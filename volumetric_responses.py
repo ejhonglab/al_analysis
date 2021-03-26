@@ -14,7 +14,8 @@ def main():
     # min / max values, partially cause i perhaps have some bug in my
     # hong2p/thor2tiff command line tool? maybe in recent changes to write_tiff?
     data_dir = '/home/tom/mb_team/raw_data'
-    thorimage_dir = join(data_dir, '2021-02-23/1/fn_001')
+    #thorimage_dir = join(data_dir, '2021-02-23/1/fn_001')
+    thorimage_dir = join(data_dir, '2021-03-07/1/t2h_single_plane')
     #tiff_fname = /3_left.tif')
 
     movie = u.read_movie(thorimage_dir)
@@ -40,6 +41,7 @@ def main():
     # frames means volumes here
     print('frames_per_trial:', frames_per_trial)
 
+    '''
     odor_order = [
         '5% cleaning ammonia in water',
         'geranyl acetate',
@@ -49,6 +51,10 @@ def main():
         'trans-2-hexenal',
         'methyl salicylate',
         '2-butanone',
+    ]
+    '''
+    odor_order = [
+        'trans-2-hexenal',
     ]
 
     n_repeats = 3
@@ -64,7 +70,13 @@ def main():
     anat_baseline = movie.mean(axis=0)
     baseline_fig, baseline_axs = plt.subplots(1, z)
     for d in range(z):
-        ax = baseline_axs[d]
+        # TODO fix hack that added support for 2d case
+        try:
+            ax = baseline_axs[d]
+        # 'AxesSubplot' object does not support indexing
+        except TypeError:
+            ax = baseline_axs
+
         ax.imshow(anat_baseline[d], vmin=0, vmax=9000)
         ax.set_axis_off()
         """
@@ -140,7 +152,12 @@ def main():
                 im = ax.imshow(max_dff[d], vmin=vmin, vmax=vmax)
                 '''
 
-                ax = mean_axs[n, d]
+                try:
+                    ax = mean_axs[n, d]
+                # TODO fix hack
+                except IndexError:
+                    ax = mean_axs[n]
+
                 im = ax.imshow(mean_dff[d], vmin=vmin, vmax=vmax)
                 ax.set_axis_off()
 
