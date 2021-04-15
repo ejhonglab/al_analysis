@@ -1,12 +1,42 @@
 #!/usr/bin/env python3
 
 from os.path import join, exists
+# TODO delete
+import traceback
+#
 
 import numpy as np
 import matplotlib.pyplot as plt
 import tifffile
+import yaml
 
 from hong2p import util, thor
+
+
+def yaml_data2pin_lists(yaml_data):
+    """
+    Pins used as balances can be part of these lists despite not having a corresponding
+    odor in 'pins2odors'.
+    """
+    return [x['pins'] for x in yaml_data['pin_sequence']['pin_groups']]
+
+
+def yaml_data2odor_lists(yaml_data):
+    pin_lists = yaml_data2pin_lists(yaml_data)
+    # int pin -> dict representing odor (keys 'name', 'log10_conc', etc)
+    pins2odors = yaml_data['pins2odors']
+
+    odor_lists = []
+    for pin_list in pin_lists:
+
+        odor_list = []
+        for p in pin_list:
+            if p in pins2odors:
+                odor_list.append(pins2odors[p])
+
+        odor_lists.append(odor_list)
+
+    return odor_lists
 
 
 def main():
@@ -34,7 +64,27 @@ def main():
     )
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
 
-            movie = thor.read_movie(thorimage_dir)
+            thorsync_df = thor.load_thorsync_hdf5(thorsync_dir)
+
+            '''
+            try:
+                bounding_frames = thor.assign_frames_to_odor_presentations(thorsync_df,
+                    thorimage_dir, _debug=True
+                )
+            except:
+                traceback.print_exc()
+
+            print()
+            continue
+            '''
+
+            # TODO TODO do i also want to call thor.get_frame_times, or is that just
+            # useful insofar as it can be used to generate what this fn does?
+            # TODO TODO TODO also have this / a related function either give first frame
+            # >= odor onset or just return times of all frames relative to odor onsets
+            bounding_frames = thor.assign_frames_to_odor_presentations(thorsync_df,
+                thorimage_dir
+            )
 
             single_plane_fps, xy, z, c, n_flyback, _, xml = thor.load_thorimage_metadata(
                 thorimage_dir, return_xml=True
@@ -59,7 +109,34 @@ def main():
 
                     break
 
-            print()
+            assert yaml_path is not None
+            with open(yaml_path, 'r') as f:
+                data = yaml.safe_load(f)
+
+            odor_lists = yaml_data2odor_lists(data)
+
+            assert len(bounding_frames) == len(odor_lists)
+
+            #odor_order = [
+            #    '5% cleaning ammonia in water',
+            #    'geranyl acetate',
+            #    'methyl acetate',
+            #    'phenylacetaldehyde',
+            #    '2,3-butanedione',
+            #    'trans-2-hexenal',
+            #    'methyl salicylate',
+            #    '2-butanone',
+            #]
+            #odor_order = [
+            #    'trans-2-hexenal',
+            #]
+
+            if max([len(x) for x in odor_lists]) > 1:
+                print('SKIPPING B/C ODOR_LISTS OF LEN > 1')
+                continue
+
+            odor_order = [x[0]['name'] for x in odor_lists]
+            print(odor_order)
             continue
 
             pre_odor_s = 5.0
@@ -79,21 +156,7 @@ def main():
             # frames means volumes here
             print('frames_per_trial:', frames_per_trial)
 
-            '''
-            odor_order = [
-                '5% cleaning ammonia in water',
-                'geranyl acetate',
-                'methyl acetate',
-                'phenylacetaldehyde',
-                '2,3-butanedione',
-                'trans-2-hexenal',
-                'methyl salicylate',
-                '2-butanone',
-            ]
-            '''
-            odor_order = [
-                'trans-2-hexenal',
-            ]
+            movie = thor.read_movie(thorimage_dir)
 
             n_repeats = 3
             n_trials = n_repeats * len(odor_order)
