@@ -1,3 +1,9 @@
 # TODO remove if this gets added to hong2p / i move this stuff to olfactometer and add
 # that here
 pyyaml
+
+# You may replace this line with:
+# git+https://github.com/ejhonglab/hong2p
+-e ../hong2p
+
+suite2p
