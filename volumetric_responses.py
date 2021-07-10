@@ -8,6 +8,7 @@ import warnings
 import time
 import shutil
 import traceback
+import subprocess
 
 import numpy as np
 import pandas as pd
@@ -15,9 +16,32 @@ import matplotlib.pyplot as plt
 import tifffile
 import yaml
 from suite2p import run_s2p
+import ijroi
 
 from hong2p import util, thor, viz
 from hong2p.suite2p import suite2p_params
+
+
+SAVE_FIGS = True
+PLOT_FMT = 'svg'
+
+def savefig(fig, experiment_fig_dir, desc, close=True):
+    # If True, the directory name containing (date, fly, thorimage_dir) information will
+    # also be in the prefix for each of the plots saved within that directory (harder to
+    # lose track in image viewers / after copying, but more verbose).
+    prefix_plot_fnames = False
+    basename = util.to_filename(desc) + PLOT_FMT
+
+    if prefix_plot_fnames:
+        experiment_basedir = split(experiment_fig_dir)[0]
+        fname_prefix = experiment_basedir + '_'
+        basename = fname_prefix + basename
+
+    if SAVE_FIGS:
+        fig.savefig(join(experiment_fig_dir, basename))
+
+    if close:
+        plt.close(fig)
 
 
 def yaml_data2pin_lists(yaml_data):
@@ -227,7 +251,9 @@ def split_into_trials(movie_length_array, bounding_frames, *n_trial_length_args,
         *n_trial_length_args):
 
         # Not doing + 1 to odor_onset_frame since we only want to include up to the
-        # previous frame in the baseline.
+        # previous frame in the baseline. This slicing seems to work the same for both
+        # numpy arrays and pandas DataFrames of the same shape (at least for stuff where
+        # the rows are the default RangeIndex, which is all I tested)
         before_onset = movie_length_array[start_frame:odor_onset_frame]
         after_onset = movie_length_array[odor_onset_frame:(end_frame + 1)]
 
@@ -267,6 +293,10 @@ def split_into_trials(movie_length_array, bounding_frames, *n_trial_length_args,
 # data later)?
 def compute_trial_stats(traces, bounding_frames, odor_order_with_repeats=None,
     stat=lambda x: np.max(x, axis=0)):
+    """
+    Args:
+        odor_order_with_repeats: if passed, will be passed to odor_lists_to_multiindex
+    """
 
     if odor_order_with_repeats is not None:
         assert len(bounding_frames) == len(odor_order_with_repeats)
@@ -277,8 +307,6 @@ def compute_trial_stats(traces, bounding_frames, odor_order_with_repeats=None,
     trial_stats = []
 
     for trial_traces in split_into_trials(traces, bounding_frames):
-        #print('trial_traces.shape:', trial_traces.shape)
-
         curr_trial_stats = stat(trial_traces)
 
         # TODO TODO adapt to also work in case input is a movie
@@ -292,16 +320,27 @@ def compute_trial_stats(traces, bounding_frames, odor_order_with_repeats=None,
     trial_stats = np.stack(trial_stats)
 
     if odor_order_with_repeats is None:
-        return trial_stats
+        index = None
     else:
         index = odor_lists_to_multiindex(odor_order_with_repeats)
 
-        trial_stats_df = pd.DataFrame(index=index, data=trial_stats)
+    trial_stats_df = pd.DataFrame(index=index, data=trial_stats)
+    trial_stats_df.index.name = 'trial'
+
+    # TODO maybe implement somthing that also works w/ xarrays? maybe make my own
+    # function that dispatches to the appropriate concatenation function accordingly?
+
+    # Since np.stack (probably as well as other similar numpy functions) converts pandas
+    # stuff to numpy, and pd.concat doesn't work with numpy arrays.
+    if hasattr(traces, 'columns'):
+        trial_stats_df.columns = traces.columns
+    else:
         # TODO maybe only do this if a certain dimension if 2d input (time x ROIs) is
         # passed in (but is it possible to name these correctly based on dimension in
         # general, or even for any particular dimension? if not, don't name ever)
         trial_stats_df.columns.name = 'roi'
-        return trial_stats_df
+
+    return trial_stats_df
 
 
 def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None):
@@ -364,16 +403,14 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
 
 
 def plot_roi(roi_stat, ops, ax=None):
-    #from scipy.ndimage import binary_closing
-
     if ax is None:
         ax = plt.gca()
 
     roi_img = np.zeros((ops['Ly'], ops['Lx'])) * np.nan
     xpix = roi_stat['xpix']
     ypix = roi_stat['ypix']
-    print(f'xpix range: [{xpix.min(), xpix.max()}]')
-    print(f'ypix range: [{ypix.min(), ypix.max()}]')
+    #print(f'xpix range: [{xpix.min(), xpix.max()}]')
+    #print(f'ypix range: [{ypix.min(), ypix.max()}]')
 
     roi_img[ypix, xpix] = roi_stat['lam']
 
@@ -385,6 +422,7 @@ def plot_roi(roi_stat, ops, ax=None):
     ax.imshow(cropped)
     ax.axis('off')
 
+    #from scipy.ndimage import binary_closing
     #closed = binary_closing(roi_img_tmp > 0)
     #ax.contour(closed > 0, [0.5])
 
@@ -422,7 +460,7 @@ def set_suite2p_iscell_label(s2p_out_dir, roi_num, is_good):
 # TODO maybe wrap call that checks this (and opens suite2p if not) with something that
 # also saves an empty hidden file in the directory to mark good if no modifications
 # necessary? or unlikely enough? / just prompt before opening suite2p each time?
-def is_iscell_modified(s2p_out_dir):
+def is_iscell_modified(s2p_out_dir, warn=True):
     iscell = load_s2p_pickle(join(s2p_out_dir, 'iscell.npy'))
 
     # Defined in suite2p/suite2p/classification/classifier.py, in kwarg to `run`.
@@ -430,28 +468,77 @@ def is_iscell_modified(s2p_out_dir):
     # kwarg (so it should always be this default value).
     p_threshold = 0.5
 
+    iscell_bool = iscell[:, 0].astype(np.bool_)
+
+    if warn and iscell_bool.all():
+        # Since this is probably the result of just setting the threshold to 0 in the
+        # GUI and not further marking the ROIs as cell/not-cell from there.
+        warnings.warn(f'all suite2p ROIs in {s2p_out_dir} marked as good. check this '
+            'is intentional.'
+        )
+
     # TODO warn if iscell[:, 0] is all ones? + fail if all zeros?
-    # TODO does this work?
-    # TODO should equality be included in comparison to p_threshold?
-    return not np.array_equal(
-        iscell[:, 0].astype(np.bool_),
-        iscell[:, 1] >= p_threshold
-    )
+    # TODO should equality be included in comparison to p_threshold? would probably have
+    # to inspect suite2p source code to determine...
+    return not np.array_equal(iscell_bool, iscell[:, 1] >= p_threshold)
+
+
+def modify_iscell_in_suite2p(stat_path):
+    # TODO TODO TODO maybe show a plot for the relevant df/f image(s) alongside this, to
+    # see if i'm getting *those* glomeruli? would probably need to couple with main loop
+    # more though...
+
+    # This would block until the process finishes, as opposed to Popen call below.
+    #subprocess.run(f'suite2p --statfile {stat_path}'.split(), check=True)
+
+    # TODO some way to have ctrl-c in main program also kill this opened suite2p window?
+
+    # This will wait for suite2p to be closed before it returns.
+    # NOTE: the --statfile argument is something I added in my fork of suite2p
+    proc = subprocess.Popen(f'suite2p --statfile {stat_path}'.split())
+
+    # TODO maybe refactor so closing suite2p will automatically close any still-open
+    # matplotlib figures?
+    plt.show()
+
+    proc.wait()
+    print('SUITE2P CLOSED', flush=True)
+
+    # TODO warn if not modified after closing?
+
+
+def suite2p_footprint2bool_mask(roi_stat, ops):
+    from scipy.ndimage import binary_closing
+
+    full_roi = np.zeros((ops['Ly'], ops['Lx'])) * np.nan
+    xpix = roi_stat['xpix']
+    ypix = roi_stat['ypix']
+
+    full_roi[ypix, xpix] = roi_stat['lam']
+
+    # np.nan > 0 is False (as is np.nan < 0), so the nan background is fine
+    closed = binary_closing(full_roi > 0)
+
+    return closed
 
 
 # TODO kwarg to allow passing trial stat fn in that includes frame rate info as closure,
 # for picking frames in a certain time window after onset and computing mean?
-def suite2p_trace_plots(thorimage_dir, bounding_frames, odor_order_with_repeats):
+# TODO TODO TODO to the extent that i need to convert suite2p rois to my own and do my
+# own trace extraction, maybe just modify my fork of suite2p to save sufficient
+# information in combined view stat.npy to invert the tiling? unless i really can find a
+# reliable way to invert that step...
+def suite2p_trace_plots(thorimage_dir, bounding_frames, odor_order_with_repeats,
+    experiment_dir=None):
 
-    s2p_output_dir = join(thorimage_dir, 'suite2p')
-    combined_dir = join(s2p_output_dir, 'combined')
+    combined_dir = get_suite2p_combined_dir(thorimage_dir)
+
     traces_path = join(combined_dir, 'F.npy')
     if not exists(traces_path):
         print(f'{traces_path} did not exist! skipping suite2p_trace_plots!')
         return
 
-    traces = load_s2p_pickle(traces_path)
-    # TODO TODO TODO are traces output by suite2p already delta F / F, or just F?
+    # TODO TODO are traces output by suite2p already delta F / F, or just F?
     # (seems like just F, though not i'm pretty sure there were some options for using
     # some percentile as a baseline, so need to check again)
 
@@ -461,22 +548,33 @@ def suite2p_trace_plots(thorimage_dir, bounding_frames, odor_order_with_repeats)
     # - where are the weights for the ROI? (expecting something of same length as xpix
     #   and ypix)? it's not 'lam', is it? and if it's 'lam', should i normalized it
     #   before using? why isn't it already normalized?
-    stat = load_s2p_pickle(join(combined_dir, 'stat.npy'))
-
+    stat_path = join(combined_dir, 'stat.npy')
     if not is_iscell_modified(combined_dir):
-        # TODO TODO TODO use modified suite2p to open gui **with appropriate data**
-        print('\nIS CELL **NOT** MODIFIED\n')
+        print('\nIS CELL **NOT** MODIFIED\n', flush=True)
+        #modify_iscell_in_suite2p(stat_path)
+        return
+
     # TODO delete
     else:
         print('\nIS CELL MODIFIED!!!\n')
-    return
+    #return
     #
 
+    traces = load_s2p_pickle(traces_path)
+    stat = load_s2p_pickle(stat_path)
     iscell = load_s2p_pickle(join(combined_dir, 'iscell.npy'))
 
     ops = load_s2p_pickle(join(combined_dir, 'ops.npy')).item()
 
     good_rois = iscell[:, 0].astype(np.bool_)
+
+    # TODO TODO TODO delete this hack / put behind flag circa current iscell
+    # modification checking
+    if len(good_rois) == good_rois.sum():
+        print('skipping because *all* ROIs marked good')
+        return
+    #
+
     # TODO note, one/both of these might need to change to account for merged ROIs...
     print('# ROIs', len(good_rois))
     print('# good ROIs:', good_rois.sum())
@@ -485,23 +583,38 @@ def suite2p_trace_plots(thorimage_dir, bounding_frames, odor_order_with_repeats)
     # but compute_trial_stats expects first dimension to be of size # timepoints in
     # movie (so it can be used directly on movie as well).
     traces = traces.T
+    # TODO delete
+    traces_arr = traces.copy()
+    #
+
+    traces = pd.DataFrame(data=traces)
+    traces.index.name = 'frame'
+    traces.columns.name = 'roi'
+
+    traces = traces.iloc[:, good_rois]
 
     trial_stats = compute_trial_stats(traces, bounding_frames, odor_order_with_repeats)
 
-    # TODO move this before compute_trial_stats, and just check that it being a
-    # dataframe (specifically w/ numbered axes), doesn't break anything inside that fn
-    # (earlier so i can factor merged + iscell/not-iscell handling into its own function
-    # / part of a load function, but so i can preserve ROI IDs as in suite2p using
-    # pandas labels)
-    trial_stats = trial_stats.iloc[:, good_rois]
+    # TODO delete
+    '''
+    trial_stats_from_arr = compute_trial_stats(traces, bounding_frames,
+        odor_order_with_repeats
+    )
+    '''
+    #
 
     # TODO check numbering is consistent w/ suite2p numbering in case where there is
     # some merging (currently handling will treat it incorrectly)
     # TODO also plot roi / outline of roi on corresponding [mean?] plane / maybe with
     # other planes for context?
+    if SAVE_FIGS and experiment_dir is not None:
+        roi_dir = join(experiment_dir, 'roi')
+        os.makedirs(roi_dir, exist_ok=True)
 
     for roi in trial_stats.columns:
         fig, axs = plt.subplots(nrows=2, ncols=1)
+
+        # TODO TODO more globally appropriate title?
 
         #fig.suptitle(f'ROI {roi}')
 
@@ -511,10 +624,8 @@ def suite2p_trace_plots(thorimage_dir, bounding_frames, odor_order_with_repeats)
         roi_stat = stat[roi]
         plot_roi(roi_stat, ops, ax=axs[1])
 
-    # TODO delete
-    plt.show()
-    import ipdb; ipdb.set_trace()
-    #
+        if experiment_dir is not None:
+            savefig(fig, roi_dir, str(roi))
 
     # TODO TODO [option to] use non-weighted footprints (as well as footprints that have
     # had the binary closing operation applied before uniform weighting)
@@ -525,15 +636,29 @@ def suite2p_trace_plots(thorimage_dir, bounding_frames, odor_order_with_repeats)
     # TODO TODO TODO savefigs (would require some refactoring to reuse the other one...)
 
 
+def get_suite2p_dir(thorimage_dir):
+    return join(thorimage_dir, 'suite2p')
+
+
+def get_suite2p_combined_dir(thorimage_dir):
+    return join(get_suite2p_dir(thorimage_dir), 'combined')
+
+
 failed_suite2p_dirs = []
 def run_suite2p(thorimage_dir, overwrite=False):
     # verbose=True is also the default
     # TODO expose if_exists kwarg as kwarg here?
     util.thor2tiff(thorimage_dir, if_exists='ignore', verbose=True)
 
-    suite2p_dir = join(thorimage_dir, 'suite2p')
+    suite2p_dir = get_suite2p_dir(thorimage_dir)
 
     if exists(suite2p_dir):
+        # Since we currently depend on the contents of this directory existing for
+        # analysis, and it's generated as one of the last steps in what suite2p does, so
+        # many errors will cause this directory to not get generated.
+        if not exists(get_suite2p_combined_dir(thorimage_dir)):
+            overwrite = True
+
         if overwrite:
             shutil.rmtree(suite2p_dir)
             os.mkdir(suite2p_dir)
@@ -575,6 +700,7 @@ def run_suite2p(thorimage_dir, overwrite=False):
     # TODO TODO may want / need to put in a try/except
     try:
         ops_end = run_s2p(ops=ops, db=db)
+
     except Exception as e:
         traceback.print_exc()
         failed_suite2p_dirs.append(thorimage_dir)
@@ -589,18 +715,15 @@ def run_suite2p(thorimage_dir, overwrite=False):
 def main():
     skip_if_experiment_plot_dir_exists = False
 
+    # Whether to run the suite2p pipeline (generates outputs among raw data, in
+    # 'suite2p' subdirectories)
     do_suite2p = True
-
-    #overwrite_suite2p = True
+    # Will just skip if already exists if False
     overwrite_suite2p = False
-    #delete_suite2p_dir_on_err = False
 
-    plot_fmt = 'svg'
-    # If True, the directory name containing (date, fly, thorimage_dir) information will
-    # also be in the prefix for each of the plots saved within that directory (harder to
-    # lose track in image viewers / after copying, but more verbose).
-    prefix_plot_fnames = False
-    save_figs = False
+    analyze_suite2p_outputs = True
+    # TODO add var clarifying what happens in case where iscell is not modified /
+    # controlling that behavior
 
     # Since some of the pilot experiments had 6 planes (but top 5 should be the
     # same as in experiments w/ only 5 total), and that last plane largely doesn't
@@ -608,12 +731,16 @@ def main():
     # top n will yield a consistent total height of the volume.
     n_top_z_to_analyze = 5
 
+    analyze_glomeruli_diagnostics = False
+
+    # Whether to analyze any single plane data that is found under the enumerated
+    # directories.
+    analyze_2d_tests = False
+
     dff_vmin = 0
     dff_vmax = 3.0
 
     ax_fontsize = 7
-
-    analyze_glomeruli_diagnostics = False
 
     stimfile_root = util.stimfile_root()
 
@@ -631,23 +758,35 @@ def main():
     # analysis script
 
     experiment_keys = [
+        # TODO TODO TODO skip all data that doesn't have final concentrations of ethyl
+        # hexanoate (i went down, right?)
+
+        # TODO TODO TODO handle all '*_redo' experiments (skip any data that have redo
+        # that is missing this suffix)
+
         ('2021-03-07', 1),
-        ('2021-03-07', 2),
+        # skipping for now cause suite2p output looks weird (for both recordings)
+        #('2021-03-07', 2),
         ('2021-03-08', 1),
-        ('2021-03-08', 2),
+        # skipping for now just because responses in df/f images seem weak. compare to
+        # others tho.
+        #('2021-03-08', 2),
         ('2021-04-28', 1),
         ('2021-04-29', 1),
         ('2021-05-03', 1),
 
         # NOTE: ethyl hex. + 1-hexanol here was some of the first data I was testing
         # suite2p volumetric analysis with.
+        # TODO skip just the butanal and acetone experiment here, which seems bad
         ('2021-05-05', 1),
 
-        # TODO probably delete butanal + acetone here (cause possible conc mixup for i
-        # think butanal)
+        # TODO TODO TODO probably delete butanal + acetone here (cause possible conc
+        # mixup for i think butanal) (unless i can clarify what mixup might have been
+        # from notes + it seems clear enough from data it didn't happen)
         ('2021-05-10', 1),
 
-        ('2021-05-11', 1),
+        ('2021-05-11', 2),
+
         ('2021-05-18', 1),
 
         ('2021-05-24', 1),
@@ -659,26 +798,56 @@ def main():
         # NOTE: no useful data for either fly on 2021-06-07
         ('2021-06-08', 1),
         ('2021-06-08', 2),
+
+        ('2021-06-24', 1),
+
+        # Frame <-> time assignment is currently failing for all the real data from this
+        # day.
+        #('2021-06-24', 2),
+    ]
+
+    # Using this in addition to ignore_strs in call below, because that changes the
+    # directories considered for Thor[Image/Sync] pairing, and would cause that process
+    # to fail in some of these cases.
+    bad_thorimage_dirs =  [
+    ]
+
+    test_data_dirs = [
+        (
+            '/home/tom/2p_data/raw_data/2021-05-05/1/ehex_and_1-6ol',
+            '/home/tom/2p_data/raw_data/2021-05-05/1/SyncData002',
+        ),
     ]
 
     keys_and_paired_dirs = util.date_fly_list2paired_thor_dirs(experiment_keys,
         verbose=True, ignore_strs=('anat',)
     )
-    fly_processing_time_data = []
-    for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
+    exp_processing_time_data = []
+
+    # TODO TODO TODO delete and replace w/ commented line / put this behind some
+    # kind of debug flag
+    #for thorimage_dir, thorsync_dir in test_data_dirs:
+
+    # NOTE: LHS is (date, fly_num), but I don't actually use it in here at the moment
+    for (_, _), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
 
         if (not analyze_glomeruli_diagnostics and
             'glomeruli_diagnostics' in thorimage_dir):
             continue
 
-        fly_before = time.time()
+        if any([b in thorimage_dir for b in bad_thorimage_dirs]):
+            print('skipping because in bad_thorimage_dirs\n')
+            continue
+
+        exp_start = time.time()
 
         experiment_id = format_thorimage_dir(thorimage_dir)
         experiment_basedir = util.to_filename(experiment_id, period=False)
 
         # Created below after we decide whether to skip a given experiment based on the
         # experiment type, etc.
-        experiment_dir = join(plot_fmt, experiment_basedir)
+        # TODO rename to experiment_plot_dir or something
+        experiment_dir = join(PLOT_FMT, experiment_basedir)
 
         # TODO maybe check if empty and don't skip if so?
         if skip_if_experiment_plot_dir_exists and exists(experiment_dir):
@@ -686,6 +855,11 @@ def main():
                 'exists\n'
             )
             continue
+
+        # TODO maybe move out-of-tree? (along w/ suite2p dir?)
+        # TODO put all ijroi stuff behind a flag like do_suite2p
+        ijroi_dir = join(thorimage_dir, 'ijrois')
+        os.makedirs(ijroi_dir, exist_ok=True)
 
         if do_suite2p:
             run_suite2p(thorimage_dir, overwrite=overwrite_suite2p)
@@ -696,19 +870,16 @@ def main():
 
             fig.suptitle(f'{experiment_id}\n{title}')
 
-        def savefig(fig, desc):
-            basename = util.to_filename(desc) + plot_fmt
-
-            if prefix_plot_fnames:
-                fname_prefix = experiment_basedir + '_'
-                basename = fname_prefix + basename
-
-            if save_figs:
-                fig.savefig(join(experiment_dir, basename))
+        def exp_savefig(fig, desc, **kwargs):
+            savefig(fig, experiment_dir, desc, **kwargs)
 
         single_plane_fps, xy, z, c, n_flyback, _, xml = thor.load_thorimage_metadata(
             thorimage_dir, return_xml=True
         )
+
+        if not analyze_2d_tests and z == 1:
+            print('skipping analysis for this experiment because it is single plane')
+            continue
 
         notes = thor.get_thorimage_notes_xml(xml)
         parts = notes.split()
@@ -746,16 +917,19 @@ def main():
 
         odor_lists = yaml_data2odor_lists(data)
 
-        os.makedirs(experiment_dir, exist_ok=True)
+        if SAVE_FIGS:
+            os.makedirs(experiment_dir, exist_ok=True)
 
         # NOTE: converting to list-of-str FIRST, so that each element will be
         # hashable, and thus can be counted inside `remove_consecutive_repeats`
         odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
-        try:
-            odor_order, n_repeats = remove_consecutive_repeats(odor_order_with_repeats)
-        except AssertionError:
-            print('REMOVE_CONSECUTIVE_REPEATS FAILED')
-            continue
+        odor_order, n_repeats = remove_consecutive_repeats(odor_order_with_repeats)
+
+        '''
+        print('odor_order:')
+        pprint(odor_order)
+        import ipdb; ipdb.set_trace()
+        '''
 
         before = time.time()
 
@@ -768,13 +942,6 @@ def main():
         )
         assert len(bounding_frames) == len(odor_order_with_repeats)
 
-        if do_suite2p:
-            suite2p_trace_plots(thorimage_dir, bounding_frames, odor_lists)
-
-        # TODO TODO TODO delete
-        #continue
-        #
-
         volumes_per_second = single_plane_fps / (z + n_flyback)
 
         before = time.time()
@@ -783,7 +950,7 @@ def main():
 
         read_movie_s = time.time() - before
 
-        # TODO TODO TODO maybe make a plot like this, but use the actual frame times
+        # TODO TODO maybe make a plot like this, but use the actual frame times
         # (via thor.get_frame_times) + actual odor onset / offset times, and see if
         # that lines up any better?
         '''
@@ -795,7 +962,7 @@ def main():
             ffavg_ax.axvline(first_odor_frame)
 
         ffavg_ax.set_xlabel('Frame Number')
-        savefig(ffavg_fig, 'ffavg')
+        exp_savefig(ffavg_fig, 'ffavg')
         #plt.show()
         '''
 
@@ -822,20 +989,17 @@ def main():
             print()
             """
         suptitle('average of whole movie', baseline_fig)
-        savefig(baseline_fig, 'avg')
+        exp_savefig(baseline_fig, 'avg')
         '''
 
         # TODO (optionally) tqdm this + inner loop together
         # (or is read_movie and reading hdf5 actually dominating time now?)
         for i, o in enumerate(odor_order):
 
-            plot_desc = o
-            #if 'glomeruli_diagnostics' in thorimage_dir:
-            # TODO TODO either:
+            # TODO either:
             # - always use 2 digits (leading 0)
-            # - only do for glomeruli_diagnostics (where one digit should be fine)
             # - pick # of digits from len(odor_order)
-            plot_desc = f'{i + 1}_{plot_desc}'
+            plot_desc = f'{i + 1}_{o}'
 
             def dff_imshow(ax, dff_img):
                 im = ax.imshow(dff_img, vmin=dff_vmin, vmax=dff_vmax)
@@ -922,6 +1086,7 @@ def main():
                 '''
                 # hack to make df/f values more reasonable
                 # TODO still an issue?
+                # TODO TODO maybe just add like 1e4 or something?
                 #baseline = baseline + 10.
 
                 # TODO TODO why is baseline.max() always the same???
@@ -980,13 +1145,69 @@ def main():
             viz.add_colorbar(trial_heatmap_fig, im)
 
             suptitle(o, trial_heatmap_fig)
-            # TODO TODO TODO embed number signifying order of this odor w/in overall
-            # presentation order in at least the glomeruli diagistics case too (to help
-            # in troubleshooting contamination) (in other files too)
-            savefig(trial_heatmap_fig, plot_desc + '_trials')
-
+            close = i < len(odor_order) - 1
+            # TODO need to make sure figures from earlier iterations are closed
+            exp_savefig(trial_heatmap_fig, plot_desc + '_trials', close=close)
 
             avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
+
+
+            # TODO TODO TODO save (at least(?) max pair conc) trial df/f volumes to
+            # tiffs in the ijroi_dir
+            # TODO replace LHS of "and" w/ volumetric only flag if i add one
+            if min(movie.shape) > 1 and i == (len(odor_order) - 1):
+                # TODO factor out + check this is consistent w/ write_tiff. might wanna
+                # just modify write_tiff so i can specify it's missing the T not Z
+                # dimension (to the extent it matters...), which the docstring currently
+                # says it doesn't support (or just explictly add singleton dimension
+                # before, in here?)
+                avg_mean_dff_tiff = join(ijroi_dir, 'avg_mean_dff.tif')
+
+                # This expand_dims operation doesn't seem to have added a label to
+                # slider in FIJI, but maybe FIJI still cares, and maybe the ROI manager
+                # will generate labels differently? As long as I can load the ROIs w/
+                # the metadata I need it shouldn't matter...
+                avg_dff_for_tiff = np.expand_dims(avg_mean_dff, axis=0
+                    ).astype(np.float32)
+
+                util.write_tiff(avg_mean_dff_tiff, avg_dff_for_tiff, strict_dtype=False)
+
+                # TODO TODO auto open this roi in imagej (and maybe also open roi
+                # manager), for labelling (unless ROI file exists)
+                # TODO maybe also a flag to load each with existing ROI files (if
+                # exists), for checking / modification
+
+                # TODO compare tiff data to matplotlib plots that should have same data,
+                # just for sanity checking that my tiff writing is working correctly
+
+                # TODO TODO TODO load <ijroi_dir>/RoiSet.zip if exists and use as fn
+                # that processes suite2p output if exists
+                # TODO maybe refactor that fn to separate plotting from suite2p/ijroi
+                # data source?
+                '''
+                ijroiset_filename = join(ijroi_dir, 'RoiSet.zip')
+                #print('ijrois:', ijroiset_filename)
+
+                # TODO refactor all this ijroi loading / mask creation [+ probably trace
+                # extraction too]
+                name_and_roi_list = ijroi.read_roi_zip(ijroiset_filename)
+
+                masks = util.ijrois2masks(name_and_roi_list, movie.shape[-3:],
+                    as_xarray=True
+                )
+
+                # TODO also try merging via correlation/overlap thresholds?
+                masks = util.merge_ijroi_masks(masks, check_no_overlap=True)
+
+                # TODO TODO TODO merge w/ bool masks converted from suite2p ROIS,
+                # extract traces for all, and make plots derived from traces, as
+                # suite2p_trace_plots currently has
+                # TODO TODO perhaps also option to just analyze masks from ijrois and
+                # not merge w/ suite2p stuff?
+
+                #import ipdb; ipdb.set_trace()
+                '''
+
 
             # TODO TODO TODO refactor this or at least the labelling portion within
             for d in range(z):
@@ -1008,10 +1229,19 @@ def main():
             viz.add_colorbar(mean_heatmap_fig, im)
 
             suptitle(o, mean_heatmap_fig)
-            savefig(mean_heatmap_fig, plot_desc)
+            exp_savefig(mean_heatmap_fig, plot_desc)
 
-        fly_total_s = time.time() - fly_before
-        fly_processing_time_data.append((load_hdf5_s, read_movie_s, fly_total_s))
+
+        # TODO TODO also have flag to open image-j w/ appropriate data here
+        if analyze_suite2p_outputs:
+            suite2p_trace_plots(thorimage_dir, bounding_frames, odor_lists,
+                experiment_dir=experiment_dir
+            )
+
+        plt.close('all')
+
+        exp_total_s = time.time() - exp_start
+        exp_processing_time_data.append((load_hdf5_s, read_movie_s, exp_total_s))
 
         print()
 
@@ -1024,7 +1254,7 @@ def main():
     #plt.show()
 
     #print('processing time data:')
-    #pprint(fly_processing_time_data)
+    #pprint(exp_processing_time_data)
     #import ipdb; ipdb.set_trace()
 
 
