@@ -610,7 +610,9 @@ def set_suite2p_iscell_label(s2p_out_dir, roi_num, is_good):
 # necessary? or unlikely enough? / just prompt before opening suite2p each time?
 # TODO maybe just use mtime?
 def is_iscell_modified(s2p_out_dir, warn=True):
-    iscell = np.load(join(s2p_out_dir, 'iscell.npy'))
+    iscell_path = join(s2p_out_dir, 'iscell.npy')
+    assert exists(iscell_path)
+    iscell = np.load(iscell_path)
 
     # Defined in suite2p/suite2p/classification/classifier.py, in kwarg to `run`.
     # `run` is called in classify.py in the same directory, which doesn't pass this
@@ -947,7 +949,7 @@ def main():
     # top n will yield a consistent total height of the volume.
     n_top_z_to_analyze = 5
 
-    analyze_glomeruli_diagnostics = True
+    analyze_glomeruli_diagnostics = False
 
     # Whether to analyze any single plane data that is found under the enumerated
     # directories.
@@ -1591,11 +1593,14 @@ def main():
             elif s2p_status == s2p_statuses[3]:
                 status_dirs = [x for x in analysis_dirs if x not in not_done_dirs]
 
+            else:
+                assert False
+
             show_empty_statuses = False
             if show_empty_statuses or len(status_dirs) > 0:
                 print(f' - {s2p_status} ({len(status_dirs)})')
                 for analysis_dir in status_dirs:
-                    short_id = experiment_dir2short_id(thorimage_dir)
+                    short_id = experiment_dir2short_id(analysis_dir)
                     print(f'   - {short_id}')
 
         print()
