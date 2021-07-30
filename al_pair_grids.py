@@ -28,6 +28,22 @@ from hong2p.suite2p import suite2p_params
 SAVE_FIGS = True
 PLOT_FMT = 'svg'
 
+odor2abbrev = {
+    'methyl salicylate': 'MS',
+    'hexyl hexanoate': 'HH',
+    'furfural': 'FUR',
+    '1-hexanol': 'HEX',
+    '1-octen-3-ol': 'OCT',
+    '2-heptanone': '2H',
+    'acetone': 'ACE',
+    'butanal': 'BUT',
+    'ethyl acetate': 'EA',
+    'ethyl butyrate': 'EB',
+    'ethyl hexanoate': 'EH',
+    'hexyl acetate': 'HA',
+}
+odors_without_abbrev = set()
+
 def savefig(fig, experiment_fig_dir, desc, close=True):
     # If True, the directory name containing (date, fly, thorimage_dir) information will
     # also be in the prefix for each of the plots saved within that directory (harder to
@@ -344,6 +360,16 @@ def odor_lists_to_multiindex(odor_lists, add_repeat_col=True, **format_odor_kwar
         # consistent order, for now (probably true, tbf)
         odor1, odor2 = odor_list
 
+        # TODO refactor
+        if odor1['name'] in odor2abbrev:
+            odor1['name'] = odor2abbrev[odor1['name']]
+
+        if odor2['name'] in odor2abbrev:
+            odor2['name'] = odor2abbrev[odor2['name']]
+        # TODO also do solvent->PFO
+
+        #
+
         odor1_str = format_odor(odor1, **format_odor_kwargs)
         odor1_str_list.append(odor1_str)
 
@@ -537,17 +563,21 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
     # matshow...
 
     if show_repeats:
-        viz.matshow(roi_df.droplevel('repeat'), ax=ax, title=title,
-            group_ticklabels=True, transpose_sort_key=index2single_odor_name
+        cax = viz.matshow(roi_df.droplevel('repeat'), ax=ax, title=title,
+            group_ticklabels=True, transpose_sort_key=index2single_odor_name,
+            # not working
+            #vmin=-0.2, vmax=2.0
         )
     else:
         # 'odor2' is the one on the row axis, as one level alongside 'repeat'
         # TODO not sure why sort=False seems to be ignored... bug?
         mean_df = roi_df.groupby('odor2', sort=False).mean()
         mean_df.sort_index(key=index_sort_key, inplace=True)
-        viz.matshow(mean_df, ax=ax, title=title,
+        cax = viz.matshow(mean_df, ax=ax, title=title,
             transpose_sort_key=index2single_odor_name
         )
+
+    return cax
 
 
 def plot_roi(roi_stat, ops, ax=None):
@@ -767,6 +797,21 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
 
     traces = traces.iloc[:, good_rois]
 
+    # TODO delete
+    '''
+    plt.plot(traces, linestyle='None', marker='.')
+    plt.gca().set_prop_cycle(None)
+    plt.plot(traces, alpha=0.3)
+    ax = plt.gca()
+    ax.set_xlabel('Frame')
+    ax.set_ylabel('F')
+    short_id = experiment_dir2short_id(analysis_dir)
+    ax.set_title(short_id)
+    plt.show()
+    import ipdb; ipdb.set_trace()
+    '''
+    #
+
     trial_stats = compute_trial_stats(traces, bounding_frames, odor_order_with_repeats)
 
     # TODO delete
@@ -785,8 +830,14 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
         roi_dir = join(plot_dir, 'roi')
         os.makedirs(roi_dir, exist_ok=True)
 
+    include_rois = True
+
     for roi in trial_stats.columns:
-        fig, axs = plt.subplots(nrows=2, ncols=1)
+        if include_rois:
+            fig, axs = plt.subplots(nrows=2, ncols=1)
+            ax = axs[0]
+        else:
+            fig, ax = plt.subplots(nrows=1, ncols=1)
 
         # TODO more globally appropriate title? (w/ fly and other metadata. maybe number
         # flies within each odor pair / sequentially across days, and just use that as a
@@ -795,9 +846,8 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
         #fig.suptitle(f'ROI {roi}')
 
         roi1_series = trial_stats.loc[:, roi]
-        plot_roi_stats_odorpair_grid(roi1_series, ax=axs[0])
+        cax = plot_roi_stats_odorpair_grid(roi1_series, ax=ax)
 
-        roi_stat = stat[roi]
         # TODO TODO TODO (assuming colors are saved / randomization is seeded and easily
         # reproducible in suite2p) copy suite2p coloring for plotting ROIs (or at least
         # make my own color scheme consistent across all plots w/in experiment)
@@ -805,7 +855,15 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
         # one row for consistency with my other plots) with same color scheme
         # TODO TODO have scale in single ROI plots and ~"combined" view be the same
         # (each plot pixel same physical size)
-        plot_roi(roi_stat, ops, ax=axs[1])
+        if include_rois:
+            roi_stat = stat[roi]
+            plot_roi(roi_stat, ops, ax=axs[1])
+
+        # TODO TODO make colorbar ~size of matrix + move closer + show less decimals in
+        # ticks on it
+        viz.add_colorbar(fig, cax)
+
+        fig.tight_layout()
 
         if plot_dir is not None:
             savefig(fig, roi_dir, str(roi))
@@ -878,8 +936,18 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         assert k in ops
         ops[k] = v
 
+    # Only available in my fork of suite2p
+    ops['exclude_filenames'] = (
+        'ChanA_Preview.tif',
+        'ChanB_Preview.tif',
+        'lastpair_avg_mean_dff.tif',
+    )
+
     db = {
-        'data_path': [thorimage_dir],
+        #'data_path': [thorimage_dir],
+        # TODO TODO TODO update suite2p to take substrs / globs to ignore input files on
+        # (at least for TIFFs specifically, to ignore other TIFFs in input dir)
+        'data_path': [analysis_dir],
     }
 
     # TODO probably build up a list of directories for which suite2p was run for the
@@ -977,77 +1045,57 @@ def main():
     # a date range or something, like i might have had a parameter for in some other
     # analysis script
 
-    experiment_keys = [
-        # TODO TODO TODO skip all data that doesn't have final concentrations of ethyl
-        # hexanoate (i went down)
+    # TODO TODO TODO skip all data that doesn't have final concentrations of ethyl
+    # hexanoate (i went down)
 
-        # TODO TODO TODO handle all '*_redo' experiments (skip any data that have redo
-        # that is missing this suffix)
+    # TODO TODO TODO handle all '*_redo' experiments (skip any data that have redo
+    # that is missing this suffix)
 
-        ('2021-03-07', 1),
-        # skipping for now cause suite2p output looks weird (for both recordings)
-        #('2021-03-07', 2),
-        ('2021-03-08', 1),
-        # skipping for now just because responses in df/f images seem weak. compare to
-        # others tho.
-        #('2021-03-08', 2),
-        ('2021-04-28', 1),
-        ('2021-04-29', 1),
-        ('2021-05-03', 1),
+    # TODO skip just the butanal and acetone experiment here, which seems bad
+    #('2021-05-05', 1),
 
-        # NOTE: ethyl hex. + 1-hexanol here was some of the first data I was testing
-        # suite2p volumetric analysis with.
-        # TODO skip just the butanal and acetone experiment here, which seems bad
-        ('2021-05-05', 1),
+    # TODO TODO TODO probably delete butanal + acetone here (cause possible conc
+    # mixup for i think butanal) (unless i can clarify what mixup might have been
+    # from notes + it seems clear enough from data it didn't happen)
+    #('2021-05-10', 1),
 
-        # TODO TODO TODO probably delete butanal + acetone here (cause possible conc
-        # mixup for i think butanal) (unless i can clarify what mixup might have been
-        # from notes + it seems clear enough from data it didn't happen)
-        ('2021-05-10', 1),
-
-        # TODO TODO TODO what is the deal w/ 2021-05-11/1? write comment explaining
-        ('2021-05-11', 2),
-
-        ('2021-05-18', 1),
-
-        ('2021-05-24', 1),
-        ('2021-05-24', 2),
-
-        # TODO TODO TODO add to in-code list of things w/ some suite2p analysis that
-        # should be excluded from plotting regardless (and add other stuff as well)
-        #
-        # eb_and_ea recording looks bad (mainly just one glomerulus? lots of stuff seems
-        # to come in 4s at times rather than 3s [well really just one group of 4], and
-        # generally not much signal)
-        ('2021-05-25', 1),
-
-        ('2021-05-25', 2),
-
-        # NOTE: no useful data for either fly on 2021-06-07
-        ('2021-06-08', 1),
-        ('2021-06-08', 2),
-
-        ('2021-06-24', 1),
-
-        # Frame <-> time assignment is currently failing for all the real data from this
-        # day.
-        #('2021-06-24', 2),
-
-        # NOTE: first reverse order experiments
-        ('2021-07-21', 1),
-        ('2021-07-21', 2),
-    ]
+    # TODO TODO TODO fix how 2021-07-21/1/EH_and_1H seems to have the stimulus file
+    # for acetone+butanal (from previous exp w/ same fly) in notes
 
     # Using this in addition to ignore_prepairing in call below, because that changes
     # the directories considered for Thor[Image/Sync] pairing, and would cause that
     # process to fail in some of these cases.
-    bad_thorimage_dirs =  [
+    bad_thorimage_dirs = [
+        # skipping for now just because responses in df/f images seem weak. compare to
+        # others tho.
+        '2021-03-08/2',
+
+        # Just has glomeruli diagnostics. No real data.
+        '2021-05-11/1',
+
+        # Both flies only have glomeruli diagnostics.
+        '2021-06-07',
+
+        # Frame <-> time assignment is currently failing for all the real data from this
+        # day.
+        #'2021-06-24/2',
     ]
 
     bad_suite2p_analysis_dirs = [
-        '2021-05-25/1/eb_and_ea',
+        # skipping for now cause suite2p output looks weird (for both recordings)
+        '2021-03-07/2',
+
+        # Just a few glomeruli visible in (at least the last odor) trials
+        '2021-05-24/1/1oct3ol_and_2h',
+
         # TODO TODO revisit this one
         '2021-05-24/2/ea_and_etb',
+
+        # TODO why?
+        # eb_and_ea recording looks bad (mainly just one glomerulus? lots of stuff seems
+        # to come in 4s at times rather than 3s [well really just one group of 4], and
+        # generally not much signal)
+        '2021-05-25/1/eb_and_ea',
 
         # TODO TODO TODO add other stuff that was bad
     ]
@@ -1069,19 +1117,20 @@ def main():
     experiment_plot_dirs = []
     experiment_analysis_dirs = []
 
-    # TODO TODO use new `ignore` kwarg to exclude stuff after pairing (to resolve some
-    # comments above / in pair_grid_data google sheet about some flies only excluded
-    # cause a subset of experiments with them were bad)
     # TODO add a drop_redos arg or something that works with that <x>_redo ThorImage
     # naming convention of mine?
-    keys_and_paired_dirs = util.date_fly_list2paired_thor_dirs(experiment_keys,
-        verbose=True, ignore_prepairing=('anat',) #, n_first=15
+
+    keys_and_paired_dirs = util.paired_thor_dirs(start_date='2021-03-07',
+        verbose=True, ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
     )
+
     main_start_s = time.time()
     exp_processing_time_data = []
 
     names_and_concs2analysis_dirs = dict()
     failed_assigning_frames_to_odors = []
+
+    seen_stimulus_yamls = set()
 
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
 
@@ -1160,8 +1209,18 @@ def main():
             experiment_plot_dirs.append(plot_dir)
 
         yaml_path = stimulus_yaml_from_thorimage_xml(xml)
+        if yaml_path in seen_stimulus_yamls:
+            raise ValueError(f'stimulus yaml {yaml_path} already seen!')
+
+        seen_stimulus_yamls.add(yaml_path)
+
         with open(yaml_path, 'r') as f:
             data = yaml.safe_load(f)
+
+        pulse_s = float(int(data['settings']['timing']['pulse_us']) / 1e6)
+        if pulse_s < 3:
+            print(f'skipping because odor pulses were {pulse_s} (<3s) long (old)\n')
+            continue
 
         odor_lists = yaml_data2odor_lists(data)
 
@@ -1169,6 +1228,13 @@ def main():
         # hashable, and thus can be counted inside `remove_consecutive_repeats`
         odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
         odor_order, n_repeats = remove_consecutive_repeats(odor_order_with_repeats)
+
+        # TODO use that list comprehension way of one lining this? equiv for sets?
+        name_lists = [[o['name'] for o in os] for os in odor_lists]
+        for ns in name_lists:
+            for n in ns:
+                if n not in odor2abbrev:
+                    odors_without_abbrev.add(n)
 
         # TODO also exclude stuff where stimuli were not pairs. maybe just try/except
         # the code extracting stimulus info in here? or separate fn, run first, to
@@ -1181,7 +1247,7 @@ def main():
             if names_and_concs_tuple not in names_and_concs2analysis_dirs:
                 names_and_concs2analysis_dirs[names_and_concs_tuple] = []
 
-            names_and_concs2analysis_dirs[names_and_concs_tuple].append(thorimage_dir)
+            names_and_concs2analysis_dirs[names_and_concs_tuple].append(analysis_dir)
 
         before = time.time()
 
@@ -1606,6 +1672,9 @@ def main():
         print()
     print()
 
+    # TODO also check that all loaded data is using same stimulus program
+    # (already skipping stuff with odor pulse < 3s tho)
+
     total_s = time.time() - main_start_s
     print(f'Took {total_s:.0f}s\n')
 
@@ -1626,6 +1695,7 @@ def main():
         if len(failed_suite2p_dirs) > 0:
             print('failed_suite2p_dirs:')
             pprint(failed_suite2p_dirs)
+            print()
 
     if analyze_suite2p_outputs:
         if len(s2p_not_run) > 0:
@@ -1644,6 +1714,10 @@ def main():
             print('suite2p outputs where no ROIs were marked bad:')
             pprint(iscell_not_selective)
             print()
+
+    if len(odors_without_abbrev) > 0:
+        print('odors_without_abbrev:')
+        pprint(odors_without_abbrev)
 
 
 if __name__ == '__main__':
