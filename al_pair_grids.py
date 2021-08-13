@@ -20,13 +20,28 @@ import tifffile
 import yaml
 from suite2p import run_s2p
 import ijroi
+# TODO find a nicer perceptually linear colormap from here?
+#import colorcet as cc
 
 from hong2p import util, thor, viz
-from hong2p.suite2p import suite2p_params
+from hong2p import suite2p as s2p
+from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 
 
 SAVE_FIGS = True
 PLOT_FMT = 'svg'
+# TODO also use this cmap for trial df/f images (or at least not viridis?)
+CMAP = 'plasma'
+
+if util.fast_data_dir_env_var in os.environ:
+    intermediates_root_parent = os.environ[util.fast_data_dir_env_var]
+else:
+    warnings.warn(f'environment variable {util.fast_data_dir_env_var} not set, so '
+        'storing analysis intermediates under current directory'
+    )
+    intermediates_root_parent = os.getcwd()
+
+analysis_intermediates_root = join(intermediates_root_parent, 'analysis_intermediates')
 
 odor2abbrev = {
     'methyl salicylate': 'MS',
@@ -43,6 +58,14 @@ odor2abbrev = {
     'hexyl acetate': 'HA',
 }
 odors_without_abbrev = set()
+
+# TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
+# (just want to prefer the "fast" data root)
+def get_analysis_dir(date, fly_num, thorimage_basedir):
+    return join(analysis_intermediates_root,
+        util.get_fly_dir(date, fly_num), thorimage_basedir
+    )
+
 
 def savefig(fig, experiment_fig_dir, desc, close=True):
     # If True, the directory name containing (date, fly, thorimage_dir) information will
@@ -557,165 +580,30 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
 
     title = f'ROI {single_roi_series.name}'
 
-    # TODO TODO TODO fix so these matshow calls still have colorbars.
-    # probably need to make the colobar axes differently inside.
-    # TODO try viz.add_colorbar(<fig>, <imshow axes>?)? probably should just fix
-    # matshow...
+    # TODO delete
+    # TODO try some colormaps from colorcet too
+    #for cmap in ['plasma', 'magma', 'cividis', 'inferno', 'gray']:
+    #    fig, ax = plt.subplots()
+    #
+
+    common_matshow_kwargs = dict(
+        ax=ax, title=title, transpose_sort_key=index2single_odor_name, cmap=CMAP,
+        # not working
+        #vmin=-0.2, vmax=2.0
+    )
 
     if show_repeats:
-        cax = viz.matshow(roi_df.droplevel('repeat'), ax=ax, title=title,
-            group_ticklabels=True, transpose_sort_key=index2single_odor_name,
-            # not working
-            #vmin=-0.2, vmax=2.0
+        cax = viz.matshow(roi_df.droplevel('repeat'), group_ticklabels=True,
+            **common_matshow_kwargs
         )
     else:
         # 'odor2' is the one on the row axis, as one level alongside 'repeat'
         # TODO not sure why sort=False seems to be ignored... bug?
         mean_df = roi_df.groupby('odor2', sort=False).mean()
         mean_df.sort_index(key=index_sort_key, inplace=True)
-        cax = viz.matshow(mean_df, ax=ax, title=title,
-            transpose_sort_key=index2single_odor_name
-        )
+        cax = viz.matshow(mean_df, **common_matshow_kwargs)
 
     return cax
-
-
-def plot_roi(roi_stat, ops, ax=None):
-    if ax is None:
-        ax = plt.gca()
-
-    roi_img = np.zeros((ops['Ly'], ops['Lx'])) * np.nan
-    xpix = roi_stat['xpix']
-    ypix = roi_stat['ypix']
-    #print(f'xpix range: [{xpix.min(), xpix.max()}]')
-    #print(f'ypix range: [{ypix.min(), ypix.max()}]')
-
-    roi_img[ypix, xpix] = roi_stat['lam']
-
-    # TODO in future, might be nice to convert xpix / ypix and only ever make roi_img of
-    # the shape of the cropped ROI (change crop_to_nonzero and fn it calls)
-
-    cropped, ((x_min, x_max), (y_min, y_max)) = util.crop_to_nonzero(roi_img, margin=0)
-
-    ax.imshow(cropped)
-    ax.axis('off')
-
-    #from scipy.ndimage import binary_closing
-    #closed = binary_closing(roi_img_tmp > 0)
-    #ax.contour(closed > 0, [0.5])
-
-
-def load_s2p_pickle(npy_path):
-    return np.load(npy_path, allow_pickle=True)
-
-
-def set_suite2p_iscell_label(s2p_out_dir, roi_num, is_good):
-    """
-    Args:
-        roi_num (int): index of ROI to change label of, according to suite2p
-        s2p_out_dir (str): must directly contain a single iscell.npy file
-    """
-    assert is_good in (True, False)
-
-    iscell_npy = join(s2p_out_dir, 'iscell.npy')
-    iscell = np.load(iscell_npy)
-
-    import ipdb; ipdb.set_trace()
-    dtype_before = iscell.dtype
-    # TODO TODO need to index the correct column (1st of 2)
-    iscell[roi_num] = float(is_good)
-    assert iscell.dtype == dtype_before
-
-    # TODO only write if diff
-    # TODO TODO see how suite2p actually writes this file, in case there is anything
-    # special
-    import ipdb; ipdb.set_trace()
-    # NOTE: if redcell.npy is used, may also need to modify that? see suite2p/io:save.py
-    np.save(iscell_npy, iscell)
-    import ipdb; ipdb.set_trace()
-
-
-# TODO maybe wrap call that checks this (and opens suite2p if not) with something that
-# also saves an empty hidden file in the directory to mark good if no modifications
-# necessary? or unlikely enough? / just prompt before opening suite2p each time?
-# TODO maybe just use mtime?
-def is_iscell_modified(s2p_out_dir, warn=True):
-    iscell_path = join(s2p_out_dir, 'iscell.npy')
-    assert exists(iscell_path)
-    iscell = np.load(iscell_path)
-
-    # Defined in suite2p/suite2p/classification/classifier.py, in kwarg to `run`.
-    # `run` is called in classify.py in the same directory, which doesn't pass this
-    # kwarg (so it should always be this default value).
-    p_threshold = 0.5
-
-    iscell_bool = iscell[:, 0].astype(np.bool_)
-
-    if warn and iscell_bool.all():
-        # Since this is probably the result of just setting the threshold to 0 in the
-        # GUI and not further marking the ROIs as cell/not-cell from there.
-        warnings.warn(f'all suite2p ROIs in {s2p_out_dir} marked as good. check this '
-            'is intentional.'
-        )
-
-    # The GUI (in suite2p/gui/merge.py:apply), also does not include equality.
-    return not np.array_equal(iscell_bool, iscell[:, 1] > p_threshold)
-
-
-def mark_all_suite2p_rois_good(s2p_out_dir):
-    """Modify iscell.npy to set all labels (first column) 1.
-
-    This is to undo the automatic classification step that I do not want and can not
-    seem to disable. It should be equivalent to entering 0 for the probability threshold
-    in the GUI.
-    """
-    iscell_path = join(s2p_out_dir, 'iscell.npy')
-    assert not is_iscell_modified(s2p_out_dir, warn=False)
-
-    iscell = np.load(iscell_path)
-    iscell[:, 0] = 1
-    np.save(iscell_path, iscell)
-
-    assert is_iscell_modified(s2p_out_dir, warn=False)
-
-
-def modify_iscell_in_suite2p(stat_path):
-    # TODO TODO maybe show a plot for the relevant df/f image(s) alongside this, to
-    # see if i'm getting *those* glomeruli? would probably need to couple with main loop
-    # more though... (or modify my suite2p fork to have optional additional views)
-
-    # This would block until the process finishes, as opposed to Popen call below.
-    #subprocess.run(f'suite2p --statfile {stat_path}'.split(), check=True)
-
-    # TODO some way to have ctrl-c in main program also kill this opened suite2p window?
-
-    # This will wait for suite2p to be closed before it returns.
-    # NOTE: the --statfile argument is something I added in my fork of suite2p
-    proc = subprocess.Popen(f'suite2p --statfile {stat_path}'.split())
-
-    # TODO maybe refactor so closing suite2p will automatically close any still-open
-    # matplotlib figures?
-    plt.show()
-
-    proc.wait()
-    print('SUITE2P CLOSED', flush=True)
-
-    # TODO warn if not modified after closing?
-
-
-def suite2p_footprint2bool_mask(roi_stat, ops):
-    from scipy.ndimage import binary_closing
-
-    full_roi = np.zeros((ops['Ly'], ops['Lx'])) * np.nan
-    xpix = roi_stat['xpix']
-    ypix = roi_stat['ypix']
-
-    full_roi[ypix, xpix] = roi_stat['lam']
-
-    # np.nan > 0 is False (as is np.nan < 0), so the nan background is fine
-    closed = binary_closing(full_roi > 0)
-
-    return closed
 
 
 s2p_not_run = []
@@ -732,70 +620,27 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
     """
     Returns whether plots were generated.
     """
+    try:
+        traces, roi_stats, ops, merges = s2p.load_s2p_combined_outputs(analysis_dir)
 
-    combined_dir = get_suite2p_combined_dir(analysis_dir)
+    except (IOError, LabelsNotModifiedError, LabelsNotSelectiveError) as e:
 
-    common_skip_msg = 'NOT generating suite2p plots because '
+        if isinstance(e, IOError):
+            s2p_not_run.append(analysis_dir)
 
-    traces_path = join(combined_dir, 'F.npy')
-    if not exists(traces_path):
-        print(common_skip_msg + 'suite2p needs to be run on this data '
-            f'({traces_path} did not exist)'
-        )
-        s2p_not_run.append(analysis_dir)
+        elif isinstance(e, LabelsNotModifiedError):
+            iscell_not_modified.append(analysis_dir)
+
+        elif isinstance(e, LabelsNotSelectiveError):
+            iscell_not_selective.append(analysis_dir)
+
+        print(f'NOT generating suite2p plots because {e}')
         return False
 
-    # TODO TODO are traces output by suite2p already delta F / F, or just F?
-    # (seems like just F, though not i'm pretty sure there were some options for using
-    # some percentile as a baseline, so need to check again)
-
-    # TODO regarding single entries in this array (each a dict):
-    # - what is 'soma_crop'? it's a boolean array but what's it mean?
-    # - what is 'med'? (len 2 list, but is it a centroid or what?)
-    # - where are the weights for the ROI? (expecting something of same length as xpix
-    #   and ypix)? it's not 'lam', is it? and if it's 'lam', should i normalized it
-    #   before using? why isn't it already normalized?
-    stat_path = join(combined_dir, 'stat.npy')
-    if not is_iscell_modified(combined_dir):
-        print(common_skip_msg + 'suite2p ROI labels not modified')
-        iscell_not_modified.append(analysis_dir)
-        return False
-
-    traces = load_s2p_pickle(traces_path)
-    stat = load_s2p_pickle(stat_path)
-    iscell = load_s2p_pickle(join(combined_dir, 'iscell.npy'))
-
-    ops = load_s2p_pickle(join(combined_dir, 'ops.npy')).item()
-
-    good_rois = iscell[:, 0].astype(np.bool_)
-
-    if len(good_rois) == good_rois.sum():
-        # (and that probably means probability threshold was set to ~0 and no ROIs were
-        # marked bad since then, though it would almost certainly be necessary)
-        print(common_skip_msg + '*all* ROIs marked good')
-        iscell_not_selective.append(analysis_dir)
-        return False
-
-    # TODO note, one/both of these might need to change to account for merged ROIs...
-    # (if i ever actually use the merging in s2p, then it might matter...)
-    #print('# ROIs', len(good_rois))
-    #print('# good ROIs:', good_rois.sum())
-
-    # Transposing because original is of shape (# ROIs, # timepoints in movie),
-    # but compute_trial_stats expects first dimension to be of size # timepoints in
-    # movie (so it can be used directly on movie as well).
-    traces = traces.T
-    # TODO delete
-    # (was going to check compute_trial_stats gave same answer w/ this [-> adding
-    # metadata after] vs using [dataframe? xarray? both?] input)
-    #traces_arr = traces.copy()
-    #
-
-    traces = pd.DataFrame(data=traces)
-    traces.index.name = 'frame'
-    traces.columns.name = 'roi'
-
-    traces = traces.iloc[:, good_rois]
+    verbose = True
+    traces, rois = s2p.remerge_suite2p_merged(traces, roi_stats, ops, merges,
+        verbose=False
+    )
 
     # TODO delete
     '''
@@ -856,8 +701,8 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
         # TODO TODO have scale in single ROI plots and ~"combined" view be the same
         # (each plot pixel same physical size)
         if include_rois:
-            roi_stat = stat[roi]
-            plot_roi(roi_stat, ops, ax=axs[1])
+            roi_stat = roi_stats[roi]
+            s2p.plot_roi(roi_stat, ops, ax=axs[1])
 
         # TODO TODO make colorbar ~size of matrix + move closer + show less decimals in
         # ticks on it
@@ -878,15 +723,7 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
     return True
 
 
-# TODO switch to using analysis_dir as input or at least by output
-def get_suite2p_dir(analysis_dir):
-    return join(analysis_dir, 'suite2p')
-
-
-def get_suite2p_combined_dir(analysis_dir):
-    return join(get_suite2p_dir(analysis_dir), 'combined')
-
-
+# TODO maybe refactor (part of?) this to hong2p.suite2p
 failed_suite2p_dirs = []
 def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
 
@@ -896,7 +733,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         verbose=True
     )
 
-    suite2p_dir = get_suite2p_dir(analysis_dir)
+    suite2p_dir = s2p.get_suite2p_dir(analysis_dir)
     if exists(suite2p_dir):
         # TODO TODO but maybe actually just return here? because if it failed with the
         # user-level options the first time, won't it just fail this run too?  (or are
@@ -905,7 +742,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         # Since we currently depend on the contents of this directory existing for
         # analysis, and it's generated as one of the last steps in what suite2p does, so
         # many errors will cause this directory to not get generated.
-        if not exists(get_suite2p_combined_dir(analysis_dir)):
+        if not exists(s2p.get_suite2p_combined_dir(analysis_dir)):
             print('suite2p directory existed, but combined subdirectory did not. '
                 're-running suite2p!'
             )
@@ -923,7 +760,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
     # defaults
     ops_file = join(ops_dir, 'ops_user.npy')
     # TODO print the path of the ops*.npy file we ultimately load ops from
-    ops = load_s2p_pickle(ops_file).item()
+    ops = s2p.load_s2p_ops(ops_file)
 
     # TODO TODO perhaps try having threshold_scaling depend on plane, and use run_plane
     # instead? (decrease on lower planes, where it's harder to find stuff generally)
@@ -931,7 +768,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
     # TODO maybe use suite2p's options for ignoring flyback frames to ignore depths
     # beyond those i've now settled on?
 
-    data_specific_ops = suite2p_params(thorimage_dir)
+    data_specific_ops = s2p.suite2p_params(thorimage_dir)
     for k, v in data_specific_ops.items():
         assert k in ops
         ops[k] = v
@@ -976,8 +813,8 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
     if success:
         # NOTE: this is not changing the iscell.npy files in the plane<x> folders,
         # as I'm trying to avoid dealing with those folders at all as much as possible
-        combined_dir = get_suite2p_combined_dir(analysis_dir)
-        mark_all_suite2p_rois_good(combined_dir)
+        combined_dir = s2p.get_suite2p_combined_dir(analysis_dir)
+        s2p.mark_all_suite2p_rois_good(combined_dir)
 
 
 def main():
@@ -993,6 +830,16 @@ def main():
     # have a suite2p directory?)
     skip_if_experiment_plot_dir_exists = False
 
+    # TODO TODO probably make another category or two for data marked as failed (in the
+    # breakdown of data by pairs * concs at the end)
+    retry_previously_failed = False
+
+    analyze_glomeruli_diagnostics = False
+
+    # Whether to analyze any single plane data that is found under the enumerated
+    # directories.
+    analyze_2d_tests = False
+
     non_suite2p_analysis = True
     ignore_existing_nonsuite2p_outputs = False
 
@@ -1004,24 +851,12 @@ def main():
     overwrite_suite2p = False
 
     analyze_suite2p_outputs = True
-    # TODO add var clarifying what happens in case where iscell is not modified /
-    # controlling that behavior
-
-    # TODO TODO probably make another category or two for data marked as failed (in the
-    # breakdown of data by pairs * concs at the end)
-    retry_previously_failed = False
 
     # Since some of the pilot experiments had 6 planes (but top 5 should be the
     # same as in experiments w/ only 5 total), and that last plane largely doesn't
     # have anything measurably happening. All steps should have been 12um, so picking
     # top n will yield a consistent total height of the volume.
     n_top_z_to_analyze = 5
-
-    analyze_glomeruli_diagnostics = False
-
-    # Whether to analyze any single plane data that is found under the enumerated
-    # directories.
-    analyze_2d_tests = False
 
     ignore_bounding_frame_cache = False
 
@@ -1079,6 +914,11 @@ def main():
         # Frame <-> time assignment is currently failing for all the real data from this
         # day.
         #'2021-06-24/2',
+
+        # TODO was it the 1 or the 2 fly that had the problem where every plane seemed
+        # the same?
+        #'2021-07-21/TODO',
+
     ]
 
     bad_suite2p_analysis_dirs = [
@@ -1107,11 +947,10 @@ def main():
     # TODO maybe factor this to / use existing stuff in hong2p in place of this
     # TODO TODO move all intermediates to a directory under here (including suite2p
     # stuff)
-    analysis_intermediates_root = join('/mnt/d1/2p_data', 'analysis_intermediates')
     os.makedirs(analysis_intermediates_root, exist_ok=True)
 
     # TODO TODO TODO is there currently anything preventing suite2p_trace_plots from
-    # trying to run on non-pair stuff apart from the fact that i haven't labelled
+    # trying to run on non-pair stuff apart from the fact that i haven't labeled
     # outputs of the auto suite2p runs that may or may not have happened on them?
 
     experiment_plot_dirs = []
@@ -1120,8 +959,12 @@ def main():
     # TODO add a drop_redos arg or something that works with that <x>_redo ThorImage
     # naming convention of mine?
 
+    # TODO TODO TODO note that 2021-07-(21,27,28) contain reverse-order experiments.
+    # indicate this fact in the plots for these experiments!!!
+
     keys_and_paired_dirs = util.paired_thor_dirs(start_date='2021-03-07',
-        verbose=True, ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
+        ignore=bad_thorimage_dirs, ignore_prepairing=('anat',), verbose=True,
+        print_skips=False
     )
 
     main_start_s = time.time()
@@ -1130,6 +973,8 @@ def main():
     names_and_concs2analysis_dirs = dict()
     failed_assigning_frames_to_odors = []
 
+    # TODO convert this to a dict (-> thorimage dirs / Experiment.xml paths) to print
+    # out the conflicting ones
     seen_stimulus_yamls = set()
 
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
@@ -1147,9 +992,7 @@ def main():
             print('skipping because in bad_thorimage_dirs\n')
             continue
 
-        analysis_dir = join(analysis_intermediates_root,
-            util.get_fly_dir(date, fly_num), split(thorimage_dir)[1]
-        )
+        analysis_dir = get_analysis_dir(date, fly_num, split(thorimage_dir)[1])
         os.makedirs(analysis_dir, exist_ok=True)
         experiment_analysis_dirs.append(analysis_dir)
 
@@ -1210,7 +1053,9 @@ def main():
 
         yaml_path = stimulus_yaml_from_thorimage_xml(xml)
         if yaml_path in seen_stimulus_yamls:
-            raise ValueError(f'stimulus yaml {yaml_path} already seen!')
+            # TODO print where at end (and also warn there?)
+            warnings.warn(f'STIMULUS YAML {yaml_path} ALREADY SEEN!!!')
+            #raise ValueError(f'stimulus yaml {yaml_path} already seen!')
 
         seen_stimulus_yamls.add(yaml_path)
 
