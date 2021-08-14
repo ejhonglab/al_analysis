@@ -42,8 +42,13 @@ if conda env list | awk '{print $1}' | grep -q "^${conda_env_to_make}$"; then
     exit 1
 fi
 
+if ! [ -x "$(command -v mamba)" ]; then
+    MAMBA_OR_CONDA="conda"
+else
+    MAMBA_OR_CONDA="mamba"
+fi
 # This would make a conda environment named 'suite2p' if we didn't pass -n explicitly
-conda env create -f suite2p/environment.yml -n ${conda_env_to_make}
+${MAMBA_OR_CONDA} env create -f suite2p/environment.yml -n ${conda_env_to_make}
 
 conda activate ${conda_env_to_make}
 cd ~/src/al_pair_grids
