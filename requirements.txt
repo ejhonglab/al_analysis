@@ -1,3 +1,6 @@
+# See README for steps necessary before installing these dependencies.
+# (to get suite2p set up well, via conda)
+
 # TODO remove if this gets added to hong2p / i move this stuff to olfactometer and add
 # that here
 pyyaml
@@ -6,4 +9,6 @@ pyyaml
 # git+https://github.com/ejhonglab/hong2p
 -e ../hong2p
 
-suite2p
+# You may replace this line with:
+# git+https://github.com/tom-f-oconnell/suite2p
+-e ../suite2p
