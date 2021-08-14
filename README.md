@@ -21,7 +21,11 @@ cd ~/src/al_pair_grid
 pip install -r requirements.txt
 ```
 
-Then set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA_DIR` appropriately.
+Then set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA_DIR` appropriately:
+- `$HONG_NAS` should contain a directory `mb_team` directly under it.
+- `$HONG2P_FAST_DATA_DIR` should contain a local copy of the data under a `raw_data`
+  directory, again immediately under it. Analysis intermediates will be saved to a
+  directory `analysis_intermediates`, which will be created under this directory.
 
 
 ##### Mostly automated
@@ -30,10 +34,22 @@ To install as manual install above, but using SSH authentication, you may simply
 `./install.sh` after cloning. If it asks you to set environment variables, you will need
 to manually do so.
 
+
+#### Running
+
+```
+# (or whatever else you named the environment for this project)
+conda activate suite2p
+
+./al_pair_grids.py
+```
+
+Plots will be created under a directory such as `svg`, under the current directory.
+
+
+#### Installation notes
+
 Only tested on Ubuntu 18.04.
-
-
-##### Notes
 
 Note that despite the fact that `suite2p/environment.yml` includes the line `suite2p`,
 my current conda installation (despite `conda clean -a` and deleting all but the base
