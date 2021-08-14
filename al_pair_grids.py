@@ -26,6 +26,7 @@ import ijroi
 from hong2p import util, thor, viz
 from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
+from hong2p.util import shorten_path
 
 
 SAVE_FIGS = True
@@ -122,13 +123,6 @@ def clear_fail_indicators(analysis_dir):
     """
     for f in _list_fail_indicators(analysis_dir):
         os.remove(f)
-
-
-def experiment_dir2short_id(experiment_dir):
-    """
-    Works with either thorimage_dir or analysis_dir input.
-    """
-    return '/'.join(experiment_dir.split(os.path.sep)[-3:])
 
 
 def stimulus_yaml_from_thorimage_xml(xml, verbose=True):
@@ -650,7 +644,7 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
     ax = plt.gca()
     ax.set_xlabel('Frame')
     ax.set_ylabel('F')
-    short_id = experiment_dir2short_id(analysis_dir)
+    short_id = shorten_path(analysis_dir)
     ax.set_title(short_id)
     plt.show()
     import ipdb; ipdb.set_trace()
@@ -730,7 +724,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
     # TODO expose if_exists kwarg as run_suite2p  kwarg?
     # This will create a TIFF <analysis_dir>/raw.tif, if it doesn't already exist
     util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
-        verbose=True
+        verbose=False
     )
 
     suite2p_dir = s2p.get_suite2p_dir(analysis_dir)
@@ -860,31 +854,16 @@ def main():
 
     ignore_bounding_frame_cache = False
 
+    print_full_paths = False
+
     dff_vmin = 0
     dff_vmax = 3.0
 
     ax_fontsize = 7
 
-    # TODO TODO maybe refactor so i store the current set of things we might care to
-    # analyze in like a csv file or somthing? or could i make it cheap to enumerate from
-    # raw odor metadata? might be nice so i could do diff operations on this set
-    # (convert to tiffs for suite2p, use here, etc) without having to either duplicate
-    # the definition or cram all the stuff i might want to do behind one script (maybe
-    # that's fine if i organize it well, and mainly just have a short script dispatch to
-    # other functions?)
-    # TODO TODO probably handle _001 suffixes, or whatever thorimage does automatically,
-    # in same manner as '_redo' suffix?
-    # TODO TODO could even make such a function in hong2p.util, maybe as a similar
-    # `<x>2paired_thor_dirs(...)`
-    # TODO could include support for alternately doing everything after a date / within
-    # a date range or something, like i might have had a parameter for in some other
-    # analysis script
-
     # TODO TODO TODO skip all data that doesn't have final concentrations of ethyl
-    # hexanoate (i went down)
-
-    # TODO TODO TODO handle all '*_redo' experiments (skip any data that have redo
-    # that is missing this suffix)
+    # hexanoate (i went down) (and in general do this for anything where concentration
+    # changed)
 
     # TODO skip just the butanal and acetone experiment here, which seems bad
     #('2021-05-05', 1),
@@ -945,26 +924,22 @@ def main():
     full_bad_suite2p_analysis_dirs = []
 
     # TODO maybe factor this to / use existing stuff in hong2p in place of this
-    # TODO TODO move all intermediates to a directory under here (including suite2p
-    # stuff)
     os.makedirs(analysis_intermediates_root, exist_ok=True)
 
-    # TODO TODO TODO is there currently anything preventing suite2p_trace_plots from
-    # trying to run on non-pair stuff apart from the fact that i haven't labeled
-    # outputs of the auto suite2p runs that may or may not have happened on them?
+    # TODO is there currently anything preventing suite2p_trace_plots from trying to run
+    # on non-pair stuff apart from the fact that i haven't labeled outputs of the auto
+    # suite2p runs that may or may not have happened on them?
+    # (if not, probably add such logic)
 
     experiment_plot_dirs = []
     experiment_analysis_dirs = []
-
-    # TODO add a drop_redos arg or something that works with that <x>_redo ThorImage
-    # naming convention of mine?
 
     # TODO TODO TODO note that 2021-07-(21,27,28) contain reverse-order experiments.
     # indicate this fact in the plots for these experiments!!!
 
     keys_and_paired_dirs = util.paired_thor_dirs(start_date='2021-03-07',
         ignore=bad_thorimage_dirs, ignore_prepairing=('anat',), verbose=True,
-        print_skips=False
+        print_skips=False, print_fast=False, print_full_paths=print_full_paths
     )
 
     main_start_s = time.time()
@@ -973,9 +948,7 @@ def main():
     names_and_concs2analysis_dirs = dict()
     failed_assigning_frames_to_odors = []
 
-    # TODO convert this to a dict (-> thorimage dirs / Experiment.xml paths) to print
-    # out the conflicting ones
-    seen_stimulus_yamls = set()
+    seen_stimulus_yamls2thorimage_dirs = defaultdict(list)
 
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
 
@@ -1016,7 +989,7 @@ def main():
             continue
 
 
-        experiment_id = experiment_dir2short_id(thorimage_dir)
+        experiment_id = shorten_path(thorimage_dir)
         experiment_basedir = util.to_filename(experiment_id, period=False)
 
         # Created below after we decide whether to skip a given experiment based on the
@@ -1052,13 +1025,6 @@ def main():
             experiment_plot_dirs.append(plot_dir)
 
         yaml_path = stimulus_yaml_from_thorimage_xml(xml)
-        if yaml_path in seen_stimulus_yamls:
-            # TODO print where at end (and also warn there?)
-            warnings.warn(f'STIMULUS YAML {yaml_path} ALREADY SEEN!!!')
-            #raise ValueError(f'stimulus yaml {yaml_path} already seen!')
-
-        seen_stimulus_yamls.add(yaml_path)
-
         with open(yaml_path, 'r') as f:
             data = yaml.safe_load(f)
 
@@ -1066,6 +1032,13 @@ def main():
         if pulse_s < 3:
             print(f'skipping because odor pulses were {pulse_s} (<3s) long (old)\n')
             continue
+
+        if yaml_path in seen_stimulus_yamls2thorimage_dirs:
+            short_yaml_path = shorten_path(yaml_path, n_parts=2)
+            raise ValueError(f'stimulus yaml {short_yaml_path} already seen in:\n'
+                f'{seen_stimulus_yamls2thorimage_dirs[yaml_path][0]}/Experiment.xml'
+            )
+        seen_stimulus_yamls2thorimage_dirs[yaml_path].append(thorimage_dir)
 
         odor_lists = yaml_data2odor_lists(data)
 
@@ -1511,7 +1484,7 @@ def main():
             if show_empty_statuses or len(status_dirs) > 0:
                 print(f' - {s2p_status} ({len(status_dirs)})')
                 for analysis_dir in status_dirs:
-                    short_id = experiment_dir2short_id(analysis_dir)
+                    short_id = shorten_path(analysis_dir)
                     print(f'   - {short_id}')
 
         print()
@@ -1531,33 +1504,40 @@ def main():
         if not any(os.scandir(d)):
             os.rmdir(d)
 
+    # Only actually shortens if print_full_paths=False
+    def shorten_and_pprint(paths):
+        if not print_full_paths:
+            paths = [shorten_path(p) for p in paths]
+
+        pprint(paths)
+
     if len(failed_assigning_frames_to_odors) > 0:
         print('failed_assigning_frames_to_odors:')
-        pprint(failed_assigning_frames_to_odors)
+        shorten_and_pprint(failed_assigning_frames_to_odors)
         print()
 
     if do_suite2p:
         if len(failed_suite2p_dirs) > 0:
             print('failed_suite2p_dirs:')
-            pprint(failed_suite2p_dirs)
+            shorten_and_pprint(failed_suite2p_dirs)
             print()
 
     if analyze_suite2p_outputs:
         if len(s2p_not_run) > 0:
             print('suite2p needs to be run on the following data:')
-            pprint(s2p_not_run)
+            shorten_and_pprint(s2p_not_run)
         else:
             print('suite2p has been run on all currently included data')
         print()
 
         if len(iscell_not_modified) > 0:
             print('suite2p outputs with ROI labels not modified:')
-            pprint(iscell_not_modified)
+            shorten_and_pprint(iscell_not_modified)
             print()
 
         if len(iscell_not_selective) > 0:
             print('suite2p outputs where no ROIs were marked bad:')
-            pprint(iscell_not_selective)
+            shorten_and_pprint(iscell_not_selective)
             print()
 
     if len(odors_without_abbrev) > 0:
