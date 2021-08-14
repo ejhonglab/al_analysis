@@ -1,7 +1,7 @@
 
-#### Installation
+### Installation
 
-##### Manual
+#### Manual
 
 ```
 mkdir -p ~/src
@@ -28,14 +28,14 @@ Then set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA_DIR` appropr
   directory `analysis_intermediates`, which will be created under this directory.
 
 
-##### Mostly automated
+#### Mostly automated
 
 To install as manual install above, but using SSH authentication, you may simply call
 `./install.sh` after cloning. If it asks you to set environment variables, you will need
 to manually do so.
 
 
-#### Running
+### Running
 
 ```
 # (or whatever else you named the environment for this project)
@@ -47,7 +47,7 @@ conda activate suite2p
 Plots will be created under a directory such as `svg`, under the current directory.
 
 
-#### Installation notes
+### Installation notes
 
 Only tested on Ubuntu 18.04.
 
