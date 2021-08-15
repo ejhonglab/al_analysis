@@ -34,10 +34,10 @@ PLOT_FMT = 'svg'
 # TODO also use this cmap for trial df/f images (or at least not viridis?)
 CMAP = 'plasma'
 
-if util.fast_data_dir_env_var in os.environ:
-    intermediates_root_parent = os.environ[util.fast_data_dir_env_var]
+if util.FAST_DATA_DIR_ENV_VAR in os.environ:
+    intermediates_root_parent = os.environ[util.FAST_DATA_DIR_ENV_VAR]
 else:
-    warnings.warn(f'environment variable {util.fast_data_dir_env_var} not set, so '
+    warnings.warn(f'environment variable {util.FAST_DATA_DIR_ENV_VAR} not set, so '
         'storing analysis intermediates under current directory'
     )
     intermediates_root_parent = os.getcwd()

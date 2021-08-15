@@ -59,6 +59,7 @@ pip install -r requirements.txt
 declare -a required_env_vars=(
     # There are some other environment variables that can directly specify raw data root
     # without any mention of NAS, but I haven't been using those anyway.
+    # (HONG2P_DATA and DATA_DIR, the latter of which I might delete)
     "HONG_NAS"
 
     "HONG2P_FAST_DATA_DIR"
