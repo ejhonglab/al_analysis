@@ -57,12 +57,10 @@ cd ~/src/al_pair_grids
 pip install -r requirements.txt
 
 declare -a required_env_vars=(
-    # There are some other environment variables that can directly specify raw data root
-    # without any mention of NAS, but I haven't been using those anyway.
-    # (HONG2P_DATA and DATA_DIR, the latter of which I might delete)
+    # Technically can also set HONG2P_DATA, and it will take precedence over this
     "HONG_NAS"
 
-    "HONG2P_FAST_DATA_DIR"
+    "HONG2P_FAST_DATA"
 )
 declare -a example_values=(
     # Should contain 'mb_team' directory immediately under it.

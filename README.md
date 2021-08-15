@@ -21,9 +21,17 @@ cd ~/src/al_pair_grid
 pip install -r requirements.txt
 ```
 
-Then set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA_DIR` appropriately:
+Then set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA` appropriately:
+
 - `$HONG_NAS` should contain a directory `mb_team` directly under it.
-- `$HONG2P_FAST_DATA_DIR` should contain a local copy of the data under a `raw_data`
+
+  - This `mb_team` directory should contain `raw_data` and `stimulus_data_files`
+    directly under it.
+
+  - You may also set `HONG2P_DATA` as a folder that contains `raw_data` and
+    `stimulus_data_files` directly under it.
+
+- `$HONG2P_FAST_DATA` should contain a local copy of the data under a `raw_data`
   directory, again immediately under it. Analysis intermediates will be saved to a
   directory `analysis_intermediates`, which will be created under this directory.
 
