@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 from os.path import join, split, exists, splitext, expanduser
 from pprint import pprint
@@ -34,15 +35,7 @@ PLOT_FMT = 'svg'
 # TODO also use this cmap for trial df/f images (or at least not viridis?)
 CMAP = 'plasma'
 
-if util.FAST_DATA_DIR_ENV_VAR in os.environ:
-    intermediates_root_parent = os.environ[util.FAST_DATA_DIR_ENV_VAR]
-else:
-    warnings.warn(f'environment variable {util.FAST_DATA_DIR_ENV_VAR} not set, so '
-        'storing analysis intermediates under current directory'
-    )
-    intermediates_root_parent = os.getcwd()
-
-analysis_intermediates_root = join(intermediates_root_parent, 'analysis_intermediates')
+analysis_intermediates_root = util.analysis_intermediates_root()
 
 odor2abbrev = {
     'methyl salicylate': 'MS',
@@ -125,7 +118,7 @@ def clear_fail_indicators(analysis_dir):
         os.remove(f)
 
 
-def stimulus_yaml_from_thorimage_xml(xml, verbose=True):
+def stimulus_yaml_from_thorimage_xml(xml):
     """Returns absolute path to stimulus YAML file from note field in ThorImage XML.
 
     XML just contains a manually-entered path relative to where the olfactometer code
@@ -156,9 +149,6 @@ def stimulus_yaml_from_thorimage_xml(xml, verbose=True):
     # Since paths copied/pasted within Windows may have '\' as a file
     # separator character.
     yaml_path = yaml_path.replace('\\', '/')
-
-    if verbose:
-        print('yaml_path:', yaml_path)
 
     if not exists(join(stimfile_root, yaml_path)):
         prefix, ext = splitext(yaml_path)
@@ -204,6 +194,19 @@ def yaml_data2odor_lists(yaml_data):
         odor_lists.append(odor_list)
 
     return odor_lists
+
+
+def thorimage_xml2yaml_info_and_odor_lists(xml):
+    """Returns yaml_path, yaml_data, odor_lists
+    """
+    yaml_path = stimulus_yaml_from_thorimage_xml(xml)
+
+    with open(yaml_path, 'r') as f:
+        yaml_data = yaml.safe_load(f)
+
+    odor_lists = yaml_data2odor_lists(yaml_data)
+
+    return yaml_path, yaml_data, odor_lists
 
 
 def remove_consecutive_repeats(odor_lists):
@@ -321,8 +324,8 @@ def n_odors_per_trial(odor_lists):
 
 def odor_lists2names_and_conc_ranges(odor_lists):
     """
-    Gets a hashable representation of the two odors and each of their concentration
-    ranges. Ex: ( ('butanal', (-5, -4, -3)), ('acetone', (-5, -4, -3)) )
+    Gets a hashable representation of the odors and each of their concentration ranges.
+    Ex: ( ('butanal', (-5, -4, -3)), ('acetone', (-5, -4, -3)) )
 
     Tuples of concentrations measured will be sorted in ascending order.
 
@@ -350,6 +353,17 @@ def odor_lists2names_and_conc_ranges(odor_lists):
     n = n_odors_per_trial(odor_lists)
     names_and_conc_ranges = tuple((name_i(i), conc_range_i(i)) for i in range(n))
     return names_and_conc_ranges
+
+
+def is_pairgrid(odor_lists):
+    # TODO TODO reimplement in a way that actually checks there are all pairwise
+    # concentrations, rather than just assuming so if there are 2 odors w/ 3 non-zero
+    # concs each
+    names_and_conc_ranges = odor_lists2names_and_conc_ranges(odor_lists)
+
+    return len(names_and_conc_ranges) == 2 and (
+        all([len(cs) == 3 for _, cs in names_and_conc_ranges])
+    )
 
 
 # TODO maybe convert to just two column df instead and then use some pandas functions to
@@ -409,6 +423,50 @@ def odor_lists_to_multiindex(odor_lists, add_repeat_col=True, **format_odor_kwar
         index.names = ['odor1', 'odor2', 'repeat']
 
     return index
+
+
+def separate_names_and_concs_tuples(names_and_concs_tuple):
+    """
+    Takes input like ( ('butanal', (-5, -4, -3)), ('acetone', (-5, -4, -3)) ) to
+    output like ('acetone', 'butanal'), ((-5, -4, -3), (-5, -4, -3))
+    """
+    names = tuple(n for n, _ in names_and_concs_tuple)
+    concs = tuple(cs for _, cs in names_and_concs_tuple)
+    return names, concs
+
+
+def odor_names2final_concs(**paired_thor_dirs_kwargs):
+    """Returns dict of names tuple -> concentrations tuple
+
+    Loops over same directories as main analysis
+    """
+    keys_and_paired_dirs = util.paired_thor_dirs(verbose=False,
+        **paired_thor_dirs_kwargs
+    )
+
+    names2final_concs = dict()
+    for (_, _), (thorimage_dir, _) in keys_and_paired_dirs:
+
+        xml = thor.get_thorimage_xmlroot(thorimage_dir)
+        ti_time = thor.get_thorimage_time_xml(xml)
+
+        yaml_path, yaml_data, odor_lists = \
+            thorimage_xml2yaml_info_and_odor_lists(xml)
+
+        try:
+            names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
+
+        # TODO change error from assertionerror if gonna catch it...
+        except AssertionError:
+            continue
+
+        if not is_pairgrid(odor_lists):
+            continue
+
+        names, curr_concs = separate_names_and_concs_tuples(names_and_concs_tuple)
+        names2final_concs.update({names: curr_concs})
+
+    return names2final_concs
 
 
 # TODO write tests for this function for the case when n_trial_length_args is empty and
@@ -603,6 +661,7 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
 s2p_not_run = []
 iscell_not_modified = []
 iscell_not_selective = []
+no_merges = []
 # TODO kwarg to allow passing trial stat fn in that includes frame rate info as closure,
 # for picking frames in a certain time window after onset and computing mean?
 # TODO TODO TODO to the extent that i need to convert suite2p rois to my own and do my
@@ -630,6 +689,9 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
 
         print(f'NOT generating suite2p plots because {e}')
         return False
+
+    if len(merges) == 0:
+        no_merges.append(analysis_dir)
 
     verbose = True
     traces, rois = s2p.remerge_suite2p_merged(traces, roi_stats, ops, merges,
@@ -812,6 +874,14 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-t', '--test', action='store_true',
+        help='only *complete* main loop 1 time, for faster testing'
+    )
+    args = parser.parse_args()
+
+    quick_test_only = args.test
+
     # TODO try to make this more granular, so the suite2p / non-suite2p analysis can be
     # skipped separately (latter should be generated on first run, but former will at
     # least require some manual steps [and the initial automated suite2p run may also
@@ -828,6 +898,15 @@ def main():
     # breakdown of data by pairs * concs at the end)
     retry_previously_failed = False
 
+    # Whether to only analyze experiments sampling 2 odors at all pairwise
+    # concentrations (the main type of experiment for this project)
+    analyze_pairgrids_only = True
+
+    # If there are multiple experiments with the same odors, only the data from the most
+    # recent concentrations for those odors will be analyzed.
+    final_concentrations_only = True
+
+    # Will be set False if analyze_pairgrids_only=True
     analyze_glomeruli_diagnostics = False
 
     # Whether to analyze any single plane data that is found under the enumerated
@@ -854,12 +933,17 @@ def main():
 
     ignore_bounding_frame_cache = False
 
+    # TODO shorten any remaining absolute paths if this is True, so we can diff outputs
+    # across installs w/ data in diff paths
     print_full_paths = False
 
     dff_vmin = 0
     dff_vmax = 3.0
 
     ax_fontsize = 7
+
+    if analyze_pairgrids_only:
+        analyze_glomeruli_diagnostics = False
 
     # TODO TODO TODO skip all data that doesn't have final concentrations of ethyl
     # hexanoate (i went down) (and in general do this for anything where concentration
@@ -926,6 +1010,13 @@ def main():
     # TODO maybe factor this to / use existing stuff in hong2p in place of this
     os.makedirs(analysis_intermediates_root, exist_ok=True)
 
+    common_paired_thor_dirs_kwargs = dict(
+        start_date='2021-03-07', ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
+    )
+
+    if final_concentrations_only:
+        names2final_concs = odor_names2final_concs(**common_paired_thor_dirs_kwargs)
+
     # TODO is there currently anything preventing suite2p_trace_plots from trying to run
     # on non-pair stuff apart from the fact that i haven't labeled outputs of the auto
     # suite2p runs that may or may not have happened on them?
@@ -937,15 +1028,15 @@ def main():
     # TODO TODO TODO note that 2021-07-(21,27,28) contain reverse-order experiments.
     # indicate this fact in the plots for these experiments!!!
 
-    keys_and_paired_dirs = util.paired_thor_dirs(start_date='2021-03-07',
-        ignore=bad_thorimage_dirs, ignore_prepairing=('anat',), verbose=True,
-        print_skips=False, print_fast=False, print_full_paths=print_full_paths
+    keys_and_paired_dirs = util.paired_thor_dirs(verbose=True, print_skips=False,
+        print_fast=False, print_full_paths=print_full_paths,
+        **common_paired_thor_dirs_kwargs
     )
 
     main_start_s = time.time()
     exp_processing_time_data = []
 
-    names_and_concs2analysis_dirs = dict()
+    names_and_concs2analysis_dirs = defaultdict(list)
     failed_assigning_frames_to_odors = []
 
     seen_stimulus_yamls2thorimage_dirs = defaultdict(list)
@@ -961,10 +1052,6 @@ def main():
         else:
             is_glomeruli_diagnostics = False
 
-        if any([b in thorimage_dir for b in bad_thorimage_dirs]):
-            print('skipping because in bad_thorimage_dirs\n')
-            continue
-
         analysis_dir = get_analysis_dir(date, fly_num, split(thorimage_dir)[1])
         os.makedirs(analysis_dir, exist_ok=True)
         experiment_analysis_dirs.append(analysis_dir)
@@ -979,15 +1066,13 @@ def main():
 
         exp_start = time.time()
 
-
         single_plane_fps, xy, z, c, n_flyback, _, xml = thor.load_thorimage_metadata(
             thorimage_dir, return_xml=True
         )
 
         if not analyze_2d_tests and z == 1:
-            print('skipping analysis for this experiment because it is single plane\n')
+            print('skipping because experiment is single plane\n')
             continue
-
 
         experiment_id = shorten_path(thorimage_dir)
         experiment_basedir = util.to_filename(experiment_id, period=False)
@@ -1001,9 +1086,7 @@ def main():
         if (skip_if_experiment_plot_dir_exists and exists(plot_dir)
             and any(os.scandir(plot_dir))):
 
-            print(f'skipping analysis for this experiment because {plot_dir} '
-                'exists\n'
-            )
+            print(f'skipping because {plot_dir} exists\n')
             continue
 
         if do_suite2p:
@@ -1024,13 +1107,37 @@ def main():
             # (to remove empty directories at end)
             experiment_plot_dirs.append(plot_dir)
 
-        yaml_path = stimulus_yaml_from_thorimage_xml(xml)
-        with open(yaml_path, 'r') as f:
-            data = yaml.safe_load(f)
+        yaml_path, yaml_data, odor_lists = thorimage_xml2yaml_info_and_odor_lists(xml)
+        print('yaml_path:', shorten_path(yaml_path, n_parts=2))
 
-        pulse_s = float(int(data['settings']['timing']['pulse_us']) / 1e6)
+        # TODO also exclude stuff where stimuli were not pairs. maybe just try/except
+        # the code extracting stimulus info in here? or separate fn, run first, to
+        # detect *if* we are dealing w/ pair-grid data?
+        if not is_glomeruli_diagnostics:
+            # So that we can count how many flies we have for each odor pair (and
+            # concentration range, in case we varied that at one point)
+            names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
+
+            if final_concentrations_only:
+                names, curr_concs = separate_names_and_concs_tuples(
+                    names_and_concs_tuple
+                )
+
+                if (names in names2final_concs and
+                    names2final_concs[names] != curr_concs):
+
+                    print('skipping because not using final concentrations for '
+                        f'{names}\n'
+                    )
+                    continue
+
+        pulse_s = float(int(yaml_data['settings']['timing']['pulse_us']) / 1e6)
         if pulse_s < 3:
             print(f'skipping because odor pulses were {pulse_s} (<3s) long (old)\n')
+            continue
+
+        if analyze_pairgrids_only and not is_pairgrid(odor_lists):
+            print('skipping because not a pair grid experiment\n')
             continue
 
         if yaml_path in seen_stimulus_yamls2thorimage_dirs:
@@ -1040,7 +1147,8 @@ def main():
             )
         seen_stimulus_yamls2thorimage_dirs[yaml_path].append(thorimage_dir)
 
-        odor_lists = yaml_data2odor_lists(data)
+        if not is_glomeruli_diagnostics:
+            names_and_concs2analysis_dirs[names_and_concs_tuple].append(analysis_dir)
 
         # NOTE: converting to list-of-str FIRST, so that each element will be
         # hashable, and thus can be counted inside `remove_consecutive_repeats`
@@ -1053,19 +1161,7 @@ def main():
             for n in ns:
                 if n not in odor2abbrev:
                     odors_without_abbrev.add(n)
-
-        # TODO also exclude stuff where stimuli were not pairs. maybe just try/except
-        # the code extracting stimulus info in here? or separate fn, run first, to
-        # detect *if* we are dealing w/ pair-grid data?
-        if not is_glomeruli_diagnostics:
-            # So that we can count how many flies we have for each odor pair (and
-            # concentration range, in case we varied that at one point)
-            names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
-
-            if names_and_concs_tuple not in names_and_concs2analysis_dirs:
-                names_and_concs2analysis_dirs[names_and_concs_tuple] = []
-
-            names_and_concs2analysis_dirs[names_and_concs_tuple].append(analysis_dir)
+        del name_lists
 
         before = time.time()
 
@@ -1122,6 +1218,10 @@ def main():
 
         if not non_suite2p_analysis:
             print()
+
+            if quick_test_only:
+                break
+
             continue
 
         if not ignore_existing_nonsuite2p_outputs:
@@ -1134,6 +1234,10 @@ def main():
                 print('skipping non-suite2p analysis because plot dir contains '
                     f'{PLOT_FMT}\n'
                 )
+
+                if quick_test_only:
+                    break
+
                 continue
 
         before = time.time()
@@ -1397,7 +1501,6 @@ def main():
                 #import ipdb; ipdb.set_trace()
                 '''
 
-
             # TODO refactor this or at least the labelling portion within
             for d in range(z):
                 ax = mean_heatmap_axs[0, d]
@@ -1427,12 +1530,19 @@ def main():
 
         print()
 
+        if quick_test_only:
+            break
+
+
+    def earliest_analysis_dir_date(analysis_dirs):
+        return min(d.split(os.sep)[-3] for d in analysis_dirs)
 
     # TODO exclude non-pairgrid stuff from here
     print('\nOdor pair counts for all data considered (including stuff where suite2p '
         'plots not generated for various reasons):'
     )
-    for names_and_concs, analysis_dirs in names_and_concs2analysis_dirs.items():
+    for names_and_concs, analysis_dirs in sorted(names_and_concs2analysis_dirs.items(),
+        key=lambda x: earliest_analysis_dir_date(x[1])):
 
         names_and_concs_strs = []
         for name, concs in names_and_concs:
@@ -1500,6 +1610,8 @@ def main():
     # with some flag set, maybe?
     # Remove directories that were/would-have-been created to save plots/intermediates
     # for an experiment, but are empty.
+    # TODO TODO try to do during loop, so Ctrl-C / other interruption is less likely to
+    # leave empty directories lying around
     for d in experiment_plot_dirs + experiment_analysis_dirs:
         if not any(os.scandir(d)):
             os.rmdir(d)
@@ -1538,6 +1650,11 @@ def main():
         if len(iscell_not_selective) > 0:
             print('suite2p outputs where no ROIs were marked bad:')
             shorten_and_pprint(iscell_not_selective)
+            print()
+
+        if len(no_merges) > 0:
+            print('suite2p outputs where no ROIs were merged:')
+            shorten_and_pprint(no_merges)
             print()
 
     if len(odors_without_abbrev) > 0:
