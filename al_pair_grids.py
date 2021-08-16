@@ -935,6 +935,8 @@ def main():
     overwrite_suite2p = False
 
     analyze_suite2p_outputs = True
+    # TODO TODO add flags to only analyze stuff considered "done" in breakdown at end
+    # (and probably also that has some merges at least)
 
     # Since some of the pilot experiments had 6 planes (but top 5 should be the
     # same as in experiments w/ only 5 total), and that last plane largely doesn't

@@ -150,3 +150,395 @@
   - 11
 
 
+- 2021-04-28/1/butanal_and_acetone:
+  # TODO TODO TODO try to see if i can meaningfully subdivide this manually.
+  # seems likely overmerged, but responses are very clean.
+  # (same w/ 54 and 79 beneath, but to a lesser extent perhaps b/c 41 seems to include
+  # dp1m)
+  # NOTE: marking 41 bad for now since 54 seems to have similar signal (if a bit
+  # smaller, but maybe not by much), and even 41 might be quite overmerged, but at
+  # leawst
+  # merging 54 and 79 for now.
+  - 41
+
+  # if left edge were a bit further to the right, would it look less correlated w/
+  # 54 and 79?
+  # TODO watch movie: is this distinct?
+  - 64
+
+  # nerve? also a bit noisy in beginning.
+  - 34
+
+  # ok-ish towards end but spikes in beginning and towards edge, so maybe mostly arises
+  # from drift?
+  # TODO watch this region in movie
+  - 30
+
+  # okay-ish towards end. bit noisy ~1/3rd in and ~60% in
+  - 26
+
+  # looks good except for a spike ~720 seconds. not sure what that is.
+  # TODO watch movie for this
+  - 53
+
+  # Weak, but also ROI seems smaller than it maybe should be
+  # TODO experiment w/ diff means of making this fuller, either manually (to see if
+  # worth), via changing suite2p params, or via post-processing suite2p ROIs (i.e.
+  # dilating)
+  - 15
+
+  # Both might be fine if not for (mainly) two large spikes ~515 and 780s
+  # Probably neight of these is the best plane for the glomeruli they contain signal
+  # from. There is a good chance these are both the same glom too.
+  - 11
+  - 16
+
+  # Main issue is spike ~720 and a bit of noise (movement?) in the minutes before it.
+  - 53
+
+  # (not that it is in top 5 planes I actually analyze anyway, but...) are the responses
+  # towards the end on this one real or cause motion at the edge? weak for this fly +
+  # noise between 600-800 that would make it tough anyway.
+  - 93
+
+  # currently i've merged: (25,47), (20,39), and i've left 40 as potentially its own
+  # glomerulus
+  #
+  # TODO TODO what's the right way to merge this corner? are left/right sides of larger
+  # bottom "glomerulus" really the same? is smaller top also?
+  # TODO watch this region of video
+  # Might be overmerged (there is a smaller top glomerulus in next two planes)
+  # (plane 1)
+  # if there really is a top glomerulus, this one is probably overmerged, though it's
+  # not as strong as the next two planes anyway, and will probably not be selected as
+  # long as our merge strategy is 'best plane'. marking BAD for now, b/c ambiguity.
+  - 3
+  # (plane 2)
+  # NOTE: comparing the 5th from last group of 3 trials between these two has me
+  # convinced that the top glomerulus is distinct. it also seems like 40 in the next
+  # plane fits better with these two than with 25, tho maybe it's a 3rd glomerulus?
+  # bit hard to say because the rank ordering of that group of trials is roughly:
+  # 20 ~< 39 < 40 < 47 < 25 (and 40 is almost equidistant from 39 and 47...)
+  # TODO watch movie to try to get clarity
+  - 25
+  - 20
+  # (plane 3)
+  - 39
+  - 47
+  - 40
+  # (plane 4)
+  # NOTE: contrast 61 and 55 in early trials. seems likely they are distinct?
+  # TODO watch movie to make sure it isn't something stupid like drift
+  # TODO TODO make sure that adding 61 to the already merged 25,47 didn't break anything
+  # actually it does break when trying to merge, with this message:
+  # Traceback (most recent call last):
+  #    File "/home/tom/src/suite2p/suite2p/gui/gui2p.py", line 303, in keyPressEvent
+  #      merge.do_merge(self)
+  #    File "/home/tom/src/suite2p/suite2p/gui/merge.py", line 32, in do_merge
+  #      merge_activity_masks(parent)
+  #    File "/home/tom/src/suite2p/suite2p/gui/merge.py", line 139, in merge_activity_masks
+  #      np.delete(parent.F_chan2, k, 0)
+  #  AttributeError: 'MainWindow' object has no attribute 'F_chan2'
+  # (marking 61 bad in the meantime)
+  # also marking 62 bad for essentially the same reason, but fix it (merge into
+  # already-merged 97 when i fix 61)
+  # TODO also probably move 40 into 103 (marking 40 bad for now)
+  #
+  # (actually marking 103 bad cause 40 signal is larger)
+  # TODO TODO TODO check that marking a merged roi as bad doesn't break any of my
+  # stuff
+  # TODO 76 seems like it could be part of 103+40 but watch movie to try to disambiguate
+  # (marking bad for now)
+  - 61
+  - 62
+  - 55
+
+  # fine tho first trial in group starting ~1000 is ~40% higher than next two
+  # first plane ROI corresponding to seemingly same glomeruli is more consistent there
+  # tho, and i think it will be picked as best plane.
+  # TODO check that roi 0 is picked as best plane.
+  - 19
+
+  # TODO TODO TODO is there something weird going on w/ ctrl/shift selection of multiple
+  # ROIs, specifically the display of multiple traces simultaneously?
+  # it seems for ROI 32, if i just select it and look at the trace there is a peak at
+  # 810. for roi 28 there is also a peak there, tho shaped diff, if i select it alone.
+  # if i hold either ctrl/shift and select both, then one of the two line plots shown
+  # has a (differently shaped) deflection downwards at 810. the labels on the y axis are
+  # not clear.
+  # TODO modify suite2p to color numeric labels same as lines (also, just look to see if
+  # there is a difference being computed or something like that)
+  #
+  # slightly more trial inconsistency w/ 28 despite it having slightly larger signal.
+  # (e.g. ~750 and 1460)
+  # TODO watch this region to see if 32 is distinct enough (not overmerged at edges)
+  # to warrant merging / separate ROI status. for now, marking it bad as it seems more
+  # likely to encroach on other ROIs
+  - 28
+  - 32
+
+  # TODO TODO why is suite2p not pulling out more of the region above this (seems to
+  # appear in df/f and even suite2p's views)
+  # TODO watch movie to verify this isn't overmerged (w/ there being distinct
+  # left/right glomeruli) + also that the top region(s) are actually weaker enough /
+  # similar enough to not care too much suite2p didn't include that side too much.
+  # (currently merged w/ 2)
+  - 22
+
+  # TODO TODO test that me merging these two doesn't break any of my code expecting just
+  # top 5 slices (especially if bottom one selected...) maybe i should just not use
+  # anything past 5 to not risk it?
+  # (which two was this again? bottom right edge.)
+
+
+# suite2p seemed to make a lot of too-small ROIs on this one.
+- 2021-04-29/1/butanal_and_acetone:
+  # likely overmerged
+  # TODO watch video to verify it's not
+  - 4
+
+  # probably too noisy in beginning + too inconsistent @ end to be worth
+  - 5
+
+  # TODO overmerged? (contains dp1m and might equal it)
+  - 2
+
+  # TODO TODO suspicious that his is basically just a dark sapce between which looks
+  # like other glomeruli (in the mean projection at least)? investigate in movie.
+  - 0
+
+  # TODO where to fit this one? marking bad for now (b/c looks like it's getting a bit
+  # of dp1m and a bit of whatever is to the right)
+  - 8
+
+  # possibly could have merged w/ 24[,40], but 24 seems to capture most w/o weirdness
+  # both in terms of shape along inside of 24 and inconsistency
+  - 27
+  # basically same. also smaller, tho not really elongated
+  - 40
+
+  # TODO does this look like a glomerulus in movie ever or maybe clear it's nerve there?
+  # it's basically in a dark space, but might also be out-of-plane stuff from something
+  # deeper (also pretty correlated w/ merged dp1m...) (marking bad for now)
+  - 44
+
+  # should these be merged? one of the two inputs to 111 (in 3rd plane) might be
+  # it's own glomerulus too (overmerged)
+  # TODO also try splitting just the 3rd plane part into top / bottom components
+  # TODO TODO or maybe just split 111 and discard top plane, to more cleanly separate
+  # from whatever is perpendicular to dp1m
+  - 111
+  - 56
+
+  # marking bad b/c 91 seems to have what i would want from this and rest is loosely
+  # scattered overmerge
+  - 76
+
+  # TODO try splitting 73 / just using 92. it seems averaging them (not that that is
+  # what we are doing) might increase trial consistency.
+  # TODO watch movie to see if l/r sides of 73 seem distinct
+  # (marking 73 bad for now)
+  - 92
+
+  # TODO TODO TODO is there out ouf plane drift or something that explains why signal
+  # decreases so dramatically for this one? (slowly, by end. pretty consistent w/in
+  # trial groups)
+  - 75
+  # and is this really the same as 75? seems a bit to the right, but responses are also
+  # close and it could probably be angled (merging for now)
+  - 91
+
+  # TODO probably add 74 to dp1m, not that it would be best plane anyway
+  # for now, just marking bad
+
+  # too small to trust for now. there is reasonably reliable signal though...
+  # TODO inspect in video + try to improve params / manually
+  - 32
+
+  # about halfway through the movie, these two diverge in a fair set of trials, and
+  # somewhat consistently too, BUT they are extensively overlapping and it really seems
+  # like these are both just dp1m regardless. try to prevent suite2p from doing stuff
+  # like this. BOTH of these might contain stuff beyond their true extent on the left.
+  # not sure.
+  # actually, i'm going to exclude 23 for now because it has a big mass on the top edge,
+  # which is likely sensitive to motion / drift, and such drift might explain the
+  # smaller responses towards the end. 22 and 53 (in plane below) have similar ordering
+  # of responses.
+  - 22
+  - 23
+
+  # crazy spike on second trial in ~2nd trial group somewhat consistent responses after.
+  # but also probably just a small part of dp1m anyway. marking bad.
+  - 34
+
+  # might be ok but a bit inconsistent in some trial groups
+  - 44
+  # similar to 44, but also probably smaller than would make sense, and worse
+  # inconsistency
+  - 36
+
+  # NOTE how bright region above 42 not really included: why?
+  # similar issues to above. also weird / small / thin shape
+  - 42
+
+  # similar issues to 36 above
+  - 43
+  # bit weak and inconsistent
+  - 70
+  # same as above
+  - 80
+
+  # both have some signal but size too small + inconsistent
+  - 86
+  - 81
+
+  # seems to contain some signal towards end. unacceptably noisy near start.
+  - 87
+
+  # TODO try to tweak sutie2p parameters / try merging in plane to get the other two +
+  # check it looks reasonable. can't reasonably include this one until i also figure out
+  # how to merge / handle 93,99 (right next and seems they are just taking some
+  # trials... movement?). good signal in 101 tho (all really, tho 101 is most reliable
+  # cause largest)
+  - 101
+
+  # in deepest plane (6th, not included currently, for consistency w/ 5 plane [most]
+  # experiments). also a bit weak and inconsistent, but still some signal.
+  - 105
+
+
+# TODO TODO investigate bright region in bottom left of second plane being somewhat
+# neglected
+# TODO TODO TODO TODO which of these comments were referring to:
+# 2021-05-03/1/ehex_and_1-6ol_redo
+# ...AND which were referring to...
+# 2021-05-03/1/butanal_and_acetone_redo
+# (seems i forgot to start a new section for the latter)
+- 2021-05-03/1/ehex_and_1-6ol_redo:
+
+  # try to fix donut hole in center?
+  - 41
+
+  # bit small + weirdly shaped.
+  # NOTE: downward deflections. same deflections not quite as obvious in 91, tho might
+  # still be same thing.
+  # TODO watch movie to try to disambiguate these two
+  - 100
+  - 91
+
+  # TODO TODO watch movie. possible that this wraps around 22 from above, i.e. that
+  # merging 4, 23, 33, 49, 52 is the right call?? one alt is to merge (33,49) and
+  # (23,52). not sure what to do about 4 then... maybe it's just overmerged?
+  # marking 4 bad for now
+
+  # TODO should 73 be merged w/ 33,49 or is it something else? noisy enough that i'm
+  # just discarding for now.
+
+  # TODO could 13 be a glomerulus or is it more likely nerve / something?
+
+  # tossing 41 rather than merge w/ 6 atm
+
+  # TODO TODO try to determine whether 41 and/or 42 and/or 27 and/or 23 should be merged
+  # w/ 18,36 (which are already merged)
+  # NOTE: interesting variation in dynamics among these, tho unclear to waht extent
+  # artifact
+
+  # TODO merge 24 w/ 17? tossing for now
+
+  # unsure of merge between 17 and 39. 40 also pretty similar but worse SNR. 40 and 39
+  # both bad for now.
+
+  # 44 and 68 share some things but separated enough and one might have two components
+  # more similar. (also 68 is already a merge)
+
+  # TODO maybe toss 44 for being too weak
+
+  # TODO TODO maybe 69 (merge of 2) is same as 67 (merge of 2 in planes above)
+
+
+  ######################################################################################
+  # Following are all staying marked bad
+  ######################################################################################
+  # TODO try to fix overmerge / determine it's not overmerged (there is a bright spot on
+  # top tho) strong responses at end
+  - 32
+  # too noisy at beginning + some serious inconsistencies w/in trial blocks at end
+  - 3
+  # pretty good responses at end, but too noisy in beginning
+  - 24
+  # too bad at begining despite decent at end
+  - 55
+  # same as above
+  - 54
+
+  # mostly just spike around 1300
+  # TODO is it motion?
+  - 64
+
+  # bit weaker / noisy
+  - 29
+
+
+- 2021-05-05/1/ehex_and_1-6ol:
+  # NOTE severe elevated responses for some ROIs in later trials, e.g. 17
+  # TODO TODO check that top roi merged into 29 isn't better split into 2
+
+  # more likely a nerve or something i should mark bad?
+  - 17
+
+  # TODO watch to see if 3 is meaningfully distinct from already-merged-30
+  # if not, leave discarded
+
+
+- 2021-05-10/1/ehex_and_1-6ol:
+  # some responses but too noisy
+  - 12
+
+  # TODO is this in bounds? marking bad for now
+
+  # NOTE: skipping plane 4 in merge of 1,28,57,?,107 b/c no suite2p ROI there
+
+  # TODO maybe merge 90 into merged roi 122 to gaurd against drift? not sure 90 has
+  # signal apart from stealing from 122... watch movie. marking bad for now
+  # NOTE: 100 could probably be getting some out of plane signal from part of 122
+  # (assuming 122 merge was even correct)
+
+  # 98 is probably overmerged so ignoring for now. watch movie
+
+  # NOTE lack of return to baseline at end for 101
+
+  # watch movie to decide what to do w/ 63,60. marking 63 bad for now but taking 60
+
+  # also watch for 23. bad for now.
+
+  # perhaps 124 (merged) should be excluded / broken up
+
+
+# not a lot of clear boundaries in this fly it seems...
+- 2021-05-10/1/butanal_and_acetone:
+  - maybe 44 is something? watch. kinda small and weird shaped tho.
+
+  - 25 too close to edge so bad. watch tho.
+  - same w/ 47
+
+  - maybe just use 4 rather than merging it w/ 22? 22 seems to be getting some signal
+    from dp1m
+    - currently merging 4 and 22 but skipping 49 because it seems like it could be
+      overlapping very severely
+
+  - check for overmerge on 3,79
+
+
+- 2021-05-11/2/ehex_and_1-6ol:
+  - check movie to see if they are maybe noooot too close to edge:
+    - 4
+    - 6
+    - ...leaving for now cause signal is reliable enough i want to believe
+
+  - check for + try to deal w/ overmerge on:
+    - 2 (almost for sure)
+      - for now, dropping 2, because i'd want to merge two separate things from lower
+        planes w/ diff parts of it.
+        - 
+    - 5 (might not be so great anyway)
+
