@@ -157,15 +157,15 @@ def stimulus_yaml_from_thorimage_xml(xml, verbose=True):
     # separator character.
     yaml_path = yaml_path.replace('\\', '/')
 
+    if verbose:
+        print('yaml_path:', yaml_path)
+
     if not exists(join(stimfile_root, yaml_path)):
         prefix, ext = splitext(yaml_path)
         yaml_dir = '_'.join(prefix.split('_')[:3])
         subdir_path = join(stimfile_root, yaml_dir, yaml_path)
         if exists(subdir_path):
             yaml_path = subdir_path
-
-    if verbose:
-        print('yaml_path:', yaml_path)
 
     yaml_path = join(stimfile_root, yaml_path)
     assert exists(yaml_path), f'{yaml_path}'
