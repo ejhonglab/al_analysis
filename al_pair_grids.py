@@ -985,6 +985,8 @@ def main():
         # Both flies only have glomeruli diagnostics.
         '2021-06-07',
 
+        '2021-06-24/1/msl_and_hh',
+
         # Frame <-> time assignment is currently failing for all the real data from this
         # day.
         #'2021-06-24/2',
@@ -1632,6 +1634,7 @@ def main():
         if not any(os.scandir(d)):
             os.rmdir(d)
 
+
     # Only actually shortens if print_full_paths=False
     def shorten_and_pprint(paths):
         if not print_full_paths:
@@ -1639,39 +1642,47 @@ def main():
 
         pprint(paths)
 
-    if len(failed_assigning_frames_to_odors) > 0:
-        print('failed_assigning_frames_to_odors:')
-        shorten_and_pprint(failed_assigning_frames_to_odors)
+
+    def print_nonempty_path_list(name, paths, alt_msg=None):
+        if len(paths) == 0:
+            if alt_msg is not None:
+                print(alt_msg)
+
+            return
+
+        print(f'{name} ({len(paths)}):')
+        shorten_and_pprint(paths)
         print()
+
+
+    print_nonempty_path_list(
+        'failed_assigning_frames_to_odors:', failed_assigning_frames_to_odors
+    )
 
     if do_suite2p:
-        if len(failed_suite2p_dirs) > 0:
-            print('failed_suite2p_dirs:')
-            shorten_and_pprint(failed_suite2p_dirs)
-            print()
+        print_nonempty_path_list(
+            'suite2p failed:', failed_suite2p_dirs
+        )
 
     if analyze_suite2p_outputs:
-        if len(s2p_not_run) > 0:
-            print('suite2p needs to be run on the following data:')
-            shorten_and_pprint(s2p_not_run)
-        else:
-            print('suite2p has been run on all currently included data')
-        print()
+        print_nonempty_path_list(
+            'suite2p needs to be run on the following data:', s2p_not_run,
+            alt_msg='suite2p has been run on all currently included data'
+        )
 
-        if len(iscell_not_modified) > 0:
-            print('suite2p outputs with ROI labels not modified:')
-            shorten_and_pprint(iscell_not_modified)
-            print()
+        # NOTE: only possible if suite2p for these was run outside of this pipeline, as
+        # `run_suite2p` in this file currently marks all ROIs as "good" (as cells, as
+        # far as suite2p is concerned) immediately after a successful suite2p run.
+        print_nonempty_path_list(
+            'suite2p outputs with ROI labels not modified:', iscell_not_modified
+        )
 
-        if len(iscell_not_selective) > 0:
-            print('suite2p outputs where no ROIs were marked bad:')
-            shorten_and_pprint(iscell_not_selective)
-            print()
-
-        if len(no_merges) > 0:
-            print('suite2p outputs where no ROIs were merged:')
-            shorten_and_pprint(no_merges)
-            print()
+        print_nonempty_path_list(
+            'suite2p outputs where no ROIs were marked bad:', iscell_not_selective
+        )
+        print_nonempty_path_list(
+            'suite2p outputs where no ROIs were merged:', no_merges
+        )
 
     if len(odors_without_abbrev) > 0:
         print('odors_without_abbrev:')
