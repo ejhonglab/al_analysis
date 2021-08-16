@@ -366,6 +366,15 @@ def is_pairgrid(odor_lists):
     )
 
 
+def is_reverse_order(odor_lists):
+    o1_list = [o1 for o1, _ in odor_lists if o1['log10_conc'] is not None]
+
+    def get_conc(o):
+        return o['log10_conc']
+
+    return get_conc(o1_list[0]) > get_conc(o1_list[-1])
+
+
 # TODO maybe convert to just two column df instead and then use some pandas functions to
 # convert that to index?
 def odor_lists_to_multiindex(odor_lists, add_repeat_col=True, **format_odor_kwargs):
@@ -906,6 +915,8 @@ def main():
     # recent concentrations for those odors will be analyzed.
     final_concentrations_only = True
 
+    analyze_reverse_order = False
+
     # Will be set False if analyze_pairgrids_only=True
     analyze_glomeruli_diagnostics = False
 
@@ -1136,9 +1147,14 @@ def main():
             print(f'skipping because odor pulses were {pulse_s} (<3s) long (old)\n')
             continue
 
-        if analyze_pairgrids_only and not is_pairgrid(odor_lists):
-            print('skipping because not a pair grid experiment\n')
-            continue
+        if is_pairgrid(odor_lists):
+            if not analyze_reverse_order and is_reverse_order(odor_lists):
+                print('skipping because a reverse order experiment\n')
+                continue
+        else:
+            if analyze_pairgrids_only:
+                print('skipping because not a pair grid experiment\n')
+                continue
 
         if yaml_path in seen_stimulus_yamls2thorimage_dirs:
             short_yaml_path = shorten_path(yaml_path, n_parts=2)
