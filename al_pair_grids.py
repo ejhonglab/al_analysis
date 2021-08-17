@@ -1569,7 +1569,7 @@ def main():
             #print(f'{name} @ {conc_range_str}')
             names_and_concs_strs.append(f'{name} @ {conc_range_str}')
 
-        print(' mixed with '.join(names_and_concs_strs))
+        print(f'({len(analysis_dirs)}) ' + ' mixed with '.join(names_and_concs_strs))
 
         # TODO maybe come up with a local-file-format (part of a YAML in the raw data
         # dir?) type indicator that (current?) suite2p output just looks bad and doesn't
@@ -1578,7 +1578,8 @@ def main():
 
         s2p_statuses = (
             'not run',
-            'ROIs needed manual labelling (or output looks bad)',
+            'ROIs need manual labelling (or output looks bad)',
+            'ROIs may need merging (done if not)',
             'marked bad',
             'done',
         )
@@ -1597,13 +1598,19 @@ def main():
                 not_done_dirs.update(status_dirs)
 
             elif s2p_status == s2p_statuses[2]:
+                status_dirs = [
+                    x for x in analysis_dirs if x in no_merges
+                ]
+                not_done_dirs.update(status_dirs)
+
+            elif s2p_status == s2p_statuses[3]:
                 # maybe don't show these ones?
                 status_dirs = [
                     x for x in analysis_dirs if x in full_bad_suite2p_analysis_dirs
                 ]
                 not_done_dirs.update(status_dirs)
 
-            elif s2p_status == s2p_statuses[3]:
+            elif s2p_status == s2p_statuses[4]:
                 status_dirs = [x for x in analysis_dirs if x not in not_done_dirs]
 
             else:
