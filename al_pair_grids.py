@@ -1104,9 +1104,6 @@ def main():
             print(f'skipping because {plot_dir} exists\n')
             continue
 
-        if do_suite2p:
-            run_suite2p(thorimage_dir, analysis_dir, overwrite=overwrite_suite2p)
-
         def suptitle(title, fig=None):
             if fig is None:
                 fig = plt.gcf()
@@ -1226,6 +1223,8 @@ def main():
         # (loading the HDF5 should be the main time cost in the above fn)
         load_hdf5_s = time.time() - before
 
+        if do_suite2p:
+            run_suite2p(thorimage_dir, analysis_dir, overwrite=overwrite_suite2p)
 
         if analyze_suite2p_outputs:
             if not any([b in thorimage_dir for b in bad_suite2p_analysis_dirs]):
