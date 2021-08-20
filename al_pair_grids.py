@@ -3,7 +3,7 @@
 import argparse
 import os
 from os.path import join, split, exists, splitext, expanduser
-from pprint import pprint
+from pprint import pprint, pformat
 from collections import Counter, defaultdict
 import warnings
 import time
@@ -13,10 +13,11 @@ import subprocess
 import pickle
 from pathlib import Path
 import glob
+from itertools import starmap
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import tifffile
 import yaml
 from suite2p import run_s2p
@@ -29,13 +30,106 @@ from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path
 
+import matplotlib
+# Won't get warnings that some of the interactive backends give in the multiprocessing
+# case, but can't make interactive plots.
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
 
+###################################################################################
+# Constants that affect behavior of `process_experiment`
+###################################################################################
 SAVE_FIGS = True
-PLOT_FMT = 'svg'
+
+PLOT_FMT = os.environ.get('PLOT_FMT', 'svg')
 # TODO also use this cmap for trial df/f images (or at least not viridis?)
 CMAP = 'plasma'
 
 analysis_intermediates_root = util.analysis_intermediates_root()
+
+# TODO try to make this more granular, so the suite2p / non-suite2p analysis can be
+# skipped separately (latter should be generated on first run, but former will at least
+# require some manual steps [and the initial automated suite2p run may also fail])
+
+# TODO TODO also make more granular in the sense that we don't necessarily want to run
+# suite2p on glomerli diagnostics stuff, etc
+# TODO TODO probably make trial (+ avg across trial) dff image plots in their own
+# directory, so it's easier to just check if that directory exists (or maybe check if
+# any svg are in exp dir root? maybe assume plots are made if we have a suite2p
+# directory?)
+skip_if_experiment_plot_dir_exists = False
+
+# TODO TODO probably make another category or two for data marked as failed (in the
+# breakdown of data by pairs * concs at the end)
+retry_previously_failed = False
+
+# Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
+# (the main type of experiment for this project)
+analyze_pairgrids_only = True
+
+# If there are multiple experiments with the same odors, only the data from the most
+# recent concentrations for those odors will be analyzed.
+final_concentrations_only = True
+
+analyze_reverse_order = False
+
+# Will be set False if analyze_pairgrids_only=True
+analyze_glomeruli_diagnostics = False
+
+# Whether to analyze any single plane data that is found under the enumerated
+# directories.
+analyze_2d_tests = False
+
+non_suite2p_analysis = True
+ignore_existing_nonsuite2p_outputs = False
+
+# Whether to run the suite2p pipeline (generates outputs among raw data, in 'suite2p'
+# subdirectories)
+do_suite2p = True
+
+# Will just skip if already exists if False
+overwrite_suite2p = False
+
+analyze_suite2p_outputs = True
+# TODO TODO add flags to only analyze stuff considered "done" in breakdown at end
+# (and probably also that has some merges at least)
+
+# Since some of the pilot experiments had 6 planes (but top 5 should be the same as in
+# experiments w/ only 5 total), and that last plane largely doesn't have anything
+# measurably happening. All steps should have been 12um, so picking top n will yield a
+# consistent total height of the volume.
+n_top_z_to_analyze = 5
+
+ignore_bounding_frame_cache = False
+
+# TODO shorten any remaining absolute paths if this is True, so we can diff outputs
+# across installs w/ data in diff paths
+print_full_paths = False
+
+dff_vmin = 0
+dff_vmax = 3.0
+
+ax_fontsize = 7
+
+# TODO TODO TODO recheck all of these
+bad_suite2p_analysis_dirs = (
+    # skipping for now cause suite2p output looks weird (for both recordings)
+    '2021-03-07/2',
+
+    # Just a few glomeruli visible in (at least the last odor) trials
+    '2021-05-24/1/1oct3ol_and_2h',
+
+    # TODO TODO revisit this one
+    '2021-05-24/2/ea_and_etb',
+
+    # TODO why?
+    # eb_and_ea recording looks bad (mainly just one glomerulus? lots of stuff
+    # seems to come in 4s at times rather than 3s [well really just one group of
+    # 4], and generally not much signal)
+    '2021-05-25/1/eb_and_ea',
+
+    # TODO TODO TODO add other stuff that was bad
+)
 
 odor2abbrev = {
     'methyl salicylate': 'MS',
@@ -51,7 +145,53 @@ odor2abbrev = {
     'ethyl hexanoate': 'EH',
     'hexyl acetate': 'HA',
 }
-odors_without_abbrev = set()
+
+if analyze_pairgrids_only:
+    analyze_glomeruli_diagnostics = False
+
+###################################################################################
+# Modified inside `process_experiment`
+###################################################################################
+# These two variables are just for keeping track of created directories, so we can
+# remove any empty ones later.
+experiment_plot_dirs = []
+experiment_analysis_dirs = []
+
+# TODO maybe convert to dict -> None (+ conver to set after
+# process_experiment loop) (since mp.Manager doesn't seem to have a set)
+#odors_without_abbrev = set()
+odors_without_abbrev = []
+
+# TODO refactor so this is not necessary if possible
+# This will get populated w/ full paths matching path fragments in variable above,
+# to filter out these paths in printing out status of suite2p analyses at the end.
+full_bad_suite2p_analysis_dirs = []
+
+exp_processing_time_data = []
+
+failed_assigning_frames_to_odors = []
+
+# Using dict rather than defaultdict(list) so handling is more consistent in case when
+# multiprocessing DictProxy overrides this.
+names_and_concs2analysis_dirs = dict()
+
+#names_concs_and_analysis_dir_tuples = []
+
+###################################################################################
+# Modified inside `run_suite2p`
+###################################################################################
+failed_suite2p_dirs = []
+
+###################################################################################
+# Modified inside `suite2p_trace_plots`
+###################################################################################
+s2p_not_run = []
+iscell_not_modified = []
+iscell_not_selective = []
+no_merges = []
+
+###################################################################################
+
 
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
 # (just want to prefer the "fast" data root)
@@ -445,7 +585,7 @@ def separate_names_and_concs_tuples(names_and_concs_tuple):
 
 
 def odor_names2final_concs(**paired_thor_dirs_kwargs):
-    """Returns dict of names tuple -> concentrations tuple
+    """Returns dict of names tuple -> concentrations tuples + ...
 
     Loops over same directories as main analysis
     """
@@ -453,7 +593,9 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
         **paired_thor_dirs_kwargs
     )
 
+    seen_stimulus_yamls2thorimage_dirs = defaultdict(list)
     names2final_concs = dict()
+    names_and_concs_tuples = []
     for (_, _), (thorimage_dir, _) in keys_and_paired_dirs:
 
         xml = thor.get_thorimage_xmlroot(thorimage_dir)
@@ -461,6 +603,8 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
 
         yaml_path, yaml_data, odor_lists = \
             thorimage_xml2yaml_info_and_odor_lists(xml)
+
+        seen_stimulus_yamls2thorimage_dirs[yaml_path].append(thorimage_dir)
 
         try:
             names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
@@ -472,10 +616,12 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
         if not is_pairgrid(odor_lists):
             continue
 
-        names, curr_concs = separate_names_and_concs_tuples(names_and_concs_tuple)
-        names2final_concs.update({names: curr_concs})
+        names_and_concs_tuples.append(names_and_concs_tuple)
 
-    return names2final_concs
+        names, curr_concs = separate_names_and_concs_tuples(names_and_concs_tuple)
+        names2final_concs[names] = curr_concs
+
+    return names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples
 
 
 # TODO write tests for this function for the case when n_trial_length_args is empty and
@@ -667,10 +813,6 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
     return cax
 
 
-s2p_not_run = []
-iscell_not_modified = []
-iscell_not_selective = []
-no_merges = []
 # TODO kwarg to allow passing trial stat fn in that includes frame rate info as closure,
 # for picking frames in a certain time window after onset and computing mean?
 # TODO TODO TODO to the extent that i need to convert suite2p rois to my own and do my
@@ -703,6 +845,8 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
         no_merges.append(analysis_dir)
 
     verbose = True
+    # TODO TODO TODO modify so that that merging w/in plane works (before finding best
+    # plane) + test
     traces, rois = s2p.remerge_suite2p_merged(traces, roi_stats, ops, merges,
         verbose=False
     )
@@ -789,7 +933,6 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
 
 
 # TODO maybe refactor (part of?) this to hong2p.suite2p
-failed_suite2p_dirs = []
 def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
 
     # TODO expose if_exists kwarg as run_suite2p  kwarg?
@@ -882,85 +1025,600 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         s2p.mark_all_suite2p_rois_good(combined_dir)
 
 
+def multiprocessing_namespace_from_globals(manager):
+    types2manager_types = {
+        list: manager.list,
+    }
+    namespace = manager.dict()
+    for name, value in globals().items():
+        val_type = type(value)
+        if val_type in types2manager_types:
+            namespace[name] = types2manager_types[val_type]()
+
+    return namespace
+
+
+def update_globals_from_shared_state(shared_state):
+    if shared_state is None:
+        return
+
+    for k, v in shared_state.items():
+        globals()[k] = v
+
+
+def proxy2orig_type(proxy):
+
+    if type(proxy) is mp.managers.DictProxy:
+        return {k: proxy2orig_type(v) for k, v in proxy.items()}
+
+    elif type(proxy) is mp.managers.ListProxy:
+        return [proxy2orig_type(x) for x in proxy]
+
+    else:
+        # This should only be reached in cases where `proxy` is not actually a proxy.
+        return proxy
+
+
+def multiprocessing_namespace_to_globals(shared_state):
+    globals().update({
+        k: proxy2orig_type(v) for k, v in shared_state.items()
+    })
+
+
+def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=None):
+    """
+    Args:
+        ...
+        shared_state (multiprocessing.managers.DictProxy): str global variable names ->
+        other proxy objects
+    """
+    # Only relevant if called via multiprocessing, where this is how we get access to
+    # the proxies that will feed back to the corresponding global variables that get
+    # modified under this function.
+    update_globals_from_shared_state(shared_state)
+
+    date, fly_num = date_and_fly_num
+    thorimage_dir, thorsync_dir = thor_image_and_sync_dir
+
+    if 'glomeruli' in thorimage_dir and 'diag' in thorimage_dir:
+        if not analyze_glomeruli_diagnostics:
+            print('skipping because experiment is just glomeruli diagnostics\n')
+            return
+
+        is_glomeruli_diagnostics = True
+    else:
+        is_glomeruli_diagnostics = False
+
+    analysis_dir = get_analysis_dir(date, fly_num, split(thorimage_dir)[1])
+    os.makedirs(analysis_dir, exist_ok=True)
+    experiment_analysis_dirs.append(analysis_dir)
+
+    if retry_previously_failed:
+        clear_fail_indicators(analysis_dir)
+    else:
+        has_failed, suffixes_str = last_fail_suffixes(analysis_dir)
+        if has_failed:
+            print(f'skipping because previously failed {suffixes_str}\n')
+            return
+
+    exp_start = time.time()
+
+    single_plane_fps, xy, z, c, n_flyback, _, xml = thor.load_thorimage_metadata(
+        thorimage_dir, return_xml=True
+    )
+
+    if not analyze_2d_tests and z == 1:
+        print('skipping because experiment is single plane\n')
+        return
+
+    experiment_id = shorten_path(thorimage_dir)
+    experiment_basedir = util.to_filename(experiment_id, period=False)
+
+    # Created below after we decide whether to skip a given experiment based on the
+    # experiment type, etc.
+    # TODO rename to experiment_plot_dir or something
+    plot_dir = join(PLOT_FMT, experiment_basedir)
+
+    # TODO refactor scandir thing to not_empty or something
+    if (skip_if_experiment_plot_dir_exists and exists(plot_dir)
+        and any(os.scandir(plot_dir))):
+
+        print(f'skipping because {plot_dir} exists\n')
+        return
+
+    def suptitle(title, fig=None):
+        if fig is None:
+            fig = plt.gcf()
+
+        fig.suptitle(f'{experiment_id}\n{title}')
+
+    def exp_savefig(fig, desc, **kwargs):
+        savefig(fig, plot_dir, desc, **kwargs)
+
+    if SAVE_FIGS:
+        os.makedirs(plot_dir, exist_ok=True)
+
+        # (to remove empty directories at end)
+        experiment_plot_dirs.append(plot_dir)
+
+    yaml_path, yaml_data, odor_lists = thorimage_xml2yaml_info_and_odor_lists(xml)
+    print('yaml_path:', shorten_path(yaml_path, n_parts=2))
+
+    # TODO also exclude stuff where stimuli were not pairs. maybe just try/except
+    # the code extracting stimulus info in here? or separate fn, run first, to
+    # detect *if* we are dealing w/ pair-grid data?
+    if not is_glomeruli_diagnostics:
+        # So that we can count how many flies we have for each odor pair (and
+        # concentration range, in case we varied that at one point)
+        names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
+
+        if final_concentrations_only:
+            names, curr_concs = separate_names_and_concs_tuples(
+                names_and_concs_tuple
+            )
+
+            if (names in names2final_concs and
+                names2final_concs[names] != curr_concs):
+
+                print('skipping because not using final concentrations for '
+                    f'{names}\n'
+                )
+                return
+
+    pulse_s = float(int(yaml_data['settings']['timing']['pulse_us']) / 1e6)
+    if pulse_s < 3:
+        print(f'skipping because odor pulses were {pulse_s} (<3s) long (old)\n')
+        return
+
+    if is_pairgrid(odor_lists):
+        if not analyze_reverse_order and is_reverse_order(odor_lists):
+            print('skipping because a reverse order experiment\n')
+            return
+    else:
+        if analyze_pairgrids_only:
+            print('skipping because not a pair grid experiment\n')
+            return
+
+    # Checking here even though `seen_stimulus_yamls2thorimage_dirs` was pre-computed
+    # elsewhere because we don't necessarily want to err if this would only get
+    # triggered for stuff that would get skipped in this function.
+    if (yaml_path in seen_stimulus_yamls2thorimage_dirs and
+        seen_stimulus_yamls2thorimage_dirs[yaml_path] != [thorimage_dir]):
+
+        short_yaml_path = shorten_path(yaml_path, n_parts=2)
+        raise ValueError(f'stimulus yaml {short_yaml_path} seen in:\n'
+            f'{pformat(seen_stimulus_yamls2thorimage_dirs[yaml_path])}'
+        )
+
+    if not is_glomeruli_diagnostics:
+        # In case where this is a DictProxy, these empty lists (ListProxy in that case)
+        # should all have been added before parallel starmap (outside this fn).
+        if names_and_concs_tuple not in names_and_concs2analysis_dirs:
+            names_and_concs2analysis_dirs[names_and_concs_tuple] = []
+
+        names_and_concs2analysis_dirs[names_and_concs_tuple].append(analysis_dir)
+
+        #names_concs_and_analysis_dir_tuples.append(
+        #    (names_and_concs_tuple, analysis_dir)
+        #)
+
+    # NOTE: converting to list-of-str FIRST, so that each element will be
+    # hashable, and thus can be counted inside `remove_consecutive_repeats`
+    odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
+    odor_order, n_repeats = remove_consecutive_repeats(odor_order_with_repeats)
+
+    # TODO use that list comprehension way of one lining this? equiv for sets?
+    name_lists = [[o['name'] for o in os] for os in odor_lists]
+    for ns in name_lists:
+        for n in ns:
+            if n not in odor2abbrev:
+                #odors_without_abbrev.add(n)
+                if n not in odors_without_abbrev:
+                    odors_without_abbrev.append(n)
+    del name_lists
+
+    before = time.time()
+
+    bounding_frame_yaml_cache = join(analysis_dir, 'trial_bounding_frames.yaml')
+
+    if ignore_bounding_frame_cache or not exists(bounding_frame_yaml_cache):
+        # TODO TODO don't bother doing this if we only have suite2p analysis left to
+        # do, and the required output directory doesn't exist / ROIs haven't been
+        # manually filtered / etc
+        try:
+            bounding_frames = thor.assign_frames_to_odor_presentations(thorsync_dir,
+                thorimage_dir
+            )
+            assert len(bounding_frames) == len(odor_order_with_repeats)
+
+            # TODO TODO move inside assign_frames_to_odor_presentations
+            # Converting numpy int types to python int types, and tuples to lists,
+            # for (much) nicer YAML output.
+            bounding_frames = [ [int(x) for x in xs] for xs in bounding_frames]
+
+            # TODO use yaml instead. save under analysis_dir
+            with open(bounding_frame_yaml_cache, 'w') as f:
+                yaml.dump(bounding_frames, f)
+
+        # Currently seems to reliably happen iff we somehow accidentally also image
+        # with the red channel (which was allowed despite those channels having gain
+        # 0 in the few cases so far)
+        except AssertionError as err:
+            traceback.print_exc()
+            print()
+
+            failed_assigning_frames_to_odors.append(thorimage_dir)
+
+            make_fail_indicator_file(analysis_dir, 'assign_frames', err)
+
+            return
+
+    else:
+        with open(bounding_frame_yaml_cache, 'r') as f:
+            bounding_frames = yaml.safe_load(f)
+
+    # (loading the HDF5 should be the main time cost in the above fn)
+    load_hdf5_s = time.time() - before
+
+    if do_suite2p:
+        run_suite2p(thorimage_dir, analysis_dir, overwrite=overwrite_suite2p)
+
+    if analyze_suite2p_outputs:
+        if not any([b in thorimage_dir for b in bad_suite2p_analysis_dirs]):
+            suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists,
+                plot_dir=plot_dir
+            )
+        else:
+            full_bad_suite2p_analysis_dirs.append(analysis_dir)
+            print('not making suite2p plots because outputs marked bad\n')
+
+    if not non_suite2p_analysis:
+        print()
+
+        # TODO TODO TODO how to have this work from inside multiprocessing invokation
+        # too?  just refactor? return True/False for whether we should keep going?
+        #if quick_test_only:
+        #    break
+
+        return
+
+    if not ignore_existing_nonsuite2p_outputs:
+        # Assuming that if analysis_dir has *any* plots directly inside of it, it
+        # has all of what we want from non_suite2p_analysis (including any
+        # intermediates that would go in analysis_dir).
+        # Set ignore_existing_nonsuite2p_outputs=False to do this analysis
+        # regardless, regenerating any overlapping plots.
+        if len(glob.glob(join(plot_dir, f'*.{PLOT_FMT}'))) > 0:
+            print('skipping non-suite2p analysis because plot dir contains '
+                f'{PLOT_FMT}\n'
+            )
+
+            #if quick_test_only:
+            #    break
+
+            return
+
+    before = time.time()
+
+    movie = thor.read_movie(thorimage_dir)
+
+    read_movie_s = time.time() - before
+
+    # TODO TODO maybe make a plot like this, but use the actual frame times
+    # (via thor.get_frame_times) + actual odor onset / offset times, and see if
+    # that lines up any better?
+    '''
+    avg = util.full_frame_avg_trace(movie)
+    ffavg_fig, ffavg_ax = plt.subplots()
+    ffavg_ax.plot(avg)
+    for _, first_odor_frame, _ in bounding_frames:
+        # TODO need to specify ymin/ymax to existing ymin/ymax?
+        ffavg_ax.axvline(first_odor_frame)
+
+    ffavg_ax.set_xlabel('Frame Number')
+    exp_savefig(ffavg_fig, 'ffavg')
+    #plt.show()
+    '''
+
+    if z > n_top_z_to_analyze:
+        warnings.warn(f'{thorimage_dir}: only analyzing top {n_top_z_to_analyze} '
+            'slices'
+        )
+        movie = movie[:, :n_top_z_to_analyze, :, :]
+        assert movie.shape[1] == n_top_z_to_analyze
+        z = n_top_z_to_analyze
+
+    '''
+    anat_baseline = movie.mean(axis=0)
+    baseline_fig, baseline_axs = plt.subplots(1, z, squeeze=False)
+    for d in range(z):
+        ax = baseline_axs[0, d]
+
+        ax.imshow(anat_baseline[d], vmin=0, vmax=9000)
+        ax.set_axis_off()
+        """
+        print(anat_baseline[d].min())
+        print(anat_baseline[d].mean())
+        print(anat_baseline[d].max())
+        print()
+        """
+    suptitle('average of whole movie', baseline_fig)
+    exp_savefig(baseline_fig, 'avg')
+    '''
+
+    for i, o in enumerate(odor_order):
+
+        # TODO either:
+        # - always use 2 digits (leading 0)
+        # - pick # of digits from len(odor_order)
+        plot_desc = f'{i + 1}_{o}'
+
+        def dff_imshow(ax, dff_img):
+            im = ax.imshow(dff_img, vmin=dff_vmin, vmax=dff_vmax)
+
+            # TODO TODO figure out how do what this does EXCEPT i want to leave the
+            # xlabel / ylabel (just each single str)
+            ax.set_axis_off()
+
+            # part but not all of what i want above
+            #ax.set_xticklabels([])
+            #ax.set_yticklabels([])
+
+            return im
+
+        trial_heatmap_fig, trial_heatmap_axs = plt.subplots(nrows=n_repeats,
+            ncols=z, squeeze=False
+        )
+
+        # Will be of shape (1, z), since squeeze=False
+        mean_heatmap_fig, mean_heatmap_axs = plt.subplots(ncols=z, squeeze=False)
+
+        trial_mean_dffs = []
+
+        for n in range(n_repeats):
+            # This works because the repeats of any particular odor were all
+            # consecutive in all of these experiments.
+            presentation_index = (i * n_repeats) + n
+
+            start_frame, first_odor_frame, end_frame = bounding_frames[
+                presentation_index
+            ]
+
+            # TODO delete
+            '''
+            if min(movie.shape) > 1 and i == (len(odor_order) - 1) and n == 0:
+                plt.close('all')
+
+                # TODO maybe set off two volumes being compared
+                avmin = movie.min()
+                avmax = movie.max()
+
+                # this is two frames before first_odor_frame
+                # i.e. np.array_equal(movie[start_frame:(first_odor_frame + 1)][-1],
+                # fof) == True
+                curr_baseline_last_vol = movie[start_frame:(first_odor_frame - 1)][-1]
+                viz.image_grid(curr_baseline_last_vol, vmin=avmin, vmax=avmax)
+                plt.suptitle('current last baseline frame')
+
+                fbof = movie[first_odor_frame - 1]
+                viz.image_grid(fbof)
+                plt.suptitle('frame before odor')
+
+                fof = movie[first_odor_frame]
+                viz.image_grid(fof)
+                plt.suptitle('first odor frame')
+
+                plt.show()
+                import ipdb; ipdb.set_trace()
+                return
+            '''
+            #
+
+            # NOTE: was previously skipping the frame right before the odor frame
+            # too, but I think this was mainly out of fear the assignment of the
+            # first odor frame might have been off by one, but I haven't really
+            # seen examples of this, after looking through a lot of examples.
+            # Possible examples where the frame before first_odor_frame also has
+            # some response (looking at first repeat of last odor pair in
+            # volumetric stuff only):
+            # - 2021-03-08/1/acetone_and_butanal
+            # - 2021-03-08/1/acetone_and_butanal_redo
+            # - 2021-03-08/1/1hexanol_and_ethyl_hexanoate
+            # - 2021-04-28/1/butanal_and_acetone
+            # (and didn't check stuff past that for the moment)
+            # conclusion: need to keep ignoring the last frame until i can fix this
+            # issue
+            baseline = movie[start_frame:(first_odor_frame - 1)].mean(axis=0)
+            #baseline = movie[start_frame:first_odor_frame].mean(axis=0)
+
+            '''
+            print('baseline.min():', baseline.min())
+            print('baseline.mean():', baseline.mean())
+            print('baseline.max():', baseline.max())
+            '''
+            # hack to make df/f values more reasonable
+            # TODO still an issue?
+            # TODO TODO maybe just add like 1e4 or something?
+            #baseline = baseline + 10.
+
+            # TODO TODO why is baseline.max() always the same???
+            # (is it still?)
+
+            dff = (movie[first_odor_frame:end_frame] - baseline) / baseline
+
+            # TODO TODO change to using seconds and rounding to nearest[higher/lower
+            # multiple?] from there
+            #response_volumes = 1
+            response_volumes = 2
+
+            # TODO off by one at start? (still relevant?)
+            mean_dff = dff[:response_volumes].mean(axis=0)
+
+            trial_mean_dffs.append(mean_dff)
+
+            '''
+            max_dff = dff.max(axis=0)
+            print(max_dff.min())
+            print(max_dff.mean())
+            print(max_dff.max())
+            print()
+            '''
+
+            # TODO factor to hong2p.thor
+            # TODO actually possible for it to be non-int in Experiment.xml?
+            zstep_um = int(round(float(xml.find('ZStage').attrib['stepSizeUM'])))
+            #
+
+            for d in range(z):
+                ax = trial_heatmap_axs[n, d]
+
+                # TODO offset to left so it doesn't overlap and re-enable
+                if d == 0:
+                    # won't work until i fix set_axis_off thing in dff_imshow above
+                    ax.set_ylabel(f'Trial {n + 1}', fontsize=ax_fontsize,
+                        rotation='horizontal'
+                    )
+
+                if n == 0 and z > 1:
+                    curr_z = -zstep_um * d
+                    ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
+
+                im = dff_imshow(ax, mean_dff[d])
+
+        # (end loop over repeats of one odor)
+
+        # TODO TODO see link in hong2p.viz.image_grid for ways to eliminate
+        # whitespace + refactor some of this into that viz module
+        hspace = 0
+        wspace = 0.014
+
+        trial_heatmap_fig.subplots_adjust(hspace=hspace, wspace=wspace)
+
+        viz.add_colorbar(trial_heatmap_fig, im)
+
+        suptitle(o, trial_heatmap_fig)
+        close = i < len(odor_order) - 1
+        # TODO need to make sure figures from earlier iterations are closed
+        exp_savefig(trial_heatmap_fig, plot_desc + '_trials', close=close)
+
+        avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
+
+        # TODO replace LHS of "and" w/ volumetric only flag if i add one
+        if min(movie.shape) > 1 and i == (len(odor_order) - 1):
+            # TODO factor out + check this is consistent w/ write_tiff. might wanna
+            # just modify write_tiff so i can specify it's missing the T not Z
+            # dimension (to the extent it matters...), which the docstring currently
+            # says it doesn't support (or just explictly add singleton dimension
+            # before, in here?)
+            avg_mean_dff_tiff = join(analysis_dir, 'lastpair_avg_mean_dff.tif')
+
+            # This expand_dims operation doesn't seem to have added a label to
+            # slider in FIJI, but maybe FIJI still cares, and maybe the ROI manager
+            # will generate labels differently? As long as I can load the ROIs w/
+            # the metadata I need it shouldn't matter...
+            avg_dff_for_tiff = np.expand_dims(avg_mean_dff, axis=0
+                ).astype(np.float32)
+
+            util.write_tiff(avg_mean_dff_tiff, avg_dff_for_tiff, strict_dtype=False)
+
+            # TODO put all ijroi stuff behind a flag like do_suite2p
+
+            # TODO TODO auto open this roi in imagej (and maybe also open roi
+            # manager), for labelling (unless ROI file exists)
+            # TODO maybe also a flag to load each with existing ROI files (if
+            # exists), for checking / modification
+
+            # TODO compare tiff data to matplotlib plots that should have same data,
+            # just for sanity checking that my tiff writing is working correctly
+
+            # TODO TODO load <analysis_dir>/RoiSet.zip if exists and use as fn
+            # that processes suite2p output if exists
+            # TODO maybe refactor that fn to separate plotting from suite2p/ijroi
+            # data source?
+            '''
+            ijroiset_filename = join(analysis_dir, 'RoiSet.zip')
+            #print('ijrois:', ijroiset_filename)
+
+            # TODO refactor all this ijroi loading / mask creation [+ probably trace
+            # extraction too]
+            name_and_roi_list = ijroi.read_roi_zip(ijroiset_filename)
+
+            masks = util.ijrois2masks(name_and_roi_list, movie.shape[-3:],
+                as_xarray=True
+            )
+
+            # TODO also try merging via correlation/overlap thresholds?
+            masks = util.merge_ijroi_masks(masks, check_no_overlap=True)
+
+            # TODO TODO merge w/ bool masks converted from suite2p ROIS,
+            # extract traces for all, and make plots derived from traces, as
+            # suite2p_trace_plots currently has
+            # TODO TODO perhaps also option to just analyze masks from ijrois and
+            # not merge w/ suite2p stuff?
+
+            #import ipdb; ipdb.set_trace()
+            '''
+
+        # TODO refactor this or at least the labelling portion within
+        for d in range(z):
+            ax = mean_heatmap_axs[0, d]
+
+            #if d == 0:
+            #    ax.set_ylabel(f'Mean of {n_repeats} trials', fontsize=ax_fontsize,
+            #        rotation='horizontal'
+            #    )
+
+            if z > 1:
+                curr_z = -zstep_um * d
+                ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
+
+            im = dff_imshow(ax, avg_mean_dff[d])
+        #
+
+        mean_heatmap_fig.subplots_adjust(wspace=wspace)
+        viz.add_colorbar(mean_heatmap_fig, im)
+
+        suptitle(o, mean_heatmap_fig)
+        exp_savefig(mean_heatmap_fig, plot_desc)
+
+    plt.close('all')
+
+    exp_total_s = time.time() - exp_start
+    exp_processing_time_data.append((load_hdf5_s, read_movie_s, exp_total_s))
+
+    print()
+
+    #if quick_test_only:
+    #    break
+
+
 def main():
+    global names2final_concs
+    global seen_stimulus_yamls2thorimage_dirs
+    global names_and_concs2analysis_dirs
+
     parser = argparse.ArgumentParser()
+    parser.add_argument('-j', '--no-parallel', action='store_true',
+        help='Disables parallel calls to process_experiment. '
+        'Useful for debugging internals of that function.'
+    )
     parser.add_argument('-t', '--test', action='store_true',
         help='only *complete* main loop 1 time, for faster testing'
     )
     args = parser.parse_args()
 
     quick_test_only = args.test
+    parallel = not args.no_parallel
 
-    # TODO try to make this more granular, so the suite2p / non-suite2p analysis can be
-    # skipped separately (latter should be generated on first run, but former will at
-    # least require some manual steps [and the initial automated suite2p run may also
-    # fail])
-    # TODO TODO also make more granular in the sense that we don't necessarily want to
-    # run suite2p on glomerli diagnostics stuff, etc
-    # TODO TODO probably make trial (+ avg across trial) dff image plots in their own
-    # directory, so it's easier to just check if that directory exists
-    # (or maybe check if any svg are in exp dir root? maybe assume plots are made if we
-    # have a suite2p directory?)
-    skip_if_experiment_plot_dir_exists = False
+    del parser, args
 
-    # TODO TODO probably make another category or two for data marked as failed (in the
-    # breakdown of data by pairs * concs at the end)
-    retry_previously_failed = False
+    # TODO is there currently anything preventing suite2p_trace_plots from trying to run
+    # on non-pair stuff apart from the fact that i haven't labeled outputs of the auto
+    # suite2p runs that may or may not have happened on them?
+    # (if not, probably add such logic)
 
-    # Whether to only analyze experiments sampling 2 odors at all pairwise
-    # concentrations (the main type of experiment for this project)
-    analyze_pairgrids_only = True
-
-    # If there are multiple experiments with the same odors, only the data from the most
-    # recent concentrations for those odors will be analyzed.
-    final_concentrations_only = True
-
-    analyze_reverse_order = False
-
-    # Will be set False if analyze_pairgrids_only=True
-    analyze_glomeruli_diagnostics = False
-
-    # Whether to analyze any single plane data that is found under the enumerated
-    # directories.
-    analyze_2d_tests = False
-
-    non_suite2p_analysis = True
-    ignore_existing_nonsuite2p_outputs = False
-
-    # Whether to run the suite2p pipeline (generates outputs among raw data, in
-    # 'suite2p' subdirectories)
-    do_suite2p = True
-
-    # Will just skip if already exists if False
-    overwrite_suite2p = False
-
-    analyze_suite2p_outputs = True
-    # TODO TODO add flags to only analyze stuff considered "done" in breakdown at end
-    # (and probably also that has some merges at least)
-
-    # Since some of the pilot experiments had 6 planes (but top 5 should be the
-    # same as in experiments w/ only 5 total), and that last plane largely doesn't
-    # have anything measurably happening. All steps should have been 12um, so picking
-    # top n will yield a consistent total height of the volume.
-    n_top_z_to_analyze = 5
-
-    ignore_bounding_frame_cache = False
-
-    # TODO shorten any remaining absolute paths if this is True, so we can diff outputs
-    # across installs w/ data in diff paths
-    print_full_paths = False
-
-    dff_vmin = 0
-    dff_vmax = 3.0
-
-    ax_fontsize = 7
-
-    if analyze_pairgrids_only:
-        analyze_glomeruli_diagnostics = False
-
-    # TODO TODO TODO skip all data that doesn't have final concentrations of ethyl
-    # hexanoate (i went down) (and in general do this for anything where concentration
-    # changed)
+    # TODO TODO TODO note that 2021-07-(21,27,28) contain reverse-order experiments.
+    # indicate this fact in the plots for these experiments!!!
 
     # TODO skip just the butanal and acetone experiment here, which seems bad
     #('2021-05-05', 1),
@@ -976,6 +1634,7 @@ def main():
     # Using this in addition to ignore_prepairing in call below, because that changes
     # the directories considered for Thor[Image/Sync] pairing, and would cause that
     # process to fail in some of these cases.
+    # TODO TODO TODO recheck all of these
     bad_thorimage_dirs = [
         # skipping for now just because responses in df/f images seem weak. compare to
         # others tho.
@@ -998,565 +1657,68 @@ def main():
         #'2021-07-21/TODO',
 
     ]
-
-    bad_suite2p_analysis_dirs = [
-        # skipping for now cause suite2p output looks weird (for both recordings)
-        '2021-03-07/2',
-
-        # Just a few glomeruli visible in (at least the last odor) trials
-        '2021-05-24/1/1oct3ol_and_2h',
-
-        # TODO TODO revisit this one
-        '2021-05-24/2/ea_and_etb',
-
-        # TODO why?
-        # eb_and_ea recording looks bad (mainly just one glomerulus? lots of stuff seems
-        # to come in 4s at times rather than 3s [well really just one group of 4], and
-        # generally not much signal)
-        '2021-05-25/1/eb_and_ea',
-
-        # TODO TODO TODO add other stuff that was bad
-    ]
-    # TODO refactor so this is not necessary if possible
-    # This will get populated w/ full paths matching path fragments in variable above,
-    # to filter out these paths in printing out status of suite2p analyses at the end.
-    full_bad_suite2p_analysis_dirs = []
-
-    # TODO maybe factor this to / use existing stuff in hong2p in place of this
-    os.makedirs(analysis_intermediates_root, exist_ok=True)
-
     common_paired_thor_dirs_kwargs = dict(
         start_date='2021-03-07', ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
     )
 
-    if final_concentrations_only:
-        names2final_concs = odor_names2final_concs(**common_paired_thor_dirs_kwargs)
-
-    # TODO is there currently anything preventing suite2p_trace_plots from trying to run
-    # on non-pair stuff apart from the fact that i haven't labeled outputs of the auto
-    # suite2p runs that may or may not have happened on them?
-    # (if not, probably add such logic)
-
-    experiment_plot_dirs = []
-    experiment_analysis_dirs = []
-
-    # TODO TODO TODO note that 2021-07-(21,27,28) contain reverse-order experiments.
-    # indicate this fact in the plots for these experiments!!!
+    names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
+        odor_names2final_concs(**common_paired_thor_dirs_kwargs)
 
     keys_and_paired_dirs = util.paired_thor_dirs(verbose=True, print_skips=False,
         print_fast=False, print_full_paths=print_full_paths,
         **common_paired_thor_dirs_kwargs
     )
+    del common_paired_thor_dirs_kwargs
+
+    # TODO maybe factor this to / use existing stuff in hong2p in place of this
+    os.makedirs(analysis_intermediates_root, exist_ok=True)
 
     main_start_s = time.time()
-    exp_processing_time_data = []
 
-    names_and_concs2analysis_dirs = defaultdict(list)
-    failed_assigning_frames_to_odors = []
-
-    seen_stimulus_yamls2thorimage_dirs = defaultdict(list)
-
-    for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
-
-        if 'glomeruli' in thorimage_dir and 'diag' in thorimage_dir:
-            if not analyze_glomeruli_diagnostics:
-                print('skipping because experiment is just glomeruli diagnostics\n')
-                continue
-
-            is_glomeruli_diagnostics = True
-        else:
-            is_glomeruli_diagnostics = False
-
-        analysis_dir = get_analysis_dir(date, fly_num, split(thorimage_dir)[1])
-        os.makedirs(analysis_dir, exist_ok=True)
-        experiment_analysis_dirs.append(analysis_dir)
-
-        if retry_previously_failed:
-            clear_fail_indicators(analysis_dir)
-        else:
-            has_failed, suffixes_str = last_fail_suffixes(analysis_dir)
-            if has_failed:
-                print(f'skipping because previously failed {suffixes_str}\n')
-                continue
-
-        exp_start = time.time()
-
-        single_plane_fps, xy, z, c, n_flyback, _, xml = thor.load_thorimage_metadata(
-            thorimage_dir, return_xml=True
-        )
-
-        if not analyze_2d_tests and z == 1:
-            print('skipping because experiment is single plane\n')
-            continue
-
-        experiment_id = shorten_path(thorimage_dir)
-        experiment_basedir = util.to_filename(experiment_id, period=False)
-
-        # Created below after we decide whether to skip a given experiment based on the
-        # experiment type, etc.
-        # TODO rename to experiment_plot_dir or something
-        plot_dir = join(PLOT_FMT, experiment_basedir)
-
-        # TODO refactor scandir thing to not_empty or something
-        if (skip_if_experiment_plot_dir_exists and exists(plot_dir)
-            and any(os.scandir(plot_dir))):
-
-            print(f'skipping because {plot_dir} exists\n')
-            continue
-
-        def suptitle(title, fig=None):
-            if fig is None:
-                fig = plt.gcf()
-
-            fig.suptitle(f'{experiment_id}\n{title}')
-
-        def exp_savefig(fig, desc, **kwargs):
-            savefig(fig, plot_dir, desc, **kwargs)
-
-        if SAVE_FIGS:
-            os.makedirs(plot_dir, exist_ok=True)
-
-            # (to remove empty directories at end)
-            experiment_plot_dirs.append(plot_dir)
-
-        yaml_path, yaml_data, odor_lists = thorimage_xml2yaml_info_and_odor_lists(xml)
-        print('yaml_path:', shorten_path(yaml_path, n_parts=2))
-
-        # TODO also exclude stuff where stimuli were not pairs. maybe just try/except
-        # the code extracting stimulus info in here? or separate fn, run first, to
-        # detect *if* we are dealing w/ pair-grid data?
-        if not is_glomeruli_diagnostics:
-            # So that we can count how many flies we have for each odor pair (and
-            # concentration range, in case we varied that at one point)
-            names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
-
-            if final_concentrations_only:
-                names, curr_concs = separate_names_and_concs_tuples(
-                    names_and_concs_tuple
-                )
-
-                if (names in names2final_concs and
-                    names2final_concs[names] != curr_concs):
-
-                    print('skipping because not using final concentrations for '
-                        f'{names}\n'
-                    )
-                    continue
-
-        pulse_s = float(int(yaml_data['settings']['timing']['pulse_us']) / 1e6)
-        if pulse_s < 3:
-            print(f'skipping because odor pulses were {pulse_s} (<3s) long (old)\n')
-            continue
-
-        if is_pairgrid(odor_lists):
-            if not analyze_reverse_order and is_reverse_order(odor_lists):
-                print('skipping because a reverse order experiment\n')
-                continue
-        else:
-            if analyze_pairgrids_only:
-                print('skipping because not a pair grid experiment\n')
-                continue
-
-        if yaml_path in seen_stimulus_yamls2thorimage_dirs:
-            short_yaml_path = shorten_path(yaml_path, n_parts=2)
-            raise ValueError(f'stimulus yaml {short_yaml_path} already seen in:\n'
-                f'{seen_stimulus_yamls2thorimage_dirs[yaml_path][0]}/Experiment.xml'
-            )
-        seen_stimulus_yamls2thorimage_dirs[yaml_path].append(thorimage_dir)
-
-        if not is_glomeruli_diagnostics:
-            names_and_concs2analysis_dirs[names_and_concs_tuple].append(analysis_dir)
-
-        # NOTE: converting to list-of-str FIRST, so that each element will be
-        # hashable, and thus can be counted inside `remove_consecutive_repeats`
-        odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
-        odor_order, n_repeats = remove_consecutive_repeats(odor_order_with_repeats)
-
-        # TODO use that list comprehension way of one lining this? equiv for sets?
-        name_lists = [[o['name'] for o in os] for os in odor_lists]
-        for ns in name_lists:
-            for n in ns:
-                if n not in odor2abbrev:
-                    odors_without_abbrev.add(n)
-        del name_lists
-
-        before = time.time()
-
-        bounding_frame_yaml_cache = join(analysis_dir, 'trial_bounding_frames.yaml')
-
-        if ignore_bounding_frame_cache or not exists(bounding_frame_yaml_cache):
-            # TODO TODO don't bother doing this if we only have suite2p analysis left to
-            # do, and the required output directory doesn't exist / ROIs haven't been
-            # manually filtered / etc
-            try:
-                bounding_frames = thor.assign_frames_to_odor_presentations(thorsync_dir,
-                    thorimage_dir
-                )
-                assert len(bounding_frames) == len(odor_order_with_repeats)
-
-                # TODO TODO move inside assign_frames_to_odor_presentations
-                # Converting numpy int types to python int types, and tuples to lists,
-                # for (much) nicer YAML output.
-                bounding_frames = [ [int(x) for x in xs] for xs in bounding_frames]
-
-                # TODO use yaml instead. save under analysis_dir
-                with open(bounding_frame_yaml_cache, 'w') as f:
-                    yaml.dump(bounding_frames, f)
-
-            # Currently seems to reliably happen iff we somehow accidentally also image
-            # with the red channel (which was allowed despite those channels having gain
-            # 0 in the few cases so far)
-            except AssertionError as err:
-                traceback.print_exc()
-                print()
-
-                failed_assigning_frames_to_odors.append(thorimage_dir)
-
-                make_fail_indicator_file(analysis_dir, 'assign_frames', err)
-
-                continue
-
-        else:
-            with open(bounding_frame_yaml_cache, 'r') as f:
-                bounding_frames = yaml.safe_load(f)
-
-        # (loading the HDF5 should be the main time cost in the above fn)
-        load_hdf5_s = time.time() - before
-
-        if do_suite2p:
-            run_suite2p(thorimage_dir, analysis_dir, overwrite=overwrite_suite2p)
-
-        if analyze_suite2p_outputs:
-            if not any([b in thorimage_dir for b in bad_suite2p_analysis_dirs]):
-                suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists,
-                    plot_dir=plot_dir
-                )
-            else:
-                full_bad_suite2p_analysis_dirs.append(analysis_dir)
-                print('not making suite2p plots because outputs marked bad\n')
-
-        if not non_suite2p_analysis:
-            print()
-
-            if quick_test_only:
-                break
-
-            continue
-
-        if not ignore_existing_nonsuite2p_outputs:
-            # Assuming that if analysis_dir has *any* plots directly inside of it, it
-            # has all of what we want from non_suite2p_analysis (including any
-            # intermediates that would go in analysis_dir).
-            # Set ignore_existing_nonsuite2p_outputs=False to do this analysis
-            # regardless, regenerating any overlapping plots.
-            if len(glob.glob(join(plot_dir, f'*.{PLOT_FMT}'))) > 0:
-                print('skipping non-suite2p analysis because plot dir contains '
-                    f'{PLOT_FMT}\n'
-                )
-
-                if quick_test_only:
-                    break
-
-                continue
-
-        before = time.time()
-
-        movie = thor.read_movie(thorimage_dir)
-
-        read_movie_s = time.time() - before
-
-        # TODO TODO maybe make a plot like this, but use the actual frame times
-        # (via thor.get_frame_times) + actual odor onset / offset times, and see if
-        # that lines up any better?
-        '''
-        avg = util.full_frame_avg_trace(movie)
-        ffavg_fig, ffavg_ax = plt.subplots()
-        ffavg_ax.plot(avg)
-        for _, first_odor_frame, _ in bounding_frames:
-            # TODO need to specify ymin/ymax to existing ymin/ymax?
-            ffavg_ax.axvline(first_odor_frame)
-
-        ffavg_ax.set_xlabel('Frame Number')
-        exp_savefig(ffavg_fig, 'ffavg')
-        #plt.show()
-        '''
-
-        if z > n_top_z_to_analyze:
-            warnings.warn(f'{thorimage_dir}: only analyzing top {n_top_z_to_analyze} '
-                'slices'
-            )
-            movie = movie[:, :n_top_z_to_analyze, :, :]
-            assert movie.shape[1] == n_top_z_to_analyze
-            z = n_top_z_to_analyze
-
-        '''
-        anat_baseline = movie.mean(axis=0)
-        baseline_fig, baseline_axs = plt.subplots(1, z, squeeze=False)
-        for d in range(z):
-            ax = baseline_axs[0, d]
-
-            ax.imshow(anat_baseline[d], vmin=0, vmax=9000)
-            ax.set_axis_off()
-            """
-            print(anat_baseline[d].min())
-            print(anat_baseline[d].mean())
-            print(anat_baseline[d].max())
-            print()
-            """
-        suptitle('average of whole movie', baseline_fig)
-        exp_savefig(baseline_fig, 'avg')
-        '''
-
-        for i, o in enumerate(odor_order):
-
-            # TODO either:
-            # - always use 2 digits (leading 0)
-            # - pick # of digits from len(odor_order)
-            plot_desc = f'{i + 1}_{o}'
-
-            def dff_imshow(ax, dff_img):
-                im = ax.imshow(dff_img, vmin=dff_vmin, vmax=dff_vmax)
-
-                # TODO TODO figure out how do what this does EXCEPT i want to leave the
-                # xlabel / ylabel (just each single str)
-                ax.set_axis_off()
-
-                # part but not all of what i want above
-                #ax.set_xticklabels([])
-                #ax.set_yticklabels([])
-
-                return im
-
-            trial_heatmap_fig, trial_heatmap_axs = plt.subplots(nrows=n_repeats,
-                ncols=z, squeeze=False
-            )
-
-            # Will be of shape (1, z), since squeeze=False
-            mean_heatmap_fig, mean_heatmap_axs = plt.subplots(ncols=z, squeeze=False)
-
-            trial_mean_dffs = []
-
-            for n in range(n_repeats):
-                # This works because the repeats of any particular odor were all
-                # consecutive in all of these experiments.
-                presentation_index = (i * n_repeats) + n
-
-                start_frame, first_odor_frame, end_frame = bounding_frames[
-                    presentation_index
-                ]
-
-                # TODO delete
-                '''
-                if min(movie.shape) > 1 and i == (len(odor_order) - 1) and n == 0:
-                    plt.close('all')
-
-                    # TODO maybe set off two volumes being compared
-                    avmin = movie.min()
-                    avmax = movie.max()
-
-                    # this is two frames before first_odor_frame
-                    # i.e. np.array_equal(movie[start_frame:(first_odor_frame + 1)][-1],
-                    # fof) == True
-                    curr_baseline_last_vol = movie[start_frame:(first_odor_frame - 1)][-1]
-                    viz.image_grid(curr_baseline_last_vol, vmin=avmin, vmax=avmax)
-                    plt.suptitle('current last baseline frame')
-
-                    fbof = movie[first_odor_frame - 1]
-                    viz.image_grid(fbof)
-                    plt.suptitle('frame before odor')
-
-                    fof = movie[first_odor_frame]
-                    viz.image_grid(fof)
-                    plt.suptitle('first odor frame')
-
-                    plt.show()
-                    import ipdb; ipdb.set_trace()
-                    continue
-                '''
-                #
-
-                # NOTE: was previously skipping the frame right before the odor frame
-                # too, but I think this was mainly out of fear the assignment of the
-                # first odor frame might have been off by one, but I haven't really
-                # seen examples of this, after looking through a lot of examples.
-                # Possible examples where the frame before first_odor_frame also has
-                # some response (looking at first repeat of last odor pair in
-                # volumetric stuff only):
-                # - 2021-03-08/1/acetone_and_butanal
-                # - 2021-03-08/1/acetone_and_butanal_redo
-                # - 2021-03-08/1/1hexanol_and_ethyl_hexanoate
-                # - 2021-04-28/1/butanal_and_acetone
-                # (and didn't check stuff past that for the moment)
-                # conclusion: need to keep ignoring the last frame until i can fix this
-                # issue
-                baseline = movie[start_frame:(first_odor_frame - 1)].mean(axis=0)
-                #baseline = movie[start_frame:first_odor_frame].mean(axis=0)
-
-                '''
-                print('baseline.min():', baseline.min())
-                print('baseline.mean():', baseline.mean())
-                print('baseline.max():', baseline.max())
-                '''
-                # hack to make df/f values more reasonable
-                # TODO still an issue?
-                # TODO TODO maybe just add like 1e4 or something?
-                #baseline = baseline + 10.
-
-                # TODO TODO why is baseline.max() always the same???
-                # (is it still?)
-
-                dff = (movie[first_odor_frame:end_frame] - baseline) / baseline
-
-                # TODO TODO change to using seconds and rounding to nearest[higher/lower
-                # multiple?] from there
-                #response_volumes = 1
-                response_volumes = 2
-
-                # TODO off by one at start? (still relevant?)
-                mean_dff = dff[:response_volumes].mean(axis=0)
-
-                trial_mean_dffs.append(mean_dff)
-
-                '''
-                max_dff = dff.max(axis=0)
-                print(max_dff.min())
-                print(max_dff.mean())
-                print(max_dff.max())
-                print()
-                '''
-
-                # TODO factor to hong2p.thor
-                # TODO actually possible for it to be non-int in Experiment.xml?
-                zstep_um = int(round(float(xml.find('ZStage').attrib['stepSizeUM'])))
-                #
-
-                for d in range(z):
-                    ax = trial_heatmap_axs[n, d]
-
-                    # TODO offset to left so it doesn't overlap and re-enable
-                    if d == 0:
-                        # won't work until i fix set_axis_off thing in dff_imshow above
-                        ax.set_ylabel(f'Trial {n + 1}', fontsize=ax_fontsize,
-                            rotation='horizontal'
-                        )
-
-                    if n == 0 and z > 1:
-                        curr_z = -zstep_um * d
-                        ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
-
-                    im = dff_imshow(ax, mean_dff[d])
-
-            # (end loop over repeats of one odor)
-
-            # TODO TODO see link in hong2p.viz.image_grid for ways to eliminate
-            # whitespace + refactor some of this into that viz module
-            hspace = 0
-            wspace = 0.014
-
-            trial_heatmap_fig.subplots_adjust(hspace=hspace, wspace=wspace)
-
-            viz.add_colorbar(trial_heatmap_fig, im)
-
-            suptitle(o, trial_heatmap_fig)
-            close = i < len(odor_order) - 1
-            # TODO need to make sure figures from earlier iterations are closed
-            exp_savefig(trial_heatmap_fig, plot_desc + '_trials', close=close)
-
-            avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
-
-            # TODO replace LHS of "and" w/ volumetric only flag if i add one
-            if min(movie.shape) > 1 and i == (len(odor_order) - 1):
-                # TODO factor out + check this is consistent w/ write_tiff. might wanna
-                # just modify write_tiff so i can specify it's missing the T not Z
-                # dimension (to the extent it matters...), which the docstring currently
-                # says it doesn't support (or just explictly add singleton dimension
-                # before, in here?)
-                avg_mean_dff_tiff = join(analysis_dir, 'lastpair_avg_mean_dff.tif')
-
-                # This expand_dims operation doesn't seem to have added a label to
-                # slider in FIJI, but maybe FIJI still cares, and maybe the ROI manager
-                # will generate labels differently? As long as I can load the ROIs w/
-                # the metadata I need it shouldn't matter...
-                avg_dff_for_tiff = np.expand_dims(avg_mean_dff, axis=0
-                    ).astype(np.float32)
-
-                util.write_tiff(avg_mean_dff_tiff, avg_dff_for_tiff, strict_dtype=False)
-
-                # TODO put all ijroi stuff behind a flag like do_suite2p
-
-                # TODO TODO auto open this roi in imagej (and maybe also open roi
-                # manager), for labelling (unless ROI file exists)
-                # TODO maybe also a flag to load each with existing ROI files (if
-                # exists), for checking / modification
-
-                # TODO compare tiff data to matplotlib plots that should have same data,
-                # just for sanity checking that my tiff writing is working correctly
-
-                # TODO TODO load <analysis_dir>/RoiSet.zip if exists and use as fn
-                # that processes suite2p output if exists
-                # TODO maybe refactor that fn to separate plotting from suite2p/ijroi
-                # data source?
-                '''
-                ijroiset_filename = join(analysis_dir, 'RoiSet.zip')
-                #print('ijrois:', ijroiset_filename)
-
-                # TODO refactor all this ijroi loading / mask creation [+ probably trace
-                # extraction too]
-                name_and_roi_list = ijroi.read_roi_zip(ijroiset_filename)
-
-                masks = util.ijrois2masks(name_and_roi_list, movie.shape[-3:],
-                    as_xarray=True
-                )
-
-                # TODO also try merging via correlation/overlap thresholds?
-                masks = util.merge_ijroi_masks(masks, check_no_overlap=True)
-
-                # TODO TODO merge w/ bool masks converted from suite2p ROIS,
-                # extract traces for all, and make plots derived from traces, as
-                # suite2p_trace_plots currently has
-                # TODO TODO perhaps also option to just analyze masks from ijrois and
-                # not merge w/ suite2p stuff?
-
-                #import ipdb; ipdb.set_trace()
-                '''
-
-            # TODO refactor this or at least the labelling portion within
-            for d in range(z):
-                ax = mean_heatmap_axs[0, d]
-
-                #if d == 0:
-                #    ax.set_ylabel(f'Mean of {n_repeats} trials', fontsize=ax_fontsize,
-                #        rotation='horizontal'
-                #    )
-
-                if z > 1:
-                    curr_z = -zstep_um * d
-                    ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
-
-                im = dff_imshow(ax, avg_mean_dff[d])
-            #
-
-            mean_heatmap_fig.subplots_adjust(wspace=wspace)
-            viz.add_colorbar(mean_heatmap_fig, im)
-
-            suptitle(o, mean_heatmap_fig)
-            exp_savefig(mean_heatmap_fig, plot_desc)
-
-        plt.close('all')
-
-        exp_total_s = time.time() - exp_start
-        exp_processing_time_data.append((load_hdf5_s, read_movie_s, exp_total_s))
-
-        print()
-
-        if quick_test_only:
-            break
-
+    if not parallel:
+        # `list` call is just so `starmap` actually evaluates the fn on its input.
+        # `starmap` just returns a generator otherwise.
+        list(starmap(process_experiment, keys_and_paired_dirs))
+
+    else:
+        with mp.Manager() as manager:
+            print(f'Processing experiments with {os.cpu_count()} workers')
+
+            # TODO maybe define as context manager where __enter__ returns (yields,
+            # actually, right?) this + __exit__ casts back to orig types and puts those
+            # values in globals()
+            # TODO possible to have a manager.<type> object under __globals__, or too
+            # risky? to avoid need to pass extra
+            shared_state = multiprocessing_namespace_from_globals(manager)
+
+            # TODO no way to instantiate new empty manager.lists() as values inside a
+            # worker, is there? could remove some of the complexity i added if that were
+            # the case. didn't initially seem so...
+            _names_and_concs2analysis_dirs = manager.dict()
+            for ns_and_cs in names_and_concs_tuples:
+                _names_and_concs2analysis_dirs[ns_and_cs] = manager.list()
+
+            shared_state['names_and_concs2analysis_dirs'] = \
+                _names_and_concs2analysis_dirs
+
+            with manager.Pool() as pool:
+                pool.starmap(process_experiment, [
+                    x + (shared_state,) for x in keys_and_paired_dirs
+                ])
+
+            multiprocessing_namespace_to_globals(shared_state)
+
+            names_and_concs2analysis_dirs = {
+                k: ds for k, ds in names_and_concs2analysis_dirs.items() if len(ds) > 0
+            }
+
+    total_s = time.time() - main_start_s
 
     def earliest_analysis_dir_date(analysis_dirs):
         return min(d.split(os.sep)[-3] for d in analysis_dirs)
 
-    # TODO exclude non-pairgrid stuff from here
+    # TODO exclude non-pairgrid stuff from here (might already be by virtue of what is
+    # added to `names_and_concs2analysis_dirs` ...)
     print('\nOdor pair counts for all data considered (including stuff where suite2p '
         'plots not generated for various reasons):'
     )
@@ -1629,7 +1791,6 @@ def main():
     # TODO also check that all loaded data is using same stimulus program
     # (already skipping stuff with odor pulse < 3s tho)
 
-    total_s = time.time() - main_start_s
     print(f'Took {total_s:.0f}s\n')
 
     # TODO probably just remove any empty directories [matching pattern?] at same level?
@@ -1648,7 +1809,7 @@ def main():
         if not print_full_paths:
             paths = [shorten_path(p) for p in paths]
 
-        pprint(paths)
+        pprint(sorted(paths))
 
 
     def print_nonempty_path_list(name, paths, alt_msg=None):
