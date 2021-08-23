@@ -15,6 +15,8 @@ from pathlib import Path
 import glob
 from itertools import starmap
 import multiprocessing as mp
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 
 import numpy as np
 import pandas as pd
@@ -1065,6 +1067,28 @@ def multiprocessing_namespace_to_globals(shared_state):
     })
 
 
+# NOTE: can't use with multiprocessing since pickle (what it uses to serialize) can't
+# handle closures / things like this
+def capture_stdout_and_stderr(fn):
+    """Calls `fn`, returns (<args>, <captured output>, <fn return value>)
+    """
+    def fn_captured(*args, **kwargs):
+        f = StringIO()
+        print('args:', args)
+        print('kwargs:', kwargs)
+        # TODO using same StringIO object for both work? if not, how else to have
+        # outputs interleaved as they would be normally?
+        with redirect_stdout(f), redirect_stderr(f):
+            ret = fn(*args, **kwargs)
+
+        print('stdout/stderr:')
+        print(f)
+        # TODO convert f to regular str here?
+        return args, f, ret
+
+    return fn_captured
+
+
 def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=None):
     """
     Args:
@@ -1072,6 +1096,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         shared_state (multiprocessing.managers.DictProxy): str global variable names ->
         other proxy objects
     """
+
+    # TODO since this is updating **globals** after all, try moving this to a wrapper fn
+    # (combine w/ output capture?) and remove shared_state kwarg here if it works the
+    # same (not possible as long as i'm using multiprocessing and not something like
+    # pathos, for same reason i couldn't use a wrapped process_experiment to capture
+    # stdout: can't serialize closures w/ pickle, which is what multiprocessing uses)
+    #
     # Only relevant if called via multiprocessing, where this is how we get access to
     # the proxies that will feed back to the corresponding global variables that get
     # modified under this function.
@@ -1701,10 +1732,19 @@ def main():
             shared_state['names_and_concs2analysis_dirs'] = \
                 _names_and_concs2analysis_dirs
 
+            # NOTE: multiprocessing can't pickle this function, but if i switched to
+            # using something like pathos, which uses dill instead of pickle to
+            # serialize (and can serialize closures, etc), it might work
+            # https://github.com/uqfoundation/pathos
+            # https://stackoverflow.com/questions/19984152
+            #worker_fn = capture_stdout_and_stderr(process_experiment)
+
             with manager.Pool() as pool:
-                pool.starmap(process_experiment, [
-                    x + (shared_state,) for x in keys_and_paired_dirs
-                ])
+                ret = pool.starmap(
+                    #worker_fn,
+                    process_experiment,
+                    [x + (shared_state,) for x in keys_and_paired_dirs]
+                )
 
             multiprocessing_namespace_to_globals(shared_state)
 
