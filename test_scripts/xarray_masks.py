@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-from os.path import join
+from os.path import join, split
 from pprint import pprint
+import glob
 
 import numpy as np
 import pandas as pd
@@ -15,8 +16,31 @@ from suite2p.io import compute_dydx
 
 
 def main():
-    thorimage_dir = '/home/tom/2p_data/raw_data/2021-05-05/1/ehex_and_1-6ol'
-    analysis_dir = thorimage_dir
+    #thorimage_dir = '/home/tom/2p_data/raw_data/2021-05-05/1/ehex_and_1-6ol'
+    #analysis_dir = thorimage_dir
+    thorimage_dir = '/mnt/d1/2p_data/raw_data/2021-04-28/1/butanal_and_acetone'
+    analysis_dir = thorimage_dir.replace('raw_data', 'analysis_intermediates')
+
+    #
+    '''
+    #roi_path = join(analysis_dir, '07171-00119-00079.roi')
+
+    for roi_path in glob.glob(join(analysis_dir, '*.roi')):
+
+        print('roi_path:', split(roi_path)[1])
+
+        with open(roi_path, 'rb') as f:
+            roi = ijroi.read_roi(f, points_only=False)
+
+        print(roi.name)
+        print(roi.c)
+        print(roi.z)
+        print(roi.t)
+        print()
+
+    import ipdb; ipdb.set_trace()
+    '''
+    #
 
     '''
     # default=True (inside load_s2p[_combined]_outputs)
@@ -59,16 +83,28 @@ def main():
     import ipdb; ipdb.set_trace()
     '''
 
-    roipath = join(thorimage_dir, 'ijrois/RoiSet.zip')
+    '''
+    roipath = join(analysis_dir, 'RoiSet.zip')
 
     movie = thor.read_movie(thorimage_dir)
 
-    name_and_roi_list = ijroi.read_roi_zip(roipath)
+    #name_and_roi_list = ijroi.read_roi_zip(roipath)
+    name_and_roi_list = ijroi.read_roi_zip(roipath, points_only=False)
+    #import ipdb; ipdb.set_trace()
 
     masks = util.ijrois2masks(name_and_roi_list, movie.shape[-3:],
         as_xarray=True
     )
+    import ipdb; ipdb.set_trace()
+    # TODO TODO TODO at least add flag to make this also do what remerge_suite2p_merged
+    # is doing (i.e. picking the plane with the strongest signal and not using the
+    # components of the masks in other planes). probably just refactor merge handling to
+    # allow ijroi and suite2p handling to use the same logic for this.
     merged = util.merge_ijroi_masks(masks, check_no_overlap=True)
+    '''
+
+    #merged = util.ijroi_masks(analysis_dir, thorimage_dir)
+    #import ipdb; ipdb.set_trace()
 
     traces, roi_stats, ops, merges = s2p.load_s2p_combined_outputs(analysis_dir)
 

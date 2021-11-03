@@ -1,3 +1,4 @@
+oop = out-of-plane
 
 - 2021-06-08/1/ha_and_fur:
   # nerve tract or something?
@@ -541,4 +542,149 @@
         planes w/ diff parts of it.
         - 
     - 5 (might not be so great anyway)
+
+
+- 2021-05-11/2/butanal_and_acetone:
+  - 45, 49, 52 all seem to only have signal from dp1m above, so just marking bad for now
+    and merging dp1m in two planes above (0, 26)
+
+  - 25 overmerged?
+    - and are 2,3 in plane above appropriate? maybe they should be sep, but one contains
+      a bit of the other? or maybe they should be merged as 25?
+
+    - 25 seems more similar to 3 than 2 and 3 seem to each other, but this doesn't mean
+      25 isn't overmerged. 3-side component of 25 could just be stronger or something
+
+  - 67 overmerged?
+
+  - 48 could maybe go w/ (1,28) or 105 / some overmerged part of 67? marking bad for now
+    since it seems smaller signal contribution than either of the possible ROIs to merge
+    with.
+
+
+  - what to do w/ 5?
+    - is it getting a bit too much of dp1m?
+    - should it (otherwise) be merged into 103?
+
+    - for now, i'm merging 7,10,31,47 but marking 5 and 8 as bad
+
+      TODO TODO TODO check that one of smaller glomeruli in top plane isn't *alone*
+      selected as "best" ROI for this merge, as 31,47 seem to have slightly more clear
+      signal during some parts
+
+  - 105 (merged) correct?
+    - or should plane 3 member go to 111? probably not, but check overlap...
+
+
+  - 90 a real glomerulus?
+
+  - 94 might be too weak to want to include
+
+
+
+# NOTE: stuff seems correlated across larger spatial scales than i'd expect here
+# + there are some glomeruli that responded weakly to everything (weird?). ->
+# maybe this fly was bad?
+- 2021-05-11/2/ehex_and_1-6ol:
+  - my own merges i'm unsure of:
+    - many in this fly... weird stuff spans so many planes
+
+    - especially 102 (which seems to have more of the small responses to early odors in
+      planes 2 and 3, but less 1 and beneath 3... weird...)
+
+  - overmerged?
+    - 59
+    - 2
+      - part of it is out of plane signal from merged 95 it seems
+      - marking bad for now
+    - 20
+      - does either that region in the top right / bottom edge confer the difference in
+        the responses between 20 and 1 in the plane above?
+
+      - marking as bad for now cause 1 has an almost-as-large signal
+
+    - 42
+
+  - too noisy / weak:
+    - 40, 5, 6, 51, 76, 65, 31, 53
+    - 63, 88 (both seemed like they could maybe have been merged w/ 59, etc)
+
+    - 10, 90, 54
+      - all of these seem to respond somewhat consistently to all odors...
+
+  - note how bright region in plane 4 on the left (both in mean / max), doesn't have any
+    weight over it really (nor among "not cells")
+
+  - 78: possible this should be merged into 98?
+    - marked bad for now just since i think it prob should be merged but dont wanna redo
+
+
+  - 25: is this real? TODO watch movie
+    - potentially too weak / noisy anyway
+
+
+# TODO return to this. not done. included in `bad_suite2p_analysis_dirs` for now
+- 2021-05-18/1/1o3ol_and_2h:
+  - suite2p and / or the experiment might not have worked so well...
+
+  - many things w/ primarily downward deflections, e.g. 30, 8
+    - and stuff like 85 that still has a large downward component
+
+  - sluggishness in 78, 68, etc
+
+
+  - do 82, 83 belong to the AL on the side? (marked bad for now thinking they do not)
+
+  - too weak / noisy:
+    - 11, 2, 4
+    - 13, 9
+    - 80
+      - drift may be involved here
+
+  - 93: does this include some oop signal from 101?
+    - no tail like above 3 (those in 101), so maybe not
+
+  - 17, 40: are these too close to the edge?
+
+  - 103: was this merge correct? maybe split top two and bottom two planes?
+
+  - marking bad to resolve potential ambiguities:
+    - 39 (seems halfway between (62,90) and 103). really might want this one though...
+
+    - 94: would want to merge into 107 just made 107 first and not adding too much
+
+    - 42: b/c reasonable chance it is overmerged. see note in section below.
+
+  - overmerged?
+    - 15 (part of a merge now)
+    - 42: if 24 really shouldnt be a part of 16, then this is probably overmerged
+
+
+# NOTE: marked bad for now. too much overmerged out-of-suite2p
+- 2021-05-18/1/eb_and_ea:
+  - overmerged?:
+    - 15, 33, 37, 39
+
+  - uncertain merges:
+    - 58,81
+      - note third trial-group visible in one and not the other. OK (drift or something?)?
+
+  - note downward deflections in 101
+    - TODO and also check marking bad after merging isn't gonna break anything
+
+
+# NOTE: marked bad for now. no merges were clear, but also prob wanna improve suite2p
+# outputs first...
+- 2021-05-24/2/1o3ol_and_2h:
+  - uncertain merges:
+    - 29, 71, 115, 149
+      - note how response on ~first trial group after solvent is stronger moving up.
+        consistent w/ drift or what?
+
+
+# Was marked bad before, and leaving so for now.
+- 2021-05-24/2/ea_and_etb:
+  - overmerged?:
+    - 124, 166
+
 

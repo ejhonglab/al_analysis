@@ -30,7 +30,7 @@ import ijroi
 from hong2p import util, thor, viz
 from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
-from hong2p.util import shorten_path
+from hong2p.util import shorten_path, format_date
 
 import matplotlib
 # Won't get warnings that some of the interactive backends give in the multiprocessing
@@ -59,15 +59,17 @@ analysis_intermediates_root = util.analysis_intermediates_root()
 # directory, so it's easier to just check if that directory exists (or maybe check if
 # any svg are in exp dir root? maybe assume plots are made if we have a suite2p
 # directory?)
+#skip_if_experiment_plot_dir_exists = True
 skip_if_experiment_plot_dir_exists = False
 
 # TODO TODO probably make another category or two for data marked as failed (in the
 # breakdown of data by pairs * concs at the end)
+#retry_previously_failed = True
 retry_previously_failed = False
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
-analyze_pairgrids_only = True
+analyze_pairgrids_only = False
 
 # If there are multiple experiments with the same odors, only the data from the most
 # recent concentrations for those odors will be analyzed.
@@ -76,18 +78,19 @@ final_concentrations_only = True
 analyze_reverse_order = False
 
 # Will be set False if analyze_pairgrids_only=True
-analyze_glomeruli_diagnostics = False
+analyze_glomeruli_diagnostics = True
 
 # Whether to analyze any single plane data that is found under the enumerated
 # directories.
 analyze_2d_tests = False
 
 non_suite2p_analysis = True
-ignore_existing_nonsuite2p_outputs = False
+#ignore_existing_nonsuite2p_outputs = False
+ignore_existing_nonsuite2p_outputs = True
 
 # Whether to run the suite2p pipeline (generates outputs among raw data, in 'suite2p'
 # subdirectories)
-do_suite2p = True
+do_suite2p = False
 
 # Will just skip if already exists if False
 overwrite_suite2p = False
@@ -96,6 +99,8 @@ analyze_suite2p_outputs = True
 # TODO TODO add flags to only analyze stuff considered "done" in breakdown at end
 # (and probably also that has some merges at least)
 
+analyze_ijrois = True
+
 # Since some of the pilot experiments had 6 planes (but top 5 should be the same as in
 # experiments w/ only 5 total), and that last plane largely doesn't have anything
 # measurably happening. All steps should have been 12um, so picking top n will yield a
@@ -103,6 +108,9 @@ analyze_suite2p_outputs = True
 n_top_z_to_analyze = 5
 
 ignore_bounding_frame_cache = False
+
+save_lastpair_dff_tiff = False
+SAVE_DFF_TIFF = True
 
 # TODO shorten any remaining absolute paths if this is True, so we can diff outputs
 # across installs w/ data in diff paths
@@ -113,24 +121,38 @@ dff_vmax = 3.0
 
 ax_fontsize = 7
 
-# TODO TODO TODO recheck all of these
 bad_suite2p_analysis_dirs = (
     # skipping for now cause suite2p output looks weird (for both recordings)
     '2021-03-07/2',
 
-    # Just a few glomeruli visible in (at least the last odor) trials
+    # Just a few glomeruli visible in (at least the last odor) trials.
+    # Also imaged too much of other side, so just under half of potentially-good ROIs
+    # from other side.
     '2021-05-24/1/1oct3ol_and_2h',
 
-    # TODO TODO revisit this one
+    # Either suite2p ROIs bad or experiment bad too.
     '2021-05-24/2/ea_and_etb',
 
-    # TODO why?
     # eb_and_ea recording looks bad (mainly just one glomerulus? lots of stuff
     # seems to come in 4s at times rather than 3s [well really just one group of
     # 4], and generally not much signal)
     '2021-05-25/1/eb_and_ea',
 
-    # TODO TODO TODO add other stuff that was bad
+    # Was having too much of a hard time manually correcting this one. Was trying to
+    # merge, but shelving it for now.
+    '2021-05-18/1/1o3ol_and_2h',
+
+    # Too much important stuff seems overmerged right out of suite2p. May want to go
+    # down for these odors anyway. Still some nice signal in some places.
+    '2021-05-18/1/eb_and_ea',
+
+    # Mainly a suite2p issue hopefully. ROIs not all of very good shapes + hard to find
+    # good merges across planes, but perhaps mainly b/c suite2p garbage out?
+    '2021-05-24/2/1o3ol_and_2h',
+
+    # Small number of glomeruli w/ similar responses. Small # of glom also apparent in
+    # dF/F images.
+    '2021-05-24/2/1o3ol_and_2h',
 )
 
 odor2abbrev = {
@@ -173,11 +195,12 @@ exp_processing_time_data = []
 
 failed_assigning_frames_to_odors = []
 
+s2p_roi_dfs = []
+ij_roi_dfs = []
+
 # Using dict rather than defaultdict(list) so handling is more consistent in case when
 # multiprocessing DictProxy overrides this.
 names_and_concs2analysis_dirs = dict()
-
-#names_concs_and_analysis_dir_tuples = []
 
 ###################################################################################
 # Modified inside `run_suite2p`
@@ -407,6 +430,7 @@ def format_odor(odor_dict, conc=True, name_conc_delim=' @ ', conc_key='log10_con
     return ostr
 
 
+# TODO rename to indicate it accepts arbitrary iterable
 def index2single_odor_name(index, name_conc_delim='@'):
     odors = {x.split(name_conc_delim)[0].strip() for x in index}
     odors = {x for x in odors if x != 'solvent'}
@@ -443,15 +467,22 @@ def sort_odor_list(odor_list):
     return sorted(odor_list, key=odordict_sort_key)
 
 
-def format_odor_list(odor_list, delim=' + ', **kwargs):
-    """Takes list of dicts representing odors for one trial to pretty str.
-    """
-    odor_strs = [format_odor(x, **kwargs) for x in sort_odor_list(odor_list)]
+def format_mix_from_strs(odor_strs, delim=None):
+    if delim is None:
+        delim = ' + '
+
     odor_strs = [x for x in odor_strs if x != 'solvent']
     if len(odor_strs) > 0:
         return delim.join(odor_strs)
     else:
         return 'solvent'
+
+
+def format_odor_list(odor_list, delim=None, **kwargs):
+    """Takes list of dicts representing odors for one trial to pretty str.
+    """
+    odor_strs = [format_odor(x, **kwargs) for x in sort_odor_list(odor_list)]
+    return format_mix_from_strs(odor_strs, delim=delim)
 
 
 # TODO did i already implement this logic somewhere in this file? use this code if so
@@ -483,7 +514,7 @@ def odor_lists2names_and_conc_ranges(odor_lists):
     def name_i(i):
         name_set = {x[i]['name'] for x in odor_lists}
         assert len(name_set) == 1, ('assuming odor_lists w/ same odor (names, not concs'
-            ') at each trial'
+            f') at each trial ({name_set=})'
         )
         return name_set.pop()
 
@@ -501,7 +532,11 @@ def is_pairgrid(odor_lists):
     # TODO TODO reimplement in a way that actually checks there are all pairwise
     # concentrations, rather than just assuming so if there are 2 odors w/ 3 non-zero
     # concs each
-    names_and_conc_ranges = odor_lists2names_and_conc_ranges(odor_lists)
+    try:
+        names_and_conc_ranges = odor_lists2names_and_conc_ranges(odor_lists)
+    # TODO delete hack
+    except AssertionError:
+        return False
 
     return len(names_and_conc_ranges) == 2 and (
         all([len(cs) == 3 for _, cs in names_and_conc_ranges])
@@ -744,45 +779,46 @@ def compute_trial_stats(traces, bounding_frames, odor_order_with_repeats=None,
     return trial_stats_df
 
 
+def index_sort_key(level):
+    # The assignment below failed for some int dtype levels, even though the boolean
+    # mask dictating where assignment should happen must have been all False...
+    if level.dtype != np.dtype('O'):
+        return level
+
+    sort_key = level.values.copy()
+
+    solvent_elements = sort_key == 'solvent'
+    conc_delimiter = '@'
+    assert all([conc_delimiter in x for x in sort_key[~ solvent_elements]])
+
+    # TODO share this + fn wrapping this that returns sort key w/ other place that
+    # is using sorted(..., key=...)
+    def parse_log10_conc(odor_str):
+        assert conc_delimiter in odor_str
+        parts = odor_str.split(conc_delimiter)
+        assert len(parts) == 2
+        return float(parts[1].strip())
+
+    conc_keys = [parse_log10_conc(x) for x in sort_key[~ solvent_elements]]
+    sort_key[~ solvent_elements] = conc_keys
+
+    # Setting solvent to an unused log10 concentration just under lowest we have,
+    # such that it gets sorted into overall order as I want (first, followed by
+    # lowest concentration).
+    # TODO TODO maybe just use float('-inf') or numpy equivalent here?
+    # should give me the sorting i want.
+    sort_key[solvent_elements] = min(conc_keys) - 1
+
+    # TODO do i actually need to convert it back to a similar Index like the docs
+    # say, or can i leave it as an array?
+    return sort_key
+
+
 def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None):
 
     assert single_roi_series.index.names == ['odor1', 'odor2', 'repeat']
 
     roi_df = single_roi_series.unstack(level=0)
-
-    def index_sort_key(level):
-        # The assignment below failed for some int dtype levels, even though the boolean
-        # mask dictating where assignment should happen must have been all False...
-        if level.dtype != np.dtype('O'):
-            return level
-
-        sort_key = level.values.copy()
-
-        solvent_elements = sort_key == 'solvent'
-        conc_delimiter = '@'
-        assert all([conc_delimiter in x for x in sort_key[~ solvent_elements]])
-
-        # TODO share this + fn wrapping this that returns sort key w/ other place that
-        # is using sorted(..., key=...)
-        def parse_log10_conc(odor_str):
-            assert conc_delimiter in odor_str
-            parts = odor_str.split(conc_delimiter)
-            assert len(parts) == 2
-            return float(parts[1].strip())
-
-        conc_keys = [parse_log10_conc(x) for x in sort_key[~ solvent_elements]]
-        sort_key[~ solvent_elements] = conc_keys
-
-        # Setting solvent to an unused log10 concentration just under lowest we have,
-        # such that it gets sorted into overall order as I want (first, followed by
-        # lowest concentration).
-        # TODO TODO maybe just use float('-inf') or numpy equivalent here?
-        # should give me the sorting i want.
-        sort_key[solvent_elements] = min(conc_keys) - 1
-
-        # TODO do i actually need to convert it back to a similar Index like the docs
-        # say, or can i leave it as an array?
-        return sort_key
 
     roi_df = roi_df.sort_index(key=index_sort_key, axis=0
         ).sort_index(key=index_sort_key, axis=1)
@@ -815,17 +851,50 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
     return cax
 
 
+def plot_all_roi_mean_responses(trial_stats, ax=None, title=None, roi_sortkeys=None):
+
+    assert trial_stats.index.names == ['odor1', 'odor2', 'repeat']
+
+    mean_df = trial_stats.groupby(['odor1', 'odor2'], sort=False).mean()
+
+    # TODO factor out this index level re-ordering
+    odor1_name = index2single_odor_name(mean_df.index.get_level_values('odor1'))
+    odor2_name = index2single_odor_name(mean_df.index.get_level_values('odor2'))
+    if odor1_name > odor2_name:
+        mean_df = mean_df.reorder_levels(['odor2', 'odor1'])
+
+    mean_df.sort_index(key=index_sort_key, inplace=True)
+
+    if roi_sortkeys is not None:
+        assert len(roi_sortkeys) == len(trial_stats.columns)
+
+        roi_sortkey_dict = dict(zip(trial_stats.columns, roi_sortkeys))
+
+        def roi_sortkey_fn(index):
+            return [roi_sortkey_dict[x] for x in index]
+
+        mean_df.sort_index(key=roi_sortkey_fn, axis='columns', inplace=True)
+
+    # TODO TODO TODO is it currently guaranteed that order of odor1/odor2 index levels
+    # are consistent? if not, do i already have some function that can accomplish this?
+    # if not, implement. (no it is not currently)
+
+    plot_df = mean_df.copy()
+    plot_df.columns = plot_df.columns.astype(str)
+    plot_df.index = plot_df.index.map(format_mix_from_strs)
+
+    cax = viz.matshow(plot_df, ax=ax, title=title, cmap=CMAP)
+    return cax, mean_df
+
+
 # TODO kwarg to allow passing trial stat fn in that includes frame rate info as closure,
 # for picking frames in a certain time window after onset and computing mean?
 # TODO TODO TODO to the extent that i need to convert suite2p rois to my own and do my
 # own trace extraction, maybe just modify my fork of suite2p to save sufficient
 # information in combined view stat.npy to invert the tiling? unless i really can find a
 # reliable way to invert that step...
-def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
-    plot_dir=None):
-    """
-    Returns whether plots were generated.
-    """
+def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir=None):
+
     try:
         traces, roi_stats, ops, merges = s2p.load_s2p_combined_outputs(analysis_dir)
 
@@ -841,10 +910,14 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
             iscell_not_selective.append(analysis_dir)
 
         print(f'NOT generating suite2p plots because {e}')
-        return False
+        return
 
     if len(merges) == 0:
         no_merges.append(analysis_dir)
+
+    # TODO TODO TODO also try passing input of (another call to?) compute_trial_stats to
+    # remerge_suite2p_merged, so it's actually using local dF/F rather than max-min of
+    # the entire raw trace
 
     verbose = True
     # TODO TODO TODO modify so that that merging w/in plane works (before finding best
@@ -868,15 +941,18 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
     '''
     #
 
-    trial_stats = compute_trial_stats(traces, bounding_frames, odor_order_with_repeats)
+    trial_stats = compute_trial_stats(traces, bounding_frames, odor_lists)
 
-    # TODO delete
-    '''
-    trial_stats_from_arr = compute_trial_stats(traces, bounding_frames,
-        odor_order_with_repeats
-    )
-    '''
-    #
+    # TODO TODO refactor so that this is outside of the fn named indicating it is just
+    # making plots from suite2p outputs. could do simultaneous w/ refactoring to unify
+    # suite2p / manual-imagej-roi trace handling
+    print('writing ROI traces and trial statistics to CSVs')
+
+    traces.to_csv(join(analysis_dir, 'traces.csv'))
+    # W/ default CSV output format, all columns after 'repeat' (last level of row
+    # MultiIndex) are suite2p ROI numbers (not necessarily consecutive b/c of preceding
+    # selection) which should be the same numbers in the columns of traces.csv.
+    trial_stats.to_csv(join(analysis_dir, 'trial_stats.csv'))
 
     # TODO check numbering is consistent w/ suite2p numbering in case where there is
     # some merging (currently handling will treat it incorrectly)
@@ -886,7 +962,29 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
         roi_dir = join(plot_dir, 'roi')
         os.makedirs(roi_dir, exist_ok=True)
 
-    include_rois = True
+
+    z_indices = [roi_stats[x]['iplane'] for x in rois.roi.values]
+
+    fig, ax = plt.subplots(nrows=1, ncols=1)
+
+    title = 'Suite2p ROIs\nOrdered by Z plane'
+
+    # TODO TODO maybe also order by strength of response / clustering of response/mixing
+    # types?
+    # TODO TODO probably put lines between levels of sortkey if int (e.g. 'iplane')
+    # (and also show on plot as second label above/below roi labels?)
+    cax, mean_df = plot_all_roi_mean_responses(trial_stats, ax=ax,
+        roi_sortkeys=z_indices, title=title
+    )
+    viz.add_colorbar(fig, cax)
+
+    fig.tight_layout()
+
+    if plot_dir is not None:
+        savefig(fig, roi_dir, 'all_rois_by_z')
+
+    #include_rois = True
+    include_rois = False
 
     for roi in trial_stats.columns:
         if include_rois:
@@ -931,7 +1029,188 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_order_with_repeats,
     # gui for labelling?]
 
     print('generated plots based on suite2p traces')
+
+    # TODO maybe refactor
+    date_str, fly_str, thorimage_id = analysis_dir.split(os.path.sep)[-3:]
+
+    new_level_names = ['date', 'fly_num', 'thorimage_id']
+    new_level_values = [pd.Timestamp(date_str), int(fly_str), thorimage_id]
+
+    roi_df = trial_stats
+    for name, value in list(zip(new_level_names, new_level_values))[::-1]:
+        roi_df = pd.concat([roi_df], names=[name], keys=[value])
+
+    # TODO TODO TODO sort odors before assigning into either 'odor1' / 'odor2', so
+    # subsetting by odors is easier (among other operations)
+    s2p_roi_dfs.append(roi_df)
+
     return True
+
+
+# TODO TODO TODO refactor this + above suite2p version to share most of the code
+def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=None):
+
+    # TODO clean this up
+    thorimage_dir = analysis_dir.replace('analysis_intermediates', 'raw_data')
+    #
+
+    try:
+        masks = util.ijroi_masks(analysis_dir, thorimage_dir)
+
+    except IOError:
+        # TODO probably print something here / in try above
+
+        # This experiment didn't have any ImageJ ROIs (in canonical place)
+        return
+
+    # TODO TODO check this is working correctly with this new type of input +
+    # change fn to preserve input type (w/ the metadata xarrays / dfs have)
+    traces = pd.DataFrame(util.extract_traces_bool_masks(movie, masks))
+    traces.index.name = 'frame'
+    traces.columns.name = 'roi'
+
+    # TODO also try merging via correlation/overlap thresholds?
+
+    # TODO TODO update this to use df/f (same update needed on suite2p branch)
+    roi_quality = traces.max() - traces.min()
+
+    roi_nums, rois = util.rois2best_planes_only(masks, roi_quality)
+
+    traces = traces[roi_nums].copy()
+
+    # This is currently the 'name' (rois2best_planes_only drops other levels from ROI
+    # index)
+    traces.columns = rois.roi.values
+
+    trial_stats = compute_trial_stats(traces, bounding_frames, odor_lists)
+
+    # TODO TODO refactor so that this is outside of the fn named indicating it is just
+    # making plots from suite2p outputs. could do simultaneous w/ refactoring to unify
+    # suite2p / manual-imagej-roi trace handling
+    '''
+    print('writing ROI traces and trial statistics to CSVs')
+
+    traces.to_csv(join(analysis_dir, 'traces.csv'))
+    # W/ default CSV output format, all columns after 'repeat' (last level of row
+    # MultiIndex) are suite2p ROI numbers (not necessarily consecutive b/c of preceding
+    # selection) which should be the same numbers in the columns of traces.csv.
+    trial_stats.to_csv(join(analysis_dir, 'trial_stats.csv'))
+    '''
+
+    if SAVE_FIGS and plot_dir is not None:
+        roi_dir = join(plot_dir, 'ijroi')
+        os.makedirs(roi_dir, exist_ok=True)
+
+
+    z_indices = masks.roi_z[masks.roi_num.isin(roi_nums)].values
+
+    fig, ax = plt.subplots(nrows=1, ncols=1)
+
+    title = 'ImageJ ROIs\nOrdered by Z plane\n*possibly [over/under]merged'
+
+    cax, mean_df = plot_all_roi_mean_responses(trial_stats, ax=ax,
+        roi_sortkeys=z_indices, title=title
+    )
+
+    viz.add_colorbar(fig, cax)
+
+    fig.tight_layout()
+
+    if plot_dir is not None:
+        savefig(fig, roi_dir, 'all_rois_by_z')
+
+    component_df = mean_df[
+        (mean_df.index.to_frame() == 'solvent').sum(axis='columns') == 1
+    ]
+    # NOTE: i think the order of the 'odor1' and 'odor2' levels here can vary (they get
+    # sorted)
+    odor1_df = component_df[component_df.index.get_level_values('odor2') == 'solvent'
+        ].droplevel('odor2')
+
+    odor2_df = component_df[component_df.index.get_level_values('odor1') == 'solvent'
+        ].droplevel('odor1')
+
+    # not what i want. want all pairwise combinations.
+    #sum_arr = odor1_df.values + odor2_df.values
+
+    sum_diff_df = (mean_df - odor1_df - odor2_df).dropna()
+
+    # TODO maybe also drop solvent rows?
+    max_diff_df = mean_df * np.nan
+    for odor1 in sum_diff_df.index.get_level_values('odor1').unique():
+        for odor2 in sum_diff_df.index.get_level_values('odor2').unique():
+            o1_series = odor1_df.loc[odor1]
+            o2_series = odor2_df.loc[odor2]
+            max_series = np.maximum(o1_series, o2_series)
+
+            max_idx = np.argmax(
+                (max_diff_df.index.get_level_values('odor1') == odor1) &
+                (max_diff_df.index.get_level_values('odor2') == odor2)
+            )
+            max_diff_df.iloc[max_idx] = max_series
+            # TODO why didn't this work?
+            '''
+            max_diff_df.loc[
+                (max_diff_df.index.get_level_values('odor1') == odor1) &
+                (max_diff_df.index.get_level_values('odor2') == odor2)
+            ] = max_series
+            '''
+
+    # Getting rid of the solvent rows
+    max_diff_df = max_diff_df.dropna()
+
+    for diff_df, desc in ((max_diff_df, 'max'), (sum_diff_df, 'sum')):
+        fig, ax = plt.subplots(nrows=1, ncols=1)
+
+        plot_df = diff_df.copy()
+        plot_df.columns = plot_df.columns.astype(str)
+        plot_df.index = plot_df.index.map(format_mix_from_strs)
+
+        cax = viz.matshow(plot_df, ax=ax, title=f'Component {desc} minus observed',
+            cmap='RdBu'
+        )
+
+        fig.tight_layout()
+
+        if plot_dir is not None:
+            savefig(fig, roi_dir, f'diff_{desc}')
+
+    for roi in trial_stats.columns:
+        fig, ax = plt.subplots(nrows=1, ncols=1)
+
+        # TODO more globally appropriate title? (w/ fly and other metadata. maybe number
+        # flies within each odor pair / sequentially across days, and just use that as a
+        # short ID?)
+
+        #fig.suptitle(f'ROI {roi}')
+
+        roi1_series = trial_stats.loc[:, roi]
+        cax = plot_roi_stats_odorpair_grid(roi1_series, ax=ax)
+
+        # TODO TODO make colorbar ~size of matrix + move closer + show less decimals in
+        # ticks on it
+        viz.add_colorbar(fig, cax)
+
+        fig.tight_layout()
+
+        if plot_dir is not None:
+            savefig(fig, roi_dir, str(roi))
+
+    print('generated plots based on traces from ImageJ ROIs')
+
+    # TODO maybe refactor
+    date_str, fly_str, thorimage_id = analysis_dir.split(os.path.sep)[-3:]
+
+    new_level_names = ['date', 'fly_num', 'thorimage_id']
+    new_level_values = [pd.Timestamp(date_str), int(fly_str), thorimage_id]
+
+    roi_df = trial_stats
+    for name, value in list(zip(new_level_names, new_level_values))[::-1]:
+        roi_df = pd.concat([roi_df], names=[name], keys=[value])
+
+    # TODO TODO TODO sort odors before assigning into either 'odor1' / 'odor2', so
+    # subsetting by odors is easier (among other operations)
+    ij_roi_dfs.append(roi_df)
 
 
 # TODO maybe refactor (part of?) this to hong2p.suite2p
@@ -1111,7 +1390,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     date, fly_num = date_and_fly_num
     thorimage_dir, thorsync_dir = thor_image_and_sync_dir
 
-    if 'glomeruli' in thorimage_dir and 'diag' in thorimage_dir:
+    #if 'glomeruli' in thorimage_dir and 'diag' in thorimage_dir:
+    if 'diag' in thorimage_dir:
         if not analyze_glomeruli_diagnostics:
             print('skipping because experiment is just glomeruli diagnostics\n')
             return
@@ -1217,9 +1497,12 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         seen_stimulus_yamls2thorimage_dirs[yaml_path] != [thorimage_dir]):
 
         short_yaml_path = shorten_path(yaml_path, n_parts=2)
-        raise ValueError(f'stimulus yaml {short_yaml_path} seen in:\n'
+
+        err_msg = (f'stimulus yaml {short_yaml_path} seen in:\n'
             f'{pformat(seen_stimulus_yamls2thorimage_dirs[yaml_path])}'
         )
+        warnings.warn(err_msg)
+        #raise ValueError(err_msg)
 
     if not is_glomeruli_diagnostics:
         # In case where this is a DictProxy, these empty lists (ListProxy in that case)
@@ -1237,6 +1520,16 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # hashable, and thus can be counted inside `remove_consecutive_repeats`
     odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
     odor_order, n_repeats = remove_consecutive_repeats(odor_order_with_repeats)
+
+    # TODO delete if i manage to refactor code below to only do the formatting of odors
+    # right before plotting, rather than in the few lines before this
+    #
+    # This is just intended to target glomeruli information for the glomeruli
+    # diagnostic experiments.
+    odor_str2target_glomeruli = {
+        s: o[0]['glomerulus'] for s, o in zip(odor_order_with_repeats, odor_lists)
+        if len(o) == 1 and 'glomerulus' in o[0]
+    }
 
     # TODO use that list comprehension way of one lining this? equiv for sets?
     name_lists = [[o['name'] for o in os] for os in odor_lists]
@@ -1335,6 +1628,31 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     read_movie_s = time.time() - before
 
+    # TODO maybe move ijroi stuff to after loop and compute df/f movie if this is
+    # requested, IF IT MAKES ANY MORE SENSE TO START W/ DF/F MOVIE RATHER THAN
+    # EXTRACTING TRACES FIRST
+
+    # TODO refactor fn to separate plotting from suite2p/ijroi data source
+    if analyze_ijrois:
+        # TODO TODO make sure none of the stuff w/ suite2p outputs marked bad should
+        # also just generally be marked bad, s.t. not run here
+        ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie,
+            plot_dir=plot_dir
+        )
+
+    # TODO only save this computed from motion corrected movie, in any future cases
+    # where we are actually motion correcting as part of this pipeline
+    save_dff_tiff = SAVE_DFF_TIFF
+    if save_dff_tiff:
+        dff_tiff_fname = join(analysis_dir, 'dff.tif')
+        if exists(dff_tiff_fname):
+            # To not write large file unnecessarily. This should never really change,
+            # especially not if computed from non-motion-corrected movie.
+            save_dff_tiff = False
+
+    if save_dff_tiff:
+        trial_dff_movies = []
+
     # TODO TODO maybe make a plot like this, but use the actual frame times
     # (via thor.get_frame_times) + actual odor onset / offset times, and see if
     # that lines up any better?
@@ -1351,6 +1669,14 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     #plt.show()
     '''
 
+    # TODO actually possible for it to be non-int in Experiment.xml?
+    zstep_um = int(round(float(xml.find('ZStage').attrib['stepSizeUM'])))
+
+    def micrometer_depth_title(ax, z_index) -> None:
+        curr_z = -zstep_um * z_index
+        ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
+
+
     if z > n_top_z_to_analyze:
         warnings.warn(f'{thorimage_dir}: only analyzing top {n_top_z_to_analyze} '
             'slices'
@@ -1359,30 +1685,30 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         assert movie.shape[1] == n_top_z_to_analyze
         z = n_top_z_to_analyze
 
-    '''
     anat_baseline = movie.mean(axis=0)
     baseline_fig, baseline_axs = plt.subplots(1, z, squeeze=False)
     for d in range(z):
         ax = baseline_axs[0, d]
 
-        ax.imshow(anat_baseline[d], vmin=0, vmax=9000)
+        ax.imshow(anat_baseline[d], vmin=anat_baseline.min(), vmax=anat_baseline.max(),
+            cmap='gray'
+        )
         ax.set_axis_off()
-        """
-        print(anat_baseline[d].min())
-        print(anat_baseline[d].mean())
-        print(anat_baseline[d].max())
-        print()
-        """
+
+        micrometer_depth_title(ax, d)
+
     suptitle('average of whole movie', baseline_fig)
     exp_savefig(baseline_fig, 'avg')
-    '''
 
-    for i, o in enumerate(odor_order):
+    for i, odor_str in enumerate(odor_order):
+
+        if odor_str in odor_str2target_glomeruli:
+            odor_str = f'{odor_str} ({odor_str2target_glomeruli[odor_str]})'
 
         # TODO either:
         # - always use 2 digits (leading 0)
         # - pick # of digits from len(odor_order)
-        plot_desc = f'{i + 1}_{o}'
+        plot_desc = f'{i + 1}_{odor_str}'
 
         def dff_imshow(ax, dff_img):
             im = ax.imshow(dff_img, vmin=dff_vmin, vmax=dff_vmax)
@@ -1475,7 +1801,14 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             # TODO TODO why is baseline.max() always the same???
             # (is it still?)
 
-            dff = (movie[first_odor_frame:end_frame] - baseline) / baseline
+            dff = (movie[first_odor_frame:(end_frame + 1)] - baseline) / baseline
+
+            if save_dff_tiff:
+                trial_dff_movie = (
+                    (movie[start_frame:(end_frame + 1)] - baseline) / baseline
+                ).astype(np.float32)
+
+                trial_dff_movies.append(trial_dff_movie)
 
             # TODO TODO change to using seconds and rounding to nearest[higher/lower
             # multiple?] from there
@@ -1495,11 +1828,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             print()
             '''
 
-            # TODO factor to hong2p.thor
-            # TODO actually possible for it to be non-int in Experiment.xml?
-            zstep_um = int(round(float(xml.find('ZStage').attrib['stepSizeUM'])))
-            #
-
             for d in range(z):
                 ax = trial_heatmap_axs[n, d]
 
@@ -1511,8 +1839,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     )
 
                 if n == 0 and z > 1:
-                    curr_z = -zstep_um * d
-                    ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
+                    micrometer_depth_title(ax, d)
 
                 im = dff_imshow(ax, mean_dff[d])
 
@@ -1527,70 +1854,52 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         viz.add_colorbar(trial_heatmap_fig, im)
 
-        suptitle(o, trial_heatmap_fig)
+        suptitle(odor_str, trial_heatmap_fig)
         close = i < len(odor_order) - 1
         # TODO need to make sure figures from earlier iterations are closed
         exp_savefig(trial_heatmap_fig, plot_desc + '_trials', close=close)
 
         avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
 
-        # TODO replace LHS of "and" w/ volumetric only flag if i add one
-        if min(movie.shape) > 1 and i == (len(odor_order) - 1):
-            # TODO factor out + check this is consistent w/ write_tiff. might wanna
-            # just modify write_tiff so i can specify it's missing the T not Z
-            # dimension (to the extent it matters...), which the docstring currently
-            # says it doesn't support (or just explictly add singleton dimension
-            # before, in here?)
-            avg_mean_dff_tiff = join(analysis_dir, 'lastpair_avg_mean_dff.tif')
+        if i == (len(odor_order) - 1):
 
-            # This expand_dims operation doesn't seem to have added a label to
-            # slider in FIJI, but maybe FIJI still cares, and maybe the ROI manager
-            # will generate labels differently? As long as I can load the ROIs w/
-            # the metadata I need it shouldn't matter...
-            avg_dff_for_tiff = np.expand_dims(avg_mean_dff, axis=0
-                ).astype(np.float32)
+            # TODO move outside of loop (to just after it), no?
+            if save_dff_tiff:
+                delta_f_over_f = np.concatenate(trial_dff_movies)
 
-            util.write_tiff(avg_mean_dff_tiff, avg_dff_for_tiff, strict_dtype=False)
+                assert delta_f_over_f.shape == movie.shape
 
-            # TODO put all ijroi stuff behind a flag like do_suite2p
+                print(f'writing dF/F TIFF to {dff_tiff_fname}...', flush=True, end='')
 
-            # TODO TODO auto open this roi in imagej (and maybe also open roi
-            # manager), for labelling (unless ROI file exists)
-            # TODO maybe also a flag to load each with existing ROI files (if
-            # exists), for checking / modification
+                util.write_tiff(dff_tiff_fname, delta_f_over_f, strict_dtype=False)
 
-            # TODO compare tiff data to matplotlib plots that should have same data,
-            # just for sanity checking that my tiff writing is working correctly
+                print(' done', flush=True)
 
-            # TODO TODO load <analysis_dir>/RoiSet.zip if exists and use as fn
-            # that processes suite2p output if exists
-            # TODO maybe refactor that fn to separate plotting from suite2p/ijroi
-            # data source?
-            '''
-            ijroiset_filename = join(analysis_dir, 'RoiSet.zip')
-            #print('ijrois:', ijroiset_filename)
+                del delta_f_over_f, trial_dff_movies
+            #
 
-            # TODO refactor all this ijroi loading / mask creation [+ probably trace
-            # extraction too]
-            name_and_roi_list = ijroi.read_roi_zip(ijroiset_filename)
+            # TODO replace w/ volumetric only flag if i add one
+            if min(movie.shape) > 1:
 
-            masks = util.ijrois2masks(name_and_roi_list, movie.shape[-3:],
-                as_xarray=True
-            )
+                if save_lastpair_dff_tiff:
+                    # TODO factor out + check this is consistent w/ write_tiff. might
+                    # wanna just modify write_tiff so i can specify it's missing the T
+                    # not Z dimension (to the extent it matters...), which the docstring
+                    # currently says it doesn't support (or just explictly add singleton
+                    # dimension before, in here?)
+                    avg_mean_dff_tiff = join(analysis_dir, 'lastpair_avg_mean_dff.tif')
 
-            # TODO also try merging via correlation/overlap thresholds?
-            masks = util.merge_ijroi_masks(masks, check_no_overlap=True)
+                    # This expand_dims operation doesn't seem to have added a label to
+                    # slider in FIJI, but maybe FIJI still cares, and maybe the ROI
+                    # manager will generate labels differently? As long as I can load
+                    # the ROIs w/ the metadata I need it shouldn't matter...
+                    avg_dff_for_tiff = np.expand_dims(avg_mean_dff, axis=0
+                        ).astype(np.float32)
 
-            # TODO TODO merge w/ bool masks converted from suite2p ROIS,
-            # extract traces for all, and make plots derived from traces, as
-            # suite2p_trace_plots currently has
-            # TODO TODO perhaps also option to just analyze masks from ijrois and
-            # not merge w/ suite2p stuff?
+                    util.write_tiff(avg_mean_dff_tiff, avg_dff_for_tiff,
+                        strict_dtype=False
+                    )
 
-            #import ipdb; ipdb.set_trace()
-            '''
-
-        # TODO refactor this or at least the labelling portion within
         for d in range(z):
             ax = mean_heatmap_axs[0, d]
 
@@ -1600,16 +1909,14 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             #    )
 
             if z > 1:
-                curr_z = -zstep_um * d
-                ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
+                micrometer_depth_title(ax, d)
 
             im = dff_imshow(ax, avg_mean_dff[d])
-        #
 
         mean_heatmap_fig.subplots_adjust(wspace=wspace)
         viz.add_colorbar(mean_heatmap_fig, im)
 
-        suptitle(o, mean_heatmap_fig)
+        suptitle(odor_str, mean_heatmap_fig)
         exp_savefig(mean_heatmap_fig, plot_desc)
 
     plt.close('all')
@@ -1643,32 +1950,18 @@ def main():
 
     del parser, args
 
-    # TODO is there currently anything preventing suite2p_trace_plots from trying to run
-    # on non-pair stuff apart from the fact that i haven't labeled outputs of the auto
-    # suite2p runs that may or may not have happened on them?
-    # (if not, probably add such logic)
+    # TODO note that 2021-07-(21,27,28) contain reverse-order experiments. indicate
+    # this fact in the plots for these experiments!!! (just skipping them for now
+    # anyway)
 
-    # TODO TODO TODO note that 2021-07-(21,27,28) contain reverse-order experiments.
-    # indicate this fact in the plots for these experiments!!!
-
-    # TODO skip just the butanal and acetone experiment here, which seems bad
-    #('2021-05-05', 1),
-
-    # TODO TODO TODO probably delete butanal + acetone here (cause possible conc
-    # mixup for i think butanal) (unless i can clarify what mixup might have been
-    # from notes + it seems clear enough from data it didn't happen)
-    #('2021-05-10', 1),
-
-    # TODO TODO TODO fix how 2021-07-21/1/EH_and_1H seems to have the stimulus file
-    # for acetone+butanal (from previous exp w/ same fly) in notes
+    # TODO revisit "not cell"s for 2021-04-29/1/butanal_and_acetone
 
     # Using this in addition to ignore_prepairing in call below, because that changes
     # the directories considered for Thor[Image/Sync] pairing, and would cause that
     # process to fail in some of these cases.
-    # TODO TODO TODO recheck all of these
     bad_thorimage_dirs = [
-        # skipping for now just because responses in df/f images seem weak. compare to
-        # others tho.
+        # Previously skipped because responses in df/f images seem weak.
+        # Also using old pulse lengths, so would be skipped anyway.
         '2021-03-08/2',
 
         # Just has glomeruli diagnostics. No real data.
@@ -1677,7 +1970,21 @@ def main():
         # Both flies only have glomeruli diagnostics.
         '2021-06-07',
 
+        # dF/F images are basically empty. suite2p only pulled out a ~4-5 ROIs that
+        # seemed to have any signal, and all weak.
         '2021-06-24/1/msl_and_hh',
+
+        # suite2p is failing on this b/c it can't find any ROIs once it gets to plane 1
+        # (planes are numbered from 0). dF/F images much weaker than other flies w/ this
+        # odor pair.
+        '2021-05-05/1/butanal_and_acetone',
+
+        # Looking at the matrices, it's pretty clear that two concentrations were
+        # swapped here (two of butanal, I believe). Could try comparing after
+        # re-ordering data appropriately (though possible order effects could make data
+        # non-comparable)
+        # TODO potentially just delete this data to avoid accidentally including it...
+        '2021-05-10/1/butanal_and_acetone',
 
         # Frame <-> time assignment is currently failing for all the real data from this
         # day.
@@ -1821,7 +2128,7 @@ def main():
             show_empty_statuses = False
             if show_empty_statuses or len(status_dirs) > 0:
                 print(f' - {s2p_status} ({len(status_dirs)})')
-                for analysis_dir in status_dirs:
+                for analysis_dir in sorted(status_dirs):
                     short_id = shorten_path(analysis_dir)
                     print(f'   - {short_id}')
 
@@ -1873,6 +2180,8 @@ def main():
             'suite2p failed:', failed_suite2p_dirs
         )
 
+    # TODO TODO factor so that still print summary of output even in case where we have
+    # all suite2p analysis turned off
     if analyze_suite2p_outputs:
         print_nonempty_path_list(
             'suite2p needs to be run on the following data:', s2p_not_run,
@@ -1896,6 +2205,43 @@ def main():
     if len(odors_without_abbrev) > 0:
         print('odors_without_abbrev:')
         pprint(odors_without_abbrev)
+
+
+    # TODO TODO TODO refactor to loop over unique combinations of odor1/odor2 (AFTER
+    # fixing creation of DataFrames such taht they have a consistent order)
+
+    def n_largest_signal_rois(sdf, n=5):
+
+        def print_pd(x):
+            print(x.to_string(float_format=lambda x: '{:.1f}'.format(x)))
+
+        max_df = sdf.groupby(['date', 'fly_num']).max()
+        print('max signal across all ROIs:')
+        print_pd(max_df.max(axis=1, skipna=True))
+        print()
+
+        for index, row in max_df.iterrows():
+            # TODO want to dropna? how does nlargest handle if n goes into NaN?
+            nlargest = row.nlargest(n=n)
+
+            print(f'{format_date(index[0])}/{index[1]}')
+
+            print_pd(nlargest)
+            print()
+
+
+    #if len(s2p_roi_dfs) > 0:
+    #    df = pd.concat(s2p_roi_dfs)
+
+    #    bdf = df.loc[df.index.get_level_values('thorimage_id').str.contains('but')]
+    #    print('\nBUTANAL AND ACETONE:')
+    #    n_largest_signal_rois(bdf)
+
+    #    hdf = df.loc[df.index.get_level_values('thorimage_id').str.contains('1-6ol')]
+    #    print('\n1-HEXANOL AND ETHYL HEXANOATE:')
+    #    n_largest_signal_rois(hdf)
+
+    import ipdb; ipdb.set_trace()
 
 
 if __name__ == '__main__':

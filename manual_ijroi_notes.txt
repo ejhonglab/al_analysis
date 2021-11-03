@@ -1,0 +1,47 @@
+
+2021-04-29/1/butanal_and_acetone
+
+- add notes about some of ambiguity in top right in some of the higher planes
+
+- 08063-00148-00132 (lower right in 5/6)
+  - moved right edge in to try to get less of potential second glomerulus near that
+    boundary. may still have some.
+
+  - may also be missing this other glomerulus
+
+
+2021-05-11/2/butanal_and_acetone
+
+- 7136-0084-0025 (top left in 1/5)
+  - could maybe be split?
+  - case for splitting this might mainly come from half receiving more out-of-plane
+    signal from something below? nah...
+
+- in 2/5, top right, again unsure about region between smaller two circular ROIs
+
+- 6823-0124-0036
+  - moved top edge dramatically down (to about ~1/2 original extent), to avoid possible
+    inclusion of signal from another glomerulus
+
+  - as well as right edge, to avoid overlap w/ 2883-...
+  - moved left edge of 2883-... for same reason.
+
+- unsure of whether region above 6823-... should be assigned a new ROI
+
+- how to / should i split 6688-0084-0029? originally i had a circular region in right
+  side as its own ROI. also see offset behavior ~1240 (lower edge seemingly off a bit
+  later).
+
+- 8554-... (4/5, bottom left)
+  - moved bottom edge be moved to avoid overlap
+
+- 8240- may still contain some signal from part of what is above / left of it
+
+- 8245- wasn't clear enough that bottom left region should have been split into its own
+  glomerulus, tho suite2p did
+
+- there is an elongated region above 0608- that suite2p picked up, and that could be a
+  glomerulus, but might also be too weirdly shaped? suite2p roi in plane above more well
+  shaped tho
+
+  i added what is perhaps part of this as 0630-
