@@ -375,6 +375,41 @@ def stimulus_yaml_from_thorimage_xml(xml):
     return yaml_path
 
 
+def odordict_sort_key(odor_dict):
+    name = odor_dict['name']
+
+    # This assertion is only here to help clarify how solvent is actually represented in
+    # all my current uses (i.e. w/ 'name' as an odor and 'log10_conc' None).
+    # NOTE: if I do ever add solvent vials outside of the series of dilutions for each
+    # odor (or in my diagnostic experiments), this assertion would cause problems.
+    assert name not in ('solvent', 'pfo')
+
+    # If present, we expect this value to be a non-positive number.
+    # Using 0 as default for lack of 'log10_conc' key because that case should indicate
+    # some type of pure odor (or something where the concentration is specified in the
+    # name / unknown). '5% cleaning ammonia in water' for example, where original
+    # concentration of cleaning ammonia is unknown.
+    log10_conc = odor_dict.get('log10_conc', 0)
+
+    # 'log10_conc: null' in one of the YAMLs should map to None here.
+    if log10_conc is None:
+        log10_conc = float('-inf')
+
+    assert type(log10_conc) in (int, float), f'type({log10_conc}) == {type(log10_conc)}'
+
+    return (name, log10_conc)
+
+
+def sort_odor_list(odor_list):
+    """Returns a sorted list of dicts representing odors for one trial
+
+    Name takes priority over concentration, so with the same set of odor names in each
+    trial's odor_list, this should produce a consistent ordering (and same indexes can
+    be used assuming equal length of all)
+    """
+    return sorted(odor_list, key=odordict_sort_key)
+
+
 def yaml_data2pin_lists(yaml_data):
     """
     Pins used as balances can be part of these lists despite not having a corresponding
@@ -403,7 +438,7 @@ def yaml_data2odor_lists(yaml_data):
             if p in pins2odors:
                 odor_list.append(pins2odors[p])
 
-        odor_lists.append(odor_list)
+        odor_lists.append(sort_odor_list(odor_list))
 
     return odor_lists
 
@@ -477,43 +512,6 @@ def format_odor(odor_dict, conc=True, name_conc_delim=' @ ', conc_key='log10_con
     return ostr
 
 
-# TODO rename to indicate it accepts arbitrary iterable
-def index2single_odor_name(index, name_conc_delim='@'):
-    odors = {x.split(name_conc_delim)[0].strip() for x in index}
-    odors = {x for x in odors if x != 'solvent'}
-    assert len(odors) == 1
-    return odors.pop()
-
-
-def odordict_sort_key(odor_dict):
-    name = odor_dict['name']
-
-    # If present, we expect this value to be a non-positive number.
-    # Using 0 as default for lack of 'log10_conc' key because that case should indicate
-    # some type of pure odor (or something where the concentration is specified in the
-    # name / unknown). '5% cleaning ammonia in water' for example, where original
-    # concentration of cleaning ammonia is unknown.
-    log10_conc = odor_dict.get('log10_conc', 0)
-
-    # 'log10_conc: null' in one of the YAMLs should map to None here.
-    if log10_conc is None:
-        log10_conc = float('-inf')
-
-    assert type(log10_conc) in (int, float), f'type({log10_conc}) == {type(log10_conc)}'
-
-    return (name, log10_conc)
-
-
-def sort_odor_list(odor_list):
-    """Returns a sorted list of dicts representing odors for one trial
-
-    Name takes priority over concentration, so with the same set of odor names in each
-    trial's odor_list, this should produce a consistent ordering (and same indexes can
-    be used assuming equal length of all)
-    """
-    return sorted(odor_list, key=odordict_sort_key)
-
-
 def format_mix_from_strs(odor_strs, delim=None):
     if delim is None:
         delim = ' + '
@@ -528,7 +526,7 @@ def format_mix_from_strs(odor_strs, delim=None):
 def format_odor_list(odor_list, delim=None, **kwargs):
     """Takes list of dicts representing odors for one trial to pretty str.
     """
-    odor_strs = [format_odor(x, **kwargs) for x in sort_odor_list(odor_list)]
+    odor_strs = [format_odor(x, **kwargs) for x in odor_list]
     return format_mix_from_strs(odor_strs, delim=delim)
 
 
@@ -553,11 +551,6 @@ def odor_lists2names_and_conc_ranges(odor_lists):
     experiments are only equivalent if that didn't change, nor other decisions about the
     trial structure (typically these things have stayed pretty constant though)
     """
-    # So that we don't return both:
-    # ( ('a', (-2, -1)), ('b', (-2, -1)) ) and...
-    # ( ('b', (-2, -1)), ('a', (-2, -1)) )
-    odor_lists = [sort_odor_list(ol) for ol in odor_lists]
-
     def name_i(i):
         name_set = {x[i]['name'] for x in odor_lists}
         assert len(name_set) == 1, ('assuming odor_lists w/ same odor (names, not concs'
@@ -599,11 +592,15 @@ def is_reverse_order(odor_lists):
     return get_conc(o1_list[0]) > get_conc(o1_list[-1])
 
 
-# TODO maybe convert to just two column df instead and then use some pandas functions to
-# convert that to index?
-def odor_lists_to_multiindex(odor_lists, add_repeat_col=True, **format_odor_kwargs):
-    # TODO establish order of the two(?) odors, and reorder levels in multiindex as
-    # necessary
+def odor_strs2single_odor_name(index, name_conc_delim='@'):
+    odors = {x.split(name_conc_delim)[0].strip() for x in index}
+    odors = {x for x in odors if x != 'solvent'}
+    assert len(odors) == 1
+    return odors.pop()
+
+
+def odor_lists_to_multiindex(odor_lists, **format_odor_kwargs):
+
     unique_lens = {len(x) for x in odor_lists}
     if len(unique_lens) != 1:
         raise NotImplementedError
@@ -615,13 +612,10 @@ def odor_lists_to_multiindex(odor_lists, add_repeat_col=True, **format_odor_kwar
     odor1_str_list = []
     odor2_str_list = []
 
-    if add_repeat_col:
-        odor_mix_counts = defaultdict(int)
-        odor_mix_repeats = []
+    odor_mix_counts = defaultdict(int)
+    odor_mix_repeats = []
 
     for odor_list in odor_lists:
-        # NOTE: just assuming these are in the order we want, and in an appropriately
-        # consistent order, for now (probably true, tbf)
         odor1, odor2 = odor_list
 
         # TODO refactor
@@ -630,30 +624,27 @@ def odor_lists_to_multiindex(odor_lists, add_repeat_col=True, **format_odor_kwar
 
         if odor2['name'] in odor2abbrev:
             odor2['name'] = odor2abbrev[odor2['name']]
-        # TODO also do solvent->PFO
-
-        #
 
         odor1_str = format_odor(odor1, **format_odor_kwargs)
         odor1_str_list.append(odor1_str)
 
         odor2_str = format_odor(odor2, **format_odor_kwargs)
         odor2_str_list.append(odor2_str)
+        #
 
-        if add_repeat_col:
-            odor_mix = (odor1_str, odor2_str)
-            odor_mix_repeats.append(odor_mix_counts[odor_mix])
-            odor_mix_counts[odor_mix] += 1
+        odor_mix = (odor1_str, odor2_str)
+        odor_mix_repeats.append(odor_mix_counts[odor_mix])
+        odor_mix_counts[odor_mix] += 1
 
-    if not add_repeat_col:
-        odor_str_lists = [odor1_str_list, odor2_str_list]
-        index = pd.MultiIndex.from_arrays(odor_str_lists)
-        index.names = ['odor1', 'odor2']
-    else:
-        index = pd.MultiIndex.from_arrays([odor1_str_list, odor2_str_list,
-            odor_mix_repeats
-        ])
-        index.names = ['odor1', 'odor2', 'repeat']
+    # NOTE: relying on sorting odor_list(s) at load time seems to produce consistent
+    # ordering, though that alphabetical ordering (based on full odor names) is
+    # different from what would be produced sorting on abbreviated odor names (at least
+    # in some cases)
+
+    index = pd.MultiIndex.from_arrays([odor1_str_list, odor2_str_list,
+        odor_mix_repeats
+    ])
+    index.names = ['odor1', 'odor2', 'repeat']
 
     return index
 
@@ -776,9 +767,15 @@ def split_into_trials(movie_length_array, bounding_frames, *n_trial_length_args,
 # data later)?
 def compute_trial_stats(traces, bounding_frames, odor_order_with_repeats=None,
     stat=lambda x: np.max(x, axis=0)):
+    # TODO unify documentation of this list-of-list-of-dicts format, including
+    # expectations on the dicts (perhaps also use dataclasses/similar in place of the
+    # dicts and include type hints)
     """
     Args:
-        odor_order_with_repeats: if passed, will be passed to odor_lists_to_multiindex
+        odor_order_with_repeats: if passed, will be passed to odor_lists_to_multiindex.
+            Should be a list of lists, with each internal list containing dicts that
+            each represent a single odor. Each internal list represents all odors
+            presented together on one trial.
     """
 
     if odor_order_with_repeats is not None:
@@ -872,14 +869,11 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
 
     title = f'ROI {single_roi_series.name}'
 
-    # TODO delete
-    # TODO try some colormaps from colorcet too
-    #for cmap in ['plasma', 'magma', 'cividis', 'inferno', 'gray']:
-    #    fig, ax = plt.subplots()
-    #
-
+    # TODO now that order of odors within each trial should be sorted at odor_list(s)
+    # creation, do we still need this transpose_sort_key? if not, can probably delete
+    # odor_strs2single_odor_name
     common_matshow_kwargs = dict(
-        ax=ax, title=title, transpose_sort_key=index2single_odor_name, cmap=CMAP,
+        ax=ax, title=title, transpose_sort_key=odor_strs2single_odor_name, cmap=CMAP,
         # not working
         #vmin=-0.2, vmax=2.0
     )
@@ -904,12 +898,6 @@ def plot_all_roi_mean_responses(trial_stats, ax=None, title=None, roi_sortkeys=N
 
     mean_df = trial_stats.groupby(['odor1', 'odor2'], sort=False).mean()
 
-    # TODO factor out this index level re-ordering
-    odor1_name = index2single_odor_name(mean_df.index.get_level_values('odor1'))
-    odor2_name = index2single_odor_name(mean_df.index.get_level_values('odor2'))
-    if odor1_name > odor2_name:
-        mean_df = mean_df.reorder_levels(['odor2', 'odor1'])
-
     mean_df.sort_index(key=index_sort_key, inplace=True)
 
     if roi_sortkeys is not None:
@@ -921,10 +909,6 @@ def plot_all_roi_mean_responses(trial_stats, ax=None, title=None, roi_sortkeys=N
             return [roi_sortkey_dict[x] for x in index]
 
         mean_df.sort_index(key=roi_sortkey_fn, axis='columns', inplace=True)
-
-    # TODO TODO TODO is it currently guaranteed that order of odor1/odor2 index levels
-    # are consistent? if not, do i already have some function that can accomplish this?
-    # if not, implement. (no it is not currently)
 
     plot_df = mean_df.copy()
     plot_df.columns = plot_df.columns.astype(str)
@@ -1087,8 +1071,6 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir=None
     for name, value in list(zip(new_level_names, new_level_values))[::-1]:
         roi_df = pd.concat([roi_df], names=[name], keys=[value])
 
-    # TODO TODO TODO sort odors before assigning into either 'odor1' / 'odor2', so
-    # subsetting by odors is easier (among other operations)
     s2p_roi_dfs.append(roi_df)
 
     return True
@@ -1169,16 +1151,12 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     component_df = mean_df[
         (mean_df.index.to_frame() == 'solvent').sum(axis='columns') == 1
     ]
-    # NOTE: i think the order of the 'odor1' and 'odor2' levels here can vary (they get
-    # sorted)
+
     odor1_df = component_df[component_df.index.get_level_values('odor2') == 'solvent'
         ].droplevel('odor2')
 
     odor2_df = component_df[component_df.index.get_level_values('odor1') == 'solvent'
         ].droplevel('odor1')
-
-    # not what i want. want all pairwise combinations.
-    #sum_arr = odor1_df.values + odor2_df.values
 
     sum_diff_df = (mean_df - odor1_df - odor2_df).dropna()
 
@@ -1252,11 +1230,10 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     new_level_values = [pd.Timestamp(date_str), int(fly_str), thorimage_id]
 
     roi_df = trial_stats
+    # TODO factor out (similar fn in kc_natural_mixes i believe)
     for name, value in list(zip(new_level_names, new_level_values))[::-1]:
         roi_df = pd.concat([roi_df], names=[name], keys=[value])
 
-    # TODO TODO TODO sort odors before assigning into either 'odor1' / 'odor2', so
-    # subsetting by odors is easier (among other operations)
     ij_roi_dfs.append(roi_df)
 
 
@@ -1415,6 +1392,11 @@ def capture_stdout_and_stderr(fn):
     return fn_captured
 
 
+# TODO TODO TODO probably refactor so that this is essentially just populating
+# lists[/listproxies] of dataframes from s2p/ijroi stuff (extracting in ij case, merging
+# in both cases, also converting to trial stats in both), and then move most plotting to
+# after this (and cache output of the loop over calls to this)
+# maybe leave plotting of dF/F images and stuff closer to raw data in here.
 def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=None):
     """
     Args:
@@ -1437,7 +1419,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     date, fly_num = date_and_fly_num
     thorimage_dir, thorsync_dir = thor_image_and_sync_dir
 
-    #if 'glomeruli' in thorimage_dir and 'diag' in thorimage_dir:
     if 'diag' in thorimage_dir:
         if not analyze_glomeruli_diagnostics:
             print('skipping because experiment is just glomeruli diagnostics\n')
@@ -2333,9 +2314,6 @@ def main():
         pprint(odors_without_abbrev)
 
 
-    # TODO TODO TODO refactor to loop over unique combinations of odor1/odor2 (AFTER
-    # fixing creation of DataFrames such taht they have a consistent order)
-
     def n_largest_signal_rois(sdf, n=5):
 
         def print_pd(x):
@@ -2355,6 +2333,8 @@ def main():
             print_pd(nlargest)
             print()
 
+
+    # TODO refactor to loop over unique combinations of odor1/odor2 [/delete]
 
     #if len(s2p_roi_dfs) > 0:
     #    df = pd.concat(s2p_roi_dfs)
