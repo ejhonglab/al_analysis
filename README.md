@@ -43,6 +43,13 @@ To install as manual install above, but using SSH authentication, you may simply
 to manually do so.
 
 
+#### Setting up link to Google sheet with metadata
+
+For the analysis to use the metadata in my Google Sheet `Hong lab documents/Tom - odor
+mixture experiments/pair_grid_data`, open the sheet and copy the link to a file called
+`pair_grid_data_gsheet_link.txt` in the top-level of this repository.
+
+
 ### Running
 
 ```

@@ -32,10 +32,14 @@ from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path, format_date
 
-import matplotlib
-# Won't get warnings that some of the interactive backends give in the multiprocessing
-# case, but can't make interactive plots.
-matplotlib.use('agg')
+ALLOW_INTERACTIVE_PLOTS = False
+
+if not ALLOW_INTERACTIVE_PLOTS:
+    import matplotlib
+    # Won't get warnings that some of the interactive backends give in the
+    # multiprocessing case, but can't make interactive plots.
+    matplotlib.use('agg')
+
 import matplotlib.pyplot as plt
 
 ###################################################################################
@@ -48,6 +52,10 @@ PLOT_FMT = os.environ.get('PLOT_FMT', 'svg')
 CMAP = 'plasma'
 
 analysis_intermediates_root = util.analysis_intermediates_root()
+
+# For aggregating good[/bad] examples of the activation of each of these glomeruli by
+# the odors targetting them.
+across_fly_glomeruli_diags_dir = join(PLOT_FMT, 'glomeruli_diagnostics')
 
 # TODO try to make this more granular, so the suite2p / non-suite2p analysis can be
 # skipped separately (latter should be generated on first run, but former will at least
@@ -155,6 +163,42 @@ bad_suite2p_analysis_dirs = (
     '2021-05-24/2/1o3ol_and_2h',
 )
 
+# This file is intentionally not tracked in git, so you will need to create it and
+# paste in the link to this Google Sheet as the sole contents of that file. The
+# sheet is located on our drive at:
+# 'Hong Lab documents/Tom - odor mixture experiments/pair_grid_data'
+gdf = util.gsheet_to_frame('pair_grid_data_gsheet_link.txt', normalize_col_names=True)
+gdf.set_index(['date', 'fly'], verify_integrity=True, inplace=True)
+
+# This is the name as converted by what `normalize_col_names=True` triggers.
+last_gsheet_col_before_glomeruli_diag_statuses = 'notes'
+last_gsheet_col_glomeruli_diag_statuses = 'all_diagnostics_bad'
+
+first_glomeruli_diag_col_idx = list(gdf.columns
+    ).index(last_gsheet_col_before_glomeruli_diag_statuses) + 1
+
+last_glomeruli_diag_col_idx = list(gdf.columns
+    ).index(last_gsheet_col_glomeruli_diag_statuses)
+
+glomeruli_diag_status_df = gdf.iloc[
+    :, first_glomeruli_diag_col_idx:(last_glomeruli_diag_col_idx + 1)
+]
+# Column names should be lowercased names of target glomeruli after this.
+glomeruli_diag_status_df.rename(columns=lambda x: x.split('_')[0], inplace=True)
+
+# Since I called butanone's target glomerulus VM7 in my olfactometer config, but updated
+# the name of the column in the gsheet to VM7d, as that is the specific part it should
+# activate.
+glomeruli_diag_status_df.rename(columns={'vm7d': 'vm7', 'all': 'all_bad'}, inplace=True)
+
+# For cases where there were multiple glomeruli diagnostic experiments (e.g. both sides
+# imaged, and only one used for subsequent experiments w/in fly). Paths (relative to
+# data root) to the recordings not followed up on / representative should go here.
+unused_glomeruli_diagnostics = (
+    # glomeruli_diagnostics_otherside is the one used here
+    '2021-05-25/2/glomeruli_diagnostics',
+)
+
 odor2abbrev = {
     'methyl salicylate': 'MS',
     'hexyl hexanoate': 'HH',
@@ -238,11 +282,14 @@ def savefig(fig, experiment_fig_dir, desc, close=True):
         fname_prefix = experiment_basedir + '_'
         basename = fname_prefix + basename
 
+    fig_path = join(experiment_fig_dir, basename)
     if SAVE_FIGS:
-        fig.savefig(join(experiment_fig_dir, basename))
+        fig.savefig(fig_path)
 
     if close:
         plt.close(fig)
+
+    return fig_path
 
 
 FAIL_INDICATOR_PREFIX = 'FAILING_'
@@ -1444,7 +1491,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         fig.suptitle(f'{experiment_id}\n{title}')
 
     def exp_savefig(fig, desc, **kwargs):
-        savefig(fig, plot_dir, desc, **kwargs)
+        return savefig(fig, plot_dir, desc, **kwargs)
 
     if SAVE_FIGS:
         os.makedirs(plot_dir, exist_ok=True)
@@ -1703,7 +1750,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     for i, odor_str in enumerate(odor_order):
 
         if odor_str in odor_str2target_glomeruli:
-            odor_str = f'{odor_str} ({odor_str2target_glomeruli[odor_str]})'
+            target_glomerulus = odor_str2target_glomeruli[odor_str]
+            odor_str = f'{odor_str} ({target_glomerulus})'
+        else:
+            target_glomerulus = None
 
         # TODO either:
         # - always use 2 digits (leading 0)
@@ -1917,7 +1967,67 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         viz.add_colorbar(mean_heatmap_fig, im)
 
         suptitle(odor_str, mean_heatmap_fig)
-        exp_savefig(mean_heatmap_fig, plot_desc)
+        fig_path = exp_savefig(mean_heatmap_fig, plot_desc)
+
+        if target_glomerulus is not None:
+            # gsheet only has labels on a per-fly basis, and those should apply to the
+            # glomeruli diagnostic experiment corresponding to the same FOV as the other
+            # experiments. Don't want to link any other experiments anywhere under here.
+            rel_exp_dir = '/'.join(analysis_dir.split(os.sep)[-3:])
+            if rel_exp_dir in unused_glomeruli_diagnostics:
+                continue
+
+            glomerulus_dir = join(across_fly_glomeruli_diags_dir, target_glomerulus)
+            os.makedirs(glomerulus_dir, exist_ok=True)
+
+            label_subdir = None
+            try:
+                fly_diag_statuses = glomeruli_diag_status_df.loc[(date, fly_num)]
+
+                fly_diags_labelled = fly_diag_statuses.any()
+                if not fly_diags_labelled:
+                    label_subdir = 'unlabelled'
+
+            except KeyError:
+                label_subdir = 'unlabelled'
+
+            if label_subdir is None:
+                try:
+                    curr_diag_good = fly_diag_statuses.loc[target_glomerulus.lower()]
+
+                except KeyError:
+                    warnings.warn(f'target glomerulus {target_glomerulus} not in Google'
+                        ' sheet! add column and label data. currently not linking these'
+                        ' plots!'
+                    )
+                    continue
+
+                if curr_diag_good:
+                    label_subdir = 'good'
+                else:
+                    label_subdir = 'bad'
+            else:
+                warnings.warn('please label quality glomeruli diagnostics for fly '
+                    f'{(date, fly_num)} in google sheet.'
+                )
+
+            label_dir = join(glomerulus_dir, label_subdir)
+            os.makedirs(label_dir, exist_ok=True)
+
+            link_prefix = '_'.join(experiment_id.split(os.sep)[:-1])
+            link_path = join(label_dir, f'{link_prefix}.{PLOT_FMT}')
+
+            if exists(link_path):
+                # Just warning so that all the average images, etc, will still be
+                # created, so those can be used to quickly tell which experiment
+                # corresponded to the same side as the real experiments in the same fly.
+                warnings.warn(f'{(date, fly_num)} has multiple glomeruli diagnostic '
+                    'experiments. add all but one to unused_glomeruli_diagnostics. '
+                    'FIRST IS CURRENTLY LINKED BUT MAY NOT BE THE RELEVANT EXPERIMENT!'
+                )
+                continue
+
+            os.symlink(os.path.abspath(fig_path), link_path)
 
     plt.close('all')
 
@@ -1936,10 +2046,13 @@ def main():
     global names_and_concs2analysis_dirs
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-j', '--no-parallel', action='store_true',
+
+    no_parallel_flag = '-j'
+    parser.add_argument(no_parallel_flag, '--no-parallel', action='store_true',
         help='Disables parallel calls to process_experiment. '
         'Useful for debugging internals of that function.'
     )
+
     parser.add_argument('-t', '--test', action='store_true',
         help='only *complete* main loop 1 time, for faster testing'
     )
@@ -1948,7 +2061,20 @@ def main():
     quick_test_only = args.test
     parallel = not args.no_parallel
 
+    if ALLOW_INTERACTIVE_PLOTS and parallel:
+        raise RuntimeError('set ALLOW_INTERACTIVE_PLOTS=False to run parallel or pass'
+            f' {no_parallel_flag} to run non-parallel with interactive plots'
+        )
+
     del parser, args
+
+    # TODO TODO probably print stuff in gsheet but not local and vice versa
+
+    # Always want to delete this and remake it in case labels in gsheet have changed.
+    if exists(across_fly_glomeruli_diags_dir):
+        shutil.rmtree(across_fly_glomeruli_diags_dir)
+
+    os.mkdir(across_fly_glomeruli_diags_dir)
 
     # TODO note that 2021-07-(21,27,28) contain reverse-order experiments. indicate
     # this fact in the plots for these experiments!!! (just skipping them for now
