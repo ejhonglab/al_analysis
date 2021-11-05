@@ -32,47 +32,34 @@ from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path, format_date
 
-ALLOW_INTERACTIVE_PLOTS = False
-
-if not ALLOW_INTERACTIVE_PLOTS:
-    import matplotlib
-    # Won't get warnings that some of the interactive backends give in the
-    # multiprocessing case, but can't make interactive plots.
-    matplotlib.use('agg')
-
+from matplotlib import colors
 import matplotlib.pyplot as plt
+
+
+plt.rcParams['figure.constrained_layout.use'] = True
+plt.rcParams['figure.constrained_layout.w_pad'] = 1/72
+plt.rcParams['figure.constrained_layout.h_pad'] = 0.5/72
+plt.rcParams['figure.constrained_layout.wspace'] = 0
+plt.rcParams['figure.constrained_layout.hspace'] = 0
 
 ###################################################################################
 # Constants that affect behavior of `process_experiment`
 ###################################################################################
-SAVE_FIGS = True
-
-PLOT_FMT = os.environ.get('PLOT_FMT', 'svg')
-# TODO also use this cmap for trial df/f images (or at least not viridis?)
-CMAP = 'plasma'
-
 analysis_intermediates_root = util.analysis_intermediates_root()
-
-# For aggregating good[/bad] examples of the activation of each of these glomeruli by
-# the odors targetting them.
-across_fly_glomeruli_diags_dir = join(PLOT_FMT, 'glomeruli_diagnostics')
 
 # TODO try to make this more granular, so the suite2p / non-suite2p analysis can be
 # skipped separately (latter should be generated on first run, but former will at least
 # require some manual steps [and the initial automated suite2p run may also fail])
 
-# TODO TODO also make more granular in the sense that we don't necessarily want to run
+# TODO also make more granular in the sense that we don't necessarily want to run
 # suite2p on glomerli diagnostics stuff, etc
-# TODO TODO probably make trial (+ avg across trial) dff image plots in their own
-# directory, so it's easier to just check if that directory exists (or maybe check if
-# any svg are in exp dir root? maybe assume plots are made if we have a suite2p
-# directory?)
-#skip_if_experiment_plot_dir_exists = True
+# TODO probably make trial (+ avg across trial) dff image plots in their own directory,
+# so it's easier to just check if that directory exists (or maybe check if any svg are
+# in exp dir root? maybe assume plots are made if we have a suite2p directory?)
 skip_if_experiment_plot_dir_exists = False
 
 # TODO TODO probably make another category or two for data marked as failed (in the
 # breakdown of data by pairs * concs at the end)
-#retry_previously_failed = True
 retry_previously_failed = False
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
@@ -93,7 +80,6 @@ analyze_glomeruli_diagnostics = True
 analyze_2d_tests = False
 
 non_suite2p_analysis = True
-#ignore_existing_nonsuite2p_outputs = False
 ignore_existing_nonsuite2p_outputs = True
 
 # Whether to run the suite2p pipeline (generates outputs among raw data, in 'suite2p'
@@ -103,9 +89,7 @@ do_suite2p = False
 # Will just skip if already exists if False
 overwrite_suite2p = False
 
-analyze_suite2p_outputs = True
-# TODO TODO add flags to only analyze stuff considered "done" in breakdown at end
-# (and probably also that has some merges at least)
+analyze_suite2p_outputs = False
 
 analyze_ijrois = True
 
@@ -118,11 +102,25 @@ n_top_z_to_analyze = 5
 ignore_bounding_frame_cache = False
 
 save_lastpair_dff_tiff = False
-SAVE_DFF_TIFF = True
+want_dff_tiff = True
 
 # TODO shorten any remaining absolute paths if this is True, so we can diff outputs
 # across installs w/ data in diff paths
 print_full_paths = False
+
+save_figs = True
+plot_fmt = os.environ.get('plot_fmt', 'svg')
+
+cmap = 'plasma'
+diverging_cmap = 'RdBu_r'
+# TODO TODO could try TwoSlopeNorm, but would probably want to define bounds per fly (or
+# else compute in another pass / plot these after aggregating?)
+diverging_cmap_kwargs = dict(cmap=diverging_cmap, norm=colors.CenteredNorm())
+
+dff_cbar_title = f'{viz.dff_latex}'
+trial_stat_cbar_title = f'Mean peak {viz.dff_latex}'
+
+single_dff_image_row_figsize = (6.4, 2.0)
 
 dff_vmin = 0
 dff_vmax = 3.0
@@ -163,6 +161,7 @@ bad_suite2p_analysis_dirs = (
     '2021-05-24/2/1o3ol_and_2h',
 )
 
+
 # This file is intentionally not tracked in git, so you will need to create it and
 # paste in the link to this Google Sheet as the sole contents of that file. The
 # sheet is located on our drive at:
@@ -198,6 +197,11 @@ unused_glomeruli_diagnostics = (
     # glomeruli_diagnostics_otherside is the one used here
     '2021-05-25/2/glomeruli_diagnostics',
 )
+
+# For aggregating good[/bad] examples of the activation of each of these glomeruli by
+# the odors targetting them.
+across_fly_glomeruli_diags_dir = join(plot_fmt, 'glomeruli_diagnostics')
+
 
 odor2abbrev = {
     'methyl salicylate': 'MS',
@@ -242,6 +246,10 @@ failed_assigning_frames_to_odors = []
 s2p_roi_dfs = []
 ij_roi_dfs = []
 
+ij_mean_dfs = []
+ij_sum_diff_dfs = []
+ij_max_diff_dfs = []
+
 # Using dict rather than defaultdict(list) so handling is more consistent in case when
 # multiprocessing DictProxy overrides this.
 names_and_concs2analysis_dirs = dict()
@@ -270,12 +278,14 @@ def get_analysis_dir(date, fly_num, thorimage_basedir):
     )
 
 
-def savefig(fig, experiment_fig_dir, desc, close=True):
+# Especially running process_experiment in parallel, the many-figures-open memory
+# warning will get tripped at the default setting, hence `close=True`.
+def savefig(fig, experiment_fig_dir, desc, close=True, **kwargs):
     # If True, the directory name containing (date, fly, thorimage_dir) information will
     # also be in the prefix for each of the plots saved within that directory (harder to
     # lose track in image viewers / after copying, but more verbose).
     prefix_plot_fnames = False
-    basename = util.to_filename(desc) + PLOT_FMT
+    basename = util.to_filename(desc) + plot_fmt
 
     if prefix_plot_fnames:
         experiment_basedir = split(experiment_fig_dir)[0]
@@ -283,8 +293,8 @@ def savefig(fig, experiment_fig_dir, desc, close=True):
         basename = fname_prefix + basename
 
     fig_path = join(experiment_fig_dir, basename)
-    if SAVE_FIGS:
-        fig.savefig(fig_path)
+    if save_figs:
+        fig.savefig(fig_path, **kwargs)
 
     if close:
         plt.close(fig)
@@ -858,7 +868,8 @@ def index_sort_key(level):
     return sort_key
 
 
-def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None):
+def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
+    **kwargs):
 
     assert single_roi_series.index.names == ['odor1', 'odor2', 'repeat']
 
@@ -873,13 +884,18 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
     # creation, do we still need this transpose_sort_key? if not, can probably delete
     # odor_strs2single_odor_name
     common_matshow_kwargs = dict(
-        ax=ax, title=title, transpose_sort_key=odor_strs2single_odor_name, cmap=CMAP,
+        ax=ax, title=title, transpose_sort_key=odor_strs2single_odor_name, cmap=cmap,
         # not working
-        #vmin=-0.2, vmax=2.0
+        #vmin=-0.2, vmax=2.0,
+        **kwargs
     )
 
     if show_repeats:
-        cax = viz.matshow(roi_df.droplevel('repeat'), group_ticklabels=True,
+        # TODO should i just let this make the axes and handle the colorbar? is the
+        # colorbar placement any better / worse if done that way? i guess i might
+        # occasionally want to have this plot in half of a figure (one Axes in an array
+        # of two, w/ the other being a view of the ROI footprint or something)?
+        fig, _ = viz.matshow(roi_df.droplevel('repeat'), group_ticklabels=True,
             **common_matshow_kwargs
         )
     else:
@@ -887,12 +903,12 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None)
         # TODO not sure why sort=False seems to be ignored... bug?
         mean_df = roi_df.groupby('odor2', sort=False).mean()
         mean_df.sort_index(key=index_sort_key, inplace=True)
-        cax = viz.matshow(mean_df, **common_matshow_kwargs)
+        fig, _ = viz.matshow(mean_df, **common_matshow_kwargs)
 
-    return cax
+    return fig
 
 
-def plot_all_roi_mean_responses(trial_stats, ax=None, title=None, roi_sortkeys=None):
+def plot_all_roi_mean_responses(trial_stats, title=None, roi_sortkeys=None, **kwargs):
 
     assert trial_stats.index.names == ['odor1', 'odor2', 'repeat']
 
@@ -914,8 +930,12 @@ def plot_all_roi_mean_responses(trial_stats, ax=None, title=None, roi_sortkeys=N
     plot_df.columns = plot_df.columns.astype(str)
     plot_df.index = plot_df.index.map(format_mix_from_strs)
 
-    cax = viz.matshow(plot_df, ax=ax, title=title, cmap=CMAP)
-    return cax, mean_df
+    # TODO should i just let this make the axes and handle the colorbar? is the colorbar
+    # placement any better / worse if done that way? will i ever want to put this plot
+    # in an axes alongside others (in one figure)?
+    fig, _ = viz.matshow(plot_df, title=title, cmap=cmap, **kwargs)
+
+    return fig, mean_df
 
 
 # TODO kwarg to allow passing trial stat fn in that includes frame rate info as closure,
@@ -989,14 +1009,11 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir=None
     # some merging (currently handling will treat it incorrectly)
     # TODO also plot roi / outline of roi on corresponding [mean?] plane / maybe with
     # other planes for context?
-    if SAVE_FIGS and plot_dir is not None:
+    if save_figs and plot_dir is not None:
         roi_dir = join(plot_dir, 'roi')
         os.makedirs(roi_dir, exist_ok=True)
 
-
     z_indices = [roi_stats[x]['iplane'] for x in rois.roi.values]
-
-    fig, ax = plt.subplots(nrows=1, ncols=1)
 
     title = 'Suite2p ROIs\nOrdered by Z plane'
 
@@ -1004,12 +1021,9 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir=None
     # types?
     # TODO TODO probably put lines between levels of sortkey if int (e.g. 'iplane')
     # (and also show on plot as second label above/below roi labels?)
-    cax, mean_df = plot_all_roi_mean_responses(trial_stats, ax=ax,
-        roi_sortkeys=z_indices, title=title
+    fig, mean_df = plot_all_roi_mean_responses(trial_stats, title=title,
+        roi_sortkeys=z_indices, colorbar_label=trial_stat_cbar_title, shrink=0.4
     )
-    viz.add_colorbar(fig, cax)
-
-    fig.tight_layout()
 
     if plot_dir is not None:
         savefig(fig, roi_dir, 'all_rois_by_z')
@@ -1031,24 +1045,20 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir=None
         #fig.suptitle(f'ROI {roi}')
 
         roi1_series = trial_stats.loc[:, roi]
-        cax = plot_roi_stats_odorpair_grid(roi1_series, ax=ax)
+        plot_roi_stats_odorpair_grid(roi1_series, ax=ax,
+            colorbar_label=trial_stat_cbar_title, shrink=0.4
+        )
 
-        # TODO TODO TODO (assuming colors are saved / randomization is seeded and easily
+        # TODO TODO (assuming colors are saved / randomization is seeded and easily
         # reproducible in suite2p) copy suite2p coloring for plotting ROIs (or at least
         # make my own color scheme consistent across all plots w/in experiment)
-        # TODO TODO TODO separate unified ROI plot (like combined view, but maybe all in
+        # TODO TODO separate unified ROI plot (like combined view, but maybe all in
         # one row for consistency with my other plots) with same color scheme
         # TODO TODO have scale in single ROI plots and ~"combined" view be the same
         # (each plot pixel same physical size)
         if include_rois:
             roi_stat = roi_stats[roi]
             s2p.plot_roi(roi_stat, ops, ax=axs[1])
-
-        # TODO TODO make colorbar ~size of matrix + move closer + show less decimals in
-        # ticks on it
-        viz.add_colorbar(fig, cax)
-
-        fig.tight_layout()
 
         if plot_dir is not None:
             savefig(fig, roi_dir, str(roi))
@@ -1126,24 +1136,18 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     trial_stats.to_csv(join(analysis_dir, 'trial_stats.csv'))
     '''
 
-    if SAVE_FIGS and plot_dir is not None:
+    if save_figs and plot_dir is not None:
         roi_dir = join(plot_dir, 'ijroi')
         os.makedirs(roi_dir, exist_ok=True)
 
 
     z_indices = masks.roi_z[masks.roi_num.isin(roi_nums)].values
 
-    fig, ax = plt.subplots(nrows=1, ncols=1)
-
     title = 'ImageJ ROIs\nOrdered by Z plane\n*possibly [over/under]merged'
 
-    cax, mean_df = plot_all_roi_mean_responses(trial_stats, ax=ax,
-        roi_sortkeys=z_indices, title=title
+    fig, mean_df = plot_all_roi_mean_responses(trial_stats, roi_sortkeys=z_indices,
+        title=title, colorbar_label=trial_stat_cbar_title, shrink=0.4
     )
-
-    viz.add_colorbar(fig, cax)
-
-    fig.tight_layout()
 
     if plot_dir is not None:
         savefig(fig, roi_dir, 'all_rois_by_z')
@@ -1158,10 +1162,12 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     odor2_df = component_df[component_df.index.get_level_values('odor1') == 'solvent'
         ].droplevel('odor1')
 
-    sum_diff_df = (mean_df - odor1_df - odor2_df).dropna()
+    # TODO TODO TODO recheck this math
+    # This order of DataFrame operations is required to get indexing to work (or at
+    # least some other ways of ordering it doesn't work).
+    sum_diff_df = -(mean_df - odor1_df - odor2_df).dropna()
 
-    # TODO maybe also drop solvent rows?
-    max_diff_df = mean_df * np.nan
+    max_df = mean_df * np.nan
     for odor1 in sum_diff_df.index.get_level_values('odor1').unique():
         for odor2 in sum_diff_df.index.get_level_values('odor2').unique():
             o1_series = odor1_df.loc[odor1]
@@ -1169,54 +1175,46 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
             max_series = np.maximum(o1_series, o2_series)
 
             max_idx = np.argmax(
-                (max_diff_df.index.get_level_values('odor1') == odor1) &
-                (max_diff_df.index.get_level_values('odor2') == odor2)
+                (max_df.index.get_level_values('odor1') == odor1) &
+                (max_df.index.get_level_values('odor2') == odor2)
             )
-            max_diff_df.iloc[max_idx] = max_series
+            max_df.iloc[max_idx] = max_series
             # TODO why didn't this work?
             '''
-            max_diff_df.loc[
-                (max_diff_df.index.get_level_values('odor1') == odor1) &
-                (max_diff_df.index.get_level_values('odor2') == odor2)
+            max_df.loc[
+                (max_df.index.get_level_values('odor1') == odor1) &
+                (max_df.index.get_level_values('odor2') == odor2)
             ] = max_series
             '''
 
-    # Getting rid of the solvent rows
-    max_diff_df = max_diff_df.dropna()
+    # dropna() is getting rid of the rows where >=1 odors are solvent
+    max_diff_df = (max_df - mean_df).dropna()
 
     for diff_df, desc in ((max_diff_df, 'max'), (sum_diff_df, 'sum')):
-        fig, ax = plt.subplots(nrows=1, ncols=1)
-
         plot_df = diff_df.copy()
         plot_df.columns = plot_df.columns.astype(str)
         plot_df.index = plot_df.index.map(format_mix_from_strs)
 
-        cax = viz.matshow(plot_df, ax=ax, title=f'Component {desc} minus observed',
-            cmap='RdBu'
+        # TODO less gradations on these color bars? kinda packed.
+        # TODO colorbar_label? or just ok to leave it in title?
+        viz.matshow(plot_df, title=f'Component {desc} minus observed', shrink=0.4,
+            **diverging_cmap_kwargs
         )
-
-        fig.tight_layout()
 
         if plot_dir is not None:
             savefig(fig, roi_dir, f'diff_{desc}')
 
     for roi in trial_stats.columns:
-        fig, ax = plt.subplots(nrows=1, ncols=1)
-
         # TODO more globally appropriate title? (w/ fly and other metadata. maybe number
         # flies within each odor pair / sequentially across days, and just use that as a
         # short ID?)
 
-        #fig.suptitle(f'ROI {roi}')
-
         roi1_series = trial_stats.loc[:, roi]
-        cax = plot_roi_stats_odorpair_grid(roi1_series, ax=ax)
+        fig = plot_roi_stats_odorpair_grid(roi1_series, label=dff_cbar_title,
+            shrink=0.4
+        )
 
-        # TODO TODO make colorbar ~size of matrix + move closer + show less decimals in
-        # ticks on it
-        viz.add_colorbar(fig, cax)
-
-        fig.tight_layout()
+        #fig.suptitle(f'ROI {roi}')
 
         if plot_dir is not None:
             savefig(fig, roi_dir, str(roi))
@@ -1232,9 +1230,19 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     roi_df = trial_stats
     # TODO factor out (similar fn in kc_natural_mixes i believe)
     for name, value in list(zip(new_level_names, new_level_values))[::-1]:
+        # TODO factor
         roi_df = pd.concat([roi_df], names=[name], keys=[value])
 
+        mean_df = pd.concat([mean_df], names=[name], keys=[value])
+        sum_diff_df = pd.concat([sum_diff_df], names=[name], keys=[value])
+        max_diff_df = pd.concat([max_diff_df], names=[name], keys=[value])
+        #
+
     ij_roi_dfs.append(roi_df)
+
+    ij_mean_dfs.append(mean_df)
+    ij_sum_diff_dfs.append(sum_diff_df)
+    ij_max_diff_dfs.append(max_diff_df)
 
 
 # TODO maybe refactor (part of?) this to hong2p.suite2p
@@ -1456,7 +1464,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # Created below after we decide whether to skip a given experiment based on the
     # experiment type, etc.
     # TODO rename to experiment_plot_dir or something
-    plot_dir = join(PLOT_FMT, experiment_basedir)
+    plot_dir = join(plot_fmt, experiment_basedir)
 
     # TODO refactor scandir thing to not_empty or something
     if (skip_if_experiment_plot_dir_exists and exists(plot_dir)
@@ -1474,7 +1482,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     def exp_savefig(fig, desc, **kwargs):
         return savefig(fig, plot_dir, desc, **kwargs)
 
-    if SAVE_FIGS:
+    if save_figs:
         os.makedirs(plot_dir, exist_ok=True)
 
         # (to remove empty directories at end)
@@ -1640,9 +1648,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         # intermediates that would go in analysis_dir).
         # Set ignore_existing_nonsuite2p_outputs=False to do this analysis
         # regardless, regenerating any overlapping plots.
-        if len(glob.glob(join(plot_dir, f'*.{PLOT_FMT}'))) > 0:
+        if len(glob.glob(join(plot_dir, f'*.{plot_fmt}'))) > 0:
             print('skipping non-suite2p analysis because plot dir contains '
-                f'{PLOT_FMT}\n'
+                f'{plot_fmt}\n'
             )
 
             #if quick_test_only:
@@ -1670,7 +1678,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     # TODO only save this computed from motion corrected movie, in any future cases
     # where we are actually motion correcting as part of this pipeline
-    save_dff_tiff = SAVE_DFF_TIFF
+    save_dff_tiff = want_dff_tiff
     if save_dff_tiff:
         dff_tiff_fname = join(analysis_dir, 'dff.tif')
         if exists(dff_tiff_fname):
@@ -1714,7 +1722,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         z = n_top_z_to_analyze
 
     anat_baseline = movie.mean(axis=0)
-    baseline_fig, baseline_axs = plt.subplots(1, z, squeeze=False)
+    baseline_fig, baseline_axs = plt.subplots(1, z, squeeze=False,
+        figsize=single_dff_image_row_figsize
+    )
     for d in range(z):
         ax = baseline_axs[0, d]
 
@@ -1755,11 +1765,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             return im
 
         trial_heatmap_fig, trial_heatmap_axs = plt.subplots(nrows=n_repeats,
-            ncols=z, squeeze=False
+            ncols=z, squeeze=False, figsize=(6.4, 3.9)
         )
 
         # Will be of shape (1, z), since squeeze=False
-        mean_heatmap_fig, mean_heatmap_axs = plt.subplots(ncols=z, squeeze=False)
+        mean_heatmap_fig, mean_heatmap_axs = plt.subplots(ncols=z, squeeze=False,
+            figsize=single_dff_image_row_figsize
+        )
 
         trial_mean_dffs = []
 
@@ -1876,19 +1888,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         # (end loop over repeats of one odor)
 
-        # TODO TODO see link in hong2p.viz.image_grid for ways to eliminate
-        # whitespace + refactor some of this into that viz module
-        hspace = 0
-        wspace = 0.014
-
-        trial_heatmap_fig.subplots_adjust(hspace=hspace, wspace=wspace)
-
-        viz.add_colorbar(trial_heatmap_fig, im)
+        viz.add_colorbar(trial_heatmap_fig, im, label=dff_cbar_title, shrink=0.32)
 
         suptitle(odor_str, trial_heatmap_fig)
-        close = i < len(odor_order) - 1
-        # TODO need to make sure figures from earlier iterations are closed
-        exp_savefig(trial_heatmap_fig, plot_desc + '_trials', close=close)
+        exp_savefig(trial_heatmap_fig, plot_desc + '_trials')
 
         avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
 
@@ -1944,8 +1947,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
             im = dff_imshow(ax, avg_mean_dff[d])
 
-        mean_heatmap_fig.subplots_adjust(wspace=wspace)
-        viz.add_colorbar(mean_heatmap_fig, im)
+        viz.add_colorbar(mean_heatmap_fig, im, label=f'Mean {viz.dff_latex}',
+            shrink=0.68
+        )
 
         suptitle(odor_str, mean_heatmap_fig)
         fig_path = exp_savefig(mean_heatmap_fig, plot_desc)
@@ -1972,6 +1976,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             except KeyError:
                 label_subdir = 'unlabelled'
 
+            date_str = f'{date:%Y-%m-%d}'
+
             if label_subdir is None:
                 try:
                     curr_diag_good = fly_diag_statuses.loc[target_glomerulus.lower()]
@@ -1989,21 +1995,21 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     label_subdir = 'bad'
             else:
                 warnings.warn('please label quality glomeruli diagnostics for fly '
-                    f'{(date, fly_num)} in google sheet.'
+                    f'{(date_str, fly_num)} in google sheet.'
                 )
 
             label_dir = join(glomerulus_dir, label_subdir)
             os.makedirs(label_dir, exist_ok=True)
 
             link_prefix = '_'.join(experiment_id.split(os.sep)[:-1])
-            link_path = join(label_dir, f'{link_prefix}.{PLOT_FMT}')
+            link_path = join(label_dir, f'{link_prefix}.{plot_fmt}')
 
             if exists(link_path):
                 # Just warning so that all the average images, etc, will still be
                 # created, so those can be used to quickly tell which experiment
                 # corresponded to the same side as the real experiments in the same fly.
-                warnings.warn(f'{(date, fly_num)} has multiple glomeruli diagnostic '
-                    'experiments. add all but one to unused_glomeruli_diagnostics. '
+                warnings.warn(f'{(date_str, fly_num)} has multiple glomeruli diagnostic'
+                    ' experiments. add all but one to unused_glomeruli_diagnostics. '
                     'FIRST IS CURRENTLY LINKED BUT MAY NOT BE THE RELEVANT EXPERIMENT!'
                 )
                 continue
@@ -2017,14 +2023,98 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     print()
 
-    #if quick_test_only:
-    #    break
+
+def plot_dendrogram(model, **kwargs):
+    from scipy.cluster.hierarchy import dendrogram
+
+    # Create linkage matrix and then plot the dendrogram
+
+    # create the counts of samples under each node
+    counts = np.zeros(model.children_.shape[0])
+    n_samples = len(model.labels_)
+    for i, merge in enumerate(model.children_):
+        current_count = 0
+        for child_idx in merge:
+            if child_idx < n_samples:
+                current_count += 1  # leaf node
+            else:
+                current_count += counts[child_idx - n_samples]
+        counts[i] = current_count
+
+    linkage_matrix = np.column_stack(
+        [model.children_, model.distances_, counts]
+    ).astype(float)
+
+    # Plot the corresponding dendrogram
+    dendrogram(linkage_matrix, **kwargs)
 
 
 def main():
     global names2final_concs
     global seen_stimulus_yamls2thorimage_dirs
     global names_and_concs2analysis_dirs
+
+    '''
+    mean_df = pd.read_pickle('mean_df.p').T
+    sum_diff_df = pd.read_pickle('sum_diff_df.p').T
+    max_diff_df = pd.read_pickle('max_diff_df.p').T
+
+    shrink = 0.3
+
+    def plot_clusters(df, cmap=cmap):
+        from sklearn.cluster import AgglomerativeClustering
+
+        plot_df = df.iloc[:, ::-1].copy()
+        plot_df.columns = plot_df.columns.map(format_mix_from_strs)
+        plot_df.index = plot_df.index.map(lambda x: '/'.join([str(y) for y in x]))
+
+        fig, axs = plt.subplots(nrows=2, ncols=1)
+        ax0 = axs.flat[0]
+        _, im = viz.matshow(plot_df, ax=ax0, cmap=cmap)
+        viz.add_colorbar(fig, im, label=trial_stat_cbar_title, shrink=shrink)
+
+        plt.sca(axs.flat[1])
+
+        # TODO TODO TODO try aligning across odor pairs to cluster ~"types of
+        # interactions" across all data. two ideas:
+        # 1. defined odor A as the more activating
+        # 2. double the data, flipping the odors, to try to get rid of any arbitrary
+        #    asymmetry. possible problems this could cause?
+
+        model = AgglomerativeClustering(distance_threshold=0, n_clusters=None)
+
+        # TODO TODO TODO transposed right? why so few leaf nodes?
+        # problem w/ the dendrogram invocation only?
+        model = model.fit(plot_df)
+
+        plot_dendrogram(model, truncate_mode='level', p=3)
+
+    figsize = (3.0, 7.0)
+
+    # TODO are these colorbar_label values appropriate?
+
+    plot_df = sum_diff_df
+    plot_df = plot_df.iloc[:, ::-1]
+    plot_df.columns = plot_df.columns.map(format_mix_from_strs)
+    plot_df.index = plot_df.index.map(lambda x: '/'.join([str(y) for y in x]))
+    fig, _ = viz.matshow(plot_df, title='Sum minus obs', figsize=figsize,
+        colorbar_label=trial_stat_cbar_title, shrink=shrink, **diverging_cmap_kwargs
+    )
+
+    plot_df = max_diff_df
+    plot_df = plot_df.iloc[:, ::-1]
+    plot_df.columns = plot_df.columns.map(format_mix_from_strs)
+    plot_df.index = plot_df.index.map(lambda x: '/'.join([str(y) for y in x]))
+    fig, _ = viz.matshow(plot_df, title='Max minus obs', figsize=figsize,
+        colorbar_label=trial_stat_cbar_title, shrink=shrink, **diverging_cmap_kwargs
+    )
+
+    # TODO TODO TODO fix
+    plot_clusters(mean_df)
+
+    plt.show()
+    import ipdb; ipdb.set_trace()
+    '''
 
     parser = argparse.ArgumentParser()
 
@@ -2042,20 +2132,19 @@ def main():
     quick_test_only = args.test
     parallel = not args.no_parallel
 
-    if ALLOW_INTERACTIVE_PLOTS and parallel:
-        raise RuntimeError('set ALLOW_INTERACTIVE_PLOTS=False to run parallel or pass'
-            f' {no_parallel_flag} to run non-parallel with interactive plots'
-        )
-
     del parser, args
 
-    # TODO TODO probably print stuff in gsheet but not local and vice versa
+    if parallel:
+        import matplotlib
+        # Won't get warnings that some of the interactive backends give in the
+        # multiprocessing case, but can't make interactive plots.
+        matplotlib.use('agg')
 
     # Always want to delete this and remake it in case labels in gsheet have changed.
     if exists(across_fly_glomeruli_diags_dir):
         shutil.rmtree(across_fly_glomeruli_diags_dir)
 
-    os.mkdir(across_fly_glomeruli_diags_dir)
+    os.makedirs(across_fly_glomeruli_diags_dir)
 
     # TODO note that 2021-07-(21,27,28) contain reverse-order experiments. indicate
     # this fact in the plots for these experiments!!! (just skipping them for now
@@ -2333,7 +2422,6 @@ def main():
             print_pd(nlargest)
             print()
 
-
     # TODO refactor to loop over unique combinations of odor1/odor2 [/delete]
 
     #if len(s2p_roi_dfs) > 0:
@@ -2346,6 +2434,33 @@ def main():
     #    hdf = df.loc[df.index.get_level_values('thorimage_id').str.contains('1-6ol')]
     #    print('\n1-HEXANOL AND ETHYL HEXANOATE:')
     #    n_largest_signal_rois(hdf)
+
+
+    # TODO TODO probably print stuff in gsheet but not local and vice versa
+
+
+    # TODO fix other code and then probably delete some/all of this
+    def fix_metadata(df, fly_id):
+        for x in ['date', 'fly_num', 'thorimage_id']:
+            df = df.droplevel(x)
+
+        df.columns = pd.MultiIndex.from_product([[fly_id], df.columns])
+
+        return df
+
+    def agg_dfs(dfs):
+        return pd.concat([fix_metadata(x, i + 1) for i, x in enumerate(dfs)],
+            axis='columns'
+        )
+    #
+
+    mean_df = agg_dfs(ij_mean_dfs).loc[:, 1:3].dropna()
+    sum_diff_df = agg_dfs(ij_sum_diff_dfs).loc[:, 1:3].dropna()
+    max_diff_df = agg_dfs(ij_max_diff_dfs).loc[:, 1:3].dropna()
+
+    mean_df.to_pickle('mean_df.p')
+    sum_diff_df.to_pickle('sum_diff_df.p')
+    max_diff_df.to_pickle('max_diff_df.p')
 
     import ipdb; ipdb.set_trace()
 
