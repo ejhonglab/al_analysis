@@ -2,9 +2,9 @@
 
 import argparse
 import os
-from os.path import join, split, exists, splitext, expanduser
+from os.path import join, split, exists, expanduser
 from pprint import pprint, pformat
-from collections import Counter, defaultdict
+from collections import defaultdict
 import warnings
 import time
 import shutil
@@ -24,16 +24,18 @@ import tifffile
 import yaml
 from suite2p import run_s2p
 import ijroi
+from matplotlib import colors
+import matplotlib.pyplot as plt
+import seaborn as sns
 # TODO find a nicer perceptually linear colormap from here?
 #import colorcet as cc
 
-from hong2p import util, thor, viz
+from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path, format_date
-
-from matplotlib import colors
-import matplotlib.pyplot as plt
+from hong2p.olf import format_odor, format_mix_from_strs, format_odor_list
+from hong2p.viz import dff_latex
 
 
 plt.rcParams['figure.constrained_layout.use'] = True
@@ -80,6 +82,7 @@ analyze_glomeruli_diagnostics = True
 analyze_2d_tests = False
 
 non_suite2p_analysis = True
+# TODO maybe put this one behind a CLI flag?
 ignore_existing_nonsuite2p_outputs = True
 
 # Whether to run the suite2p pipeline (generates outputs among raw data, in 'suite2p'
@@ -113,12 +116,16 @@ plot_fmt = os.environ.get('plot_fmt', 'svg')
 
 cmap = 'plasma'
 diverging_cmap = 'RdBu_r'
-# TODO TODO could try TwoSlopeNorm, but would probably want to define bounds per fly (or
-# else compute in another pass / plot these after aggregating?)
+# TODO could try TwoSlopeNorm, but would probably want to define bounds per fly (or else
+# compute in another pass / plot these after aggregating?)
 diverging_cmap_kwargs = dict(cmap=diverging_cmap, norm=colors.CenteredNorm())
 
-dff_cbar_title = f'{viz.dff_latex}'
-trial_stat_cbar_title = f'Mean peak {viz.dff_latex}'
+dff_cbar_title = f'{dff_latex}'
+
+# TODO better name
+trial_stat_cbar_title = f'Mean peak {dff_latex}'
+
+diff_cbar_title = f'$\Delta$ mean peak {dff_latex}'
 
 single_dff_image_row_figsize = (6.4, 2.0)
 
@@ -340,206 +347,6 @@ def clear_fail_indicators(analysis_dir):
         os.remove(f)
 
 
-def stimulus_yaml_from_thorimage_xml(xml):
-    """Returns absolute path to stimulus YAML file from note field in ThorImage XML.
-
-    XML just contains a manually-entered path relative to where the olfactometer code
-    that generated it was run, but assuming it was copied to the appropriate location,
-    this absolute path should exist.
-    """
-    stimfile_root = util.stimfile_root()
-
-    notes = thor.get_thorimage_notes_xml(xml)
-
-    yaml_path = None
-    parts = notes.split()
-    for p in parts:
-        p = p.strip()
-        if p.endswith('.yaml'):
-            if yaml_path is not None:
-                raise ValueError('encountered multiple *.yaml substrings!')
-
-            yaml_path = p
-
-    assert yaml_path is not None
-
-    # TODO change data + delete this hack
-    if '""' in yaml_path:
-        date_str = '_'.join(yaml_path.split('_')[:2])
-        yaml_path = yaml_path.replace('""', date_str)
-
-    # Since paths copied/pasted within Windows may have '\' as a file
-    # separator character.
-    yaml_path = yaml_path.replace('\\', '/')
-
-    if not exists(join(stimfile_root, yaml_path)):
-        prefix, ext = splitext(yaml_path)
-        yaml_dir = '_'.join(prefix.split('_')[:3])
-        subdir_path = join(stimfile_root, yaml_dir, yaml_path)
-        if exists(subdir_path):
-            yaml_path = subdir_path
-
-    yaml_path = join(stimfile_root, yaml_path)
-    assert exists(yaml_path), f'{yaml_path}'
-
-    return yaml_path
-
-
-def odordict_sort_key(odor_dict):
-    name = odor_dict['name']
-
-    # This assertion is only here to help clarify how solvent is actually represented in
-    # all my current uses (i.e. w/ 'name' as an odor and 'log10_conc' None).
-    # NOTE: if I do ever add solvent vials outside of the series of dilutions for each
-    # odor (or in my diagnostic experiments), this assertion would cause problems.
-    assert name not in ('solvent', 'pfo')
-
-    # If present, we expect this value to be a non-positive number.
-    # Using 0 as default for lack of 'log10_conc' key because that case should indicate
-    # some type of pure odor (or something where the concentration is specified in the
-    # name / unknown). '5% cleaning ammonia in water' for example, where original
-    # concentration of cleaning ammonia is unknown.
-    log10_conc = odor_dict.get('log10_conc', 0)
-
-    # 'log10_conc: null' in one of the YAMLs should map to None here.
-    if log10_conc is None:
-        log10_conc = float('-inf')
-
-    assert type(log10_conc) in (int, float), f'type({log10_conc}) == {type(log10_conc)}'
-
-    return (name, log10_conc)
-
-
-def sort_odor_list(odor_list):
-    """Returns a sorted list of dicts representing odors for one trial
-
-    Name takes priority over concentration, so with the same set of odor names in each
-    trial's odor_list, this should produce a consistent ordering (and same indexes can
-    be used assuming equal length of all)
-    """
-    return sorted(odor_list, key=odordict_sort_key)
-
-
-def yaml_data2pin_lists(yaml_data):
-    """
-    Pins used as balances can be part of these lists despite not having a corresponding
-    odor in 'pins2odors'.
-    """
-    return [x['pins'] for x in yaml_data['pin_sequence']['pin_groups']]
-
-
-def yaml_data2odor_lists(yaml_data):
-    """Returns a list-of-lists of dictionary representation of odors.
-
-    Each dictionary will have at least the key 'name' and generally also 'log10_conc'.
-
-    The i-th list contains all of the odors presented simultaneously on the i-th odor
-    presentation.
-    """
-    pin_lists = yaml_data2pin_lists(yaml_data)
-    # int pin -> dict representing odor (keys 'name', 'log10_conc', etc)
-    pins2odors = yaml_data['pins2odors']
-
-    odor_lists = []
-    for pin_list in pin_lists:
-
-        odor_list = []
-        for p in pin_list:
-            if p in pins2odors:
-                odor_list.append(pins2odors[p])
-
-        odor_lists.append(sort_odor_list(odor_list))
-
-    return odor_lists
-
-
-def thorimage_xml2yaml_info_and_odor_lists(xml):
-    """Returns yaml_path, yaml_data, odor_lists
-    """
-    yaml_path = stimulus_yaml_from_thorimage_xml(xml)
-
-    with open(yaml_path, 'r') as f:
-        yaml_data = yaml.safe_load(f)
-
-    odor_lists = yaml_data2odor_lists(yaml_data)
-
-    return yaml_path, yaml_data, odor_lists
-
-
-def remove_consecutive_repeats(odor_lists):
-    """Returns a list-of-str without any consecutive repeats and int # of repeats.
-
-    Wanted to also take a list-of-lists-of-dicts, where each dict represents one odor
-    and each internal list represents all of the odors on one trial, but the internal
-    lists (nor the dicts they contain) would not be hashable, and thus cannot work with
-    Counter as-is.
-
-    Assumed that all elements of `odor_lists` are repeated the same number of times, and
-    all repeats are consecutive. Actually now as long as any repeats are to full # and
-    consecutive, it is ok for a particular odor (e.g. solvent control) to be repeated
-    `n_repeats` times in each of several different positions.
-    """
-    # In Python 3.7+, order should be guaranteed to be equal to order first encountered
-    # in odor_lists.
-    # TODO modify to also allow counting non-hashable stuff (i.e.  dictionaries), so i
-    # can pass my (list of) lists-of-dicts representation directly
-    counts = Counter(odor_lists)
-
-    count_values = set(counts.values())
-    n_repeats = min(count_values)
-    without_consecutive_repeats = odor_lists[::n_repeats]
-
-    # TODO possible to combine these two lines to one?
-    # https://stackoverflow.com/questions/25674169
-    nested = [[x] * n_repeats for x in without_consecutive_repeats]
-    flat = [x for xs in nested for x in xs]
-    assert flat == odor_lists, 'variable number or non-consecutive repeats'
-
-    # TODO add something like (<n>) to subsequent n_repeats occurence of the same odor
-    # (e.g. solvent control) (OK without as long as we are prefixing filenames with
-    # presentation index, but not-OK if we ever wanted to stop that)
-
-    return without_consecutive_repeats, n_repeats
-
-
-def format_odor(odor_dict, conc=True, name_conc_delim=' @ ', conc_key='log10_conc'):
-    """Takes a dict representation of an odor to a pretty str.
-
-    Expected to have at least 'name' key, but will also use 'log10_conc' (or `conc_key`)
-    if available, unless `conc=False`.
-    """
-    ostr = odor_dict['name']
-
-    if conc_key in odor_dict:
-        # TODO opt to choose between 'solvent' and no string (w/ no delim below used?)?
-        # what do i do in hong2p.util fn now?
-        if odor_dict[conc_key] is None:
-            return 'solvent'
-
-        if conc:
-            ostr += f'{name_conc_delim}{odor_dict[conc_key]}'
-
-    return ostr
-
-
-def format_mix_from_strs(odor_strs, delim=None):
-    if delim is None:
-        delim = ' + '
-
-    odor_strs = [x for x in odor_strs if x != 'solvent']
-    if len(odor_strs) > 0:
-        return delim.join(odor_strs)
-    else:
-        return 'solvent'
-
-
-def format_odor_list(odor_list, delim=None, **kwargs):
-    """Takes list of dicts representing odors for one trial to pretty str.
-    """
-    odor_strs = [format_odor(x, **kwargs) for x in odor_list]
-    return format_mix_from_strs(odor_strs, delim=delim)
-
-
 # TODO did i already implement this logic somewhere in this file? use this code if so
 def n_odors_per_trial(odor_lists):
     """
@@ -686,8 +493,7 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
         xml = thor.get_thorimage_xmlroot(thorimage_dir)
         ti_time = thor.get_thorimage_time_xml(xml)
 
-        yaml_path, yaml_data, odor_lists = \
-            thorimage_xml2yaml_info_and_odor_lists(xml)
+        yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
 
         seen_stimulus_yamls2thorimage_dirs[yaml_path].append(thorimage_dir)
 
@@ -833,7 +639,8 @@ def compute_trial_stats(traces, bounding_frames, odor_order_with_repeats=None,
     return trial_stats_df
 
 
-def index_sort_key(level):
+# TODO share (parts?) w/ similar key fn now in hong2p.olf?
+def odor_index_sort_key(level):
     # The assignment below failed for some int dtype levels, even though the boolean
     # mask dictating where assignment should happen must have been all False...
     if level.dtype != np.dtype('O'):
@@ -863,9 +670,32 @@ def index_sort_key(level):
     # should give me the sorting i want.
     sort_key[solvent_elements] = min(conc_keys) - 1
 
-    # TODO do i actually need to convert it back to a similar Index like the docs
-    # say, or can i leave it as an array?
-    return sort_key
+    # Converting back to an index so that `level=<previous level name>` arg to
+    # `DataFrame.sort_index` doesn't get broken. This key function is used to generate
+    # an intermediate Index pandas uses to sort, and that intermediate needs to have the
+    # same level names to be able to refer to them as if it was the input object.
+    return pd.Index(sort_key, name=level.name)
+
+
+odor_cols = ['odor1', 'odor2']
+def sort_odor_indices(df):
+
+    def levels_to_sort(index):
+        return [k for k in index.names if k in odor_cols]
+
+    kwargs = dict(sort_remaining=False)
+
+    levels = levels_to_sort(df.index)
+    for axis_name in ('index', 'columns'):
+        levels = levels_to_sort(getattr(df, axis_name))
+        if len(levels) > 0:
+            # TODO check my level sort key fn works in both case of 1 level passed in as
+            # well as 2
+            df = df.sort_index(key=odor_index_sort_key, axis=axis_name, level=levels,
+                **kwargs
+            )
+
+    return df
 
 
 def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
@@ -875,8 +705,7 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
 
     roi_df = single_roi_series.unstack(level=0)
 
-    roi_df = roi_df.sort_index(key=index_sort_key, axis=0
-        ).sort_index(key=index_sort_key, axis=1)
+    roi_df = sort_odor_indices(roi_df)
 
     title = f'ROI {single_roi_series.name}'
 
@@ -901,8 +730,8 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
     else:
         # 'odor2' is the one on the row axis, as one level alongside 'repeat'
         # TODO not sure why sort=False seems to be ignored... bug?
-        mean_df = roi_df.groupby('odor2', sort=False).mean()
-        mean_df.sort_index(key=index_sort_key, inplace=True)
+        mean_df = sort_odor_indices(roi_df.groupby('odor2', sort=False).mean())
+
         fig, _ = viz.matshow(mean_df, **common_matshow_kwargs)
 
     return fig
@@ -913,8 +742,7 @@ def plot_all_roi_mean_responses(trial_stats, title=None, roi_sortkeys=None, **kw
     assert trial_stats.index.names == ['odor1', 'odor2', 'repeat']
 
     mean_df = trial_stats.groupby(['odor1', 'odor2'], sort=False).mean()
-
-    mean_df.sort_index(key=index_sort_key, inplace=True)
+    mean_df = sort_odor_indices(mean_df)
 
     if roi_sortkeys is not None:
         assert len(roi_sortkeys) == len(trial_stats.columns)
@@ -926,14 +754,10 @@ def plot_all_roi_mean_responses(trial_stats, title=None, roi_sortkeys=None, **kw
 
         mean_df.sort_index(key=roi_sortkey_fn, axis='columns', inplace=True)
 
-    plot_df = mean_df.copy()
-    plot_df.columns = plot_df.columns.astype(str)
-    plot_df.index = plot_df.index.map(format_mix_from_strs)
-
-    # TODO should i just let this make the axes and handle the colorbar? is the colorbar
-    # placement any better / worse if done that way? will i ever want to put this plot
-    # in an axes alongside others (in one figure)?
-    fig, _ = viz.matshow(plot_df, title=title, cmap=cmap, **kwargs)
+    # TODO check whether passing `xticklabels=str` works, and fix if not
+    fig, _ = viz.matshow(mean_df, title=title, xticklabels=str,
+        yticklabels=format_mix_from_strs, cmap=cmap, **kwargs
+    )
 
     return fig, mean_df
 
@@ -1022,7 +846,7 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir=None
     # TODO TODO probably put lines between levels of sortkey if int (e.g. 'iplane')
     # (and also show on plot as second label above/below roi labels?)
     fig, mean_df = plot_all_roi_mean_responses(trial_stats, title=title,
-        roi_sortkeys=z_indices, colorbar_label=trial_stat_cbar_title, shrink=0.4
+        roi_sortkeys=z_indices, cbar_label=trial_stat_cbar_title, cbar_shrink=0.4
     )
 
     if plot_dir is not None:
@@ -1046,7 +870,7 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir=None
 
         roi1_series = trial_stats.loc[:, roi]
         plot_roi_stats_odorpair_grid(roi1_series, ax=ax,
-            colorbar_label=trial_stat_cbar_title, shrink=0.4
+            cbar_label=trial_stat_cbar_title, cbar_shrink=0.4
         )
 
         # TODO TODO (assuming colors are saved / randomization is seeded and easily
@@ -1146,7 +970,7 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     title = 'ImageJ ROIs\nOrdered by Z plane\n*possibly [over/under]merged'
 
     fig, mean_df = plot_all_roi_mean_responses(trial_stats, roi_sortkeys=z_indices,
-        title=title, colorbar_label=trial_stat_cbar_title, shrink=0.4
+        title=title, cbar_label=trial_stat_cbar_title, cbar_shrink=0.4
     )
 
     if plot_dir is not None:
@@ -1191,30 +1015,21 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     max_diff_df = (max_df - mean_df).dropna()
 
     for diff_df, desc in ((max_diff_df, 'max'), (sum_diff_df, 'sum')):
-        plot_df = diff_df.copy()
-        plot_df.columns = plot_df.columns.astype(str)
-        plot_df.index = plot_df.index.map(format_mix_from_strs)
-
         # TODO less gradations on these color bars? kinda packed.
-        # TODO colorbar_label? or just ok to leave it in title?
-        viz.matshow(plot_df, title=f'Component {desc} minus observed', shrink=0.4,
-            **diverging_cmap_kwargs
+        # TODO cbar_label? or just ok to leave it in title?
+        viz.matshow(diff_df, title=f'Component {desc} minus observed', cbar_shrink=0.4,
+            # TODO check that `xticklabels=str` works
+            xticklabels=str, yticklabels=format_mix_from_strs, **diverging_cmap_kwargs
         )
 
         if plot_dir is not None:
             savefig(fig, roi_dir, f'diff_{desc}')
 
     for roi in trial_stats.columns:
-        # TODO more globally appropriate title? (w/ fly and other metadata. maybe number
-        # flies within each odor pair / sequentially across days, and just use that as a
-        # short ID?)
-
         roi1_series = trial_stats.loc[:, roi]
         fig = plot_roi_stats_odorpair_grid(roi1_series, label=dff_cbar_title,
-            shrink=0.4
+            cbar_shrink=0.4
         )
-
-        #fig.suptitle(f'ROI {roi}')
 
         if plot_dir is not None:
             savefig(fig, roi_dir, str(roi))
@@ -1224,8 +1039,19 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     # TODO maybe refactor
     date_str, fly_str, thorimage_id = analysis_dir.split(os.path.sep)[-3:]
 
-    new_level_names = ['date', 'fly_num', 'thorimage_id']
-    new_level_values = [pd.Timestamp(date_str), int(fly_str), thorimage_id]
+    # Not including concentrations in metadata to add, b/c I generally run this script
+    # skipping all but final concentrations (process_experiment returns None for all
+    # non-final concentrations)
+    (name1, _), (name2, _) = odor_lists2names_and_conc_ranges(odor_lists)
+
+    # TODO maybe factor metadata handling to process_experiment (though would need to
+    # return dataframes from here rather than append to a global variable...)
+    # (so we don't need to recompute names_and_conc_ranges, etc)
+
+    new_level_names = ['date', 'fly_num', 'thorimage_id', 'name1', 'name2']
+    new_level_values = [pd.Timestamp(date_str), int(fly_str), thorimage_id,
+        name1, name2
+    ]
 
     roi_df = trial_stats
     # TODO factor out (similar fn in kc_natural_mixes i believe)
@@ -1400,11 +1226,12 @@ def capture_stdout_and_stderr(fn):
     return fn_captured
 
 
-# TODO TODO TODO probably refactor so that this is essentially just populating
+# TODO TODO probably refactor so that this is essentially just populating
 # lists[/listproxies] of dataframes from s2p/ijroi stuff (extracting in ij case, merging
 # in both cases, also converting to trial stats in both), and then move most plotting to
-# after this (and cache output of the loop over calls to this)
-# maybe leave plotting of dF/F images and stuff closer to raw data in here.
+# after this (and cache output of the loop over calls to this) maybe leave plotting of
+# dF/F images and stuff closer to raw data in here. (or at least factor out time
+# intensive df/f image plots and cache/skip those separately)
 def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=None):
     """
     Args:
@@ -1488,7 +1315,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         # (to remove empty directories at end)
         experiment_plot_dirs.append(plot_dir)
 
-    yaml_path, yaml_data, odor_lists = thorimage_xml2yaml_info_and_odor_lists(xml)
+    yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
     print('yaml_path:', shorten_path(yaml_path, n_parts=2))
 
     # TODO also exclude stuff where stimuli were not pairs. maybe just try/except
@@ -1553,9 +1380,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         #)
 
     # NOTE: converting to list-of-str FIRST, so that each element will be
-    # hashable, and thus can be counted inside `remove_consecutive_repeats`
+    # hashable, and thus can be counted inside `olf.remove_consecutive_repeats`
     odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
-    odor_order, n_repeats = remove_consecutive_repeats(odor_order_with_repeats)
+    odor_order, n_repeats = olf.remove_consecutive_repeats(odor_order_with_repeats)
 
     # TODO delete if i manage to refactor code below to only do the formatting of odors
     # right before plotting, rather than in the few lines before this
@@ -1888,7 +1715,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         # (end loop over repeats of one odor)
 
-        viz.add_colorbar(trial_heatmap_fig, im, label=dff_cbar_title, shrink=0.32)
+        viz.add_colorbar(trial_heatmap_fig, im, label=dff_cbar_title, cbar_shrink=0.32)
 
         suptitle(odor_str, trial_heatmap_fig)
         exp_savefig(trial_heatmap_fig, plot_desc + '_trials')
@@ -1947,8 +1774,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
             im = dff_imshow(ax, avg_mean_dff[d])
 
-        viz.add_colorbar(mean_heatmap_fig, im, label=f'Mean {viz.dff_latex}',
-            shrink=0.68
+        viz.add_colorbar(mean_heatmap_fig, im, label=f'Mean {dff_latex}',
+            cbar_shrink=0.68
         )
 
         suptitle(odor_str, mean_heatmap_fig)
@@ -2024,29 +1851,81 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     print()
 
 
-def plot_dendrogram(model, **kwargs):
-    from scipy.cluster.hierarchy import dendrogram
+def format_fly_and_roi(fly_and_roi):
+    fly, roi = fly_and_roi
+    return f'{fly}: {roi}'
 
-    # Create linkage matrix and then plot the dendrogram
 
-    # create the counts of samples under each node
-    counts = np.zeros(model.children_.shape[0])
-    n_samples = len(model.labels_)
-    for i, merge in enumerate(model.children_):
-        current_count = 0
-        for child_idx in merge:
-            if child_idx < n_samples:
-                current_count += 1  # leaf node
-            else:
-                current_count += counts[child_idx - n_samples]
-        counts[i] = current_count
+def analyze_cache():
+    warnings.simplefilter('error', pd.errors.PerformanceWarning)
 
-    linkage_matrix = np.column_stack(
-        [model.children_, model.distances_, counts]
-    ).astype(float)
+    mean_df = pd.read_pickle('mean_df.p').T
+    sum_diff_df = pd.read_pickle('sum_diff_df.p').T
+    max_diff_df = pd.read_pickle('max_diff_df.p').T
 
-    # Plot the corresponding dendrogram
-    dendrogram(linkage_matrix, **kwargs)
+
+    def onepair_dfs(name1, name2, *dfs):
+        assert len(dfs) > 0
+
+        with warnings.catch_warnings():
+            # 'indexing past lexsort depth may impact performance' doesn't actually
+            # matter here
+            warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+
+            dfs = [sort_odor_indices(x.loc[:, (name1, name2)].dropna(axis='index'))
+                for x in dfs
+            ]
+
+        return tuple(dfs)
+
+    # TODO TODO TODO loop over odor pairs and make one set of these plots for each
+    mean_df, sum_diff_df, max_diff_df = onepair_dfs('ACE', 'BUT',
+        mean_df, sum_diff_df, max_diff_df
+    )
+
+    shared_kwargs = dict(
+        figsize=(3.0, 7.0),
+        xticklabels=format_mix_from_strs,
+        yticklabels=format_fly_and_roi,
+        ylabel='ROI',
+        # TODO is this cbar_label appropriate for all plots this is used in?
+        cbar_shrink=0.3,
+    )
+
+    matshow_kwargs = dict(cbar_label=trial_stat_cbar_title, cmap=cmap, **shared_kwargs)
+
+    matshow_diverging_kwargs = dict(cbar_label=diff_cbar_title, **diverging_cmap_kwargs,
+        **shared_kwargs
+    )
+
+    fig, _ = viz.matshow(mean_df, **matshow_kwargs)
+
+    fig, _ = viz.matshow(sum_diff_df, title='Sum minus obs', **matshow_diverging_kwargs)
+
+    fig, _ = viz.matshow(max_diff_df, title='Max minus obs', **matshow_diverging_kwargs)
+
+    # TODO TODO could try using row_colors derived from non-hierarchichal clustering
+    # methods to plots those? maybe even disabling the dendrogram?
+    # TODO or from fly / glomeruli (for those w/ names)?
+    # TODO TODO for glomeruli, maybe do one version w/ and w/o non-named glomeruli
+
+    # TODO some way to get cbar on right that plays nice w/ constrained layout?
+    # maybe just disable and add after (other things seaborn is doing preclude
+    # constrained layout anyway)?
+    clustergrid = viz.clustermap(mean_df, col_cluster=False, cmap=cmap,
+        xticklabels=format_mix_from_strs, yticklabels=format_fly_and_roi,
+        cbar_label=trial_stat_cbar_title, ylabel='ROI'
+    )
+
+
+    # TODO TODO TODO try to cluster odor mixture behavior types across odor pairs, but
+    # either sorting so ~most activating is always A or maybe by adding data duplicated
+    # such that it appears once for A=x,B=y and once for A=y,B=x
+    # TODO other ways to achieve some kind of symmetry here?
+
+    plt.show()
+    import ipdb; ipdb.set_trace()
+    #"""
 
 
 def main():
@@ -2054,85 +1933,31 @@ def main():
     global seen_stimulus_yamls2thorimage_dirs
     global names_and_concs2analysis_dirs
 
-    '''
-    mean_df = pd.read_pickle('mean_df.p').T
-    sum_diff_df = pd.read_pickle('sum_diff_df.p').T
-    max_diff_df = pd.read_pickle('max_diff_df.p').T
-
-    shrink = 0.3
-
-    def plot_clusters(df, cmap=cmap):
-        from sklearn.cluster import AgglomerativeClustering
-
-        plot_df = df.iloc[:, ::-1].copy()
-        plot_df.columns = plot_df.columns.map(format_mix_from_strs)
-        plot_df.index = plot_df.index.map(lambda x: '/'.join([str(y) for y in x]))
-
-        fig, axs = plt.subplots(nrows=2, ncols=1)
-        ax0 = axs.flat[0]
-        _, im = viz.matshow(plot_df, ax=ax0, cmap=cmap)
-        viz.add_colorbar(fig, im, label=trial_stat_cbar_title, shrink=shrink)
-
-        plt.sca(axs.flat[1])
-
-        # TODO TODO TODO try aligning across odor pairs to cluster ~"types of
-        # interactions" across all data. two ideas:
-        # 1. defined odor A as the more activating
-        # 2. double the data, flipping the odors, to try to get rid of any arbitrary
-        #    asymmetry. possible problems this could cause?
-
-        model = AgglomerativeClustering(distance_threshold=0, n_clusters=None)
-
-        # TODO TODO TODO transposed right? why so few leaf nodes?
-        # problem w/ the dendrogram invocation only?
-        model = model.fit(plot_df)
-
-        plot_dendrogram(model, truncate_mode='level', p=3)
-
-    figsize = (3.0, 7.0)
-
-    # TODO are these colorbar_label values appropriate?
-
-    plot_df = sum_diff_df
-    plot_df = plot_df.iloc[:, ::-1]
-    plot_df.columns = plot_df.columns.map(format_mix_from_strs)
-    plot_df.index = plot_df.index.map(lambda x: '/'.join([str(y) for y in x]))
-    fig, _ = viz.matshow(plot_df, title='Sum minus obs', figsize=figsize,
-        colorbar_label=trial_stat_cbar_title, shrink=shrink, **diverging_cmap_kwargs
-    )
-
-    plot_df = max_diff_df
-    plot_df = plot_df.iloc[:, ::-1]
-    plot_df.columns = plot_df.columns.map(format_mix_from_strs)
-    plot_df.index = plot_df.index.map(lambda x: '/'.join([str(y) for y in x]))
-    fig, _ = viz.matshow(plot_df, title='Max minus obs', figsize=figsize,
-        colorbar_label=trial_stat_cbar_title, shrink=shrink, **diverging_cmap_kwargs
-    )
-
-    # TODO TODO TODO fix
-    plot_clusters(mean_df)
-
-    plt.show()
-    import ipdb; ipdb.set_trace()
-    '''
-
     parser = argparse.ArgumentParser()
 
-    no_parallel_flag = '-j'
-    parser.add_argument(no_parallel_flag, '--no-parallel', action='store_true',
-        help='Disables parallel calls to process_experiment. '
-        'Useful for debugging internals of that function.'
+    parser.add_argument('-j', '--parallel', action='store_true',
+        help='Enables parallel calls to process_experiment. '
+        'Disabled by default because it can complicate debugging.'
     )
 
-    parser.add_argument('-t', '--test', action='store_true',
-        help='only *complete* main loop 1 time, for faster testing'
+    parser.add_argument('-c', '--analyze-cache-only', action='store_true',
+        help='only analyze cached aggregate ROI statistics across flies'
     )
+
+    #parser.add_argument('-t', '--test', action='store_true',
+    #    help='only *complete* main loop 1 time, for faster testing'
+    #)
     args = parser.parse_args()
 
-    quick_test_only = args.test
-    parallel = not args.no_parallel
+    parallel = args.parallel
+    analyze_cache_only = args.analyze_cache_only
+    #quick_test_only = args.test
 
     del parser, args
+
+    if analyze_cache_only:
+        analyze_cache()
+        return
 
     if parallel:
         import matplotlib
@@ -2439,12 +2264,15 @@ def main():
     # TODO TODO probably print stuff in gsheet but not local and vice versa
 
 
-    # TODO fix other code and then probably delete some/all of this
+    # TODO should this be added at end of process_experiment / fns that append dfs to
+    # globals?
     def fix_metadata(df, fly_id):
         for x in ['date', 'fly_num', 'thorimage_id']:
             df = df.droplevel(x)
 
-        df.columns = pd.MultiIndex.from_product([[fly_id], df.columns])
+        df.columns = pd.MultiIndex.from_product([[fly_id], df.columns],
+            names=['fly', 'roi']
+        )
 
         return df
 
@@ -2452,15 +2280,21 @@ def main():
         return pd.concat([fix_metadata(x, i + 1) for i, x in enumerate(dfs)],
             axis='columns'
         )
-    #
 
-    mean_df = agg_dfs(ij_mean_dfs).loc[:, 1:3].dropna()
-    sum_diff_df = agg_dfs(ij_sum_diff_dfs).loc[:, 1:3].dropna()
-    max_diff_df = agg_dfs(ij_max_diff_dfs).loc[:, 1:3].dropna()
+    mean_df = agg_dfs(ij_mean_dfs)
+    sum_diff_df = agg_dfs(ij_sum_diff_dfs)
+    max_diff_df = agg_dfs(ij_max_diff_dfs)
 
+    # TODO TODO TODO cache these on a per-experiment basis so that we don't need to
+    # recompute all of them to add the values for a new experiment (or at least load and
+    # determine what we can skip?). at bare minimum, don't overwrite unless we are
+    # processing all the data.
     mean_df.to_pickle('mean_df.p')
     sum_diff_df.to_pickle('sum_diff_df.p')
     max_diff_df.to_pickle('max_diff_df.p')
+
+    # TODO TODO TODO plot hallem activations for odors in each pair, to see which
+    # glomeruli we'd expect to find (at least at their concentrations)
 
     import ipdb; ipdb.set_trace()
 
