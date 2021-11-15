@@ -27,8 +27,10 @@ import ijroi
 from matplotlib import colors
 import matplotlib.pyplot as plt
 import seaborn as sns
+from scipy.optimize import curve_fit
 # TODO find a nicer perceptually linear colormap from here?
 #import colorcet as cc
+from drosolf import orns
 
 from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
@@ -251,6 +253,10 @@ exp_processing_time_data = []
 failed_assigning_frames_to_odors = []
 
 s2p_roi_dfs = []
+# TODO TODO just agg (+ cache) this in process_experiment, and calculate all others from
+# this after the main loop over experiments
+# TODO also agg + cache full traces (maybe just use CSV? also for above)
+# TODO rename to ij_trialstat_dfs or something
 ij_roi_dfs = []
 
 ij_mean_dfs = []
@@ -963,7 +969,6 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir=No
     if save_figs and plot_dir is not None:
         roi_dir = join(plot_dir, 'ijroi')
         os.makedirs(roi_dir, exist_ok=True)
-
 
     z_indices = masks.roi_z[masks.roi_num.isin(roi_nums)].values
 
@@ -1856,18 +1861,36 @@ def format_fly_and_roi(fly_and_roi):
     return f'{fly}: {roi}'
 
 
+# TODO TODO TODO if they are fitting using a function like this, that only has as
+# product of fmax*e_i, then how do they get a single fmax for computing the model
+# response to a mixture? presumably the fmax fit on each component will differ?
+# or do they do some subsequent algebra to get one fmax and then a new e_i from each of
+# the outputs of the component fits?
+# TODO i shouldn't deal w/ concs in log units or something should i?
+def model_orn_singleodor_responses(concs, fmax_times_efficacy, ec50):
+    # TODO check this vectorized formula works correctly
+    return (concs * fmax_times_efficacy / ec50) / (1 + concs / ec50)
+
+
 def analyze_cache():
+    # TODO TODO TODO plot hallem activations for odors in each pair, to see which
+    # glomeruli we'd expect to find (at least at their concentrations)
+    # (though probably factor it into its own fn and maybe call in main rather than
+    # here?)
+
     warnings.simplefilter('error', pd.errors.PerformanceWarning)
 
+    trial_df = pd.read_pickle('trial_df.p').T
     mean_df = pd.read_pickle('mean_df.p').T
     sum_diff_df = pd.read_pickle('sum_diff_df.p').T
     max_diff_df = pd.read_pickle('max_diff_df.p').T
-
 
     def onepair_dfs(name1, name2, *dfs):
         assert len(dfs) > 0
 
         with warnings.catch_warnings():
+            # TODO does this only last for the duration of the catch_warnings context
+            # manager? if not (and it probably doesn't...), adapt to make so.
             # 'indexing past lexsort depth may impact performance' doesn't actually
             # matter here
             warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
@@ -1882,6 +1905,98 @@ def analyze_cache():
     mean_df, sum_diff_df, max_diff_df = onepair_dfs('ACE', 'BUT',
         mean_df, sum_diff_df, max_diff_df
     )
+
+    # TODO refactor. probably already have something for this.
+    def odor_str2conc(odor_str):
+        return 0 if odor_str == 'solvent' else np.float_power(10,
+            float(odor_str.split('@')[-1].strip())
+        )
+
+    # TODO refactor to share code for odor1 and odor2 stuff
+    odor1_df = mean_df.loc[:, (slice(None), 'solvent')].droplevel('odor2',
+        axis='columns'
+    )
+    concs = odor1_df.columns.map(odor_str2conc).values
+
+    fit_params = []
+    # TODO do i need to call this per row or nah? and if not, will is still behave same
+    # as this way (w/ diff params for each row) if i do call it w/ 2D input?
+    for _, roi_mean_responses in odor1_df.iterrows():
+        # TODO add reasonable bounds to parameters?
+        popt, pcov = curve_fit(model_orn_singleodor_responses, concs,
+            roi_mean_responses
+        )
+        fit_params.append(popt)
+
+    odor1_param_df = pd.DataFrame(data=fit_params, index=odor1_df.index,
+        columns=['fmax_times_efficacy', 'ec50']
+    )
+
+
+    odor2_df = mean_df.loc[:, ('solvent', slice(None))].droplevel('odor1',
+        axis='columns'
+    )
+    concs = odor2_df.columns.map(odor_str2conc).values
+
+    fit_params = []
+    # TODO do i need to call this per row or nah? and if not, will is still behave same
+    # as this way (w/ diff params for each row) if i do call it w/ 2D input?
+    for _, roi_mean_responses in odor2_df.iterrows():
+        popt, pcov = curve_fit(model_orn_singleodor_responses, concs,
+            roi_mean_responses
+        )
+        fit_params.append(popt)
+
+    odor2_param_df = pd.DataFrame(data=fit_params, index=odor2_df.index,
+        columns=['fmax_times_efficacy', 'ec50']
+    )
+
+    param_df = pd.concat([odor1_param_df, odor2_param_df], names=['odor'],
+        keys=['odor1','odor2'], axis='columns'
+    )
+
+    # TODO rename/refactor. it's just mean_df w/ a diff col index
+    #conc_df = mean_df.copy()
+    #conc_df.columns = pd.MultiIndex.from_frame(
+    #    conc_df.columns.to_frame().applymap(odor_str2conc)
+    #)
+
+    concs_df = mean_df.columns.to_frame().applymap(odor_str2conc)
+    concs_df.columns.name = 'odor'
+    odor_col_names = concs_df.columns
+    ests = []
+    #for concs in concs_df.itertuples(index=False):
+
+    odor_nums = []
+    odor_dens = []
+    for odor, conc_df in concs_df.groupby('odor', axis='columns', sort=False):
+
+        odor_param_df = param_df.loc[:, odor]
+        fmax_times_efficacy = odor_param_df['fmax_times_efficacy']
+        ec50 = odor_param_df['ec50']
+
+        # TODO calculate this in a less stupid way
+        odor_num = (np.outer(fmax_times_efficacy, conc_df) /
+            np.outer(ec50, np.ones_like(conc_df))
+        )
+        odor_den = np.outer(1/ec50, conc_df)
+
+        odor_nums.append(odor_num)
+        odor_dens.append(odor_den)
+
+    num = np.sum(odor_nums, axis=0)
+    den = np.sum(odor_dens, axis=0) + 1
+
+    est = num / den
+    assert concs_df.index.equals(mean_df.columns)
+    est_df = pd.DataFrame(est, columns=concs_df.index, index=param_df.index)
+
+    # TODO TODO TODO maybe test my fitting method on the singh et al 2019 data, to make
+    # sure i'm getting it right, esp w/ the fmax handling, to the extent it doesn't end
+    # up being trivial
+
+    # TODO TODO TODO how to do fitting like above, but also incorporating lateral
+    # inhibition?
 
     shared_kwargs = dict(
         figsize=(3.0, 7.0),
@@ -1898,25 +2013,70 @@ def analyze_cache():
         **shared_kwargs
     )
 
+    # TODO TODO do i have enough of a baseline to compute stddev there and use that to
+    # get responders significantly above[/below] baseline?
+
+    # TODO TODO TODO maybe a normalized version of this (+ clustering on that?) to also
+    # see general interaction types of weak responders?
+    # or maybe some kind of z-scored version where noiser stuff gets weighted a bit less
+    # too (need all trials for that)?
     fig, _ = viz.matshow(mean_df, **matshow_kwargs)
 
-    fig, _ = viz.matshow(sum_diff_df, title='Sum minus obs', **matshow_diverging_kwargs)
+    fig, _ = viz.matshow(sum_diff_df, title='Sum - obs', **matshow_diverging_kwargs)
 
-    fig, _ = viz.matshow(max_diff_df, title='Max minus obs', **matshow_diverging_kwargs)
+    fig, _ = viz.matshow(max_diff_df, title='Max - obs', **matshow_diverging_kwargs)
+
+    fig, _ = viz.matshow(est_df, title='Competetive binding model', **matshow_kwargs)
+
+    cb_diff_df = est_df - mean_df
+
+    fig, _ = viz.matshow(cb_diff_df, title='Competitive binding model - obs',
+        **matshow_diverging_kwargs
+    )
 
     # TODO TODO could try using row_colors derived from non-hierarchichal clustering
     # methods to plots those? maybe even disabling the dendrogram?
     # TODO or from fly / glomeruli (for those w/ names)?
     # TODO TODO for glomeruli, maybe do one version w/ and w/o non-named glomeruli
 
-    # TODO some way to get cbar on right that plays nice w/ constrained layout?
-    # maybe just disable and add after (other things seaborn is doing preclude
-    # constrained layout anyway)?
-    clustergrid = viz.clustermap(mean_df, col_cluster=False, cmap=cmap,
-        xticklabels=format_mix_from_strs, yticklabels=format_fly_and_roi,
-        cbar_label=trial_stat_cbar_title, ylabel='ROI'
-    )
+    # 'average' is the default for sns.clustermap
+    # 'single' is the default for scipy.cluster.hierarchy.linkage
+    # (and there are ofc several others)
+    #cluster_methods = ['average', 'single']
+    # 'euclidean' is the default for both. just wanted to try 'correlation' too
+    #cluster_metrics = ['euclidean', 'correlation']
 
+    cluster_methods = ['average']
+    cluster_metrics = ['correlation']
+
+    diverging_clustermap_kwargs = {k: v for k, v in matshow_diverging_kwargs.items()
+        if k not in ('figsize', 'cbar_shrink')
+    }
+
+    for method in cluster_methods:
+        for metric in cluster_metrics:
+
+            # TODO refactor to also loop over dfs (and their kwargs...)?
+
+            # TODO some way to get cbar on right that plays nice w/ constrained layout?
+            # maybe just disable and add after (other things seaborn is doing preclude
+            # constrained layout anyway)?
+
+            clustergrid = viz.clustermap(mean_df, col_cluster=False, cmap=cmap,
+                xticklabels=format_mix_from_strs, yticklabels=format_fly_and_roi,
+                cbar_label=trial_stat_cbar_title, ylabel='ROI', method=method
+            )
+            clustergrid.ax_heatmap.set_title(
+                f'clustering params: method={method}, metric={metric}'
+            )
+
+            clustergrid = viz.clustermap(cb_diff_df, col_cluster=False,
+                method=method, **diverging_clustermap_kwargs
+            )
+            clustergrid.ax_heatmap.set_title(
+                'Competetive binding model - obs\n'
+                f'clustering params: method={method}, metric={metric}'
+            )
 
     # TODO TODO TODO try to cluster odor mixture behavior types across odor pairs, but
     # either sorting so ~most activating is always A or maybe by adding data duplicated
@@ -2281,6 +2441,8 @@ def main():
             axis='columns'
         )
 
+    trial_df = agg_dfs(ij_roi_dfs)
+
     mean_df = agg_dfs(ij_mean_dfs)
     sum_diff_df = agg_dfs(ij_sum_diff_dfs)
     max_diff_df = agg_dfs(ij_max_diff_dfs)
@@ -2289,12 +2451,10 @@ def main():
     # recompute all of them to add the values for a new experiment (or at least load and
     # determine what we can skip?). at bare minimum, don't overwrite unless we are
     # processing all the data.
+    trial_df.to_pickle('trial_df.p')
     mean_df.to_pickle('mean_df.p')
     sum_diff_df.to_pickle('sum_diff_df.p')
     max_diff_df.to_pickle('max_diff_df.p')
-
-    # TODO TODO TODO plot hallem activations for odors in each pair, to see which
-    # glomeruli we'd expect to find (at least at their concentrations)
 
     import ipdb; ipdb.set_trace()
 

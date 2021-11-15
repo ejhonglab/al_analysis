@@ -5,6 +5,8 @@
 # that here
 pyyaml
 
+git+https://github.com/tom-f-oconnell/drosolf
+
 # You may replace this line with:
 # git+https://github.com/ejhonglab/hong2p
 -e ../hong2p
