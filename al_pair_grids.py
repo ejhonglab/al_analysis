@@ -65,7 +65,6 @@ final_concentrations_only = True
 analyze_reverse_order = True
 
 # Will be set False if analyze_pairgrids_only=True
-# TODO TODO TODO change back to True
 analyze_glomeruli_diagnostics = True
 
 # Whether to analyze any single plane data that is found under the enumerated
@@ -278,7 +277,7 @@ names_and_concs2analysis_dirs = dict()
 failed_suite2p_dirs = []
 
 ###################################################################################
-# Modified inside `suite2p_trace_plots`
+# Modified inside `suite2p_traces`
 ###################################################################################
 s2p_not_run = []
 iscell_not_modified = []
@@ -286,6 +285,10 @@ iscell_not_selective = []
 no_merges = []
 
 ###################################################################################
+
+dirs_with_ijrois = []
+# TODO check if any have original ROI name format (and what is it for a 3D TIFF?)
+#dirs_with_ijrois_needing_merge = []
 
 
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
@@ -368,7 +371,10 @@ def symlink(target, link):
 
 def delete_link_if_target_missing(link):
     if not islink(link):
-        raise IOError('input was not a link')
+        # TODO what caused this? some race condition between two runs?
+        #raise IOError(f'input {link} was not a link')
+        warnings.warn(f'input {link} was not a link. doing nothing with it.')
+        return
 
     if not exists(link):
         # Will fail if link is a true directory, but work if it's a link to a directory
@@ -1357,7 +1363,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         pair_link_dir = join(
             pair_link_directories_root,
-            util.to_filename(f'{name1}_{name2}', period=False)
+            util.to_filename(f'{name1}_{name2}'.lower(), period=False)
         )
         makedirs(pair_link_dir)
 
@@ -1531,7 +1537,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     do_ij_analysis = False
     if analyze_ijrois:
+
         if util.has_ijrois(analysis_dir):
+            dirs_with_ijrois.append(analysis_dir)
+
             ij_trial_df_cache_fname = join(analysis_dir, 'ij_trial_df_cache.p')
 
             ij_analysis_current = (
@@ -1572,6 +1581,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         ij_trial_df = ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie,
             plot_dir
         )
+
+        # TODO populate dirs_with_ijrois_needing_merge
+        #import ipdb; ipdb.set_trace()
+
         ij_trial_df = add_metadata(ij_trial_df)
         ij_trial_df.to_pickle(ij_trial_df_cache_fname)
         ij_trial_dfs.append(ij_trial_df)
@@ -2152,6 +2165,9 @@ def analyze_onepair(trial_df):
             )
 
 
+fly_keys = ['date', 'fly_num']
+recording_keys = fly_keys + ['thorimage_id']
+
 # TODO better name for this fn (+ probably call at end of main, not just behind -c flag)
 def analyze_cache():
     # TODO TODO TODO plot hallem activations for odors in each pair, to see which
@@ -2166,10 +2182,6 @@ def analyze_cache():
     # This will just be additional presentations of solvent, interspersed throughout the
     # experiment. Not interesting.
     df = df.loc[:, df.columns.get_level_values('repeat')  <= 2].copy()
-
-    # TODO print fly -> (date, fly_num, thorimage_id) legend
-    fly_keys = ['date', 'fly_num']
-    recording_keys = fly_keys + ['thorimage_id']
 
     fly_id = df.groupby(level=fly_keys).ngroup()
     fly_id.name = 'fly'
@@ -2310,7 +2322,7 @@ def main():
         # odor pair.
         # TODO TODO add back / handle bad elsewhere if i still decide too weak. for
         # suite2p alone it shouldn't be in this list.
-        '2021-05-05/1/butanal_and_acetone',
+        #'2021-05-05/1/butanal_and_acetone',
 
         # Looking at the matrices, it's pretty clear that two concentrations were
         # swapped here (two of butanal, I believe). Could try comparing after
@@ -2398,12 +2410,13 @@ def main():
         print('odors_without_abbrev:')
         pprint(odors_without_abbrev)
 
+    print(f'Took {total_s:.0f}s\n')
+
     def earliest_analysis_dir_date(analysis_dirs):
         return min(d.split(os.sep)[-3] for d in analysis_dirs)
 
-    print('\nOdor pair counts for all data considered (including stuff where suite2p '
-        'plots not generated for various reasons):'
-    )
+    show_empty_statuses = False
+    print('\nodor pair counts (of data considered) at various analysis stages:')
     for names_and_concs, analysis_dirs in sorted(names_and_concs2analysis_dirs.items(),
         key=lambda x: earliest_analysis_dir_date(x[1])):
 
@@ -2420,60 +2433,85 @@ def main():
         # just need labelling, to avoid spending more effort on bad data?
         # (and include that as a status here probably)
 
-        s2p_statuses = (
-            'not run',
-            'ROIs need manual labelling (or output looks bad)',
-            'ROIs may need merging (done if not)',
-            'marked bad',
-            'done',
-        )
-        not_done_dirs = set()
-        for s2p_status in s2p_statuses:
+        if analyze_suite2p_outputs:
+            print('suite2p:')
+            s2p_statuses = (
+                'not run',
+                'ROIs need manual labelling (or output looks bad)',
+                'ROIs may need merging (done if not)',
+                'marked bad',
+                'done',
+            )
+            not_done_dirs = set()
+            for s2p_status in s2p_statuses:
 
-            if s2p_status == s2p_statuses[0]:
-                status_dirs = [x for x in analysis_dirs if x in s2p_not_run]
-                not_done_dirs.update(status_dirs)
+                if s2p_status == s2p_statuses[0]:
+                    status_dirs = [x for x in analysis_dirs if x in s2p_not_run]
+                    not_done_dirs.update(status_dirs)
 
-            elif s2p_status == s2p_statuses[1]:
-                status_dirs = [
-                    x for x in analysis_dirs
-                    if (x in iscell_not_modified) or (x in iscell_not_selective)
-                ]
-                not_done_dirs.update(status_dirs)
+                elif s2p_status == s2p_statuses[1]:
+                    status_dirs = [
+                        x for x in analysis_dirs
+                        if (x in iscell_not_modified) or (x in iscell_not_selective)
+                    ]
+                    not_done_dirs.update(status_dirs)
 
-            elif s2p_status == s2p_statuses[2]:
-                status_dirs = [
-                    x for x in analysis_dirs if x in no_merges
-                ]
-                not_done_dirs.update(status_dirs)
+                elif s2p_status == s2p_statuses[2]:
+                    status_dirs = [
+                        x for x in analysis_dirs if x in no_merges
+                    ]
+                    not_done_dirs.update(status_dirs)
 
-            elif s2p_status == s2p_statuses[3]:
-                # maybe don't show these ones?
-                status_dirs = [
-                    x for x in analysis_dirs if x in full_bad_suite2p_analysis_dirs
-                ]
-                not_done_dirs.update(status_dirs)
+                elif s2p_status == s2p_statuses[3]:
+                    # maybe don't show these ones?
+                    status_dirs = [
+                        x for x in analysis_dirs if x in full_bad_suite2p_analysis_dirs
+                    ]
+                    not_done_dirs.update(status_dirs)
 
-            elif s2p_status == s2p_statuses[4]:
-                status_dirs = [x for x in analysis_dirs if x not in not_done_dirs]
+                elif s2p_status == s2p_statuses[4]:
+                    status_dirs = [x for x in analysis_dirs if x not in not_done_dirs]
 
-            else:
-                assert False
+                else:
+                    assert False
 
-            show_empty_statuses = False
-            if show_empty_statuses or len(status_dirs) > 0:
-                print(f' - {s2p_status} ({len(status_dirs)})')
-                for analysis_dir in sorted(status_dirs):
-                    short_id = shorten_path(analysis_dir)
-                    print(f'   - {short_id}')
+                if show_empty_statuses or len(status_dirs) > 0:
+                    print(f' - {s2p_status} ({len(status_dirs)})')
+                    for analysis_dir in sorted(status_dirs):
+                        short_id = shorten_path(analysis_dir)
+                        print(f'   - {short_id}')
 
-        print()
+            print()
+
+        if analyze_ijrois:
+            print('ImageJ:')
+
+            ij_status2dirs = {
+                'have ROIs': [x for x in analysis_dirs if x in dirs_with_ijrois
+                    and x not in failed_assigning_frames_to_odors
+                ],
+                'need ROIs': [x for x in analysis_dirs if x not in dirs_with_ijrois
+                    and x not in failed_assigning_frames_to_odors
+                ],
+                # TODO implement + add needing merge category (i.e. still has some
+                # default names)
+                'failed assigning frames': [x for x in analysis_dirs if x in
+                    failed_assigning_frames_to_odors
+                ],
+            }
+
+            for ij_status, status_dirs in ij_status2dirs.items():
+                if show_empty_statuses or len(status_dirs) > 0:
+                    print(f' - {ij_status} ({len(status_dirs)})')
+                    for analysis_dir in sorted(status_dirs):
+                        short_id = shorten_path(analysis_dir)
+                        print(f'   - {short_id}')
+
+            print()
     print()
 
     # TODO also check that all loaded data is using same stimulus program
     # (already skipping stuff with odor pulse < 3s tho)
-
-    print(f'Took {total_s:.0f}s\n')
 
     # Only actually shortens if print_full_paths=False
     def shorten_and_pprint(paths):
@@ -2504,8 +2542,6 @@ def main():
             'suite2p failed:', failed_suite2p_dirs
         )
 
-    # TODO TODO factor so that still print summary of output even in case where we have
-    # all suite2p analysis turned off
     if analyze_suite2p_outputs:
         print_nonempty_path_list(
             'suite2p needs to be run on the following data:', s2p_not_run,
@@ -2530,9 +2566,7 @@ def main():
 
     trial_df = pd.concat(ij_trial_dfs, axis='columns')
 
-    trial_df.sort_index(level=['date', 'fly_num', 'thorimage_id'], sort_remaining=False,
-        axis='columns'
-    )
+    trial_df.sort_index(level=recording_keys, sort_remaining=False, axis='columns')
 
     trial_df.to_pickle('trial_df.p')
 
