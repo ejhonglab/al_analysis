@@ -2165,11 +2165,11 @@ def analyze_onepair(trial_df):
             )
 
 
-fly_keys = ['date', 'fly_num']
-recording_keys = fly_keys + ['thorimage_id']
-
 # TODO better name for this fn (+ probably call at end of main, not just behind -c flag)
 def analyze_cache():
+    fly_keys = ['date', 'fly_num']
+    recording_keys = fly_keys + ['thorimage_id']
+
     # TODO TODO TODO plot hallem activations for odors in each pair, to see which
     # glomeruli we'd expect to find (at least at their concentrations)
     # (though probably factor it into its own fn and maybe call in main rather than
@@ -2415,6 +2415,11 @@ def main():
     def earliest_analysis_dir_date(analysis_dirs):
         return min(d.split(os.sep)[-3] for d in analysis_dirs)
 
+    failed_assigning_frames_analysis_dirs = [
+        x.replace('raw_data', 'analysis_intermediates')
+        for x in failed_assigning_frames_to_odors
+    ]
+
     show_empty_statuses = False
     print('\nodor pair counts (of data considered) at various analysis stages:')
     for names_and_concs, analysis_dirs in sorted(names_and_concs2analysis_dirs.items(),
@@ -2488,15 +2493,15 @@ def main():
 
             ij_status2dirs = {
                 'have ROIs': [x for x in analysis_dirs if x in dirs_with_ijrois
-                    and x not in failed_assigning_frames_to_odors
+                    and x not in failed_assigning_frames_analysis_dirs
                 ],
                 'need ROIs': [x for x in analysis_dirs if x not in dirs_with_ijrois
-                    and x not in failed_assigning_frames_to_odors
+                    and x not in failed_assigning_frames_analysis_dirs
                 ],
                 # TODO implement + add needing merge category (i.e. still has some
                 # default names)
                 'failed assigning frames': [x for x in analysis_dirs if x in
-                    failed_assigning_frames_to_odors
+                    failed_assigning_frames_analysis_dirs
                 ],
             }
 
@@ -2565,6 +2570,11 @@ def main():
     # TODO TODO probably print stuff in gsheet but not local and vice versa
 
     trial_df = pd.concat(ij_trial_dfs, axis='columns')
+
+    # TODO define globally as a tuple / fix whatever fucky thing my multiprocessing
+    # wrapper code is doing to some/all global lists, or at least clearly document it
+    fly_keys = ['date', 'fly_num']
+    recording_keys = fly_keys + ['thorimage_id']
 
     trial_df.sort_index(level=recording_keys, sort_remaining=False, axis='columns')
 
