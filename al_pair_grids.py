@@ -113,6 +113,7 @@ links_to_input_dirs = True
 print_full_paths = False
 
 save_figs = True
+# TODO TODO TODO fix png in case it doesn't exist before running w/ -c flag
 plot_fmt = os.environ.get('plot_fmt', 'svg')
 
 cmap = 'plasma'
@@ -169,7 +170,7 @@ bad_suite2p_analysis_dirs = (
     '2021-05-24/2/1o3ol_and_2h',
 )
 
-pair_link_directories_root = join(plot_fmt, 'by_pairs')
+pair_directories_root = join(plot_fmt, 'pairs')
 
 # TODO set bool_fillna_false=False (kwarg to gsheet_to_frame) and manually fix any
 # unintentional NaN in these columns if I need to use the missing data for early
@@ -823,6 +824,14 @@ def suite2p_last_analysis_time(plot_dir):
     return util.most_recent_contained_file_mtime(roi_plot_dir)
 
 
+def names2fname_prefix(name1, name2):
+    return util.to_filename(f'{name1}_{name2}'.lower(), period=False)
+
+
+def get_pair_dir(name1, name2):
+    return join(pair_directories_root, names2fname_prefix(name1, name2))
+
+
 def dff_imshow(ax, dff_img, **imshow_kwargs):
 
     vmin = imshow_kwargs.pop('vmin', dff_vmin)
@@ -1361,13 +1370,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         name1 = odor2abbrev.get(name1, name1)
         name2 = odor2abbrev.get(name2, name2)
 
-        pair_link_dir = join(
-            pair_link_directories_root,
-            util.to_filename(f'{name1}_{name2}'.lower(), period=False)
-        )
-        makedirs(pair_link_dir)
+        pair_dir = get_pair_dir(name1, name2)
+        makedirs(pair_dir)
 
-        symlink(plot_dir, join(pair_link_dir, experiment_basedir))
+        symlink(plot_dir, join(pair_dir, experiment_basedir))
     else:
         if analyze_pairgrids_only:
             print('skipping because not a pair grid experiment\n')
@@ -1543,9 +1549,15 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
             ij_trial_df_cache_fname = join(analysis_dir, 'ij_trial_df_cache.p')
 
-            ij_analysis_current = (
-                util.ijroi_mtime(analysis_dir) < ij_last_analysis_time(plot_dir)
-            )
+            # TODO TODO TODO fix (or maybe just return appropriate inf value from
+            # ijroi_mtime / other util mtime fn used by the RHS fn?)
+            try:
+                ij_analysis_current = (
+                    util.ijroi_mtime(analysis_dir) < ij_last_analysis_time(plot_dir)
+                )
+            # (comparing None to float)
+            except TypeError:
+                ij_analysis_current = False
 
             # TODO delete after generating them all? slightly more robust to interrupted
             # runs if i leave it
@@ -1987,11 +1999,9 @@ def model_orn_singleodor_responses(concs, fmax_times_efficacy, ec50):
     return (concs * fmax_times_efficacy / ec50) / (1 + concs / ec50)
 
 
-# TODO better name for this fn
-#def analyze_onepair(trial_df, mean_df, sum_diff_df, max_diff_df):
-def analyze_onepair(trial_df):
-
-    mean_df = trial_df.mean(level=['odor1','odor2'], axis='columns')
+# TODO TODO modify to use trial_df not mean_df, and weight by standard deviation(?) like
+# in the paper
+def competitive_binding_model(mean_df):
 
     # TODO refactor to share code for odor1 and odor2 stuff
     odor1_df = mean_df.loc[:, (slice(None), 'solvent')].droplevel('odor2',
@@ -2072,25 +2082,63 @@ def analyze_onepair(trial_df):
     assert concs_df.index.equals(mean_df.columns)
     est_df = pd.DataFrame(est, columns=concs_df.index, index=param_df.index)
 
+    return est_df, param_df
+
+
+def pair_savefig(fig_or_sns_obj, fname_prefix, names):
+    name1, name2 = names
+    pair_dir = get_pair_dir(name1, name2)
+    if save_figs:
+        fig_or_sns_obj.savefig(join(pair_dir, f'{fname_prefix}.{plot_fmt}'))
+
+
+# TODO better name for this fn
+#def analyze_onepair(trial_df, mean_df, sum_diff_df, max_diff_df):
+def analyze_onepair(trial_df):
+
+    name1 = odor_strs2single_odor_name(trial_df.columns.get_level_values('odor1'))
+    name2 = odor_strs2single_odor_name(trial_df.columns.get_level_values('odor2'))
+
+    def savefig(fig_or_sns_obj, fname_prefix):
+        pair_savefig(fig_or_sns_obj, fname_prefix, (name1, name2))
+
+    fly_ids = trial_df.index.get_level_values('fly').unique().sort_values()
+    n_flies = len(fly_ids)
+
+    fly_str = ','.join([str(x) for x in
+        trial_df.index.get_level_values('fly').unique().sort_values()
+    ])
+    fly_str = f'n={n_flies} {{{fly_str}}}'
+
+    mean_df = sort_odor_indices(
+        trial_df.groupby(level=['odor1','odor2'], axis='columns').mean()
+    )
+
+    # TODO TODO TODO how to do fitting like in this fn, but also incorporating lateral
+    # inhibition?
+    est_df, param_df = competitive_binding_model(mean_df)
+    cb_diff_df = est_df - mean_df
+
     # TODO TODO TODO maybe test my fitting method on the singh et al 2019 data, to make
     # sure i'm getting it right, esp w/ the fmax handling, to the extent it doesn't end
     # up being trivial
 
-    # TODO TODO TODO how to do fitting like above, but also incorporating lateral
-    # inhibition?
+    # TODO TODO TODO plot a few example curves (and also a reference set of plots for
+    # all?) (for components and mix), capturing diversity of difference / fit quality (+
+    # to see what kinds of behavior model is actually capturing, as fit on my data). to
+    # what extent is lack of saturation a problem? ways to deal with it?
 
-
-    # TODO TODO TODO plot a few example curves (for components and mix), capturing
-    # diversity of difference / fit quality (+ to see what kinds of behavior model is
-    # actually capturing, as fit on my data). to what extent is lack of saturation a
-    # problem? ways to deal with it?
+    # TODO TODO show / output parameters for competitive binding model
 
     shared_kwargs = dict(
         figsize=(3.0, 7.0),
         xticklabels=format_mix_from_strs,
         yticklabels=format_fly_and_roi,
-        ylabel='ROI',
+        ylabel=f'ROI',
         # TODO is this cbar_label appropriate for all plots this is used in?
+        ylabel_rotation='horizontal',
+        # Default labelpad should be 4.0
+        ylabel_kws=dict(labelpad=10.0),
         cbar_shrink=0.3,
     )
 
@@ -2103,22 +2151,25 @@ def analyze_onepair(trial_df):
     # TODO TODO do i have enough of a baseline to compute stddev there and use that to
     # get responders significantly above[/below] baseline?
 
-    # TODO TODO TODO maybe a normalized version of this (+ clustering on that?) to also
-    # see general interaction types of weak responders?
-    # or maybe some kind of z-scored version where noiser stuff gets weighted a bit less
-    # too (need all trials for that)?
-    fig, _ = viz.matshow(mean_df, **matshow_kwargs)
+    # TODO TODO z-score (+ subsequent clustering?) using either trial or baseline noise,
+    # rather than just relying on what seaborn can do from mean?
 
+    # TODO maybe compute in here and make these plots again (+ just show clustered
+    # versions if i do? strictly more info and nicer layout)
     #fig, _ = viz.matshow(sum_diff_df, title='Sum - obs', **matshow_diverging_kwargs)
     #fig, _ = viz.matshow(max_diff_df, title='Max - obs', **matshow_diverging_kwargs)
 
-    fig, _ = viz.matshow(est_df, title='Competetive binding model', **matshow_kwargs)
-
-    cb_diff_df = est_df - mean_df
-
-    fig, _ = viz.matshow(cb_diff_df, title='Competitive binding model - obs',
-        **matshow_diverging_kwargs
+    #'''
+    fig, _ = viz.matshow(est_df, title=f'Competitive binding model\n{fly_str}',
+        **matshow_kwargs
     )
+    savefig(fig, 'cb')
+
+    fig, _ = viz.matshow(cb_diff_df,
+        title=f'Competitive binding model - obs\n{fly_str}', **matshow_diverging_kwargs
+    )
+    savefig(fig, 'cb_diff')
+    #'''
 
     # TODO TODO could try using row_colors derived from non-hierarchichal clustering
     # methods to plots those? maybe even disabling the dendrogram?
@@ -2128,41 +2179,76 @@ def analyze_onepair(trial_df):
     # 'average' is the default for sns.clustermap
     # 'single' is the default for scipy.cluster.hierarchy.linkage
     # (and there are ofc several others)
-    #cluster_methods = ['average', 'single']
+    #cluster_methods = ['average', 'single', 'ward']
     # 'euclidean' is the default for both. just wanted to try 'correlation' too
     #cluster_metrics = ['euclidean', 'correlation']
 
     cluster_methods = ['average']
     cluster_metrics = ['correlation']
 
+    non_clustermap_kwargs = ('figsize', 'cbar_shrink')
+    clustermap_kwargs = {
+        k: v for k, v in matshow_kwargs.items() if k not in non_clustermap_kwargs
+    }
     diverging_clustermap_kwargs = {k: v for k, v in matshow_diverging_kwargs.items()
         if k not in ('figsize', 'cbar_shrink')
     }
 
+    # TODO may want to compare using z_score (or standard_scale) to passing in my own
+    # linkage without either operation and then just plotting the [0, 1] data
     for method in cluster_methods:
         for metric in cluster_metrics:
 
-            # TODO refactor to also loop over dfs (and their kwargs...)?
+            if method == 'ward' and metric != 'euclidean':
+                continue
 
-            # TODO some way to get cbar on right that plays nice w/ constrained layout?
-            # maybe just disable and add after (other things seaborn is doing preclude
-            # constrained layout anyway)?
+            shared_clustermap_kwargs = dict(
+                col_cluster=False, method=method, metric=metric
+            )
+            cluster_param_desc = f'clustering: method={method}, metric={metric}'
 
-            clustergrid = viz.clustermap(mean_df, col_cluster=False, cmap=cmap,
-                xticklabels=format_mix_from_strs, yticklabels=format_fly_and_roi,
-                cbar_label=trial_stat_cbar_title, ylabel='ROI', method=method
-            )
-            clustergrid.ax_heatmap.set_title(
-                f'clustering params: method={method}, metric={metric}'
+            # 0=z-score rows, 1=z-score columns (1 since we are clustering rows only)
+            #for z_score in (None, 0):
+            for z_score in (None,):
+
+                preprocessing_desc = 'pre: z-score, ' if z_score is not None else ''
+                param_desc = preprocessing_desc + cluster_param_desc
+
+                desc = f'{fly_str}\n{param_desc}'
+
+                # TODO should i change cmap to diverging one if i'm gonna z-score?
+
+                # TODO refactor to also loop over dfs (and their kwargs...)?
+
+                # TODO some way to get cbar on right that plays nice w/ constrained
+                # layout?  maybe just disable and add after (other things seaborn is
+                # doing preclude constrained layout anyway)?
+
+                clustergrid = viz.clustermap(mean_df, z_score=z_score, title=desc,
+                    **clustermap_kwargs, **shared_clustermap_kwargs
+                )
+
+                fname_prefix = f'clust_{method}_{metric}'
+                if z_score is not None:
+                    fname_prefix += '_zscore'
+
+                savefig(clustergrid, fname_prefix)
+
+            # TODO it doesn't make sense to z-score the difference from model does
+            # it? seems too hard to read...
+            #'''
+            desc = f'{fly_str}\n{cluster_param_desc}'
+            clustergrid = viz.clustermap(cb_diff_df,
+                title=f'Competitive binding model - obs\n{desc}',
+                **diverging_clustermap_kwargs, **shared_clustermap_kwargs
             )
 
-            clustergrid = viz.clustermap(cb_diff_df, col_cluster=False,
-                method=method, **diverging_clustermap_kwargs
-            )
-            clustergrid.ax_heatmap.set_title(
-                'Competetive binding model - obs\n'
-                f'clustering params: method={method}, metric={metric}'
-            )
+            fname_prefix = f'cb_diff_clust_{method}_{metric}'
+            savefig(clustergrid, fname_prefix)
+            #'''
+
+    #plt.show()
+    #import ipdb; ipdb.set_trace()
 
 
 # TODO better name for this fn (+ probably call at end of main, not just behind -c flag)
@@ -2183,28 +2269,31 @@ def analyze_cache():
     # experiment. Not interesting.
     df = df.loc[:, df.columns.get_level_values('repeat')  <= 2].copy()
 
-    fly_id = df.groupby(level=fly_keys).ngroup()
+    fly_id = df.groupby(level=fly_keys).ngroup() + 1
     fly_id.name = 'fly'
 
     # TODO maybe write these to a text file as well?
     print('"fly" = ordered across days, "fly_num" = order within a day')
     print(fly_id.to_frame().reset_index()[['fly'] + fly_keys].drop_duplicates(
-        ).to_string(index=False)
+        ).sort_values('fly').to_string(index=False)
     )
     print()
 
-    recording_id = df.groupby(level=recording_keys).ngroup()
+    '''
+    recording_id = df.groupby(level=recording_keys).ngroup() + 1
     recording_id.name = 'recording'
 
     print(recording_id.to_frame().reset_index()[['recording'] + recording_keys
-        ].drop_duplicates().to_string(index=False)
+        ].drop_duplicates().sort_values('recording').to_string(index=False)
     )
     print()
+    '''
 
     df.set_index(fly_id, append=True, inplace=True)
-    df.set_index(recording_id, append=True, inplace=True)
+    #df.set_index(recording_id, append=True, inplace=True)
 
-    df = df.droplevel(recording_keys).reorder_levels(['fly', 'recording', 'roi'])
+    df = df.droplevel(recording_keys).reorder_levels(['fly', 'roi'])
+    #df = df.droplevel(recording_keys).reorder_levels(['fly', 'recording', 'roi'])
 
     def onepair_dfs(name1, name2, *dfs):
         assert len(dfs) > 0
@@ -2217,9 +2306,40 @@ def analyze_cache():
 
         return tuple([onepair_df(name1, name2, df) for df in dfs])
 
+    odf = orns.orns(add_sfr=False)
+    odf.columns = pd.Index(data=[orns.receptor2glomerulus[x] for x in odf.columns],
+        name='glomerulus'
+    )
+    abbrev2odor = {v: k for k, v in odor2abbrev.items()}
+
+    def print_hallem(df):
+        print(df.T.rename_axis(columns='').to_string(max_cols=None,
+            float_format=lambda x: '{:.0f}'.format(x)
+        ))
 
     for name1, name2 in df.columns.to_frame(index=False)[['name1','name2']
-        ].drop_duplicates().itertuples(index=False):
+        ].drop_duplicates().sort_values(['name1','name2']).itertuples(index=False):
+
+        orig_name1 = abbrev2odor[name1] if name1 in abbrev2odor else name1
+        orig_name2 = abbrev2odor[name2] if name2 in abbrev2odor else name2
+
+        # TODO TODO TODO also get values for lower concentrations, when available
+        # (not in main data used in orns.orns(), but should be in other csv, maybe also
+        # in drosolf somewhere)
+
+        o1df = odf.loc[orig_name1].sort_values(ascending=False).to_frame()
+        print_hallem(o1df)
+        fig, _ = viz.matshow(o1df)
+        pair_savefig(fig, name1, (name1, name2))
+
+        print()
+
+        o2df = odf.loc[orig_name2].sort_values(ascending=False).to_frame()
+        print_hallem(o2df)
+        fig, _ = viz.matshow(o2df)
+        pair_savefig(fig, name2, (name1, name2))
+
+        print('\n')
 
         pair_df = onepair_dfs(name1, name2, df)[0]
         analyze_onepair(pair_df)
@@ -2229,8 +2349,8 @@ def analyze_cache():
     # such that it appears once for A=x,B=y and once for A=y,B=x
     # TODO other ways to achieve some kind of symmetry here?
 
-    plt.show()
-    import ipdb; ipdb.set_trace()
+    #plt.show()
+    #import ipdb; ipdb.set_trace()
 
     # TODO add back some optional csv exporting
     #"""
@@ -2284,7 +2404,7 @@ def main():
         # multiprocessing case, but can't make interactive plots.
         matplotlib.use('agg')
 
-    makedirs(pair_link_directories_root)
+    makedirs(pair_directories_root)
 
     if analyze_glomeruli_diagnostics:
         # Always want to delete and remake this in case labels in gsheet have changed.
