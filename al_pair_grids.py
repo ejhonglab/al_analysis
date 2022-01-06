@@ -114,7 +114,7 @@ print_full_paths = False
 
 save_figs = True
 # TODO TODO TODO fix png in case it doesn't exist before running w/ -c flag
-plot_fmt = os.environ.get('plot_fmt', 'svg')
+plot_fmt = os.environ.get('plot_fmt', 'png')
 
 cmap = 'plasma'
 diverging_cmap = 'RdBu_r'
