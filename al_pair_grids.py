@@ -120,7 +120,12 @@ cmap = 'plasma'
 diverging_cmap = 'RdBu_r'
 # TODO could try TwoSlopeNorm, but would probably want to define bounds per fly (or else
 # compute in another pass / plot these after aggregating?)
-diverging_cmap_kwargs = dict(cmap=diverging_cmap, norm=colors.CenteredNorm())
+diverging_cmap_kwargs = dict(cmap=diverging_cmap,
+    # TODO delete kwargs / determine from data in each case (and why does it
+    # seem fixed to [-1, 1] without this?)
+    # TODO TODO TODO am i understanding this correctly?
+    norm=colors.CenteredNorm(halfrange=2.0),
+)
 
 dff_cbar_title = f'{dff_latex}'
 
@@ -1937,7 +1942,9 @@ def odor_str2conc(odor_str):
 
 # TODO maybe refactor so this happens in analyze_cache, if at all (splitting fly-by-fly
 # first or nah?)
-def plot_diffs_from_max_and_sum(mean_df, roi_plot_dir):
+def plot_diffs_from_max_and_sum(mean_df, roi_plot_dir=None, **matshow_kwargs):
+    mean_df = mean_df.T
+
     component_df = mean_df[
         (mean_df.index.to_frame() == 'solvent').sum(axis='columns') == 1
     ]
@@ -1976,16 +1983,27 @@ def plot_diffs_from_max_and_sum(mean_df, roi_plot_dir):
     max_diff_df = (max_df - mean_df).dropna()
 
     for diff_df, desc in ((max_diff_df, 'max'), (sum_diff_df, 'sum')):
+        diff_df = diff_df.T
+
         # TODO less gradations on these color bars? kinda packed.
         # TODO cbar_label? or just ok to leave it in title?
-        viz.matshow(diff_df, title=f'Component {desc} minus observed', cbar_shrink=0.4,
+        fig, _ = viz.matshow(diff_df, title=f'Component {desc} minus observed',
             # TODO check that `xticklabels=str` works
-            xticklabels=str, yticklabels=format_mix_from_strs, **diverging_cmap_kwargs
+            #xticklabels=str, yticklabels=format_mix_from_strs, #**diverging_cmap_kwargs,
+            **matshow_kwargs
         )
 
-        savefig(fig, roi_plot_dir, f'diff_{desc}')
+        if roi_plot_dir is not None:
+            savefig(fig, roi_plot_dir, f'diff_{desc}')
 
-    return sum_diff_df, max_diff_df
+        # TODO refactor (unroll loop?)
+        if desc == 'max':
+            max_diff_fig = fig
+        elif desc == 'sum':
+            sum_diff_fig = fig
+
+    #return sum_diff_df, max_diff_df
+    return sum_diff_fig, max_diff_fig
 
 
 # TODO TODO TODO if they are fitting using a function like this, that only has as
@@ -2093,7 +2111,6 @@ def pair_savefig(fig_or_sns_obj, fname_prefix, names):
 
 
 # TODO better name for this fn
-#def analyze_onepair(trial_df, mean_df, sum_diff_df, max_diff_df):
 def analyze_onepair(trial_df):
 
     name1 = odor_strs2single_odor_name(trial_df.columns.get_level_values('odor1'))
@@ -2159,16 +2176,31 @@ def analyze_onepair(trial_df):
     #fig, _ = viz.matshow(sum_diff_df, title='Sum - obs', **matshow_diverging_kwargs)
     #fig, _ = viz.matshow(max_diff_df, title='Max - obs', **matshow_diverging_kwargs)
 
+    max_diff_fig, sum_diff_fig = plot_diffs_from_max_and_sum(mean_df,
+        dpi=300, **matshow_diverging_kwargs
+    )
+    savefig(max_diff_fig, 'max_diff')
+    savefig(sum_diff_fig, 'sum_diff')
+
     #'''
     fig, _ = viz.matshow(est_df, title=f'Competitive binding model\n{fly_str}',
-        **matshow_kwargs
+        dpi=300, vmin=0, vmax=3.0, **matshow_kwargs
     )
     savefig(fig, 'cb')
 
-    fig, _ = viz.matshow(cb_diff_df,
+    fig, _ = viz.matshow(cb_diff_df, dpi=300,
         title=f'Competitive binding model - obs\n{fly_str}', **matshow_diverging_kwargs
     )
     savefig(fig, 'cb_diff')
+
+    cb_diff_df_mixes_only = cb_diff_df.loc[:,
+        (cb_diff_df.columns.to_frame() == 'solvent').sum(axis='columns') == 0
+    ]
+    fig, _ = viz.matshow(cb_diff_df_mixes_only, dpi=300,
+        title=f'Competitive binding model - obs\n{fly_str}', **matshow_diverging_kwargs
+    )
+    savefig(fig, 'cb_diff_mixes_only')
+
     #'''
 
     # TODO TODO could try using row_colors derived from non-hierarchichal clustering
