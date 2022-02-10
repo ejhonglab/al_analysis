@@ -5,6 +5,9 @@
 # that here
 pyyaml
 
+colorama
+termcolor
+
 git+https://github.com/tom-f-oconnell/drosolf
 
 # You may replace this line with:

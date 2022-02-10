@@ -11,6 +11,7 @@ import time
 import shutil
 import traceback
 import subprocess
+import sys
 import pickle
 from pathlib import Path
 import glob
@@ -29,6 +30,8 @@ from matplotlib import colors
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.optimize import curve_fit
+import colorama
+from termcolor import cprint
 from drosolf import orns
 
 from hong2p import util, thor, viz, olf
@@ -38,6 +41,8 @@ from hong2p.util import shorten_path, format_date
 from hong2p.olf import format_odor, format_mix_from_strs, format_odor_list
 from hong2p.viz import dff_latex
 
+
+colorama.init()
 
 plt.rcParams['figure.constrained_layout.use'] = True
 plt.rcParams['figure.constrained_layout.w_pad'] = 1/72
@@ -52,7 +57,7 @@ analysis_intermediates_root = util.analysis_intermediates_root()
 
 # TODO probably make another category or two for data marked as failed (in the breakdown
 # of data by pairs * concs at the end) (if i don't refactor completely...)
-retry_previously_failed = False
+retry_previously_failed = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -123,7 +128,9 @@ diverging_cmap = 'RdBu_r'
 diverging_cmap_kwargs = dict(cmap=diverging_cmap,
     # TODO delete kwargs / determine from data in each case (and why does it
     # seem fixed to [-1, 1] without this?)
-    # TODO TODO TODO am i understanding this correctly?
+    # TODO TODO TODO am i understanding this correctly? (and was default range really
+    # [-1, 1], and not the data range, with no kwargs to this (or was it transforming
+    # data and was that the range of the transformed data???)?
     norm=colors.CenteredNorm(halfrange=2.0),
 )
 
@@ -1174,7 +1181,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         success = True
 
     except Exception as err:
-        traceback.print_exc()
+        cprint(traceback.format_exc(), 'red', file=sys.stderr)
         failed_suite2p_dirs.append(analysis_dir)
 
         make_fail_indicator_file(analysis_dir, suite2p_fail_prefix, err)
@@ -1470,7 +1477,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         # with the red channel (which was allowed despite those channels having gain
         # 0 in the few cases so far)
         except AssertionError as err:
-            traceback.print_exc()
+            cprint(traceback.format_exc(), 'red', file=sys.stderr)
             print()
 
             failed_assigning_frames_to_odors.append(thorimage_dir)
@@ -2493,7 +2500,11 @@ def main():
 
     ]
     common_paired_thor_dirs_kwargs = dict(
-        start_date='2021-03-07', ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
+        # NOTE: this start_date should exclude all pair-only experiments and only select
+        # experiments as part of the return to kiwi-approximation experiments (that now
+        # include ramps of eb/ea/kiwi mixture). For 2021 pair experiments, was using
+        # start_date of '2021-03-07'
+        start_date='2022-02-04', ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
     )
 
     names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
@@ -2720,6 +2731,10 @@ def main():
         )
 
     # TODO TODO probably print stuff in gsheet but not local and vice versa
+
+    if len(ij_trial_dfs) == 0:
+        cprint('No ImageJ ROIs defined for current experiments!', 'yellow')
+        return
 
     trial_df = pd.concat(ij_trial_dfs, axis='columns')
 
