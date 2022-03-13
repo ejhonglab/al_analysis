@@ -108,8 +108,6 @@ ignore_bounding_frame_cache = False
 
 # If False, will not write any TIFFs (other than raw.tif, which will always only get
 # written if it doesn't already exist), including dF/F TIFF.
-# TODO TODO TODO change back to True after getting a glomeruli-diagnostics-only CLI flag
-# working
 write_processed_tiffs = True
 want_dff_tiff = True
 
@@ -261,6 +259,16 @@ ignore_existing = False
 # TODO probably make another category or two for data marked as failed (in the breakdown
 # of data by pairs * concs at the end) (if i don't refactor completely...)
 retry_previously_failed = False
+
+is_acquisition_host = util.is_acquisition_host()
+if is_acquisition_host:
+    analyze_ijrois = False
+    final_concentrations_only = False
+    do_suite2p = False
+    analyze_suite2p_outputs = False
+    write_processed_tiffs = False
+    want_dff_tiff = False
+    # TODO may also need to turn off creation of symlinks in here. test.
 
 ###################################################################################
 # Modified inside `process_experiment`
@@ -2467,7 +2475,11 @@ def main():
         # multiprocessing case, but can't make interactive plots.
         matplotlib.use('agg')
 
-    makedirs(pair_directories_root)
+    if not is_acquisition_host:
+        # TODO switch to doing just first time we would add something there?  (and do
+        # same for other dirs, especially those we might not want generated on the
+        # acquisition computer)
+        makedirs(pair_directories_root)
 
     if analyze_glomeruli_diagnostics:
         # TODO if i am gonna keep this, need a way to just re-link stuff without also
