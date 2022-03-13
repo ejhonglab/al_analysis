@@ -24,7 +24,6 @@ import numpy as np
 import pandas as pd
 import tifffile
 import yaml
-from suite2p import run_s2p
 import ijroi
 from matplotlib import colors
 import matplotlib.pyplot as plt
@@ -33,6 +32,7 @@ from scipy.optimize import curve_fit
 import colorama
 from termcolor import cprint, colored
 from drosolf import orns
+# `from suite2p import run_s2p` now done at start of function that would run suite2p
 
 from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
@@ -1133,6 +1133,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
     """
     Depends on util.thor2tiff already being run to create TIFF in analysis_dir
     """
+    from suite2p import run_s2p
 
     suite2p_dir = s2p.get_suite2p_dir(analysis_dir)
     if exists(suite2p_dir):
