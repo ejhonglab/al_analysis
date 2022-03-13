@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.optimize import curve_fit
 import colorama
-from termcolor import cprint
+from termcolor import cprint, colored
 from drosolf import orns
 
 from hong2p import util, thor, viz, olf
@@ -54,10 +54,6 @@ plt.rcParams['figure.constrained_layout.hspace'] = 0
 # Constants that affect behavior of `process_experiment`
 ###################################################################################
 analysis_intermediates_root = util.analysis_intermediates_root()
-
-# TODO probably make another category or two for data marked as failed (in the breakdown
-# of data by pairs * concs at the end) (if i don't refactor completely...)
-retry_previously_failed = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -88,7 +84,8 @@ overwrite_suite2p = False
 #analyze_suite2p_outputs = True
 analyze_suite2p_outputs = False
 
-analyze_ijrois = True
+# TODO TODO TODO return to True
+analyze_ijrois = False
 
 # TODO TODO change to using seconds and rounding to nearest[higher/lower
 # multiple?] from there
@@ -109,7 +106,14 @@ n_top_z_to_analyze = 5
 
 ignore_bounding_frame_cache = False
 
+# If False, will not write any TIFFs (other than raw.tif, which will always only get
+# written if it doesn't already exist), including dF/F TIFF.
+# TODO TODO TODO change back to True after getting a glomeruli-diagnostics-only CLI flag
+# working
+write_processed_tiffs = True
 want_dff_tiff = True
+
+want_dff_tiff = want_dff_tiff and write_processed_tiffs
 
 links_to_input_dirs = True
 
@@ -252,8 +256,11 @@ if analyze_pairgrids_only:
 frame_assign_fail_prefix = 'assign_frames'
 suite2p_fail_prefix = 'suite2p'
 
-# Changed as a global in main
+# Changed as a globals in main (exposed as command line arguments)
 ignore_existing = False
+# TODO probably make another category or two for data marked as failed (in the breakdown
+# of data by pairs * concs at the end) (if i don't refactor completely...)
+retry_previously_failed = False
 
 ###################################################################################
 # Modified inside `process_experiment`
@@ -302,6 +309,10 @@ no_merges = []
 dirs_with_ijrois = []
 # TODO check if any have original ROI name format (and what is it for a 3D TIFF?)
 #dirs_with_ijrois_needing_merge = []
+
+
+def warn(msg):
+    warnings.warn(colored(msg, 'yellow'))
 
 
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
@@ -364,7 +375,7 @@ def delete_empty_dirs():
 # TODO probably need a recursive solution combining deletion of empty symlinks and
 # directories to cleanup all hierarchies that could be created w/ symlink and makedirs
 links_created = []
-def symlink(target, link):
+def symlink(target, link, relative=True):
     """Create symlink link pointing to target, doing nothing if link exists.
 
     Also registers `link` for deletion at end if what it points to no
@@ -375,7 +386,12 @@ def symlink(target, link):
         raise FileNotFoundError
 
     try:
-        os.symlink(os.path.abspath(target), link)
+        if relative:
+            link_dir = link if os.path.isdir(link) else os.path.dirname(link)
+            os.symlink(os.path.relpath(target, link_dir), link)
+        else:
+            os.symlink(os.path.abspath(target), link)
+
     except FileExistsError:
         return
 
@@ -386,7 +402,7 @@ def delete_link_if_target_missing(link):
     if not islink(link):
         # TODO what caused this? some race condition between two runs?
         #raise IOError(f'input {link} was not a link')
-        warnings.warn(f'input {link} was not a link. doing nothing with it.')
+        warn(f'input {link} was not a link. doing nothing with it.')
         return
 
     if not exists(link):
@@ -1337,8 +1353,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     makedirs(plot_dir)
 
     if links_to_input_dirs:
-        symlink(thorimage_dir, join(plot_dir, 'thorimage'))
-        symlink(analysis_dir, join(plot_dir, 'analysis'))
+        symlink(thorimage_dir, join(plot_dir, 'thorimage'), relative=False)
+        symlink(analysis_dir, join(plot_dir, 'analysis'), relative=False)
 
     yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
     print('yaml_path:', shorten_path(yaml_path, n_parts=2))
@@ -1385,7 +1401,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         pair_dir = get_pair_dir(name1, name2)
         makedirs(pair_dir)
 
-        symlink(plot_dir, join(pair_dir, experiment_basedir))
+        symlink(plot_dir, join(pair_dir, experiment_basedir), relative=True)
     else:
         if analyze_pairgrids_only:
             print('skipping because not a pair grid experiment\n')
@@ -1402,7 +1418,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         err_msg = (f'stimulus yaml {short_yaml_path} seen in:\n'
             f'{pformat(seen_stimulus_yamls2thorimage_dirs[yaml_path])}'
         )
-        warnings.warn(err_msg)
+        warn(err_msg)
         #raise ValueError(err_msg)
 
     # NOTE: converting to list-of-str FIRST, so that each element will be
@@ -1448,7 +1464,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 failed_suite2p_dirs.append(analysis_dir)
 
             suffixes_str = ' AND '.join(suffixes)
-            print(f'skipping because previously failed {suffixes_str}\n')
+            cprint(f'skipping because previously failed {suffixes_str}\n', 'red')
             return
 
     before = time.time()
@@ -1664,7 +1680,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
 
     if z > n_top_z_to_analyze:
-        warnings.warn(f'{thorimage_dir}: only analyzing top {n_top_z_to_analyze} '
+        warn(f'{thorimage_dir}: only analyzing top {n_top_z_to_analyze} '
             'slices'
         )
         movie = movie[:, :n_top_z_to_analyze, :, :]
@@ -1844,7 +1860,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     curr_diag_good = fly_diag_statuses.loc[target_glomerulus.lower()]
 
                 except KeyError:
-                    warnings.warn(f'target glomerulus {target_glomerulus} not in Google'
+                    warn(f'target glomerulus {target_glomerulus} not in Google'
                         ' sheet! add column and label data. currently not linking these'
                         ' plots!'
                     )
@@ -1855,7 +1871,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 else:
                     label_subdir = 'bad'
             else:
-                warnings.warn('please label quality glomeruli diagnostics for fly '
+                warn('please label quality glomeruli diagnostics for fly '
                     f'{(date_str, fly_num)} in google sheet.'
                 )
 
@@ -1869,15 +1885,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 # Just warning so that all the average images, etc, will still be
                 # created, so those can be used to quickly tell which experiment
                 # corresponded to the same side as the real experiments in the same fly.
-                warnings.warn(f'{(date_str, fly_num)} has multiple glomeruli diagnostic'
+                warn(f'{(date_str, fly_num)} has multiple glomeruli diagnostic'
                     ' experiments. add all but one to unused_glomeruli_diagnostics. '
                     'FIRST IS CURRENTLY LINKED BUT MAY NOT BE THE RELEVANT EXPERIMENT!'
                 )
                 continue
 
-            # TODO make symlinks relative (more complicated) to make it easier to move
-            # the directory manually
-            symlink(fig_path, link_path)
+            symlink(fig_path, link_path, relative=True)
 
     if save_dff_tiff:
         delta_f_over_f = np.concatenate(trial_dff_movies)
@@ -1893,11 +1907,12 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         del delta_f_over_f, trial_dff_movies
 
     max_trialmean_dff = np.max(odor_mean_dff_list, axis=0)
-    max_trialmean_dff_tiff_fname = join(analysis_dir, 'max_trialmean_dff.tif')
-    util.write_tiff(max_trialmean_dff_tiff_fname, max_trialmean_dff, strict_dtype=False,
-        dims='ZYX'
-    )
-    print(f'wrote TIFF with max across mean odor dF/F volumes')
+    if write_processed_tiffs:
+        max_trialmean_dff_tiff_fname = join(analysis_dir, 'max_trialmean_dff.tif')
+        util.write_tiff(max_trialmean_dff_tiff_fname, max_trialmean_dff,
+            strict_dtype=False, dims='ZYX'
+        )
+        print(f'wrote TIFF with max across mean odor dF/F volumes')
 
     fname_prefix = 'max_trialmean_dff'
     if n_response_volumes_in_fname:
@@ -2406,6 +2421,7 @@ def main():
     global seen_stimulus_yamls2thorimage_dirs
     global names_and_concs2analysis_dirs
     global ignore_existing
+    global retry_previously_failed
 
     atexit.register(cleanup_created_dirs_and_links)
 
@@ -2424,12 +2440,20 @@ def main():
     parser.add_argument('-i', '--ignore-existing', action='store_true',
         help='re-calculate almost everything'
     )
+    parser.add_argument('-r', '--retry-failed', action='store_true',
+        help='retry steps that previously failed (frame-to-odor assignment or suite2p)'
+    )
+
+    # TODO TODO TODO add flag for ONLY doing glomeruli diagnostics, and make sure to
+    # link everything in that case (avoid skipping stuff that already has their
+    # experiment-specific non-ROI plots)
 
     args = parser.parse_args()
 
     parallel = args.parallel
     analyze_cache_only = args.analyze_cache_only
     ignore_existing = args.ignore_existing
+    retry_previously_failed = args.retry_failed
 
     del parser, args
 
@@ -2446,6 +2470,9 @@ def main():
     makedirs(pair_directories_root)
 
     if analyze_glomeruli_diagnostics:
+        # TODO if i am gonna keep this, need a way to just re-link stuff without also
+        # having to compute the heatmaps in the same run (current behavior)
+        #
         # Always want to delete and remake this in case labels in gsheet have changed.
         if exists(across_fly_glomeruli_diags_dir):
             shutil.rmtree(across_fly_glomeruli_diags_dir)
@@ -2499,12 +2526,16 @@ def main():
         '2021-07-21/1',
 
     ]
+
+    # NOTE: this start_date should exclude all pair-only experiments and only select
+    # experiments as part of the return to kiwi-approximation experiments (that now
+    # include ramps of eb/ea/kiwi mixture). For 2021 pair experiments, was using
+    # start_date of '2021-03-07'
+    #start_date = '2021-03-07'
+    start_date = '2022-02-04'
+
     common_paired_thor_dirs_kwargs = dict(
-        # NOTE: this start_date should exclude all pair-only experiments and only select
-        # experiments as part of the return to kiwi-approximation experiments (that now
-        # include ramps of eb/ea/kiwi mixture). For 2021 pair experiments, was using
-        # start_date of '2021-03-07'
-        start_date='2022-02-04', ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
+        start_date=start_date, ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
     )
 
     names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
