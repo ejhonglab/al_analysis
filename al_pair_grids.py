@@ -268,7 +268,10 @@ if is_acquisition_host:
     analyze_suite2p_outputs = False
     write_processed_tiffs = False
     want_dff_tiff = False
-    # TODO may also need to turn off creation of symlinks in here. test.
+    # Non-admin users don't have permission to make (the equivlant of?) symbolic links
+    # in Windows, and I'm not sure what all the ramifications of enabling that would 
+    # be.
+    links_to_input_dirs = False
 
 ###################################################################################
 # Modified inside `process_experiment`
@@ -1410,7 +1413,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         pair_dir = get_pair_dir(name1, name2)
         makedirs(pair_dir)
 
-        symlink(plot_dir, join(pair_dir, experiment_basedir), relative=True)
+        if not is_acquisition_host:
+            symlink(plot_dir, join(pair_dir, experiment_basedir), relative=True)
     else:
         if analyze_pairgrids_only:
             print('skipping because not a pair grid experiment\n')
@@ -1900,7 +1904,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 )
                 continue
 
-            symlink(fig_path, link_path, relative=True)
+            if not is_acquisition_host:
+                symlink(fig_path, link_path, relative=True)
 
     if save_dff_tiff:
         delta_f_over_f = np.concatenate(trial_dff_movies)
