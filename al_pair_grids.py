@@ -1410,10 +1410,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         name1 = odor2abbrev.get(name1, name1)
         name2 = odor2abbrev.get(name2, name2)
 
-        pair_dir = get_pair_dir(name1, name2)
-        makedirs(pair_dir)
-
         if not is_acquisition_host:
+            pair_dir = get_pair_dir(name1, name2)
+            makedirs(pair_dir)
             symlink(plot_dir, join(pair_dir, experiment_basedir), relative=True)
     else:
         if analyze_pairgrids_only:
@@ -1841,10 +1840,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         # TODO TODO maybe also include some quick reference to
         # previously-presented-stimulus, to check for constamination components of
         # noise?
-        # TODO TODO TODO also include a subdir of glomeruli_diagnostics that just links
+        # TODO TODO also include a subdir of glomeruli_diagnostics that just links
         # to the corresponding directories of individual flies, to not have to sift
         # through them at the top-level that also has real experiments
-        if target_glomerulus is not None:
+        if not is_acquisition_host and target_glomerulus is not None:
             # gsheet only has labels on a per-fly basis, and those should apply to the
             # glomeruli diagnostic experiment corresponding to the same FOV as the other
             # experiments. Don't want to link any other experiments anywhere under here.
@@ -1852,7 +1851,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             if rel_exp_dir in unused_glomeruli_diagnostics:
                 continue
 
-            glomerulus_dir = join(across_fly_glomeruli_diags_dir, target_glomerulus)
+            glomerulus_dir = join(across_fly_glomeruli_diags_dir,
+                util.to_filename(target_glomerulus, period=False).strip('_')
+            )
             makedirs(glomerulus_dir)
 
             label_subdir = None
@@ -1904,8 +1905,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 )
                 continue
 
-            if not is_acquisition_host:
-                symlink(fig_path, link_path, relative=True)
+            symlink(fig_path, link_path, relative=True)
 
     if save_dff_tiff:
         delta_f_over_f = np.concatenate(trial_dff_movies)
