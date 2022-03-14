@@ -53,7 +53,7 @@ plt.rcParams['figure.constrained_layout.hspace'] = 0
 ###################################################################################
 # Constants that affect behavior of `process_experiment`
 ###################################################################################
-analysis_intermediates_root = util.analysis_intermediates_root()
+analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -2559,9 +2559,6 @@ def main():
         **common_paired_thor_dirs_kwargs
     )
     del common_paired_thor_dirs_kwargs
-
-    # TODO maybe factor this to / use existing stuff in hong2p in place of this
-    makedirs(analysis_intermediates_root)
 
     main_start_s = time.time()
 

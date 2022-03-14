@@ -16,4 +16,4 @@ git+https://github.com/tom-f-oconnell/drosolf
 
 # You may replace this line with:
 # git+https://github.com/tom-f-oconnell/suite2p
--e ../suite2p
+#-e ../suite2p
