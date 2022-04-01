@@ -106,6 +106,10 @@ n_top_z_to_analyze = 5
 
 ignore_bounding_frame_cache = False
 
+# Also required if do_suite2p is True, but that is always going to be False the only
+# time this currently is (when is_acquisition_host is True).
+convert_raw_to_tiff = True
+
 # If False, will not write any TIFFs (other than raw.tif, which will always only get
 # written if it doesn't already exist), including dF/F TIFF.
 write_processed_tiffs = True
@@ -272,6 +276,7 @@ if is_acquisition_host:
     # in Windows, and I'm not sure what all the ramifications of enabling that would 
     # be.
     links_to_input_dirs = False
+    convert_raw_to_tiff = False
 
 ###################################################################################
 # Modified inside `process_experiment`
@@ -1520,10 +1525,11 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # (loading the HDF5 should be the main time cost in the above fn)
     load_hdf5_s = time.time() - before
 
-    # This will create a TIFF <analysis_dir>/raw.tif, if it doesn't already exist
-    util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
-        verbose=False
-    )
+    if convert_raw_to_tiff:
+        # This will create a TIFF <analysis_dir>/raw.tif, if it doesn't already exist
+        util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
+            verbose=False
+        )
 
     if do_suite2p:
         run_suite2p(thorimage_dir, analysis_dir, overwrite=overwrite_suite2p)
