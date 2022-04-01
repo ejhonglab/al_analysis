@@ -65,6 +65,8 @@ final_concentrations_only = True
 
 analyze_reverse_order = True
 
+# NOTE: not actually a constant now. set True in main if CLI flag set to *only* analyze
+# glomeruli diagnostics
 # Will be set False if analyze_pairgrids_only=True
 analyze_glomeruli_diagnostics = True
 
@@ -263,6 +265,7 @@ ignore_existing = False
 # TODO probably make another category or two for data marked as failed (in the breakdown
 # of data by pairs * concs at the end) (if i don't refactor completely...)
 retry_previously_failed = False
+analyze_glomeruli_diagnostics_only = False
 
 is_acquisition_host = util.is_acquisition_host()
 if is_acquisition_host:
@@ -1332,6 +1335,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         is_glomeruli_diagnostics = True
     else:
+        if analyze_glomeruli_diagnostics_only:
+            print('skipping because experiment is NOT glomeruli diagnostics\n')
+            return
+
         is_glomeruli_diagnostics = False
 
     exp_start = time.time()
@@ -2442,6 +2449,8 @@ def main():
     global names_and_concs2analysis_dirs
     global ignore_existing
     global retry_previously_failed
+    global analyze_glomeruli_diagnostics_only
+    global analyze_glomeruli_diagnostics
 
     atexit.register(cleanup_created_dirs_and_links)
 
@@ -2463,10 +2472,11 @@ def main():
     parser.add_argument('-r', '--retry-failed', action='store_true',
         help='retry steps that previously failed (frame-to-odor assignment or suite2p)'
     )
-
-    # TODO TODO TODO add flag for ONLY doing glomeruli diagnostics, and make sure to
-    # link everything in that case (avoid skipping stuff that already has their
-    # experiment-specific non-ROI plots)
+    # TODO try to still link everything already generated (same w/ pairs)
+    parser.add_argument('-g', '--glomeruli-diags-only', action='store_true',
+        help='only analyze glomeruli diagnostics (mainly for use on acquisition '
+        'computer)'
+    )
 
     args = parser.parse_args()
 
@@ -2474,6 +2484,7 @@ def main():
     analyze_cache_only = args.analyze_cache_only
     ignore_existing = args.ignore_existing
     retry_previously_failed = args.retry_failed
+    analyze_glomeruli_diagnostics_only = args.glomeruli_diags_only
 
     del parser, args
 
@@ -2492,6 +2503,9 @@ def main():
         # same for other dirs, especially those we might not want generated on the
         # acquisition computer)
         makedirs(pair_directories_root)
+
+    if analyze_glomeruli_diagnostics_only:
+        analyze_glomeruli_diagnostics = True
 
     if analyze_glomeruli_diagnostics:
         # TODO if i am gonna keep this, need a way to just re-link stuff without also
