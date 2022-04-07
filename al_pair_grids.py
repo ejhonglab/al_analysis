@@ -37,8 +37,8 @@ from drosolf import orns
 from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
-from hong2p.util import shorten_path, format_date
-from hong2p.olf import format_odor, format_mix_from_strs, format_odor_list
+from hong2p.util import shorten_path, shorten_stimfile_path, format_date
+from hong2p.olf import format_odor, format_mix_from_strs, format_odor_list, solvent_str
 from hong2p.viz import dff_latex
 
 
@@ -87,7 +87,7 @@ overwrite_suite2p = False
 analyze_suite2p_outputs = False
 
 # TODO TODO TODO return to True
-analyze_ijrois = False
+analyze_ijrois = True
 
 # TODO TODO change to using seconds and rounding to nearest[higher/lower
 # multiple?] from there
@@ -252,6 +252,11 @@ odor2abbrev = {
     'ethyl butyrate': 'EB',
     'ethyl hexanoate': 'EH',
     'hexyl acetate': 'HA',
+    'ethanol': 'EtOH',
+    'isoamyl alcohol': 'IAol',
+    'isoamyl acetate': 'IAA',
+    'valeric acid': 'VA',
+    'kiwi approx.': '~kiwi',
 }
 
 if analyze_pairgrids_only:
@@ -266,6 +271,7 @@ ignore_existing = False
 # of data by pairs * concs at the end) (if i don't refactor completely...)
 retry_previously_failed = False
 analyze_glomeruli_diagnostics_only = False
+print_skipped = False
 
 is_acquisition_host = util.is_acquisition_host()
 if is_acquisition_host:
@@ -276,7 +282,7 @@ if is_acquisition_host:
     write_processed_tiffs = False
     want_dff_tiff = False
     # Non-admin users don't have permission to make (the equivlant of?) symbolic links
-    # in Windows, and I'm not sure what all the ramifications of enabling that would 
+    # in Windows, and I'm not sure what all the ramifications of enabling that would
     # be.
     links_to_input_dirs = False
     convert_raw_to_tiff = False
@@ -558,8 +564,9 @@ def is_reverse_order(odor_lists):
 
 
 def odor_strs2single_odor_name(index, name_conc_delim='@'):
+    # TODO factor LHS into hong2p.olf.parse_odor_name fn or something
     odors = {x.split(name_conc_delim)[0].strip() for x in index}
-    odors = {x for x in odors if x != 'solvent'}
+    odors = {x for x in odors if x != solvent_str}
     assert len(odors) == 1
     return odors.pop()
 
@@ -571,7 +578,12 @@ def odor_lists_to_multiindex(odor_lists, **format_odor_kwargs):
         raise NotImplementedError
 
     # This one would be more straight forward to relax than the above one
-    if unique_lens != {2}:
+    if unique_lens == {2}:
+        pairs = True
+
+    elif unique_lens == {1}:
+        pairs = False
+    else:
         raise NotImplementedError
 
     odor1_str_list = []
@@ -581,7 +593,16 @@ def odor_lists_to_multiindex(odor_lists, **format_odor_kwargs):
     odor_mix_repeats = []
 
     for odor_list in odor_lists:
-        odor1, odor2 = odor_list
+
+        if pairs:
+            odor1, odor2 = odor_list
+        else:
+            odor1 = odor_list[0]
+            # format_odor -> format_mix_from_strs should treat this as:
+            # 'solvent' (hong2p.olf.solvent_str) -> not being shown as part of mix
+            # TODO is this actually reached? i'm not seeing it in some of the
+            # ij_trial_dfs at end of main
+            odor2 = {'name': 'no_second_odor', 'log10_conc': None}
 
         # TODO refactor
         if odor1['name'] in odor2abbrev:
@@ -648,7 +669,8 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
         try:
             names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
 
-        # TODO change error from assertionerror if gonna catch it...
+        # An odor name wasn't in a consistent position across the odor lists somewhere
+        # (probably would only happen for a non-pair experiment).
         except AssertionError:
             continue
 
@@ -798,7 +820,7 @@ def odor_index_sort_key(level):
 
     sort_key = level.values.copy()
 
-    solvent_elements = sort_key == 'solvent'
+    solvent_elements = sort_key == solvent_str
     conc_delimiter = '@'
     assert all([conc_delimiter in x for x in sort_key[~ solvent_elements]])
 
@@ -810,15 +832,16 @@ def odor_index_sort_key(level):
         assert len(parts) == 2
         return float(parts[1].strip())
 
-    conc_keys = [parse_log10_conc(x) for x in sort_key[~ solvent_elements]]
-    sort_key[~ solvent_elements] = conc_keys
+    if not all(solvent_elements):
+        conc_keys = [parse_log10_conc(x) for x in sort_key[~ solvent_elements]]
+        sort_key[~ solvent_elements] = conc_keys
 
-    # Setting solvent to an unused log10 concentration just under lowest we have,
-    # such that it gets sorted into overall order as I want (first, followed by
-    # lowest concentration).
-    # TODO TODO maybe just use float('-inf') or numpy equivalent here?
-    # should give me the sorting i want.
-    sort_key[solvent_elements] = min(conc_keys) - 1
+        # Setting solvent to an unused log10 concentration just under lowest we have,
+        # such that it gets sorted into overall order as I want (first, followed by
+        # lowest concentration).
+        # TODO TODO maybe just use float('-inf') or numpy equivalent here?
+        # should give me the sorting i want.
+        sort_key[solvent_elements] = min(conc_keys) - 1
 
     # Converting back to an index so that `level=<previous level name>` arg to
     # `DataFrame.sort_index` doesn't get broken. This key function is used to generate
@@ -827,6 +850,12 @@ def odor_index_sort_key(level):
     return pd.Index(sort_key, name=level.name)
 
 
+# TODO TODO add some kind of lookup for odor panels (might just need to get the set of
+# all (odor name, odor concentrations) used in experiment and compare that.  -> force
+# consistent order for things like kiwi.yaml/control1.yaml experiments (anything not
+# pair that we actually wanna see plots for actually. probably just don't wanna sort
+# glomeruli diagnostics) (only really relevant if i actually start randomizing order in
+# those experiments... for now, could just not sort)
 odor_cols = ['odor1', 'odor2']
 def sort_odor_indices(df):
 
@@ -936,10 +965,19 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
     return fig
 
 
-def plot_all_roi_mean_responses(trial_df, title=None, roi_sortkeys=None, **kwargs):
-    """
+def plot_all_roi_mean_responses(trial_df, title=None, roi_sortkeys=None, roi_rows=True,
+    sort_odors=True, **kwargs):
+    """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
+
     Args:
+        trial_df: DataFrame with ['odor1', 'odor2', 'repeat'] index names and a column
+            for each ROI
+
         roi_sortkeys: sequence of same length as trial_df, used to order ROIs
+
+        roi_rows: (default=True) if True, matrix will be transposed relative to input,
+            with ROIs as rows and odors as columns
+
     """
     for c in ['odor1', 'odor2', 'repeat']:
         assert c in trial_df.index.names
@@ -948,7 +986,9 @@ def plot_all_roi_mean_responses(trial_df, title=None, roi_sortkeys=None, **kwarg
     # (so can't just add metadata once at beginning and have it propate through here,
     # without extra work at least)
     mean_df = trial_df.groupby(['odor1', 'odor2'], sort=False).mean()
-    mean_df = sort_odor_indices(mean_df)
+
+    if sort_odors:
+        mean_df = sort_odor_indices(mean_df)
 
     if roi_sortkeys is not None:
         assert len(roi_sortkeys) == len(trial_df.columns)
@@ -960,12 +1000,19 @@ def plot_all_roi_mean_responses(trial_df, title=None, roi_sortkeys=None, **kwarg
 
         mean_df.sort_index(key=roi_sortkey_fn, axis='columns', inplace=True)
 
+    if roi_rows:
+        xticklabels = format_mix_from_strs
+        yticklabels = True
+        mean_df = mean_df.T
+    else:
+        xticklabels = True
+        yticklabels = format_mix_from_strs
+
     # TODO maybe put lines between levels of sortkey if int (e.g. 'iplane')
     # (and also show on plot as second label above/below roi labels?)
 
-    # TODO check whether passing `xticklabels=str` works, and fix if not
-    fig, _ = viz.matshow(mean_df, title=title, xticklabels=str,
-        yticklabels=format_mix_from_strs, cmap=cmap, **kwargs
+    fig, _ = viz.matshow(mean_df, title=title, xticklabels=xticklabels,
+        yticklabels=yticklabels, cmap=cmap, **kwargs
     )
 
     return fig, mean_df
@@ -1055,18 +1102,24 @@ def ij_traces(analysis_dir, movie):
     return traces, rois, z_indices
 
 
-def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, *, roi_stats=None,
-    show_suite2p_rois=False):
+def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, *,
+    roi_stats=None, show_suite2p_rois=False):
 
     if show_suite2p_rois and roi_stats is None:
         raise ValueError('must pass roi_stats if show_suite2p_rois')
 
+    is_pair = is_pairgrid(odor_lists)
+
     makedirs(roi_plot_dir)
 
     fig, mean_df = plot_all_roi_mean_responses(trial_df, roi_sortkeys=z_indices,
-        title=main_plot_title, cbar_label=trial_stat_cbar_title, cbar_shrink=0.4
+        sort_odors=is_pair, title=main_plot_title, cbar_label=trial_stat_cbar_title,
+        cbar_shrink=0.4
     )
     savefig(fig, roi_plot_dir, 'all_rois_by_z')
+
+    if not is_pair:
+        return
 
     for roi in trial_df.columns:
         if show_suite2p_rois:
@@ -1115,8 +1168,8 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir):
     roi_plot_dir = suite2p_plot_dir(plot_dir)
     title = 'Suite2p ROIs\nOrdered by Z plane'
 
-    trace_plots(roi_plot_dir, trial_df, z_indices, title, roi_stats=roi_stats,
-        show_suite2p_rois=False
+    trace_plots(roi_plot_dir, trial_df, z_indices, title, odor_lists,
+        roi_stats=roi_stats, show_suite2p_rois=False
     )
     print('generated plots based on suite2p traces')
 
@@ -1132,7 +1185,7 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir):
     roi_plot_dir = ijroi_plot_dir(plot_dir)
     title = 'ImageJ ROIs\nOrdered by Z plane\n*possibly [over/under]merged'
 
-    trace_plots(roi_plot_dir, trial_df, z_indices, title)
+    trace_plots(roi_plot_dir, trial_df, z_indices, title, odor_lists)
 
     print('generated plots based on traces from ImageJ ROIs')
 
@@ -1328,9 +1381,73 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     date, fly_num = date_and_fly_num
     thorimage_dir, thorsync_dir = thor_image_and_sync_dir
 
+    # NOTE: This should be called at least once before process_experiment returns, and
+    # the first call must be *before* any other calls that make output (prints,
+    # warnings, errors).
+    # If function returns after yaml_path is defined, it should be called at least once
+    # with yaml_path as an argument.
+    _printed_thor_dirs = False
+    _printed_yaml_path = False
+    def print_inputs_once(yaml_path=None):
+        nonlocal _printed_thor_dirs
+        nonlocal _printed_yaml_path
+
+        if not _printed_thor_dirs:
+            util.print_thor_paths(thorimage_dir, thorsync_dir,
+                print_full_paths=print_full_paths
+            )
+            _printed_thor_dirs = True
+
+        if yaml_path is not None and not _printed_yaml_path:
+            print('yaml_path:', shorten_stimfile_path(yaml_path))
+            _printed_yaml_path = True
+
+    def print_skip(msg, yaml_path=None, *, color=None, file=None):
+        if not print_skipped:
+            return
+
+        print_inputs_once(yaml_path)
+
+        if color is not None:
+            msg = colored(msg, color)
+
+        print(msg, file=file)
+        print()
+
+    _to_print_if_not_skipped = []
+    def print_if_not_skipped(x):
+        if print_skipped:
+            print(x)
+        else:
+            _to_print_if_not_skipped.append(x)
+
+    def warn_if_not_skipped(x):
+        if print_skipped:
+            warn(x)
+        else:
+            _to_print_if_not_skipped.append(UserWarning(x))
+
+    def do_nonskipped_experiment_prints_and_warns(yaml_path):
+        # Because in this case we should be printing / warning everything ASAP.
+        if print_skipped:
+            return
+
+        print_inputs_once(yaml_path)
+        for x in _to_print_if_not_skipped:
+            if type(x) is UserWarning:
+                warn(x)
+            else:
+                print(x)
+
+    # If we are printing skipped, we might as well print each of the input paths as soon
+    # as possible, to make debugging easier (so relevant paths will be more likely to
+    # appear before traceback -> termination).
+    if print_skipped:
+        print_inputs_once()
+
     if 'diag' in thorimage_dir:
         if not analyze_glomeruli_diagnostics:
-            print('skipping because experiment is just glomeruli diagnostics\n')
+            print_skip('skipping because experiment is just glomeruli diagnostics')
             return
 
         is_glomeruli_diagnostics = True
@@ -1348,7 +1465,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     )
 
     if not analyze_2d_tests and z == 1:
-        print('skipping because experiment is single plane\n')
+        print_skip('skipping because experiment is single plane')
         return
 
     experiment_id = shorten_path(thorimage_dir)
@@ -1381,11 +1498,16 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         symlink(analysis_dir, join(plot_dir, 'analysis'), relative=False)
 
     yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
-    print('yaml_path:', shorten_path(yaml_path, n_parts=2))
+
+    # Again, in this case, we might as well print all input paths ASAP.
+    if print_skipped:
+        print_inputs_once(yaml_path)
 
     pulse_s = float(int(yaml_data['settings']['timing']['pulse_us']) / 1e6)
     if pulse_s < 3:
-        print(f'skipping because odor pulses were {pulse_s} (<3s) long (old)\n')
+        print_skip(f'skipping because odor pulses were {pulse_s} (<3s) long (old)',
+            yaml_path
+        )
         return
 
     is_pair = is_pairgrid(odor_lists)
@@ -1402,13 +1524,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             if (names in names2final_concs and
                 names2final_concs[names] != curr_concs):
 
-                print('skipping because not using final concentrations for '
-                    f'{names}\n'
+                print_skip('skipping because not using final concentrations for '
+                    f'{names}', yaml_path
                 )
                 return
 
         if not analyze_reverse_order and is_reverse_order(odor_lists):
-            print('skipping because a reverse order experiment\n')
+            print_skip('skipping because a reverse order experiment', yaml_path)
             return
 
         # In case where this is a DictProxy, these empty lists (ListProxy in that case)
@@ -1428,22 +1550,21 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             symlink(plot_dir, join(pair_dir, experiment_basedir), relative=True)
     else:
         if analyze_pairgrids_only:
-            print('skipping because not a pair grid experiment\n')
+            print_skip('skipping because not a pair grid experiment', yaml_path)
             return
 
     # Checking here even though `seen_stimulus_yamls2thorimage_dirs` was pre-computed
     # elsewhere because we don't necessarily want to err if this would only get
     # triggered for stuff that would get skipped in this function.
-    if (yaml_path in seen_stimulus_yamls2thorimage_dirs and
-        seen_stimulus_yamls2thorimage_dirs[yaml_path] != [thorimage_dir]):
+    if not is_glomeruli_diagnostics and (yaml_path in seen_stimulus_yamls2thorimage_dirs
+        and seen_stimulus_yamls2thorimage_dirs[yaml_path] != [thorimage_dir]):
 
-        short_yaml_path = shorten_path(yaml_path, n_parts=2)
+        short_yaml_path = shorten_stimfile_path(yaml_path)
 
         err_msg = (f'stimulus yaml {short_yaml_path} seen in:\n'
             f'{pformat(seen_stimulus_yamls2thorimage_dirs[yaml_path])}'
         )
-        warn(err_msg)
-        #raise ValueError(err_msg)
+        warn_if_not_skipped(err_msg)
 
     # NOTE: converting to list-of-str FIRST, so that each element will be
     # hashable, and thus can be counted inside `olf.remove_consecutive_repeats`
@@ -1488,7 +1609,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 failed_suite2p_dirs.append(analysis_dir)
 
             suffixes_str = ' AND '.join(suffixes)
-            cprint(f'skipping because previously failed {suffixes_str}\n', 'red')
+
+            print_skip(f'skipping because previously failed {suffixes_str}', yaml_path,
+                color='red'
+            )
             return
 
     before = time.time()
@@ -1517,13 +1641,11 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         # with the red channel (which was allowed despite those channels having gain
         # 0 in the few cases so far)
         except AssertionError as err:
-            cprint(traceback.format_exc(), 'red', file=sys.stderr)
-            print()
+            print_skip(traceback.format_exc(), yaml_path, color='red', file=sys.stderr)
 
             failed_assigning_frames_to_odors.append(thorimage_dir)
 
             make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, err)
-
             return
     else:
         with open(bounding_frame_yaml_cache, 'r') as f:
@@ -1574,7 +1696,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 s2p_analysis_current = False
 
             if not ignore_existing and s2p_analysis_current:
-                print('suite2p outputs unchanged since last analysis')
+                print_if_not_skipped('suite2p outputs unchanged since last analysis')
                 s2p_trial_df = pd.read_pickle(s2p_trial_df_cache_fname)
             else:
                 s2p_trial_df = suite2p_trace_plots(analysis_dir, bounding_frames,
@@ -1586,7 +1708,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             s2p_trial_dfs.append(s2p_trial_df)
         else:
             full_bad_suite2p_analysis_dirs.append(analysis_dir)
-            print('not making suite2p plots because outputs marked bad\n')
+            print_if_not_skipped('not making suite2p plots because outputs marked bad')
 
     # Assuming that if analysis_dir has *any* plots directly inside of it, it has all of
     # what we want (including any outputs that would go in analysis_dir).
@@ -1604,6 +1726,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
             # TODO TODO TODO fix (or maybe just return appropriate inf value from
             # ijroi_mtime / other util mtime fn used by the RHS fn?)
+            # (what was wrong with this?)
             try:
                 ij_analysis_current = (
                     util.ijroi_mtime(analysis_dir) < ij_last_analysis_time(plot_dir)
@@ -1619,20 +1742,29 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
             if not ignore_existing:
                 if ij_analysis_current:
-                    print('ImageJ ROIs unchanged since last analysis. reading cache.')
+                    print_if_not_skipped(
+                        'ImageJ ROIs unchanged since last analysis. reading cache.'
+                    )
                     ij_trial_df = pd.read_pickle(ij_trial_df_cache_fname)
                     ij_trial_dfs.append(ij_trial_df)
                 else:
+                    print_inputs_once(yaml_path)
                     print('ImageJ ROIs were modified')
 
             do_ij_analysis = ignore_existing or not ij_analysis_current
         else:
+            # TODO also print for other stuff we wanna analyze that doesn't have ImageJ
+            # ROIs
             if is_pair:
-                print('no ImageJ ROIs')
+                print_if_not_skipped('no ImageJ ROIs')
 
     if not (do_nonroi_analysis or do_ij_analysis):
-        print(f'skipping non-ROI analysis because plot dir contains {plot_fmt}\n')
+        print_skip(f'skipping non-ROI analysis because plot dir contains {plot_fmt}',
+            yaml_path
+        )
         return
+
+    do_nonskipped_experiment_prints_and_warns(yaml_path)
 
     before = time.time()
 
@@ -1956,6 +2088,11 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     print()
 
+    # Just to indicate that something was analyzed. Could replace w/ some data
+    # potentially, still just checking the # of None/falsey return values to get the #
+    # of non-analyzed things.
+    return True
+
 
 def n_largest_signal_rois(sdf, n=5):
 
@@ -1984,7 +2121,7 @@ def format_fly_and_roi(fly_and_roi):
 
 # TODO refactor. probably already have something for this.
 def odor_str2conc(odor_str):
-    return 0 if odor_str == 'solvent' else np.float_power(10,
+    return 0 if odor_str == solvent_str else np.float_power(10,
         float(odor_str.split('@')[-1].strip())
     )
 
@@ -1995,13 +2132,13 @@ def plot_diffs_from_max_and_sum(mean_df, roi_plot_dir=None, **matshow_kwargs):
     mean_df = mean_df.T
 
     component_df = mean_df[
-        (mean_df.index.to_frame() == 'solvent').sum(axis='columns') == 1
+        (mean_df.index.to_frame() == solvent_str).sum(axis='columns') == 1
     ]
 
-    odor1_df = component_df[component_df.index.get_level_values('odor2') == 'solvent'
+    odor1_df = component_df[component_df.index.get_level_values('odor2') == solvent_str
         ].droplevel('odor2')
 
-    odor2_df = component_df[component_df.index.get_level_values('odor1') == 'solvent'
+    odor2_df = component_df[component_df.index.get_level_values('odor1') == solvent_str
         ].droplevel('odor1')
 
     # This order of DataFrame operations is required to get indexing to work (or at
@@ -2037,8 +2174,7 @@ def plot_diffs_from_max_and_sum(mean_df, roi_plot_dir=None, **matshow_kwargs):
         # TODO less gradations on these color bars? kinda packed.
         # TODO cbar_label? or just ok to leave it in title?
         fig, _ = viz.matshow(diff_df, title=f'Component {desc} minus observed',
-            # TODO check that `xticklabels=str` works
-            #xticklabels=str, yticklabels=format_mix_from_strs, #**diverging_cmap_kwargs,
+            #xticklabels=True, yticklabels=format_mix_from_strs, #**diverging_cmap_kwargs,
             **matshow_kwargs
         )
 
@@ -2071,7 +2207,7 @@ def model_orn_singleodor_responses(concs, fmax_times_efficacy, ec50):
 def competitive_binding_model(mean_df):
 
     # TODO refactor to share code for odor1 and odor2 stuff
-    odor1_df = mean_df.loc[:, (slice(None), 'solvent')].droplevel('odor2',
+    odor1_df = mean_df.loc[:, (slice(None), solvent_str)].droplevel('odor2',
         axis='columns'
     )
     concs = odor1_df.columns.map(odor_str2conc).values
@@ -2091,7 +2227,7 @@ def competitive_binding_model(mean_df):
     )
 
 
-    odor2_df = mean_df.loc[:, ('solvent', slice(None))].droplevel('odor1',
+    odor2_df = mean_df.loc[:, (solvent_str, slice(None))].droplevel('odor1',
         axis='columns'
     )
     concs = odor2_df.columns.map(odor_str2conc).values
@@ -2243,7 +2379,7 @@ def analyze_onepair(trial_df):
     savefig(fig, 'cb_diff')
 
     cb_diff_df_mixes_only = cb_diff_df.loc[:,
-        (cb_diff_df.columns.to_frame() == 'solvent').sum(axis='columns') == 0
+        (cb_diff_df.columns.to_frame() == solvent_str).sum(axis='columns') == 0
     ]
     fig, _ = viz.matshow(cb_diff_df_mixes_only, dpi=300,
         title=f'Competitive binding model - obs\n{fly_str}', **matshow_diverging_kwargs
@@ -2451,6 +2587,7 @@ def main():
     global retry_previously_failed
     global analyze_glomeruli_diagnostics_only
     global analyze_glomeruli_diagnostics
+    global print_skipped
 
     atexit.register(cleanup_created_dirs_and_links)
 
@@ -2477,6 +2614,10 @@ def main():
         help='only analyze glomeruli diagnostics (mainly for use on acquisition '
         'computer)'
     )
+    parser.add_argument('-v', '--verbose', action='store_true',
+        help='also prints paths to data that has some analysis skipped, with reasons '
+        'for why things were skipped.'
+    )
 
     args = parser.parse_args()
 
@@ -2485,6 +2626,7 @@ def main():
     ignore_existing = args.ignore_existing
     retry_previously_failed = args.retry_failed
     analyze_glomeruli_diagnostics_only = args.glomeruli_diags_only
+    print_skipped = args.verbose
 
     del parser, args
 
@@ -2579,10 +2721,7 @@ def main():
     names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
         odor_names2final_concs(**common_paired_thor_dirs_kwargs)
 
-    keys_and_paired_dirs = util.paired_thor_dirs(verbose=True, print_skips=False,
-        print_fast=False, print_full_paths=print_full_paths,
-        **common_paired_thor_dirs_kwargs
-    )
+    keys_and_paired_dirs = util.paired_thor_dirs(**common_paired_thor_dirs_kwargs)
     del common_paired_thor_dirs_kwargs
 
     main_start_s = time.time()
@@ -2590,11 +2729,15 @@ def main():
     if not parallel:
         # `list` call is just so `starmap` actually evaluates the fn on its input.
         # `starmap` just returns a generator otherwise.
-        list(starmap(process_experiment, keys_and_paired_dirs))
+        was_analyzed = list(starmap(process_experiment, keys_and_paired_dirs))
 
     else:
         with mp.Manager() as manager:
-            print(f'Processing experiments with {os.cpu_count()} workers')
+            # "If processes is None then the number returned by os.cpu_count() is used
+            # [for the number of processes in the Pool]"
+            # https://docs.python.org/3/library/multiprocessing.html
+            n_workers = os.cpu_count()
+            print(f'Processing experiments with {n_workers} workers')
 
             # TODO maybe define as context manager where __enter__ returns (yields,
             # actually, right?) this + __exit__ casts back to orig types and puts those
@@ -2620,8 +2763,8 @@ def main():
             # https://stackoverflow.com/questions/19984152
             #worker_fn = capture_stdout_and_stderr(process_experiment)
 
-            with manager.Pool() as pool:
-                ret = pool.starmap(
+            with manager.Pool(n_workers) as pool:
+                was_analyzed = pool.starmap(
                     #worker_fn,
                     process_experiment,
                     [x + (shared_state,) for x in keys_and_paired_dirs]
@@ -2633,13 +2776,17 @@ def main():
                 k: ds for k, ds in names_and_concs2analysis_dirs.items() if len(ds) > 0
             }
 
+    print(f'Checked {len(was_analyzed)} experiment(s)')
+
+    n_analyzed = sum([x is not None for x in was_analyzed])
+    print(f'Analyzed {n_analyzed} experiment(s)')
+
     total_s = time.time() - main_start_s
-
-    if len(odors_without_abbrev) > 0:
-        print('odors_without_abbrev:')
-        pprint(odors_without_abbrev)
-
     print(f'Took {total_s:.0f}s\n')
+
+    #if len(odors_without_abbrev) > 0:
+    #    print('Odors without abbreviations:')
+    #    pprint(odors_without_abbrev)
 
     def earliest_analysis_dir_date(analysis_dirs):
         return min(d.split(os.sep)[-3] for d in analysis_dirs)
@@ -2649,8 +2796,10 @@ def main():
         for x in failed_assigning_frames_to_odors
     ]
 
+    # TODO TODO TODO extend to other stuff we want to analyze (e.g. at least the
+    # kiwi/control1 panel data)
     show_empty_statuses = False
-    print('\nodor pair counts (of data considered) at various analysis stages:')
+    print('odor pair counts (of data considered) at various analysis stages:')
     for names_and_concs, analysis_dirs in sorted(names_and_concs2analysis_dirs.items(),
         key=lambda x: earliest_analysis_dir_date(x[1])):
 
@@ -2768,7 +2917,7 @@ def main():
 
 
     print_nonempty_path_list(
-        'failed_assigning_frames_to_odors:', failed_assigning_frames_to_odors
+        'Failed assigning frames to odors', failed_assigning_frames_to_odors
     )
 
     if do_suite2p:
@@ -2778,7 +2927,7 @@ def main():
 
     if analyze_suite2p_outputs:
         print_nonempty_path_list(
-            'suite2p needs to be run on the following data:', s2p_not_run,
+            'suite2p needs to be run on the following data', s2p_not_run,
             alt_msg='suite2p has been run on all currently included data'
         )
 
@@ -2786,14 +2935,14 @@ def main():
         # `run_suite2p` in this file currently marks all ROIs as "good" (as cells, as
         # far as suite2p is concerned) immediately after a successful suite2p run.
         print_nonempty_path_list(
-            'suite2p outputs with ROI labels not modified:', iscell_not_modified
+            'suite2p outputs with ROI labels not modified', iscell_not_modified
         )
 
         print_nonempty_path_list(
-            'suite2p outputs where no ROIs were marked bad:', iscell_not_selective
+            'suite2p outputs where no ROIs were marked bad', iscell_not_selective
         )
         print_nonempty_path_list(
-            'suite2p outputs where no ROIs were merged:', no_merges
+            'suite2p outputs where no ROIs were merged', no_merges
         )
 
     # TODO TODO probably print stuff in gsheet but not local and vice versa
@@ -2813,7 +2962,79 @@ def main():
 
     trial_df.to_pickle('trial_df.p')
 
+    '''
+    # TODO factor into analysis that loops over all relevant data + delete
+    pdf = ij_trial_dfs[-2]
+    cdf = ij_trial_dfs[-1]
+    # TODO TODO try to concat in a way that also works for what i was doing for pair
+    # stuff (or split into pair / not [strictly] pair stuff and concat each separately)
+    df = pd.concat([d.droplevel('thorimage_id', axis='columns') for d in [cdf, pdf]])
+
+    # TODO delete if this isn't required for exising plotting fns to work [/ modify them
+    # to not care + delete]
+    df = df.droplevel(['date', 'fly_num'], axis='columns')
+
+    # will probably be useful for doing stuff to specifically pair recording actually
+    # (given overlap in top two components between the two recordings)
+    #df = df.droplevel(['name1', 'name2'])
+
+    def reorder_odors(df):
+        nonpair_rows = []
+        pair_rows = []
+        for x in df.index:
+            if x[:2] == (np.nan, np.nan):
+                nonpair_rows.append(x)
+            else:
+                pair_rows.append(x)
+
+        vialmix_rows = [x for x in nonpair_rows
+            # TODO change to 'kiwi approx' or whatever the prefix actually should be
+            if (x[2].startswith('control mix') or x[2].startswith('kiwi'))
+        ]
+        component_rows = [x for x in nonpair_rows if x not in vialmix_rows]
+
+        # TODO probably plot pair A (at highest conc, alone) next to nonpair A
+        # TODO TODO but use a different color font for pair data legend or something
+        # else to indicate
+
+        # TODO TODO TODO can we rely on odors A, B already being in a constent order?
+        # fix if not. document why we can rely on this if so.
+        a_rows = []
+        b_rows = []
+        # TODO TODO TODO will i need to sort the diag rows into a particular order?
+        diag_rows = []
+        # TODO TODO will i need to do some sorting here? should i replot the concs
+        # alone?
+        br_edge_rows = []
+
+        for x in pair_rows:
+            _, _, o1, o2, _ = x
+
+            if o2 == solvent_str and o1 != solvent_str:
+                a_rows.append(x)
+            elif o1 == solvent_str and o2 != solvent_str:
+                b_rows.append(x)
+
+            # TODO TODO TODO how to just get the diagonal?
+            #elif 
+
+        import ipdb; ipdb.set_trace()
+
+    # TODO TODO TODO define odor order appropriately (by re-ordering before plot all),
+    # if that is all it takes to get plot betty wants
+    # TODO TODO + probably drop other data (from pair grid) she didnt want in summary
+    df = reorder_odors(df)
+
+    # TODO define roi_sortkeys kwarg to get an interesting order
+    # (or at least by mean activation across experiments within panel / alphabetical)
+    fig, mean_df = plot_all_roi_mean_responses(df, sort_odors=False,
+        title='03-10/1 test summary', cbar_label=trial_stat_cbar_title, cbar_shrink=0.4
+    )
+    plt.show()
+    #savefig(fig, roi_plot_dir, 'all_rois_by_z')
+    #
     import ipdb; ipdb.set_trace()
+    '''
 
 
 if __name__ == '__main__':
