@@ -2,10 +2,11 @@
 
 import argparse
 import atexit
+from datetime import date
 import os
 from os.path import join, split, exists, expanduser, islink
 from pprint import pprint, pformat
-from collections import defaultdict
+from collections import defaultdict, Counter
 import warnings
 import time
 import shutil
@@ -19,9 +20,11 @@ from itertools import starmap
 import multiprocessing as mp
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from typing import Optional
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 import tifffile
 import yaml
 import ijroi
@@ -40,6 +43,7 @@ from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path, shorten_stimfile_path, format_date
 from hong2p.olf import format_odor, format_mix_from_strs, format_odor_list, solvent_str
 from hong2p.viz import dff_latex
+from hong2p.types import ExperimentOdors
 
 
 colorama.init()
@@ -96,7 +100,7 @@ analyze_ijrois = True
 # 4 seems to produce similar outputs to 2, though slightly dimmer in most cases.
 # 3 is not noticeably dimmer than 2, so since it's averaging a little more data, I'll
 # use that one.
-response_volumes_for_trial_mean = 3
+n_response_volumes_for_trial_mean = 3
 
 n_response_volumes_in_fname = False
 
@@ -265,6 +269,10 @@ if analyze_pairgrids_only:
 frame_assign_fail_prefix = 'assign_frames'
 suite2p_fail_prefix = 'suite2p'
 
+spatial_dims = ['z', 'y', 'x']
+
+checks = True
+
 # Changed as a globals in main (exposed as command line arguments)
 ignore_existing = False
 # TODO probably make another category or two for data marked as failed (in the breakdown
@@ -305,6 +313,8 @@ exp_processing_time_data = []
 
 failed_assigning_frames_to_odors = []
 
+response_volumes_list = []
+
 s2p_trial_dfs = []
 # TODO TODO just agg (+ cache) this in process_experiment, and calculate all others from
 # this after the main loop over experiments
@@ -336,8 +346,16 @@ dirs_with_ijrois = []
 #dirs_with_ijrois_needing_merge = []
 
 
+def formatwarning_msg_only(msg, category, *args, **kwargs):
+    """Format warning without line/lineno (which are often not the relevant line)
+    """
+    return colored(f'{category.__name__}: {msg}\n', 'yellow')
+
+warnings.formatwarning = formatwarning_msg_only
+
+
 def warn(msg):
-    warnings.warn(colored(msg, 'yellow'))
+    warnings.warn(msg)
 
 
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
@@ -346,6 +364,14 @@ def get_analysis_dir(date, fly_num, thorimage_basedir):
     return join(analysis_intermediates_root,
         util.get_fly_dir(date, fly_num), thorimage_basedir
     )
+
+
+def get_plot_dir(experiment_id, relative=False):
+    plot_dir = util.to_filename(experiment_id, period=False)
+    if not relative:
+        plot_dir = join(plot_fmt, plot_dir)
+
+    return plot_dir
 
 
 # Especially running process_experiment in parallel, the many-figures-open memory
@@ -376,6 +402,8 @@ dirs_to_delete_if_empty = []
 def makedirs(d):
     """Make directory if it does not exist, and register for deletion if empty.
     """
+    # TODO shortcircuit to returning if we already made it this run, to avoid the checks
+    # on subsequent calls? they probably aren't a big deal though...
     os.makedirs(d, exist_ok=True)
     dirs_to_delete_if_empty.append(d)
 
@@ -383,6 +411,7 @@ def makedirs(d):
 def delete_if_empty(d):
     """Delete directory if empty, do nothing otherwise.
     """
+    # TODO don't we still want to delete any broken links / links to empty dirs?
     if not exists(d) or islink(d):
         return
 
@@ -405,6 +434,9 @@ def symlink(target, link, relative=True):
 
     Also registers `link` for deletion at end if what it points to no
     """
+    # TODO TODO err if link exists and was created *in this same run* (indicating trying
+    # to point to multiple different outputs from the same link; a bug)
+
     # Will slightly simplify cleanup logic by mostly ensuring broken links only come
     # from deleted directories.
     if not exists(target):
@@ -501,8 +533,45 @@ def clear_fail_indicators(analysis_dir):
         os.remove(f)
 
 
+# default = 'netcdf4'
+# need to `pip install h5netcdf` for this
+#netcdf_engine = 'h5netcdf'
+def load_dataarray(fname):
+    """Loads xarray object and restores odor MultiIndex (['odor1','odor2','repeat'])
+    """
+    # NOTE: no longer using netcdf as it's had an obtuse error when trying to use it tot
+    # serialize across-fly data:
+    # "ValueError: could not broadcast input array from shape (2709,21) into shape
+    # (2709,31)"
+    # (related to odor index, it seems, as 2709 is the length of that)
+
+    # TODO see if other drivers for loading are faster
+    #arr = xr.load_dataarray(fname, engine=netcdf_engine)
+    #return arr.set_index({'odor': ['odor1', 'odor2', 'repeat']})
+
+    with open(fname, 'rb') as f:
+        return pickle.load(f)
+
+
+def write_dataarray(arr, fname) -> None:
+    """Writes xarray object with odor MultiIndex (w/ levels ['odor1','odor2','repeat'])
+    """
+    # Only doing reset_index so we can serialize the DataArray via netCDF (recommended
+    # format in xarray docs). If odor MultiIndex is left in, it causes an error which
+    # says to reset_index() and references: https://github.com/pydata/xarray/issues/1077
+    #arr.reset_index('odor').to_netcdf(fname, engine=netcdf_engine)
+    # TODO delete eventually
+    #assert arr.identical(load_dataarray(fname, engine=netcdf_engine))
+    #
+
+    with open(fname, 'wb') as f:
+        # "use the highest protocol (-1) because it is way faster than the default text
+        # based pickle format"
+        pickle.dump(arr, f, protocol=-1)
+
+
 # TODO did i already implement this logic somewhere in this file? use this code if so
-def n_odors_per_trial(odor_lists):
+def n_odors_per_trial(odor_lists: ExperimentOdors):
     """
     Assumes same number of odors on each trial
     """
@@ -511,7 +580,7 @@ def n_odors_per_trial(odor_lists):
     return len_set.pop()
 
 
-def odor_lists2names_and_conc_ranges(odor_lists):
+def odor_lists2names_and_conc_ranges(odor_lists: ExperimentOdors):
     """
     Gets a hashable representation of the odors and each of their concentration ranges.
     Ex: ( ('butanal', (-5, -4, -3)), ('acetone', (-5, -4, -3)) )
@@ -539,7 +608,7 @@ def odor_lists2names_and_conc_ranges(odor_lists):
     return names_and_conc_ranges
 
 
-def is_pairgrid(odor_lists):
+def is_pairgrid(odor_lists: ExperimentOdors):
     # TODO TODO reimplement in a way that actually checks there are all pairwise
     # concentrations, rather than just assuming so if there are 2 odors w/ 3 non-zero
     # concs each
@@ -554,7 +623,7 @@ def is_pairgrid(odor_lists):
     )
 
 
-def is_reverse_order(odor_lists):
+def is_reverse_order(odor_lists: ExperimentOdors):
     o1_list = [o1 for o1, _ in odor_lists if o1['log10_conc'] is not None]
 
     def get_conc(o):
@@ -571,7 +640,8 @@ def odor_strs2single_odor_name(index, name_conc_delim='@'):
     return odors.pop()
 
 
-def odor_lists_to_multiindex(odor_lists, **format_odor_kwargs):
+# TODO indicate subclass of pd.Index (Type[pd.Index]?) as return type
+def odor_lists_to_multiindex(odor_lists: ExperimentOdors, **format_odor_kwargs):
 
     unique_lens = {len(x) for x in odor_lists}
     if len(unique_lens) != 1:
@@ -598,6 +668,7 @@ def odor_lists_to_multiindex(odor_lists, **format_odor_kwargs):
             odor1, odor2 = odor_list
         else:
             odor1 = odor_list[0]
+            assert len(odor_list) == 1
             # format_odor -> format_mix_from_strs should treat this as:
             # 'solvent' (hong2p.olf.solvent_str) -> not being shown as part of mix
             # TODO is this actually reached? i'm not seeing it in some of the
@@ -753,7 +824,8 @@ def split_into_trials(movie_length_array, bounding_frames, *n_trial_length_args,
 # TODO maybe default to mean in a fixed window as below? or not matter as much since i'm
 # actually using this on data already meaned within an ROI (though i could use on other
 # data later)?
-def compute_trial_stats(traces, bounding_frames, odor_order_with_repeats=None,
+def compute_trial_stats(traces, bounding_frames,
+    odor_order_with_repeats: Optional[ExperimentOdors] = None,
     stat=lambda x: np.max(x, axis=0)):
     # TODO unify documentation of this list-of-list-of-dicts format, including
     # expectations on the dicts (perhaps also use dataclasses/similar in place of the
@@ -873,6 +945,31 @@ def sort_odor_indices(df):
             )
 
     return df
+
+
+def get_panel(date: pd.Timestamp, thorimage_id: str, odor_list: ExperimentOdors
+    ) -> Optional[str]:
+    """Return None or str describing the odors used in the experiment.
+
+    Some panels are split across multiple types of experiments. For example, 'kiwi' is
+    the panel for both experiments collecting mainly the components alone as well as
+    those collecting just mixtures of the most intense 2 components (run via
+    `olf kiwi.yaml` and `olf kiwi_ea_eb_only.yaml`, respectively).
+    """
+    if 'diag' in thorimage_id:
+        return 'glomeruli_diagnostics'
+
+    elif 'kiwi' in thorimage_id:
+        return 'kiwi'
+
+    elif 'control' in thorimage_id:
+        return 'control'
+
+    # TODO TODO handle old pair stuff too (panel='<name1>+<name2>' or something) + maybe
+    # use get_panel to replace the old name1 + name2 means grouping by effectively panel
+
+    else:
+        return None
 
 
 def ijroi_plot_dir(plot_dir):
@@ -1359,6 +1456,9 @@ def capture_stdout_and_stderr(fn):
 # after this (and cache output of the loop over calls to this) maybe leave plotting of
 # dF/F images and stuff closer to raw data in here. (or at least factor out time
 # intensive df/f image plots and cache/skip those separately)
+# TODO TODO figure out why this seems to be using up a lot of memory now. is something
+# not being cleaned up properly? or maybe i just had very low memory available and it
+# wasn't abnormal?
 def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=None):
     """
     Args:
@@ -1366,7 +1466,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         shared_state (multiprocessing.managers.DictProxy): str global variable names ->
         other proxy objects
     """
-
     # TODO since this is updating **globals** after all, try moving this to a wrapper fn
     # (combine w/ output capture?) and remove shared_state kwarg here if it works the
     # same (not possible as long as i'm using multiprocessing and not something like
@@ -1414,20 +1513,31 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         print(msg, file=file)
         print()
 
+    _did_nonskipped_prints = False
     _to_print_if_not_skipped = []
     def print_if_not_skipped(x):
+        assert not _did_nonskipped_prints, ('after '
+            'do_nonskipped_experiment_prints_and_warns, use regular print/warn'
+        )
         if print_skipped:
             print(x)
         else:
             _to_print_if_not_skipped.append(x)
 
     def warn_if_not_skipped(x):
+        assert not _did_nonskipped_prints, ('after '
+            'do_nonskipped_experiment_prints_and_warns, use regular print/warn'
+        )
         if print_skipped:
             warn(x)
         else:
             _to_print_if_not_skipped.append(UserWarning(x))
 
     def do_nonskipped_experiment_prints_and_warns(yaml_path):
+        nonlocal _did_nonskipped_prints
+        # We should only be doing this once
+        assert not _did_nonskipped_prints
+
         # Because in this case we should be printing / warning everything ASAP.
         if print_skipped:
             return
@@ -1438,6 +1548,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 warn(x)
             else:
                 print(x)
+
+        _did_nonskipped_prints = True
 
     # If we are printing skipped, we might as well print each of the input paths as soon
     # as possible, to make debugging easier (so relevant paths will be more likely to
@@ -1469,7 +1581,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         return
 
     experiment_id = shorten_path(thorimage_dir)
-    experiment_basedir = util.to_filename(experiment_id, period=False)
+    experiment_basedir = get_plot_dir(experiment_id, relative=True)
 
     # Created below after we decide whether to skip a given experiment based on the
     # experiment type, etc.
@@ -1497,6 +1609,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         symlink(thorimage_dir, join(plot_dir, 'thorimage'), relative=False)
         symlink(analysis_dir, join(plot_dir, 'analysis'), relative=False)
 
+    # TODO try to speed up? or just move my stimfiles to local storage?
+    # currently takeing ~0.04s per call, -> 3-4 seconds @ ~80ish calls
+    # (same issue w/ yaml.safe_load on bounding frames though, so maybe it's not
+    # storage? or maybe it's partially a matter of seek time? should be ~5-10ms tho...)
     yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
 
     # Again, in this case, we might as well print all input paths ASAP.
@@ -1545,6 +1661,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         name2 = odor2abbrev.get(name2, name2)
 
         if not is_acquisition_host:
+            # TODO TODO do this for all panels/experiment types (or (panel, is_pair)
+            # combinations...)
             pair_dir = get_pair_dir(name1, name2)
             makedirs(pair_dir)
             symlink(plot_dir, join(pair_dir, experiment_basedir), relative=True)
@@ -1655,6 +1773,12 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     load_hdf5_s = time.time() - before
 
     if convert_raw_to_tiff:
+        # TODO TODO TODO share loading (passing in movie) when possible (or returning
+        # from here and using if needed. i forget the order)
+        #
+        # TODO TODO TODO integrate w/ as-yet-unmerged-hong2p flipping code (via metadata
+        # `flip_lr: <bool>` flag in to this (+ elsewhere too potentially).
+        #
         # This will create a TIFF <analysis_dir>/raw.tif, if it doesn't already exist
         util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
             verbose=False
@@ -1674,6 +1798,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     new_col_level_names = ['date', 'fly_num', 'thorimage_id']
     new_col_level_values = [date, fly_num, thorimage_basename]
 
+    # TODO is this still how i want to handle things for the return to natural mix
+    # experiments (where some but not all data we want to analyze are pairs)?
     new_row_level_names = ['name1', 'name2']
     new_row_level_values = [name1, name2]
 
@@ -1735,7 +1861,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             except TypeError:
                 ij_analysis_current = False
 
-            # TODO delete after generating them all? slightly more robust to interrupted
+           # TODO delete after generating them all? slightly more robust to interrupted
             # runs if i leave it
             if not exists(ij_trial_df_cache_fname):
                 ij_analysis_current = False
@@ -1749,7 +1875,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     ij_trial_dfs.append(ij_trial_df)
                 else:
                     print_inputs_once(yaml_path)
-                    print('ImageJ ROIs were modified')
+                    print('ImageJ ROIs were modified. re-analyzing.')
 
             do_ij_analysis = ignore_existing or not ij_analysis_current
         else:
@@ -1758,9 +1884,17 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             if is_pair:
                 print_if_not_skipped('no ImageJ ROIs')
 
+    response_volume_cache_fname = join(analysis_dir, 'trial_response_volumes.p')
+    response_volume_cache_exists = exists(response_volume_cache_fname)
+    if not response_volume_cache_exists:
+        do_nonroi_analysis = True
+
+    if response_volume_cache_exists and not do_nonroi_analysis:
+        response_volumes_list.append(load_dataarray(response_volume_cache_fname))
+
     if not (do_nonroi_analysis or do_ij_analysis):
-        print_skip(f'skipping non-ROI analysis because plot dir contains {plot_fmt}',
-            yaml_path
+        print_skip('not loading movie because neither non-ROI nor ImageJ ROI analysis '
+            'were requested', yaml_path
         )
         return
 
@@ -1773,8 +1907,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     read_movie_s = time.time() - before
 
     if do_ij_analysis:
-        # TODO TODO make sure none of the stuff w/ suite2p outputs marked bad should
-        # also just generally be marked bad, s.t. not run here
+        # TODO make sure none of the stuff w/ suite2p outputs marked bad should also
+        # just generally be marked bad, s.t. not run here
         ij_trial_df = ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie,
             plot_dir
         )
@@ -1785,6 +1919,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         ij_trial_df = add_metadata(ij_trial_df)
         ij_trial_df.to_pickle(ij_trial_df_cache_fname)
         ij_trial_dfs.append(ij_trial_df)
+
+    if not do_nonroi_analysis:
+        print(f'skipping non-ROI analysis because plot dir contains {plot_fmt}\n')
+        return
 
     # TODO only save this computed from motion corrected movie, in any future cases
     # where we are actually motion correcting as part of this pipeline
@@ -1860,6 +1998,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     if save_dff_tiff:
         trial_dff_movies = []
 
+    # List of length equal to the total number of trials, each element an array of shape
+    # (z, y, x).
+    all_trial_mean_dffs = []
+
     # Each element mean of the (mean) volumetric responses across the trials of a
     # particular odor, of shape (z, y, x)
     odor_mean_dff_list = []
@@ -1933,7 +2075,12 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 trial_dff_movies.append(trial_dff_movie)
 
             # TODO off by one at start? (still relevant?)
-            mean_dff = dff[:response_volumes_for_trial_mean].mean(axis=0)
+            mean_dff = dff[:n_response_volumes_for_trial_mean].mean(axis=0)
+
+            # This one is for constructing an xarray of the response volume after the
+            # loop over odors. Below is just for calculating mean across trials of an
+            # odor.
+            all_trial_mean_dffs.append(mean_dff)
 
             trial_mean_dffs.append(mean_dff)
 
@@ -1963,13 +2110,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         fname_prefix = plot_desc + '_trials'
 
         if n_response_volumes_in_fname:
-            fname_prefix += f'_n{response_volumes_for_trial_mean}'
+            fname_prefix += f'_n{n_response_volumes_for_trial_mean}'
 
         exp_savefig(trial_heatmap_fig, fname_prefix)
 
         fname_prefix = plot_desc
         if n_response_volumes_in_fname:
-            fname_prefix += f'_n{response_volumes_for_trial_mean}'
+            fname_prefix += f'_n{n_response_volumes_for_trial_mean}'
 
         avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
         fig_path = plot_and_save_dff_depth_grid(avg_mean_dff, fname_prefix,
@@ -2012,7 +2159,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             except KeyError:
                 label_subdir = 'unlabelled'
 
-            date_str = f'{date:%Y-%m-%d}'
+            date_str = format_date(date)
 
             if label_subdir is None:
                 try:
@@ -2052,6 +2199,40 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
             symlink(fig_path, link_path, relative=True)
 
+    # TODO maybe refactor so it doesn't need to be computed both here and in both the
+    # (ij/suite2p) trace handling fns (though they currently also use odor_lists to
+    # compute is_pairgrid, so might want to refactor that too)
+    odor_index = odor_lists_to_multiindex(odor_lists)
+    assert len(odor_index) == len(all_trial_mean_dffs)
+
+    panel = get_panel(date, thorimage_basename, odor_lists)
+
+    # TODO maybe factor out the add_metadata fn above to hong2p.util + also handle
+    # xarray inputs there?
+    # TODO TODO any reason to use attrs for these rather than additional coords?
+    # either make concatenating more natural?
+    metadata = {
+        'panel': panel,
+        'is_pair': is_pair,
+        'date': date,
+        'fly_num': fly_num,
+        'thorimage_id': thorimage_basename,
+    }
+    coords = metadata.copy()
+    coords['odor'] = odor_index
+
+    # TODO use long_name attr for fly info str?
+    # TODO populate units (how to specify though? pint compat?)?
+    arr = xr.DataArray(all_trial_mean_dffs, dims=['odor', 'z', 'y', 'x'], coords=coords)
+
+    # TODO probably move in constructor above if it ends up being useful to do here
+    arr = arr.assign_coords({n: np.arange(dict(zip(arr.dims, arr.shape))[n])
+        for n in spatial_dims
+    })
+
+    response_volumes_list.append(arr)
+    write_dataarray(arr, response_volume_cache_fname)
+
     if save_dff_tiff:
         delta_f_over_f = np.concatenate(trial_dff_movies)
 
@@ -2075,7 +2256,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     fname_prefix = 'max_trialmean_dff'
     if n_response_volumes_in_fname:
-        fname_prefix += f'_n{response_volumes_for_trial_mean}'
+        fname_prefix += f'_n{n_response_volumes_for_trial_mean}'
 
     plot_and_save_dff_depth_grid(max_trialmean_dff, fname_prefix,
         title=f'Max of trial-mean {dff_latex}', cbar_label=f'{dff_latex}',
@@ -2468,6 +2649,10 @@ def analyze_onepair(trial_df):
     #import ipdb; ipdb.set_trace()
 
 
+# TODO write a csv in addition (and maybe use as main cache too, but would need to
+# handle indices)? parquet?
+roi_response_stats_cache_fname = 'roi_mean_response_df.p'
+response_volume_cache_fname = 'allfly_trial_response_volumes.p'
 # TODO better name for this fn (+ probably call at end of main, not just behind -c flag)
 def analyze_cache():
     fly_keys = ['date', 'fly_num']
@@ -2480,7 +2665,7 @@ def analyze_cache():
 
     warnings.simplefilter('error', pd.errors.PerformanceWarning)
 
-    df = pd.read_pickle('trial_df.p').T
+    df = pd.read_pickle(roi_response_stats_cache_fname).T
 
     # This will just be additional presentations of solvent, interspersed throughout the
     # experiment. Not interesting.
@@ -2578,7 +2763,6 @@ def analyze_cache():
 # drawing ROIs (without using some more processed version) (leaning towards just trying
 # to use the max-trial-dff or something instead though... may still be useful for
 # checking that?)
-
 def main():
     global names2final_concs
     global seen_stimulus_yamls2thorimage_dirs
@@ -2593,33 +2777,40 @@ def main():
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument('matching_substrs', nargs='*', help='If passed, only data whose'
+        ' ThorImage path contains one of these substrings will be analyzed.'
+    )
+
+    # TODO TODO TODO what is currently causing this to hang on ~ when it is done with
+    # iterating over the inputs? some big data it's trying to [de]serialize?
     parser.add_argument('-j', '--parallel', action='store_true',
         help='Enables parallel calls to process_experiment. '
         'Disabled by default because it can complicate debugging.'
     )
-
-    # TODO rename to across fly or something
-    parser.add_argument('-c', '--analyze-cache-only', action='store_true',
-        help='only analyze cached aggregate ROI statistics across flies'
-    )
-
     parser.add_argument('-i', '--ignore-existing', action='store_true',
-        help='re-calculate almost everything'
+        help='Re-calculate non-ROI analysis and analysis downstream of ImageJ/suite2p '
+        'ROIs.'
     )
     parser.add_argument('-r', '--retry-failed', action='store_true',
-        help='retry steps that previously failed (frame-to-odor assignment or suite2p)'
+        help='Retry steps that previously failed (frame-to-odor assignment or suite2p).'
+    )
+    parser.add_argument('-v', '--verbose', action='store_true',
+        help='Also prints paths to data that has some analysis skipped, with reasons '
+        'for why things were skipped.'
+    )
+    # TODO rename to across fly or something
+    parser.add_argument('-c', '--analyze-cache-only', action='store_true',
+        help='Only analyze cached aggregate ROI statistics across flies.'
     )
     # TODO try to still link everything already generated (same w/ pairs)
     parser.add_argument('-g', '--glomeruli-diags-only', action='store_true',
-        help='only analyze glomeruli diagnostics (mainly for use on acquisition '
-        'computer)'
-    )
-    parser.add_argument('-v', '--verbose', action='store_true',
-        help='also prints paths to data that has some analysis skipped, with reasons '
-        'for why things were skipped.'
+        help='Only analyze glomeruli diagnostics (mainly for use on acquisition '
+        'computer).'
     )
 
     args = parser.parse_args()
+
+    matching_substrs = args.matching_substrs
 
     parallel = args.parallel
     analyze_cache_only = args.analyze_cache_only
@@ -2644,6 +2835,7 @@ def main():
         # TODO switch to doing just first time we would add something there?  (and do
         # same for other dirs, especially those we might not want generated on the
         # acquisition computer)
+        # TODO rename to 'panels'/'experiment_types' or somethings
         makedirs(pair_directories_root)
 
     if analyze_glomeruli_diagnostics_only:
@@ -2721,7 +2913,9 @@ def main():
     names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
         odor_names2final_concs(**common_paired_thor_dirs_kwargs)
 
-    keys_and_paired_dirs = util.paired_thor_dirs(**common_paired_thor_dirs_kwargs)
+    keys_and_paired_dirs = util.paired_thor_dirs(matching_substrs=matching_substrs,
+        **common_paired_thor_dirs_kwargs
+    )
     del common_paired_thor_dirs_kwargs
 
     main_start_s = time.time()
@@ -2783,6 +2977,239 @@ def main():
 
     total_s = time.time() - main_start_s
     print(f'Took {total_s:.0f}s\n')
+
+    if not is_acquisition_host and len(response_volumes_list) > 0:
+
+        # TODO factor all this into a function so i can more neatly call it multiple
+        # times w/ diff downsampling factors
+
+        # downsampling factor
+        # 192 / 4 = 48
+        # TODO TODO better name
+        # TODO switch back to 0 / a sequence including this + 0, and change code to try
+        # both?
+        ds = 4
+        pixel_corr_basename = 'pixel_correlations'
+        if ds > 0:
+            pixel_corr_basename = f'{pixel_corr_basename}_ds{ds}'
+
+        pixel_corr_plots_root = join(plot_fmt, pixel_corr_basename)
+        makedirs(pixel_corr_plots_root)
+
+        #spatial_dims = ['z', 'y', 'x']
+        spatial_shapes = [tuple(dict(zip(x.dims, x.shape))[n] for n in spatial_dims)
+            for x in response_volumes_list
+        ]
+        # doesn't handle ties, but that should be fine
+        most_common_shape = Counter(spatial_shapes).most_common(1)[0][0]
+
+        # TODO switch to not throwing out any shapes. just need to test the NaNs are
+        # handled appropriately in any downsteam correlation / plotting code
+        consistent_spatial_shape_response_volumes = []
+        for shape, recording_response_volumes in zip(spatial_shapes,
+            response_volumes_list):
+
+            if shape != most_common_shape:
+                # Each recording_response_volumes should only have one value for each of
+                # these.
+                date = pd.to_datetime(recording_response_volumes.date.item(0)).date()
+                fly_num = recording_response_volumes.fly_num.item(0)
+                thorimage_id = recording_response_volumes.thorimage_id.item(0)
+
+                warn(f'not including {date}/{fly_num}/{thorimage_id} in '
+                    f'response_volumes because it had shape of {shape} (!= most common '
+                    f'{most_common_shape})'
+                )
+                continue
+
+            consistent_spatial_shape_response_volumes.append(recording_response_volumes)
+
+        # NOTE: memory usage is just under 4GB loading 85 experiments from 2022-02-04 to
+        # 2022-04-03.
+        response_volumes = xr.concat(consistent_spatial_shape_response_volumes, 'odor')
+
+        assert response_volumes.notnull().sum().item(0) == sum([
+            x.notnull().sum().item(0) for x in consistent_spatial_shape_response_volumes
+        ])
+
+        # NOTE: will need to remove this assertion if i stop throwing out stuff not the
+        # most common shape.
+        #
+        # concatenating along odor axis should give us no NaN, as long as movie shapes
+        # are first restricted to all be the same (as otherwise the odor dimension
+        # should be the only one that varies in length)
+        assert response_volumes.isnull().sum().item(0) == 0
+
+        # TODO fix in case only one experiment is here:
+        # ValueError: If using all scalar values, you must pass an index
+        response_volumes = util.add_group_id(response_volumes,
+            ['date', 'fly_num', 'thorimage_id'], name='recording_id', dim='odor'
+        )
+
+        # TODO TODO TODO also try calculating correlations only for pixels where the max
+        # dF/F (across all trials) is above some threshold (or maybe threshold a pixel
+        # z-score?)
+
+        if ds > 0:
+            print('downsampling response volumes...', end='', flush=True)
+            response_volumes = response_volumes.coarsen(y=ds, x=ds).mean()
+            print('done', flush=True)
+
+        # TODO TODO TODO motion correct within each fly (all recordings to one template
+        # too), to facilitate across-recording, within-fly pixel correlation, among
+        # other things
+
+        # TODO TODO TODO try to concatenate recordings from within fly together so that
+        # i can correlate pixels across them.
+        # TODO memory profile w/ just first group, to be more clear on usage of just the
+        # grouping itself and (more importantly) all of the steps in the loop
+        # TODO tqdm/time loop
+        # TODO TODO profile
+        corr_list = []
+        _checked = False
+        for labels, garr in response_volumes.groupby('recording_id'):
+
+            panel = garr.panel.item(0)
+
+            if panel == 'glomeruli_diagnostics':
+                continue
+
+            # TODO maybe incoporate this / some of this data into a version of these
+            # plots that also has all the non-pair-experiment data for the same panel?
+            # (probably want across movie registration first, as mentioned above)
+            # TODO TODO TODO or at least make a separate version that just compares
+            # 2H/1o3ol at the various concentrations. not necessarily any mixtures.
+            if garr.is_pair.item(0):
+                continue
+
+            # TODO make a (hong2p) fn for getting all metadata for an experiment from
+            # either xarray / pandas input? maybe config recording / fly keys at start
+            # via some setters? (and/or for going directly to a str like this?)
+            experiment_id = (f'{format_date(garr.date.item(0))}/{garr.fly_num.item(0)}/'
+                f'{garr.thorimage_id.item(0)}'
+            )
+            plot_dir = get_plot_dir(experiment_id)
+
+            # TODO TODO TODO try smoothing/downsampling before calculating correlation
+            # and see whether / how much that improves things (include description of
+            # process + params in fnames + plot titles too)
+
+            #corr = xr.corr(garr, garr.rename(odor='odor_b'), dim=spatial_dims)
+            #
+            # Need to do this ugly thing rather than commented line above because one we
+            # have two different dimensions (odor and odor_b) that have MultiIndices
+            # with levels that have the same name (e.g. odor and odor_b both have an
+            # 'odor1' level), it seems impossible to get out of that situation with
+            # standard xarray calls, and it makes some other calls (including xr.concat)
+            # impossible.
+            # TODO make a PR to fix this xarray behavior (probably could just make
+            # rename also work with multiindex levels, as if they were any regular
+            # coordinate name)? currently get:
+            # "ValueError: cannot rename 'odor1' because it is not a variable or
+            # dimension in this dataset" when trying to rename MultiIndex levels
+            #
+            # TODO TODO TODO at least factor into a function for renaming multiindex
+            # levels
+            garr2 = garr.reset_index('odor').rename(
+                odor='odor_b', odor1='odor1_b', odor2='odor2_b', repeat='repeat_b'
+                ).set_index(odor_b=['odor1_b', 'odor2_b', 'repeat_b'])
+
+            corr = xr.corr(garr, garr2, dim=spatial_dims)
+
+            if checks and not _checked:
+                stacked = garr.stack(pixel=spatial_dims)
+                # TODO TODO TODO update to rename odor_b levels as in garr2 above +
+                # uncomment
+                #corr2 = xr.corr(stacked, stacked.rename(odor='odor_b'), dim='pixel')
+                # TODO better way to check coordinates equal?
+                #assert corr.coords.to_dataset().identical(corr2.coords.to_dataset())
+
+                # Both of this are True with or without .values after each argument.
+                # In both cases, neither seems to have np.array_equals True for the same
+                # inputs, so it seems there are some pervasive numerical differences
+                # (which shouldn't matter, and I'm not sure which is the more correct of
+                # the inputs).
+                #assert np.allclose(corr2, corr)
+                assert np.allclose(corr, stacked.to_pandas().T.corr())
+                _checked = True
+
+            corr_list.append(corr)
+
+            xticklabels = format_mix_from_strs
+            yticklabels = format_mix_from_strs
+
+            with warnings.catch_warnings():
+                # For the warning from format_mix_from_strs since we aren't dropping
+                # 'repeat' level
+                warnings.simplefilter('ignore', UserWarning)
+
+                # TODO shared vmin/vmax?
+                # TODO colorbar label
+                fig, _  = viz.matshow(corr, title=experiment_id,
+                    xticklabels=xticklabels, yticklabels=yticklabels,
+                    # NOTE: this would currently cause failure on the pair experiment
+                    # data (because the multiple solvent entries i assume)
+                    group_ticklabels=True,
+                )
+
+            # TODO tight_layout / whatever appropriate to not have cbar label cut off
+            # and not have so much space on the left
+
+            # TODO test that on a fresh run (or if another run finishes first and
+            # deletes stuff...) that this still works / fix if not (always makedirs in
+            # savefig?)
+            fig_path = savefig(fig, plot_dir, 'pixel_corr')
+
+            assert type(panel) is str, 'ensure panel is defined / update code to skip'
+            panel_dir = join(pixel_corr_plots_root, panel)
+            makedirs(panel_dir)
+
+            link_prefix = '_'.join(experiment_id.split('/')[:-1])
+            link_path = join(panel_dir, f'{link_prefix}.{plot_fmt}')
+
+            symlink(fig_path, link_path, relative=True)
+
+        # TODO TODO TODO aggregate these to average across flies (+ make plots of that,
+        # including n in figure)
+        # TODO worth having a version w/o trials?
+
+        # TODO TODO try to swap dims around / concat in a way that we dont get a bunch
+        # of nans. possible? could just concat separately for each panel?
+        corrs = xr.concat(corr_list, 'fly')
+        print(f'{corrs.shape=}\n')
+
+        # TODO TODO TODO get average correlations across flies to work (what loop below
+        # was trying)
+        #
+        # reset_index() because otherwise we get: "NotImplementedError: isna is not
+        # defined for MultiIndex" when trying to group on panel.
+        #
+        # TODO TODO might need to also groupby experiment or something else if i make
+        # corr pltos for pair stuff in loop above + also include that data in corrs
+        for panel, garr in corrs.reset_index(['odor', 'odor_b']).groupby('panel',
+            squeeze=False, restore_coord_dims=True):
+
+            print(f'{panel=}')
+            print(f'{garr.shape=}')
+
+            # TODO TODO TODO why is it getting reshaped to (7290,) w/
+            # 'stacked_fly_odor_odor_b'
+
+            # "dropping along multiple dimensions simultaneously is not yet supported"
+            import ipdb; ipdb.set_trace()
+            garr = garr.dropna('odor', how='all').dropna('odor_b', how='all')
+            import ipdb; ipdb.set_trace()
+
+            #panel = garr.panel.item(0)
+
+        import ipdb; ipdb.set_trace()
+        #
+
+        # TODO TODO TODO don't overwrite if we are only running on a subset of data? did
+        # i handle this w/ trial_df.p writing (if not, do, and hopefully in same way)?
+        # TODO TODO TODO uncomment after figuring out commment above + implementing
+        #write_dataarray(response_volumes, response_volume_cache_fname)
+
 
     #if len(odors_without_abbrev) > 0:
     #    print('Odors without abbreviations:')
@@ -2960,7 +3387,7 @@ def main():
 
     trial_df.sort_index(level=recording_keys, sort_remaining=False, axis='columns')
 
-    trial_df.to_pickle('trial_df.p')
+    trial_df.to_pickle(roi_response_stats_cache_fname)
 
     '''
     # TODO factor into analysis that loops over all relevant data + delete

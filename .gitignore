@@ -5,3 +5,5 @@ pair_grid_data_gsheet_link.txt
 *.p
 *.svg
 *.png
+# NetCDF files, if used to save xarray intermediates
+*.nc
