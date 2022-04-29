@@ -5,8 +5,8 @@
 # - git
 # - awk
 
-# Defaults to suite2p, but if you call as (for example) `./install.sh al_pair_grids`,
-# this will take the value 'al_pair_grids'
+# Defaults to suite2p, but if you call as (for example) `./install.sh al_analysis`,
+# this will take the value 'al_analysis'
 conda_env_to_make=${1:-suite2p}
 
 src_path=$HOME/src
@@ -22,7 +22,7 @@ declare -a required_git_repos=(
     # Chances are we are running this script because we have already cloned this, but
     # leaving it in to enable one-line install getting the script via curl or something
     # (would require making this repo public).
-    "ejhonglab/al_pair_grids"
+    "ejhonglab/al_analysis"
 )
 
 git_auth_prefix="git@github.com:"
@@ -38,7 +38,7 @@ do
 done
 
 if conda env list | awk '{print $1}' | grep -q "^${conda_env_to_make}$"; then
-    echo "Environment ${conda_env_to_make} already exists! Pass alternate name, e.g. \`./install.sh al_pair_grids\`"
+    echo "Environment ${conda_env_to_make} already exists! Pass alternate name, e.g. \`./install.sh al_analysis\`"
     exit 1
 fi
 
@@ -51,7 +51,7 @@ fi
 ${MAMBA_OR_CONDA} env create -f suite2p/environment.yml -n ${conda_env_to_make}
 
 conda activate ${conda_env_to_make}
-cd ~/src/al_pair_grids
+cd ~/src/al_analysis
 # TODO test that this actually works (that conda activate call before actually worked in
 # the script context. if not, need to do this a different way)
 pip install -r requirements.txt

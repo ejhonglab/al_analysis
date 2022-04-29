@@ -11,13 +11,13 @@ cd ~/src
 git clone https://github.com/tom-f-oconnell/suite2p
 
 git clone https://github.com/ejhonglab/hong2p
-git clone https://github.com/ejhonglab/al_pair_grid
+git clone https://github.com/ejhonglab/al_analysis
 
 # This will make a conda environment named 'suite2p'
 conda env create -f suite2p/environment.yml
 
 conda activate suite2p
-cd ~/src/al_pair_grid
+cd ~/src/al_analysis
 pip install -r requirements.txt
 ```
 
@@ -56,7 +56,7 @@ mixture experiments/pair_grid_data`, open the sheet and copy the link to a file 
 # (or whatever else you named the environment for this project)
 conda activate suite2p
 
-./al_pair_grids.py
+./al_analysis.py
 ```
 
 Plots will be created under a directory such as `svg`, under the current directory.
