@@ -59,6 +59,11 @@ plt.rcParams['figure.constrained_layout.hspace'] = 0
 ###################################################################################
 analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 
+# 'mocorr' | 'flipped' | 'raw'
+# load_movie will raise an IOError for any experiments w/o at least a TIFF of this level
+# of processing (motion corrected, flipped-L/R-if-needed, and raw, respectively)
+min_input = 'mocorr'
+
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
 analyze_pairgrids_only = False
@@ -109,6 +114,12 @@ n_response_volumes_in_fname = False
 # measurably happening. All steps should have been 12um, so picking top n will yield a
 # consistent total height of the volume.
 n_top_z_to_analyze = 5
+
+# I seemed to end up imaging this side more anyway...
+# Movies taken of any fly's right AL's will be flipped along left/right axis to be more
+# easily comparable to the data from left ALs.
+standard_side_orientation = 'left'
+assert standard_side_orientation in ('left', 'right')
 
 ignore_bounding_frame_cache = False
 
@@ -196,6 +207,10 @@ bad_suite2p_analysis_dirs = (
 
 pair_directories_root = join(plot_fmt, 'pairs')
 
+
+# TODO refactor google sheet metadata handling so it doesn't download until it's needed
+# (or at least not outside of __main__?)?
+
 # TODO set bool_fillna_false=False (kwarg to gsheet_to_frame) and manually fix any
 # unintentional NaN in these columns if I need to use the missing data for early
 # diagnostic panels (w/o some of the odors only in newest set) for anything
@@ -208,7 +223,7 @@ gdf = util.gsheet_to_frame('pair_grid_data_gsheet_link.txt', normalize_col_names
 gdf.set_index(['date', 'fly'], verify_integrity=True, inplace=True)
 
 # This is the name as converted by what `normalize_col_names=True` triggers.
-last_gsheet_col_before_glomeruli_diag_statuses = 'notes'
+last_gsheet_col_before_glomeruli_diag_statuses = 'side'
 last_gsheet_col_glomeruli_diag_statuses = 'all_labelled'
 
 first_glomeruli_diag_col_idx = list(gdf.columns
@@ -226,9 +241,9 @@ glomeruli_diag_status_df.rename(columns=lambda x: x.split('_')[0], inplace=True)
 # Since I called butanone's target glomerulus VM7 in my olfactometer config, but updated
 # the name of the column in the gsheet to VM7d, as that is the specific part it should
 # activate.
-# TODO TODO TODO check all / all_bad still there after i renamed / moved some stuff in
-# sheet
+# TODO check all / all_bad still there after i renamed / moved some stuff in sheet
 glomeruli_diag_status_df.rename(columns={'vm7d': 'vm7', 'all': 'all_bad'}, inplace=True)
+
 
 # For cases where there were multiple glomeruli diagnostic experiments (e.g. both sides
 # imaged, and only one used for subsequent experiments w/in fly). Paths (relative to
@@ -278,6 +293,9 @@ ignore_existing = False
 # TODO probably make another category or two for data marked as failed (in the breakdown
 # of data by pairs * concs at the end) (if i don't refactor completely...)
 retry_previously_failed = False
+
+# TODO TODO probably delete this + pairgrid only stuff. leave diagnostic only stuff for
+# use on acquisition computer.
 analyze_glomeruli_diagnostics_only = False
 print_skipped = False
 
@@ -294,6 +312,8 @@ if is_acquisition_host:
     # be.
     links_to_input_dirs = False
     convert_raw_to_tiff = False
+
+    min_input = 'raw'
 
 ###################################################################################
 # Modified inside `process_experiment`
@@ -349,7 +369,8 @@ dirs_with_ijrois = []
 def formatwarning_msg_only(msg, category, *args, **kwargs):
     """Format warning without line/lineno (which are often not the relevant line)
     """
-    return colored(f'{category.__name__}: {msg}\n', 'yellow')
+    warn_type = category.__name__ if category.__name__ != 'UserWarning' else 'Warning'
+    return colored(f'{warn_type}: {msg}\n', 'yellow')
 
 warnings.formatwarning = formatwarning_msg_only
 
@@ -360,10 +381,57 @@ def warn(msg):
 
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
 # (just want to prefer the "fast" data root)
-def get_analysis_dir(date, fly_num, thorimage_basedir):
-    return join(analysis_intermediates_root,
-        util.get_fly_dir(date, fly_num), thorimage_basedir
+def get_analysis_dir(date, fly_num, thorimage_dir):
+    """
+    Args:
+        thorimage_dir: either a path ending in a ThorImage directory, or just the last
+            part of the path to one
+    """
+    thorimage_basedir = split(thorimage_dir)[1]
+
+    return join(analysis_intermediates_root, util.get_fly_dir(date, fly_num),
+        thorimage_basedir
     )
+
+
+# TODO TODO factor to hong2p.util (along w/ get_analysis_dir, removing old analysis dir
+# stuff for it [which would ideally involve updating old code that used it...])
+def load_movie(*keys, tiff_priority=('mocorr', 'flipped', 'raw'), min_input=min_input,
+    verbose=False):
+
+    assert min_input is None or min_input in tiff_priority
+
+    analysis_dir = Path(get_analysis_dir(*keys))
+
+    for tiff_prefix in tiff_priority:
+
+        tiff_path = analysis_dir / f'{tiff_prefix}.tif'
+        if verbose:
+            print(f'checking for {tiff_path}...', end='')
+
+        if tiff_path.exists():
+            if verbose:
+                # See https://unicode-table.com / unicodedata stdlib module for more fun
+                print(u'\N{WHITE HEAVY CHECK MARK}')
+
+            # This does also work with Path input
+            return tifffile.imread(tiff_path)
+
+        if verbose:
+            # TODO replace w/ something red?
+            print(u'\N{HEAVY MULTIPLICATION X}')
+
+        if tiff_prefix == min_input:
+
+            # Want to just try thor.read_movie in this case, b/c if we would accept the
+            # raw TIFF, we should also accept the (what should be) equivalent ThorImage
+            # .raw file
+            if tiff_prefix == 'raw':
+                break
+
+            raise IOError(f"did not have a TIFF of at least {min_input=} status")
+
+    return thor.read_movie(util.thorimage_dir(*keys))
 
 
 def get_plot_dir(experiment_id, relative=False):
@@ -428,6 +496,12 @@ def delete_empty_dirs():
 
 # TODO probably need a recursive solution combining deletion of empty symlinks and
 # directories to cleanup all hierarchies that could be created w/ symlink and makedirs
+
+# TODO maybe just pick relative/abs based on whether target is under plot_dir (also
+# probably err if link is not under plot_dir), because the whole reason we wanted some
+# links relative is so i could move the whole plot directory and have the (internal,
+# relative) links still be valid, rather than potentially pointing to plots generated in
+# the original path after
 links_created = []
 def symlink(target, link, relative=True):
     """Create symlink link pointing to target, doing nothing if link exists.
@@ -1426,36 +1500,35 @@ def multiprocessing_namespace_to_globals(shared_state):
     })
 
 
-# NOTE: can't use with multiprocessing since pickle (what it uses to serialize) can't
-# handle closures / things like this
-# TODO try joblib though. they use something other than pickle by default i think, for
-# what seems like related reasons
-def capture_stdout_and_stderr(fn):
-    """Calls `fn`, returns (<args>, <captured output>, <fn return value>)
-    """
-    def fn_captured(*args, **kwargs):
-        f = StringIO()
-        print('args:', args)
-        print('kwargs:', kwargs)
-        # TODO using same StringIO object for both work? if not, how else to have
-        # outputs interleaved as they would be normally?
-        with redirect_stdout(f), redirect_stderr(f):
-            ret = fn(*args, **kwargs)
+# TODO would it be possible to factor so that:
+# - core loading functions make data available in a consistent manner
+#   (maybe a Recording/Experiment object can be populated w/ relevant data,
+#   using attributes to only load/compute stuff as necessary)
+#
+# - fns deciding whether to skip stuff at various steps can be passed in
+#
+# - fns w/ certain analysis steps to do, again potentially divided into different steps
+#   (like maybe pre/post registration/extraction, in a way that different types of
+#   experiments (maybe again w/ those matching some indicator fn?) can have different
+#   steps done?)
+#
+# - consideration for stuff done on a fly / experiment level, with maybe the option to
+#   alternate between the two in a specific serialized order (e.g. so we can guarantee
+#   we have the outputs needed for subsequent steps, such as to register stuff together
+#   and then analyze the experiments separately)
+#
+# - the multiprocessing option is factored into the fn and doesn't need to wrap it in
+#   each analysis
+#
+# maybe have analysis types define what experiment types are valid input for them (and,
+# at least by default, just run all of those?)
 
-        print('stdout/stderr:')
-        print(f)
-        # TODO convert f to regular str here?
-        return args, f, ret
-
-    return fn_captured
-
-
-# TODO TODO probably refactor so that this is essentially just populating
-# lists[/listproxies] of dataframes from s2p/ijroi stuff (extracting in ij case, merging
-# in both cases, also converting to trial stats in both), and then move most plotting to
-# after this (and cache output of the loop over calls to this) maybe leave plotting of
-# dF/F images and stuff closer to raw data in here. (or at least factor out time
-# intensive df/f image plots and cache/skip those separately)
+# TODO probably refactor so that this is essentially just populating lists[/listproxies]
+# of dataframes from s2p/ijroi stuff (extracting in ij case, merging in both cases, also
+# converting to trial stats in both), and then move most plotting to after this (and
+# cache output of the loop over calls to this) maybe leave plotting of dF/F images and
+# stuff closer to raw data in here. (or at least factor out time intensive df/f image
+# plots and cache/skip those separately)
 # TODO TODO figure out why this seems to be using up a lot of memory now. is something
 # not being cleaned up properly? or maybe i just had very low memory available and it
 # wasn't abnormal?
@@ -1466,12 +1539,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         shared_state (multiprocessing.managers.DictProxy): str global variable names ->
         other proxy objects
     """
-    # TODO since this is updating **globals** after all, try moving this to a wrapper fn
-    # (combine w/ output capture?) and remove shared_state kwarg here if it works the
-    # same (not possible as long as i'm using multiprocessing and not something like
-    # pathos, for same reason i couldn't use a wrapped process_experiment to capture
-    # stdout: can't serialize closures w/ pickle, which is what multiprocessing uses)
-    #
     # Only relevant if called via multiprocessing, where this is how we get access to
     # the proxies that will feed back to the corresponding global variables that get
     # modified under this function.
@@ -1479,6 +1546,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     date, fly_num = date_and_fly_num
     thorimage_dir, thorsync_dir = thor_image_and_sync_dir
+
+    date_str = format_date(date)
+
+    # These functions for defering printing/warning are so we can control what gets
+    # printed in skipped data in one place. We want the option to not print any thing
+    # for data that is ultimately skipped, but we also want to see all the output for
+    # non-skipped data.
 
     # NOTE: This should be called at least once before process_experiment returns, and
     # the first call must be *before* any other calls that make output (prints,
@@ -1501,7 +1575,19 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             print('yaml_path:', shorten_stimfile_path(yaml_path))
             _printed_yaml_path = True
 
+    # May want to handle calls to this after _called_do_nonskipped is True
+    # differently... (always print? don't add to global record of what is skipped, for
+    # multiple pass stuff?).
     def print_skip(msg, yaml_path=None, *, color=None, file=None):
+        """
+        This should be called preceding any premature return from process_experiment.
+        """
+        # TODO TODO TODO also add the fly, date, thorimage[, thorsync] as keys in a
+        # global dict marking stuff as having-been-skipped-in-a-previous-run, to not
+        # need to recompute stuff
+        # TODO TODO TODO and for non-skipped stuff, maybe add all metadata we would have
+        # up to the point of the last skip (or at least some core stuff actually used
+        # later, like odor metadata), to not have to reload / compute that stuff
         if not print_skipped:
             return
 
@@ -1513,10 +1599,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         print(msg, file=file)
         print()
 
-    _did_nonskipped_prints = False
+    _called_do_nonskipped = False
     _to_print_if_not_skipped = []
     def print_if_not_skipped(x):
-        assert not _did_nonskipped_prints, ('after '
+        assert not _called_do_nonskipped, ('after '
             'do_nonskipped_experiment_prints_and_warns, use regular print/warn'
         )
         if print_skipped:
@@ -1525,7 +1611,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             _to_print_if_not_skipped.append(x)
 
     def warn_if_not_skipped(x):
-        assert not _did_nonskipped_prints, ('after '
+        assert not _called_do_nonskipped, ('after '
             'do_nonskipped_experiment_prints_and_warns, use regular print/warn'
         )
         if print_skipped:
@@ -1534,9 +1620,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             _to_print_if_not_skipped.append(UserWarning(x))
 
     def do_nonskipped_experiment_prints_and_warns(yaml_path):
-        nonlocal _did_nonskipped_prints
+        nonlocal _called_do_nonskipped
         # We should only be doing this once
-        assert not _did_nonskipped_prints
+        assert not _called_do_nonskipped
+        _called_do_nonskipped = True
 
         # Because in this case we should be printing / warning everything ASAP.
         if print_skipped:
@@ -1548,8 +1635,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 warn(x)
             else:
                 print(x)
-
-        _did_nonskipped_prints = True
 
     # If we are printing skipped, we might as well print each of the input paths as soon
     # as possible, to make debugging easier (so relevant paths will be more likely to
@@ -1565,7 +1650,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         is_glomeruli_diagnostics = True
     else:
         if analyze_glomeruli_diagnostics_only:
-            print('skipping because experiment is NOT glomeruli diagnostics\n')
+            print_skip('skipping because experiment is NOT glomeruli diagnostics\n')
             return
 
         is_glomeruli_diagnostics = False
@@ -1600,8 +1685,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     def exp_savefig(fig, desc, **kwargs):
         return savefig(fig, plot_dir, desc, **kwargs)
 
-    thorimage_basename = split(thorimage_dir)[1]
-    analysis_dir = get_analysis_dir(date, fly_num, thorimage_basename)
+    analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
     makedirs(analysis_dir)
     makedirs(plot_dir)
 
@@ -1759,11 +1843,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         # with the red channel (which was allowed despite those channels having gain
         # 0 in the few cases so far)
         except AssertionError as err:
-            print_skip(traceback.format_exc(), yaml_path, color='red', file=sys.stderr)
-
             failed_assigning_frames_to_odors.append(thorimage_dir)
-
             make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, err)
+
+            print_skip(traceback.format_exc(), yaml_path, color='red', file=sys.stderr)
             return
     else:
         with open(bounding_frame_yaml_cache, 'r') as f:
@@ -1771,18 +1854,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     # (loading the HDF5 should be the main time cost in the above fn)
     load_hdf5_s = time.time() - before
-
-    if convert_raw_to_tiff:
-        # TODO TODO TODO share loading (passing in movie) when possible (or returning
-        # from here and using if needed. i forget the order)
-        #
-        # TODO TODO TODO integrate w/ as-yet-unmerged-hong2p flipping code (via metadata
-        # `flip_lr: <bool>` flag in to this (+ elsewhere too potentially).
-        #
-        # This will create a TIFF <analysis_dir>/raw.tif, if it doesn't already exist
-        util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
-            verbose=False
-        )
 
     if do_suite2p:
         run_suite2p(thorimage_dir, analysis_dir, overwrite=overwrite_suite2p)
@@ -1795,6 +1866,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         name1 = np.nan
         name2 = np.nan
 
+    thorimage_basename = split(thorimage_dir)[1]
     new_col_level_names = ['date', 'fly_num', 'thorimage_id']
     new_col_level_values = [date, fly_num, thorimage_basename]
 
@@ -1892,7 +1964,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     if response_volume_cache_exists and not do_nonroi_analysis:
         response_volumes_list.append(load_dataarray(response_volume_cache_fname))
 
+    # TODO maybe we should do_nonskipped... here, to use it more for stuff skipped for
+    # what the raw data+metadata IS, rather than what analysis outputs we already have?
+    # distinction could make factoring out skip logic easier
+
     if not (do_nonroi_analysis or do_ij_analysis):
+        # (technically we could have already loaded movie if we converted raw to TIFF in
+        # this function call)
         print_skip('not loading movie because neither non-ROI nor ImageJ ROI analysis '
             'were requested', yaml_path
         )
@@ -1902,11 +1980,22 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     before = time.time()
 
-    movie = thor.read_movie(thorimage_dir)
+    # TODO TODO TODO find a way to keep track of whether the tiff was flipped, and
+    # invalidate + complain (or just flip) any ROIs drawn on original non-flipped TIFFs?
+    # similar thing but w/ any motion correction i add... any of this possible (does ROI
+    # format have reference to tiff it was drawn on anywhere?)?
+
+    # TODO remove verbose=True kwarg after some testing
+    movie = load_movie(date, fly_num, thorimage_basename, verbose=True)
 
     read_movie_s = time.time() - before
 
     if do_ij_analysis:
+        # TODO TODO TODO ensure we don't use ROIs drawn on non-flipped stuff on flipped
+        # stuff (same w/ mocorr ideally), then remove this
+        assert False
+        #
+
         # TODO make sure none of the stuff w/ suite2p outputs marked bad should also
         # just generally be marked bad, s.t. not run here
         ij_trial_df = ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie,
@@ -1921,7 +2010,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         ij_trial_dfs.append(ij_trial_df)
 
     if not do_nonroi_analysis:
-        print(f'skipping non-ROI analysis because plot dir contains {plot_fmt}\n')
+        print_skip(f'skipping non-ROI analysis because plot dir contains {plot_fmt}\n')
         return
 
     # TODO only save this computed from motion corrected movie, in any future cases
@@ -2125,16 +2214,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         odor_mean_dff_list.append(avg_mean_dff)
 
-        # TODO TODO TODO (at least until i have stuff in a standardized l/r orientation
-        # (flipping one), add average image / projection on left / bottom of glomeruli
-        # diag dF/F plots, to tell from looking at one plot whether glomerulus is on
-        # right side)
-        # TODO TODO maybe also include some quick reference to
-        # previously-presented-stimulus, to check for constamination components of
-        # noise?
-        # TODO TODO also include a subdir of glomeruli_diagnostics that just links
-        # to the corresponding directories of individual flies, to not have to sift
-        # through them at the top-level that also has real experiments
+        # TODO maybe also include some quick reference to previously-presented-stimulus,
+        # to check for contamination components of noise?
         if not is_acquisition_host and target_glomerulus is not None:
             # gsheet only has labels on a per-fly basis, and those should apply to the
             # glomeruli diagnostic experiment corresponding to the same FOV as the other
@@ -2159,8 +2240,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             except KeyError:
                 label_subdir = 'unlabelled'
 
-            date_str = format_date(date)
-
             if label_subdir is None:
                 try:
                     curr_diag_good = fly_diag_statuses.loc[target_glomerulus.lower()]
@@ -2178,7 +2257,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     label_subdir = 'bad'
             else:
                 warn('please label quality glomeruli diagnostics for fly '
-                    f'{(date_str, fly_num)} in google sheet.'
+                    f'{date_str}/{fly_num} in Google Sheet'
                 )
 
             label_dir = join(glomerulus_dir, label_subdir)
@@ -2191,7 +2270,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 # Just warning so that all the average images, etc, will still be
                 # created, so those can be used to quickly tell which experiment
                 # corresponded to the same side as the real experiments in the same fly.
-                warn(f'{(date_str, fly_num)} has multiple glomeruli diagnostic'
+                warn(f'{date_str}/{fly_num} has multiple glomeruli diagnostic'
                     ' experiments. add all but one to unused_glomeruli_diagnostics. '
                     'FIRST IS CURRENTLY LINKED BUT MAY NOT BE THE RELEVANT EXPERIMENT!'
                 )
@@ -2652,7 +2731,7 @@ def analyze_onepair(trial_df):
 # TODO write a csv in addition (and maybe use as main cache too, but would need to
 # handle indices)? parquet?
 roi_response_stats_cache_fname = 'roi_mean_response_df.p'
-response_volume_cache_fname = 'allfly_trial_response_volumes.p'
+response_volume_cache_fname = 'trial_response_volumes.p'
 # TODO better name for this fn (+ probably call at end of main, not just behind -c flag)
 def analyze_cache():
     fly_keys = ['date', 'fly_num']
@@ -2913,12 +2992,59 @@ def main():
     names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
         odor_names2final_concs(**common_paired_thor_dirs_kwargs)
 
-    keys_and_paired_dirs = util.paired_thor_dirs(matching_substrs=matching_substrs,
+    # list(...) because otherwise we get a generator back, which we will only be able to
+    # iterate over once (and we are planning on using this twice)
+    keys_and_paired_dirs = list(util.paired_thor_dirs(matching_substrs=matching_substrs,
         **common_paired_thor_dirs_kwargs
-    )
+    ))
     del common_paired_thor_dirs_kwargs
 
     main_start_s = time.time()
+
+
+    # TODO refactor to skip things here consistent w/ how i would in process_experiment?
+    if convert_raw_to_tiff:
+        for (date, fly_num), (thorimage_dir, _) in keys_and_paired_dirs:
+            # TODO unify w/ half-implemented hong2p flip_lr metadata key?
+            try:
+                # np.nan / 'left' / 'right'
+                side_imaged = gdf.at[(date, fly_num), 'side']
+            except KeyError:
+                side_imaged = None
+
+            if pd.isnull(side_imaged):
+                # TODO TODO maybe err / warn w/ higher severity (red?), especially if i
+                # require downstream analysis to use the flipped version
+                warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
+                    ' in Google Sheet'
+                )
+                flip_lr = None
+            else:
+                assert side_imaged in ('left', 'right')
+                flip_lr = (side_imaged == standard_side_orientation)
+
+            analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
+
+            # Creates a TIFF <analysis_dir>/flipped.tif, if it doesn't already exist.
+            util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
+                flip_lr=flip_lr, check_round_trip=checks, verbose=True
+            )
+
+
+    # TODO TODO TODO loop over flies (*not* experiments), and register all things we
+    # don't wanna skip together (by symlinking to some directory made just for this, and
+    # running suite2p on it? or are there suite2p options [/ would it be easy to add
+    # them], for passing multiple tiffs in diff directories [/arrays]?)
+
+    # TODO TODO TODO try to skip the same stuff we would skip in the process_experiment
+    # loop below (and at that point, maybe also treat converstion to tiffs above
+    # consistently?)
+
+    # TODO maybe register everything that has as panel defined? or that has the same
+    # shape?
+    # TODO TODO TODO if suite2p concats everything together, split apart at end
+    import ipdb; ipdb.set_trace()
+
 
     if not parallel:
         # `list` call is just so `starmap` actually evaluates the fn on its input.
@@ -2940,6 +3066,13 @@ def main():
             # risky? to avoid need to pass extra
             shared_state = multiprocessing_namespace_from_globals(manager)
 
+            # I'm handling names_and_concs2analysis_dirs specially (rather than letting
+            # multiprocessing_namespace_from_globals handle it), because I want
+            # something like a defaultdict, but there is no multiprocesssing proxy for
+            # that, and it seemed to make the most sense to just pre-populate all the
+            # values as empty list proxies (I don't think the workers could do it
+            # themselves).
+
             # TODO no way to instantiate new empty manager.lists() as values inside a
             # worker, is there? could remove some of the complexity i added if that were
             # the case. didn't initially seem so...
@@ -2949,13 +3082,6 @@ def main():
 
             shared_state['names_and_concs2analysis_dirs'] = \
                 _names_and_concs2analysis_dirs
-
-            # NOTE: multiprocessing can't pickle this function, but if i switched to
-            # using something like pathos, which uses dill instead of pickle to
-            # serialize (and can serialize closures, etc), it might work
-            # https://github.com/uqfoundation/pathos
-            # https://stackoverflow.com/questions/19984152
-            #worker_fn = capture_stdout_and_stderr(process_experiment)
 
             with manager.Pool(n_workers) as pool:
                 was_analyzed = pool.starmap(
@@ -3039,6 +3165,10 @@ def main():
         # are first restricted to all be the same (as otherwise the odor dimension
         # should be the only one that varies in length)
         assert response_volumes.isnull().sum().item(0) == 0
+
+        # TODO TODO maybe rename 'odor' to 'trial' in all xarray things (may need to
+        # recompute), or something else more clear (indicating it's also the fly #,
+        # repeat, etc, that vary)
 
         # TODO fix in case only one experiment is here:
         # ValueError: If using all scalar values, you must pass an index
@@ -3177,6 +3307,7 @@ def main():
         # of nans. possible? could just concat separately for each panel?
         corrs = xr.concat(corr_list, 'fly')
         print(f'{corrs.shape=}\n')
+        import ipdb; ipdb.set_trace()
 
         # TODO TODO TODO get average correlations across flies to work (what loop below
         # was trying)
