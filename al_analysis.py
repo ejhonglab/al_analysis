@@ -133,7 +133,7 @@ convert_raw_to_tiff = True
 # If False, will not write any TIFFs (other than raw.tif, which will always only get
 # written if it doesn't already exist), including dF/F TIFF.
 write_processed_tiffs = True
-want_dff_tiff = True
+want_dff_tiff = False
 
 want_dff_tiff = want_dff_tiff and write_processed_tiffs
 
@@ -2589,6 +2589,20 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
 
         if to_uint16:
             assert movie_range.dtype == np.int16
+
+            # TODO could also try just setting to zero since i think it is a small
+            # number of pixels (and typically much less negative than max range, e.g.
+            # min=-657, max=4387 for 2022-02-04/1/kiwi)
+            #
+            # This was to deal w/ small negative values (eyeballing it seemed like they
+            # were just registration artifacts at the edges, often ~1x3 pixels or so),
+            # that got converted to huge positive values when changing to uint16.
+            min_pixel = movie_range.min()
+            if min_pixel < 0:
+                # This will make the new minimum 0, shifting everything slightly more
+                # positive.
+                movie_range = movie_range - min_pixel
+
             movie_range = (movie_range * 2).astype(np.uint16)
 
         input_tiff2movie_range[Path(input_tiff)] = movie_range
@@ -3106,6 +3120,9 @@ def main():
         ' ThorImage path contains one of these substrings will be analyzed.'
     )
 
+    # TODO TODO CLI argument to pass a shell command to be run in each directory
+    # visited (like for renaming stuff / copying stuff)? or a separate script for that?
+
     # TODO TODO TODO what is currently causing this to hang on ~ when it is done with
     # iterating over the inputs? some big data it's trying to [de]serialize?
     parser.add_argument('-j', '--parallel', action='store_true',
@@ -3273,6 +3290,10 @@ def main():
                 flip_lr = (side_imaged != standard_side_orientation)
 
             analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
+
+            # TODO maybe delete any existing raw.tif when we save a flipped.tif
+            # (so that we can still see the data for stuff where we haven't labelled a
+            # side yet, but to otherwise save space / avoid confusion)?
 
             # Creates a TIFF <analysis_dir>/flipped.tif, if it doesn't already exist.
             util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
