@@ -35,7 +35,7 @@ from scipy.optimize import curve_fit
 import colorama
 from termcolor import cprint, colored
 from drosolf import orns
-# `from suite2p import run_s2p` now done at start of function that would run suite2p
+# suite2p imports are currently done at the top of functions that use them
 
 from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
@@ -43,7 +43,7 @@ from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path, shorten_stimfile_path, format_date
 from hong2p.olf import format_odor, format_mix_from_strs, format_odor_list, solvent_str
 from hong2p.viz import dff_latex
-from hong2p.types import ExperimentOdors
+from hong2p.types import ExperimentOdors, Pathlike
 
 
 colorama.init()
@@ -63,6 +63,9 @@ analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 # load_movie will raise an IOError for any experiments w/o at least a TIFF of this level
 # of processing (motion corrected, flipped-L/R-if-needed, and raw, respectively)
 min_input = 'mocorr'
+
+# Whether to motion correct all recordings done, in a given fly, to each other.
+register_all_fly_recordings_together = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -96,7 +99,7 @@ overwrite_suite2p = False
 analyze_suite2p_outputs = False
 
 # TODO TODO TODO return to True
-analyze_ijrois = True
+analyze_ijrois = False
 
 # TODO TODO change to using seconds and rounding to nearest[higher/lower
 # multiple?] from there
@@ -315,6 +318,8 @@ if is_acquisition_host:
 
     min_input = 'raw'
 
+    register_all_fly_recordings_together = False
+
 ###################################################################################
 # Modified inside `process_experiment`
 ###################################################################################
@@ -379,23 +384,32 @@ def warn(msg):
     warnings.warn(msg)
 
 
+def get_fly_analysis_dir(date, fly_num) -> Path:
+    """Returns path for storing fly-level (across-recording) analysis artifacts
+    """
+    return analysis_intermediates_root / util.get_fly_dir(date, fly_num)
+
+
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
 # (just want to prefer the "fast" data root)
-def get_analysis_dir(date, fly_num, thorimage_dir):
-    """
+# TODO try to see if i broke anything by returning Path instead of str path here
+def get_analysis_dir(date, fly_num, thorimage_dir) -> Path:
+    """Returns path for storing recording-level analysis artifacts
+
     Args:
         thorimage_dir: either a path ending in a ThorImage directory, or just the last
             part of the path to one
     """
     thorimage_basedir = split(thorimage_dir)[1]
-
-    return join(analysis_intermediates_root, util.get_fly_dir(date, fly_num),
-        thorimage_basedir
-    )
+    return get_fly_analysis_dir(date, fly_num) / thorimage_basedir
 
 
 # TODO TODO factor to hong2p.util (along w/ get_analysis_dir, removing old analysis dir
 # stuff for it [which would ideally involve updating old code that used it...])
+# TODO TODO factor out part to a fn that just returns path to TIFF to use?
+# (so i can use it to get the TIFFs to link for joint suite2p registration. want
+# tiff_priority=('flipped, 'raw') there, as it will be in that step that we will be
+# creating the 'mocorr' TIFFs)
 def load_movie(*keys, tiff_priority=('mocorr', 'flipped', 'raw'), min_input=min_input,
     verbose=False):
 
@@ -403,11 +417,14 @@ def load_movie(*keys, tiff_priority=('mocorr', 'flipped', 'raw'), min_input=min_
 
     analysis_dir = Path(get_analysis_dir(*keys))
 
+    # TODO modify to load binary from suite2p if available, and if mocorr tiff is not
+    # available
+
     for tiff_prefix in tiff_priority:
 
         tiff_path = analysis_dir / f'{tiff_prefix}.tif'
         if verbose:
-            print(f'checking for {tiff_path}...', end='')
+            print(f'checking for {shorten_path(tiff_path, n_parts=4)}...', end='')
 
         if tiff_path.exists():
             if verbose:
@@ -501,7 +518,7 @@ def delete_empty_dirs():
 # probably err if link is not under plot_dir), because the whole reason we wanted some
 # links relative is so i could move the whole plot directory and have the (internal,
 # relative) links still be valid, rather than potentially pointing to plots generated in
-# the original path after
+# the original path after (relative=None, w/ True/False set based on this)
 links_created = []
 def symlink(target, link, relative=True):
     """Create symlink link pointing to target, doing nothing if link exists.
@@ -575,7 +592,7 @@ FAIL_INDICATOR_PREFIX = 'FAILING_'
 def make_fail_indicator_file(analysis_dir, suffix, err=None):
     """Makes empty file (e.g. FAILING_suite2p) in analysis_dir, to mark step as failing
     """
-    path = Path(join(analysis_dir, f'{FAIL_INDICATOR_PREFIX}{suffix}'))
+    path = Path(analysis_dir) / f'{FAIL_INDICATOR_PREFIX}{suffix}'
     if err is None:
         path.touch()
     else:
@@ -1021,8 +1038,7 @@ def sort_odor_indices(df):
     return df
 
 
-def get_panel(date: pd.Timestamp, thorimage_id: str, odor_list: ExperimentOdors
-    ) -> Optional[str]:
+def get_panel(thorimage_id: Pathlike) -> Optional[str]:
     """Return None or str describing the odors used in the experiment.
 
     Some panels are split across multiple types of experiments. For example, 'kiwi' is
@@ -1030,6 +1046,8 @@ def get_panel(date: pd.Timestamp, thorimage_id: str, odor_list: ExperimentOdors
     those collecting just mixtures of the most intense 2 components (run via
     `olf kiwi.yaml` and `olf kiwi_ea_eb_only.yaml`, respectively).
     """
+    thorimage_id = str(Path(thorimage_id).name)
+
     if 'diag' in thorimage_id:
         return 'glomeruli_diagnostics'
 
@@ -1410,6 +1428,10 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         assert k in ops
         ops[k] = v
 
+    # TODO TODO probably add a whitelist parameter inside suite2p at this point, so i
+    # can just specify excatly the tiff(s) i want
+    # TODO TODO replace w/ usage of (new?) ops['tiff_list'] parameters?
+
     # Only available in my fork of suite2p
     ops['exclude_filenames'] = (
         'ChanA_Preview.tif',
@@ -1421,13 +1443,16 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         # not the directories containing them)
         'dff.tif',
         'max_trialmean_dff.tif',
+        # TODO may need to configure this to also ignore either raw.tif or flipped.tif,
+        # depending on current value of min_input (never want to include *both* raw.tif
+        # and flipped.tif)
     )
 
     db = {
         #'data_path': [thorimage_dir],
         # TODO update suite2p to take substrs / globs to ignore input files on
         # (at least for TIFFs specifically, to ignore other TIFFs in input dir)
-        'data_path': [analysis_dir],
+        'data_path': [str(analysis_dir)],
     }
 
     # TODO probably build up a list of directories for which suite2p was run for the
@@ -1642,7 +1667,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     if print_skipped:
         print_inputs_once()
 
-    if 'diag' in thorimage_dir:
+    if 'diag' in str(thorimage_dir):
         if not analyze_glomeruli_diagnostics:
             print_skip('skipping because experiment is just glomeruli diagnostics')
             return
@@ -1956,6 +1981,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             if is_pair:
                 print_if_not_skipped('no ImageJ ROIs')
 
+    # TODO TODO TODO probably also put this under control of ignore cache (or provide a
+    # means of storing version of this in parallel for flipped.tif / mocorr.tif input)
     response_volume_cache_fname = join(analysis_dir, 'trial_response_volumes.p')
     response_volume_cache_exists = exists(response_volume_cache_fname)
     if not response_volume_cache_exists:
@@ -1976,8 +2003,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         )
         return
 
-    do_nonskipped_experiment_prints_and_warns(yaml_path)
-
     before = time.time()
 
     # TODO TODO TODO find a way to keep track of whether the tiff was flipped, and
@@ -1986,7 +2011,14 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # format have reference to tiff it was drawn on anywhere?)?
 
     # TODO remove verbose=True kwarg after some testing
-    movie = load_movie(date, fly_num, thorimage_basename, verbose=True)
+    try:
+        movie = load_movie(date, fly_num, thorimage_basename, verbose=True)
+    except IOError as err:
+        # TODO maybe just warn? or don't return and still do some analysis?
+        warn_if_not_skipped(f'{err}\n')
+        return
+
+    do_nonskipped_experiment_prints_and_warns(yaml_path)
 
     read_movie_s = time.time() - before
 
@@ -2220,7 +2252,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             # gsheet only has labels on a per-fly basis, and those should apply to the
             # glomeruli diagnostic experiment corresponding to the same FOV as the other
             # experiments. Don't want to link any other experiments anywhere under here.
-            rel_exp_dir = '/'.join(analysis_dir.split(os.sep)[-3:])
+            rel_exp_dir = '/'.join(analysis_dir.parts[-3:])
             if rel_exp_dir in unused_glomeruli_diagnostics:
                 continue
 
@@ -2284,7 +2316,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     odor_index = odor_lists_to_multiindex(odor_lists)
     assert len(odor_index) == len(all_trial_mean_dffs)
 
-    panel = get_panel(date, thorimage_basename, odor_lists)
+    panel = get_panel(thorimage_basename)
 
     # TODO maybe factor out the add_metadata fn above to hong2p.util + also handle
     # xarray inputs there?
@@ -2352,6 +2384,220 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # potentially, still just checking the # of None/falsey return values to get the #
     # of non-analyzed things.
     return True
+
+
+def was_suite2p_registration_successful(suite2p_dir):
+
+    def plane_successful(plane_dir):
+        reg_bin = plane_dir / 'data.bin'
+        if not reg_bin.exists():
+            return False
+        # TODO might or might not gain something from also checking its size / whether
+        # ops exists
+        return True
+
+    if not suite2p_dir.exists():
+        return False
+
+    plane_dirs = list(suite2p_dir.rglob('plane*/'))
+    if len(plane_dirs) == 0:
+        return False
+
+    return all(plane_successful(p) for p in plane_dirs)
+
+
+# TODO TODO refactor / merge into run_suite2p. copied from that fn above.
+def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
+    overwrite=False):
+
+    from suite2p import run_s2p
+
+    # TODO try to cleanup suite2p dir (esp if we created it) if we ctrl-c before it
+    # finishes
+
+    suite2p_dir = s2p.get_suite2p_dir(fly_analysis_dir)
+
+    if suite2p_dir.exists():
+        if not was_suite2p_registration_successful(suite2p_dir):
+            overwrite = True
+
+        if overwrite:
+            shutil.rmtree(suite2p_dir)
+            suite2p_dir.mkdir()
+        else:
+            print(f'suite2p dir {suite2p_dir} already existed. returning.\n')
+            # True to indicate success
+            return True
+
+    ops_dir = expanduser('~/.suite2p/ops')
+    # NOTE: {ops_dir}/ops_user.npy is what gets written w/ the gui button to save new
+    # defaults
+    ops_file = join(ops_dir, 'ops_user.npy')
+    # TODO print the path of the ops*.npy file we ultimately load ops from
+    ops = s2p.load_s2p_ops(ops_file)
+
+    # TODO TODO assert we get the same value for all of these w/ stuff we are trying to
+    # register together? (for now just assuming first applies to the rest)
+    # TODO TODO or at least check all the shapes are compatible? maybe suite2p has a
+    # good enough error message already there tho...
+    data_specific_ops = s2p.suite2p_params(thorimage_dirs[0])
+    for k, v in data_specific_ops.items():
+        assert k in ops
+        ops[k] = v
+
+    # TODO TODO sum up # frames from each entry in thorimage_dirs -> pass to batch size
+    batch_size = sum(thor.get_thorimage_n_frames(d) for d in thorimage_dirs)
+    print(f'Setting {batch_size=} (all volumes across movies to register for this fly)')
+    ops['batch_size'] = batch_size
+
+    # TODO may need to strip te fly_analysis_dir prefix these should all have
+    # Path objects don't work in suite2p for this variable.
+    ops['tiff_list'] = [str(x) for x in tiffs]
+
+    # TODO TODO set batch size to include all the frames (or the sum of them) (+ check
+    # whether it should be # of XY frames of # of volumes), and only back it off if i
+    # start running out of memory. should be a bit faster.
+
+    db = {
+        'data_path': [str(fly_analysis_dir)],
+    }
+
+    # TODO update suite2p message:
+    # "NOTE: not registered / registration forced with ops['do_registration']>1
+    #  (no previous offsets to delete)"
+    # to say '=1' unless there is actually a time to do '>1'. at least '>=1', no?
+    # TODO make suite2p work to view registeration w/o needing to extract cells too
+
+    success = False
+    try:
+        # TODO actually care about ops_end?
+        # TODO TODO save ops['refImg'] into some plots and see how they look?
+        # (if useful, probably also load ops_end from data above, if we can get
+        # something equivalent to it from the saved data...)
+        ops_end = run_s2p(ops=ops, db=db)
+        success = True
+        print()
+
+    except Exception as err:
+        cprint(traceback.format_exc(), 'red', file=sys.stderr)
+        # TODO might want to add this back, but need to manage clearing it and stuff
+        # then...
+        #make_fail_indicator_file(fly_analysis_dir, suite2p_fail_prefix, err)
+
+    return success
+
+
+# TODO TODO factor to hong2p.suite2p
+def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
+    registered: bool = True, to_uint16: bool = True, verbose: bool = False
+    ) -> np.ndarray:
+
+    # TODO TODO is dtype='int16' a mistake on the part of the suite2p people (they at
+    # least seem to be consistent about it w/in io.binary)? shouldn't it be uint16? or
+    # can it really be negative? precision loss when converting from uint16 (and that is
+    # the type of data i get from thorimage, right? should i rescale?)
+    # TODO might need to handle for tests of equavilancy between this and my other raw
+    # data formats
+    """
+    Args:
+        suite2p_dir: path to suite2p directory, containing 'plane<x>' folders
+
+        thorimage_dir: path containing ThorImage output (for the Experiment.xml that
+            contains movie shape information)
+
+        registered: if True, load registered data in 'data.bin' files, otherwise
+            load raw data from 'data_raw.bin' files
+
+        to_uint16: if True, will convert int16 suite2p data to the uint16 type our input
+            data is, to make the output more directly comparable with input TIFFs
+
+        verbose: if True, print frame ranges for each input TIFF
+
+    Returns dict of input TIFF filename -> array of shape (t, z, y, x).
+    """
+    from suite2p.io import BinaryFile
+
+    # TODO should i just use glob? what exactly is the difference?
+    plane_dirs = sorted(suite2p_dir.rglob('plane*/'))
+
+    # Depending on ops['keep_movie_raw'], 'data_raw.bin' may or may not exist.
+    # Just using to test binary reading (for TIFF creation + direct use).
+    name = 'data.bin' if registered else 'data_raw.bin'
+    binaries = [d / name for d in plane_dirs]
+
+    # TODO TODO TODO can i just replace this w/ usage of some of the other entries in
+    # ops?
+    (x, y), z, c = thor.get_thorimage_dims(thorimage_dir)
+    # TODO TODO actually test on some test data where x != y
+    frame_width = x
+    frame_height = y
+
+    plane_data_list = []
+    for binary in binaries:
+        with BinaryFile(frame_height, frame_width, binary) as bf:
+            # "nImg x Ly x Lx", meaning T x frame height x frame width
+            plane_data = bf.data
+            plane_data_list.append(plane_data)
+
+    data = np.stack(plane_data_list, axis=1)
+
+    # the metadata we care about should be the same regardless of which we plane we load
+    # the ops from
+    ops_path = plane_dirs[0] / 'ops.npy'
+    ops = s2p.load_s2p_ops(ops_path)
+
+    # list of (always?)-absolute paths to input files, presumably in concatenation order
+    filelist = ops['filelist']
+
+    # of same length as filelist. e.g. array([ 756, 1796,  945])
+    frames_per_file = ops['frames_per_file']
+
+    # TODO figure out how to use this if i want to support loading data from multiple
+    # folders (as it would probably be if you managed to use the GUI to concatenate in a
+    # particular order, with only one TIFF per each input folder)
+    #'frames_per_folder': array([3497], dtype=int32),
+
+    start_idx = 0
+    input_tiff2movie_range = dict()
+    for input_tiff, n_input_frames in zip(filelist, frames_per_file):
+
+        end_idx = start_idx + n_input_frames
+        movie_range = data[start_idx:end_idx]
+        assert movie_range.shape[0] == n_input_frames
+
+        if verbose:
+            # TODO TODO TODO maybe i should write this to a file instead (so i don't
+            # need to run right before inspecting...)? factor out if so
+
+            # Converting to 1-based indices, as these prints are intended for inspecting
+            # boundaries in ImageJ
+            print(f'{shorten_path(input_tiff, n_parts=4)}: '
+                # TODO any off-by-ones here?
+                f'{start_idx + 1} - {end_idx + 1}'
+            )
+
+        # TODO convert this to a test (pulling in the commented code below that calls
+        # this fn w/ registered=False)
+        if checks and not registered:
+            # TODO double check on thorimage .raw dtype
+            #
+            # Note: our TIFF inputs are uint16 (as is the ThorImage data, I believe),
+            # and suite2p does floor division by 2 before conversion to dtype np.int16
+            # (for inputs of dtype np.uint16).
+            tiff = tifffile.imread(input_tiff)
+            assert np.array_equal(movie_range, (tiff // 2).astype(np.int16))
+
+        if to_uint16:
+            assert movie_range.dtype == np.int16
+            movie_range = (movie_range * 2).astype(np.uint16)
+
+        input_tiff2movie_range[Path(input_tiff)] = movie_range
+        start_idx += n_input_frames
+
+    if verbose:
+        print()
+
+    return input_tiff2movie_range
 
 
 def n_largest_signal_rois(sdf, n=5):
@@ -3015,13 +3261,16 @@ def main():
             if pd.isnull(side_imaged):
                 # TODO TODO maybe err / warn w/ higher severity (red?), especially if i
                 # require downstream analysis to use the flipped version
+                # TODO don't warn if there are no non-glomeruli diagnostic recordings
+                # for a given fly? might want to do this even if i do make skip handling
+                # consistent w/ process_experiment.
                 warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
                     ' in Google Sheet'
                 )
                 flip_lr = None
             else:
                 assert side_imaged in ('left', 'right')
-                flip_lr = (side_imaged == standard_side_orientation)
+                flip_lr = (side_imaged != standard_side_orientation)
 
             analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
 
@@ -3030,20 +3279,139 @@ def main():
                 flip_lr=flip_lr, check_round_trip=checks, verbose=True
             )
 
+        print()
 
-    # TODO TODO TODO loop over flies (*not* experiments), and register all things we
-    # don't wanna skip together (by symlinking to some directory made just for this, and
-    # running suite2p on it? or are there suite2p options [/ would it be easy to add
-    # them], for passing multiple tiffs in diff directories [/arrays]?)
 
-    # TODO TODO TODO try to skip the same stuff we would skip in the process_experiment
-    # loop below (and at that point, maybe also treat converstion to tiffs above
-    # consistently?)
+    if register_all_fly_recordings_together:
 
-    # TODO maybe register everything that has as panel defined? or that has the same
-    # shape?
-    # TODO TODO TODO if suite2p concats everything together, split apart at end
-    import ipdb; ipdb.set_trace()
+        # TODO try to skip the same stuff we would skip in the process_experiment loop
+        # below (and at that point, maybe also treat converstion to tiffs above
+        # consistently?)
+
+        date_and_fly2thorimage_dirs = defaultdict(list)
+        for (date, fly_num), (thorimage_dir, _) in keys_and_paired_dirs:
+            # Since keys_and_paired_dirs should have everything in chronological order,
+            # these ThorImage directories should also be in the order they were acquired
+            # in, which might make registering them all into one big movie more
+            # easily interpretable. Might do this for some intermediates.
+            date_and_fly2thorimage_dirs[(date, fly_num)].append(thorimage_dir)
+
+        # TODO option to suppress suite2p output (most of it is logged to
+        # ./suite2p/run.log anyway), so i can tqdm this loop (nevermind, i can't seem to
+        # find run.log files when i invoke via this code, rather than via the gui...
+        # bug?)
+        for (date, fly_num), all_thorimage_dirs in date_and_fly2thorimage_dirs.items():
+
+            date_str = format_date(date)
+            fly_str = f'{date_str}/{fly_num}'
+            fly_analysis_dir = get_fly_analysis_dir(date, fly_num)
+
+            # As long as we write this TIFF (and write it after the per-recording TIFFs
+            # split out of this one), we can assume we also have all the per-recording
+            # stuff if we have this.
+            # TODO TODO maybe also make a raw concat version of this for easier
+            # comparison?
+            fly_concat_tiff = fly_analysis_dir / 'mocorr_concat.tif'
+
+            # TODO maybe add this to ignore_existing? but i might rather not overwrite
+            # this stuff... can just manually rename existing stuff to something else to
+            # be able to compare runs w/ diff parameters
+            # TODO CLI arg specifically for renaming existing stuff rather than
+            # overwriting / loading (both suite2p dir and all TIFFs)?
+            if fly_concat_tiff.exists():
+                print(f'{fly_str} already has motion corrected TIFFs\n')
+                continue
+
+            # suite2p will make this. We just want to be able to check if the
+            # within-fly, across-recording registration has been done already.
+            suite2p_dir = join(fly_analysis_dir, 'suite2p')
+
+            thorimage_dirs = []
+            tiffs = []
+            for thorimage_dir in all_thorimage_dirs:
+                panel = get_panel(thorimage_dir)
+                # TODO may also wanna try excluding 'glomeruli_diagnostic' panel
+                # recordings (other options are currently 'kiwi' or 'control')
+                if panel is None:
+                    continue
+
+                # TODO may also need to filter on shape (hasn't been an issue so far)
+
+                analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
+                tiff_fname = analysis_dir / 'flipped.tif'
+                if not tiff_fname.exists():
+                    warn(f'TIFF {tiff_fname} did not exist! will not include in across '
+                        'recording registration (if there are any other valid TIFFs for'
+                        ' this fly)!'
+                    )
+                    continue
+
+                thorimage_dirs.append(thorimage_dir)
+                tiffs.append(tiff_fname)
+
+            if len(thorimage_dirs) == 0:
+                warn(f'no panels we want to register for fly {fly_str}\n')
+                continue
+
+            # TODO write text/yaml not in suite2p directory explaining what all data
+            # went into it
+
+            # maybe make bold too?
+            cprint(f'registering recordings for fly {fly_str} to each other...',
+                'blue', flush=True
+            )
+
+            # TODO delete
+            print('Input TIFFs:')
+            pprint([str(x) for x in tiffs])
+            #
+
+            # TODO TODO TODO probably compare to registering stuff individually, because
+            # my initial results have not been great (using block size of '48, 48')
+
+            success = register_recordings_together(thorimage_dirs, tiffs,
+                fly_analysis_dir
+            )
+            if not success:
+                continue
+
+            suite2p_dir = s2p.get_suite2p_dir(fly_analysis_dir)
+
+            # TODO TODO TODO convert to test + factor load_suite2p_binaries into hong2p
+            #if checks:
+            #    # This has an assertion inside that the raw matches the input TIFF
+            #    load_suite2p_binaries(suite2p_dir, thorimage_dirs[0], registered=False)
+
+            # TODO TODO also write ops['refImg'] and some of the more useful
+            # registration quality metrics from ops (there are some in there, yea?)
+
+            # As long as the shape for each movie is the same (which it should be if we
+            # got this far), it doesn't matter which thorimage_dir we pass, so I'm just
+            # taking the first.
+            # TODO maybe have this print out frame ranges for each tiff, so i can go
+            # there in imagej to see where the discontinuities between movies should be?
+            input_tiff2registered = load_suite2p_binaries(suite2p_dir,
+                thorimage_dirs[0], verbose=True
+            )
+
+            for input_tiff, registered in input_tiff2registered.items():
+                # TODO come up w/ diff names to distinguish stuff registered across
+                # movies vs not? at least if we can't get across movie stuff to work as
+                # well as latter (cause across movie stuff would be way more useful...)
+                motion_corrected_tiff = input_tiff.with_name('mocorr.tif')
+                print(f'writing {motion_corrected_tiff}')
+                util.write_tiff(motion_corrected_tiff, registered)
+
+            # Essentially the same one I'm pulling apart in the above function, but we
+            # are just putting it back together to be able to make it a TIFF to inspect
+            # the boundaries.
+            fly_concat_movie = np.concatenate(
+                [x for x in input_tiff2registered.values()], axis=0
+            )
+            print(f'writing {fly_concat_tiff}')
+            util.write_tiff(fly_concat_tiff, fly_concat_movie)
+
+            print()
 
 
     if not parallel:
@@ -3115,7 +3483,7 @@ def main():
         # TODO switch back to 0 / a sequence including this + 0, and change code to try
         # both?
         ds = 4
-        pixel_corr_basename = 'pixel_correlations'
+        pixel_corr_basename = 'pixel_corr'
         if ds > 0:
             pixel_corr_basename = f'{pixel_corr_basename}_ds{ds}'
 
@@ -3175,28 +3543,44 @@ def main():
         response_volumes = util.add_group_id(response_volumes,
             ['date', 'fly_num', 'thorimage_id'], name='recording_id', dim='odor'
         )
+        # TODO handle trial_df.p or whatever the same way?
+        # Crude way to ensure we don't overwrite if we only run on a subset of the data
+        if len(matching_substrs) == 0:
+            # TODO actually load and use this cache under some circumstances (-c)...
+            # otherwise, delete it
+            write_dataarray(response_volumes, response_volume_cache_fname)
+        else:
+            warn('not saving response_volumes to cache because script was run with '
+                'positional arguments to restrict the data analyzed'
+            )
 
         # TODO TODO TODO also try calculating correlations only for pixels where the max
         # dF/F (across all trials) is above some threshold (or maybe threshold a pixel
         # z-score?)
 
         if ds > 0:
-            print('downsampling response volumes...', end='', flush=True)
+            print(f'downsampling response volumes by {ds} in XY...', end='', flush=True)
             response_volumes = response_volumes.coarsen(y=ds, x=ds).mean()
             print('done', flush=True)
 
-        # TODO TODO TODO motion correct within each fly (all recordings to one template
-        # too), to facilitate across-recording, within-fly pixel correlation, among
-        # other things
+        # TODO TODO TODO why tf did motion correcting make the vast majority of stuff
+        # worse??? would it be any different if i did the correction only within
+        # recordings (maybe some stuff is just really not well plane matched / there is
+        # too much warping?)? is it a matter of over smoothing (but downsampling
+        # improved stuff the first time so idk...)
+        # TODO TODO TODO is it a matter of extreme values causing oddities in the
+        # correlations? maybe it would be different if i restricted to an ROI or did
+        # some filtering to remove hot pixels[/pixel streaks] that seem to show up
+        # sometimes around the edge?
 
-        # TODO TODO TODO try to concatenate recordings from within fly together so that
-        # i can correlate pixels across them.
         # TODO memory profile w/ just first group, to be more clear on usage of just the
         # grouping itself and (more importantly) all of the steps in the loop
         # TODO tqdm/time loop
         # TODO TODO profile
         corr_list = []
         _checked = False
+        # TODO TODO TODO now that i actually do have mocorr.tif from registering
+        # recordings together -> splitting, use fly (not recording) keys to group
         for labels, garr in response_volumes.groupby('recording_id'):
 
             panel = garr.panel.item(0)
@@ -3288,7 +3672,11 @@ def main():
             # TODO test that on a fresh run (or if another run finishes first and
             # deletes stuff...) that this still works / fix if not (always makedirs in
             # savefig?)
-            fig_path = savefig(fig, plot_dir, 'pixel_corr')
+            # NOTE: important that we also have the '_ds{ds}' suffix here, otherwise if
+            # we do two runs w/ diff values for ds, the links created by the first run
+            # will end up pointing to the plots written by the second run (b/c
+            # overwritten)
+            fig_path = savefig(fig, plot_dir, pixel_corr_basename)
 
             assert type(panel) is str, 'ensure panel is defined / update code to skip'
             panel_dir = join(pixel_corr_plots_root, panel)
@@ -3335,11 +3723,6 @@ def main():
 
         import ipdb; ipdb.set_trace()
         #
-
-        # TODO TODO TODO don't overwrite if we are only running on a subset of data? did
-        # i handle this w/ trial_df.p writing (if not, do, and hopefully in same way)?
-        # TODO TODO TODO uncomment after figuring out commment above + implementing
-        #write_dataarray(response_volumes, response_volume_cache_fname)
 
 
     #if len(odors_without_abbrev) > 0:
