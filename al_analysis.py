@@ -42,7 +42,7 @@ from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path, shorten_stimfile_path, format_date
 from hong2p.olf import (format_odor, format_mix_from_strs, format_odor_list,
-    solvent_str, sort_odor_indices
+    solvent_str, sort_odors
 )
 from hong2p.viz import dff_latex
 from hong2p.types import ExperimentOdors, Pathlike
@@ -411,6 +411,10 @@ def get_analysis_dir(date, fly_num, thorimage_dir) -> Path:
     return get_fly_analysis_dir(date, fly_num) / thorimage_basedir
 
 
+def sort_concs(df):
+    return sort_odors(df, sort_names=False)
+
+
 # TODO TODO factor to hong2p.util (along w/ get_analysis_dir, removing old analysis dir
 # stuff for it [which would ideally involve updating old code that used it...])
 # TODO TODO factor out part to a fn that just returns path to TIFF to use?
@@ -473,6 +477,7 @@ def get_plot_dir(experiment_id: str, relative=False) -> Path:
 # TODO CLI flag to (or just always?) warn if there are old figs in any/some of the dirs
 # we saved figs in?
 
+# TODO TODO want to support FacetGrids?
 # Especially running process_experiment in parallel, the many-figures-open memory
 # warning will get tripped at the default setting, hence `close=True`.
 def savefig(fig, experiment_fig_dir: Path, desc, close=True, **kwargs):
@@ -1072,7 +1077,7 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
 
     trial_df = single_roi_series.unstack(level=0)
 
-    trial_df = sort_odor_indices(trial_df)
+    trial_df = sort_concs(trial_df)
 
     title = f'ROI {single_roi_series.name}'
 
@@ -1097,7 +1102,7 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
     else:
         # 'odor2' is the one on the row axis, as one level alongside 'repeat'
         # TODO not sure why sort=False seems to be ignored... bug?
-        mean_df = sort_odor_indices(trial_df.groupby('odor2', sort=False).mean())
+        mean_df = sort_concs(trial_df.groupby('odor2', sort=False).mean())
 
         fig, _ = viz.matshow(mean_df, **common_matshow_kwargs)
 
@@ -1105,7 +1110,7 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
 
 
 def plot_all_roi_mean_responses(trial_df, title=None, roi_sortkeys=None, roi_rows=True,
-    sort_odors=True, **kwargs):
+    odor_sort=True, **kwargs):
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
 
     Args:
@@ -1126,8 +1131,8 @@ def plot_all_roi_mean_responses(trial_df, title=None, roi_sortkeys=None, roi_row
     # without extra work at least)
     mean_df = trial_df.groupby(['odor1', 'odor2'], sort=False).mean()
 
-    if sort_odors:
-        mean_df = sort_odor_indices(mean_df)
+    if odor_sort:
+        mean_df = sort_concs(mean_df)
 
     if roi_sortkeys is not None:
         assert len(roi_sortkeys) == len(trial_df.columns)
@@ -1252,7 +1257,7 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
     makedirs(roi_plot_dir)
 
     fig, mean_df = plot_all_roi_mean_responses(trial_df, roi_sortkeys=z_indices,
-        sort_odors=is_pair, title=main_plot_title, cbar_label=trial_stat_cbar_title,
+        odor_sort=is_pair, title=main_plot_title, cbar_label=trial_stat_cbar_title,
         cbar_shrink=0.4
     )
     savefig(fig, roi_plot_dir, 'all_rois_by_z')
@@ -2486,7 +2491,7 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
     # to say '=1' unless there is actually a time to do '>1'. at least '>=1', no?
     # TODO make suite2p work to view registeration w/o needing to extract cells too
 
-    # TODO delete
+    # TODO TODO TODO TODO delete
     return None
     #
 
@@ -2871,7 +2876,7 @@ def analyze_onepair(trial_df):
     ])
     fly_str = f'n={n_flies} {{{fly_str}}}'
 
-    mean_df = sort_odor_indices(
+    mean_df = sort_concs(
         trial_df.groupby(level=['odor1','odor2'], axis='columns').mean()
     )
 
@@ -3086,7 +3091,7 @@ def analyze_cache():
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
 
-                return sort_odor_indices(df.loc[:, (name1, name2)].dropna(axis='index'))
+                return sort_concs(df.loc[:, (name1, name2)].dropna(axis='index'))
 
         return tuple([onepair_df(name1, name2, df) for df in dfs])
 
@@ -3723,45 +3728,24 @@ def main():
             print('done', flush=True)
 
 
-        # TODO fix up some version of this and uncomment
+        # TODO nicer way to change index?
         ser = response_volumes.mean(spatial_dims).reset_index('odor').set_index(odor=[
             'panel','is_pair','date','fly_num','odor1','odor2','repeat'
             ]).to_pandas()
 
-        '''
-        print('1')
         mean = ser.groupby([x for x in ser.index.names if x != 'repeat']).mean()
-        print('2')
         df = mean.to_frame('mean_dff').reset_index()
-        print('3')
-        df = util.add_group_id(df[~df.is_pair], ['date','fly_num'], name='fly_id')
-        #import ipdb; ipdb.set_trace()
 
-        print('4')
-        nonpair_df = df[~df.is_pair].copy()
-        print('5')
-        nonpair_df.rename(columns={'odor1': 'odor'}, inplace=True)
-        print('6')
+        # TODO before deleting all _checks code, turn into a test of some kind at least
+        _checks = False
+        g1 = natmix.plot_activation_strength(df, color_flies=True,
+            _checks=_checks
+        )
+        # TODO TODO save these in top level under plot_fmt directory
+        g1.savefig(f'mean_activations_per_fly.{plot_fmt}')
 
-        import seaborn as sns
-
-        df = nonpair_df
-        for panel in ('kiwi', 'control'):
-            plt.figure()
-            ax = sns.barplot(data=df[df.panel == panel], x='odor', y='mean_dff')
-            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
-
-        plt.show()
-
-        """
-        import seaborn as sns
-        plt.figure()
-        sns.swarmplot(x='odor', y='mean_dff', hue='fly_id', data=nonpair_df)
-
-        plt.show()
-        """
-        import ipdb; ipdb.set_trace()
-        '''
+        g2 = natmix.plot_activation_strength(df, _checks=_checks)
+        g2.savefig(f'mean_activations.{plot_fmt}')
 
         pixel_corr_plots_root = plot_root_dir / pixel_corr_basename
         makedirs(pixel_corr_plots_root)
@@ -4253,7 +4237,7 @@ def main():
 
     # TODO define roi_sortkeys kwarg to get an interesting order
     # (or at least by mean activation across experiments within panel / alphabetical)
-    fig, mean_df = plot_all_roi_mean_responses(df, sort_odors=False,
+    fig, mean_df = plot_all_roi_mean_responses(df, odor_sort=False,
         title='03-10/1 test summary', cbar_label=trial_stat_cbar_title, cbar_shrink=0.4
     )
     plt.show()
