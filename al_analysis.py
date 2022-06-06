@@ -29,6 +29,7 @@ import tifffile
 import yaml
 import ijroi
 from matplotlib import colors
+from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.optimize import curve_fit
@@ -70,8 +71,8 @@ min_input = 'mocorr'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
 # TODO TODO TODO TODO switch back to True
-register_all_fly_recordings_together = False
-#register_all_fly_recordings_together = True
+do_register_all_fly_recordings_together = False
+#do_register_all_fly_recordings_together = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -134,7 +135,7 @@ ignore_bounding_frame_cache = False
 
 # Also required if do_suite2p is True, but that is always going to be False the only
 # time this currently is (when is_acquisition_host is True).
-convert_raw_to_tiff = True
+do_convert_raw_to_tiff = True
 
 # If False, will not write any TIFFs (other than raw.tif, which will always only get
 # written if it doesn't already exist), including dF/F TIFF.
@@ -321,11 +322,11 @@ if is_acquisition_host:
     # in Windows, and I'm not sure what all the ramifications of enabling that would
     # be.
     links_to_input_dirs = False
-    convert_raw_to_tiff = False
+    do_convert_raw_to_tiff = False
 
     min_input = 'raw'
 
-    register_all_fly_recordings_together = False
+    do_register_all_fly_recordings_together = False
 
 ###################################################################################
 # Modified inside `process_experiment`
@@ -477,26 +478,21 @@ def get_plot_dir(experiment_id: str, relative=False) -> Path:
 # TODO CLI flag to (or just always?) warn if there are old figs in any/some of the dirs
 # we saved figs in?
 
-# TODO TODO want to support FacetGrids?
 # Especially running process_experiment in parallel, the many-figures-open memory
 # warning will get tripped at the default setting, hence `close=True`.
-def savefig(fig, experiment_fig_dir: Path, desc, close=True, **kwargs):
-    # If True, the directory name containing (date, fly, thorimage_dir) information will
-    # also be in the prefix for each of the plots saved within that directory (harder to
-    # lose track in image viewers / after copying, but more verbose).
-    prefix_plot_fnames = False
+def savefig(fig_or_facetgrid, fig_dir: Path, desc: str, close=True, **kwargs):
     basename = util.to_filename(desc) + plot_fmt
-
-    if prefix_plot_fnames:
-        experiment_basedir = split(experiment_fig_dir)[0]
-        fname_prefix = experiment_basedir + '_'
-        basename = fname_prefix + basename
-
-    fig_path = experiment_fig_dir / basename
+    fig_path = fig_dir / basename
     if save_figs:
-        fig.savefig(fig_path, **kwargs)
+        fig_or_facetgrid.savefig(fig_path, **kwargs)
 
     if close:
+        if isinstance(fig_or_facetgrid, Figure):
+            fig = fig_or_facetgrid
+
+        elif isinstance(fig_or_facetgrid, sns.FacetGrid):
+            fig = fig_or_facetgrid.fig
+
         plt.close(fig)
 
     return fig_path
@@ -2437,6 +2433,7 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
 
     # TODO TODO TODO instead of hardcoding '0', enumerate current folders and add one to
     # max num
+    import ipdb; ipdb.set_trace()
     suite2p_dir = suite2p_runs_dir / '0' / 'suite2p'
 
     suite2p_dir_link = s2p.get_suite2p_dir(fly_analysis_dir)
@@ -2514,9 +2511,10 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
         # TODO TODO are ops_end same as if loading from the ops file in the
         # corresponding plane directory (so ig ops_end must be a list of ops dicts, if
         # that were true?)?
-        import ipdb; ipdb.set_trace()
+        #import ipdb; ipdb.set_trace()
         print()
 
+    # TODO TODO TODO why did i want to catch arbitrary exceptions here again? document.
     except Exception as err:
         cprint(traceback.format_exc(), 'red', file=sys.stderr)
         # TODO might want to add this back, but need to manage clearing it and stuff
@@ -2658,6 +2656,237 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     return input_tiff2movie_range
 
 
+def convert_raw_to_tiff(keys_and_paired_dirs) -> None:
+    """Writes a TIFF for each .raw file in referenced ThorImage directories.
+    """
+    for (date, fly_num), (thorimage_dir, _) in keys_and_paired_dirs:
+        # TODO unify w/ half-implemented hong2p flip_lr metadata key?
+        try:
+            # np.nan / 'left' / 'right'
+            side_imaged = gdf.at[(date, fly_num), 'side']
+        except KeyError:
+            side_imaged = None
+
+        if pd.isnull(side_imaged):
+            # TODO TODO maybe err / warn w/ higher severity (red?), especially if i
+            # require downstream analysis to use the flipped version
+            # TODO don't warn if there are no non-glomeruli diagnostic recordings
+            # for a given fly? might want to do this even if i do make skip handling
+            # consistent w/ process_experiment.
+            warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
+                ' in Google Sheet'
+            )
+            flip_lr = None
+        else:
+            assert side_imaged in ('left', 'right')
+            flip_lr = (side_imaged != standard_side_orientation)
+
+        analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
+
+        # TODO maybe delete any existing raw.tif when we save a flipped.tif
+        # (so that we can still see the data for stuff where we haven't labelled a
+        # side yet, but to otherwise save space / avoid confusion)?
+
+        # Creates a TIFF <analysis_dir>/flipped.tif, if it doesn't already exist.
+        util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
+            flip_lr=flip_lr, check_round_trip=checks, verbose=True
+        )
+
+
+# TODO doc
+def register_all_fly_recordings_together(keys_and_paired_dirs):
+    # TODO try to skip the same stuff we would skip in the process_experiment loop
+    # below (and at that point, maybe also treat converstion to tiffs above
+    # consistently?)
+
+    date_and_fly2thorimage_dirs = defaultdict(list)
+    for (date, fly_num), (thorimage_dir, _) in keys_and_paired_dirs:
+        # Since keys_and_paired_dirs should have everything in chronological order,
+        # these ThorImage directories should also be in the order they were acquired
+        # in, which might make registering them all into one big movie more
+        # easily interpretable. Might do this for some intermediates.
+        date_and_fly2thorimage_dirs[(date, fly_num)].append(thorimage_dir)
+
+    # TODO option to suppress suite2p output (most of it is logged to
+    # ./suite2p/run.log anyway), so i can tqdm this loop (nevermind, i can't seem to
+    # find run.log files when i invoke via this code, rather than via the gui...
+    # bug?)
+    for (date, fly_num), all_thorimage_dirs in date_and_fly2thorimage_dirs.items():
+
+        date_str = format_date(date)
+        fly_str = f'{date_str}/{fly_num}'
+        fly_analysis_dir = get_fly_analysis_dir(date, fly_num)
+
+        # As long as we write this TIFF (and write it after the per-recording TIFFs
+        # split out of this one), we can assume we also have all the per-recording
+        # stuff if we have this.
+        # TODO TODO maybe also make a raw concat version of this for easier
+        # comparison?
+        fly_concat_tiff_link = fly_analysis_dir / 'mocorr_concat.tif'
+
+        # TODO TODO TODO also check (registration only) parameters are the same
+        # before deciding if we already have suite2p done?
+
+        # TODO TODO TODO consider whether i even need to add this back...
+        # want to probably also have this as a symlink pointing to the corresponding
+        # concat tiff in a suite2p run subdirectory
+        #
+        # TODO maybe add this to ignore_existing? but i might rather not overwrite
+        # this stuff... can just manually rename existing stuff to something else to
+        # be able to compare runs w/ diff parameters
+        # TODO CLI arg specifically for renaming existing stuff rather than
+        # overwriting / loading (both suite2p dir and all TIFFs)?
+        '''
+        if fly_concat_tiff_link.exists():
+            print(f'{fly_str} already has motion corrected TIFFs\n')
+            continue
+        '''
+
+        thorimage_dirs = []
+        tiffs = []
+        for thorimage_dir in all_thorimage_dirs:
+            panel = get_panel(thorimage_dir)
+            # TODO may also wanna try excluding 'glomeruli_diagnostic' panel
+            # recordings (other options are currently 'kiwi' or 'control')
+            if panel is None:
+                continue
+
+            # TODO may also need to filter on shape (hasn't been an issue so far)
+
+            analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
+            tiff_fname = analysis_dir / 'flipped.tif'
+            if not tiff_fname.exists():
+                warn(f'TIFF {tiff_fname} did not exist! will not include in across '
+                    'recording registration (if there are any other valid TIFFs for'
+                    ' this fly)!'
+                )
+                continue
+
+            thorimage_dirs.append(thorimage_dir)
+            tiffs.append(tiff_fname)
+
+        if len(thorimage_dirs) == 0:
+            warn(f'no panels we want to register for fly {fly_str}\n')
+            continue
+
+        # TODO write text/yaml not in suite2p directory explaining what all data
+        # went into it
+
+        # TODO only print if we are actually running suite2p
+        # maybe make bold too?
+        cprint(f'registering recordings for fly {fly_str} to each other...',
+            'blue', flush=True
+        )
+
+        # TODO delete
+        print('Input TIFFs:')
+        pprint([str(x) for x in tiffs])
+        #
+
+        # TODO TODO TODO probably compare to registering stuff individually, because
+        # my initial results have not been great (using block size of '48, 48')
+
+        suite2p_dir = register_recordings_together(thorimage_dirs, tiffs,
+            fly_analysis_dir
+        )
+        if suite2p_dir is None:
+            continue
+
+        fly_concat_tiff = suite2p_dir / 'mocorr_concat.tif'
+
+        # TODO TODO TODO delete
+        assert fly_concat_tiff_link.exists()
+        # TODO TODO TODO probably update these links to point to use a path
+        # including the <date>/<fly_num>/'suite2p' symlink, so the link to
+        # the concanated motion corrected tiff doesn't need to be updated to
+        # select between runs of diff parameters?
+        if not fly_concat_tiff_link.is_symlink():
+            fly_concat_tiff_link.rename(fly_concat_tiff)
+            fly_concat_tiff_link.symlink_to(fly_concat_tiff)
+        # TODO TODO TODO can i delete this now or is it still relevant for new data
+        # (/ is there old data it hasn't been run on yet?)
+        else:
+            import ipdb; ipdb.set_trace()
+        #
+
+        # TODO TODO TODO why did i have a continue here, again?
+        continue
+        #
+
+        # TODO TODO convert to test + factor load_suite2p_binaries into hong2p
+        #if checks:
+        #    # This has an assertion inside that the raw matches the input TIFF
+        #    load_suite2p_binaries(suite2p_dir, thorimage_dirs[0], registered=False)
+
+        # TODO TODO also write ops['refImg'] and some of the more useful
+        # registration quality metrics from ops (there are some in there, yea?)
+
+        # TODO TODO TODO will need to update this to only load and write (remind me,
+        # what is getting [potentially] *written*, again?) these if the current
+        # links arent already pointing to stuff under suite2p_dir (the dir that
+        # register_recordings_together either generated or determined came from a
+        # run w/ the current parameters)
+
+        # As long as the shape for each movie is the same (which it should be if we
+        # got this far), it doesn't matter which thorimage_dir we pass, so I'm just
+        # taking the first.
+        # TODO refactor how this is currently printing frame ranges for each input
+        # movie so i can also write a a file, for reference when inspecting TIFF
+        input_tiff2registered = load_suite2p_binaries(suite2p_dir,
+            thorimage_dirs[0], verbose=True
+        )
+
+        for input_tiff, registered in input_tiff2registered.items():
+
+            motion_corrected_tiff = suite2p_dir / f'{input_tiff.parent.name}.tif'
+            motion_corrected_tiff_link = input_tiff.with_name('mocorr.tif')
+
+            # TODO delete
+            print(f'{motion_corrected_tiff=}')
+            print(f'{motion_corrected_tiff_link=}')
+            #
+
+            # TODO TODO TODO probably also use symlinks including fly/'suite2p'
+            # symlink here, to not need to update these separate from updating
+            # 'suite2p' symlink (ideally...)
+
+            # TODO delete
+            if motion_corrected_tiff_link.exists():
+                if not motion_corrected_tiff_link.is_symlink():
+                    motion_corrected_tiff_link.rename(motion_corrected_tiff)
+                    motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
+                else:
+                    print('link already existed')
+
+                continue
+
+            #
+            # TODO come up w/ diff names to distinguish stuff registered across
+            # movies vs not? at least if we can't get across movie stuff to work as
+            # well as latter (cause across movie stuff would be way more useful...)
+            print(f'writing {motion_corrected_tiff}', flush=True)
+            util.write_tiff(motion_corrected_tiff, registered)
+            motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
+
+        # TODO TODO TODO also write concatenated raw tiffs, for comparison to
+        # registered one
+        import ipdb; ipdb.set_trace()
+
+        # Essentially the same one I'm pulling apart in the above function, but we
+        # are just putting it back together to be able to make it a TIFF to inspect
+        # the boundaries.
+        # TODO TODO TODO uncomment
+        '''
+        fly_concat_movie = np.concatenate(
+            [x for x in input_tiff2registered.values()], axis=0
+        )
+        print(f'writing {fly_concat_tiff}', flush=True)
+        util.write_tiff(fly_concat_tiff, fly_concat_movie)
+        '''
+
+        print()
+
+
 def n_largest_signal_rois(sdf, n=5):
 
     def print_pd(x):
@@ -2688,6 +2917,388 @@ def odor_str2conc(odor_str):
     return 0 if odor_str == solvent_str else np.float_power(10,
         float(odor_str.split('@')[-1].strip())
     )
+
+
+response_volume_cache_fname = 'trial_response_volumes.p'
+def analyze_response_volumes(response_volumes_list, write_cache=True):
+
+    # TODO factor all this into a function so i can more neatly call it multiple
+    # times w/ diff downsampling factors
+
+    # downsampling factor
+    # 192 / 4 = 48
+    # TODO TODO better name
+    # TODO switch back to 0 / a sequence including this + 0, and change code to try
+    # both?
+    ds = 4
+    pixel_corr_basename = 'pixel_corr'
+    if ds > 0:
+        pixel_corr_basename = f'{pixel_corr_basename}_ds{ds}'
+
+    #spatial_dims = ['z', 'y', 'x']
+    spatial_shapes = [tuple(dict(zip(x.dims, x.shape))[n] for n in spatial_dims)
+        for x in response_volumes_list
+    ]
+    # doesn't handle ties, but that should be fine
+    most_common_shape = Counter(spatial_shapes).most_common(1)[0][0]
+
+    # TODO switch to not throwing out any shapes. just need to test the NaNs are
+    # handled appropriately in any downsteam correlation / plotting code
+    consistent_spatial_shape_response_volumes = []
+    for shape, recording_response_volumes in zip(spatial_shapes,
+        response_volumes_list):
+
+        # TODO delete
+        date = pd.to_datetime(recording_response_volumes.date.item(0)).date()
+        fly_num = recording_response_volumes.fly_num.item(0)
+        thorimage_id = recording_response_volumes.thorimage_id.item(0)
+
+        # TODO TODO TODO TODO change conversion to uint16 handling to set min to at
+        # least 1 so there shouldn't be any divide-by-zero errors, then regenerate
+        # mocorr TIFFs and regenerate response volume pickles
+        # TODO then delete this code. just a hack.
+        n_null = recording_response_volumes.isnull().sum().item(0)
+        if n_null > 0:
+            warn(f'{date}/{fly_num}/{thorimage_id}: {n_null} null (probably from '
+                'divide-by-zero)'
+            )
+            recording_max_pixel = recording_response_volumes.max().item(0)
+            recording_response_volumes = recording_response_volumes.fillna(
+                recording_max_pixel
+            )
+        #
+        # TODO TODO TODO maybe in general i should be capping dF/F at some sane
+        # value, like say 10? not like anything higher is plausibly anything other
+        # than noise, no?
+
+        if shape != most_common_shape:
+            # Each recording_response_volumes should only have one value for each of
+            # these.
+            date = pd.to_datetime(recording_response_volumes.date.item(0)).date()
+            fly_num = recording_response_volumes.fly_num.item(0)
+            thorimage_id = recording_response_volumes.thorimage_id.item(0)
+
+            warn(f'not including {date}/{fly_num}/{thorimage_id} in '
+                f'response_volumes because it had shape of {shape} (!= most common '
+                f'{most_common_shape})'
+            )
+            continue
+
+        consistent_spatial_shape_response_volumes.append(recording_response_volumes)
+
+    # NOTE: memory usage is just under 4GB loading 85 experiments from 2022-02-04 to
+    # 2022-04-03.
+    response_volumes = xr.concat(consistent_spatial_shape_response_volumes, 'odor')
+
+    assert response_volumes.notnull().sum().item(0) == sum([
+        x.notnull().sum().item(0) for x in consistent_spatial_shape_response_volumes
+    ])
+
+    # NOTE: will need to remove this assertion if i stop throwing out stuff not the
+    # most common shape.
+    #
+    # concatenating along odor axis should give us no NaN, as long as movie shapes
+    # are first restricted to all be the same (as otherwise the odor dimension
+    # should be the only one that varies in length)
+    assert response_volumes.isnull().sum().item(0) == 0
+
+    # TODO TODO maybe rename 'odor' to 'trial' in all xarray things (may need to
+    # recompute), or something else more clear (indicating it's also the fly #,
+    # repeat, etc, that vary)
+
+    # TODO fix in case only one experiment is here:
+    # ValueError: If using all scalar values, you must pass an index
+    response_volumes = util.add_group_id(response_volumes,
+        ['date', 'fly_num', 'thorimage_id'], name='recording_id', dim='odor'
+    )
+
+    # For calculating correlations of, e.g. kiwi + kiwi_ramps (that had been
+    # registered together) in one fly.
+    response_volumes = util.add_group_id(response_volumes,
+        ['date', 'fly_num', 'panel'], name='fly_panel_id', dim='odor'
+    )
+
+    # TODO handle trial_df.p or whatever the same way?
+    if write_cache:
+        # TODO actually load and use this cache under some circumstances (-c)...
+        # otherwise, delete it
+        write_dataarray(response_volumes, response_volume_cache_fname)
+    else:
+        warn('not saving response_volumes to cache because script was run with '
+            'positional arguments to restrict the data analyzed'
+        )
+
+    # TODO TODO TODO also try calculating correlations only for pixels where the max
+    # dF/F (across all trials) is above some threshold (or maybe threshold a pixel
+    # z-score?)
+
+    if ds > 0:
+        print(f'downsampling response volumes by {ds} in XY...', end='', flush=True)
+        response_volumes = response_volumes.coarsen(y=ds, x=ds).mean()
+        print('done', flush=True)
+
+
+    # TODO nicer way to change index?
+    ser = response_volumes.mean(spatial_dims).reset_index('odor').set_index(odor=[
+        'panel','is_pair','date','fly_num','odor1','odor2','repeat'
+        ]).to_pandas()
+
+    mean = ser.groupby([x for x in ser.index.names if x != 'repeat']).mean()
+    df = mean.to_frame('mean_dff').reset_index()
+
+    intensities_plot_dir = plot_root_dir / 'activation_strengths'
+    makedirs(intensities_plot_dir)
+
+    # TODO before deleting all _checks code, turn into a test of some kind at least
+    _checks = False
+
+    g1 = natmix.plot_activation_strength(df, color_flies=True, _checks=_checks)
+    savefig(g1, intensities_plot_dir, 'mean_activations_per_fly')
+
+    g2 = natmix.plot_activation_strength(df, _checks=_checks)
+    savefig(g2, intensities_plot_dir, 'mean_activations')
+
+
+    pixel_corr_plots_root = plot_root_dir / pixel_corr_basename
+    makedirs(pixel_corr_plots_root)
+
+    # Similar issue to directories grouping links to different glomeruli diagnostic
+    # data: we don't want to include links to data from old runs.
+    if pixel_corr_plots_root.exists():
+        shutil.rmtree(pixel_corr_plots_root)
+
+    # TODO TODO TODO try both filling in pfo for stuff that doesn't have it w/ NaN,
+    # as well as just not showing pfo on any of the correlation plots
+
+    # TODO TODO TODO how to enforce order for the two experiments?
+    # just order once i condense down to corr matrix?
+
+    # TODO TODO compare corr plots generated w/ both values for this, to check that
+    # there isn't some hidden re-ordering causing correlation pair expt odors that
+    # overlap with other expt to be ordered with the wrong experiment data
+    #
+    # TODO make grouping on fly_panel_id conditional on min_input being mocorr?
+    # TODO TODO TODO if this == 'fly_panel_id', need to not make plots in
+    # directories for each recording (usually would symlink to these), but instead
+    # just want to directly save plots in the pixel corr folder (since we currently
+    # don't have any other place to put plots for each fly, independent of which
+    # recording they came from)
+    #corr_group_var = 'recording_id'
+    corr_group_var = 'fly_panel_id'
+
+    # TODO memory profile w/ just first group, to be more clear on usage of just the
+    # grouping itself and (more importantly) all of the steps in the loop
+    # TODO tqdm/time loop
+    # TODO TODO profile
+    corr_list = []
+    _checked = False
+
+    for _, garr in response_volumes.groupby(corr_group_var):
+
+        panel = unique_coord_value(garr.panel)
+        if panel == 'glomeruli_diagnostics':
+            continue
+
+        if corr_group_var == 'recording_id' and unique_coord_value(garr.is_pair):
+            # TODO may still want to make a (separate) corr plot from some of the
+            # pair expt data in this case, at least for comparison
+            continue
+
+        date_str = format_date(unique_coord_value(garr.date))
+        fly_num = unique_coord_value(garr.fly_num)
+        fly_str = f'{date_str}/{fly_num}'
+
+        if corr_group_var == 'recording_id':
+            # TODO make a (hong2p) fn for getting all metadata for an experiment
+            # from either xarray / pandas input? maybe config recording / fly keys
+            # at start via some setters? (and/or for going directly to a str like
+            # this?)
+            thorimage_id = unique_coord_value(garr.thorimage_id)
+
+        # TODO try to avoid need for dropping/re-adding metadata?
+        # (more idiomatic xarray calls?)
+
+        # TODO maybe only drop thorimage_id if corr_group_var != 'recording_id'
+        # (cause otherwise should be unique and should be able to handle)
+        # TODO TODO factor all this variable re-shuffling stuff to hong2p.xarray?
+        # (maybe via a fn that records+drops -> calls callable passed in (corr in
+        # one case) -> adds metadata back)
+        garr = garr.drop_vars(['thorimage_id', 'recording_id'])
+
+        # TODO TODO possible to generalize to work w/ non-unique stuff too (like
+        # thorimage_id, when corr_group_var == 'fly_panel_id')? i feel like it might
+        # not be...
+        # otherwise, any way to preserve this metadata for later stuff?
+        coords_to_drop = ['panel', 'fly_panel_id', 'date', 'fly_num']
+        meta = {k: unique_coord_value(garr, k) for k in coords_to_drop}
+        garr = garr.drop_vars(coords_to_drop)
+
+        # TODO TODO factor correlation handling to hong2p.xarray
+
+        if corr_group_var == 'fly_panel_id':
+            garr = garr.reset_index('odor').set_index(
+                odor=['is_pair', 'odor1', 'odor2', 'repeat']
+            )
+
+            garr = garr[(garr.is_pair == False) | (~ ( (garr.is_pair == True) & (
+                ((garr.odor1 == 'solvent') & (garr.odor2 == 'solvent')) |
+                ((garr.odor1 != 'solvent') & (garr.odor2 != 'solvent'))
+            )))]
+
+            # TODO clean up...
+            garr2 = garr.reset_index('odor').rename(odor='odor_b',
+                is_pair='is_pair_b', odor1='odor1_b', odor2='odor2_b',
+                repeat='repeat_b').set_index(
+                odor_b=['is_pair_b', 'odor1_b', 'odor2_b', 'repeat_b']
+            )
+
+        # TODO TODO TODO test this branch or delete it
+        else:
+            #corr = xr.corr(garr, garr.rename(odor='odor_b'), dim=spatial_dims)
+            #
+            # Need to do this ugly thing rather than commented line above because
+            # one we have two different dimensions (odor and odor_b) that have
+            # MultiIndices with levels that have the same name (e.g. odor and odor_b
+            # both have an 'odor1' level), it seems impossible to get out of that
+            # situation with standard xarray calls, and it makes some other calls
+            # (including xr.concat) impossible.
+            # TODO make a PR to fix this xarray behavior (probably could just make
+            # rename also work with multiindex levels, as if they were any regular
+            # coordinate name)? currently get:
+            # "ValueError: cannot rename 'odor1' because it is not a variable or
+            # dimension in this dataset" when trying to rename MultiIndex levels
+            #
+            # TODO TODO TODO at least factor into a function for renaming multiindex
+            # levels
+            garr2 = garr.reset_index('odor').rename(
+                odor='odor_b', odor1='odor1_b', odor2='odor2_b', repeat='repeat_b'
+                ).set_index(odor_b=['odor1_b', 'odor2_b', 'repeat_b'])
+
+        corr = xr.corr(garr, garr2, dim=spatial_dims)
+
+        # TODO also factor this into the fn to remove metadata -> call fn -> reapply
+        # it (mentioned in related code above)
+        corr = corr.assign_coords(meta)
+
+        if checks and not _checked:
+            stacked = garr.stack(pixel=spatial_dims)
+
+            # TODO TODO TODO update to rename odor_b levels as in garr2 above +
+            # uncomment
+            #corr2 = xr.corr(stacked, stacked.rename(odor='odor_b'), dim='pixel')
+            # TODO better way to check coordinates equal?
+            #assert corr.coords.to_dataset().identical(corr2.coords.to_dataset())
+
+            # Both of this are True with or without .values after each argument.
+            # In both cases, neither seems to have np.array_equals True for the same
+            # inputs, so it seems there are some pervasive numerical differences
+            # (which shouldn't matter, and I'm not sure which is the more correct of
+            # the inputs).
+            #assert np.allclose(corr2, corr)
+            assert np.allclose(corr, stacked.to_pandas().T.corr())
+            _checked = True
+
+        # TODO TODO TODO why do only a few still have ['thorimage_id',
+        # 'recording_id'] coords? are they flies w/ both kiwi and control panels or
+        # something?  or flies w/o both pair and ~pair (exist?)?
+        # TODO TODO TODO still an issue / even need dropping (maybe conditional on
+        # one value for corr_group_var?)?
+        if 'thorimage_id' in corr.coords:
+            corr = corr.drop_vars(['thorimage_id', 'recording_id'])
+
+        corr_list.append(corr)
+
+    # TODO TODO TODO where is this one w/ duplicate coming from?
+    # (index 5)
+    # TODO keep metadata so i can better identify stuff like this. at least in
+    # attrs...
+
+    # (odor_b was duplicated IFF odor was (just index 5))
+    # did i really somehow include two control1 expts for one fly? improper redo
+    # handling?
+    # TODO TODO TODO TODO delete hack
+    orig_corr_list = corr_list
+    corr_list = [x for x in corr_list if not
+        (x.odor.to_pandas().index.duplicated().any())
+    ]
+    # TODO TODO TODO support corr averaging in corr_group_var == 'recording_id' case
+    assert corr_group_var != 'recording_id', 'corr averaging broken in this case'
+    # Before this, we also have shapes of (42, 42) and (27, 27),  from experiments
+    # w/o pfo in kiwi/control panel and w/o pair experiment, respectively.
+    # NOTE: have NOT checked whether any other shapes were tossed in filtering above
+    corr_list = [x for x in corr_list if x.shape == (45, 45)]
+    #
+
+    # TODO try to swap dims around / concat in a way that we dont get a bunch of
+    # nans. possible?
+    corr_avg_dim = 'fly_panel'
+    corrs = xr.concat(corr_list, corr_avg_dim)
+
+    # TODO TODO TODO change to also work w/ recording_id
+    # TODO maybe just use squeeze=True to not need squeeze inside? or will groupby
+    # squeeze not drop like i want?
+    for fly_panel_id, garr in corrs.reset_index(['odor', 'odor_b']).groupby(
+        'fly_panel_id', squeeze=False, restore_coord_dims=True):
+
+        date_str = format_date(unique_coord_value(garr.date))
+        fly_num = unique_coord_value(garr.fly_num)
+        fly_str = f'{date_str}/{fly_num}'
+        panel = unique_coord_value(garr.panel)
+
+        # TODO might need to deal w/ NaNs some other way than just dropna (to avoid
+        # dropping specific trials w/ baseline NaN issues. or fix the baseline cause
+        # of the issue.)
+        corr = garr.squeeze(drop=True
+            ).dropna('odor', how='all').dropna('odor_b', how='all')
+
+        fig = natmix.plot_corr(corr, panel=panel, title=fly_str)
+
+        fly_plot_prefix = fly_str.replace('/', '_')
+
+        panel_dir = pixel_corr_plots_root / panel
+        makedirs(panel_dir)
+
+        # TODO tight_layout / whatever appropriate to not have cbar label cut off
+        # and not have so much space on the left
+
+        if corr_group_var == 'recording_id':
+            experiment_id = f'{fly_str}/{thorimage_id}'
+            plot_dir = get_plot_dir(experiment_id)
+
+            # TODO test that on a fresh run (or if another run finishes first and
+            # deletes stuff...) that this still works / fix if not (always makedirs
+            # in savefig?)
+            # NOTE: important that we also have the '_ds{ds}' suffix here, otherwise
+            # if we do two runs w/ diff values for ds, the links created by the
+            # first run will end up pointing to the plots written by the second run
+            # (b/c overwritten)
+            fig_path = savefig(fig, plot_dir, pixel_corr_basename)
+
+            # NOTE: would need to use prefix specific to recording if I add plots
+            # for just the pair experiments in this case
+            link_path = panel_dir / f'{fly_plot_prefix}.{plot_fmt}'
+            symlink(fig_path, link_path, relative=True)
+        else:
+            fig_path = savefig(fig, panel_dir, fly_plot_prefix)
+
+
+    for panel, garr in corrs.reset_index(['odor', 'odor_b']).groupby('panel',
+        squeeze=False, restore_coord_dims=True):
+
+        # "dropping along multiple dimensions simultaneously is not yet supported"
+        garr = garr.dropna('odor', how='all').dropna('odor_b', how='all')
+
+        # TODO TODO is this re-ordering stuff?
+        # TODO TODO TODO either way, re-order everything to a consistent order, both
+        # here and in single-fly stuff above
+        panel_mean = garr.mean(corr_avg_dim)
+
+        # TODO TODO TODO include which flies were included in average in a
+        # separate output
+        # TODO TODO TODO include N of flies in title
+        fig = natmix.plot_corr(panel_mean, panel=panel, title=panel)
+
+        savefig(fig, pixel_corr_plots_root, f'{panel}_mean')
 
 
 # TODO maybe refactor so this happens in analyze_cache, if at all (splitting fly-by-fly
@@ -3035,7 +3646,6 @@ def analyze_onepair(trial_df):
 # TODO write a csv in addition (and maybe use as main cache too, but would need to
 # handle indices)? parquet?
 roi_response_stats_cache_fname = 'roi_mean_response_df.p'
-response_volume_cache_fname = 'trial_response_volumes.p'
 # TODO better name for this fn (+ probably call at end of main, not just behind -c flag)
 def analyze_cache():
     fly_keys = ['date', 'fly_num']
@@ -3319,235 +3929,21 @@ def main():
 
 
     # TODO refactor to skip things here consistent w/ how i would in process_experiment?
-    if convert_raw_to_tiff:
-        for (date, fly_num), (thorimage_dir, _) in keys_and_paired_dirs:
-            # TODO unify w/ half-implemented hong2p flip_lr metadata key?
-            try:
-                # np.nan / 'left' / 'right'
-                side_imaged = gdf.at[(date, fly_num), 'side']
-            except KeyError:
-                side_imaged = None
-
-            if pd.isnull(side_imaged):
-                # TODO TODO maybe err / warn w/ higher severity (red?), especially if i
-                # require downstream analysis to use the flipped version
-                # TODO don't warn if there are no non-glomeruli diagnostic recordings
-                # for a given fly? might want to do this even if i do make skip handling
-                # consistent w/ process_experiment.
-                warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
-                    ' in Google Sheet'
-                )
-                flip_lr = None
-            else:
-                assert side_imaged in ('left', 'right')
-                flip_lr = (side_imaged != standard_side_orientation)
-
-            analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
-
-            # TODO maybe delete any existing raw.tif when we save a flipped.tif
-            # (so that we can still see the data for stuff where we haven't labelled a
-            # side yet, but to otherwise save space / avoid confusion)?
-
-            # Creates a TIFF <analysis_dir>/flipped.tif, if it doesn't already exist.
-            util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
-                flip_lr=flip_lr, check_round_trip=checks, verbose=True
-            )
-
+    if do_convert_raw_to_tiff:
+        convert_raw_to_tiff(keys_and_paired_dirs)
         print()
 
-    if register_all_fly_recordings_together:
+    if do_register_all_fly_recordings_together:
+        # TODO rename to something like just "register_recordings" and implement
+        # switching between no registration / whole registration / movie-by-movie
+        # registration within?
+        register_all_fly_recordings_together(keys_and_paired_dirs)
+        print()
 
-        # TODO try to skip the same stuff we would skip in the process_experiment loop
-        # below (and at that point, maybe also treat converstion to tiffs above
-        # consistently?)
-
-        date_and_fly2thorimage_dirs = defaultdict(list)
-        for (date, fly_num), (thorimage_dir, _) in keys_and_paired_dirs:
-            # Since keys_and_paired_dirs should have everything in chronological order,
-            # these ThorImage directories should also be in the order they were acquired
-            # in, which might make registering them all into one big movie more
-            # easily interpretable. Might do this for some intermediates.
-            date_and_fly2thorimage_dirs[(date, fly_num)].append(thorimage_dir)
-
-        # TODO option to suppress suite2p output (most of it is logged to
-        # ./suite2p/run.log anyway), so i can tqdm this loop (nevermind, i can't seem to
-        # find run.log files when i invoke via this code, rather than via the gui...
-        # bug?)
-        for (date, fly_num), all_thorimage_dirs in date_and_fly2thorimage_dirs.items():
-
-            date_str = format_date(date)
-            fly_str = f'{date_str}/{fly_num}'
-            fly_analysis_dir = get_fly_analysis_dir(date, fly_num)
-
-            # As long as we write this TIFF (and write it after the per-recording TIFFs
-            # split out of this one), we can assume we also have all the per-recording
-            # stuff if we have this.
-            # TODO TODO maybe also make a raw concat version of this for easier
-            # comparison?
-            fly_concat_tiff_link = fly_analysis_dir / 'mocorr_concat.tif'
-
-            # TODO TODO TODO also check (registration only) parameters are the same
-            # before deciding if we already have suite2p done?
-
-            # TODO TODO TODO consider whether i even need to add this back...
-            # want to probably also have this as a symlink pointing to the corresponding
-            # concat tiff in a suite2p run subdirectory
-            #
-            # TODO maybe add this to ignore_existing? but i might rather not overwrite
-            # this stuff... can just manually rename existing stuff to something else to
-            # be able to compare runs w/ diff parameters
-            # TODO CLI arg specifically for renaming existing stuff rather than
-            # overwriting / loading (both suite2p dir and all TIFFs)?
-            '''
-            if fly_concat_tiff_link.exists():
-                print(f'{fly_str} already has motion corrected TIFFs\n')
-                continue
-            '''
-
-            thorimage_dirs = []
-            tiffs = []
-            for thorimage_dir in all_thorimage_dirs:
-                panel = get_panel(thorimage_dir)
-                # TODO may also wanna try excluding 'glomeruli_diagnostic' panel
-                # recordings (other options are currently 'kiwi' or 'control')
-                if panel is None:
-                    continue
-
-                # TODO may also need to filter on shape (hasn't been an issue so far)
-
-                analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
-                tiff_fname = analysis_dir / 'flipped.tif'
-                if not tiff_fname.exists():
-                    warn(f'TIFF {tiff_fname} did not exist! will not include in across '
-                        'recording registration (if there are any other valid TIFFs for'
-                        ' this fly)!'
-                    )
-                    continue
-
-                thorimage_dirs.append(thorimage_dir)
-                tiffs.append(tiff_fname)
-
-            if len(thorimage_dirs) == 0:
-                warn(f'no panels we want to register for fly {fly_str}\n')
-                continue
-
-            # TODO write text/yaml not in suite2p directory explaining what all data
-            # went into it
-
-            # TODO only print if we are actually running suite2p
-            # maybe make bold too?
-            cprint(f'registering recordings for fly {fly_str} to each other...',
-                'blue', flush=True
-            )
-
-            # TODO delete
-            print('Input TIFFs:')
-            pprint([str(x) for x in tiffs])
-            #
-
-            # TODO TODO TODO probably compare to registering stuff individually, because
-            # my initial results have not been great (using block size of '48, 48')
-
-            suite2p_dir = register_recordings_together(thorimage_dirs, tiffs,
-                fly_analysis_dir
-            )
-            if suite2p_dir is None:
-                continue
-
-            fly_concat_tiff = suite2p_dir / 'mocorr_concat.tif'
-
-            # TODO TODO TODO delete
-            assert fly_concat_tiff_link.exists()
-            # TODO TODO TODO probably update these links to point to use a path
-            # including the <date>/<fly_num>/'suite2p' symlink, so the link to
-            # the concanated motion corrected tiff doesn't need to be updated to
-            # select between runs of diff parameters?
-            if not fly_concat_tiff_link.is_symlink():
-                fly_concat_tiff_link.rename(fly_concat_tiff)
-                fly_concat_tiff_link.symlink_to(fly_concat_tiff)
-            else:
-                import ipdb; ipdb.set_trace()
-
-            continue
-            #
-
-            # TODO TODO convert to test + factor load_suite2p_binaries into hong2p
-            #if checks:
-            #    # This has an assertion inside that the raw matches the input TIFF
-            #    load_suite2p_binaries(suite2p_dir, thorimage_dirs[0], registered=False)
-
-            # TODO TODO also write ops['refImg'] and some of the more useful
-            # registration quality metrics from ops (there are some in there, yea?)
-
-            # TODO TODO TODO will need to update this to only load and write these if
-            # the current links arent already pointing to stuff under suite2p_dir
-            # (the dir that register_recordings_together either generated or determined
-            # came from a run w/ the current parameters)
-
-            # As long as the shape for each movie is the same (which it should be if we
-            # got this far), it doesn't matter which thorimage_dir we pass, so I'm just
-            # taking the first.
-            # TODO refactor how this is currently printing frame ranges for each input
-            # movie so i can also write a a file, for reference when inspecting TIFF
-            input_tiff2registered = load_suite2p_binaries(suite2p_dir,
-                thorimage_dirs[0], verbose=True
-            )
-
-            for input_tiff, registered in input_tiff2registered.items():
-
-                motion_corrected_tiff = suite2p_dir / f'{input_tiff.parent.name}.tif'
-                motion_corrected_tiff_link = input_tiff.with_name('mocorr.tif')
-
-                # TODO delete
-                print(f'{motion_corrected_tiff=}')
-                print(f'{motion_corrected_tiff_link=}')
-                #
-
-                # TODO TODO TODO probably also use symlinks including fly/'suite2p'
-                # symlink here, to not need to update these separate from updating
-                # 'suite2p' symlink (ideally...)
-
-                # TODO delete
-                if motion_corrected_tiff_link.exists():
-                    if not motion_corrected_tiff_link.is_symlink():
-                        motion_corrected_tiff_link.rename(motion_corrected_tiff)
-                        motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
-                    else:
-                        print('link already existed')
-
-                    continue
-
-                #
-                # TODO come up w/ diff names to distinguish stuff registered across
-                # movies vs not? at least if we can't get across movie stuff to work as
-                # well as latter (cause across movie stuff would be way more useful...)
-                print(f'writing {motion_corrected_tiff}', flush=True)
-                util.write_tiff(motion_corrected_tiff, registered)
-                motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
-
-            # TODO TODO TODO also write concatenated raw tiffs, for comparison to
-            # registered one
-            import ipdb; ipdb.set_trace()
-
-            # Essentially the same one I'm pulling apart in the above function, but we
-            # are just putting it back together to be able to make it a TIFF to inspect
-            # the boundaries.
-            # TODO TODO TODO uncomment
-            '''
-            fly_concat_movie = np.concatenate(
-                [x for x in input_tiff2registered.values()], axis=0
-            )
-            print(f'writing {fly_concat_tiff}', flush=True)
-            util.write_tiff(fly_concat_tiff, fly_concat_movie)
-            '''
-
-            print()
-
-    # TODO delete
-    if register_all_fly_recordings_together:
+        # TODO delete
         print('RETURNING')
         return
-    #
+        #
 
     if not parallel:
         # `list` call is just so `starmap` actually evaluates the fn on its input.
@@ -3611,388 +4007,13 @@ def main():
 
     if not is_acquisition_host and len(response_volumes_list) > 0:
 
-        # TODO factor all this into a function so i can more neatly call it multiple
-        # times w/ diff downsampling factors
-
-        # downsampling factor
-        # 192 / 4 = 48
-        # TODO TODO better name
-        # TODO switch back to 0 / a sequence including this + 0, and change code to try
-        # both?
-        ds = 4
-        pixel_corr_basename = 'pixel_corr'
-        if ds > 0:
-            pixel_corr_basename = f'{pixel_corr_basename}_ds{ds}'
-
-        #spatial_dims = ['z', 'y', 'x']
-        spatial_shapes = [tuple(dict(zip(x.dims, x.shape))[n] for n in spatial_dims)
-            for x in response_volumes_list
-        ]
-        # doesn't handle ties, but that should be fine
-        most_common_shape = Counter(spatial_shapes).most_common(1)[0][0]
-
-        # TODO switch to not throwing out any shapes. just need to test the NaNs are
-        # handled appropriately in any downsteam correlation / plotting code
-        consistent_spatial_shape_response_volumes = []
-        for shape, recording_response_volumes in zip(spatial_shapes,
-            response_volumes_list):
-
-            # TODO delete
-            date = pd.to_datetime(recording_response_volumes.date.item(0)).date()
-            fly_num = recording_response_volumes.fly_num.item(0)
-            thorimage_id = recording_response_volumes.thorimage_id.item(0)
-
-            # TODO TODO TODO TODO change conversion to uint16 handling to set min to at
-            # least 1 so there shouldn't be any divide-by-zero errors, then regenerate
-            # mocorr TIFFs and regenerate response volume pickles
-            # TODO then delete this code. just a hack.
-            n_null = recording_response_volumes.isnull().sum().item(0)
-            if n_null > 0:
-                warn(f'{date}/{fly_num}/{thorimage_id}: {n_null} null (probably from '
-                    'divide-by-zero)'
-                )
-                recording_max_pixel = recording_response_volumes.max().item(0)
-                recording_response_volumes = recording_response_volumes.fillna(
-                    recording_max_pixel
-                )
-            #
-            # TODO TODO TODO maybe in general i should be capping dF/F at some sane
-            # value, like say 10? not like anything higher is plausibly anything other
-            # than noise, no?
-
-            if shape != most_common_shape:
-                # Each recording_response_volumes should only have one value for each of
-                # these.
-                date = pd.to_datetime(recording_response_volumes.date.item(0)).date()
-                fly_num = recording_response_volumes.fly_num.item(0)
-                thorimage_id = recording_response_volumes.thorimage_id.item(0)
-
-                warn(f'not including {date}/{fly_num}/{thorimage_id} in '
-                    f'response_volumes because it had shape of {shape} (!= most common '
-                    f'{most_common_shape})'
-                )
-                continue
-
-            consistent_spatial_shape_response_volumes.append(recording_response_volumes)
-
-        # NOTE: memory usage is just under 4GB loading 85 experiments from 2022-02-04 to
-        # 2022-04-03.
-        response_volumes = xr.concat(consistent_spatial_shape_response_volumes, 'odor')
-
-        assert response_volumes.notnull().sum().item(0) == sum([
-            x.notnull().sum().item(0) for x in consistent_spatial_shape_response_volumes
-        ])
-
-        # NOTE: will need to remove this assertion if i stop throwing out stuff not the
-        # most common shape.
-        #
-        # concatenating along odor axis should give us no NaN, as long as movie shapes
-        # are first restricted to all be the same (as otherwise the odor dimension
-        # should be the only one that varies in length)
-        assert response_volumes.isnull().sum().item(0) == 0
-
-        # TODO TODO maybe rename 'odor' to 'trial' in all xarray things (may need to
-        # recompute), or something else more clear (indicating it's also the fly #,
-        # repeat, etc, that vary)
-
-        # TODO fix in case only one experiment is here:
-        # ValueError: If using all scalar values, you must pass an index
-        response_volumes = util.add_group_id(response_volumes,
-            ['date', 'fly_num', 'thorimage_id'], name='recording_id', dim='odor'
-        )
-
-        # For calculating correlations of, e.g. kiwi + kiwi_ramps (that had been
-        # registered together) in one fly.
-        response_volumes = util.add_group_id(response_volumes,
-            ['date', 'fly_num', 'panel'], name='fly_panel_id', dim='odor'
-        )
-
-        # TODO handle trial_df.p or whatever the same way?
         # Crude way to ensure we don't overwrite if we only run on a subset of the data
-        if len(matching_substrs) == 0:
-            # TODO actually load and use this cache under some circumstances (-c)...
-            # otherwise, delete it
-            write_dataarray(response_volumes, response_volume_cache_fname)
-        else:
-            warn('not saving response_volumes to cache because script was run with '
-                'positional arguments to restrict the data analyzed'
-            )
+        write_cache = len(matching_substrs) == 0
 
-        # TODO TODO TODO also try calculating correlations only for pixels where the max
-        # dF/F (across all trials) is above some threshold (or maybe threshold a pixel
-        # z-score?)
+        analyze_response_volumes(response_volumes_list, write_cache=write_cache)
 
-        if ds > 0:
-            print(f'downsampling response volumes by {ds} in XY...', end='', flush=True)
-            response_volumes = response_volumes.coarsen(y=ds, x=ds).mean()
-            print('done', flush=True)
-
-
-        # TODO nicer way to change index?
-        ser = response_volumes.mean(spatial_dims).reset_index('odor').set_index(odor=[
-            'panel','is_pair','date','fly_num','odor1','odor2','repeat'
-            ]).to_pandas()
-
-        mean = ser.groupby([x for x in ser.index.names if x != 'repeat']).mean()
-        df = mean.to_frame('mean_dff').reset_index()
-
-        # TODO before deleting all _checks code, turn into a test of some kind at least
-        _checks = False
-        g1 = natmix.plot_activation_strength(df, color_flies=True,
-            _checks=_checks
-        )
-        # TODO TODO save these in top level under plot_fmt directory
-        g1.savefig(f'mean_activations_per_fly.{plot_fmt}')
-
-        g2 = natmix.plot_activation_strength(df, _checks=_checks)
-        g2.savefig(f'mean_activations.{plot_fmt}')
-
-        pixel_corr_plots_root = plot_root_dir / pixel_corr_basename
-        makedirs(pixel_corr_plots_root)
-
-        # Similar issue to directories grouping links to different glomeruli diagnostic
-        # data: we don't want to include links to data from old runs.
-        if pixel_corr_plots_root.exists():
-            shutil.rmtree(pixel_corr_plots_root)
-
-        # TODO TODO TODO try both filling in pfo for stuff that doesn't have it w/ NaN,
-        # as well as just not showing pfo on any of the correlation plots
-
-        # TODO TODO TODO how to enforce order for the two experiments?
-        # just order once i condense down to corr matrix?
-
-        # TODO TODO compare corr plots generated w/ both values for this, to check that
-        # there isn't some hidden re-ordering causing correlation pair expt odors that
-        # overlap with other expt to be ordered with the wrong experiment data
-        #
-        # TODO make grouping on fly_panel_id conditional on min_input being mocorr?
-        # TODO TODO TODO if this == 'fly_panel_id', need to not make plots in
-        # directories for each recording (usually would symlink to these), but instead
-        # just want to directly save plots in the pixel corr folder (since we currently
-        # don't have any other place to put plots for each fly, independent of which
-        # recording they came from)
-        #corr_group_var = 'recording_id'
-        corr_group_var = 'fly_panel_id'
-
-        # TODO memory profile w/ just first group, to be more clear on usage of just the
-        # grouping itself and (more importantly) all of the steps in the loop
-        # TODO tqdm/time loop
-        # TODO TODO profile
-        corr_list = []
-        _checked = False
-
-        for _, garr in response_volumes.groupby(corr_group_var):
-
-            panel = unique_coord_value(garr.panel)
-            if panel == 'glomeruli_diagnostics':
-                continue
-
-            if corr_group_var == 'recording_id' and unique_coord_value(garr.is_pair):
-                # TODO may still want to make a (separate) corr plot from some of the
-                # pair expt data in this case, at least for comparison
-                continue
-
-            date_str = format_date(unique_coord_value(garr.date))
-            fly_num = unique_coord_value(garr.fly_num)
-            fly_str = f'{date_str}/{fly_num}'
-
-            if corr_group_var == 'recording_id':
-                # TODO make a (hong2p) fn for getting all metadata for an experiment
-                # from either xarray / pandas input? maybe config recording / fly keys
-                # at start via some setters? (and/or for going directly to a str like
-                # this?)
-                thorimage_id = unique_coord_value(garr.thorimage_id)
-
-            # TODO try to avoid need for dropping/re-adding metadata?
-            # (more idiomatic xarray calls?)
-
-            # TODO maybe only drop thorimage_id if corr_group_var != 'recording_id'
-            # (cause otherwise should be unique and should be able to handle)
-            # TODO TODO factor all this variable re-shuffling stuff to hong2p.xarray?
-            # (maybe via a fn that records+drops -> calls callable passed in (corr in
-            # one case) -> adds metadata back)
-            garr = garr.drop_vars(['thorimage_id', 'recording_id'])
-
-            # TODO TODO possible to generalize to work w/ non-unique stuff too (like
-            # thorimage_id, when corr_group_var == 'fly_panel_id')? i feel like it might
-            # not be...
-            # otherwise, any way to preserve this metadata for later stuff?
-            coords_to_drop = ['panel', 'fly_panel_id', 'date', 'fly_num']
-            meta = {k: unique_coord_value(garr, k) for k in coords_to_drop}
-            garr = garr.drop_vars(coords_to_drop)
-
-            # TODO TODO factor correlation handling to hong2p.xarray
-
-            if corr_group_var == 'fly_panel_id':
-                garr = garr.reset_index('odor').set_index(
-                    odor=['is_pair', 'odor1', 'odor2', 'repeat']
-                )
-
-                garr = garr[(garr.is_pair == False) | (~ ( (garr.is_pair == True) & (
-                    ((garr.odor1 == 'solvent') & (garr.odor2 == 'solvent')) |
-                    ((garr.odor1 != 'solvent') & (garr.odor2 != 'solvent'))
-                )))]
-
-                # TODO clean up...
-                garr2 = garr.reset_index('odor').rename(odor='odor_b',
-                    is_pair='is_pair_b', odor1='odor1_b', odor2='odor2_b',
-                    repeat='repeat_b').set_index(
-                    odor_b=['is_pair_b', 'odor1_b', 'odor2_b', 'repeat_b']
-                )
-
-            # TODO TODO TODO test this branch or delete it
-            else:
-                #corr = xr.corr(garr, garr.rename(odor='odor_b'), dim=spatial_dims)
-                #
-                # Need to do this ugly thing rather than commented line above because
-                # one we have two different dimensions (odor and odor_b) that have
-                # MultiIndices with levels that have the same name (e.g. odor and odor_b
-                # both have an 'odor1' level), it seems impossible to get out of that
-                # situation with standard xarray calls, and it makes some other calls
-                # (including xr.concat) impossible.
-                # TODO make a PR to fix this xarray behavior (probably could just make
-                # rename also work with multiindex levels, as if they were any regular
-                # coordinate name)? currently get:
-                # "ValueError: cannot rename 'odor1' because it is not a variable or
-                # dimension in this dataset" when trying to rename MultiIndex levels
-                #
-                # TODO TODO TODO at least factor into a function for renaming multiindex
-                # levels
-                garr2 = garr.reset_index('odor').rename(
-                    odor='odor_b', odor1='odor1_b', odor2='odor2_b', repeat='repeat_b'
-                    ).set_index(odor_b=['odor1_b', 'odor2_b', 'repeat_b'])
-
-            corr = xr.corr(garr, garr2, dim=spatial_dims)
-
-            # TODO also factor this into the fn to remove metadata -> call fn -> reapply
-            # it (mentioned in related code above)
-            corr = corr.assign_coords(meta)
-
-            if checks and not _checked:
-                stacked = garr.stack(pixel=spatial_dims)
-
-                # TODO TODO TODO update to rename odor_b levels as in garr2 above +
-                # uncomment
-                #corr2 = xr.corr(stacked, stacked.rename(odor='odor_b'), dim='pixel')
-                # TODO better way to check coordinates equal?
-                #assert corr.coords.to_dataset().identical(corr2.coords.to_dataset())
-
-                # Both of this are True with or without .values after each argument.
-                # In both cases, neither seems to have np.array_equals True for the same
-                # inputs, so it seems there are some pervasive numerical differences
-                # (which shouldn't matter, and I'm not sure which is the more correct of
-                # the inputs).
-                #assert np.allclose(corr2, corr)
-                assert np.allclose(corr, stacked.to_pandas().T.corr())
-                _checked = True
-
-            # TODO TODO TODO why do only a few still have ['thorimage_id',
-            # 'recording_id'] coords? are they flies w/ both kiwi and control panels or
-            # something?  or flies w/o both pair and ~pair (exist?)?
-            # TODO TODO TODO still an issue / even need dropping (maybe conditional on
-            # one value for corr_group_var?)?
-            if 'thorimage_id' in corr.coords:
-                corr = corr.drop_vars(['thorimage_id', 'recording_id'])
-
-            corr_list.append(corr)
-
-        # TODO TODO TODO where is this one w/ duplicate coming from?
-        # (index 5)
-        # TODO keep metadata so i can better identify stuff like this. at least in
-        # attrs...
-
-        # (odor_b was duplicated IFF odor was (just index 5))
-        # did i really somehow include two control1 expts for one fly? improper redo
-        # handling?
-        # TODO TODO TODO TODO delete hack
-        orig_corr_list = corr_list
-        corr_list = [x for x in corr_list if not
-            (x.odor.to_pandas().index.duplicated().any())
-        ]
-        # TODO TODO TODO support corr averaging in corr_group_var == 'recording_id' case
-        assert corr_group_var != 'recording_id', 'corr averaging broken in this case'
-        # Before this, we also have shapes of (42, 42) and (27, 27),  from experiments
-        # w/o pfo in kiwi/control panel and w/o pair experiment, respectively.
-        # NOTE: have NOT checked whether any other shapes were tossed in filtering above
-        corr_list = [x for x in corr_list if x.shape == (45, 45)]
-        #
-
-        # TODO try to swap dims around / concat in a way that we dont get a bunch of
-        # nans. possible?
-        # TODO TODO rename to 'fly_panel' or something more accurate
-        corr_avg_dim = 'fly_panel'
-        corrs = xr.concat(corr_list, corr_avg_dim)
-
-        # TODO TODO TODO change to also work w/ recording_id
-        # TODO maybe just use squeeze=True to not need squeeze inside? or will groupby
-        # squeeze not drop like i want?
-        for fly_panel_id, garr in corrs.reset_index(['odor', 'odor_b']).groupby(
-            'fly_panel_id', squeeze=False, restore_coord_dims=True):
-
-            date_str = format_date(unique_coord_value(garr.date))
-            fly_num = unique_coord_value(garr.fly_num)
-            fly_str = f'{date_str}/{fly_num}'
-            panel = unique_coord_value(garr.panel)
-
-            # TODO might need to deal w/ NaNs some other way than just dropna (to avoid
-            # dropping specific trials w/ baseline NaN issues. or fix the baseline cause
-            # of the issue.)
-            corr = garr.squeeze(drop=True
-                ).dropna('odor', how='all').dropna('odor_b', how='all')
-
-            fig = natmix.plot_corr(corr, panel=panel, title=fly_str)
-
-            fly_plot_prefix = fly_str.replace('/', '_')
-
-            panel_dir = pixel_corr_plots_root / panel
-            makedirs(panel_dir)
-
-            # TODO tight_layout / whatever appropriate to not have cbar label cut off
-            # and not have so much space on the left
-
-            if corr_group_var == 'recording_id':
-                experiment_id = f'{fly_str}/{thorimage_id}'
-                plot_dir = get_plot_dir(experiment_id)
-
-                # TODO test that on a fresh run (or if another run finishes first and
-                # deletes stuff...) that this still works / fix if not (always makedirs
-                # in savefig?)
-                # NOTE: important that we also have the '_ds{ds}' suffix here, otherwise
-                # if we do two runs w/ diff values for ds, the links created by the
-                # first run will end up pointing to the plots written by the second run
-                # (b/c overwritten)
-                fig_path = savefig(fig, plot_dir, pixel_corr_basename)
-
-                # NOTE: would need to use prefix specific to recording if I add plots
-                # for just the pair experiments in this case
-                link_path = panel_dir / f'{fly_plot_prefix}.{plot_fmt}'
-                symlink(fig_path, link_path, relative=True)
-            else:
-                fig_path = savefig(fig, panel_dir, fly_plot_prefix)
-
-
-        for panel, garr in corrs.reset_index(['odor', 'odor_b']).groupby('panel',
-            squeeze=False, restore_coord_dims=True):
-
-            # "dropping along multiple dimensions simultaneously is not yet supported"
-            garr = garr.dropna('odor', how='all').dropna('odor_b', how='all')
-
-            # TODO TODO is this re-ordering stuff?
-            # TODO TODO TODO either way, re-order everything to a consistent order, both
-            # here and in single-fly stuff above
-            panel_mean = garr.mean(corr_avg_dim)
-
-            # TODO TODO TODO include which flies were included in average in a
-            # separate output
-            # TODO TODO TODO include N of flies in title
-            fig = natmix.plot_corr(panel_mean, panel=panel, title=panel)
-
-            savefig(fig, pixel_corr_plots_root, f'{panel}_mean')
-
-        plt.show()
-        import ipdb; ipdb.set_trace()
-        #
-
+    # TODO delete after cleaning up below + deciding which of it to keep still
+    sys.exit()
 
     #if len(odors_without_abbrev) > 0:
     #    print('Odors without abbreviations:')
