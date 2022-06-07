@@ -2667,6 +2667,11 @@ def convert_raw_to_tiff(keys_and_paired_dirs) -> None:
         except KeyError:
             side_imaged = None
 
+        # TODO implement some kind of fly specific ignoring by fly-level metadata yaml
+        # file
+        # TODO only warn if fly has at least one real experiment (that is also
+        # has frame<->odor assignment working and everything)
+
         if pd.isnull(side_imaged):
             # TODO TODO maybe err / warn w/ higher severity (red?), especially if i
             # require downstream analysis to use the flipped version
@@ -2809,7 +2814,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             import ipdb; ipdb.set_trace()
         #
 
-        # TODO TODO TODO why did i have a continue here, again?
+        # TODO TODO TODO TODO delete
         continue
         #
 
@@ -2832,8 +2837,9 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # taking the first.
         # TODO refactor how this is currently printing frame ranges for each input
         # movie so i can also write a a file, for reference when inspecting TIFF
-        input_tiff2registered = load_suite2p_binaries(suite2p_dir,
-            thorimage_dirs[0], verbose=True
+        # TODO why are we only using thorimage_dirs[0], again?
+        input_tiff2registered = load_suite2p_binaries(suite2p_dir, thorimage_dirs[0],
+            verbose=True
         )
 
         for input_tiff, registered in input_tiff2registered.items():
@@ -3051,12 +3057,15 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
 
     # TODO before deleting all _checks code, turn into a test of some kind at least
     _checks = False
+    _debug = False
 
-    g1 = natmix.plot_activation_strength(df, color_flies=True, _checks=_checks)
-    savefig(g1, intensities_plot_dir, 'mean_activations_per_fly')
+    g1 = natmix.plot_activation_strength(df, color_flies=True, _checks=_checks,
+        _debug=_debug
+    )
+    savefig(g1, intensities_plot_dir, 'mean_activations_per_fly', bbox_inches=None)
 
-    g2 = natmix.plot_activation_strength(df, _checks=_checks)
-    savefig(g2, intensities_plot_dir, 'mean_activations')
+    g2 = natmix.plot_activation_strength(df, _checks=_checks, _debug=_debug)
+    savefig(g2, intensities_plot_dir, 'mean_activations', bbox_inches=None)
 
 
     pixel_corr_plots_root = plot_root_dir / pixel_corr_basename
@@ -3896,7 +3905,6 @@ def main():
         # All planes same (probably piezo not set up properly at acquisition), in all
         # three recordings.
         '2021-07-21/1',
-
     ]
 
     # NOTE: this start_date should exclude all pair-only experiments and only select
