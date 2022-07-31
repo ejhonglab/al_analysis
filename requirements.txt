@@ -1,19 +1,18 @@
 # See README for steps necessary before installing these dependencies.
 # (to get suite2p set up well, via conda)
 
-# TODO remove if this gets added to hong2p / i move this stuff to olfactometer and add
-# that here
-pyyaml
-
 colorama
 termcolor
 
-git+https://github.com/tom-f-oconnell/drosolf
-
 # You may replace this line with:
-# git+https://github.com/ejhonglab/hong2p
+#git+https://github.com/tom-f-oconnell/drosolf
+-e ../drosolf
+
+#git+https://github.com/ejhonglab/hong2p
 -e ../hong2p
 
-# You may replace this line with:
-# git+https://github.com/tom-f-oconnell/suite2p
-#-e ../suite2p
+#git+https://github.com/tom-f-oconnell/suite2p
+-e ../suite2p
+
+#git+https://github.com/ejhonglab/natmix
+-e ../natmix
