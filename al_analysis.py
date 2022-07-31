@@ -21,6 +21,7 @@ import multiprocessing as mp
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from typing import Optional
+import json
 
 import numpy as np
 import pandas as pd
@@ -70,9 +71,7 @@ analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 min_input = 'mocorr'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
-# TODO TODO TODO TODO switch back to True
 do_register_all_fly_recordings_together = False
-#do_register_all_fly_recordings_together = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -105,8 +104,7 @@ overwrite_suite2p = False
 #analyze_suite2p_outputs = True
 analyze_suite2p_outputs = False
 
-# TODO TODO TODO return to True
-analyze_ijrois = False
+analyze_ijrois = True
 
 # TODO TODO change to using seconds and rounding to nearest[higher/lower
 # multiple?] from there
@@ -151,7 +149,7 @@ links_to_input_dirs = True
 print_full_paths = False
 
 save_figs = True
-# TODO TODO TODO fix png in case it doesn't exist before running w/ -c flag
+# TODO TODO fix png in case it doesn't exist before running w/ -c flag
 plot_fmt = os.environ.get('plot_fmt', 'png')
 plot_root_dir = Path(plot_fmt)
 
@@ -299,6 +297,8 @@ spatial_dims = ['z', 'y', 'x']
 
 checks = True
 
+ignore_existing_options = ('nonroi', 'ijroi', 'suite2p')
+
 # Changed as a globals in main (exposed as command line arguments)
 ignore_existing = False
 # TODO probably make another category or two for data marked as failed (in the breakdown
@@ -394,8 +394,12 @@ def warn(msg):
 
 def get_fly_analysis_dir(date, fly_num) -> Path:
     """Returns path for storing fly-level (across-recording) analysis artifacts
+
+    Creates the directory if it does not exist.
     """
-    return analysis_intermediates_root / util.get_fly_dir(date, fly_num)
+    fly_analysis_dir = analysis_intermediates_root / util.get_fly_dir(date, fly_num)
+    fly_analysis_dir.mkdir(exist_ok=True, parents=True)
+    return fly_analysis_dir
 
 
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
@@ -407,9 +411,14 @@ def get_analysis_dir(date, fly_num, thorimage_dir) -> Path:
     Args:
         thorimage_dir: either a path ending in a ThorImage directory, or just the last
             part of the path to one
+
+    Creates the directory if it does not exist.
     """
+    # TODO switch to pathlib
     thorimage_basedir = split(thorimage_dir)[1]
-    return get_fly_analysis_dir(date, fly_num) / thorimage_basedir
+    analysis_dir = get_fly_analysis_dir(date, fly_num) / thorimage_basedir
+    analysis_dir.mkdir(exist_ok=True, parents=True)
+    return analysis_dir
 
 
 def sort_concs(df):
@@ -482,7 +491,9 @@ def get_plot_dir(experiment_id: str, relative=False) -> Path:
 # warning will get tripped at the default setting, hence `close=True`.
 def savefig(fig_or_facetgrid, fig_dir: Path, desc: str, close=True, **kwargs):
     basename = util.to_filename(desc) + plot_fmt
-    fig_path = fig_dir / basename
+    # TODO update code that is currently passing in str fig_dir and delete Path
+    # conversion
+    fig_path = Path(fig_dir) / basename
     if save_figs:
         fig_or_facetgrid.savefig(fig_path, **kwargs)
 
@@ -505,6 +516,8 @@ def makedirs(d):
     # TODO shortcircuit to returning if we already made it this run, to avoid the checks
     # on subsequent calls? they probably aren't a big deal though...
     os.makedirs(d, exist_ok=True)
+    # TODO only do this if we actually made the directory in the above call?
+    # not sure we really care for empty dirs in any circumstances tho...
     dirs_to_delete_if_empty.append(d)
 
 
@@ -740,6 +753,7 @@ def is_reverse_order(odor_lists: ExperimentOdors):
 
 def odor_strs2single_odor_name(index, name_conc_delim='@'):
     # TODO factor LHS into hong2p.olf.parse_odor_name fn or something
+    # (or, rather, use parse_odor_name if that is now equiv)
     odors = {x.split(name_conc_delim)[0].strip() for x in index}
     odors = {x for x in odors if x != solvent_str}
     assert len(odors) == 1
@@ -1201,8 +1215,11 @@ def suite2p_traces(analysis_dir):
 # TODO change to just take thorimage_dir after refactoring probably
 #def ij_traces(thorimage_dir, analysis_dir, movie):
 def ij_traces(analysis_dir, movie):
-    # TODO clean this up
-    thorimage_dir = analysis_dir.replace('analysis_intermediates', 'raw_data')
+    # TODO cleanup pathlib version of this code
+    #thorimage_dir = analysis_dir.replace('analysis_intermediates', 'raw_data')
+    thorimage_dir = Path(str(analysis_dir
+        ).replace('analysis_intermediates', 'raw_data')
+    )
     #
     try:
         masks = util.ijroi_masks(analysis_dir, thorimage_dir)
@@ -1257,6 +1274,31 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
         cbar_shrink=0.4
     )
     savefig(fig, roi_plot_dir, 'all_rois_by_z')
+
+    # TODO TODO TODO fix / cleanup (just to skip diags, i think)
+    # (also to detect which panel (via a fn in natmix) + get that to work w/ 'control'
+    # panel as well)
+    #'''
+    try:
+        # TODO TODO factor this convertion into a fn (probably in my hong2p.xarray)
+        # (+ include the metadata (panel, fly, etc) / is_pair handling in there)
+        corr_df = trial_df.T.corr()
+        corr_df.columns.names = ['odor1_b', 'odor2_b', 'repeat_b']
+        corr = xr.DataArray(corr_df, dims=['odor', 'odor_b'])
+
+        # TODO TODO TODO modify plot_corr to also accept dataframe input
+        # TODO TODO TODO TODO fix kiwi/title hardcode
+        #fig = natmix.plot_corr(corr, panel='kiwi', title='Using ROI responses')
+        fig = natmix.plot_corr(corr, title='Using ROI responses')
+        savefig(fig, roi_plot_dir, 'roi_corr')
+
+    # TODO TODO TODO at least change to non-generic exception...
+    # pretty sure it's catching BdbQuit
+    except Exception as err:
+        cprint(traceback.format_exc(), 'red', file=sys.stderr)
+        import ipdb; ipdb.set_trace()
+        #pass
+    #'''
 
     if not is_pair:
         return
@@ -1673,7 +1715,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         return savefig(fig, plot_dir, desc, **kwargs)
 
     analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
-    makedirs(analysis_dir)
+    # TODO we used to let makedirs make analysis_dir if it didn't exist, but now
+    # get_analysis_dir will do that. if we still want to delete it on cleanup if it's
+    # empty, would special handling.
     makedirs(plot_dir)
 
     if links_to_input_dirs:
@@ -1839,6 +1883,21 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         with open(bounding_frame_yaml_cache, 'r') as f:
             bounding_frames = yaml.safe_load(f)
 
+    # For trying to load in ImageJ plugin (assuming stdlib json module works there)
+    json_dicts = []
+    for trial_frames, trial_odors in zip(bounding_frames, odor_order_with_repeats):
+        start_frame, first_odor_frame, end_frame = trial_frames
+        json_dicts.append({
+            'start_frame': start_frame,
+            'first_odor_frame': first_odor_frame,
+            'end_frame': end_frame,
+            # TODO use abbrevs / at least include another field with them
+            'odors': trial_odors,
+        })
+
+    json_fname = analysis_dir / 'trial_frames_and_odors.json'
+    json_fname.write_text(json.dumps(json_dicts))
+
     # (loading the HDF5 should be the main time cost in the above fn)
     load_hdf5_s = time.time() - before
 
@@ -1868,6 +1927,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             axis='columns'
         )
 
+    def should_ignore_existing(name):
+        if type(ignore_existing) is bool:
+            return ignore_existing
+        else:
+            assert name in ignore_existing_options
+            return ignore_existing == name
+
     if analyze_suite2p_outputs:
         if not any([b in thorimage_dir for b in bad_suite2p_analysis_dirs]):
             s2p_trial_df_cache_fname = analysis_dir / 'suite2p_trial_df_cache.p'
@@ -1880,7 +1946,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             if not exists(s2p_trial_df_cache_fname):
                 s2p_analysis_current = False
 
-            if not ignore_existing and s2p_analysis_current:
+            ignore_existing_suite2p = should_ignore_existing('suite2p')
+
+            if not ignore_existing_suite2p and s2p_analysis_current:
                 print_if_not_skipped('suite2p outputs unchanged since last analysis')
                 s2p_trial_df = pd.read_pickle(s2p_trial_df_cache_fname)
             else:
@@ -1889,17 +1957,21 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 )
                 s2p_trial_df = add_metadata(s2p_trial_df)
                 s2p_trial_df.to_pickle(s2p_trial_df_cache_fname)
+                # TODO why am i calling print_inputs_once(yaml_path) in ijroi stuff
+                # below but not here? what if i just wanna analyze the suite2p stuff?
 
             s2p_trial_dfs.append(s2p_trial_df)
         else:
             full_bad_suite2p_analysis_dirs.append(analysis_dir)
             print_if_not_skipped('not making suite2p plots because outputs marked bad')
 
+    ignore_existing_nonroi = should_ignore_existing('nonroi')
+
     # Assuming that if analysis_dir has *any* plots directly inside of it, it has all of
     # what we want (including any outputs that would go in analysis_dir).
     do_nonroi_analysis = (
         # TODO replace w/ pathlib.Path glob
-        ignore_existing or len(glob.glob(str(plot_dir / f'*.{plot_fmt}'))) == 0
+        ignore_existing_nonroi or len(glob.glob(str(plot_dir / f'*.{plot_fmt}'))) == 0
     )
 
     do_ij_analysis = False
@@ -1908,15 +1980,25 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         if util.has_ijrois(analysis_dir):
             dirs_with_ijrois.append(analysis_dir)
 
+            # TODO udpate to pathlib
             ij_trial_df_cache_fname = join(analysis_dir, 'ij_trial_df_cache.p')
 
+            # TODO TODO i'm not sure if this was the original issue described below, but
+            # i think i want to make sure that all ijroi outputs are successfully
+            # generated before i need to `touch` the file again to get the ijroi
+            # analysis to run for a recording. or at least make it so ijroi analysis
+            # always runs from ij trace cache (i have one, right? or only stats?), and
+            # make sure those are updated whenever RoiSet.zip changes.
+            #
             # TODO TODO TODO fix (or maybe just return appropriate inf value from
             # ijroi_mtime / other util mtime fn used by the RHS fn?)
-            # (what was wrong with this?)
+            # (what was wrong with this? probably just that I'm using a try/except in
+            # a hacky/unclear way...)
             try:
                 ij_analysis_current = (
                     util.ijroi_mtime(analysis_dir) < ij_last_analysis_time(plot_dir)
                 )
+
             # (comparing None to float)
             except TypeError:
                 ij_analysis_current = False
@@ -1926,7 +2008,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             if not exists(ij_trial_df_cache_fname):
                 ij_analysis_current = False
 
-            if not ignore_existing:
+            ignore_existing_ijroi = should_ignore_existing('ijroi')
+
+            if not ignore_existing_ijroi:
                 if ij_analysis_current:
                     print_if_not_skipped(
                         'ImageJ ROIs unchanged since last analysis. reading cache.'
@@ -1936,16 +2020,17 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 else:
                     print_inputs_once(yaml_path)
                     print('ImageJ ROIs were modified. re-analyzing.')
+            else:
+                print_inputs_once(yaml_path)
+                print('ignoring existing ImageJ ROI analysis. re-analyzing.')
 
             do_ij_analysis = ignore_existing or not ij_analysis_current
         else:
-            # TODO also print for other stuff we wanna analyze that doesn't have ImageJ
-            # ROIs
-            if is_pair:
-                print_if_not_skipped('no ImageJ ROIs')
+            print_if_not_skipped('no ImageJ ROIs')
 
     # TODO TODO TODO probably also put this under control of ignore cache (or provide a
     # means of storing version of this in parallel for flipped.tif / mocorr.tif input)
+    # TODO use pathlib
     response_volume_cache_fname = join(analysis_dir, 'trial_response_volumes.p')
     response_volume_cache_exists = exists(response_volume_cache_fname)
     if not response_volume_cache_exists:
@@ -1985,9 +2070,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     read_movie_s = time.time() - before
 
     if do_ij_analysis:
-        # TODO TODO TODO ensure we don't use ROIs drawn on non-flipped stuff on flipped
-        # stuff (same w/ mocorr ideally), then remove this
-        assert False
+        # TODO TODO TODO TODO ensure we don't use ROIs drawn on non-flipped stuff on
+        # flipped stuff (same w/ mocorr ideally), then remove this
+        #assert False
         #
 
         # TODO make sure none of the stuff w/ suite2p outputs marked bad should also
@@ -2321,9 +2406,16 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         del delta_f_over_f, trial_dff_movies
 
+    # TODO TODO TODO ensure this gets updated when mocorr.tif changes (OR the link
+    # mocorr.tif is changed to point to a new TIFF)
+
     max_trialmean_dff = np.max(odor_mean_dff_list, axis=0)
     if write_processed_tiffs:
+        # TODO switch to pathlib
         max_trialmean_dff_tiff_fname = join(analysis_dir, 'max_trialmean_dff.tif')
+
+        # TODO TODO TODO will this be overwriting? we may need that to update w/ mocorr
+        # updates.
         util.write_tiff(max_trialmean_dff_tiff_fname, max_trialmean_dff,
             strict_dtype=False, dims='ZYX'
         )
@@ -2350,7 +2442,11 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     return True
 
 
+# TODO rename to not be exlusive to registration (may want to check slightly different
+# set of things then tho?)
 def was_suite2p_registration_successful(suite2p_dir: Path) -> bool:
+
+    # TODO check for combined dir too (/only?) ?
 
     def plane_successful(plane_dir):
         reg_bin = plane_dir / 'data.bin'
@@ -2371,90 +2467,31 @@ def was_suite2p_registration_successful(suite2p_dir: Path) -> bool:
 
 
 # TODO TODO refactor / merge into run_suite2p. copied from that fn above.
-def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
-    overwrite=False) -> Optional[Path]:
-    """
-    If successful or suite2p run with same parameters already exists, path to suite2p
-    directory is returned, otherwise None.
+# TODO probably refactor(+rename) to be able to handle either single/multiple movies as
+# input, and make a new function that handles multiple tiffs specifically (to make split
+# binaries into multiple TIFFs as necessary) the multiple-input-movie case is currently
+# mostly handled surrounding the call to the function in
+# register_all_fly_recordings_together
+def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
+    overwrite: bool = False) -> bool: #-> Optional[Path]:
     """
 
+    Args:
+        overwrite: whether to overwrite any existant suite2p runs that match the
+            currently requested input + parameters. May be useful if suite2p code gets
+            updated and behavior changes without parameters or input changing.
+
+    Returns whether registration was successful
+    """
     from suite2p import run_s2p
 
-    # TODO maybe refactor suite2p to expose this? currently seems to just be defined in
-    # a variable inside a fn (regkeys in  gui/rungui.py:create_buttons)
-    registration_keys = [
-        'do_registration',
-        #rigid
-        'nimg_init',
-        'smooth_sigma',
-        'smooth_sigma_time',
-        'maxregshift',
-        'th_badframes',
-        'two_step_registration',
-        #nonrigid
-        'block_size',
-        'snr_thresh',
-        'maxregshiftNR',
-    ]
+    # TODO TODO TODO refactor so this whole logic (of having multiple runs in parallel
+    # and updating a symlink to the one with the params we want) can be used inside
+    # recording directories too (not just fly directories), where in those cases the
+    # input should be only one recordings data. how to be clear as to whether to use the
+    # across run stuff vs single run stuff? just in the gsheet i suppose is fine.
 
     ops = load_default_ops()
-
-    # TODO TODO and also symlink suitep -> latest suite2p directory
-    # TODO TODO TODO modify so ops are loaded first and dirname includes all key
-    # registration parameters (like
-    # bs{bs_x}x{bs_y}_ss{smooth_sigma})_st{smooth_sigma_time}... )
-    # prob need to put in a directory w/ this name, and then have 'suite2p' under there.
-    # or can suite2p be configured to save in arbitrarily named dir?
-    #
-    # Potentially relevant registration parameters:
-    #
-    # Rigid:
-    # - nimg_init
-    # - smooth_sigma
-    # - smooth_sigma_time
-    # - maxregshift
-    # - th_badframes
-    # - (in theory, but not sure i'll ever use) two_step_registration
-    #
-    # Nonrigid:
-    # - block_size
-    # - snr_thresh
-    # - maxregshiftNR
-
-    # TODO if i manage to fix suite2p ops['save_folder'] (so all stuff gets written
-    # there rather than everything but the registered binaries, which go to
-    # .../'suite2p'/... regardless), could just use that rather than having to make my
-    # own directory hierarchy (naming them 'suite2p<n>')
-    suite2p_runs_dir = fly_analysis_dir / 'suite2p_runs'
-
-    # TODO TODO TODO delete (after moving out code that makes link so those still get
-    # created for runs on new data PLUS updated as appropriate, whether for new runs w/
-    # diff params or old runs w/ matching params)
-
-    # TODO TODO TODO instead of hardcoding '0', enumerate current folders and add one to
-    # max num
-    import ipdb; ipdb.set_trace()
-    suite2p_dir = suite2p_runs_dir / '0' / 'suite2p'
-
-    suite2p_dir_link = s2p.get_suite2p_dir(fly_analysis_dir)
-
-    if suite2p_dir.exists():
-        if not was_suite2p_registration_successful(suite2p_dir):
-            overwrite = True
-
-        if overwrite:
-            # TODO replace w/ pathlib call
-            shutil.rmtree(suite2p_dir)
-            suite2p_dir.mkdir()
-        else:
-            print(f'suite2p dir {suite2p_dir} already existed. returning.\n')
-            return suite2p_dir
-
-    # TODO may wanna refactor this depending on how i decide on dir to use
-    else:
-        # TODO do i need exist_ok for the parents to, or will it only fail if the final
-        # directory already exists?
-        suite2p_dir.parent.mkdir(parents=True)
 
     # TODO TODO assert we get the same value for all of these w/ stuff we are trying to
     # register together? (for now just assuming first applies to the rest)
@@ -2464,22 +2501,139 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
     for k, v in data_specific_ops.items():
         assert k in ops
         ops[k] = v
-    # TODO try to cleanup suite2p dir (esp if we created it) if we ctrl-c before it
-    # finishes
-
-    batch_size = sum(thor.get_thorimage_n_frames(d) for d in thorimage_dirs)
-    print(f'Setting {batch_size=} to try to register in one batch')
-    ops['batch_size'] = batch_size
+    # TODO TODO TODO try to cleanup suite2p dir (esp if we created it) if we ctrl-c
+    # before it finishes (as part of this, delete links if they would be broken by end
+    # of cleanup)
 
     # Path objects don't work in suite2p for this variable.
     ops['tiff_list'] = [str(x) for x in tiffs]
 
-    # TODO TODO set batch size to include all the frames (or the sum of them) (+ check
-    # whether it should be # of XY frames of # of volumes), and only back it off if i
-    # start running out of memory. should be a bit faster.
+    # TODO if i manage to fix suite2p ops['save_folder'] (so all stuff gets written
+    # there rather than everything but the registered binaries, which go to
+    # .../'suite2p'/... regardless), could just use that rather than having to make my
+    # own directory hierarchy (naming them 'suite2p<n>')
+    suite2p_runs_dir = fly_analysis_dir / 'suite2p_runs'
+    # TODO include under something like my makedirs empty-dir deletion handling
+    # (assuming a crash causes no children to be successfully created)
+    suite2p_runs_dir.mkdir(exist_ok=True)
+
+    # Should generally be numbered directories, each of which should contain a single
+    # subdirectory named 'suite2p', created by suite2p.
+    suite2p_run_dirs = [d for d in suite2p_runs_dir.iterdir() if d.is_dir()]
+
+    suite2p_dir = None
+    max_seen_s2p_run_num = -1
+    for d in suite2p_run_dirs:
+
+        # This won't fail if you decide you want to rename some of the run directories.
+        # It does have the downside where if we only have some directory <n>, it will
+        # lead to directory <n+1> being made, whether or not we have directories in
+        # [0, n-1]
+        try:
+            curr_s2p_run_num = int(d.name)
+            max_seen_s2p_run_num = max(max_seen_s2p_run_num, curr_s2p_run_num)
+        except ValueError:
+            pass
+
+        curr_suite2p_dir = d / 'suite2p'
+
+        # TODO should i load ops from 'plane0' dir? 'combined'? does it matter? how do
+        # the contents of their 'ops.npy' files differ?
+        curr_ops = s2p.load_s2p_ops(curr_suite2p_dir / 'plane0')
+
+        # For the formatting+printing of differences in parameters/inputs.
+        # label1 and 2 correspond to curr_ops and ops, respectively.
+        diff_kwargs = dict(
+            # TODO change 2nd arg to shorten_path to 5 if we are working in a recording
+            # directory rather than a fly directory (or change to start from a
+            # particular part, like the date, rather than counting parts from the end)
+            label1=f'{shorten_path(d, 4)}:', label2='new:',
+            header='\nsuite2p inputs differed:'
+        )
+        if not s2p.inputs_equal(curr_ops, ops, **diff_kwargs):
+            continue
+
+        # TODO again, make shorten_path 2nd arg depend on whether fly/recording level
+        print('Past suite2p run matched requested input & parameters:',
+            shorten_path(curr_suite2p_dir, 5)
+        )
+
+        if not was_suite2p_registration_successful(curr_suite2p_dir):
+            warn('This suite2p run had failed. Deleting.')
+            shutil.rmtree(curr_suite2p_dir)
+            continue
+
+        suite2p_dir = curr_suite2p_dir
+        break
+
+    # TODO rename fly_analysis_dir if that's all it takes for this fn to basically
+    # support multi-tiff and single-tiff input cases
+    suite2p_dir_link = s2p.get_suite2p_dir(fly_analysis_dir)
+    suite2p_dir_link.unlink(missing_ok=True)
+
+    def make_suite2p_dir_symlink(suite2p_dir: Path) -> None:
+        # TODO again, mind # of path parts we want, and maybe reimplement to just count
+        # from date part to end
+        print(f'Linking {shorten_path(suite2p_dir_link)} -> '
+            f'{shorten_path(suite2p_dir, 5)}\n'
+        )
+        # TODO TODO TODO TODO delete try/except
+        try:
+            # This would work if suite2p_dir did not exist yet, but I'm still postponing
+            # till after run_s2p call, when applicable, to not make a link that will be
+            # broken.
+            suite2p_dir_link.symlink_to(suite2p_dir)
+        except Exception as e:
+            print(e)
+            import ipdb; ipdb.set_trace()
+
+    if suite2p_dir is None:
+        suite2p_run_num = max_seen_s2p_run_num + 1
+        suite2p_run_dir = suite2p_runs_dir / str(suite2p_run_num)
+        suite2p_dir =  suite2p_run_dir / 'suite2p'
+        print('Found no matching suite2p run!\nMaking new suite2p directory under:')
+        print(suite2p_run_dir)
+
+        # TODO do i need exist_ok for the parents too, or will it only fail if the final
+        # directory already exists? (test w/ and w/o .../sutie2p_runs existing)
+
+        # This is to create directories like:
+        # analysis_intermediates/2022-03-10/1/suite2p_runs/0
+        # which are the parent of the 'suite2p' directory created within (by run_s2p)
+        suite2p_dir.parent.mkdir(parents=True)
+    else:
+        if overwrite:
+            assert False, 'need to define suite2p_run_dir here'
+            # TODO TODO TODO need to still have suite2p_run_dir defined in this case, as
+            # it is used in db argument to run_s2p (would be more urgent if i was using
+            # this overwrite path...)
+            print('Deleting past suite2p run because overwrite=True')
+            shutil.rmtree(suite2p_dir)
+            # TODO do we even need to do this, or will suite2p run_s2p make this anyway?
+            # don't make unless we need to
+            # (delete if code works correctly with this commented)
+            #suite2p_dir.mkdir()
+        else:
+            make_suite2p_dir_symlink(suite2p_dir)
+            #return suite2p_dir
+            return True
+
+    print('Input TIFFs:')
+    pprint([str(shorten_path(x, 4)) for x in tiffs])
+
+    # May need to implement some kind of fallback to smaller batch sizes, if I end up
+    # experiencing OOM issues with large batches.
+    batch_size = sum(thor.get_thorimage_n_frames(d) for d in thorimage_dirs)
+    # TODO change 'suite2p' back to 'registration', if batch_size only affects
+    # registration
+    print(f'Setting {batch_size=} to attempt suite2p in one batch')
+    ops['batch_size'] = batch_size
 
     db = {
         'data_path': [str(fly_analysis_dir)],
+        # TODO test all outputs same as if these were not specified (just in a diff
+        # folder)
+        'save_path0': str(suite2p_run_dir),
     }
 
     # TODO update suite2p message:
@@ -2488,10 +2642,6 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
     # to say '=1' unless there is actually a time to do '>1'. at least '>=1', no?
     # TODO make suite2p work to view registeration w/o needing to extract cells too
 
-    # TODO TODO TODO TODO delete
-    return None
-    #
-
     try:
         # TODO actually care about ops_end?
         # TODO TODO save ops['refImg'] into some plots and see how they look?
@@ -2499,8 +2649,6 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
         # something equivalent to it from the saved data...)
         # TODO TODO also do the same w/ ops['meanImg']
         ops_end = run_s2p(ops=ops, db=db)
-
-        suite2p_dir_link.symlink_to(suite2p_dir)
 
         # TODO also is save path in here? if so, does it include 'suite2p' part?
         # and if i explicitly pass save path, can i avoid need for that part?
@@ -2514,18 +2662,35 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir,
         #import ipdb; ipdb.set_trace()
         print()
 
-    # TODO TODO TODO why did i want to catch arbitrary exceptions here again? document.
+    # TODO TODO why did i want to catch arbitrary exceptions here again? document.
+    # TODO TODO does ctrl-c also get caught here? would want to cleanup (delete any
+    # directories made) if ctrl-c'd, but probably not if there was a regular error
+    # (so i can investigate the errors)
     except Exception as err:
         cprint(traceback.format_exc(), 'red', file=sys.stderr)
         # TODO might want to add this back, but need to manage clearing it and stuff
         # then...
-        #make_fail_indicator_file(fly_analysis_dir, suite2p_fail_prefix, err)
-        return None
+        ##make_fail_indicator_file(fly_analysis_dir, suite2p_fail_prefix, err)
 
-    return suite2p_dir
+        return False
+
+    make_suite2p_dir_symlink(suite2p_dir)
+
+    # NOTE: this is not changing the iscell.npy files in the plane<x> folders,
+    # as I'm trying to avoid dealing with those folders at all as much as possible
+    combined_dir = s2p.get_suite2p_combined_dir(fly_analysis_dir)
+    # TODO test this doesn't cause failure even if just running registration steps
+    # (then delete try/except)
+    try:
+        s2p.mark_all_suite2p_rois_good(combined_dir)
+    except Exception as e:
+        print(e)
+        import ipdb; ipdb.set_trace()
+
+    return True
 
 
-# TODO TODO factor to hong2p.suite2p
+# TODO factor to hong2p.suite2p
 def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     registered: bool = True, to_uint16: bool = True, verbose: bool = False
     ) -> np.ndarray:
@@ -2578,10 +2743,13 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
 
     data = np.stack(plane_data_list, axis=1)
 
+    # TODO maybe factor using 'plane0' into some fn (maybe even load_s2p_ops), to ensure
+    # we are being consistent, especially if there actually are any differences between
+    # (for example) 'combined' and 'plane<n>' ops.
+    #
     # the metadata we care about should be the same regardless of which we plane we load
     # the ops from
-    ops_path = plane_dirs[0] / 'ops.npy'
-    ops = s2p.load_s2p_ops(ops_path)
+    ops = s2p.load_s2p_ops(plane_dirs[0])
 
     # list of (always?)-absolute paths to input files, presumably in concatenation order
     filelist = ops['filelist']
@@ -2656,7 +2824,8 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     return input_tiff2movie_range
 
 
-def convert_raw_to_tiff(keys_and_paired_dirs) -> None:
+def convert_raw_to_tiff(keys_and_paired_dirs, silence_curr_sidelabel_warnings=False
+    ) -> None:
     """Writes a TIFF for each .raw file in referenced ThorImage directories.
     """
     for (date, fly_num), (thorimage_dir, _) in keys_and_paired_dirs:
@@ -2673,20 +2842,33 @@ def convert_raw_to_tiff(keys_and_paired_dirs) -> None:
         # has frame<->odor assignment working and everything)
 
         if pd.isnull(side_imaged):
-            # TODO TODO maybe err / warn w/ higher severity (red?), especially if i
-            # require downstream analysis to use the flipped version
+            # TODO TODO check the metadata written in silence_curr_sidelabel_warnings
+            # case, and don't warn if it's present here
+
+            # TODO maybe err / warn w/ higher severity (red?), especially if i require
+            # downstream analysis to use the flipped version
             # TODO don't warn if there are no non-glomeruli diagnostic recordings
             # for a given fly? might want to do this even if i do make skip handling
             # consistent w/ process_experiment.
+            # TODO TODO or maybe just warn separately if not in spreadsheet (but only if
+            # some real data seems to be there. maybe add a column in the sheet to mark
+            # stuff that should be marked bad and not warned about too)
             warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
                 ' in Google Sheet'
             )
             flip_lr = None
+
+            # TODO TODO write some metadata to indicate we shouldn't warn for curr fly
+            if silence_curr_sidelabel_warnings:
+                import ipdb; ipdb.set_trace()
+
         else:
             assert side_imaged in ('left', 'right')
             flip_lr = (side_imaged != standard_side_orientation)
 
         analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
+
+        # TODO just (sym)link flipped.tif->raw.tif if we don't need to flip?
 
         # TODO maybe delete any existing raw.tif when we save a flipped.tif
         # (so that we can still see the data for stuff where we haven't labelled a
@@ -2722,31 +2904,6 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         fly_str = f'{date_str}/{fly_num}'
         fly_analysis_dir = get_fly_analysis_dir(date, fly_num)
 
-        # As long as we write this TIFF (and write it after the per-recording TIFFs
-        # split out of this one), we can assume we also have all the per-recording
-        # stuff if we have this.
-        # TODO TODO maybe also make a raw concat version of this for easier
-        # comparison?
-        fly_concat_tiff_link = fly_analysis_dir / 'mocorr_concat.tif'
-
-        # TODO TODO TODO also check (registration only) parameters are the same
-        # before deciding if we already have suite2p done?
-
-        # TODO TODO TODO consider whether i even need to add this back...
-        # want to probably also have this as a symlink pointing to the corresponding
-        # concat tiff in a suite2p run subdirectory
-        #
-        # TODO maybe add this to ignore_existing? but i might rather not overwrite
-        # this stuff... can just manually rename existing stuff to something else to
-        # be able to compare runs w/ diff parameters
-        # TODO CLI arg specifically for renaming existing stuff rather than
-        # overwriting / loading (both suite2p dir and all TIFFs)?
-        '''
-        if fly_concat_tiff_link.exists():
-            print(f'{fly_str} already has motion corrected TIFFs\n')
-            continue
-        '''
-
         thorimage_dirs = []
         tiffs = []
         for thorimage_dir in all_thorimage_dirs:
@@ -2775,7 +2932,8 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             continue
 
         # TODO write text/yaml not in suite2p directory explaining what all data
-        # went into it
+        # went into it (and which frames boundaries correspond to what, for manual
+        # inspection)
 
         # TODO only print if we are actually running suite2p
         # maybe make bold too?
@@ -2783,39 +2941,83 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             'blue', flush=True
         )
 
-        # TODO delete
-        print('Input TIFFs:')
-        pprint([str(x) for x in tiffs])
-        #
-
         # TODO TODO TODO probably compare to registering stuff individually, because
         # my initial results have not been great (using block size of '48, 48')
+        # TODO TODO compare to block size '96, 96'
 
-        suite2p_dir = register_recordings_together(thorimage_dirs, tiffs,
+        success = register_recordings_together(thorimage_dirs, tiffs,
             fly_analysis_dir
         )
-        if suite2p_dir is None:
+        if not success:
             continue
+
+        # "raw" in the sense that they aren't motion corrected. They may still be
+        # flipped left/right according to labelling of which side I imaged (from the
+        # labels in the Google Sheet).
+        raw_fly_concat_tiff = fly_analysis_dir / 'raw_concat.tif'
+        if not raw_fly_concat_tiff.is_file():
+            raw_tiffs = [tifffile.imread(t) for t in tiffs]
+
+            raw_fly_concat_movie = np.concatenate(raw_tiffs, axis=0)
+            print(f'writing {raw_fly_concat_tiff}', flush=True)
+            util.write_tiff(raw_fly_concat_tiff, raw_fly_concat_movie)
+            del raw_tiffs
+
+        # TODO TODO make temporary code to read existing TIFFs (or at least the
+        # mocorr_concat.tif ones, probably) that are derived from suite2p binaries, and
+        # prints the min/max/dtype of the movies, to make sure we shouldn't be getting
+        # divide by zero-type errors anymore. re-run stuff as necessary (or at least
+        # change code to generate from binaries, and re-run that).
+
+        # This Path is a symlink to a particular suite2p run, created and updated by
+        # register_recordings_together (above)
+        suite2p_dir = s2p.get_suite2p_dir(fly_analysis_dir)
+        assert suite2p_dir.is_symlink()
 
         fly_concat_tiff = suite2p_dir / 'mocorr_concat.tif'
 
-        # TODO TODO TODO delete
-        assert fly_concat_tiff_link.exists()
-        # TODO TODO TODO probably update these links to point to use a path
-        # including the <date>/<fly_num>/'suite2p' symlink, so the link to
-        # the concanated motion corrected tiff doesn't need to be updated to
-        # select between runs of diff parameters?
-        if not fly_concat_tiff_link.is_symlink():
-            fly_concat_tiff_link.rename(fly_concat_tiff)
-            fly_concat_tiff_link.symlink_to(fly_concat_tiff)
-        # TODO TODO TODO can i delete this now or is it still relevant for new data
-        # (/ is there old data it hasn't been run on yet?)
-        else:
-            import ipdb; ipdb.set_trace()
-        #
+        # TODO probably move creation of all symlinks to after things that generate the
+        # files they link to (just had it the other way around to change how i set up
+        # the links for files that already existed...). as-is, it leads to broken links
+        # until the second step finishes.
 
-        # TODO TODO TODO TODO delete
-        continue
+        fly_concat_tiff_link = fly_analysis_dir / 'mocorr_concat.tif'
+        # TODO test on data that does/doesn't already have one
+        if not fly_concat_tiff_link.is_symlink():
+            # This link will be broken until fly_concat_tiff is written below.
+            fly_concat_tiff_link.symlink_to(fly_concat_tiff)
+
+        def input_tiff2mocorr_tiff(input_tiff):
+            return suite2p_dir / f'{input_tiff.parent.name}.tif'
+
+        expected_tiffs = [input_tiff2mocorr_tiff(t) for t in tiffs]
+        expected_tiffs.append(fly_concat_tiff)
+
+        have_all_tiffs = True
+        for t in expected_tiffs:
+            if not t.is_file():
+                have_all_tiffs = False
+                break
+            else:
+                assert not t.is_symlink(), ('all elements of expected_tiffs should be '
+                    'real files, not symlinks'
+                )
+
+        # TODO TODO TODO may also want to test we have all the symlinks we expect
+        # (AND may need some temporary code to either delete all existing links that
+        # should be relative but currently aren't, or may need to do that manually)
+
+        if have_all_tiffs:
+            # TODO delete
+            print('HAVE ALL EXPECTED TIFFs')
+            #
+            # TODO TODO TODO TODO uncomment. just so temporary code making all links
+            # relative below runs.
+            #continue
+
+        # TODO delete
+        else:
+            print('MISSING SOME EXPECTED TIFFs')
         #
 
         # TODO TODO convert to test + factor load_suite2p_binaries into hong2p
@@ -2826,69 +3028,62 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # TODO TODO also write ops['refImg'] and some of the more useful
         # registration quality metrics from ops (there are some in there, yea?)
 
-        # TODO TODO TODO will need to update this to only load and write (remind me,
-        # what is getting [potentially] *written*, again?) these if the current
-        # links arent already pointing to stuff under suite2p_dir (the dir that
-        # register_recordings_together either generated or determined came from a
-        # run w/ the current parameters)
-
+        # TODO refactor how this is currently printing frame ranges for each input
+        # movie so i can also write a a file, for reference when inspecting TIFF
+        #
         # As long as the shape for each movie is the same (which it should be if we
         # got this far), it doesn't matter which thorimage_dir we pass, so I'm just
         # taking the first.
-        # TODO refactor how this is currently printing frame ranges for each input
-        # movie so i can also write a a file, for reference when inspecting TIFF
-        # TODO why are we only using thorimage_dirs[0], again?
         input_tiff2registered = load_suite2p_binaries(suite2p_dir, thorimage_dirs[0],
             verbose=True
         )
 
         for input_tiff, registered in input_tiff2registered.items():
 
-            motion_corrected_tiff = suite2p_dir / f'{input_tiff.parent.name}.tif'
+            motion_corrected_tiff = input_tiff2mocorr_tiff(input_tiff)
             motion_corrected_tiff_link = input_tiff.with_name('mocorr.tif')
 
             # TODO delete
+            print()
             print(f'{motion_corrected_tiff=}')
             print(f'{motion_corrected_tiff_link=}')
+            print(f'{input_tiff=}')
+            print()
             #
 
-            # TODO TODO TODO probably also use symlinks including fly/'suite2p'
-            # symlink here, to not need to update these separate from updating
-            # 'suite2p' symlink (ideally...)
-
-            # TODO delete
-            if motion_corrected_tiff_link.exists():
-                if not motion_corrected_tiff_link.is_symlink():
-                    motion_corrected_tiff_link.rename(motion_corrected_tiff)
-                    motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
-                else:
-                    print('link already existed')
-
-                continue
-
+            # TODO delete this temporary code to fix links
+            motion_corrected_tiff_link.unlink(missing_ok=True)
             #
+
+            if not motion_corrected_tiff_link.is_symlink():
+                # For example:
+                # (link) analysis_intermediates/2022-02-04/1/kiwi/mocorr.tif ->
+                # (file) analysis_intermediates/2022-02-04/1/suite2p/kiwi.tif
+                #
+                # Since 'suite2p' in the target of the link is itself a symlink,
+                # these links should not need to be updated, and the files they refer to
+                # will change when the directory the 'suite2p' link is pointing to does.
+                motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
+
+            # TODO TODO skip this if we already have this written
+
             # TODO come up w/ diff names to distinguish stuff registered across
             # movies vs not? at least if we can't get across movie stuff to work as
             # well as latter (cause across movie stuff would be way more useful...)
+            # TODO TODO TODO or rather, probably just change which one the link in the
+            # recording directory points to...
             print(f'writing {motion_corrected_tiff}', flush=True)
             util.write_tiff(motion_corrected_tiff, registered)
-            motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
-
-        # TODO TODO TODO also write concatenated raw tiffs, for comparison to
-        # registered one
-        import ipdb; ipdb.set_trace()
 
         # Essentially the same one I'm pulling apart in the above function, but we
         # are just putting it back together to be able to make it a TIFF to inspect
         # the boundaries.
-        # TODO TODO TODO uncomment
-        '''
         fly_concat_movie = np.concatenate(
             [x for x in input_tiff2registered.values()], axis=0
         )
         print(f'writing {fly_concat_tiff}', flush=True)
         util.write_tiff(fly_concat_tiff, fly_concat_movie)
-        '''
+        del fly_concat_movie
 
         print()
 
@@ -3014,6 +3209,33 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
 
     # TODO fix in case only one experiment is here:
     # ValueError: If using all scalar values, you must pass an index
+    #
+    # TODO fix, now i'm getting (maybe diff circumstances?):
+    # (happens when some of the coordinatest are scalars, but not all. e.g.
+    # date/fly_num, but not thorimage_id)
+    # TypeError: len() of unsized object
+    # circumstances for TypeError:
+    # ...
+    # Coordinates:
+    #     panel         (odor) <U21 'glomeruli_diagnostics' ... 'kiwi'
+    #     is_pair       (odor) bool False False False False ... True True True True
+    #     date          datetime64[ns] 2022-03-30
+    #     fly_num       int64 1
+    #     thorimage_id  (odor) <U21 'glomeruli_diagnostics' ... 'kiwi_ramps'
+    #   * odor          (odor) MultiIndex
+    #   - odor1         (odor) object 'ethyl lactate @ -7' ... 'EA @ -4.2'
+    #   - odor2         (odor) object 'solvent' 'solvent' ... 'EB @ -3.5' 'EB @ -3.5'
+    #   - repeat        (odor) int64 0 1 2 0 1 2 0 1 2 0 1 2 ... 1 2 0 1 2 0 1 2 0 1 2
+    #   * z             (z) int64 0 1 2 3 4
+    #   * y             (y) int64 0 1 2 3 4 5 6 7 ... 184 185 186 187 188 189 190 191
+    #   * x             (x) int64 0 1 2 3 4 5 6 7 ... 184 185 186 187 188 189 190 191
+    # ipdb> len(response_volumes)
+    # 198
+    # ipdb> response_volumes.shape
+    # (198, 5, 192, 192)
+    # ipdb> response_volumes.dims
+    # ('odor', 'z', 'y', 'x')
+    #import ipdb; ipdb.set_trace()
     response_volumes = util.add_group_id(response_volumes,
         ['date', 'fly_num', 'thorimage_id'], name='recording_id', dim='odor'
     )
@@ -3178,7 +3400,8 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
             # dimension in this dataset" when trying to rename MultiIndex levels
             #
             # TODO TODO TODO at least factor into a function for renaming multiindex
-            # levels
+            # levels (e.g. for appending a suffix to all levels/names on either column
+            # or row multiindex index)
             garr2 = garr.reset_index('odor').rename(
                 odor='odor_b', odor1='odor1_b', odor2='odor2_b', repeat='repeat_b'
                 ).set_index(odor_b=['odor1_b', 'odor2_b', 'repeat_b'])
@@ -3290,7 +3513,9 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
         else:
             fig_path = savefig(fig, panel_dir, fly_plot_prefix)
 
-
+    # TODO make a fn for grouping -> mean (+ embedding number of flies [maybe also w/ a
+    # separate list of metadata for those flies] in the DataArray attrs or something)
+    # -> maybe require those type of attrs for corresponding natmix plotting fn?
     for panel, garr in corrs.reset_index(['odor', 'odor_b']).groupby('panel',
         squeeze=False, restore_coord_dims=True):
 
@@ -3783,6 +4008,13 @@ def main():
 
     parser = argparse.ArgumentParser()
 
+    # TODO add CLI argument to generate metadata files signaling that all data currently
+    # generating warnings like "side needs labelled left/right in Google sheet" should
+    # no longer generate these warnings
+
+    # TODO support ending path substrings with '/' to indicate, for instance, that
+    # '2-22/1/kiwi/' should not run on 2-22/1/kiwi_ea_eb_only data
+
     parser.add_argument('matching_substrs', nargs='*', help='If passed, only data whose'
         ' ThorImage path contains one of these substrings will be analyzed.'
     )
@@ -3796,7 +4028,7 @@ def main():
         help='Enables parallel calls to process_experiment. '
         'Disabled by default because it can complicate debugging.'
     )
-    parser.add_argument('-i', '--ignore-existing', action='store_true',
+    parser.add_argument('-i', '--ignore-existing', nargs='?', const=True, default=False,
         help='Re-calculate non-ROI analysis and analysis downstream of ImageJ/suite2p '
         'ROIs.'
     )
@@ -3816,6 +4048,13 @@ def main():
         help='Only analyze glomeruli diagnostics (mainly for use on acquisition '
         'computer).'
     )
+    # TODO implement
+    # TODO provide a means of undoing this
+    parser.add_argument('-s', '--silence-sidelabel-warnings', action='store_true',
+        help='Writes metadata for flies currently triggering warnings about left/right '
+        'side not being labelled in the Google Sheet, so that future runs will not warn'
+        ' about these flies.'
+    )
 
     args = parser.parse_args()
 
@@ -3827,6 +4066,14 @@ def main():
     retry_previously_failed = args.retry_failed
     analyze_glomeruli_diagnostics_only = args.glomeruli_diags_only
     print_skipped = args.verbose
+    # TODO implement
+    silence_curr_sidelabel_warnings = args.silence_sidelabel_warnings
+
+    if type(ignore_existing) is not bool:
+        if ignore_existing not in ignore_existing_options:
+            raise ValueError('-i/--ignore-existing must either be given no argument, or'
+                f" one of {ignore_existing_options}. got '{ignore_existing}'."
+            )
 
     del parser, args
 
@@ -3926,8 +4173,14 @@ def main():
     # still want to restrict stuff that doesn't need all the data to just the originally
     # matched stuff tho, so idk...
 
+    # This list will contain elements like:
+    # ( (<recording-date>, <fly-num>), (<thorimage-dir>, <thorsync-dir>) )
+    #
+    # Within each (date, fly-num), the directory pairs are guaranteed to be in
+    # acquisition order.
+    #
     # list(...) because otherwise we get a generator back, which we will only be able to
-    # iterate over once (and we are planning on using this twice)
+    # iterate over once (and we are planning on using this multiple times)
     keys_and_paired_dirs = list(util.paired_thor_dirs(matching_substrs=matching_substrs,
         **common_paired_thor_dirs_kwargs
     ))
@@ -3935,10 +4188,11 @@ def main():
 
     main_start_s = time.time()
 
-
     # TODO refactor to skip things here consistent w/ how i would in process_experiment?
     if do_convert_raw_to_tiff:
-        convert_raw_to_tiff(keys_and_paired_dirs)
+        convert_raw_to_tiff(keys_and_paired_dirs,
+            silence_curr_sidelabel_warnings=silence_curr_sidelabel_warnings
+        )
         print()
 
     if do_register_all_fly_recordings_together:
