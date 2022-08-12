@@ -71,7 +71,9 @@ analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 min_input = 'mocorr'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
+# TODO TODO TODO return to True + fix
 do_register_all_fly_recordings_together = False
+#do_register_all_fly_recordings_together = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -652,6 +654,22 @@ def clear_fail_indicators(analysis_dir: Path) -> None:
         os.remove(f)
 
 
+# TODO factor into hong2p maybe (+ add support for xarray?)
+def dropna(df: pd.DataFrame, _checks=True) -> pd.DataFrame:
+    """Drops rows/columns where all values are NaN.
+    """
+    if _checks:
+        notna_before = df.notna().sum().sum()
+
+    # TODO need to alternate (i.e. does order ever mattter? ever not idempotent?)?
+    df = df.dropna(how='all', axis='columns').dropna(how='all', axis='rows')
+
+    if _checks:
+        assert df.notna().sum().sum() == notna_before
+
+    return df
+
+
 # default = 'netcdf4'
 # need to `pip install h5netcdf` for this
 #netcdf_engine = 'h5netcdf'
@@ -1029,17 +1047,21 @@ def get_panel(thorimage_id: Pathlike) -> Optional[str]:
         return None
 
 
-def ijroi_plot_dir(plot_dir):
+# TODO update both of these to pathlib
+def ijroi_plot_dir(plot_dir: Path) -> Path:
+    #return plot_dir / 'ijroi'
     return join(plot_dir, 'ijroi')
 
 
-def suite2p_plot_dir(plot_dir):
+def suite2p_plot_dir(plot_dir: Path) -> Path:
+    # TODO test doesn't break stuff
+    #return plot_dir / 'suite2p_roi'
     return join(plot_dir, 'suite2p_roi')
 
 
 # TODO TODO maybe i should check for all of a minimum set of files, or just the mtime on
 # the df caches, in case a partial run erroneously prevents future runs
-def ij_last_analysis_time(plot_dir):
+def ij_last_analysis_time(plot_dir: Path):
     roi_plot_dir = ijroi_plot_dir(plot_dir)
     return util.most_recent_contained_file_mtime(roi_plot_dir)
 
@@ -1119,22 +1141,31 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
     return fig
 
 
-def plot_all_roi_mean_responses(trial_df, title=None, roi_sortkeys=None, roi_rows=True,
-    odor_sort=True, **kwargs):
+def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sortkeys=None,
+    roi_rows=True, odor_sort=True, **kwargs):
+    # TODO update doc for roi_sortkeys. it's not shape[1], not len/shape[0], right?
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
 
     Args:
-        trial_df: DataFrame with ['odor1', 'odor2', 'repeat'] index names and a column
-            for each ROI
+        trial_df: ['odor1', 'odor2', 'repeat'] index names and a column for each ROI.
+            should only contain data from one panel (e.g. 'kiwi'/'control') and one fly.
 
         roi_sortkeys: sequence of same length as trial_df, used to order ROIs
 
-        roi_rows: (default=True) if True, matrix will be transposed relative to input,
-            with ROIs as rows and odors as columns
+        roi_rows: if True, matrix will be transposed relative to input, with ROIs as
+            rows and odors as columns
+
+        **kwargs: passed thru to hong2p.viz.matshow
 
     """
+    # TODO maybe also assert these are only index levels
     for c in ['odor1', 'odor2', 'repeat']:
         assert c in trial_df.index.names
+    # TODO also assert columns index names are either just 'roi' (.name not names)
+    # or (still need to implement) ('fly', 'roi') or something like that
+    # TODO TODO TODO maybe also support just 'fly' on the column index (where plot title
+    # might be the glomerulus name, and we are showing all fly data for a particular
+    # glomerulus)
 
     # This will throw away any metadta in multiindex levels other than these two
     # (so can't just add metadata once at beginning and have it propate through here,
@@ -1244,9 +1275,14 @@ def ij_traces(analysis_dir, movie):
     roi_nums, rois = util.rois2best_planes_only(masks, roi_quality)
 
     traces = traces[roi_nums].copy()
-    # This is currently the 'name' (rois2best_planes_only drops other levels from ROI
-    # index)
+
+    # needed this (b/c rois2best_planes_only returned more metadata than intended) when
+    # i had xarray 2022.6.0 somehow, but much of the rest of the code was broken.
+    # getting back to xarray==0.19.0 in that conda env seemed to fix it (though I might
+    # have had the code working with something more like 0.23 at some point?)
+    #traces.columns = rois.roi_name.values
     traces.columns = rois.roi.values
+
     # do need to add this again it seems (and i think one above *might* ahve been used
     # inside `rois2best_planes_only`
     traces.columns.name = 'roi'
@@ -1262,11 +1298,15 @@ def ij_traces(analysis_dir, movie):
 def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, *,
     roi_stats=None, show_suite2p_rois=False):
 
+    # TODO TODO remake directory (or at least make sure plots from ROIs w/ names no
+    # longer in set of ROI names are deleted)
+
     if show_suite2p_rois and roi_stats is None:
         raise ValueError('must pass roi_stats if show_suite2p_rois')
 
     is_pair = is_pairgrid(odor_lists)
 
+    # TODO update to pathlib
     makedirs(roi_plot_dir)
 
     fig, mean_df = plot_all_roi_mean_responses(trial_df, roi_sortkeys=z_indices,
@@ -1275,30 +1315,15 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
     )
     savefig(fig, roi_plot_dir, 'all_rois_by_z')
 
-    # TODO TODO TODO fix / cleanup (just to skip diags, i think)
-    # (also to detect which panel (via a fn in natmix) + get that to work w/ 'control'
-    # panel as well)
-    #'''
-    try:
-        # TODO TODO factor this convertion into a fn (probably in my hong2p.xarray)
-        # (+ include the metadata (panel, fly, etc) / is_pair handling in there)
-        corr_df = trial_df.T.corr()
-        corr_df.columns.names = ['odor1_b', 'odor2_b', 'repeat_b']
-        corr = xr.DataArray(corr_df, dims=['odor', 'odor_b'])
+    # TODO TODO factor this convertion into a fn (probably in my hong2p.xarray)
+    # (+ include the metadata (panel, fly, etc) / is_pair handling in there)
+    corr_df = trial_df.T.corr()
+    corr_df.columns.names = ['odor1_b', 'odor2_b', 'repeat_b']
+    corr = xr.DataArray(corr_df, dims=['odor', 'odor_b'])
 
-        # TODO TODO TODO modify plot_corr to also accept dataframe input
-        # TODO TODO TODO TODO fix kiwi/title hardcode
-        #fig = natmix.plot_corr(corr, panel='kiwi', title='Using ROI responses')
-        fig = natmix.plot_corr(corr, title='Using ROI responses')
-        savefig(fig, roi_plot_dir, 'roi_corr')
-
-    # TODO TODO TODO at least change to non-generic exception...
-    # pretty sure it's catching BdbQuit
-    except Exception as err:
-        cprint(traceback.format_exc(), 'red', file=sys.stderr)
-        import ipdb; ipdb.set_trace()
-        #pass
-    #'''
+    # TODO modify plot_corr to also accept dataframe input
+    fig = natmix.plot_corr(corr, title='Using ROI responses')
+    savefig(fig, roi_plot_dir, 'roi_corr')
 
     if not is_pair:
         return
@@ -1916,10 +1941,14 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     new_col_level_names = ['date', 'fly_num', 'thorimage_id']
     new_col_level_values = [date, fly_num, thorimage_basename]
 
-    # TODO is this still how i want to handle things for the return to natural mix
-    # experiments (where some but not all data we want to analyze are pairs)?
-    new_row_level_names = ['name1', 'name2']
-    new_row_level_values = [name1, name2]
+    panel = get_panel(thorimage_basename)
+
+    # TODO TODO still somehow support the arbitrary pair experiment data (w/o panel
+    # defined via get_panel, currently) (just add 'name1','name2' to 'panel','is_pair'?)
+    #new_row_level_names = ['name1', 'name2']
+    #new_row_level_values = [name1, name2]
+    new_row_level_names = ['panel', 'is_pair']
+    new_row_level_values = [panel, is_pair]
 
     def add_metadata(df):
         df = util.addlevel(df, new_row_level_names, new_row_level_values)
@@ -2364,8 +2393,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # compute is_pairgrid, so might want to refactor that too)
     odor_index = odor_lists_to_multiindex(odor_lists)
     assert len(odor_index) == len(all_trial_mean_dffs)
-
-    panel = get_panel(thorimage_basename)
 
     # TODO maybe factor out the add_metadata fn above to hong2p.util + also handle
     # xarray inputs there?
@@ -3012,7 +3039,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             print('HAVE ALL EXPECTED TIFFs')
             #
             # TODO TODO TODO TODO uncomment. just so temporary code making all links
-            # relative below runs.
+            # relative below runs. (why did i want to continue here tho...?)
             #continue
 
         # TODO delete
@@ -3052,7 +3079,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             #
 
             # TODO delete this temporary code to fix links
-            motion_corrected_tiff_link.unlink(missing_ok=True)
+            #motion_corrected_tiff_link.unlink(missing_ok=True)
             #
 
             if not motion_corrected_tiff_link.is_symlink():
@@ -3163,6 +3190,8 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
             warn(f'{date}/{fly_num}/{thorimage_id}: {n_null} null (probably from '
                 'divide-by-zero)'
             )
+            # TODO TODO TODO update to not allow inf either (which value to use for a
+            # max then? should i even limit?)
             recording_max_pixel = recording_response_volumes.max().item(0)
             recording_response_volumes = recording_response_volumes.fillna(
                 recording_max_pixel
@@ -3235,7 +3264,6 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     # (198, 5, 192, 192)
     # ipdb> response_volumes.dims
     # ('odor', 'z', 'y', 'x')
-    #import ipdb; ipdb.set_trace()
     response_volumes = util.add_group_id(response_volumes,
         ['date', 'fly_num', 'thorimage_id'], name='recording_id', dim='odor'
     )
@@ -3267,6 +3295,7 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
 
 
     # TODO nicer way to change index?
+    #import ipdb; ipdb.set_trace()
     ser = response_volumes.mean(spatial_dims).reset_index('odor').set_index(odor=[
         'panel','is_pair','date','fly_num','odor1','odor2','repeat'
         ]).to_pandas()
@@ -3281,6 +3310,11 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     _checks = False
     _debug = False
 
+    # TODO TODO TODO version of these plots using ROI traces as inputs
+    # TODO TODO TODO save both these pixel activation strengths (+ROI ones, when i get
+    # those) to CSVs, so that i can include in analyses centered around model outputs
+    # (model_mixes_mb)
+
     g1 = natmix.plot_activation_strength(df, color_flies=True, _checks=_checks,
         _debug=_debug
     )
@@ -3289,6 +3323,7 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     g2 = natmix.plot_activation_strength(df, _checks=_checks, _debug=_debug)
     savefig(g2, intensities_plot_dir, 'mean_activations', bbox_inches=None)
 
+    df.to_csv(intensities_plot_dir / 'mean_pixel_dff.csv', index=False)
 
     pixel_corr_plots_root = plot_root_dir / pixel_corr_basename
     makedirs(pixel_corr_plots_root)
@@ -3320,7 +3355,7 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     # TODO memory profile w/ just first group, to be more clear on usage of just the
     # grouping itself and (more importantly) all of the steps in the loop
     # TODO tqdm/time loop
-    # TODO TODO profile
+    # TODO profile
     corr_list = []
     _checked = False
 
@@ -3475,7 +3510,6 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
         date_str = format_date(unique_coord_value(garr.date))
         fly_num = unique_coord_value(garr.fly_num)
         fly_str = f'{date_str}/{fly_num}'
-        panel = unique_coord_value(garr.panel)
 
         # TODO might need to deal w/ NaNs some other way than just dropna (to avoid
         # dropping specific trials w/ baseline NaN issues. or fix the baseline cause
@@ -3483,10 +3517,11 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
         corr = garr.squeeze(drop=True
             ).dropna('odor', how='all').dropna('odor_b', how='all')
 
-        fig = natmix.plot_corr(corr, panel=panel, title=fly_str)
+        fig = natmix.plot_corr(corr, title=fly_str)
 
         fly_plot_prefix = fly_str.replace('/', '_')
 
+        panel = unique_coord_value(garr.panel)
         panel_dir = pixel_corr_plots_root / panel
         makedirs(panel_dir)
 
@@ -3530,7 +3565,7 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
         # TODO TODO TODO include which flies were included in average in a
         # separate output
         # TODO TODO TODO include N of flies in title
-        fig = natmix.plot_corr(panel_mean, panel=panel, title=panel)
+        fig = natmix.plot_corr(panel_mean, title=panel)
 
         savefig(fig, pixel_corr_plots_root, f'{panel}_mean')
 
@@ -4030,7 +4065,7 @@ def main():
     )
     parser.add_argument('-i', '--ignore-existing', nargs='?', const=True, default=False,
         help='Re-calculate non-ROI analysis and analysis downstream of ImageJ/suite2p '
-        'ROIs.'
+        f'ROIs. If an argument is supplied, must be one of {ignore_existing_options}.'
     )
     parser.add_argument('-r', '--retry-failed', action='store_true',
         help='Retry steps that previously failed (frame-to-odor assignment or suite2p).'
@@ -4162,9 +4197,15 @@ def main():
     start_date = '2022-02-04'
 
     common_paired_thor_dirs_kwargs = dict(
-        start_date=start_date, ignore=bad_thorimage_dirs, ignore_prepairing=('anat',)
+        start_date=start_date, ignore=bad_thorimage_dirs, ignore_prepairing=('anat',),
+        # To exclude PN recordings in 2022-07-02, until I'm ready to deal with them
+        # TODO TODO TODO delete + fix code handling this
+        # TODO TODO TODO add checkbox/similar to gsheet to track which stuff are PN
+        # recordings, and analyze them separately
+        end_date='2022-07-01'
     )
 
+    # TODO replace first two returned args w/ _ if not gonna use them...
     names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
         odor_names2final_concs(**common_paired_thor_dirs_kwargs)
 
@@ -4203,7 +4244,7 @@ def main():
         print()
 
         # TODO delete
-        print('RETURNING')
+        print('RETURNING AFTER register_all_fly_recordings_together')
         return
         #
 
@@ -4275,17 +4316,17 @@ def main():
         analyze_response_volumes(response_volumes_list, write_cache=write_cache)
 
     # TODO delete after cleaning up below + deciding which of it to keep still
-    sys.exit()
+    #sys.exit()
 
     #if len(odors_without_abbrev) > 0:
     #    print('Odors without abbreviations:')
     #    pprint(odors_without_abbrev)
 
     def earliest_analysis_dir_date(analysis_dirs):
-        return min(d.split(os.sep)[-3] for d in analysis_dirs)
+        return min(d.parts[-3] for d in analysis_dirs)
 
     failed_assigning_frames_analysis_dirs = [
-        x.replace('raw_data', 'analysis_intermediates')
+        Path(str(x).replace('raw_data', 'analysis_intermediates'))
         for x in failed_assigning_frames_to_odors
     ]
 
@@ -4444,90 +4485,114 @@ def main():
         cprint('No ImageJ ROIs defined for current experiments!', 'yellow')
         return
 
+    # TODO and why is this:
+    # sum([x.notna().sum().sum() for x in ij_trial_dfs]) (20586)
+    # ...greater than this:
+    # trial_df.notna().sum().sum() (11082)
+    # i assume pair stuff is either overwritting or getting overwritten by non-pair
+    # stuff? (yes, seems to be fixed now. add assertion guaranteeing num non-na doesn't
+    # change tho)
+
     trial_df = pd.concat(ij_trial_dfs, axis='columns')
+
+    # TODO TODO TODO why are there any rows where this:
+    # trial_df.isna().all(axis='columns') ...is True???
 
     # TODO define globally as a tuple / fix whatever fucky thing my multiprocessing
     # wrapper code is doing to some/all global lists, or at least clearly document it
     fly_keys = ['date', 'fly_num']
     recording_keys = fly_keys + ['thorimage_id']
 
-    trial_df.sort_index(level=recording_keys, sort_remaining=False, axis='columns')
+    # i think this is warning (either not/only-partially sorting)
+    #trial_df.sort_index(level=recording_keys, sort_remaining=False, axis='columns',
+    #    inplace=True
+    #)
+
+    trial_df.to_csv('ij_roi_stats.csv')
+    # TODO just use this or pickle below...
+    trial_df.to_pickle('ij_roi_stats.p')
 
     trial_df.to_pickle(roi_response_stats_cache_fname)
 
-    '''
-    # TODO factor into analysis that loops over all relevant data + delete
-    pdf = ij_trial_dfs[-2]
-    cdf = ij_trial_dfs[-1]
-    # TODO TODO try to concat in a way that also works for what i was doing for pair
-    # stuff (or split into pair / not [strictly] pair stuff and concat each separately)
-    df = pd.concat([d.droplevel('thorimage_id', axis='columns') for d in [cdf, pdf]])
+    # TODO maybe also serialize the above things here
+    across_fly_ijroi_dir = plot_root_dir / 'ijroi'
+    makedirs(across_fly_ijroi_dir)
 
-    # TODO delete if this isn't required for exising plotting fns to work [/ modify them
-    # to not care + delete]
-    df = df.droplevel(['date', 'fly_num'], axis='columns')
+    def fly_roi_id(row):
+        # NOTE: assuming no need to use row.thorimage_id (or a panel / something like
+        # that), as assumed this will only be used within a context where that is
+        # context (e.g. a plot w/ kiwi data, but no control data)
+        return f'{row.date:%-m-%d}/{row.fly_num}/{row.roi}'
 
-    # will probably be useful for doing stuff to specifically pair recording actually
-    # (given overlap in top two components between the two recordings)
-    #df = df.droplevel(['name1', 'name2'])
+    # TODO TODO TODO cluster all ROIs across flies (w/ and w/o unidentified ROIs).
+    # try including positions too. try doing just for unidentified glomeruli too.
+    # TODO TODO also do for just the unidentified ROIs
+    # TODO also sort unidentified ROIs by total/max activation strength
 
-    def reorder_odors(df):
-        nonpair_rows = []
-        pair_rows = []
-        for x in df.index:
-            if x[:2] == (np.nan, np.nan):
-                nonpair_rows.append(x)
-            else:
-                pair_rows.append(x)
+    print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
 
-        vialmix_rows = [x for x in nonpair_rows
-            # TODO change to 'kiwi approx' or whatever the prefix actually should be
-            if (x[2].startswith('control mix') or x[2].startswith('kiwi'))
-        ]
-        component_rows = [x for x in nonpair_rows if x not in vialmix_rows]
+    # TODO print what we are doing before loop + 'done' at end
+    for panel, pdf in trial_df.groupby('panel'):
+        # TODO skip diagnostics?
+        # Selecting just the is_pair=False rows, w/ the False here.
+        pdf = dropna(pdf.loc[(panel, False), :])
 
-        # TODO probably plot pair A (at highest conc, alone) next to nonpair A
-        # TODO TODO but use a different color font for pair data legend or something
-        # else to indicate
+        fly_roi_ids = pdf.columns.to_frame().apply(fly_roi_id, axis='columns')
 
-        # TODO TODO TODO can we rely on odors A, B already being in a constent order?
-        # fix if not. document why we can rely on this if so.
-        a_rows = []
-        b_rows = []
-        # TODO TODO TODO will i need to sort the diag rows into a particular order?
-        diag_rows = []
-        # TODO TODO will i need to do some sorting here? should i replot the concs
-        # alone?
-        br_edge_rows = []
+        # TODO rewrite to index stuff by name. -1 = roi name. 0 = date, 1 = fly_num
+        # (unused 2 = thorimage_id)
+        fly_roi_sortkeys = [(x[-1], x[0], x[1]) for x in pdf.columns]
 
-        for x in pair_rows:
-            _, _, o1, o2, _ = x
+        # TODO unify colorbar scales across kiwi/control
 
-            if o2 == solvent_str and o1 != solvent_str:
-                a_rows.append(x)
-            elif o1 == solvent_str and o2 != solvent_str:
-                b_rows.append(x)
+        # TODO TODO re-order so pfo isn't last / isn't included at all in these plots
+        # (sort_odors should work hopefully)
 
-            # TODO TODO TODO how to just get the diagonal?
-            #elif 
+        # TODO TODO remove kiwi -2,-1 from these plots (for now + main version, at
+        # least)
 
-        import ipdb; ipdb.set_trace()
+        # TODO maybe factor this stuff to roi merging, so there can be options to merge
+        # the uncertain stuff either to neither or both ways? nice to be able to make
+        # plotting choices on cached roi extractions tho...
+        is_named = []
+        is_certain = []
+        for roi in pdf.columns.get_level_values('roi'):
+            try:
+                int(roi)
+                named = False
+                certain = False
+            except ValueError:
+                named = True
 
-    # TODO TODO TODO define odor order appropriately (by re-ordering before plot all),
-    # if that is all it takes to get plot betty wants
-    # TODO TODO + probably drop other data (from pair grid) she didnt want in summary
-    df = reorder_odors(df)
+                if ('?' in roi) or ('|' in roi) or ('/' in roi):
+                    certain = False
+                else:
+                    certain = True
 
-    # TODO define roi_sortkeys kwarg to get an interesting order
-    # (or at least by mean activation across experiments within panel / alphabetical)
-    fig, mean_df = plot_all_roi_mean_responses(df, odor_sort=False,
-        title='03-10/1 test summary', cbar_label=trial_stat_cbar_title, cbar_shrink=0.4
-    )
-    plt.show()
-    #savefig(fig, roi_plot_dir, 'all_rois_by_z')
-    #
+            is_named.append(named)
+            is_certain.append(certain)
+
+        # TODO maybe also/only include is_certain
+        fly_roi_sortkeys = [((not n),) + x for n, x in zip(is_named, fly_roi_sortkeys)]
+
+        pdf.columns = fly_roi_ids
+
+        fig, _ = plot_all_roi_mean_responses(pdf,
+            roi_sortkeys=fly_roi_sortkeys, dpi=1000
+        )
+        # TODO find a proper directory (under plot_fmt dir) for this
+        # TODO use plot_fmt
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois.png')
+
+        roi_sortkeys = [tuple(x) for x in np.array(fly_roi_sortkeys)[is_certain]]
+        fig, _ = plot_all_roi_mean_responses(pdf.loc[:, is_certain],
+            roi_sortkeys=roi_sortkeys, dpi=1000
+        )
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain.png')
+
+    print('done')
+
     import ipdb; ipdb.set_trace()
-    '''
 
 
 if __name__ == '__main__':
