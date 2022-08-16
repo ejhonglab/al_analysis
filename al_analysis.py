@@ -1114,6 +1114,19 @@ def dff_imshow(ax, dff_img, **imshow_kwargs):
     return im
 
 
+def fly_roi_id(row):
+    # NOTE: assuming no need to use row.thorimage_id (or a panel / something like
+    # that), as assumed this will only be used within a context where that is
+    # context (e.g. a plot w/ kiwi data, but no control data)
+    return f'{row.date:%-m-%d}/{row.fly_num}/{row.roi}'
+
+
+def get_fly_roi_ids(df):
+    """Takes columns with date,fly_num,roi levels to Series with str fly+ROI labels.
+    """
+    return df.columns.to_frame().apply(fly_roi_id, axis='columns')
+
+
 def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
     **kwargs):
 
@@ -3930,7 +3943,7 @@ def analyze_onepair(trial_df):
 
 # TODO write a csv in addition (and maybe use as main cache too, but would need to
 # handle indices)? parquet?
-roi_response_stats_cache_fname = 'roi_mean_response_df.p'
+ij_roi_responses_cache = 'ij_roi_stats.p'
 # TODO better name for this fn (+ probably call at end of main, not just behind -c flag)
 def analyze_cache():
     fly_keys = ['date', 'fly_num']
@@ -3943,7 +3956,7 @@ def analyze_cache():
 
     warnings.simplefilter('error', pd.errors.PerformanceWarning)
 
-    df = pd.read_pickle(roi_response_stats_cache_fname).T
+    df = pd.read_pickle(ij_roi_responses_cache).T
 
     # This will just be additional presentations of solvent, interspersed throughout the
     # experiment. Not interesting.
@@ -4530,7 +4543,6 @@ def main():
     diag_panel_str = 'glomeruli_diagnostics'
     # TODO actually load from generator config (union of all loaded w/ this panel?)
     # -> use associated glomeruli keys of odors to sort
-    # TODO TODO also add + apply abbreviations for these odors
     #
     # Sorted manually to roughly alphabetically sort by names of glomeruli we are trying
     # to target with these diagnostics.
@@ -4563,12 +4575,9 @@ def main():
     )
 
     trial_df.to_csv('ij_roi_stats.csv')
-    # TODO just use this or pickle below...
-    trial_df.to_pickle('ij_roi_stats.p')
+    trial_df.to_pickle(ij_roi_responses_cache)
 
-    trial_df.to_pickle(roi_response_stats_cache_fname)
-
-    # TODO TODO TODO global option to always use glomeruli_diagnostic ImageJ ROIs
+    # TODO TODO TODO option to always use glomeruli_diagnostic ImageJ ROIs
     # (at least for stuff where diags + recording of interest are nicely registered
     # together).
     # TODO TODO TODO at least print out / warn / fail in cases where diagnostic ROIs are
@@ -4591,12 +4600,6 @@ def main():
     across_fly_ijroi_dir = plot_root_dir / 'ijroi'
     makedirs(across_fly_ijroi_dir)
 
-    def fly_roi_id(row):
-        # NOTE: assuming no need to use row.thorimage_id (or a panel / something like
-        # that), as assumed this will only be used within a context where that is
-        # context (e.g. a plot w/ kiwi data, but no control data)
-        return f'{row.date:%-m-%d}/{row.fly_num}/{row.roi}'
-
     # TODO TODO TODO cluster all ROIs across flies (w/ and w/o unidentified ROIs).
     # try including positions too. try doing just for unidentified glomeruli too.
     # TODO TODO also do for just the unidentified ROIs
@@ -4614,7 +4617,7 @@ def main():
         # Selecting just the is_pair=False rows, w/ the False here.
         pdf = dropna(pdf.loc[(panel, False), :])
 
-        fly_roi_ids = pdf.columns.to_frame().apply(fly_roi_id, axis='columns')
+        fly_roi_ids = get_fly_roi_ids(pdf)
 
         # TODO rewrite to index stuff by name. -1 = roi name. 0 = date, 1 = fly_num
         # (unused 2 = thorimage_id)
@@ -4655,6 +4658,9 @@ def main():
         fly_roi_sortkeys = [((not n),) + x for n, x in zip(is_named, fly_roi_sortkeys)]
 
         pdf.columns = fly_roi_ids
+
+        # TODO TODO TODO assert no duplicate columns anywhere in here.
+        # (or is it not an issue here cause i'm always within a panel?)
 
         fig, _ = plot_all_roi_mean_responses(pdf, roi_sortkeys=fly_roi_sortkeys,
             dpi=dpi, odor_sort=False
