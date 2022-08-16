@@ -7,6 +7,7 @@ import os
 from os.path import join, split, exists, expanduser, islink
 from pprint import pprint, pformat
 from collections import defaultdict, Counter
+from copy import deepcopy
 import warnings
 import time
 import shutil
@@ -269,6 +270,7 @@ unused_glomeruli_diagnostics = (
 across_fly_glomeruli_diags_dir = plot_root_dir / 'glomeruli_diagnostics'
 
 
+# TODO load/supplement from (union of?) abbrevs included in configs, if possible
 odor2abbrev = {
     'methyl salicylate': 'MS',
     'hexyl hexanoate': 'HH',
@@ -287,6 +289,16 @@ odor2abbrev = {
     'isoamyl acetate': 'IAA',
     'valeric acid': 'VA',
     'kiwi approx.': '~kiwi',
+
+    'ethyl lactate': 'elac',
+    'methyl acetate': 'MA',
+    '2,3-butanedione': '2,3-b',
+    '2-butanone': '2but',
+    'ethyl 3-hydroxybutyrate': 'e3hb',
+    'trans-2-hexenal': 't2h',
+    'ethyl crotonate': 'ecrot',
+    'methyl octanoate': 'moct',
+    # good one for acetoin (should be only current diag w/o one)?
 }
 
 if analyze_pairgrids_only:
@@ -1150,7 +1162,7 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sortkeys
         trial_df: ['odor1', 'odor2', 'repeat'] index names and a column for each ROI.
             should only contain data from one panel (e.g. 'kiwi'/'control') and one fly.
 
-        roi_sortkeys: sequence of same length as trial_df, used to order ROIs
+        roi_sortkeys: sequence of same length as trial_df, used to order ROIs.
 
         roi_rows: if True, matrix will be transposed relative to input, with ROIs as
             rows and odors as columns
@@ -1308,6 +1320,10 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
 
     # TODO update to pathlib
     makedirs(roi_plot_dir)
+
+    # TODO maybe replace odor_sort kwarg with something like odor_sort_fn, and pass
+    # sort_concs in this case, and maybe something else for the non-pair experiments i'm
+    # mainly dealing with now
 
     fig, mean_df = plot_all_roi_mean_responses(trial_df, roi_sortkeys=z_indices,
         odor_sort=is_pair, title=main_plot_title, cbar_label=trial_stat_cbar_title,
@@ -4508,13 +4524,70 @@ def main():
     #    inplace=True
     #)
 
+    panel2name_order = deepcopy(natmix.panel2name_order)
+    panel_order = list(natmix.panel_order)
+
+    diag_panel_str = 'glomeruli_diagnostics'
+    # TODO actually load from generator config (union of all loaded w/ this panel?)
+    # -> use associated glomeruli keys of odors to sort
+    # TODO TODO also add + apply abbreviations for these odors
+    #
+    # Sorted manually to roughly alphabetically sort by names of glomeruli we are trying
+    # to target with these diagnostics.
+    panel2name_order[diag_panel_str] = [
+        # DL5
+        't2h',
+        # DM1
+        'EA',
+        # DM4
+        'MA',
+        # DM2
+        'moct',
+        # DM5
+        'e3hb',
+        # VA2/?
+        '2,3-b',
+        # VC4
+        'elac',
+        # VM2/VA2/?
+        'ecrot',
+        # ~VM3
+        'acetoin',
+        # VM7d
+        '2but',
+    ]
+    panel_order = [diag_panel_str] + panel_order
+
+    trial_df = sort_odors(trial_df, panel_order=panel_order,
+        panel2name_order=panel2name_order
+    )
+
     trial_df.to_csv('ij_roi_stats.csv')
     # TODO just use this or pickle below...
     trial_df.to_pickle('ij_roi_stats.p')
 
     trial_df.to_pickle(roi_response_stats_cache_fname)
 
-    # TODO maybe also serialize the above things here
+    # TODO TODO TODO global option to always use glomeruli_diagnostic ImageJ ROIs
+    # (at least for stuff where diags + recording of interest are nicely registered
+    # together).
+    # TODO TODO TODO at least print out / warn / fail in cases where diagnostic ROIs are
+    # more recent than the recording specific ROIs of interest (+ maybe option to
+    # overwrite the latter with the former[, making a backup first])
+
+    # TODO TODO add (+use) some notation (maybe '<roi_name>+') to indicate an ROI that
+    # is the largest extent plausibly containing signal mainly from a given ROI.
+    # use to summarize / plot extent of dF/F sum in current ROIs / not (for assessing
+    # completeness of ROI assignments)
+
+    # TODO factor out plotting below, so i can partially use it for plotting responses
+    # to specific glomeruli of interest, for interactively comparing certain glomeruli
+    # to [each other / Hallem / DoOR / all existing glomeruli given a particular name]
+    # TODO and/or just make plots of responses w/ all fly/ROIs lexsorted, for quick
+    # lookup of a particular ROI
+
+    # TODO maybe also serialize the above things here (they aren't plots tho... maybe
+    # another root for data outputs?)
     across_fly_ijroi_dir = plot_root_dir / 'ijroi'
     makedirs(across_fly_ijroi_dir)
 
@@ -4529,11 +4602,15 @@ def main():
     # TODO TODO also do for just the unidentified ROIs
     # TODO also sort unidentified ROIs by total/max activation strength
 
-    print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
+    # TODO TODO drop thorimage_id level in trial_df? (asserting that no rows contain
+    # multiple non-NaN values within a group of (date, fly_num, roi) on the columns
+    # (with (panel, is_pair) on the rows, also helping)
 
-    # TODO print what we are doing before loop + 'done' at end
-    for panel, pdf in trial_df.groupby('panel'):
-        # TODO skip diagnostics?
+    # TODO TODO relabel <date>/<fly_num> to one letter for both. write a text key to the
+    # same directory.
+    print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
+    dpi = 1000
+    for panel, pdf in trial_df.groupby('panel', sort=False):
         # Selecting just the is_pair=False rows, w/ the False here.
         pdf = dropna(pdf.loc[(panel, False), :])
 
@@ -4549,7 +4626,7 @@ def main():
         # (sort_odors should work hopefully)
 
         # TODO TODO remove kiwi -2,-1 from these plots (for now + main version, at
-        # least)
+        # least) (same for control mix -2,-1)
 
         # TODO maybe factor this stuff to roi merging, so there can be options to merge
         # the uncertain stuff either to neither or both ways? nice to be able to make
@@ -4572,23 +4649,36 @@ def main():
             is_named.append(named)
             is_certain.append(certain)
 
-        # TODO maybe also/only include is_certain
+        is_named = np.array(is_named)
+        is_certain = np.array(is_certain)
+
         fly_roi_sortkeys = [((not n),) + x for n, x in zip(is_named, fly_roi_sortkeys)]
 
         pdf.columns = fly_roi_ids
 
-        fig, _ = plot_all_roi_mean_responses(pdf,
-            roi_sortkeys=fly_roi_sortkeys, dpi=1000
+        fig, _ = plot_all_roi_mean_responses(pdf, roi_sortkeys=fly_roi_sortkeys,
+            dpi=dpi, odor_sort=False
         )
-        # TODO find a proper directory (under plot_fmt dir) for this
         # TODO use plot_fmt
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois.png')
 
         roi_sortkeys = [tuple(x) for x in np.array(fly_roi_sortkeys)[is_certain]]
         fig, _ = plot_all_roi_mean_responses(pdf.loc[:, is_certain],
-            roi_sortkeys=roi_sortkeys, dpi=1000
+            roi_sortkeys=roi_sortkeys, dpi=dpi, odor_sort=False
         )
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain.png')
+
+        # TODO TODO do a version (or only version) where sorting is across both panels,
+        # so i can line them up (take max before loop)
+
+        # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
+        # (/ "z-scored" ok?)
+        glom_maxes = pdf.max(axis='rows')
+        fig, _ = plot_all_roi_mean_responses(pdf.loc[:, ~is_certain],
+            # negative glom_maxes, so sort is as if ascending=False
+            roi_sortkeys=-glom_maxes[~is_certain], dpi=dpi, odor_sort=False
+        )
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_uncertain.png')
 
     print('done')
 
