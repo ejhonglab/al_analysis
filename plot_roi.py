@@ -27,6 +27,9 @@ def main():
     df = dropna(df.loc[df.index.get_level_values('is_pair') == False, :])
     df = df[df.index.get_level_values('odor1') != 'pfo @ 0']
 
+    # TODO maybe move this earlier and explicitly group on all vars in the column index
+    # other than the thorimage_id level (which should be the only one we are really
+    # aggregating across) (so that i can use it here and also in al_analysis)
     def merge_dupe_cols(gdf):
         # As long as this doesn't trip, we don't have to worry about choosing which
         # column to take data from: there will only ever be at most one not NaN.
@@ -34,7 +37,7 @@ def main():
         ser = gdf.bfill(axis='columns').iloc[:, 0]
         return ser
 
-    df = df.groupby('roi', axis='columns').apply(merge_dupe_cols)
+    df = df.groupby('roi', axis='columns', sort=False).apply(merge_dupe_cols)
 
     matching = np.any([df.columns.str.endswith(x) for x in roi_strs], axis=0)
     subset_df = dropna(df.loc[:, matching])

@@ -156,6 +156,8 @@ save_figs = True
 plot_fmt = os.environ.get('plot_fmt', 'png')
 plot_root_dir = Path(plot_fmt)
 
+trial_and_frame_json_basename = 'trial_frames_and_odors.json'
+
 cmap = 'plasma'
 diverging_cmap = 'RdBu_r'
 # TODO could try TwoSlopeNorm, but would probably want to define bounds per fly (or else
@@ -368,6 +370,7 @@ s2p_trial_dfs = []
 # TODO also agg + cache full traces (maybe just use CSV? also for above)
 # TODO rename to ij_trialstat_dfs or something
 ij_trial_dfs = []
+ij_corrs = []
 
 # Using dict rather than defaultdict(list) so handling is more consistent in case when
 # multiprocessing DictProxy overrides this.
@@ -389,8 +392,6 @@ no_merges = []
 ###################################################################################
 
 dirs_with_ijrois = []
-# TODO check if any have original ROI name format (and what is it for a 3D TIFF?)
-#dirs_with_ijrois_needing_merge = []
 
 
 def formatwarning_msg_only(msg, category, *args, **kwargs):
@@ -1346,6 +1347,8 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
 
     # TODO TODO factor this convertion into a fn (probably in my hong2p.xarray)
     # (+ include the metadata (panel, fly, etc) / is_pair handling in there)
+    # TODO TODO TODO save these / compute them at the end, so i can easily compute the
+    # mean across them
     corr_df = trial_df.T.corr()
     corr_df.columns.names = ['odor1_b', 'odor2_b', 'repeat_b']
     corr = xr.DataArray(corr_df, dims=['odor', 'odor_b'])
@@ -1355,7 +1358,7 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
     savefig(fig, roi_plot_dir, 'roi_corr')
 
     if not is_pair:
-        return
+        return corr
 
     for roi in trial_df.columns:
         if show_suite2p_rois:
@@ -1381,6 +1384,8 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
             s2p.plot_roi(roi_stat, ops, ax=axs[1])
 
         savefig(fig, roi_plot_dir, str(roi))
+
+    return corr
 
 
 # TODO kwarg to allow passing trial stat fn in that includes frame rate info as closure,
@@ -1421,11 +1426,11 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir):
     roi_plot_dir = ijroi_plot_dir(plot_dir)
     title = 'ImageJ ROIs\nOrdered by Z plane\n*possibly [over/under]merged'
 
-    trace_plots(roi_plot_dir, trial_df, z_indices, title, odor_lists)
+    corr = trace_plots(roi_plot_dir, trial_df, z_indices, title, odor_lists)
 
     print('generated plots based on traces from ImageJ ROIs')
 
-    return trial_df
+    return trial_df, corr
 
 
 # TODO factor to hong2p.suite2p
@@ -1937,6 +1942,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         with open(bounding_frame_yaml_cache, 'r') as f:
             bounding_frames = yaml.safe_load(f)
 
+    # TODO TODO TODO refactor so i can also write these in concat TIFF cases
+
     # For trying to load in ImageJ plugin (assuming stdlib json module works there)
     json_dicts = []
     for trial_frames, trial_odors in zip(bounding_frames, odor_order_with_repeats):
@@ -1949,7 +1956,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             'odors': trial_odors,
         })
 
-    json_fname = analysis_dir / 'trial_frames_and_odors.json'
+    json_fname = analysis_dir / trial_and_frame_json_basename
     json_fname.write_text(json.dumps(json_dicts))
 
     # (loading the HDF5 should be the main time cost in the above fn)
@@ -1979,11 +1986,18 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     new_row_level_names = ['panel', 'is_pair']
     new_row_level_values = [panel, is_pair]
 
-    def add_metadata(df):
-        df = util.addlevel(df, new_row_level_names, new_row_level_values)
-        return util.addlevel(df, new_col_level_names, new_col_level_values,
-            axis='columns'
-        )
+    def add_metadata(data):
+        if isinstance(data, pd.DataFrame):
+            df = util.addlevel(data, new_row_level_names, new_row_level_values)
+            return util.addlevel(df, new_col_level_names, new_col_level_values,
+                axis='columns'
+            )
+        # Assuming DataArray here
+        else:
+            return data.assign_coords(dict(zip(
+                new_col_level_names + new_row_level_names,
+                new_col_level_values + new_row_level_values
+            )))
 
     def should_ignore_existing(name):
         if type(ignore_existing) is bool:
@@ -2040,6 +2054,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
             # TODO udpate to pathlib
             ij_trial_df_cache_fname = join(analysis_dir, 'ij_trial_df_cache.p')
+            # Assuming this is written, if ij_trial_df_cache_fname was
+            ij_corr_cache_fname = join(analysis_dir, 'ij_corr.p')
 
             # TODO TODO i'm not sure if this was the original issue described below, but
             # i think i want to make sure that all ijroi outputs are successfully
@@ -2075,6 +2091,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     )
                     ij_trial_df = pd.read_pickle(ij_trial_df_cache_fname)
                     ij_trial_dfs.append(ij_trial_df)
+
+                    ij_corr = load_dataarray(ij_corr_cache_fname)
+                    ij_corrs.append(ij_corr)
                 else:
                     print_inputs_once(yaml_path)
                     print('ImageJ ROIs were modified. re-analyzing.')
@@ -2135,16 +2154,18 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         # TODO make sure none of the stuff w/ suite2p outputs marked bad should also
         # just generally be marked bad, s.t. not run here
-        ij_trial_df = ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie,
-            plot_dir
+        ij_trial_df, ij_corr = ij_trace_plots(analysis_dir, bounding_frames, odor_lists,
+            movie, plot_dir
         )
-
-        # TODO populate dirs_with_ijrois_needing_merge
-        #import ipdb; ipdb.set_trace()
 
         ij_trial_df = add_metadata(ij_trial_df)
         ij_trial_df.to_pickle(ij_trial_df_cache_fname)
         ij_trial_dfs.append(ij_trial_df)
+
+        ij_corr = add_metadata(ij_corr)
+        write_dataarray(ij_corr, ij_corr_cache_fname)
+        ij_corrs.append(ij_corr)
+
 
     if not do_nonroi_analysis:
         print_skip(f'skipping non-ROI analysis because plot dir contains {plot_fmt}\n')
@@ -2973,6 +2994,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
 
             analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
             tiff_fname = analysis_dir / 'flipped.tif'
+            del analysis_dir
             if not tiff_fname.exists():
                 warn(f'TIFF {tiff_fname} did not exist! will not include in across '
                     'recording registration (if there are any other valid TIFFs for'
@@ -3094,6 +3116,11 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             verbose=True
         )
 
+        # TODO double check that this iterates through in acquisition order
+        # (+clarify in doc of load_suite2p_binaries)
+        # (part generating concat array, after this loop, already seems to assume that)
+
+        json_dicts = []
         for input_tiff, registered in input_tiff2registered.items():
 
             motion_corrected_tiff = input_tiff2mocorr_tiff(input_tiff)
@@ -3107,7 +3134,14 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             print()
             #
 
+            json_fname = input_tiff.parent / trial_and_frame_json_basename
+            json_dicts.extend(json.loads(json_fname.read_text()))
+            # TODO TODO TODO can't just extent. need to increment frames by last frame
+            # (+1) in previous
+            import ipdb; ipdb.set_trace()
+
             # TODO delete this temporary code to fix links
+            # (i think i should just need something similar for the concat tiff(s) now)
             #motion_corrected_tiff_link.unlink(missing_ok=True)
             #
 
@@ -3140,6 +3174,10 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         print(f'writing {fly_concat_tiff}', flush=True)
         util.write_tiff(fly_concat_tiff, fly_concat_movie)
         del fly_concat_movie
+
+        # TODO print we are writing this
+        concat_json_fname = fly_concat_tiff.parent / trial_and_frame_json_basename
+        concat_json_fname.write_text(json.dumps(json_dicts))
 
         print()
 
@@ -4609,10 +4647,22 @@ def main():
     # multiple non-NaN values within a group of (date, fly_num, roi) on the columns
     # (with (panel, is_pair) on the rows, also helping)
 
+    dpi = 1000
+    shared_kwargs = dict(dpi=dpi, odor_sort=False)
+
+    def roi_name_fn(x):
+        """Takes labels like '3-30/1/DM4' to just the ROI name (here, 'DM4').
+        """
+        # Extra complication is to not fail on stuff where the ROI name is something
+        # like '[D/V]M2'
+        # (I should just replace them all w/ the '|' character, but oh well)
+        return '/'.join(x.split('/')[2:])
+
+    nonmean_kwargs = dict(hline_level_fn=roi_name_fn, **shared_kwargs)
+
     # TODO TODO relabel <date>/<fly_num> to one letter for both. write a text key to the
     # same directory.
     print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
-    dpi = 1000
     for panel, pdf in trial_df.groupby('panel', sort=False):
         # Selecting just the is_pair=False rows, w/ the False here.
         pdf = dropna(pdf.loc[(panel, False), :])
@@ -4634,6 +4684,7 @@ def main():
         # TODO maybe factor this stuff to roi merging, so there can be options to merge
         # the uncertain stuff either to neither or both ways? nice to be able to make
         # plotting choices on cached roi extractions tho...
+        # TODO TODO factor out so i can use this in plot_roi.py too
         is_named = []
         is_certain = []
         for roi in pdf.columns.get_level_values('roi'):
@@ -4663,16 +4714,24 @@ def main():
         # (or is it not an issue here cause i'm always within a panel?)
 
         fig, _ = plot_all_roi_mean_responses(pdf, roi_sortkeys=fly_roi_sortkeys,
-            dpi=dpi, odor_sort=False
+            **nonmean_kwargs
         )
         # TODO use plot_fmt
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois.png')
 
+        cdf = pdf.loc[:, is_certain]
         roi_sortkeys = [tuple(x) for x in np.array(fly_roi_sortkeys)[is_certain]]
-        fig, _ = plot_all_roi_mean_responses(pdf.loc[:, is_certain],
-            roi_sortkeys=roi_sortkeys, dpi=dpi, odor_sort=False
+        fig, _ = plot_all_roi_mean_responses(cdf, roi_sortkeys=roi_sortkeys,
+            **nonmean_kwargs
         )
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain.png')
+
+        # I think this is sorting on output of the grouping fn (on ROI name), as I want.
+        mean_cdf = cdf.groupby(roi_name_fn, axis='columns').mean()
+        # TODO do i want roi_sortkeys here defined or no? i feel like i had reason to be
+        # happy with the current order, but maybe not
+        fig, _ = plot_all_roi_mean_responses(mean_cdf, **shared_kwargs)
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain_mean.png')
 
         # TODO TODO do a version (or only version) where sorting is across both panels,
         # so i can line them up (take max before loop)
@@ -4682,9 +4741,13 @@ def main():
         glom_maxes = pdf.max(axis='rows')
         fig, _ = plot_all_roi_mean_responses(pdf.loc[:, ~is_certain],
             # negative glom_maxes, so sort is as if ascending=False
-            roi_sortkeys=-glom_maxes[~is_certain], dpi=dpi, odor_sort=False
+            roi_sortkeys=-glom_maxes[~is_certain], **nonmean_kwargs
         )
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_uncertain.png')
+
+        # TODO TODO another version grouped by fly first, then glomerulus
+
+    # TODO TODO a version showing full tuning (like the plots from plot_roi.py)
 
     print('done')
 
