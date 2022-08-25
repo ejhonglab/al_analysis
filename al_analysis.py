@@ -4716,22 +4716,21 @@ def main():
         fig, _ = plot_all_roi_mean_responses(pdf, roi_sortkeys=fly_roi_sortkeys,
             **nonmean_kwargs
         )
-        # TODO use plot_fmt
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois.png')
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois.{plot_fmt}')
 
         cdf = pdf.loc[:, is_certain]
         roi_sortkeys = [tuple(x) for x in np.array(fly_roi_sortkeys)[is_certain]]
         fig, _ = plot_all_roi_mean_responses(cdf, roi_sortkeys=roi_sortkeys,
             **nonmean_kwargs
         )
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain.png')
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain.{plot_fmt}')
 
         # I think this is sorting on output of the grouping fn (on ROI name), as I want.
         mean_cdf = cdf.groupby(roi_name_fn, axis='columns').mean()
         # TODO do i want roi_sortkeys here defined or no? i feel like i had reason to be
         # happy with the current order, but maybe not
         fig, _ = plot_all_roi_mean_responses(mean_cdf, **shared_kwargs)
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain_mean.png')
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain_mean.{plot_fmt}')
 
         # TODO TODO do a version (or only version) where sorting is across both panels,
         # so i can line them up (take max before loop)
@@ -4743,7 +4742,7 @@ def main():
             # negative glom_maxes, so sort is as if ascending=False
             roi_sortkeys=-glom_maxes[~is_certain], **nonmean_kwargs
         )
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_uncertain.png')
+        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_uncertain.{plot_fmt}')
 
         # TODO TODO another version grouped by fly first, then glomerulus
 
