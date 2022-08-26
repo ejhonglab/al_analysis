@@ -185,6 +185,8 @@ dff_vmax = 3.0
 
 ax_fontsize = 7
 
+diag_panel_str = 'glomeruli_diagnostics'
+
 bad_suite2p_analysis_dirs = (
     # skipping for now cause suite2p output looks weird (for both recordings)
     '2021-03-07/2',
@@ -370,7 +372,7 @@ s2p_trial_dfs = []
 # TODO also agg + cache full traces (maybe just use CSV? also for above)
 # TODO rename to ij_trialstat_dfs or something
 ij_trial_dfs = []
-ij_corrs = []
+ij_corr_list = []
 
 # Using dict rather than defaultdict(list) so handling is more consistent in case when
 # multiprocessing DictProxy overrides this.
@@ -683,6 +685,62 @@ def dropna(df: pd.DataFrame, _checks=True) -> pd.DataFrame:
     return df
 
 
+# TODO factor into hong2p.xarray?
+# TODO TODO maybe also work if there is 'odor' but no 'odor_b'? what does it do now?
+def dropna_odors(arr: xr.DataArray, _checks=True) -> xr.DataArray:
+    # TODO doc correct?
+    # TODO can/should we check that sizes of dims other than 'odor'/'odor_b' don't
+    # change?
+    """Drops data where all NaN for either a given 'odor' or 'odor_b' index value.
+    """
+    if _checks:
+        notna_before = arr.notnull().sum().item()
+
+    # TODO need to alternate (i.e. does order ever mattter? ever not idempotent?)?
+    # "dropping along multiple dimensions simultaneously is not yet supported"
+    arr = arr.dropna('odor', how='all').dropna('odor_b', how='all')
+
+    if _checks:
+        assert arr.notnull().sum().item() == notna_before
+
+    return arr
+
+
+# TODO factor out (maybe into natmix, alongside a fn for dropping is_pair
+# stuff altogether)
+# TODO TODO support if arr has both odor (w/ odor[1|2]) and odor_b (w/ odor[1|2]_b)
+# TODO TODO after fixing to work w/ corr input (w/ odor_b), use in place of dropping all
+# is_pair stuff in plot_corrs (so that if i wanted to show some stuff from pair expt, i
+# could)
+def drop_nonlone_pair_expt_odors(arr):
+    """
+    Drops (along 'odor' dim) presentations that are any of:
+    - solvent-only
+    - >1 odors presented simultaneously (mixed in air) w/ non-zero concentration
+
+    This is to make some pair experiment data comparable alongside the same odors
+    presented from the non-pair experiment.
+    """
+    odor1 = arr.odor1
+    odor2 = arr.odor2
+    is_pair = arr.is_pair
+
+    # Once we drop these odors, the only data we should be left with (for
+    # the pair experiments) are odors presented by themselves.
+    pair_expt_odors_to_drop = (
+        ((odor1 == 'solvent') & (odor2 == 'solvent')) |
+        ((odor1 != 'solvent') & (odor2 != 'solvent'))
+    )
+    # TODO adapt this to work w/ either is_pair or is_pair_b
+    assert pair_expt_odors_to_drop[pair_expt_odors_to_drop].is_pair.all().item()
+
+    # TODO better name
+    mask = (is_pair == False) | ~pair_expt_odors_to_drop
+
+    # TODO copy?
+    return arr[mask]
+
+
 # default = 'netcdf4'
 # need to `pip install h5netcdf` for this
 #netcdf_engine = 'h5netcdf'
@@ -759,7 +817,7 @@ def odor_lists2names_and_conc_ranges(odor_lists: ExperimentOdors):
 
 
 def is_pairgrid(odor_lists: ExperimentOdors):
-    # TODO TODO reimplement in a way that actually checks there are all pairwise
+    # TODO reimplement in a way that actually checks there are all pairwise
     # concentrations, rather than just assuming so if there are 2 odors w/ 3 non-zero
     # concs each
     try:
@@ -1349,6 +1407,11 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
     # (+ include the metadata (panel, fly, etc) / is_pair handling in there)
     # TODO TODO TODO save these / compute them at the end, so i can easily compute the
     # mean across them
+    # TODO TODO TODO need to compute+plot these at end if we want corr_group_var to be
+    # able to work for ROI responses the same as i currently have for pixelwise
+    # analysis, where i can either compute correlations within a recording or a (fly,
+    # panel). if i ever want to show correlations between odors in separate recordings
+    # (within a fly), then i will need this.
     corr_df = trial_df.T.corr()
     corr_df.columns.names = ['odor1_b', 'odor2_b', 'repeat_b']
     corr = xr.DataArray(corr_df, dims=['odor', 'odor_b'])
@@ -1994,10 +2057,28 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             )
         # Assuming DataArray here
         else:
-            return data.assign_coords(dict(zip(
+            new_coords = dict(zip(
                 new_col_level_names + new_row_level_names,
                 new_col_level_values + new_row_level_values
-            )))
+            ))
+
+            # TODO make this more graceful. do for all of a list of odor-specific params
+            # (given how pixelwise corr code works, panel should not be included in such
+            # a list)
+            # TODO refactor to something to append coordinates (w/ scalar values, at
+            # lesat) to existing dimensions
+            # TODO may want to change to set_index
+            new_coords['is_pair'] = ('odor', [is_pair] * data.sizes['odor'])
+            new_coords['is_pair_b'] = ('odor_b', [is_pair] * data.sizes['odor_b'])
+
+            data = data.assign_coords(new_coords)
+
+            # NOTE: this currently results in different order of the index levels wrt
+            # the older pixelwise corr DataArray code. Shouldn't matter, hopefully
+            # doesn't...
+            # TODO also factor out w/ above (if i do)
+            return data.set_index(odor=['is_pair'], append=True
+                ).set_index(odor_b=['is_pair_b'], append=True)
 
     def should_ignore_existing(name):
         if type(ignore_existing) is bool:
@@ -2093,7 +2174,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     ij_trial_dfs.append(ij_trial_df)
 
                     ij_corr = load_dataarray(ij_corr_cache_fname)
-                    ij_corrs.append(ij_corr)
+                    ij_corr_list.append(ij_corr)
                 else:
                     print_inputs_once(yaml_path)
                     print('ImageJ ROIs were modified. re-analyzing.')
@@ -2147,10 +2228,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     read_movie_s = time.time() - before
 
     if do_ij_analysis:
-        # TODO TODO TODO TODO ensure we don't use ROIs drawn on non-flipped stuff on
-        # flipped stuff (same w/ mocorr ideally), then remove this
-        #assert False
-        #
+        # TODO ensure we don't use ROIs drawn on non-flipped stuff on flipped stuff
+        # (same w/ mocorr ideally) (if possible...)
 
         # TODO make sure none of the stuff w/ suite2p outputs marked bad should also
         # just generally be marked bad, s.t. not run here
@@ -2164,7 +2243,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         ij_corr = add_metadata(ij_corr)
         write_dataarray(ij_corr, ij_corr_cache_fname)
-        ij_corrs.append(ij_corr)
+        ij_corr_list.append(ij_corr)
 
 
     if not do_nonroi_analysis:
@@ -3207,11 +3286,152 @@ def format_fly_and_roi(fly_and_roi):
     return f'{fly}: {roi}'
 
 
-# TODO refactor. probably already have something for this.
 def odor_str2conc(odor_str):
-    return 0 if odor_str == solvent_str else np.float_power(10,
-        float(odor_str.split('@')[-1].strip())
-    )
+    if odor_str == solvent_str:
+        return 0.0
+
+    log10_conc = olf.parse_log10_conc(odor_str, require=True)
+    return np.float_power(10, log10_conc)
+
+
+# TODO maybe factor to natmix?
+# TODO rename corr_group_var / change things to not require it (might only really want
+# to support case where it is == 'fly_panel_id' in input, but ImageJ ROI corrs are
+# currently computed per experiment. change how ijroi corrs are computed to match.)
+def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
+    per_fly_figs=True, per_fly_fig_basename=None) -> None:
+
+    # Similar issue to directories grouping links to different glomeruli diagnostic
+    # data: we don't want to include links to data from old runs.
+    will_make_links = per_fly_figs and corr_group_var == 'recording_id'
+    if will_make_links and corr_plot_root.exists():
+        shutil.rmtree(corr_plot_root)
+
+    makedirs(corr_plot_root)
+
+    # TODO try to swap dims around / concat in a way that we dont get a bunch of
+    # nans. possible?
+    # TODO should this change from 'fly_panel' if corr_group_var != 'fly_panel_id'?
+    corr_avg_dim = 'fly_panel'
+    corrs = xr.concat(corr_list, corr_avg_dim)
+
+    # TODO .copy() *ever* useful in these .sel calls?
+
+    # .sel / .loc didn't work here cause 'panel' isn't (always) part of an index,
+    # despite always being associated w/ the 'fly_panel' dimension
+    #corrs = corrs.sel(panel=diag_panel_str).copy()
+    corrs = corrs.where(corrs.panel != diag_panel_str, drop=True)
+
+    # TODO don't drop all of this if i can get subsetting via drop_nonlone... to work
+    corrs = corrs.sel(is_pair=False, is_pair_b=False).copy()
+
+    corrs = corrs.dropna('fly_panel', how='all')
+
+    # TODO make a fn for grouping -> mean (+ embedding number of flies [maybe also w/ a
+    # separate list of metadata for those flies] in the DataArray attrs or something)
+    # -> maybe require those type of attrs for corresponding natmix plotting fn?
+    for panel, garr in corrs.reset_index(['odor', 'odor_b']).groupby('panel',
+        squeeze=False, restore_coord_dims=True):
+
+        garr = dropna_odors(garr)
+
+        # garr.mean(...) will otherwise throw out some / all of this information.
+        meta_dict = {
+            'date': garr.date.values,
+            'fly_num': garr.fly_num.values,
+        }
+        if hasattr(garr, 'thorimage_id'):
+            meta_dict['thorimage_id'] = garr.thorimage_id.values
+
+        panel_mean = garr.mean(corr_avg_dim)
+
+        # garr seems to be of shape:
+        # (# flies[/recordings sometimes maybe], # odors, # odors)
+        # TODO may need to fix. check against dedeuping below
+        n = len(garr)
+
+        fig = natmix.plot_corr(panel_mean, title=f'{panel} (n={n})')
+
+        savefig(fig, corr_plot_root, f'{panel}_mean')
+
+        # TODO more idiomatic way? to_dataframe seemed to be too much and
+        # to_[series|index|pandas] didn't seem to readily do what i wanted
+        # also pd.DataFrame(garr.date.to_series(), <other series>) was behaving strange
+        meta_df = pd.DataFrame(meta_dict)
+        try:
+            assert len(meta_df) == len(meta_df[['date', 'fly_num']].drop_duplicates())
+        except:
+            print(f'{meta_df=}')
+            import ipdb; ipdb.set_trace()
+
+        assert len(meta_df) == n
+        meta_df.to_csv(corr_plot_root / f'{panel}_flies.csv', index=False)
+
+        # (below should only be relevant if i am not dropping is_pair data, as i
+        # currently am before loop)
+        # TODO TODO serialize + use to check that panel_mean values are the same whether
+        # or not we drop the is_pair == True stuff
+        # TODO TODO especially if values are NOT the same, need to add some mechanism to
+        # make sure we aren't averaging part of data from other types of experiments
+        # into the experiment we are actually trying to plot
+        '''
+        if not per_fly_figs:
+            #write_dataarray(panel_mean, f'{panel}_w_pairs.p')
+            import ipdb; ipdb.set_trace()
+        '''
+
+    if not per_fly_figs:
+        return
+
+    # TODO TODO TODO change to also work w/ recording_id
+    # TODO maybe just use squeeze=True to not need squeeze inside? or will groupby
+    # squeeze not drop like i want?
+    # TODO TODO TODO compare to corr plots generated in trace_plots call ->
+    # remove this conditional if equiv, and only make the plots here then
+    for fly_panel_id, garr in corrs.reset_index(['odor', 'odor_b']).groupby(
+        'fly_panel_id', squeeze=False, restore_coord_dims=True):
+
+        panel = unique_coord_value(garr.panel)
+
+        panel_dir = corr_plot_root / panel
+        makedirs(panel_dir)
+
+        date_str = format_date(unique_coord_value(garr.date))
+        fly_num = unique_coord_value(garr.fly_num)
+        fly_str = f'{date_str}/{fly_num}'
+
+        # TODO might need to deal w/ NaNs some other way than just dropna (to avoid
+        # dropping specific trials w/ baseline NaN issues. or fix the baseline cause
+        # of the issue.)
+        corr = dropna_odors(garr.squeeze(drop=True))
+
+        fig = natmix.plot_corr(corr, title=fly_str)
+
+        fly_plot_prefix = fly_str.replace('/', '_')
+
+        # TODO tight_layout / whatever appropriate to not have cbar label cut off
+        # and not have so much space on the left
+
+        if corr_group_var == 'recording_id':
+            experiment_id = f'{fly_str}/{thorimage_id}'
+            plot_dir = get_plot_dir(experiment_id)
+
+            assert per_fly_fig_basename is not None, 'must be passed in this case'
+            # TODO test that on a fresh run (or if another run finishes first and
+            # deletes stuff...) that this still works / fix if not (always makedirs
+            # in savefig?)
+            # NOTE: important that we also have the '_ds{ds}' suffix here, otherwise
+            # if we do two runs w/ diff values for ds, the links created by the
+            # first run will end up pointing to the plots written by the second run
+            # (b/c overwritten)
+            fig_path = savefig(fig, plot_dir, per_fly_fig_basename)
+
+            # NOTE: would need to use prefix specific to recording if I add plots
+            # for just the pair experiments in this case
+            link_path = panel_dir / f'{fly_plot_prefix}.{plot_fmt}'
+            symlink(fig_path, link_path, relative=True)
+        else:
+            fig_path = savefig(fig, panel_dir, fly_plot_prefix)
 
 
 response_volume_cache_fname = 'trial_response_volumes.p'
@@ -3377,10 +3597,7 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     _checks = False
     _debug = False
 
-    # TODO TODO TODO version of these plots using ROI traces as inputs
-    # TODO TODO TODO save both these pixel activation strengths (+ROI ones, when i get
-    # those) to CSVs, so that i can include in analyses centered around model outputs
-    # (model_mixes_mb)
+    # TODO TODO TODO version of these plots using ROI responses as inputs (refactor)
 
     g1 = natmix.plot_activation_strength(df, color_flies=True, _checks=_checks,
         _debug=_debug
@@ -3390,21 +3607,14 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     g2 = natmix.plot_activation_strength(df, _checks=_checks, _debug=_debug)
     savefig(g2, intensities_plot_dir, 'mean_activations', bbox_inches=None)
 
+    # TODO TODO TODO also save the equivalent from the ijroi analysis elsewhere
+    # (again, for use w/ model_mixes_mb)
     df.to_csv(intensities_plot_dir / 'mean_pixel_dff.csv', index=False)
-
-    pixel_corr_plots_root = plot_root_dir / pixel_corr_basename
-    makedirs(pixel_corr_plots_root)
-
-    # Similar issue to directories grouping links to different glomeruli diagnostic
-    # data: we don't want to include links to data from old runs.
-    if pixel_corr_plots_root.exists():
-        shutil.rmtree(pixel_corr_plots_root)
 
     # TODO TODO TODO try both filling in pfo for stuff that doesn't have it w/ NaN,
     # as well as just not showing pfo on any of the correlation plots
-
-    # TODO TODO TODO how to enforce order for the two experiments?
-    # just order once i condense down to corr matrix?
+    # (don't want presence/absence of pfo to prevent some data from otherwise being
+    # included in an average correlation)
 
     # TODO TODO compare corr plots generated w/ both values for this, to check that
     # there isn't some hidden re-ordering causing correlation pair expt odors that
@@ -3415,7 +3625,11 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     # directories for each recording (usually would symlink to these), but instead
     # just want to directly save plots in the pixel corr folder (since we currently
     # don't have any other place to put plots for each fly, independent of which
-    # recording they came from)
+    # recording they came from) (what was the issue again? stuff getting overwritten?
+    # was it only a problem if an experiment type was done twice for one fly?)
+    # TODO maybe add an assertion plots don't already exist (assuming we are starting in
+    # a fresh directory. otherwise need to maintain a list of plots written in here, and
+    # assert we don't see repeats there, within a run of this script.)
     #corr_group_var = 'recording_id'
     corr_group_var = 'fly_panel_id'
 
@@ -3429,7 +3643,7 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     for _, garr in response_volumes.groupby(corr_group_var):
 
         panel = unique_coord_value(garr.panel)
-        if panel == 'glomeruli_diagnostics':
+        if panel == diag_panel_str:
             continue
 
         if corr_group_var == 'recording_id' and unique_coord_value(garr.is_pair):
@@ -3469,14 +3683,16 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
         # TODO TODO factor correlation handling to hong2p.xarray
 
         if corr_group_var == 'fly_panel_id':
+            # TODO factor this out + use in place of code in process_experiment that
+            # currently deals w/ adding odor index metadata?
             garr = garr.reset_index('odor').set_index(
                 odor=['is_pair', 'odor1', 'odor2', 'repeat']
             )
 
-            garr = garr[(garr.is_pair == False) | (~ ( (garr.is_pair == True) & (
-                ((garr.odor1 == 'solvent') & (garr.odor2 == 'solvent')) |
-                ((garr.odor1 != 'solvent') & (garr.odor2 != 'solvent'))
-            )))]
+            # TODO TODO compare to what happens if we drop after calculating
+            # correlation, so that (if we add this) we can test support for dropping
+            # along odor_b dim simultaneously w/ odor dim
+            garr = drop_nonlone_pair_expt_odors(garr)
 
             # TODO clean up...
             garr2 = garr.reset_index('odor').rename(odor='odor_b',
@@ -3550,7 +3766,8 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     # (odor_b was duplicated IFF odor was (just index 5))
     # did i really somehow include two control1 expts for one fly? improper redo
     # handling?
-    # TODO TODO TODO TODO delete hack
+    # TODO TODO TODO TODO delete hack (turn into assertion there is nothing duplicated
+    # like this -> fix if so)
     orig_corr_list = corr_list
     corr_list = [x for x in corr_list if not
         (x.odor.to_pandas().index.duplicated().any())
@@ -3563,78 +3780,11 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     corr_list = [x for x in corr_list if x.shape == (45, 45)]
     #
 
-    # TODO try to swap dims around / concat in a way that we dont get a bunch of
-    # nans. possible?
-    corr_avg_dim = 'fly_panel'
-    corrs = xr.concat(corr_list, corr_avg_dim)
+    pixel_corr_plots_root = plot_root_dir / pixel_corr_basename
 
-    # TODO TODO TODO change to also work w/ recording_id
-    # TODO maybe just use squeeze=True to not need squeeze inside? or will groupby
-    # squeeze not drop like i want?
-    for fly_panel_id, garr in corrs.reset_index(['odor', 'odor_b']).groupby(
-        'fly_panel_id', squeeze=False, restore_coord_dims=True):
-
-        date_str = format_date(unique_coord_value(garr.date))
-        fly_num = unique_coord_value(garr.fly_num)
-        fly_str = f'{date_str}/{fly_num}'
-
-        # TODO might need to deal w/ NaNs some other way than just dropna (to avoid
-        # dropping specific trials w/ baseline NaN issues. or fix the baseline cause
-        # of the issue.)
-        corr = garr.squeeze(drop=True
-            ).dropna('odor', how='all').dropna('odor_b', how='all')
-
-        fig = natmix.plot_corr(corr, title=fly_str)
-
-        fly_plot_prefix = fly_str.replace('/', '_')
-
-        panel = unique_coord_value(garr.panel)
-        panel_dir = pixel_corr_plots_root / panel
-        makedirs(panel_dir)
-
-        # TODO tight_layout / whatever appropriate to not have cbar label cut off
-        # and not have so much space on the left
-
-        if corr_group_var == 'recording_id':
-            experiment_id = f'{fly_str}/{thorimage_id}'
-            plot_dir = get_plot_dir(experiment_id)
-
-            # TODO test that on a fresh run (or if another run finishes first and
-            # deletes stuff...) that this still works / fix if not (always makedirs
-            # in savefig?)
-            # NOTE: important that we also have the '_ds{ds}' suffix here, otherwise
-            # if we do two runs w/ diff values for ds, the links created by the
-            # first run will end up pointing to the plots written by the second run
-            # (b/c overwritten)
-            fig_path = savefig(fig, plot_dir, pixel_corr_basename)
-
-            # NOTE: would need to use prefix specific to recording if I add plots
-            # for just the pair experiments in this case
-            link_path = panel_dir / f'{fly_plot_prefix}.{plot_fmt}'
-            symlink(fig_path, link_path, relative=True)
-        else:
-            fig_path = savefig(fig, panel_dir, fly_plot_prefix)
-
-    # TODO make a fn for grouping -> mean (+ embedding number of flies [maybe also w/ a
-    # separate list of metadata for those flies] in the DataArray attrs or something)
-    # -> maybe require those type of attrs for corresponding natmix plotting fn?
-    for panel, garr in corrs.reset_index(['odor', 'odor_b']).groupby('panel',
-        squeeze=False, restore_coord_dims=True):
-
-        # "dropping along multiple dimensions simultaneously is not yet supported"
-        garr = garr.dropna('odor', how='all').dropna('odor_b', how='all')
-
-        # TODO TODO is this re-ordering stuff?
-        # TODO TODO TODO either way, re-order everything to a consistent order, both
-        # here and in single-fly stuff above
-        panel_mean = garr.mean(corr_avg_dim)
-
-        # TODO TODO TODO include which flies were included in average in a
-        # separate output
-        # TODO TODO TODO include N of flies in title
-        fig = natmix.plot_corr(panel_mean, title=panel)
-
-        savefig(fig, pixel_corr_plots_root, f'{panel}_mean')
+    plot_corrs(corr_list, pixel_corr_plots_root, corr_group_var,
+        per_fly_fig_basename=pixel_corr_basename
+    )
 
 
 # TODO maybe refactor so this happens in analyze_cache, if at all (splitting fly-by-fly
@@ -4578,7 +4728,6 @@ def main():
     panel2name_order = deepcopy(natmix.panel2name_order)
     panel_order = list(natmix.panel_order)
 
-    diag_panel_str = 'glomeruli_diagnostics'
     # TODO actually load from generator config (union of all loaded w/ this panel?)
     # -> use associated glomeruli keys of odors to sort
     #
@@ -4614,6 +4763,10 @@ def main():
 
     trial_df.to_csv('ij_roi_stats.csv')
     trial_df.to_pickle(ij_roi_responses_cache)
+
+    old_index_levels = trial_df.index.names
+    trial_df = natmix.drop_mix_dilutions(trial_df.reset_index()
+        ).set_index(old_index_levels)
 
     # TODO TODO TODO option to always use glomeruli_diagnostic ImageJ ROIs
     # (at least for stuff where diags + recording of interest are nicely registered
@@ -4665,6 +4818,7 @@ def main():
     print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
     for panel, pdf in trial_df.groupby('panel', sort=False):
         # Selecting just the is_pair=False rows, w/ the False here.
+        # TODO switch to indexing by name (via a mask), to make more robust to changes?
         pdf = dropna(pdf.loc[(panel, False), :])
 
         fly_roi_ids = get_fly_roi_ids(pdf)
@@ -4749,6 +4903,20 @@ def main():
     # TODO TODO a version showing full tuning (like the plots from plot_roi.py)
 
     print('done')
+
+
+    # TODO TODO TODO activation strength plots using ROI responses as input
+
+
+    ij_corr_plots_root = across_fly_ijroi_dir / 'corr'
+
+    # TODO TODO TODO only use the certain ROIs for (at least one version of) this
+    # TODO TODO TODO also probably only compute w/ the 4 flies i am using in pixelwise
+    # case, to make more direct comparison (actually onlya 2 flies in kiwi case rn, b/c
+    # of unresolved bug)
+    # TODO after checking equiv + moving per_fly corr plotting in this case to use
+    # per_fly_figs=True branch in plot_corrs, probably delete that kwarg
+    plot_corrs(ij_corr_list, ij_corr_plots_root, per_fly_figs=False)
 
     import ipdb; ipdb.set_trace()
 
