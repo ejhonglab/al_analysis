@@ -1180,10 +1180,47 @@ def fly_roi_id(row):
     return f'{row.date:%-m-%d}/{row.fly_num}/{row.roi}'
 
 
-def get_fly_roi_ids(df):
+def get_fly_roi_ids(df: pd.DataFrame):
     """Takes columns with date,fly_num,roi levels to Series with str fly+ROI labels.
     """
     return df.columns.to_frame().apply(fly_roi_id, axis='columns')
+
+
+def is_ijroi_named(roi):
+    try:
+        int(roi)
+        return False
+    except ValueError:
+        return True
+
+def is_ijroi_certain(roi):
+    # Won't contain any of the characters indicating uncertainty if it's just a number.
+    if not is_ijroi_named(roi):
+        return False
+
+    if ('?' in roi) or ('|' in roi) or ('/' in roi):
+        return False
+    return True
+
+
+def fly_roi_id2roi_name(x: str, numeric_as_none: bool = True) -> Optional[str]:
+    """Takes labels like '3-30/1/DM4' to just the ROI name (here, 'DM4').
+
+    Args:
+        numeric_as_none: if False, will return None if ROI name can be parsed as an
+            integer (how uncertain / unnamed ImageJ ROIs start in my workflow)
+    """
+    # Extra complication is to not fail on stuff where the ROI name is something
+    # like '[D/V]M2'
+    # (I should just replace them all w/ the '|' character, but oh well)
+    ret = '/'.join(x.split('/')[2:])
+    try:
+        int(ret)
+        if numeric_as_none:
+            return None
+    except ValueError:
+        pass
+    return ret
 
 
 def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
@@ -1259,22 +1296,27 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sortkeys
     if odor_sort:
         mean_df = sort_concs(mean_df)
 
+    # TODO TODO may want to (only?) accept a fn for this, to not need to reindex a
+    # separately stored list of sort keys
     if roi_sortkeys is not None:
-        assert len(roi_sortkeys) == len(trial_df.columns)
 
-        roi_sortkey_dict = dict(zip(trial_df.columns, roi_sortkeys))
+        if callable(roi_sortkeys):
+            roi_sortkey_fn = roi_sortkeys
+        else:
+            assert len(roi_sortkeys) == len(trial_df.columns)
 
-        def roi_sortkey_fn(index):
-            return [roi_sortkey_dict[x] for x in index]
+            roi_sortkey_dict = dict(zip(trial_df.columns, roi_sortkeys))
+            def roi_sortkey_fn(index):
+                return [roi_sortkey_dict[x] for x in index]
 
         mean_df.sort_index(key=roi_sortkey_fn, axis='columns', inplace=True)
 
     if roi_rows:
         xticklabels = format_mix_from_strs
-        yticklabels = True
+        yticklabels = kwargs.get('yticklabels', True)
         mean_df = mean_df.T
     else:
-        xticklabels = True
+        xticklabels = kwargs.get('xticklabels', True)
         yticklabels = format_mix_from_strs
 
     # TODO maybe put lines between levels of sortkey if int (e.g. 'iplane')
@@ -1379,8 +1421,10 @@ def ij_traces(analysis_dir, movie):
     return traces, rois, z_indices
 
 
+# TODO delete corr_certain_ijrois_only if i ever refactor ijroi correlation calculation
+# to end, using aggregated trial_dfs rather than correlations computed in here
 def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, *,
-    roi_stats=None, show_suite2p_rois=False):
+    roi_stats=None, show_suite2p_rois=False, corr_certain_ijrois_only=False):
 
     # TODO TODO remake directory (or at least make sure plots from ROIs w/ names no
     # longer in set of ROI names are deleted)
@@ -1403,6 +1447,12 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
     )
     savefig(fig, roi_plot_dir, 'all_rois_by_z')
 
+    if not corr_certain_ijrois_only:
+        for_corr = trial_df
+    else:
+        assert {type(x) for x in trial_df.columns} == {str}
+        for_corr = trial_df[[x for x in trial_df.columns if is_ijroi_certain(x)]]
+
     # TODO TODO factor this convertion into a fn (probably in my hong2p.xarray)
     # (+ include the metadata (panel, fly, etc) / is_pair handling in there)
     # TODO TODO TODO save these / compute them at the end, so i can easily compute the
@@ -1412,7 +1462,7 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
     # analysis, where i can either compute correlations within a recording or a (fly,
     # panel). if i ever want to show correlations between odors in separate recordings
     # (within a fly), then i will need this.
-    corr_df = trial_df.T.corr()
+    corr_df = for_corr.T.corr()
     corr_df.columns.names = ['odor1_b', 'odor2_b', 'repeat_b']
     corr = xr.DataArray(corr_df, dims=['odor', 'odor_b'])
 
@@ -1489,7 +1539,9 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir):
     roi_plot_dir = ijroi_plot_dir(plot_dir)
     title = 'ImageJ ROIs\nOrdered by Z plane\n*possibly [over/under]merged'
 
-    corr = trace_plots(roi_plot_dir, trial_df, z_indices, title, odor_lists)
+    corr = trace_plots(roi_plot_dir, trial_df, z_indices, title, odor_lists,
+        corr_certain_ijrois_only=True
+    )
 
     print('generated plots based on traces from ImageJ ROIs')
 
@@ -4800,101 +4852,86 @@ def main():
     # multiple non-NaN values within a group of (date, fly_num, roi) on the columns
     # (with (panel, is_pair) on the rows, also helping)
 
-    dpi = 1000
-    shared_kwargs = dict(dpi=dpi, odor_sort=False)
-
-    def roi_name_fn(x):
-        """Takes labels like '3-30/1/DM4' to just the ROI name (here, 'DM4').
-        """
-        # Extra complication is to not fail on stuff where the ROI name is something
-        # like '[D/V]M2'
-        # (I should just replace them all w/ the '|' character, but oh well)
-        return '/'.join(x.split('/')[2:])
-
-    nonmean_kwargs = dict(hline_level_fn=roi_name_fn, **shared_kwargs)
+    shared_kwargs = dict(dpi=1000, odor_sort=False)
+    hlines_kwargs = dict(hline_level_fn=fly_roi_id2roi_name, **shared_kwargs)
 
     # TODO TODO relabel <date>/<fly_num> to one letter for both. write a text key to the
     # same directory.
     print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
     for panel, pdf in trial_df.groupby('panel', sort=False):
-        # Selecting just the is_pair=False rows, w/ the False here.
+
         # TODO switch to indexing by name (via a mask), to make more robust to changes?
+        assert pdf.index.names[0] == 'panel' and pdf.index.names[1] == 'is_pair'
+        # Selecting just the is_pair=False rows, w/ the False here.
         pdf = dropna(pdf.loc[(panel, False), :])
 
-        fly_roi_ids = get_fly_roi_ids(pdf)
-
-        # TODO rewrite to index stuff by name. -1 = roi name. 0 = date, 1 = fly_num
-        # (unused 2 = thorimage_id)
-        fly_roi_sortkeys = [(x[-1], x[0], x[1]) for x in pdf.columns]
+        assert not pdf.columns.duplicated().any()
 
         # TODO unify colorbar scales across kiwi/control
-
-        # TODO TODO re-order so pfo isn't last / isn't included at all in these plots
-        # (sort_odors should work hopefully)
-
-        # TODO TODO remove kiwi -2,-1 from these plots (for now + main version, at
-        # least) (same for control mix -2,-1)
 
         # TODO maybe factor this stuff to roi merging, so there can be options to merge
         # the uncertain stuff either to neither or both ways? nice to be able to make
         # plotting choices on cached roi extractions tho...
         # TODO TODO factor out so i can use this in plot_roi.py too
+        # (and--more importantly--for exclusion of uncertain ROIs in correlation
+        # calculation)
         is_named = []
         is_certain = []
         for roi in pdf.columns.get_level_values('roi'):
-            try:
-                int(roi)
-                named = False
-                certain = False
-            except ValueError:
-                named = True
-
-                if ('?' in roi) or ('|' in roi) or ('/' in roi):
-                    certain = False
-                else:
-                    certain = True
-
-            is_named.append(named)
-            is_certain.append(certain)
+            is_named.append(is_ijroi_named(roi))
+            is_certain.append(is_ijroi_certain(roi))
 
         is_named = np.array(is_named)
         is_certain = np.array(is_certain)
 
+        # TODO rewrite to index stuff by name. -1 = roi name. 0 = date, 1 = fly_num
+        # (unused 2 = thorimage_id)
+        fly_roi_sortkeys = [(x[-1], x[0], x[1]) for x in pdf.columns]
         fly_roi_sortkeys = [((not n),) + x for n, x in zip(is_named, fly_roi_sortkeys)]
 
+        # TODO TODO change to name A,B,... w/in an ROI name, for at least one version
+        # of the *certain* plots (+ write a CSV key mapping date+fly_num to these IDs)
+        fly_roi_ids = get_fly_roi_ids(pdf)
+        assert not fly_roi_ids.duplicated().any()
+
+        # TODO TODO maybe dont do this? just use fn input to xticklabels?
+        # might make re-organizing easier.
         pdf.columns = fly_roi_ids
 
         # TODO TODO TODO assert no duplicate columns anywhere in here.
         # (or is it not an issue here cause i'm always within a panel?)
 
         fig, _ = plot_all_roi_mean_responses(pdf, roi_sortkeys=fly_roi_sortkeys,
-            **nonmean_kwargs
+            **hlines_kwargs
         )
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois.{plot_fmt}')
 
         cdf = pdf.loc[:, is_certain]
         roi_sortkeys = [tuple(x) for x in np.array(fly_roi_sortkeys)[is_certain]]
         fig, _ = plot_all_roi_mean_responses(cdf, roi_sortkeys=roi_sortkeys,
-            **nonmean_kwargs
+            **hlines_kwargs
         )
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain.{plot_fmt}')
 
         # I think this is sorting on output of the grouping fn (on ROI name), as I want.
-        mean_cdf = cdf.groupby(roi_name_fn, axis='columns').mean()
+        mean_cdf = cdf.groupby(fly_roi_id2roi_name, axis='columns').mean()
         # TODO do i want roi_sortkeys here defined or no? i feel like i had reason to be
         # happy with the current order, but maybe not
         fig, _ = plot_all_roi_mean_responses(mean_cdf, **shared_kwargs)
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain_mean.{plot_fmt}')
 
-        # TODO TODO do a version (or only version) where sorting is across both panels,
-        # so i can line them up (take max before loop)
+        # TODO do a version (or only version) where sorting is across both panels,
+        # so i can line them up (take max before loop)? less important now that i have
+        # plot_roi.py script, for investigating possible merges
 
         # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
         # (/ "z-scored" ok?)
+
+        # TODO maybe tern this into a fn looking up max using index?
         glom_maxes = pdf.max(axis='rows')
         fig, _ = plot_all_roi_mean_responses(pdf.loc[:, ~is_certain],
             # negative glom_maxes, so sort is as if ascending=False
-            roi_sortkeys=-glom_maxes[~is_certain], **nonmean_kwargs
+            roi_sortkeys=-glom_maxes[~is_certain], **shared_kwargs
         )
         fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_uncertain.{plot_fmt}')
 
@@ -4907,8 +4944,11 @@ def main():
 
     # TODO TODO TODO activation strength plots using ROI responses as input
 
-
     ij_corr_plots_root = across_fly_ijroi_dir / 'corr'
+
+    # TODO TODO make a dir + link all ijroi corrs into their own top level dir
+    # (or subdir of {plot_fmt}/ijroi[/corr]) (or refactor to only compute + save these
+    # at the end)
 
     # TODO TODO TODO only use the certain ROIs for (at least one version of) this
     # TODO TODO TODO also probably only compute w/ the 4 flies i am using in pixelwise
