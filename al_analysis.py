@@ -5001,8 +5001,12 @@ def main():
 
         # TODO switch to indexing by name (via a mask), to make more robust to changes?
         assert pdf.index.names[0] == 'panel' and pdf.index.names[1] == 'is_pair'
-        # Selecting just the is_pair=False rows, w/ the False here.
-        pdf = dropna(pdf.loc[(panel, False), :])
+
+        with warnings.catch_warnings():
+            # To ignore the "indexing past lexsort depth" warning.
+            warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+            # Selecting just the is_pair=False rows, w/ the False here.
+            pdf = dropna(pdf.loc[(panel, False), :])
 
         assert not pdf.columns.duplicated().any()
 
