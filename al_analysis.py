@@ -32,6 +32,7 @@ import yaml
 import ijroi
 from matplotlib import colors
 from matplotlib.figure import Figure
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.optimize import curve_fit
@@ -49,7 +50,9 @@ from hong2p.olf import (format_odor, format_mix_from_strs, format_odor_list,
 )
 from hong2p.viz import dff_latex
 from hong2p.types import ExperimentOdors, Pathlike
-from hong2p.xarray import move_all_coords_to_index, unique_coord_value
+from hong2p.xarray import (move_all_coords_to_index, unique_coord_value, scalar_coords,
+    drop_scalar_coords
+)
 import natmix
 
 
@@ -304,6 +307,38 @@ odor2abbrev = {
     'methyl octanoate': 'moct',
     # good one for acetoin (should be only current diag w/o one)?
 }
+
+panel2name_order = deepcopy(natmix.panel2name_order)
+panel_order = list(natmix.panel_order)
+
+# TODO actually load from generator config (union of all loaded w/ this panel?)
+# -> use associated glomeruli keys of odors to sort
+#
+# Sorted manually to roughly alphabetically sort by names of glomeruli we are trying to
+# target with these diagnostics.
+panel2name_order[diag_panel_str] = [
+    # DL5
+    't2h',
+    # DM1
+    'EA',
+    # DM4
+    'MA',
+    # DM2
+    'moct',
+    # DM5
+    'e3hb',
+    # VA2/?
+    '2,3-b',
+    # VC4
+    'elac',
+    # VM2/VA2/?
+    'ecrot',
+    # ~VM3
+    'acetoin',
+    # VM7d
+    '2but',
+]
+panel_order = [diag_panel_str] + panel_order
 
 if analyze_pairgrids_only:
     analyze_glomeruli_diagnostics = False
@@ -3377,7 +3412,10 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
     # TODO don't drop all of this if i can get subsetting via drop_nonlone... to work
     corrs = corrs.sel(is_pair=False, is_pair_b=False).copy()
 
-    corrs = corrs.dropna('fly_panel', how='all')
+    corrs = corrs.dropna(corr_avg_dim, how='all')
+
+    # TODO TODO serialize corrs for scatterplot directly comparing KC and ORN
+    # correlation consistency in the same figure/axes?
 
     # TODO make a fn for grouping -> mean (+ embedding number of flies [maybe also w/ a
     # separate list of metadata for those flies] in the DataArray attrs or something)
@@ -3395,16 +3433,133 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
         if hasattr(garr, 'thorimage_id'):
             meta_dict['thorimage_id'] = garr.thorimage_id.values
 
-        panel_mean = garr.mean(corr_avg_dim)
-
         # garr seems to be of shape:
         # (# flies[/recordings sometimes maybe], # odors, # odors)
         # TODO may need to fix. check against dedeuping below
         n = len(garr)
 
+        panel_mean = garr.mean(corr_avg_dim)
         fig = natmix.plot_corr(panel_mean, title=f'{panel} (n={n})')
-
         savefig(fig, corr_plot_root, f'{panel}_mean')
+
+        panel_sem = garr.std(corr_avg_dim, ddof=1) / np.sqrt(n)
+        # TODO try (a version) w/o forcing same scale (as it currently does)
+        fig = natmix.plot_corr(panel_sem,
+            title=f'{panel} (n={n})\nSEM for mean of correlations'
+        )
+        savefig(fig, corr_plot_root, f'{panel}_sem')
+
+        # TODO factor out the correlation consistency plotting code to its own fn (maybe
+        # in natmix?) and call here
+
+        fly_panel_sers = []
+        for arr in garr:
+            coord_dict = scalar_coords(arr)
+            arr = move_all_coords_to_index(drop_scalar_coords(arr))
+
+            # TODO add flag to this to exclude the diagonal itself?
+            ser = util.melt_symmetric(arr.to_pandas(), suffixes=('', '_b'),
+                keep_duplicate_values=True
+            )
+
+            # TODO add an option to not do this, esp when factoring out corr consistency
+            # plotting. probably still drop the diagonal itself, leaving just the values
+            # from different trials to average over.
+            #
+            # Dropping all correlations between an odor and itself, before averaging
+            # over trials, so we don't have some averages that include the perfect
+            # correlations on the diagonal (or even just 3/6 values to average vs 9 for
+            # other correlations).
+            ser = ser[
+                ser.index.get_level_values('odor1') !=
+                ser.index.get_level_values('odor1_b')
+            ]
+
+            mean_ser = ser.groupby(['odor1', 'odor1_b']).mean()
+
+            mean_ser = util.addlevel(mean_ser, coord_dict.keys(), coord_dict.values())
+            fly_panel_sers.append(mean_ser)
+
+        panel_tidy_corrs = pd.concat(fly_panel_sers).reset_index(name='correlation')
+        assert sum(len(x) for x in fly_panel_sers) == len(panel_tidy_corrs)
+
+        panel_tidy_corrs = sort_odors(panel_tidy_corrs, panel_order=panel_order,
+            panel2name_order=panel2name_order,
+        )
+
+        # TODO TODO factor some general pfo dropping into hong2p.olf (+ try to support
+        # odor vars being in diff places (index/columns/levels of those) & DataArrays)
+        panel_tidy_corrs = panel_tidy_corrs[ ~(
+            panel_tidy_corrs.odor1.str.startswith('pfo') |
+            panel_tidy_corrs.odor1_b.str.startswith('pfo')
+        )]
+
+        # TODO TODO TODO maybe plot on same axis as KC data, w/ diff markers?
+        # (probably w/o hue='fly_id' in these plots)
+        # (need to get that data from remy)
+
+        # TODO TODO drop correlations i don't care about (or do in a plotting fn, maybe
+        # a new one in natmix.viz)
+        # TODO TODO TODO maybe only have three Axes: one with highest mix conc (vs
+        # components), one with just mixes compared together (maybe just highest vs
+        # other two?), and one w/ top component (vs components and mix?)
+        # (or have those in addition to one plot showing ~all correlations)
+
+        # TODO if i were to reimplement this to be more general (detecting which odors
+        # have multiple concs, rather than hardcoding), then factor it out
+        def format_xtick_odor(ostr):
+            # These are the only odors for which, within a panel, the concentration
+            # varies, so we need that information for these odors.
+            if any(ostr.startswith(p) for p in ('~kiwi', 'control mix')):
+                return ostr
+            # For the other odors, we can drop the concentration information to tidy up
+            # the xticklabels.
+            else:
+                return olf.parse_odor_name(ostr)
+
+        # TODO prevent this from formatting odors from columns ['odor1','odor1_b'] as a
+        # mixture (or at least provide kwarg to control).  only stuff like ['odor1<x>',
+        # 'odor2<x>'] should be formatted as such. it should probably get order from
+        # union of all odor columns when not to be formatted a mixture.
+        # NOTE: do not need to pass these through the formatter fn supplied to catplot
+        odor_order = olf.panel_odor_orders(panel_tidy_corrs[['panel', 'odor1_b']],
+            panel2name_order
+        )[panel]
+
+        # This will add a 'fly_id' column from unique ['date','fly_num'] combinations.
+        # Internal sorting should produce same palette as in other places, given same
+        # input.
+        # TODO maybe call this earlier, so it also gets saved w/ meta_df?
+        # doesn't currently work w/ dataarray input tho, if that matters...
+        fly_id_palette = natmix.get_fly_id_palette(panel_tidy_corrs)
+
+        with mpl.rc_context({'figure.constrained_layout.use': False}):
+            # TODO TODO show errorbars (SEM?) (to also show points, would need to use a
+            # FacetGrid, and map in two calls / use custom plotting fn)
+            # TODO TODO maybe use same vmin/vmax as correlation heatmaps
+            # (at least so it's consistent across kiwi/control panels)
+            g = sns.catplot(data=panel_tidy_corrs, col='odor1', col_wrap=5, x='odor1_b',
+                order=odor_order, y='correlation', hue='fly_id', palette=fly_id_palette,
+                kind='swarm', legend=False,
+                # Note this required upgrading from seaborn 0.11.2 to 0.12.0
+                formatter=format_xtick_odor
+            )
+            g.set_xticklabels(rotation=90)
+            g.set_titles(col_template='{col_name}')
+            g.set_xlabels('odor')
+            g.fig.suptitle(f'{panel}\ncorrelation consistency')
+            # TODO if i still intend to share y, is it necessary to disable sharey just
+            # to make this call work (doesn't seem so. compare to plot w/o changing
+            # limits tho)?
+            # TODO especially if seaborn doesn't warn/fail, warn/fail if some data
+            # is out of this hardcoded range
+            # TODO may want to use a diff scale in the pixel corr case (currently data
+            # seems to occupy ~[0.2, 1.0] on average
+            g.set(ylim=(-0.4, 1.0))
+            viz.fix_facetgrid_axis_labels(g)
+            g.tight_layout()
+            # NOTE: assuming unique w/in corr_plot_root
+            g.savefig(corr_plot_root / f'{panel}_consistency.{plot_fmt}')
 
         # TODO more idiomatic way? to_dataframe seemed to be too much and
         # to_[series|index|pandas] didn't seem to readily do what i wanted
@@ -3435,7 +3590,7 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
     if not per_fly_figs:
         return
 
-    # TODO TODO TODO change to also work w/ recording_id
+    # TODO TODO change to also work w/ recording_id
     # TODO maybe just use squeeze=True to not need squeeze inside? or will groupby
     # squeeze not drop like i want?
     # TODO TODO TODO compare to corr plots generated in trace_plots call ->
@@ -3484,6 +3639,33 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
             symlink(fig_path, link_path, relative=True)
         else:
             fig_path = savefig(fig, panel_dir, fly_plot_prefix)
+
+
+def activation_strength_plots(df, intensities_plot_dir) -> None:
+    # TODO delete
+    print(intensities_plot_dir)
+    print(df.shape)
+    print()
+    #
+    makedirs(intensities_plot_dir)
+
+    # TODO before deleting all _checks code, turn into a test of some kind at least
+    _checks = False
+    _debug = False
+
+    # TODO TODO TODO version of these plots using ROI responses as inputs (refactor)
+
+    # TODO TODO TODO reorganize directories so all (downsampled) pixelbased stuff is in
+    # a ds<x> or pixelwise[_ds<x] folder, with folders underneath as necessary, same as
+    # ijroi/
+
+    g1 = natmix.plot_activation_strength(df, color_flies=True, _checks=_checks,
+        _debug=_debug
+    )
+    savefig(g1, intensities_plot_dir, 'mean_activations_per_fly', bbox_inches=None)
+
+    g2 = natmix.plot_activation_strength(df, _checks=_checks, _debug=_debug)
+    savefig(g2, intensities_plot_dir, 'mean_activations', bbox_inches=None)
 
 
 response_volume_cache_fname = 'trial_response_volumes.p'
@@ -3643,22 +3825,11 @@ def analyze_response_volumes(response_volumes_list, write_cache=True):
     df = mean.to_frame('mean_dff').reset_index()
 
     intensities_plot_dir = plot_root_dir / 'activation_strengths'
-    makedirs(intensities_plot_dir)
+    activation_strength_plots(df, intensities_plot_dir)
 
-    # TODO before deleting all _checks code, turn into a test of some kind at least
-    _checks = False
-    _debug = False
-
-    # TODO TODO TODO version of these plots using ROI responses as inputs (refactor)
-
-    g1 = natmix.plot_activation_strength(df, color_flies=True, _checks=_checks,
-        _debug=_debug
-    )
-    savefig(g1, intensities_plot_dir, 'mean_activations_per_fly', bbox_inches=None)
-
-    g2 = natmix.plot_activation_strength(df, _checks=_checks, _debug=_debug)
-    savefig(g2, intensities_plot_dir, 'mean_activations', bbox_inches=None)
-
+    # TODO TODO TODO maybe rename basename here + factor into activation_strength_plots
+    # (to remove reference to 'pixel') (change any model_mixes_mb code that currently
+    # hardcodes this filename)
     # TODO TODO TODO also save the equivalent from the ijroi analysis elsewhere
     # (again, for use w/ model_mixes_mb)
     df.to_csv(intensities_plot_dir / 'mean_pixel_dff.csv', index=False)
@@ -4777,38 +4948,6 @@ def main():
     #    inplace=True
     #)
 
-    panel2name_order = deepcopy(natmix.panel2name_order)
-    panel_order = list(natmix.panel_order)
-
-    # TODO actually load from generator config (union of all loaded w/ this panel?)
-    # -> use associated glomeruli keys of odors to sort
-    #
-    # Sorted manually to roughly alphabetically sort by names of glomeruli we are trying
-    # to target with these diagnostics.
-    panel2name_order[diag_panel_str] = [
-        # DL5
-        't2h',
-        # DM1
-        'EA',
-        # DM4
-        'MA',
-        # DM2
-        'moct',
-        # DM5
-        'e3hb',
-        # VA2/?
-        '2,3-b',
-        # VC4
-        'elac',
-        # VM2/VA2/?
-        'ecrot',
-        # ~VM3
-        'acetoin',
-        # VM7d
-        '2but',
-    ]
-    panel_order = [diag_panel_str] + panel_order
-
     trial_df = sort_odors(trial_df, panel_order=panel_order,
         panel2name_order=panel2name_order
     )
@@ -4941,8 +5080,20 @@ def main():
 
     print('done')
 
+    trial_ser = trial_df.stack(trial_df.columns.names)
+    assert trial_df.notnull().sum().sum() == trial_ser.notnull().sum()
+    tidy_trial_df = trial_ser.reset_index(name='mean_dff').drop(columns='thorimage_id')
 
-    # TODO TODO TODO activation strength plots using ROI responses as input
+    # TODO TODO how come the pixelwise analysis has a few more rows than this?
+    #
+    # Taking mean across ROIs and across trials, so there should be one number
+    # describing activation strength (still in mean_dff column), for each fly X odor.
+    mean_df = tidy_trial_df.groupby([
+        x for x in tidy_trial_df.columns if x not in ('repeat', 'roi', 'mean_dff')
+    ], sort=False).mean_dff.mean().reset_index()
+
+    intensities_plot_dir = across_fly_ijroi_dir / 'activation_strengths'
+    activation_strength_plots(mean_df, intensities_plot_dir)
 
     ij_corr_plots_root = across_fly_ijroi_dir / 'corr'
 
@@ -4957,8 +5108,6 @@ def main():
     # TODO after checking equiv + moving per_fly corr plotting in this case to use
     # per_fly_figs=True branch in plot_corrs, probably delete that kwarg
     plot_corrs(ij_corr_list, ij_corr_plots_root, per_fly_figs=False)
-
-    import ipdb; ipdb.set_trace()
 
 
 if __name__ == '__main__':

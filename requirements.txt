@@ -1,6 +1,8 @@
 # See README for steps necessary before installing these dependencies.
 # (to get suite2p set up well, via conda)
 
+seaborn>=0.12.0
+
 colorama
 termcolor
 
