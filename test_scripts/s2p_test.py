@@ -7,7 +7,7 @@ import numpy as np
 from scipy.ndimage import binary_closing
 import matplotlib.pyplot as plt
 
-from hong2p import util
+from hong2p.viz import plot_closed_contours
 
 
 def load(npy_path):
@@ -51,7 +51,7 @@ def main():
         roi_img_tmp[ypix, xpix] = s['lam']
 
         #dilated = cv2.dilate(roi_img_tmp, kernel, iterations=1)
-        #util.closed_mpl_contours(dilated)
+        #plot_closed_contours(dilated)
 
         plt.figure()
         ax = plt.gca()
@@ -65,10 +65,10 @@ def main():
         plt.imshow(closed)
 
         #plt.figure()
-        #util.closed_mpl_contours(closed)
+        #plot_closed_contours(closed)
         ax.contour(closed > 0, [0.5])
 
-        #util.closed_mpl_contours(roi_img_tmp)
+        #plot_closed_contours(roi_img_tmp)
         plt.show()
         import ipdb; ipdb.set_trace()
 

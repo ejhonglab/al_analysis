@@ -76,8 +76,8 @@ min_input = 'mocorr'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
 # TODO TODO TODO return to True + fix
-do_register_all_fly_recordings_together = False
-#do_register_all_fly_recordings_together = True
+#do_register_all_fly_recordings_together = False
+do_register_all_fly_recordings_together = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -158,8 +158,10 @@ save_figs = True
 # TODO TODO fix png in case it doesn't exist before running w/ -c flag
 plot_fmt = os.environ.get('plot_fmt', 'png')
 plot_root_dir = Path(plot_fmt)
+across_fly_ijroi_dir = plot_root_dir / 'ijroi'
 
 trial_and_frame_json_basename = 'trial_frames_and_odors.json'
+max_trialmean_dff_tiff_basename = 'max_trialmean_dff.tif'
 
 cmap = 'plasma'
 diverging_cmap = 'RdBu_r'
@@ -541,7 +543,8 @@ def get_plot_dir(experiment_id: str, relative=False) -> Path:
 
 # Especially running process_experiment in parallel, the many-figures-open memory
 # warning will get tripped at the default setting, hence `close=True`.
-def savefig(fig_or_facetgrid, fig_dir: Path, desc: str, close=True, **kwargs):
+def savefig(fig_or_facetgrid, fig_dir: Pathlike, desc: str, close=True, **kwargs
+    ) -> Path:
     basename = util.to_filename(desc) + plot_fmt
     # TODO update code that is currently passing in str fig_dir and delete Path
     # conversion
@@ -1138,7 +1141,7 @@ def get_panel(thorimage_id: Pathlike) -> Optional[str]:
     thorimage_id = Path(thorimage_id).name
 
     if 'diag' in thorimage_id:
-        return 'glomeruli_diagnostics'
+        return diag_panel_str
 
     elif 'kiwi' in thorimage_id:
         return 'kiwi'
@@ -1155,14 +1158,14 @@ def get_panel(thorimage_id: Pathlike) -> Optional[str]:
 
 # TODO update both of these to pathlib
 def ijroi_plot_dir(plot_dir: Path) -> Path:
-    #return plot_dir / 'ijroi'
-    return join(plot_dir, 'ijroi')
+    return plot_dir / 'ijroi'
+    #return join(plot_dir, 'ijroi')
 
 
 def suite2p_plot_dir(plot_dir: Path) -> Path:
     # TODO test doesn't break stuff
-    #return plot_dir / 'suite2p_roi'
-    return join(plot_dir, 'suite2p_roi')
+    return plot_dir / 'suite2p_roi'
+    #return join(plot_dir, 'suite2p_roi')
 
 
 # TODO TODO maybe i should check for all of a minimum set of files, or just the mtime on
@@ -1404,11 +1407,12 @@ def suite2p_traces(analysis_dir):
     return traces, rois, z_indices, roi_stats
 
 
-# TODO change to just take thorimage_dir after refactoring probably
-#def ij_traces(thorimage_dir, analysis_dir, movie):
+def plot_rois(*args, **kwargs):
+    return viz.plot_rois(*args, _pad=False, **kwargs)
+
+
 def ij_traces(analysis_dir, movie):
     # TODO cleanup pathlib version of this code
-    #thorimage_dir = analysis_dir.replace('analysis_intermediates', 'raw_data')
     thorimage_dir = Path(str(analysis_dir
         ).replace('analysis_intermediates', 'raw_data')
     )
@@ -1451,13 +1455,82 @@ def ij_traces(analysis_dir, movie):
     # TODO can i just use rois.roi_z.values?
     z_indices = masks.roi_z[masks.roi_num.isin(roi_nums)].values
 
+
+    # TODO TODO TODO provide option to symlink all RoiSet.zip files to point to the
+    # glomeruli_diagnostic one (a process I had done manually before).
+    # TODO TODO + copy any existing RoiSet.zip files where links would be created to a
+    # backup first
+    # (might wanna do this in process_experiment or something. here may not be the
+    # place.)
+
+    panel = get_panel(thorimage_dir)
+
+    # Only plotting ROI spatial extents (+ making symlinks to those plots) for
+    # diagnostic experiment for now, because for most fles I had symlinked all other
+    # RoiSet.zip files to the one for the diagnostic experiment.
+    if panel != diag_panel_str:
+        return traces, rois, z_indices
+
+    # TODO refactor to do plotting elsewhere / explicitly pass in plot_dir / something?
+    experiment_id = shorten_path(thorimage_dir)
+    plot_dir = ijroi_plot_dir(get_plot_dir(experiment_id))
+
+    ijroi_spatial_extents_plot_dir = across_fly_ijroi_dir / 'spatial_extents'
+    makedirs(ijroi_spatial_extents_plot_dir)
+
+    experiment_link_prefix = experiment_id.replace('/', '_')
+
+    # TODO fix what seems to be a (1[,1) pixel offset of contour wrt mask
+    # (if it were not for the _pad=False kwarg which i'm adding in fn here that wraps
+    # viz.plot_rois)
+    #mask_union_per_plane = masks.sum('roi') > 0
+    #plot_rois(masks, mask_union_per_plane)
+
+    masks = masks.transpose('roi', 'z', 'y', 'x')
+    certain_rois = [is_ijroi_certain(x) for x in masks.roi_name.values]
+
+    movie_mean = movie.mean(axis=0)
+
+    descriptions_and_backgrounds = [('avg', movie_mean)]
+
+    # TODO maybe do all this plotting in a separate step at the end, so i can get one
+    # colormap that maps all certain ROI names across all flies to particular colors, to
+    # make it easier to eyeball similarities across flies?
+
+    # NOTE: as currently implemented, this will need to be generated on an earlier run
+    # of this script, as these TIFFs are saved after where the ROI analysis is done.
+    max_trialmean_dff_tiff_fname = analysis_dir / max_trialmean_dff_tiff_basename
+    if max_trialmean_dff_tiff_fname.exists():
+        max_trialmean_dff = tifffile.imread(max_trialmean_dff_tiff_fname)
+        descriptions_and_backgrounds.append(('max_trialmean_dff', max_trialmean_dff))
+
+    for bg_desc, background in descriptions_and_backgrounds:
+
+        fig = plot_rois(masks, background)
+        fig_path = savefig(fig, plot_dir, f'all_rois_on_{bg_desc}')
+
+        all_roi_dir = ijroi_spatial_extents_plot_dir / f'all_rois_on_{bg_desc}'
+        makedirs(all_roi_dir)
+        symlink(fig_path, all_roi_dir / f'{experiment_link_prefix}.{plot_fmt}',
+            relative=True
+        )
+
+        fig = plot_rois(masks[certain_rois], movie_mean)
+        fig_path = savefig(fig, plot_dir, f'certain_rois_on_{bg_desc}')
+
+        certain_roi_dir = ijroi_spatial_extents_plot_dir / f'certain_rois_on_{bg_desc}'
+        makedirs(certain_roi_dir)
+        symlink(fig_path, certain_roi_dir / f'{experiment_link_prefix}.{plot_fmt}',
+            relative=True
+        )
+
     # TODO maybe just return rois and have z index information there in a way consistent
     # w/ output from corresponding suite2p fn?
     return traces, rois, z_indices
 
 
 # TODO delete corr_certain_ijrois_only if i ever refactor ijroi correlation calculation
-# to end, using aggregated trial_dfs rather than correlations computed in here
+# to end, using aggregated trial_dfs rather than correlations computed in here (?)
 def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, *,
     roi_stats=None, show_suite2p_rois=False, corr_certain_ijrois_only=False):
 
@@ -1480,6 +1553,8 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
         odor_sort=is_pair, title=main_plot_title, cbar_label=trial_stat_cbar_title,
         cbar_shrink=0.4
     )
+    # TODO rename to 'traces' or something (to more clearly disambiguate wrt spatial
+    # extent plots)
     savefig(fig, roi_plot_dir, 'all_rois_by_z')
 
     if not corr_certain_ijrois_only:
@@ -1908,7 +1983,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # Created below after we decide whether to skip a given experiment based on the
     # experiment type, etc.
     # TODO rename to experiment_plot_dir or something
-    # TODO TODO should i not be using get_plot_dir or whatever?
     plot_dir = plot_root_dir / experiment_basedir
 
     def suptitle(title, fig=None):
@@ -2220,10 +2294,38 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         if util.has_ijrois(analysis_dir):
             dirs_with_ijrois.append(analysis_dir)
 
-            # TODO udpate to pathlib
-            ij_trial_df_cache_fname = join(analysis_dir, 'ij_trial_df_cache.p')
+            # TODO TODO TODO maybe add column to gsheet (value to some metadata) to
+            # explicitly indicate whether registration between diagnostic and other
+            # stuff (/ a specific other recording) is good, and only do this if
+            # indicated
+            if panel != diag_panel_str:
+                ij_roiset_fname = util.ijroi_filename(analysis_dir)
+                if not ij_roiset_fname.is_symlink():
+                    # TODO TODO TODO backup ij_roiset_fname + make a new symlink to the
+                    # diagnostics recording
+                    # TODO assert RoiSet.zip.bak doesn't already exist
+                    parts = list(ij_roiset_fname.parts)
+                    assert parts[-1] == 'RoiSet.zip'
+                    parts[-2] = diag_panel_str
+
+                    diag_ij_roiset_fname = Path(*parts)
+                    assert diag_ij_roiset_fname.is_file()
+                    assert not diag_ij_roiset_fname.is_symlink()
+
+                    # TODO TODO TODO first backup if necessary
+
+                    # TODO delete
+                    print(f'{ij_roiset_fname=}')
+                    print(f'{diag_ij_roiset_fname=}')
+                    #
+                    #ij_roiset_fname.symlink_to(diag_ij_roiset_fname)
+                    # TODO delete
+                    import ipdb; ipdb.set_trace()
+                    #
+
+            ij_trial_df_cache_fname = analysis_dir / 'ij_trial_df_cache.p'
             # Assuming this is written, if ij_trial_df_cache_fname was
-            ij_corr_cache_fname = join(analysis_dir, 'ij_corr.p')
+            ij_corr_cache_fname = analysis_dir / 'ij_corr.p'
 
             # TODO TODO i'm not sure if this was the original issue described below, but
             # i think i want to make sure that all ijroi outputs are successfully
@@ -2247,7 +2349,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
            # TODO delete after generating them all? slightly more robust to interrupted
             # runs if i leave it
-            if not exists(ij_trial_df_cache_fname):
+            if not ij_trial_df_cache_fname.exists():
                 ij_analysis_current = False
 
             ignore_existing_ijroi = should_ignore_existing('ijroi')
@@ -2636,6 +2738,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     response_volumes_list.append(arr)
     write_dataarray(arr, response_volume_cache_fname)
 
+    # TODO try to save all tiffs with timing / xy resolution / step size information, as
+    # much as possible (in a format useable by imagej, ideally same as if entered
+    # manually)
+
     if save_dff_tiff:
         delta_f_over_f = np.concatenate(trial_dff_movies)
 
@@ -2654,8 +2760,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     max_trialmean_dff = np.max(odor_mean_dff_list, axis=0)
     if write_processed_tiffs:
-        # TODO switch to pathlib
-        max_trialmean_dff_tiff_fname = join(analysis_dir, 'max_trialmean_dff.tif')
+        max_trialmean_dff_tiff_fname = analysis_dir / max_trialmean_dff_tiff_basename
 
         # TODO TODO TODO will this be overwriting? we may need that to update w/ mocorr
         # updates.
@@ -2820,7 +2925,7 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
         print(f'Linking {shorten_path(suite2p_dir_link)} -> '
             f'{shorten_path(suite2p_dir, 5)}\n'
         )
-        # TODO TODO TODO TODO delete try/except
+        # TODO TODO TODO delete try/except
         try:
             # This would work if suite2p_dir did not exist yet, but I'm still postponing
             # till after run_s2p call, when applicable, to not make a link that will be
@@ -3302,7 +3407,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
 
             json_fname = input_tiff.parent / trial_and_frame_json_basename
             json_dicts.extend(json.loads(json_fname.read_text()))
-            # TODO TODO TODO can't just extent. need to increment frames by last frame
+            # TODO TODO TODO can't just extend. need to increment frames by last frame
             # (+1) in previous
             import ipdb; ipdb.set_trace()
 
@@ -3559,7 +3664,7 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
             viz.fix_facetgrid_axis_labels(g)
             g.tight_layout()
             # NOTE: assuming unique w/in corr_plot_root
-            g.savefig(corr_plot_root / f'{panel}_consistency.{plot_fmt}')
+            savefig(g, corr_plot_root, f'{panel}_consistency')
 
         # TODO more idiomatic way? to_dataframe seemed to be too much and
         # to_[series|index|pandas] didn't seem to readily do what i wanted
@@ -3641,10 +3746,15 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
             fig_path = savefig(fig, panel_dir, fly_plot_prefix)
 
 
-def activation_strength_plots(df, intensities_plot_dir) -> None:
+# TODO delete
+_shape2df = dict()
+#
+def activation_strength_plots(df: pd.DataFrame, intensities_plot_dir: Path) -> None:
     # TODO delete
     print(intensities_plot_dir)
     print(df.shape)
+    print(df)
+    _shape2df[df.shape] = df.copy()
     print()
     #
     makedirs(intensities_plot_dir)
@@ -4979,7 +5089,6 @@ def main():
 
     # TODO maybe also serialize the above things here (they aren't plots tho... maybe
     # another root for data outputs?)
-    across_fly_ijroi_dir = plot_root_dir / 'ijroi'
     makedirs(across_fly_ijroi_dir)
 
     # TODO TODO TODO cluster all ROIs across flies (w/ and w/o unidentified ROIs).
@@ -5047,21 +5156,21 @@ def main():
         fig, _ = plot_all_roi_mean_responses(pdf, roi_sortkeys=fly_roi_sortkeys,
             **hlines_kwargs
         )
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois.{plot_fmt}')
+        savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois')
 
         cdf = pdf.loc[:, is_certain]
         roi_sortkeys = [tuple(x) for x in np.array(fly_roi_sortkeys)[is_certain]]
         fig, _ = plot_all_roi_mean_responses(cdf, roi_sortkeys=roi_sortkeys,
             **hlines_kwargs
         )
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain.{plot_fmt}')
+        savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_certain')
 
         # I think this is sorting on output of the grouping fn (on ROI name), as I want.
         mean_cdf = cdf.groupby(fly_roi_id2roi_name, axis='columns').mean()
         # TODO do i want roi_sortkeys here defined or no? i feel like i had reason to be
         # happy with the current order, but maybe not
         fig, _ = plot_all_roi_mean_responses(mean_cdf, **shared_kwargs)
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_certain_mean.{plot_fmt}')
+        savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_certain_mean')
 
         # TODO do a version (or only version) where sorting is across both panels,
         # so i can line them up (take max before loop)? less important now that i have
@@ -5076,7 +5185,7 @@ def main():
             # negative glom_maxes, so sort is as if ascending=False
             roi_sortkeys=-glom_maxes[~is_certain], **shared_kwargs
         )
-        fig.savefig(across_fly_ijroi_dir / f'{panel}_ijrois_uncertain.{plot_fmt}')
+        savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_uncertain')
 
         # TODO TODO another version grouped by fly first, then glomerulus
 
@@ -5101,17 +5210,31 @@ def main():
 
     ij_corr_plots_root = across_fly_ijroi_dir / 'corr'
 
-    # TODO TODO make a dir + link all ijroi corrs into their own top level dir
-    # (or subdir of {plot_fmt}/ijroi[/corr]) (or refactor to only compute + save these
-    # at the end)
-
-    # TODO TODO TODO only use the certain ROIs for (at least one version of) this
-    # TODO TODO TODO also probably only compute w/ the 4 flies i am using in pixelwise
-    # case, to make more direct comparison (actually onlya 2 flies in kiwi case rn, b/c
-    # of unresolved bug)
     # TODO after checking equiv + moving per_fly corr plotting in this case to use
-    # per_fly_figs=True branch in plot_corrs, probably delete that kwarg
+    # per_fly_figs=True branch in plot_corrs, probably delete that kwarg (?)
     plot_corrs(ij_corr_list, ij_corr_plots_root, per_fly_figs=False)
+
+
+    # TODO TODO TODO where are these differences coming from?
+    # TODO delete
+    if matching_substrs != ['2022-03-3', '2022-04-03']:
+        return
+    pixel_df = _shape2df[(208, 7)]
+    ijroi_df = _shape2df[(192, 7)]
+
+    cols = ['panel', 'is_pair', 'date', 'fly_num', 'odor1', 'odor2']
+    pixel_tuples = {
+        tuple(x) for x in pixel_df[cols].drop_duplicates().itertuples(index=False)
+    }
+    ijroi_tuples = {
+        tuple(x) for x in ijroi_df[cols].drop_duplicates().itertuples(index=False)
+    }
+    pprint(pixel_tuples - ijroi_tuples)
+    print(f'{len(ijroi_tuples - pixel_tuples)=}')
+    # NOTE: len(ijroi_tuples - pixel_tuples) == 32, at the moment
+    import ipdb; ipdb.set_trace()
+    #
+
 
 
 if __name__ == '__main__':
