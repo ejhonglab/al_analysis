@@ -1506,6 +1506,10 @@ def ij_traces(analysis_dir, movie):
 
     for bg_desc, background in descriptions_and_backgrounds:
 
+        # TODO TODO provide <date>/<fly_num> suptitle for all of these
+        # TODO probably black out behind text, like the imagej option, to make ROI names
+        # easier to read
+
         fig = plot_rois(masks, background)
         fig_path = savefig(fig, plot_dir, f'all_rois_on_{bg_desc}')
 
@@ -1515,7 +1519,7 @@ def ij_traces(analysis_dir, movie):
             relative=True
         )
 
-        fig = plot_rois(masks[certain_rois], movie_mean)
+        fig = plot_rois(masks[certain_rois], background)
         fig_path = savefig(fig, plot_dir, f'certain_rois_on_{bg_desc}')
 
         certain_roi_dir = ijroi_spatial_extents_plot_dir / f'certain_rois_on_{bg_desc}'
@@ -2166,8 +2170,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         with open(bounding_frame_yaml_cache, 'r') as f:
             bounding_frames = yaml.safe_load(f)
 
-    # TODO TODO TODO refactor so i can also write these in concat TIFF cases
-
     # For trying to load in ImageJ plugin (assuming stdlib json module works there)
     json_dicts = []
     for trial_frames, trial_odors in zip(bounding_frames, odor_order_with_repeats):
@@ -2714,8 +2716,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     # TODO maybe factor out the add_metadata fn above to hong2p.util + also handle
     # xarray inputs there?
-    # TODO TODO any reason to use attrs for these rather than additional coords?
-    # either make concatenating more natural?
+    # TODO any reason to use attrs for these rather than additional coords?
+    # either make concatenating more natural (no great way to concat with attrs as of
+    # 2022-09, it seems)?
     metadata = {
         'panel': panel,
         'is_pair': is_pair,
@@ -2833,11 +2836,16 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
     """
     from suite2p import run_s2p
 
-    # TODO TODO TODO refactor so this whole logic (of having multiple runs in parallel
+    # TODO TODO TODO option to indicate we only care about suite2p motion correction,
+    # and then only re-run if one of the motion correction related parameters differs
+    # from current setting (for use with imagej ROI code)
+
+    # TODO TODO refactor so this whole logic (of having multiple runs in parallel
     # and updating a symlink to the one with the params we want) can be used inside
     # recording directories too (not just fly directories), where in those cases the
     # input should be only one recordings data. how to be clear as to whether to use the
     # across run stuff vs single run stuff? just in the gsheet i suppose is fine.
+    # (eh...)
 
     ops = load_default_ops()
 
@@ -2868,6 +2876,9 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
     # Should generally be numbered directories, each of which should contain a single
     # subdirectory named 'suite2p', created by suite2p.
     suite2p_run_dirs = [d for d in suite2p_runs_dir.iterdir() if d.is_dir()]
+
+    # TODO TODO make sure we are deleting directories that are being written too if
+    # suite2p is interrupted (or at least on the next run, which could be trickier)
 
     suite2p_dir = None
     max_seen_s2p_run_num = -1
@@ -3290,9 +3301,9 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             'blue', flush=True
         )
 
-        # TODO TODO TODO probably compare to registering stuff individually, because
+        # TODO TODO probably compare to registering stuff individually, because
         # my initial results have not been great (using block size of '48, 48')
-        # TODO TODO compare to block size '96, 96'
+        # TODO compare to block size '96, 96'
 
         success = register_recordings_together(thorimage_dirs, tiffs,
             fly_analysis_dir
@@ -3306,7 +3317,6 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         raw_fly_concat_tiff = fly_analysis_dir / 'raw_concat.tif'
         if not raw_fly_concat_tiff.is_file():
             raw_tiffs = [tifffile.imread(t) for t in tiffs]
-
             raw_fly_concat_movie = np.concatenate(raw_tiffs, axis=0)
             print(f'writing {raw_fly_concat_tiff}', flush=True)
             util.write_tiff(raw_fly_concat_tiff, raw_fly_concat_movie)
@@ -3331,10 +3341,27 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # until the second step finishes.
 
         fly_concat_tiff_link = fly_analysis_dir / 'mocorr_concat.tif'
+
+        # TODO delete this temporary code (to fix old links)
+        if fly_concat_tiff_link.exists():
+            assert fly_concat_tiff_link.is_symlink()
+            fly_concat_tiff_link.unlink()
+        #
+
         # TODO test on data that does/doesn't already have one
         if not fly_concat_tiff_link.is_symlink():
             # This link will be broken until fly_concat_tiff is written below.
             fly_concat_tiff_link.symlink_to(fly_concat_tiff)
+
+        trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
+
+        # This link will also remain broken until written below (on first run, at
+        # least).
+        trial_and_frame_concat_json_link = (
+            fly_analysis_dir / trial_and_frame_json_basename
+        )
+        if not trial_and_frame_concat_json_link.is_symlink():
+            trial_and_frame_concat_json_link.symlink_to(trial_and_frame_concat_json)
 
         def input_tiff2mocorr_tiff(input_tiff):
             return suite2p_dir / f'{input_tiff.parent.name}.tif'
@@ -3352,13 +3379,13 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
                     'real files, not symlinks'
                 )
 
-        # TODO TODO TODO may also want to test we have all the symlinks we expect
+        # TODO TODO may also want to test we have all the symlinks we expect
         # (AND may need some temporary code to either delete all existing links that
         # should be relative but currently aren't, or may need to do that manually)
 
         if have_all_tiffs:
             # TODO delete
-            print('HAVE ALL EXPECTED TIFFs')
+            print('HAVE ALL EXPECTED TIFFs (delete this code!)')
             #
             # TODO TODO TODO TODO uncomment. just so temporary code making all links
             # relative below runs. (why did i want to continue here tho...?)
@@ -3390,31 +3417,33 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # TODO double check that this iterates through in acquisition order
         # (+clarify in doc of load_suite2p_binaries)
         # (part generating concat array, after this loop, already seems to assume that)
-
         json_dicts = []
+        curr_frame_offset = 0
         for input_tiff, registered in input_tiff2registered.items():
 
             motion_corrected_tiff = input_tiff2mocorr_tiff(input_tiff)
             motion_corrected_tiff_link = input_tiff.with_name('mocorr.tif')
 
-            # TODO delete
-            print()
-            print(f'{motion_corrected_tiff=}')
-            print(f'{motion_corrected_tiff_link=}')
-            print(f'{input_tiff=}')
-            print()
-            #
-
+            # TODO TODO make sure the ImageJ plugin component of this stops displaying
+            # odor data when the current frame is in a region that doesn't have odor
+            # data (and that it doesn't just continue displaying the last odor from the
+            # direction of approach)
             json_fname = input_tiff.parent / trial_and_frame_json_basename
-            json_dicts.extend(json.loads(json_fname.read_text()))
-            # TODO TODO TODO can't just extend. need to increment frames by last frame
-            # (+1) in previous
-            import ipdb; ipdb.set_trace()
+            if json_fname.exists():
+                curr_json_dicts = json.loads(json_fname.read_text())
+                for d in curr_json_dicts:
+                    d['start_frame'] += curr_frame_offset
+                    d['first_odor_frame'] += curr_frame_offset
+                    d['end_frame'] += curr_frame_offset
 
-            # TODO delete this temporary code to fix links
-            # (i think i should just need something similar for the concat tiff(s) now)
-            #motion_corrected_tiff_link.unlink(missing_ok=True)
-            #
+                json_dicts.extend(curr_json_dicts)
+            else:
+                warn(f'{shorten_path(json_fname, n_parts=5)} did not exist! '
+                    'not including frame/odor metadata for this recording in '
+                    'concatenated metadata JSON.'
+                )
+
+            curr_frame_offset += len(registered)
 
             if not motion_corrected_tiff_link.is_symlink():
                 # For example:
@@ -3426,13 +3455,11 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
                 # will change when the directory the 'suite2p' link is pointing to does.
                 motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
 
-            # TODO TODO skip this if we already have this written
+            # TODO skip this if we already have this written?
 
             # TODO come up w/ diff names to distinguish stuff registered across
             # movies vs not? at least if we can't get across movie stuff to work as
             # well as latter (cause across movie stuff would be way more useful...)
-            # TODO TODO TODO or rather, probably just change which one the link in the
-            # recording directory points to...
             print(f'writing {motion_corrected_tiff}', flush=True)
             util.write_tiff(motion_corrected_tiff, registered)
 
@@ -3447,8 +3474,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         del fly_concat_movie
 
         # TODO print we are writing this
-        concat_json_fname = fly_concat_tiff.parent / trial_and_frame_json_basename
-        concat_json_fname.write_text(json.dumps(json_dicts))
+        trial_and_frame_concat_json.write_text(json.dumps(json_dicts))
 
         print()
 
@@ -4606,6 +4632,11 @@ def main():
 
     # TODO TODO CLI argument (-x) to pass a shell command to be run in each directory
     # visited (like for renaming stuff / copying stuff)? or a separate script for that?
+
+    # TODO script / CLI argument to delete all TIFFs generated from suite2p binary that
+    # do NOT correspond to currently linked mocorr dirs
+    # TODO or to just delete all other runs wholly (probably also renumbering remaining
+    # suite2p_runs/ subdir to '0/')
 
     # TODO TODO TODO what is currently causing this to hang on ~ when it is done with
     # iterating over the inputs? some big data it's trying to [de]serialize?
