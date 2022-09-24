@@ -479,6 +479,10 @@ def sort_concs(df):
     return sort_odors(df, sort_names=False)
 
 
+def paired_thor_dirs(*args, **kwargs):
+    return util.paired_thor_dirs(*args, ignore_prepairing=('anat',), **kwargs)
+
+
 # TODO TODO factor to hong2p.util (along w/ get_analysis_dir, removing old analysis dir
 # stuff for it [which would ideally involve updating old code that used it...])
 # TODO TODO factor out part to a fn that just returns path to TIFF to use?
@@ -518,6 +522,7 @@ def load_movie(*keys, tiff_priority=('mocorr', 'flipped', 'raw'), min_input=min_
             # Want to just try thor.read_movie in this case, b/c if we would accept the
             # raw TIFF, we should also accept the (what should be) equivalent ThorImage
             # .raw file
+            # TODO is this really how i want to handle it?
             if tiff_prefix == 'raw':
                 break
 
@@ -548,6 +553,9 @@ def savefig(fig_or_facetgrid, fig_dir: Pathlike, desc: str, close=True, **kwargs
     basename = util.to_filename(desc) + plot_fmt
     # TODO update code that is currently passing in str fig_dir and delete Path
     # conversion
+    # TODO delete / fix
+    makedirs(fig_dir)
+    #
     fig_path = Path(fig_dir) / basename
     if save_figs:
         fig_or_facetgrid.savefig(fig_path, **kwargs)
@@ -968,9 +976,7 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
 
     Loops over same directories as main analysis
     """
-    keys_and_paired_dirs = util.paired_thor_dirs(verbose=False,
-        **paired_thor_dirs_kwargs
-    )
+    keys_and_paired_dirs = paired_thor_dirs(verbose=False, **paired_thor_dirs_kwargs)
 
     seen_stimulus_yamls2thorimage_dirs = defaultdict(list)
     names2final_concs = dict()
@@ -1001,6 +1007,33 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
         names2final_concs[names] = curr_concs
 
     return names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples
+
+
+# TODO factor to hong2p / just supply a cache_dir arg to the hong2p.thor fn?
+def assign_frames_to_odor_presentations(thorsync_dir, thorimage_dir, cache_dir,
+    ignore_cache=ignore_bounding_frame_cache):
+
+    bounding_frame_yaml_cache = cache_dir / 'trial_bounding_frames.yaml'
+
+    if ignore_bounding_frame_cache or not bounding_frame_yaml_cache.exists():
+        # TODO don't bother doing this if we only have imagej / suite2p analysis left to
+        # do, and the required output directory doesn't exist / ROIs haven't been
+        # manually drawn/filtered / etc
+        bounding_frames = thor.assign_frames_to_odor_presentations(thorsync_dir,
+            thorimage_dir
+        )
+
+        # Converting numpy int types to python int types, and tuples to lists, for
+        # (much) nicer YAML output.
+        bounding_frames = [ [int(x) for x in xs] for xs in bounding_frames]
+
+        with open(bounding_frame_yaml_cache, 'w') as f:
+            yaml.dump(bounding_frames, f)
+    else:
+        with open(bounding_frame_yaml_cache, 'r') as f:
+            bounding_frames = yaml.safe_load(f)
+
+    return bounding_frames
 
 
 # TODO write tests for this function for the case when n_trial_length_args is empty and
@@ -1307,7 +1340,6 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sortkeys
 
     Args:
         trial_df: ['odor1', 'odor2', 'repeat'] index names and a column for each ROI.
-            should only contain data from one panel (e.g. 'kiwi'/'control') and one fly.
 
         roi_sortkeys: sequence of same length as trial_df, used to order ROIs.
 
@@ -1411,12 +1443,16 @@ def plot_rois(*args, **kwargs):
     return viz.plot_rois(*args, _pad=False, **kwargs)
 
 
-def ij_traces(analysis_dir, movie):
+def analysis2thorimage_dir(analysis_dir: Path) -> Path:
     # TODO cleanup pathlib version of this code
-    thorimage_dir = Path(str(analysis_dir
+    return Path(str(analysis_dir
         ).replace('analysis_intermediates', 'raw_data')
     )
-    #
+
+
+def ij_traces(analysis_dir, movie):
+
+    thorimage_dir = analysis2thorimage_dir(analysis_dir)
     try:
         masks = util.ijroi_masks(analysis_dir, thorimage_dir)
 
@@ -1480,6 +1516,9 @@ def ij_traces(analysis_dir, movie):
 
     experiment_link_prefix = experiment_id.replace('/', '_')
 
+    # TODO save these ROI images in a place where we can do it once for each fly,
+    # and have the background be computed across all the input movies?
+
     # TODO fix what seems to be a (1[,1) pixel offset of contour wrt mask
     # (if it were not for the _pad=False kwarg which i'm adding in fn here that wraps
     # viz.plot_rois)
@@ -1503,6 +1542,10 @@ def ij_traces(analysis_dir, movie):
     if max_trialmean_dff_tiff_fname.exists():
         max_trialmean_dff = tifffile.imread(max_trialmean_dff_tiff_fname)
         descriptions_and_backgrounds.append(('max_trialmean_dff', max_trialmean_dff))
+    else:
+        warn(f'{max_trialmean_dff_tiff_fname} did not exist. re-run script to use as '
+            'ROI plot background.'
+        )
 
     for bg_desc, background in descriptions_and_backgrounds:
 
@@ -2137,38 +2180,17 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     before = time.time()
 
-    bounding_frame_yaml_cache = analysis_dir / 'trial_bounding_frames.yaml'
-
-    if ignore_bounding_frame_cache or not exists(bounding_frame_yaml_cache):
-        # TODO TODO don't bother doing this if we only have imagej / suite2p analysis
-        # left to do, and the required output directory doesn't exist / ROIs haven't
-        # been manually drawn/filtered / etc
-        try:
-            bounding_frames = thor.assign_frames_to_odor_presentations(thorsync_dir,
-                thorimage_dir
-            )
-            assert len(bounding_frames) == len(odor_order_with_repeats)
-
-            # TODO TODO move inside assign_frames_to_odor_presentations
-            # Converting numpy int types to python int types, and tuples to lists,
-            # for (much) nicer YAML output.
-            bounding_frames = [ [int(x) for x in xs] for xs in bounding_frames]
-
-            with open(bounding_frame_yaml_cache, 'w') as f:
-                yaml.dump(bounding_frames, f)
-
-        # Currently seems to reliably happen iff we somehow accidentally also image
-        # with the red channel (which was allowed despite those channels having gain
-        # 0 in the few cases so far)
-        except AssertionError as err:
-            failed_assigning_frames_to_odors.append(thorimage_dir)
-            make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, err)
-
-            print_skip(traceback.format_exc(), yaml_path, color='red', file=sys.stderr)
-            return
-    else:
-        with open(bounding_frame_yaml_cache, 'r') as f:
-            bounding_frames = yaml.safe_load(f)
+    bounding_frames = assign_frames_to_odor_presentations(thorsync_dir, thorimage_dir,
+        analysis_dir
+    )
+    # Currently seems to reliably happen iff we somehow accidentally also image with the
+    # red channel (which was allowed despite those channels having gain 0 in the few
+    # cases so far)
+    if len(bounding_frames) != len(odor_order_with_repeats):
+        failed_assigning_frames_to_odors.append(thorimage_dir)
+        make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, err)
+        print_skip(traceback.format_exc(), yaml_path, color='red', file=sys.stderr)
+        return
 
     # For trying to load in ImageJ plugin (assuming stdlib json module works there)
     json_dicts = []
@@ -2300,6 +2322,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             # explicitly indicate whether registration between diagnostic and other
             # stuff (/ a specific other recording) is good, and only do this if
             # indicated
+            '''
             if panel != diag_panel_str:
                 ij_roiset_fname = util.ijroi_filename(analysis_dir)
                 if not ij_roiset_fname.is_symlink():
@@ -2324,6 +2347,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     # TODO delete
                     import ipdb; ipdb.set_trace()
                     #
+            '''
 
             ij_trial_df_cache_fname = analysis_dir / 'ij_trial_df_cache.p'
             # Assuming this is written, if ij_trial_df_cache_fname was
@@ -2351,7 +2375,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
            # TODO delete after generating them all? slightly more robust to interrupted
             # runs if i leave it
-            if not ij_trial_df_cache_fname.exists():
+            if not (ij_trial_df_cache_fname.exists() and ij_corr_cache_fname.exists()):
                 ij_analysis_current = False
 
             ignore_existing_ijroi = should_ignore_existing('ijroi')
@@ -3384,17 +3408,10 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # should be relative but currently aren't, or may need to do that manually)
 
         if have_all_tiffs:
-            # TODO delete
-            print('HAVE ALL EXPECTED TIFFs (delete this code!)')
-            #
-            # TODO TODO TODO TODO uncomment. just so temporary code making all links
-            # relative below runs. (why did i want to continue here tho...?)
-            #continue
-
-        # TODO delete
+            continue
+        # TODO delete / cleanup and print which
         else:
             print('MISSING SOME EXPECTED TIFFs')
-        #
 
         # TODO TODO convert to test + factor load_suite2p_binaries into hong2p
         #if checks:
@@ -4778,7 +4795,7 @@ def main():
     start_date = '2022-02-04'
 
     common_paired_thor_dirs_kwargs = dict(
-        start_date=start_date, ignore=bad_thorimage_dirs, ignore_prepairing=('anat',),
+        start_date=start_date, ignore=bad_thorimage_dirs,
         # To exclude PN recordings in 2022-07-02, until I'm ready to deal with them
         # TODO TODO TODO delete + fix code handling this
         # TODO TODO TODO add checkbox/similar to gsheet to track which stuff are PN
@@ -4803,7 +4820,7 @@ def main():
     #
     # list(...) because otherwise we get a generator back, which we will only be able to
     # iterate over once (and we are planning on using this multiple times)
-    keys_and_paired_dirs = list(util.paired_thor_dirs(matching_substrs=matching_substrs,
+    keys_and_paired_dirs = list(paired_thor_dirs(matching_substrs=matching_substrs,
         **common_paired_thor_dirs_kwargs
     ))
     del common_paired_thor_dirs_kwargs
@@ -4823,11 +4840,6 @@ def main():
         # registration within?
         register_all_fly_recordings_together(keys_and_paired_dirs)
         print()
-
-        # TODO delete
-        print('RETURNING AFTER register_all_fly_recordings_together')
-        return
-        #
 
     if not parallel:
         # `list` call is just so `starmap` actually evaluates the fn on its input.
