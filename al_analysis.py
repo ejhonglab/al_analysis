@@ -1450,7 +1450,7 @@ def analysis2thorimage_dir(analysis_dir: Path) -> Path:
     )
 
 
-def ij_traces(analysis_dir, movie):
+def ij_traces(analysis_dir, movie, roi_plots=False):
 
     thorimage_dir = analysis2thorimage_dir(analysis_dir)
     try:
@@ -1499,13 +1499,17 @@ def ij_traces(analysis_dir, movie):
     # (might wanna do this in process_experiment or something. here may not be the
     # place.)
 
+    ret = (traces, rois, z_indices)
+    if not roi_plots:
+        return ret
+
     panel = get_panel(thorimage_dir)
 
     # Only plotting ROI spatial extents (+ making symlinks to those plots) for
     # diagnostic experiment for now, because for most fles I had symlinked all other
     # RoiSet.zip files to the one for the diagnostic experiment.
     if panel != diag_panel_str:
-        return traces, rois, z_indices
+        return ret
 
     # TODO refactor to do plotting elsewhere / explicitly pass in plot_dir / something?
     experiment_id = shorten_path(thorimage_dir)
@@ -1573,7 +1577,7 @@ def ij_traces(analysis_dir, movie):
 
     # TODO maybe just return rois and have z index information there in a way consistent
     # w/ output from corresponding suite2p fn?
-    return traces, rois, z_indices
+    return ret
 
 
 # TODO delete corr_certain_ijrois_only if i ever refactor ijroi correlation calculation
@@ -1689,7 +1693,7 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir):
 
 def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir):
 
-    traces, rois, z_indices = ij_traces(analysis_dir, movie)
+    traces, rois, z_indices = ij_traces(analysis_dir, movie, roi_plots=True)
 
     trial_df = compute_trial_stats(traces, bounding_frames, odor_lists)
 
@@ -2785,6 +2789,13 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # TODO TODO TODO ensure this gets updated when mocorr.tif changes (OR the link
     # mocorr.tif is changed to point to a new TIFF)
 
+    # TODO TODO TODO write a tiff where it is one dff image per odor presentation
+    # (probably not averaged across trials?)
+    # TODO TODO TODO and ideally, do so with the full concatenated movie when available
+    # TODO TODO TODO and modify odor overlaying imagej_macros code to be able to use the
+    # same trial_frames_and_odors.json with TIFFs that only have a number of timepoints
+    # EITHER equal to the # odors or the # of presentations
+
     max_trialmean_dff = np.max(odor_mean_dff_list, axis=0)
     if write_processed_tiffs:
         max_trialmean_dff_tiff_fname = analysis_dir / max_trialmean_dff_tiff_basename
@@ -3263,6 +3274,7 @@ def convert_raw_to_tiff(keys_and_paired_dirs, silence_curr_sidelabel_warnings=Fa
         )
 
 
+mocorr_concat_tiff_basename = 'mocorr_concat.tif'
 # TODO doc
 def register_all_fly_recordings_together(keys_and_paired_dirs):
     # TODO try to skip the same stuff we would skip in the process_experiment loop
@@ -3357,14 +3369,14 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         suite2p_dir = s2p.get_suite2p_dir(fly_analysis_dir)
         assert suite2p_dir.is_symlink()
 
-        fly_concat_tiff = suite2p_dir / 'mocorr_concat.tif'
+        fly_concat_tiff = suite2p_dir / mocorr_concat_tiff_basename
 
         # TODO probably move creation of all symlinks to after things that generate the
         # files they link to (just had it the other way around to change how i set up
         # the links for files that already existed...). as-is, it leads to broken links
         # until the second step finishes.
 
-        fly_concat_tiff_link = fly_analysis_dir / 'mocorr_concat.tif'
+        fly_concat_tiff_link = fly_analysis_dir / mocorr_concat_tiff_basename
 
         # TODO delete this temporary code (to fix old links)
         if fly_concat_tiff_link.exists():
