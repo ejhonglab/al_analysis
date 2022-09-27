@@ -46,7 +46,7 @@ from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import shorten_path, shorten_stimfile_path, format_date
 from hong2p.olf import (format_odor, format_mix_from_strs, format_odor_list,
-    solvent_str, sort_odors
+    solvent_str
 )
 from hong2p.viz import dff_latex
 from hong2p.types import ExperimentOdors, Pathlike
@@ -475,8 +475,15 @@ def get_analysis_dir(date, fly_num, thorimage_dir) -> Path:
     return analysis_dir
 
 
+# TODO delete? sort_odors below not do what i wanted in some pair data stuff?
 def sort_concs(df):
-    return sort_odors(df, sort_names=False)
+    return olf.sort_odors(df, sort_names=False)
+
+
+def sort_odors(df):
+    return olf.sort_odors(df, panel_order=panel_order,
+        panel2name_order=panel2name_order
+    )
 
 
 def paired_thor_dirs(*args, **kwargs):
@@ -3643,9 +3650,7 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
         panel_tidy_corrs = pd.concat(fly_panel_sers).reset_index(name='correlation')
         assert sum(len(x) for x in fly_panel_sers) == len(panel_tidy_corrs)
 
-        panel_tidy_corrs = sort_odors(panel_tidy_corrs, panel_order=panel_order,
-            panel2name_order=panel2name_order,
-        )
+        panel_tidy_corrs = sort_odors(panel_tidy_corrs)
 
         # TODO TODO factor some general pfo dropping into hong2p.olf (+ try to support
         # odor vars being in diff places (index/columns/levels of those) & DataArrays)
@@ -5113,9 +5118,7 @@ def main():
     #    inplace=True
     #)
 
-    trial_df = sort_odors(trial_df, panel_order=panel_order,
-        panel2name_order=panel2name_order
-    )
+    trial_df = sort_odors(trial_df)
 
     trial_df.to_csv('ij_roi_stats.csv')
     trial_df.to_pickle(ij_roi_responses_cache)
