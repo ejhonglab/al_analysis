@@ -2,12 +2,16 @@
 
 import argparse
 from pathlib import Path
+import logging
+import sys
+# TODO or just use queue?
+from multiprocessing.connection import Listener, Client
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from hong2p import util
+from hong2p import util, olf
 
 from al_analysis import (ij_roi_responses_cache, get_fly_roi_ids, dropna,
     plot_all_roi_mean_responses, mocorr_concat_tiff_basename
@@ -15,37 +19,83 @@ from al_analysis import (ij_roi_responses_cache, get_fly_roi_ids, dropna,
 import al_analysis as al
 
 
+logger = logging.getLogger(__name__)
+log_path = Path(__file__).resolve().parent / 'plot_roi.log'
+handler = logging.FileHandler(log_path)
+formatter = logging.Formatter(fmt='%(asctime)s %(levelname)-8s %(message)s',
+  datefmt='%Y-%m-%d %H:%M:%S'
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.DEBUG)
+# To also print to stderr
+logger.addHandler(logging.StreamHandler())
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+
+    logger.critical('Uncaught exception', exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_exception
+
+
+def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
+    return df.reset_index()[['odor1','odor2']].applymap(olf.parse_odor_name)
+
+
 # TODO maybe add an option to run as some kind of singleton, and like add stuff to a
 # plot rather than making a new one (if called with some arguments the same at least,
 # i.e. same fly)? otherwise not sure easiest way to have imagej plot multiple...
+# (use multiprocessing something?)
 # TODO would probably be easier to have imagej maintain list of indices on successive
 # 'p' presses, and have it call same script with that list of indices, but approach
 # suggested above would probably be faster... (movie and stuff already loaded)
-def extract_ij_responses(analysis_dir, roi_index, roiset_path=None, sort=True):
-    analysis_dir = Path(analysis_dir)
+def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
+    analysis_dir = Path(analysis_dir).resolve()
     fly_dir = analysis_dir.parent
+
+    try:
+        int(fly_dir.name)
+
+    # If we were given input directory that was already a fly directory, rather than a
+    # recording directory (which is a child of a fly directory). Happens if plotting
+    # triggered from the mocorr_concat.tif in ImageJ
+    except ValueError:
+        try:
+            int(analysis_dir.name)
+        except ValueError:
+            raise FileNotFoundError('input did not seem to be either fly / recording '
+                'dir'
+            )
+
+        fly_dir = analysis_dir
 
     # This should generally be a symlink to a TIFF from a particular suite2p run.
     mocorr_concat_tiff = fly_dir / mocorr_concat_tiff_basename
+
+    # TODO maybe assert mocorr_concat_tiff exists if input was fly dir and not analysis
+    # dir? otherwise which recording are we supposed to use?
 
     if mocorr_concat_tiff.exists():
         # Not actually getting a particular ThorImage dir w/ this fn here, but rather
         # the raw data fly directory that should contain all of the relevant ThorImage
         # dirs.
         raw_fly_dir = al.analysis2thorimage_dir(fly_dir)
-        print(raw_fly_dir)
         match_str = str(raw_fly_dir)
     else:
         thorimage_dir = al.analysis2thorimage_dir(analysis_dir)
         match_str = str(thorimage_dir)
 
-    date_str = analysis_dir.parts[-3]
+    del analysis_dir
+
+    date_str = fly_dir.parts[-2]
     keys_and_paired_dirs = list(
         al.paired_thor_dirs(matching_substrs=[match_str],
             start_date=date_str, end_date=date_str
         )
     )
-    del analysis_dir
     # TODO make conditional on not loading all fly data / no mocorr concat (/ delete)
     #assert len(keys_and_paired_dirs) == 1
 
@@ -98,49 +148,72 @@ def extract_ij_responses(analysis_dir, roi_index, roiset_path=None, sort=True):
 
     df = pd.concat(subset_dfs, verify_integrity=True)
 
-    if sort:
-        df = al.sort_odors(df)
-
     return df
 
 
-# TODO profile, especially the analysis_dir path
-def main():
-    parser = argparse.ArgumentParser(description='Reads and plots ROI stats from '
-        f'{ij_roi_responses_cache}'
-    )
-    # TODO TODO still check it is specified in case where -a not passed
-    parser.add_argument('roi_strs', nargs='*', help='ROI names (e.g. DM5, 3-30/1/0)')
-    parser.add_argument('-a', '--analysis-dir', help='If passed, analyze data from this'
-        f' directory, rather than loading data from {ij_roi_responses_cache}.'
-    )
-    # TODO store as int(s)
-    # TODO change to roi_indices (tho would i then need to select all from ROI manager
-    # rather than overlay? might be tricky)
-    parser.add_argument('-i', '--roi-index', help='The index of the ROI to analyze. '
-        'Only relevant when also passing -a/--analysis-dir.'
-    )
-    parser.add_argument('-r', '--roiset-path', help='Path to the RoiSet.zip to load '
-        'ImageJ ROIs from. Only relevant in -a/--analysis-dir case.'
-    )
-    args = parser.parse_args()
+def plot(args):
     roi_strs = args.roi_strs
-    analysis_dir = args.analysis_dir
-    roi_index = int(args.roi_index)
-    roiset_path = args.roiset_path
 
-    if analysis_dir is None:
+    analysis_dir = args.analysis_dir
+    roi_index = args.roi_index
+    roiset_path = args.roiset_path
+    compare = not args.no_compare
+
+    plot_pair_data = args.pairs
+    plot_other_odors = args.other_odors
+
+    subset_dfs = []
+    if analysis_dir is not None:
+        new_df = extract_ij_responses(analysis_dir, roi_index, roiset_path=roiset_path)
+
+        new_roi_names = new_df.columns
+        # would need to relax + modify code if i wanted to ever return multiple ROIs
+        # from one extract_ij_responses call
+        assert len(new_roi_names) == 1
+        new_roi_name = new_roi_names[0]
+
+        # So that if it's just a numbered ROI like '5', it doesn't pull up all the
+        # 'DM5',etc data for comparison.
+        if not al.is_ijroi_certain(new_roi_name):
+            compare = False
+
+        roi_strs.append(new_roi_name)
+
+        subset_dfs.append(new_df)
+
+    if compare or analysis_dir is None:
+        assert len(roi_strs) > 0
+
         df = pd.read_pickle(ij_roi_responses_cache)
+
+        if analysis_dir is not None and not plot_other_odors:
+            # TODO or (more work, but...) consider equal if within ~1-2 orders of
+            # magnitude? or option to match exactly only?
+            fly_odor_set = {tuple(x[1:]) for x in
+                _get_odor_name_df(new_df).itertuples()
+            }
+
+            shared_odors = _get_odor_name_df(df).apply(
+                tuple, axis='columns').isin(fly_odor_set).values
+
+            # TODO maybe grey out names of odors not having matching concentration?
+            # TODO TODO change odor sorting so odors w/ same name are next to each
+            # other, regardless of panel? how to implement? maybe just define one order
+            # for everything besides diagnostic panel? or prefer panel(s) from current
+            # fly for name order somehow?
+
+            df = df[shared_odors].copy()
+
         fly_roi_ids = get_fly_roi_ids(df)
         df.columns = fly_roi_ids
         df.columns.name = 'roi'
 
-        df = dropna(df.loc[df.index.get_level_values('is_pair') == False, :])
-        df = df[df.index.get_level_values('odor1') != 'pfo @ 0']
-
         # TODO maybe move this earlier and explicitly group on all vars in the column
         # index other than the thorimage_id level (which should be the only one we are
         # really aggregating across) (so that i can use it here and also in al_analysis)
+        # TODO TODO add comment on what exactly this is doing (where are duplicates
+        # coming from? looking back at what df columns are before changing them above
+        # might remind me.
         def merge_dupe_cols(gdf):
             # As long as this doesn't trip, we don't have to worry about choosing which
             # column to take data from: there will only ever be at most one not NaN.
@@ -154,27 +227,103 @@ def main():
         if matching.sum() == 0:
             raise ValueError(f'no ROIs matching any of {roi_strs}')
 
-        subset_df = dropna(df.loc[:, matching])
+        # Putting at start so it should be plotted above
+        subset_dfs.insert(0, dropna(df.loc[:, matching]))
 
-    # TODO TODO TODO option to show all cached stuff w/ same substring above data from
-    # analysis_dir
-    # TODO TODO maybe another option to show everything that did NOT match substring as
-    # well (matching cached -> specific indexed ROI not in cache -> NON-matching cached)
-    else:
-        subset_df = extract_ij_responses(analysis_dir, roi_index,
-            roiset_path=roiset_path
+    subset_df = pd.concat(subset_dfs, axis='columns', verify_integrity=True)
+
+    if not plot_pair_data:
+        subset_df = dropna(
+            subset_df.loc[subset_df.index.get_level_values('is_pair') == False, :]
         )
+
+    subset_df = subset_df[subset_df.index.get_level_values('odor1') != 'pfo @ 0']
+
+    # TODO refactor (move sorting into plot_all_roi_mean_responses, after mean? need to
+    # drop too though...) so that order from current panel is used, but data from any
+    # ROIs from older panels that shared some odors is still shown. as is, it will
+    # either only show for the first panel or only show separately
+    #
+    # I don't think order would necessarily be preserved wrt data if sort=False either,
+    # and would want to ensure that before providing an option to not sort.
+    sort = True
+    if sort:
+        # TODO option to switch between these? modify olf.sort_odors to allow keeping
+        # certain panels in a fixed position + name_order, but to allow treating a
+        # subset of panels as a single panel?
+        # TODO vline_level_fn using panel data? might need to pass in some precomputed
+        # list or something, which i think might require changes to hong2p.viz.matshow
+        # handling
+        #subset_df = al.sort_odors(subset_df)
+
+        # TODO or determine order by sorting by how much old data we have for each odor
+        # name?
+
+        subset_df = olf.sort_odors(subset_df)
+
+    # TODO also/only try slightly changing odor ticklabel text color between changes in
+    # odor name?
+    vline_level_fn = lambda odor_str: olf.parse_odor_name(odor_str)
 
     # TODO TODO if i ever allow plotting multiple (from raw data where i don't yet want
     # to merge across planes, cause i'm dealing w/ single planes), specify Z in name in
     # plot (at least when there are two w/ same name, from diff planes)
     # (should i support same name in same plane?)
 
+    # The cached ROIs will have '/' in ROI name (e.g. '3-30/1/DM4'), and only the last
+    # row from the newly extracted data will not. We want a white line between these two
+    # groups of data.
+    hline_level_fn = lambda roi_name_str: '/' in roi_name_str
+
+    # TODO TODO normalize within each fly (if comparing)? or at least option to?
+    # (+ maybe label colorbars differently in each case if so)
+
+    # TODO make colorbar generally/always the height of the main Axes (maybe a bit
+    # larger if just ~one row?)
     # TODO want to use roi_sortkeys (could try to put in same order as arguments passed?
-    # or always named ones first?)
-    fig, _ = plot_all_roi_mean_responses(subset_df, odor_sort=False)
+    # or always named ones first?)?
+    fig, _ = plot_all_roi_mean_responses(subset_df, odor_sort=False,
+        hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn
+    )
 
     plt.show()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Reads and plots ROI stats from '
+        f'{ij_roi_responses_cache}'
+    )
+    # TODO TODO still check it is specified in case where -a not passed
+    parser.add_argument('roi_strs', nargs='*', help='ROI names (e.g. DM5, 3-30/1/0)')
+    parser.add_argument('-a', '--analysis-dir', help='If passed, analyze data from this'
+        f' directory, rather than loading data from {ij_roi_responses_cache}.'
+    )
+    # TODO store as int(s)
+    # TODO change to roi_indices (tho would i then need to select all from ROI manager
+    # rather than overlay? might be tricky)
+    parser.add_argument('-i', '--roi-index', type=int, help='The index of the ROI to '
+        'analyze. Only relevant when also passing -a/--analysis-dir.'
+    )
+    parser.add_argument('-r', '--roiset-path', help='Path to the RoiSet.zip to load '
+        'ImageJ ROIs from. Only relevant in -a/--analysis-dir case.'
+    )
+    # TODO maybe another option to show everything that did NOT match substring as well
+    # (matching cached -> specific indexed ROI not in cache -> NON-matching cached)
+    parser.add_argument('-n', '--no-compare', action='store_true', help='Only plot data'
+        'from -a/--analysis_dir, rather than also plotting relevant cached data above '
+        'it.'
+    )
+    parser.add_argument('-p', '--pairs', action='store_true', help='Also plots'
+        'pair experiment data, when available. Excluded from plots by default.'
+    )
+    # TODO i just would still want to see neighboring concentrations, if available...
+    # (e.g. -5 vs -6 2,3-butanedione, after diagnostic conc change)
+    parser.add_argument('-o', '--other-odors', action='store_true', help='Also plots'
+        'data from odors not done for the fly referenced by --analysis-dir, when '
+        'available. Excluded from plots by default.'
+    )
+    args = parser.parse_args()
+    plot(args)
 
 
 if __name__ == '__main__':
