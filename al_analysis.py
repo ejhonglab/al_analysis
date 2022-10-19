@@ -23,6 +23,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from typing import Optional
 import json
+import logging
+import shlex
 
 import numpy as np
 import pandas as pd
@@ -433,12 +435,55 @@ no_merges = []
 dirs_with_ijrois = []
 
 
+def init_logger(module_name, script_path, log_argv=True):
+    """
+    >>> log = init_logger(__name__, __file__)
+    """
+    logger = logging.getLogger(module_name)
+
+    script_path = Path(script_path).resolve()
+
+    log_dir = script_path.parent / 'logs'
+    log_dir.mkdir(exist_ok=True)
+
+    log_path = log_dir / f'{script_path.stem}.log'
+
+    handler = logging.FileHandler(log_path)
+    formatter = logging.Formatter(fmt='%(asctime)s %(levelname)-8s %(message)s',
+      datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    # To also print to stderr
+    logger.addHandler(logging.StreamHandler())
+
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+
+        logger.critical('Uncaught exception',
+            exc_info=(exc_type, exc_value, exc_traceback)
+        )
+
+    sys.excepthook = handle_exception
+
+    if log_argv:
+        # Python 3.8+
+        cmd_str = shlex.join(sys.argv)
+        logger.info(cmd_str)
+
+    return logger
+
+
 def formatwarning_msg_only(msg, category, *args, **kwargs):
     """Format warning without line/lineno (which are often not the relevant line)
     """
     warn_type = category.__name__ if category.__name__ != 'UserWarning' else 'Warning'
     return colored(f'{warn_type}: {msg}\n', 'yellow')
 
+# TODO do just in main?
 warnings.formatwarning = formatwarning_msg_only
 
 
@@ -2938,6 +2983,9 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
             # This would work if suite2p_dir did not exist yet, but I'm still postponing
             # till after run_s2p call, when applicable, to not make a link that will be
             # broken.
+            #
+            # TODO TODO TODO convert to relative (so i can copy directories within
+            # analysis_intermediates using something like cp -a)
             suite2p_dir_link.symlink_to(suite2p_dir)
         except Exception as e:
             print(e)
@@ -3413,6 +3461,9 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # TODO test on data that does/doesn't already have one
         if not fly_concat_tiff_link.is_symlink():
             # This link will be broken until fly_concat_tiff is written below.
+            #
+            # TODO TODO TODO convert to relative (so i can copy directories within
+            # analysis_intermediates using something like cp -a)
             fly_concat_tiff_link.symlink_to(fly_concat_tiff)
 
         trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
@@ -3423,6 +3474,8 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             fly_analysis_dir / trial_and_frame_json_basename
         )
         if not trial_and_frame_concat_json_link.is_symlink():
+            # TODO TODO TODO convert to relative (so i can copy directories within
+            # analysis_intermediates using something like cp -a)
             trial_and_frame_concat_json_link.symlink_to(trial_and_frame_concat_json)
 
         def input_tiff2mocorr_tiff(input_tiff):
@@ -3507,6 +3560,9 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
                 # Since 'suite2p' in the target of the link is itself a symlink,
                 # these links should not need to be updated, and the files they refer to
                 # will change when the directory the 'suite2p' link is pointing to does.
+                #
+                # TODO TODO TODO convert to relative (so i can copy directories within
+                # analysis_intermediates using something like cp -a)
                 motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
 
             # TODO skip this if we already have this written?
@@ -4677,6 +4733,8 @@ def main():
     global analyze_glomeruli_diagnostics_only
     global analyze_glomeruli_diagnostics
     global print_skipped
+
+    init_logger(__name__, __file__)
 
     atexit.register(cleanup_created_dirs_and_links)
 

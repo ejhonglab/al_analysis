@@ -10,3 +10,5 @@ pair_grid_data_gsheet_link.txt
 *.nc
 ij_roi_stats.csv
 remy/
+*.log
+logs/

@@ -2,9 +2,7 @@
 
 import argparse
 from pathlib import Path
-import logging
-import sys
-# TODO or just use queue?
+# TODO or just use queue (unclear if it's possible/intended from 2 separate scripts...)?
 from multiprocessing.connection import Listener, Client
 
 import numpy as np
@@ -14,31 +12,9 @@ import matplotlib.pyplot as plt
 from hong2p import util, olf
 
 from al_analysis import (ij_roi_responses_cache, get_fly_roi_ids, dropna,
-    plot_all_roi_mean_responses, mocorr_concat_tiff_basename
+    plot_all_roi_mean_responses, mocorr_concat_tiff_basename, init_logger
 )
 import al_analysis as al
-
-
-logger = logging.getLogger(__name__)
-log_path = Path(__file__).resolve().parent / 'plot_roi.log'
-handler = logging.FileHandler(log_path)
-formatter = logging.Formatter(fmt='%(asctime)s %(levelname)-8s %(message)s',
-  datefmt='%Y-%m-%d %H:%M:%S'
-)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.DEBUG)
-# To also print to stderr
-logger.addHandler(logging.StreamHandler())
-
-def handle_exception(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-
-    logger.critical('Uncaught exception', exc_info=(exc_type, exc_value, exc_traceback))
-
-sys.excepthook = handle_exception
 
 
 def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -290,6 +266,8 @@ def plot(args):
 
 
 def main():
+    init_logger(__name__, __file__)
+
     parser = argparse.ArgumentParser(description='Reads and plots ROI stats from '
         f'{ij_roi_responses_cache}'
     )
