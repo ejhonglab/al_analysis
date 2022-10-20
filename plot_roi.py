@@ -13,7 +13,6 @@ SERVER_PORT = 12481
 
 MAX_LIFETIME_S = 60 * 60 * 2
 
-
 def main():
     parser = argparse.ArgumentParser(description='Reads and plots ROI stats from cached'
         ' responses written by al_analysis.py. Can also analyze fresh data, and compare'
@@ -22,9 +21,9 @@ def main():
         # calls just communicating to already running server
         #f'{ij_roi_responses_cache}'
     )
-    # TODO TODO still check it is specified in case where -a not passed
+    # TODO TODO still check it is specified in case where -d not passed
     parser.add_argument('roi_strs', nargs='*', help='ROI names (e.g. DM5, 3-30/1/0)')
-    parser.add_argument('-a', '--analysis-dir', help='If passed, analyze data from this'
+    parser.add_argument('-d', '--analysis-dir', help='If passed, analyze data from this'
         ' directory, rather than loading data from al_analysis.py cached responses.'
         #f' directory, rather than loading data from {ij_roi_responses_cache}.'
     )
@@ -32,10 +31,10 @@ def main():
     # TODO change to roi_indices (tho would i then need to select all from ROI manager
     # rather than overlay? might be tricky)
     parser.add_argument('-i', '--roi-index', type=int, help='The index of the ROI to '
-        'analyze. Only relevant when also passing -a/--analysis-dir.'
+        'analyze. Only relevant when also passing -d/--analysis-dir.'
     )
     parser.add_argument('-r', '--roiset-path', help='Path to the RoiSet.zip to load '
-        'ImageJ ROIs from. Only relevant in -a/--analysis-dir case.'
+        'ImageJ ROIs from. Only relevant in -d/--analysis-dir case.'
     )
     # TODO maybe another option to show everything that did NOT match substring as well
     # (matching cached -> specific indexed ROI not in cache -> NON-matching cached)
@@ -43,7 +42,7 @@ def main():
     # flag indicating we want to compare to currently analyzed data, from previous calls
     # while server is still active)
     parser.add_argument('-n', '--no-compare', action='store_true', help='Only plot data'
-        ' from -a/--analysis_dir, rather than also plotting relevant cached data above '
+        ' from -d/--analysis_dir, rather than also plotting relevant cached data above '
         'it.'
     )
     parser.add_argument('-p', '--pairs', action='store_true', help='Also plots'
@@ -52,8 +51,12 @@ def main():
     # TODO i just would still want to see neighboring concentrations, if available...
     # (e.g. -5 vs -6 2,3-butanedione, after diagnostic conc change)
     parser.add_argument('-o', '--other-odors', action='store_true', help='Also plots'
-        'data from odors not done for the fly referenced by --analysis-dir, when '
+        'data from odors not done for the fly referenced by -d/--analysis-dir, when '
         'available. Excluded from plots by default.'
+    )
+    parser.add_argument('-a', '--add', action='store_true', help='Updates current plot '
+        'to include data from newly specified ROI. Only relevant in -d/--analysis-dir '
+        'case. Otherwise, a new plot is made in parallel.'
     )
     args = parser.parse_args()
 

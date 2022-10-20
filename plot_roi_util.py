@@ -2,7 +2,6 @@
 from multiprocessing import Process
 from pathlib import Path
 from functools import lru_cache
-import time
 
 import numpy as np
 import pandas as pd
@@ -20,9 +19,9 @@ def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index()[['odor1','odor2']].applymap(olf.parse_odor_name)
 
 
+# 6 = 2 flies w/ 3 movies each
 @lru_cache(maxsize=6)
 def cached_load_movie(*recording_keys):
-    print('loading movie (cache miss)')
     return al.load_movie(*recording_keys, min_input='mocorr')
 
 
@@ -167,13 +166,15 @@ def plot(subset_df):
     plt.show()
 
 
+newly_analyzed_dfs = []
+most_recent_plot_proc = None
+
 # TODO somehow profile just client calls to this, to see why even w/ movie and
 # cached_responses_df loaded, it still takes ~0.34s (of ~0.45s loading movie but not
 # cached df)
 def load_and_plot(args):
-    global cached_responses_df
-
-    load_start_s = time.time()
+    global newly_analyzed_dfs
+    global most_recent_plot_proc
 
     roi_strs = args.roi_strs
 
@@ -185,7 +186,15 @@ def load_and_plot(args):
     plot_pair_data = args.pairs
     plot_other_odors = args.other_odors
 
-    subset_dfs = []
+    add_to_plot = args.add
+
+
+    if add_to_plot:
+        subset_dfs = list(newly_analyzed_dfs)
+    else:
+        subset_dfs = []
+        newly_analyzed_dfs = []
+
     if analysis_dir is not None:
         new_df = extract_ij_responses(analysis_dir, roi_index, roiset_path=roiset_path)
 
@@ -202,6 +211,7 @@ def load_and_plot(args):
 
         roi_strs.append(new_roi_name)
 
+        newly_analyzed_dfs.append(new_df)
         subset_dfs.append(new_df)
 
     if compare or analysis_dir is None:
@@ -291,7 +301,13 @@ def load_and_plot(args):
 
         subset_df = olf.sort_odors(subset_df)
 
-    analysis_time_s = time.time() - load_start_s
-    print(f'loading/analyzing took {analysis_time_s:.2f}s')
+    # TODO maybe also add an option to close all existing processes?
+    if add_to_plot and most_recent_plot_proc is not None:
+        most_recent_plot_proc.terminate()
 
-    plot(subset_df)
+    # currently just counting on the process eventually terminating, and thus the
+    # corresponding Process object being cleaned up
+    proc = Process(target=plot, args=(subset_df,))
+    most_recent_plot_proc = proc
+    proc.start()
+
