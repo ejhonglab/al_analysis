@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 
 import argparse
+from multiprocessing import Process, Queue
 from multiprocessing.connection import Listener, Client
 from threading import Thread
 import time
 import queue
 
+
 SERVER_HOST = 'localhost'
 SERVER_PORT = 12481
 
-#MAX_LIFETIME_S = 60 * 60 * 2
-MAX_LIFETIME_S = 10
+MAX_LIFETIME_S = 60 * 60 * 2
 
 
 def main():
@@ -87,66 +88,41 @@ def main():
 
     log = init_logger(__name__, __file__)
 
-    # TODO maybe try https://stackoverflow.com/questions/57817955
-    # to implement a listener timeout?
-    # or re-implement w/ something like https://stackoverflow.com/questions/50031613 ?
+    arg_queue = Queue()
+
+    def get_client_args():
+        # This is the call that can hang, hence why I'm wrapping this call in a Process
+        client = listener.accept()
+
+        client_args = client.recv()
+        client.close()
+
+        arg_queue.put(client_args)
+
+    def get_cliet_args_loop():
+        while True:
+            get_client_args()
+
+    p = Process(target=get_cliet_args_loop)
+    p.start()
 
     # TODO how to decide when to shut the server down? do we?
     # can register something at imagej exit (inside imagej config) to kill any?
     # any nice way to have python check if (corresponding) imagej process is alive?
 
-    arg_queue = queue.Queue()
-    def get_client_args():
-        print('accept', flush=True)
-        # This is the call that can hang, hence why I'm wrapping this call in a Thread
-        client = listener.accept()
-
-        print('recv', flush=True)
-        client_args = client.recv()
-        print('close', flush=True)
-        client.close()
-
-        arg_queue.put(client_args)
-
-        print('', flush=True)
-
     # TODO maybe only go into this loop if a certain flag is set / if we are analyzing
     # new data
     while time.time() - start_time_s < MAX_LIFETIME_S:
-
         #plt.pause(0.001)
-
-        # TODO TODO don't make a new thread if the old one is alive? will gc handle the
-        # dereferenced threads at least?
-
-        # TODO probably switch these to using multiprocessing.Process / similar, as no
-        # way to kill threads at the end, and even after we exceed MAX_LIFETIME_S, it
-        # seems we are waiting on one (or more) threads to finish an accept call that
-        # will never come...
-
-        t = Thread(target=get_client_args)
-        print('start', flush=True)
-        t.start()
-        print('join', flush=True)
-        # TODO how much time does it actually need to reliably populate the queue w/ the
-        # client args?
-        t.join(0.1)
-
-        # don't think this actually matters (assuming old threads get cleaned up
-        # sufficiently just by dereferencing them...)
-        print('is_alive', flush=True)
-        if t.is_alive():
-            print('timeout', flush=True)
-
 
         try:
             client_args = arg_queue.get_nowait()
         except queue.Empty:
-            print('queue was empty', flush=True)
             continue
 
-        print('load_and_plot', flush=True)
         load_and_plot(client_args)
+
+    p.terminate()
 
 
 if __name__ == '__main__':
