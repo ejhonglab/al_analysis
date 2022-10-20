@@ -439,6 +439,9 @@ def init_logger(module_name, script_path, log_argv=True):
     """
     >>> log = init_logger(__name__, __file__)
     """
+    # could use some introspection like this to not need arguments:
+    # https://stackoverflow.com/questions/13699283
+
     logger = logging.getLogger(module_name)
 
     script_path = Path(script_path).resolve()
@@ -4734,7 +4737,7 @@ def main():
     global analyze_glomeruli_diagnostics
     global print_skipped
 
-    init_logger(__name__, __file__)
+    log = init_logger(__name__, __file__)
 
     atexit.register(cleanup_created_dirs_and_links)
 
