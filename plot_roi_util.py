@@ -201,6 +201,13 @@ def load_and_plot(args):
 
     add_to_plot = args.add
 
+    # TODO might want to instead change most_recent_plot_proc to point to most recent
+    # still-alive process (b/c we might have manually closed the otherwise most recent
+    # one) (then don't set add_to_plot = False here)
+    if most_recent_plot_proc is not None and not most_recent_plot_proc.is_alive():
+        most_recent_plot_proc = None
+        add_to_plot = False
+
     plotting_processes = [p for p in plotting_processes if p.is_alive()]
     if len(plotting_processes) == 0:
         add_to_plot = False
