@@ -116,7 +116,7 @@ def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
 
         subset_dfs.append(subset_df)
 
-    # TODO TODO TODO was i dropping is_pair == True stuff before building up ij trace
+    # TODO TODO was i dropping is_pair == True stuff before building up ij trace
     # cache?  should i do that here too? or should i not do that when forming cache?
     # probably latter...
     # TODO maybe provide option to drop it?
@@ -127,6 +127,26 @@ def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
 
 
 def plot(subset_df):
+
+    fly_roi_sortkeys = []
+    for roi_str in subset_df.columns:
+        if '/' in roi_str:
+            date_str, fly_str, roi_name = roi_str.split('/')
+            is_newly_analyzed = False
+        else:
+            is_newly_analyzed, date_str, fly_str, roi_name = (True, '', '', roi_str)
+
+        if len(newly_analyzed_roi_names) == 0:
+            roi_key = roi_name
+        else:
+            # NOTE: this may fail (raising ValueError) given that we are currently only
+            # matching cached stuff by .endswith... would need to change how cached
+            # stuff is matched against to fix
+            roi_key = newly_analyzed_roi_names.index(roi_name)
+
+        # First component of tuple will put newly analyzed stuff at end.
+        fly_roi_sortkeys.append((is_newly_analyzed, roi_key, '', ''))
+
     # TODO also/only try slightly changing odor ticklabel text color between changes in
     # odor name?
     vline_level_fn = lambda odor_str: olf.parse_odor_name(odor_str)
@@ -134,12 +154,13 @@ def plot(subset_df):
     # TODO TODO if i ever allow plotting multiple (from raw data where i don't yet want
     # to merge across planes, cause i'm dealing w/ single planes), specify Z in name in
     # plot (at least when there are two w/ same name, from diff planes)
-    # (should i support same name in same plane?)
+    # (should i support same name in same plane?) (or at least append to end of ROI
+    # name?)
 
     # The cached ROIs will have '/' in ROI name (e.g. '3-30/1/DM4'), and only the last
     # row from the newly extracted data will not. We want a white line between these two
     # groups of data.
-    hline_level_fn = lambda roi_name_str: '/' in roi_name_str
+    hline_level_fn = lambda roi_str: ('/' in roi_str, roi_str.split('/')[-1])
 
     # TODO TODO normalize within each fly (if comparing)? or at least option to?
     # (+ maybe label colorbars differently in each case if so)
@@ -149,32 +170,24 @@ def plot(subset_df):
     # TODO want to use roi_sortkeys (could try to put in same order as arguments passed?
     # or always named ones first?)?
     fig, _ = plot_all_roi_mean_responses(subset_df, odor_sort=False,
+        roi_sortkeys=fly_roi_sortkeys,
         hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn
     )
-
-    # didn't work in isolation
-    #plt.show(block=False)
-
-    # works but OS soon thinks the plot is unresponsive, and can't use controls.
-    # adding plt.pause(0.001) in `while True` loop in main didn't fix it.
-    #plt.draw()
-    #plt.pause(0.001)
-
-    # TODO TODO some way to make this non-blocking
-    # (AND either replace current plot w/ new data or add new data to current plot,
-    # depending on arguments)
     plt.show()
 
 
 newly_analyzed_dfs = []
+newly_analyzed_roi_names = []
 most_recent_plot_proc = None
+keep_comparison_to_cache = False
+plotting_processes = []
 
-# TODO somehow profile just client calls to this, to see why even w/ movie and
-# cached_responses_df loaded, it still takes ~0.34s (of ~0.45s loading movie but not
-# cached df)
 def load_and_plot(args):
     global newly_analyzed_dfs
+    global newly_analyzed_roi_names
     global most_recent_plot_proc
+    global keep_comparison_to_cache
+    global plotting_processes
 
     roi_strs = args.roi_strs
 
@@ -188,12 +201,19 @@ def load_and_plot(args):
 
     add_to_plot = args.add
 
+    plotting_processes = [p for p in plotting_processes if p.is_alive()]
+    if len(plotting_processes) == 0:
+        add_to_plot = False
 
     if add_to_plot:
         subset_dfs = list(newly_analyzed_dfs)
+        roi_strs.extend([x for x in newly_analyzed_roi_names if al.is_ijroi_certain(x)])
     else:
         subset_dfs = []
+
         newly_analyzed_dfs = []
+        newly_analyzed_roi_names = []
+        keep_comparison_to_cache = False
 
     if analysis_dir is not None:
         new_df = extract_ij_responses(analysis_dir, roi_index, roiset_path=roiset_path)
@@ -208,35 +228,56 @@ def load_and_plot(args):
         # 'DM5',etc data for comparison.
         if not al.is_ijroi_certain(new_roi_name):
             compare = False
+        else:
+            keep_comparison_to_cache = True
+            roi_strs.append(new_roi_name)
 
-        roi_strs.append(new_roi_name)
+        if new_roi_name in newly_analyzed_roi_names:
+            for ndf in newly_analyzed_dfs:
+                assert len(ndf.columns) == 1
+                ndf_roi_name = ndf.columns[0]
 
-        newly_analyzed_dfs.append(new_df)
+                if ndf_roi_name == new_roi_name:
+                    # If we've gotten this far, we must already have some plots open
+                    # (with this ROI too), so no need to update the plot if the data is
+                    # also equal.
+                    if ndf.equals(new_df):
+                        return
+
+                    # Script must have been called with an ROI of the same name, but
+                    # drawn differently (perhaps in a different plane).
+                    i = 1
+                    while True:
+                        # Not using '-' as separator, to differentiate from what
+                        # ImageJ uses in ROI manager.
+                        suffixed_name = f'{new_roi_name}_{i}'
+                        if suffixed_name not in newly_analyzed_roi_names:
+                            assert len(new_df.columns) == 1
+                            assert new_df.columns[0] == new_roi_name
+                            new_roi_name = suffixed_name
+                            new_df.columns = [suffixed_name]
+                            break
+
         subset_dfs.append(new_df)
 
-    if compare or analysis_dir is None:
+        newly_analyzed_roi_names.append(new_roi_name)
+        newly_analyzed_dfs.append(new_df)
+
+    if compare or analysis_dir is None or keep_comparison_to_cache:
         assert len(roi_strs) > 0
 
-        # TODO would need to either cache all of the df (might only save on load cost,
-        # which is probably small) or have keys be the same thing we use to subset the
-        # df, which would be more complicated and might not make senes
         df = pd.read_pickle(ij_roi_responses_cache)
 
         if analysis_dir is not None and not plot_other_odors:
             # TODO or (more work, but...) consider equal if within ~1-2 orders of
             # magnitude? or option to match exactly only?
+            # TODO maybe grey out names of odors not having matching concentration?
             fly_odor_set = {tuple(x[1:]) for x in
                 _get_odor_name_df(new_df).itertuples()
             }
 
             shared_odors = _get_odor_name_df(df).apply(
                 tuple, axis='columns').isin(fly_odor_set).values
-
-            # TODO maybe grey out names of odors not having matching concentration?
-            # TODO TODO change odor sorting so odors w/ same name are next to each
-            # other, regardless of panel? how to implement? maybe just define one
-            # order for everything besides diagnostic panel? or prefer panel(s) from
-            # current fly for name order somehow?
 
             df = df[shared_odors].copy()
 
@@ -261,6 +302,10 @@ def load_and_plot(args):
 
         df = df.groupby('roi', axis='columns', sort=False).apply(merge_dupe_cols)
 
+        # TODO maybe it should match the last '/' separated part exactly?
+        # any reason i didn't want that?
+        # (then i could get get index of matching name in newly analyzed ROI names to
+        # sort these...)
         matching = np.any([df.columns.str.endswith(x) for x in roi_strs], axis=0)
         if matching.sum() == 0:
             raise ValueError(f'no ROIs matching any of {roi_strs}')
@@ -301,7 +346,6 @@ def load_and_plot(args):
 
         subset_df = olf.sort_odors(subset_df)
 
-    # TODO maybe also add an option to close all existing processes?
     if add_to_plot and most_recent_plot_proc is not None:
         most_recent_plot_proc.terminate()
 
@@ -310,4 +354,6 @@ def load_and_plot(args):
     proc = Process(target=plot, args=(subset_df,))
     most_recent_plot_proc = proc
     proc.start()
+
+    plotting_processes.append(proc)
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import atexit
 from multiprocessing import Process, Queue
 from multiprocessing.connection import Listener, Client
 from threading import Thread
@@ -67,20 +68,12 @@ def main():
     except OSError:
         listener = None
 
-    # TODO maybe refactor so all plot calls can be killed by a client connection
-    # (put actual plotting in a subprocess?)
-    # was trying stuff from https://stackoverflow.com/questions/28269157
-    # to get it working using matplotlibs non-blocking calls
-
     # will it work to do this from the same script? need a separate thread/process
     # maybe?
     client = Client((SERVER_HOST, SERVER_PORT), 'AF_INET')
     client.send(args)
     if listener is None:
         return
-
-    #plt.ion()
-    #plt.show()
 
     start_time_s = time.time()
 
@@ -109,6 +102,10 @@ def main():
     p = Process(target=get_cliet_args_loop)
     p.start()
 
+    # This, rather than just the same call after the while loop, avoided some hanging
+    # caused by exceptions in load_and_plot.
+    atexit.register(p.terminate)
+
     # TODO how to decide when to shut the server down? do we?
     # can register something at imagej exit (inside imagej config) to kill any?
     # any nice way to have python check if (corresponding) imagej process is alive?
@@ -116,16 +113,12 @@ def main():
     # TODO maybe only go into this loop if a certain flag is set / if we are analyzing
     # new data
     while time.time() - start_time_s < MAX_LIFETIME_S:
-        #plt.pause(0.001)
-
         try:
             client_args = arg_queue.get_nowait()
         except queue.Empty:
             continue
 
         load_and_plot(client_args)
-
-    p.terminate()
 
 
 if __name__ == '__main__':
