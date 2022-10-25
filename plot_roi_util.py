@@ -147,6 +147,10 @@ def plot(subset_df):
         # First component of tuple will put newly analyzed stuff at end.
         fly_roi_sortkeys.append((is_newly_analyzed, roi_key, '', ''))
 
+    # TODO TODO maybe replace [h|v]lines w/ black lines, or change the missing-data
+    # color to something like grey (from white), so that it's easier to see the
+    # divisions against a border of a lot of missing data
+
     # TODO also/only try slightly changing odor ticklabel text color between changes in
     # odor name?
     vline_level_fn = lambda odor_str: olf.parse_odor_name(odor_str)
@@ -233,6 +237,11 @@ def load_and_plot(args):
 
         # So that if it's just a numbered ROI like '5', it doesn't pull up all the
         # 'DM5',etc data for comparison.
+        # TODO TODO need to also allow '?' here if i'm gonna strip later and try to
+        # match w/o it. also may want to allow uncertain stuff that at least has names
+        # in it, e.g. 'DM2|VM2', 'VM[2|3]', so i can match how i want later
+        # TODO so ig i want to check if it's a number of a default name, and keep
+        # compare=True if it's neither
         if not al.is_ijroi_certain(new_roi_name):
             compare = False
         else:
@@ -264,6 +273,8 @@ def load_and_plot(args):
                             new_roi_name = suffixed_name
                             new_df.columns = [suffixed_name]
                             break
+
+                        i += 1
 
         subset_dfs.append(new_df)
 
@@ -313,7 +324,13 @@ def load_and_plot(args):
         # any reason i didn't want that?
         # (then i could get get index of matching name in newly analyzed ROI names to
         # sort these...)
-        matching = np.any([df.columns.str.endswith(x) for x in roi_strs], axis=0)
+        # TODO decide whether i want to keep the .strip('?') part?
+        # TODO TODO TODO why is .strip('?') not working (want 'DP1m?' to also show
+        # 'DP1m' in cached data for comparison)
+        matching = np.any([df.columns.str.endswith(x.strip('?')) for x in roi_strs],
+            axis=0
+        )
+        #import ipdb; ipdb.set_trace()
         if matching.sum() == 0:
             raise ValueError(f'no ROIs matching any of {roi_strs}')
 
