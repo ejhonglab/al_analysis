@@ -155,6 +155,10 @@ want_dff_tiff = False
 
 want_dff_tiff = want_dff_tiff and write_processed_tiffs
 
+# When concatenating multiple recordings (from one fly, registered together) and their
+# metadata, fail if any frame<->odor metadata is missing if True, else warn.
+allow_missing_trial_and_frame_json = True
+
 links_to_input_dirs = True
 
 # TODO shorten any remaining absolute paths if this is True, so we can diff outputs
@@ -187,7 +191,7 @@ diverging_cmap = 'RdBu_r'
 diverging_cmap_kwargs = dict(cmap=diverging_cmap,
     # TODO delete kwargs / determine from data in each case (and why does it
     # seem fixed to [-1, 1] without this?)
-    # TODO TODO TODO am i understanding this correctly? (and was default range really
+    # TODO TODO am i understanding this correctly? (and was default range really
     # [-1, 1], and not the data range, with no kwargs to this (or was it transforming
     # data and was that the range of the transformed data???)?
     norm=colors.CenteredNorm(halfrange=2.0),
@@ -628,10 +632,9 @@ def get_plot_dir(experiment_id: str, relative=False) -> Path:
     return plot_dir
 
 
-# TODO CLI flag to not close figs on save?
 # TODO CLI flag to (or just always?) warn if there are old figs in any/some of the dirs
 # we saved figs in?
-
+#
 # Especially running process_experiment in parallel, the many-figures-open memory
 # warning will get tripped at the default setting, hence `close=True`.
 def savefig(fig_or_facetgrid, fig_dir: Pathlike, desc: str, close=True, **kwargs
@@ -696,33 +699,124 @@ def delete_empty_dirs():
 # links relative is so i could move the whole plot directory and have the (internal,
 # relative) links still be valid, rather than potentially pointing to plots generated in
 # the original path after (relative=None, w/ True/False set based on this)
+# (also want stuff linking from&to analysis root to be relative too, also for copying)
 links_created = []
 # TODO maybe support link being a dir (that exists), target being a file, and then
 # use basename of file in new dir by default?
-def symlink(target, link, relative=True):
+def symlink(target, link, relative=True, checks=True, replace=False):
     """Create symlink link pointing to target, doing nothing if link exists.
 
     Also registers `link` for deletion at end if what it points to no
     """
-    # TODO TODO err if link exists and was created *in this same run* (indicating trying
-    # to point to multiple different outputs from the same link; a bug)
+    # TODO err if link exists and was created *in this same run* (indicating trying to
+    # point to multiple different outputs from the same link; a bug)
+    target = Path(target)
+    link = Path(link)
 
     # Will slightly simplify cleanup logic by mostly ensuring broken links only come
     # from deleted directories.
-    if not exists(target):
+    if not target.exists():
         raise FileNotFoundError
 
-    try:
-        if relative:
-            link_dir = link if os.path.isdir(link) else os.path.dirname(link)
-            os.symlink(os.path.relpath(target, link_dir), link)
-        else:
-            os.symlink(os.path.abspath(target), link)
+    # TODO delete
+    verbose = False
+    if verbose:
+        print('input:')
+        print(f'target={target}')
+        print(f'link={link}')
+        print(f'{target.is_dir()=}')
+        print(f'{link.is_dir()=}')
+    #
+    if relative:
+        # TODO delete if the old link_dir code was actually useful...
+        # (if i run all parts of my analysis that make symlinks fresh and this doesn't
+        # trigger, can delete)
+        assert not (link.is_dir() and not link.is_symlink())
 
-    except FileExistsError:
-        return
+        # seemed to work for some(/all? unclear...) uses, but would cause my
+        # link-already-exists checks to fail...
+        link_dir = link.parent
+
+        # TODO delete
+        if verbose:
+            print(f'{link_dir=}')
+            print(f'{os.path.relpath(target, link_dir)=}')
+        #
+
+        # From pathlib docs: "PurePath.relative_to() requires self to be the subpath of
+        # the argument, but os.path.relpath() does not."
+        # ...so probably can't use it as a direct replacement here.
+        # TODO test this behaves correctly. depend on whether target is a dir/not?
+        target = Path(os.path.relpath(target, link_dir))
+    else:
+        # Because relative paths are resolved wrt current working directory, not wrt
+        # directory of target (or link) (same w/ os.path.abspath)
+        assert target.is_absolute()
+
+        # TODO do i even want to do this? isn't it just modifying relative components
+        # inside of an absolute path OR paths containing symlinks at this point? i don't
+        # think i have the former and i don't know if i would want symlinks resolved...
+        #
+        # From pathlib docs: "os.path.abspath() does not resolve symbolic links while
+        # Path.resolve() does."
+        # Not sure if relevant to any of my use cases.
+        target = target.resolve()
+
+    # TODO delete
+    if verbose:
+        print('final:')
+        print(f'target={target}')
+        print(f'link={link}')
+    #
+
+    def check_written_link():
+        resolved_link = link.resolve()
+
+        if target.is_absolute():
+            resolved_target = target.resolve()
+        else:
+            resolved_target = (link.parent / target).resolve()
+
+        # TODO delete try/except
+        try:
+            assert resolved_link == resolved_target, (f'link: {link}\n'
+                f'target: {target}\n{resolved_link} != {resolved_target}'
+            )
+        except AssertionError as err:
+            print()
+            print(str(err))
+            import ipdb; ipdb.set_trace()
+
+    # TODO delete
+    #replace = True
+    #
+    if link.exists():
+        if replace:
+            link.unlink()
+        else:
+            if checks:
+                assert link.is_symlink()
+                check_written_link()
+
+            return
+
+    link.symlink_to(target)
+    if checks:
+        # This should fail if the link is broken right after creation
+        assert link.is_symlink()
+        assert link.resolve().exists(), f'link broken! ({link} -> {target})'
+
+    # TODO delete?
+    if checks:
+        check_written_link()
+    #
 
     links_created.append(link)
+
+    # TODO delete
+    if verbose:
+        print()
+    #
 
 
 def delete_link_if_target_missing(link):
@@ -1568,18 +1662,14 @@ def ij_traces(analysis_dir, movie, roi_plots=False):
 
         all_roi_dir = ijroi_spatial_extents_plot_dir / f'all_rois_on_{bg_desc}'
         makedirs(all_roi_dir)
-        symlink(fig_path, all_roi_dir / f'{experiment_link_prefix}.{plot_fmt}',
-            relative=True
-        )
+        symlink(fig_path, all_roi_dir / f'{experiment_link_prefix}.{plot_fmt}')
 
         fig = plot_rois(masks[certain_rois], background)
         fig_path = savefig(fig, plot_dir, f'certain_rois_on_{bg_desc}')
 
         certain_roi_dir = ijroi_spatial_extents_plot_dir / f'certain_rois_on_{bg_desc}'
         makedirs(certain_roi_dir)
-        symlink(fig_path, certain_roi_dir / f'{experiment_link_prefix}.{plot_fmt}',
-            relative=True
-        )
+        symlink(fig_path, certain_roi_dir / f'{experiment_link_prefix}.{plot_fmt}')
 
     # TODO maybe just return rois and have z index information there in a way consistent
     # w/ output from corresponding suite2p fn?
@@ -1662,7 +1752,7 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
         assert corr_plot_path.exists()
 
         corr_link = corr_link_dir / f'{roi_plot_dir_basename}.{plot_fmt}'
-        symlink(corr_plot_path, corr_link, relative=True)
+        symlink(corr_plot_path, corr_link)
 
     if not is_pair:
         return corr
@@ -2040,8 +2130,11 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     if print_skipped:
         print_inputs_once()
 
+    thorimage_basename = thorimage_dir.name
+    panel = get_panel(thorimage_basename)
+
     # TODO delete all the analyze_glomeruli_diagnostics stuff (always behave as if True)
-    if 'diag' in str(thorimage_dir):
+    if panel == diag_panel_str:
         if not analyze_glomeruli_diagnostics:
             print_skip('skipping because experiment is just glomeruli diagnostics')
             return
@@ -2114,9 +2207,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     if print_skipped:
         print_inputs_once(yaml_path)
 
-    thorimage_basename = split(thorimage_dir)[1]
-    panel = get_panel(thorimage_basename)
-
     pulse_s = float(int(yaml_data['settings']['timing']['pulse_us']) / 1e6)
     # Remy uses 2s odor pulses, so for analyzing her data I can't restrict this way.
     if 'megamat0' != panel and pulse_s < 3:
@@ -2164,7 +2254,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             # combinations...)
             pair_dir = get_pair_dir(name1, name2)
             makedirs(pair_dir)
-            symlink(plot_dir, pair_dir / experiment_basedir, relative=True)
+            symlink(plot_dir, pair_dir / experiment_basedir)
     else:
         if analyze_pairgrids_only:
             print_skip('skipping because not a pair grid experiment', yaml_path)
@@ -2406,7 +2496,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 # NOTE: changing the target of the link should also trigger
                 # recomputation of ImageJ ROI outputs for directories w/ links to the
                 # changed RoiSet.zip. tested.
-                symlink(diag_ijroi_fname, diag_ijroi_link, relative=True)
+                symlink(diag_ijroi_fname, diag_ijroi_link)
                 has_ijrois = True
 
         if has_ijrois:
@@ -2717,6 +2807,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         odor_mean_dff_list.append(avg_mean_dff)
 
+        # TODO TODO TODO is this stuff not getting run? fix if so
         # TODO maybe also include some quick reference to previously-presented-stimulus,
         # to check for contamination components of noise?
         if not is_acquisition_host and target_glomerulus is not None:
@@ -2781,7 +2872,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 )
                 continue
 
-            symlink(fig_path, link_path, relative=True)
+            symlink(fig_path, link_path)
 
     # TODO maybe refactor so it doesn't need to be computed both here and in both the
     # (ij/suite2p) trace handling fns (though they currently also use odor_lists to
@@ -2925,8 +3016,8 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
     # then only re-run if one of the motion correction related parameters differs from
     # current setting (for use with imagej ROI code)
 
-    # TODO TODO refactor so this whole logic (of having multiple runs in parallel
-    # and updating a symlink to the one with the params we want) can be used inside
+    # TODO refactor so this whole logic (of having multiple runs in parallel and
+    # updating a symlink to the one with the params we want) can be used inside
     # recording directories too (not just fly directories), where in those cases the
     # input should be only one recordings data. how to be clear as to whether to use the
     # across run stuff vs single run stuff? just in the gsheet i suppose is fine.
@@ -3013,6 +3104,11 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
     # TODO rename fly_analysis_dir if that's all it takes for this fn to basically
     # support multi-tiff and single-tiff input cases
     suite2p_dir_link = s2p.get_suite2p_dir(fly_analysis_dir)
+    if suite2p_dir_link.exists():
+        assert suite2p_dir_link.is_symlink()
+
+    # My symlink(...) currently doesn't support existing links, though it will fail
+    # (by default) if they exist and point to the wrong target.
     suite2p_dir_link.unlink(missing_ok=True)
 
     def make_suite2p_dir_symlink(suite2p_dir: Path) -> None:
@@ -3021,18 +3117,7 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
         print(f'Linking {shorten_path(suite2p_dir_link)} -> '
             f'{shorten_path(suite2p_dir, 5)}\n'
         )
-        # TODO TODO TODO delete try/except
-        try:
-            # This would work if suite2p_dir did not exist yet, but I'm still postponing
-            # till after run_s2p call, when applicable, to not make a link that will be
-            # broken.
-            #
-            # TODO TODO TODO convert to relative (so i can copy directories within
-            # analysis_intermediates using something like cp -a)
-            suite2p_dir_link.symlink_to(suite2p_dir)
-        except Exception as e:
-            print(e)
-            import ipdb; ipdb.set_trace()
+        symlink(suite2p_dir, suite2p_dir_link)
 
     if suite2p_dir is None:
         suite2p_run_num = max_seen_s2p_run_num + 1
@@ -3413,7 +3498,11 @@ def preprocess_experiments(keys_and_paired_dirs, silence_curr_sidelabel_warnings
     ) -> None:
     """Writes a TIFF for .raw file in referenced ThorImage directory
     """
+    ambiguous_diags = set()
+
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
+
+        # TODO also print directories here if CLI verbose flag is true?
 
         panel = get_panel(thorimage_dir)
         if panel == diag_panel_str:
@@ -3421,11 +3510,16 @@ def preprocess_experiments(keys_and_paired_dirs, silence_curr_sidelabel_warnings
 
             # any such data? redos should generally be only one passed to this fn,
             # to the exclusion of any redone experiments
-            assert fly_key not in fly2diag_thorimage_dir
+            if fly_key in fly2diag_thorimage_dir:
+                date_str = format_date(date)
+                fly_str = f'{date_str}/{fly_num}'
+
+                warn(f'{fly_str} had multiple diagnostics, at least:\n'
+                    f'{fly2diag_thorimage_dir[fly_key]}\n{thorimage_dir}'
+                )
+                ambiguous_diags.add(fly_key)
 
             fly2diag_thorimage_dir[fly_key] = thorimage_dir
-
-        # TODO also print directories here if CLI verbose flag is true?
 
         if do_convert_raw_to_tiff:
             convert_raw_to_tiff(thorimage_dir, date, fly_num,
@@ -3436,6 +3530,9 @@ def preprocess_experiments(keys_and_paired_dirs, silence_curr_sidelabel_warnings
         # just don't even call preprocess_experiments? then delete
         # do_convert_raw_to_tiff flag?
         write_trial_and_frame_json(thorimage_dir, thorsync_dir)
+
+    for fly_key in ambiguous_diags:
+        fly2diag_thorimage_dir.pop(fly_key)
 
 
 # TODO doc
@@ -3490,6 +3587,9 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             tiffs.append(tiff_fname)
 
         if len(thorimage_dirs) == 0:
+            # TODO TODO TODO better error message if we are only in this situation
+            # because we didn't have side (left/right) labelled in gsheet (and thus
+            # didni't have the flipped.tif files)
             warn(f'no panels we want to register for fly {fly_str}\n')
             continue
 
@@ -3538,39 +3638,6 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
 
         mocorr_concat_tiff = suite2p_dir / mocorr_concat_tiff_basename
 
-        # TODO probably move creation of all symlinks to after things that generate the
-        # files they link to (just had it the other way around to change how i set up
-        # the links for files that already existed...). as-is, it leads to broken links
-        # until the second step finishes.
-
-        mocorr_concat_tiff_link = fly_analysis_dir / mocorr_concat_tiff_basename
-
-        # TODO delete this temporary code (to fix old links)
-        if mocorr_concat_tiff_link.exists():
-            assert mocorr_concat_tiff_link.is_symlink()
-            mocorr_concat_tiff_link.unlink()
-        #
-
-        # TODO test on data that does/doesn't already have one
-        if not mocorr_concat_tiff_link.is_symlink():
-            # This link will be broken until mocorr_concat_tiff is written below.
-            #
-            # TODO TODO TODO convert to relative (so i can copy directories within
-            # analysis_intermediates using something like cp -a)
-            mocorr_concat_tiff_link.symlink_to(mocorr_concat_tiff)
-
-        trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
-
-        # This link will also remain broken until written below (on first run, at
-        # least).
-        trial_and_frame_concat_json_link = (
-            fly_analysis_dir / trial_and_frame_json_basename
-        )
-        if not trial_and_frame_concat_json_link.is_symlink():
-            # TODO TODO TODO convert to relative (so i can copy directories within
-            # analysis_intermediates using something like cp -a)
-            trial_and_frame_concat_json_link.symlink_to(trial_and_frame_concat_json)
-
         def input_tiff2mocorr_tiff(input_tiff):
             return suite2p_dir / f'{input_tiff.parent.name}.tif'
 
@@ -3587,12 +3654,12 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
                     'real files, not symlinks'
                 )
 
-        # TODO TODO may also want to test we have all the symlinks we expect
+        # TODO may also want to test we have all the symlinks we expect
         # (AND may need some temporary code to either delete all existing links that
         # should be relative but currently aren't, or may need to do that manually)
-
-        # TODO TODO TODO need to also check we have the concatenated json, or will want
-        # to save that before this check to continue
+        # TODO need to also check we have the concatenated json, or will want to save
+        # that before this check to continue
+        # TODO add raw_concat.tif too
         if have_all_tiffs:
             continue
 
@@ -3622,16 +3689,31 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         for input_tiff, registered in input_tiff2registered.items():
 
             motion_corrected_tiff = input_tiff2mocorr_tiff(input_tiff)
+
+            print(f'writing {motion_corrected_tiff}', flush=True)
+            util.write_tiff(motion_corrected_tiff, registered)
+
             motion_corrected_tiff_link = input_tiff.with_name('mocorr.tif')
+
+            # For example:
+            # (link) analysis_intermediates/2022-02-04/1/kiwi/mocorr.tif ->
+            # (file) analysis_intermediates/2022-02-04/1/suite2p/kiwi.tif
+            #
+            # Since 'suite2p' in the target of the link is itself a symlink,
+            # these links should not need to be updated, and the files they refer to
+            # will change when the directory the 'suite2p' link is pointing to does.
+            symlink(motion_corrected_tiff, motion_corrected_tiff_link)
 
             json_fname = input_tiff.parent / trial_and_frame_json_basename
             if not json_fname.exists():
-                # TODO move symlink creation to after this loop so failure here doesn't
-                # leave us w/ broken links
-                raise FileNotFoundError(
-                    f'{shorten_path(json_fname, n_parts=5)} did not exist! '
-                    'can not create concatenated trial/frame JSON!'
+                err_msg = (f'{shorten_path(json_fname, n_parts=5)} did not exist! '
+                    'can not create (complete) concatenated trial/frame JSON!'
                 )
+                if allow_missing_trial_and_frame_json:
+                    warn(err_msg)
+                    continue
+                else:
+                    raise FileNotFoundError(err_msg)
 
             curr_json_dicts = json.loads(json_fname.read_text())
             for d in curr_json_dicts:
@@ -3640,29 +3722,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
                 d['end_frame'] += curr_frame_offset
 
             json_dicts.extend(curr_json_dicts)
-
             curr_frame_offset += len(registered)
-
-            if not motion_corrected_tiff_link.is_symlink():
-                # For example:
-                # (link) analysis_intermediates/2022-02-04/1/kiwi/mocorr.tif ->
-                # (file) analysis_intermediates/2022-02-04/1/suite2p/kiwi.tif
-                #
-                # Since 'suite2p' in the target of the link is itself a symlink,
-                # these links should not need to be updated, and the files they refer to
-                # will change when the directory the 'suite2p' link is pointing to does.
-                #
-                # TODO TODO TODO convert to relative (so i can copy directories within
-                # analysis_intermediates using something like cp -a)
-                motion_corrected_tiff_link.symlink_to(motion_corrected_tiff)
-
-            # TODO skip this if we already have this written?
-
-            # TODO come up w/ diff names to distinguish stuff registered across
-            # movies vs not? at least if we can't get across movie stuff to work as
-            # well as latter (cause across movie stuff would be way more useful...)
-            print(f'writing {motion_corrected_tiff}', flush=True)
-            util.write_tiff(motion_corrected_tiff, registered)
 
         # Essentially the same one I'm pulling apart in the above function, but we
         # are just putting it back together to be able to make it a TIFF to inspect
@@ -3674,8 +3734,17 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         util.write_tiff(mocorr_concat_tiff, mocorr_concat)
         del mocorr_concat
 
-        # TODO print we are writing this
+        mocorr_concat_tiff_link = fly_analysis_dir / mocorr_concat_tiff_basename
+        symlink(mocorr_concat_tiff, mocorr_concat_tiff_link)
+
+        trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
+
         trial_and_frame_concat_json.write_text(json.dumps(json_dicts))
+
+        trial_and_frame_concat_json_link = (
+            fly_analysis_dir / trial_and_frame_json_basename
+        )
+        symlink(trial_and_frame_concat_json, trial_and_frame_concat_json_link)
 
         print()
 
@@ -3977,7 +4046,7 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
             # NOTE: would need to use prefix specific to recording if I add plots
             # for just the pair experiments in this case
             link_path = panel_dir / f'{fly_plot_prefix}.{plot_fmt}'
-            symlink(fig_path, link_path, relative=True)
+            symlink(fig_path, link_path)
         else:
             fig_path = savefig(fig, panel_dir, fly_plot_prefix)
 
@@ -4994,26 +5063,20 @@ def main():
     # experiments as part of the return to kiwi-approximation experiments (that now
     # include ramps of eb/ea/kiwi mixture). For 2021 pair experiments, was using
     # start_date of '2021-03-07'
-    #start_date = '2021-03-07'
     start_date = '2022-02-04'
+
+    # TODO TODO TODO analyze PN/ORN recordings separately in some places
+    # (e.g. don't average across the two types of data, plot w/ some indication of which
+    # type of data we are looking at)
+    # use 'driver' column from gsheet for that (fill missing values w/ 'pebbled').
 
     common_paired_thor_dirs_kwargs = dict(
         start_date=start_date, ignore=bad_thorimage_dirs,
-        # To exclude PN recordings in 2022-07-02, until I'm ready to deal with them
-        # TODO TODO TODO delete + fix code handling this
-        # TODO TODO TODO add checkbox/similar to gsheet to track which stuff are PN
-        # recordings, and analyze them separately
-        #end_date='2022-07-01'
     )
 
     # TODO replace first two returned args w/ _ if not gonna use them...
     names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples = \
         odor_names2final_concs(**common_paired_thor_dirs_kwargs)
-
-    # TODO add flag to expand matching_substrs to all data for flies that have some data
-    # matching (for analyses that should use ~all data w/in a fly)?
-    # still want to restrict stuff that doesn't need all the data to just the originally
-    # matched stuff tho, so idk...
 
     # This list will contain elements like:
     # ( (<recording-date>, <fly-num>), (<thorimage-dir>, <thorsync-dir>) )
@@ -5046,7 +5109,6 @@ def main():
         # `list` call is just so `starmap` actually evaluates the fn on its input.
         # `starmap` just returns a generator otherwise.
         was_analyzed = list(starmap(process_experiment, keys_and_paired_dirs))
-
     else:
         with mp.Manager() as manager:
             # "If processes is None then the number returned by os.cpu_count() is used
@@ -5362,11 +5424,11 @@ def main():
     # same directory.
     print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
 
-    #trial_df
     # TODO TODO TODO another plot of mean roi activations w/ full tuning curve
     # (concatenated and sorted across panels)
     # TODO maybe restrict data to only known good, for at least one version of this
-    import ipdb; ipdb.set_trace()
+    #trial_df
+    #import ipdb; ipdb.set_trace()
 
     for panel, pdf in trial_df.groupby('panel', sort=False):
 
@@ -5434,10 +5496,6 @@ def main():
         fig, _ = plot_all_roi_mean_responses(mean_cdf, **shared_kwargs)
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_certain_mean')
 
-        # TODO do a version (or only version) where sorting is across both panels,
-        # so i can line them up (take max before loop)? less important now that i have
-        # plot_roi.py script, for investigating possible merges
-
         # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
         # (/ "z-scored" ok?)
 
@@ -5449,7 +5507,7 @@ def main():
         )
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_uncertain')
 
-        # TODO TODO another version grouped by fly first, then glomerulus
+        # TODO another version grouped by fly first, then glomerulus
 
     print('done')
 
