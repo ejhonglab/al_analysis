@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from hong2p import util, olf
 
 from al_analysis import (ij_roi_responses_cache, get_fly_roi_ids, dropna,
-    plot_all_roi_mean_responses, mocorr_concat_tiff_basename, init_logger
+    plot_all_roi_mean_responses, mocorr_concat_tiff_basename
 )
 import al_analysis as al
 
@@ -130,7 +130,9 @@ def plot(subset_df):
 
     fly_roi_sortkeys = []
     for roi_str in subset_df.columns:
-        if '/' in roi_str:
+
+        from_cache = '/' in roi_str
+        if from_cache:
             date_str, fly_str, roi_name = roi_str.split('/')
             is_newly_analyzed = False
         else:
@@ -139,10 +141,12 @@ def plot(subset_df):
         if len(newly_analyzed_roi_names) == 0:
             roi_key = roi_name
         else:
-            # NOTE: this may fail (raising ValueError) given that we are currently only
-            # matching cached stuff by .endswith... would need to change how cached
-            # stuff is matched against to fix
-            roi_key = newly_analyzed_roi_names.index(roi_name)
+            if from_cache:
+                # These should all be clean "certain" ROI names, which is also what our
+                # cache input should be (if comparing to newly analyzed data).
+                roi_key = newly_analyzed_roi_strs.index(roi_name)
+            else:
+                roi_key = newly_analyzed_roi_names.index(roi_name)
 
         # First component of tuple will put newly analyzed stuff at end.
         fly_roi_sortkeys.append((is_newly_analyzed, roi_key, '', ''))
@@ -182,6 +186,8 @@ def plot(subset_df):
 
 newly_analyzed_dfs = []
 newly_analyzed_roi_names = []
+newly_analyzed_roi_strs = []
+
 most_recent_plot_proc = None
 keep_comparison_to_cache = False
 plotting_processes = []
@@ -189,6 +195,7 @@ plotting_processes = []
 def load_and_plot(args):
     global newly_analyzed_dfs
     global newly_analyzed_roi_names
+    global newly_analyzed_roi_strs
     global most_recent_plot_proc
     global keep_comparison_to_cache
     global plotting_processes
@@ -218,12 +225,12 @@ def load_and_plot(args):
 
     if add_to_plot:
         subset_dfs = list(newly_analyzed_dfs)
-        roi_strs.extend([x for x in newly_analyzed_roi_names if al.is_ijroi_certain(x)])
     else:
         subset_dfs = []
 
         newly_analyzed_dfs = []
         newly_analyzed_roi_names = []
+        newly_analyzed_roi_strs = []
         keep_comparison_to_cache = False
 
     if analysis_dir is not None:
@@ -237,16 +244,18 @@ def load_and_plot(args):
 
         # So that if it's just a numbered ROI like '5', it doesn't pull up all the
         # 'DM5',etc data for comparison.
-        # TODO TODO need to also allow '?' here if i'm gonna strip later and try to
-        # match w/o it. also may want to allow uncertain stuff that at least has names
-        # in it, e.g. 'DM2|VM2', 'VM[2|3]', so i can match how i want later
-        # TODO so ig i want to check if it's a number of a default name, and keep
-        # compare=True if it's neither
-        if not al.is_ijroi_certain(new_roi_name):
+        if not al.is_ijroi_named(new_roi_name):
             compare = False
         else:
             keep_comparison_to_cache = True
-            roi_strs.append(new_roi_name)
+
+            # NOTE: just going to support the syntax '<roi name 1>|<roi name 2>|...',
+            # rather than anything more complicated involving square brackets, as it
+            # would complicate parsing. Also support having a single '?' at end.
+            new_roi_str = new_roi_name.strip('?')
+            for roi_name in new_roi_str.split('|'):
+                if roi_name not in newly_analyzed_roi_strs:
+                    newly_analyzed_roi_strs.append(roi_name)
 
         if new_roi_name in newly_analyzed_roi_names:
             for ndf in newly_analyzed_dfs:
@@ -282,6 +291,7 @@ def load_and_plot(args):
         newly_analyzed_dfs.append(new_df)
 
     if compare or analysis_dir is None or keep_comparison_to_cache:
+        roi_strs.extend(newly_analyzed_roi_strs)
         assert len(roi_strs) > 0
 
         df = pd.read_pickle(ij_roi_responses_cache)
@@ -324,13 +334,9 @@ def load_and_plot(args):
         # any reason i didn't want that?
         # (then i could get get index of matching name in newly analyzed ROI names to
         # sort these...)
-        # TODO decide whether i want to keep the .strip('?') part?
-        # TODO TODO TODO why is .strip('?') not working (want 'DP1m?' to also show
-        # 'DP1m' in cached data for comparison)
-        matching = np.any([df.columns.str.endswith(x.strip('?')) for x in roi_strs],
+        matching = np.any([df.columns.str.endswith(x) for x in roi_strs],
             axis=0
         )
-        #import ipdb; ipdb.set_trace()
         if matching.sum() == 0:
             raise ValueError(f'no ROIs matching any of {roi_strs}')
 
