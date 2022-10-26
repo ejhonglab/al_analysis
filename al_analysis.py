@@ -21,7 +21,7 @@ from itertools import starmap
 import multiprocessing as mp
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Optional
+from typing import Optional, Tuple, List
 import json
 import logging
 import shlex
@@ -46,11 +46,15 @@ from drosolf import orns
 from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
-from hong2p.util import shorten_path, shorten_stimfile_path, format_date
+from hong2p.util import (shorten_path, shorten_stimfile_path, format_date,
+    ijroiset_default_basename
+)
 from hong2p.olf import (format_odor, format_mix_from_strs, format_odor_list,
     solvent_str, odor2abbrev, odor_lists_to_multiindex
 )
 from hong2p.viz import dff_latex
+from hong2p.err import NoStimulusFile
+from hong2p.thor import OnsetOffsetNumMismatch
 from hong2p.types import ExperimentOdors, Pathlike
 from hong2p.xarray import (move_all_coords_to_index, unique_coord_value, scalar_coords,
     drop_scalar_coords
@@ -80,8 +84,6 @@ analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 min_input = 'mocorr'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
-# TODO TODO TODO return to True + fix
-#do_register_all_fly_recordings_together = False
 do_register_all_fly_recordings_together = True
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
@@ -166,7 +168,16 @@ plot_root_dir = Path(plot_fmt)
 across_fly_ijroi_dir = plot_root_dir / 'ijroi'
 across_fly_ijroi_corr_dir = across_fly_ijroi_dir / 'corr'
 
+bounding_frame_yaml_cache_basename = 'trial_bounding_frames.yaml'
+
 trial_and_frame_json_basename = 'trial_frames_and_odors.json'
+
+mocorr_concat_tiff_basename = 'mocorr_concat.tif'
+
+# NOTE: trial_dff* is still a mean within a trial, but trialmean_dff* is a mean OF THOSE
+# MEANS (across trials)
+trial_dff_tiff_basename = 'trial_dff.tif'
+trialmean_dff_tiff_basename = 'trialmean_dff.tif'
 max_trialmean_dff_tiff_basename = 'max_trialmean_dff.tif'
 
 cmap = 'plasma'
@@ -417,6 +428,8 @@ ij_corr_list = []
 # multiprocessing DictProxy overrides this.
 names_and_concs2analysis_dirs = dict()
 
+flies_with_new_processed_tiffs = []
+
 ###################################################################################
 # Modified inside `run_suite2p`
 ###################################################################################
@@ -458,10 +471,23 @@ def init_logger(module_name, script_path, log_argv=True):
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
+
+    # Doing this before adding StreamHandler, because don't want this on terminal.
+    if log_argv:
+        # Python 3.8+
+        cmd_str = shlex.join(sys.argv)
+        logger.info(cmd_str)
+
     # To also print to stderr
     logger.addHandler(logging.StreamHandler())
 
     def handle_exception(exc_type, exc_value, exc_traceback):
+        # bdb.BdqQuit doesn't seem to currently get logged here, though I'm not sure why
+        #
+        # actually, it seems any exception after I have been in ipdb (e.g. despite 'c'
+        # to continue to completion), isn't logged.
+        #
+        # TODO possible to get those errors to be logged?
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
@@ -471,11 +497,6 @@ def init_logger(module_name, script_path, log_argv=True):
         )
 
     sys.excepthook = handle_exception
-
-    if log_argv:
-        # Python 3.8+
-        cmd_str = shlex.join(sys.argv)
-        logger.info(cmd_str)
 
     return logger
 
@@ -490,8 +511,9 @@ def formatwarning_msg_only(msg, category, *args, **kwargs):
 warnings.formatwarning = formatwarning_msg_only
 
 
+# TODO TODO maybe log all warnings?
 def warn(msg):
-    warnings.warn(msg)
+    warnings.warn(str(msg))
 
 
 def get_fly_analysis_dir(date, fly_num) -> Path:
@@ -506,7 +528,6 @@ def get_fly_analysis_dir(date, fly_num) -> Path:
 
 # TODO replace similar fn (if still exists?) already in hong2p? or use the hong2p one?
 # (just want to prefer the "fast" data root)
-# TODO try to see if i broke anything by returning Path instead of str path here
 def get_analysis_dir(date, fly_num, thorimage_dir) -> Path:
     """Returns path for storing recording-level analysis artifacts
 
@@ -753,16 +774,19 @@ def make_fail_indicator_file(analysis_dir: Path, suffix: str, err=None):
     path = analysis_dir / f'{FAIL_INDICATOR_PREFIX}{suffix}'
     if err is None:
         path.touch()
+    elif type(err) is str:
+        err_str = err
     else:
         err_str = ''.join(traceback.format_exception(type(err), err, err.__traceback__))
-        path.write_text(err_str)
+
+    path.write_text(err_str)
 
 
 def _list_fail_indicators(analysis_dir: Path):
     return glob.glob(str(analysis_dir / (FAIL_INDICATOR_PREFIX + '*')))
 
 
-def last_fail_suffixes(analysis_dir: Path):
+def last_fail_suffixes(analysis_dir: Path) -> Tuple[bool, Optional[List[str]]]:
     """Returns if an analysis_dir has any fail indicators and list of their suffixes
     """
     suffixes = [
@@ -893,7 +917,13 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
         xml = thor.get_thorimage_xmlroot(thorimage_dir)
         ti_time = thor.get_thorimage_time_xml(xml)
 
-        yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
+        try:
+            yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(
+                xml
+            )
+        except NoStimulusFile as err:
+            warn(f'{err}. skipping.')
+            continue
 
         seen_stimulus_yamls2thorimage_dirs[yaml_path].append(thorimage_dir)
 
@@ -916,29 +946,52 @@ def odor_names2final_concs(**paired_thor_dirs_kwargs):
     return names2final_concs, seen_stimulus_yamls2thorimage_dirs, names_and_concs_tuples
 
 
-# TODO factor to hong2p / just supply a cache_dir arg to the hong2p.thor fn?
-def assign_frames_to_odor_presentations(thorsync_dir, thorimage_dir, cache_dir,
+# TODO factor to hong2p / just supply a analysis_dir arg to the hong2p.thor fn?
+def assign_frames_to_odor_presentations(thorsync_dir, thorimage_dir, analysis_dir,
     ignore_cache=ignore_bounding_frame_cache):
 
-    bounding_frame_yaml_cache = cache_dir / 'trial_bounding_frames.yaml'
+    bounding_frame_yaml_cache = analysis_dir / bounding_frame_yaml_cache_basename
 
     if ignore_bounding_frame_cache or not bounding_frame_yaml_cache.exists():
-        # TODO don't bother doing this if we only have imagej / suite2p analysis left to
-        # do, and the required output directory doesn't exist / ROIs haven't been
-        # manually drawn/filtered / etc
+        print('assigning frames to odor presentations for:\n'
+            f'ThorImage: {shorten_path(thorimage_dir)}\n'
+            f'ThorSync:  {shorten_path(thorsync_dir)}', flush=True
+        )
+        # This may raise an error, and calling code should handle if so.
         bounding_frames = thor.assign_frames_to_odor_presentations(thorsync_dir,
             thorimage_dir
         )
-
         # Converting numpy int types to python int types, and tuples to lists, for
         # (much) nicer YAML output.
         bounding_frames = [ [int(x) for x in xs] for xs in bounding_frames]
 
+        # TODO regenerate all data (+ recopy stuff that has been copied)
+        #
+        # Writing thor[image|sync]_dir so that if I need to copy a YAML file from a
+        # similar experiment to one failing frame<->odor assignment, I can keep track of
+        # where it came from.
+        yaml_data = {
+            'thorimage_dir': shorten_path(thorimage_dir),
+            'thorsync_dir': shorten_path(thorsync_dir),
+            'bounding_frames': bounding_frames,
+        }
+        # TODO TODO also write thorsync and thorimage dirs as keys to the yaml, but
+        # don't load them under most circumstances. so that i can tell easier if i
+        # copied the yaml file from one recording to a similar recording where the frame
+        # assignment is failing.
         with open(bounding_frame_yaml_cache, 'w') as f:
-            yaml.dump(bounding_frames, f)
+            yaml.dump(yaml_data, f)
     else:
         with open(bounding_frame_yaml_cache, 'r') as f:
-            bounding_frames = yaml.safe_load(f)
+            yaml_data = yaml.safe_load(f)
+
+        # TODO delete after all yaml files have been regenerated / recopied s.t. they
+        # all include the same set of keys
+        if 'bounding_frames' not in yaml_data:
+            bounding_frames = yaml_data
+        #
+        else:
+            bounding_frames = yaml_data['bounding_frames']
 
     return bounding_frames
 
@@ -1452,13 +1505,6 @@ def ij_traces(analysis_dir, movie, roi_plots=False):
     z_indices = masks.roi_z[masks.roi_num.isin(roi_nums)].values
 
 
-    # TODO TODO TODO provide option to symlink all RoiSet.zip files to point to the
-    # glomeruli_diagnostic one (a process I had done manually before).
-    # TODO TODO + copy any existing RoiSet.zip files where links would be created to a
-    # backup first
-    # (might wanna do this in process_experiment or something. here may not be the
-    # place.)
-
     ret = (traces, rois, z_indices)
     if not roi_plots:
         return ret
@@ -1767,7 +1813,9 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         # directories here so that suite2p doesn't try to run on them (just the name,
         # not the directories containing them)
         'dff.tif',
-        'max_trialmean_dff.tif',
+        trial_dff_tiff_basename,
+        trialmean_dff_tiff_basename,
+        max_trialmean_dff_tiff_basename,
         # TODO may need to configure this to also ignore either raw.tif or flipped.tif,
         # depending on current value of min_input (never want to include *both* raw.tif
         # and flipped.tif)
@@ -2037,6 +2085,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         return savefig(fig, plot_dir, desc, **kwargs)
 
     analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
+    fly_analysis_dir = analysis_dir.parent
+
     # TODO we used to let makedirs make analysis_dir if it didn't exist, but now
     # get_analysis_dir will do that. if we still want to delete it on cleanup if it's
     # empty, would special handling.
@@ -2050,7 +2100,15 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # currently takeing ~0.04s per call, -> 3-4 seconds @ ~80ish calls
     # (same issue w/ yaml.safe_load on bounding frames though, so maybe it's not
     # storage? or maybe it's partially a matter of seek time? should be ~5-10ms tho...)
-    yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
+    try:
+        yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(xml)
+
+    except NoStimulusFile:
+        # currently redundant w/ warning in case of same error in preprocess_experiments
+        print_skip(f'skipping because no stimulus YAML file referenced in ThorImage '
+            'Experiment.xml'
+        )
+        return
 
     # Again, in this case, we might as well print all input paths ASAP.
     if print_skipped:
@@ -2061,7 +2119,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     pulse_s = float(int(yaml_data['settings']['timing']['pulse_us']) / 1e6)
     # Remy uses 2s odor pulses, so for analyzing her data I can't restrict this way.
-    if 'megamat' not in panel and pulse_s < 3:
+    if 'megamat0' != panel and pulse_s < 3:
         print_skip(f'skipping because odor pulses were {pulse_s} (<3s) long (old)',
             yaml_path
         )
@@ -2120,8 +2178,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         short_yaml_path = shorten_stimfile_path(yaml_path)
 
+        seen_yamls = seen_stimulus_yamls2thorimage_dirs[yaml_path]
         err_msg = (f'stimulus yaml {short_yaml_path} seen in:\n'
-            f'{pformat(seen_stimulus_yamls2thorimage_dirs[yaml_path])}'
+            f'{pformat([str(x) for x in seen_yamls])}'
         )
         warn_if_not_skipped(err_msg)
 
@@ -2161,9 +2220,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     else:
         has_failed, suffixes = last_fail_suffixes(analysis_dir)
         if has_failed:
-            if frame_assign_fail_prefix in suffixes:
-                failed_assigning_frames_to_odors.append(thorimage_dir)
-
             if suite2p_fail_prefix in suffixes:
                 failed_suite2p_dirs.append(analysis_dir)
 
@@ -2176,20 +2232,20 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     before = time.time()
 
+    # TODO don't bother doing this if we only have imagej / suite2p analysis left to do,
+    # and the required output directory doesn't exist / ROIs haven't been manually
+    # drawn/filtered / etc
     # TODO thread thru kwargs
     bounding_frames = assign_frames_to_odor_presentations(thorsync_dir, thorimage_dir,
         analysis_dir
     )
-    # Currently seems to reliably happen iff we somehow accidentally also image with the
-    # red channel (which was allowed despite those channels having gain 0 in the few
-    # cases so far)
-    # TODO move this before new location of trial/frame json writing (in
-    # preprocess_experiments)
+
+    # TODO delete unless this gets triggered (and fix if it does).
+    # should be getting detected in write_trial_frames_and_json now, and skipped just
+    # above b/c of fail indicator now)
     if len(bounding_frames) != len(odor_order_with_repeats):
-        failed_assigning_frames_to_odors.append(thorimage_dir)
-        make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, err)
-        print_skip(traceback.format_exc(), yaml_path, color='red', file=sys.stderr)
-        return
+        assert False, 'should be unreachable'
+    #
 
     # (loading the HDF5 should be the main time cost in the above fn)
     load_hdf5_s = time.time() - before
@@ -2331,44 +2387,30 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     do_ij_analysis = False
     if analyze_ijrois:
+        has_ijrois = util.has_ijrois(analysis_dir)
 
-        if util.has_ijrois(analysis_dir):
+        fly_key = (date, fly_num)
+        if (not has_ijrois and fly_key in fly2diag_thorimage_dir and
+            (fly_analysis_dir / mocorr_concat_tiff_basename).exists()):
+
+            diag_analysis_dir = thorimage2analysis_dir(fly2diag_thorimage_dir[fly_key])
+            diag_ijroi_fname = util.ijroi_filename(diag_analysis_dir, must_exist=False)
+
+            if diag_ijroi_fname.is_file():
+                diag_ijroi_link = analysis_dir / ijroiset_default_basename
+
+                print_if_not_skipped(f'no {ijroiset_default_basename}. linking to ROIs'
+                    ' defined on diagnostic recording '
+                    f'{shorten_path(diag_analysis_dir)}.'
+                )
+                # NOTE: changing the target of the link should also trigger
+                # recomputation of ImageJ ROI outputs for directories w/ links to the
+                # changed RoiSet.zip. tested.
+                symlink(diag_ijroi_fname, diag_ijroi_link, relative=True)
+                has_ijrois = True
+
+        if has_ijrois:
             dirs_with_ijrois.append(analysis_dir)
-
-            # TODO or at least warn if glomeruli_diagnostics/RoiSet.zip exists and
-            # there are no RoiSet.zip's in other recording folders for the same fly
-            # (at least if we have motion correction)
-
-            # TODO TODO TODO maybe add column to gsheet (value to some metadata) to
-            # explicitly indicate whether registration between diagnostic and other
-            # stuff (/ a specific other recording) is good, and only do this if
-            # indicated
-            '''
-            if panel != diag_panel_str:
-                ij_roiset_fname = util.ijroi_filename(analysis_dir)
-                if not ij_roiset_fname.is_symlink():
-                    # TODO TODO TODO backup ij_roiset_fname + make a new symlink to the
-                    # diagnostics recording
-                    # TODO assert RoiSet.zip.bak doesn't already exist
-                    parts = list(ij_roiset_fname.parts)
-                    assert parts[-1] == 'RoiSet.zip'
-                    parts[-2] = diag_panel_str
-
-                    diag_ij_roiset_fname = Path(*parts)
-                    assert diag_ij_roiset_fname.is_file()
-                    assert not diag_ij_roiset_fname.is_symlink()
-
-                    # TODO TODO TODO first backup if necessary
-
-                    # TODO delete
-                    print(f'{ij_roiset_fname=}')
-                    print(f'{diag_ij_roiset_fname=}')
-                    #
-                    #ij_roiset_fname.symlink_to(diag_ij_roiset_fname)
-                    # TODO delete
-                    import ipdb; ipdb.set_trace()
-                    #
-            '''
 
             ij_trial_df_cache_fname = analysis_dir / 'ij_trial_df_cache.p'
             # Assuming this is written, if ij_trial_df_cache_fname was
@@ -2790,30 +2832,28 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         del delta_f_over_f, trial_dff_movies
 
-    # TODO TODO TODO write a tiff where it is one dff image per odor presentation
-    # (probably not averaged across trials?)
-    # TODO TODO TODO and ideally, do so with the full concatenated movie when available
-    # TODO try handling similarly to trial/frame jsons, where i read them all, concat,
-    # and save (would need several runs of the analysis though... because we want the
-    # process_experiment call to be using motion corrected output, which requires
-    # running the code that currently handles this...).
-    # TODO TODO TODO add new loop over registered fly data after all process_experiment
-    # calls (maybe specifically just to concat these tiffs, when requested)
-
-    # TODO TODO TODO and modify odor overlaying imagej_macros code to be able to use the
-    # same trial_frames_and_odors.json with TIFFs that only have a number of timepoints
-    # EITHER equal to the # odors or the # of presentations (maybe only for tiffs whose
-    # names match what i'm gonna call these TIFFs)
-
     max_trialmean_dff = np.max(odor_mean_dff_list, axis=0)
     if write_processed_tiffs:
-        import ipdb; ipdb.set_trace()
-        max_trialmean_dff_tiff_fname = analysis_dir / max_trialmean_dff_tiff_basename
+        # Of length (.shape[0]) equal to number of odor presentations
+        # (including each repeat separately).
+        trial_dff_tiff = analysis_dir / trial_dff_tiff_basename
+        trial_dff = np.array(all_trial_mean_dffs)
+        util.write_tiff(trial_dff_tiff, trial_dff, strict_dtype=False)
 
-        util.write_tiff(max_trialmean_dff_tiff_fname, max_trialmean_dff,
+        # Of length equal to number of odor presentations, AVERAGED ACROSS
+        # (consecutive?) TRIALS.
+        trialmean_dff_tiff = analysis_dir / trialmean_dff_tiff_basename
+        trialmean_dff = np.array(odor_mean_dff_list)
+        util.write_tiff(trialmean_dff_tiff, trialmean_dff, strict_dtype=False)
+
+        max_trialmean_dff_tiff = analysis_dir / max_trialmean_dff_tiff_basename
+        util.write_tiff(max_trialmean_dff_tiff, max_trialmean_dff,
             strict_dtype=False, dims='ZYX'
         )
-        print(f'wrote TIFF with max across mean odor dF/F volumes')
+
+        flies_with_new_processed_tiffs.append(fly_analysis_dir)
+
+        print('wrote processed TIFFs')
 
     fname_prefix = 'max_trialmean_dff'
     if n_response_volumes_in_fname:
@@ -3288,32 +3328,68 @@ def convert_raw_to_tiff(thorimage_dir, date, fly_num,
 
 def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
 
-    _, _, odor_lists = util.thorimage2yaml_info_and_odor_lists(thorimage_dir)
-    odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
-
     analysis_dir = thorimage2analysis_dir(thorimage_dir)
     json_fname = analysis_dir / trial_and_frame_json_basename
 
+    try:
+        _, _, odor_lists = util.thorimage2yaml_info_and_odor_lists(thorimage_dir)
+    except NoStimulusFile as e:
+        warn(f'{e}. could not write {json_fname}!')
+        return
+
+    odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
+
     if json_fname.exists():
+        return
+
+    # TODO option for CLI --ignore-existing flag to recompute these frame<->odor
+    # assignments?
+    # TODO TODO TODO maybe check for YAML before failing, so that we don't also need to
+    # delete the fail indicator if we want the YAML to work (if e.g. we copy a YAML from
+    # a similar experiment that should have roughly the same frame<->odor
+    # correspondance) (would need to refactor a bit to move into assign_... tho. would
+    # probably be worth it do that.)
+    # (currently, i need to rename / delete fail indicator file so that it doesn't
+    # prevent cache from being loaded / process_experiment from failing)
+    has_failed, suffixes = last_fail_suffixes(analysis_dir)
+    if has_failed and frame_assign_fail_prefix in suffixes:
+        warn(f'skipping {shorten_path(thorimage_dir)} with previously failed frame<->'
+            'odor assignment'
+        )
+        failed_assigning_frames_to_odors.append(thorimage_dir)
         return
 
     try:
         bounding_frames = assign_frames_to_odor_presentations(thorsync_dir,
             thorimage_dir, analysis_dir
         )
-    except AssertionError as e:
+
+    # TODO convert any remaining expected-to-sometimes-trigger AssertionErrors to their
+    # own suitable error type -> catch those
+    except (OnsetOffsetNumMismatch, AssertionError) as e:
         if err:
             raise
         else:
-            # TODO print full traceback / add message to warning about this fn
-            warn(e)
+            failed_assigning_frames_to_odors.append(thorimage_dir)
+            make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, e)
 
-    # Currently letting the actual failure happen in process_experiment.
+            # TODO print full traceback / add message to warning about this fn
+            warn(f'{e}. could not write {json_fname}!')
+            return
+
+    # Currently seems to reliably happen iff we somehow accidentally also image with the
+    # red channel (which was allowed despite those channels having gain 0 in the few
+    # cases so far)
     if len(bounding_frames) != len(odor_order_with_repeats):
-        warn(f'len(bounding_frames) ({len(bounding_frames)}) != '
+        err_msg = (f'len(bounding_frames) ({len(bounding_frames)}) != '
             f'len(odor_order_with_repeats) ({len(odor_order_with_repeats)}).'
             f'not able to make {json_fname}!'
         )
+        warn(err_msg)
+
+        failed_assigning_frames_to_odors.append(thorimage_dir)
+        make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, err_msg)
+
         return
 
     # For trying to load in ImageJ plugin (assuming stdlib json module works there)
@@ -3331,11 +3407,25 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
     json_fname.write_text(json.dumps(json_dicts))
 
 
+
+fly2diag_thorimage_dir = dict()
 def preprocess_experiments(keys_and_paired_dirs, silence_curr_sidelabel_warnings=False
     ) -> None:
     """Writes a TIFF for .raw file in referenced ThorImage directory
     """
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
+
+        panel = get_panel(thorimage_dir)
+        if panel == diag_panel_str:
+            fly_key = (date, fly_num)
+
+            # any such data? redos should generally be only one passed to this fn,
+            # to the exclusion of any redone experiments
+            assert fly_key not in fly2diag_thorimage_dir
+
+            fly2diag_thorimage_dir[fly_key] = thorimage_dir
+
+        # TODO also print directories here if CLI verbose flag is true?
 
         if do_convert_raw_to_tiff:
             convert_raw_to_tiff(thorimage_dir, date, fly_num,
@@ -3348,7 +3438,6 @@ def preprocess_experiments(keys_and_paired_dirs, silence_curr_sidelabel_warnings
         write_trial_and_frame_json(thorimage_dir, thorsync_dir)
 
 
-mocorr_concat_tiff_basename = 'mocorr_concat.tif'
 # TODO doc
 def register_all_fly_recordings_together(keys_and_paired_dirs):
     # TODO TODO doc w/ clarification on how this is different from
@@ -3427,12 +3516,12 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # "raw" in the sense that they aren't motion corrected. They may still be
         # flipped left/right according to labelling of which side I imaged (from the
         # labels in the Google Sheet).
-        raw_fly_concat_tiff = fly_analysis_dir / 'raw_concat.tif'
-        if not raw_fly_concat_tiff.is_file():
+        raw_concat_tiff = fly_analysis_dir / 'raw_concat.tif'
+        if not raw_concat_tiff.is_file():
             raw_tiffs = [tifffile.imread(t) for t in tiffs]
-            raw_fly_concat_movie = np.concatenate(raw_tiffs, axis=0)
-            print(f'writing {raw_fly_concat_tiff}', flush=True)
-            util.write_tiff(raw_fly_concat_tiff, raw_fly_concat_movie)
+            raw_concat = np.concatenate(raw_tiffs, axis=0)
+            print(f'writing {raw_concat_tiff}', flush=True)
+            util.write_tiff(raw_concat_tiff, raw_concat)
             del raw_tiffs
 
         # TODO TODO make temporary code to read existing TIFFs (or at least the
@@ -3440,34 +3529,35 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # prints the min/max/dtype of the movies, to make sure we shouldn't be getting
         # divide by zero-type errors anymore. re-run stuff as necessary (or at least
         # change code to generate from binaries, and re-run that).
+        # (probably just do this for directly the suite2p binaries themselves)
 
         # This Path is a symlink to a particular suite2p run, created and updated by
         # register_recordings_together (above)
         suite2p_dir = s2p.get_suite2p_dir(fly_analysis_dir)
         assert suite2p_dir.is_symlink()
 
-        fly_concat_tiff = suite2p_dir / mocorr_concat_tiff_basename
+        mocorr_concat_tiff = suite2p_dir / mocorr_concat_tiff_basename
 
         # TODO probably move creation of all symlinks to after things that generate the
         # files they link to (just had it the other way around to change how i set up
         # the links for files that already existed...). as-is, it leads to broken links
         # until the second step finishes.
 
-        fly_concat_tiff_link = fly_analysis_dir / mocorr_concat_tiff_basename
+        mocorr_concat_tiff_link = fly_analysis_dir / mocorr_concat_tiff_basename
 
         # TODO delete this temporary code (to fix old links)
-        if fly_concat_tiff_link.exists():
-            assert fly_concat_tiff_link.is_symlink()
-            fly_concat_tiff_link.unlink()
+        if mocorr_concat_tiff_link.exists():
+            assert mocorr_concat_tiff_link.is_symlink()
+            mocorr_concat_tiff_link.unlink()
         #
 
         # TODO test on data that does/doesn't already have one
-        if not fly_concat_tiff_link.is_symlink():
-            # This link will be broken until fly_concat_tiff is written below.
+        if not mocorr_concat_tiff_link.is_symlink():
+            # This link will be broken until mocorr_concat_tiff is written below.
             #
             # TODO TODO TODO convert to relative (so i can copy directories within
             # analysis_intermediates using something like cp -a)
-            fly_concat_tiff_link.symlink_to(fly_concat_tiff)
+            mocorr_concat_tiff_link.symlink_to(mocorr_concat_tiff)
 
         trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
 
@@ -3485,7 +3575,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             return suite2p_dir / f'{input_tiff.parent.name}.tif'
 
         expected_tiffs = [input_tiff2mocorr_tiff(t) for t in tiffs]
-        expected_tiffs.append(fly_concat_tiff)
+        expected_tiffs.append(mocorr_concat_tiff)
 
         have_all_tiffs = True
         for t in expected_tiffs:
@@ -3534,12 +3624,10 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             motion_corrected_tiff = input_tiff2mocorr_tiff(input_tiff)
             motion_corrected_tiff_link = input_tiff.with_name('mocorr.tif')
 
-            # TODO TODO make sure the ImageJ plugin component of this stops displaying
-            # odor data when the current frame is in a region that doesn't have odor
-            # data (and that it doesn't just continue displaying the last odor from the
-            # direction of approach)
             json_fname = input_tiff.parent / trial_and_frame_json_basename
             if not json_fname.exists():
+                # TODO move symlink creation to after this loop so failure here doesn't
+                # leave us w/ broken links
                 raise FileNotFoundError(
                     f'{shorten_path(json_fname, n_parts=5)} did not exist! '
                     'can not create concatenated trial/frame JSON!'
@@ -3579,12 +3667,12 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         # Essentially the same one I'm pulling apart in the above function, but we
         # are just putting it back together to be able to make it a TIFF to inspect
         # the boundaries.
-        fly_concat_movie = np.concatenate(
+        mocorr_concat = np.concatenate(
             [x for x in input_tiff2registered.values()], axis=0
         )
-        print(f'writing {fly_concat_tiff}', flush=True)
-        util.write_tiff(fly_concat_tiff, fly_concat_movie)
-        del fly_concat_movie
+        print(f'writing {mocorr_concat_tiff}', flush=True)
+        util.write_tiff(mocorr_concat_tiff, mocorr_concat)
+        del mocorr_concat
 
         # TODO print we are writing this
         trial_and_frame_concat_json.write_text(json.dumps(json_dicts))
@@ -4792,6 +4880,9 @@ def main():
     )
     # TODO implement
     # TODO provide a means of undoing this
+    # TODO maybe generalize this to silencing any warnings that we might want to see
+    # once but generally not a second time (also e.g. "...no string ending in .yaml
+    # found in ThorImage note field..." (issued from hong2p.util))
     parser.add_argument('-s', '--silence-sidelabel-warnings', action='store_true',
         help='Writes metadata for flies currently triggering warnings about left/right '
         'side not being labelled in the Google Sheet, so that future runs will not warn'
@@ -4807,6 +4898,9 @@ def main():
     ignore_existing = args.ignore_existing
     retry_previously_failed = args.retry_failed
     analyze_glomeruli_diagnostics_only = args.glomeruli_diags_only
+    # TODO maybe have this also apply to warnings about stuff skipped in
+    # PREprocess_experiment (now that i moved frame<->odor assignment fail handling code
+    # there)
     print_skipped = args.verbose
     # TODO implement
     silence_curr_sidelabel_warnings = args.silence_sidelabel_warnings
@@ -4941,10 +5035,6 @@ def main():
         silence_curr_sidelabel_warnings=silence_curr_sidelabel_warnings
     )
 
-    # TODO TODO move creation of trial_and_frame_jsons for individual recoredings here,
-    # so they can be used to create the concatenated ones in
-    # register_all_fly_recordings_together
-
     if do_register_all_fly_recordings_together:
         # TODO rename to something like just "register_recordings" and implement
         # switching between no registration / whole registration / movie-by-movie
@@ -5008,6 +5098,29 @@ def main():
 
     n_analyzed = sum([x is not None for x in was_analyzed])
     print(f'Analyzed {n_analyzed} experiment(s)')
+
+
+    for fly_analysis_dir in sorted(set(flies_with_new_processed_tiffs)):
+
+        # TODO refactor? currently duplicating in code that decides whether to link to
+        # diagnostic RoiSet.zip in process_experiment
+        if not (fly_analysis_dir / mocorr_concat_tiff_basename).exists():
+            continue
+
+        for tiff_basename in (trial_dff_tiff_basename, trialmean_dff_tiff_basename):
+
+            tiffs_to_concat = sorted(fly_analysis_dir.glob(f'*/{tiff_basename}'),
+                key=lambda d: thor.get_thorimage_time(analysis2thorimage_dir(d.parent))
+            )
+
+            concat_tiff_path = (
+                fly_analysis_dir / f'{Path(tiff_basename).stem}_concat.tif'
+            )
+            processed_concat = np.concatenate([
+                tifffile.imread(x) for x in tiffs_to_concat
+            ])
+            util.write_tiff(concat_tiff_path, processed_concat, strict_dtype=False)
+
 
     total_s = time.time() - main_start_s
     print(f'Took {total_s:.0f}s\n')
@@ -5230,12 +5343,6 @@ def main():
     # use to summarize / plot extent of dF/F sum in current ROIs / not (for assessing
     # completeness of ROI assignments)
 
-    # TODO factor out plotting below, so i can partially use it for plotting responses
-    # to specific glomeruli of interest, for interactively comparing certain glomeruli
-    # to [each other / Hallem / DoOR / all existing glomeruli given a particular name]
-    # TODO and/or just make plots of responses w/ all fly/ROIs lexsorted, for quick
-    # lookup of a particular ROI
-
     # TODO maybe also serialize the above things here (they aren't plots tho... maybe
     # another root for data outputs?)
     makedirs(across_fly_ijroi_dir)
@@ -5243,7 +5350,6 @@ def main():
     # TODO TODO TODO cluster all ROIs across flies (w/ and w/o unidentified ROIs).
     # try including positions too. try doing just for unidentified glomeruli too.
     # TODO TODO also do for just the unidentified ROIs
-    # TODO also sort unidentified ROIs by total/max activation strength
 
     # TODO TODO drop thorimage_id level in trial_df? (asserting that no rows contain
     # multiple non-NaN values within a group of (date, fly_num, roi) on the columns
@@ -5255,6 +5361,13 @@ def main():
     # TODO TODO relabel <date>/<fly_num> to one letter for both. write a text key to the
     # same directory.
     print('saving across fly ImageJ ROI response matrices... ', end='', flush=True)
+
+    #trial_df
+    # TODO TODO TODO another plot of mean roi activations w/ full tuning curve
+    # (concatenated and sorted across panels)
+    # TODO maybe restrict data to only known good, for at least one version of this
+    import ipdb; ipdb.set_trace()
+
     for panel, pdf in trial_df.groupby('panel', sort=False):
 
         # TODO switch to indexing by name (via a mask), to make more robust to changes?
@@ -5337,8 +5450,6 @@ def main():
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_uncertain')
 
         # TODO TODO another version grouped by fly first, then glomerulus
-
-    # TODO TODO a version showing full tuning (like the plots from plot_roi.py)
 
     print('done')
 
