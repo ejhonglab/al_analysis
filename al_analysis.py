@@ -47,7 +47,7 @@ from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
 from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.util import (shorten_path, shorten_stimfile_path, format_date,
-    ijroiset_default_basename
+    ijroiset_default_basename, date_fmt_str
 )
 from hong2p.olf import (format_odor, format_mix_from_strs, format_odor_list,
     solvent_str, odor2abbrev, odor_lists_to_multiindex
@@ -549,14 +549,166 @@ def get_analysis_dir(date, fly_num, thorimage_dir) -> Path:
 
 
 # TODO delete? sort_odors below not do what i wanted in some pair data stuff?
-def sort_concs(df):
+def sort_concs(df: pd.DataFrame) -> pd.DataFrame:
     return olf.sort_odors(df, sort_names=False)
 
 
-def sort_odors(df):
+def sort_odors(df: pd.DataFrame) -> pd.DataFrame:
     return olf.sort_odors(df, panel_order=panel_order,
         panel2name_order=panel2name_order
     )
+
+
+# TODO flag to select whether ROI or (date, fly) take priority?
+# TODO move to hong2p + test
+def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False,
+    sort_first_on=None, key=None) -> pd.DataFrame:
+    # TODO delete key if i can do w/o it (by always just sorting a second time when i
+    # want some outer level)
+    """Sorts column MultiIndex with ['date','fly_num','roi'] levels.
+
+    Args:
+        df: data to sort by fly/ROI column values
+
+        flies_first: if True, sorts on ['date', 'fly_num'] columns primarily, followed
+            by 'roi' ROI names.
+
+        key: sequence of same length as df.columns, used to order ROIs, or a
+            callable to generate them. By default, uses a key that sorts date/fly_num
+            with higher priority than roi, but will then group all "named" ROIs before
+            all numbered/autonamed ROIs.
+    """
+    index_names = df.columns.names
+    assert 'roi' in index_names or 'roi' == df.columns.name
+
+    # TODO probably just delete
+    '''
+    # TODO TODO will i need to have key ever operate on more than roi (just the str
+    # name, w/o date,fly_num info). rename to just 'key' if so + try to have it also
+    # work on just roi str input for most cases
+
+    if key is None:
+        index_vals = list(df.columns.to_frame().itertuples())
+        key = [(not is_ijroi_named(x.roi), x.roi) for x in index_vals]
+
+        if 'date' in index_names and 'fly_num' in index_names:
+            key = [k + (x.date, x.fly_num) for k, x in zip(key, index_vals)]
+
+        # TODO TODO [pre|a]ppend_default_key kwargs to support simply extending?
+        # or maybe i should just do two sorts? some reason that wouldn't work?
+        # would it be easy to get it to work w/ callable input as well?
+
+    # TODO test use of callable here (+ doc shape/type of inputs/outputs)
+    # (or delete it...)
+    if callable(key):
+        roi_sortkey_fn = key
+    else:
+        assert len(key) == len(df.columns)
+
+        roi_sortkey_dict = dict(zip(df.columns, key))
+        # TODO TODO TODO how was this working before i factored it into this fn?
+        # were df.columns just ROI names at this point? and/or was the index no longer a
+        # MultiIndex?
+        def roi_sortkey_fn(index):
+            # pandas docs say key "should expact an Index and return an Index of the
+            # same shape", but this same-length list seems to work too
+            # TODO TODO TODO what does it mean:
+            # "for MultiIndex inputs, the keys is applied per level"
+            return [roi_sortkey_dict[x] for x in index]
+
+    # TODO TODO TODO can levels kwarg be used to control sort order?
+    return df.sort_index(key=roi_sortkey_fn, sort_remaining=False, axis='columns',
+        kind='stable'
+    )
+    '''
+
+    # TODO delete
+    assert key is None
+    #
+
+    levels = ['not_named', 'roi']
+    if 'date' in index_names and 'fly_num' in index_names:
+        if not flies_first:
+            levels = levels + ['date', 'fly_num']
+        else:
+            levels = ['date', 'fly_num'] + levels
+
+    levels_to_drop = []
+
+    assert 'not_named' not in df.columns.names
+    not_named = df.columns.get_level_values('roi').map(lambda x: not is_ijroi_named(x)
+        ).to_frame(index=False, name='not_named')
+
+    levels_to_drop.append('not_named')
+
+    to_concat = [not_named, df.columns.to_frame(index=False)]
+
+    if sort_first_on is not None:
+        # NOTE: for now, just gonna support this being of-same-length as df.columns
+        assert len(sort_first_on) == len(df.columns)
+        sort_first_on = pd.Series(list(sort_first_on), name='_sort_first_on').to_frame()
+
+        levels = ['_sort_first_on'] + levels
+        levels_to_drop.append('_sort_first_on')
+        to_concat = [sort_first_on] + to_concat
+
+    df.columns = pd.MultiIndex.from_frame(pd.concat(to_concat, axis='columns'))
+    # TODO make sure order of levels is unchanged (including any not sorted)
+
+    # TODO get numbers to actually sort like numbers, for any numbered ROIs
+    # (or maybe just set name to NaN there, just for the sort, and rely on them already
+    # being in order?)
+
+    # The order of level here determines the sort-priority of each level.
+    return df.sort_index(level=levels, sort_remaining=False, kind='stable',
+        axis='columns').droplevel(levels_to_drop, axis='columns')
+
+
+# TODO prob move to hong2p
+def merge_rois_across_recordings(df: pd.DataFrame) -> pd.DataFrame:
+    """Merges ROI columns across recordings (thorimage_id level)
+
+    Merges within each unique combination of ['date','fly_num','roi']
+    """
+    recording_col = 'thorimage_id'
+    assert recording_col in df.columns.names
+
+    def merge_single_flyroi_across_recordings(gdf):
+        # recording_col is the only thing that should really be varying here,
+        # except maybe 'panel' (which should vary <= as much as recording_col).
+        #
+        # This at least ensures nothing else is varying within a particular value
+        # for recording_col.
+        assert gdf.shape[1] == len(
+            gdf.columns.get_level_values(recording_col).unique()
+        )
+
+        # As long as this doesn't trip, we don't have to worry about choosing which
+        # column to take data from: there will only ever be at most one not NaN.
+        assert not (gdf.notna().sum(axis='columns') > 1).any()
+
+        ser = gdf.bfill(axis='columns').iloc[:, 0]
+        return ser
+
+    # TODO factor this kind of #-notnull-preserving check into a decorator?
+    n_before = df.notnull().sum().sum()
+
+    # TODO warn if any column levels other than these and recording_col? maybe allow
+    # panel?
+    #
+    # This is to merge across across multiple values for recording_col
+    # (for a each combination of group keys), which is what we have when a fly has
+    # multiple recordings (but the ROIs definitions for each recording are the same
+    # / overlapping).
+    df = df.groupby(['date','fly_num','roi'], axis='columns', sort=False
+        ).apply(merge_single_flyroi_across_recordings)
+
+    assert df.notnull().sum().sum() == n_before
+    assert recording_col not in df.columns.names
+
+    util.check_index_vals_unique(df)
+
+    return df
 
 
 def paired_thor_dirs(*args, **kwargs):
@@ -639,6 +791,9 @@ def get_plot_dir(experiment_id: str, relative=False) -> Path:
 # warning will get tripped at the default setting, hence `close=True`.
 def savefig(fig_or_facetgrid, fig_dir: Pathlike, desc: str, close=True, **kwargs
     ) -> Path:
+    # TODO add debugging flag to check that plots to be saved exactly match any already
+    # written? (to check analysis hasn't been affected when refactoring)
+
     basename = util.to_filename(desc) + plot_fmt
     # TODO update code that is currently passing in str fig_dir and delete Path
     # conversion
@@ -1309,13 +1464,21 @@ def dff_imshow(ax, dff_img, **imshow_kwargs):
     return im
 
 
+# TODO rename now that i'm also allowing input w/o date/fly_num attributes?
 def fly_roi_id(row):
     # NOTE: assuming no need to use row.thorimage_id (or a panel / something like
     # that), as assumed this will only be used within a context where that is
     # context (e.g. a plot w/ kiwi data, but no control data)
-    return f'{row.date:%-m-%d}/{row.fly_num}/{row.roi}'
+    try:
+        return f'{row.date:%-m-%d}/{row.fly_num}/{row.roi}'
+    except AttributeError:
+        return f'{row.roi}'
 
 
+# TODO probably delete
+# TODO make this work like (+ use this like) my callable-accepting-xticklabels
+# hong2p.viz code and format_mix_from_strs fn i use it with
+# (/ check this already can be used that way)
 def get_fly_roi_ids(df: pd.DataFrame):
     """Takes columns with date,fly_num,roi levels to Series with str fly+ROI labels.
     """
@@ -1416,19 +1579,20 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
     return fig
 
 
-def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sortkeys=None,
-    roi_rows=True, odor_sort=True, keep_panels_separate=False, **kwargs):
-    # TODO update doc for roi_sortkeys. it's not shape[1], not len/shape[0], right?
+def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=True,
+    sort_rois_first_on=None, roi_sortkey=None, odor_sort=True,
+    keep_panels_separate=False, **kwargs):
+    # TODO update doc for roi_sortkey. it's not shape[1], not len/shape[0], right?
     # TODO rename odor_sort -> conc_sort (or delete altogether)
+    # TODO callable taking what for roi_sortkey?
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
 
     Args:
         trial_df: ['odor1', 'odor2', 'repeat'] index names and a column for each ROI.
 
-        roi_sortkeys: sequence of same length as trial_df, used to order ROIs.
+        roi_sort: whether to sort columns
 
-        roi_rows: if True, matrix will be transposed relative to input, with ROIs as
-            rows and odors as columns
+        roi_sortkey: passed to sort_fly_roi_cols's key kwarg
 
         keep_panels_separate: if 'panel' is among trial_df index level names, and there
             are any odors shared by multiple panels, this will prevent data from
@@ -1437,14 +1601,14 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sortkeys
         **kwargs: passed thru to hong2p.viz.matshow
 
     """
+    # TODO factor out this odor-index checking to hong2p.olf
     # TODO maybe also assert these are only index levels
-    for c in ['odor1', 'odor2', 'repeat']:
-        assert c in trial_df.index.names
-    # TODO also assert columns index names are either just 'roi' (.name not names)
-    # or (still need to implement) ('fly', 'roi') or something like that
-    # TODO TODO TODO maybe also support just 'fly' on the column index (where plot title
-    # might be the glomerulus name, and we are showing all fly data for a particular
-    # glomerulus)
+    # (tho 'panel' should also be allowed)
+    assert all(c in trial_df.index.names for c in ['odor1', 'odor2', 'repeat'])
+
+    # TODO also check ROI index (and also factor that to hong2p)
+    # TODO maybe also support just 'fly' on the column index (where plot title might be
+    # the glomerulus name, and we are showing all fly data for a particular glomerulus)
 
     avg_levels = ['odor1', 'odor2']
     if keep_panels_separate and 'panel' in trial_df.index.names:
@@ -1462,28 +1626,16 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sortkeys
     if odor_sort:
         mean_df = sort_concs(mean_df)
 
-    # TODO TODO may want to (only?) accept a fn for this, to not need to reindex a
-    # separately stored list of sort keys
-    if roi_sortkeys is not None:
+    if roi_sort:
+        #mean_df = sort_fly_roi_cols(mean_df, key=roi_sortkey)
+        mean_df = sort_fly_roi_cols(mean_df, sort_first_on=sort_rois_first_on)
 
-        if callable(roi_sortkeys):
-            roi_sortkey_fn = roi_sortkeys
-        else:
-            assert len(roi_sortkeys) == len(trial_df.columns)
+    xticklabels = format_mix_from_strs
 
-            roi_sortkey_dict = dict(zip(trial_df.columns, roi_sortkeys))
-            def roi_sortkey_fn(index):
-                return [roi_sortkey_dict[x] for x in index]
+    yticklabels = list(mean_df.columns.to_frame().apply(fly_roi_id, axis='columns'))
+    assert len(yticklabels) == len(set(yticklabels)), 'duplicate yticklabels'
 
-        mean_df.sort_index(key=roi_sortkey_fn, axis='columns', inplace=True)
-
-    if roi_rows:
-        xticklabels = format_mix_from_strs
-        yticklabels = kwargs.get('yticklabels', True)
-        mean_df = mean_df.T
-    else:
-        xticklabels = kwargs.get('xticklabels', True)
-        yticklabels = format_mix_from_strs
+    mean_df = mean_df.T
 
     # TODO maybe put lines between levels of sortkey if int (e.g. 'iplane')
     # (and also show on plot as second label above/below roi labels?)
@@ -1696,13 +1848,19 @@ def trace_plots(roi_plot_dir, trial_df, z_indices, main_plot_title, odor_lists, 
     # sort_concs in this case, and maybe something else for the non-pair experiments i'm
     # mainly dealing with now
 
-    fig, mean_df = plot_all_roi_mean_responses(trial_df, roi_sortkeys=z_indices,
+    # TODO make axhlines bewteen changes in z_indices
+    fig, mean_df = plot_all_roi_mean_responses(trial_df, sort_rois_first_on=z_indices,
         odor_sort=is_pair, title=main_plot_title, cbar_label=trial_stat_cbar_title,
         cbar_shrink=0.4
     )
     # TODO rename to 'traces' or something (to more clearly disambiguate wrt spatial
     # extent plots)
     savefig(fig, roi_plot_dir, 'all_rois_by_z')
+
+    # TODO TODO TODO try both ways (+ probably actually just compute correlations,
+    # particularly for the mean, in main (or at least after process_experiment loop),
+    # so that each fly that has both megamat0 recordings (registered) can have a full
+    # megamat0 correlation matrix
 
     if not corr_certain_ijrois_only:
         for_corr = trial_df
@@ -3786,6 +3944,12 @@ def odor_str2conc(odor_str):
 # TODO rename corr_group_var / change things to not require it (might only really want
 # to support case where it is == 'fly_panel_id' in input, but ImageJ ROI corrs are
 # currently computed per experiment. change how ijroi corrs are computed to match.)
+#
+# TODO TODO TODO why would i ever want corr_group_var='recording_id'??
+# seems i may need to remove that code and make sure other path is working, now that
+# corr_group_var='recording_id' path seems to be broken in ijroi call to this now that i
+# have megamat0 data (analyze_response_volumes call that had been using 'fly_panel_id'
+# still seems to work)
 def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
     per_fly_figs=True, per_fly_fig_basename=None) -> None:
 
@@ -3842,16 +4006,21 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
         # garr seems to be of shape:
         # (# flies[/recordings sometimes maybe], # odors, # odors)
         # TODO may need to fix. check against dedeuping below
-        n = len(garr)
+        # TODO TODO TODO update computation to work for megamat0 stuff
+        # (where len(garr) seems to be # of unique (date, fly_num, **thorimage_id**),
+        # when now we don't want to count multiple thorimage_id as diff n (prob didn't
+        # before either...)
+        # may need to change groupby/something above
+        n_flies = len(garr)
 
         panel_mean = garr.mean(corr_avg_dim)
-        fig = natmix.plot_corr(panel_mean, title=f'{panel} (n={n})')
+        fig = natmix.plot_corr(panel_mean, title=f'{panel} (n={n_flies})')
         savefig(fig, corr_plot_root, f'{panel}_mean')
 
-        panel_sem = garr.std(corr_avg_dim, ddof=1) / np.sqrt(n)
+        panel_sem = garr.std(corr_avg_dim, ddof=1) / np.sqrt(n_flies)
         # TODO try (a version) w/o forcing same scale (as it currently does)
         fig = natmix.plot_corr(panel_sem,
-            title=f'{panel} (n={n})\nSEM for mean of correlations'
+            title=f'{panel} (n={n_flies})\nSEM for mean of correlations'
         )
         savefig(fig, corr_plot_root, f'{panel}_sem')
 
@@ -3975,13 +4144,19 @@ def plot_corrs(corr_list, corr_plot_root, corr_group_var='recording_id', *,
         # to_[series|index|pandas] didn't seem to readily do what i wanted
         # also pd.DataFrame(garr.date.to_series(), <other series>) was behaving strange
         meta_df = pd.DataFrame(meta_dict)
-        try:
-            assert len(meta_df) == len(meta_df[['date', 'fly_num']].drop_duplicates())
-        except:
-            print(f'{meta_df=}')
-            import ipdb; ipdb.set_trace()
 
-        assert len(meta_df) == n
+        # TODO probably just delete this whole thing. try to reproduce on old data first
+        # tho... require diff corr_group_var or something like that?
+        if panel != 'megamat0':
+            try:
+                assert len(meta_df) == len(
+                    meta_df[['date', 'fly_num']].drop_duplicates()
+                )
+            except:
+                print(f'{meta_df=}')
+                import ipdb; ipdb.set_trace()
+        #
+        assert len(meta_df) == n_flies
         meta_df.to_csv(corr_plot_root / f'{panel}_flies.csv', index=False)
 
         # (below should only be relevant if i am not dropping is_pair data, as i
@@ -5208,6 +5383,9 @@ def main():
 
     # TODO TODO TODO extend to other stuff we want to analyze (e.g. at least the
     # kiwi/control1 panel data)
+    # TODO TODO TODO also do this on a per-fly basis, now that we typically are only
+    # analyzing stuff where recordings have been registered together (and only one set
+    # of ROIs defined, on the diagnostic recording)
     show_empty_statuses = False
     print('odor pair counts (of data considered) at various analysis stages:')
     for names_and_concs, analysis_dirs in sorted(names_and_concs2analysis_dirs.items(),
@@ -5370,23 +5548,21 @@ def main():
     # change tho)
 
     trial_df = pd.concat(ij_trial_dfs, axis='columns')
+    util.check_index_vals_unique(trial_df)
+
+    trial_df = merge_rois_across_recordings(trial_df)
 
     # TODO TODO TODO why are there any rows where this:
-    # trial_df.isna().all(axis='columns') ...is True???
+    # trial_df.isna().all(axis='columns') ...is True??? (still?)
+    # and was this likely just from some small amount of data affected by a
+    # divide-by-zero error?
 
-    # TODO define globally as a tuple / fix whatever fucky thing my multiprocessing
-    # wrapper code is doing to some/all global lists, or at least clearly document it
-    fly_keys = ['date', 'fly_num']
-    recording_keys = fly_keys + ['thorimage_id']
-
-    # i think this is warning (either not/only-partially sorting)
-    #trial_df.sort_index(level=recording_keys, sort_remaining=False, axis='columns',
-    #    inplace=True
-    #)
-
+    trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
     trial_df = sort_odors(trial_df)
 
-    trial_df.to_csv('ij_roi_stats.csv')
+    # TODO TODO any way to get date_format to apply to stuff in MultiIndex?
+    # or is the issue that it's a pd.Timestamp and not datetime?
+    trial_df.to_csv('ij_roi_stats.csv', date_format=date_fmt_str)
     trial_df.to_pickle(ij_roi_responses_cache)
 
     old_index_levels = trial_df.index.names
@@ -5413,10 +5589,6 @@ def main():
     # try including positions too. try doing just for unidentified glomeruli too.
     # TODO TODO also do for just the unidentified ROIs
 
-    # TODO TODO drop thorimage_id level in trial_df? (asserting that no rows contain
-    # multiple non-NaN values within a group of (date, fly_num, roi) on the columns
-    # (with (panel, is_pair) on the rows, also helping)
-
     shared_kwargs = dict(dpi=1000, odor_sort=False)
     hlines_kwargs = dict(hline_level_fn=fly_roi_id2roi_name, **shared_kwargs)
 
@@ -5427,8 +5599,12 @@ def main():
     # TODO TODO TODO another plot of mean roi activations w/ full tuning curve
     # (concatenated and sorted across panels)
     # TODO maybe restrict data to only known good, for at least one version of this
+
+    # TODO TODO TODO also make plot like this for hallem data for remy's odors
+
     #trial_df
     #import ipdb; ipdb.set_trace()
+
 
     for panel, pdf in trial_df.groupby('panel', sort=False):
 
@@ -5445,65 +5621,35 @@ def main():
 
         # TODO unify colorbar scales across kiwi/control
 
-        # TODO maybe factor this stuff to roi merging, so there can be options to merge
-        # the uncertain stuff either to neither or both ways? nice to be able to make
-        # plotting choices on cached roi extractions tho...
-        # TODO TODO factor out so i can use this in plot_roi.py too
-        # (and--more importantly--for exclusion of uncertain ROIs in correlation
-        # calculation)
-        is_named = []
-        is_certain = []
-        for roi in pdf.columns.get_level_values('roi'):
-            is_named.append(is_ijroi_named(roi))
-            is_certain.append(is_ijroi_certain(roi))
+        # TODO change date/fly_num part to to name A,B,... w/in an ROI name
+        # (or sequential numbers via ~add_group_id), for at least one version of the
+        # *certain* plots (+ write a CSV key mapping date+fly_num to these IDs)
+        # (implement in plot_all_mean... ? def not here)
 
-        is_named = np.array(is_named)
-        is_certain = np.array(is_certain)
-
-        # TODO rewrite to index stuff by name. -1 = roi name. 0 = date, 1 = fly_num
-        # (unused 2 = thorimage_id)
-        fly_roi_sortkeys = [(x[-1], x[0], x[1]) for x in pdf.columns]
-        fly_roi_sortkeys = [((not n),) + x for n, x in zip(is_named, fly_roi_sortkeys)]
-
-        # TODO TODO change to name A,B,... w/in an ROI name, for at least one version
-        # of the *certain* plots (+ write a CSV key mapping date+fly_num to these IDs)
-        fly_roi_ids = get_fly_roi_ids(pdf)
-        assert not fly_roi_ids.duplicated().any()
-
-        # TODO TODO maybe dont do this? just use fn input to xticklabels?
-        # might make re-organizing easier.
-        pdf.columns = fly_roi_ids
-
-        # TODO TODO TODO assert no duplicate columns anywhere in here.
-        # (or is it not an issue here cause i'm always within a panel?)
-
-        fig, _ = plot_all_roi_mean_responses(pdf, roi_sortkeys=fly_roi_sortkeys,
-            **hlines_kwargs
-        )
+        fig, _ = plot_all_roi_mean_responses(pdf, **hlines_kwargs)
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois')
 
-        cdf = pdf.loc[:, is_certain]
-        roi_sortkeys = [tuple(x) for x in np.array(fly_roi_sortkeys)[is_certain]]
-        fig, _ = plot_all_roi_mean_responses(cdf, roi_sortkeys=roi_sortkeys,
-            **hlines_kwargs
+        is_certain = np.array(
+            [is_ijroi_certain(x) for x in pdf.columns.get_level_values('roi')]
         )
+        cdf = pdf.loc[:, is_certain]
+
+        fig, _ = plot_all_roi_mean_responses(cdf, **hlines_kwargs)
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_certain')
 
         # I think this is sorting on output of the grouping fn (on ROI name), as I want.
-        mean_cdf = cdf.groupby(fly_roi_id2roi_name, axis='columns').mean()
-        # TODO do i want roi_sortkeys here defined or no? i feel like i had reason to be
-        # happy with the current order, but maybe not
+        mean_cdf = cdf.groupby('roi', sort=False, axis='columns').mean()
         fig, _ = plot_all_roi_mean_responses(mean_cdf, **shared_kwargs)
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_certain_mean')
 
         # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
         # (/ "z-scored" ok?)
 
-        # TODO maybe tern this into a fn looking up max using index?
+        # TODO maybe turn this into a fn looking up max using index?
         glom_maxes = pdf.max(axis='rows')
         fig, _ = plot_all_roi_mean_responses(pdf.loc[:, ~is_certain],
             # negative glom_maxes, so sort is as if ascending=False
-            roi_sortkeys=-glom_maxes[~is_certain], **shared_kwargs
+            sort_rois_first_on=-glom_maxes[~is_certain], **shared_kwargs
         )
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_uncertain')
 
@@ -5513,7 +5659,7 @@ def main():
 
     trial_ser = trial_df.stack(trial_df.columns.names)
     assert trial_df.notnull().sum().sum() == trial_ser.notnull().sum()
-    tidy_trial_df = trial_ser.reset_index(name='mean_dff').drop(columns='thorimage_id')
+    tidy_trial_df = trial_ser.reset_index(name='mean_dff')
 
     # TODO TODO how come the pixelwise analysis has a few more rows than this?
     #

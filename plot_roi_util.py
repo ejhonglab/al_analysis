@@ -2,6 +2,7 @@
 from multiprocessing import Process
 from pathlib import Path
 from functools import lru_cache
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ import matplotlib.pyplot as plt
 import psutil
 
 from hong2p import util, olf
+from hong2p.types import Pathlike
 
 from al_analysis import (ij_roi_responses_cache, get_fly_roi_ids, dropna,
     plot_all_roi_mean_responses, mocorr_concat_tiff_basename
@@ -34,18 +36,32 @@ def cached_load_movie(*recording_keys):
     return al.load_movie(*recording_keys, min_input='mocorr')
 
 
-def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
+def extract_ij_responses(input_dir: Pathlike, roi_index: int,
+    roiset_path: Optional[Pathlike] = None) -> pd.DataFrame:
+    """
+    Args:
+        input_dir: directory with either a single recording's TIFFs/ROIs, or a directory
+            containing all such directories for a given fly
 
+        roi_index: index of ImageJ ROI to analyze (same as in ROI manager, 0-indexed)
+
+        roiset_path: if passed, load ROIs from this, rather than from <input_dir>
+
+    Currently returns a dataframe with only a single column level ('roi', just the
+    string ROI name). No levels for ['date','fly_num','thorimage_id'] that we start with
+    from the loaded al_analysis.py output.
+    """
     # NOTE: this will also resolve symlinks (which I didn't want and complicated
     # match_str calculation, but can't figure out a pathlib way to resolve just relative
     # paths INCLUDING stuff like '/..' at the end of a path, without also resolving
     # symlinks.
-    analysis_dir = Path(analysis_dir).resolve()
+    input_dir = Path(input_dir).resolve()
+    fly_dir = input_dir.parent
 
     # doesn't deal w/ trailing '/..' (which it would need to)
-    #analysis_dir = Path(analysis_dir).absolute()
+    #input_dir = Path(input_dir).absolute()
 
-    fly_dir = analysis_dir.parent
+    fly_dir = input_dir.parent
     try:
         int(fly_dir.name)
 
@@ -54,18 +70,18 @@ def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
     # triggered from the mocorr_concat.tif in ImageJ
     except ValueError:
         try:
-            int(analysis_dir.name)
+            int(input_dir.name)
         except ValueError:
             raise FileNotFoundError('input did not seem to be either fly / recording '
                 'dir'
             )
 
-        fly_dir = analysis_dir
+        fly_dir = input_dir
 
     # This should generally be a symlink to a TIFF from a particular suite2p run.
     mocorr_concat_tiff = fly_dir / mocorr_concat_tiff_basename
 
-    # TODO maybe assert mocorr_concat_tiff exists if input was fly dir and not analysis
+    # TODO maybe assert mocorr_concat_tiff exists if input was fly dir and not input
     # dir? otherwise which recording are we supposed to use?
 
     if mocorr_concat_tiff.exists():
@@ -75,12 +91,10 @@ def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
         raw_fly_dir = al.analysis2thorimage_dir(fly_dir)
         match_parts = raw_fly_dir.parts[-2:]
     else:
-        thorimage_dir = al.analysis2thorimage_dir(analysis_dir)
+        thorimage_dir = al.analysis2thorimage_dir(input_dir)
         match_parts = thorimage_dir.parts[-3:]
 
     match_str = str(Path(*match_parts))
-
-    del analysis_dir
 
     date_str = fly_dir.parts[-2]
     keys_and_paired_dirs = list(
@@ -178,12 +192,6 @@ def plot(subset_df):
     # odor name?
     vline_level_fn = lambda odor_str: olf.parse_odor_name(odor_str)
 
-    # TODO TODO if i ever allow plotting multiple (from raw data where i don't yet want
-    # to merge across planes, cause i'm dealing w/ single planes), specify Z in name in
-    # plot (at least when there are two w/ same name, from diff planes)
-    # (should i support same name in same plane?) (or at least append to end of ROI
-    # name?)
-
     # The cached ROIs will have '/' in ROI name (e.g. '3-30/1/DM4'), and only the last
     # row from the newly extracted data will not. We want a white line between these two
     # groups of data.
@@ -197,7 +205,7 @@ def plot(subset_df):
     # TODO want to use roi_sortkeys (could try to put in same order as arguments passed?
     # or always named ones first?)?
     fig, _ = plot_all_roi_mean_responses(subset_df, odor_sort=False,
-        roi_sortkeys=fly_roi_sortkeys,
+        roi_sortkey=fly_roi_sortkeys,
         hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn
     )
     plt.show()
@@ -218,6 +226,10 @@ def load_and_plot(args):
     global most_recent_plot_proc
     global keep_comparison_to_cache
     global plotting_processes
+
+    # TODO TODO TODO add option to load hallem data + compare as well
+    # (not sure if i want in the same figure or not...)
+    # (take int and plot top-correlating-n glomeruli)
 
     roi_strs = args.roi_strs
 
@@ -318,6 +330,9 @@ def load_and_plot(args):
         if analysis_dir is not None and not plot_other_odors:
             # TODO or (more work, but...) consider equal if within ~1-2 orders of
             # magnitude? or option to match exactly only?
+            # TODO TODO a coarse-concentration-matching for odors might be useful in
+            # some other places too
+
             # TODO maybe grey out names of odors not having matching concentration?
             fly_odor_set = {tuple(x[1:]) for x in
                 _get_odor_name_df(new_df).itertuples()
@@ -328,26 +343,11 @@ def load_and_plot(args):
 
             df = df[shared_odors].copy()
 
+        # TODO just factor this into plotting fn in al_analysis/hong2p, and leave all
+        # the metadata on the column multiindex?
         fly_roi_ids = get_fly_roi_ids(df)
         df.columns = fly_roi_ids
         df.columns.name = 'roi'
-
-        # TODO maybe move this earlier and explicitly group on all vars in the
-        # column index other than the thorimage_id level (which should be the only
-        # one we are really aggregating across) (so that i can use it here and also
-        # in al_analysis)
-        # TODO TODO add comment on what exactly this is doing (where are duplicates
-        # coming from? looking back at what df columns are before changing them
-        # above might remind me.
-        def merge_dupe_cols(gdf):
-            # As long as this doesn't trip, we don't have to worry about choosing
-            # which column to take data from: there will only ever be at most one
-            # not NaN.
-            assert not (gdf.notna().sum(axis='columns') > 1).any()
-            ser = gdf.bfill(axis='columns').iloc[:, 0]
-            return ser
-
-        df = df.groupby('roi', axis='columns', sort=False).apply(merge_dupe_cols)
 
         # TODO maybe it should match the last '/' separated part exactly?
         # any reason i didn't want that?
