@@ -22,23 +22,18 @@ def main():
         # calls just communicating to already running server
         #f'{ij_roi_responses_cache}'
     )
-    # TODO TODO still check it is specified in case where -d not passed
+    # TODO still check it is specified in case where -d not passed
     parser.add_argument('roi_strs', nargs='*', help='ROI names (e.g. DM5, 3-30/1/0)')
     parser.add_argument('-d', '--analysis-dir', help='If passed, analyze data from this'
         ' directory, rather than loading data from al_analysis.py cached responses.'
         #f' directory, rather than loading data from {ij_roi_responses_cache}.'
     )
-    # TODO store as int(s)
-    # TODO change to roi_indices (tho would i then need to select all from ROI manager
-    # rather than overlay? might be tricky)
     parser.add_argument('-i', '--roi-index', type=int, help='The index of the ROI to '
         'analyze. Only relevant when also passing -d/--analysis-dir.'
     )
     parser.add_argument('-r', '--roiset-path', help='Path to the RoiSet.zip to load '
         'ImageJ ROIs from. Only relevant in -d/--analysis-dir case.'
     )
-    # TODO maybe another option to show everything that did NOT match substring as well
-    # (matching cached -> specific indexed ROI not in cache -> NON-matching cached)
     # TODO rename to something w/ "cache" or "analyzed" in it (-> use "compare" for
     # flag indicating we want to compare to currently analyzed data, from previous calls
     # while server is still active)
@@ -106,12 +101,9 @@ def main():
     # caused by exceptions in load_and_plot.
     atexit.register(p.terminate)
 
-    # TODO how to decide when to shut the server down? do we?
-    # can register something at imagej exit (inside imagej config) to kill any?
+    # TODO can register something at imagej exit (inside imagej config) to kill any?
     # any nice way to have python check if (corresponding) imagej process is alive?
 
-    # TODO maybe only go into this loop if a certain flag is set / if we are analyzing
-    # new data
     while time.time() - start_time_s < MAX_LIFETIME_S:
         try:
             client_args = arg_queue.get_nowait()
@@ -119,6 +111,11 @@ def main():
             continue
 
         load_and_plot(client_args)
+
+        # Don't want to start a server unless we actually did io/compute that takes a
+        # lot of time. All calls from ImageJ should have --analysis-dir specified.
+        if args.analysis_dir is None:
+            break
 
 
 if __name__ == '__main__':

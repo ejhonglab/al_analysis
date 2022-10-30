@@ -6,6 +6,7 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import psutil
 
 from hong2p import util, olf
 
@@ -18,18 +19,33 @@ import al_analysis as al
 def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index()[['odor1','odor2']].applymap(olf.parse_odor_name)
 
+# Rough hack to get cache to not crash the process on my laptop, but to be more useful
+# as a cache on my lab computer.
+_meminfo = psutil.virtual_memory()
+total_mem_GB = _meminfo.total / 1e9
+if total_mem_GB < 10:
+    CACHE_MAX_SIZE = 1
+else:
+    # 6 = 2 flies w/ 3 movies each
+    CACHE_MAX_SIZE = 6
 
-# 6 = 2 flies w/ 3 movies each
-@lru_cache(maxsize=6)
+@lru_cache(maxsize=CACHE_MAX_SIZE)
 def cached_load_movie(*recording_keys):
     return al.load_movie(*recording_keys, min_input='mocorr')
 
 
 def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
 
+    # NOTE: this will also resolve symlinks (which I didn't want and complicated
+    # match_str calculation, but can't figure out a pathlib way to resolve just relative
+    # paths INCLUDING stuff like '/..' at the end of a path, without also resolving
+    # symlinks.
     analysis_dir = Path(analysis_dir).resolve()
-    fly_dir = analysis_dir.parent
 
+    # doesn't deal w/ trailing '/..' (which it would need to)
+    #analysis_dir = Path(analysis_dir).absolute()
+
+    fly_dir = analysis_dir.parent
     try:
         int(fly_dir.name)
 
@@ -57,17 +73,19 @@ def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
         # the raw data fly directory that should contain all of the relevant ThorImage
         # dirs.
         raw_fly_dir = al.analysis2thorimage_dir(fly_dir)
-        match_str = str(raw_fly_dir)
+        match_parts = raw_fly_dir.parts[-2:]
     else:
         thorimage_dir = al.analysis2thorimage_dir(analysis_dir)
-        match_str = str(thorimage_dir)
+        match_parts = thorimage_dir.parts[-3:]
+
+    match_str = str(Path(*match_parts))
 
     del analysis_dir
 
     date_str = fly_dir.parts[-2]
     keys_and_paired_dirs = list(
         al.paired_thor_dirs(matching_substrs=[match_str],
-            start_date=date_str, end_date=date_str
+            start_date=date_str, end_date=date_str,
         )
     )
     # TODO make conditional on not loading all fly data / no mocorr concat (/ delete)
@@ -99,6 +117,7 @@ def extract_ij_responses(analysis_dir, roi_index, roiset_path=None):
         # break out some of ij_traces into another helper fn?)
         # TODO silence this here / in general
         traces = pd.DataFrame(util.extract_traces_bool_masks(movie, masks))
+        del movie
         traces.index.name = 'frame'
         traces.columns.name = 'roi'
         traces.columns = masks.roi_name.values
