@@ -6,6 +6,8 @@ seaborn>=0.12.0
 colorama
 termcolor
 
+psutil
+
 # You may replace this line with:
 #git+https://github.com/tom-f-oconnell/drosolf
 -e ../drosolf
