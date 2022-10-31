@@ -84,7 +84,10 @@ analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 min_input = 'mocorr'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
-do_register_all_fly_recordings_together = True
+#do_register_all_fly_recordings_together = True
+# TODO delete. only false for work on my laptop
+do_register_all_fly_recordings_together = False
+#
 
 # Whether to only analyze experiments sampling 2 odors at all pairwise concentrations
 # (the main type of experiment for this project)
@@ -561,8 +564,8 @@ def sort_odors(df: pd.DataFrame) -> pd.DataFrame:
 
 # TODO flag to select whether ROI or (date, fly) take priority?
 # TODO move to hong2p + test
-def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False,
-    sort_first_on=None, key=None) -> pd.DataFrame:
+def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on=None
+    ) -> pd.DataFrame:
     # TODO delete key if i can do w/o it (by always just sorting a second time when i
     # want some outer level)
     """Sorts column MultiIndex with ['date','fly_num','roi'] levels.
@@ -573,58 +576,13 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False,
         flies_first: if True, sorts on ['date', 'fly_num'] columns primarily, followed
             by 'roi' ROI names.
 
-        key: sequence of same length as df.columns, used to order ROIs, or a
-            callable to generate them. By default, uses a key that sorts date/fly_num
+        sort_first_on: sequence of same length as df.columns, used to order ROIs.
+            Within each level of this key, will sort on the default date/fly_num ->
             with higher priority than roi, but will then group all "named" ROIs before
             all numbered/autonamed ROIs.
     """
     index_names = df.columns.names
     assert 'roi' in index_names or 'roi' == df.columns.name
-
-    # TODO probably just delete
-    '''
-    # TODO TODO will i need to have key ever operate on more than roi (just the str
-    # name, w/o date,fly_num info). rename to just 'key' if so + try to have it also
-    # work on just roi str input for most cases
-
-    if key is None:
-        index_vals = list(df.columns.to_frame().itertuples())
-        key = [(not is_ijroi_named(x.roi), x.roi) for x in index_vals]
-
-        if 'date' in index_names and 'fly_num' in index_names:
-            key = [k + (x.date, x.fly_num) for k, x in zip(key, index_vals)]
-
-        # TODO TODO [pre|a]ppend_default_key kwargs to support simply extending?
-        # or maybe i should just do two sorts? some reason that wouldn't work?
-        # would it be easy to get it to work w/ callable input as well?
-
-    # TODO test use of callable here (+ doc shape/type of inputs/outputs)
-    # (or delete it...)
-    if callable(key):
-        roi_sortkey_fn = key
-    else:
-        assert len(key) == len(df.columns)
-
-        roi_sortkey_dict = dict(zip(df.columns, key))
-        # TODO TODO TODO how was this working before i factored it into this fn?
-        # were df.columns just ROI names at this point? and/or was the index no longer a
-        # MultiIndex?
-        def roi_sortkey_fn(index):
-            # pandas docs say key "should expact an Index and return an Index of the
-            # same shape", but this same-length list seems to work too
-            # TODO TODO TODO what does it mean:
-            # "for MultiIndex inputs, the keys is applied per level"
-            return [roi_sortkey_dict[x] for x in index]
-
-    # TODO TODO TODO can levels kwarg be used to control sort order?
-    return df.sort_index(key=roi_sortkey_fn, sort_remaining=False, axis='columns',
-        kind='stable'
-    )
-    '''
-
-    # TODO delete
-    assert key is None
-    #
 
     levels = ['not_named', 'roi']
     if 'date' in index_names and 'fly_num' in index_names:
@@ -634,30 +592,33 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False,
             levels = ['date', 'fly_num'] + levels
 
     levels_to_drop = []
+    to_concat = [df.columns.to_frame(index=False)]
 
     assert 'not_named' not in df.columns.names
-    not_named = df.columns.get_level_values('roi').map(lambda x: not is_ijroi_named(x)
-        ).to_frame(index=False, name='not_named')
+    not_named = df.columns.get_level_values('roi').map(
+        lambda x: not is_ijroi_named(x)).to_frame(index=False, name='not_named')
 
     levels_to_drop.append('not_named')
-
-    to_concat = [not_named, df.columns.to_frame(index=False)]
+    to_concat.append(not_named)
 
     if sort_first_on is not None:
         # NOTE: for now, just gonna support this being of-same-length as df.columns
         assert len(sort_first_on) == len(df.columns)
+
+        # Seems to also work when input is a list of tuples (so you can list(zip(...))
+        # multiple iterables of keys, in the order you want them to take priority).
         sort_first_on = pd.Series(list(sort_first_on), name='_sort_first_on').to_frame()
 
         levels = ['_sort_first_on'] + levels
         levels_to_drop.append('_sort_first_on')
-        to_concat = [sort_first_on] + to_concat
+        to_concat.append(sort_first_on)
 
     df.columns = pd.MultiIndex.from_frame(pd.concat(to_concat, axis='columns'))
-    # TODO make sure order of levels is unchanged (including any not sorted)
 
     # TODO get numbers to actually sort like numbers, for any numbered ROIs
     # (or maybe just set name to NaN there, just for the sort, and rely on them already
-    # being in order?)
+    # being in order?) (would probably have to sort the numbered section separately from
+    # the named one, casting the numbered ROI names to ints)
 
     # The order of level here determines the sort-priority of each level.
     return df.sort_index(level=levels, sort_remaining=False, kind='stable',
@@ -941,6 +902,10 @@ def symlink(target, link, relative=True, checks=True, replace=False):
             print()
             print(str(err))
             import ipdb; ipdb.set_trace()
+
+    # TODO delete. just ignoring for work on my laptop
+    checks = False
+    #
 
     # TODO delete
     #replace = True
@@ -1470,7 +1435,9 @@ def fly_roi_id(row):
     # that), as assumed this will only be used within a context where that is
     # context (e.g. a plot w/ kiwi data, but no control data)
     try:
-        return f'{row.date:%-m-%d}/{row.fly_num}/{row.roi}'
+        date_str = f'{row.date:%-m-%d}/' if pd.notnull(row.date) else ''
+        fly_num_str = f'{row.fly_num:0.0f}/' if pd.notnull(row.fly_num) else ''
+        return f'{date_str}{fly_num_str}{row.roi}'
     except AttributeError:
         return f'{row.roi}'
 
@@ -1580,11 +1547,8 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
 
 
 def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=True,
-    sort_rois_first_on=None, roi_sortkey=None, odor_sort=True,
-    keep_panels_separate=False, **kwargs):
-    # TODO update doc for roi_sortkey. it's not shape[1], not len/shape[0], right?
+    sort_rois_first_on=None, odor_sort=True, keep_panels_separate=False, **kwargs):
     # TODO rename odor_sort -> conc_sort (or delete altogether)
-    # TODO callable taking what for roi_sortkey?
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
 
     Args:
@@ -1592,7 +1556,7 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
 
         roi_sort: whether to sort columns
 
-        roi_sortkey: passed to sort_fly_roi_cols's key kwarg
+        sort_rois_first_on: passed to sort_fly_roi_cols's sort_first_on kwarg
 
         keep_panels_separate: if 'panel' is among trial_df index level names, and there
             are any odors shared by multiple panels, this will prevent data from
@@ -1604,13 +1568,18 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     # TODO factor out this odor-index checking to hong2p.olf
     # TODO maybe also assert these are only index levels
     # (tho 'panel' should also be allowed)
-    assert all(c in trial_df.index.names for c in ['odor1', 'odor2', 'repeat'])
+    assert (all(c in trial_df.index.names for c in ['odor1', 'odor2', 'repeat']) or
+        trial_df.index.name == 'odor1'
+    )
 
     # TODO also check ROI index (and also factor that to hong2p)
     # TODO maybe also support just 'fly' on the column index (where plot title might be
     # the glomerulus name, and we are showing all fly data for a particular glomerulus)
 
-    avg_levels = ['odor1', 'odor2']
+    avg_levels = ['odor1']
+    if 'odor2' in trial_df.index.names:
+        avg_levels.append('odor2')
+
     if keep_panels_separate and 'panel' in trial_df.index.names:
         avg_levels = ['panel'] + avg_levels
 
@@ -1627,7 +1596,6 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         mean_df = sort_concs(mean_df)
 
     if roi_sort:
-        #mean_df = sort_fly_roi_cols(mean_df, key=roi_sortkey)
         mean_df = sort_fly_roi_cols(mean_df, sort_first_on=sort_rois_first_on)
 
     xticklabels = format_mix_from_strs
@@ -2614,6 +2582,9 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             tiff_path = find_movie(date, fly_num, thorimage_basename).resolve()
             assert tiff_path.is_file() and not tiff_path.is_symlink()
 
+            # TODO TODO this should also be invalidating any cached roi-based analysis
+            # on this data (but if the mocorr is more recent than the roi definitions,
+            # then they would need to be redrawn/edited first... so just warn?)
             last_mocorr = getmtime(tiff_path)
             nonroi_analysis_current = last_mocorr < nonroi_last_analysis
 
@@ -3895,6 +3866,8 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         mocorr_concat_tiff_link = fly_analysis_dir / mocorr_concat_tiff_basename
         symlink(mocorr_concat_tiff, mocorr_concat_tiff_link)
 
+        # TODO probably add '_concat' in name to be consistent w/ other stuff in fly
+        # analysis directories
         trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
 
         trial_and_frame_concat_json.write_text(json.dumps(json_dicts))
@@ -5618,6 +5591,18 @@ def main():
             pdf = dropna(pdf.loc[(panel, False), :])
 
         assert not pdf.columns.duplicated().any()
+
+        if panel == 'megamat0':
+            # TODO TODO do i need to explicitly merge the ROIs from across recordings
+            # somehow?
+            # maybe i should change the index to replace 'thorimage_id' w/ panel?
+            # TODO delete
+            print()
+            print(fly_roi_ids[fly_roi_ids.duplicated()].to_string())
+
+            # TODO TODO TODO probably do this merge operation above, before we serialize
+            # trial_df
+            import ipdb; ipdb.set_trace()
 
         # TODO unify colorbar scales across kiwi/control
 

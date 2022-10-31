@@ -54,6 +54,13 @@ def main():
         'to include data from newly specified ROI. Only relevant in -d/--analysis-dir '
         'case. Otherwise, a new plot is made in parallel.'
     )
+    # TODO add parameter to specify within which concentration range stuff should be
+    # considered
+    parser.add_argument('-H', '--hallem', action='store_true',
+        help='Also plots Hallem responses to glomeruli, sorted by correlation to the '
+        'ROI from -d/--analysis-dir. Currently only considers odors that match the '
+        'Hallem concentration exactly (-3).'
+    )
     args = parser.parse_args()
 
     try:

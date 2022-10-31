@@ -9,8 +9,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import psutil
 
-from hong2p import util, olf
+from hong2p import util, olf, viz
 from hong2p.types import Pathlike
+from drosolf import orns
 
 from al_analysis import (ij_roi_responses_cache, get_fly_roi_ids, dropna,
     plot_all_roi_mean_responses, mocorr_concat_tiff_basename
@@ -19,7 +20,10 @@ import al_analysis as al
 
 
 def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
-    return df.reset_index()[['odor1','odor2']].applymap(olf.parse_odor_name)
+    # TODO return columns should always just be ['name1','name2'] or something
+    df = df.reset_index()[['odor1','odor2']].applymap(olf.parse_odor_name)
+    df.columns = ['name1', 'name2']
+    return df
 
 # Rough hack to get cache to not crash the process on my laptop, but to be more useful
 # as a cache on my lab computer.
@@ -110,7 +114,7 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
     # odor data from str, maybe not)
 
     subset_dfs = []
-    for (_, _), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
+    for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
         recording_keys = thorimage_dir.parts[-3:]
 
         analysis_dir = al.get_analysis_dir(*recording_keys)
@@ -133,6 +137,7 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         traces = pd.DataFrame(util.extract_traces_bool_masks(movie, masks))
         del movie
         traces.index.name = 'frame'
+        # TODO have this name preserved at output? i'm assuming it's not now
         traces.columns.name = 'roi'
         traces.columns = masks.roi_name.values
 
@@ -147,42 +152,46 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         new_level_vals = [panel, is_pair]
         subset_df = util.addlevel(subset_df, new_level_names, new_level_vals)
 
-        subset_dfs.append(subset_df)
+        subset_df.columns.name = 'roi'
+        subset_df = util.addlevel(subset_df,
+            ['from_hallem','newly_analyzed','date','fly_num'],
+            [False, True, None, None], axis='columns'
+        )
 
-    # TODO TODO was i dropping is_pair == True stuff before building up ij trace
-    # cache?  should i do that here too? or should i not do that when forming cache?
-    # probably latter...
-    # TODO maybe provide option to drop it?
+        subset_dfs.append(subset_df)
 
     df = pd.concat(subset_dfs, verify_integrity=True)
 
     return df
 
 
-def plot(subset_df):
+def plot(df, sort_rois=True, **kwargs):
+    # For sorting based on order ROIs added to new analysis, so if plot is updated to
+    # include new data, the new data is always towards the bottom of each section.
+    def roi_sort_index(col_index_vals):
+        index_vals = dict(zip(df.columns.names, col_index_vals))
+        roi = index_vals['roi']
+        if index_vals['newly_analyzed']:
+            return newly_analyzed_roi_names.index(roi)
 
-    fly_roi_sortkeys = []
-    for roi_str in subset_df.columns:
+        # TODO should i also just disable --add if --hallem?
+        elif index_vals['from_hallem']:
+            return None
 
-        from_cache = '/' in roi_str
-        if from_cache:
-            date_str, fly_str, roi_name = roi_str.split('/')
-            is_newly_analyzed = False
         else:
-            is_newly_analyzed, date_str, fly_str, roi_name = (True, '', '', roi_str)
+            return newly_analyzed_roi_strs.index(roi)
 
-        if len(newly_analyzed_roi_names) == 0:
-            roi_key = roi_name
-        else:
-            if from_cache:
-                # These should all be clean "certain" ROI names, which is also what our
-                # cache input should be (if comparing to newly analyzed data).
-                roi_key = newly_analyzed_roi_strs.index(roi_name)
-            else:
-                roi_key = newly_analyzed_roi_names.index(roi_name)
-
-        # First component of tuple will put newly analyzed stuff at end.
-        fly_roi_sortkeys.append((is_newly_analyzed, roi_key, '', ''))
+    sort_first_on = None
+    if len(newly_analyzed_roi_names) > 0:
+        assert all(x in df.columns.names for x in ('newly_analyzed', 'roi'))
+        sort_first_on = list(zip(
+            df.columns.get_level_values('newly_analyzed'),
+            df.columns.map(roi_sort_index)
+        ))
+        if df.columns.get_level_values('from_hallem').any():
+            sort_first_on = [(h,) + x for h, x in zip(
+                df.columns.get_level_values('from_hallem'), sort_first_on
+            )]
 
     # TODO TODO maybe replace [h|v]lines w/ black lines, or change the missing-data
     # color to something like grey (from white), so that it's easier to see the
@@ -202,11 +211,9 @@ def plot(subset_df):
 
     # TODO make colorbar generally/always the height of the main Axes (maybe a bit
     # larger if just ~one row?)
-    # TODO want to use roi_sortkeys (could try to put in same order as arguments passed?
-    # or always named ones first?)?
-    fig, _ = plot_all_roi_mean_responses(subset_df, odor_sort=False,
-        roi_sortkey=fly_roi_sortkeys,
-        hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn
+    fig, _ = plot_all_roi_mean_responses(df, odor_sort=False,
+        roi_sort=sort_rois, sort_rois_first_on=sort_first_on,
+        hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn, **kwargs
     )
     plt.show()
 
@@ -227,16 +234,14 @@ def load_and_plot(args):
     global keep_comparison_to_cache
     global plotting_processes
 
-    # TODO TODO TODO add option to load hallem data + compare as well
-    # (not sure if i want in the same figure or not...)
-    # (take int and plot top-correlating-n glomeruli)
-
     roi_strs = args.roi_strs
 
     analysis_dir = args.analysis_dir
     roi_index = args.roi_index
     roiset_path = args.roiset_path
+
     compare = not args.no_compare
+    hallem = args.hallem
 
     plot_pair_data = args.pairs
     plot_other_odors = args.other_odors
@@ -267,7 +272,7 @@ def load_and_plot(args):
     if analysis_dir is not None:
         new_df = extract_ij_responses(analysis_dir, roi_index, roiset_path=roiset_path)
 
-        new_roi_names = new_df.columns
+        new_roi_names = new_df.columns.get_level_values('roi').unique()
         # would need to relax + modify code if i wanted to ever return multiple ROIs
         # from one extract_ij_responses call
         assert len(new_roi_names) == 1
@@ -318,6 +323,78 @@ def load_and_plot(args):
 
         subset_dfs.append(new_df)
 
+        fly_odor_set = {tuple(x[1:]) for x in _get_odor_name_df(new_df).itertuples()}
+
+
+        # TODO want to actually limit to top n? leaning no, b/c ruling stuff out also
+        # useful...
+        if hallem:
+            # Absolute ORN firing rates (reported deltas, w/ reported SFR added back in)
+            orn_df = orns.orns(columns='glomerulus')
+
+            # Since I'm not sure whether to compute DM3 signal as a weighted average of
+            # 47a ("DM3.1") and 33b ("DM3") inputs, or which weights to use if so.
+            '''
+            orn_df = orn_df.drop(
+                columns=[c for c in orn_df.columns if c.startswith('DM3')]
+            )
+            assert not orn_df.columns.duplicated().any()
+            '''
+
+            orn_df = orn_df.rename(index={
+                'b-citronellol': 'B-citronellol',
+                'isopentyl acetate': 'isoamyl acetate',
+                'E2-hexenal': 'trans-2-hexenal',
+            })
+
+            orn_df = orn_df.rename(index=olf.odor2abbrev)
+
+            # TODO TODO replace w/ some kind of coarse matching on concentration
+            orn_df.index = orn_df.index.str.cat([' @ -3'] * len(orn_df))
+
+            # TODO TODO also use lower concentration data (not loaded by current version
+            # of drosolf)
+
+            odor1_name_set = {x[0] for x in fly_odor_set if x[1] == None}
+
+            # TODO i already have a fn i can use for this?
+            new_df_nomix = new_df[
+                new_df.index.get_level_values('odor2') == olf.solvent_str
+            ]
+
+            new_df_mean = new_df_nomix.groupby('odor1', sort=False).mean()
+            assert new_df_mean.shape[1] == 1
+            new_df_mean = new_df_mean.iloc[:, 0]
+
+            hallem_overlap_df = orn_df[orn_df.index.isin(new_df_mean.index)]
+
+            hallem_corrs = hallem_overlap_df.corrwith(new_df_mean).sort_values(
+                ascending=False
+            )
+            hallem_overlap_df = hallem_overlap_df.loc[:, hallem_corrs.index]
+
+            # TODO subpanel w/ hallem_corrs in small part on left and full responses on
+            # right? maybe just two plots?
+
+            hallem_corrs.index.name = 'roi'
+            hallem_corrs = hallem_corrs.to_frame()
+
+            hallem_overlap_df.columns.name = 'roi'
+            hallem_overlap_df.index.name = 'odor1'
+
+            # TODO try to put in a subplot in the hallem plot below (just don't divide
+            # horizontal space evenly)
+            def plot_corrs(df):
+                fig, _ = viz.matshow(df, cmap='RdBu_r')
+                ax = plt.gca()
+                ax.set_title(new_roi_name)
+                ax.get_xaxis().set_visible(False)
+                plt.show()
+
+            proc = Process(target=plot_corrs, args=(hallem_corrs,))
+            proc.start()
+
+
         newly_analyzed_roi_names.append(new_roi_name)
         newly_analyzed_dfs.append(new_df)
 
@@ -331,38 +408,44 @@ def load_and_plot(args):
             # TODO or (more work, but...) consider equal if within ~1-2 orders of
             # magnitude? or option to match exactly only?
             # TODO TODO a coarse-concentration-matching for odors might be useful in
-            # some other places too
+            # some other places too (see Index.get_loc?)
 
             # TODO maybe grey out names of odors not having matching concentration?
-            fly_odor_set = {tuple(x[1:]) for x in
-                _get_odor_name_df(new_df).itertuples()
-            }
 
             shared_odors = _get_odor_name_df(df).apply(
                 tuple, axis='columns').isin(fly_odor_set).values
 
             df = df[shared_odors].copy()
 
-        # TODO just factor this into plotting fn in al_analysis/hong2p, and leave all
-        # the metadata on the column multiindex?
-        fly_roi_ids = get_fly_roi_ids(df)
-        df.columns = fly_roi_ids
-        df.columns.name = 'roi'
-
-        # TODO maybe it should match the last '/' separated part exactly?
-        # any reason i didn't want that?
-        # (then i could get get index of matching name in newly analyzed ROI names to
-        # sort these...)
-        matching = np.any([df.columns.str.endswith(x) for x in roi_strs],
+        matching = np.any([df.columns.get_level_values('roi') == x for x in roi_strs],
             axis=0
         )
         if matching.sum() == 0:
             raise ValueError(f'no ROIs matching any of {roi_strs}')
 
+        df = util.addlevel(df, ['from_hallem','newly_analyzed'], [False, False],
+            axis='columns'
+        )
+
         cached_responses_df = dropna(df.loc[:, matching])
 
         # Putting at start so it should be plotted above
         subset_dfs.insert(0, cached_responses_df)
+
+    if hallem:
+        new_level_names = ['panel', 'is_pair', 'odor2', 'repeat']
+        new_level_vals = ['hallem', False, olf.solvent_str, 0]
+        hallem_overlap_df = util.addlevel(hallem_overlap_df, new_level_names,
+            new_level_vals
+        )
+        hallem_overlap_df = hallem_overlap_df.reorder_levels(new_df.index.names)
+
+        hallem_overlap_df = util.addlevel(hallem_overlap_df,
+            ['from_hallem','newly_analyzed','date','fly_num'],
+            [True, False, None, None], axis='columns'
+        )
+
+        subset_dfs.append(hallem_overlap_df)
 
     subset_df = pd.concat(subset_dfs, axis='columns', verify_integrity=True)
 
@@ -395,14 +478,33 @@ def load_and_plot(args):
 
         subset_df = olf.sort_odors(subset_df)
 
+    if hallem:
+        n_overlapping = len(hallem_overlap_df.columns)
+
+        hallem_overlap_df = subset_df.iloc[:, -n_overlapping:]
+        subset_df = subset_df.iloc[:, :-n_overlapping]
+
+        # TODO TODO have this Axes be same physical size, so it's easier to compare
+        # the two plots
+        # TODO move up "title" (xlabel) on this one / tight_layout / something
+        proc = Process(target=plot, args=(hallem_overlap_df,),
+            kwargs={'sort_rois': False,
+                'title': f'Hallem data (sorted by corr with {new_roi_name})',
+        })
+        proc.start()
+
     if add_to_plot and most_recent_plot_proc is not None:
         most_recent_plot_proc.terminate()
 
-    # currently just counting on the process eventually terminating, and thus the
-    # corresponding Process object being cleaned up
-    proc = Process(target=plot, args=(subset_df,))
-    most_recent_plot_proc = proc
-    proc.start()
-
-    plotting_processes.append(proc)
+    _debug_plot = False
+    if not _debug_plot:
+        # currently just counting on the process eventually terminating, and thus the
+        # corresponding Process object being cleaned up
+        proc = Process(target=plot, args=(subset_df,))
+        most_recent_plot_proc = proc
+        proc.start()
+        plotting_processes.append(proc)
+    else:
+        # So I can use a debugger
+        plot(subset_df)
 
