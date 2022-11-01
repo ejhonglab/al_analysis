@@ -332,6 +332,8 @@ def load_and_plot(args):
             # Absolute ORN firing rates (reported deltas, w/ reported SFR added back in)
             orn_df = orns.orns(columns='glomerulus')
 
+            # TODO append asterisks to these names, to avoid confusion w/ just 'DM3'
+            #
             # Since I'm not sure whether to compute DM3 signal as a weighted average of
             # 47a ("DM3.1") and 33b ("DM3") inputs, or which weights to use if so.
             '''
@@ -368,6 +370,10 @@ def load_and_plot(args):
 
             hallem_overlap_df = orn_df[orn_df.index.isin(new_df_mean.index)]
 
+            # TODO TODO consider normalizing (within all hallem, and all my data / fly)
+            # to [0, 1], then do euclidean or something? don't want corr w/ glomeruli
+            # that are essentially nonresponsive to count for as much as it does...
+            # ig i can just ignore as long as i'm showing responses...
             hallem_corrs = hallem_overlap_df.corrwith(new_df_mean).sort_values(
                 ascending=False
             )
