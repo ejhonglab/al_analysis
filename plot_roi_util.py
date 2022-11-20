@@ -50,10 +50,6 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         roi_index: index of ImageJ ROI to analyze (same as in ROI manager, 0-indexed)
 
         roiset_path: if passed, load ROIs from this, rather than from <input_dir>
-
-    Currently returns a dataframe with only a single column level ('roi', just the
-    string ROI name). No levels for ['date','fly_num','thorimage_id'] that we start with
-    from the loaded al_analysis.py output.
     """
     # NOTE: this will also resolve symlinks (which I didn't want and complicated
     # match_str calculation, but can't figure out a pathlib way to resolve just relative
@@ -165,7 +161,7 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
     return df
 
 
-def plot(df, sort_rois=True, **kwargs):
+def plot(df, sort_rois=True, show=True, **kwargs):
     # For sorting based on order ROIs added to new analysis, so if plot is updated to
     # include new data, the new data is always towards the bottom of each section.
     def roi_sort_index(col_index_vals):
@@ -215,7 +211,8 @@ def plot(df, sort_rois=True, **kwargs):
         roi_sort=sort_rois, sort_rois_first_on=sort_first_on,
         hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn, **kwargs
     )
-    plt.show()
+    if show:
+        plt.show()
 
 
 newly_analyzed_dfs = []
@@ -271,6 +268,7 @@ def load_and_plot(args):
 
     if analysis_dir is not None:
         new_df = extract_ij_responses(analysis_dir, roi_index, roiset_path=roiset_path)
+        assert len(new_df.columns) == 1
 
         new_roi_names = new_df.columns.get_level_values('roi').unique()
         # would need to relax + modify code if i wanted to ever return multiple ROIs
@@ -296,7 +294,7 @@ def load_and_plot(args):
         if new_roi_name in newly_analyzed_roi_names:
             for ndf in newly_analyzed_dfs:
                 assert len(ndf.columns) == 1
-                ndf_roi_name = ndf.columns[0]
+                ndf_roi_name = ndf.columns.get_level_values('roi')[0]
 
                 if ndf_roi_name == new_roi_name:
                     # If we've gotten this far, we must already have some plots open
@@ -313,10 +311,11 @@ def load_and_plot(args):
                         # ImageJ uses in ROI manager.
                         suffixed_name = f'{new_roi_name}_{i}'
                         if suffixed_name not in newly_analyzed_roi_names:
-                            assert len(new_df.columns) == 1
-                            assert new_df.columns[0] == new_roi_name
                             new_roi_name = suffixed_name
-                            new_df.columns = [suffixed_name]
+
+                            index_df = new_df.columns.to_frame(index=False)
+                            index_df.loc[:, 'roi'] = new_roi_name
+                            new_df.columns = pd.MultiIndex.from_frame(index_df)
                             break
 
                         i += 1
@@ -332,8 +331,10 @@ def load_and_plot(args):
             # Absolute ORN firing rates (reported deltas, w/ reported SFR added back in)
             orn_df = orns.orns(columns='glomerulus')
 
-            # TODO append asterisks to these names, to avoid confusion w/ just 'DM3'
-            #
+            # Appending asterisks for 'DM3' and 'DM3.1' to avoid confusion w/ just 'DM3'
+            orn_df.columns = orn_df.columns.map(
+                lambda x: f'{x}*' if x.startswith('DM3') else x
+            )
             # Since I'm not sure whether to compute DM3 signal as a weighted average of
             # 47a ("DM3.1") and 33b ("DM3") inputs, or which weights to use if so.
             '''
@@ -390,6 +391,7 @@ def load_and_plot(args):
 
             # TODO try to put in a subplot in the hallem plot below (just don't divide
             # horizontal space evenly)
+            #'''
             def plot_corrs(df):
                 fig, _ = viz.matshow(df, cmap='RdBu_r')
                 ax = plt.gca()
@@ -399,6 +401,7 @@ def load_and_plot(args):
 
             proc = Process(target=plot_corrs, args=(hallem_corrs,))
             proc.start()
+            #'''
 
 
         newly_analyzed_roi_names.append(new_roi_name)
@@ -484,20 +487,49 @@ def load_and_plot(args):
 
         subset_df = olf.sort_odors(subset_df)
 
+    # TODO TODO maybe if the name is shared (prefix? cause DM3[.1] thing) w/ current roi
+    # name (prefix again, cause '?'?), then call out that one, maybe by bolding name in
+    # yticklabels of both hallem plots or something? or sorting that one out?
     if hallem:
         n_overlapping = len(hallem_overlap_df.columns)
 
         hallem_overlap_df = subset_df.iloc[:, -n_overlapping:]
         subset_df = subset_df.iloc[:, :-n_overlapping]
 
+        # Constrained layout causes width_ratios thing to fail.
+        # TODO nice way to do something similar within the context of constrained
+        # layout?
+        @viz.no_constrained_layout
+        def hallem_comparison_plot():
+            # Passing width_ratios directly here only supported as of matplotlib>=3.6.0
+            fig, (corr_ax, resp_ax) = plt.subplots(ncols=2, width_ratios=[1, 3])
+
+            viz.matshow(hallem_corrs, ax=corr_ax, cmap='RdBu_r')
+            #corr_ax.set_title(new_roi_name)
+            corr_ax.get_xaxis().set_visible(False)
+
+            plot(hallem_overlap_df, ax=resp_ax, sort_rois=False, show=False,
+                title=f'Hallem data (sorted by corr with {new_roi_name})'
+            )
+            plt.show()
+
+        # TODO delete after debugging
+        #hallem_comparison_plot()
+        #
+
+        #proc = Process(target=hallem_comparison_plot)
+        #proc.start()
+
         # TODO TODO have this Axes be same physical size, so it's easier to compare
         # the two plots
         # TODO move up "title" (xlabel) on this one / tight_layout / something
+        #'''
         proc = Process(target=plot, args=(hallem_overlap_df,),
             kwargs={'sort_rois': False,
                 'title': f'Hallem data (sorted by corr with {new_roi_name})',
         })
         proc.start()
+        #'''
 
     if add_to_plot and most_recent_plot_proc is not None:
         most_recent_plot_proc.terminate()

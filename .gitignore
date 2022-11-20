@@ -5,6 +5,7 @@ pair_grid_data_gsheet_link.txt
 *.p
 *.svg
 *.png
+*.pdf
 *_png/
 # NetCDF files, if used to save xarray intermediates
 *.nc
@@ -12,3 +13,7 @@ ij_roi_stats.csv
 remy/
 *.log
 logs/
+*_8m/
+*_6f/
+GH146_*/
+pebbled_*/

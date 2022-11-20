@@ -111,6 +111,13 @@ def main():
     # TODO can register something at imagej exit (inside imagej config) to kill any?
     # any nice way to have python check if (corresponding) imagej process is alive?
 
+    # TODO TODO also log PID at start (+ log children PID whenever they are created, and
+    # maybe also when destroyed, probably from the child processes)
+    # TODO TODO atexit call to log PID and memory usage (for seeing which processes were
+    # actually using memory when pkilled)
+    # TODO TODO also log current / max lifetime atexit, to see if any things are somehow
+    # exceeding lifetime
+
     while time.time() - start_time_s < MAX_LIFETIME_S:
         try:
             client_args = arg_queue.get_nowait()

@@ -1,6 +1,7 @@
 # See README for steps necessary before installing these dependencies.
 # (to get suite2p set up well, via conda)
 
+matplotlib>=3.6.0
 seaborn>=0.12.0
 
 colorama
