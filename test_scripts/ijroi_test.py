@@ -2,7 +2,7 @@
 
 import ijroi
 
-from hong2p import util
+from hong2p.roi import ijroi_masks
 
 
 def main():
@@ -20,10 +20,10 @@ def main():
 
     # Defined on a TIFF created by projecting across the time dimension, so dims ZYX
     on_3d_test_fname = test_dir + 'rois_defined_on_3dtiff_test.zip'
-    m3 = util.ijroi_masks(on_3d_test_fname, thorimage_dir)
+    m3 = ijroi_masks(on_3d_test_fname, thorimage_dir)
 
     on_4d_test = test_dir + 'RoiSet.zip'
-    m4 = util.ijroi_masks(on_4d_test, thorimage_dir)
+    m4 = ijroi_masks(on_4d_test, thorimage_dir)
 
     import ipdb; ipdb.set_trace()
 

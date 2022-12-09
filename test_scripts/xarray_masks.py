@@ -10,6 +10,7 @@ import xarray as xr
 import ijroi
 
 from hong2p import util, thor
+from hong2p.roi import ijrois2masks, merge_ijroi_masks, ijroi_masks
 from hong2p import suite2p as s2p
 from suite2p.io.utils import get_plane_ops_and_folder_lists
 from suite2p.io import compute_dydx
@@ -92,7 +93,7 @@ def main():
     name_and_roi_list = ijroi.read_roi_zip(roipath, points_only=False)
     #import ipdb; ipdb.set_trace()
 
-    masks = util.ijrois2masks(name_and_roi_list, movie.shape[-3:],
+    masks = ijrois2masks(name_and_roi_list, movie.shape[-3:],
         as_xarray=True
     )
     import ipdb; ipdb.set_trace()
@@ -100,10 +101,10 @@ def main():
     # is doing (i.e. picking the plane with the strongest signal and not using the
     # components of the masks in other planes). probably just refactor merge handling to
     # allow ijroi and suite2p handling to use the same logic for this.
-    merged = util.merge_ijroi_masks(masks, check_no_overlap=True)
+    merged = merge_ijroi_masks(masks, check_no_overlap=True)
     '''
 
-    #merged = util.ijroi_masks(analysis_dir, thorimage_dir)
+    #merged = ijroi_masks(analysis_dir, thorimage_dir)
     #import ipdb; ipdb.set_trace()
 
     traces, roi_stats, ops, merges = s2p.load_s2p_combined_outputs(analysis_dir)
