@@ -83,6 +83,24 @@ plt.rcParams['figure.constrained_layout.h_pad'] = 0.5/72
 plt.rcParams['figure.constrained_layout.wspace'] = 0
 plt.rcParams['figure.constrained_layout.hspace'] = 0
 
+
+def formatwarning_msg_only(msg, category, *args, **kwargs):
+    """Format warning without line/lineno (which are often not the relevant line)
+    """
+    warn_type = category.__name__ if category.__name__ != 'UserWarning' else 'Warning'
+    return colored(f'{warn_type}: {msg}\n', 'yellow')
+
+# TODO do just in main?
+# TODO TODO maybe also toggle this w/ -v CLI flag (still have it colored orange tho...)
+# (or a dedicated flag for this?)
+warnings.formatwarning = formatwarning_msg_only
+
+
+# TODO maybe log all warnings?
+def warn(msg):
+    warnings.warn(str(msg))
+
+
 ###################################################################################
 # Constants that affect behavior of `process_experiment`
 ###################################################################################
@@ -290,9 +308,6 @@ bad_suite2p_analysis_dirs = (
 # unintentional NaN in these columns if I need to use the missing data for early
 # diagnostic panels (w/o some of the odors only in newest set) for anything
 
-# TODO TODO actually do allow cacheing this (build into hong2p fn) (maybe only use it w/
-# an explicit arg? for analysis while traveling)
-#
 # This file is intentionally not tracked in git, so you will need to create it and
 # paste in the link to this Google Sheet as the sole contents of that file. The
 # sheet is located on our drive at:
@@ -464,8 +479,6 @@ failed_assigning_frames_to_odors = []
 response_volumes_list = []
 
 s2p_trial_dfs = []
-# TODO TODO just agg (+ cache) this in process_experiment, and calculate all others from
-# this after the main loop over experiments
 # TODO also agg + cache full traces (maybe just use CSV? also for above)
 # TODO rename to ij_trialstat_dfs or something
 ij_trial_dfs = []
@@ -547,23 +560,6 @@ def init_logger(module_name, script_path, log_argv=True):
     sys.excepthook = handle_exception
 
     return logger
-
-
-def formatwarning_msg_only(msg, category, *args, **kwargs):
-    """Format warning without line/lineno (which are often not the relevant line)
-    """
-    warn_type = category.__name__ if category.__name__ != 'UserWarning' else 'Warning'
-    return colored(f'{warn_type}: {msg}\n', 'yellow')
-
-# TODO do just in main?
-# TODO TODO maybe also toggle this w/ -v CLI flag (still have it colored orange tho...)
-# (or a dedicated flag for this?)
-warnings.formatwarning = formatwarning_msg_only
-
-
-# TODO TODO maybe log all warnings?
-def warn(msg):
-    warnings.warn(str(msg))
 
 
 def get_fly_analysis_dir(date, fly_num) -> Path:
@@ -2111,6 +2107,7 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
             continue
 
         if repeat == 0:
+            # NOTE: layout kwarg not available in older (< ~3.6) versions of matplotlib
             fig, axs = plt.subplots(nrows=1, ncols=n_trials, layout='constrained',
                 # TODO lower dpi when not debugging (setting high so i can have a chance
                 # at reading xticklabel frame numbers)

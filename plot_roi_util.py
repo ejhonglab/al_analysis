@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import psutil
 
 from hong2p import util, olf, viz
-from hong2p.roi import extract_traces_bool_masks
+from hong2p.roi import extract_traces_bool_masks, ijroi_masks
 from hong2p.types import Pathlike
 from drosolf import orns
 
@@ -126,7 +126,7 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         if roiset_path is None:
             roiset_path = analysis_dir
 
-        masks = util.ijroi_masks(roiset_path, thorimage_dir)
+        masks = ijroi_masks(roiset_path, thorimage_dir)
 
         # TODO TODO refactor this + hong2p.util.ij_traces, to share a bit more code
         # (maybe break out some of ij_traces into another helper fn?)

@@ -1,0 +1,15 @@
+- fix how it seems that:
+  1. opening expt via F2 in ImageJ
+  2. selecting ROI -> p
+  3. selecting diff ROI -> P (replaces window from #2 w/ window w/ both ROIs data)
+  4. selecting (diff/same?) ROI -> H (pops up 2 new windows)
+  5. selecting ROI unique from all above -> P
+
+  ...ultimately creates two comparison windows (as created via P), when there should
+  only ever be one comparison window open at a time
+
+
+- maybe just make H update window (as P does to p window), with Hallem comparison stuff
+  at the top? is only reason i might not want to do this that it's a bit unclear which
+  ROI below should be compared to Hallem data (e.g. if i already was comparing other
+  ROIs from my data, or if i do that with subsequent commands)
