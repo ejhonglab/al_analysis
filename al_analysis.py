@@ -21,7 +21,7 @@ from itertools import starmap
 import multiprocessing as mp
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Optional, Tuple, List, Type, Union
+from typing import Optional, Tuple, List, Type, Union, Dict
 import json
 import logging
 import shlex
@@ -427,7 +427,11 @@ fly_keys = ['date', 'fly_num']
 
 checks = True
 
-ignore_existing_options = ('nonroi', 'ijroi', 'suite2p')
+# TODO split out into stuff that will get included in blanket "-i" (without string
+# passed), and stuff that needs to be explicitly specified (e.g. 'json') (at least for
+# documentation purposes)?
+# should i even have a blanket '-i' option?
+ignore_existing_options = ('json', 'nonroi', 'ijroi', 'suite2p')
 
 # Changed as a globals in main (exposed as command line arguments)
 ignore_existing = False
@@ -626,6 +630,8 @@ def driver_indicator_output_dir(driver: str, indicator: str) -> Path:
     return output_dir
 
 
+# TODO TODO let root of this be overridden by env var, so i can put it on external hard
+# drive if i'm running on my space limited laptop
 def get_plot_root(driver, indicator) -> Path:
     return driver_indicator_output_dir(driver, indicator) / plot_fmt
 
@@ -3755,10 +3761,49 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
     return True
 
 
+def suite2p_ordered_tiffs_to_num_frames(suite2p_dir: Path, thorimage_dir: Path
+    ) -> Dict[Path, int]:
+
+    # TODO TODO is dtype='int16' a mistake on the part of the suite2p people (they at
+    # least seem to be consistent about it w/in io.binary)? shouldn't it be uint16? or
+    # can it really be negative? precision loss when converting from uint16 (and that is
+    # the type of data i get from thorimage, right? should i rescale?)
+    # TODO might need to handle for tests of equavilancy between this and my other raw
+    # data formats
+    """
+    Args:
+        suite2p_dir: path to suite2p directory, containing 'plane<x>' folders
+
+        thorimage_dir: path containing ThorImage output (for the Experiment.xml that
+            contains movie shape information)
+
+    Returns ordered dict of input TIFF filename -> number of timepoints in the movie.
+    Dict order same as concatenation order for suite2p motion correction.
+    """
+    plane_dirs = sorted(suite2p_dir.glob('plane*/'))
+
+    # TODO maybe factor using 'plane0' into some fn (maybe even load_s2p_ops), to ensure
+    # we are being consistent, especially if there actually are any differences between
+    # (for example) 'combined' and 'plane<n>' ops.
+    #
+    # the metadata we care about should be the same regardless of which we plane we load
+    # the ops from
+    ops = s2p.load_s2p_ops(plane_dirs[0])
+
+    # list of (always?)-absolute paths to input files, presumably in concatenation order
+    filelist = [Path(x) for x in ops['filelist']]
+
+    # of same length as filelist. e.g. array([ 756, 1796,  945])
+    # converting from np.int64 (not serializable in json)
+    frames_per_file = [int(x) for x in ops['frames_per_file']]
+
+    return dict(zip(filelist, frames_per_file))
+
+
 # TODO factor to hong2p.suite2p
 def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     registered: bool = True, to_uint16: bool = True, verbose: bool = False
-    ) -> np.ndarray:
+    ) -> Dict[Path, np.ndarray]:
 
     # TODO TODO is dtype='int16' a mistake on the part of the suite2p people (they at
     # least seem to be consistent about it w/in io.binary)? shouldn't it be uint16? or
@@ -3792,8 +3837,8 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     name = 'data.bin' if registered else 'data_raw.bin'
     binaries = [d / name for d in plane_dirs]
 
-    # TODO TODO TODO can i just replace this w/ usage of some of the other entries in
-    # ops?
+    # TODO can i just replace this w/ usage of some of the other entries in ops?
+    # (currently only use ops in suite2p_ordered_tiffs_to_num_frames)
     (x, y), z, c = thor.get_thorimage_dims(thorimage_dir)
     # TODO TODO actually test on some test data where x != y
     frame_width = x
@@ -3808,19 +3853,9 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
 
     data = np.stack(plane_data_list, axis=1)
 
-    # TODO maybe factor using 'plane0' into some fn (maybe even load_s2p_ops), to ensure
-    # we are being consistent, especially if there actually are any differences between
-    # (for example) 'combined' and 'plane<n>' ops.
-    #
-    # the metadata we care about should be the same regardless of which we plane we load
-    # the ops from
-    ops = s2p.load_s2p_ops(plane_dirs[0])
-
-    # list of (always?)-absolute paths to input files, presumably in concatenation order
-    filelist = ops['filelist']
-
-    # of same length as filelist. e.g. array([ 756, 1796,  945])
-    frames_per_file = ops['frames_per_file']
+    input_tiff2num_frames = suite2p_ordered_tiffs_to_num_frames(suite2p_dir,
+        thorimage_dir
+    )
 
     # TODO figure out how to use this if i want to support loading data from multiple
     # folders (as it would probably be if you managed to use the GUI to concatenate in a
@@ -3829,7 +3864,7 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
 
     start_idx = 0
     input_tiff2movie_range = dict()
-    for input_tiff, n_input_frames in zip(filelist, frames_per_file):
+    for input_tiff, n_input_frames in input_tiff2num_frames.items():
 
         end_idx = start_idx + n_input_frames
         movie_range = data[start_idx:end_idx]
@@ -3880,7 +3915,7 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
 
             movie_range = (movie_range * 2).astype(np.uint16)
 
-        input_tiff2movie_range[Path(input_tiff)] = movie_range
+        input_tiff2movie_range[input_tiff] = movie_range
         start_idx += n_input_frames
 
     if verbose:
@@ -3937,6 +3972,9 @@ def convert_raw_to_tiff(thorimage_dir, date, fly_num) -> None:
 
 
 def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
+    """
+    Will recompute if global ignore_existing == 'json'.
+    """
 
     analysis_dir = thorimage2analysis_dir(thorimage_dir)
     json_fname = analysis_dir / trial_and_frame_json_basename
@@ -3952,9 +3990,11 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
         warn(f'{e}. could not write {json_fname}!')
         return
 
-    odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
-
-    if json_fname.exists():
+    # TODO TODO TODO also have it apply to concatenated ones made in register_all_...
+    #
+    # NOTE: NOT recomputing these if -i/--ignore-existing passed with no string argument
+    # (which will recompute most of the other things this CLI arg applies to)
+    if ignore_existing != 'json' and json_fname.exists():
         return
 
     # TODO option for CLI --ignore-existing flag to recompute these frame<->odor
@@ -4004,10 +4044,9 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
     # Currently seems to reliably happen iff we somehow accidentally also image with the
     # red channel (which was allowed despite those channels having gain 0 in the few
     # cases so far)
-    if len(bounding_frames) != len(odor_order_with_repeats):
-        err_msg = (f'len(bounding_frames) ({len(bounding_frames)}) != '
-            f'len(odor_order_with_repeats) ({len(odor_order_with_repeats)}).'
-            f'not able to make {json_fname}!'
+    if len(bounding_frames) != len(odor_lists):
+        err_msg = (f'len(bounding_frames) ({len(bounding_frames)}) != len(odor_lists) '
+            f'({len(odor_lists)}). not able to make {json_fname}!'
         )
         warn(err_msg)
 
@@ -4016,17 +4055,35 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
 
         return
 
+    odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
+
     # For trying to load in ImageJ plugin (assuming stdlib json module works there)
     json_dicts = []
-    for trial_frames, trial_odors in zip(bounding_frames, odor_order_with_repeats):
+    for trial_frames, trial_odors in zip(bounding_frames, odor_lists):
+
         start_frame, first_odor_frame, end_frame = trial_frames
-        json_dicts.append({
+
+        trial_json = {
             'start_frame': start_frame,
             'first_odor_frame': first_odor_frame,
             'end_frame': end_frame,
             # TODO use abbrevs / at least include another field with them
-            'odors': trial_odors,
-        })
+            'odors': format_odor_list(trial_odors),
+        }
+
+        # Mainly want to get the 'glomerulus' value, when specified (for diagnostic
+        # odors), but might as well include any other odor data.
+        #
+        # NOTE: not currently supporting odor metadata passthru for trials with multiple
+        # odors
+        if len(trial_odors) == 1:
+            trial_odor_dict = trial_odors[0]
+
+            for k, v in trial_odor_dict.items():
+                assert k not in trial_json
+                trial_json[k] = v
+
+        json_dicts.append(trial_json)
 
     json_fname.write_text(json.dumps(json_dicts))
 
@@ -4208,6 +4265,55 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         suite2p_dir = s2p.get_suite2p_dir(fly_analysis_dir)
         assert suite2p_dir.is_symlink()
 
+
+        # TODO TODO also check if concat json has length equal to sum of all input
+        # json lengths (because maybe another json was added after suite2p run, e.g. if
+        # a frame<->trial YAML was copied into an experiment dir to allow analysis to
+        # proceed but *AFTER* suite2p was run)
+
+        # TODO probably add '_concat' in name to be consistent w/ other stuff in fly
+        # analysis directories
+        trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
+        trial_and_frame_concat_json_link = (
+            fly_analysis_dir / trial_and_frame_json_basename
+        )
+        # This shouldn't need to change enough to be worth checking mtimes.
+        if ignore_existing == 'json' or not (trial_and_frame_concat_json.exists() and
+            trial_and_frame_concat_json_link.exists()):
+
+            input_tiff2num_frames = suite2p_ordered_tiffs_to_num_frames(suite2p_dir,
+                thorimage_dirs[0]
+            )
+
+            json_dicts = []
+            curr_frame_offset = 0
+            for input_tiff, n_frames in input_tiff2num_frames.items():
+                json_fname = input_tiff.parent / trial_and_frame_json_basename
+                if not json_fname.exists():
+                    err_msg = (f'{shorten_path(json_fname, n_parts=5)} did not exist! '
+                        'can not create (complete) concatenated trial/frame JSON!'
+                    )
+                    if allow_missing_trial_and_frame_json:
+                        warn(err_msg)
+                        continue
+                    else:
+                        raise FileNotFoundError(err_msg)
+
+                # TODO maybe also save input recording thorimage folder name?
+                curr_json_dicts = json.loads(json_fname.read_text())
+                for d in curr_json_dicts:
+                    d['start_frame'] += curr_frame_offset
+                    d['first_odor_frame'] += curr_frame_offset
+                    d['end_frame'] += curr_frame_offset
+
+                json_dicts.extend(curr_json_dicts)
+                curr_frame_offset += n_frames
+
+            trial_and_frame_concat_json.write_text(json.dumps(json_dicts))
+
+            symlink(trial_and_frame_concat_json, trial_and_frame_concat_json_link)
+
+
         mocorr_concat_tiff = suite2p_dir / mocorr_concat_tiff_basename
 
         def input_tiff2mocorr_tiff(input_tiff):
@@ -4226,19 +4332,9 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
                     'real files, not symlinks'
                 )
 
-        # TODO TODO TODO also check if concat json has length equal to sum of all input
-        # json lengths (because maybe another json was added after suite2p run, e.g. if
-        # a frame<->trial YAML was copied into an experiment dir to allow analysis to
-        # proceed but *AFTER* suite2p was run)
-        # TODO at least warn if not all outputs of suite2p run are included in concat
-        # outputs (check both JSON and tiffs)
-
         # TODO may also want to test we have all the symlinks we expect
         # (AND may need some temporary code to either delete all existing links that
         # should be relative but currently aren't, or may need to do that manually)
-        # TODO need to also check we have the concatenated json, or will want to save
-        # that before this check to continue
-        # TODO add raw_concat.tif too
         if have_all_tiffs:
             continue
 
@@ -4259,12 +4355,9 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
         input_tiff2registered = load_suite2p_binaries(suite2p_dir, thorimage_dirs[0],
             verbose=True
         )
-
         # TODO double check that this iterates through in acquisition order
         # (+clarify in doc of load_suite2p_binaries)
         # (part generating concat array, after this loop, already seems to assume that)
-        json_dicts = []
-        curr_frame_offset = 0
         for input_tiff, registered in input_tiff2registered.items():
 
             motion_corrected_tiff = input_tiff2mocorr_tiff(input_tiff)
@@ -4283,26 +4376,6 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             # will change when the directory the 'suite2p' link is pointing to does.
             symlink(motion_corrected_tiff, motion_corrected_tiff_link)
 
-            json_fname = input_tiff.parent / trial_and_frame_json_basename
-            if not json_fname.exists():
-                err_msg = (f'{shorten_path(json_fname, n_parts=5)} did not exist! '
-                    'can not create (complete) concatenated trial/frame JSON!'
-                )
-                if allow_missing_trial_and_frame_json:
-                    warn(err_msg)
-                    continue
-                else:
-                    raise FileNotFoundError(err_msg)
-
-            curr_json_dicts = json.loads(json_fname.read_text())
-            for d in curr_json_dicts:
-                d['start_frame'] += curr_frame_offset
-                d['first_odor_frame'] += curr_frame_offset
-                d['end_frame'] += curr_frame_offset
-
-            json_dicts.extend(curr_json_dicts)
-            curr_frame_offset += len(registered)
-
         # Essentially the same one I'm pulling apart in the above function, but we
         # are just putting it back together to be able to make it a TIFF to inspect
         # the boundaries.
@@ -4315,17 +4388,6 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
 
         mocorr_concat_tiff_link = fly_analysis_dir / mocorr_concat_tiff_basename
         symlink(mocorr_concat_tiff, mocorr_concat_tiff_link)
-
-        # TODO probably add '_concat' in name to be consistent w/ other stuff in fly
-        # analysis directories
-        trial_and_frame_concat_json = suite2p_dir / trial_and_frame_json_basename
-
-        trial_and_frame_concat_json.write_text(json.dumps(json_dicts))
-
-        trial_and_frame_concat_json_link = (
-            fly_analysis_dir / trial_and_frame_json_basename
-        )
-        symlink(trial_and_frame_concat_json, trial_and_frame_concat_json_link)
 
         print()
 
@@ -5903,7 +5965,6 @@ def main():
 
 
     for fly_analysis_dir in sorted(set(flies_with_new_processed_tiffs)):
-
         # TODO refactor? currently duplicating in code that decides whether to link to
         # diagnostic RoiSet.zip in process_experiment
         # TODO TODO TODO but may need to check that input tiffs didn't change
