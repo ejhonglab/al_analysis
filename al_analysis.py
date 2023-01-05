@@ -235,9 +235,25 @@ mocorr_concat_tiff_basename = 'mocorr_concat.tif'
 trial_dff_tiff_basename = 'trial_dff.tif'
 trialmean_dff_tiff_basename = 'trialmean_dff.tif'
 max_trialmean_dff_tiff_basename = 'max_trialmean_dff.tif'
+min_trialmean_dff_tiff_basename = 'min_trialmean_dff.tif'
 
+# TODO also name this cmap / split if needed
 cmap = 'plasma'
 diverging_cmap = 'RdBu_r'
+
+# TODO is there a 'gray_r'? try that?
+# NOTE: 'Greys' is reversed wrt 'gray' (maybe not exactly, but it is white->black),
+# and I wanted to try it to be more printer friendly, but at least without additional
+# tweaking, it seemed a bit harder to use to see faint ROIs.
+#anatomical_cmap = 'Greys'
+anatomical_cmap = 'gray'
+
+# This background will often either be anatomical (e.g. an average of the movie),
+# but may also be computed from functional data (e.g. max across trial-mean dF/Fs),
+# but we still want to use the same colormap for consistency (+ ease of seeing ROI
+# boundaries/labels against it)
+roi_bg_cmap = anatomical_cmap
+
 # TODO could try TwoSlopeNorm, but would probably want to define bounds per fly (or else
 # compute in another pass / plot these after aggregating?)
 diverging_cmap_kwargs = dict(cmap=diverging_cmap,
@@ -428,11 +444,13 @@ fly_keys = ['date', 'fly_num']
 
 checks = True
 
-# TODO split out into stuff that will get included in blanket "-i" (without string
-# passed), and stuff that needs to be explicitly specified (e.g. 'json') (at least for
-# documentation purposes)?
-# should i even have a blanket '-i' option?
-ignore_existing_options = ('json', 'nonroi', 'ijroi', 'suite2p')
+# TODO distinguish between these two in CLI doc (or delete blanket -i)
+# TODO should i even have a blanket '-i' option?
+ignore_if_explicitly_requested = ('json',)
+also_ignore_if_ignore_existing_true = ('nonroi', 'ijroi', 'suite2p')
+ignore_existing_options = (
+    ignore_if_explicitly_requested + also_ignore_if_ignore_existing_true
+)
 
 # Changed as a globals in main (exposed as command line arguments)
 ignore_existing = False
@@ -1164,6 +1182,28 @@ def clear_fail_indicators(analysis_dir: Path) -> None:
         os.remove(f)
 
 
+def should_ignore_existing(name: str, explicit_only: bool = False) -> bool:
+    """
+    Args:
+        name: step to check whether it should be recomputed.
+            see `ignore_existing_options`.
+
+        explicit_only: will only ignore `name` if it is in `ignore_existing`, not if
+            `ignore_existing == True`
+    """
+    if type(ignore_existing) is bool:
+
+        # Some steps are unlikely enough to need recomputation, we will only do so if we
+        # explicitly request that step be recomputed.
+        if name in ignore_if_explicitly_requested:
+            return False
+
+        return ignore_existing
+    else:
+        assert name in ignore_existing_options
+        return name in ignore_existing
+
+
 # TODO factor into hong2p maybe (+ add support for xarray?)
 def dropna(df: pd.DataFrame, _checks=True) -> pd.DataFrame:
     """Drops rows/columns where all values are NaN.
@@ -1882,7 +1922,7 @@ def suite2p_traces(analysis_dir):
 # TODO TODO change how LUT is defined to at least allow ~single pixels NOT washing out
 # whole range (e.g. from motion correction artifact at edge)
 def plot_rois(*args, **kwargs):
-    return viz.plot_rois(*args, _pad=False, **kwargs)
+    return viz.plot_rois(*args, cmap=roi_bg_cmap, _pad=False, **kwargs)
 
 
 _date_dir_parent_index = -4
@@ -2082,7 +2122,7 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
 
     # TODO try one of those diverging colormaps w/ diff scales for the two sides
     # (since the range of inhibition is smaller)
-    matshow_kwargs = dict(cmap='RdBu_r', vmin=-dff_vmax, vmax=dff_vmax)
+    matshow_kwargs = dict(cmap=diverging_cmap, vmin=-dff_vmax, vmax=dff_vmax)
 
     timeseries_plot_dir = roi_plot_dir / 'timeseries'
     # TODO update to pathlib
@@ -2383,6 +2423,7 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         trial_dff_tiff_basename,
         trialmean_dff_tiff_basename,
         max_trialmean_dff_tiff_basename,
+        min_trialmean_dff_tiff_basename,
         # TODO may need to configure this to also ignore either raw.tif or flipped.tif,
         # depending on current value of min_input (never want to include *both* raw.tif
         # and flipped.tif)
@@ -2912,14 +2953,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             return data.set_index(odor=['is_pair'], append=True
                 ).set_index(odor_b=['is_pair_b'], append=True)
 
-    def should_ignore_existing(name):
-        if type(ignore_existing) is bool:
-            return ignore_existing
-        else:
-            assert name in ignore_existing_options
-            # TODO or split ignore_existing on ',' and check match against all parts
-            return ignore_existing == name
-
     if analyze_suite2p_outputs:
         if not any([b in thorimage_dir for b in bad_suite2p_analysis_dirs]):
             s2p_trial_df_cache_fname = analysis_dir / 'suite2p_trial_df_cache.p'
@@ -2997,6 +3030,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         trial_dff_tiff_basename,
         trialmean_dff_tiff_basename,
         max_trialmean_dff_tiff_basename,
+        min_trialmean_dff_tiff_basename,
     )
     for name in desired_processed_tiffs:
         desired_output = analysis_dir / name
@@ -3199,7 +3233,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     # TODO remove[/don't plot] colorbar on this one?
     avg_fig_path = plot_and_save_dff_depth_grid(anat_baseline, 'avg',
         'average of whole movie', vmin=anat_baseline.min(), vmax=anat_baseline.max(),
-        cmap='gray'
+        cmap=anatomical_cmap
     )
 
     save_dff_tiff = want_dff_tiff
@@ -3449,6 +3483,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         del dff_movie, trial_dff_movies
 
     max_trialmean_dff = np.max(odor_mean_dff_list, axis=0)
+    min_trialmean_dff = np.min(odor_mean_dff_list, axis=0)
+
     if write_processed_tiffs:
         # Of length (.shape[0]) equal to number of odor presentations
         # (including each repeat separately).
@@ -3467,12 +3503,22 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             strict_dtype=False, dims='ZYX'
         )
 
+        min_trialmean_dff_tiff = analysis_dir / min_trialmean_dff_tiff_basename
+        util.write_tiff(min_trialmean_dff_tiff, min_trialmean_dff,
+            strict_dtype=False, dims='ZYX'
+        )
+
         flies_with_new_processed_tiffs.append(fly_analysis_dir)
 
         print('wrote processed TIFFs')
 
     max_trialmean_dff_fig_path = plot_and_save_dff_depth_grid(max_trialmean_dff,
         'max_trialmean_dff', title=f'max of trial-mean {dff_latex}',
+        cbar_label=f'{dff_latex}'
+    )
+    # To see if strong inhibition ever helps quickly identify glomeruli
+    min_trialmean_dff_fig_path = plot_and_save_dff_depth_grid(min_trialmean_dff,
+        'min_trialmean_dff', title=f'min of trial-mean {dff_latex}',
         cbar_label=f'{dff_latex}'
     )
 
@@ -3487,22 +3533,21 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     sort_df = sort_odors(sort_df)
     sorted_odor_strs = list(sort_df.odor_str)
-
     sorted_fig_paths = [
         odor_str2trialmean_dff_fig_path[o] for o in sorted_odor_strs
     ]
 
-    # TODO replace 'ijroi' and 'all_rois_on_avg' parts w/ vars shared w/ code writing
-    # them
     # TODO maybe also check we saved it this run?
-    roi_fig_for_pdf = plot_dir / f'ijroi/all_rois_on_avg.{plot_fmt}'
+    roi_fig_for_pdf = ijroi_plot_dir(plot_dir) / f'all_rois_on_avg.{plot_fmt}'
 
     section_names2fig_paths = {
         'ROIs': [roi_fig_for_pdf] if roi_fig_for_pdf.exists() else [],
         # lumping these together into one "section" for now, b/c as is template.tex puts
         # a pagebreak after each section
         # TODO maybe just add an option to not do that though?
-        'Summary images': [avg_fig_path, max_trialmean_dff_fig_path],
+        'Summary images': [
+            avg_fig_path, max_trialmean_dff_fig_path, min_trialmean_dff_fig_path
+        ],
         'Trial-mean response volumes': sorted_fig_paths,
     }
     # TODO why does first page of trialmean response volumes seem to have the 4 figures
@@ -4054,7 +4099,7 @@ def convert_raw_to_tiff(thorimage_dir, date, fly_num) -> None:
 
 def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
     """
-    Will recompute if global ignore_existing == 'json'.
+    Will recompute if global ignore_existing explicitly included 'json'.
     """
 
     analysis_dir = thorimage2analysis_dir(thorimage_dir)
@@ -4071,11 +4116,9 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
         warn(f'{e}. could not write {json_fname}!')
         return
 
-    # TODO TODO TODO also have it apply to concatenated ones made in register_all_...
-    #
     # NOTE: NOT recomputing these if -i/--ignore-existing passed with no string argument
     # (which will recompute most of the other things this CLI arg applies to)
-    if ignore_existing != 'json' and json_fname.exists():
+    if not should_ignore_existing('json') and json_fname.exists():
         return
 
     # TODO option for CLI --ignore-existing flag to recompute these frame<->odor
@@ -4359,7 +4402,8 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             fly_analysis_dir / trial_and_frame_json_basename
         )
         # This shouldn't need to change enough to be worth checking mtimes.
-        if ignore_existing == 'json' or not (trial_and_frame_concat_json.exists() and
+        if should_ignore_existing('json') or not (
+            trial_and_frame_concat_json.exists() and
             trial_and_frame_concat_json_link.exists()):
 
             input_tiff2num_frames = suite2p_ordered_tiffs_to_num_frames(suite2p_dir,
@@ -4569,7 +4613,7 @@ def plot_corrs(corr_list, output_root, plot_relpath, *, per_fly_figs: bool = Tru
     # correlation consistency in the same figure/axes?
 
     # TODO change cmap to 'vlag', along with remy (and in all places w/ diverging)
-    remy_matshow_kwargs = dict(cmap='RdBu_r', vmin=-1, vmax=1, fontsize=10.0)
+    remy_matshow_kwargs = dict(cmap=diverging_cmap, vmin=-1, vmax=1, fontsize=10.0)
     # TODO delete (was just for that one bad PN fly since all correlations seemed
     # inflated)
     #remy_matshow_kwargs = dict(cmap='RdBu_r', fontsize=10.0)
@@ -5661,7 +5705,7 @@ def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root):
 
     # TODO share kwargs w/ other places i'm defining them for plotting correlations
     # for remy's experiment
-    fig = natmix.plot_corr(remy_corr_da, cmap='RdBu_r', vmin=-1, vmax=1,
+    fig = natmix.plot_corr(remy_corr_da, cmap=diverging_cmap, vmin=-1, vmax=1,
         fontsize=10.0
     )
     # TODO use savefig defined in here (+ save under plot_fmt dir)
@@ -5727,7 +5771,8 @@ def main():
     # TODO use choices= kwarg w/ ignore_existing_options?
     parser.add_argument('-i', '--ignore-existing', nargs='?', const=True, default=False,
         help='Re-calculate non-ROI analysis and analysis downstream of ImageJ/suite2p '
-        f'ROIs. If an argument is supplied, must be one of {ignore_existing_options}.'
+        'ROIs. If an argument is supplied, must be a comma separated list of strings, '
+        f'whose elements must be in {ignore_existing_options}.'
     )
     parser.add_argument('-r', '--retry-failed', action='store_true',
         help='Retry steps that previously failed (frame-to-odor assignment or suite2p).'
@@ -5800,10 +5845,14 @@ def main():
     print_skipped = args.verbose
 
     if type(ignore_existing) is not bool:
-        if ignore_existing not in ignore_existing_options:
-            raise ValueError('-i/--ignore-existing must either be given no argument, or'
-                f" one of {ignore_existing_options}. got '{ignore_existing}'."
-            )
+        ignore_existing = set(ignore_existing.split(','))
+
+        for x in ignore_existing:
+            if x not in ignore_existing_options:
+                raise ValueError('-i/--ignore-existing must either be given no argument'
+                    ', or a comma seperated list of elements from '
+                    f"{ignore_existing_options}. got '{ignore_existing}'."
+                )
 
     del parser, args
 
@@ -6085,6 +6134,13 @@ def main():
         max_of_maxes = np.max([tifffile.imread(x) for x in input_max_dff_tiffs], axis=0)
         max_of_maxes_tiff_path = fly_analysis_dir / max_trialmean_dff_tiff_basename
         util.write_tiff(max_of_maxes_tiff_path, max_of_maxes, strict_dtype=False)
+
+        input_min_dff_tiffs = fly_analysis_dir.glob(
+            f'*/{min_trialmean_dff_tiff_basename}'
+        )
+        min_of_mins = np.min([tifffile.imread(x) for x in input_min_dff_tiffs], axis=0)
+        min_of_mins_tiff_path = fly_analysis_dir / min_trialmean_dff_tiff_basename
+        util.write_tiff(min_of_mins_tiff_path, min_of_mins, strict_dtype=False)
 
 
     total_s = time.time() - main_start_s
