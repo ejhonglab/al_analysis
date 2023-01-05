@@ -60,6 +60,7 @@ from hong2p.types import ExperimentOdors, Pathlike
 from hong2p.xarray import (move_all_coords_to_index, unique_coord_value, scalar_coords,
     drop_scalar_coords, assign_scalar_coords_to_dim
 )
+from hong2p.latex import make_pdf
 import natmix
 # TODO rename these [load|write]_corr_dataarray fns to remove reference to "corr"
 # (since correlations are not what i'm using with these fns here)
@@ -255,7 +256,7 @@ trial_stat_cbar_title = f'Mean peak {dff_latex}'
 
 diff_cbar_title = f'$\Delta$ mean peak {dff_latex}'
 
-single_dff_image_row_figsize = (6.4, 2.0)
+single_dff_image_row_figsize = (6.4, 1.6)
 
 # TODO TODO should i switch to a diverging colormap now that i'm using min < 0
 dff_vmin = -0.5
@@ -706,6 +707,9 @@ def sort_concs(df: pd.DataFrame) -> pd.DataFrame:
     return olf.sort_odors(df, sort_names=False)
 
 
+# TODO also let this take a list of odors? or somehow use output + input to do something
+# that is effectively like an argsort, and use that to index some other type of object
+# (where we convert it to a DataFrame just for sorting)
 def sort_odors(df: pd.DataFrame) -> pd.DataFrame:
     return olf.sort_odors(df, panel_order=panel_order,
         panel2name_order=panel2name_order
@@ -1873,6 +1877,10 @@ def suite2p_traces(analysis_dir):
     return traces, rois, z_indices, roi_stats
 
 
+# TODO change in hong2p to allow having non-named ROIs drawn with slightly duller red /
+# thinner lines?
+# TODO TODO change how LUT is defined to at least allow ~single pixels NOT washing out
+# whole range (e.g. from motion correction artifact at edge)
 def plot_rois(*args, **kwargs):
     return viz.plot_rois(*args, _pad=False, **kwargs)
 
@@ -2629,16 +2637,19 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     plot_dir = get_plot_dir(date, fly_num, thorimage_basename)
     experiment_id = shorten_path(thorimage_dir)
 
-    def suptitle(title, fig=None):
+    def suptitle(title, fig=None, *, experiment_id_in_title: bool = True):
         if title is None:
             return
 
         if fig is None:
             fig = plt.gcf()
 
-        fig.suptitle(f'{experiment_id}\n{title}')
+        if experiment_id_in_title:
+            title = f'{experiment_id}\n{title}'
 
-    def exp_savefig(fig, desc, **kwargs):
+        fig.suptitle(title)
+
+    def exp_savefig(fig, desc, **kwargs) -> Path:
         return savefig(fig, plot_dir, desc, **kwargs)
 
     analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
@@ -2981,6 +2992,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     else:
         nonroi_analysis_current = True
 
+    # TODO move to module level?
     desired_processed_tiffs = (
         trial_dff_tiff_basename,
         trialmean_dff_tiff_basename,
@@ -3151,7 +3163,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
 
     def plot_and_save_dff_depth_grid(dff_depth_grid, fname_prefix, title=None,
-        cbar_label=None, **imshow_kwargs):
+        cbar_label=None, experiment_id_in_title=False, **imshow_kwargs) -> Path:
 
         # Will be of shape (1, z), since squeeze=False
         fig, axs = plt.subplots(ncols=z, squeeze=False,
@@ -3168,9 +3180,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         viz.add_colorbar(fig, im, label=cbar_label, shrink=0.68)
 
-        suptitle(title, fig)
+        suptitle(title, fig, experiment_id_in_title=experiment_id_in_title)
         fig_path = exp_savefig(fig, fname_prefix)
-
         return fig_path
 
 
@@ -3183,8 +3194,12 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         z = n_top_z_to_analyze
 
     anat_baseline = movie.mean(axis=0)
-    plot_and_save_dff_depth_grid(anat_baseline, 'avg', 'average of whole movie',
-        vmin=anat_baseline.min(), vmax=anat_baseline.max(), cmap='gray'
+
+    # TODO rename fn (since input here is not dF/F)
+    # TODO remove[/don't plot] colorbar on this one?
+    avg_fig_path = plot_and_save_dff_depth_grid(anat_baseline, 'avg',
+        'average of whole movie', vmin=anat_baseline.min(), vmax=anat_baseline.max(),
+        cmap='gray'
     )
 
     save_dff_tiff = want_dff_tiff
@@ -3211,19 +3226,40 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     dff_after_onset_iterator = delta_f_over_f(movie, bounding_frames)
     dff_full_trial_iterator = delta_f_over_f(movie, bounding_frames, keep_pre_odor=True)
 
+    # Should contain one PDF per fly, mainly to be used for printing out and comparing
+    # response/summary images side-by-side, with odors and figures in the same order.
+    #
+    # TODO rename to all_flies_.../'fly_pdfs' (+ re-write to only generate one per fly,
+    # aggregating any data?). as-is might be easier to unsure comparable when some
+    # recordings might be missing / of-different-length in some flies, though...
+    # (one big reason is to not have to waste space on showing ROIs more than once...,
+    # and to include all data in background for ROI image)
+    #
+    # TODO TODO try to put all common diagnostics at top, and/or add placeholders (at
+    # bottom?) to make sure PDFs can still be directly compared side-by-side?
+    all_experiment_pdfs_dir = plot_dir.parent / 'experiment_pdfs'
+    makedirs(all_experiment_pdfs_dir)
+
+    experiment_pdf_path = (
+        all_experiment_pdfs_dir / f"{experiment_id.replace('/', '_')}.pdf"
+    )
+
+    odor_str2trialmean_dff_fig_path = dict()
+
     # TODO do i still need these 2-3 nested loops?
     for i, odor_str in enumerate(odor_order):
 
         if odor_str in odor_str2target_glomeruli:
             target_glomerulus = odor_str2target_glomeruli[odor_str]
-            odor_str = f'{odor_str} ({target_glomerulus})'
+            title = f'{odor_str} ({target_glomerulus})'
         else:
             target_glomerulus = None
+            title = odor_str
 
         # TODO either:
         # - always use 2 digits (leading 0)
         # - pick # of digits from len(odor_order)
-        plot_desc = f'{i + 1}_{odor_str}'
+        plot_desc = f'{i + 1}_{title}'
 
         trial_heatmap_fig, trial_heatmap_axs = plt.subplots(nrows=n_repeats,
             ncols=z, squeeze=False, figsize=(6.4, 3.9)
@@ -3269,14 +3305,20 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         viz.add_colorbar(trial_heatmap_fig, im, label=dff_cbar_title, shrink=0.32)
 
-        suptitle(odor_str, trial_heatmap_fig)
+        # TODO modify titles to no longer include the
+        # <date>/<fly_num>/<thorimage_id> line (for saving space when grouping outputs
+        # within each fly together, for making PDF summaries). flag?
 
+        suptitle(title, trial_heatmap_fig)
         exp_savefig(trial_heatmap_fig, plot_desc + '_trials')
 
         avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
-        fig_path = plot_and_save_dff_depth_grid(avg_mean_dff, plot_desc, title=odor_str,
-            cbar_label=f'Mean {dff_latex}'
+
+        trialmean_dff_fig_path = plot_and_save_dff_depth_grid(avg_mean_dff, plot_desc,
+            title=title, cbar_label=f'Mean {dff_latex}'
         )
+
+        odor_str2trialmean_dff_fig_path[odor_str] = trialmean_dff_fig_path
 
         odor_mean_dff_list.append(avg_mean_dff)
 
@@ -3337,6 +3379,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             # TODO refactor? i do this at least one other place (and maybe switch to
             # using metadata directly rather than relying on a str while i'm at it?)
             link_prefix = '_'.join(experiment_id.split(os.sep)[:-1])
+            # TODO pathlib
             link_path = join(label_dir, f'{link_prefix}.{plot_fmt}')
 
             if exists(link_path):
@@ -3349,7 +3392,7 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                 )
                 continue
 
-            symlink(fig_path, link_path)
+            symlink(trialmean_dff_fig_path, link_path)
 
     # TODO maybe refactor so it doesn't need to be computed both here and in both the
     # (ij/suite2p) trace handling fns (though they currently also use odor_lists to
@@ -3428,9 +3471,47 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         print('wrote processed TIFFs')
 
-    plot_and_save_dff_depth_grid(max_trialmean_dff, 'max_trialmean_dff',
-        title=f'Max of trial-mean {dff_latex}', cbar_label=f'{dff_latex}',
+    max_trialmean_dff_fig_path = plot_and_save_dff_depth_grid(max_trialmean_dff,
+        'max_trialmean_dff', title=f'max of trial-mean {dff_latex}',
+        cbar_label=f'{dff_latex}'
     )
+
+    # This working correctly might depend on repeats of an odor being consecutive...
+    sort_index = odor_index.droplevel('repeat').drop_duplicates()
+    # odor_order does not have odors abbreviated, but the index does.
+    # They should have the odors in the same order.
+    sort_df = pd.DataFrame(data=odor_order, index=sort_index, columns=['odor_str'])
+
+    # sort_odors is expecting this
+    sort_df = util.addlevel(sort_df, 'panel', panel)
+
+    sort_df = sort_odors(sort_df)
+    sorted_odor_strs = list(sort_df.odor_str)
+
+    sorted_fig_paths = [
+        odor_str2trialmean_dff_fig_path[o] for o in sorted_odor_strs
+    ]
+
+    # TODO replace 'ijroi' and 'all_rois_on_avg' parts w/ vars shared w/ code writing
+    # them
+    # TODO maybe also check we saved it this run?
+    roi_fig_for_pdf = plot_dir / f'ijroi/all_rois_on_avg.{plot_fmt}'
+
+    section_names2fig_paths = {
+        'ROIs': [roi_fig_for_pdf] if roi_fig_for_pdf.exists() else [],
+        # lumping these together into one "section" for now, b/c as is template.tex puts
+        # a pagebreak after each section
+        # TODO maybe just add an option to not do that though?
+        'Summary images': [avg_fig_path, max_trialmean_dff_fig_path],
+        'Trial-mean response volumes': sorted_fig_paths,
+    }
+    # TODO why does first page of trialmean response volumes seem to have the 4 figures
+    # justified vertically differently than on the second page? fix
+    #
+    # I initially tried matplotlib's PdfPages and img2pdf for more simply making a PDF
+    # with a bunch of images, but neither supported multiple figures per page, which is
+    # what I wanted.
+    make_pdf(experiment_pdf_path, '.', section_names2fig_paths, header=experiment_id)
 
     plt.close('all')
 
@@ -5976,8 +6057,7 @@ def main():
         # TODO TODO compare mtime of output of concatenation w/ concatenation
         # inputs (and don't continue on just this...)
 
-        # TODO TODO TODO change this (want concatenating to work when min_input <
-        # 'mocorr')
+        # TODO TODO change this (want concatenating to work when min_input < 'mocorr')
         if not (fly_analysis_dir / mocorr_concat_tiff_basename).exists():
             continue
 
@@ -5995,6 +6075,16 @@ def main():
             ])
             # TODO print that we are doing this / what we are writing
             util.write_tiff(concat_tiff_path, processed_concat, strict_dtype=False)
+
+        # For these maximum-across-odors dF/F TIFFs, we want to compute max of inputs,
+        # rather than concatenating. No use sorting, since we will collapse across
+        # "time" (trial/odor) dimension.
+        input_max_dff_tiffs = fly_analysis_dir.glob(
+            f'*/{max_trialmean_dff_tiff_basename}'
+        )
+        max_of_maxes = np.max([tifffile.imread(x) for x in input_max_dff_tiffs], axis=0)
+        max_of_maxes_tiff_path = fly_analysis_dir / max_trialmean_dff_tiff_basename
+        util.write_tiff(max_of_maxes_tiff_path, max_of_maxes, strict_dtype=False)
 
 
     total_s = time.time() - main_start_s
