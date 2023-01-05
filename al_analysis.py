@@ -655,6 +655,13 @@ def get_plot_root(driver, indicator) -> Path:
     return driver_indicator_output_dir(driver, indicator) / plot_fmt
 
 
+def fly2driver_indicator(date, fly_num) -> Tuple[str, str]:
+    """Returns tuple with driver and indicator of fly, via Google sheet metadata lookup
+    """
+    fly_row = gdf.loc[(pd.Timestamp(date), int(fly_num))]
+    return fly_row.driver, fly_row.indicator
+
+
 def fly2driver_indicator_output_dir(date, fly_num) -> Path:
     """Looks up driver+indicator of fly and returns path for outputs/plots.
 
@@ -664,9 +671,7 @@ def fly2driver_indicator_output_dir(date, fly_num) -> Path:
     Raises NotImplementedError if fly's driver or indicator (from Google sheet) differ
     from other flies seen.
     """
-    fly_row = gdf.loc[(pd.Timestamp(date), int(fly_num))]
-    driver = fly_row.driver
-    indicator = fly_row.indicator
+    driver, indicator = fly2driver_indicator(date, fly_num)
     return driver_indicator_output_dir(driver, indicator)
 
 
@@ -3416,7 +3421,14 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             # TODO pathlib
             link_path = join(label_dir, f'{link_prefix}.{plot_fmt}')
 
+            #  TODO TODO does this work w/ the 'glomeruli_diagnostics_part2' recordings?
+            # (also note that one of those is still misspelled, at
+            # 2022-11-30/glomerli_diagnostics_part2)
             if exists(link_path):
+                # TODO update warning to indicate it only really applies in this
+                # particular limited context (right?) [or handle better, to avoid need
+                # for this warning]
+                #
                 # Just warning so that all the average images, etc, will still be
                 # created, so those can be used to quickly tell which experiment
                 # corresponded to the same side as the real experiments in the same fly.
@@ -3550,13 +3562,19 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         ],
         'Trial-mean response volumes': sorted_fig_paths,
     }
+
+    driver, indicator = fly2driver_indicator(date, fly_num)
+
+    # TODO or maybe split driver/indicator and experiment_id across header and footer?
+    header = f'{driver} ({indicator}): {experiment_id}'
+
     # TODO why does first page of trialmean response volumes seem to have the 4 figures
     # justified vertically differently than on the second page? fix
     #
     # I initially tried matplotlib's PdfPages and img2pdf for more simply making a PDF
     # with a bunch of images, but neither supported multiple figures per page, which is
     # what I wanted.
-    make_pdf(experiment_pdf_path, '.', section_names2fig_paths, header=experiment_id)
+    make_pdf(experiment_pdf_path, '.', section_names2fig_paths, header=header)
 
     plt.close('all')
 
