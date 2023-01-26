@@ -8,8 +8,12 @@
   ...ultimately creates two comparison windows (as created via P), when there should
   only ever be one comparison window open at a time
 
+- does my creation of cache that imagej response comparison loads from make sense,
+  now that i do separate al_analysis.py runs for pebbled/GH146? maintain both in cache?
+  separate caches?
 
 - maybe just make H update window (as P does to p window), with Hallem comparison stuff
   at the top? is only reason i might not want to do this that it's a bit unclear which
   ROI below should be compared to Hallem data (e.g. if i already was comparing other
   ROIs from my data, or if i do that with subsequent commands)
+

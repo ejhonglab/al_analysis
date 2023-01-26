@@ -218,8 +218,8 @@ save_figs = True
 
 # TODO support multiple (don't know if i want this to be default though, cause extra
 # time)
-#plot_fmt = os.environ.get('plot_fmt', 'pdf')
-plot_fmt = os.environ.get('plot_fmt', 'png')
+plot_fmt = os.environ.get('plot_fmt', 'pdf')
+#plot_fmt = os.environ.get('plot_fmt', 'png')
 
 # Overall folder structure should be: <driver>_<indicator>/<plot_fmt>/...
 across_fly_ijroi_dirname = 'ijroi'
@@ -277,7 +277,7 @@ single_dff_image_row_figsize = (6.4, 1.6)
 # TODO TODO should i switch to a diverging colormap now that i'm using min < 0
 dff_vmin = -0.5
 # TODO TODO restore / set on a per-fly basis based on some percetile of dF/F
-#dff_vmax = 3.0
+##dff_vmax = 3.0
 dff_vmax = 2.0
 
 ax_fontsize = 7
@@ -409,24 +409,26 @@ panel_order = [diag_panel_str] + panel_order
 # TODO factor out to something like natmix (or natmix itself?)?
 # TODO (as w/ other stuff), load from either generated or generator-input YAMLs
 # (in this case, tom_olfactometer_configs/megamat0.yaml)
+# TODO try deleting this entry (just don't want it to add warnings...), b/c this is
+# supposed to be alphabetical anyway...
 panel2name_order['megamat'] = [
-    'va',
-    'Lin',
-    'B-cit',
-    '6al',
-    't2h',
-    '2-but',
-    '2h',
-    'ms',
-    'benz',
     '1-5ol',
     '1-6ol',
     '1-8ol',
-    'pa',
+    '2-but',
+    '2h',
+    '6al',
+    'B-cit',
+    'IaA',
+    'Lin',
+    'aa',
+    'benz',
     'eb',
     'ep',
-    'IaA',
-    'aa',
+    'ms',
+    'pa',
+    't2h',
+    'va',
 ]
 # Putting this before my 'control' panel, so that shared odors are plotted in correct
 # order for this data
@@ -733,7 +735,12 @@ def sort_concs(df: pd.DataFrame) -> pd.DataFrame:
 # TODO also let this take a list of odors? or somehow use output + input to do something
 # that is effectively like an argsort, and use that to index some other type of object
 # (where we convert it to a DataFrame just for sorting)
-def sort_odors(df: pd.DataFrame) -> pd.DataFrame:
+def sort_odors(df: pd.DataFrame, add_panel: Optional[str] = None) -> pd.DataFrame:
+
+    if add_panel is not None:
+        # TODO assert 'panel' not already in (relevant axis) index level names
+        df = util.addlevel(df, 'panel', add_panel)
+
     return olf.sort_odors(df, panel_order=panel_order,
         panel2name_order=panel2name_order
     )
@@ -2534,6 +2541,9 @@ def multiprocessing_namespace_to_globals(shared_state):
 # maybe have analysis types define what experiment types are valid input for them (and,
 # at least by default, just run all of those?)
 
+fly_panel2odor_strs_and_fig_paths = dict()
+fly_panel2odor_sort_dfs = dict()
+
 # TODO probably refactor so that this is essentially just populating lists[/listproxies]
 # of dataframes from s2p/ijroi stuff (extracting in ij case, merging in both cases, also
 # converting to trial stats in both), and then move most plotting to after this (and
@@ -2993,9 +3003,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
             full_bad_suite2p_analysis_dirs.append(analysis_dir)
             print_if_not_skipped('not making suite2p plots because outputs marked bad')
 
-    # TODO TODO TODO also check we have all the processed TIFFs (and maybe other files?)
-    # we want (setting nonroi_analysis_current=False if not)
-
     nonroi_last_analysis = nonroi_last_analysis_time(plot_dir)
     last_mocorr = None
 
@@ -3236,6 +3243,8 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
     # TODO rename fn (since input here is not dF/F)
     # TODO remove[/don't plot] colorbar on this one?
+    # TODO TODO recompute in new home of PDF-generation code (loop in main after loop
+    # calling process_experiment), so it can be computed across movies
     avg_fig_path = plot_and_save_dff_depth_grid(anat_baseline, 'avg',
         'average of whole movie', vmin=anat_baseline.min(), vmax=anat_baseline.max(),
         cmap=anatomical_cmap
@@ -3265,24 +3274,6 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
     dff_after_onset_iterator = delta_f_over_f(movie, bounding_frames)
     dff_full_trial_iterator = delta_f_over_f(movie, bounding_frames, keep_pre_odor=True)
 
-    # Should contain one PDF per fly, mainly to be used for printing out and comparing
-    # response/summary images side-by-side, with odors and figures in the same order.
-    #
-    # TODO rename to all_flies_.../'fly_pdfs' (+ re-write to only generate one per fly,
-    # aggregating any data?). as-is might be easier to unsure comparable when some
-    # recordings might be missing / of-different-length in some flies, though...
-    # (one big reason is to not have to waste space on showing ROIs more than once...,
-    # and to include all data in background for ROI image)
-    #
-    # TODO TODO try to put all common diagnostics at top, and/or add placeholders (at
-    # bottom?) to make sure PDFs can still be directly compared side-by-side?
-    all_experiment_pdfs_dir = plot_dir.parent / 'experiment_pdfs'
-    makedirs(all_experiment_pdfs_dir)
-
-    experiment_pdf_path = (
-        all_experiment_pdfs_dir / f"{experiment_id.replace('/', '_')}.pdf"
-    )
-
     odor_str2trialmean_dff_fig_path = dict()
 
     # TODO do i still need these 2-3 nested loops?
@@ -3307,6 +3298,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         # Each element is mean-within-a-window response for one trial, of shape
         # (z, y, x)
         trial_mean_dffs = []
+
+        # TODO delete. for example fig for betty
+        #baselines_to_avg = []
+        #
 
         for n in range(n_repeats):
             dff = next(dff_after_onset_iterator)
@@ -3341,6 +3336,68 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
                     micrometer_depth_title(ax, d)
 
                 im = dff_imshow(ax, mean_dff[d])
+
+                # TODO delete. for example fig for betty
+                '''
+                # TODO just do on first trial? maybe save that separately? or save all
+                # trials + also save average?
+                # (betty just wanted the -12 plane, which is d==1)
+                if d != 1:
+                    continue
+
+                #if odor_str not in ('ethyl propionate @ -3', '1-pentanol @ -3',
+                #        '1-hexanol @ -3'):
+                if odor_str not in ('ethyl propionate @ -3',):
+                    continue
+
+                baseline_start, baseline_odor_start, _ = bounding_frames[
+                    (i * n_repeats) + n
+                ]
+                baseline = movie[baseline_start:(baseline_odor_start - 1), d].mean(axis=0)
+
+                baselines_to_avg.append(baseline)
+
+                fig, ax = plt.subplots()
+                im = ax.imshow(baseline)
+                ax.set_axis_off()
+                viz.add_colorbar(fig, im, label='F (a.u.)')
+                micrometer_depth_title(ax, d)
+                suptitle(title, fig)
+                exp_savefig(fig, plot_desc + f'_baseline{n}')
+
+                fig, ax = plt.subplots()
+                im = ax.imshow(baseline, cmap='gray')
+                ax.set_axis_off()
+                viz.add_colorbar(fig, im, label='F (a.u.)')
+                micrometer_depth_title(ax, d)
+                suptitle(title, fig)
+                exp_savefig(fig, plot_desc + f'_baseline{n}_gray')
+                '''
+                #
+
+        # TODO delete
+        '''
+        if len(baselines_to_avg) > 0:
+            assert len(baselines_to_avg) == 3
+            avg_baseline = np.mean(baselines_to_avg, axis=0)
+
+            fig, ax = plt.subplots()
+            im = ax.imshow(avg_baseline)
+            ax.set_axis_off()
+            viz.add_colorbar(fig, im, label='F (a.u.)')
+            micrometer_depth_title(ax, d)
+            suptitle(title + '\nMean baseline', fig)
+            exp_savefig(fig, plot_desc + f'_avg_baseline{n}')
+
+            fig, ax = plt.subplots()
+            im = ax.imshow(avg_baseline, cmap='gray')
+            ax.set_axis_off()
+            viz.add_colorbar(fig, im, label='F (a.u.)')
+            micrometer_depth_title(ax, d)
+            suptitle(title + '\nMean baseline', fig)
+            exp_savefig(fig, plot_desc + f'_avg_baseline{n}_gray')
+        '''
+        #
 
         viz.add_colorbar(trial_heatmap_fig, im, label=dff_cbar_title, shrink=0.32)
 
@@ -3524,6 +3581,10 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
 
         print('wrote processed TIFFs')
 
+    # TODO TODO TODO generate these from the min-of-mins and max-of-maxes TIFFs now!
+    # (after moving to new home of PDF-generation code, below process_experiment loop)
+    # (or at least load across the individual TIFFs within each panel and compute within
+    # there?)
     max_trialmean_dff_fig_path = plot_and_save_dff_depth_grid(max_trialmean_dff,
         'max_trialmean_dff', title=f'max of trial-mean {dff_latex}',
         cbar_label=f'{dff_latex}'
@@ -3534,47 +3595,37 @@ def process_experiment(date_and_fly_num, thor_image_and_sync_dir, shared_state=N
         cbar_label=f'{dff_latex}'
     )
 
+
+    key = (date, fly_num, panel)
+
+    # TODO refactor to just compute where the rest of the PDF generation code is
+    # (below the process_experiment loop)
+    #
     # This working correctly might depend on repeats of an odor being consecutive...
     sort_index = odor_index.droplevel('repeat').drop_duplicates()
     # odor_order does not have odors abbreviated, but the index does.
     # They should have the odors in the same order.
     sort_df = pd.DataFrame(data=odor_order, index=sort_index, columns=['odor_str'])
 
-    # sort_odors is expecting this
-    sort_df = util.addlevel(sort_df, 'panel', panel)
-
-    sort_df = sort_odors(sort_df)
-    sorted_odor_strs = list(sort_df.odor_str)
-    sorted_fig_paths = [
-        odor_str2trialmean_dff_fig_path[o] for o in sorted_odor_strs
-    ]
-
-    # TODO maybe also check we saved it this run?
-    roi_fig_for_pdf = ijroi_plot_dir(plot_dir) / f'all_rois_on_avg.{plot_fmt}'
-
-    section_names2fig_paths = {
-        'ROIs': [roi_fig_for_pdf] if roi_fig_for_pdf.exists() else [],
-        # lumping these together into one "section" for now, b/c as is template.tex puts
-        # a pagebreak after each section
-        # TODO maybe just add an option to not do that though?
-        'Summary images': [
-            avg_fig_path, max_trialmean_dff_fig_path, min_trialmean_dff_fig_path
-        ],
-        'Trial-mean response volumes': sorted_fig_paths,
-    }
-
-    driver, indicator = fly2driver_indicator(date, fly_num)
-
-    # TODO or maybe split driver/indicator and experiment_id across header and footer?
-    header = f'{driver} ({indicator}): {experiment_id}'
-
-    # TODO why does first page of trialmean response volumes seem to have the 4 figures
-    # justified vertically differently than on the second page? fix
+    if key not in fly_panel2odor_sort_dfs:
+        fly_panel2odor_sort_dfs[key] = [sort_df]
+    else:
+        fly_panel2odor_sort_dfs[key].append(sort_df)
     #
-    # I initially tried matplotlib's PdfPages and img2pdf for more simply making a PDF
-    # with a bunch of images, but neither supported multiple figures per page, which is
-    # what I wanted.
-    make_pdf(experiment_pdf_path, '.', section_names2fig_paths, header=header)
+
+    if key not in fly_panel2odor_strs_and_fig_paths:
+        fly_panel2odor_strs_and_fig_paths[key] = odor_str2trialmean_dff_fig_path
+
+    # TODO move this part to loop below? might wanna change data structure to aggregate
+    # these things then?
+    else:
+        prev_odor_str2fig_paths = fly_panel2odor_strs_and_fig_paths[key]
+
+        for odor_str, fig_paths in odor_str2trialmean_dff_fig_path.items():
+            # If a panel is split across two recordings, (at least as I've been doing
+            # things so far) the odors in each recording should be unique.
+            assert odor_str not in prev_odor_str2fig_paths
+            prev_odor_str2fig_paths[odor_str] = fig_paths
 
     plt.close('all')
 
@@ -5697,7 +5748,10 @@ def megamat_cluster(df, title):
     return cg
 
 
-def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root):
+def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root,
+    plot_responses=False):
+
+    # TODO refactor (duped in pn_convergence_vs_hallem_corr.py)
     df = df.rename(index={
         'b-citronellol': 'B-citronellol',
         'isopentyl acetate': 'isoamyl acetate',
@@ -5708,6 +5762,18 @@ def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root):
     remy_df = df.loc[panel2name_order['megamat']]
 
     remy_df.index = remy_df.index.str.cat([' @ -3'] * len(remy_df))
+
+    if plot_responses:
+        resp_df = sort_odors(remy_df, add_panel='megamat')
+
+        # b/c plot_all_roi_mean_responses is picky about index level names...
+        resp_df = resp_df.droplevel('panel')
+        resp_df.index.name = 'odor1'
+        resp_df.columns.name = 'roi'
+
+        fig, _ = plot_all_roi_mean_responses(resp_df, odor_sort=False, dpi=1000)
+
+        savefig(fig, plot_root, f'remy_{for_filename}')
 
     remy_df.index = pd.MultiIndex.from_arrays(
         [[x for x in remy_df.index], ['solvent'] * len(remy_df)],
@@ -6038,7 +6104,10 @@ def main():
     # TODO maybe this stuff should always be in a <plot_fmt> dir at root, independent of
     # driver? or maybe just at same level as this script, as before?
     orn_df = orns.orns(columns='glomerulus')
-    plot_remy_drosolf_corr(orn_df, 'hallem_orns', 'Hallem ORNs', plot_root)
+
+    plot_remy_drosolf_corr(orn_df, 'hallem_orns', 'Hallem ORNs', plot_root,
+        plot_responses=True
+    )
 
     # TODO do w/ kennedy PNs too!
     pn_df = pns.pns(columns='glomerulus')
@@ -6159,6 +6228,61 @@ def main():
         min_of_mins = np.min([tifffile.imread(x) for x in input_min_dff_tiffs], axis=0)
         min_of_mins_tiff_path = fly_analysis_dir / min_trialmean_dff_tiff_basename
         util.write_tiff(min_of_mins_tiff_path, min_of_mins, strict_dtype=False)
+
+
+    for key, odor_str2figs in fly_panel2odor_strs_and_fig_paths.items():
+
+        date, fly_num, panel = key
+
+        # TODO delete
+        if panel != 'megamat':
+            continue
+        #
+
+        # Should contain one PDF per (fly, panel) combo, mainly to be used for printing
+        # out and comparing response/summary images side-by-side, with odors and figures
+        # in the same order.
+        all_fly_panel_pdfs_dir = plot_root / 'fly_panel_pdfs'
+        makedirs(all_fly_panel_pdfs_dir)
+
+        fly_panel_id = f'{panel}/{format_date(date)}/{fly_num}'
+        fly_panel_pdf_path = (
+            all_fly_panel_pdfs_dir / f"{fly_panel_id.replace('/', '_')}.pdf"
+        )
+
+        sort_df = pd.concat(fly_panel2odor_sort_dfs[key], verify_integrity=True)
+
+        sort_df = sort_odors(sort_df, add_panel=panel)
+        sorted_odor_strs = list(sort_df.odor_str)
+        sorted_fig_paths = [odor_str2figs[o] for o in sorted_odor_strs]
+
+        # TODO TODO fix
+        #roi_fig_for_pdf = ijroi_plot_dir(plot_dir) / f'all_rois_on_avg.{plot_fmt}'
+
+        # TODO TODO TODO re-implement the first two sections of this (now that code is
+        # no longer in process_experiment)
+        section_names2fig_paths = {
+            'ROIs': [roi_fig_for_pdf] if roi_fig_for_pdf.exists() else [],
+            # lumping these together into one "section" for now, b/c as is template.tex
+            # puts a pagebreak after each section
+            # TODO maybe just add an option to not do that though?
+            'Summary images': [
+                avg_fig_path, max_trialmean_dff_fig_path, min_trialmean_dff_fig_path
+            ],
+            'Trial-mean response volumes': sorted_fig_paths,
+        }
+
+        # TODO or maybe split driver/indicator and fly_panel_id across header and
+        # footer?
+        header = f'{driver} ({indicator}): {fly_panel_id}'
+
+        # TODO why does first page of trialmean response volumes seem to have the 4
+        # figures justified vertically differently than on the second page? fix!
+        #
+        # I initially tried matplotlib's PdfPages and img2pdf for more simply making a
+        # PDF with a bunch of images, but neither supported multiple figures per page,
+        # which is what I wanted.
+        make_pdf(fly_panel_pdf_path, '.', section_names2fig_paths, header=header)
 
 
     total_s = time.time() - main_start_s
@@ -6469,13 +6593,6 @@ def main():
         mean_certain_df = certain_df.groupby('roi', sort=False, axis='columns').mean()
         fig, _ = plot_all_roi_mean_responses(mean_certain_df, **plot_kws)
         savefig(fig, across_fly_ijroi_dir, f'ijrois_certain_mean')
-
-    # TODO TODO also make plot like above for hallem data for remy's odors (still
-    # relevant?)
-    # (though i have exactly this via interactive plot_roi.py --hallem option now)
-    #orn_df = orns.orns(columns='glomerulus')
-    # <restrict to remy's odors before plotting>
-    #fig, _ = plot_all_roi_mean_responses(megamat_orn_df, **plot_kws)
 
     # TODO TODO TODO change plot_all_... to show N for each ROI mean
     # (or do that in a new fn, seeing as i am already computing the mean out here in
