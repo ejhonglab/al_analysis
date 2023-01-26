@@ -18,3 +18,8 @@ logs/
 GH146_*/
 pebbled_*/
 test.tex
+
+# Can be downloaded from Hong lab Dropbox at:
+# 'HongLab @ Caltech/MB Model/Matt connectome analysis/MB-Convergence-Data_01-14-23'
+# (excluded from repo b/c it's ~0.5GB)
+MB-Convergence-Data_01-14-23
