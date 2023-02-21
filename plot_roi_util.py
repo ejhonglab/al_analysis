@@ -3,6 +3,7 @@ from multiprocessing import Process
 from pathlib import Path
 from functools import lru_cache
 from typing import Optional
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -431,16 +432,17 @@ def load_and_plot(args):
             axis=0
         )
         if matching.sum() == 0:
-            raise ValueError(f'no ROIs matching any of {roi_strs}')
+            # TODO just print? not sure if i'll be able to see either, as i'm currently
+            # calling from imagej
+            warnings.warn(f'no ROIs matching any of {roi_strs} in cached responses')
+        else:
+            df = util.addlevel(df, ['from_hallem','newly_analyzed'], [False, False],
+                axis='columns'
+            )
+            cached_responses_df = dropna(df.loc[:, matching])
 
-        df = util.addlevel(df, ['from_hallem','newly_analyzed'], [False, False],
-            axis='columns'
-        )
-
-        cached_responses_df = dropna(df.loc[:, matching])
-
-        # Putting at start so it should be plotted above
-        subset_dfs.insert(0, cached_responses_df)
+            # Putting at start so it should be plotted above
+            subset_dfs.insert(0, cached_responses_df)
 
     if hallem:
         new_level_names = ['panel', 'is_pair', 'odor2', 'repeat']
