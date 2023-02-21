@@ -42,6 +42,7 @@ from scipy.optimize import curve_fit
 import colorama
 from termcolor import cprint, colored
 from drosolf import orns, pns
+from latex.exc import LatexBuildError
 # suite2p imports are currently done at the top of functions that use them
 
 from hong2p import util, thor, viz, olf
@@ -3130,6 +3131,10 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             if ijroi_last_analysis is None:
                 ij_analysis_current = False
             else:
+                # TODO TODO make sure that if we could would make any of the roi plots
+                # in ij_traces, we also consider ij_analysis_current=False if we don't
+                # have those
+
                 # We don't need to check LHS for None b/c have_ijrois check earlier.
                 ij_analysis_current = (
                     ijroi_mtime(analysis_dir) < ijroi_last_analysis
@@ -5919,7 +5924,8 @@ def main():
     # TODO maybe have this also apply to warnings about stuff skipped in
     # PREprocess_recording (now that i moved frame<->odor assignment fail handling code
     # there)
-    print_skipped = args.verbose
+    verbose = args.verbose
+    print_skipped = verbose
 
     if type(ignore_existing) is not bool:
         ignore_existing = set(ignore_existing.split(','))
@@ -6288,6 +6294,9 @@ def main():
         # TODO how to indicate that these should be sorted according to odors?
         'Trial-mean response volumes': r'\d+_(?!.*_trials).*',
     }
+    required_sections = {
+        'Trial-mean response volumes',
+    }
     assert len(
         set(section_names2fig_globs.keys()) & set(section_names2fig_regex.keys())
     ) == 0
@@ -6305,12 +6314,18 @@ def main():
     # (not checked in glob path below)
     sections_with_one_fig_per_experiment_odor = {'Trial-mean response volumes'}
 
+    # TODO TODO TODO test new pdf generation code on stuff that actually splits
+    # experiments across recordings (e.g. 17 odor megamat stuff)
+
     print()
-    print('saving summary PDFs:')
+    print(f'saving summary PDFs under {all_fly_panel_pdfs_dir}:')
 
     for experiment_key, thor_image_and_sync_dirs in experiment2recording_dirs.items():
 
         date, fly_num, panel, is_pair = experiment_key
+
+        # if this triggers, drop / skip these
+        assert panel is not None
 
         experiment_type_str = str(panel)
         # initially added this to differentiate the kiwi/control recordings from the
@@ -6330,15 +6345,39 @@ def main():
         for section_name, fig_globs in section_names2fig_globs.items():
 
             for fig_glob in fig_globs:
+                fig_glob = f'{fig_glob}.{plot_fmt}'
 
                 for thorimage_dir, _ in thor_image_and_sync_dirs:
                     plot_dir = get_plot_dir(date, fly_num, thorimage_dir.name)
                     assert plot_dir.is_dir()
 
-                    fig_paths = list(plot_dir.glob(f'{fig_glob}.{plot_fmt}'))
+                    fig_paths = list(plot_dir.glob(fig_glob))
+
+                    if len(fig_paths) == 0:
+                        # TODO TODO TODO check none of older kiwi/control experiments
+                        # have ROIs defined only on stuff other than diagnostic (and
+                        # also that things are all linked back to diagnostic, because
+                        # want to separately plots the other ones if not)
+                        #
+                        # Not warning about missing ROI plots for panels OTHER than the
+                        # diagnostic, because this script currently only generates those
+                        # plots for the diagnostic recordings.
+                        if not (section_name == 'ROIs' and panel != diag_panel_str):
+                            # TODO put behind verbose flag? at least for ROI stuff when
+                            # we might not have ROIs?
+                            warn(f'{shorten_path(thorimage_dir)}: no figures matching '
+                                f'{fig_glob}'
+                            )
+                        continue
+
                     section_names2fig_paths[section_name].extend(fig_paths)
 
         _thorimage2sort_index = dict()
+
+        # TODO why was 2022-03-01/1/glomeruli_diagnosics (with no plots, just a few
+        # files in analysis_dir and only thorimage/analysis links in plot_dir) among
+        # experiment2recording_dirs anyway? shouldn't there have been plots if it wasn't
+        # somehow getting skipped?
 
         for section_name, fig_regex in section_names2fig_regex.items():
 
@@ -6362,6 +6401,12 @@ def main():
                 fig_paths = [
                     plot_dir / x for x in fig_paths if re.match(fig_regex, str(x))
                 ]
+
+                if len(fig_paths) == 0:
+                    warn(f'{shorten_path(thorimage_dir)}: no figures matching '
+                        f'{fig_regex}'
+                    )
+                    continue
 
                 if sort_dfs is None:
                     section_names2fig_paths[section_name].extend(fig_paths)
@@ -6417,10 +6462,41 @@ def main():
                     rec_sort_df = pd.DataFrame(data=fig_paths, index=sort_index,
                         columns=['fig_path']
                     )
+
+                    duplicated_index_rows = sort_index.duplicated(keep='first')
+                    if duplicated_index_rows.any():
+                        # (from the ramp experiments that interspersed them, to check
+                        # for contamination)
+                        assert (
+                            {x for x in sort_index[duplicated_index_rows]} ==
+                            {(solvent_str, solvent_str)}
+                        )
+
+                        # TODO modify handling (mainly sort_odors usage) so that we can
+                        # keep the duplicates (though with the plots no longer in
+                        # presentation order, the extra solvent stuff won't really be
+                        # useful...)
+
+                        # TODO warn we are dropping these (if verbose?)
+                        rec_sort_df = rec_sort_df[~ duplicated_index_rows].copy()
+
                     sort_dfs.append(rec_sort_df)
 
             if sort_dfs is not None:
+                if len(sort_dfs) == 0:
+                    # no need to warn because currently totally redundant w/ warning
+                    # about no figs matching fig_regex
+                    continue
+
+                # TODO TODO modify sort_odors args to also sort on a new variable to
+                # encode the number of times each odor pair was seen before (note that
+                # we already have one figure for each 3 trials here, so it's about
+                # repeats of the 3 trials groups)
+                # (remove the code de-duplicating the (solvent, solvent) duplicates
+                # above if so)
+                # TODO also check that the only pairs duplicated are (solvent, solvent)
                 sort_df = pd.concat(sort_dfs, verify_integrity=True)
+
                 sort_df = sort_odors(sort_df, add_panel=panel)
                 sorted_fig_paths = list(sort_df.fig_path)
                 section_names2fig_paths[section_name].extend(sorted_fig_paths)
@@ -6429,32 +6505,53 @@ def main():
             n: section_names2fig_paths[n] for n in section_order
         }
 
+        for section_name in required_sections:
+            if len(section_names2fig_paths[section_name]) == 0:
+                warn(f"missing figures for required section '{section_name}'. "
+                    'not generating PDF.'
+                )
+                continue
+
         if fly_panel_pdf_path.exists():
-            # TODO add ignore existing option for this?
+            # TODO add ignore existing option for this
             pdf_creation_time = getmtime(fly_panel_pdf_path)
             most_recent_fig_change = max(
                 getmtime(x) for fig_paths in section_names2fig_paths.values()
                 for x in fig_paths
             )
             if pdf_creation_time > most_recent_fig_change:
-                # TODO only if verbose
-                print(f'{fly_panel_pdf_path.relative_to(plot_root)} already up-to-date')
+                if verbose:
+                    print(f'{fly_panel_pdf_path.relative_to(all_fly_panel_pdfs_dir)}'
+                        ' already up-to-date'
+                    )
+
                 continue
 
         # TODO or maybe split driver/indicator and fly_panel_id across header and
         # footer?
         header = f'{driver} ({indicator}): {fly_panel_id}'
 
-        # TODO only if verbose
-        print(f'making {fly_panel_pdf_path.relative_to(plot_root)}')
+        print(f'making {fly_panel_pdf_path.relative_to(all_fly_panel_pdfs_dir)}')
 
-        # TODO why does first page of trialmean response volumes seem to have the 4
-        # figures justified vertically differently than on the second page? fix!
-        #
-        # I initially tried matplotlib's PdfPages and img2pdf for more simply making a
-        # PDF with a bunch of images, but neither supported multiple figures per page,
-        # which is what I wanted.
-        make_pdf(fly_panel_pdf_path, '.', section_names2fig_paths, header=header)
+        try:
+            # TODO why does first page of trialmean response volumes seem to have the 4
+            # figures justified vertically differently than on the second page? fix!
+            #
+            # I initially tried matplotlib's PdfPages and img2pdf for more simply making
+            # a PDF with a bunch of images, but neither supported multiple figures per
+            # page, which is what I wanted.
+            make_pdf(fly_panel_pdf_path, '.', section_names2fig_paths, header=header,
+                # TODO set to true if i wanna debug
+                print_tex_on_err=False
+            )
+
+        # TODO troubleshoot
+        # TODO TODO try to also not have the tex printed on err
+        # (the stuff still printed is something i added, right?)
+        except LatexBuildError:
+            warn('making PDF failed!')
+            #cprint(traceback.format_exc(), 'yellow', file=sys.stderr)
+            #print()
 
     print()
 
