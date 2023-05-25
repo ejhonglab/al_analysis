@@ -54,6 +54,9 @@ def main():
         'to include data from newly specified ROI. Only relevant in -d/--analysis-dir '
         'case. Otherwise, a new plot is made in parallel.'
     )
+    # TODO TODO add CLI flag that alters behavior so no plotting is done but index of
+    # odor with max response is printed (-> use in imagej_macros to go to index)
+
     # TODO add parameter to specify within which concentration range stuff should be
     # considered
     parser.add_argument('-H', '--hallem', action='store_true',

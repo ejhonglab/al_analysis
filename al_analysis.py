@@ -43,6 +43,7 @@ import colorama
 from termcolor import cprint, colored
 from drosolf import orns, pns
 from latex.exc import LatexBuildError
+from tqdm import tqdm
 # suite2p imports are currently done at the top of functions that use them
 
 from hong2p import util, thor, viz, olf
@@ -109,12 +110,25 @@ def warn(msg):
 ###################################################################################
 analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 
+# TODO TODO TODO cli flag to quickly disable motion correction
+# TODO test that w/ do_regis...=True and min_input<'mocorr', still do mocorr if we have
+# side labelled (and then just stick w/ that min_input?)
+
+# TODO TODO TODO actually rerun mocorr if it is using less than the current subset of
+# movies (or at least have a flag to do this, and prominently warn if False)
+
 # 'mocorr' | 'flipped' | 'raw'
 # load_movie will raise an IOError for any experiments w/o at least a TIFF of this level
 # of processing (motion corrected, flipped-L/R-if-needed, and raw, respectively)
 min_input = 'mocorr'
+# TODO modify so i can specify left|right (or _l|r?) in filename, to override what
+# gsheet says for a given fly (or to not use the gsheet in particular cases?)
+# and/or in Experiment.xml?
+##min_input = 'flipped'
+#min_input = 'raw'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
+#do_register_all_fly_recordings_together = False
 do_register_all_fly_recordings_together = True
 
 # TODO add --ignore-existing option to set this True?
@@ -128,9 +142,10 @@ rerun_old_param_registrations = False
 # (the main type of experiment for this project)
 analyze_pairgrids_only = False
 
+# TODO delete?
 # If there are multiple experiments with the same odors, only the data from the most
 # recent concentrations for those odors will be analyzed.
-final_concentrations_only = True
+final_pair_concentrations_only = True
 
 analyze_reverse_order = True
 
@@ -152,12 +167,13 @@ overwrite_suite2p = False
 
 # TODO change back to False. just for testing while refactoring to share code w/ ijroi
 # stuff
-#analyze_suite2p_outputs = True
 analyze_suite2p_outputs = False
 
 analyze_ijrois = True
 
-# TODO TODO change to using seconds and rounding to nearest[higher/lower
+do_analyze_response_volumes = False
+
+# TODO TODO TODO change to using seconds and rounding to nearest[higher/lower
 # multiple?] from there
 # TODO some quantitative check this is ~optimal?
 # Note this is w/ volumetric sampling of ~1Hz.
@@ -179,13 +195,14 @@ n_volumes_for_baseline = None
 # trial. These baselines are used to define the dF/F for each trial. This can help hedge
 # against off-by-one bugs in the frame<-> assignment code, but might otherwise weaken
 # signals.
-exclude_last_pre_odor_frame = True
+exclude_last_pre_odor_frame = False
+#exclude_last_pre_odor_frame = True
 
 # Since some of the pilot experiments had 6 planes (but top 5 should be the same as in
 # experiments w/ only 5 total), and that last plane largely doesn't have anything
 # measurably happening. All steps should have been 12um, so picking top n will yield a
 # consistent total height of the volume.
-n_top_z_to_analyze = 5
+#n_top_z_to_analyze = 5
 
 # I seemed to end up imaging this side more anyway...
 # Movies taken of any fly's right AL's will be flipped along left/right axis to be more
@@ -220,8 +237,8 @@ save_figs = True
 
 # TODO support multiple (don't know if i want this to be default though, cause extra
 # time)
-plot_fmt = os.environ.get('plot_fmt', 'pdf')
-#plot_fmt = os.environ.get('plot_fmt', 'png')
+#plot_fmt = os.environ.get('plot_fmt', 'pdf')
+plot_fmt = os.environ.get('plot_fmt', 'png')
 
 # Overall folder structure should be: <driver>_<indicator>/<plot_fmt>/...
 across_fly_ijroi_dirname = 'ijroi'
@@ -239,7 +256,6 @@ trialmean_dff_tiff_basename = 'trialmean_dff.tif'
 max_trialmean_dff_tiff_basename = 'max_trialmean_dff.tif'
 min_trialmean_dff_tiff_basename = 'min_trialmean_dff.tif'
 
-# TODO also name this cmap / split if needed
 cmap = 'plasma'
 diverging_cmap = 'RdBu_r'
 
@@ -375,39 +391,63 @@ unused_glomeruli_diagnostics = (
     '2021-05-25/2/glomeruli_diagnostics',
 )
 
+# TODO TODO TODO clarify how these behave if something is missing (in comment)
 panel2name_order = deepcopy(natmix.panel2name_order)
 panel_order = list(natmix.panel_order)
 
+# TODO TODO any reason for this order? just use order loaded from config /
+# glomeruli_diagnostics.yaml?
 # TODO actually load from generator config (union of all loaded w/ this panel?)
 # -> use associated glomeruli keys of odors to sort
 #
 # Sorted manually to roughly alphabetically sort by names of glomeruli we are trying to
 # target with these diagnostics.
 panel2name_order[diag_panel_str] = [
+    '3mtp',
+    'va',
     # DL5
     't2h',
-    # DM1
-    'ea',
-    # DM4
-    'ma',
-    # DM2
-    'moct',
+    'ms',
+    'a-terp',
+    'geos',
     # DM5
     'e3hb',
-    # VA2/?
-    '2,3-b',
-    # VC4
-    'elac',
-    # VM2/VA2/?
-    'ecrot',
-    # ~VM3
-    'acetoin',
+    'mhex',
+    # DM4
+    'ma',
+    # DM1
+    'ea',
     # VM7d
     '2-but',
+    '2h',
+    'ga',
+    'HCl',
+    'carene',
+    'farn',
+    '4h-ol',
+    '2but',
+    # VA2
+    '2,3-b',
+    'p-cre',
+    'aphe',
+
+    '1-6ol',
+    'paa',
+    'fench',
+    'CO2',
+
+    # VM2/VA2/?
+    'ecrot',
+
+    # VC4 (+VA2)
+    'elac',
+    # ~VM3
+    'acetoin',
 ]
 
 panel_order = [diag_panel_str] + panel_order
 
+# TODO TODO get order from yaml files if not specified? per-panel flag to do this?
 # TODO factor out to something like natmix (or natmix itself?)?
 # TODO (as w/ other stuff), load from either generated or generator-input YAMLs
 # (in this case, tom_olfactometer_configs/megamat0.yaml)
@@ -415,6 +455,7 @@ panel_order = [diag_panel_str] + panel_order
 # supposed to be alphabetical anyway...
 panel2name_order['megamat'] = [
     '1-5ol',
+    # TODO TODO make sure it works w/ abbrev='6ol' too
     '1-6ol',
     '1-8ol',
     '2-but',
@@ -470,7 +511,7 @@ print_skipped = False
 is_acquisition_host = util.is_acquisition_host()
 if is_acquisition_host:
     analyze_ijrois = False
-    final_concentrations_only = False
+    final_pair_concentrations_only = False
     do_suite2p = False
     analyze_suite2p_outputs = False
     write_processed_tiffs = False
@@ -875,6 +916,101 @@ def paired_thor_dirs(*args, **kwargs):
     return util.paired_thor_dirs(*args, ignore_prepairing=('anat',), **kwargs)
 
 
+# TODO factor into hong2p.thor
+# TODO rename to load_*, if that would be more consistent w/ what i already have
+def read_thor_tiff_sequence(thorimage_dir: Path) -> xr.DataArray:
+    # Needs to have at least two '_' characters, to exclude stuff like:
+    # 'ChanA_Preview.tif'
+    tiffs = sorted(thorimage_dir.glob('Chan*_*_*.tif'),
+        key=lambda x: x.name.split('_')
+    )
+
+    # TODO assert len tiffs expected from thorimage xml metadata
+    # how to get whether second channel is enabled again?
+    # (or probably check both channels, cause maybe just red is enabled?)
+    xml = thor.get_thorimage_xmlroot(thorimage_dir)
+
+    n_zstream_frames = thor.get_thorimage_z_stream_frames(xml)
+
+    (nx, ny), nz, n_channels = thor.get_thorimage_dims(xml)
+
+    # TODO delete
+    '''
+    nz = thor.get_thorimage_z_xml(xml)
+
+    # TODO could also check Wavelength elements under Wavelengths (and maybe
+    # ChannelEnable at same level) to see which were actually selected to record,
+    # but for now assuming if a PMT was enabled and had gain > 0, it was recorded
+    pmt = xml.find('PMT').attrib
+    # TODO factor into hong2p.thor (some similar stuff currently inside
+    # thor.get_thorimage_n_channels_xml)
+    def is_channel_enabled(channel):
+        enabled = bool(int(pmt[f'enable{channel}']))
+        # TODO warn if enabled but gain == 0?
+        gain = int(pmt[f'gain{channel}'])
+        return enabled and gain > 0
+
+    a_enabled = is_channel_enabled('A')
+    b_enabled = is_channel_enabled('B')
+    n_channels = sum([a_enabled, b_enabled])
+    '''
+
+    frame_metadata = defaultdict(list)
+    frames = []
+
+    # TODO maybe use part of thorimage_dir in desc instead?
+    for tiff in tqdm(tiffs, total=len(tiffs), unit='frame',
+        desc='loading TIFF sequence', leave=False):
+
+        # TODO factor metadata parsing (from tiff fname) into its own fn
+        parts = tiff.stem.split('_')
+
+        channel_part = parts[0]
+        assert channel_part.startswith('Chan') and len(channel_part) == 5
+        # Should be 'A' or 'B' from e.g. 'ChanA_...'
+        thor_chan = channel_part[-1]
+        if thor_chan == 'A':
+            channel = 'green'
+
+        elif thor_chan == 'B':
+            channel = 'red'
+        else:
+            raise ValueError('unexpected ThorImage channel: {thor_chan}')
+
+        z = int(parts[-2]) - 1
+        z_stream_index = (int(parts[-1]) - 1) % n_zstream_frames
+        assert 0 <= z_stream_index < n_zstream_frames, z_stream_index
+
+        frame_metadata['channel'].append(channel)
+        frame_metadata['z'].append(z)
+        frame_metadata['z_stream_index'].append(z_stream_index)
+        # TODO delete (unless this is more useful in getting a DataArray constructed
+        # in a way useful for reshaping)
+        '''
+        frame_metadata.append({
+            'channel': channel,
+            'z': z,
+            'z_stream_index': z_stream_index,
+        })
+        '''
+
+        # is_ome=False to disable processing of OME metadata in the first TIFF in
+        # each channel x Z-stream index combination.
+        frame = tifffile.imread(tiff, is_ome=False)
+        frames.append(frame)
+
+    # TODO TODO how to do while reshaping in xarray, using frame_metadata?
+    movie = np.stack(frames).reshape((n_channels, nz, n_zstream_frames, ny, nx))
+
+    movie = xr.DataArray(movie, dims=['c','z','t','y','x'])
+
+    # TODO factor into hong2p.xarray (already used in at least one other place here)
+    movie = movie.assign_coords({n: np.arange(movie.sizes[n]) for n in movie.dims})
+
+    return movie
+
+
+
 # TODO some of the registration tiff handling code benefit from this?
 def find_movie(*keys, tiff_priority=('mocorr', 'flipped', 'raw'), min_input=min_input,
     verbose=False) -> Path:
@@ -959,13 +1095,25 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     if save_figs:
         fig_or_seaborngrid.savefig(fig_path, **kwargs)
 
+    fig = None
+    if isinstance(fig_or_seaborngrid, Figure):
+        fig = fig_or_seaborngrid
+
+    elif isinstance(fig_or_seaborngrid, sns.axisgrid.Grid):
+        fig = fig_or_seaborngrid.fig
+
+    debug = False
+    if debug:
+        print(fig_path)
+        assert fig is not None
+        print(f'figsize={tuple(fig.get_size_inches())}, dpi={fig.dpi}')
+        print()
+
     if close:
-        if isinstance(fig_or_seaborngrid, Figure):
-            fig = fig_or_seaborngrid
-
-        elif isinstance(fig_or_seaborngrid, sns.axisgrid.Grid):
-            fig = fig_or_seaborngrid.fig
-
+        if fig is None:
+            raise ValueError(
+                f'cannot close unknown plot object of type={type(fig_or_seaborngrid)}'
+            )
         plt.close(fig)
 
     return fig_path
@@ -1716,26 +1864,34 @@ def dff_imshow(ax, dff_img, **imshow_kwargs):
 
 
 # TODO rename now that i'm also allowing input w/o date/fly_num attributes?
-def fly_roi_id(row):
+def fly_roi_id(row, fly_only=False):
+    """
+    Args:
+        fly_only: if False, will include date, fly, and ROI information.
+            If True, will exclude ROI information, so long as the ROI was given a name
+            (and not autonamed/numbered).
+    """
     # NOTE: assuming no need to use row.thorimage_id (or a panel / something like
     # that), as assumed this will only be used within a context where that is
     # context (e.g. a plot w/ kiwi data, but no control data)
     try:
-        date_str = f'{row.date:%-m-%d}/' if pd.notnull(row.date) else ''
-        fly_num_str = f'{row.fly_num:0.0f}/' if pd.notnull(row.fly_num) else ''
-        return f'{date_str}{fly_num_str}{row.roi}'
+        date_str = f'{row.date:%-m-%d}' if pd.notnull(row.date) else ''
+        fly_num_str = f'{row.fly_num:0.0f}' if pd.notnull(row.fly_num) else ''
+        # TODO also support a 'fly'/'fly_id' key in place of (date, fly[_num])?
+        # (for lettered/sequential simplified IDs, for nicer plots)
+
+        roi = row.roi
+        if not is_ijroi_named(roi):
+            fly_only = False
+
+        # For when [h|v]line_[level_fn+group_text] code is drawing ROI labels.
+        if fly_only:
+            return f'{date_str}/{fly_num_str}'
+        else:
+            return f'{date_str}/{fly_num_str}/{roi}'
+
     except AttributeError:
         return f'{row.roi}'
-
-
-# TODO probably delete
-# TODO make this work like (+ use this like) my callable-accepting-xticklabels
-# hong2p.viz code and format_mix_from_strs fn i use it with
-# (/ check this already can be used that way)
-def get_fly_roi_ids(df: pd.DataFrame):
-    """Takes columns with date,fly_num,roi levels to Series with str fly+ROI labels.
-    """
-    return df.columns.to_frame().apply(fly_roi_id, axis='columns')
 
 
 # TODO complete? check against imagej internal code?
@@ -1768,8 +1924,10 @@ def is_ijroi_certain(roi):
     if not is_ijroi_named(roi):
         return False
 
-    if ('?' in roi) or ('|' in roi) or ('/' in roi):
+    uncertainty_chars = ('?', '|', '/', '+')
+    if any(x in roi for x in uncertainty_chars):
         return False
+
     return True
 
 
@@ -1779,28 +1937,8 @@ def certain_roi_indices(df: pd.DataFrame) -> np.ndarray:
     return np.array([is_ijroi_certain(x) for x in df.columns.get_level_values('roi')])
 
 
-def fly_roi_id2roi_name(x: str, numeric_as_none: bool = True) -> Optional[str]:
-    """Takes labels like '3-30/1/DM4' to just the ROI name (here, 'DM4').
-
-    Args:
-        numeric_as_none: if False, will return None if ROI name can be parsed as an
-            integer (how uncertain / unnamed ImageJ ROIs start in my workflow)
-    """
-    # Extra complication is to not fail on stuff where the ROI name is something
-    # like '[D/V]M2'
-    # (I should just replace them all w/ the '|' character, but oh well)
-    ret = '/'.join(x.split('/')[2:])
-    try:
-        int(ret)
-        if numeric_as_none:
-            return None
-    except ValueError:
-        pass
-    return ret
-
-
 def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
-    **kwargs):
+    cmap=cmap, **kwargs):
 
     assert single_roi_series.index.names == ['odor1', 'odor2', 'repeat']
 
@@ -1839,7 +1977,8 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
 
 
 def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=True,
-    sort_rois_first_on=None, odor_sort=True, keep_panels_separate=False, **kwargs):
+    sort_rois_first_on=None, odor_sort=True, keep_panels_separate=True,
+    roi_min_max_scale=False, cmap=cmap, **kwargs):
     # TODO rename odor_sort -> conc_sort (or delete altogether)
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
 
@@ -1853,6 +1992,8 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         keep_panels_separate: if 'panel' is among trial_df index level names, and there
             are any odors shared by multiple panels, this will prevent data from
             different panels from being averaged together
+
+        roi_min_max_scale: if True, scales data within each ROI to [0, 1]
 
         **kwargs: passed thru to hong2p.viz.matshow
 
@@ -1884,24 +2025,60 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     # that we don't get the format_mix_from_strs warning about other levels (or just
     # delete that warning...)
 
+    if roi_min_max_scale:
+        # TODO may need to check vmin/vmax aren't in kwargs and change if so
+
+        # The .min()/.max() functions should return Series where index elements are ROI
+        # labels (or at least it won't be the odor axis based on above assertions...).
+        mean_df -= mean_df.min()
+        mean_df /= mean_df.max()
+        assert np.isclose(mean_df.min().min(), 0)
+        assert np.isclose(mean_df.max().max(), 1)
+
     if odor_sort:
         mean_df = sort_concs(mean_df)
 
     if roi_sort:
         mean_df = sort_fly_roi_cols(mean_df, sort_first_on=sort_rois_first_on)
 
+    # TODO deal w/ warning this is currently producing (not totally sure it's this call
+    # tho)
     xticklabels = format_mix_from_strs
 
-    yticklabels = list(mean_df.columns.to_frame().apply(fly_roi_id, axis='columns'))
-    assert len(yticklabels) == len(set(yticklabels)), 'duplicate yticklabels'
+    # TODO TODO TODO numbered ROIs should be shown as before, and not have number shown
+    # as an ROI group label (via hline_* stuff) (ideally in same plot w/ some named ROIs
+    # grouped, but maybe just disable if not all certain/named)
+
+    # TODO try to move some of this logic into viz.matshow?
+    # (the automatic enabling of hline_group_text if we have levels_from_labels?)
+    # (also, just to not have to redefine the default value of levels_from_labels...)
+    hline_group_text = False
+    # (assuming it's a valid callable if so)
+    if 'hline_level_fn' in kwargs and not kwargs.get('levels_from_labels', True):
+        if all([x in trial_df.columns.names for x in fly_keys]):
+            # TODO maybe still check if there is >1 fly too (esp if this path produces
+            # bad looking figures in that case)
+
+            # will show the ROI label only once for each group of rows where the
+            # ROI name is the same (e.g. but coming from different flies)
+            hline_group_text = True
+
+    # TODO why was i not just passing in fly_roi_id again? change to do it that way?
+    yticklabels = list(mean_df.columns.to_frame().apply(
+        lambda x: fly_roi_id(x, fly_only=hline_group_text), axis='columns'
+    ))
+
+    # TODO allow overridding w/ kwarg (to not show despite having panel)?
+    vline_group_text = 'panel' in trial_df.index.names
 
     mean_df = mean_df.T
 
     # TODO maybe put lines between levels of sortkey if int (e.g. 'iplane')
     # (and also show on plot as second label above/below roi labels?)
 
-    fig, _ = viz.matshow(mean_df, title=title, xticklabels=xticklabels,
-        yticklabels=yticklabels, cmap=cmap, **kwargs
+    fig, _ = viz.matshow(mean_df, title=title, cmap=cmap,
+        xticklabels=xticklabels, yticklabels=yticklabels,
+        hline_group_text=hline_group_text, vline_group_text=vline_group_text, **kwargs
     )
 
     return fig, mean_df
@@ -1956,7 +2133,10 @@ def suite2p_traces(analysis_dir):
 # TODO TODO change how LUT is defined to at least allow ~single pixels NOT washing out
 # whole range (e.g. from motion correction artifact at edge)
 def plot_rois(*args, **kwargs):
-    return viz.plot_rois(*args, cmap=roi_bg_cmap, _pad=False, **kwargs)
+    # TODO did i actually need _pad=False? comment why
+    return viz.plot_rois(*args, cmap=roi_bg_cmap, _pad=False, if_multiple='ignore',
+        **kwargs
+    )
 
 
 _date_dir_parent_index = -4
@@ -2041,11 +2221,6 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
     if panel != diag_panel_str:
         return ret
 
-    # TODO TODO TODO delete (+ fix RuntimeError: multiple disconnected paths...)
-    # (which data? still in current ROI definitions?)
-    #return ret
-    #
-
     # TODO refactor to do plotting elsewhere / explicitly pass in plot_dir / something?
 
     date, fly_num, thorimage_id = util.dir2keys(analysis_dir)
@@ -2098,6 +2273,13 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         # TODO probably black out behind text, like the imagej option, to make ROI names
         # easier to read
 
+        # NOTE: RuntimeError should no longer be triggered now that I'm adding
+        # if_multiple='ignore' in plot_rois wrapper.
+        #
+        # In 5/5 examples I checked across 2023-04-22 - 2023-05-09 data, the contours
+        # were being plotted correctly despite matplotlib seemingly producing multiple
+        # disconnected paths. The label was sometimes offset more than I'd like, but
+        # that's only a minor issue.  warned about
         try:
             fig = plot_rois(masks, background)
 
@@ -2107,9 +2289,8 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         # For "RuntimeError: multiple disconnected paths in one footprint" raised by
         # hong2p.viz.plot_closed_contours
         except RuntimeError as err:
-            warn(err)
-            # TODO what exactly is causing this error anyway?
-            #import ipdb; ipdb.set_trace()
+            assert False, 'should be unreachable'
+            warn(f'{shorten_path(analysis_dir)}: {err}')
             continue
 
         fig_path = savefig(fig, ij_plot_dir, f'all_rois_on_{bg_desc}')
@@ -2118,8 +2299,6 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         makedirs(all_roi_dir)
         symlink(fig_path, all_roi_dir / f'{experiment_link_prefix}.{plot_fmt}')
 
-        # TODO TODO TODO might also need to handle RuntimeError on this one. may want to
-        # refactor / handle+remove error in hong2p fn
         fig = plot_rois(masks[certain_rois], background)
         fig_path = savefig(fig, ij_plot_dir, f'certain_rois_on_{bg_desc}')
 
@@ -2774,13 +2953,10 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # concentration range, in case we varied that at one point)
         names_and_concs_tuple = odor_lists2names_and_conc_ranges(odor_lists)
 
-        if final_concentrations_only:
-            names, curr_concs = separate_names_and_concs_tuples(
-                names_and_concs_tuple
-            )
+        if final_pair_concentrations_only:
+            names, curr_concs = separate_names_and_concs_tuples(names_and_concs_tuple)
 
-            if (names in names2final_concs and
-                names2final_concs[names] != curr_concs):
+            if names in names2final_concs and names2final_concs[names] != curr_concs:
 
                 print_skip('skipping because not using final concentrations for '
                     f'{names}', yaml_path
@@ -2799,6 +2975,7 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         names_and_concs2analysis_dirs[names_and_concs_tuple].append(analysis_dir)
 
         (name1, _), (name2, _) = names_and_concs_tuple
+        # TODO factor out handling pointing name back to itself?
         name1 = odor2abbrev.get(name1, name1)
         name2 = odor2abbrev.get(name2, name2)
 
@@ -3232,12 +3409,13 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     #plt.show()
     '''
 
-    # TODO actually possible for it to be non-int in Experiment.xml?
-    zstep_um = int(round(float(xml.find('ZStage').attrib['stepSizeUM'])))
+    zstep_um = thor.get_thorimage_zstep_um(xml)
 
     def micrometer_depth_title(ax, z_index) -> None:
         curr_z = -zstep_um * z_index
-        ax.set_title(f'{curr_z} $\\mu$m', fontsize=ax_fontsize)
+        # TODO check no decimal point in figures now that i'm formatting a float here
+        # (used to be int)
+        ax.set_title(f'{curr_z:.0f} $\\mu$m', fontsize=ax_fontsize)
 
 
     def plot_and_save_dff_depth_grid(dff_depth_grid, fname_prefix, title=None,
@@ -3262,7 +3440,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         fig_path = exp_savefig(fig, fname_prefix)
         return fig_path
 
-
+    # TODO probably delete
+    '''
     if z > n_top_z_to_analyze:
         warn(f'{thorimage_dir}: only analyzing top {n_top_z_to_analyze} '
             'slices'
@@ -3270,6 +3449,7 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         movie = movie[:, :n_top_z_to_analyze, :, :]
         assert movie.shape[1] == n_top_z_to_analyze
         z = n_top_z_to_analyze
+    '''
 
     anat_baseline = movie.mean(axis=0)
 
@@ -3507,6 +3687,7 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             #  TODO TODO does this work w/ the 'glomeruli_diagnostics_part2' recordings?
             # (also note that one of those is still misspelled, at
             # 2022-11-30/glomerli_diagnostics_part2)
+            # (also want 'diagnotics<n>' to work now split across however many)
             if exists(link_path):
                 # TODO update warning to indicate it only really applies in this
                 # particular limited context (right?) [or handle better, to avoid need
@@ -4114,15 +4295,20 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     return input_tiff2movie_range
 
 
-def convert_raw_to_tiff(thorimage_dir, date, fly_num) -> None:
-    """Writes a TIFF for .raw file in referenced ThorImage directory
-    """
+def should_flip_lr(date, fly_num) -> Optional[bool]:
     # TODO unify w/ half-implemented hong2p flip_lr metadata key?
+    # TODO TODO TODO fix. why .at not working all of a sudden?
     try:
         # np.nan / 'left' / 'right'
-        side_imaged = gdf.at[(date, fly_num), 'side']
+        #side_imaged = gdf.at[(date, fly_num), 'side']
+        side_imaged = gdf.loc[(date, fly_num), 'side']
+        assert not hasattr(side_imaged, 'shape')
     except KeyError:
         side_imaged = None
+    # TODO delete (was for troubleshooting .at issue)
+    #except ValueError:
+    #    import ipdb; ipdb.set_trace()
+    #
 
     # TODO implement some kind of fly specific ignoring by fly-level metadata yaml
     # file
@@ -4141,11 +4327,19 @@ def convert_raw_to_tiff(thorimage_dir, date, fly_num) -> None:
         warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
             ' in Google Sheet'
         )
+        # This will produce a tiff called 'raw.tif', rather than 'flipped.tif'
         flip_lr = None
-
     else:
         assert side_imaged in ('left', 'right')
         flip_lr = (side_imaged != standard_side_orientation)
+
+    return flip_lr
+
+
+def convert_raw_to_tiff(thorimage_dir, date, fly_num) -> None:
+    """Writes a TIFF for .raw file in referenced ThorImage directory
+    """
+    flip_lr = should_flip_lr(date, fly_num)
 
     analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
 
@@ -4157,20 +4351,26 @@ def convert_raw_to_tiff(thorimage_dir, date, fly_num) -> None:
 
     # Creates a TIFF <analysis_dir>/flipped.tif, if it doesn't already exist.
     util.thor2tiff(thorimage_dir, output_dir=analysis_dir, if_exists='ignore',
-        flip_lr=flip_lr, check_round_trip=checks, verbose=True
+        # TODO TODO TODO fix so discard_channel_b not necessary
+        flip_lr=flip_lr, discard_channel_b=True, check_round_trip=checks, verbose=True
     )
 
 
-def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
+def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False):
     """
     Will recompute if global ignore_existing explicitly included 'json'.
-    """
 
+    Returns (yaml_path, yaml_data, odor_lists), as returned by
+    `util.thorimage2yaml_info_and_odor_lists`, or None if no YAML file.
+    """
     analysis_dir = thorimage2analysis_dir(thorimage_dir)
     json_fname = analysis_dir / trial_and_frame_json_basename
 
     try:
-        _, _, odor_lists = util.thorimage2yaml_info_and_odor_lists(thorimage_dir)
+        yaml_path, yaml_data, odor_lists = util.thorimage2yaml_info_and_odor_lists(
+            thorimage_dir
+        )
+        odor_data = yaml_path, yaml_data, odor_lists
     except NoStimulusFile as e:
         # TODO if it's just like an extra 1-2 frames (presumably at end, but not sure if
         # there's a way to know), maybe i should just ignore that discrepancy?  (could
@@ -4178,12 +4378,12 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
         # TODO try to determine if the extra 1-2 frames are always at end (and if so,
         # just fix frame<->trial assignment code, with this in mind)
         warn(f'{e}. could not write {json_fname}!')
-        return
+        return None
 
     # NOTE: NOT recomputing these if -i/--ignore-existing passed with no string argument
     # (which will recompute most of the other things this CLI arg applies to)
     if not should_ignore_existing('json') and json_fname.exists():
-        return
+        return odor_data
 
     # TODO option for CLI --ignore-existing flag to recompute these frame<->odor
     # assignments?
@@ -4209,7 +4409,7 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
             warn(f'skipping {shorten_path(thorimage_dir)} with previously failed '
                 'frame<->odor assignment'
             )
-            return
+            return odor_data
 
     try:
         bounding_frames = assign_frames_to_odor_presentations(thorsync_dir,
@@ -4227,7 +4427,7 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
 
             # TODO print full traceback / add message to warning about this fn
             warn(f'{e}. could not write {json_fname}!')
-            return
+            return odor_data
 
     # Currently seems to reliably happen iff we somehow accidentally also image with the
     # red channel (which was allowed despite those channels having gain 0 in the few
@@ -4240,8 +4440,7 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
 
         failed_assigning_frames_to_odors.append(thorimage_dir)
         make_fail_indicator_file(analysis_dir, frame_assign_fail_prefix, err_msg)
-
-        return
+        return odor_data
 
     odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
 
@@ -4274,8 +4473,10 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
         json_dicts.append(trial_json)
 
     json_fname.write_text(json.dumps(json_dicts))
+    return odor_data
 
 
+fly2anat_thorimage_dir = dict()
 # TODO probably just transition to always saving my ROIs at the root by default
 # (maybe / maybe not supporting experiment specific ROIs that can override the top-level
 # ones?)
@@ -4283,14 +4484,14 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False) -> None:
 # Only used to check diagnostic experiment analysis directory for ImageJ ROIs
 # (RoiSet.zip), to use those ROIs when other experiments don't have their own.
 fly2diag_thorimage_dir = dict()
-def preprocess_recordings(keys_and_paired_dirs) -> None:
+def preprocess_recordings(keys_and_paired_dirs, verbose=False) -> None:
     """
     - Writes a TIFF for .raw file in referenced ThorImage directory
     - Writes a JSON with trial/frame info
-
     - Populates fly2diag_thorimage_dir with particular diagnostic recordings for each
       fly that has them, so other code can use ROIs defined there if other recordings
       don't have their own.
+    - Adds any odors with abbreviations defined in olfactometer YAMLs to odor2abbrev.
     """
     ambiguous_diags = set()
 
@@ -4298,10 +4499,39 @@ def preprocess_recordings(keys_and_paired_dirs) -> None:
 
         # TODO also print directories here if CLI verbose flag is true?
 
+        fly_key = (date, fly_num)
+
+        # Since the ThorImage <-> ThorSync pairing is currently set up to exclude 'anat'
+        # recordings (mainly because I often don't save ThorSync recordings for them,
+        # but also because they would need their own analysis).
+        # TODO TODO TODO uncomment
+        '''
+        if fly_key not in fly2anat_thorimage_dir:
+            # TODO TODO deal with (or just fix data layout for)
+            # 2021-05-*/[other|without_thorsync]/anat* stuff? any examples in older data
+            # currently just on dropbox?
+            fly_dir = thorimage_dir.parent
+
+            # rglob rather than glob, to also handle cases in older data (e.g. 2021-05*)
+            # where I had copied anat recording to a subfolder, to side step issues with
+            # ThorImage <-> ThorSync pairing at the time.
+            anat_dirs = list(fly_dir.rglob('anat*'))
+            # TODO TODO warn if 0 / >1, rather than asserting
+            assert len(anat_dirs) == 1
+            anat_thorimage_dir = anat_dirs[0]
+
+            fly2anat_thorimage_dir[fly_key] = anat_thorimage_dir
+        '''
+
         panel = get_panel(thorimage_dir)
         if panel == diag_panel_str:
-            fly_key = (date, fly_num)
+            # Assuming we just want to use the chronologically first one.
+            # Otherwise maybe natsort on thorimage_dir.names?
+            if fly_key not in fly2diag_thorimage_dir:
+                fly2diag_thorimage_dir[fly_key] = thorimage_dir
 
+            # TODO delete if above works
+            '''
             # any such data? redos should generally be only one passed to this fn,
             # to the exclusion of any redone experiments
             if fly_key in fly2diag_thorimage_dir:
@@ -4320,6 +4550,9 @@ def preprocess_recordings(keys_and_paired_dirs) -> None:
                 elif prev_thorimage_dir.name == preferred_thorimage_name:
                     fly2diag_thorimage_dir[fly_key] = prev_thorimage_dir
 
+                # TODO TODO TODO try to delete? need analysis to work w/ diags split
+                # over multiple recordings (e.g. 2023-04-22 data)
+                #
                 # This should be pretty much unreachable now that we are checking name
                 # exactly (unless I typo or deviate from conventionally calling at least
                 # one diagnostic recording per fly 'glomeruli_diagnostics' exactly.
@@ -4333,6 +4566,7 @@ def preprocess_recordings(keys_and_paired_dirs) -> None:
                     ambiguous_diags.add(fly_key)
 
             fly2diag_thorimage_dir[fly_key] = thorimage_dir
+            '''
 
         if do_convert_raw_to_tiff:
             # TODO if we wrote a flipped.tif for a fly, that should trigger updating any
@@ -4342,7 +4576,43 @@ def preprocess_recordings(keys_and_paired_dirs) -> None:
         # TODO maybe also don't do this in is_acquisition_host case?
         # just don't even call preprocess_recordings? then delete
         # do_convert_raw_to_tiff flag?
-        write_trial_and_frame_json(thorimage_dir, thorsync_dir)
+        odor_data = write_trial_and_frame_json(thorimage_dir, thorsync_dir)
+        if odor_data is None:
+            continue
+
+        yaml_path, _, odor_lists = odor_data
+
+        # TODO TODO move *use of* odor2abbrev to shortly before / in plotting, to not
+        # have to recompute cached stuff just to change abbreviations
+        if_abbrev_mismatch = 'warn'
+        assert if_abbrev_mismatch in ('warn', 'err')
+        for odors in odor_lists:
+            for odor in odors:
+                try:
+                    abbrev = odor['abbrev']
+                except KeyError:
+                    continue
+
+                name = odor['name']
+                if name in odor2abbrev:
+                    prev_abbrev = odor2abbrev[name]
+                    if abbrev != prev_abbrev:
+                        # TODO say which one we are using (hardcode dict should take
+                        # precedence)
+                        msg = (f'abbreviation {abbrev} (YAML) != {prev_abbrev} '
+                            '(hardcoded, will be used)'
+                        )
+                        if if_abbrev_mismatch == 'err':
+                            raise ValueError(msg)
+                        elif if_abbrev_mismatch == 'warn':
+                            warn(msg)
+                else:
+                    if name == abbrev:
+                        warn(f'name and abbrev were both {name} in {yaml_path}')
+
+                    odor2abbrev[name] = abbrev
+                    if verbose:
+                        print(f'adding {name=} -> {abbrev=} from {yaml_path}')
 
     for fly_key in ambiguous_diags:
         fly2diag_thorimage_dir.pop(fly_key)
@@ -4385,6 +4655,7 @@ def register_all_fly_recordings_together(keys_and_paired_dirs):
             panel = get_panel(thorimage_dir)
             # TODO may also wanna try excluding 'glomeruli_diagnostic' panel
             # recordings
+            # TODO warn though?
             if panel is None:
                 continue
 
@@ -6021,7 +6292,9 @@ def main():
         start_date=start_date, end_date=end_date, ignore=bad_thorimage_dirs,
     )
 
-    # TODO check names2final_concs stuff works with anything other than pairs
+    # TODO TODO delete this?
+    # TODO TODO check names2final_concs stuff works with anything other than pairs
+    # (code in process_recording is currently only run in pair case)
     # (and maybe delete code if not, or at least rename to indicate it's just for pair
     # stuff)
     #
@@ -6125,7 +6398,186 @@ def main():
     # keys_and_paired_dirs? only exceptions might be in cases like registration across
     # recordings, where we might still want to include stuff that would otherwise be
     # filtered?)
-    preprocess_recordings(keys_and_paired_dirs)
+    preprocess_recordings(keys_and_paired_dirs, verbose=verbose)
+
+    # TODO TODO TODO uncomment. was just to analyze some new data quickly
+    '''
+    for (date, fly_num), anat_dir in fly2anat_thorimage_dir.items():
+
+        flip_lr = should_flip_lr(date, fly_num)
+        if flip_lr in (True, False):
+            anat_tif_name = 'flipped_anat.tif'
+        else:
+            assert flip_lr is None
+            anat_tif_name = 'anat.tif'
+
+        fly_analysis_dir = get_fly_analysis_dir(date, fly_num)
+        anat_tif_path = fly_analysis_dir / anat_tif_name
+
+        # TODO make -i option for these?
+        if anat_tif_path.exists():
+            # TODO delete
+            print('would have skipped existant anat tiff (delete me)')
+            # TODO uncomment
+            #continue
+
+        # TODO TODO modify to include 'green'/'red' in channel coords
+        # (rather than 0/1)
+        anat = read_thor_tiff_sequence(anat_dir)
+
+        # Median over the "z-stream" / time dimension, to get a single frame per
+        # depth/channel
+        # TODO try mean / other?
+        anat = anat.median('t')
+
+        if flip_lr:
+            # TODO TODO TODO test! (x or y?)
+            # https://stackoverflow.com/questions/54677161
+            anat = anat.reindex(x=anat.x[::-1])
+
+        # should be getting the green channel
+        anat_for_reg = anat.sel(c=0)
+
+        # should go from XY shape of (384, 384) to (192, 192), to match functional
+        anat_for_reg = anat_for_reg.coarsen(y=2, x=2).mean().data
+
+        # TODO TODO TODO load correct z-spacing from xml to check
+
+
+        # TODO TODO TODO (option to) handle each recording separately?
+        # (to check my plane matching, for one)
+        # TODO try to use suite2p binaries, rather than mocorr_concat.tif
+        mocorr_concat = tifffile.imread(fly_analysis_dir / 'mocorr_concat.tif')
+        # Before mean, should be of shape: (time, z, y, x)
+        avg_mocorr_concat = mocorr_concat.mean(axis=0)
+        del mocorr_concat
+
+        # TODO TODO TODO get functional zstep_um
+        # TODO TODO TODO get anatomical zstep_um
+        # TODO use combination to get # of anatomical slices that should correspond to a
+        # functional slice
+
+        # TODO delete
+
+        # TODO remove
+        from suite2p.registration.zalign import compute_zpos
+
+        print('compute_zpos method:')
+        zcorr_list = []
+        # TODO check we don't need to natsort to get 'plane0' and 'plane10' (/ similar)
+        # in correct order
+        for ops_path in sorted((fly_analysis_dir / 'suite2p').glob('plane*')):
+            print(ops_path.name)
+            ops = s2p.load_s2p_ops(ops_path)
+
+            # TODO which path was this supposed to check? both?
+            assert not bool(ops['smooth_sigma_time'])
+
+            # TODO TODO TODO diy solution that doesn't register each frame separately
+            # (just wanna register to average of a certain recording/concat, rather than
+            # each time point)
+            before = time.time()
+            _, zcorr = compute_zpos(anat_for_reg, ops)
+            dur = time.time() - before
+            print(f'(at one depth) took {dur:.3f}')
+            print(f'{zcorr.shape=}')
+            plt.figure()
+            plt.plot(zcorr.max(axis=1))
+            plt.title(f'compute_pos zcorr.max() ({zcorr.shape=})')
+
+            zcorr_list.append(zcorr)
+
+        print()
+
+        # TODO which thorimage_dir to use here? try to remove need for that?
+        #load_suite2p_binaries(ops_path.parent)
+
+        # TODO also want shift_frames?
+        from suite2p.registration.register import register_frames
+
+        # TODO delete this data when i'm done
+        # TODO TODO TODO which data did i make this for (2022-10-07/1)? any reason i
+        # can't just use my usual suite2p outputs? was i just worried i might be
+        # modifying something?
+        # TODO check nothing gets modified?
+        #ops_path = fly_analysis_dir / 'test' / 'plane0'
+
+        ops_path = fly_analysis_dir / 'suite2p' / 'plane0'
+        ops = s2p.load_s2p_ops(ops_path)
+
+        # TODO which path was this supposed to check? both?
+        assert not bool(ops['smooth_sigma_time'])
+
+        print('register frames method:')
+
+        rigid_max_corr_list = []
+        nonrigid_max_corr_list = []
+
+        for avg_mocorr_plane in avg_mocorr_concat:
+            # TODO matter which side i use as a template?
+
+            # ig to use the same ROIs, it would be easier to use avg mocorr concat as a
+            # template...
+            template = avg_mocorr_plane.astype(np.int16)
+
+            # copying just b/c it seems it may be modified in place in suite2p fn.
+            # not sure it is. could check
+            frames_to_register = anat_for_reg.astype(np.int16).copy()
+
+            before = time.time()
+
+            ret = register_frames(template, frames_to_register, ops=ops.copy())
+
+            dur = time.time() - before
+            print(f'(at one depth) took {dur:.3f}')
+
+            # (and cmax = rigig max corr, if i want that)
+            #frames, ymax, xmax, cmax, ymax1, xmax1, cmax1 = ret
+            registered_anat = ret[0]
+            # this seems to be of shape (z,)
+            rigid_max_corr = ret[3]
+            rigid_max_corr_list.append(rigid_max_corr)
+
+            plt.figure()
+            plt.plot(rigid_max_corr)
+
+            # TODO why is this of shape (z, 36)? in each block? average them?
+            nonrigid_max_corr = ret[-1]
+            nonrigid_max_corr_list.append(nonrigid_max_corr)
+
+            plt.figure()
+            plt.plot(nonrigid_max_corr.mean(axis=-1))
+
+            #break
+
+        print()
+
+        # TODO assert new shape matches functional here, if this all works
+
+        plt.show()
+
+        import ipdb; ipdb.set_trace()
+        #
+
+        # TODO TODO TODO register average movies frames to volume (assuming 12um
+        # spacing, or letting each go free?)
+        # TODO just for average mocorr movie? for average of each recording?
+
+        # TODO TODO TODO register each plane of average fn recording to each plane in
+        # median-anat, and look for peaks in some registration metric (after
+        # smoothing?)?
+        # TODO try any fns suite2p might have that could already do some of this?
+
+        # TODO check this works w/ DataArray input (+ support, if not)
+        #
+        # If we weren't eliminating the "z-stream"/time dimension, we would want
+        # dims='CZTYX'.
+        # TODO move writing of this just after check it exists
+        # (just down here to prevent skipping code i want to test)
+        util.write_tiff(anat_tif_path, anat.data, dims='CZYX', strict_dtype=False)
+
+        import ipdb; ipdb.set_trace()
+    '''
 
     if do_register_all_fly_recordings_together:
         # TODO rename to something like just "register_recordings" and implement
@@ -6190,7 +6642,6 @@ def main():
     n_analyzed = sum([x is not None for x in was_analyzed])
     print(f'Analyzed {n_analyzed} experiment(s)')
 
-
     for fly_analysis_dir in sorted(set(flies_with_new_processed_tiffs)):
         # TODO refactor? currently duplicating in code that decides whether to link to
         # diagnostic RoiSet.zip in process_recording
@@ -6216,9 +6667,36 @@ def main():
             concat_tiff_path = (
                 fly_analysis_dir / f'{Path(tiff_basename).stem}_concat.tif'
             )
-            processed_concat = np.concatenate([
-                tifffile.imread(x) for x in tiffs_to_concat
-            ])
+
+            data_to_concat = [tifffile.imread(x) for x in tiffs_to_concat]
+
+            # This special handling was needed to concatenate data from experiments with
+            # multiple odors (typical) with those with just a single odor (CO2 in the
+            # case I needed it for).
+            shape_lens = {len(x.shape) for x in data_to_concat}
+            if len(shape_lens) > 1:
+                max_len = max(shape_lens)
+                min_len = min(shape_lens)
+                assert min_len == max_len - 1
+
+                max_len_shapes_without_time_dim = {
+                    x.shape[1:] for x in data_to_concat if len(x.shape) == max_len
+                }
+                assert len(max_len_shapes_without_time_dim) == 1
+
+                # Assuming these are all simply missing the time/odor dimension,
+                # but otherwise share the spatial[/channel] part of the shape
+                min_len_shapes = {
+                    x.shape for x in data_to_concat if len(x.shape) == min_len
+                }
+                assert min_len_shapes == max_len_shapes_without_time_dim
+
+                data_to_concat = [x if len(x.shape) == max_len else np.expand_dims(x, 0)
+                    for x in data_to_concat
+                ]
+
+            processed_concat = np.concatenate(data_to_concat)
+
             # TODO print that we are doing this / what we are writing
             util.write_tiff(concat_tiff_path, processed_concat, strict_dtype=False)
 
@@ -6317,6 +6795,9 @@ def main():
     # TODO TODO TODO test new pdf generation code on stuff that actually splits
     # experiments across recordings (e.g. 17 odor megamat stuff)
 
+    # TODO TODO TODO TODO uncomment
+    # TODO move after ijroi stuff? or at least don't fail here if odors duplicated
+    '''
     print()
     print(f'saving summary PDFs under {all_fly_panel_pdfs_dir}:')
 
@@ -6325,7 +6806,10 @@ def main():
         date, fly_num, panel, is_pair = experiment_key
 
         # if this triggers, drop / skip these
-        assert panel is not None
+        # TODO TODO TODO fix (want analysis to work on most things. just continue here?)
+        #assert panel is not None
+        if panel is None:
+            continue
 
         experiment_type_str = str(panel)
         # initially added this to differentiate the kiwi/control recordings from the
@@ -6354,17 +6838,11 @@ def main():
                     fig_paths = list(plot_dir.glob(fig_glob))
 
                     if len(fig_paths) == 0:
-                        # TODO TODO TODO check none of older kiwi/control experiments
-                        # have ROIs defined only on stuff other than diagnostic (and
-                        # also that things are all linked back to diagnostic, because
-                        # want to separately plots the other ones if not)
-                        #
                         # Not warning about missing ROI plots for panels OTHER than the
                         # diagnostic, because this script currently only generates those
                         # plots for the diagnostic recordings.
                         if not (section_name == 'ROIs' and panel != diag_panel_str):
-                            # TODO put behind verbose flag? at least for ROI stuff when
-                            # we might not have ROIs?
+                            # TODO put behind verbose flag?
                             warn(f'{shorten_path(thorimage_dir)}: no figures matching '
                                 f'{fig_glob}'
                             )
@@ -6495,6 +6973,9 @@ def main():
                 # (remove the code de-duplicating the (solvent, solvent) duplicates
                 # above if so)
                 # TODO also check that the only pairs duplicated are (solvent, solvent)
+                # TODO TODO TODO get this to not fail if i do experiments e.g. 2 sides
+                # in one fly (how though? just flag to disable this whole analysis or
+                # something?)
                 sort_df = pd.concat(sort_dfs, verify_integrity=True)
 
                 sort_df = sort_odors(sort_df, add_panel=panel)
@@ -6554,15 +7035,20 @@ def main():
             #print()
 
     print()
+    '''
 
     total_s = time.time() - main_start_s
     print(f'Took {total_s:.0f}s\n')
 
-    if not is_acquisition_host and len(response_volumes_list) > 0:
+    if do_analyze_response_volumes and (
+        not is_acquisition_host and len(response_volumes_list) > 0):
 
         # Crude way to ensure we don't overwrite if we only run on a subset of the data
         write_cache = len(matching_substrs) == 0
 
+        # TODO TODO TODO get this to not err in quick-test case (2023-04-03 data,
+        # before panel stuff). should also work w/ diagnostic only input (or at least
+        # not err)
         analyze_response_volumes(response_volumes_list, output_root,
             write_cache=write_cache
         )
@@ -6663,6 +7149,8 @@ def main():
                     and x not in failed_assigning_frames_analysis_dirs
                 ],
                 # TODO implement + add needing merge category (i.e. still has some
+        # TODO TODO need to prevent this from triggering in case where we already only have
+        # one row per roi
                 # default names)
                 'failed assigning frames': [x for x in analysis_dirs if x in
                     failed_assigning_frames_analysis_dirs
@@ -6745,6 +7233,8 @@ def main():
     # stuff? (yes, seems to be fixed now. add assertion guaranteeing num non-na doesn't
     # change tho)
 
+    # TODO TODO TODO filter out all ROIs w/ '+' in them here
+
     trial_df = pd.concat(ij_trial_dfs, axis='columns')
     util.check_index_vals_unique(trial_df)
 
@@ -6758,6 +7248,28 @@ def main():
     trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
     trial_df = sort_odors(trial_df)
 
+    # TODO TODO TODO hardcode groups of panels to save to split out into particular
+    # output CSVs? ideally would only do it when run with a canonical set of good
+    # inputs, but i might need to handle that separately for now. should probably move
+    # to using checkboxes/similar in google sheet for that?
+    # TODO TODO TODO also print N for each combination of (panel, is_pair) in CSV
+
+    # TODO TODO TODO TODO delete. hack to remove (small number. ~5/169) ROIs that still
+    # had ambiguous names, while serializing for anoop)
+    #
+    # just removing the 'glomeruli_diagnostics' panel
+    '''
+    print('FIX THIS HACK')
+    natmix_rows = trial_df.index.get_level_values('panel').isin(('kiwi', 'control'))
+    trial_df.loc[natmix_rows, trial_df.columns.get_level_values('roi').map(
+        lambda x: is_ijroi_certain(x) or not is_ijroi_named(x)
+    )].to_csv(
+        output_root / '2023-02-21_orn_glomeruli_responses.csv', date_format=date_fmt_str
+    )
+    import ipdb; ipdb.set_trace()
+    '''
+    #
+
     # TODO TODO any way to get date_format to apply to stuff in MultiIndex?
     # or is the issue that it's a pd.Timestamp and not datetime?
     trial_df.to_csv(output_root / 'ij_roi_stats.csv', date_format=date_fmt_str)
@@ -6770,9 +7282,10 @@ def main():
     trial_df = natmix.drop_mix_dilutions(trial_df.reset_index()
         ).set_index(old_index_levels)
 
-    # TODO TODO TODO at least print out / warn / fail in cases where diagnostic ROIs are
-    # more recent than the recording specific ROIs of interest (+ maybe option to
-    # overwrite the latter with the former[, making a backup first])
+    # TODO at least print out / warn / fail in cases where diagnostic ROIs are more
+    # recent than the recording specific ROIs of interest (+ maybe option to overwrite
+    # the latter with the former[, making a backup first]) (do i ever even have
+    # recording specific ROIs other than for diagnostic now?)
 
     # TODO TODO add (+use) some notation (maybe '<roi_name>+') to indicate an ROI that
     # is the largest extent plausibly containing signal mainly from a given ROI.
@@ -6848,9 +7361,78 @@ def main():
     # try including positions too. try doing just for unidentified glomeruli too.
     # TODO TODO also do for just the unidentified ROIs
 
-    # TODO TODO TODO is hline_level_fn still working given how my dataframes are
-    # organized now?
-    plot_kws = dict(dpi=1000, odor_sort=False, hline_level_fn=fly_roi_id2roi_name)
+    def format_panel(x):
+        panel = x.get('panel')
+        # TODO maybe return None if it'd make more consistent vline_level_fn usage
+        # possible (across single/multi panel cases)? would prob need to handle in viz
+        # regardless
+        if not panel:
+            return ''
+
+        if panel == diag_panel_str:
+            # Less jarring than 'glomeruli_diagnostics'
+            return 'diagnostics'
+
+        assert type(panel) is str
+        return panel
+
+    # TODO fix how grouped ROI labels currently a bit low (still?) (revert va to
+    # default? offset?)
+    # TODO TODO put 'n=<n>' text below ROI labels? esp for stuff w/ less than full.
+    def roi_label(index_dict):
+        roi = index_dict['roi']
+        if is_ijroi_named(roi):
+            return roi
+        # Don't want numbered ROIs to be grouped together in plots, as the numbers
+        # aren't meanginful across flies.
+        return ''
+
+    plot_kws = dict(
+        inches_per_cell=0.08,
+        # TODO adjust based on whether we have extra text labels / title / etc?
+        # 1.7 better for the single panel plots, 2.0 needed for ijrois_certain.png, etc
+        extra_figsize=(2.0, 0.0),
+
+        fontsize=4.5,
+
+        linewidth=0.5,
+        dpi=300,
+
+        hgroup_label_offset=5.5,
+
+        vgroup_label_offset=7,
+
+        # TODO define separate ones for colobar + title/ylabel (+ check colorbar one is
+        # working)
+        bigtext_fontsize_scaler=1.5,
+
+        cbar_label=trial_stat_cbar_title,
+
+        odor_sort=False,
+        # TODO need to prevent hline_level_fn from triggering in case where we already
+        # only have one row per roi?
+        #  'roi' should always be a level
+        hline_level_fn=roi_label,
+        vline_level_fn=format_panel,
+        # TODO try to delete levels_from_labels (switching to only == False case),
+        # (inside viz)
+        levels_from_labels=False,
+    )
+
+    mean_kws = deepcopy(plot_kws)
+    mean_kws['inches_per_cell'] = 0.15
+    mean_kws['extra_figsize'] = (1.0, 0.0)
+    mean_kws['vgroup_label_offset'] = 5
+
+    # TODO probably just specify cbar_label separately on each, and delete these
+    normed_kws = deepcopy(mean_kws)
+    normed_kws['cbar_label'] += '\n[0,1] scaled'
+
+    # TODO can replace title back w/ usual title here, now that we have it in cbar
+    n_plot_kws = deepcopy(mean_kws)
+    n_plot_kws['cbar_label'] = 'number of flies (n)'
+
+    uncertain_plot_kws = {k: v for k, v in plot_kws.items() if k != 'hline_level_fn'}
 
     # TODO TODO relabel <date>/<fly_num> to one letter for both. write a text key to the
     # same directory.
@@ -6859,20 +7441,74 @@ def main():
     is_certain = certain_roi_indices(trial_df)
     certain_df = trial_df.loc[:, is_certain]
 
-    # TODO TODO warn if not!
+    # TODO TODO TODO version of mean plot w/ zeros added for non-responsive glomeruli
+    # (maybe w/ some indicator for those we are particularly unsure of / in general)
+
+    # TODO TODO TODO refactor to share code w/ loop over panels below
+    # TODO TODO hlines between panels
     if len(certain_df.columns) > 0:
         fig, _ = plot_all_roi_mean_responses(certain_df, **plot_kws)
-        savefig(fig, across_fly_ijroi_dir, f'ijrois_certain')
+        savefig(fig, across_fly_ijroi_dir, 'ijrois_certain')
+
+        # TODO TODO try to get methyl salicylate -3 to show up in remy's panel rather
+        # than in diagnostics? specify panel priority or something? show the two
+        # separately somehow?
 
         # TODO maybe restrict data to only known good, for at least one version of this
         # TODO TODO TODO indicate good/bad in gsheet now
         mean_certain_df = certain_df.groupby('roi', sort=False, axis='columns').mean()
-        fig, _ = plot_all_roi_mean_responses(mean_certain_df, **plot_kws)
-        savefig(fig, across_fly_ijroi_dir, f'ijrois_certain_mean')
+        fig, _ = plot_all_roi_mean_responses(mean_certain_df, **mean_kws)
+        savefig(fig, across_fly_ijroi_dir, 'ijrois_certain_mean')
 
-    # TODO TODO TODO change plot_all_... to show N for each ROI mean
+        # TODO TODO TODO also do in ijrois_certain case above(?) and in loop below
+        # (refactor)
+        fig, _ = plot_all_roi_mean_responses(mean_certain_df, roi_min_max_scale=True,
+            **normed_kws
+        )
+        savefig(fig, across_fly_ijroi_dir, 'ijrois_certain_mean_normed')
+
+        n_per_odor_and_glom = certain_df.notna().groupby('roi', sort=False,
+            axis='columns').sum()
+        # TODO TODO at least for panels below, show min N for each glomerulus?
+        # (maybe as a separate single-column matshow w/ it's own colorbar?)
+
+        # https://stackoverflow.com/questions/14777066
+        max_n = n_per_odor_and_glom.max().max()
+        cmap = plt.get_cmap('cividis', max_n)
+        # want to display 0 as distinct (white rather than dark blue)
+        cmap.set_under('white')
+
+        # TODO show n in each matrix element?
+        fig, _ = plot_all_roi_mean_responses(n_per_odor_and_glom, cmap=cmap,
+            title='sample size (n) per (glomerulus X odor)',
+            vmin=0.5, vmax=(max_n + 0.5),
+            cbar_kws=dict(ticks=np.arange(1, max_n + 1)), **n_plot_kws
+        )
+        savefig(fig, across_fly_ijroi_dir, 'ijrois_certain_n')
+    else:
+        # I.e. no "certain" ROIs (those named and without '?' suffix)
+        warn('no ImageJ ROIs were confidently identified!')
+
+    # TODO TODO TODO per-roi-mean plot (both normalized within ROI and not) where ROIs
+    # are ordered according to clustering rather than just alphabetically
+
+    # TODO TODO versions of all-roi-mean plots where if only uncertain ( "<x>?") ROIs
+    # exist (within a recording/fly) for a given glomerulus name, then those are also
+    # included in average (but still exclude uncertain when they exist alongside certain
+    # ROIs of same name)
+
+    # TODO TODO TODO make sure that in all-roi-mean plots (unless i want to make another
+    # version), any (odor, ROI) combos w/ less than all flies having that odor are shown
+    # as missing (white)
+
+    # TODO TODO change plot_all_... to show N for each ROI mean
     # (or do that in a new fn, seeing as i am already computing the mean out here in
     # those cases. or factor that into plot_all_... behind a flag.)
+    # (could also pass in the N for each, as a separate series or something?)
+
+    # TODO TODO modify plotting in many-roi (one per fly) case so that white hline
+    # between ROI names doesn't get that close to size of cells (or so it's a fixed
+    # percentage of cell size)
 
     for panel, pdf in trial_df.groupby('panel', sort=False):
 
@@ -6894,32 +7530,43 @@ def main():
         # *certain* plots (+ write a CSV key mapping date+fly_num to these IDs)
         # (implement in plot_all_mean... ? def not here)
 
-        fig, _ = plot_all_roi_mean_responses(pdf, **plot_kws)
-        savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois')
-
-        is_certain = certain_roi_indices(pdf)
-        cdf = pdf.loc[:, is_certain]
-
-        # TODO also put "(n=...)" in titles of mean plots
-        # TODO or separate representation showing n for each particular glomerulus name?
+        # TODO TODO TODO  separate representation showing n for each particular
+        # glomerulus name (in yticklabels)?
+        # TODO TODO shouldn't this be using cdf in certain plot cases? just do away w/
+        # this altogether anyway?
         n_flies = len(
-            pdf.columns.to_frame(index=False)[['date','fly_num'] ].drop_duplicates()
+            pdf.columns.to_frame(index=False)[['date','fly_num']].drop_duplicates()
         )
 
         # TODO put driver (+indicator?) in titles of all plots here?
         # TODO maybe (here and elsewhere), map driver to something simple like
         # ('ORN'/'PN'), for use in titles/etc
-        mean_title = f'{driver} (n={n_flies})'
+        # TODO remove the '<=' part eventually (or special case when whole plot has same
+        # n) or just show min? range?
+        title = f'{driver} (n<={n_flies})'
 
-        # TODO TODO warn if not!
+
+        fig, _ = plot_all_roi_mean_responses(pdf, title=title, **plot_kws)
+        savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois')
+
+        is_certain = certain_roi_indices(pdf)
+        cdf = pdf.loc[:, is_certain]
+
+        # TODO TODO warn if not (and what would that mean? just that there are no
+        # certain rois, right?)!
         if len(cdf.columns) > 0:
-            fig, _ = plot_all_roi_mean_responses(cdf, **plot_kws)
+            fig, _ = plot_all_roi_mean_responses(cdf, title=title, **plot_kws)
             savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_certain')
 
             # I think this is sorting on output of the grouping fn (on ROI name), as I
             # want.
+            # TODO TODO factor into option of plot_all_..., so that i can share code to
+            # show N for each ROI w/ case calling from before loop over panels
             mean_cdf = cdf.groupby('roi', sort=False, axis='columns').mean()
-            fig, _ = plot_all_roi_mean_responses(mean_cdf, title=mean_title, **plot_kws)
+
+            # TODO mean_kws also look good here? at least better?
+            fig, _ = plot_all_roi_mean_responses(mean_cdf, title=title, **mean_kws)
+
             savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_certain_mean')
 
         # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
@@ -6928,13 +7575,13 @@ def main():
         glom_maxes = pdf.max(axis='rows')
         fig, _ = plot_all_roi_mean_responses(pdf.loc[:, ~is_certain],
             # negative glom_maxes, so sort is as if ascending=False
-            sort_rois_first_on=-glom_maxes[~is_certain], **plot_kws
+            sort_rois_first_on=-glom_maxes[~is_certain], **uncertain_plot_kws
         )
         savefig(fig, across_fly_ijroi_dir, f'{panel}_ijrois_uncertain')
 
         # TODO another version grouped by fly first, then glomerulus?
 
-        # TODO TODO TODO same type of clustering, but with responses to *all* odors
+        # TODO TODO same type of clustering, but with responses to *all* odors
         # (for trying to identify set of glomeruli we are dealing with)
         #
         # Mean across repeats. Should be one row per odor after.
@@ -6942,7 +7589,7 @@ def main():
         with mpl.rc_context({'figure.constrained_layout.use': False}):
             # Clustering will fail if there are any NaN in the input.
             clust_df = mean_df.dropna(how='any', axis='index')
-            cg = megamat_cluster(clust_df, mean_title)
+            cg = megamat_cluster(clust_df, title)
             savefig(cg, across_fly_ijroi_dir, f'{panel}_clust')
 
     print('done')
@@ -6961,6 +7608,9 @@ def main():
 
     intensities_plot_dir = across_fly_ijroi_dir / 'activation_strengths'
     natmix_activation_strength_plots(mean_df, intensities_plot_dir)
+
+    # TODO TODO TODO apply matt's MB model (maybe do in separate script using one of the
+    # .p/.csv files though?)
 
 
 if __name__ == '__main__':

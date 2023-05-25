@@ -7,7 +7,10 @@ seaborn>=0.12.0
 colorama
 termcolor
 
+# Used to get total memory in plot_roi_util.py
 psutil
+
+tqdm
 
 # You may replace this line with:
 #git+https://github.com/tom-f-oconnell/drosolf
@@ -21,3 +24,7 @@ psutil
 
 #git+https://github.com/ejhonglab/natmix
 -e ../natmix
+
+# Might not really by any point in installing this one editable...
+#git+https://github.com/ejhonglab/olfsysm
+-e ../olfsysm
