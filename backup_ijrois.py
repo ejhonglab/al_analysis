@@ -197,6 +197,8 @@ def main():
             if verbose:
                 # NOTE: can't use format_path here, as central backup dir not under
                 # analysis root
+                # TODO if not verbose, still print which directory we are saving all
+                # backups to (once, at top)?
                 print(f'copying to central backup at {central_backup}')
 
             copy2(roi_zip, central_backup)

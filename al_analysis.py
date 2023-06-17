@@ -88,6 +88,8 @@ plt.rcParams['figure.constrained_layout.wspace'] = 0
 plt.rcParams['figure.constrained_layout.hspace'] = 0
 
 
+# TODO replace this + use of warnings.warn w/ logging.warning (w/ logger probably
+# currently just configured to output to stdout/stderr)
 def formatwarning_msg_only(msg, category, *args, **kwargs):
     """Format warning without line/lineno (which are often not the relevant line)
     """
@@ -101,6 +103,7 @@ warnings.formatwarning = formatwarning_msg_only
 
 
 # TODO maybe log all warnings?
+# TODO TODO replace w/ logging.warning
 def warn(msg):
     warnings.warn(str(msg))
 
@@ -196,13 +199,6 @@ n_volumes_for_baseline = None
 # against off-by-one bugs in the frame<-> assignment code, but might otherwise weaken
 # signals.
 exclude_last_pre_odor_frame = False
-#exclude_last_pre_odor_frame = True
-
-# Since some of the pilot experiments had 6 planes (but top 5 should be the same as in
-# experiments w/ only 5 total), and that last plane largely doesn't have anything
-# measurably happening. All steps should have been 12um, so picking top n will yield a
-# consistent total height of the volume.
-#n_top_z_to_analyze = 5
 
 # I seemed to end up imaging this side more anyway...
 # Movies taken of any fly's right AL's will be flipped along left/right axis to be more
@@ -1102,6 +1098,7 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     elif isinstance(fig_or_seaborngrid, sns.axisgrid.Grid):
         fig = fig_or_seaborngrid.fig
 
+    # TODO cli flag for this?
     debug = False
     if debug:
         print(fig_path)
@@ -1385,16 +1382,24 @@ def should_ignore_existing(name: str, explicit_only: bool = False) -> bool:
 
 
 # TODO factor into hong2p maybe (+ add support for xarray?)
-def dropna(df: pd.DataFrame, _checks=True) -> pd.DataFrame:
+def dropna(df: pd.DataFrame, how: str = 'all', cols_first: bool = True, _checks=True
+    ) -> pd.DataFrame:
     """Drops rows/columns where all values are NaN.
     """
-    if _checks:
+    assert how in ('all', 'any')
+
+    if how == 'all' and _checks:
         notna_before = df.notna().sum().sum()
 
-    # TODO need to alternate (i.e. does order ever mattter? ever not idempotent?)?
-    df = df.dropna(how='all', axis='columns').dropna(how='all', axis='rows')
+    # TODO need to alternate (i.e. does order ever matter? ever not idempotent?)?
+    if cols_first:
+        # Not sure whether axis='rows' has always been supported, but it seems to behave
+        # same as axis='index'... Was originally a mistake, but more clear I think.
+        df = df.dropna(how=how, axis='columns').dropna(how=how, axis='rows')
+    else:
+        df = df.dropna(how=how, axis='rows').dropna(how=how, axis='columns')
 
-    if _checks:
+    if how == 'all' and _checks:
         assert df.notna().sum().sum() == notna_before
 
     return df
@@ -2132,9 +2137,25 @@ def suite2p_traces(analysis_dir):
 # thinner lines?
 # TODO TODO change how LUT is defined to at least allow ~single pixels NOT washing out
 # whole range (e.g. from motion correction artifact at edge)
-def plot_rois(*args, **kwargs):
+def plot_rois(*args, cmap=roi_bg_cmap, **kwargs):
+    # TODO version of this plot post merging, to show which planes are selected?
+    # (maybe w/ non-used planes still shown w/ lower color saturation / something?)
+
+    # TODO maybe define global glomerulus name -> color palette here?
+
+    # TODO TODO TODO why is color seed apparently not working (should be constant
+    # default of 0 inside plot_rois)?
     # TODO did i actually need _pad=False? comment why
-    return viz.plot_rois(*args, cmap=roi_bg_cmap, _pad=False, if_multiple='ignore',
+    return viz.plot_rois(*args, cmap=cmap, _pad=False, if_multiple='ignore',
+        # Without n_colors=10, there will be too many colors to meaninigfully tell them
+        # all apart, so might as well focus on cycling a smaller set of more distinct
+        # colors (using randomization now, but maybe graph coloring if I really want to
+        # avoid having neighbors w/ similar colors).
+        palette=sns.color_palette('hls', n_colors=10),
+        # TODO delete. didn't like as much as hls10
+        # 'bright' will only produce <=10 colors no matter n_colors
+        # This will get rid of the grey color, where (r == g == b), giving us 9 colors.
+        #palette=[x for x in sns.color_palette('bright') if len(set(x)) > 1],
         **kwargs
     )
 
@@ -2157,6 +2178,11 @@ def thorimage2analysis_dir(thorimage_dir : Path) -> Path:
     return Path(str(thorimage_dir).replace(_thorimage_dir_part, _analysis_dir_part))
 
 
+# TODO rename to indicate it also [can] plot rois (+ that it returns masks now)
+# TODO add plot_roi_kws?
+# TODO TODO TODO refactor so that i can most code both called in single recordings (as
+# now), and in (not yet implemented) code doing the same on all data w/in a fly
+# (concatenated)
 def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
 
     thorimage_dir = analysis2thorimage_dir(analysis_dir)
@@ -2164,35 +2190,38 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         masks = ijroi_masks(analysis_dir, thorimage_dir)
 
     except IOError:
-        # TODO probably print something here / in try above
-
-        # This experiment didn't have any ImageJ ROIs (in canonical place)
-        return
+        raise
 
     # TODO TODO check this is working correctly with this new type of input +
     # change fn to preserve input type (w/ the metadata xarrays / dfs have)
+    # TODO TODO TODO modify extract_traces_bool_masks to return output of same type as
+    # input (w/ any additional metadata DataFrame / DataArray might have kept intact)
     traces = pd.DataFrame(extract_traces_bool_masks(movie, masks))
     traces.index.name = 'frame'
+    # TODO rename 'roi_index' for now? (or delete if not used, as i suspect)
     traces.columns.name = 'roi'
+
+    # TODO either assert that index of traces now matches some index in masks, or change
+    # so that is true (by fixing extract_traces_bool_masks to preserved metadat
+    # probably) (assertion would prob fail now that ijroi_masks can do some subsetting.
+    # they must at least be the same shape though, since it is literally computed w/
+    # masks...)
 
     # TODO also try merging via correlation/overlap thresholds?
 
-    # TODO TODO TODO update this to use df/f (same update needed on suite2p branch)
-    # (what do i need to compute that? want to compute same as i'm computing average
-    # dF/F w/in ROIs elsewhere)
+    # TODO equivalent suite2p ROI handling code also need to be updated to use
+    # compute_trial_stats for roi quality?
     # TODO maybe also ~z-score before picking best plane (dividing by variability in
     # baseline period first)
-    old_roi_quality = traces.max() - traces.min()
-
     trial_dff = compute_trial_stats(traces, bounding_frames)
     roi_quality = trial_dff.max()
 
-    roi_nums, rois = rois2best_planes_only(masks, roi_quality)
+    # TODO TODO TODO refactor so all this calculation is done across all recordings
+    # within each fly, rather than just within each recording
+    # (could add in parallel for now, and then phase out old way)
+    roi_indices, rois = rois2best_planes_only(masks, roi_quality)
 
-    # TODO TODO TODO (at least manually for a subset of data) compare ordering produced
-    # by old/new roi_quality definition
-
-    traces = traces[roi_nums].copy()
+    traces = traces[roi_indices].copy()
 
     # needed this (b/c rois2best_planes_only returned more metadata than intended) when
     # i had xarray 2022.6.0 somehow, but much of the rest of the code was broken.
@@ -2201,25 +2230,50 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
     #traces.columns = rois.roi_name.values
     traces.columns = rois.roi.values
 
-    # do need to add this again it seems (and i think one above *might* ahve been used
-    # inside `rois2best_planes_only`
+    # do need to add this again it seems (and i think one above *might* have been used
+    # inside `rois2best_planes_only`)
     traces.columns.name = 'roi'
 
     # TODO can i just use rois.roi_z.values?
-    z_indices = masks.roi_z[masks.roi_num.isin(roi_nums)].values
+    z_indices = masks.isel(roi=roi_indices).roi_z.values
 
+    # TODO delete
+    # z1 = masks.isel(roi=roi_indinces).roi_z
+    # z2  = masks2.roi_z[masks2.roi_index.isin(roi_indices)]
+    # not sure why (for z1, z2 as defined above):
+    # z1.equals(z2) but NOT z1.identical(z2). don't think the difference matters, and
+    # asserting .values are equal to check.
+    masks2 = masks.assign_coords({'roi_index': ('roi', range(masks.sizes['roi']))})
+    z_indices2 = masks2.roi_z[masks2.roi_index.isin(roi_indices)].values
+    assert np.array_equal(z_indices, z_indices2)
+    #
 
-    ret = (traces, rois, z_indices)
+    # TODO include roi_quality in another coordinate / metadata value f or rois
+    # (for picking planes across recordings, within a fly)? or probably just do all of
+    # it outside process_recording loop...
+
+    # TODO TODO [plot_rois?] color option to desaturate plane-ROIs that are NOT the
+    # "best" plane (for a given volumetric-ROI)
+
+    # TODO rename rois/masks throughout (->best_plane_rois/full_rois, respectively?)
+    ret = (traces, rois, z_indices, masks)
+    # TODO delete this kwarg (have always be true?)?
     if not roi_plots:
         return ret
 
     panel = get_panel(thorimage_dir)
 
+    # NOTE: now i often have multiple recordings with this panel (b/c so many odors)
+    # TODO maybe change to only do on first?
+    #
     # Only plotting ROI spatial extents (+ making symlinks to those plots) for
     # diagnostic experiment for now, because for most fles I had symlinked all other
     # RoiSet.zip files to the one for the diagnostic experiment.
     if panel != diag_panel_str:
         return ret
+    # TODO TODO am i unnecessarily calling this ROI plotting stuff for stuff w/ multiple
+    # diagnostic recordings? check against that dict pointing to single diagnostic
+    # recordings, rather than just checking panel (above)
 
     # TODO refactor to do plotting elsewhere / explicitly pass in plot_dir / something?
 
@@ -2245,7 +2299,6 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
     #mask_union_per_plane = masks.sum('roi') > 0
     #plot_rois(masks, mask_union_per_plane)
 
-    masks = masks.transpose('roi', 'z', 'y', 'x')
     certain_rois = [is_ijroi_certain(x) for x in masks.roi_name.values]
 
     movie_mean = movie.mean(axis=0)
@@ -2299,7 +2352,10 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         makedirs(all_roi_dir)
         symlink(fig_path, all_roi_dir / f'{experiment_link_prefix}.{plot_fmt}')
 
-        fig = plot_rois(masks[certain_rois], background)
+        # TODO what was it that caused need to index masks this way though?
+        # lack of transposing?
+        fig = plot_rois(masks[dict(roi=certain_rois)], background)
+
         fig_path = savefig(fig, ij_plot_dir, f'certain_rois_on_{bg_desc}')
 
         certain_roi_dir = ijroi_spatial_extents_plot_dir / f'certain_rois_on_{bg_desc}'
@@ -2546,8 +2602,8 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir):
     #
     # could probably pass less variables if some of them were already in the coordinates
     # of a DataArray traces
-    traces, rois, z_indices = ij_traces(analysis_dir, movie, bounding_frames,
-        roi_plots=True
+    traces, best_plane_rois, z_indices, full_rois = ij_traces(analysis_dir, movie,
+        bounding_frames, roi_plots=True
     )
 
     roi_plot_dir = ijroi_plot_dir(plot_dir)
@@ -2559,7 +2615,7 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir):
 
     print('generated plots based on traces from ImageJ ROIs')
 
-    return trial_df
+    return trial_df, best_plane_rois, full_rois
 
 
 # TODO factor to hong2p.suite2p
@@ -3301,6 +3357,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         if have_ijrois:
             dirs_with_ijrois.append(analysis_dir)
 
+            # TODO also save as a CSV for easy inspection / transfer? or just leave that
+            # to the top-level one containing all / most data?
             ij_trial_df_cache_fname = analysis_dir / 'ij_trial_df_cache.p'
 
             ijroi_last_analysis = ij_last_analysis_time(plot_dir)
@@ -3373,12 +3431,27 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
 
     read_movie_s = time.time() - before
 
+    # TODO fix handling of None for these + serialization
+    best_plane_rois = None
+    full_rois = None
+    #
     if do_ij_analysis:
         # TODO ensure we don't use ROIs drawn on non-flipped stuff on flipped stuff
         # (same w/ mocorr ideally) (if possible...)
-        ij_trial_df = ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie,
-            plot_dir
+        ij_trial_df, best_plane_rois, full_rois = ij_trace_plots(analysis_dir,
+            bounding_frames, odor_lists, movie, plot_dir
         )
+
+        # TODO TODO TODO compare best_plane_rois across experiments (+ probably refactor
+        # their computation to always be across all recordings for a fly anyway, rather
+        # than computing within each recording...)
+
+        # TODO also pickle best_plane_rois & full_rois (so we can do the nonroi plots w/
+        # ijrois no matter whether we are currently re-running ijroi analysis or not)
+        # (for now, maybe just `-i nonroi,ijroi`, as a hack)
+        # (probably wanna move all this after process_recording anyway though, computing
+        # everything on concatenated data, so may not be worth it)
+
         ij_trial_df = add_metadata(ij_trial_df)
         ij_trial_df.to_pickle(ij_trial_df_cache_fname)
         ij_trial_dfs.append(ij_trial_df)
@@ -3409,6 +3482,11 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     #plt.show()
     '''
 
+    # TODO TODO TODO figures like these produce, but also overlaying ROIs as plot_rois
+    # does (put somewhere in the ijroi dependent part). prob use b/w colormap plot_rois
+    # does by default.
+    # (need to move any dF/F image calculation earlier?)
+    # TODO maybe label plot_rois w/ zstep in general anyway?
     zstep_um = thor.get_thorimage_zstep_um(xml)
 
     def micrometer_depth_title(ax, z_index) -> None:
@@ -3440,24 +3518,12 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         fig_path = exp_savefig(fig, fname_prefix)
         return fig_path
 
-    # TODO probably delete
-    '''
-    if z > n_top_z_to_analyze:
-        warn(f'{thorimage_dir}: only analyzing top {n_top_z_to_analyze} '
-            'slices'
-        )
-        movie = movie[:, :n_top_z_to_analyze, :, :]
-        assert movie.shape[1] == n_top_z_to_analyze
-        z = n_top_z_to_analyze
-    '''
-
     anat_baseline = movie.mean(axis=0)
 
     # TODO rename fn (since input here is not dF/F)
     # TODO remove[/don't plot] colorbar on this one?
-    plot_and_save_dff_depth_grid(anat_baseline, 'avg',
-        'average of whole movie', vmin=anat_baseline.min(), vmax=anat_baseline.max(),
-        cmap=anatomical_cmap
+    plot_and_save_dff_depth_grid(anat_baseline, 'avg', 'average of whole movie',
+        vmin=anat_baseline.min(), vmax=anat_baseline.max(), cmap=anatomical_cmap
     )
 
     save_dff_tiff = want_dff_tiff
@@ -3509,10 +3575,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # (z, y, x)
         trial_mean_dffs = []
 
-        # TODO delete. for example fig for betty
-        #baselines_to_avg = []
-        #
-
         for n in range(n_repeats):
             dff = next(dff_after_onset_iterator)
 
@@ -3520,8 +3582,11 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                 trial_dff_movie = next(dff_full_trial_iterator)
                 trial_dff_movies.append(trial_dff_movie)
 
-            # TODO refactor so all response computation goes through
+            # TODO TODO TODO refactor so all response computation goes through
             # compute_trial_stats (to ensure no divergence)?
+            # (test on PN data in particular, where greater spontaneous activity had
+            # caused some problems with mean based statistics [at least the mean in the
+            # baseline...])
             # TODO off by one at start? (still relevant?)
             mean_dff = dff[:n_volumes_for_response].mean(axis=0)
 
@@ -3545,69 +3610,10 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                 if n == 0 and z > 1:
                     micrometer_depth_title(ax, d)
 
+                # NOTE: last value this is set to will be used to add colorbar
+                # TODO so does this assume that color scale for each image is the same?
+                # assert? where are vmin/vmax getting in now? inside dff_imshow?
                 im = dff_imshow(ax, mean_dff[d])
-
-                # TODO delete. for example fig for betty
-                '''
-                # TODO just do on first trial? maybe save that separately? or save all
-                # trials + also save average?
-                # (betty just wanted the -12 plane, which is d==1)
-                if d != 1:
-                    continue
-
-                #if odor_str not in ('ethyl propionate @ -3', '1-pentanol @ -3',
-                #        '1-hexanol @ -3'):
-                if odor_str not in ('ethyl propionate @ -3',):
-                    continue
-
-                baseline_start, baseline_odor_start, _ = bounding_frames[
-                    (i * n_repeats) + n
-                ]
-                baseline = movie[baseline_start:(baseline_odor_start - 1), d].mean(axis=0)
-
-                baselines_to_avg.append(baseline)
-
-                fig, ax = plt.subplots()
-                im = ax.imshow(baseline)
-                ax.set_axis_off()
-                viz.add_colorbar(fig, im, label='F (a.u.)')
-                micrometer_depth_title(ax, d)
-                suptitle(title, fig)
-                exp_savefig(fig, plot_desc + f'_baseline{n}')
-
-                fig, ax = plt.subplots()
-                im = ax.imshow(baseline, cmap='gray')
-                ax.set_axis_off()
-                viz.add_colorbar(fig, im, label='F (a.u.)')
-                micrometer_depth_title(ax, d)
-                suptitle(title, fig)
-                exp_savefig(fig, plot_desc + f'_baseline{n}_gray')
-                '''
-                #
-
-        # TODO delete
-        '''
-        if len(baselines_to_avg) > 0:
-            assert len(baselines_to_avg) == 3
-            avg_baseline = np.mean(baselines_to_avg, axis=0)
-
-            fig, ax = plt.subplots()
-            im = ax.imshow(avg_baseline)
-            ax.set_axis_off()
-            viz.add_colorbar(fig, im, label='F (a.u.)')
-            micrometer_depth_title(ax, d)
-            suptitle(title + '\nMean baseline', fig)
-            exp_savefig(fig, plot_desc + f'_avg_baseline{n}')
-
-            fig, ax = plt.subplots()
-            im = ax.imshow(avg_baseline, cmap='gray')
-            ax.set_axis_off()
-            viz.add_colorbar(fig, im, label='F (a.u.)')
-            micrometer_depth_title(ax, d)
-            suptitle(title + '\nMean baseline', fig)
-            exp_savefig(fig, plot_desc + f'_avg_baseline{n}_gray')
-        '''
-        #
 
         viz.add_colorbar(trial_heatmap_fig, im, label=dff_cbar_title, shrink=0.32)
 
@@ -3619,6 +3625,58 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         trialmean_dff_fig_path = plot_and_save_dff_depth_grid(avg_mean_dff, plot_desc,
             title=title, cbar_label=f'Mean {dff_latex}'
         )
+
+        # TODO TODO warn if target glomerulus is None? (<- delete)
+        # TODO TODO TODO fix elsewhere to not need this hack (/better name at least)
+        # TODO or should i highlight all in these cases?
+        focus_roi_fixes = {
+            # ethyl 3-hydroxybutyrate @ -6
+            'DM5/VM5d': 'DM5',
+        }
+        focus_roi = focus_roi_fixes.get(target_glomerulus, target_glomerulus)
+
+        # TODO TODO TODO similar plot, but using max dF/F (also try stddev [of raw
+        # movie? dF/F?]?), showing all ROIs. -> maybe switch individual odor plots to
+        # only spelling out single ROIs (/ highlighting and listing odor and/or target
+        # glom in text to the side / above odor row?)
+        # TODO TODO TODO colorbars! (+ maybe try depth specific and/or odor specific
+        # color scales?)
+
+        # TODO TODO TODO is color seed not working on plot_rois?
+
+        # TODO TODO TODO figure out how to also get the micrometer_depth_titles in here
+        # (or how to plot ROIs onto existing means of creating plots w/
+        # micrometer_depth_titles)
+        # TODO TODO TODO add cbar_label kwarg if not already there (-> pass here)
+        # TODO TODO add colorbar too
+        #
+        # NOTE: unlike dff_imshow (or stuff calling it), this won't warn about large
+        # fractions of pixels above vmax / below vmin.
+        # TODO off-by-one on z?
+        # TODO try w/ best_plane_rois instead of full_rois (or color desat thing)?
+        # TODO TODO TODO change colormap so there is never any ~gray. completely
+        # invisible.
+        # TODO TODO TODO experiment w/ desaturating other colors and/or maybe making
+        # line around current ROI solid / thicker (or other lines thinner).
+        # want to call attention to ROI targetted by current diagnostic odor.
+        # TODO desat the text/lines equally? maybe lines only?
+        # TODO push everything to black a bit (via vmin/vmax?), so roi labels are more
+        # legible?
+        # TODO maybe try have highlighted ROI always be that default red color?
+        # (probably try desat first...)
+        #
+        # TODO TODO TODO try one colorscale per roi
+        # TODO TODO TODO show colorbars
+        trialmean_dff_w_rois_fig = plot_rois(full_rois, avg_mean_dff, ncols=z,
+            focus_roi=focus_roi, image_kws=dict(vmin=dff_vmin, vmax=dff_vmax)
+        )
+        # TODO TODO TODO want this under ijroi dir? some subdir of <diag-recording-dir>?
+        # current figs (from above) seem to be at:
+        # <diag-recording-dir>/<n>_<odor>_<conc>_<glom>.<plot_fmt>
+        # TODO fix?
+        # TODO TODO TODO make sure these are sorted correctly by PDF aggregation code
+        # (in fixed odor order, as other diagnostic dF/F images should be)
+        exp_savefig(trialmean_dff_w_rois_fig, f'with_rois_{plot_desc}')
 
         odor_str2trialmean_dff_fig_path[odor_str] = trialmean_dff_fig_path
 
@@ -4999,6 +5057,11 @@ def plot_corrs(corr_list, output_root, plot_relpath, *, per_fly_figs: bool = Tru
             mdf = df.groupby('odor1').mean().groupby('odor1_b', axis='columns').mean()
 
             # TODO rename 'odor1' to just 'odor' in csv
+            # TODO TODO TODO save a version w/ correlations for each fly separately
+            # (to compute the error different ways / decide to drop particular
+            # odors/trials)
+            # TODO TODO TODO also save at least one error metric too (B: standardize on
+            # SD now, as she thinks that's what Remy is using now? check that.)
 
             # TODO print we are writing this
             # TODO TODO TODO still verify we aren't saving to the same file twice in one
@@ -6637,6 +6700,7 @@ def main():
                 k: ds for k, ds in names_and_concs2analysis_dirs.items() if len(ds) > 0
             }
 
+    # TODO rename to "recordings"?
     print(f'Checked {len(was_analyzed)} experiment(s)')
 
     n_analyzed = sum([x is not None for x in was_analyzed])
@@ -7336,6 +7400,9 @@ def main():
             # len(1)==1 produces all NaN. Neither meaningful.
             if len(for_corr.columns) <= 2:
                 continue
+            # TODO TODO TODO save single fly corr CSVs (+ across fly error CSV) here?
+            # (delete similar note in place currently saving the mean CSV
+            # [in plot_corrs] + move that here, if so)
 
             corr_df = for_corr.T.corr()
 
@@ -7447,6 +7514,7 @@ def main():
     # TODO TODO TODO refactor to share code w/ loop over panels below
     # TODO TODO hlines between panels
     if len(certain_df.columns) > 0:
+        # TODO TODO version of this w/ rows normalized [0,1] (as i have for mean below)
         fig, _ = plot_all_roi_mean_responses(certain_df, **plot_kws)
         savefig(fig, across_fly_ijroi_dir, 'ijrois_certain')
 
@@ -7586,10 +7654,36 @@ def main():
         #
         # Mean across repeats. Should be one row per odor after.
         mean_df = pdf.groupby('odor1').mean()
+
+        # TODO TODO TODO replace this w/ sequential drops along both axes (maybe in
+        # order that keeps most data, if there is one?)? currently getting empty
+        # matrices in some cases where i shouldn't need too
+        # (index=odors, for reference)
+        #
+        # Clustering will fail if there are any NaN in the input.
+        clust_df = mean_df.dropna(how='any', axis='index')
+
+        # TODO TODO TODO and why was dropna(df, how='any') not working even when ROIs
+        # were dropped first? shouldn't be empty, no?
+
+        # Clustering will also fail if the dropna above drops *everything*
+        # TODO TODO TODO fail early / skip here if df empty
+
+        # TODO just move to megamat_cluster (can i use that decorator i have in
+        # hong2p.viz?)
         with mpl.rc_context({'figure.constrained_layout.use': False}):
-            # Clustering will fail if there are any NaN in the input.
-            clust_df = mean_df.dropna(how='any', axis='index')
-            cg = megamat_cluster(clust_df, title)
+
+            # TODO TODO TODO fix cause of (it's b/c after dropna above, clust_df can be
+            # empty):
+            # ValueError: zero-size array to reduction operation fmin which has no
+            # identity
+            # (is it simply an issue of only have one recording as input?)
+            try:
+                cg = megamat_cluster(clust_df, title)
+            except ValueError:
+                traceback.print_exc()
+                import ipdb; ipdb.set_trace()
+
             savefig(cg, across_fly_ijroi_dir, f'{panel}_clust')
 
     print('done')
