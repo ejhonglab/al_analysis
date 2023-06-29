@@ -4,7 +4,6 @@ import argparse
 import atexit
 from multiprocessing import Process, Queue
 from multiprocessing.connection import Listener, Client
-from threading import Thread
 import time
 import queue
 
@@ -64,9 +63,19 @@ def main():
         'ROI from -d/--analysis-dir. Currently only considers odors that match the '
         'Hallem concentration exactly (-3).'
     )
+
+    parser.add_argument('-b', '--debug', action='store_true',
+        help='Should prevent calls within plot_roi_util.py from running through '
+        'multiprocessing.Process, to be able to use a debugger within those calls.'
+    )
     args = parser.parse_args()
 
+    # TODO try to add arg above and refactor below so that i can run everything w/o
+    # multiprocessing, for debugging of plot_roi_util (can't currently use debugger in
+    # there...)
+
     try:
+        # TODO log that we are starting this and what PID is
         # TODO maybe i want to use something other than 'AF_INET'? is there a default?
         listener = Listener((SERVER_HOST, SERVER_PORT), 'AF_INET')
 
@@ -77,6 +86,7 @@ def main():
     # maybe?
     client = Client((SERVER_HOST, SERVER_PORT), 'AF_INET')
     client.send(args)
+
     if listener is None:
         return
 
@@ -129,6 +139,9 @@ def main():
 
         load_and_plot(client_args)
 
+        # TODO how does breaking here prevent making a server though... does it?
+        # hasn't that decision already been made? this comment out-of-date?
+        #
         # Don't want to start a server unless we actually did io/compute that takes a
         # lot of time. All calls from ImageJ should have --analysis-dir specified.
         if args.analysis_dir is None:

@@ -21,7 +21,7 @@ from itertools import starmap
 import multiprocessing as mp
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Optional, Tuple, List, Type, Union, Dict
+from typing import Optional, Tuple, List, Type, Union, Dict, Any
 import json
 import logging
 import shlex
@@ -123,12 +123,12 @@ analysis_intermediates_root = util.analysis_intermediates_root(create=True)
 # 'mocorr' | 'flipped' | 'raw'
 # load_movie will raise an IOError for any experiments w/o at least a TIFF of this level
 # of processing (motion corrected, flipped-L/R-if-needed, and raw, respectively)
-min_input = 'mocorr'
+#min_input = 'mocorr'
 # TODO modify so i can specify left|right (or _l|r?) in filename, to override what
 # gsheet says for a given fly (or to not use the gsheet in particular cases?)
 # and/or in Experiment.xml?
 ##min_input = 'flipped'
-#min_input = 'raw'
+min_input = 'raw'
 
 # Whether to motion correct all recordings done, in a given fly, to each other.
 #do_register_all_fly_recordings_together = False
@@ -1731,7 +1731,7 @@ def compute_trial_stats(traces, bounding_frames,
 
         curr_trial_stats = stat(for_response)
 
-        # TODO TODO adapt to also work in case input is a movie
+        # TODO TODO adapt to also work in case input is a movie (done?)
         # TODO TODO also work in 1d input case (i.e. if just data from single ROI was
         # passed)
         # traces.shape[1] == # of ROIs
@@ -1741,7 +1741,6 @@ def compute_trial_stats(traces, bounding_frames,
 
     trial_stats = np.stack(trial_stats)
 
-    # TODO TODO TODO factor out this odor index creation (or just whole df creation)
     if odor_order_with_repeats is None:
         index = None
     else:
@@ -1869,7 +1868,7 @@ def dff_imshow(ax, dff_img, **imshow_kwargs):
 
 
 # TODO rename now that i'm also allowing input w/o date/fly_num attributes?
-def fly_roi_id(row, fly_only=False):
+def fly_roi_id(row, *, fly_only: bool = False) -> str:
     """
     Args:
         fly_only: if False, will include date, fly, and ROI information.
@@ -1880,8 +1879,15 @@ def fly_roi_id(row, fly_only=False):
     # that), as assumed this will only be used within a context where that is
     # context (e.g. a plot w/ kiwi data, but no control data)
     try:
-        date_str = f'{row.date:%-m-%d}' if pd.notnull(row.date) else ''
-        fly_num_str = f'{row.fly_num:0.0f}' if pd.notnull(row.fly_num) else ''
+        parts = []
+        if pd.notnull(row.date):
+            date_str = f'{row.date:%-m-%d}'
+            parts.append(date_str)
+
+        if pd.notnull(row.fly_num):
+            fly_num_str = f'{row.fly_num:0.0f}'
+            parts.append(fly_num_str)
+
         # TODO also support a 'fly'/'fly_id' key in place of (date, fly[_num])?
         # (for lettered/sequential simplified IDs, for nicer plots)
 
@@ -1889,11 +1895,12 @@ def fly_roi_id(row, fly_only=False):
         if not is_ijroi_named(roi):
             fly_only = False
 
-        # For when [h|v]line_[level_fn+group_text] code is drawing ROI labels.
-        if fly_only:
-            return f'{date_str}/{fly_num_str}'
-        else:
-            return f'{date_str}/{fly_num_str}/{roi}'
+        if not fly_only:
+            parts.append(str(roi))
+
+        # fly_only=True for when [h|v]line_[level_fn+group_text] code is drawing ROI
+        # labels
+        return '/'.join(parts)
 
     except AttributeError:
         return f'{row.roi}'
@@ -2053,6 +2060,7 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     # TODO TODO TODO numbered ROIs should be shown as before, and not have number shown
     # as an ROI group label (via hline_* stuff) (ideally in same plot w/ some named ROIs
     # grouped, but maybe just disable if not all certain/named)
+    # (which plots currently affected by this? still relevant?)
 
     # TODO try to move some of this logic into viz.matshow?
     # (the automatic enabling of hline_group_text if we have levels_from_labels?)
@@ -2068,13 +2076,9 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
             # ROI name is the same (e.g. but coming from different flies)
             hline_group_text = True
 
-    # TODO why was i not just passing in fly_roi_id again? change to do it that way?
-    yticklabels = list(mean_df.columns.to_frame().apply(
-        lambda x: fly_roi_id(x, fly_only=hline_group_text), axis='columns'
-    ))
+    yticklabels = lambda x: fly_roi_id(x, fly_only=hline_group_text)
 
-    # TODO allow overridding w/ kwarg (to not show despite having panel)?
-    vline_group_text = 'panel' in trial_df.index.names
+    vline_group_text = kwargs.pop('vline_group_text', 'panel' in trial_df.index.names)
 
     mean_df = mean_df.T
 
@@ -3031,7 +3035,9 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         names_and_concs2analysis_dirs[names_and_concs_tuple].append(analysis_dir)
 
         (name1, _), (name2, _) = names_and_concs_tuple
-        # TODO factor out handling pointing name back to itself?
+
+        # TODO factor out handling pointing name back to itself (hong2p.olf.get_abbrev
+        # or something like that?)?
         name1 = odor2abbrev.get(name1, name1)
         name2 = odor2abbrev.get(name2, name2)
 
@@ -3667,16 +3673,19 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         #
         # TODO TODO TODO try one colorscale per roi
         # TODO TODO TODO show colorbars
-        trialmean_dff_w_rois_fig = plot_rois(full_rois, avg_mean_dff, ncols=z,
-            focus_roi=focus_roi, image_kws=dict(vmin=dff_vmin, vmax=dff_vmax)
-        )
-        # TODO TODO TODO want this under ijroi dir? some subdir of <diag-recording-dir>?
-        # current figs (from above) seem to be at:
-        # <diag-recording-dir>/<n>_<odor>_<conc>_<glom>.<plot_fmt>
-        # TODO fix?
-        # TODO TODO TODO make sure these are sorted correctly by PDF aggregation code
-        # (in fixed odor order, as other diagnostic dF/F images should be)
-        exp_savefig(trialmean_dff_w_rois_fig, f'with_rois_{plot_desc}')
+        # TODO check have_ijrois is what i want here (/ works)
+        if have_ijrois:
+            trialmean_dff_w_rois_fig = plot_rois(full_rois, avg_mean_dff, ncols=z,
+                focus_roi=focus_roi, image_kws=dict(vmin=dff_vmin, vmax=dff_vmax)
+            )
+
+            # TODO TODO TODO want this under ijroi dir? some subdir of
+            # <diag-recording-dir>?  current figs (from above) seem to be at:
+            # <diag-recording-dir>/<n>_<odor>_<conc>_<glom>.<plot_fmt>
+            # TODO fix?
+            # TODO TODO TODO make sure these are sorted correctly by PDF aggregation
+            # code (in fixed odor order, as other diagnostic dF/F images should be)
+            exp_savefig(trialmean_dff_w_rois_fig, f'with_rois_{plot_desc}')
 
         odor_str2trialmean_dff_fig_path[odor_str] = trialmean_dff_fig_path
 
@@ -3762,6 +3771,15 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
 
             symlink(trialmean_dff_fig_path, link_path)
 
+    # (odor2abbrev used inside odor_lists_to_multiindex)
+    # TODO TODO move *use of* odor2abbrev to shortly before / in plotting, to not have
+    # to recompute cached stuff just to change abbreviations (this clearly isn't where
+    # main abbreviation is happening, as is_pair path not used in current analysis of
+    # remy's data...)
+    # TODO should i just accept odor2abbrev or as kwarg to viz.matshow (requiring an
+    # odor level in one of the indices)? where else do i need to use abbrevs?  [sub]plot
+    # titles? elsewhere?
+    #
     # TODO maybe refactor so it doesn't need to be computed both here and in both the
     # (ij/suite2p) trace handling fns (though they currently also use odor_lists to
     # compute is_pairgrid, so might want to refactor that too)
@@ -4124,10 +4142,6 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
     # to say '=1' unless there is actually a time to do '>1'. at least '>=1', no?
     # TODO make suite2p work to view registeration w/o needing to extract cells too
 
-    # TODO delete
-    #failed = False
-    #
-
     try:
         # TODO actually care about ops_end?
         # TODO TODO save ops['refImg'] into some plots and see how they look?
@@ -4157,20 +4171,9 @@ def register_recordings_together(thorimage_dirs, tiffs, fly_analysis_dir: Path,
         # TODO might want to add this back, but need to manage clearing it and stuff
         # then...
         ##make_fail_indicator_file(fly_analysis_dir, suite2p_fail_prefix, err)
-
-        # TODO TODO TODO TODO delete. to try to ignore issue where no ROIs found in
-        # 2022-11-19/2 fly (...bad sign alone?)
-        #failed = True
-        #
-        # TODO TODO TODO TODO restore
         return False
 
     make_suite2p_dir_symlink(suite2p_dir)
-
-    # TODO TODO TODO TODO delete
-    #if failed:
-    #    return True
-    #
 
     # TODO TODO uncomment (handle case when file doesn't exist tho, if roi detection not
     # requested)
@@ -4414,7 +4417,10 @@ def convert_raw_to_tiff(thorimage_dir, date, fly_num) -> None:
     )
 
 
-def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False):
+# TODO factor type hint for odor_data to hong2p + expand type of odor_lists (-> make
+# hong2p type alias for that odor_lists type)
+def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False
+    ) -> Optional[Tuple[Path, Dict[str, Any], list]]:
     """
     Will recompute if global ignore_existing explicitly included 'json'.
 
@@ -4429,6 +4435,7 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False):
             thorimage_dir
         )
         odor_data = yaml_path, yaml_data, odor_lists
+
     except NoStimulusFile as e:
         # TODO if it's just like an extra 1-2 frames (presumably at end, but not sure if
         # there's a way to know), maybe i should just ignore that discrepancy?  (could
@@ -4639,41 +4646,15 @@ def preprocess_recordings(keys_and_paired_dirs, verbose=False) -> None:
             continue
 
         yaml_path, _, odor_lists = odor_data
+        olf.add_abbrevs_from_odor_lists(odor_lists, odor2abbrev, yaml_path=yaml_path)
 
-        # TODO TODO move *use of* odor2abbrev to shortly before / in plotting, to not
-        # have to recompute cached stuff just to change abbreviations
-        if_abbrev_mismatch = 'warn'
-        assert if_abbrev_mismatch in ('warn', 'err')
-        for odors in odor_lists:
-            for odor in odors:
-                try:
-                    abbrev = odor['abbrev']
-                except KeyError:
-                    continue
-
-                name = odor['name']
-                if name in odor2abbrev:
-                    prev_abbrev = odor2abbrev[name]
-                    if abbrev != prev_abbrev:
-                        # TODO say which one we are using (hardcode dict should take
-                        # precedence)
-                        msg = (f'abbreviation {abbrev} (YAML) != {prev_abbrev} '
-                            '(hardcoded, will be used)'
-                        )
-                        if if_abbrev_mismatch == 'err':
-                            raise ValueError(msg)
-                        elif if_abbrev_mismatch == 'warn':
-                            warn(msg)
-                else:
-                    if name == abbrev:
-                        warn(f'name and abbrev were both {name} in {yaml_path}')
-
-                    odor2abbrev[name] = abbrev
-                    if verbose:
-                        print(f'adding {name=} -> {abbrev=} from {yaml_path}')
-
+    # TODO causing issues on new data w/ 'diagnostics1', 'diagnostics2', ... ?
     for fly_key in ambiguous_diags:
         fly2diag_thorimage_dir.pop(fly_key)
+
+    # also happens automatically atexit, but saving explicitly here incase there is an
+    # unclean exit
+    olf.save_odor2abbrev_cache()
 
 
 # TODO TODO flag to not change re-link mocorr directories (so that this script can be
@@ -7469,7 +7450,7 @@ def main():
 
         vgroup_label_offset=7,
 
-        # TODO define separate ones for colobar + title/ylabel (+ check colorbar one is
+        # TODO define separate ones for colorbar + title/ylabel (+ check colorbar one is
         # working)
         bigtext_fontsize_scaler=1.5,
 

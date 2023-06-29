@@ -139,6 +139,7 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         traces.columns.name = 'roi'
         traces.columns = masks.roi_name.values
 
+        # odor abbreviating happens inside here (in odor_lists_to_multiindex call)
         trial_df = al.compute_trial_stats(traces, bounding_frames, odor_lists)
 
         subset_df = trial_df.iloc[:, [roi_index]]
@@ -152,7 +153,7 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
 
         subset_df.columns.name = 'roi'
         subset_df = util.addlevel(subset_df,
-            ['from_hallem','newly_analyzed','date','fly_num'],
+            ['from_hallem', 'newly_analyzed', 'date', 'fly_num'],
             [False, True, None, None], axis='columns'
         )
 
@@ -197,6 +198,8 @@ def plot(df, sort_rois=True, show=True, **kwargs):
 
     # TODO also/only try slightly changing odor ticklabel text color between changes in
     # odor name?
+    # TODO TODO try replacing this w/ something similar to vline_level_fn in across-fly
+    # ijroi part of al_analysis.py code (format_panel, w/ levels_from_labels=False)?
     vline_level_fn = lambda odor_str: olf.parse_odor_name(odor_str)
 
     # The cached ROIs will have '/' in ROI name (e.g. '3-30/1/DM4'), and only the last
@@ -211,10 +214,29 @@ def plot(df, sort_rois=True, show=True, **kwargs):
     # larger if just ~one row?)
     fig, _ = plot_all_roi_mean_responses(df, odor_sort=False,
         roi_sort=sort_rois, sort_rois_first_on=sort_first_on,
-        hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn, **kwargs
+        hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn,
+
+        # Since we want vlines between odors, we can't easily (w/ current viz.matshow
+        # behavior) also have vlines between panels, and thus the (group label, odor)
+        # combinations will have duplicates... (because of the few odors both in
+        # diagnostic and Remy panel, e.g. 'ms @ -3')
+        # TODO try to have it warn about dupes or modify labels to include panel?
+        allow_duplicate_labels=True, **kwargs
     )
     if show:
         plt.show()
+
+
+_no_multiprocessing = False
+# TODO could add a start=True kwarg if that one case that currently assigns proc before
+# starting needs that order
+def plot_process(plot_fn, *args, **kwargs):
+    if not _no_multiprocessing:
+        proc = Process(target=plot_fn, args=args, kwargs=kwargs)
+        proc.start()
+        return proc
+    else:
+        plot_fn(*args, **kwargs)
 
 
 newly_analyzed_dfs = []
@@ -232,6 +254,7 @@ def load_and_plot(args):
     global most_recent_plot_proc
     global keep_comparison_to_cache
     global plotting_processes
+    global _no_multiprocessing
 
     roi_strs = args.roi_strs
 
@@ -246,6 +269,8 @@ def load_and_plot(args):
     plot_other_odors = args.other_odors
 
     add_to_plot = args.add
+
+    _no_multiprocessing = args.debug
 
     # TODO might want to instead change most_recent_plot_proc to point to most recent
     # still-alive process (b/c we might have manually closed the otherwise most recent
@@ -401,10 +426,7 @@ def load_and_plot(args):
                 ax.get_xaxis().set_visible(False)
                 plt.show()
 
-            proc = Process(target=plot_corrs, args=(hallem_corrs,))
-            proc.start()
-            #'''
-
+            plot_process(plot_corrs, hallem_corrs)
 
         newly_analyzed_roi_names.append(new_roi_name)
         newly_analyzed_dfs.append(new_df)
@@ -468,6 +490,10 @@ def load_and_plot(args):
 
     subset_df = subset_df[subset_df.index.get_level_values('odor1') != 'pfo @ 0']
 
+    # TODO care to have same order as manually specified in panel2name_order in
+    # al_analysis.py? try to unify handling if so... maybe just import it from there?
+    # or cache it, as w/ abbrevs?
+    #
     # TODO refactor (move sorting into plot_all_roi_mean_responses, after mean? need to
     # drop too though...) so that order from current panel is used, but data from any
     # ROIs from older panels that shared some odors is still shown. as is, it will
@@ -520,32 +546,33 @@ def load_and_plot(args):
         #hallem_comparison_plot()
         #
 
-        #proc = Process(target=hallem_comparison_plot)
-        #proc.start()
+        #plot_process(hallem_comparison_plot)
 
+        # TODO add option to not run this through Process? some reason i can't?
+        # (to make use of debugger within possible)
+        #
         # TODO TODO have this Axes be same physical size, so it's easier to compare
         # the two plots
         # TODO move up "title" (xlabel) on this one / tight_layout / something
-        #'''
-        proc = Process(target=plot, args=(hallem_overlap_df,),
-            kwargs={'sort_rois': False,
-                'title': f'Hallem data (sorted by corr with {new_roi_name})',
-        })
-        proc.start()
-        #'''
+        plot_process(plot, hallem_overlap_df, sort_rois=False,
+            title=f'Hallem data (sorted by corr with {new_roi_name})',
+        )
 
     if add_to_plot and most_recent_plot_proc is not None:
         most_recent_plot_proc.terminate()
 
-    _debug_plot = False
-    if not _debug_plot:
-        # currently just counting on the process eventually terminating, and thus the
-        # corresponding Process object being cleaned up
-        proc = Process(target=plot, args=(subset_df,))
-        most_recent_plot_proc = proc
-        proc.start()
-        plotting_processes.append(proc)
-    else:
-        # So I can use a debugger
-        plot(subset_df)
+    # currently just counting on the process eventually terminating, and thus the
+    # corresponding Process object being cleaned up
+
+    # TODO matter that this is before proc.start()? can also refactor this part if
+    # not...
+    # TODO delete if order did not seem to matter
+    #proc = Process(target=plot, args=(subset_df,))
+    #most_recent_plot_proc = proc
+    #proc.start()
+
+    proc = plot_process(plot, subset_df)
+    most_recent_plot_proc = proc
+
+    plotting_processes.append(proc)
 
