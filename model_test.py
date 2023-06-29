@@ -17,11 +17,7 @@ from drosolf.orns import orns
 def main():
     matt_data_dir = Path('../matt/matt-modeling/data')
 
-    # TODO TODO TODO make sure there are no hc_data.csv files on my computer (esp since
-    # i copied a lot of matt's stuff over) that still needs the methanoic acid row fix!
-    # (there was an offset starting ~2nd/3rd entry in, where 14 was moved to end of row)
-
-    # TODO TODO TODO fix code that generated hemimatrix.npy / delete
+    # TODO TODO fix code that generated hemimatrix.npy / delete
     # (to remove effect of hc_data.csv methanoic acid bug that persisted in many copies
     # of this csv) (won't be equal to `wide` until fixed)
     #
@@ -64,27 +60,18 @@ def main():
     mp.kc.thr_type = 'uniform'
 
     hc_data_csv = str(Path('~/src/olfsysm/hc_data.csv').expanduser())
-    # TODO TODO was it an issue that i was using only one mp earlier, and changing shape
-    # of hallem data? (unclear, but matt's old python example did say something like
-    # this) (probably not, right? change all tmp_mp stuff back to mp)
-    #osm.load_hc_data(mp, hc_data_csv)
-    tmp_mp = osm.ModelParams()
-    osm.load_hc_data(tmp_mp, hc_data_csv)
+    osm.load_hc_data(mp, hc_data_csv)
 
     orn_deltas = orns(add_sfr=False, drop_sfr=False).T
     sfr = orn_deltas['spontaneous firing rate']
     assert orn_deltas.columns[-1] == 'spontaneous firing rate'
     orn_deltas = orn_deltas.iloc[:, :-1]
 
-    # TODO TODO TODO at which point can't mp.orn.data.[delta|spont] change (Matt
-    # specifically mentioned this consideration in his (non-repo)
-    # kc-modeling/python-example.py)? and how does an error manifest? is it just after
-    # tuning / running some of the sims that it shouldn't change size? will it err (and
-    # if not can we change it so it does)? ask Matt if i need.
-
+    # NOTE: as long as we finish all changes to mp.orn.data.[delta|spont] BEFORE
+    # initializing RunVars, we should be fine. After that, sizes of these matrices
+    # should not change (but content can).
     skip_idx = None
-    #for i, osm_one_orn_deltas in enumerate(mp.orn.data.delta):
-    for i, osm_one_orn_deltas in enumerate(tmp_mp.orn.data.delta):
+    for i, osm_one_orn_deltas in enumerate(mp.orn.data.delta):
 
         my_one_orn_deltas = orn_deltas.iloc[i]
         if not np.array_equal(osm_one_orn_deltas, my_one_orn_deltas):
@@ -101,7 +88,7 @@ def main():
     # TODO TODO check this is right (33b/DM3. is that what ann drops?)
     # (33b goes to both DM3 and DM5, even though each of those has another unique
     # receptor)
-    # TODO TODO TODO TODO where does ann even say she drops the 8th glomerulus
+    # TODO TODO where does ann even say she drops the 8th glomerulus
     # (or where is it in her code?)
     skip_or = orn_deltas.index[skip_idx]
     skip_glom = drosolf.orns.receptor2glomerulus[skip_or]
@@ -113,21 +100,13 @@ def main():
     shared_idx = np.setdiff1d(np.arange(len(orn_deltas)), [skip_idx])
     sfr = sfr.iloc[shared_idx]
     orn_deltas = orn_deltas.iloc[shared_idx]
-    assert np.array_equal(sfr, tmp_mp.orn.data.spont[:, 0])
-    assert np.array_equal(orn_deltas, tmp_mp.orn.data.delta)
-    #assert np.array_equal(sfr, mp.orn.data.spont[:, 0])
-    #assert np.array_equal(orn_deltas, mp.orn.data.delta)
+    assert np.array_equal(sfr, mp.orn.data.spont[:, 0])
+    assert np.array_equal(orn_deltas, mp.orn.data.delta)
 
     assert sfr.index[0] == '2a'
     assert orn_deltas.index[0] == '2a'
-    # TODO try removing .values and/or .copy()
-    #mp.orn.data.spont = sfr.iloc[1:].values.copy()
-    #mp.orn.data.delta = orn_deltas.iloc[1:].values.copy()
 
-    # TODO was there some reason i needed a local reference?
-    # (well it didn't seem to fix the issue...)
-    #sfr = sfr.iloc[1:].values.copy()
-    #orn_deltas = orn_deltas.iloc[1:].values.copy()
+    # TODO try removing .copy()?
     sfr = sfr.iloc[1:].copy()
     orn_deltas = orn_deltas.iloc[1:].copy()
     mp.orn.data.spont = sfr
@@ -155,8 +134,12 @@ def main():
     responses = rv.kc.responses
 
     assert np.array_equal(wide.index, gkc_wide.bodyid)
-
     assert np.array_equal(responses, wide)
+
+    # TODO TODO TODO when fitting calcium->spike fn, should i add points from 0 dF/F ->
+    # spontaneous spike rate?
+    # TODO make sure each glomerulus has its specific spontaneous firing rate reflected
+    # in its equation
 
     import ipdb; ipdb.set_trace()
 
