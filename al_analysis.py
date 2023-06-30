@@ -52,7 +52,10 @@ from hong2p.suite2p import LabelsNotModifiedError, LabelsNotSelectiveError
 from hong2p.roi import (rois2best_planes_only, ijroi_filename, has_ijrois, ijroi_mtime,
     ijroi_masks, extract_traces_bool_masks, ijroiset_default_basename
 )
-from hong2p.util import shorten_path, shorten_stimfile_path, format_date, date_fmt_str
+from hong2p.util import (shorten_path, shorten_stimfile_path, format_date, date_fmt_str,
+    # TODO refactor current stuff to use these
+    num_null, num_notnull
+)
 from hong2p.olf import (format_odor, format_mix_from_strs, format_odor_list,
     solvent_str, odor2abbrev, odor_lists_to_multiindex
 )
@@ -332,8 +335,8 @@ bad_suite2p_analysis_dirs = (
     '2021-05-24/2/1o3ol_and_2h',
 )
 
-# TODO refactor google sheet metadata handling so it doesn't download until it's needed
-# (or at least not outside of __main__?)?
+# TODO TODO refactor google sheet metadata handling so it doesn't download until it's
+# needed (or at least not outside of __main__?)?
 
 # TODO set bool_fillna_false=False (kwarg to gsheet_to_frame) and manually fix any
 # unintentional NaN in these columns if I need to use the missing data for early
@@ -3036,10 +3039,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
 
         (name1, _), (name2, _) = names_and_concs_tuple
 
-        # TODO factor out handling pointing name back to itself (hong2p.olf.get_abbrev
-        # or something like that?)?
-        name1 = odor2abbrev.get(name1, name1)
-        name2 = odor2abbrev.get(name2, name2)
+        name1 = olf.abbrev(name1)
+        name2 = olf.abbrev(name2)
 
         if not is_acquisition_host:
             experiment_basedir = keys2rel_plot_dir(date, fly_num, thorimage_basename)
@@ -4558,8 +4559,6 @@ def preprocess_recordings(keys_and_paired_dirs, verbose=False) -> None:
       don't have their own.
     - Adds any odors with abbreviations defined in olfactometer YAMLs to odor2abbrev.
     """
-    ambiguous_diags = set()
-
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
 
         # TODO also print directories here if CLI verbose flag is true?
@@ -4595,44 +4594,6 @@ def preprocess_recordings(keys_and_paired_dirs, verbose=False) -> None:
             if fly_key not in fly2diag_thorimage_dir:
                 fly2diag_thorimage_dir[fly_key] = thorimage_dir
 
-            # TODO delete if above works
-            '''
-            # any such data? redos should generally be only one passed to this fn,
-            # to the exclusion of any redone experiments
-            if fly_key in fly2diag_thorimage_dir:
-                prev_thorimage_dir =  fly2diag_thorimage_dir[fly_key]
-
-                # If directory is called this exactly, rather than e.g.
-                # 'glomeruli_diagnostics_part2', we will use this directory for
-                # RoiSet.zip
-                # (for now, might want to just move things to using fly analysis
-                # directories, and mostly not symlinking any RoiSet.zip files)
-                preferred_thorimage_name = 'glomeruli_diagnostics'
-
-                if thorimage_dir.name == preferred_thorimage_name:
-                    fly2diag_thorimage_dir[fly_key] = thorimage_dir
-
-                elif prev_thorimage_dir.name == preferred_thorimage_name:
-                    fly2diag_thorimage_dir[fly_key] = prev_thorimage_dir
-
-                # TODO TODO TODO try to delete? need analysis to work w/ diags split
-                # over multiple recordings (e.g. 2023-04-22 data)
-                #
-                # This should be pretty much unreachable now that we are checking name
-                # exactly (unless I typo or deviate from conventionally calling at least
-                # one diagnostic recording per fly 'glomeruli_diagnostics' exactly.
-                else:
-                    date_str = format_date(date)
-                    fly_str = f'{date_str}/{fly_num}'
-                    warn(f'{fly_str} had multiple diagnostics, at least:\n'
-                        f'{shorten_path(prev_thorimage_dir)}\n'
-                        f'{shorten_path(thorimage_dir)}'
-                    )
-                    ambiguous_diags.add(fly_key)
-
-            fly2diag_thorimage_dir[fly_key] = thorimage_dir
-            '''
-
         if do_convert_raw_to_tiff:
             # TODO if we wrote a flipped.tif for a fly, that should trigger updating any
             # outputs that depend on it (nonroi stuff esp, but probably just everything)
@@ -4646,11 +4607,33 @@ def preprocess_recordings(keys_and_paired_dirs, verbose=False) -> None:
             continue
 
         yaml_path, _, odor_lists = odor_data
-        olf.add_abbrevs_from_odor_lists(odor_lists, odor2abbrev, yaml_path=yaml_path)
+        olf.add_abbrevs_from_odor_lists(odor_lists, yaml_path=yaml_path)
 
-    # TODO causing issues on new data w/ 'diagnostics1', 'diagnostics2', ... ?
-    for fly_key in ambiguous_diags:
-        fly2diag_thorimage_dir.pop(fly_key)
+        # TODO delete
+        # (can't use solvent info to exclude va/aa in water, at least not w/o fixing
+        # generated yamls for megamat experiments, which still don't specify
+        # solvent='water' for those despite experiments after 2023-04-26 always using
+        # water for them (no matter for which panel))
+        '''
+        _printed = False
+        for trial_odors in odor_lists:
+            for odor in trial_odors:
+                if odor['abbrev'] not in ('va', 'aa'):
+                    continue
+
+                if not _printed:
+                    print()
+                    print(shorten_path(thorimage_dir))
+                    print(shorten_path(yaml_path))
+                    _printed = True
+
+                solvent = odor.get('solvent', 'unspecified')
+                print(f'{odor["abbrev"]}: {solvent=}')
+
+        if _printed:
+            print()
+        '''
+        #
 
     # also happens automatically atexit, but saving explicitly here incase there is an
     # unclean exit
@@ -4919,6 +4902,12 @@ def format_fly_and_roi(fly_and_roi) -> str:
 # TODO type hint w/ appropriate type from hong2p.types
 def format_fly_key_list(fly_key_list) -> str:
     return pformat([f'{format_date(d)}/{n}' for d, n in sorted(fly_key_list)])
+
+
+# TODO refactor stuff to use this
+# TODO datelike type? have one already?
+def format_datefly(date, fly_num: int) -> str:
+    return f'{format_date(date)}/{fly_num}'
 
 
 def odor_str2conc(odor_str: str) -> float:
@@ -6362,17 +6351,18 @@ def main():
     ))
     del common_paired_thor_dirs_kwargs
 
-    # TODO try to only warn for flies that do have *some* real data
-    # (and probably not just diagnostics)
+    # TODO try to get autocomplete to work for panels / indicators (+ dates?)
+
     not_in_gsheet = [(k, d) for k, d in keys_and_paired_dirs if k not in gdf.index]
     flies_not_in_gsheet = set(k for k, d in not_in_gsheet)
     if len(flies_not_in_gsheet) > 0:
         warn('flies not in gsheet will not be analyzed if not added:\n'
             f'{format_fly_key_list(flies_not_in_gsheet)}'
         )
+        keys_and_paired_dirs = [(k, d) for k, d in keys_and_paired_dirs
+            if k not in flies_not_in_gsheet
+        ]
 
-    # TODO warn about data thrown out for not being in gsheet (also in general, if this
-    # path isn't the only case that happens)
     if driver is not None:
         keys_and_paired_dirs = [(k, d) for k, d in keys_and_paired_dirs
             if k in gdf.index and gdf.loc[k, 'driver'] == driver
@@ -6391,15 +6381,32 @@ def main():
                 raise ValueError(f'no flies with {driver=}, {indicator=} to analyze')
 
     fly_key_set = set((d, f) for (d, f), _ in keys_and_paired_dirs)
-
-    # TODO maybe warn if this set we are *subtracting* is non-empty?
-    # (i.e. if final len(fly_key_set) != len(set((d,f) for (d,f), _ in
-    # keys_and_paired_dirs)) )
     fly_key_set &= set(gdf.index.to_list())
 
     # Subset of the Google Sheet pertaining to the flies being analyzed.
     gsheet_subset = gdf.loc[fly_key_set]
     del fly_key_set
+
+    # Flies where 'Exclude' column in Google Sheet is True, indicating the whole fly
+    # should be excluded. Each fly excluded this way should also have a reason listed in
+    # the 'Exclusion Reason' column.
+    n_excluded = gsheet_subset.exclude.sum()
+    if n_excluded > 0:
+        warn(f'excluding {n_excluded} flies marked for exclusion in Google Sheet')
+
+        exclude_subset = gsheet_subset[gsheet_subset.exclude]
+        missing_reason = exclude_subset[exclude_subset.exclusion_reason.isna()]
+        msg = "please fill in missing 'Exclusion Reason' in Google Sheet for:"
+        if len(missing_reason) > 0:
+            for date, fly_num in missing_reason.index:
+                msg += f'\n- {format_date(date)}/{fly_num}'
+
+            warn(msg)
+
+        keys_and_paired_dirs = [(k, d) for k, d in keys_and_paired_dirs
+            if not gdf.loc[k, 'exclude']
+        ]
+        gsheet_subset = gsheet_subset[~gsheet_subset.exclude]
 
     # TODO TODO update code to loop over drivers/indicators in all relevant places
     # (or add to groupbys, etc)
@@ -6414,6 +6421,7 @@ def main():
         f'({unique_indicators}) not supported! pass matching_substrs CLI args to limit'
         'data to one indicator.'
     )
+    del gsheet_subset
 
     driver = unique_drivers.pop()
     indicator = unique_indicators.pop()
@@ -6425,8 +6433,10 @@ def main():
     plot_root = get_plot_root(driver, indicator)
 
 
-    # TODO maybe this stuff should always be in a <plot_fmt> dir at root, independent of
-    # driver? or maybe just at same level as this script, as before?
+    # TODO TODO maybe this stuff should always be in a <plot_fmt> dir at root,
+    # independent of driver? or maybe just at same level as this script, as before?
+    # TODO TODO or maybe only regen if doesn't exist / a new -i option is passed
+    # TODO separate script?
     orn_df = orns.orns(columns='glomerulus')
 
     plot_remy_drosolf_corr(orn_df, 'hallem_orns', 'Hallem ORNs', plot_root,
@@ -6436,6 +6446,7 @@ def main():
     # TODO do w/ kennedy PNs too!
     pn_df = pns.pns(columns='glomerulus')
     plot_remy_drosolf_corr(pn_df, 'olsen_pns', 'Olsen PNs', plot_root)
+
 
     # TODO refactor to skip things here consistent w/ how i would in process_recording?
     # (have all skipping decisions made in a prior loop that returns a filtered
@@ -7088,6 +7099,12 @@ def main():
     if do_analyze_response_volumes and (
         not is_acquisition_host and len(response_volumes_list) > 0):
 
+        # TODO also drop va/aa <= 2023-04-22 (when solvent was pfo) here, if i ever
+        # want to re-enable do_analyze_response_volumes
+        print('DROP VA/AA <= 2023-04-22 FROM EACH ELEMENT OF RESPONSE_VOLUMES_LIST')
+        import ipdb; ipdb.set_trace()
+        raise NotImplementedError
+
         # Crude way to ensure we don't overwrite if we only run on a subset of the data
         write_cache = len(matching_substrs) == 0
 
@@ -7214,6 +7231,7 @@ def main():
 
     # TODO also check that all loaded data is using same stimulus program
     # (already skipping stuff with odor pulse < 3s tho)
+    # (wouldn't want to do for any diagnostic panel stuff)
 
     # Only actually shortens if print_full_paths=False
     def shorten_and_pprint(paths):
@@ -7264,31 +7282,50 @@ def main():
             'suite2p outputs where no ROIs were merged', no_merges
         )
 
-    # TODO TODO probably print stuff in gsheet but not local and vice versa
-
     if len(ij_trial_dfs) == 0:
         cprint('No ImageJ ROIs defined for current experiments!', 'yellow')
         return
 
-    # TODO and why is this:
-    # sum([x.notna().sum().sum() for x in ij_trial_dfs]) (20586)
-    # ...greater than this:
-    # trial_df.notna().sum().sum() (11082)
-    # i assume pair stuff is either overwritting or getting overwritten by non-pair
-    # stuff? (yes, seems to be fixed now. add assertion guaranteeing num non-na doesn't
-    # change tho)
-
-    # TODO TODO TODO filter out all ROIs w/ '+' in them here
+    n_before = sum([num_notnull(x) for x in ij_trial_dfs])
 
     trial_df = pd.concat(ij_trial_dfs, axis='columns')
-    util.check_index_vals_unique(trial_df)
 
+    util.check_index_vals_unique(trial_df)
+    assert num_notnull(trial_df) == n_before
+
+    # this does the same checks as above, internally
+    # (that number of notna values does not change and index values are unique)
     trial_df = merge_rois_across_recordings(trial_df)
 
-    # TODO TODO TODO why are there any rows where this:
-    # trial_df.isna().all(axis='columns') ...is True??? (still?)
-    # and was this likely just from some small amount of data affected by a
-    # divide-by-zero error?
+    trial_df_isna = trial_df.isna()
+    assert not trial_df_isna.all(axis='columns').any()
+    assert not trial_df_isna.all(axis='rows').any()
+    del trial_df_isna
+
+
+    # I don't think any old 2-component air-mixture data (where odor2 is defined) is
+    # affected, and I'm unlikely to reanalyze that data at this point.
+    odor1 = trial_df.index.get_level_values('odor1')
+    wrong_solvent_odors = odor1.str.startswith('va @') | odor1.isin(('aa @ -3',))
+
+    # TODO TODO TODO do i really just have 17 glomeruli per fly (on average) in the 6
+    # flies >= 2023-04-26? why do i have ~39 glomeruli per fly in the 2 flies on 4-22?
+    last_wrong_solvent_date = '2023-04-22'
+    assert trial_df.columns.names[0] == 'date', 'date slicing below needs this'
+    to_null = trial_df.loc[wrong_solvent_odors, :last_wrong_solvent_date]
+    n_new_null = num_notnull(to_null)
+
+    if n_new_null > 0:
+        msg = 'nulling VA/AA data for flies (from before switch to water solvent):\n'
+        msg += '\n'.join([f'- {format_datefly(*x)}'
+            for x in to_null.columns.droplevel('roi').unique()
+        ])
+        warn(msg)
+
+    trial_df.loc[wrong_solvent_odors, :last_wrong_solvent_date] = float('nan')
+
+    assert num_notnull(trial_df) == n_before - n_new_null
+
 
     trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
     trial_df = sort_odors(trial_df)
@@ -7360,10 +7397,12 @@ def main():
     for (date, fly_num), fly_df in trial_df.groupby(fly_keys, axis='columns',
         sort=False):
 
-        # TODO maybe modify plot_corrs so it accepts a list of length == # of flies
+        # TODO TODO maybe modify plot_corrs so it accepts a list of length == # of flies
         # (i.e. doesn't need one entry for each (fly, panel) combination)).
         # only matters for ease + if i want to actually plot correlations between odors
         # from two diff panels
+        # (...but if it's complaining about diff size corr inputs, and w/in panel size
+        # doesn't change, is plot_corrs current handling even correct?)
         for panel, fly_panel_df in fly_df.groupby('panel', sort=False):
 
             # There will only be one of these, and we already have access to it.
