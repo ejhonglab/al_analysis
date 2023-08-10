@@ -5,17 +5,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-import olfsysm as osm
-import drosolf
-from drosolf.orns import orns
+from drosolf import orns
+
+from al_analysis import matt_data_dir, fit_mb_model
 
 
 # TODO TODO TODO re: narrow-odors-jupyter/modeling.ipynb:
 # - what is diff between "connection-weighted" vs "synapse-weighted" Hemibrain matrix?
 # - which (if either) was used to produce hemibrain plot in preprint?
 
+# TODO convert this to unit test(s)?
 def main():
-    matt_data_dir = Path('../matt/matt-modeling/data')
+    # TODO TODO TODO also load and try to reproduce his hemidraw / uniform draw stuff
+    # TODO TODO how to get seeds to be the same tho?
+
+    #import ipdb; ipdb.set_trace()
 
     # TODO TODO fix code that generated hemimatrix.npy / delete
     # (to remove effect of hc_data.csv methanoic acid bug that persisted in many copies
@@ -39,109 +43,94 @@ def main():
     )
     df['ordered_kcs'] = pd.Categorical(df.kc, categories=df.kc.unique(), ordered=True)
     wide = df.pivot(columns='ordered_odors', index='ordered_kcs', values='r')
+    del df
 
     #assert np.array_equal(hemi, wide.values)
     #del hemi
 
+    # TODO rename to run_model? or have a separate fn for that? take `mp` (and `rv` too,
+    # or are even fit thresholds in mp?) as input (and return from fit_model?)?
+    # TODO modify so i don't need to return gkc_wide here (or at least be more clear
+    # about what it is, both in docs and in name)?
+    responses, gkc_wide = fit_mb_model(connectome_wPNKC=True, _use_matt_wPNKC=True)
 
-    gkc_wide = pd.read_csv(matt_data_dir / 'hemibrain/halfmat/gkc-halfmat-wide.csv')
-    gkc_mat = pd.read_csv(matt_data_dir / 'hemibrain/halfmat/gkc-halfmat.csv',
-        header=None
-    )
-    # All other columns are glomerulus names.
-    assert gkc_wide.columns[0] == 'bodyid'
-    assert np.array_equal(gkc_wide.iloc[:, 1:].values, gkc_mat)
-
-    mp = osm.ModelParams()
-
-    # TODO TODO TODO what was matt using this for in narrow-odors-jupyter/modeling.ipynb
-    #mp.kc.ignore_ffapl = True
-
-    mp.kc.thr_type = 'uniform'
-
-    hc_data_csv = str(Path('~/src/olfsysm/hc_data.csv').expanduser())
-    osm.load_hc_data(mp, hc_data_csv)
-
-    orn_deltas = orns(add_sfr=False, drop_sfr=False).T
-    sfr = orn_deltas['spontaneous firing rate']
-    assert orn_deltas.columns[-1] == 'spontaneous firing rate'
-    orn_deltas = orn_deltas.iloc[:, :-1]
-
-    # NOTE: as long as we finish all changes to mp.orn.data.[delta|spont] BEFORE
-    # initializing RunVars, we should be fine. After that, sizes of these matrices
-    # should not change (but content can).
-    skip_idx = None
-    for i, osm_one_orn_deltas in enumerate(mp.orn.data.delta):
-
-        my_one_orn_deltas = orn_deltas.iloc[i]
-        if not np.array_equal(osm_one_orn_deltas, my_one_orn_deltas):
-            assert np.array_equal(orn_deltas.iloc[i + 1], osm_one_orn_deltas)
-            skip_idx = i
-            break
-
-    assert skip_idx is not None
-
-    # TODO TODO merge da4m/l hallem data?
-    # TODO do same w/ 33b (adding it into 47a and 85a Hallem data, for DM3 and DM5,
-    # respectively)?
-
-    # TODO TODO check this is right (33b/DM3. is that what ann drops?)
-    # (33b goes to both DM3 and DM5, even though each of those has another unique
-    # receptor)
-    # TODO TODO where does ann even say she drops the 8th glomerulus
-    # (or where is it in her code?)
-    skip_or = orn_deltas.index[skip_idx]
-    skip_glom = drosolf.orns.receptor2glomerulus[skip_or]
-    print(f'\nDropping Hallem data for Or{skip_or}/{skip_glom} '
-        f'(index={skip_idx}), consistent with Kennedy work.\n'
-    )
-    del skip_or, skip_glom
-
-    shared_idx = np.setdiff1d(np.arange(len(orn_deltas)), [skip_idx])
-    sfr = sfr.iloc[shared_idx]
-    orn_deltas = orn_deltas.iloc[shared_idx]
-    assert np.array_equal(sfr, mp.orn.data.spont[:, 0])
-    assert np.array_equal(orn_deltas, mp.orn.data.delta)
-
-    assert sfr.index[0] == '2a'
-    assert orn_deltas.index[0] == '2a'
-
-    # TODO try removing .copy()?
-    sfr = sfr.iloc[1:].copy()
-    orn_deltas = orn_deltas.iloc[1:].copy()
-    mp.orn.data.spont = sfr
-    mp.orn.data.delta = orn_deltas
-
-    # TODO in narrow-odors-jupyter/modeling.ipynb, why does matt set
-    # mp.kc.tune_from = np.arange(110, step=2)
-    # (only tuning on every other odor from hallem, it seems)
-
-    # TODO need to remove DA4m (2a) from gkc_wide / gkc_mat first too?  don't see matt
-    # doing it in hemimat-modeling... (i don't think i need to.  rv.pn.pn_sims below had
-    # receptor-dim length of 22)
-
-    mp.kc.preset_wPNKC = True
-    mp.kc.N = len(gkc_mat)
-
-    rv = osm.RunVars(mp)
-
-    rv.kc.wPNKC = gkc_mat
-
-    osm.run_ORN_LN_sims(mp, rv)
-    osm.run_PN_sims(mp, rv)
-    osm.run_KC_sims(mp, rv, True)
-
-    responses = rv.kc.responses
-
-    assert np.array_equal(wide.index, gkc_wide.bodyid)
+    # (i might decide to change this index name, inside fit_mb_model...)
+    assert gkc_wide.index.name == 'bodyid'
+    assert np.array_equal(wide.index, gkc_wide.index)
     assert np.array_equal(responses, wide)
+    print("hemibrain (halfmat) responses equal to Matt's")
 
-    # TODO TODO TODO when fitting calcium->spike fn, should i add points from 0 dF/F ->
-    # spontaneous spike rate?
-    # TODO make sure each glomerulus has its specific spontaneous firing rate reflected
-    # in its equation
+    # TODO TODO also try orn_deltas having one less odor than hallem or something?
+    # or change the names? to make it more clear we aren't getting the other half of the
+    # concatenated matrix
+    # TODO standard transpose orientation for my data + this, so i don't need to
+    # tranpose (as much)? (think i want rows = odors?)
+    # TODO TODO TODO also test (+ get working w/) columns='glomerulus', for easier use
+    # on my data
+    orn_deltas = orns.orns(columns='receptor', add_sfr=False).T
 
-    import ipdb; ipdb.set_trace()
+    # TODO TODO also test if input has glomeruli instead of receptors
+    r1, _ = fit_mb_model(orn_deltas, tune_on_hallem=True, connectome_wPNKC=True,
+        _use_matt_wPNKC=True
+    )
+
+    # NOTE: tune_on_hallem would be True by default here anyway
+    r2, _ = fit_mb_model(tune_on_hallem=True, connectome_wPNKC=True,
+        _use_matt_wPNKC=True
+    )
+
+    assert np.array_equal(r1.values, r2.values)
+    # (model_kc)
+    assert r1.index.equals(r2.index)
+    # this won't be true for odors passed through odor2abbrev
+    assert (
+        ((r1.columns + ' @ -2') == r2.columns).sum() / len(r1.columns) >= 0.5
+    ), 'assuming more than half of hallem odors not in odor2abbrev'
+
+    # Hardcoded from what value this takes in fit_and_plot_mb_model calls in
+    # al_analysis.py. fit_mb_model should process Hallem odor names such that all of
+    # these are in there, internally (though at -2 rather than -3...)
+    remy_odors = {
+        '1-5ol @ -3',
+        '1-6ol @ -3',
+        '1-8ol @ -3',
+        '2-but @ -3',
+        '2h @ -3',
+        '6al @ -3',
+        'B-cit @ -3',
+        'IaA @ -3',
+        'Lin @ -3',
+        'aa @ -3',
+        'benz @ -3',
+        'eb @ -3',
+        'ep @ -3',
+        'ms @ -3',
+        'pa @ -3',
+        't2h @ -3',
+        'va @ -3',
+    }
+    r3, _ = fit_mb_model(tune_on_hallem=True, connectome_wPNKC=True,
+        sim_odors=remy_odors, _use_matt_wPNKC=True
+    )
+
+    def is_remy_odor_col(c):
+        if c.replace(' @ -2', ' @ -3') in remy_odors:
+            return True
+        return False
+
+    remy_odor_cols = [c for c in r3.columns if is_remy_odor_col(c)]
+    assert remy_odor_cols == [c for c in r2.columns if is_remy_odor_col(c)]
+    assert r3[remy_odor_cols].equals(r2[remy_odor_cols])
+
+    # TODO w/ both calls above, or just w/ orn_deltas left None (as we'd normally call
+    # when just trying to check w/ hallem input)?
+
+    # TODO delete? or factor to a separate unit test just checking this call to model
+    # doesn't fail? replace w/ using matt's input seed(s) and actually comparing to one
+    # of his other non-hemibrain draws
+    # TODO TODO TODO TODO why does this seem to produce frac_silent=0??? red flag?
+    # (for connectome stuff tuned on hallem, it's 0.443)
+    r2, _ = fit_mb_model(connectome_wPNKC=False, _use_matt_wPNKC=True)
 
 
 if __name__ == '__main__':

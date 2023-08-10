@@ -58,7 +58,11 @@ pip install -r requirements.txt
 
 declare -a required_env_vars=(
     # Technically can also set HONG2P_DATA, and it will take precedence over this
+    # TODO is this HONG2P_NAS now?
+    # TODO + HONG2P_DATA_DIR
     "HONG_NAS"
+
+    # TODO also add HONG2P_STIMFILE_DIR?
 
     "HONG2P_FAST_DATA"
 )

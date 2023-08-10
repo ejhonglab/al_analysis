@@ -1,0 +1,14 @@
+-r common-requirements.txt
+
+# Assumes all of these have been cloned to same level as this al_analysis repo.
+-e ../drosolf
+-e ../hong2p
+-e ../suite2p
+-e ../natmix
+
+# TODO uncomment! just testing if this is only thing preventing:
+# `pip install -r requirements.txt` from working w/ pip 23.2.1
+#
+# Might not really by any point in installing this one editable...
+# TODO if not, move to common-requirements.txt
+#-e ../olfsysm

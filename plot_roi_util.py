@@ -358,18 +358,11 @@ def load_and_plot(args):
             # Absolute ORN firing rates (reported deltas, w/ reported SFR added back in)
             orn_df = orns.orns(columns='glomerulus')
 
-            # Appending asterisks for 'DM3' and 'DM3.1' to avoid confusion w/ just 'DM3'
-            orn_df.columns = orn_df.columns.map(
-                lambda x: f'{x}*' if x.startswith('DM3') else x
-            )
-            # Since I'm not sure whether to compute DM3 signal as a weighted average of
-            # 47a ("DM3.1") and 33b ("DM3") inputs, or which weights to use if so.
-            '''
-            orn_df = orn_df.drop(
-                columns=[c for c in orn_df.columns if c.startswith('DM3')]
-            )
+            # TODO test
+            # TODO move to option in orns.orns(...)?
+            orn_df = orn_df[[g for g in orn_df.columns if g != 'DM3+DM5']].copy()
+
             assert not orn_df.columns.duplicated().any()
-            '''
 
             orn_df = orn_df.rename(index={
                 'b-citronellol': 'B-citronellol',
@@ -516,9 +509,9 @@ def load_and_plot(args):
 
         subset_df = olf.sort_odors(subset_df)
 
-    # TODO TODO maybe if the name is shared (prefix? cause DM3[.1] thing) w/ current roi
-    # name (prefix again, cause '?'?), then call out that one, maybe by bolding name in
-    # yticklabels of both hallem plots or something? or sorting that one out?
+    # TODO TODO maybe if the name is shared w/ current roi name (prefix again, cause
+    # '?'?), then call out that one, maybe by bolding name in yticklabels of both hallem
+    # plots or something? or sorting that one out?
     if hallem:
         n_overlapping = len(hallem_overlap_df.columns)
 

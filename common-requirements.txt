@@ -1,0 +1,48 @@
+# some stuff would break w/ some of the newer versions
+xarray==0.19.0
+
+# To read Prat's PN->KC Excel file
+openpyxl
+
+# works to unpickle some old stuff. not sure if other things would break w/ newer.
+pandas==1.3.1
+
+matplotlib>=3.6.0
+seaborn>=0.12.0
+
+# TODO delete if i don't end up using.
+statsmodels
+
+colorcet
+
+colorama
+termcolor
+
+# Used to get total memory in plot_roi_util.py
+psutil
+
+tqdm
+
+# Just to silence suite2p warnings about not having cellpose. Not actually using.
+cellpose
+
+# TODO and has something replaced pages= kwarg, or is that support just gone?
+#
+# TODO TODO is 2023.7.10 actually working for me and not for sam, or had i just not
+# tested motion correction since remaking this venv (after breaking suite2p conda env)?
+# traceback from 2023-07-27 slack conversation w/ sam:
+# ...
+# NOTE: ScanImageTiffReader not working for this tiff type, using tifffile
+# Traceback (most recent call last):
+#   File "./al_analysis.py", line 4155, in register_recordings_together
+#     ops_end = run_s2p(ops=ops, db=db)
+#   File "/home/hong/anaconda3/envs/al_analysis/lib/python3.8/site-packages/suite2p/run_s2p.py", line 412, in run_s2p
+#     ops0 = io.tiff_to_binary(ops.copy())
+#   File "/home/hong/anaconda3/envs/al_analysis/lib/python3.8/site-packages/suite2p/io/tiff.py", line 153, in tiff_to_binary
+#     im = imread(file, pages=range(ix, ix + nfr))
+#   File "/home/hong/anaconda3/envs/al_analysis/lib/python3.8/site-packages/tifffile/tifffile.py", line 1073, in imread
+#     raise TypeError(
+# TypeError: imread() got unexpected keyword arguments 'pages'
+#
+tifffile==2021.8.8
+

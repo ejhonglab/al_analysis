@@ -42,7 +42,7 @@ orn_df = orn_df.rename(index=olf.odor2abbrev)
 # TODO do i want to focus on this subset? prob not, at least for initial version
 #remy_df = orn_df.loc[panel2name_order['megamat']]
 
-# TODO deal w/ DM3 / DM3.1 (and any other issues)
+# TODO deal w/ DM3 / 'DM3+DM5' (and any other issues)
 hallem_glom_names = set(orn_df.columns)
 
 
@@ -97,7 +97,7 @@ def load_pn2kc_overconvergence_zscores(data_str, data_desc) -> pd.DataFrame:
     glom_names = set(df.index.get_level_values('A'))
 
     print(f'Glomerulus names in Hallem but not {data_desc}:')
-    # TODO deal w/ DM3.1
+    # TODO deal w/ 'DM3+DM5'
     pprint(hallem_glom_names - glom_names)
 
     # TODO TODO TODO check that none of these should be processed into some name in

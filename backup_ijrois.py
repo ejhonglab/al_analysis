@@ -42,6 +42,8 @@ def main():
     # used for backups of the RoiSet.zip files.
     backup_dir_name = 'ijroi_backups'
 
+    # TODO TODO TODO also support a list of paths here, and make sure hong dropbox
+    # folder is also added
     central_backup_dir_envvar = 'AL_IJROI_BACKUP_DIR'
     central_backup_dir_root = getenv(central_backup_dir_envvar)
 
