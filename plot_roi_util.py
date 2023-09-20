@@ -127,7 +127,12 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         if roiset_path is None:
             roiset_path = analysis_dir
 
-        masks = ijroi_masks(roiset_path, thorimage_dir)
+        # TODO why does this seem to print "dropping <n> ROIs with '+' suffix" 5 times
+        # for (what i thought should be) 1 call? actually pressing 'p' 5 times?
+        # (it should no longer do that, since i'm passing
+        # drop_maximal_extent_rois=False, but this may have still indicated
+        # usage/behavior not matching up with my expectations...)
+        masks = ijroi_masks(roiset_path, thorimage_dir, drop_maximal_extent_rois=False)
 
         # TODO TODO refactor this + hong2p.util.ij_traces, to share a bit more code
         # (maybe break out some of ij_traces into another helper fn?)
@@ -263,6 +268,9 @@ def load_and_plot(args):
     roiset_path = args.roiset_path
 
     compare = not args.no_compare
+    # TODO delete
+    #print(f'COMPARE={compare}')
+    #
     hallem = args.hallem
 
     plot_pair_data = args.pairs
@@ -308,7 +316,15 @@ def load_and_plot(args):
         if not al.is_ijroi_named(new_roi_name):
             compare = False
         else:
-            keep_comparison_to_cache = True
+            # TODO TODO delete? or fix so this branch actually only worked when i wanted
+            # to keep these. commenting because this is the only thing keep comparisons
+            # still showing up (when --no-compare CLI arg is passed), and actually i
+            # never want these comparisons at present (cache location is out of date
+            # anyway, so not showing any of new data)
+            #
+            # TODO do i really want this True just in the else here? additional check?
+            # (no, seems broken as-is)
+            #keep_comparison_to_cache = True
 
             # NOTE: just going to support the syntax '<roi name 1>|<roi name 2>|...',
             # rather than anything more complicated involving square brackets, as it
@@ -424,6 +440,13 @@ def load_and_plot(args):
         newly_analyzed_roi_names.append(new_roi_name)
         newly_analyzed_dfs.append(new_df)
 
+    # TODO delete
+    '''
+    print(f'{compare=}')
+    print(f'{(analysis_dir is None)=}')
+    print(f'{keep_comparison_to_cache=}')
+    '''
+    #
     if compare or analysis_dir is None or keep_comparison_to_cache:
         roi_strs.extend(newly_analyzed_roi_strs)
         assert len(roi_strs) > 0
