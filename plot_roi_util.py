@@ -4,11 +4,14 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Optional
 import warnings
+import socket
+from struct import pack
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import psutil
+from matplotlib.backend_bases import MouseButton
 
 from hong2p import util, olf, viz
 from hong2p.roi import extract_traces_bool_masks, ijroi_masks
@@ -169,6 +172,103 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
     return df
 
 
+def send_odor_index_to_imagej_script(odor_index):
+    # TODO these the options i want (mostly unsure of socket.SOCK_STREAM)?
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # TODO this work for address? should i use 127.0.0.1? can i omit?
+    #
+    # same port as in overlay_rois_in_curr_z.py
+    port = 49007
+
+    _debug = False
+
+    # TODO something more elegant than looping until connection is not refused? want to
+    # continue showing plot too... make another thread?
+    while True:
+        try:
+            if _debug:
+                print(f'connecting on {port=}')
+
+            client.connect(('0.0.0.0', 49007))
+            break
+
+        # TODO which error is this actually? what to catch (to be specific)?
+        except:
+            if _debug:
+                print('could not connect! returning!')
+
+            return
+
+    if _debug:
+        print('connected')
+
+    # '!' = "network encoding" (big Endian)
+    client.send(pack('!i', odor_index))
+
+    if _debug:
+        print(f'sent {odor_index}')
+
+    # TODO replace w/ context manager for real deal
+    client.close()
+
+
+def on_click(event):
+    # TODO if i only associate df with fig and not the specific axes (i.e. not the
+    # colorbar axes), check behavior in case we click on the colorbar (+ probably need
+    # to find a way to exclude actions there)
+    if event.button is MouseButton.LEFT:
+        xdata = event.xdata
+
+        # TODO when does this actually happen? need it?
+        if xdata is None:
+            return
+        #
+
+        # NOTE: we also have access to the Axes through event.inaxes, but it was easier
+        # to get the figure elsewhere, where the main Axes (along with the 2nd Axes in
+        # the figure, for the colorbar) were created inside plot_all_...
+        fig = event.canvas.figure
+        if not hasattr(fig, 'df'):
+            # TODO delete
+            print('fig does not have DataFrame asssociated!')
+            #
+            return
+
+        df = fig.df
+
+        # could check this against df shape, but eh...
+        '''
+        ax = event.inaxes
+        xmin, xmax = ax.get_xlim()
+        x_extent = xmax - xmin
+        '''
+
+        # event.xdata ~ [0, # odors - 1]
+        sorted_odor_index = int(round(xdata))
+
+        # df should be of length equal to number of total presentations, whereas
+        # axes should be averaged across number of repeats. factorize() is just to
+        # number the odors in sorted order (as they appear in plot)
+        # https://stackoverflow.com/questions/47492685
+        _, uniques = df.index.droplevel(['repeat', 'odor_index']).factorize()
+
+        # TODO possible to factor this warning silencing out nicely? copied from
+        # al_analysis.py
+        with warnings.catch_warnings():
+            # To ignore the "indexing past lexsort depth" warning.
+            warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+
+            matching_rows = df.loc[
+                tuple(uniques.to_frame(index=False).iloc[sorted_odor_index])
+            ]
+
+        unique_indices = matching_rows.index.get_level_values('odor_index').unique()
+        assert len(unique_indices) == 1
+        presentation_odor_index = unique_indices[0]
+
+        send_odor_index_to_imagej_script(presentation_odor_index)
+
+
 def plot(df, sort_rois=True, show=True, **kwargs):
     # For sorting based on order ROIs added to new analysis, so if plot is updated to
     # include new data, the new data is always towards the bottom of each section.
@@ -217,6 +317,8 @@ def plot(df, sort_rois=True, show=True, **kwargs):
 
     # TODO make colorbar generally/always the height of the main Axes (maybe a bit
     # larger if just ~one row?)
+    # TODO maybe just use odor_sort=True? could make passing odor_index to imagej script
+    # harder / impossible tho...
     fig, _ = plot_all_roi_mean_responses(df, odor_sort=False,
         roi_sort=sort_rois, sort_rois_first_on=sort_first_on,
         hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn,
@@ -228,6 +330,13 @@ def plot(df, sort_rois=True, show=True, **kwargs):
         # TODO try to have it warn about dupes or modify labels to include panel?
         allow_duplicate_labels=True, **kwargs
     )
+
+    # so that on_click can access the associated data
+    fig.df = df
+
+    plt.connect('button_press_event', on_click)
+
+    # TODO why would i event want to not show in this context? delete?
     if show:
         plt.show()
 
@@ -519,6 +628,9 @@ def load_and_plot(args):
     # and would want to ensure that before providing an option to not sort.
     sort = True
     if sort:
+        # TODO TODO TODO store original indices s.t. i can invert the sorting later
+        # (including in cases where the input order is important, as w/ 'ms @ -3')?
+        #
         # TODO option to switch between these? modify olf.sort_odors to allow keeping
         # certain panels in a fixed position + name_order, but to allow treating a
         # subset of panels as a single panel?
@@ -529,6 +641,29 @@ def load_and_plot(args):
 
         # TODO or determine order by sorting by how much old data we have for each odor
         # name?
+
+        index = subset_df.index.to_frame().reset_index(drop=True)
+
+        # we could relax this requirement, but then we'd really need to check that #
+        # repeats is consistent (as checked in next assertion...)
+        assert 'panel' in subset_df.index.names
+
+        # https://stackoverflow.com/questions/47492685
+        odor_index, _ = subset_df.index.droplevel('repeat').factorize()
+
+        assert len(set(pd.Series(odor_index).value_counts())) == 1
+
+        index['odor_index'] = odor_index
+
+        index = pd.MultiIndex.from_frame(index)
+        # TODO TODO maybe it'd be easier for imagej code to work in more cases if i do
+        # either presentation / frame indices here (rather than odors)?
+        assert subset_df.index.identical(index.droplevel('odor_index'))
+        subset_df.index = index
+
+        # TODO delete. for debugging.
+        #subset_df.to_pickle('subset_df.p')
+        #
 
         subset_df = olf.sort_odors(subset_df)
 
@@ -592,3 +727,14 @@ def load_and_plot(args):
 
     plotting_processes.append(proc)
 
+
+# TODO delete
+'''
+if __name__ == '__main__':
+    df = pd.read_pickle('subset_df.p')
+    # TODO also check it works w/ al.sort_odors
+    df = olf.sort_odors(df)
+    plot(df)
+    plt.show()
+'''
+#
