@@ -1274,15 +1274,17 @@ def symlink(target, link, relative=True, checks=True, replace=False):
             print(str(err))
             import ipdb; ipdb.set_trace()
 
-    # TODO delete
+    # TODO delete?
+    # TODO maybe this should just be the default? why not? maybe warn if replacing?
     #replace = True
-    #
-    if link.exists():
-        if replace:
+
+    # NOTE: link.exists() will return False for broken symlinks, but link.is_symlink()
+    # will return True.
+    if link.is_symlink():
+        if replace or not link.exists():
             link.unlink()
         else:
             if checks:
-                assert link.is_symlink()
                 check_written_link()
 
             return
@@ -1858,7 +1860,18 @@ def nonroi_last_analysis_time(plot_dir):
     # TODO was usage of nonroi_last_analysis_time ever not correct? delete if no reason
     # to believe...
     #return util.most_recent_contained_file_mtime(plot_dir, recurse=False, verbose=True)
+
+    # TODO TODO maybe what i really want here is the oldest time of a set of files
+    # that should change whenever nonroi inputs (movie, whether raw/flipped/mocorr)
+    # changes. fix! (and maybe also in other cases)
+    # TODO should also be considering the TIFFs spit out under analysis dir
     return util.most_recent_contained_file_mtime(plot_dir, recurse=False)
+
+
+def format_mtime(mtime: float) -> str:
+    """Formats mtime like default `ls -l` output (e.g. 'Oct 11 18:24').
+    """
+    return time.strftime('%b %d %H:%M', time.localtime(mtime))
 
 
 def names2fname_prefix(name1, name2):
@@ -3308,38 +3321,41 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             print_if_not_skipped('not making suite2p plots because outputs marked bad')
 
     nonroi_last_analysis = nonroi_last_analysis_time(plot_dir)
-    last_mocorr = None
 
-    if nonroi_last_analysis is None:
-        nonroi_analysis_current = False
+    try:
+        tiff_path_link = find_movie(date, fly_num, thorimage_basename)
 
-    elif min_input == 'mocorr':
-        try:
-            tiff_path_link = find_movie(date, fly_num, thorimage_basename)
-            assert tiff_path_link.is_symlink(), f'{tiff_path_link=} not a symlink'
+        # TODO TODO TODO test in raw/flipped cases (where presumably, it WON'T be a
+        # symlink). only do these assertions if it actually is mocorr input
+        # (regardless of min_input)?
+        assert tiff_path_link.is_symlink(), f'{tiff_path_link=} not a symlink'
 
-            # .resolve() should find the file actually pointed to, by any series of
-            # file/directory symlinks
-            tiff_path = tiff_path_link.resolve()
-            assert tiff_path.is_file() and not tiff_path.is_symlink()
+        # .resolve() should find the file actually pointed to, by any series of
+        # file/directory symlinks
+        tiff_path = tiff_path_link.resolve()
+        assert tiff_path.is_file() and not tiff_path.is_symlink()
 
-            # TODO TODO this should also be invalidating any cached roi-based analysis
-            # on this data (but if the mocorr is more recent than the roi definitions,
-            # then they would need to be redrawn/edited first... so just warn?)
-            last_mocorr = getmtime(tiff_path)
-            nonroi_analysis_current = last_mocorr < nonroi_last_analysis
+        # TODO this should also be invalidating any cached roi-based analysis on this
+        # data (but if the mocorr(/tiff) is more recent than the roi definitions, then
+        # they would need to be redrawn/edited first... so just warn?)
+        #
+        # NOTE: this could be of a motion corrected TIFF or a raw/flipped TIFF,
+        # whichever is the best (i.e. mocorr > flipped > raw) available.
+        tiff_mtime = getmtime(tiff_path)
 
-            if not nonroi_analysis_current:
-                print_if_not_skipped(
-                    'motion correction changed. updating non-ROI outputs.'
-                )
+        if nonroi_last_analysis is None:
+            nonroi_analysis_current = False
+        else:
+            nonroi_analysis_current = tiff_mtime < nonroi_last_analysis
 
-        except IOError as err:
-            # TODO maybe just warn? or don't return and still do some analysis?
-            warn_if_not_skipped(f'{err}\n')
-            return
-    else:
-        nonroi_analysis_current = True
+        if not nonroi_analysis_current:
+            print_if_not_skipped(
+                'TIFF (/ motion correction) changed. updating non-ROI outputs.'
+            )
+
+    except IOError as err:
+        warn(f'{err}\n')
+        return
 
     # TODO move to module level?
     desired_processed_tiffs = (
@@ -3350,10 +3366,7 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     )
     for name in desired_processed_tiffs:
         desired_output = analysis_dir / name
-
-        if (not desired_output.exists() or (last_mocorr is not None and
-            last_mocorr >= getmtime(desired_output))):
-
+        if not desired_output.exists() or tiff_mtime >= getmtime(desired_output):
             nonroi_analysis_current = False
             break
 
@@ -3372,6 +3385,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # not what it's loading)
         response_volumes_list.append(load_corr_dataarray(response_volume_cache_fname))
 
+    # TODO am i currently refusing to do any imagej ROI analysis on non-mocorred
+    # stuff? maybe i should?
     do_ij_analysis = False
     if analyze_ijrois:
         have_ijrois = has_ijrois(analysis_dir)
@@ -3420,7 +3435,7 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                     ijroi_mtime(analysis_dir) < ijroi_last_analysis
                 )
 
-           # TODO delete after generating them all? slightly more robust to interrupted
+            # TODO delete after generating them all? slightly more robust to interrupted
             # runs if i leave it
             if not ij_trial_df_cache_fname.exists():
                 ij_analysis_current = False
@@ -3437,6 +3452,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                     )
                     ij_trial_df = pd.read_pickle(ij_trial_df_cache_fname)
                     ij_trial_dfs.append(ij_trial_df)
+                    # TODO TODO TODO also load full_rois [+ best_plane_rois], for use in
+                    # plot_rois call below
                 else:
                     print_inputs_once(yaml_path)
                     print('ImageJ ROIs were modified. re-analyzing.')
@@ -3468,8 +3485,7 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     try:
         movie = load_movie(date, fly_num, thorimage_basename)
     except IOError as err:
-        # TODO maybe just warn? or don't return and still do some analysis?
-        warn_if_not_skipped(f'{err}\n')
+        warn(f'{err}\n')
         return
 
     do_nonskipped_experiment_prints_and_warns(yaml_path)
@@ -3480,6 +3496,13 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     best_plane_rois = None
     full_rois = None
     #
+
+    # TODO delete
+    # TODO TODO TODO make sure everything below that requires full_rois/best_plane_rois
+    # to be not None below only happens if do_ij_analysis == True
+    # (or actually, just actually cache and load these in have_ijrois [but not
+    # !do_ij_analysis] case...)
+
     if do_ij_analysis:
         ij_trial_df, best_plane_rois, full_rois = ij_trace_plots(analysis_dir,
             bounding_frames, odor_lists, movie, plot_dir
@@ -3718,6 +3741,9 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # TODO TODO TODO show colorbars
         # TODO check have_ijrois is what i want here (/ works)
         if have_ijrois:
+            # TODO delete (when is this happening?)
+            assert full_rois is not None
+            #
             trialmean_dff_w_rois_fig = plot_rois(full_rois, avg_mean_dff, ncols=z,
                 focus_roi=focus_roi, image_kws=dict(vmin=dff_vmin, vmax=dff_vmax)
             )
@@ -8250,6 +8276,11 @@ def main():
         ]
         gsheet_subset = gsheet_subset[~gsheet_subset.exclude]
 
+    # TODO TODO warn if any (date, fly_num) are NaN for rows from gsheet (and say which
+    # rows, so it can be fixed easily). will cause errors later (may be more obvious if
+    # multiple such rows, but will probably cause errors regardless. sam ran into this
+    # and it wasn't obvious to him what the issue was)
+
     # TODO TODO update code to loop over drivers/indicators in all relevant places
     # (or add to groupbys, etc)
     # TODO delete if ends up being redundant w/ checks in
@@ -8482,6 +8513,7 @@ def main():
         import ipdb; ipdb.set_trace()
     '''
 
+    # TODO --ignore-existing option for mocorr?
     if do_register_all_fly_recordings_together:
         # TODO rename to something like just "register_recordings" and implement
         # switching between no registration / whole registration / movie-by-movie
@@ -9161,6 +9193,8 @@ def main():
     # to using checkboxes/similar in google sheet for that?
     # TODO TODO TODO also print N for each combination of (panel, is_pair) in CSV
 
+    # TODO TODO TODO save w/ driver+indicator in name
+    #
     # TODO TODO TODO TODO delete. hack to remove (small number. ~5/169) ROIs that still
     # had ambiguous names, while serializing for anoop)
     #
@@ -9202,12 +9236,18 @@ def main():
     makedirs(across_fly_ijroi_dir)
 
     # TODO move modeling towards bottom after getting working
+    # TODO TODO add CLI arg to skip this (and other stuff, w/ options similar to
+    # --ignore-existing?)
+    # TODO option to skip all across-fly analysis? (often want to do something like just
+    # regenerate motion correction for one fly)
+    #'''
     orn_drivers = {'pebbled'}
     # TODO worth warning that model won't be run otherwise?
     if driver in orn_drivers:
         model_mb_responses(certain_df, across_fly_ijroi_dir)
     else:
         print(f'not running MB model(s), as driver not in {orn_drivers=}')
+    #'''
 
     # TODO at least print out / warn / fail in cases where diagnostic ROIs are more
     # recent than the recording specific ROIs of interest (+ maybe option to overwrite
@@ -9218,6 +9258,15 @@ def main():
     # is the largest extent plausibly containing signal mainly from a given ROI.
     # use to summarize / plot extent of dF/F sum in current ROIs / not (for assessing
     # completeness of ROI assignments)
+
+    # TODO TODO TODO separate option for handling ROIs that only ever have '?' suffix
+    # (e.g. 'DL3?' when i haven't corroborated this ROI from other data)
+    # (want to still be able to see these things in some versions of the average plots,
+    # to compare new flies to this mean, but don't want to drop the suffix cause the
+    # high uncertainty)
+
+    # TODO TODO warn if any glomeruli that a certain # / fraction of flies share that
+    # are missing / '?'-suffixed-only in a given fly?
 
     # TODO TODO TODO outer loop over options for certain_only (including plot_corrs
     # call)?
@@ -9432,24 +9481,26 @@ def main():
         # I.e. no "certain" ROIs (those named and without '?' suffix)
         warn('no ImageJ ROIs were confidently identified!')
 
-    # TODO TODO TODO per-roi-mean plot (both normalized within ROI and not) where ROIs
+    # TODO TODO per-roi-mean plot (both normalized within ROI and not) where ROIs
     # are ordered according to clustering rather than just alphabetically
 
     # TODO TODO versions of all-roi-mean plots where if only uncertain ( "<x>?") ROIs
     # exist (within a recording/fly) for a given glomerulus name, then those are also
     # included in average (but still exclude uncertain when they exist alongside certain
     # ROIs of same name)
+    # TODO and maybe (also?) break these into their own plot?
 
-    # TODO TODO TODO make sure that in all-roi-mean plots (unless i want to make another
+    # TODO TODO make sure that in all-roi-mean plots (unless i want to make another
     # version), any (odor, ROI) combos w/ less than all flies having that odor are shown
-    # as missing (white)
+    # as missing (white) (actually want this? maybe some threshold such as at least
+    # 2 or half?) (separate version that does this?)
 
     # TODO TODO change plot_all_... to show N for each ROI mean
     # (or do that in a new fn, seeing as i am already computing the mean out here in
     # those cases. or factor that into plot_all_... behind a flag.)
     # (could also pass in the N for each, as a separate series or something?)
 
-    # TODO TODO modify plotting in many-roi (one per fly) case so that white hline
+    # TODO modify plotting in many-roi (one per fly) case so that white hline
     # between ROI names doesn't get that close to size of cells (or so it's a fixed
     # percentage of cell size)
 
@@ -9473,7 +9524,7 @@ def main():
         # *certain* plots (+ write a CSV key mapping date+fly_num to these IDs)
         # (implement in plot_all_mean... ? def not here)
 
-        # TODO TODO TODO  separate representation showing n for each particular
+        # TODO TODO separate representation showing n for each particular
         # glomerulus name (in yticklabels)?
         # TODO TODO shouldn't this be using cdf in certain plot cases? just do away w/
         # this altogether anyway?
