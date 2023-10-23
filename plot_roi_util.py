@@ -6,6 +6,7 @@ from typing import Optional
 import warnings
 import socket
 from struct import pack
+import traceback
 
 import numpy as np
 import pandas as pd
@@ -19,7 +20,7 @@ from hong2p.types import Pathlike
 from drosolf import orns
 
 from al_analysis import (ij_roi_responses_cache, dropna, plot_all_roi_mean_responses,
-    mocorr_concat_tiff_basename
+    mocorr_concat_tiff_basename, warn
 )
 import al_analysis as al
 
@@ -167,11 +168,21 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
 
         subset_dfs.append(subset_df)
 
-    df = pd.concat(subset_dfs, verify_integrity=True)
+    try:
+        df = pd.concat(subset_dfs, verify_integrity=True)
+
+    # 2023-10-16: currently only triggered in 2023-10-15/1 data where I repeated 2-mib
+    # in it's own recording (validation2_4, because it was disconnected in
+    # validation2_2).
+    except ValueError as err:
+        warn(traceback.format_exc())
+        df = pd.concat(subset_dfs)
 
     return df
 
 
+# TODO modify to also send ROI index (row clicked) (for ROIs that came from the current
+# data)
 def send_odor_index_to_imagej_script(odor_index):
     # TODO these the options i want (mostly unsure of socket.SOCK_STREAM)?
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -560,6 +571,8 @@ def load_and_plot(args):
         roi_strs.extend(newly_analyzed_roi_strs)
         assert len(roi_strs) > 0
 
+        # TODO TODO TODO handle this not existing (never saving to this path anymore
+        # anyway). delete all this code? update saving to a new place i can rely on?
         df = pd.read_pickle(ij_roi_responses_cache)
 
         if analysis_dir is not None and not plot_other_odors:
@@ -581,7 +594,7 @@ def load_and_plot(args):
         if matching.sum() == 0:
             # TODO just print? not sure if i'll be able to see either, as i'm currently
             # calling from imagej
-            warnings.warn(f'no ROIs matching any of {roi_strs} in cached responses')
+            warn(f'no ROIs matching any of {roi_strs} in cached responses')
         else:
             df = util.addlevel(df, ['from_hallem','newly_analyzed'], [False, False],
                 axis='columns'
@@ -606,6 +619,7 @@ def load_and_plot(args):
 
         subset_dfs.append(hallem_overlap_df)
 
+    # TODO this one also need error handling in case where verify_integrity would fail?
     subset_df = pd.concat(subset_dfs, axis='columns', verify_integrity=True)
 
     if not plot_pair_data:
@@ -628,17 +642,6 @@ def load_and_plot(args):
     # and would want to ensure that before providing an option to not sort.
     sort = True
     if sort:
-        # TODO TODO TODO store original indices s.t. i can invert the sorting later
-        # (including in cases where the input order is important, as w/ 'ms @ -3')?
-        #
-        # TODO option to switch between these? modify olf.sort_odors to allow keeping
-        # certain panels in a fixed position + name_order, but to allow treating a
-        # subset of panels as a single panel?
-        # TODO vline_level_fn using panel data? might need to pass in some precomputed
-        # list or something, which i think might require changes to hong2p.viz.matshow
-        # handling
-        #subset_df = al.sort_odors(subset_df)
-
         # TODO or determine order by sorting by how much old data we have for each odor
         # name?
 
@@ -651,7 +654,10 @@ def load_and_plot(args):
         # https://stackoverflow.com/questions/47492685
         odor_index, _ = subset_df.index.droplevel('repeat').factorize()
 
-        assert len(set(pd.Series(odor_index).value_counts())) == 1
+        # should also currently only be triggered by 2023-10-15/1 data w/ duplicate
+        # 2-mib
+        if len(set(pd.Series(odor_index).value_counts())) != 1:
+            warn('variable number of repeats')
 
         index['odor_index'] = odor_index
 
@@ -665,7 +671,16 @@ def load_and_plot(args):
         #subset_df.to_pickle('subset_df.p')
         #
 
-        subset_df = olf.sort_odors(subset_df)
+        #subset_df = olf.sort_odors(subset_df)
+
+        # TODO option to switch between these? modify olf.sort_odors to allow keeping
+        # certain panels in a fixed position + name_order, but to allow treating a
+        # subset of panels as a single panel?
+        # TODO vline_level_fn using panel data? might need to pass in some precomputed
+        # list or something, which i think might require changes to hong2p.viz.matshow
+        # handling
+        subset_df = al.sort_odors(subset_df)
+
 
     # TODO TODO maybe if the name is shared w/ current roi name (prefix again, cause
     # '?'?), then call out that one, maybe by bolding name in yticklabels of both hallem
