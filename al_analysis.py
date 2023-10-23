@@ -2,7 +2,6 @@
 
 import argparse
 import atexit
-from datetime import date
 import os
 from os.path import join, split, exists, expanduser, islink, getmtime
 from pprint import pprint, pformat
@@ -887,13 +886,86 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
         axis='columns').droplevel(levels_to_drop, axis='columns')
 
 
+recording_col = 'thorimage_id'
+
+def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
+    """Drops all but last recording for each (panel, odor) combo.
+    """
+    assert recording_col in df.columns.names
+
+    # TODO TODO warn / err if any panel values are NaN? likely to cause issues...
+
+    def drop_single_fly_redone_odors(fly_df):
+        fly_df = fly_df.copy()
+
+        recording_has_odor = fly_df.groupby('thorimage_id', axis='columns',
+            sort=False).apply(lambda x: x.notna().any(axis='columns'))
+
+        redone_odors = fly_df[recording_has_odor.sum(axis='columns') > 1].index
+
+        # should only be 1 element each each of these unique(...) outputs
+        date = fly_df.columns.unique('date')[0]
+        fly_num = fly_df.columns.unique('fly_num')[0]
+
+        # TODO make less shitty? don't want to have to hard code indices like this...
+        # looping over index elements below just gives us tuples (of row index values)
+        # tho.
+        assert fly_df.index.names[0] == 'panel'
+        assert fly_df.index.names[2:4] == ['odor1', 'odor2']
+
+        recordings = fly_df.columns.get_level_values('thorimage_id').unique()
+
+        for panel_odor in redone_odors:
+            recording_has_curr_odor = recording_has_odor.loc[panel_odor]
+            final_recording = recording_has_curr_odor[::-1].idxmax()
+
+            # TODO TODO TODO how to warn about which ones we are tossing this way tho???
+            nonfinal_recordings= (
+                fly_df.columns.get_level_values('thorimage_id') != final_recording
+            )
+
+            panel = panel_odor[0]
+            # NOTE: ignoring 'repeat' (which might be different across recordings in
+            # someone elses use, but isn't in any of my data)
+            odors = panel_odor[2:4]
+
+            nonfinal_recording_set = (
+                set(recording_has_curr_odor[recording_has_curr_odor].index)
+                - {final_recording}
+            )
+
+            # TODO consistent formatting of nonfinal_recording_set (wrt final_recording,
+            # at least)
+            warn(f'{format_date(date)}/{fly_num} (panel={panel}): dropping '
+                f'{format_mix_from_strs(odors)} from {nonfinal_recording_set} '
+                f'(redone in {final_recording})'
+            )
+
+            fly_df.loc[panel_odor, nonfinal_recordings] = np.nan
+
+        return fly_df
+
+    # TODO warn if any column levels other than these (+ 'roi')
+    # panel?
+    #
+    # This is to merge across across multiple values for recording_col
+    # (for a each combination of group keys), which is what we have when a fly has
+    # multiple recordings
+    df = df.groupby(['date','fly_num'], axis='columns', sort=False
+        ).apply(drop_single_fly_redone_odors)
+
+    # TODO TODO does this check both columns (.columns) and rows (.index)?
+    util.check_index_vals_unique(df)
+
+    return df
+
+
 # TODO prob move to hong2p
 def merge_rois_across_recordings(df: pd.DataFrame) -> pd.DataFrame:
     """Merges ROI columns across recordings (thorimage_id level)
 
     Merges within each unique combination of ['date','fly_num','roi']
     """
-    recording_col = 'thorimage_id'
     assert recording_col in df.columns.names
 
     def merge_single_flyroi_across_recordings(gdf):
@@ -916,8 +988,7 @@ def merge_rois_across_recordings(df: pd.DataFrame) -> pd.DataFrame:
     # TODO factor this kind of #-notnull-preserving check into a decorator?
     n_before = df.notnull().sum().sum()
 
-    # TODO warn if any column levels other than these and recording_col? maybe allow
-    # panel?
+    # TODO warn if any column levels other than these and recording_col?
     #
     # This is to merge across across multiple values for recording_col
     # (for a each combination of group keys), which is what we have when a fly has
@@ -1826,6 +1897,9 @@ def get_panel(thorimage_id: Pathlike) -> Optional[str]:
     elif 'megamat' in thorimage_id:
         return 'megamat'
 
+    elif 'validation2' in thorimage_id:
+        return 'validation2'
+
     # TODO TODO handle old pair stuff too (panel='<name1>+<name2>' or something) + maybe
     # use get_panel to replace the old name1 + name2 means grouping by effectively panel
 
@@ -2074,6 +2148,9 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         avg_levels.append('odor2')
 
     if keep_panels_separate and 'panel' in trial_df.index.names:
+        # TODO TODO TODO warn/err if any null panel values. will silently be dropped as
+        # is.
+        # TODO or change fn to handle them gracefully (sorting alphabetically w/in?)
         avg_levels = ['panel'] + avg_levels
 
     # This will throw away any metadta in multiindex levels other than these two
@@ -3323,16 +3400,17 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     nonroi_last_analysis = nonroi_last_analysis_time(plot_dir)
 
     try:
-        tiff_path_link = find_movie(date, fly_num, thorimage_basename)
+        tiff_path = find_movie(date, fly_num, thorimage_basename)
 
-        # TODO TODO TODO test in raw/flipped cases (where presumably, it WON'T be a
-        # symlink). only do these assertions if it actually is mocorr input
-        # (regardless of min_input)?
-        assert tiff_path_link.is_symlink(), f'{tiff_path_link=} not a symlink'
+        # TODO refactor to share checking w/ find_movie?
+        if tiff_path.name.startswith('mocorr'):
+            tiff_path_link = tiff_path
+            assert tiff_path_link.is_symlink(), f'{tiff_path_link=} not a symlink'
 
-        # .resolve() should find the file actually pointed to, by any series of
-        # file/directory symlinks
-        tiff_path = tiff_path_link.resolve()
+            # .resolve() should find the file actually pointed to, by any series of
+            # file/directory symlinks
+            tiff_path = tiff_path_link.resolve()
+
         assert tiff_path.is_file() and not tiff_path.is_symlink()
 
         # TODO this should also be invalidating any cached roi-based analysis on this
@@ -3802,6 +3880,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                     )
                     continue
 
+                # NOTE: if there are ever two columns in gsheet with same glomerulus
+                # name, this could truth test could raise a pandas ValueError
                 if curr_diag_good:
                     label_subdir = 'good'
                 else:
@@ -6200,7 +6280,7 @@ def setnull_old_wrong_solvent_aa_and_va_data(trial_df: pd.DataFrame) -> pd.DataF
     trial_df = trial_df.copy()
     trial_df.loc[wrong_solvent_odors, :last_wrong_solvent_date] = float('nan')
 
-    # TODO TODO should i just dropna trial_df here to get rid of these?
+    # TODO should i just dropna trial_df here to get rid of these?
     assert num_notnull(trial_df) == n_before - n_new_null
 
     return trial_df
@@ -8054,7 +8134,10 @@ def main():
     # experiments as part of the return to kiwi-approximation experiments (that now
     # include ramps of eb/ea/kiwi mixture). For 2021 pair experiments, was using
     # start_date of '2021-03-07'
-    parser.add_argument('-t', '--start-date', default='2022-02-04',
+    #
+    # 2022-10-06 should be the date beyond which the 'Exclude' (+ 'Exclusion reason')
+    # column in the Google sheet is used whenever needed.
+    parser.add_argument('-t', '--start-date', default='2022-10-06',
         help='Only analyze data from dates >= this. Should be in YYYY-MM-DD format '
         '(default: %(default)s)'
     )
@@ -8192,6 +8275,11 @@ def main():
     common_paired_thor_dirs_kwargs = dict(
         start_date=start_date, end_date=end_date, ignore=bad_thorimage_dirs,
     )
+    # TODO TODO TODO where are warnings like these coming from??? at least some (e.g.
+    # '1-3ol' are NOT in the hardcoded order. at least, not as defined in hong2p.olf.
+    # is it just a modification in here? is some code setting them from the yaml files
+    # or something?)
+    # TODO TODO from odor2abbrev_cache (loaded by magic inside hong2p.olf init...)?
 
     # TODO TODO delete this?
     # TODO TODO check names2final_concs stuff works with anything other than pairs
@@ -8512,6 +8600,12 @@ def main():
 
         import ipdb; ipdb.set_trace()
     '''
+
+    # TODO TODO TODO also check set of odors [+ panel, at least] would never be
+    # concatenated together (as diagnostics1 / diagnostics1_redo somehow were for
+    # 2023-06-22/1...)
+    # TODO TODO TODO how did diagnostics1 not get flagged w/ redo logic in that
+    # 2023-06-22/1 case? something like already having been partially run?
 
     # TODO --ignore-existing option for mocorr?
     if do_register_all_fly_recordings_together:
@@ -9173,6 +9267,8 @@ def main():
     util.check_index_vals_unique(trial_df)
     assert num_notnull(trial_df) == n_before
 
+    trial_df = drop_redone_odors(trial_df)
+
     # this does the same checks as above, internally
     # (that number of notna values does not change and index values are unique)
     trial_df = merge_rois_across_recordings(trial_df)
@@ -9182,6 +9278,10 @@ def main():
     assert not trial_df_isna.all(axis='rows').any()
     del trial_df_isna
 
+    # TODO test that moving this before merge_rois_across_recordings doesn't change
+    # anything (because merge_... currently fails w/ duplicate odors [where one had been
+    # repeated later, to overwrite former], and i'd like to use a similar strategy to
+    # deal w/ those cases)
     trial_df = setnull_old_wrong_solvent_aa_and_va_data(trial_df)
 
     trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
@@ -9211,6 +9311,9 @@ def main():
     '''
     #
 
+    # TODO TODO TODO save another version dropping all non-certain ROIs?
+    # TODO TODO and split out by panel (or just tell remy to only use 'megamat' panel?)?
+
     # TODO TODO any way to get date_format to apply to stuff in MultiIndex?
     # or is the issue that it's a pd.Timestamp and not datetime?
     trial_df.to_csv(output_root / 'ij_roi_stats.csv', date_format=date_fmt_str)
@@ -9234,20 +9337,6 @@ def main():
 
     across_fly_ijroi_dir = plot_root / across_fly_ijroi_dirname
     makedirs(across_fly_ijroi_dir)
-
-    # TODO move modeling towards bottom after getting working
-    # TODO TODO add CLI arg to skip this (and other stuff, w/ options similar to
-    # --ignore-existing?)
-    # TODO option to skip all across-fly analysis? (often want to do something like just
-    # regenerate motion correction for one fly)
-    #'''
-    orn_drivers = {'pebbled'}
-    # TODO worth warning that model won't be run otherwise?
-    if driver in orn_drivers:
-        model_mb_responses(certain_df, across_fly_ijroi_dir)
-    else:
-        print(f'not running MB model(s), as driver not in {orn_drivers=}')
-    #'''
 
     # TODO at least print out / warn / fail in cases where diagnostic ROIs are more
     # recent than the recording specific ROIs of interest (+ maybe option to overwrite
@@ -9355,6 +9444,8 @@ def main():
     plot_corrs(hallem_roi_only_ij_corr_list, output_root, hallem_rois_only_reldir)
 
 
+    # TODO move (something like it?) to toplevel? might want to share w/ (at least)
+    # drop_redone_odors
     def format_panel(x):
         panel = x.get('panel')
         # TODO maybe return None if it'd make more consistent vline_level_fn usage
@@ -9489,6 +9580,8 @@ def main():
     # included in average (but still exclude uncertain when they exist alongside certain
     # ROIs of same name)
     # TODO and maybe (also?) break these into their own plot?
+    # TODO TODO TODO probably any ROIs certain in *any* fly should trigger a warning if
+    # some fly has them with '?'
 
     # TODO TODO make sure that in all-roi-mean plots (unless i want to make another
     # version), any (odor, ROI) combos w/ less than all flies having that odor are shown
@@ -9628,6 +9721,20 @@ def main():
 
     intensities_plot_dir = across_fly_ijroi_dir / 'activation_strengths'
     natmix_activation_strength_plots(mean_df, intensities_plot_dir)
+
+    # TODO TODO add CLI arg to skip this (and other stuff, w/ options similar to
+    # --ignore-existing?)
+    # TODO TODO option to skip all across-fly analysis? (often want to do something like
+    # just regenerate motion correction for one fly)
+    #'''
+    orn_drivers = {'pebbled'}
+    # TODO worth warning that model won't be run otherwise?
+    if driver in orn_drivers:
+        model_mb_responses(certain_df, across_fly_ijroi_dir)
+    else:
+        print(f'not running MB model(s), as driver not in {orn_drivers=}')
+    #'''
+
 
 
 if __name__ == '__main__':
