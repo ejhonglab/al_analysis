@@ -25,6 +25,10 @@ from al_analysis import (ij_roi_responses_cache, dropna, plot_all_roi_mean_respo
 import al_analysis as al
 
 
+# TODO TODO try profiling again
+# TODO try disabling constrained layout, to see how much that is affecting
+# plotting speed
+
 def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
     # TODO return columns should always just be ['name1','name2'] or something
     df = df.reset_index()[['odor1','odor2']].applymap(olf.parse_odor_name)
@@ -339,7 +343,26 @@ def plot(df, sort_rois=True, show=True, **kwargs):
         # combinations will have duplicates... (because of the few odors both in
         # diagnostic and Remy panel, e.g. 'ms @ -3')
         # TODO try to have it warn about dupes or modify labels to include panel?
-        allow_duplicate_labels=True, **kwargs
+        allow_duplicate_labels=True,
+
+        # TODO refactor to share w/ roi_plot_kws in al_analysis (move into plot_all...
+        # defaults?), if same values work (they don't, extra_figsize[1]==0.0 led to:
+        # "constrained_layout not applied because axes sizes collapsed to zero. ...")
+        # could try 0.8 for this value in al_analysis.py:roi_plot_kws tho
+        #
+        # TODO now that these options often produce a cbar w/ only a couple ticks,
+        # change cbar_kws to make sure a reasonable number of ticks shown?
+        inches_per_cell=0.08,
+        # long odor names might get cut off w/ only 1.0. <=0.9 cuts off some of my
+        # abbreviated odor names.
+        extra_figsize=(2.0, 1.0),
+
+        # More readable than default 100 for stuff with a lot of odors (e.g. validation2
+        # + diagnostsics, which has 46 odors total)
+        # TODO probably just change font params tho? or idk
+        dpi=120,
+
+        **kwargs
     )
 
     # so that on_click can access the associated data
