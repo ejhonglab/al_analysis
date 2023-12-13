@@ -7,13 +7,37 @@ from multiprocessing.connection import Listener, Client
 import time
 import queue
 
+# Factored init_logger into this minimal module (outside al_analysis.py), to avoid
+# major import time costs associated with importing al_analysis, such that we can import
+# this unconditionally up here (and log stuff doing server/client setup)
+from hong_logging import init_logger
+
 
 SERVER_HOST = 'localhost'
 SERVER_PORT = 12481
 
 MAX_LIFETIME_S = 60 * 60 * 2
 
+
 def main():
+    # TODO TODO TODO make sure this is actually set up such that both server and clients
+    # log all errors (esp fatal ones) to a sensible place (maybe one log file, as long
+    # as info to distinguish PIDs and server/client easily is added)
+    # (so that when killing a hung process, i can see where it is hung, to fix it)
+
+    # TODO might be useful to use filename in log format (now that i'm using same exact
+    # config in plot_roi_util.py)?
+    #
+    # Just gonna hardcode this and then use that in plot_roi_util.py for now
+    log = init_logger('plot_roi', __file__)
+
+    ## TODO replace log w/ just logging (now that init_logger is changing root logger)?
+    #log = init_logger(__name__, __file__)
+
+    # TODO TODO make a fn for printing all PIDs in tree under the parent python process
+    # -> intersperse below to figure out which calls are actually making new processes
+    # (or otherwise figure out) (is it just Process? wb Queue/Listener/Client?)
+
     parser = argparse.ArgumentParser(description='Reads and plots ROI stats from cached'
         ' responses written by al_analysis.py. Can also analyze fresh data, and compare'
         ' this to cached responses.'
@@ -74,49 +98,98 @@ def main():
     # multiprocessing, for debugging of plot_roi_util (can't currently use debugger in
     # there...)
 
+    log.debug(f'trying to start listener on port {SERVER_PORT}')
     try:
         # TODO log that we are starting this and what PID is
         # TODO maybe i want to use something other than 'AF_INET'? is there a default?
         listener = Listener((SERVER_HOST, SERVER_PORT), 'AF_INET')
 
+        log.debug('started listener')
+
     except OSError:
+        log.debug('could not start listener (one probably already bound to port)!')
         listener = None
 
+    log.debug(f'starting client on port {SERVER_PORT}')
     # will it work to do this from the same script? need a separate thread/process
     # maybe?
     client = Client((SERVER_HOST, SERVER_PORT), 'AF_INET')
+
+    # TODO may not want to actually log args
+    log.debug(f'sending args {args} via client')
     client.send(args)
 
+    # TODO does this imply they've been successfully received???
+    log.debug('done sending args')
+
     if listener is None:
+        log.debug('this process was a client only. exiting (having sent args to '
+            'listener)!'
+        )
+        # TODO maybe disable stream handler init_logger also adds tho?  want in
+        # al_analysis.py, but probably don't want this printed? or just use debug level?
         return
 
     start_time_s = time.time()
 
+    # TODO add a comment saying how i measured import time again + how to do rest of
+    # profiling (-> do again. i feel like things are pretty slow now)
+    #
     # Only importing these *after* client would have exited, so those invocations don't
-    # need to suffer long import time.
-    from al_analysis import init_logger
+    # need to suffer long import time (importing al_analysis imports a lot of other
+    # stuff, which takes maybe 1-3 seconds).
     from plot_roi_util import load_and_plot
-
-    log = init_logger(__name__, __file__)
 
     arg_queue = Queue()
 
     def get_client_args():
+        # TODO these even need multiprocessing_logging to work correctly? do i ever
+        # actually have two things writing to the file at once?
+        # (feel like not, or at least maybe only if i also log in plot subprocesses in
+        # plot_roi_util.py?)
+        # (delete that dependency if not)
+        log.debug('get_client_args: calling listener.accept()')
         # This is the call that can hang, hence why I'm wrapping this call in a Process
         client = listener.accept()
 
+        log.debug('get_client_args: calling client.recv()')
         client_args = client.recv()
+
+        log.debug('get_client_args: got client_args from client.recv()')
+        # TODO need to log before this one? prob not
         client.close()
 
+        # TODO need to log before this one? prob not
         arg_queue.put(client_args)
 
-    def get_cliet_args_loop():
-        while True:
-            get_client_args()
+    def get_client_args_loop():
+        # TODO TODO will these logging calls above (ini get_client_args) even work
+        # (since this is called from Process? need to change global logging settings /
+        # re-init logging here [or in a new target that includes that?]?)
+        try:
+            while True:
+                get_client_args()
 
-    p = Process(target=get_cliet_args_loop)
+        # TODO test this even works / delete if not
+        # https://stackoverflow.com/questions/34506638
+        # TODO and does p.terminate also trigger this?
+        finally:
+            # not sure i even care to log this (in any case)
+            #
+            # (i kinda just wanted to see which step of get_client_args it's add when
+            # killed, especially if that's the reason the overall system sometimes
+            # hangs)
+            log.debug('get_client_args_loop seems to have been interrupted')
+
+    p = Process(target=get_client_args_loop)
+    log.debug('listener: starting process to queue incoming client args')
+    # TODO can i get PID from `p`? do i need to start it first?  just get logging
+    # working correctly inside it, then use that to show PID and other stuff (what is
+    # sys.argv inside there tho? don't want to duplicate from parent...)
     p.start()
 
+    # TODO wrap p.terminate in something that also log.debug-s?
+    #
     # This, rather than just the same call after the while loop, avoided some hanging
     # caused by exceptions in load_and_plot.
     atexit.register(p.terminate)
@@ -124,11 +197,9 @@ def main():
     # TODO can register something at imagej exit (inside imagej config) to kill any?
     # any nice way to have python check if (corresponding) imagej process is alive?
 
-    # TODO TODO also log PID at start (+ log children PID whenever they are created, and
-    # maybe also when destroyed, probably from the child processes)
-    # TODO TODO atexit call to log PID and memory usage (for seeing which processes were
+    # TODO atexit call to log PID and memory usage (for seeing which processes were
     # actually using memory when pkilled)
-    # TODO TODO also log current / max lifetime atexit, to see if any things are somehow
+    # TODO also log current / max lifetime atexit, to see if any things are somehow
     # exceeding lifetime
 
     while time.time() - start_time_s < MAX_LIFETIME_S:
@@ -137,14 +208,22 @@ def main():
         except queue.Empty:
             continue
 
+        # TODO keep printing args? OK format (pformat?)?
+        log.debug(f'listener: calling load_and_plot with args={client_args}')
+
         load_and_plot(client_args)
 
+        # TODO TODO is this causing issues? delete?
         # TODO how does breaking here prevent making a server though... does it?
         # hasn't that decision already been made? this comment out-of-date?
-        #
+        # TODO TODO and why does this being not None indicate what the comment below is
+        # saying?
         # Don't want to start a server unless we actually did io/compute that takes a
         # lot of time. All calls from ImageJ should have --analysis-dir specified.
         if args.analysis_dir is None:
+            log.debug('listener: breaking because args.analysis_dir (from client args '
+                'queue) was None'
+            )
             break
 
 

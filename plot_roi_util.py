@@ -1,12 +1,17 @@
 
 from multiprocessing import Process
 from pathlib import Path
+from pprint import pformat
 from functools import lru_cache
 from typing import Optional
 import warnings
 import socket
 from struct import pack
 import traceback
+# TODO check this is going to same place as plot_roi.py process that is calling stuff
+# from here (init_logging should be configuring root logger now, so logging.<x> should
+# work)
+import logging
 
 import numpy as np
 import pandas as pd
@@ -24,6 +29,12 @@ from al_analysis import (ij_roi_responses_cache, dropna, plot_all_roi_mean_respo
 )
 import al_analysis as al
 
+
+# hardcoded to same name as in plot_roi.py, which calls init_logger to set it up.
+#
+# TODO could try as a sub-logger (terminology?), like 'plot_roi.util' or something, but
+# not sure that'd be useful
+log = logging.getLogger('plot_roi')
 
 # TODO TODO try profiling again
 # TODO try disabling constrained layout, to see how much that is affecting
@@ -201,6 +212,7 @@ def send_odor_index_to_imagej_script(odor_index):
     # continue showing plot too... make another thread?
     while True:
         try:
+            log.debug(f'trying to connect socket to {port=}')
             if _debug:
                 print(f'connecting on {port=}')
 
@@ -209,17 +221,20 @@ def send_odor_index_to_imagej_script(odor_index):
 
         # TODO which error is this actually? what to catch (to be specific)?
         except:
+            log.debug('could not connect! returning!')
             if _debug:
                 print('could not connect! returning!')
 
             return
 
+    log.debug('connected')
     if _debug:
         print('connected')
 
     # '!' = "network encoding" (big Endian)
     client.send(pack('!i', odor_index))
 
+    log.debug(f'sent {odor_index}')
     if _debug:
         print(f'sent {odor_index}')
 
@@ -284,7 +299,7 @@ def on_click(event):
         send_odor_index_to_imagej_script(presentation_odor_index)
 
 
-def plot(df, sort_rois=True, show=True, **kwargs):
+def plot(df, sort_rois=True, **kwargs):
     # For sorting based on order ROIs added to new analysis, so if plot is updated to
     # include new data, the new data is always towards the bottom of each section.
     def roi_sort_index(col_index_vals):
@@ -368,11 +383,15 @@ def plot(df, sort_rois=True, show=True, **kwargs):
     # so that on_click can access the associated data
     fig.df = df
 
+    # TODO also say fig number? or fig id(...)?
+    log.debug('connecting matplotlib on_click event')
+
+    # TODO log debug this?
     plt.connect('button_press_event', on_click)
 
-    # TODO why would i event want to not show in this context? delete?
-    if show:
-        plt.show()
+    log.debug('calling matplotlib plt.show()')
+    plt.show()
+    log.debug('done showing plot')
 
 
 _no_multiprocessing = False
@@ -381,6 +400,12 @@ _no_multiprocessing = False
 def plot_process(plot_fn, *args, **kwargs):
     if not _no_multiprocessing:
         proc = Process(target=plot_fn, args=args, kwargs=kwargs)
+        # TODO possible to also log when it dies? multiprocessing-logging work with more
+        # than one level of multliprocess? prob not?
+        # TODO possible to at least get PID of plotting process here if not?
+        log.debug(f'starting Process for plot_fn={plot_fn.__name__}, with args:\n'
+            f'{pformat(args)}\nkwargs:\n{pformat(kwargs)}'
+        )
         proc.start()
         return proc
     else:
@@ -411,9 +436,6 @@ def load_and_plot(args):
     roiset_path = args.roiset_path
 
     compare = not args.no_compare
-    # TODO delete
-    #print(f'COMPARE={compare}')
-    #
     hallem = args.hallem
 
     plot_pair_data = args.pairs
@@ -583,13 +605,6 @@ def load_and_plot(args):
         newly_analyzed_roi_names.append(new_roi_name)
         newly_analyzed_dfs.append(new_df)
 
-    # TODO delete
-    '''
-    print(f'{compare=}')
-    print(f'{(analysis_dir is None)=}')
-    print(f'{keep_comparison_to_cache=}')
-    '''
-    #
     if compare or analysis_dir is None or keep_comparison_to_cache:
         roi_strs.extend(newly_analyzed_roi_strs)
         assert len(roi_strs) > 0
@@ -726,10 +741,9 @@ def load_and_plot(args):
             #corr_ax.set_title(new_roi_name)
             corr_ax.get_xaxis().set_visible(False)
 
-            plot(hallem_overlap_df, ax=resp_ax, sort_rois=False, show=False,
+            plot(hallem_overlap_df, ax=resp_ax, sort_rois=False,
                 title=f'Hallem data (sorted by corr with {new_roi_name})'
             )
-            plt.show()
 
         # TODO delete after debugging
         #hallem_comparison_plot()

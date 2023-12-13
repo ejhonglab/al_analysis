@@ -14,6 +14,7 @@ import shutil
 import traceback
 import subprocess
 import sys
+import logging
 import pickle
 from pathlib import Path
 import glob
@@ -23,8 +24,6 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from typing import Optional, Tuple, List, Type, Union, Dict, Any
 import json
-import logging
-import shlex
 import re
 
 import numpy as np
@@ -80,6 +79,9 @@ import natmix
 from natmix import load_corr_dataarray, drop_nonlone_pair_expt_odors, dropna_odors
 from natmix import write_corr_dataarray as _write_corr_dataarray
 
+# TODO move this to hong2p probably
+from hong_logging import init_logger
+
 
 # not sure i'll be able to fix this one...
 # can't seem to convert this warning to error this way.
@@ -120,7 +122,8 @@ warnings.formatwarning = formatwarning_msg_only
 
 
 # TODO maybe log all warnings?
-# TODO TODO replace w/ logging.warning
+# TODO TODO replace w/ logging.warning (have init_logger just hook into warnings.warn?
+# some standard mechanism for that?)
 def warn(msg):
     warnings.warn(str(msg))
 
@@ -625,61 +628,6 @@ no_merges = []
 ###################################################################################
 
 dirs_with_ijrois = []
-
-
-# TODO refactor to use the global (module specific?) logger, to enable for nested code
-# w/o passing logger in
-def init_logger(module_name, script_path, log_argv=True):
-    """
-    >>> log = init_logger(__name__, __file__)
-    """
-    # could use some introspection like this to not need arguments:
-    # https://stackoverflow.com/questions/13699283
-
-    logger = logging.getLogger(module_name)
-
-    script_path = Path(script_path).resolve()
-
-    log_dir = script_path.parent / 'logs'
-    log_dir.mkdir(exist_ok=True)
-
-    log_path = log_dir / f'{script_path.stem}.log'
-
-    handler = logging.FileHandler(log_path)
-    formatter = logging.Formatter(fmt='%(asctime)s %(levelname)-8s %(message)s',
-      datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
-
-    # Doing this before adding StreamHandler, because don't want this on terminal.
-    if log_argv:
-        # Python 3.8+
-        cmd_str = shlex.join(sys.argv)
-        logger.info(cmd_str)
-
-    # To also print to stderr
-    logger.addHandler(logging.StreamHandler())
-
-    def handle_exception(exc_type, exc_value, exc_traceback):
-        # bdb.BdqQuit doesn't seem to currently get logged here, though I'm not sure why
-        #
-        # actually, it seems any exception after I have been in ipdb (e.g. despite 'c'
-        # to continue to completion), isn't logged.
-        #
-        # TODO possible to get those errors to be logged?
-        if issubclass(exc_type, KeyboardInterrupt):
-            sys.__excepthook__(exc_type, exc_value, exc_traceback)
-            return
-
-        logger.critical('Uncaught exception',
-            exc_info=(exc_type, exc_value, exc_traceback)
-        )
-
-    sys.excepthook = handle_exception
-
-    return logger
 
 
 def get_fly_analysis_dir(date, fly_num) -> Path:
@@ -9085,6 +9033,13 @@ def main():
     global analyze_glomeruli_diagnostics
     global print_skipped
 
+    # TODO actually use log/delete / go back to global?
+    # (might just get a lot of matplotlib, etc logging there (maybe regardless)
+    # (or still init at top, but don't do the any logging / making dirs in init_logger
+    # unless __name__ is __main__? don't want that to happen if we just import some
+    # stuff from al_analysis.py...)
+    log = init_logger(__name__, __file__)
+
     # TODO TODO TODO would this screw up any existing plots? for some i was already
     # specifying this explicitly... (look at at least plot_rois outputs)
     #
@@ -9094,8 +9049,6 @@ def main():
     # Up from default of 100. Putting in main so it doesn't affect plot_roi[_util].py
     # interactive plotting.
     plt.rcParams['figure.dpi'] = 300
-
-    log = init_logger(__name__, __file__)
 
     # TODO any issues if one process is started, is stuck at a debugger (or otherwise
     # finishes after 2nd proecss), and then a 2nd process starts and finishes after?
@@ -10388,6 +10341,10 @@ def main():
     # TODO TODO TODO delete (/ only do for one certain only version)
     certain_df = select_certain_rois(trial_df)
 
+    # TODO TODO TODO make this >= half of flies (and say that's what we are doing, and
+    # what the threshold is) (so plots/outputs still useful when looking at data that
+    # doesn't have much yet)
+    #
     # Betty picked this number when I asked if we could drop glomeruli based on this
     # criteria
     n_for_consensus = 3

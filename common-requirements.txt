@@ -46,3 +46,13 @@ cellpose
 #
 tifffile==2021.8.8
 
+# TODO maybe replace with my own QueueHandler based implementation? see:
+# https://docs.python.org/3/howto/logging-cookbook.html#logging-to-a-single-file-from-multiple-processes
+# (+ fantabolous's answer here: https://stackoverflow.com/questions/641420)
+#
+# To try to get logging to work w/ multiprocessing
+# (mostly relevant for plot_roi[_util].py)
+# https://stackoverflow.com/questions/641420
+#
+# 0.3.4 was first version I tried.
+multiprocessing-logging
