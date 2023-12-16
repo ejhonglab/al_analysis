@@ -32,7 +32,8 @@ import xarray as xr
 import tifffile
 import yaml
 import ijroi
-from matplotlib import colors
+from matplotlib import colors, patches
+#import matplotlib.patheffects as PathEffects
 from matplotlib.figure import Figure
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -61,8 +62,8 @@ from hong2p.util import (shorten_path, shorten_stimfile_path, format_date, date_
     # TODO refactor current stuff to use these (num_[not]null)
     num_null, num_notnull, add_fly_id
 )
-from hong2p.olf import (format_odor, format_mix_from_strs, format_odor_list,
-    solvent_str, odor2abbrev, odor_lists_to_multiindex
+from hong2p.olf import (format_mix_from_strs, format_odor_list, solvent_str,
+    odor2abbrev, odor_lists_to_multiindex
 )
 from hong2p.viz import dff_latex, no_constrained_layout
 from hong2p.err import NoStimulusFile
@@ -600,6 +601,8 @@ ij_trial_dfs = []
 # Using dict rather than defaultdict(list) so handling is more consistent in case when
 # multiprocessing DictProxy overrides this.
 names_and_concs2analysis_dirs = dict()
+
+all_odor_str2target_glomeruli = dict()
 
 flies_with_new_processed_tiffs = []
 
@@ -2298,6 +2301,7 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
     return fig
 
 
+# TODO delete odor_min_max_scale if i don't end up using
 # TODO TODO rename this, and similar w/ 'roi_' (any others?), to exclude that?
 # what else would i be plotting responses of? this is the main type of response i'd want
 # to plot...
@@ -2305,7 +2309,9 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
 # can always see the xticklabels (at the top), without having to scroll up?
 def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=True,
     sort_rois_first_on=None, odor_sort=True, keep_panels_separate=True,
-    roi_min_max_scale=False, cmap=cmap, **kwargs):
+    roi_min_max_scale=False, odor_min_max_scale=False, cmap=cmap,
+    single_fly: bool = False,
+    odor_glomerulus_combos_to_highlight: Optional[List[Dict]] = None, **kwargs):
     # TODO rename odor_sort -> conc_sort (or delete altogether)
     # TODO TODO add fly_min_max_scale flag (like roi_min_max_scale)?
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
@@ -2323,6 +2329,13 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
 
         roi_min_max_scale: if True, scales data within each ROI to [0, 1].
             if `cbar_label` is in `kwargs`, will append '[0,1] scaled per ROI'.
+
+        odor_min_max_scale: if True, scales data within each odor to [0, 1].
+            if `cbar_label` is in `kwargs`, will append '[0,1] scaled per odor'.
+
+        odor_glomerulus_combos_to_highlight: list of dicts with 'odor' and 'glomerulus'
+            keys. cells where `odor1` matches 'odor' (with no odor in `odor2`) and `roi`
+            matches 'glomerulus' will have a red box drawn around them.
 
         **kwargs: passed thru to hong2p.viz.matshow
 
@@ -2362,12 +2375,16 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     # delete that warning...) (still relevant?)
 
     if roi_min_max_scale:
+        assert not odor_min_max_scale
+
         # TODO may need to check vmin/vmax aren't in kwargs and change if so
 
         # The .min()/.max() functions should return Series where index elements are ROI
         # labels (or at least it won't be the odor axis based on above assertions...).
+        # equivalent to mean_df.[min|max](axis='rows')
         mean_df -= mean_df.min()
         mean_df /= mean_df.max()
+
         assert np.isclose(mean_df.min().min(), 0)
         assert np.isclose(mean_df.max().max(), 1)
 
@@ -2375,6 +2392,21 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         if 'cbar_label' in kwargs:
             # (won't modify input)
             kwargs['cbar_label'] += '\n[0,1] scaled per ROI'
+
+    if odor_min_max_scale:
+        mean_df = mean_df.T.copy()
+        # I tried passing axis='columns' (without transposing first), but then the
+        # subtracting didn't seem able to align (nor would other ops, probably)
+        mean_df -= mean_df.min()
+        mean_df /= mean_df.max()
+
+        mean_df = mean_df.T.copy()
+
+        assert np.isclose(mean_df.min().min(), 0)
+        assert np.isclose(mean_df.max().max(), 1)
+
+        if 'cbar_label' in kwargs:
+            kwargs['cbar_label'] += '\n[0,1] scaled per odor'
 
     if odor_sort:
         mean_df = sort_concs(mean_df)
@@ -2397,17 +2429,29 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     # (the automatic enabling of hline_group_text if we have levels_from_labels?)
     # (also, just to not have to redefine the default value of levels_from_labels...)
     hline_group_text = False
-    # (assuming it's a valid callable if so)
-    if 'hline_level_fn' in kwargs and not kwargs.get('levels_from_labels', True):
-        if all([x in trial_df.columns.names for x in fly_keys]):
-            # TODO maybe still check if there is >1 fly too (esp if this path produces
-            # bad looking figures in that case)
 
-            # will show the ROI label only once for each group of rows where the
-            # ROI name is the same (e.g. but coming from different flies)
-            hline_group_text = True
+    if not single_fly:
+        # (assuming it's a valid callable if so)
+        if 'hline_level_fn' in kwargs and not kwargs.get('levels_from_labels', True):
+            if all([x in trial_df.columns.names for x in fly_keys]):
+                # TODO maybe still check if there is >1 fly too (esp if this path
+                # produces bad looking figures in that case)
 
-    yticklabels = lambda x: fly_roi_id(x, fly_only=hline_group_text)
+                # will show the ROI label only once for each group of rows where the
+                # ROI name is the same (e.g. but coming from different flies)
+                hline_group_text = True
+
+        # TODO allow overriding w/ kwarg for case where i wanna call this w/ single fly
+        # data? (to make diag examples, but calling as part of
+        # acrossfly_response_matrix_plots)
+        yticklabels = lambda x: fly_roi_id(x, fly_only=hline_group_text)
+    else:
+        n_flies = len(
+            trial_df.columns.to_frame(index=False)[['date','fly_num']].drop_duplicates()
+        )
+        assert n_flies == 1
+
+        yticklabels = lambda x: x.roi
 
     vline_group_text = kwargs.pop('vline_group_text', 'panel' in trial_df.index.names)
 
@@ -2421,14 +2465,101 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         hline_group_text=hline_group_text, vline_group_text=vline_group_text, **kwargs
     )
 
+    if odor_glomerulus_combos_to_highlight is not None:
+        # colorbar should be fig.axes[1] if it's there at all
+        ax = fig.axes[0]
+
+        # this seems to be default colorbar label. for other ax (one i want), default
+        # label seems to be '' here.
+        assert '<colorbar>' != ax.get_label()
+
+        for combo in odor_glomerulus_combos_to_highlight:
+            odor1 = combo['odor']
+            roi = combo['glomerulus']
+
+            matching_roi = mean_df.index.get_level_values('roi') == roi
+            matching_odor = (
+                (mean_df.columns.get_level_values('odor1') == odor1) &
+                (mean_df.columns.get_level_values('odor2') == solvent_str)
+            )
+            if matching_roi.sum() == 0 or matching_odor.sum() == 0:
+                continue
+
+            # TODO TODO if there are a few adjacent, find outer edge and just draw one
+            # rect?
+            # (for highlighting same on plots that have multiple fly data)
+            #
+            # other cases not currently supported (would have to think about handling)
+            assert matching_odor.sum() == 1
+            assert matching_roi.sum() == 1
+
+            # these will get index of first True value
+            odor_index = np.argmax(matching_odor)
+            roi_index = np.argmax(matching_roi)
+
+            # TODO possible to compute good value for this tho (for flush w/ edge of
+            # cell)?
+            # since the rect (+ path effect) extend a bit beyond each cell, and it looks
+            # kinda bad. 0.05 seems to produce good results (w/ linewidth=1, or
+            # linewith=0.5 + patheffects w/ lw=1.0).
+            # TODO decrease shrink slightly? some (but--for some reason--not all) boxes
+            # seem to show a tiny bit of underlying color on right edge. seemed to
+            # happen more on the bright yellow ones. not sure it's consistent...
+            # (may only be an issue w/ png too?)
+            shrink = 0.05
+
+            # https://stackoverflow.com/questions/37435369
+            # -0.5 seems needed for both in order to center box on each matshow cell
+            anchor = (odor_index - 0.5 + shrink, roi_index - 0.5 + shrink)
+            box_size = 1 - 2 * shrink
+            # linewidth: 0.75 bit too much
+            rect = patches.Rectangle(anchor, box_size, box_size, facecolor='none',
+
+                # TODO try something other than white/red (that doesn't need PathEffect
+                # black outline maybe?) (red pretty bad on magma cmap i'm using).
+                # dotted (first try was pretty bad)?
+                #
+                # OK
+                #edgecolor='w', linewidth=0.5,
+                #path_effects=[
+                #    # w/ linewidth=1 above: 0.75 too little, 2.0 a bit too much
+                #    # w/ linewidth=0.75 above: 1.5 OK, but maybe highlights that either
+                #    # rect or path effect is offset very slightly (~1px)?
+                #    PathEffects.withStroke(linewidth=1.0, foreground='black')
+                #],
+
+                # OK (try a brighter green? might need path effect then...)
+                #edgecolor='g', linewidth=1.0,
+
+                # OK. maybe my fav so far?
+                #edgecolor='k', linewidth=1.0,
+
+                # OK. bit too close to yellow (too light) maybe?.
+                # gray ('1.0' = white, '0.0' = black)
+                #edgecolor='0.6', linewidth=1.0,
+
+                # among my favorites.
+                #edgecolor='0.4', linewidth=1.0,
+
+                # think i'll stick with this one for now
+                edgecolor='0.5', linewidth=1.0,
+
+                # bad. at least with the linewidth=1.0 (too much) and not densely dotted
+                #edgecolor='k', linewidth=1.0, linestyle='dotted',
+                # cyan?
+            )
+            ax.add_patch(rect)
+
     # TODO just mean across trials right? do i actually use this anywhere?
     # would probably make more sense to just recompute, considering how often i find
     # myself writing `fig, _ = plot...`
     return fig, mean_df
 
 
+# TODO delete odor_scaled_version kwarg if i don't end up using
 def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
-    fname_prefix: str, *, bbox_inches=None, **kwargs) -> None:
+    fname_prefix: str, *, odor_scaled_version=False, bbox_inches=None, **kwargs
+    ) -> None:
     """Saves response matrix plots to <plot_dir>/<fname_prefix>[_normed].<plot_fmt>
 
     Args:
@@ -2441,6 +2572,12 @@ def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
     savefig(fig, plot_dir, f'{fname_prefix}_normed', bbox_inches=bbox_inches)
 
     # TODO TODO and a scaled-within-each-fly version?
+
+    # TODO or maybe just move out to the one place i might want this (diagnostics
+    # response matrix example for now)
+    if odor_scaled_version:
+        fig, _ = plot_all_roi_mean_responses(df, odor_min_max_scale=True, **kwargs)
+        savefig(fig, plot_dir, f'{fname_prefix}_odor-normed', bbox_inches=bbox_inches)
 
 
 def suite2p_traces(analysis_dir):
@@ -3567,6 +3704,11 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
     odor_order, n_repeats = olf.remove_consecutive_repeats(odor_order_with_repeats)
 
+    # TODO TODO TODO build this up across flies (for use in diag example response matrix
+    # plotting, which is currently part of acrossfly_response_matrix_plots)
+    # TODO or maybe i should just move that in here?
+    # TODO TODO TODO also apply target_glomerulus_renames to that (prob make that global too)
+    #
     # TODO delete if i manage to refactor code below to only do the formatting of odors
     # right before plotting, rather than in the few lines before this
     #
@@ -3577,12 +3719,39 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         if len(o) == 1 and 'glomerulus' in o[0]
     }
 
+    # TODO fix elsewhere to not need this hack (/better name at least)?
+    target_glomerulus_renames = {
+        # ethyl 3-hydroxybutyrate @ -6
+        'DM5/VM5d': 'DM5',
+    }
+
+    # TODO build this up in preprocessing instead? and move target_glomerulus_renames to
+    # module level?
+    for o, g in odor_str2target_glomeruli.items():
+
+        g = target_glomerulus_renames.get(g, g)
+
+        # data that will be used with all_odor_str2target_glomeruli will have odors
+        # already abbreviated. olf.abbrev(...) now also works for input with
+        # concentration info (e.g. 'ethyl acetate @ -4').
+        o = olf.abbrev(o)
+
+        if o in all_odor_str2target_glomeruli:
+            old_g = all_odor_str2target_glomeruli[o]
+            # TODO maybe switch to warning if this is actually getting triggered
+            assert g == old_g, f'{o}, target glom mismatch: {g} != (previous) {old_g}'
+
+        all_odor_str2target_glomeruli[o] = g
+
+
     # TODO use that list comprehension way of one lining this? equiv for sets?
     name_lists = [[o['name'] for o in os] for os in odor_lists]
     for ns in name_lists:
         for n in ns:
             if n not in odor2abbrev:
-                #odors_without_abbrev.add(n)
+                # didn't use a set for this because back when i used multiprocessing
+                # option to call process_recording, wasn't a great type to support
+                # across-process shared sets
                 if n not in odors_without_abbrev:
                     odors_without_abbrev.append(n)
     del name_lists
@@ -4140,14 +4309,7 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             title=title, cbar_label=f'mean {dff_latex}'
         )
 
-        # TODO TODO warn if target glomerulus is None? (<- delete)
-        # TODO TODO TODO fix elsewhere to not need this hack (/better name at least)
-        # TODO or should i highlight all in these cases?
-        focus_roi_fixes = {
-            # ethyl 3-hydroxybutyrate @ -6
-            'DM5/VM5d': 'DM5',
-        }
-        focus_roi = focus_roi_fixes.get(target_glomerulus, target_glomerulus)
+        focus_roi = target_glomerulus_renames.get(target_glomerulus, target_glomerulus)
 
         # TODO TODO TODO similar plot, but using max dF/F (also try stddev [of raw
         # movie? dF/F?]?), showing all ROIs. -> maybe switch individual odor plots to
@@ -4176,8 +4338,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         #
         # TODO TODO try one colorscale per roi
         # TODO check have_ijrois is what i want here (/ works)
-        # TODO why not group w/ creation of similar plots in ij_traces? was it for
-        # caching reasons? did i even have a reason?
         if have_ijrois:
             # TODO delete (when is this happening? probably when cache actually isn't
             # loaded, cause it's not implemented...?)
@@ -5530,6 +5690,7 @@ def format_datefly(date, fly_num: int) -> str:
     return f'{format_date(date)}/{fly_num}'
 
 
+# TODO delete? replace w/ olf.parse_log10_conc?
 def odor_str2conc(odor_str: str) -> float:
     if odor_str == solvent_str:
         return 0.0
@@ -8989,6 +9150,13 @@ roimean_plot_kws['inches_per_cell'] = 0.15
 roimean_plot_kws['extra_figsize'] = (1.0, 0.0)
 roimean_plot_kws['vgroup_label_offset'] = 5
 
+single_fly_roi_plot_kws = deepcopy(roimean_plot_kws)
+# TODO remove levels_from_labels? don't think i should need to?
+# starting from roimean_plot_kws b/c total amount of data will be more like that
+single_fly_roi_plot_kws = {k: v for k, v in single_fly_roi_plot_kws.items()
+    if k not in ('hline_level_fn', 'hgroup_label_offset')
+}
+
 # TODO can replace title back w/ usual title here, now that we have it in cbar
 # TODO replace deepcopy w/ just dict(...)?
 n_roi_plot_kws = deepcopy(roimean_plot_kws)
@@ -9244,6 +9412,8 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # title there...
         response_matrix_plots(panel_ijroi_dir, pdf)
 
+        # TODO move all after stuff we also wanna do w/ diag panel -> dedent + continue
+        # if diag panel (before stuff we don't wanna do for diag panel alone)
         if panel != diag_panel_str:
             # TODO TODO still want stuff in panel_df but w/o diags tho. modify
             # (though in data i'm currently analyzing, this shouldn't ever be the
@@ -9511,6 +9681,89 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         except ValueError:
             traceback.print_exc()
             import ipdb; ipdb.set_trace()
+
+        # TODO re-organize this + all other !diag stuff above, to simplify
+        # TODO or just put this stuff in a loop over diag_df above panel_df loop?
+        # (not doing for any other panels...)
+        if panel == diag_panel_str:
+            each_fly_diag_response_dir = panel_ijroi_dir / 'each_fly'
+
+            certain_df = select_certain_rois(panel_df)
+
+            # only did CO2 in one fly, and not planning on routinely presenting it.
+            diags_to_drop = ['CO2 @ 0']
+            certain_df = certain_df.loc[
+                ~ certain_df.index.get_level_values('odor1').isin(diags_to_drop), :
+            ]
+
+            for (date, fly_num), fly_df in certain_df.groupby(['date', 'fly_num'],
+                axis='columns'):
+
+                # TODO refactor to share w/ other places
+                date_str = format_date(date)
+                fly_str = f'{date_str}/{fly_num}'
+
+                # drop any odors that are fully NaN (mainly to handle cases where
+                # concentration changed, such as aphe -5 -> -4)
+                fly_df = fly_df.dropna(how='all', axis='rows')
+
+                # TODO calculate these once up top of this fn?
+                glomeruli_with_diags = set(all_odor_str2target_glomeruli.values())
+                odor_glom_combos_to_highlight = [
+                    dict(odor=o, glomerulus=g)
+                    for o, g in all_odor_str2target_glomeruli.items()
+                ]
+
+                # TODO define up top?
+                def glom_has_diag(index_dict):
+                    glom = index_dict['roi']
+                    return glom in glomeruli_with_diags
+
+                # `x not in glomeruli_with_diags` puts those with diags first, as I want
+                sort_rois_first_on = [x not in glomeruli_with_diags
+                    for x in fly_df.columns.get_level_values('roi')
+                ]
+
+                # TODO version that doesn't have the glomeruli w/o diags?
+
+                # TODO sort to group useful-to-compare odors/glomeruli next to each
+                # other? not sure how...
+                # TODO or order odors by how reliable of diagnostics they are?
+                # (maybe just using strength of response in target?)
+                # TODO or leave sorted same as i typically have odors ordered
+                # (alphabetical)?
+                #
+                # should produce a nice, easy-to-follow, diagonal
+                odors_sorted_by_target_glom = sorted(
+                    fly_df.index.get_level_values('odor1'),
+                    key=all_odor_str2target_glomeruli.get
+                )
+                names = [olf.parse_odor_name(o) for o in odors_sorted_by_target_glom]
+                assert len(set(odors_sorted_by_target_glom)) == len(set(names))
+
+                # list(set(names)) does NOT preserve order of names, so doing it this
+                # way instead.
+                name_order = []
+                for n in names:
+                    if n not in name_order:
+                        name_order.append(n)
+
+                fly_df = olf.sort_odors(fly_df, name_order=name_order)
+
+                # TODO maybe use same dF/F range as in plot_rois invocations that
+                # produce diagnostic examples (clipped)?
+                plot_responses_and_scaled_versions(fly_df, each_fly_diag_response_dir,
+                    f'{fly_str}_certain', title=f'{fly_str}\n({title})',
+                    single_fly=True, sort_rois_first_on=sort_rois_first_on,
+                    hline_level_fn=glom_has_diag,
+                    odor_glomerulus_combos_to_highlight=odor_glom_combos_to_highlight,
+
+                    # TODO like (eh... i still think i find the roi scaled more useful)?
+                    # delete?
+                    odor_scaled_version=True,
+
+                    **single_fly_roi_plot_kws
+                )
 
     print('done')
 
