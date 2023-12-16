@@ -1,5 +1,9 @@
 -r common-requirements.txt
 
+line-profiler
+# So that -r option to line_profiler actually works
+rich
+
 # Assumes all of these have been cloned to same level as this al_analysis repo.
 -e ../drosolf
 -e ../hong2p

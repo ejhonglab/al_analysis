@@ -12,6 +12,7 @@ import traceback
 # from here (init_logging should be configuring root logger now, so logging.<x> should
 # work)
 import logging
+from os import getenv
 
 import numpy as np
 import pandas as pd
@@ -30,13 +31,28 @@ from al_analysis import (ij_roi_responses_cache, dropna, plot_all_roi_mean_respo
 import al_analysis as al
 
 
+# LINE_PROFILE is the same env var line_profiler (pip installed as line-profiler) uses
+# to decide whether to run (when script is called normally)
+do_profiling = getenv('LINE_PROFILE') == '1'
+if do_profiling:
+    # TODO possible to configure as if `-u 1`? does that matter for saving .lprof, or
+    # just for viewing it (it the latter, doesn't matter here)?
+    from line_profiler import profile
+    # TODO also print about how to view results of profiling
+    # (via `python -m line_profiler <.lprof file>` ?, which i think requires source
+    # lines to not have changed to make sense)
+else:
+    # TODO will this screw with understanding any of the code (tracebacks / etc)?
+    # some other way to have an optional wrapper (that when disabled does literally
+    # nothing)?
+    profile = lambda x: x
+
 # hardcoded to same name as in plot_roi.py, which calls init_logger to set it up.
 #
 # TODO could try as a sub-logger (terminology?), like 'plot_roi.util' or something, but
 # not sure that'd be useful
 log = logging.getLogger('plot_roi')
 
-# TODO TODO try profiling again
 # TODO try disabling constrained layout, to see how much that is affecting
 # plotting speed
 
@@ -52,15 +68,19 @@ _meminfo = psutil.virtual_memory()
 total_mem_GB = _meminfo.total / 1e9
 if total_mem_GB < 10:
     CACHE_MAX_SIZE = 1
+    warn('because system has <10GB total RAM, setting CACHE_MAX_SIZE=1. will need to '
+        'load movies more often (will be slower)'
+    )
 else:
-    # 6 = 2 flies w/ 3 movies each
-    CACHE_MAX_SIZE = 6
+    # e.g. 2 flies w/ 5 recordings each, or one fly with 10 recordings.
+    CACHE_MAX_SIZE = 10
 
 @lru_cache(maxsize=CACHE_MAX_SIZE)
 def cached_load_movie(*recording_keys):
     return al.load_movie(*recording_keys, min_input='mocorr')
 
 
+@profile
 def extract_ij_responses(input_dir: Pathlike, roi_index: int,
     roiset_path: Optional[Pathlike] = None) -> pd.DataFrame:
     """
@@ -130,12 +150,21 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
     # (in both concat / single recording case) (though if i would need to back convert
     # odor data from str, maybe not)
 
+    # TODO switch to calling one per fly (on concatenated stuff, when available), rather
+    # than once per recording (would want to switch al_analysis.py behavior at the same
+    # time, which would take a fair bit of work)
+    # TODO TODO since i'm not actually computing best plane though, maybe i can still
+    # just compute ROI mask once per fly (assuming ROIs never actually differ across
+    # recordings, which they don't actually. always symlinked to diagnostics1)
     subset_dfs = []
     for (date, fly_num), (thorimage_dir, thorsync_dir) in keys_and_paired_dirs:
         recording_keys = thorimage_dir.parts[-3:]
 
         analysis_dir = al.get_analysis_dir(*recording_keys)
 
+        # NOTE: still takes a reasonable fraction of a second
+        # TODO cache? just use lru_cache decorator again? shouldn't change while doing
+        # analysis really...
         _, _, odor_lists = util.thorimage2yaml_info_and_odor_lists(thorimage_dir)
 
         bounding_frames = al.assign_frames_to_odor_presentations(thorsync_dir,
@@ -146,13 +175,19 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         if roiset_path is None:
             roiset_path = analysis_dir
 
-        # TODO why does this seem to print "dropping <n> ROIs with '+' suffix" 5 times
-        # for (what i thought should be) 1 call? actually pressing 'p' 5 times?
-        # (it should no longer do that, since i'm passing
-        # drop_maximal_extent_rois=False, but this may have still indicated
-        # usage/behavior not matching up with my expectations...)
-        masks = ijroi_masks(roiset_path, thorimage_dir, drop_maximal_extent_rois=False)
+        # NOTE: still takes a reasonable fraction of a second w/ 1 ROI
+        #
+        # TODO at least unless roiset_path points to another real file (after
+        # resolving symlinks), cache mask computation as well!
+        # (may not be very important now that i'm only computing mask for roi_index i
+        # want?)
+        masks = ijroi_masks(roiset_path, thorimage_dir, drop_maximal_extent_rois=False,
+            indices=[roi_index]
+        )
 
+        # TODO TODO can i change to only compute w/ single mask i'm actually planning on
+        # analyzing? is that why it's slow?
+        #
         # TODO TODO refactor this + hong2p.util.ij_traces, to share a bit more code
         # (maybe break out some of ij_traces into another helper fn?)
         # TODO silence this here / in general
@@ -163,10 +198,13 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         traces.columns.name = 'roi'
         traces.columns = masks.roi_name.values
 
+        # NOTE: still takes a reasonable fraction of a second w/ 1 ROI
+        #
         # odor abbreviating happens inside here (in odor_lists_to_multiindex call)
         trial_df = al.compute_trial_stats(traces, bounding_frames, odor_lists)
 
-        subset_df = trial_df.iloc[:, [roi_index]]
+        # now we should be subsetting via indices= kwarg to ijroi_masks above
+        subset_df = trial_df
 
         panel = al.get_panel(thorimage_dir)
         is_pair = al.is_pairgrid(odor_lists)
@@ -390,7 +428,23 @@ def plot(df, sort_rois=True, **kwargs):
     plt.connect('button_press_event', on_click)
 
     log.debug('calling matplotlib plt.show()')
+
+    # TODO delete
+    # draw() was 0.4s per hit (that's probably the worst that constrained layout is
+    # impacting each call). other 0.4s per call were in savefig (and plt.show() would
+    # probably be similar or greater?)
+    #fig.canvas.draw()
+    #fig.set_layout_engine('none')
+    #
+
+    # plot_all_roi_mean_responses was most of (~15%) the rest of the time, w/ around
+    # 0.1s per hit (not too much)
+    #
+    # TODO some way to exclude this from profiling (or at least idle time?)?
+    # this was ~85% of time (1.2s per hit) (when i was manually closing each plot after
+    # it popped up, but maybe that's not the best test)
     plt.show()
+
     log.debug('done showing plot')
 
 
@@ -420,6 +474,7 @@ most_recent_plot_proc = None
 keep_comparison_to_cache = False
 plotting_processes = []
 
+@profile
 def load_and_plot(args):
     global newly_analyzed_dfs
     global newly_analyzed_roi_names
@@ -694,7 +749,15 @@ def load_and_plot(args):
 
         # should also currently only be triggered by 2023-10-15/1 data w/ duplicate
         # 2-mib
+        # TODO maybe delete here if i'm going to keep warning in except branch of
+        # pd.concat(subset_dfs, verify_integrity=True)? or provide more info here and
+        # delete that other one?
         if len(set(pd.Series(odor_index).value_counts())) != 1:
+            # TODO TODO at least say how the excess are being handled. and how are they
+            # (all averaged together? everything but last n_repeats dropped?)?
+            # TODO TODO if these ever actually cause a problem for either olf.sort_odors
+            # or al.sort_odors, just check that those fns warn themselves in these cases
+            # (at least by default)
             warn('variable number of repeats')
 
         index['odor_index'] = odor_index
@@ -714,9 +777,9 @@ def load_and_plot(args):
         # TODO option to switch between these? modify olf.sort_odors to allow keeping
         # certain panels in a fixed position + name_order, but to allow treating a
         # subset of panels as a single panel?
-        # TODO vline_level_fn using panel data? might need to pass in some precomputed
-        # list or something, which i think might require changes to hong2p.viz.matshow
-        # handling
+        # TODO TODO vline_level_fn using panel data (as in many of the across-fly ijroi
+        # plots in al_analysis.py)? might need to pass in some precomputed list or
+        # something, which i think might require changes to hong2p.viz.matshow handling
         subset_df = al.sort_odors(subset_df)
 
 
@@ -775,9 +838,16 @@ def load_and_plot(args):
     #proc.start()
 
     proc = plot_process(plot, subset_df)
-    most_recent_plot_proc = proc
 
-    plotting_processes.append(proc)
+    if not _no_multiprocessing:
+        most_recent_plot_proc = proc
+        plotting_processes.append(proc)
+
+    # TODO maybe as a hack to get easy profiling to work, just sys.exit here if we are
+    # profiling? (working OK to manually call `pkill -SIGINT -f '/plot_roi'` after)
+    #
+    # (not sure how i could do this and also profile w/o initial load time, from a prior
+    # call, tho...)
 
 
 # TODO delete
