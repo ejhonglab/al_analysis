@@ -1060,8 +1060,12 @@ def drop_superfluous_uncertain_rois(df: pd.DataFrame) -> pd.DataFrame:
     fly_rois['name_as_if_certain'] = df.columns.get_level_values('roi').map(
         ijroi_name_as_if_certain
     )
-    # TODO TODO TODO fix issue probably added (2023-10-29) by editing 2023-05-09/1 (or
-    # fly edited before that?) (probably by 'x?' and 'x??' or something...)
+
+    # TODO TODO delete? this even an issue? maybe just print cases where there are
+    # multiple 'roi' for a given 'name_as_if_certain'?
+    #
+    # TODO fix issue probably added (2023-10-29) by editing 2023-05-09/1 (or fly edited
+    # before that?) (probably by 'x?' and 'x??' or something...)
     # Traceback (most recent call last):
     #   File "./al_analysis.py", line 10534, in <module>
     #     main()
@@ -1076,7 +1080,11 @@ def drop_superfluous_uncertain_rois(df: pd.DataFrame) -> pd.DataFrame:
             len(fly_rois[['date','fly_num','name_as_if_certain']].drop_duplicates())
         )
     except AssertionError as err:
+        # TODO TODO what to say? this a problem? this what was causing an empty warning
+        # message after some warnings that came from above?
         warn(err)
+        import ipdb; ipdb.set_trace()
+
     # TODO restore after dealing w/ only exception:
     # when name_as_if_certain=None (b/c there were multiple parts)
     # (although if there were ever >=2 of these in one fly, above assertion would fail
@@ -4168,6 +4176,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         #
         # TODO TODO try one colorscale per roi
         # TODO check have_ijrois is what i want here (/ works)
+        # TODO why not group w/ creation of similar plots in ij_traces? was it for
+        # caching reasons? did i even have a reason?
         if have_ijrois:
             # TODO delete (when is this happening? probably when cache actually isn't
             # loaded, cause it's not implemented...?)
@@ -4248,6 +4258,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                 )
             '''
 
+            # TODO TODO symlink to these in across fly ijroi dir?
+
             # TODO move certain_only=True, best_planes_only=True into
             # diag_example_plot_kws (if i like them)? (probably do for
             # certain_only=True, but probably not for best_planes_only=True)
@@ -4260,8 +4272,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             savefig(trialmean_dff_w_bestplane_rois_fig,
                 plot_dir / 'ijroi/with_bestplane_rois', plot_desc
             )
-
-            # TODO prat request: try to ensure top of cbar labelled?
 
             # TODO vertical instead (on col per odor), to maximize resolution available
             # for ROI boundaries/labels in each image? idk...
@@ -5632,10 +5642,15 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
         # may need to change groupby/something above
         n_flies = len(garr)
 
+        # TODO delete. always use remy_matshow_kwargs. renaem to just matshow_kwargs or
+        # something
+        '''
         if panel != 'megamat':
             kwargs = dict()
         else:
             kwargs = remy_matshow_kwargs
+        '''
+        kwargs = remy_matshow_kwargs
 
         panel_mean = garr.mean(corr_avg_dim)
 
@@ -5890,10 +5905,14 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
         # of the issue.)
         corr = dropna_odors(garr.squeeze(drop=True))
 
+        # TODO delete
+        '''
         if panel != 'megamat':
             kwargs = dict()
         else:
             kwargs = remy_matshow_kwargs
+        '''
+        kwargs = remy_matshow_kwargs
 
         fig = natmix.plot_corr(corr, title=fly_str, **kwargs)
 
@@ -7256,6 +7275,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     target_sparsity: Optional[float] = None,
     _use_matt_wPNKC=False, _add_back_methanoic_acid_mistake=False
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+    # TODO TODO doc point of sim_odors. do we need to pass them in?
+    # (even when neither tuning nor running on any hallem data?)
     """
     Returns responses, wPNKC
     """
@@ -7285,6 +7306,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
                 f'{variable_n_claw_options}'
             )
 
+    # TODO TODO rename hallem_input to only_run_on_hallem (or something better)?
     hallem_input = False
     if orn_deltas is None:
         hallem_input = True
@@ -7525,7 +7547,17 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
 
         orn_deltas = orn_deltas.loc[sfr.index].copy()
 
-        assert sim_odors is None or sim_odors == set(input_odors), 'why'
+        # TODO delete? not sure if it's triggered outside of case where i accidentally
+        # passed input where all va/aa stuff was dropped (by calling script w/
+        # 2023-04-22 as end of date range, rather than start)
+        try:
+            # TODO if i wanna keep this, move earlier (or at least have another version
+            # of this earlier? maybe in one of first lines in fit_mb_model, or in
+            # whatever is processing orn_deltas before it's passed to fit_mb_model?)
+            # (the issue seems to be created before we get into fit_mb_model)
+            assert sim_odors is None or sim_odors == set(input_odors), 'why'
+        except AssertionError:
+            import ipdb; ipdb.set_trace()
 
     if not hallem_input:
         # TODO maybe i should still have an option here to tune on more data than what i
@@ -7815,6 +7847,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
 
 _fit_and_plot_saved_plot_prefixes = set()
 def fit_and_plot_mb_model(plot_dir, sim_odors=None, **model_kws):
+    # TODO doc
 
     # TODO also support sim_odors=None (returning all)? or just make positional arg?
 
@@ -7836,7 +7869,8 @@ def fit_and_plot_mb_model(plot_dir, sim_odors=None, **model_kws):
         # in this case, for now!)
         tune_from = my_data
 
-    # TODO fix (give actual default? make positional?)
+    # TODO fix (give actual default? make positional?) (is this ever not available?
+    # when?)
     pn2kc_connections = model_kws['pn2kc_connections']
 
     # TODO TODO also use param_str for title? maybe just replace in the other direction,
@@ -7871,11 +7905,13 @@ def fit_and_plot_mb_model(plot_dir, sim_odors=None, **model_kws):
         tune_from = 'pebbled'
     #
 
-    print(f'fitting model ({responses_to=}{param_str})...',
-        flush=True
-    )
+    print(f'fitting model ({responses_to=}{param_str})...', flush=True)
 
+    # TODO TODO TODO also plot orn deltas input (part of model_kws)
+    # TODO TODO TODO also get model PN responses returned (to plot)
     responses, wPNKC = fit_mb_model(sim_odors=sim_odors, **model_kws)
+
+    # TODO TODO TODO also save model outputs to csv / pickle for remy to analyze
 
     print('done', flush=True)
 
@@ -7889,7 +7925,14 @@ def fit_and_plot_mb_model(plot_dir, sim_odors=None, **model_kws):
     # NOTE: this will fail if ever fit_mb_model ever returns odor names without the
     # '@ <log10_conc>' concentration information at the end (e.g. raw Hallem names).
     # Currently it modifiers Hallem names to append ' @ -2', so this isn't an issue.
-    responses = sort_odors(responses.T, add_panel='megamat').T
+    # TODO TODO TODO update to work (/ not misrepresent) validation2 input
+    # (just leave out panel for now?)
+    #responses = sort_odors(responses.T, add_panel='megamat').T
+    # failed
+    # ValueError: panel sorting requested, but axis had odor levelswithout a 'panel' level
+    #responses = sort_odors(responses.T).T
+    print('FIX MODELLING ODOR SORTING FOR NON-MEGAMAT PANELS')
+    responses = sort_odors(responses.T, add_panel='validation2').T
 
     # TODO TODO TODO also simply plot responses
 
@@ -7901,6 +7944,10 @@ def fit_and_plot_mb_model(plot_dir, sim_odors=None, **model_kws):
     # (or maybe odor_corr_frame_to_dataarray?)
     responses.columns.name = 'odor1'
 
+    # TODO if i'm gonna keep this, at least make it so it doesn't affect validation
+    # stuff (which shouldn't have any of these odors) (nor other cases like that)
+    # (switch on odors? we don't have access to panel here, do we?)
+    #
     # TODO delete
     matt_order = True
     #matt_order = False
@@ -7955,6 +8002,9 @@ def fit_and_plot_mb_model(plot_dir, sim_odors=None, **model_kws):
         for_filename += (
             param_str.strip(', ').replace('_','-').replace(', ','__').replace('=','_')
         )
+
+    # don't care about saying matt_order or not here
+    to_csv(responses, plot_dir / f'{for_filename}.csv')
 
     if matt_order:
         for_filename = f'matt-order_{for_filename}'
@@ -8285,7 +8335,24 @@ def model_mb_responses(certain_df, parent_plot_dir):
 
     assert _found, 'delete me after debugging linear est plot below'
 
-    # TODO TODO TODO factor statsmodels fiting (+ plotting as matches seaborn)
+    # TODO change to not hardcode panel / cutoff of 7 flies? other criteria?
+    #
+    # hack to tell whether we should fit model (if input is megamat panel [which
+    # overlaps well enough w/ hallem], and has at least 7 flies there, we should).
+    # otherwise, we should try to load a saved model, and use that.
+    try:
+        if len(certain_df.loc['megamat'].dropna(axis='columns', how='all'
+            ).columns.to_frame(index=False)[[ 'date','fly_num']].drop_duplicates()
+            ) >= 7:
+
+            use_saved_dff_to_spiking_model = False
+        else:
+            use_saved_dff_to_spiking_model = True
+
+    except KeyError:
+        use_saved_dff_to_spiking_model = True
+
+    # TODO factor statsmodels fiting (+ plotting as matches seaborn)
     # into hong2p.viz (-> share w/ use in
     # natural_odors/scripts/kristina/lit_total_conc_est.py)
 
@@ -8294,13 +8361,38 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # (though should already be behaving that way)
     col_to_fit = 'zscore_scaled_delta_f_over_f'
 
-    # TODO where are the NaN in fdf[dff_col] coming from? is the merge not 'inner'?
-    to_fit = fdf.dropna()
-    y_train = to_fit.delta_spike_rate
-    X_train = sm.add_constant(to_fit[col_to_fit])
-    # TODO TODO why does this model produce a different result from the seaborn call
-    # above (can tell by sooming in on upper right region of plot)???
-    model = sm.OLS(y_train, X_train).fit()
+    if not use_saved_dff_to_spiking_model:
+        # TODO where are the NaN in fdf[dff_col] coming from? is the merge not 'inner'?
+        to_fit = fdf.dropna()
+        y_train = to_fit.delta_spike_rate
+        X_train = sm.add_constant(to_fit[col_to_fit])
+        # TODO TODO why does this model produce a different result from the seaborn call
+        # above (can tell by sooming in on upper right region of plot)???
+        # TODO rename to "results"? technically the .fit() returns a results wrapper or
+        # something (and do i only want to serialize the model part? can that even store
+        # the parameters separately) (online info seems to say it should return
+        # RegressionResults, so not sure why i'm getting RegressionResultsWrapper...)
+        model = sm.OLS(y_train, X_train).fit()
+
+        # TODO TODO delete / rename file (+ only save if input is megamat, or similarly
+        # rich in odors overlapping w/ hallem)
+        model.save('test_model.p')
+        #
+
+        m2 = sm.load('test_model.p')
+
+        # TODO other comparison that would work after model.remove_data()?
+        # care to remove_data? probably not
+        #
+        # ok, this is true at least...
+        assert str(m2.summary()) == str(model.summary())
+
+        # TODO TODO TODO use _model kwarg in predict to check serialized->deser model is
+        # behaving same (below, where predict is called)
+    else:
+        warn('using saved dF/F -> spiking model (computed on megamat data)!')
+        # TODO rename + put in appropriate path
+        model = sm.load('test_model.p')
 
     # TODO still show if verbose=True or something?
     #print('dF/F -> spike delta model summary:')
@@ -8309,8 +8401,21 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # TODO delete / factor all into a larger fn. just for testing fill_between params
     # (above comment in right place?)
     # TODO rename to clarify type of data input/output
-    def predict(df):
-        # TODO TODO TODO add_constant to input if needed
+    # TODO delete _model kwarg. just using to test serialization of OLS model,
+    # since i can't figure out why this equality check fails (no .equals avail):
+    # > model.save('test_model.p')
+    # > m2 = sm.load('test_model.p')
+    # > m2 == model
+    # False
+    # > m2.remove_data()
+    # > model.remove_data()
+    # > m2 == model
+    # False
+    def predict(df, _model=None):
+        # TODO doc input requirements
+        # TODO doc output
+
+        # TODO add_constant to input if needed?
 
         # TODO should i? maybe i should return a new df w/ column added?
         df = df.copy()
@@ -8358,7 +8463,8 @@ def model_mb_responses(certain_df, parent_plot_dir):
         # have that column (and maybe change plot then too. color markers as in
         # scatterplot? maybe w/ dotted line up to actual data point?)
 
-        # TODO delete sort= path + revent to sort=False behavior, if sorting doesn't
+        # TODO what was this for?
+        # TODO delete sort= path + revert to sort=False behavior, if sorting doesn't
         # actually matter here (even if linestyle != '')
         sort = True
         if sort:
@@ -8370,6 +8476,8 @@ def model_mb_responses(certain_df, parent_plot_dir):
 
         # TODO TODO comment explaining why only some of input has this (and/or refactor
         # to be more general and not tied to specific hardcoded col names...)
+        # TODO TODO TODO just err in this first case? why would we be calling predict if
+        # we don't want to add this column?
         if 'delta_spike_rate' in df.columns:
             # TODO try to at least share y def w/ above
             sns.scatterplot(data=df, hue='fly_id', palette=fly_palette, legend='full',
@@ -8414,6 +8522,15 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # above?
     fly_mean_df, f2 = predict(fly_mean_df)
 
+    # TODO TODO TODO also try to save / load parameters needed to fit new data
+    # (so we can use on validation set, where fitting probably won't work as well [not
+    # that it works that well here...] b/c of lack of hallem data)
+
+    # TODO TODO TODO also fix how remy's odors (even w/ megamat input, that should have
+    # worked before, now is missing va/aa) (matter of filtering before CSV saving, in
+    # main?)
+
+    print('FIX FITTING PARAM + PLOT SAVING!!!!')
     import ipdb; ipdb.set_trace()
     # TODO TODO savefig (both?) all (just do in predict(...), and force an input to make
     # save names unique?)
@@ -8427,6 +8544,8 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # axis in the same kind of scatter plot of (x=dF/F, y=delta spike rate,
     # hue=fly_id)?)
 
+    # TODO TODO TODO va/aa not in fly_mean_df here (w/ what should have been same
+    # megamat input)
     mean_est_df = fly_mean_df.reset_index().groupby(['odor', 'glomerulus'])[
         'est_delta_spike_rate'].mean()
 
@@ -8436,10 +8555,24 @@ def model_mb_responses(certain_df, parent_plot_dir):
 
     # TODO more direct list of these odors available earlier? maybe in sort order (where
     # i think they are spelled out)? maybe it makes sense to compute here tho...
-    remy_odors = set(certain_df.loc['megamat'].index.get_level_values('odor1').unique())
+    # TODO TODO TODO update to work on validation2 panel
+    try:
+        remy_odors = set(
+            certain_df.loc['megamat'].index.get_level_values('odor1').unique()
+        )
+    except KeyError:
+        # TODO TODO TODO at least rename to sim_odors (but probably also don't require
+        # manually calculating this? just ensure we only provide each panel's input
+        # separately, w/o diags?)
+        remy_odors = set(
+            certain_df.loc['validation2'].index.get_level_values('odor1').unique()
+        )
 
     remy_odor_cols = [x for x in mean_est_df.columns if x in remy_odors]
     assert len(set(remy_odor_cols)) == len(remy_odor_cols)
+
+    # TODO TODO TODO probably drop diagnostics before this? don't want to sim them...
+    # (fly_mean_df still have panel? need to do before?)
 
     mean_est_df = mean_est_df[remy_odor_cols].copy()
 
@@ -8463,19 +8596,22 @@ def model_mb_responses(certain_df, parent_plot_dir):
     my_data = f'pebbled {dff_latex}'
 
     # TODO TODO drop all non-megamat odors prior to running through fit_mb_model?
-    # (diagnostics prob gonna produce much lower KC sparsity)S
+    # (no, want to model other stuff now too...)
+    # (diagnostics prob gonna produce much lower KC sparsity)
     # (are any of the non-HALLEM odors (which is probably most non-megamat odors?)
     # actually influencing model in fit_mb_model tho?)
 
-    # TODO TODO TODO actually fit to average sparsities remy observes
+    # TODO actually fit to average sparsities remy observes
     # (actually, might make more senes to just sweep sparsity a bit, like B suggested)
+    # TODO TODO but are relative sparsities recapitulating what remy seems? even
+    # broadly?
 
-    # TODO TODO TODO TODO try fitting on hallem, and then running on my data passed thru
+    # TODO TODO try fitting on hallem, and then running on my data passed thru
     # dF/F model (fitting on all hallem might produce very different thresholds from
     # fitting on the subset of odors remy uses!!!)
 
-    # TODO TODO TODO try sweeping target sparsities (maybe over range [5, 20]%)
-    # (maybe a separate output folder for each?)
+    # TODO TODO skip most of these most of the time? at least without some other flag
+    # being set? just a hardcoded bool flag here prob fine
     for model_kws in [
             # TODO TODO prob just always explicitly list out kwargs (independent of
             # defaults) (also in plot filenames?)
@@ -8527,9 +8663,13 @@ def model_mb_responses(certain_df, parent_plot_dir):
 
             dict(pn2kc_connections='hemibrain', _use_matt_wPNKC=True),
 
+            # TODO TODO TODO compute this one over several replicates (maybe confirm
+            # before doing so?) (as many as matt does. 100? will take a while...)
+            # TODO + save all replicates to csv (w/ metadata to distinguish)
             dict(pn2kc_connections='uniform', n_claws=7),
         ]:
 
+        # TODO just do 0.03 for now? or at least not 0.1?
         for target_sparsity in (0.03, 0.05, 0.1):
             # TODO clean up...
             #
@@ -8541,6 +8681,8 @@ def model_mb_responses(certain_df, parent_plot_dir):
             else:
                 _model_kws = deepcopy(model_kws)
 
+            # TODO TODO TODO update this remy_odors part to also work on validation2
+            # panel (if need be...)
             fit_and_plot_mb_model(plot_dir, sim_odors=remy_odors, **_model_kws)
 
     # (maybe do some/all of this outside of model_mb_responses though...)
@@ -8853,6 +8995,11 @@ roimean_plot_kws['vgroup_label_offset'] = 5
 n_roi_plot_kws = deepcopy(roimean_plot_kws)
 n_roi_plot_kws['cbar_label'] = 'number of flies (n)'
 
+# TODO TODO (at least when plot format is svg) add metadata to matshow plots to allow
+# showing glomerulus / odor on hover, as in:
+# https://matplotlib.org/stable/gallery/user_interfaces/svg_tooltip_sgskip.html
+# (requires loading svg in a browser, or at least something that actually runs the
+# scripts, so not default ubuntu image viewer)
 def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     fname_prefix: Optional[str] = None) -> None:
     # TODO doc
@@ -10307,10 +10454,15 @@ def main():
     # anything (because merge_... currently fails w/ duplicate odors [where one had been
     # repeated later, to overwrite former], and i'd like to use a similar strategy to
     # deal w/ those cases)
+    # TODO err/warn if this nulls all stuff for those odors (would have indicated i ran
+    # things wrong the one time i mixed up the -t/-e (start vs end) date options, and
+    # ended up only using data from the affected flies)
     trial_df = setnull_old_wrong_solvent_aa_and_va_data(trial_df)
 
     trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
     trial_df = sort_odors(trial_df)
+
+    # TODO TODO TODO also save csv per panel, so they don't always overwrite each other
 
     # TODO TODO TODO hardcode groups of panels to save to split out into particular
     # output CSVs? ideally would only do it when run with a canonical set of good
@@ -10337,6 +10489,11 @@ def main():
     import ipdb; ipdb.set_trace()
     '''
     #
+
+    # TODO TODO in a global cache that is saved (for use in real time analysis when
+    # drawing ROIs. not currently implemented anymore), probably only update it to
+    # REMOVE flies if they become marked exclude in google sheet
+    # (and otherwise just filter data to compare against during that realtime analysis)
 
     # TODO TODO TODO delete (/ only do for one certain only version)
     certain_df = select_certain_rois(trial_df)
@@ -10376,7 +10533,6 @@ def main():
     to_pickle(consensus_df, output_root / 'ij_certain-roi_stats.p')
     #
 
-    # TODO TODO TODO save another version dropping all non-certain ROIs?
     # TODO TODO and split out by panel (or just tell remy to only use 'megamat' panel?)?
 
     # TODO TODO any way to get date_format to apply to stuff in MultiIndex?
@@ -10450,6 +10606,9 @@ def main():
     diag_df = dropna(diag_df)
     # TODO warn if diag_df is empty (after dropping some NaNs?)?
 
+    # TODO TODO TODO also plot all diagnostics for each fly (each fly in sep plot)
+    # (to pick a good example, that looks good at least in response matrix, but
+    # hopefully also in dF/F images)
     for panel, panel_df in trial_df.groupby('panel', sort=False):
         _printed_any_flies = False
 
@@ -10789,6 +10948,9 @@ def main():
 
     # TODO at least if --verbose, print we are skipping step (and in all cases we skip
     # steps)
+    # TODO TODO TODO get this to work if script is run with megamat + validation input
+    # (and ideally make sure megamat is run first, esp if we serialize model params
+    # there to use in validation panel, for the dff->spikedelta transform)
     if 'model' not in steps_to_skip:
         # TODO worth warning that model won't be run otherwise?
         if driver in orn_drivers:
