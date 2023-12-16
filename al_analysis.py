@@ -8768,8 +8768,7 @@ def get_gh146_glomeruli():
     return gh146_glomeruli
 
 
-# TODO rename to across_fly...?
-def all_correlation_plots(output_root: Path, trial_df: pd.DataFrame, *,
+def acrossfly_correlation_plots(output_root: Path, trial_df: pd.DataFrame, *,
     certain_only=True) -> None:
 
     # TODO TODO TODO save CSVs of [hallem|gh146]-restricted / bouton-frequency-repeated
@@ -9163,6 +9162,359 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     )
 
 
+def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indicator
+    ) -> None:
+
+    # TODO TODO also add skip option for these (but don't skip by default)
+    # TODO relabel <date>/<fly_num> to one letter for both. write a text key to the same
+    # directory
+    print('saving across fly ImageJ ROI response matrices...', flush=True)
+
+    uncertain_roi_plot_kws = {
+        k: v for k, v in roi_plot_kws.items() if k != 'hline_level_fn'
+    }
+
+    # TODO TODO re-establish a real-time-analysis script that can compare current ROI
+    # to:
+    # - certain ROIs of same name, in cached (e.g. ij_roi_stats.p) driver/indicator
+    #   (/pebbled) data
+    #   (to see if this call would be ~consistent with other data)
+    #
+    # - N most correlated ROIs in the same fly, to the mean certain response profile
+    #   of the cached data (at least among the uncertain ones in the current fly)
+    #   (to see if any other ROIs are a better match for this glomerulus name)
+    #
+    # - most correlated other mean certain ROIs?
+
+    response_matrix_plots(across_fly_ijroi_dir, trial_df)
+
+    # TODO cluster all uncertain ROIs? to see there are any things that could be added?
+
+    # TODO and what would it take to include ROI positions in clustering again?
+    # doesn't require picking a single global best plane, right? but might require
+    # caching / concating / returning masks from process_recording?
+
+    # TODO select in a way that doesn't rely on 'panel' level being in this position?
+    assert trial_df.index.names[0] == 'panel'
+    # the extra square brackets prevent 'panel' level from being lost
+    # (for concatenating with other subsets w/ different panels)
+    # https://stackoverflow.com/questions/47886401
+    diag_df = trial_df.loc[[diag_panel_str]]
+    diag_df = dropna(diag_df)
+    # TODO warn if diag_df is empty (after dropping some NaNs?)?
+
+    # TODO TODO TODO also plot all diagnostics for each fly (each fly in sep plot)
+    # (to pick a good example, that looks good at least in response matrix, but
+    # hopefully also in dF/F images)
+    for panel, panel_df in trial_df.groupby('panel', sort=False):
+        _printed_any_flies = False
+
+        # TODO TODO switch all code to work w/ initial 2 index levels:
+        # ['panel', 'is_pair'] (-> replace all pdf w/ panel_df)
+        # (was previously dropping for everything, but now that i want some plots with
+        # diag panel as well, and odors might be same as some in panel, need that level
+        # for now. could maybe still get rid of is_pair, but why?)
+        pdf = panel_df.copy()
+
+        # TODO switch to indexing by name (via a mask), to make more robust to changes?
+        assert pdf.index.names[0] == 'panel' and pdf.index.names[1] == 'is_pair'
+
+        # TODO warn if these drop anything? what all should they be dropping?
+        # TODO these should just be dropping ROIs, right?
+        # (assuming all panel odors presented in each fly w/ that panel?
+        # which ig might not always be true...)
+        panel_df = dropna(panel_df)
+        with warnings.catch_warnings():
+            # To ignore the "indexing past lexsort depth" warning.
+            warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+
+            # Selecting just the is_pair=False rows, w/ the False here.
+            pdf = dropna(pdf.loc[(panel, False), :])
+
+        assert not pdf.columns.duplicated().any()
+
+        # TODO maybe append the f' (n<={n_flies})' part later as appropriate
+        # (could be diff for diff panels...)
+        title = f'{driver}>{indicator}'
+
+        # response_matrix_plots will make these if needed
+        panel_ijroi_dir = across_fly_ijroi_dir / 'by_panel' / panel
+
+        # TODO return title from this, so i can use below? not sure i care enough for a
+        # title there...
+        response_matrix_plots(panel_ijroi_dir, pdf)
+
+        if panel != diag_panel_str:
+            # TODO TODO still want stuff in panel_df but w/o diags tho. modify
+            # (though in data i'm currently analyzing, this shouldn't ever be the
+            # case...)
+            # (join='outer' -> separate call dropping any stuff null for all of current
+            # panel?)
+            #
+            # join='inner' to drop ROIs (columns) that are only in one of the inputs
+            diag_and_panel_df = pd.concat([diag_df, panel_df], join='inner',
+                verify_integrity=True
+            )
+            # TODO warn + skip if current panel doesn't have any associated diag data
+            # (shouldn't be the case in any data i'm analyzing rn, but people might want
+            # it)
+
+            # TODO TODO TODO still make a version not dropping these?
+            if driver == 'GH146':
+                # TODO refactor
+                gh146_glomeruli = get_gh146_glomeruli()
+                # (so plot ACTUALLY lines up with pebbled-subset-to-GH146 plot)_
+                diag_and_panel_df = diag_and_panel_df.loc[:,
+                    diag_and_panel_df.columns.get_level_values('roi'
+                        ).isin(gh146_glomeruli)
+                ]
+                # TODO TODO also plot the pebbled-only stuff in a separate plot
+                # (or make some kind of matshow comparison plot, w/ 2 df inputs, and use
+                # that to make something in here? where pebbled only stuff would be
+                # sorted in a separate section at bottom)
+
+            # TODO replace above response_matrix_call w/ this one (when we have diags,
+            # at least?)
+            response_matrix_plots(panel_ijroi_dir, diag_and_panel_df, 'with-diags')
+
+            # TODO TODO TODO need to at least drop stuff from GH146 plots that get
+            # dropped in get_gh146_glomeruli (the stuff in <1/2 of flies)
+            # TODO also only do for panels we are doing both gh146 and pebbled on
+            # (e.g. megamat). same restriction for this variant of correlation analysis
+            if driver in orn_drivers:
+                # TODO TODO or maybe try just NaNing in gh146 case (to add rows for
+                # stuff in pb but not gh146)
+                gh146_glomeruli = get_gh146_glomeruli()
+                gh146_only_diag_and_panel_df = diag_and_panel_df.loc[:,
+                    diag_and_panel_df.columns.get_level_values('roi'
+                        ).isin(gh146_glomeruli)
+                ]
+                response_matrix_plots(panel_ijroi_dir, gh146_only_diag_and_panel_df,
+                    'gh146-only_with-diags'
+                )
+
+            # TODO some reason i'm not using .map(...)?
+            mask = np.array([ijroi_comparable_via_name(x)
+                for x in diag_and_panel_df.columns.get_level_values('roi')
+            ])
+            # no need to copy, because indexing with a bool mask always does
+            comparable_via_name = diag_and_panel_df.loc[:, mask]
+            del mask
+
+            # TODO show a mean for the certain things for each group? (eh...)
+            # (rather than each of the lines individually?)
+
+            df = comparable_via_name
+            del comparable_via_name
+
+            # TODO TODO TODO why is this shape (129, 0) and not original (129, 294)?
+            # (for panel='megamat') (matter? delete?)
+            #df.dropna(how='any', axis='columns').shape
+
+            fly_rois = df.columns.to_frame(index=False)
+            fly_rois['name_as_if_certain'] = fly_rois.roi.map(ijroi_name_as_if_certain)
+
+            # TODO might need to handle if triggered
+            assert not fly_rois.name_as_if_certain.isna().any()
+
+            # TODO warn if number of ROIs w/ same ijroi_name_as_if_certain are
+            # < n_flies for any (including if all certain / not)
+            # (still want that separately? currently warning on a fly-by-fly basis,
+            # which could include all the same ROIs by the end...)
+            # or build + write summary CSV?
+            #
+            # TODO factor out n_flies calc?
+            # TODO nunique?
+            n_flies = len(fly_rois[['date','fly_num']].drop_duplicates())
+
+            glom_counts = fly_rois.name_as_if_certain.value_counts()
+            # TODO TODO how could this possibly fail? fix!
+            # ipdb> fly_rois[fly_rois.name_as_if_certain == 'DP1l']
+            #           date fly_num     roi name_as_if_certain
+            # 16  2023-04-22       2    DP1l               DP1l
+            # 56  2023-04-22       3    DP1l               DP1l
+            # 95  2023-04-26       2    DP1l               DP1l
+            # 133 2023-04-26       3    DP1l               DP1l
+            # 167 2023-05-08       1    DP1l               DP1l
+            # 206 2023-05-08       3   DP1l?               DP1l
+            # 207 2023-05-08       3  DP1l??               DP1l
+            # 244 2023-05-09       1    DP1l               DP1l
+            # 285 2023-05-10       1    DP1l               DP1l
+            # 325 2023-06-22       1   DP1l?               DP1l
+            # TODO better error message (in case i accidentally do this again)
+            assert (glom_counts <= n_flies).all()
+
+            fly_rois['certain'] = fly_rois.roi.map(is_ijroi_certain)
+
+            allfly_certain_roi_set = set(fly_rois[fly_rois.certain].roi)
+            # TODO delete?
+            #allfly_roi_set = set(fly_rois.name_as_if_certain)
+            #print('ROIs only ever uncertain: '
+            #    f'{pformat(allfly_roi_set - allfly_certain_roi_set)}'
+            #)
+
+            # TODO replace ['date','fly_num'] w/ fly_keys
+            # (and <same> + ['roi'] w/ roi_keys) ...here, and elsewhere
+            # TODO groupby_fly_keys fn?
+            # TODO some way to groupby df/df.columns directly (WHILE simplifying this
+            # section, in the process) (so as to not need to make fly_rois)?
+            for (date, fly_num), onefly_rois in fly_rois.groupby(['date','fly_num']):
+
+                date_str = format_date(date)
+                fly_str = f'{date_str}/{fly_num} ({panel}):'
+
+                _printed_flystr = False
+                def _print_flystr_if_havent():
+                    nonlocal _printed_flystr
+                    nonlocal _printed_any_flies
+                    if not _printed_flystr:
+                        print(fly_str)
+                        _printed_flystr = True
+                        _printed_any_flies = True
+
+                def _print_rois(rois):
+                    if isinstance(rois, pd.Series) and rois.dtype == bool:
+                        rois = rois[rois].index
+
+                    # TODO sort s.t. certain counts prioritized?
+                    # (if i'm just gonna sort on one number tho, what i'm sorting on now
+                    # [i.e. name_as_if_certain] is probably the way to go)
+                    # TODO also include glom_counts value in parens (rather than just
+                    # sorting on them?)
+                    pprint(set(sorted(rois, key=glom_counts.get)))
+
+                missing_completely = (
+                    allfly_certain_roi_set - set(onefly_rois.name_as_if_certain)
+                )
+                if len(missing_completely) > 0:
+                    _print_flystr_if_havent()
+
+                    # TODO TODO TODO also just drop stuff in <=~2 (/9) flies?
+                    # (earlier? maybe even before saving CSV?)
+                    print('missing completely (marked certain in >=1 fly):')
+                    _print_rois(missing_completely)
+
+                # TODO sort=False actually doing anything?
+                uncertain_only = ~ onefly_rois.groupby('name_as_if_certain', sort=False
+                    ).certain.any()
+
+                if uncertain_only.any():
+                    _print_flystr_if_havent()
+                    print('uncertain:')
+                    # NOTE: uncertain_only only has name_as_if_certain, not raw name
+                    # (w/ '?' or whatever suffix)
+                    _print_rois(uncertain_only)
+
+                # TODO TODO TODO also warn about stuff where the name entered doesn't
+                # refer to the specific glomerulus name (e.g. 'VA7' for 'VA7m' vs 'VA7l'
+                # (or 'DL2' vs 'DL2v'/'DL2d', etc) )
+                # (could just do based on whether any ROIs have another ROI name as a
+                # prefix? any cases where this wouldn't work?)
+
+                if _printed_flystr:
+                    print()
+
+            # TODO count use certain_counts == 0 if i want another summary of
+            # uncertain-only ROIs (besides fly-by-fly prints in loop below)
+            #certain_counts = fly_rois.groupby('name_as_if_certain').certain.sum()
+            # TODO don't actually need/want n_flies, right? cause if all certain and
+            # have less than n flies, still want to drop from plot, no?
+            #certain_only = (certain_counts == n_flies)
+
+            certain_only = fly_rois.groupby('name_as_if_certain').certain.all()
+            certain_only = set(certain_only[certain_only].index)
+
+            df = df.loc[:, ~df.columns.get_level_values('roi').isin(certain_only)]
+
+            # TODO version of this plot, also comparing to most correlated other stuff
+            # in same fly each comes from? (would be too busy?)
+
+            # TODO diff hline thicknesses between uncertain/certain vs ROI-name-changed
+            # cases? possible? or change color/font of ticklabels for subgroups?
+            #
+            # default ROI sorting should put uncertain after certain
+            # (just b/c default of 'x' < 'x?')
+            plot_responses_and_scaled_versions(df, panel_ijroi_dir,
+                'with-diags_certain_vs_uncertain', title=title, **roi_plot_kws
+            )
+            del df
+
+        # TODO change so it only happens if there are more panels to come (print at
+        # start of loop?)
+        if _printed_any_flies:
+            print()
+
+        # TODO TODO move all the below plots into response_matrix_plots (/delete)?
+        # (maybe behind a new flag like plot_uncertain?)
+
+        # TODO want to keep this plot? what purpose does it serve?
+        # is something focusing on just uncertain ROIs not enough?
+        fig, _ = plot_all_roi_mean_responses(pdf, title=title, **roi_plot_kws)
+        savefig(fig, panel_ijroi_dir, 'with-uncertain')
+
+        uncertain_rois = ~certain_roi_indices(pdf)
+
+        # TODO cluster all ROIs within each fly (or at least the non-certain ones?)
+        # (for answering the question: is there anything with similar tuning to this ROI
+        # i'm currently trying to identify?)
+
+        # TODO these plots still useful?
+        # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
+        # (/ "z-scored" ok?)
+        # TODO maybe turn this into a fn looking up max using index?
+        glom_maxes = pdf.max(axis='rows')
+        fig, _ = plot_all_roi_mean_responses(pdf.loc[:, uncertain_rois],
+            # negative glom_maxes, so sort is as if ascending=False
+            sort_rois_first_on=-glom_maxes[uncertain_rois], title=title,
+            **uncertain_roi_plot_kws
+        )
+        savefig(fig, panel_ijroi_dir, 'uncertain_by_max_resp')
+
+        # TODO TODO (also) cluster only uncertain stuff?
+        # or maybe only unnamed stuff? maybe uncertain stuff (specifically the subset w/
+        # '?' suffix), should be handled mainly in another plot, comparing to each
+        # other / similar certain ROIs in other flies (when available)?
+
+        # TODO same type of clustering, but with responses to *all* odors
+        # (or maybe panel + diags? couldn't  really do all since everything would
+        # probably get dropped, since flies tend to only have one panel beyond diags...)
+        # (for trying to identify set of glomeruli we are dealing with)
+        #
+        # Mean across repeats (done by plot_all_roi_mean_responses in other cases).
+        # Should be one row per odor after.
+        mean_df = pdf.groupby('odor1').mean()
+
+        # TODO replace this w/ sequential drops along both axes (maybe in order that
+        # keeps most data, if there is one?)? currently getting empty matrices in some
+        # cases where i shouldn't need too (index=odors, for reference)
+        # (on which data?  still an issue?)
+        #
+        # Clustering will fail if there are any NaN in the input.
+        clust_df = mean_df.dropna(how='any', axis='index')
+
+        # TODO TODO and why was dropna(df, how='any') not working even when ROIs
+        # were dropped first? shouldn't be empty, no?
+        # (still an issue?)
+
+        # Clustering will also fail if the dropna above drops *everything*
+        # TODO TODO fail early / skip here if df empty
+        # (still an issue?)
+
+        # TODO TODO fix cause of (it's b/c after dropna above, clust_df can be
+        # empty):
+        # ValueError: zero-size array to reduction operation fmin which has no
+        # identity
+        # (is it simply an issue of only have one recording as input?)
+        try:
+            cg = cluster_rois(clust_df, odor_sort=False, title=title)
+            savefig(cg, panel_ijroi_dir, 'with-uncertain_clust')
+        except ValueError:
+            traceback.print_exc()
+            import ipdb; ipdb.set_trace()
+
+    print('done')
+
+
 # TODO function for making "abbreviated" tiffs, each with the first ~2-3s of baseline,
 # 4-7s of response (~7 should allow some baseline after) per trial, for more quickly
 # drawing ROIs (without using some more processed version) (leaning towards just trying
@@ -9238,7 +9590,7 @@ def main():
     # TODO or maybe -s (with no string following) should skip default, and no steps
     # skipped if -s isn't passed (probably)?
     # TODO add across fly pdfs to this (probably also in defaults?)?
-    skippable_steps = ('intensity', 'corr', 'model')
+    skippable_steps = ('intensity', 'corr', 'model', 'ijroi')
     parser.add_argument('-s', '--skip', nargs='?', const='',
         default='intensity,corr,model',
         help='Comma separated list of steps to skip (default: %(default)s). '
@@ -10568,365 +10920,20 @@ def main():
     across_fly_ijroi_dir = plot_root / across_fly_ijroi_dirname
     makedirs(across_fly_ijroi_dir)
 
-    # TODO TODO also add skip option for these (but don't skip by default)
-    # TODO relabel <date>/<fly_num> to one letter for both. write a text key to the same
-    # directory
-    print('saving across fly ImageJ ROI response matrices...', flush=True)
-
-    uncertain_roi_plot_kws = {
-        k: v for k, v in roi_plot_kws.items() if k != 'hline_level_fn'
-    }
-
-    # TODO TODO re-establish a real-time-analysis script that can compare current ROI
-    # to:
-    # - certain ROIs of same name, in cached (e.g. ij_roi_stats.p) driver/indicator
-    #   (/pebbled) data
-    #   (to see if this call would be ~consistent with other data)
-    #
-    # - N most correlated ROIs in the same fly, to the mean certain response profile
-    #   of the cached data (at least among the uncertain ones in the current fly)
-    #   (to see if any other ROIs are a better match for this glomerulus name)
-    #
-    # - most correlated other mean certain ROIs?
-
-    response_matrix_plots(across_fly_ijroi_dir, trial_df)
-
-    # TODO cluster all uncertain ROIs? to see there are any things that could be added?
-
-    # TODO and what would it take to include ROI positions in clustering again?
-    # doesn't require picking a single global best plane, right? but might require
-    # caching / concating / returning masks from process_recording?
-
-    # TODO select in a way that doesn't rely on 'panel' level being in this position?
-    assert trial_df.index.names[0] == 'panel'
-    # the extra square brackets prevent 'panel' level from being lost
-    # (for concatenating with other subsets w/ different panels)
-    # https://stackoverflow.com/questions/47886401
-    diag_df = trial_df.loc[[diag_panel_str]]
-    diag_df = dropna(diag_df)
-    # TODO warn if diag_df is empty (after dropping some NaNs?)?
-
-    # TODO TODO TODO also plot all diagnostics for each fly (each fly in sep plot)
-    # (to pick a good example, that looks good at least in response matrix, but
-    # hopefully also in dF/F images)
-    for panel, panel_df in trial_df.groupby('panel', sort=False):
-        _printed_any_flies = False
-
-        # TODO TODO switch all code to work w/ initial 2 index levels:
-        # ['panel', 'is_pair'] (-> replace all pdf w/ panel_df)
-        # (was previously dropping for everything, but now that i want some plots with
-        # diag panel as well, and odors might be same as some in panel, need that level
-        # for now. could maybe still get rid of is_pair, but why?)
-        pdf = panel_df.copy()
-
-        # TODO switch to indexing by name (via a mask), to make more robust to changes?
-        assert pdf.index.names[0] == 'panel' and pdf.index.names[1] == 'is_pair'
-
-        # TODO warn if these drop anything? what all should they be dropping?
-        # TODO these should just be dropping ROIs, right?
-        # (assuming all panel odors presented in each fly w/ that panel?
-        # which ig might not always be true...)
-        panel_df = dropna(panel_df)
-        with warnings.catch_warnings():
-            # To ignore the "indexing past lexsort depth" warning.
-            warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
-
-            # Selecting just the is_pair=False rows, w/ the False here.
-            pdf = dropna(pdf.loc[(panel, False), :])
-
-        assert not pdf.columns.duplicated().any()
-
-        # TODO maybe append the f' (n<={n_flies})' part later as appropriate
-        # (could be diff for diff panels...)
-        title = f'{driver}>{indicator}'
-
-        # response_matrix_plots will make these if needed
-        panel_ijroi_dir = across_fly_ijroi_dir / 'by_panel' / panel
-
-        # TODO return title from this, so i can use below? not sure i care enough for a
-        # title there...
-        response_matrix_plots(panel_ijroi_dir, pdf)
-
-        if panel != diag_panel_str:
-            # TODO TODO still want stuff in panel_df but w/o diags tho. modify
-            # (though in data i'm currently analyzing, this shouldn't ever be the
-            # case...)
-            # (join='outer' -> separate call dropping any stuff null for all of current
-            # panel?)
-            #
-            # join='inner' to drop ROIs (columns) that are only in one of the inputs
-            diag_and_panel_df = pd.concat([diag_df, panel_df], join='inner',
-                verify_integrity=True
-            )
-            # TODO warn + skip if current panel doesn't have any associated diag data
-            # (shouldn't be the case in any data i'm analyzing rn, but people might want
-            # it)
-
-            # TODO TODO TODO still make a version not dropping these?
-            if driver == 'GH146':
-                # TODO refactor
-                gh146_glomeruli = get_gh146_glomeruli()
-                # (so plot ACTUALLY lines up with pebbled-subset-to-GH146 plot)_
-                diag_and_panel_df = diag_and_panel_df.loc[:,
-                    diag_and_panel_df.columns.get_level_values('roi'
-                        ).isin(gh146_glomeruli)
-                ]
-                # TODO TODO also plot the pebbled-only stuff in a separate plot
-                # (or make some kind of matshow comparison plot, w/ 2 df inputs, and use
-                # that to make something in here? where pebbled only stuff would be
-                # sorted in a separate section at bottom)
-
-            # TODO replace above response_matrix_call w/ this one (when we have diags,
-            # at least?)
-            response_matrix_plots(panel_ijroi_dir, diag_and_panel_df, 'with-diags')
-
-            # TODO TODO TODO need to at least drop stuff from GH146 plots that get
-            # dropped in get_gh146_glomeruli (the stuff in <1/2 of flies)
-            # TODO also only do for panels we are doing both gh146 and pebbled on
-            # (e.g. megamat). same restriction for this variant of correlation analysis
-            if driver in orn_drivers:
-                # TODO TODO or maybe try just NaNing in gh146 case (to add rows for
-                # stuff in pb but not gh146)
-                gh146_glomeruli = get_gh146_glomeruli()
-                gh146_only_diag_and_panel_df = diag_and_panel_df.loc[:,
-                    diag_and_panel_df.columns.get_level_values('roi'
-                        ).isin(gh146_glomeruli)
-                ]
-                response_matrix_plots(panel_ijroi_dir, gh146_only_diag_and_panel_df,
-                    'gh146-only_with-diags'
-                )
-
-            # TODO some reason i'm not using .map(...)?
-            mask = np.array([ijroi_comparable_via_name(x)
-                for x in diag_and_panel_df.columns.get_level_values('roi')
-            ])
-            # no need to copy, because indexing with a bool mask always does
-            comparable_via_name = diag_and_panel_df.loc[:, mask]
-            del mask
-
-            # TODO show a mean for the certain things for each group? (eh...)
-            # (rather than each of the lines individually?)
-
-            df = comparable_via_name
-            del comparable_via_name
-
-            # TODO TODO TODO why is this shape (129, 0) and not original (129, 294)?
-            # (for panel='megamat') (matter? delete?)
-            #df.dropna(how='any', axis='columns').shape
-
-            fly_rois = df.columns.to_frame(index=False)
-            fly_rois['name_as_if_certain'] = fly_rois.roi.map(ijroi_name_as_if_certain)
-
-            # TODO might need to handle if triggered
-            assert not fly_rois.name_as_if_certain.isna().any()
-
-            # TODO warn if number of ROIs w/ same ijroi_name_as_if_certain are
-            # < n_flies for any (including if all certain / not)
-            # (still want that separately? currently warning on a fly-by-fly basis,
-            # which could include all the same ROIs by the end...)
-            # or build + write summary CSV?
-            #
-            # TODO factor out n_flies calc?
-            # TODO nunique?
-            n_flies = len(fly_rois[['date','fly_num']].drop_duplicates())
-
-            glom_counts = fly_rois.name_as_if_certain.value_counts()
-            # TODO TODO how could this possibly fail? fix!
-            # ipdb> fly_rois[fly_rois.name_as_if_certain == 'DP1l']
-            #           date fly_num     roi name_as_if_certain
-            # 16  2023-04-22       2    DP1l               DP1l
-            # 56  2023-04-22       3    DP1l               DP1l
-            # 95  2023-04-26       2    DP1l               DP1l
-            # 133 2023-04-26       3    DP1l               DP1l
-            # 167 2023-05-08       1    DP1l               DP1l
-            # 206 2023-05-08       3   DP1l?               DP1l
-            # 207 2023-05-08       3  DP1l??               DP1l
-            # 244 2023-05-09       1    DP1l               DP1l
-            # 285 2023-05-10       1    DP1l               DP1l
-            # 325 2023-06-22       1   DP1l?               DP1l
-            # TODO better error message (in case i accidentally do this again)
-            assert (glom_counts <= n_flies).all()
-
-            fly_rois['certain'] = fly_rois.roi.map(is_ijroi_certain)
-
-            allfly_certain_roi_set = set(fly_rois[fly_rois.certain].roi)
-            # TODO delete?
-            #allfly_roi_set = set(fly_rois.name_as_if_certain)
-            #print('ROIs only ever uncertain: '
-            #    f'{pformat(allfly_roi_set - allfly_certain_roi_set)}'
-            #)
-
-            # TODO replace ['date','fly_num'] w/ fly_keys
-            # (and <same> + ['roi'] w/ roi_keys) ...here, and elsewhere
-            # TODO groupby_fly_keys fn?
-            # TODO some way to groupby df/df.columns directly (WHILE simplifying this
-            # section, in the process) (so as to not need to make fly_rois)?
-            for (date, fly_num), onefly_rois in fly_rois.groupby(['date','fly_num']):
-
-                date_str = format_date(date)
-                fly_str = f'{date_str}/{fly_num} ({panel}):'
-
-                _printed_flystr = False
-                def _print_flystr_if_havent():
-                    nonlocal _printed_flystr
-                    nonlocal _printed_any_flies
-                    if not _printed_flystr:
-                        print(fly_str)
-                        _printed_flystr = True
-                        _printed_any_flies = True
-
-                def _print_rois(rois):
-                    if isinstance(rois, pd.Series) and rois.dtype == bool:
-                        rois = rois[rois].index
-
-                    # TODO sort s.t. certain counts prioritized?
-                    # (if i'm just gonna sort on one number tho, what i'm sorting on now
-                    # [i.e. name_as_if_certain] is probably the way to go)
-                    # TODO also include glom_counts value in parens (rather than just
-                    # sorting on them?)
-                    pprint(set(sorted(rois, key=glom_counts.get)))
-
-                missing_completely = (
-                    allfly_certain_roi_set - set(onefly_rois.name_as_if_certain)
-                )
-                if len(missing_completely) > 0:
-                    _print_flystr_if_havent()
-
-                    # TODO TODO TODO also just drop stuff in <=~2 (/9) flies?
-                    # (earlier? maybe even before saving CSV?)
-                    print('missing completely (marked certain in >=1 fly):')
-                    _print_rois(missing_completely)
-
-                # TODO sort=False actually doing anything?
-                uncertain_only = ~ onefly_rois.groupby('name_as_if_certain', sort=False
-                    ).certain.any()
-
-                if uncertain_only.any():
-                    _print_flystr_if_havent()
-                    print('uncertain:')
-                    # NOTE: uncertain_only only has name_as_if_certain, not raw name
-                    # (w/ '?' or whatever suffix)
-                    _print_rois(uncertain_only)
-
-                # TODO TODO TODO also warn about stuff where the name entered doesn't
-                # refer to the specific glomerulus name (e.g. 'VA7' for 'VA7m' vs 'VA7l'
-                # (or 'DL2' vs 'DL2v'/'DL2d', etc) )
-                # (could just do based on whether any ROIs have another ROI name as a
-                # prefix? any cases where this wouldn't work?)
-
-                if _printed_flystr:
-                    print()
-
-            # TODO count use certain_counts == 0 if i want another summary of
-            # uncertain-only ROIs (besides fly-by-fly prints in loop below)
-            #certain_counts = fly_rois.groupby('name_as_if_certain').certain.sum()
-            # TODO don't actually need/want n_flies, right? cause if all certain and
-            # have less than n flies, still want to drop from plot, no?
-            #certain_only = (certain_counts == n_flies)
-
-            certain_only = fly_rois.groupby('name_as_if_certain').certain.all()
-            certain_only = set(certain_only[certain_only].index)
-
-            df = df.loc[:, ~df.columns.get_level_values('roi').isin(certain_only)]
-
-            # TODO version of this plot, also comparing to most correlated other stuff
-            # in same fly each comes from? (would be too busy?)
-
-            # TODO diff hline thicknesses between uncertain/certain vs ROI-name-changed
-            # cases? possible? or change color/font of ticklabels for subgroups?
-            #
-            # default ROI sorting should put uncertain after certain
-            # (just b/c default of 'x' < 'x?')
-            plot_responses_and_scaled_versions(df, panel_ijroi_dir,
-                'with-diags_certain_vs_uncertain', title=title, **roi_plot_kws
-            )
-            del df
-
-        # TODO change so it only happens if there are more panels to come (print at
-        # start of loop?)
-        if _printed_any_flies:
-            print()
-
-        # TODO TODO move all the below plots into response_matrix_plots (/delete)?
-        # (maybe behind a new flag like plot_uncertain?)
-
-        # TODO want to keep this plot? what purpose does it serve?
-        # is something focusing on just uncertain ROIs not enough?
-        fig, _ = plot_all_roi_mean_responses(pdf, title=title, **roi_plot_kws)
-        savefig(fig, panel_ijroi_dir, 'with-uncertain')
-
-        uncertain_rois = ~certain_roi_indices(pdf)
-
-        # TODO cluster all ROIs within each fly (or at least the non-certain ones?)
-        # (for answering the question: is there anything with similar tuning to this ROI
-        # i'm currently trying to identify?)
-
-        # TODO these plots still useful?
-        # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
-        # (/ "z-scored" ok?)
-        # TODO maybe turn this into a fn looking up max using index?
-        glom_maxes = pdf.max(axis='rows')
-        fig, _ = plot_all_roi_mean_responses(pdf.loc[:, uncertain_rois],
-            # negative glom_maxes, so sort is as if ascending=False
-            sort_rois_first_on=-glom_maxes[uncertain_rois], title=title,
-            **uncertain_roi_plot_kws
+    # TODO if --verbose, print when we skip this
+    if 'ijroi' not in steps_to_skip:
+        acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver,
+            indicator
         )
-        savefig(fig, panel_ijroi_dir, 'uncertain_by_max_resp')
-
-        # TODO TODO (also) cluster only uncertain stuff?
-        # or maybe only unnamed stuff? maybe uncertain stuff (specifically the subset w/
-        # '?' suffix), should be handled mainly in another plot, comparing to each
-        # other / similar certain ROIs in other flies (when available)?
-
-        # TODO same type of clustering, but with responses to *all* odors
-        # (or maybe panel + diags? couldn't  really do all since everything would
-        # probably get dropped, since flies tend to only have one panel beyond diags...)
-        # (for trying to identify set of glomeruli we are dealing with)
-        #
-        # Mean across repeats (done by plot_all_roi_mean_responses in other cases).
-        # Should be one row per odor after.
-        mean_df = pdf.groupby('odor1').mean()
-
-        # TODO replace this w/ sequential drops along both axes (maybe in order that
-        # keeps most data, if there is one?)? currently getting empty matrices in some
-        # cases where i shouldn't need too (index=odors, for reference)
-        # (on which data?  still an issue?)
-        #
-        # Clustering will fail if there are any NaN in the input.
-        clust_df = mean_df.dropna(how='any', axis='index')
-
-        # TODO TODO and why was dropna(df, how='any') not working even when ROIs
-        # were dropped first? shouldn't be empty, no?
-        # (still an issue?)
-
-        # Clustering will also fail if the dropna above drops *everything*
-        # TODO TODO fail early / skip here if df empty
-        # (still an issue?)
-
-        # TODO TODO fix cause of (it's b/c after dropna above, clust_df can be
-        # empty):
-        # ValueError: zero-size array to reduction operation fmin which has no
-        # identity
-        # (is it simply an issue of only have one recording as input?)
-        try:
-            cg = cluster_rois(clust_df, odor_sort=False, title=title)
-            savefig(cg, panel_ijroi_dir, 'with-uncertain_clust')
-        except ValueError:
-            traceback.print_exc()
-            import ipdb; ipdb.set_trace()
-
-    print('done')
-
 
     # TODO if --verbose, print when we skip this
     if 'corr' not in steps_to_skip:
         # TODO TODO move this enumeration of certain_only values inside
-        # all_correlation_plots?)
+        # acrossfly_correlation_plots?)
         # TODO rename across_fly...? (and do same for similar fns to organize across fly
         # analysis steps?)
-        all_correlation_plots(output_root, trial_df, certain_only=True)
-        all_correlation_plots(output_root, trial_df, certain_only=False)
-
+        acrossfly_correlation_plots(output_root, trial_df, certain_only=True)
+        acrossfly_correlation_plots(output_root, trial_df, certain_only=False)
 
     # TODO if --verbose, print when we skip this
     if 'intensity' not in steps_to_skip:

@@ -1,8 +1,18 @@
 TODO:
 - also talk about old kiwi/control data
 
+
 - mention which data are good candidates for diagnostic examples
+  - aphe was bumped from -5 to -4 starting with fly 2023-05-10, so it only was at final
+    concentration for the last two megamat pebbled flies (2023-05-10/1 and 2023-06-22/1)
+
+  - va -4 solvent was still water for 2023-04-22 and 2023-04-23
+    - 5 megamat/pebbled flies from 2023-04-26/2 - 2023-05-09/1
+      (where va -4 solvent was changed, but aphe still at -5)
+
   - 2023-05-10/1?
+    - 2023-06-22/1 better (only other w/ all concs "final")?
+    - or another fly enough better to show despite aphe -5?
 
 
 NOTE: add `-s` to any of the following to ensure no across-fly steps are skipped.
@@ -13,7 +23,9 @@ The default skipped steps should be mentioned in the `-s` section of the
 megamat:
 - all pebbled data:
   - 2 flies on 2023-04-22 had water for va/aa, but i had typically been including them.
-    first fly after 2023-04-22 was on 2023-04-26.
+    first fly after 2023-04-22 was on 2023-04-26. va was still in the diagnostics on
+    2023-04-22, but solvent was also water there (and thus also nulled for across-fly
+    analyses).
 
   - TODO why was i not using 2023-04-03 - 2023-04-11 flies, which say
     "pfo for va/aa" in Google Sheet "Exclusion reason"? was it also that diagnostics
