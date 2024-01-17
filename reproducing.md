@@ -47,6 +47,7 @@ megamat:
   ```
 
 
+# TODO include end date for these commands
 validation2:
 - pebbled data (at final concentrations only):
   - last date of first 4 flies was 2023-11-21

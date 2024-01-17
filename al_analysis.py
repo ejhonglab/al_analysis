@@ -33,7 +33,7 @@ import tifffile
 import yaml
 import ijroi
 from matplotlib import colors, patches
-#import matplotlib.patheffects as PathEffects
+import matplotlib.patheffects as PathEffects
 from matplotlib.figure import Figure
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -86,9 +86,59 @@ from hong_logging import init_logger
 
 # not sure i'll be able to fix this one...
 # can't seem to convert this warning to error this way.
-warnings.filterwarnings('error', 'invalid value encountered in mulitply')
+# TODO TODO try again now that it's spelled correctly (was 'mulitply')!
+#warnings.filterwarnings('error', 'invalid value encountered in multiply')
 # TODO TODO wasn't there some SO post saying errors from certain c extensions needed
 # separate handling? figure that out!
+
+# TODO fix!
+# (venv) tom@atlas:~/src/al_analysis$ ./al_analysis.py -d pebbled -n 6f -t 2023-11-19
+# ...
+# thorimage_dir: 2024-01-05/1/diagnostics1
+# thorsync_dir: 2024-01-05/1/SyncData001
+# yaml_path: 20240105_164541_stimuli/20240105_164541_stimuli_0.yaml
+# ImageJ ROIs were modified. re-analyzing.
+# Warning: dropping 17 ROIs with '+' suffix
+# picking best plane for each ROI
+# scale_per_plane=False
+# minmax_clip_frac=0.025
+# kwargs.get("norm")='log'
+# from minmax_clip_frac: vmin=114.7911111111111 vmax=3190.0786666666663
+# Uncaught exception
+# Traceback (most recent call last):
+#   File "./al_analysis.py", line 11600, in <module>
+#     main()
+#   File "./al_analysis.py", line 10705, in main
+#     was_processed = list(starmap(process_recording, keys_and_paired_dirs))
+#   File "./al_analysis.py", line 4380, in process_recording
+#     ij_trial_df, best_plane_rois, full_rois = ij_trace_plots(analysis_dir,
+#   File "./al_analysis.py", line 3486, in ij_trace_plots
+#     traces, best_plane_rois, z_indices, full_rois = ij_traces(analysis_dir, movie,
+#   File "./al_analysis.py", line 3220, in ij_traces
+#     fig_path = savefig(fig, ij_plot_dir, f'all_rois_on_{bg_desc}')
+#   File "./al_analysis.py", line 1578, in savefig
+#     fig_or_seaborngrid.savefig(fig_path, **kwargs)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/figure.py", line 3378, in savefig
+#     self.canvas.print_figure(fname, **kwargs)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/backends/backend_qtagg.py", line 75, in print_figure
+#     super().print_figure(*args, **kwargs)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/backend_bases.py", line 2342, in print_figure
+#     self.figure.draw(renderer)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/artist.py", line 95, in draw_wrapper
+#     result = draw(artist, renderer, *args, **kwargs)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/artist.py", line 72, in draw_wrapper
+#     return draw(artist, renderer)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/figure.py", line 3169, in draw
+#     self.get_layout_engine().execute(self)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/layout_engine.py", line 274, in execute
+#     return do_constrained_layout(fig, w_pad=w_pad, h_pad=h_pad,
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/_constrained_layout.py", line 106, in do_constrained_layout
+#     _api.warn_external('There are no gridspecs with layoutgrids. '
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/_api/__init__.py", line 390, in warn_external
+#     warnings.warn(message, category, stacklevel)
+# UserWarning: There are no gridspecs with layoutgrids. Possibly did not call parent GridSpec with the "figure" keyword
+# to filter on substring of message: https://stackoverflow.com/questions/65761137
+#warnings.filterwarnings('error', message='There are no gridspecs with layoutgrids.*')
 
 colorama.init()
 
@@ -200,6 +250,10 @@ analyze_suite2p_outputs = False
 
 analyze_ijrois = True
 
+# TODO warn once if skip_singlefly_trace_plots=True? cli option to re-enable them (prob
+# not)?
+skip_singlefly_trace_plots = True
+
 do_analyze_response_volumes = False
 
 # TODO TODO TODO change to using seconds and rounding to nearest[higher/lower
@@ -272,6 +326,8 @@ trial_and_frame_json_basename = 'trial_frames_and_odors.json'
 
 mocorr_concat_tiff_basename = 'mocorr_concat.tif'
 
+all_frame_avg_tiff_basename = 'mocorr_concat_avg.tif'
+
 # NOTE: trial_dff* is still a mean within a trial, but trialmean_dff* is a mean OF THOSE
 # MEANS (across trials)
 trial_dff_tiff_basename = 'trial_dff.tif'
@@ -279,10 +335,9 @@ trialmean_dff_tiff_basename = 'trialmean_dff.tif'
 max_trialmean_dff_tiff_basename = 'max_trialmean_dff.tif'
 min_trialmean_dff_tiff_basename = 'min_trialmean_dff.tif'
 
+# TODO TODO replace some use of this w/ diverging_cmap_kwargs?
+# (e.g. in response matrix plots)
 cmap = 'plasma'
-# TODO change cmap to 'vlag', along with remy (and in all places w/ diverging)
-# (why did i want to change to 'vlag'? what is it?)
-diverging_cmap = 'RdBu_r'
 
 # TODO is there a 'gray_r'? try that?
 # NOTE: 'Greys' is reversed wrt 'gray' (maybe not exactly, but it is white->black),
@@ -291,31 +346,94 @@ diverging_cmap = 'RdBu_r'
 #anatomical_cmap = 'Greys'
 anatomical_cmap = 'gray'
 
-# This background will often either be anatomical (e.g. an average of the movie),
-# but may also be computed from functional data (e.g. max across trial-mean dF/Fs),
-# but we still want to use the same colormap for consistency (+ ease of seeing ROI
-# boundaries/labels against it)
-roi_bg_cmap = anatomical_cmap
+# TODO is 'vlag' just available in seaborn? work w/ CenteredNorm/similar from mpl?
+# maybe via adding as_cmap=True kwarg to color_palette call?
+#
+# used to be 'RdBu_r', but Remy had wanted to change to 'vlag', which she said is
+# supposed to be similar, but perceptually uniform
+#
+# TODO TODO TODO which cmap / bounds to use for error? just the positive part of vlag?
+# is there some red only equivalent to that part of vlag? just use same 'vlag' w/ diff
+# cutoff (to only use red portion)?
+diverging_cmap = 'vlag'
 
-# TODO could try TwoSlopeNorm, but would probably want to define bounds per fly (or else
-# compute in another pass / plot these after aggregating?)
-diverging_cmap_kwargs = dict(cmap=diverging_cmap,
+# TODO could try TwoSlopeNorm ([-0.5, 0] and [0, 2.0]?), but would probably want to
+# define bounds per fly (or else compute in another pass / plot these after
+# aggregating?)
+diverging_cmap_kwargs = dict(
+    cmap=diverging_cmap,
+
+    # TODO consolidate these two notes
+    # NOTE: won't necessarily be able to specify norms here, if i want to be able to
+    # change the limits of the norms elsewhere (min/max might be computed from data)
+    # NOTE: specifying norm classes this way only works because some of my hong2p.viz
+    # wrappers
+
+    # TODO TODO get everything to warn if any colormap normalization would clip values?
+
     # TODO delete kwargs / determine from data in each case (and why does it
     # seem fixed to [-1, 1] without this?)
+    #
+    # TODO try to repro this so i can delete comment
     # TODO TODO am i understanding this correctly? (and was default range really
     # [-1, 1], and not the data range, with no kwargs to this (or was it transforming
     # data and was that the range of the transformed data???)?
-    norm=colors.CenteredNorm(halfrange=2.0),
-)
+    # TODO it wasn't some outlier screwing up the scale, was it?
+    #
+    # "Defaults to the largest absolute difference to vcenter for the values in the
+    # dataset" (vcenter=0 by default)
+    #norm=colors.CenteredNorm(halfrange=2.0),
+    # should be handled by hong2p.viz.
+    # TODO probably delete (replace w/ TwoSlopeNorm)
+    norm=colors.CenteredNorm,
 
-# TODO change cmap to 'vlag', along with remy (and in all places w/ diverging)
-# (why did i want to change to 'vlag'? what is it?)
-remy_matshow_kwargs = dict(cmap=diverging_cmap, vmin=-1, vmax=1, fontsize=10.0)
+    # currently, these must both be a sign flip apart for CenteredNorm to work
+    #
+    # TODO TODO TODO which thing between here and the add_norm_opts wrapper is
+    # overwriting one/both of these to None? try to stop doing that
+    vmin=-2.0,
+    vmax=2.0,
+    # TODO try using this instead of vmin/vmax? would want code to complain if vmax is
+    # tried to specified with this norm though... (which it just did)
+    # TODO TODO check that part of hong2p.viz.add_norm_opts wrapper is working first
+    #halfrange=2.0,
+
+    # TODO TODO TODO restore to this (or at least try it), but need to fix add_norm_opts
+    # wrapper (around hong2p.viz.imshow) first
+    #
+    # TODO TODO test default clip behavior of this is OK. (and contrast w/ e.g.
+    # CenteredNorm, which actually has a clip=True/False kwarg, like most)
+    #norm=colors.TwoSlopeNorm,
+
+    # TODO TODO want clip=True for diag_example_kws?
+    # TODO TODO TODO with clip=False (the default), is this colormap even clearly
+    # showing over/under cmap range values distinctly?
+)
+# TODO delete (after fixing above)
+print('STILL NOT USING TWOSLOPENORM IN DIVERGING_CMAP_KWARGS')
+#
+
+# TODO try registering custom scale class w/ matplotlib:
+# matplotlib.scale.register_scale(scale_class) (so i can specify CenteredNorm /
+# TwoSlopeNorm via str? any way to specify parameters there as input to these norms?)
+#
+# why does imshow doc say any str from this should work, if some seem like they would
+# need extra params to create (e.g. 'function')?
+# > mpl.scale.get_scale_names()
+# ['asinh', 'function', 'functionlog', 'linear', 'log', 'logit', 'symlog']
+# (norm='function' does indeed complain about missing params)
+
+# TODO replace some/all uses of these w/ my own diverging_cmap_kwargs?
+# (since we aren't using my generated plots for any of these anyway...)
+#
+# NOTE: not actually sure she will switch to 'vlag' (from 'RdBu_r'), though I have
+# in diverging_cmap.
+remy_corr_matshow_kwargs = dict(cmap='RdBu_r', vmin=-1, vmax=1, fontsize=10.0)
 
 dff_cbar_title = f'{dff_latex}'
 
 # TODO better name
-trial_stat_cbar_title = f'Mean peak {dff_latex}'
+trial_stat_cbar_title = f'mean peak {dff_latex}'
 
 diff_cbar_title = f'$\Delta$ mean peak {dff_latex}'
 
@@ -327,11 +445,116 @@ dff_vmin = -0.5
 ##dff_vmax = 3.0
 dff_vmax = 2.0
 
+# TODO TODO support a col_wrap kwarg in image_grid (like seaborn facetgrid has)?
+# (so i can pick max i can show in a row, rather than hardcoding how many rows / etc)
+#
+# TODO TODO TODO separate version of this dict for plots where i DO want to show ROI
+# names (w/ mean F as bg), and probably taking multiple rows per fly, so images can be
+# larger. maybe show name only on best plane for each?
 diag_example_plot_roi_kws = dict(
+
+    # (was just doing vmax=0.8, instead of 0.75, b/c it happened to place a tick at top
+    # of cbar, but could probably enforce that other ways)
     #vmin=0.0, vmax=0.75,
-    vmin=0.0, vmax=0.8,
+
+    # TODO TODO TODO decide if i want these or to use halfrange.
+    # was just using this before trying to add norm stuff below.
+    #vmin=0.0, vmax=0.8,
+
     cbar_label=f'mean {dff_cbar_title}',
+
+    # TODO set as_ylabel=True automatically in image_grid if (ncols=1, nrows=None)?
+    #
+    # labelpad controls spacing between text and images. needed when as_ylabel=True
+    # TODO just move fontsize=7 to plot_rois default now? want for other ones too...
+    # TODO rename now that these aren't actually "titles"
+    #depth_text_kws=dict(fontsize=7, as_ylabel=True, labelpad=16),
+    # TODO also specify x, y kwargs here
+    depth_text_kws=dict(fontsize=7, as_overlay=True),
+
+    # TODO set scalebar / over-image-depth-info (/ other?) default colors (either white
+    # or black, probably), based on whether ~0 is more white/black in colormap plot_rois
+    # is using (try to do automatically inside plot_rois)
+
+    # for suptitle. default is 'large', but not sure what that is in points...
+    title_kws=dict(fontsize=8),
+
+    # (1.2 was/is default in plot_closed_contours)
+    # pretty good
+    #linewidth=1.0,
+    linewidth=0.8,
+
+    # TODO revert to default (None work for that?)
+    # 1.0 might have been too low
+    focus_roi_linewidth=1.1,
+
+    #show_names=False,
+    show_names='focus',
+
+    # (should also be default now)
+    #label_outline=False,
+    label_outline=True,
+    # default 0.75 seemed a bit much
+    label_outline_linewidth=0.6,
+
+    label_over_contour=True,
+    # TODO delete. default of 0 seems ok.
+    # see if we need to change from this default
+    #label_to_bbox_dy=0,
+
+    # TODO make fontweight not 'bold'? see defaults in plot_closed_contours
+    # (no longer relevant, w/ show_names=False)
+    text_kws=dict(fontsize=5),
+
+    # TODO make scale bar thicker (can do in inkscape pretty easily...)?
+    # TODO TODO make scale bar text smaller (+ fix font to match depth info)
+
+    # TODO TODO just suck it up and either have 2 rows per fly or show only a
+    # subset of planes (~3-4 per ROI?) (probably not for these, as i don't want to
+    # actual show all ROI text, but probably DO want to do this for the similar plots w/
+    # avg F background and all / best-plane ROI text shown)
+
+    # TODO or subsample planes, though doesn't see like there are any great choices for
+    # that in 2023-05-10/1 at least...
+
+    # trying columns now. not enough space in rows (for >=8 planes at least, w/ all in
+    # one row).
+    nrows=None, ncols=1,
+
+    # after ImageGrid, do still need some extra width (w/o bbox_inches, haven't tried
+    # with).
+    # TODO can bbox_inches[='tight'? something else?] also make fig larger to have
+    # stuff not cut off (ylabels of axes/cax + suptitles, etc)? may not need
+    # extra_figsize if so?
+    # at extra width < ~0.9, cbar info is cut off (tho there is still space on left...)
+    # TODO some way to get constrained layout to respect all colorbar contents?
+    image_kws=dict(height=10.5, extra_figsize=(1.0, 0),
+        # top, bottom, width, height of ImageGrid area of figure
+        imagegrid_rect=(0.09, 0.01, 0.775, 0.955)
+    ),
+
+    # (need matplotlib for either/both of these?)
+    # TODO TODO TODO want to try a segmented version of this?
+    # (to highlight inhibition / exh separately, showing full range of each)
+    # TODO TODO or at least a version where white = 0?
+    #cmap='vlag',
+    **diverging_cmap_kwargs
+
+    # previously, figsize was calculated in image_grid with no width constraint, and for
+    # 2023-05-10/1 (with 8 planes, down to -70um), this lead to a crazy
+    # figsize=(21.504, 2.688). want to try not needing to scale so much when importing.
+    #
+    # width is total width, and extra_figsize[0] is subtracted from that to make space
+    # for colorbar (or whatever)
+    #
+    # extra height:
+    # - too much: 1.0, 0.5 (but only slightly)
+    #image_kws=dict(width=8.2, extra_figsize=(0, 0.5)),
+    # worked for massive ~20" wide fig
+    #text_kws=dict(fontsize=8),
 )
+# vmin/vmax (as in above) override this. otherwise, this fraction of data is excluded,
+# and new extremes are used for vmin/vmax.
 roi_background_minmax_clip_frac = 0.025
 
 ax_fontsize = 7
@@ -554,6 +777,7 @@ retry_previously_failed = False
 # use on acquisition computer.
 analyze_glomeruli_diagnostics_only = False
 print_skipped = False
+verbose = False
 
 is_acquisition_host = util.is_acquisition_host()
 if is_acquisition_host:
@@ -851,7 +1075,18 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
 
     if sort_first_on is not None:
         # NOTE: for now, just gonna support this being of-same-length as df.columns
-        assert len(sort_first_on) == len(df.columns)
+
+        # TODO delete try/except
+        # triggered when trying to adapt each_fly diag resp matrix code to across fly
+        # case
+        try:
+            assert len(sort_first_on) == len(df.columns)
+        except AssertionError:
+            print(f'{sort_first_on=}')
+            print(f'{df.columns=}')
+            print(f'{len(sort_first_on)=}')
+            print(f'{len(df.columns)=}')
+            import ipdb; ipdb.set_trace()
 
         # Seems to also work when input is a list of tuples (so you can list(zip(...))
         # multiple iterables of keys, in the order you want them to take priority).
@@ -1360,7 +1595,8 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     #
     fig_path = Path(fig_dir) / basename
 
-    # TODO share logic w/ to_csv above
+    # TODO share logic w/ to_csv above (meaning also want to resolve() in
+    # produces_output? or no? already doing that?)
     abs_fig_path = fig_path.resolve()
 
     # TODO delete try/except (can i repro failure?)
@@ -1421,13 +1657,23 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     elif isinstance(fig_or_seaborngrid, sns.axisgrid.Grid):
         fig = fig_or_seaborngrid.fig
 
-    # TODO cli flag for this?
+    assert fig is not None
+
     debug = False
-    if debug:
+
+    # using global verbose flag, set True/False by CLI in main.
+    if verbose or debug:
+        # TODO may shorten to remove first two components of path by default
+        # (<driver>_<indicator>/<plot_fmt> in most/all cases)?
         print(fig_path)
-        assert fig is not None
+
+    if debug:
         print(f'figsize={tuple(fig.get_size_inches())}, dpi={fig.dpi}')
         print()
+
+    # TODO warn if any figs are wider than would fit in a sheet of paper?
+    # at least for a subset of figs marked as for publications?
+    # (e.g. diagnostic example plot_rois fig i'm working on now)
 
     if close:
         if fig is None:
@@ -2490,8 +2736,21 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
             # (for highlighting same on plots that have multiple fly data)
             #
             # other cases not currently supported (would have to think about handling)
+
+            # should be fine to ignore / delete, or significantly weaken
+            # TODO TODO not true actually, as i'm currently only drawing box around
+            # FIRST matching index pair
+            #'''
             assert matching_odor.sum() == 1
-            assert matching_roi.sum() == 1
+            # TODO delete try/except
+            try:
+                assert matching_roi.sum() == 1
+            except AssertionError:
+                # TODO be more descriptive (say which plot(s) affected) in warning
+                warn(f'{matching_roi.sum()=} > 1. disabling box drawing!')
+                continue
+                #import ipdb; ipdb.set_trace()
+            #'''
 
             # these will get index of first True value
             odor_index = np.argmax(matching_odor)
@@ -2519,8 +2778,9 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
                 # black outline maybe?) (red pretty bad on magma cmap i'm using).
                 # dotted (first try was pretty bad)?
                 #
-                # OK
-                #edgecolor='w', linewidth=0.5,
+                # don't like w/ edgecolor='r', lw=0.4, PathEffect lw=1.0
+                # OK (w/ edgecolor='w', lw=0.5, PathEffect lw=1.0). lw=0.3 prob too low.
+                #edgecolor='w', linewidth=0.4,
                 #path_effects=[
                 #    # w/ linewidth=1 above: 0.75 too little, 2.0 a bit too much
                 #    # w/ linewidth=0.75 above: 1.5 OK, but maybe highlights that either
@@ -2541,6 +2801,7 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
                 # among my favorites.
                 #edgecolor='0.4', linewidth=1.0,
 
+                # TODO restore
                 # think i'll stick with this one for now
                 edgecolor='0.5', linewidth=1.0,
 
@@ -2564,6 +2825,7 @@ def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
 
     Args:
         bbox_inches: None is also matplotlib savefig default
+        **kwargs: passed to `plot_all_roi_mean_responses`
     """
     fig, _ = plot_all_roi_mean_responses(df, **kwargs)
     savefig(fig, plot_dir, f'{fname_prefix}', bbox_inches=bbox_inches)
@@ -2628,7 +2890,7 @@ def suite2p_traces(analysis_dir):
 # thinner lines?
 # TODO change how LUT is defined to at least allow ~single pixels NOT washing out whole
 # range (e.g. from motion correction artifact at edge)
-def plot_rois(*args, nrows: Optional[int] = 1, cmap=roi_bg_cmap, **kwargs):
+def plot_rois(*args, nrows=1, cmap=anatomical_cmap, **kwargs):
     # TODO test display of cmap default in generated docs. try to get it to look nice
     # (without having to manually specify the default in the docstring)
     """
@@ -2658,17 +2920,18 @@ def plot_rois(*args, nrows: Optional[int] = 1, cmap=roi_bg_cmap, **kwargs):
         minmax_clip_frac = 0.0
 
     if 'palette' not in kwargs:
-        # TODO may want to delete if i implement simpler color= instead
-        if 'colors' in kwargs:
+        if 'color' in kwargs:
             palette = None
         else:
-        #
+            # TODO TODO just let viz.plot_rois handle this? should be same default
+            # (unless it matters that i pass in a colormap rather than a str, so there
+            # are 2 nested color_palette calls)
             palette = sns.color_palette('hls', n_colors=10)
     else:
         palette = kwargs['palette']
 
-    # TODO TODO TODO why is color seed apparently not working (should be constant
-    # default of 0 inside plot_rois)? (still true?)
+    # TODO TODO why is color seed apparently not working (should be constant default of
+    # 0 inside plot_rois)? (2023-12-18: still seems to not be working)
     # TODO did i actually need _pad=False? comment why (hong2p.plot_rois default is
     # False, at least now....)
     return viz.plot_rois(*args, nrows=nrows, cmap=cmap, _pad=False,
@@ -2679,6 +2942,11 @@ def plot_rois(*args, nrows: Optional[int] = 1, cmap=roi_bg_cmap, **kwargs):
         # TODO TODO inside hong2p.viz.plot_rois, warn if this clipping happens
         # (just like other code in here that does regarding dff_vp[min|max])?
         minmax_clip_frac=minmax_clip_frac,
+
+        # TODO experiment w/ only showing on one? which is more annoying, not being able
+        # to pick which odor shows it, or having to break apart groups and manually
+        # delete for most?
+        scalebar=True,
 
         # Without n_colors=10, there will be too many colors to meaninigfully tell them
         # all apart, so might as well focus on cycling a smaller set of more distinct
@@ -2754,10 +3022,18 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
     trial_dff = compute_trial_stats(traces, bounding_frames)
     roi_quality = trial_dff.max()
 
+    if not verbose:
+        # (if verbose=True passed to rois2best_planes_only, it has a lot of output)
+        #
+        # TODO even want this?
+        print('picking best plane for each ROI')
+
     # TODO TODO TODO refactor so all this calculation is done across all recordings
     # within each fly, rather than just within each recording
     # (could add in parallel for now, and then phase out old way)
-    roi_indices, best_plane_rois = rois2best_planes_only(full_rois, roi_quality)
+    roi_indices, best_plane_rois = rois2best_planes_only(full_rois, roi_quality,
+        verbose=verbose
+    )
 
     # TODO make full_rois have roi name represented same way as in best_plane_rois
     # (former currently has roi_name, latter currently has just .roi)
@@ -2886,14 +3162,17 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
     # TODO TODO need to explicitly handle <=0 values w/ norm='log'? or will be clipped
     # fine anyway (and i'm cool with that?)
     description_background_kwarg_tuples = [
-        ('avg', movie_mean, dict(cbar_label='mean F (a.u.)'))
-        # TODO TODO TODO do i actually like 'log' better than default tho?
-        # (how to adjust label to reflect norm anyway? need to?)
-        #('avg', movie_mean, dict(norm='log', cbar_label='mean F (a.u.)'))
+        #('avg', movie_mean, dict(cbar_label='mean F (a.u.)'))
 
-        # TODO this should still work, right? rn it seems label must be passed via
-        # cbar_label. fix?
-        #('avg', movie_mean, dict(norm='log', cbar_kws=dict(label='mean F (a.u.)')))
+        # TODO do i actually like 'log' better than default tho? (probably, see below)
+        # (cbar label is uglier tho, and that might be reason to just show default
+        # version... might wanna change vmin/vmax tho)
+        #
+        # in 2023-05-10/1 example data, norm='log' boosts weaker signals (so i do think
+        # i like it better for just seeing some glomeruli i might not otherwise), but
+        # not really any clear examples of constrast being improved (and might be made
+        # worse for stuff already near saturation)
+        ('avg', movie_mean, dict(norm='log', cbar_label='mean F (a.u.)'))
     ]
 
     # TODO maybe do all this plotting in a separate step at the end, so i can get one
@@ -2925,26 +3204,69 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         )
 
     zstep_um = thor.get_thorimage_zstep_um(thorimage_dir)
+    xy_pixelsize_um = thor.get_thorimage_pixelsize_um(thorimage_dir)
+
+    # TODO TODO TODO fix color seed! can't line up colors between these plots and diag
+    # example ones otherwise (was it always just b/c different numbers of ROIs plotted
+    # across the calls?)! (if i still want colors in diag example plot... betty had
+    # wanted a version without...) (seems to be OK across diagnostic recordings within a
+    # fly, and within one analysis run... are these vs diagnostic odor-specific ones
+    # also good w/in a run?  or the fact that some things are consistent feels like
+    # there should be a solution...)
+    # TODO at least provide instructions to repro the issue in comment above...
+    shared_kws = dict(zstep_um=zstep_um, pixelsize_um=xy_pixelsize_um,
+
+        # TODO check this is working
+        label_outline=True,
+
+        # TODO TODO why does spacing between image axes seem more than in first
+        # ImageGrid usage i was testing? horz and vert spacing not same?
+        #
+        # adjusted w/ nrows=1, ncols=None
+        # TODO TODO TODO shouldn't nrows, ncols be set here then???
+        image_kws=dict(imagegrid_rect=(0.005, 0.0, 0.95, 0.955)),
+
+        # TODO TODO if i'm gonna rely on diag example kws for one of the cases, need to
+        # duplicate some of the values here for the avg bg case! (try to still share
+        # somewhat w/ diag example kws)
+        # TODO try to delete these after
+        #depth_text_kws=dict(fontsize=7),
+        # for ROI names only
+        # fontsize:
+        # - too small: 5
+        # - OK: 6 (~1 case where names overlap, but not too bad)
+        #text_kws=dict(fontsize=6),
+    )
 
     # TODO maybe also plot on stddev image or something?
 
-    # TODO TODO TODO revert all constant scale modifications?
+    # TODO revert all constant scale modifications?
     # (both on average and dF/F bgs) contrast within each plane tends to get
     # worse... and scale doesn't actually matter in any of those cases...
     # was just to appease betty, and i think she might agree it's not making the figure
     # better (at least, so far, towards the diagnostic example supplemental fig)
 
-    for bg_desc, background, imagegrid_kws in description_background_kwarg_tuples:
+    for bg_desc, background, specific_kws in description_background_kwarg_tuples:
+
+        # TODO TODO warn/err if keys overlap (currently much of shared_kws may be
+        # overwritten by specific_kws, particularly in case where it's
+        # diag_example_plot_roi_kws) (or at least have shared_kws overwrite
+        # specific_kws?)
+
+        plot_rois_kws = {**shared_kws, **specific_kws}
+
+        key_overlap = set(shared_kws.keys()) & set(specific_kws.keys())
+        for k in key_overlap:
+            v1 = shared_kws[k]
+            v2 = specific_kws[k]
+            # may generally want to try to eliminate such cases, by re-organizing the
+            # kws dicts.
+            warn(f"{bg_desc}: shared key '{k}':\n{v1} (overwritten)\n{v2}")
 
         # TODO TODO provide <date>/<fly_num> suptitle for all of these
-        # TODO probably black out behind text, like the imagej option, to make ROI names
-        # easier to read
 
         # TODO color option to desaturate plane-ROIs that are NOT the "best" plane
         # (for a given volumetric-ROI) (or change line properties?)
-
-        # TODO TODO TODO also (/only?) do a version that only shows the plane actually
-        # used (or at least those planes emphasized? change line / sat?)
 
         # TODO delete this comment (+ try/except)?
         # what issue was happening when not plotted "correctly"? and can i still
@@ -2958,9 +3280,7 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         # disconnected paths. The label was sometimes offset more than I'd like, but
         # that's only a minor issue. warned about
         try:
-            # TODO rename from imagegrid_kws (here and elsewhere). some are not just
-            # passed to image_grid
-            fig = plot_rois(full_rois, background, zstep_um=zstep_um, **imagegrid_kws)
+            fig = plot_rois(full_rois, background, **plot_rois_kws)
 
         # TODO make custom error message for this in hong2p (or handle, removing need
         # for error)
@@ -2978,9 +3298,7 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
         makedirs(all_roi_dir)
         symlink(fig_path, all_roi_dir / f'{experiment_link_prefix}.{plot_fmt}')
 
-        fig = plot_rois(full_rois, background, certain_only=True, zstep_um=zstep_um,
-            **imagegrid_kws
-        )
+        fig = plot_rois(full_rois, background, certain_only=True, **plot_rois_kws)
         fig_path = savefig(fig, ij_plot_dir, f'certain_rois_on_{bg_desc}')
 
         certain_roi_dir = ijroi_spatial_extents_plot_dir / f'certain_rois_on_{bg_desc}'
@@ -2991,13 +3309,34 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False):
 
 
 def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
-    main_plot_title, *, roi_stats=None, show_suite2p_rois=False):
+    main_plot_title, *, skip_all_plots=skip_singlefly_trace_plots, roi_stats=None,
+    show_suite2p_rois=False):
+    # TODO check it is always (unconditionally!) mean trial dF/F, or update
+    # skip_all_plots doc to reference which variables trial stat depends on
+    """
+    Args:
+        skip_all_plots: if True, only compute and return ROI x mean trial dF/F
+            dataframe. makes no plots.
+    """
 
     # TODO TODO remake directory (or at least make sure plots from ROIs w/ names no
     # longer in set of ROI names are deleted)
 
     if show_suite2p_rois and roi_stats is None:
         raise ValueError('must pass roi_stats if show_suite2p_rois')
+
+    # TODO TODO add option to compute + return this w/o making other plots in here
+    # (don't care about them much of the time...). or move computation of this out?
+    #
+    # TODO TODO TODO compare dF/F traces (or at least response means from these traces)
+    # (as currently calculated), to those calculated from dF/F'd movie (in
+    # response_volumes, calculated in process_recording)
+    #
+    # Mean dF/F for each ROI x trial
+    trial_df = compute_trial_stats(traces, bounding_frames, odor_lists)
+
+    if skip_all_plots:
+        return trial_df
 
     # TODO update to pathlib
     makedirs(roi_plot_dir)
@@ -3014,6 +3353,8 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
 
     # TODO try one of those diverging colormaps w/ diff scales for the two sides
     # (since the range of inhibition is smaller)
+    # TODO TODO modify diverging_cmap_kwargs / plotting fn handling so that norms
+    # can use the custom vmin/vmax, as here (then replace w/ diverging_cmap_kwargs)
     matshow_kwargs = dict(cmap=diverging_cmap, vmin=-dff_vmax, vmax=dff_vmax)
 
     timeseries_plot_dir = roi_plot_dir / 'timeseries'
@@ -3132,13 +3473,6 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
 
             curr_odor_i += 1
 
-    # TODO TODO TODO compare dF/F traces (or at least response means from these traces)
-    # (as currently calculated), to those calculated from dF/F'd movie (in
-    # response_volumes, calculated in process_recording)
-    #
-    # Mean dF/F for each ROI x trial
-    trial_df = compute_trial_stats(traces, bounding_frames, odor_lists)
-
     is_pair = is_pairgrid(odor_lists)
 
     # TODO maybe replace odor_sort kwarg with something like odor_sort_fn, and pass
@@ -3212,7 +3546,6 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir):
     trial_df = trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
         title, roi_stats=roi_stats, show_suite2p_rois=False
     )
-    print('generated plots based on suite2p traces')
 
     return trial_df
 
@@ -3235,8 +3568,6 @@ def ij_trace_plots(analysis_dir, bounding_frames, odor_lists, movie, plot_dir):
     trial_df = trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
         title
     )
-
-    print('generated plots based on traces from ImageJ ROIs')
 
     return trial_df, best_plane_rois, full_rois
 
@@ -3312,6 +3643,10 @@ def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
         # directories here so that suite2p doesn't try to run on them (just the name,
         # not the directories containing them)
         'dff.tif',
+
+        mocorr_concat_tiff_basename,
+        all_frame_avg_tiff_basename,
+
         trial_dff_tiff_basename,
         trialmean_dff_tiff_basename,
         max_trialmean_dff_tiff_basename,
@@ -4236,14 +4571,22 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     dff_full_trial_iterator = delta_f_over_f(movie, bounding_frames, keep_pre_odor=True)
 
     # TODO do i still need these 2-3 nested loops?
+    # TODO replace these plots w/ the ones that also draw ROIs (the diagnostic example
+    # ones) (just getting that code to not fail / look bad if no ROI inputs)?
     for i, odor_str in enumerate(odor_order):
+
+        abbrev_odor_str = olf.abbrev(odor_str)
+        abbrev_odor_str = abbrev_odor_str.replace(' @', '')
 
         if odor_str in odor_str2target_glomeruli:
             target_glomerulus = odor_str2target_glomeruli[odor_str]
             title = f'{odor_str} ({target_glomerulus})'
+            #abbrev_title = f'{abbrev_odor_str}\n({target_glomerulus})'
+            abbrev_title = f'{abbrev_odor_str} ({target_glomerulus})'
         else:
             target_glomerulus = None
             title = odor_str
+            abbrev_title = abbrev_odor_str
 
         # TODO either:
         # - always use 2 digits (leading 0)
@@ -4258,6 +4601,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # (z, y, x)
         trial_mean_dffs = []
 
+        # TODO do mean_dff/etc calculation in this loop, but move plotting below (or
+        # just replace plotting w/ existing/new plot_rois/similar calls?
         for n in range(n_repeats):
             dff = next(dff_after_onset_iterator)
 
@@ -4298,12 +4643,12 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                 # assert? where are vmin/vmax getting in now? inside dff_imshow?
                 im = dff_imshow(ax, mean_dff[d])
 
+        avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
+
         viz.add_colorbar(trial_heatmap_fig, im, label=dff_cbar_title, shrink=0.32)
 
         suptitle(title, trial_heatmap_fig)
         exp_savefig(trial_heatmap_fig, plot_desc + '_trials')
-
-        avg_mean_dff = np.mean(trial_mean_dffs, axis=0)
 
         trialmean_dff_fig_path = plot_and_save_dff_depth_grid(avg_mean_dff, plot_desc,
             title=title, cbar_label=f'mean {dff_latex}'
@@ -4311,32 +4656,9 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
 
         focus_roi = target_glomerulus_renames.get(target_glomerulus, target_glomerulus)
 
-        # TODO TODO TODO similar plot, but using max dF/F (also try stddev [of raw
-        # movie? dF/F?]?), showing all ROIs. -> maybe switch individual odor plots to
-        # only spelling out single ROIs (/ highlighting and listing odor and/or target
-        # glom in text to the side / above odor row?)
-        # TODO TODO TODO colorbars! (+ maybe try depth specific and/or odor specific
-        # color scales?)
-
-        # TODO TODO TODO is color seed not working on plot_rois? (still relevant?)
-
-        # TODO TODO add colorbar too
+        # NOTE: unlike dff_imshow (or stuff calling it), this won't currently warn about
+        # large fractions of pixels above vmax / below vmin.
         #
-        # NOTE: unlike dff_imshow (or stuff calling it), this won't warn about large
-        # fractions of pixels above vmax / below vmin.
-        # TODO off-by-one on z?
-        # TODO try w/ best_plane_rois instead of full_rois (or color desat thing)?
-        # TODO change colormap so there is never any ~gray. completely invisible (?)
-        # TODO TODO experiment w/ desaturating other colors and/or maybe making
-        # line around current ROI solid / thicker (or other lines thinner).
-        # want to call attention to ROI targetted by current diagnostic odor.
-        # TODO desat the text/lines equally? maybe lines only?
-        # TODO push everything to black a bit (via vmin/vmax?), so roi labels are more
-        # legible?
-        # TODO maybe try have highlighted ROI always be that default red color?
-        # (probably try desat first...)
-        #
-        # TODO TODO try one colorscale per roi
         # TODO check have_ijrois is what i want here (/ works)
         if have_ijrois:
             # TODO delete (when is this happening? probably when cache actually isn't
@@ -4363,35 +4685,101 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             #    assert full_rois is not None
             #AssertionError
             # (above also happened for 3-10/2[/control1_ramps] on another run)
+            #
+            # TODO fix!
+            # can repro by calling w/ `-i nonroi` but not `-i ijroi,nonroi`
             try:
                 assert full_rois is not None
             except AssertionError:
                 import ipdb; ipdb.set_trace()
             #
 
-            # TODO don't really care for a non-certain-only version of these, do i?
-            # still have those versions for ones over average / recording-max-dF/F
+            xy_pixelsize_um = thor.get_thorimage_pixelsize_um(xml)
 
-            # TODO TODO TODO also probably use same (SMALLER) dF/F range as in the max
-            # dF/F plot_rois call (or even smaller range here!)
+            # TODO TODO try depth specific colorbars?
 
-            # TODO TODO TODO text to left (/above?) that has odor name (probably
-            # horizontal) (and target glomerulus?)
-            # TODO TODO abbreviation only (instead of full name, as in titles in some
-            # other similar plots [the ones saved w/ exp_savefig])
+            # TODO are colorbar labels getting cut off or are they just not passed?
+            # (still relevant?)
 
-            # TODO TODO TODO are colorbar labels getting cut off or are they just not
-            # passed?
+            # TODO TODO try a verision where background is average baseline, and a
+            # (thresholded + magma colormapped) version of response is overlayed, in a
+            # addition to ROI boundary/boundaries) (like some recent papers i've made
+            # note of)
 
-            # TODO do something drastic, like only showing name for focus_roi?
-            # TODO still wanna try the red arrow thing? did i already?
+            # TODO try having the red/blue version below each row w/ black background
+            # (change ROI lines to gray + don't show labels, assuming each is paired
+            # with a version where you can see labels)
 
-            # TODO TODO TODO try having the red/blue version below each row w/ black
-            # background (change ROI lines to gray + don't show labels, assuming each is
-            # paired with a version where you can see labels)
+            # TODO TODO TODO try only showing name for focus_roi?
+            # (but still show colored outlines for other ones?)
 
-            # TODO TODO try a version like this, but w/ colors=['black'] and background
+            # TODO TODO symlink to these in across fly ijroi dir?
+
+            # TODO move certain_only=True diag_example_plot_kws (if i like it)?
+
+            # TODO vertical instead (one col per odor), to maximize resolution available
+            # for ROI boundaries/labels in each image? idk...
+
+            # TODO TODO replace main dF/F plots with this (as long as these also can
+            # work w/o ROIs, or can be modified to do so)
+
+            # TODO maybe group into how many fit into a page (would want to do after
+            # process_recording tho...) -> only ylabel left and only cbar the right
+            # + only scalebar either left/right
+
+            trialmean_dff_w_rois_fig = plot_rois(full_rois, avg_mean_dff,
+                focus_roi=focus_roi, certain_only=True, zstep_um=zstep_um,
+                pixelsize_um=xy_pixelsize_um, title=abbrev_title,
+                **diag_example_plot_roi_kws
+            )
+            # TODO make sure these are sorted correctly by PDF aggregation code
+            # (in fixed odor order, as other diagnostic dF/F images should be)
+            # (can't figure how this is happening, if it is [in commented code, no
+            # less]... delete comment?)
+            savefig(trialmean_dff_w_rois_fig, plot_dir / 'ijroi/with_rois', plot_desc,
+
+                # TODO find a png viewer that displays this as white instead of
+                # checkerboard? or a pdf viewer that is as quick to use as default png
+                # viewer? or only set True sometimes?
+                #transparent=True,
+
+                # TODO why this causing failure (seems to be because of inset_axes)?
+                # just wanted this to have colorbar ticks/label not cut off, but could
+                # probably handle that another way)
+                # (may be fixed in mpl 3.8. i'm using 3.7.2 now and can't upgrade w/o at
+                # least python 3.9. i'm still on python 3.8.12 for now.)
+                #
+                # https://github.com/jupyter/notebook/issues/7052
+                # after upgrading to 3.7.3, it no longer errs, but cbar position gets
+                # screwed up.
+                #
+                # cbars work with this now that their axes are created via ImageGrid
+                #
+                # (both still 2.8125 x 10.5 figsize, at least when savefig is called, if
+                # not in output)
+                # w/ bbox_inches='tight':
+                # Page size:      161.998 x 677.995 pts
+                # w/o:
+                # Page size:      202.5 x 756 pts
+                #bbox_inches='tight'
+            )
+
+            # TODO probably delete
+            '''
+            # TODO shorten names (trialmean->odor? what else?)
+            trialmean_dff_w_bestplane_rois_fig = plot_rois(full_rois, avg_mean_dff,
+                focus_roi=focus_roi, certain_only=True, best_planes_only=True,
+                zstep_um=zstep_um, pixelsize_um=xy_pixelsize_um, title=abbrev_title,
+                **diag_example_plot_roi_kws
+            )
+            savefig(trialmean_dff_w_bestplane_rois_fig,
+                plot_dir / 'ijroi/with_bestplane_rois', plot_desc
+            )
+            '''
+
+            # TODO TODO try a version like this, but w/ color='black' and background
             # colormap some kind of blue<->red (to also show inhibition)?
+            # (or color='grey' and focus_roi_color='black'?)
             #
             # TODO delete?
             # indexing this way rather than just roi_name=focus_roi, so that the
@@ -4403,12 +4791,10 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             )
             # TODO TODO or should plot_rois work w/ empty input?
             if only_focus.sizes['roi'] > 0:
-                # current behavior could also be achieved by omitting focus_roi=,
-                # passing colors=['red'], and omitting palette (which I assume is in the
-                # *kws)
                 trialmean_dff_w_focusroi_fig = plot_rois(only_focus, avg_mean_dff,
                     certain_only=True, focus_roi=focus_roi, zstep_um=zstep_um,
-                    title=title, **diag_example_plot_roi_kws
+                    pixelsize_um=xy_pixelsize_um, title=abbrev_title,
+                    **diag_example_plot_roi_kws
                 )
                 # TODO put all variants of these roi plots under ijroi/spatial_extents/?
                 # TODO rename all to '*/odoravg_*' (other plots like
@@ -4418,37 +4804,17 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                 )
             '''
 
-            # TODO TODO symlink to these in across fly ijroi dir?
-
-            # TODO move certain_only=True, best_planes_only=True into
-            # diag_example_plot_kws (if i like them)? (probably do for
-            # certain_only=True, but probably not for best_planes_only=True)
+            # TODO delete. exiting after first to save time.
+            #'''
+            if i == 0:
+                print('EXITING!')
+                sys.exit()
+            #'''
             #
-            # TODO shorten names (trialmean->odor? what else?)
-            trialmean_dff_w_bestplane_rois_fig = plot_rois(full_rois, avg_mean_dff,
-                focus_roi=focus_roi, certain_only=True, best_planes_only=True,
-                zstep_um=zstep_um, title=title, **diag_example_plot_roi_kws
-            )
-            savefig(trialmean_dff_w_bestplane_rois_fig,
-                plot_dir / 'ijroi/with_bestplane_rois', plot_desc
-            )
-
-            # TODO vertical instead (on col per odor), to maximize resolution available
-            # for ROI boundaries/labels in each image? idk...
-
-            trialmean_dff_w_rois_fig = plot_rois(full_rois, avg_mean_dff,
-                focus_roi=focus_roi, certain_only=True, zstep_um=zstep_um,
-                title=title, **diag_example_plot_roi_kws
-            )
-            # TODO make sure these are sorted correctly by PDF aggregation code
-            # (in fixed odor order, as other diagnostic dF/F images should be)
-            # (can't figure how this is happening, if it is [in commented code, no
-            # less]... delete comment?)
-            savefig(trialmean_dff_w_rois_fig, plot_dir / 'ijroi/with_rois', plot_desc)
 
         odor_mean_dff_list.append(avg_mean_dff)
 
-        # TODO TODO TODO is this stuff not getting run? fix if so
+        # TODO TODO is this stuff not getting run? fix if so (/delete...)
         # TODO maybe also include some quick reference to previously-presented-stimulus,
         # to check for contamination components of noise?
         if not is_acquisition_host and target_glomerulus is not None:
@@ -5803,15 +6169,7 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
         # may need to change groupby/something above
         n_flies = len(garr)
 
-        # TODO delete. always use remy_matshow_kwargs. renaem to just matshow_kwargs or
-        # something
-        '''
-        if panel != 'megamat':
-            kwargs = dict()
-        else:
-            kwargs = remy_matshow_kwargs
-        '''
-        kwargs = remy_matshow_kwargs
+        kwargs = remy_corr_matshow_kwargs
 
         panel_mean = garr.mean(corr_avg_dim)
 
@@ -6066,14 +6424,7 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
         # of the issue.)
         corr = dropna_odors(garr.squeeze(drop=True))
 
-        # TODO delete
-        '''
-        if panel != 'megamat':
-            kwargs = dict()
-        else:
-            kwargs = remy_matshow_kwargs
-        '''
-        kwargs = remy_matshow_kwargs
+        kwargs = remy_corr_matshow_kwargs
 
         fig = natmix.plot_corr(corr, title=fly_str, **kwargs)
 
@@ -6462,7 +6813,8 @@ def plot_diffs_from_max_and_sum(mean_df, roi_plot_dir=None, **matshow_kwargs):
         # TODO less gradations on these color bars? kinda packed.
         # TODO cbar_label? or just ok to leave it in title?
         fig, _ = viz.matshow(diff_df, title=f'Component {desc} minus observed',
-            #xticklabels=True, yticklabels=format_mix_from_strs, #**diverging_cmap_kwargs,
+            #xticklabels=True, yticklabels=format_mix_from_strs,
+            #**diverging_cmap_kwargs,
             **matshow_kwargs
         )
 
@@ -7001,10 +7353,7 @@ def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root,
 
     # TODO share kwargs w/ other places i'm defining them for plotting correlations
     # for remy's experiment
-    # TODO replace all kwargs here w/ remy_matshow_kwargs?
-    fig = natmix.plot_corr(remy_corr_da, cmap=diverging_cmap, vmin=-1, vmax=1,
-        fontsize=10.0
-    )
+    fig = natmix.plot_corr(remy_corr_da, **remy_corr_matshow_kwargs)
     savefig(fig, plot_root, f'remy_{for_filename}_corr')
 
     cg = cluster_rois(remy_df, f'{for_title} (megamat odors only)')
@@ -8148,13 +8497,13 @@ def fit_and_plot_mb_model(plot_dir, sim_odors=None, **model_kws):
     # TODO delete. just for comparing to matt's plots. do both ways permanently?
     if matt_order:
         fig = natmix.plot_corr(model_corr, title=title, name_order=name_order,
-            **remy_matshow_kwargs
+            **remy_corr_matshow_kwargs
         )
     else:
-        fig = natmix.plot_corr(model_corr, title=title, **remy_matshow_kwargs)
+        fig = natmix.plot_corr(model_corr, title=title, **remy_corr_matshow_kwargs)
     #
 
-    #fig = natmix.plot_corr(model_corr, title=title, **remy_matshow_kwargs)
+    #fig = natmix.plot_corr(model_corr, title=title, **remy_corr_matshow_kwargs)
 
     # (this goes thru util.to_filename inside savefig)
     for_filename = f'responses-to_{responses_to}'
@@ -9313,7 +9662,7 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     # TODO just check # of columns to decide if we want to add bbox_inches='tight'
     # (between diags + megamat and that number + validation2)? or always pass it?
     plot_responses_and_scaled_versions(certain_df, plot_dir, f'{fname_prefix}certain',
-        bbox_inches='tight', title=title, **roi_plot_kws
+        bbox_inches='tight', title=title, xticks_also_on_bottom=True, **roi_plot_kws
     )
 
     # TODO TODO TODO should i be normalizing within fly or something before taking mean?
@@ -9553,6 +9902,9 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                     # sorting on them?)
                     pprint(set(sorted(rois, key=glom_counts.get)))
 
+                # TODO TODO TODO also warn (when merging ROIs) if strongest signal comes
+                # from a plane marked uncertain (also w/ +?)
+
                 missing_completely = (
                     allfly_certain_roi_set - set(onefly_rois.name_as_if_certain)
                 )
@@ -9685,7 +10037,10 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # TODO re-organize this + all other !diag stuff above, to simplify
         # TODO or just put this stuff in a loop over diag_df above panel_df loop?
         # (not doing for any other panels...)
+        #
+        # TODO TODO version of this across flies?
         if panel == diag_panel_str:
+            # <driver_indicator>/<plot_fmt>/ijroi/by_panel/<diag_panel_str>/each_fly
             each_fly_diag_response_dir = panel_ijroi_dir / 'each_fly'
 
             certain_df = select_certain_rois(panel_df)
@@ -9695,6 +10050,100 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             certain_df = certain_df.loc[
                 ~ certain_df.index.get_level_values('odor1').isin(diags_to_drop), :
             ]
+
+            # TODO calculate these once up top of this fn?
+            glomeruli_with_diags = set(all_odor_str2target_glomeruli.values())
+            odor_glom_combos_to_highlight = [
+                dict(odor=o, glomerulus=g)
+                for o, g in all_odor_str2target_glomeruli.items()
+            ]
+
+            # TODO define up top?
+            def glom_has_diag(index_dict):
+                glom = index_dict['roi']
+                return glom in glomeruli_with_diags
+
+            '''
+            # `x not in glomeruli_with_diags` puts those with diags first, as I want
+            sort_rois_first_on = [x not in glomeruli_with_diags
+                for x in certain_df.columns.get_level_values('roi')
+            ]
+            '''
+
+            # TODO version that doesn't have the glomeruli w/o diags?
+
+            # TODO sort to group useful-to-compare odors/glomeruli next to each
+            # other? not sure how...
+            # TODO or order odors by how reliable of diagnostics they are?
+            # (maybe just using strength of response in target?)
+            # TODO or leave sorted same as i typically have odors ordered
+            # (alphabetical)?
+            #
+            # should produce a nice, easy-to-follow, diagonal
+            odors_sorted_by_target_glom = sorted(
+                certain_df.index.get_level_values('odor1'),
+                key=all_odor_str2target_glomeruli.get
+            )
+            # checking that .get always found key
+            assert all(x is not None for x in odors_sorted_by_target_glom)
+
+            names = [olf.parse_odor_name(o) for o in odors_sorted_by_target_glom]
+            # TODO delete
+            '''
+            print(f'{len(set(odors_sorted_by_target_glom))=}')
+            print(f'{len(set(names))=}')
+            import ipdb; ipdb.set_trace()
+            '''
+            #
+            # TODO delete
+            # failing because aphe at -4 and -5. prob doesn't matter?
+            #assert len(set(odors_sorted_by_target_glom)) == len(set(names))
+
+            # list(set(names)) does NOT preserve order of names, so doing it this
+            # way instead.
+            name_order = []
+            for n in names:
+                if n not in name_order:
+                    name_order.append(n)
+
+            # TODO refactor to share w/ fly-specific below (this copied from there
+            certain_df = olf.sort_odors(certain_df, name_order=name_order)
+
+            # `x not in glomeruli_with_diags` puts those with diags first, as I want
+            sort_rois_first_on = [x not in glomeruli_with_diags
+                for x in certain_df.columns.get_level_values('roi')
+            ]
+
+            # TODO maybe use same dF/F range as in plot_rois invocations that
+            # produce diagnostic examples (clipped)?
+
+            # TODO TODO save not in each_fly (unless i rename it to something fitting
+            # both) (just save up one level) (maybe save both in one subdir though?)
+            # TODO TODO restore roi label hline group text
+            plot_responses_and_scaled_versions(certain_df, each_fly_diag_response_dir,
+                f'diag-highlight_certain',
+                # TODO TODO add a thicker hline between diag / non-diag stuff?
+                # (prob still want hlines between ROIs in non-single-fly case...)
+                sort_rois_first_on=sort_rois_first_on,
+                odor_glomerulus_combos_to_highlight=odor_glom_combos_to_highlight,
+
+                # TODO TODO TODO prob just fix... now getting:
+                #  File "./al_analysis.py", line 2594, in plot_all_roi_mean_responses
+                #    assert matching_roi.sum() == 1
+                # TODO was there something that this didn't work with, that i care
+                # about?
+                allow_duplicate_labels=True,
+
+                # TODO like (eh... i still think i find the roi scaled more useful)?
+                # delete?
+                #odor_scaled_version=True,
+
+                # NOTE: this will no longer have only one white hline between diag'd and
+                # non-diag'd glomeruli. there will be usual hline between each
+                # glomerulus name
+                **roi_plot_kws
+            )
+            #
 
             for (date, fly_num), fly_df in certain_df.groupby(['date', 'fly_num'],
                 axis='columns'):
@@ -9707,48 +10156,12 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 # concentration changed, such as aphe -5 -> -4)
                 fly_df = fly_df.dropna(how='all', axis='rows')
 
-                # TODO calculate these once up top of this fn?
-                glomeruli_with_diags = set(all_odor_str2target_glomeruli.values())
-                odor_glom_combos_to_highlight = [
-                    dict(odor=o, glomerulus=g)
-                    for o, g in all_odor_str2target_glomeruli.items()
-                ]
-
-                # TODO define up top?
-                def glom_has_diag(index_dict):
-                    glom = index_dict['roi']
-                    return glom in glomeruli_with_diags
+                fly_df = olf.sort_odors(fly_df, name_order=name_order)
 
                 # `x not in glomeruli_with_diags` puts those with diags first, as I want
                 sort_rois_first_on = [x not in glomeruli_with_diags
                     for x in fly_df.columns.get_level_values('roi')
                 ]
-
-                # TODO version that doesn't have the glomeruli w/o diags?
-
-                # TODO sort to group useful-to-compare odors/glomeruli next to each
-                # other? not sure how...
-                # TODO or order odors by how reliable of diagnostics they are?
-                # (maybe just using strength of response in target?)
-                # TODO or leave sorted same as i typically have odors ordered
-                # (alphabetical)?
-                #
-                # should produce a nice, easy-to-follow, diagonal
-                odors_sorted_by_target_glom = sorted(
-                    fly_df.index.get_level_values('odor1'),
-                    key=all_odor_str2target_glomeruli.get
-                )
-                names = [olf.parse_odor_name(o) for o in odors_sorted_by_target_glom]
-                assert len(set(odors_sorted_by_target_glom)) == len(set(names))
-
-                # list(set(names)) does NOT preserve order of names, so doing it this
-                # way instead.
-                name_order = []
-                for n in names:
-                    if n not in name_order:
-                        name_order.append(n)
-
-                fly_df = olf.sort_odors(fly_df, name_order=name_order)
 
                 # TODO maybe use same dF/F range as in plot_rois invocations that
                 # produce diagnostic examples (clipped)?
@@ -9784,6 +10197,8 @@ def main():
     global analyze_glomeruli_diagnostics_only
     global analyze_glomeruli_diagnostics
     global print_skipped
+    # TODO add this, checking it doesn't cause issues
+    global verbose
 
     # TODO actually use log/delete / go back to global?
     # (might just get a lot of matplotlib, etc logging there (maybe regardless)
@@ -10134,12 +10549,14 @@ def main():
     plot_root = get_plot_root(driver, indicator)
 
 
-    # TODO -i option for these?
+    # TODO -i option for these (could just check if remy_hallem_orns.png exists, and
+    # assume others do if so)?
+    # TODO or just separate script?
+    # TODO delete? even want anymore?
+    '''
     #
     # TODO TODO maybe this stuff should always be in a <plot_fmt> dir at root,
     # independent of driver? or maybe just at same level as this script, as before?
-    # TODO TODO or maybe only regen if doesn't exist / a new -i option is passed
-    # TODO separate script?
     #
     # add_sfr=True is the default, just including here for clarity.
     hallem_abs = orns.orns(columns='glomerulus', add_sfr=True)
@@ -10148,6 +10565,7 @@ def main():
     plot_remy_drosolf_corr(hallem_abs, 'hallem_orns', 'Hallem ORNs', plot_root,
         plot_responses=True
     )
+    del hallem_abs
 
     # TODO do w/ kennedy PNs too!
     # TODO TODO does it even make sense to propagate up thru olsen model as deltas?  is
@@ -10155,6 +10573,8 @@ def main():
     # internally?
     pn_df = pns.pns(columns='glomerulus', add_sfr=True)
     plot_remy_drosolf_corr(pn_df, 'olsen_pns', 'Olsen PNs', plot_root)
+    del pn_df
+    '''
 
 
     # TODO refactor to skip things here consistent w/ how i would in process_recording?
@@ -10422,6 +10842,9 @@ def main():
         total_s = time.time() - main_start_s
         print(f'Took {total_s:.0f}s\n')
 
+    # TODO TODO TODO also save + concat an average baseline fluorescence tiff, for more
+    # quickly making roi judgements on that basis
+    #
     # TODO also have it regenerate if for some reason a concat tiff doesn't already
     # exist for a processed tiff type we want
     for fly_analysis_dir in sorted(set(flies_with_new_processed_tiffs)):
@@ -10439,6 +10862,38 @@ def main():
         # TODO change this (want concatenating to work when min_input < 'mocorr')
         if not (fly_analysis_dir / mocorr_concat_tiff_basename).exists():
             continue
+
+        # TODO TODO do this in a loop separate from flies_with_new_processed_tiffs
+        # (or in motion correction step, right after saving mocorr_concat_tiff)
+        # (doesn't actually depend on any processed TIFFs! at least, none computed in
+        # process_recording. just mocorr)
+        #
+        # TODO TODO TODO draw ROI example (version that has big images and shows names)
+        # on this instead of average from just whichever recording
+        # (would need to deal w/ ROIs though... as best plane still depends on
+        # recording. doesn't matter if i don't show best planes only/differently tho...)
+        #
+        # NOTE: this one just depends on mocorr_concat.tif
+        # (and only depends on mocorr, not choice of any response windows. all frames
+        # are averaged, weighted equally.)
+        mocorr_concat_tiff = fly_analysis_dir / mocorr_concat_tiff_basename
+        all_frame_avg_tiff = fly_analysis_dir / all_frame_avg_tiff_basename
+        if (not all_frame_avg_tiff.exists() or
+            getmtime(mocorr_concat_tiff) > getmtime(all_frame_avg_tiff)):
+
+            # TODO print we are reading this (could be slow)?
+            mocorr_concat = tifffile.imread(mocorr_concat_tiff)
+
+            # (t, z, y, x) -> (z, y, x)
+            all_frame_avg = np.mean(mocorr_concat, axis=0)
+
+            # TODO TODO update so these are saved in a manner considered "properly
+            # volumetric" by my imagej_macros stuff (some of it currently complaining w/
+            # above quote in error message). may also just need to fix some of the
+            # image_macros stuff?
+            util.write_tiff(all_frame_avg_tiff, all_frame_avg, strict_dtype=False)
+            del mocorr_concat
+        #
 
         for tiff_basename in (trial_dff_tiff_basename, trialmean_dff_tiff_basename):
 
@@ -11055,6 +11510,10 @@ def main():
 
     trial_df = drop_superfluous_uncertain_rois(trial_df)
 
+    # TODO TODO should i always merge DL2d/v data? should be same exact receptors, etc?
+    # and don't always have a good number of planes labelled for each, b/c often unclear
+    # where boundary is
+
     # TODO test that moving this before merge_rois_across_recordings doesn't change
     # anything (because merge_... currently fails w/ duplicate odors [where one had been
     # repeated later, to overwrite former], and i'd like to use a similar strategy to
@@ -11063,6 +11522,10 @@ def main():
     # things wrong the one time i mixed up the -t/-e (start vs end) date options, and
     # ended up only using data from the affected flies)
     trial_df = setnull_old_wrong_solvent_aa_and_va_data(trial_df)
+
+    # TODO TODO TODO also do this for wrong conc / solvent validation2 odors
+    # (those 3 flies before 4 odors changed) -> analyze some of that data?
+    # or is the data not worth it?
 
     trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
     trial_df = sort_odors(trial_df)
@@ -11101,15 +11564,19 @@ def main():
     # (and otherwise just filter data to compare against during that realtime analysis)
 
     # TODO TODO TODO delete (/ only do for one certain only version)
+    # (still relevant?)
     certain_df = select_certain_rois(trial_df)
 
-    # TODO TODO TODO make this >= half of flies (and say that's what we are doing, and
-    # what the threshold is) (so plots/outputs still useful when looking at data that
-    # doesn't have much yet)
-    #
-    # Betty picked this number when I asked if we could drop glomeruli based on this
-    # criteria
-    n_for_consensus = 3
+    # Betty picked this number (3) when I asked if we could drop glomeruli based on this
+    # criteria, which should *roughly* line up w/ new >= half criteria for that megamat
+    # data. might have been slightly less stringent, but not sure any glomeruli would be
+    # treated differently.
+    n_flies = len(
+        certain_df.columns.to_frame(index=False)[['date','fly_num']].drop_duplicates()
+    )
+    # >= half of flies (the flies w/ any certain ROIs, at least)
+    n_for_consensus = int(np.ceil(n_flies / 2))
+
     certain_glom_counts = certain_df.columns.get_level_values('roi').value_counts()
     consensus_gloms = set(
         certain_glom_counts[certain_glom_counts >= n_for_consensus].index
@@ -11117,7 +11584,8 @@ def main():
     consensus_df = certain_df.loc[
         :, certain_df.columns.get_level_values('roi').isin(consensus_gloms)
     ]
-    if len(consensus_df) < len(certain_df):
+    assert len(consensus_df) == len(certain_df)
+    if consensus_df.shape[1] < certain_df.shape[1]:
         dropped_rois = certain_df.columns.difference(consensus_df.columns).to_frame(
             index=False
         )
@@ -11136,7 +11604,6 @@ def main():
         date_format=date_fmt_str
     )
     to_pickle(consensus_df, output_root / 'ij_certain-roi_stats.p')
-    #
 
     # TODO TODO and split out by panel (or just tell remy to only use 'megamat' panel?)?
 

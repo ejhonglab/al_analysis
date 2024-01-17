@@ -31,6 +31,11 @@ from al_analysis import (ij_roi_responses_cache, dropna, plot_all_roi_mean_respo
 import al_analysis as al
 
 
+# TODO TODO fix plotting so it's always a fixed horizontal size (the actual Axes area),
+# so that plots are easy to line up and compare to each other
+# TODO in add_to_plot=True case, try to keep window in roughly the same position as
+# closed one
+
 # LINE_PROFILE is the same env var line_profiler (pip installed as line-profiler) uses
 # to decide whether to run (when script is called normally)
 do_profiling = getenv('LINE_PROFILE') == '1'
@@ -280,10 +285,30 @@ def send_odor_index_to_imagej_script(odor_index):
     client.close()
 
 
+def _get_fig_df(event):
+    # NOTE: we also have access to the Axes through event.inaxes, but it was easier
+    # to get the figure elsewhere, where the main Axes (along with the 2nd Axes in
+    # the figure, for the colorbar) were created inside plot_all_...
+    fig = event.canvas.figure
+
+    df = None
+    if hasattr(fig, 'df'):
+        df = fig.df
+    else:
+        # TODO log instead (though this shouldn't happen...)
+        # TODO delete
+        print('fig does not have DataFrame asssociated!')
+        #
+
+    return fig, df
+
+
 def on_click(event):
-    # TODO if i only associate df with fig and not the specific axes (i.e. not the
-    # colorbar axes), check behavior in case we click on the colorbar (+ probably need
-    # to find a way to exclude actions there)
+    # TODO if i only associate df with fig (what i'm currently doing) and not the
+    # specific axes (i.e. not the colorbar axes), check behavior in case we click on the
+    # colorbar (+ probably need to find a way to exclude actions there)
+    # TODO did i get `is` (rather than `==`) checking from an example? is that the right
+    # way here? add comment if so.
     if event.button is MouseButton.LEFT:
         xdata = event.xdata
 
@@ -292,17 +317,9 @@ def on_click(event):
             return
         #
 
-        # NOTE: we also have access to the Axes through event.inaxes, but it was easier
-        # to get the figure elsewhere, where the main Axes (along with the 2nd Axes in
-        # the figure, for the colorbar) were created inside plot_all_...
-        fig = event.canvas.figure
-        if not hasattr(fig, 'df'):
-            # TODO delete
-            print('fig does not have DataFrame asssociated!')
-            #
+        _, df = _get_fig_df(event)
+        if df is None:
             return
-
-        df = fig.df
 
         # could check this against df shape, but eh...
         '''
@@ -335,6 +352,40 @@ def on_click(event):
         presentation_odor_index = unique_indices[0]
 
         send_odor_index_to_imagej_script(presentation_odor_index)
+
+
+# TODO does this interfere w/ default 's'->save? (don't want to, but nbd if it does)
+# NOTE: not working! no new plot is made (+ stuff freezes when i try to make one?)
+def on_key_press(event):
+    global most_recent_plot_proc
+    global plotting_processes
+    global _no_multiprocessing
+
+    if event.key == 'r':
+        fig, df = _get_fig_df(event)
+        if df is None:
+            return
+
+        # TODO delete
+        # (working)
+        #log.debug('in on_key_press (event.key == "r")')
+
+        # TODO get title of existing fig (or otherwise check for signs it was made w/
+        # roi_min_max_scale=True, setting my own in plot if needed) ->
+        # don't make new plot if already made w/ roi_min_max_scale=True
+
+        log.debug('BEFORE making new roi_min_max_scale=True plot process')
+
+        # TODO TODO TODO why is this freezing?
+        proc = plot_process(plot, df, roi_min_max_scale=True,
+            title='[0, 1] scaled per ROI'
+        )
+
+        log.debug('AFTER making new roi_min_max_scale=True plot process')
+
+        if not _no_multiprocessing:
+            most_recent_plot_proc = proc
+            plotting_processes.append(proc)
 
 
 def plot(df, sort_rois=True, **kwargs):
@@ -383,23 +434,23 @@ def plot(df, sort_rois=True, **kwargs):
     # TODO TODO normalize within each fly (if comparing)? or at least option to?
     # (+ maybe label colorbars differently in each case if so)
 
+    # TODO TODO fix how there are no longer lines between panels always
+    # (what change broke that?) (or sometimes there is a line between *each* odor,
+    # regardless of whether they are in the same panel. don't want that either.)
+    #
     # TODO make colorbar generally/always the height of the main Axes (maybe a bit
     # larger if just ~one row?)
     # TODO maybe just use odor_sort=True? could make passing odor_index to imagej script
     # harder / impossible tho...
     fig, _ = plot_all_roi_mean_responses(df, odor_sort=False,
-        roi_sort=sort_rois, sort_rois_first_on=sort_first_on,
-        hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn,
-
-        # Since we want vlines between odors, we can't easily (w/ current viz.matshow
-        # behavior) also have vlines between panels, and thus the (group label, odor)
-        # combinations will have duplicates... (because of the few odors both in
-        # diagnostic and Remy panel, e.g. 'ms @ -3')
-        # TODO try to have it warn about dupes or modify labels to include panel?
-        allow_duplicate_labels=True,
-
-        # TODO refactor to share w/ roi_plot_kws in al_analysis (move into plot_all...
-        # defaults?), if same values work (they don't, extra_figsize[1]==0.0 led to:
+        # TODO TODO make figs fixed width
+        # (really it's the AXES that i want to be a fixed width... it may have been
+        # other parts of the figure changing size of axes, rather than number of columns
+        # changing anyway...)
+        #
+        # TODO (still?) refactor to share w/ roi_plot_kws in al_analysis (move into
+        # plot_all...  defaults?), if same values work (they don't,
+        # extra_figsize[1]==0.0 led to:
         # "constrained_layout not applied because axes sizes collapsed to zero. ...")
         # could try 0.8 for this value in al_analysis.py:roi_plot_kws tho
         #
@@ -410,6 +461,20 @@ def plot(df, sort_rois=True, **kwargs):
         # abbreviated odor names.
         extra_figsize=(2.0, 1.0),
 
+        # TODO TODO use cmap w/ TwoSlopeNorm, perceptually linear diverging
+        # colormap (once i get that figured out in al_analysis.py diverging_cmap_kwargs,
+        # maybe can just use that?)
+
+        roi_sort=sort_rois, sort_rois_first_on=sort_first_on,
+        hline_level_fn=hline_level_fn, vline_level_fn=vline_level_fn,
+
+        # Since we want vlines between odors, we can't easily (w/ current viz.matshow
+        # behavior) also have vlines between panels, and thus the (group label, odor)
+        # combinations will have duplicates... (because of the few odors both in
+        # diagnostic and Remy panel, e.g. 'ms @ -3')
+        # TODO try to have it warn about dupes or modify labels to include panel?
+        allow_duplicate_labels=True,
+
         # More readable than default 100 for stuff with a lot of odors (e.g. validation2
         # + diagnostsics, which has 46 odors total)
         # TODO probably just change font params tho? or idk
@@ -417,15 +482,27 @@ def plot(df, sort_rois=True, **kwargs):
 
         **kwargs
     )
+    # TODO delete (for checking figs are now fixed width)
+    # width of 6 should be fine.
+    #print(f'figsize={tuple(fig.get_size_inches())}')
+    #
 
     # so that on_click can access the associated data
     fig.df = df
 
     # TODO also say fig number? or fig id(...)?
-    log.debug('connecting matplotlib on_click event')
+    log.debug('connecting on_click via matplotlib button_press_event')
 
     # TODO log debug this?
+    # NOTE: the on_click callback requires to the fig.df attribute set above
     plt.connect('button_press_event', on_click)
+
+    # TODO can i also use fig.canvas.mpl_connect (rather than plt.connect) for above?
+    # try!
+
+    # TODO TODO TODO fix + restore!
+    #log.debug('connecting on_key_press via matplotlib key_press_event')
+    #fig.canvas.mpl_connect('key_press_event', on_key_press)
 
     log.debug('calling matplotlib plt.show()')
 
@@ -470,8 +547,8 @@ newly_analyzed_dfs = []
 newly_analyzed_roi_names = []
 newly_analyzed_roi_strs = []
 
-most_recent_plot_proc = None
 keep_comparison_to_cache = False
+most_recent_plot_proc = None
 plotting_processes = []
 
 @profile
@@ -479,8 +556,8 @@ def load_and_plot(args):
     global newly_analyzed_dfs
     global newly_analyzed_roi_names
     global newly_analyzed_roi_strs
-    global most_recent_plot_proc
     global keep_comparison_to_cache
+    global most_recent_plot_proc
     global plotting_processes
     global _no_multiprocessing
 
