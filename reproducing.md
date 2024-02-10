@@ -47,19 +47,20 @@ megamat:
   ```
 
 
-# TODO include end date for these commands
+# TODO TODO also list (/ include references to files listing) flies in each output,
+# in case Google Sheet metadata changes (e.g. changing the Exclude checkbox)
 validation2:
 - pebbled data (at final concentrations only):
   - last date of first 4 flies was 2023-11-21
 
   ```
-  ./al_analysis.py -d pebbled -n 6f -t 2023-11-19
+  ./al_analysis.py -d pebbled -n 6f -t 2023-11-19 -e 2024-01-05
   ```
 
 
 - all pebbled data (including first 3 flies, after which some odor concs changed):
 
   ```
-  ./al_analysis.py -d pebbled -n 6f -t 2023-10-15
+  ./al_analysis.py -d pebbled -n 6f -t 2023-10-15 -e 2024-01-05
   ```
 

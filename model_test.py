@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import itertools
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 from drosolf import orns
 
-from al_analysis import matt_data_dir, fit_mb_model
+from hong2p import viz
+from al_analysis import (matt_data_dir, fit_mb_model, savefig, diverging_cmap, cmap,
+    abbrev_hallem_odor_index, panel2name_order
+)
+import al_analysis
 
 
 # TODO TODO TODO re: narrow-odors-jupyter/modeling.ipynb:
 # - what is diff between "connection-weighted" vs "synapse-weighted" Hemibrain matrix?
 # - which (if either) was used to produce hemibrain plot in preprint?
 # TODO relevant to disrepancy between matt's / my (via prat) wPNKC matrix?
+
+al_analysis.plot_fmt = 'pdf'
 
 # Hardcoded from what value this takes in fit_and_plot_mb_model calls in
 # al_analysis.py. fit_mb_model should process Hallem odor names such that all of
@@ -68,19 +77,300 @@ def main():
     #assert np.array_equal(hemi, wide.values)
     #del hemi
 
+    # TODO maybe move these first three runs + assertions into model_test.py, and break
+    # rest of sensitivity analysis stuff into own script?
+
+    # TODO TODO TODO see what values i get for these from fitting (using my data as
+    # input) -> grid search around those!
+    # TODO TODO TODO [a version] also using my data as input!!! (+ search around those
+    # params, using that input data)
+    # TODO factor all sensitivity analysis into fns that can be called after model
+    # tuning, varying around tuned params (and comparing to tuned outputs, in plots)?
+    #
+    # got these from uniform tuning, using first call below
+    # (hemibrain, _use_matt_wPNKC=True)
+    uniform_fixed_thr = 145.97261409492017
+    # NOTE: can't exactly reproduce output only specifying wAPLKC like this.
+    # also had to specify `wKCAPL = np.ones((1, mp.kc.N)) * 0.002386503067484662`
+    # (which is almost exactly 1/wAPLKC). not currently exposed as param tho.
+    uniform_wAPLKC = 3.8899999999999992
+
+    # TODO delete
+    # no longer actually need this. defining from wAPLKC works.
+    uniform_wKCAPL = 0.002386503067484662
+
+    # don't want to consider choices of the above 2 that give us sparsities outside this
+    # range
+    min_sparsity = 0.03
+    max_sparsity = 0.25
+
+    # TODO restore False
+    #ignore_existing = False
+    ignore_existing = True
+
+    # TODO TODO TODO rename / delete / move existing outputs -> re-run searches
+    # -> see if relative insensitivity to wAPLKC is still there (and can i fix it?)
+
+    # TODO TODO break sensitivity analysis into its own script, distinct from
+    # model_test.py
+    parent_output_dir = Path('kc_model_sensitivity')
+    # savefig will generally do this for us below
+    parent_output_dir.mkdir(exist_ok=True)
+
+    tried_param_cache = parent_output_dir / 'tried.csv'
+    if tried_param_cache.exists():
+        tried = pd.read_csv(tried_param_cache)
+        # TODO assert columns are same as below (refactor col def above conditional)
+    else:
+        tried = pd.DataFrame(columns=['fixed_thr', 'wAPLKC', 'megamat_sparsity',
+            'full_hallem_sparsity'
+        ])
+
+    # TODO tqdm
+    for fixed_thr, wAPLKC in itertools.product(
+            # TODO try to make sure uniform_* params are included in sweep?
+            # (just need odd num= kwarg for linspace?)
+            #(uniform_fixed_thr,),
+            #(uniform_wAPLKC,)
+
+            # TODO test whether these ranges are reasonable
+            np.linspace(uniform_fixed_thr / 10, uniform_fixed_thr * 10, num=10),
+
+            # TODO does it change now that i fixed wKCAPL handling? delete comments
+            # below?
+            #
+            # TODO TODO actually get it so wAPLKC changes output sparsity
+            # (for a given threshold choice)
+            # trying in to [uniform_wAPLKC / 2, uniform_wAPLKC * 4] didn't seem to do
+            # that. [u/4, u*10] barely seemed to cause changes either...
+            # TODO TODO maybe set to 0 to check it's actually doing something?
+            # TODO TODO re-check modelling code, and the values of these after
+            # running stuff (all their elements should be from scalar input)
+            #
+            np.linspace(uniform_wAPLKC / 10, uniform_wAPLKC * 10, num=10)
+
+            # TODO probably delete logspace steps. now that wKCAPL actually working,
+            # probably don't need.
+            # TODO TODO logarithmic steps?
+            # .1 (10**-1) - 10,000 (10**4)
+            #np.logspace(-1, 6, num=6)
+        ):
+
+        # TODO decide whether whether to skip current params based on tried
+        # (rows where both params are >= current, and megamat_sparsity was <
+        # min_sparsity, or reverse)
+
+        print(f'{fixed_thr=}')
+        print(f'{wAPLKC=}')
+
+        # TODO TODO also skip if directory exists, unless a flag to recomplete?
+        output_dir = parent_output_dir / f'thr{fixed_thr:.2f}_wAPLKC{wAPLKC:.2f}'
+        if output_dir.exists() and not ignore_existing:
+            print(f'{output_dir} already existed. skipping!')
+            continue
+
+        # TODO delete
+        #print('tried:')
+        #print(tried)
+
+        # TODO maybe use full_hallem_sparsity (sparsity110) for these cutoffs instead?
+        # sparsity17 is a bit higher in all cases i've seen (often ~2x sparsity110)
+        if ((tried.fixed_thr <= fixed_thr) & (tried.wAPLKC <= wAPLKC) &
+            (tried.megamat_sparsity < min_sparsity)).any():
+
+            print(f'sparsity17 would be < {min_sparsity=}')
+            continue
+
+        elif ((tried.fixed_thr >= fixed_thr) & (tried.wAPLKC >= wAPLKC) &
+                (tried.megamat_sparsity > max_sparsity)).any():
+
+            print(f'sparsity17 would be > {max_sparsity=}')
+            continue
+
+        # TODO TODO turn off _use_matt_wPNKC for actual fitting (+ probably rebase first
+        # to include the allowdd code)
+        # TODO flag to disable printing olfsysm output (and use that by default)
+        # TODO or save log to each directory (eh...)?
+        responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
+            _use_matt_wPNKC=True, fixed_thr=fixed_thr, wAPLKC=wAPLKC
+        )
+
+        responses = abbrev_hallem_odor_index(responses, axis='columns')
+
+        sparsity110 = responses.mean().mean()
+
+        # TODO refactor to share subsetting to megamat w/ al_analysis stuff
+        # TODO assert have all 17? would if fail if one was missing?
+        panel_odors = [f'{n} @ -2' for n in panel2name_order['megamat']]
+        responses = responses.loc[:, panel_odors]
+
+        responses.columns = responses.columns.map(lambda x: x[:-(len(' @ -2'))])
+
+        # sparsity within Remy's 17 megamat odors
+        sparsity17 = responses.mean().mean()
+        # TODO TODO actually write this to a file or something?
+        # (already in CSV, right? output to separate CSV in each dir?)
+        print(f'{sparsity17=}')
+
+        tried = tried.append(
+            {
+                'fixed_thr': fixed_thr, 'wAPLKC': wAPLKC,
+                'megamat_sparsity':  sparsity17, 'full_hallem_sparsity': sparsity110,
+            },
+            ignore_index=True
+        )
+        tried = tried.sort_values(['fixed_thr','wAPLKC'])
+        tried.to_csv(tried_param_cache, index=False)
+
+        # TODO should stuff have to be out-of-bounds for BOTH 17 odor panel and
+        # overall, to be skipped?
+        if not (min_sparsity <= sparsity17 <= max_sparsity):
+            print('sparsity17 outside bounds!')
+            continue
+
+        # TODO subscript 17?
+        title = (f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f}'
+            f' (sparsity17={sparsity17:.2f})'
+        )
+
+        # TODO fix aspect ratio so we can actually see each of the odors (/ delete)
+        # TODO transpose?
+        fig, _ = viz.matshow(responses, cmap=cmap)
+        # TODO replace w/ regular axes title (maybe pass ax in to matshow?)?
+        fig.suptitle(title)
+        savefig(fig, output_dir, 'responses')
+
+        fig, _ = viz.matshow(responses.corr(), cmap=diverging_cmap, vmin=-1.0, vmax=1.0)
+        fig.suptitle(title)
+        savefig(fig, output_dir, 'corr')
+        # TODO corr diff plot too (even if B doesn't want to plot it for now)?
+
+        # TODO TODO TODO show line for outputs w/ tuned parameters on sparsity +
+        # n_odors_per_cell plots
+        # TODO and (maybe later) correlation diffs wrt model w/ tuned params
+
+        # TODO TODO fixed cbar/ylimits for sparsity plots
+        # TODO TODO fixed scales for plots in general (corr prob ok already?)
+        # TODO and assert no sparsity (/ value) goes outside limits
+
+        sparsity_per_odor = responses.mean(axis='rows')
+        sparsity_per_odor = sparsity_per_odor.to_frame('sparsity')
+
+        # TODO delete?
+        # TODO .T?
+        fig, _ = viz.matshow(sparsity_per_odor, cmap=cmap)
+        fig.suptitle(title)
+        savefig(fig, output_dir, 'sparsity_per_odor_mat')
+        #
+
+        # TODO sort by sparsity?
+        #
+        # TODO or do i want lineplot instead? (see S1B, which has both, bar for hallem
+        # data)
+        fig, ax = plt.subplots()
+        sns.barplot(sparsity_per_odor.reset_index(), x='odor', y='sparsity',
+            color='black'
+        )
+        # TODO simpler way?
+        for x in ax.get_xticklabels():
+            x.set_rotation(90)
+
+        # TODO maybe make ylabel 'response rate' instead (more accurate than
+        # 'sparsity'...)
+        ax.set_title(title)
+        savefig(fig, output_dir, 'sparsity_per_odor')
+
+        xlabel = '# odors'
+        ylabel = '# cells responding to N odors'
+
+        # TODO TODO say how many total cells (looks like 1630 in halfmat model now?)
+        # TODO TODO and/or just say fraction of cells in these next two plots
+
+        # how many odors each cell responds to
+        n_odors_per_cell = responses.sum(axis='columns')
+        fig, ax = plt.subplots()
+        # discrete=True will mainly just set binwidth to 1 (binwidth=1 actually didn't
+        # work for me, but this does)
+        sns.histplot(ax=ax, data=n_odors_per_cell, discrete=True)
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        savefig(fig, output_dir, 'n_odors_per_cell_hist')
+
+        # (for if i want a line plot of above)
+        #
+        # this will be ordered w/ silent cells first, cells reponding to 1 odor 2nd, ...
+        n_odors_per_cell_counts = n_odors_per_cell.value_counts().sort_index()
+        fig, ax = plt.subplots()
+        # blue to be consistent w/ hemibrain line in preprint?
+        color = 'blue'
+        sns.lineplot(n_odors_per_cell_counts, color=color, marker='o',
+            markerfacecolor='white', markeredgecolor=color
+        )
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        savefig(fig, output_dir, 'n_odors_per_cell')
+
+        responses.to_csv(output_dir / 'responses.csv')
+        responses.to_pickle(output_dir / 'responses.p')
+        #import ipdb; ipdb.set_trace()
+
+        print()
+
+    # TODO delete
+    print('EXITING EARLY!!!')
+    import sys; sys.exit()
+    #
+
     # TODO rename to run_model? or have a separate fn for that? take `mp` (and `rv` too,
     # or are even fit thresholds in mp?) as input (and return from fit_model?)?
     # TODO modify so i don't need to return gkc_wide here (or at least be more clear
     # about what it is, both in docs and in name)?
-    responses, gkc_wide = fit_mb_model(pn2kc_connections='hemibrain',
+    responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
         _use_matt_wPNKC=True
     )
-
     # (i might decide to change this index name, inside fit_mb_model...)
     assert gkc_wide.index.name == 'bodyid'
     assert np.array_equal(wide.index, gkc_wide.index)
     assert np.array_equal(responses, wide)
-    print("hemibrain (halfmat) responses equal to Matt's")
+    del gkc_wide, responses
+    print("hemibrain (halfmat) responses equal to Matt's (uniform tuning)\n")
+
+    # TODO delete (as long as 2 param call works, don't need 3 param version)
+    '''
+    responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
+        _use_matt_wPNKC=True, fixed_thr=uniform_fixed_thr, wAPLKC=uniform_wAPLKC,
+        wKCAPL=uniform_wKCAPL
+    )
+    sparsity110 = responses.mean().mean()
+    print(f'sparsity: {sparsity110:.4f}')
+
+    # TODO refactor this checking against matt's hemibrain outputs
+    # (if i plan to keep all these checks, rather than just 1 assertion on responses,
+    # in each of 3 places i'm currently checking against same data...)
+    assert gkc_wide.index.name == 'bodyid'
+    assert np.array_equal(wide.index, gkc_wide.index)
+    assert np.array_equal(responses, wide)
+    print("hemibrain (halfmat) responses equal to Matt's (fixing all 3 params to "
+        "uniform tuning outputs)\n"
+    )
+    '''
+
+    # now also working
+    responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
+        _use_matt_wPNKC=True, fixed_thr=uniform_fixed_thr, wAPLKC=uniform_wAPLKC,
+    )
+    sparsity110 = responses.mean().mean()
+    print(f'sparsity: {sparsity110:.4f}')
+
+    assert gkc_wide.index.name == 'bodyid'
+    assert np.array_equal(wide.index, gkc_wide.index)
+    assert np.array_equal(responses, wide)
+    print("hemibrain (halfmat) responses equal to Matt's (fixing just fixed_thr and "
+        "wAPLKC to uniform tuning outputs)\n"
+    )
+
 
     # TODO TODO also try orn_deltas having one less odor than hallem or something?
     # or change the names? to make it more clear we aren't getting the other half of the
@@ -92,12 +382,12 @@ def main():
     orn_deltas = orns.orns(columns='receptor', add_sfr=False).T
 
     # TODO TODO also test if input has glomeruli instead of receptors
-    r1, _ = fit_mb_model(orn_deltas, tune_on_hallem=True, pn2kc_connections='hemibrain',
-        _use_matt_wPNKC=True
+    r1, _, _ = fit_mb_model(orn_deltas, tune_on_hallem=True,
+        pn2kc_connections='hemibrain', _use_matt_wPNKC=True
     )
 
     # NOTE: tune_on_hallem would be True by default here anyway
-    r2, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
+    r2, _, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
         _use_matt_wPNKC=True
     )
 
@@ -109,7 +399,7 @@ def main():
         ((r1.columns + ' @ -2') == r2.columns).sum() / len(r1.columns) >= 0.5
     ), 'assuming more than half of hallem odors not in odor2abbrev'
 
-    r3, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
+    r3, _, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
         # TODO sim_odors actually need to be a set?
         sim_odors=set(remy_odors), _use_matt_wPNKC=True
     )
@@ -160,13 +450,16 @@ def main():
             # (w/ last param = True), as matt does?
             # TODO regenerate matt's hemidraw / uniform responses w/ the methanoic acid
             # bug fixed?
-            curr_responses, _ = fit_mb_model(pn2kc_connections=draw_type,
+            curr_responses, _, _ = fit_mb_model(pn2kc_connections=draw_type,
                 n_claws=n_claws, _use_matt_wPNKC=True, seed=(seed + i),
                 # TODO regen matt's things with methanoic acid mistake fixed -> compare
                 # to that -> delete this flag
                 _add_back_methanoic_acid_mistake=True
             )
 
+            # TODO TODO TODO see how different things actually are w/ c70b0e7f tho.
+            # presumably not qualitatively different, and probably not even perceptibly?
+            #
             # NOTE: this comparison only works w/ olfsysm 0d23530 (and NOT c70b0e7f or
             # later), as the slight changes to the RNG handling introduced in c70b0e7f
             # cause different output for the same seed (but probably don't change the
@@ -213,10 +506,14 @@ def main():
         '''
         #
 
+    # TODO assertion involving this (/delete). this wasn't supposed to test something
+    # internally (to the fit_mb_model call), was it?
     # TODO delete? or factor to a separate unit test just checking this call to model
     # doesn't fail? replace w/ using matt's input seed(s) and actually comparing to one
     # of his other non-hemibrain draws
-    r2, _ = fit_mb_model(pn2kc_connections='hemidraw', _use_matt_wPNKC=True, n_claws=6)
+    r2, _, _ = fit_mb_model(pn2kc_connections='hemidraw', _use_matt_wPNKC=True,
+        n_claws=6
+    )
 
 
 if __name__ == '__main__':
