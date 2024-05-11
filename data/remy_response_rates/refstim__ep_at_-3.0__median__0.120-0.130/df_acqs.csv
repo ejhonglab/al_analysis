@@ -1,0 +1,5 @@
+acq,date_imaged,fly_num,thorimage_name,title,stat_file
+0,2022-10-10,1,megamat0,2022-10-10/1/megamat0,/local/matrix/Remy-Data/projects/odor_space_collab/processed_data/2022-10-10/1/megamat0/source_extraction_s2p/suite2p/combined/stat.npy
+1,2022-10-10,2,megamat0,2022-10-10/2/megamat0,/local/matrix/Remy-Data/projects/odor_space_collab/processed_data/2022-10-10/2/megamat0/source_extraction_s2p/suite2p/combined/stat.npy
+2,2022-10-11,1,megamat0,2022-10-11/1/megamat0,/local/matrix/Remy-Data/projects/odor_space_collab/processed_data/2022-10-11/1/megamat0/source_extraction_s2p/suite2p/combined/stat.npy
+3,2022-11-10,1,megamat0__dsub03,2022-11-10/1/megamat0__dsub03,/local/matrix/Remy-Data/projects/odor_space_collab/processed_data/2022-11-10/1/megamat0__dsub03/source_extraction_s2p/suite2p/combined/stat.npy
