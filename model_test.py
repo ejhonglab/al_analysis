@@ -99,6 +99,8 @@ def main():
     # no longer actually need this. defining from wAPLKC works.
     uniform_wKCAPL = 0.002386503067484662
 
+    # TODO move to another file / delete
+    '''
     # don't want to consider choices of the above 2 that give us sparsities outside this
     # range
     min_sparsity = 0.03
@@ -322,22 +324,14 @@ def main():
     print('EXITING EARLY!!!')
     import sys; sys.exit()
     #
+    '''
 
-    # TODO rename to run_model? or have a separate fn for that? take `mp` (and `rv` too,
-    # or are even fit thresholds in mp?) as input (and return from fit_model?)?
-    # TODO modify so i don't need to return gkc_wide here (or at least be more clear
-    # about what it is, both in docs and in name)?
-    responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
-        _use_matt_wPNKC=True
-    )
-    # (i might decide to change this index name, inside fit_mb_model...)
-    assert gkc_wide.index.name == 'bodyid'
-    assert np.array_equal(wide.index, gkc_wide.index)
-    assert np.array_equal(responses, wide)
-    del gkc_wide, responses
-    print("hemibrain (halfmat) responses equal to Matt's (uniform tuning)\n")
-
-    # TODO delete (as long as 2 param call works, don't need 3 param version)
+    # TODO if i move sensitivity analysis stuff (that varies fixed_thr/wAPLKC) to a
+    # separate file, move this there too
+    """
+    #
+    # TODO delete (as long as 2 param call works [which it does], don't need 3 param
+    # version)
     '''
     responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
         _use_matt_wPNKC=True, fixed_thr=uniform_fixed_thr, wAPLKC=uniform_wAPLKC,
@@ -370,7 +364,20 @@ def main():
     print("hemibrain (halfmat) responses equal to Matt's (fixing just fixed_thr and "
         "wAPLKC to uniform tuning outputs)\n"
     )
+    """
 
+    # TODO rename to run_model? or have a separate fn for that? take `mp` (and `rv` too,
+    # or are even fit thresholds in mp?) as input (and return from fit_model?)?
+    # TODO modify so i don't need to return gkc_wide here (or at least be more clear
+    # about what it is, both in docs and in name)?
+    responses, gkc_wide, _ = fit_mb_model(tune_on_hallem=True,
+        pn2kc_connections='hemibrain', _use_matt_wPNKC=True
+    )
+    # (i might decide to change this index name, inside fit_mb_model...)
+    assert gkc_wide.index.name == 'bodyid'
+    assert np.array_equal(wide.index, gkc_wide.index)
+    assert np.array_equal(responses, wide)
+    print("hemibrain (halfmat) responses equal to Matt's (uniform tuning)\n")
 
     # TODO TODO also try orn_deltas having one less odor than hallem or something?
     # or change the names? to make it more clear we aren't getting the other half of the
@@ -382,26 +389,29 @@ def main():
     orn_deltas = orns.orns(columns='receptor', add_sfr=False).T
 
     # TODO TODO also test if input has glomeruli instead of receptors
+    # TODO TODO TODO compare output to if we pass orn_deltas (w/ glomeruli?) but set
+    # tune_on_hallem=False
+    # TODO TODO TODO compare that to passing just the megamat subset
+    # TODO TODO TODO and also compare to passing megamat subset, but w/
+    # tune_on_hallem=True
     r1, _, _ = fit_mb_model(orn_deltas, tune_on_hallem=True,
         pn2kc_connections='hemibrain', _use_matt_wPNKC=True
     )
 
-    # NOTE: tune_on_hallem would be True by default here anyway
-    r2, _, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
-        _use_matt_wPNKC=True
-    )
-
-    assert np.array_equal(r1.values, r2.values)
+    assert np.array_equal(r1.values, responses.values)
     # (model_kc)
-    assert r1.index.equals(r2.index)
-    # this won't be true for odors passed through odor2abbrev
+    assert r1.index.equals(responses.index)
+    # this won't be true for odors passed through odoresponsesabbrev
     assert (
-        ((r1.columns + ' @ -2') == r2.columns).sum() / len(r1.columns) >= 0.5
-    ), 'assuming more than half of hallem odors not in odor2abbrev'
+        ((r1.columns + ' @ -2') == responses.columns).sum() / len(r1.columns) >= 0.5
+    ), 'assuming more than half of hallem odors not in odoresponsesabbrev'
 
     r3, _, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
-        # TODO sim_odors actually need to be a set?
-        sim_odors=set(remy_odors), _use_matt_wPNKC=True
+        # it's not an issue that remy_odors has '@ -3' suffix in sim_odors here.
+        # fit_mb_model allows concs in [-3, -1) to match hallem.
+        #
+        # set would work, but order of odors would not be fixed then.
+        sim_odors=sorted(set(remy_odors)), _use_matt_wPNKC=True
     )
 
     def is_remy_odor_col(c):
@@ -410,10 +420,41 @@ def main():
         return False
 
     remy_odor_cols = [c for c in r3.columns if is_remy_odor_col(c)]
-    assert remy_odor_cols == [c for c in r2.columns if is_remy_odor_col(c)]
-    assert r3[remy_odor_cols].equals(r2[remy_odor_cols])
+    assert remy_odor_cols == [c for c in responses.columns if is_remy_odor_col(c)]
+    assert r3[remy_odor_cols].equals(responses[remy_odor_cols])
 
+    megamat_odors = panel2name_order['megamat']
+    assert len(megamat_odors) == 17
 
+    orn_deltas = abbrev_hallem_odor_index(orn_deltas, axis='columns')
+    assert all(x in orn_deltas.columns for x in megamat_odors)
+    megamat_deltas = orn_deltas[megamat_odors].copy()
+
+    r4, _, _ = fit_mb_model(megamat_deltas, tune_on_hallem=True,
+        pn2kc_connections='hemibrain', _use_matt_wPNKC=True
+    )
+
+    # TODO worth also checking same but in uniform draw case
+    # (equiv of either (r3 or r4) vs responses)?
+    assert np.array_equal(
+        r3.sort_index(axis='columns').values,
+        r4.sort_index(axis='columns').values
+    )
+    # TODO TODO TODO compare to just tuning on megamat odors? matt tunes on all hallem
+    # for all preprint stuff, right?
+
+    # TODO TODO add check that sorting wPNKC in some other order doesn't change any
+    # outputs qualitatively (e.g. the average correlation across several seeds)
+    # (would expect it to change effect of seed on draw, but hopefully nothing else,
+    # in only uniform/hemidraw/caron cases [not any fixed wPNKC cases])
+
+    # NOTE: I'm now planning on rebasing some of my changes (originally made relative to
+    # 0d23530, the commit before c70b0e7f) after a commit that just reverts c70b0e7.
+    #
+    # TODO TODO maybe restore what c70b0e7 added, but add options to allow fully
+    # disabling the new rng that commit also added (which is probably not consequential,
+    # other than making it hard to compare exactly to older results)
+    #
     # TODO detect/set this automatically?
     #
     # This commit, from 2022-02-01, added option to block double-draws
@@ -423,6 +464,9 @@ def main():
     # in c70b0e7f)
     olfsysm_is_pre_c70b0e7f = True
     #olfsysm_is_pre_c70b0e7f = False
+
+    # TODO TODO TODO wPNKC at least constant (across runs) here? why not in 54 glom case
+    # from al_analysis?
 
     n_claws = 7
     draw_types = ('hemidraw', 'uniform')
@@ -445,6 +489,10 @@ def main():
         responses = []
         for i in tqdm(range(min(n_repeats, n_first_to_check)), unit='seed',
             desc=f'{draw_type} ({n_claws=})'):
+
+            # TODO try passing in hallem odors as orn_deltas= (w/ diff column order?)
+            # (both w/ and w/o sim_odors, but start w/o?) and see if that alone breaks
+            # uniform draw wPNKC consistency?
 
             # TODO is it actually appreciably faster to only re-run the run_KC_sims step
             # (w/ last param = True), as matt does?
@@ -479,7 +527,7 @@ def main():
                     'has changed!'
                 )
 
-        # TODO TODO just plot remy_odors (and do same w/ matt_responses)
+        # TODO just plot remy_odors (and do same w/ matt_responses)
         # (do w/ new >=c70b0e7f olfsysm, to show that behavior is qualitatively the same
         # on average)
 
@@ -505,15 +553,6 @@ def main():
         import ipdb; ipdb.set_trace()
         '''
         #
-
-    # TODO assertion involving this (/delete). this wasn't supposed to test something
-    # internally (to the fit_mb_model call), was it?
-    # TODO delete? or factor to a separate unit test just checking this call to model
-    # doesn't fail? replace w/ using matt's input seed(s) and actually comparing to one
-    # of his other non-hemibrain draws
-    r2, _, _ = fit_mb_model(pn2kc_connections='hemidraw', _use_matt_wPNKC=True,
-        n_claws=6
-    )
 
 
 if __name__ == '__main__':
