@@ -1,3 +1,20 @@
+- (med) add Z information for each glomerulus, and revisit glomerulus specific
+  fitting? (now using depth instead of glomerulus ID, potentially giving us enough
+  data to see an effect?)
+
+  - try clustering glomeruli (those in both Hallem and my data, the same subset used
+    to calculate dF/F -> spike delta est fn) by some combination of:
+    - dF/F
+    - hallem spike delta data
+    - parameters of fit models?
+
+    -> fit within each glomerulus type -> have dF/F->spike-delta-est fn use
+    different model depending on input glomerulus type
+
+    (may need to handle when glomerulus can't be assigned same type as glomerulus
+    clustering/whatever from dF/F->spike-delta-est fitting)
+
+old:
 - fix how it seems that:
   1. opening expt via F2 in ImageJ
   2. selecting ROI -> p

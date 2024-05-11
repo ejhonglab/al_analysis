@@ -1,5 +1,7 @@
 TODO:
 - also talk about old kiwi/control data
+  this work?
+  ./al_analysis.py -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model
 
 
 - mention which data are good candidates for diagnostic examples
@@ -63,4 +65,15 @@ validation2:
   ```
   ./al_analysis.py -d pebbled -n 6f -t 2023-10-15 -e 2024-01-05
   ```
+
+  NOTE: the 3 extra flies that would be analyzed here (2023-10-15/1, 10-19/1-2) are now
+  marked explicitly for exclusion in Google sheet, so that I can analyze data
+  all the megamat and validation2 data together with one command now.
+
+
+fitting dF/F -> spiking model (analyzing all pebbled data, including megamat and
+validation2 panels, as well as glomeruli diagnostics for those flies):
+```
+./al_analysis.py -d pebbled -n 6f -t 2023-04-22 -e 2024-01-05
+```
 
