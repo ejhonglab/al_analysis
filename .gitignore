@@ -8,6 +8,7 @@ pair_grid_data_gsheet_link.txt
 *.pdf
 *_png/
 # NetCDF files, if used to save xarray intermediates
+# TODO maybe remove this one. force adding some in the meantime
 *.nc
 ij_roi_stats.csv
 remy/
