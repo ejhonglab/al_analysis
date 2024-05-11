@@ -26,3 +26,5 @@ profile_output*
 # 'HongLab @ Caltech/MB Model/Matt connectome analysis/MB-Convergence-Data_01-14-23'
 # (excluded from repo b/c it's ~0.5GB)
 MB-Convergence-Data_01-14-23
+
+untracked/
