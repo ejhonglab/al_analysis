@@ -57,6 +57,9 @@ from drosolf import orns, pns
 from latex.exc import LatexBuildError
 from tqdm import tqdm
 # suite2p imports are currently done at the top of functions that use them
+#
+# for type hinting
+from statsmodels.regression.linear_model import RegressionResultsWrapper
 
 from hong2p import util, thor, viz, olf
 from hong2p import suite2p as s2p
@@ -1033,6 +1036,8 @@ s2p_trial_dfs = []
 # TODO rename to ij_trialstat_dfs or something
 ij_trial_dfs = []
 
+roi2best_plane_depth_list = []
+
 # Using dict rather than defaultdict(list) so handling is more consistent in case when
 # multiprocessing DictProxy overrides this.
 names_and_concs2analysis_dirs = dict()
@@ -1500,7 +1505,28 @@ def merge_rois_across_recordings(df: pd.DataFrame) -> pd.DataFrame:
 
         # As long as this doesn't trip, we don't have to worry about choosing which
         # column to take data from: there will only ever be at most one not NaN.
-        assert not (gdf.notna().sum(axis='columns') > 1).any()
+        # TODO fix for merging roi_best_plane_depths (handling that without this fn for
+        # now)
+        # values in that case:
+        # ipdb> gdf
+        # date                            2023-04-22
+        # fly_num                                  2
+        # thorimage_id                  diagnostics1 diagnostics2 diagnostics3 megamat1 megamat2
+        # roi                                    DC1          DC1          DC1      DC1      DC1
+        # panel                 is_pair
+        # glomeruli_diagnostics False           10.0         10.0         20.0      NaN      NaN
+        # megamat               False            NaN          NaN          NaN      0.0      0.0
+        # validation2           False            NaN          NaN          NaN      NaN      NaN
+        #
+        # ipdb> gdf.notna().sum(axis='columns')
+        # panel                  is_pair
+        # glomeruli_diagnostics  False      3
+        # megamat                False      2
+        # validation2            False      0
+        try:
+            assert not (gdf.notna().sum(axis='columns') > 1).any()
+        except AssertionError:
+            import ipdb; ipdb.set_trace()
 
         # TODO rename if ser isn't actually a series
         ser = gdf.bfill(axis='columns').iloc[:, 0]
@@ -5390,6 +5416,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # not what it's loading)
         response_volumes_list.append(load_corr_dataarray(response_volume_cache_fname))
 
+    zstep_um = thor.get_thorimage_zstep_um(xml)
+
     full_rois = None
 
     # TODO am i currently refusing to do any imagej ROI analysis on non-mocorred
@@ -5467,6 +5495,50 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                             'regenerate.'
                         )
                     #
+
+                    # TODO TODO TODO refactor to share w/ other place ij_trial_dfs is
+                    # appended to below (case where they are computed de novo)
+                    #
+                    # full_rois has more metadata on roi index, including roi_z that we
+                    # want
+                    full_rois_bestplane = full_rois[
+                        dict(roi=best_plane_rois.roi_index.values)
+                    ]
+                    assert np.array_equal(full_rois_bestplane, best_plane_rois)
+                    assert np.array_equal(
+                        best_plane_rois.roi.values, full_rois_bestplane.roi_name.values
+                    )
+                    assert (
+                        len(set(full_rois_bestplane.roi_name.values)) ==
+                        len(full_rois_bestplane.roi_name)
+                    )
+                    roi2best_plane = dict(zip(
+                        full_rois_bestplane.roi_name.values,
+                        full_rois_bestplane.roi_z.values
+                    ))
+                    # assuming we start at same point. would add complexity to register
+                    # to anat (-> get better depth), and may not help muc
+                    roi2best_plane_depth = {
+                        k: v * zstep_um for k, v in roi2best_plane.items()
+                    }
+                    roi2best_plane_depth = pd.Series(roi2best_plane_depth,
+                        name='best_plane_depth_um'
+                    )
+                    roi2best_plane_depth.index.name = 'roi'
+                    roi2best_plane_depth = add_metadata(
+                        roi2best_plane_depth.to_frame().T
+                    )
+                    junk_level = -1
+                    assert (
+                        set(roi2best_plane_depth.index.get_level_values(junk_level)) ==
+                        {'best_plane_depth_um'}
+                    )
+                    assert roi2best_plane_depth.index.names[junk_level] is None
+                    roi2best_plane_depth = roi2best_plane_depth.droplevel(junk_level,
+                        axis='index'
+                    )
+                    roi2best_plane_depth_list.append(roi2best_plane_depth)
+                    #
                 else:
                     print_inputs_once(yaml_path)
                     print('ImageJ ROIs were modified. re-analyzing.')
@@ -5536,13 +5608,19 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # mass? warn if deviations are above some threshold?
         # do in a script to be called from an imagej macro?
 
-        # TODO TODO TODO compare best_plane_rois across recordings (+ probably refactor
+        # TODO TODO compare best_plane_rois across recordings (+ probably refactor
         # their computation to always be across all recordings for a fly anyway, rather
         # than computing within each recording...)
 
         ij_trial_df = add_metadata(ij_trial_df)
         to_pickle(ij_trial_df, ij_trial_df_cache)
         ij_trial_dfs.append(ij_trial_df)
+
+        # TODO TODO TODO refactor code computing + appending roi->best plane depth
+        # (from branch above loading saved data) -> share here
+        # TODO compare what ij_trial_df looked like before add_metadata, to see how i
+        # could add_metadata on roi->depth data?
+        import ipdb; ipdb.set_trace()
 
         assert full_rois is not None and best_plane_rois is not None
         # probably wanna move all this after process_recording anyway though, computing
@@ -5565,8 +5643,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     if not do_nonroi_analysis:
         print_skip('skipping non-ROI analysis\n')
         return
-
-    zstep_um = thor.get_thorimage_zstep_um(xml)
 
     def micrometer_depth_title(ax, z_index) -> None:
         viz.micrometer_depth_title(ax, zstep_um, z_index, fontsize=ax_fontsize)
@@ -11430,18 +11506,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # TODO maybe i do want this one on some kind of log scale too?
 
         savefig(fig, param_dir, f'sparsity_per_odor{suffix}')
+        return fig, ax
 
-
-    # TODO TODO or maybe just load responses and recompute sparsity from that?
-    #
-    # TODO TODO TODO save sparsities in hallem input cases, so i can load megamat odors
-    # and compute mean sparsity there (-> use for target sparsity on pebbled megamat
-    # data)
-    # TODO TODO TODO see what this looks like when responses also includes multiple
-    # seeds
-    #import ipdb; ipdb.set_trace()
-
-    plot_sparsity_per_odor(sparsity_per_odor, comparison_sparsity_per_odor, suffix)
 
     if responses_to == 'hallem':
         # assuming megamat for now (otherwise this would be empty)
@@ -11452,16 +11518,18 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # subset this if not.
         assert comparison_sparsity_per_odor is None
         plot_sparsity_per_odor(megamat_sparsity_per_odor, comparison_sparsity_per_odor,
+            # TODO put hallem in this somewhere?
             f'{suffix}_megamat'
         )
 
+    fig, ax = plot_sparsity_per_odor(sparsity_per_odor, comparison_sparsity_per_odor,
+        suffix
+    )
 
     xlabel = '# odors'
     ylabel = 'cell fraction responding to N odors'
 
     # TODO say how many total cells (looks like 1630 in halfmat model now?)
-
-    # TODO TODO TODO need special handling for multi-seed case here???
 
     # how many odors each cell responds to
     n_odors_per_cell = responses.sum(axis='columns')
@@ -11483,6 +11551,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # TODO may want to do it in case i want to try switching off log scale?
     n_odors_per_cell_counts = n_odors_per_cell_counts.reindex(n_odor_index).fillna(0)
 
+    # TODO move all this below n_odors_per_cell_plot def? none seems used in there...
+    #
     # https://stackoverflow.com/questions/33264624
     # NOTE: without other fiddling, need to keep references to both of these axes, as
     # the Axes created by `ax.twinx()` is what we need to control the ylabel
@@ -11491,7 +11561,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     n_odor_ax = n_odor_ax_for_ylabel.twiny()
     sparsity_ax = ax
     combined_fig = fig
-
+    #
+    # TODO delete?
     fig, ax = plt.subplots()
 
     def n_odors_per_cell_plot(ax, ax_for_ylabel=None):
@@ -12067,7 +12138,7 @@ def maxabs_scale(data: pd.Series) -> pd.Series:
     return pd.Series(index=data.index, name=data.name, data=sk_maxabs_scale(data))
 
 
-def model_mb_responses(certain_df, parent_plot_dir):
+def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None):
     # TODO make and use a subdir in plot_dir (for everything in here, including
     # fit_and_plot... calls)
 
@@ -12191,7 +12262,15 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # True for now, but may not always be?
     assert our_glomeruli_in_task.all()
 
-    # TODO TODO TODO may want to preserve panel just so i can fit dF/F -> spike delta fn
+    # TODO TODO assert that 'is_pair' is all False? maybe drop it in a separate step
+    # before this? (want to also drop is_pair for roi_depths in a consistent way.
+    assert (certain_df.index.get_level_values('is_pair') == False).all()
+    certain_df = certain_df.droplevel('is_pair', axis='index')
+    if roi_depths is not None:
+        assert (roi_depths.index.get_level_values('is_pair') == False).all()
+        roi_depths = roi_depths.droplevel('is_pair', axis='index')
+
+    # TODO TODO may want to preserve panel just so i can fit dF/F -> spike delta fn
     # on all, then subset to specific panels for certain plots
     #
     # TODO maybe ['panel', 'odor1']? or just drop diagnostic panel 'ms @ -3'?
@@ -12283,12 +12362,45 @@ def model_mb_responses(certain_df, parent_plot_dir):
     n_notnull_before = num_notnull(fly_mean_df)
     n_null_before = num_null(fly_mean_df)
 
+    if roi_depths is not None:
+        assert fly_mean_df.columns.get_level_values('glomerulus').equals(
+            roi_depths.columns.get_level_values('roi')
+        )
+        # to also replace the ['date','fly_num'] levels w/ 'fly_id, as was done to
+        # fly_mean_df above
+        roi_depths.columns = fly_mean_df.columns.copy()
+
     fly_mean_df = melt_odor_by_glom_responses(fly_mean_df, dff_col)
+
+    roi_depth_col = 'roi_depth_um'
+
+    if roi_depths is not None:
+        # should be ['panel', 'odor']
+        index_levels_before = fly_mean_df.index.names
+        shape_before = fly_mean_df.shape
+
+        roi_depths = melt_odor_by_glom_responses(roi_depths, roi_depth_col
+            ).reset_index()
+
+        fly_mean_df = fly_mean_df.reset_index().merge(roi_depths,
+            on=['panel', 'fly_id', 'glomerulus']
+        )
+
+        fly_mean_df = fly_mean_df.set_index(index_levels_before)
+
+        assert fly_mean_df.shape[0] == shape_before[0]
+        assert fly_mean_df.shape[-1] == (shape_before[-1] + 1)
 
     assert num_notnull(fly_mean_df[dff_col]) == n_notnull_before
     assert num_null(fly_mean_df[dff_col]) == n_null_before
 
     fly_mean_df = fly_mean_df.dropna(subset=[dff_col])
+    if roi_depths is not None:
+        # TODO and should i also check we aren't dropping stuff that's non-NaN in depth
+        # col (by dropna on dff_col) (no, some odors are nulled before)?
+        #
+        # this should be defined whenever dff_col is
+        assert not fly_mean_df[roi_depth_col].isna().any()
 
     assert num_notnull(fly_mean_df[dff_col]) == n_notnull_before
     assert num_null(fly_mean_df) == 0
@@ -12495,12 +12607,6 @@ def model_mb_responses(certain_df, parent_plot_dir):
         return gdf
 
 
-    # TODO TODO TODO and maybe w/ scaling per depth (still need to get that metadata
-    # in...)? or just have that in model (if at all)?
-    # TODO TODO TODO + revisit glomerulus specific plots (for each of scaling methods?)
-    # (+automated detection of outlier glomeruli? i.e. those benefitting from different
-    # fits)
-
     columns_before = fly_mean_df.columns
 
     methods = [
@@ -12520,31 +12626,6 @@ def model_mb_responses(certain_df, parent_plot_dir):
         )
 
     # TODO recompute and compare quartiles?
-
-    # TODO delete
-    '''
-    # TODO delete
-    #fly_mean_df = fly_mean_df.groupby('fly_id', sort=False).apply(
-    #    lambda x: scale_one_fly(x, method='minmax')
-    #)
-    #
-    fly_mean_df = fly_mean_df.groupby('fly_id', sort=False).apply(
-        lambda x: scale_one_fly(x, method='zscore')
-    )
-    fly_mean_df = fly_mean_df.groupby('fly_id', sort=False).apply(
-        lambda x: scale_one_fly(x, method='maxabs')
-    )
-    fly_mean_df = fly_mean_df.groupby('fly_id', sort=False).apply(
-        lambda x: scale_one_fly(x, method='to-avg-max')
-    )
-    fly_mean_df = fly_mean_df.groupby('fly_id', sort=False).apply(
-        lambda x: scale_one_fly(x, method='split-minmax')
-    )
-    fly_mean_df = fly_mean_df.groupby('fly_id', sort=False).apply(
-        lambda x: scale_one_fly(x, method='split-minmax-to-avg')
-    )
-    '''
-
     # TODO replace w/ refactoring loop over scaling_method2desc.items() to loop over
     # scaling methods from added columns? (would need to track scaling methods for the
     # added cols, probably in scale_one_fly?)
@@ -12632,8 +12713,6 @@ def model_mb_responses(certain_df, parent_plot_dir):
 
     # TODO add receptors in parens after glom, for easy ref to hallem paper
 
-    # TODO TODO TODO restore some kind of glomerulus specific plots (one fig per, all in
-    # a sub-directory?)?
     # TODO try to get an interactive version w/ showing odor on point hover?
     #fig, ax = plt.subplots()
     #sns.scatterplot(df, x=spike_delta_col, y=dff_col, hue='glomerulus',
@@ -12818,13 +12897,331 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # check the fact i was getting negative slopes?
     separate_inh_model = False
 
+    col_to_fit = scaling_method_to_col(scaling_method_to_use)
+
+    # TODO refactor to move type of model to one place above?
+    # NOTE: RegressionResults does not seem to be a subclass of
+    # RegressionResultsWrapper. sad.
+    def fit_dff2spiking_model(to_fit: pd.DataFrame) -> Tuple[RegressionResultsWrapper,
+        Optional[RegressionResultsWrapper]]:
+
+        # would need to dropna otherwise
+        assert not to_fit.isna().any().any()
+        to_fit = to_fit.copy()
+        y_train = to_fit[spike_delta_col]
+
+        # TODO try adding (0, 0) as as point, even if still using Ax+b as a model? is
+        # that actually a valid practice? probably not, right?
+
+        if add_constant:
+            X_train = sm.add_constant(to_fit[col_to_fit])
+        else:
+            X_train = to_fit[col_to_fit].to_frame()
+
+        if not separate_inh_model:
+            # TODO why does this model produce a different result from the seaborn call
+            # above (can tell by zooming in on upper right region of plot)??
+            # TODO rename to "results"? technically the .fit() returns a results wrapper
+            # or something (and do i only want to serialize the model part? can that
+            # even store the parameters separately) (online info seems to say it should
+            # return RegressionResults, so not sure why i'm getting
+            # RegressionResultsWrapper...)
+            model = sm.OLS(y_train, X_train).fit()
+            inh_model = None
+        else:
+            nonneg = X_train[col_to_fit] >= 0
+            neg = X_train[col_to_fit] < 0
+
+            model = sm.OLS(y_train[nonneg], X_train[nonneg]).fit()
+            inh_model = sm.OLS(y_train[neg], X_train[neg]).fit()
+
+        return model, inh_model
+
+
+    def predict_spiking_from_dff(df: pd.DataFrame, model: RegressionResultsWrapper,
+        inh_model: Optional[RegressionResultsWrapper] = None, *, alpha=0.025
+        ) -> pd.DataFrame:
+        """
+        Returns dataframe with 3 additional columns: [est_spike_delta_col,
+        <est_spike_delta_col>_ci_[lower|upper] ]
+        """
+        # TODO doc input requirements
+
+        # TODO delete unless add_constant line below w/ series input might mutate df
+        # (unlikely)
+        df = df.copy()
+
+        # would otherwise need to dropna
+        assert not df.isna().any().any()
+
+        # TODO assert saved model only has const term if add_constant?
+        # do above where we load model + choices?
+
+        # TODO see if this can be replaced w/ below (and do in other place if so)
+        if add_constant:
+            # returns a DataFrame w/ an extra 'const' col (=1.0 everywhere)
+            X = sm.add_constant(df[col_to_fit])
+        else:
+            X = df[col_to_fit].to_frame()
+
+        # TODO does it also work w/ just the series col_to_fit input, or do i always
+        # need the add_constant col first (to add a 'const'=1 column)? (seems you do
+        # always need add_constant [maybe not if model doesn't have that term tho? this
+        # comment is from before i tried that]. maybe make a wrapper that handles that?)
+        #
+        # TODO how to just draw full line of prediction? just start and stop range +
+        # linestyle='-'? or np.arange input on some interval domain?
+        if not separate_inh_model:
+            y_pred = model.get_prediction(X)
+
+            # TODO what are obs_ci_[lower|upper] cols? i assume i'm right to use
+            # mean_ci_[upper|lower] instead?
+            #
+            # alpha=0.05 by default (in statsmodels, if not passed)
+            pred_df = y_pred.summary_frame(alpha=alpha)
+
+            predicted = y_pred.predicted
+        else:
+            # fly_mean_df input (call where important estimates get added) currently has
+            # an index that would fail the verify_integrity=True checks below, so saving
+            # this index to restore later.
+            # TODO do i actually need to restore index tho?
+            # TODO delete?
+            #index = X.index
+            X = X.reset_index(drop=True)
+
+            nonneg = X[col_to_fit] >= 0
+            neg = X[col_to_fit] < 0
+
+            y_pred_nonneg = model.get_prediction(X[nonneg])
+            y_pred_neg = inh_model.get_prediction(X[neg])
+
+            pred_df_nonneg = y_pred_nonneg.summary_frame(alpha=alpha)
+            pred_df_neg = y_pred_neg.summary_frame(alpha=alpha)
+
+            predicted_nonneg = pd.Series(
+                data=y_pred_nonneg.predicted, index=X[nonneg].index
+            )
+            predicted_neg = pd.Series(data=y_pred_neg.predicted, index=X[neg].index)
+
+            pred_df = pd.concat([pred_df_nonneg, pred_df_neg], verify_integrity=True)
+
+            # just on the RangeIndex of input (should have all consecutive indices from
+            # start to end after concatenating)
+            pred_df = pred_df.sort_index()
+            assert pred_df.index.equals(X.index)
+
+            predicted = pd.concat([predicted_nonneg, predicted_neg],
+                verify_integrity=True
+            )
+            predicted = predicted.sort_index()
+            assert predicted.index.equals(X.index)
+
+            # TODO TODO restore (w/ above)? will this make predict_spiking_from_dff fn
+            # return val make more sense? what was issue again?
+            # TODO delete?
+            #X.index = index
+
+        # NOTE: .get_prediction(...) seems to return an object where more information is
+        # available about the fit (e.g. confidence intervals, etc). .predict(...) will
+        # just return simple output of model (same as <PredictionResult>.predicted).
+        # (also seems to be same as pred_df['mean'])
+        assert np.array_equal(predicted, pred_df['mean'])
+        if not separate_inh_model:
+            assert np.array_equal(predicted, model.predict(X))
+
+        # TODO was this broken in separate inh case? (still think that case was
+        # probably a dead end, so not necessarily worth fixing...)
+        # (but megamat/est_orn_spike_deltas[_corr].pdf plots were all NaN it seems?)
+        # (not sure i can repro)
+        df[est_spike_delta_col] = predicted
+
+        # TODO how are these CI's actually computed? how does that differ from how
+        # seaborn computes them? why are they different?
+        # TODO what are obs_ci_[lower|upper]? seems newer versions of statsmodels might
+        # not have them anyway? or at least they aren't documented...
+        for c in ('mean_ci_lower', 'mean_ci_upper'):
+            df[f'{est_spike_delta_col}{c.replace("mean", "")}'] = pred_df[c]
+
+        # TODO sort df by est_spike_delta_col before returning? would that make
+        # plotting fn avoid need to do that? or prob just do in plotting fn...
+        return df
+
+
+    # TODO (reword to make accurate again) delete _model kwarg.
+    # just using to test serialization of OLS model, since i can't figure out why this
+    # equality check fails (no .equals avail):
+    # > model.save('test_model.p')
+    # > deserialized_model = sm.load('test_model.p')
+    # > deserialized_model == model
+    # False
+    # > deserialized_model.remove_data()
+    # > model.remove_data()
+    # > deserialized_model == model
+    # False
+    def plot_dff2spiking_fit(df: pd.DataFrame, model: RegressionResultsWrapper,
+        inh_model: Optional[RegressionResultsWrapper] = None, title_prefix=''):
+
+        assert col_to_fit in df.columns
+        assert spike_delta_col in df.columns
+        assert est_spike_delta_col not in df.columns
+
+        if separate_inh_model:
+            assert inh_model is not None
+        else:
+            assert inh_model is None
+
+        # functions passed to FacetGrid.map[_dataframe] must plot to current Axes
+        ax = plt.gca()
+
+        # TODO put in title (/text elsewhere) what the confidence interval represents
+        alpha = 0.025
+        # TODO include what alpha is in name of cols returned from predict (-> delete
+        # explicit pass-in here)?
+        df = predict_spiking_from_dff(df, model, inh_model, alpha=alpha)
+
+        assert est_spike_delta_col in df.columns
+
+        # TODO also assert both of these in cols
+        ci_lower_col = f'{est_spike_delta_col}_ci_lower'
+        ci_upper_col = f'{est_spike_delta_col}_ci_upper'
+
+        # (delete? am i not doing this now?)
+        # TODO TODO use prediction instead of spike_delta_col, if input doesn't
+        # have that column (and maybe change plot then too. color markers as in
+        # scatterplot? maybe w/ dotted line up to actual data point?)
+
+        # TODO TODO some kind of 2d histogram of same data (in diff plot prob)
+
+        # TODO also hide white marker edges like before
+        # TODO set alpha < 1 (was it not working?)
+        sns.scatterplot(ax=ax, data=df, hue='fly_id', palette=fly_palette,
+            legend='full', y=spike_delta_col, x=col_to_fit
+        )
+
+        # TODO can i replace all est_df below w/ just df?
+
+        xs = df[col_to_fit]
+        if not separate_inh_model:
+            est_df = df
+        else:
+            neg = df[col_to_fit] < 0
+            nonneg = df[col_to_fit] >= 0
+
+            est_df = df[nonneg]
+
+            # TODO move handling above if need to restore sorting (commented above)
+            xs = xs[nonneg]
+
+        # sorting was necessary for fill_between below to work correctly
+        sorted_indices = np.argsort(xs).values
+        xs = xs.iloc[sorted_indices]
+        est_df = est_df.iloc[sorted_indices]
+
+        color = 'blue'
+
+        ax.plot(xs, est_df[est_spike_delta_col], color=color)
+
+        # TODO is this what (might have?) required sorting above? just do for this?
+        ax.fill_between(xs,
+            est_df[ci_lower_col],
+            est_df[ci_upper_col],
+            color=color, alpha=0.2,
+            # TODO each of these needed? try to recreate seaborn (set color_palette the
+            # same / use that seaborn blue?)
+            linestyle='', linewidth=0, edgecolor='white'
+        )
+
+        if separate_inh_model:
+            inh_color = 'red'
+            xs = df[col_to_fit][neg]
+            est_df = df[neg]
+
+            sorted_indices = np.argsort(xs).values
+            xs = xs.iloc[sorted_indices]
+            est_df = est_df.iloc[sorted_indices]
+
+            ax.plot(xs, est_df[est_spike_delta_col], color=inh_color)
+            ax.fill_between(xs,
+                est_df[ci_lower_col],
+                est_df[ci_upper_col],
+                color=inh_color, alpha=0.2,
+                linestyle='', linewidth=0, edgecolor='white'
+            )
+
+        if add_constant:
+            # TODO refactor
+            model_eq = (f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x + '
+                f'{model.params["const"]:.1f}$'
+            )
+            # TODO assert no other parameters besides col_to_fit and const?
+        else:
+            model_eq = f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x$'
+            # TODO assert no other parameters besides col_to_fit?
+
+        if separate_inh_model:
+            assert not add_constant, 'not yet implemented'
+            model_eq = (f'{model_eq}\n$\\Delta$ '
+                f'$spike$ $rate_{{inh}} = {inh_model.params[col_to_fit]:.1f} x$'
+            )
+
+        y_train = df[spike_delta_col]
+
+        # https://en.wikipedia.org/wiki/Coefficient_of_determination
+        ss_res = ((y_train - df[est_spike_delta_col])**2).sum()
+
+        ss_tot = ((y_train - y_train.mean())**2).sum()
+
+        # TODO make sense that this can be negative??? (for some of the glomerulus
+        # specific fits. see by-glom_dff_vs_hallem__dff_scale-to-avg-max.pdf)
+        # think so: https://stats.stackexchange.com/questions/12900
+        # just means fit is worse than a horizontal line?
+        #
+        # using this R**2 just temporarily to be more comparable to values
+        # reported for add_constant=True cases
+        r_squared = 1 - ss_res / ss_tot
+
+        if add_constant:
+            assert np.isclose(r_squared, model.rsquared)
+
+        # for why R**2 (as reported by model.rsquared) higher w/o intercept:
+        # https://stats.stackexchange.com/questions/267325
+        # https://stats.stackexchange.com/questions/26176
+
+        # ...and some discussion about whether it makes sense to fit w/o intercept:
+        # https://stats.stackexchange.com/questions/7948
+        # https://stats.stackexchange.com/questions/102709
+
+        # now only including this in title if we are able to recalculate R**2
+        # (may be possible from model alone, but not sure how to access y_train from
+        # model, if possible)
+        #
+        # TODO rsquared_adj useful in comparing these two models w/ diff # of
+        # parameters?
+        # TODO want anything else in here? don't really think p-val would be useful
+
+        goodness_of_fit_str = (f'$R^2 = {r_squared:.4f}$'
+            # TODO delete (or recalc for add_constant=False case, as w/ R**2
+            # above)
+            # TODO only include this if we have more than 1 param (i.e. if
+            # add_constant=True). otherwise, R**2 should be equal to R**2_adj
+            #f', $R^2_{{adj}} = {model.rsquared_adj:.4f}$'
+        )
+
+        title = f'{title_prefix}{model_eq}\n{goodness_of_fit_str}'
+
+        ax.set_title(title)
+
+        assert ax.get_xlabel() == col_to_fit
+        desc = scaling_method2desc[scaling_method_to_use]
+        ax.set_xlabel(f'{col_to_fit}\n{desc}')
+
+
     dff_to_spiking_model_path = plot_dir / 'dff2spiking_fit.p'
     if separate_inh_model:
         dff_to_spiking_inh_model_path = plot_dir / 'dff2spiking_inh_fit.p'
 
     dff_to_spiking_data_csv = plot_dir / 'dff2spiking_model_input.csv'
-
-    col_to_fit = scaling_method_to_col(scaling_method_to_use)
 
     # TODO move all fitting + plotting up above (~where current seaborn plotting
     # is), so i can do for all scaling choices, like w/ current seaborn plots (still
@@ -12868,36 +13265,7 @@ def model_mb_responses(certain_df, parent_plot_dir):
         assert saved.equals(dff_to_spiking_model_choices)
         del saved
 
-        # would need to dropna otherwise
-        assert not merged_dff_and_hallem.isna().any().any()
-        to_fit = merged_dff_and_hallem.copy()
-        y_train = to_fit[spike_delta_col]
-
-        # TODO try adding (0, 0) as as point, even if still using Ax+b as a model? is
-        # that actually a valid practice? probably not, right?
-
-        if add_constant:
-            X_train = sm.add_constant(to_fit[col_to_fit])
-        else:
-            X_train = to_fit[col_to_fit].to_frame()
-
-        if not separate_inh_model:
-            # TODO why does this model produce a different result from the seaborn call
-            # above (can tell by zooming in on upper right region of plot)??
-            # TODO rename to "results"? technically the .fit() returns a results wrapper
-            # or something (and do i only want to serialize the model part? can that
-            # even store the parameters separately) (online info seems to say it should
-            # return RegressionResults, so not sure why i'm getting
-            # RegressionResultsWrapper...)
-            model = sm.OLS(y_train, X_train).fit()
-        else:
-            nonneg = X_train[col_to_fit] >= 0
-            neg = X_train[col_to_fit] < 0
-
-            model = sm.OLS(y_train[nonneg], X_train[nonneg]).fit()
-            inh_model = sm.OLS(y_train[neg], X_train[neg]).fit()
-
-
+        # TODO also add depth col (when available) here?
         cols_to_save = ['fly_id', 'odor', 'glomerulus', dff_col]
 
         if col_to_fit != dff_col:
@@ -12905,8 +13273,8 @@ def model_mb_responses(certain_df, parent_plot_dir):
 
         cols_to_save.append(spike_delta_col)
 
-        assert all(c in to_fit.columns for c in cols_to_save)
-        dff_to_spiking_data = to_fit[cols_to_save].copy()
+        assert all(c in merged_dff_and_hallem.columns for c in cols_to_save)
+        dff_to_spiking_data = merged_dff_and_hallem[cols_to_save].copy()
 
         dff_to_spiking_data = dff_to_spiking_data.rename({
                 col_to_fit: f'{col_to_fit} (X_train)',
@@ -12928,12 +13296,11 @@ def model_mb_responses(certain_df, parent_plot_dir):
         # TODO include panel? (would need to merge in a way that preserves that. don't
         # think i currently do... shouldn't really matter)
 
-        # TODO TODO TODO loop over glomeruli -> fit for each (try raw and also the new
-        # 'to-avg-max' scaling i implemented)
-
         to_csv(dff_to_spiking_data, dff_to_spiking_data_csv, index=False,
             date_format=date_fmt_str
         )
+
+        model, inh_model = fit_dff2spiking_model(merged_dff_and_hallem)
 
         # TODO also save model.summary() to text file?
         cprint(f'saving dF/F -> spike delta model to {dff_to_spiking_model_path}',
@@ -12949,17 +13316,28 @@ def model_mb_responses(certain_df, parent_plot_dir):
             inh_model.save(dff_to_spiking_inh_model_path)
 
         # TODO delete / put behind checks flag
-        deserialized_model = sm.load(dff_to_spiking_model_path)
-
+        #deserialized_model = sm.load(dff_to_spiking_model_path)
         # TODO other comparison that would work after model.remove_data()?
         # care to remove_data? probably not
         #
         # ok, this is true at least...
-        assert str(deserialized_model.summary()) == str(model.summary())
+        # TODO why is this failing now (seems to only be a line containing Time, and
+        # only in the time part of that line. doesn't matter.)
+        # from diffing these:
+        # Path('model_summary.txt').write_text(str(model.summary()))
+        # Path('deser_model_summary.txt').write_text(str(deserialized_model.summary()))
+        # tom@atlas:~/src/al_analysis$ diff model_summary.txt deser_model_summary.txt
+        # 7c7
+        # < Time:                        15:46:35   Log-Likelihood:                         -17078.
+        # ---
+        # > Time:                        15:46:46   Log-Likelihood:                         -17078.
+        #
+        # TODO find a replacement check?
+        #assert str(deserialized_model.summary()) == str(model.summary())
         #
 
-        # TODO use _model kwarg in predict to check serialized->deser model is behaving
-        # same (below, where predict is called)
+        # TODO (reword to update / delete) use _model kwarg in predict to check
+        # serialized->deser model is behaving same (below, where predict is called)
     else:
         cprint(f'using saved dF/F -> spiking model {dff_to_spiking_model_path}',
             _cprint_color
@@ -12985,6 +13363,8 @@ def model_mb_responses(certain_df, parent_plot_dir):
         model = sm.load(dff_to_spiking_model_path)
         if separate_inh_model:
             inh_model = sm.load(dff_to_spiking_inh_model_path)
+        else:
+            inh_model = None
 
         # TODO load + summarize model input data
         # TODO +also load+summarize model choices
@@ -13003,291 +13383,6 @@ def model_mb_responses(certain_df, parent_plot_dir):
         assert y0 != 0.0
     else:
         assert y0 == 0.0
-
-    # TODO rename to clarify type of data input/output
-    # TODO delete _model kwarg. just using to test serialization of OLS model,
-    # since i can't figure out why this equality check fails (no .equals avail):
-    # > model.save('test_model.p')
-    # > deserialized_model = sm.load('test_model.p')
-    # > deserialized_model == model
-    # False
-    # > deserialized_model.remove_data()
-    # > model.remove_data()
-    # > deserialized_model == model
-    # False
-    def predict(df, _model=None):
-        # TODO doc input requirements
-        # TODO doc output
-
-        # TODO delete unless add_constant line below w/ series input might mutate df
-        # (unlikely)
-        df = df.copy()
-
-        # would otherwise need to dropna
-        assert not df.isna().any().any()
-
-        # TODO assert saved model only has const term if add_constant?
-        # do above where we load model + choices?
-
-        # TODO see if this can be replaced w/ below (and do in other place if so)
-        if add_constant:
-            # returns a DataFrame w/ an extra 'const' col (=1.0 everywhere)
-            X = sm.add_constant(df[col_to_fit])
-        else:
-            X = df[col_to_fit].to_frame()
-
-        # TODO should model be computed in this plotting fn, w/ maybe a flag to turn off
-        # either the recomputation (maybe by passing a model in?)
-        # and/or a flag to turn the plotting off?
-        color = 'blue'
-
-        # alpha=0.05 by default
-        alpha = 0.025
-        # TODO does it also work w/ just the series col_to_fit input, or do i always
-        # need the add_constant col first (to add a 'const'=1 column)? (seems you do
-        # always need add_constant [maybe not if model doesn't have that term tho? this
-        # comment is from before i tried that]. maybe make a wrapper that handles that?)
-        #
-        # TODO how to just draw full line of prediction? just start and stop range +
-        # linestyle='-'? or np.arange input on some interval domain?
-        if not separate_inh_model:
-            y_pred = model.get_prediction(X)
-
-            # TODO what are obs_ci_[lower|upper] cols? i assume i'm right to use
-            # mean_ci_[upper|lower] instead?
-            #
-            # TODO TODO put in title (/text elsewhere) what the confidence interval
-            # represents
-            pred_df = y_pred.summary_frame(alpha=alpha)
-
-            predicted = y_pred.predicted
-        else:
-            # fly_mean_df input (call where important estimates get added) currently has
-            # an index that would fail the verify_integrity=True checks below, so saving
-            # this index to restore later.
-            # TODO do i actually need to restore index tho?
-            # TODO delete?
-            #index = X.index
-            X = X.reset_index(drop=True)
-
-            nonneg = X[col_to_fit] >= 0
-            neg = X[col_to_fit] < 0
-
-            y_pred_nonneg = model.get_prediction(X[nonneg])
-            y_pred_neg = inh_model.get_prediction(X[neg])
-
-            pred_df_nonneg = y_pred_nonneg.summary_frame(alpha=alpha)
-            pred_df_neg = y_pred_neg.summary_frame(alpha=alpha)
-
-            predicted_nonneg = pd.Series(
-                data=y_pred_nonneg.predicted, index=X[nonneg].index
-            )
-            predicted_neg = pd.Series(data=y_pred_neg.predicted, index=X[neg].index)
-
-            pred_df = pd.concat([pred_df_nonneg, pred_df_neg], verify_integrity=True)
-
-            # just on the RangeIndex of input (should have all consecutive indices from
-            # start to end after concatenating)
-            pred_df = pred_df.sort_index()
-            assert pred_df.index.equals(X.index)
-
-            predicted = pd.concat([predicted_nonneg, predicted_neg],
-                verify_integrity=True
-            )
-            predicted = predicted.sort_index()
-            assert predicted.index.equals(X.index)
-
-            # TODO delete?
-            #X.index = index
-
-        # NOTE: .get_prediction(...) seems to return an object where more information is
-        # available about the fit (e.g. confidence intervals, etc). .predict(...) will
-        # just return simple output of model (same as <PredictionResult>.predicted).
-        # (also seems to be same as pred_df['mean'])
-        assert np.array_equal(predicted, pred_df['mean'])
-        if not separate_inh_model:
-            assert np.array_equal(predicted, model.predict(X))
-
-        # TODO TODO how are these CI's actually computed? how does that differ from how
-        # seaborn computes them? why are they different?
-        # TODO what are obs_ci_[lower|upper]? seems newer versions of statsmodels might
-        # not have them anyway? or at least they aren't documented...
-        xs = X[col_to_fit]
-
-        # TODO should i maybe just define xs from df[col_to_fit]?
-        #assert xs.equals(df[col_to_fit])
-        assert np.array_equal(xs, df[col_to_fit])
-
-        # (delete? am i not doing this now?)
-        # TODO TODO use prediction instead of spike_delta_col, if input doesn't
-        # have that column (and maybe change plot then too. color markers as in
-        # scatterplot? maybe w/ dotted line up to actual data point?)
-
-        # TODO what was this for? the fill_between below (seems so, yea)?
-        # TODO delete sort= path + revert to sort=False behavior, if sorting doesn't
-        # actually matter here (seems like it does) (even if linestyle != '')
-        '''
-        sort = True
-        if sort:
-            # TODO TODO this even correct, given i define `predicted` separtely,
-            # which won't be sorted? (but that's not used in the else, at least, nor is
-            # xs... pred_df/xs are currently both used below else tho...)
-            print('fix / delete sorting')
-            #import ipdb; ipdb.set_trace()
-            #
-            sorted_indices = np.argsort(xs).values
-            xs = xs.iloc[sorted_indices]
-            pred_df = pred_df.iloc[sorted_indices]
-
-            del sorted_indices
-        '''
-
-        fig, ax = plt.subplots()
-
-        # TODO comment explaining why only some of input has this (and/or refactor to be
-        # more general and not tied to specific hardcoded col names...)
-        if spike_delta_col in df.columns:
-            # TODO TODO TODO some kind of 2d histogram of same data (in diff plot prob)
-
-            # TODO also hide white marker edges like before
-            # TODO set alpha < 1 (was it not working?)
-            sns.scatterplot(ax=ax, data=df, hue='fly_id', palette=fly_palette,
-                legend='full', y=spike_delta_col, x=col_to_fit
-            )
-
-        # TODO delete this branch (and all others for same input).
-        # don't actually want that plot anymore.
-        else:
-            # TODO was this broken in separate inh case? (still think that case was
-            # probably a dead end, so not necessarily worth fixing...)
-            # (but megamat/est_orn_spike_deltas[_corr].pdf plots were all NaN it seems?)
-            # (not sure i can repro)
-            df[est_spike_delta_col] = predicted
-
-            # TODO change options to try to not have many overlapping X's appear same
-            # color as background
-            sns.scatterplot(ax=ax, data=df, hue='fly_id', palette=fly_palette,
-                legend='full', y=est_spike_delta_col, x=col_to_fit, marker='x'
-            )
-        #
-
-        # TODO TODO should i only be doing all this stuff inside if above?
-        # (the next .plot and .fill_between)
-
-        if not separate_inh_model:
-            est_df = pred_df
-        else:
-            est_df = pred_df_nonneg
-            # TODO move handling above if need to restore sorting (commented above)
-            xs = X[col_to_fit][nonneg]
-
-        sorted_indices = np.argsort(xs).values
-        xs = xs.iloc[sorted_indices]
-        est_df = est_df.iloc[sorted_indices]
-
-        # TODO check whether xs and pred_df['mean'] sorting matters
-        # (sort flag above)
-        ax.plot(xs, est_df['mean'], color=color)
-
-        # TODO is this what (might have?) required sorting above? just do for this?
-        ax.fill_between(xs,
-            est_df['mean_ci_lower'],
-            est_df['mean_ci_upper'],
-            color=color, alpha=0.2,
-            # TODO each of these needed? try to recreate seaborn (set color_palette the
-            # same / use that seaborn blue?)
-            linestyle='', linewidth=0, edgecolor='white'
-        )
-
-        if separate_inh_model:
-            inh_color = 'red'
-            xs = X[col_to_fit][neg]
-            est_df = pred_df_neg
-
-            sorted_indices = np.argsort(xs).values
-            xs = xs.iloc[sorted_indices]
-            est_df = est_df.iloc[sorted_indices]
-
-            ax.plot(xs, est_df['mean'], color=inh_color)
-            ax.fill_between(xs,
-                est_df['mean_ci_lower'],
-                est_df['mean_ci_upper'],
-                color=inh_color, alpha=0.2,
-                linestyle='', linewidth=0, edgecolor='white'
-            )
-
-        if add_constant:
-            # TODO refactor
-            model_eq = (f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x + '
-                f'{model.params["const"]:.1f}$'
-            )
-            # TODO assert no other parameters besides col_to_fit and const?
-        else:
-            model_eq = f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x$'
-            # TODO assert no other parameters besides col_to_fit?
-
-        if separate_inh_model:
-            assert not add_constant, 'not yet implemented'
-            model_eq = (f'{model_eq}\n$\\Delta$ '
-                f'$spike$ $rate_{{inh}} = {inh_model.params[col_to_fit]:.1f} x$'
-            )
-
-        if not use_saved_dff_to_spiking_model and X.equals(X_train):
-            # https://en.wikipedia.org/wiki/Coefficient_of_determination
-            ss_res = ((y_train - pred_df['mean'])**2).sum()
-
-            ss_tot = ((y_train - y_train.mean())**2).sum()
-            # using this R**2 just temporarily to be more comparable to values
-            # reported for add_constant=True cases
-            r_squared = 1 - ss_res / ss_tot
-
-            if add_constant:
-                assert np.isclose(r_squared, model.rsquared)
-
-            # for why R**2 (as reported by model.rsquared) higher w/o intercept:
-            # https://stats.stackexchange.com/questions/267325
-            # https://stats.stackexchange.com/questions/26176
-
-            # ...and some discussion about whether it makes sense to fit w/o intercept:
-            # https://stats.stackexchange.com/questions/7948
-            # https://stats.stackexchange.com/questions/102709
-
-            # now only including this in title if we are able to recalculate R**2
-            # (may be possible from model alone, but not sure how to access y_train from
-            # model, if possible)
-            #
-            # TODO rsquared_adj useful in comparing these two models w/ diff # of
-            # parameters?
-            # TODO want anything else in here? don't really think p-val would be useful
-
-            goodness_of_fit_str = (f'$R^2 = {r_squared:.4f}$'
-                # TODO delete (or recalc for add_constant=False case, as w/ R**2
-                # above)
-                # TODO only include this if we have more than 1 param (i.e. if
-                # add_constant=True). otherwise, R**2 should be equal to R**2_adj
-                #f', $R^2_{{adj}} = {model.rsquared_adj:.4f}$'
-            )
-
-            title = f'{model_eq}\n{goodness_of_fit_str}'
-        else:
-            title = model_eq
-
-        ax.set_title(title)
-
-        assert ax.get_xlabel() == col_to_fit
-        desc = scaling_method2desc[scaling_method_to_use]
-        ax.set_xlabel(f'{col_to_fit}\n{desc}')
-
-        return df, fig
-
-    # TODO add comments above predict calls explaining which is adding an
-    # estimate column to input (why we calling twice, only once we data merged w/
-    # hallem???)
-    #
-    # - to_fit above defined from merged_dff_and_hallem
-    #
-    # - merged_dff_and_hallem has delta_spike_rate, and fly_mean_df does not. other
-    #   columns the same (after reset_index(), to move odor from index of fly_mean_df)
 
     # don't want to clutter str w/ the most typical values of these
     exclude_param_for_vals = {
@@ -13316,12 +13411,9 @@ def model_mb_responses(certain_df, parent_plot_dir):
     pebbled_param_dir_prefix = f'{dff2spiking_choices_str}__'
 
     if not use_saved_dff_to_spiking_model:
-        print()
-        print('merged_dff_and_hallem, F1 = PREDICT(merged_dff_and_hallem)')
-        #
-        # TODO delete merged_dff_and_hallem return here to clarify we don't use it below
-        # (replace w/ _)
-        merged_dff_and_hallem, f1 = predict(merged_dff_and_hallem)
+        f1, _ = plt.subplots()
+        # TODO factor into same fn that fits model?
+        plot_dff2spiking_fit(merged_dff_and_hallem, model)
 
         plot_fname = f'dff_vs_hallem__{dff2spiking_choices_str}'
 
@@ -13329,6 +13421,127 @@ def model_mb_responses(certain_df, parent_plot_dir):
         savefig(f1, plot_dir, plot_fname, normalize_fname=False)
 
         print()
+
+
+        # TODO try a depth specific model too (seems not worth, from depth binned plots)
+        # (quite clear overall scale changes when i need to avoid strongest responding
+        # plane b/c contamination. e.g. often VA4 has contamination p-cre response in
+        # highest (strongest) plane, from one of the nearby/above glomeruli that
+        # responds to that)
+
+        _seen_group_vals = set()
+        def fit_and_plot_dff2spiking_model(*args, group_col=None, **kwargs):
+            assert len(args) == 0
+            assert 'label' not in kwargs
+            # TODO OK to throw away color kwarg like this? my plotting fn uses
+            # fly_palette internally...
+            assert set(kwargs.keys()) == {'data', 'color'}
+
+            df = kwargs['data']
+            model, inh_model = fit_dff2spiking_model(df)
+
+            group_vals = set(df[group_col].unique())
+            assert len(group_vals) == 1
+            group_val = group_vals.pop()
+            group_tuple = (group_col, group_val)
+            assert group_tuple not in _seen_group_vals, f'{group_tuple=} already seen'
+            _seen_group_vals.add(group_tuple)
+
+            assert group_col in ('glomerulus', 'depth_bin')
+            if group_col == 'glomerulus':
+                # assuming this is in columns for now
+                avg_depth_col = f'avg_{roi_depth_col}'
+                assert df[avg_depth_col].nunique() == 1
+                avg_roi_depth_um = df[avg_depth_col].unique()[0]
+
+                title_prefix = \
+                    f'{group_val} (avg depth: {avg_roi_depth_um:.1f} $\\mu$m)\n'
+
+            elif group_col == 'depth_bin':
+                title_prefix = f'{group_val} $\\mu$m\n'
+                # TODO delete (or get wrap to work)
+                '''
+                title_prefix = (f'{group_val} $\\mu$m\n'
+                    # TODO like this second line?
+                    # doesn't indicate counts either...
+                    # TODO make this wrap at a certain limit? overlaps across facets
+                    # now, and that section unreadable
+                    f'{",".join(sorted(df.glomerulus.unique()))}\n'
+                )
+                '''
+
+            plot_dff2spiking_fit(df, model, inh_model, title_prefix=title_prefix)
+
+
+        avg_depth_per_glomerulus = merged_dff_and_hallem.groupby('glomerulus')[
+            roi_depth_col].mean()
+        avg_depth_per_glomerulus.name = f'avg_{roi_depth_col}'
+        merged_dff_and_hallem = merged_dff_and_hallem.merge(avg_depth_per_glomerulus,
+            left_on='glomerulus', right_index=True
+        )
+
+        merged_dff_and_hallem = merged_dff_and_hallem.sort_values(f'avg_{roi_depth_col}'
+            ).reset_index(drop=True)
+        # TODO delete
+        #merged_dff_and_hallem = merged_dff_and_hallem.sort_values('glomerulus'
+        #    ).reset_index(drop=True)
+
+        col = 'glomerulus'
+        # TODO default behavior do this anyway? easier way?
+        grid_len = int(np.ceil(np.sqrt(merged_dff_and_hallem[col].nunique())))
+
+        g = sns.FacetGrid(data=merged_dff_and_hallem, col=col, col_wrap=grid_len)
+        g.map_dataframe(fit_and_plot_dff2spiking_model, group_col=col)
+
+        viz.fix_facetgrid_axis_labels(g)
+
+        # TODO suptitle (dupe scaling method xlabel up there?)?
+
+        savefig(g, plot_dir, f'by-glom_{plot_fname}', normalize_fname=False)
+
+        # TODO TODO maybe also show list of glomeruli in each bin for plot below?
+        # TODO or least print these glomeruli (+ value_counts?)
+
+        n_depth_bins_options = (2, 3, 4, 5)
+        for n_depth_bins in n_depth_bins_options:
+            # should be a series of length equal to merged_dff_and_hallem
+            # (w/ CategoricalDtype)
+            depth_bins = pd.cut(merged_dff_and_hallem[roi_depth_col], n_depth_bins)
+
+            df = merged_dff_and_hallem.copy()
+
+            df['depth_bin'] = depth_bins
+
+            col = 'depth_bin'
+            grid_len = int(np.ceil(np.sqrt(df[col].nunique())))
+
+            g = sns.FacetGrid(data=df, col=col, col_wrap=grid_len)
+            g.map_dataframe(fit_and_plot_dff2spiking_model, group_col=col)
+
+            viz.fix_facetgrid_axis_labels(g)
+
+            # TODO suptitle?
+
+            savefig(g, plot_dir, f'by-depth-bin-{n_depth_bins}_{plot_fname}',
+                normalize_fname=False
+            )
+
+        # TODO TODO try directly estimating fn like:
+        # A(B*depth*x)? how would be best?
+        # since it's linear, couldn't i just do:
+        # A*depth*x?
+        # i guess i might like to try nonlinear fns of depth, or at least to make depth
+        # scaling more interpretable, but idk...
+        # TODO TODO or maybe i want A(B*depth + x)?
+        # either way, i want to make sure that 0 dff is always 0 est spike delta
+        # (regardless of depth), so making me thing i dont want this additive model...
+        # TODO try scipy optimization stuff?
+
+        # TODO TODO also compare to just adding a param for depth in linear model
+        # (but otherwise still using all data for fit)
+        # TODO possible to have automated detection of outlier glomeruli? i.e. those
+        # benefitting from different fits
+
 
     # TODO TODO histogram of est spike deltas this spits out
     # (to what extent is that already done in loop over panels below?)
@@ -13340,12 +13553,12 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # this predict(...) call is the one actually adding the estimated spike deltas,
     # computed from data to be modelled (which can be different from data originally
     # used to compute dF/F -> spike delta est fn).
-    fly_mean_df, _ = predict(fly_mean_df)
+    fly_mean_df = predict_spiking_from_dff(fly_mean_df, model, inh_model)
 
-    # TODO TODO also save fly_mean_df similar to how we save dff2spiking_model_input.csv
+    # TODO also save fly_mean_df similar to how we save dff2spiking_model_input.csv
     # above (for other people to analyze arbitrary subsets of est spike deltas /
     # whatever) (maybe refactor above to share + use panel_prefix from below?)
-    # TODO TODO + do same under each panel dir, for each panels data?
+    # TODO + do same under each panel dir, for each panels data?
 
     # TODO delete? [/finish...]
     ####################################################################################
@@ -13426,11 +13639,6 @@ def model_mb_responses(certain_df, parent_plot_dir):
         )
         sys.exit()
     #
-
-    # TODO TODO TODO try a depth specific model too
-    # (quite clear overall scale changes when i need to avoid strongest responding plane
-    # b/c contamination. e.g. often VA4 has contamination p-cre response in highest
-    # (strongest) plane, from one of the nearby/above glomeruli that responds to that)
 
     # TODO plot histogram of fly_mean_df[est_spike_delta_col] (maybe resting on the x
     # axis in the same kind of scatter plot of (x=dF/F, y=delta spike rate,
@@ -13522,6 +13730,7 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # TODO delete? if i'm just gonna hardcode anyway...
     # ~0.0915 on megmat outputs she gave me 2024-04-03
     #remy_sparsity = remy_megamat_sparsity()
+    remy_sparsity = 0.0915
 
     # TODO restore lower ones? just for a subset of other params (collapse 2 loops
     # together?)?
@@ -13530,15 +13739,13 @@ def model_mb_responses(certain_df, parent_plot_dir):
     # TODO replace w/ remy's value (sep for each panel, presumably)?
     #target_sparsities = (0.15,)
     # this is remy_sparsity (to this many decimal places, at least)
-    target_sparsities = (0.0915,)
     #target_sparsities = (0.1, remy_sparsity)
-    #target_sparsities = (remy_sparsity,)
+    target_sparsities = (remy_sparsity,)
 
     # if model_kws (in loop below) contains sensitivity_analysis=True, will only do that
     # analysis for this specific panel and target sparsity
     panel_for_sensitivity_analysis = 'megamat'
-    # TODO TODO remy_sparsity for this?
-    target_sparsity_for_sensitivity_analysis = 0.1
+    target_sparsity_for_sensitivity_analysis = remy_sparsity
 
     # TODO delete / restore
     #assert target_sparsity_for_sensitivity_analysis in target_sparsities
@@ -13873,11 +14080,10 @@ def model_mb_responses(certain_df, parent_plot_dir):
                 tune_on_hallem=False,
                 pn2kc_connections='hemibrain',
 
-                # TODO TODO TODO TODO restore true
                 # NOTE: this will be removed for all target_sparsity values (and all
                 # panels) except ones specified above to be used for sensitivity
                 # analysis
-                #sensitivity_analysis=True,
+                sensitivity_analysis=True,
 
                 comparison_orns=comparison_orns,
                 comparison_kcs=comparison_kcs,
@@ -16611,7 +16817,24 @@ def main():
 
     n_before = sum([num_notnull(x) for x in ij_trial_dfs])
 
-    trial_df = pd.concat(ij_trial_dfs, axis='columns')
+    trial_df = pd.concat(ij_trial_dfs, axis='columns', verify_integrity=True)
+
+    roi_best_plane_depths = pd.concat(roi2best_plane_depth_list, axis='columns',
+        verify_integrity=True
+    )
+    util.check_index_vals_unique(roi_best_plane_depths)
+
+    # failing assertion (b/c depth defined for each recording, and not differentiated by
+    # odor metadata along row axis, as w/ trial_df)
+    #roi_best_plane_depths = merge_rois_across_recordings(roi_best_plane_depths)
+    #
+    # TODO TODO this what i want for merging depths across recordings? can i change to
+    # not take average, and use depth for each specific recording? good enough?
+    roi_best_plane_depths = roi_best_plane_depths.groupby(
+        level=[x for x in roi_best_plane_depths.columns.names if x != 'thorimage_id'],
+        sort=False, axis='columns'
+    ).mean()
+    util.check_index_vals_unique(roi_best_plane_depths)
 
     util.check_index_vals_unique(trial_df)
     assert num_notnull(trial_df) == n_before
@@ -16639,11 +16862,19 @@ def main():
     contained_plus = np.array(
         [('+' in x) for x in trial_df.columns.get_level_values('roi')]
     )
+
+    # to justify indexing it the same below
+    assert trial_df.columns.get_level_values('roi').equals(
+        roi_best_plane_depths.columns.get_level_values('roi')
+    )
+
     # no need to copy, because indexing with a bool mask always does
     trial_df = trial_df.loc[:, ~contained_plus]
+    roi_best_plane_depths = roi_best_plane_depths.loc[:, ~contained_plus]
 
     # TODO add comment explaining what this drops (+ doc in doc str for this fn)
     trial_df = drop_superfluous_uncertain_rois(trial_df)
+    roi_best_plane_depths = drop_superfluous_uncertain_rois(roi_best_plane_depths)
 
     # TODO TODO should i always merge DL2d/v data? should be same exact receptors, etc?
     # and don't always have a good number of planes labelled for each, b/c often unclear
@@ -16673,9 +16904,10 @@ def main():
     # TODO TODO NaN all (fly, odor, ROI) combos w/ self correlation not > some
     # threshold?
 
-
     trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
     trial_df = sort_odors(trial_df)
+
+    roi_best_plane_depths = sort_fly_roi_cols(roi_best_plane_depths, flies_first=True)
 
     # TODO TODO TODO also save csv per panel, so they don't always overwrite each other
     # (or just include panel in name?)
@@ -16927,12 +17159,10 @@ def main():
         print()
     #
 
-    # TODO TODO TODO append dataframes together and use that instead of old consensus_df
-
     # TODO need to do any sorting after concating to get things in same order as before?
     # outer sort on panel?
 
-    # TODO TODO TODO + compare modelling using the 2 diff inputs
+    # TODO TODO + compare modelling using the 2 diff inputs
 
     # TODO TODO also some matshows, to see the coarse NaN parts?
     # TODO TODO and do columns more or less line up in order, or is this process
@@ -16943,8 +17173,6 @@ def main():
     #print('concated consensus_dfs:')
     # TODO will this even work w/ verify_integrity=True (no)? (considering certain_df so
     # much shorter than consensus_df constructed w/o this...)
-    # TODO TODO TODO try concating on col axis (need some kind of dropna first tho? or
-    # diff groupby above?)
     # TODO possible to get this to not sort the row index? currently it seems to...
     consensus_df = pd.concat(consensus_dfs, verify_integrity=True, axis='columns')
 
@@ -17066,6 +17294,12 @@ def main():
     #
     # these glomeruli were only seen in pebbled (though VC5/V might also be in GH146):
     # {'DL2d', 'DC4', 'DP1l', 'V', 'VC5', 'DL2v', 'VL1', 'VM5d', 'VC4', 'VM5v', 'VC3'}
+
+    # TODO want to also allow a version of this using certain_df instead of
+    # consensus_df?
+    # modelling currently hardcoding consensus_df as input (below), and this is only
+    # place i'm planning to use that, so shouldn't matter.
+    roi_best_plane_depths = roi_best_plane_depths.loc[:, consensus_df.columns]
 
     to_csv(consensus_df, output_root / 'ij_certain-roi_stats.csv',
         date_format=date_fmt_str
@@ -17198,7 +17432,9 @@ def main():
         # consensus_df or certain_df for that, and do i want to change that? maybe after
         # forming consensus glomeruli only within each panel?
         if driver in orn_drivers:
-            model_mb_responses(consensus_df, across_fly_ijroi_dir)
+            model_mb_responses(consensus_df, across_fly_ijroi_dir,
+                roi_depths=roi_best_plane_depths
+            )
             # TODO delete
             #model_mb_responses(certain_df, across_fly_ijroi_dir)
         else:
