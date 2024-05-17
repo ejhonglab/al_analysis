@@ -1,0 +1,12 @@
+responses_to,pebbled
+tune_from,pebbled
+tune_on_hallem,False
+pn2kc_connections,hemibrain
+target_sparsity,0.0915
+fixed_thr,204.23121324519371
+wAPLKC,3.7779883896277555
+wKCAPL,0.002056607724348261
+sparsity,0.09462358705049793
+dff2spiking_scaling_method_to_use,to-avg-max
+dff2spiking_add_constant,False
+dff2spiking_separate_inh_model,False
