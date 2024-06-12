@@ -7,20 +7,19 @@ from pprint import pformat, pprint
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 
+from hong2p.roi import certain_roi_indices
 from hong2p.types import Pathlike
 
 from al_analysis import (format_mtime, roi_plot_kws, roimean_plot_kws,
-    plot_all_roi_mean_responses, plot_n_per_odor_and_glom
+    plot_all_roi_mean_responses, plot_n_per_odor_and_glom, warn
 )
-
+from al_analysis import gdf as gsheet
 
 
 fly_cols = ['date', 'fly_num']
 col_levels = fly_cols + ['roi']
 index_levels = ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
-
 
 # TODO provide fn to invert zero filling i had done for some new outputs (dropping
 # glomeruli w/ all 0s or NaN)
@@ -106,38 +105,8 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
 
 
 def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
-    # TODO also fly_id if present?
-    unique_flies = df.columns.to_frame(index=False)[fly_cols].drop_duplicates()
 
-    n_flies = len(unique_flies)
-    print(f'{n_flies=}')
-    print(unique_flies.to_string(index=False))
-    print()
-
-    # a glomerulus is one of ~50 named regions in the antennal lobe. each receives
-    # input from all olfactory receptor neurons (ORNs) expressing a corresponding
-    # type of receptor. in each glomerulus, all ORNs of one type synapse onto all
-    # projection neurons (PNs) of a corresponding type. the PNs then provide input
-    # to the Kenyon cells (KCs).
-    #
-    # the Hallem and Carlson (2006) data you might be familiar with measured signals
-    # from ~half of these receptor types, with a different type of measurement.
-    unique_glomeruli = sorted(set(df.columns.get_level_values('roi')))
-    print(f'unique glomeruli ({len(unique_glomeruli)})', end='')
-    if verbose:
-        print(f':\n{pformat(unique_glomeruli)}')
-    print()
-
-    n_glom_per_fly = df.groupby(fly_cols, axis='columns').apply(
-        lambda x: x.columns.nunique('roi')
-    )
-    avg_n_glom = n_glom_per_fly.mean()
-    print(f'number of glomeruli per fly (avg: {avg_n_glom:.1f}):\n'
-        f'{n_glom_per_fly.to_string()}'
-    )
-    print()
-
-    # TODO print number of repeats (if we have)
+    # TODO TODO also switch away from nunique here? see note below
     n_repeats_per_odor = df.index.to_frame(index=False).groupby(['panel', 'odor1']
         ).nunique('repeat')
 
@@ -155,12 +124,97 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
         print()
         for panel, pdf in df.groupby('panel'):
             print(f'{panel=} odors:')
-            # TODO odor sorting from al_analysis instead? no sorting?
-            #pprint(sorted(pdf.index.unique('odor1')))
             pprint(list(pdf.index.unique('odor1')))
             print()
-
     print()
+
+
+    # a glomerulus is one of ~50 named regions in the antennal lobe. each receives
+    # input from all olfactory receptor neurons (ORNs) expressing a corresponding
+    # type of receptor. in each glomerulus, all ORNs of one type synapse onto all
+    # projection neurons (PNs) of a corresponding type. the PNs then provide input
+    # to the Kenyon cells (KCs).
+    #
+    # the Hallem and Carlson (2006) data you might be familiar with measured signals
+    # from ~half of these receptor types, with a different type of measurement.
+    def print_n_glom_per_fly(df, desc=''):
+        n_glom_per_fly = df.groupby(fly_cols, axis='columns').apply(
+            # NOTE: using len(... .unique(...)) instead of nunique b/c at least in one
+            # case it seems nunique can be diff, and not what i expected (MUCH larger).
+            #
+            # ipdb> df.index.nunique('panel')
+            # 192
+            # ipdb> df.index.unique('panel')
+            # Index(['glomeruli_diagnostics', 'megamat', 'validation2'], ...)
+            lambda x: len(x.columns.unique('roi'))
+        )
+        avg_n_glom = n_glom_per_fly.mean()
+        print(f'number of {desc}glomeruli per fly (avg: {avg_n_glom:.1f}):\n'
+            f'{n_glom_per_fly.to_string()}'
+        )
+        print()
+
+    certain_rois = certain_roi_indices(df)
+    certain_df = df.loc[:, certain_rois]
+
+    if certain_rois.all():
+        print('no glomeruli names indicate uncertainty in identity')
+    else:
+        uncertain_df = df.loc[:, ~certain_rois]
+        print_n_glom_per_fly(uncertain_df, 'UNCERTAIN ')
+
+    unique_glomeruli = sorted(set(certain_df.columns.get_level_values('roi')))
+    print(f'unique glomeruli ({len(unique_glomeruli)})', end='')
+    if verbose:
+        print(f':\n{pformat(unique_glomeruli)}')
+    print()
+
+    print_n_glom_per_fly(certain_df)
+    print()
+    del certain_df, certain_rois
+
+    def print_flies(df):
+        # TODO also fly_id if present?
+        unique_flies = df.columns.to_frame(index=False)[fly_cols].drop_duplicates()
+
+        n_flies = len(unique_flies)
+        print(f'{n_flies=}')
+        print(unique_flies.to_string(index=False))
+        print()
+        return unique_flies
+
+    unique_flies = print_flies(df)
+
+    if len(df.index.unique('panel')) > 1:
+        print('flies by panel:')
+        for panel, pdf in df.groupby(level='panel'):
+            print(f'{panel=}')
+            print_flies(pdf.dropna(how='all', axis='columns'))
+
+
+    not_in_gsheet = []
+    now_excluded = []
+    for _, row in unique_flies.iterrows():
+        try:
+            excluded = gsheet.loc[(row.date, row.fly_num), 'exclude']
+        except KeyError:
+            not_in_gsheet.append(row)
+            continue
+
+        if excluded:
+            now_excluded.append(row)
+
+    if len(not_in_gsheet) > 0:
+        print('flies not currently in my metadata Google Sheet (not my data? bug?):')
+        print(pd.concat([x.to_frame().T for x in not_in_gsheet]).to_string(index=False))
+        print()
+
+    # to highlight stuff like 2024-01-05/4 in
+    # data/sent_to_anoop/v1/validation2_ij_certain-roi_stats.csv
+    if len(now_excluded) > 0:
+        print('flies now marked for exclusion in my metadata Google Sheet:')
+        print(pd.concat([x.to_frame().T for x in now_excluded]).to_string(index=False))
+        print()
 
 
 sep_line = '#' * 88
@@ -188,20 +242,12 @@ def summarize_old_panel_csvs(*, verbose=True):
 
         summarize_antennal_data(df, verbose=verbose)
 
-        # example code:
-        '''
-        assert df.index.names[0] == 'panel'
-        # dropping 'glomeruli_diagnostic' panel, as you probably don't want to analyze
-        # that. it's just a series of narrowly activating odors intended to help me
-        # identify particular glomeruli
-        df = df.loc[panel].copy()
-
-        # averaging over the 3 trials for each odor
-        mean_df = df.groupby('odor1', sort=False).mean()
-        '''
-
 
 def main():
+    # TODO update hong2p.gsheet_to_frame / al_analysis code using it to let this script
+    # work no matter where it is called from -> set this script up s.t. it can be
+    # installed as CLI entry point
+
     parser = argparse.ArgumentParser()
     # TODO include message about what happens by default if not passed
     # (though i might change what that is now...)
@@ -253,6 +299,10 @@ def main():
             )
             savefig(fig,  '_stddev')
 
+            # NOTE: if input has some uncertain glomeruli, this plot will currently
+            # overrepresent the true counts (none of final data I'm working with now
+            # should be affected, just older outputs, like
+            # data/sent_to_remy/v1/2023-01-06)
             fig, _ = plot_n_per_odor_and_glom(trialmean_df, title=False)
             savefig(fig, '_n-per-odor-and-glom') #, bbox_inches='tight')
     else:

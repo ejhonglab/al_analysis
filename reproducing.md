@@ -53,7 +53,7 @@ megamat:
 # in case Google Sheet metadata changes (e.g. changing the Exclude checkbox)
 validation2:
 - pebbled data (at final concentrations only):
-  - last date of first 4 flies was 2023-11-21
+  - 5 good flies (after dropping 2024-01-05/4 at B's request, for looking anomalous)
 
   ```
   ./al_analysis.py -d pebbled -n 6f -t 2023-11-19 -e 2024-01-05
