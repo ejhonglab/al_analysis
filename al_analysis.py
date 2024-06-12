@@ -839,20 +839,26 @@ bad_suite2p_analysis_dirs = (
     '2021-05-24/2/1o3ol_and_2h',
 )
 
+script_dir = Path(__file__).resolve().parent
 # TODO refactor google sheet metadata handling so it doesn't download until it's needed
 # (or at least not outside of __main__?)?
-
+#
 # TODO set bool_fillna_false=False (kwarg to gsheet_to_frame) and manually fix any
 # unintentional NaN in these columns if I need to use the missing data for early
 # diagnostic panels (w/o some of the odors only in newest set) for anything
-
+#
 # This file is intentionally not tracked in git, so you will need to create it and
 # paste in the link to this Google Sheet as the sole contents of that file. The
 # sheet is located on our drive at:
-# 'Hong Lab documents/Tom - odor mixture experiments/pair_grid_data'
-# TODO TODO rename prefix to al_analysis or something more general
-# TODO also add al_analysis.py dir to search path for this
-gdf = util.gsheet_to_frame('pair_grid_data_gsheet_link.txt', normalize_col_names=True)
+# 'Hong Lab documents/Tom - odor mixture experiments/tom_antennal_lobe_data'
+#
+# Sam has his own sheet following a similar format, as should any extra user of this
+# pipeline.
+gdf = util.gsheet_to_frame('metadata_gsheet_link.txt', normalize_col_names=True,
+    # so that the .txt file can be found no matter where we run this code from
+    # (hong2p defaults to checking current working dir and a hong2p root)
+    extra_search_dirs=[script_dir]
+)
 gdf.set_index(['date', 'fly'], verify_integrity=True, inplace=True)
 
 # Currently has some explicitly labelled 'pebbled' (for new megamat experiments where I

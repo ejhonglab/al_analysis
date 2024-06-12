@@ -37,7 +37,7 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
     check_vs_pickle: bool = True, verbose: bool = True) -> pd.DataFrame:
 
     csv = Path(csv)
-    assert csv.exists()
+    assert csv.exists(), f'CSV {csv} did not exist!'
 
     if verbose:
         print(f'loading {csv}')
@@ -220,20 +220,21 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
 sep_line = '#' * 88
 
 def summarize_old_panel_csvs(*, verbose=True):
-    csv_dir = Path('pebbled_6f')
+    csv_dir = Path('pebbled_6f/old')
 
-    # TODO TODO TODO why only 6 flies in this validation2 panel csv? check what i gave
-    # remy / anoop! (prob just old csv. still...)
     for i, panel in enumerate(('megamat', 'validation2')):
         if i != 0:
             print(sep_line)
 
-        # TODO TODO TODO update to now just load ij_certain-roi_stats.csv (and maybe
-        # also other csvs i'm now saving). NO LONGER saving these csvs w/ panel prefix
-        # in al_analysis.py!
         csv_name = f'{panel}_ij_certain-roi_stats.csv'
         csv = csv_dir / csv_name
         print(f'{panel=}')
+
+        if i == 0:
+            if not csv.exists():
+                raise IOError('pass input CSV to script or change dir. can not find '
+                    f'first default CSV {csv}'
+                )
 
         df = read_csv(csv)
 
@@ -243,11 +244,7 @@ def summarize_old_panel_csvs(*, verbose=True):
         summarize_antennal_data(df, verbose=verbose)
 
 
-def main():
-    # TODO update hong2p.gsheet_to_frame / al_analysis code using it to let this script
-    # work no matter where it is called from -> set this script up s.t. it can be
-    # installed as CLI entry point
-
+def csvinfo_cli():
     parser = argparse.ArgumentParser()
     # TODO include message about what happens by default if not passed
     # (though i might change what that is now...)
@@ -306,9 +303,30 @@ def main():
             fig, _ = plot_n_per_odor_and_glom(trialmean_df, title=False)
             savefig(fig, '_n-per-odor-and-glom') #, bbox_inches='tight')
     else:
+        # TODO TODO update to now just load ij_certain-roi_stats.csv (and maybe also
+        # other csvs i'm now saving). NO LONGER saving these csvs w/ panel prefix in
+        # al_analysis.py!
+        # (below only loads <panel>_ij_certain-roi_stats.csv files, which al_analysis.py
+        # hasn't been writing since maybe 2023-05 or so)
+
         # TODO support plot here too? prob not...
         assert not plot, 'plot only supported if CSV path provided'
         summarize_old_panel_csvs(verbose=verbose)
+
+
+def csvdiff_cli():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('csv1', type=Path, help='path to CSV to summarize')
+    parser.add_argument('csv2', type=Path, help='path to CSV to summarize')
+    args = parser.parse_args()
+    csv1 = args.csv1
+    csv2 = args.csv2
+
+    df1 = read_csv(csv1)
+    df2 = read_csv(csv2)
+
+    # TODO TODO TODO implement
+    import ipdb; ipdb.set_trace()
 
 
 if __name__ == '__main__':

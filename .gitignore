@@ -2,6 +2,8 @@ svg/
 png/
 pdf/
 pair_grid_data_gsheet_link.txt
+# new name for pair_grid_data_gsheet_link.txt
+metadata_gsheet_link.txt
 *.p
 *.svg
 *.png

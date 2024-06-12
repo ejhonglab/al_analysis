@@ -1,0 +1,24 @@
+
+[build-system]
+# https://packaging.python.org/en/latest/guides/writing-pyproject-toml/
+# example had 61.0, but I had 56.0 installe, so replaced w/ that
+requires = ["setuptools >= 56.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# editable installs seem to work fine so far
+py-modules = ["al_analysis", "hong_logging", "load_antennal_csv"]
+
+[project]
+name = "al_analysis"
+# required, and not sure if i can set up dynamically from git
+version = "0.0.0"
+# make this exactly 3.8 (i've been using 3.8.12)?
+#requires-python = ">= 3.8"
+
+# TODO reference requirements.txt? how to consolidate? seems that might not let me
+# install editable?
+
+[project.scripts]
+csvinfo = "load_antennal_csv:csvinfo_cli"
+csvdiff = "load_antennal_csv:csvdiff_cli"

@@ -1,0 +1,7 @@
+figure out when i sent v1/v2 -> rename folders to those dates
+(could also probably just delete v2, as we never really had him use them as the
+modelling was still in flux...)
+
+be clear how v1 still has that 1 fly i asked anoop to drop (2024-01-05/4, at B's
+request), and maybe resend him a version w/o it and archive that in a new dir here, just
+for clarity to future people?

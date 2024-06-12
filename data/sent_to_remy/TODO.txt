@@ -1,0 +1,6 @@
+- confirm with Remy that what she's been using from me are contents of 2023-01-06
+  (megamat, both pebbled and GH146) and 2023-10-29 (validation2) directories
+
+- compare contents of these to what Anoop should be using (should not be meaningfully
+  diff, if at all)
+
