@@ -104,6 +104,11 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
     return df
 
 
+def get_unique_flies(df: pd.DataFrame) -> pd.DataFrame:
+    # TODO also fly_id if present?
+    return df.columns.to_frame(index=False)[fly_cols].drop_duplicates()
+
+
 def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
 
     # TODO TODO also switch away from nunique here? see note below
@@ -174,9 +179,7 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
     del certain_df, certain_rois
 
     def print_flies(df):
-        # TODO also fly_id if present?
-        unique_flies = df.columns.to_frame(index=False)[fly_cols].drop_duplicates()
-
+        unique_flies = get_unique_flies(df)
         n_flies = len(unique_flies)
         print(f'{n_flies=}')
         print(unique_flies.to_string(index=False))
@@ -324,6 +327,25 @@ def csvdiff_cli():
 
     df1 = read_csv(csv1)
     df2 = read_csv(csv2)
+
+    # TODO test on (among other things) data/sent_to_remy/2023-10-29/pebbled* vs similar
+    # csv i sent here a few hours earlier on same day (on slack. shouldn't have been
+    # used, but should only really differ in terms of ~1 non-consensus glomerulus being
+    # dropped)
+
+    unique_flies1 = get_unique_flies(df1)
+    unique_flies2 = get_unique_flies(df2)
+
+    # TODO delete/refactor (copied from above)
+    '''
+    def print_flies(df):
+        unique_flies = get_unique_flies(df)
+        n_flies = len(unique_flies)
+        print(f'{n_flies=}')
+        print(unique_flies.to_string(index=False))
+        print()
+        return unique_flies
+    '''
 
     # TODO TODO TODO implement
     import ipdb; ipdb.set_trace()

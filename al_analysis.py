@@ -1177,6 +1177,45 @@ no_merges = []
 dirs_with_ijrois = []
 
 
+# TODO also want to (and does it?) return DataFrame when input has single level?
+def index_uniq(index: pd.Index, levels: Optional[List[str]] = None) -> pd.DataFrame:
+    df = index.to_frame(index=False)
+
+    if levels is not None:
+        df = df[levels]
+
+    return df.drop_duplicates()
+
+
+def format_index_uniq(index: pd.Index, levels: Optional[List[str]] = None) -> str:
+    return index_uniq(index, levels).to_string(index=False)
+
+
+# TODO use everwhere this logic currently duped (including in load_antennal_csv)
+# TODO factor to hong2p.util
+def print_index_uniq(index: pd.Index, levels: Optional[List[str]] = None) -> None:
+    print(format_index_uniq(index, levels))
+
+
+def format_uniq(df: Union[pd.DataFrame, pd.Series], levels: Optional[List[str]] = None
+    ) -> None:
+
+    df = df.reset_index()
+
+    if levels is not None:
+        df = df[levels]
+
+    return df.drop_duplicates().to_string(index=False)
+
+
+# TODO use everwhere this logic currently duped (including in load_antennal_csv)
+# TODO factor to hong2p.util
+# TODO already have a type i can use instead of this union?
+def print_uniq(df: Union[pd.DataFrame, pd.Series], levels: Optional[List[str]] = None
+    ) -> None:
+    print(format_uniq(df, levels))
+
+
 # TODO factor to hong2p.viz
 # TODO simpler way?
 def rotate_xticklabels(ax, rotation=90):
@@ -3236,8 +3275,8 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
 
 
 # TODO use/delete (and maybe refactor to include much/all of the kwargs used in
-# plot_all...? see also *for_vlad plotting in main, that recreates much of those kwargs
-# for use w/ viz.matshow)
+# plot_all...? see also mean_df/etc plotting in main, that recreates much of those
+# kwargs for use w/ viz.matshow)
 def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
     vmin=None, vmax=None, title: str = '', **kwargs) -> None:
 
@@ -3408,7 +3447,7 @@ def dff_imshow(ax, dff_img, **imshow_kwargs):
 
 
 # TODO rename now that i'm also allowing input w/o date/fly_num attributes?
-def fly_roi_id(row, *, fly_only: bool = False) -> str:
+def fly_roi_id(row: pd.Series, *, fly_only: bool = False) -> str:
     """
     Args:
         fly_only: if False, will include date, fly, and ROI information.
@@ -3420,13 +3459,22 @@ def fly_roi_id(row, *, fly_only: bool = False) -> str:
     # context (e.g. a plot w/ kiwi data, but no control data)
     try:
         parts = []
-        if pd.notnull(row.date):
-            date_str = f'{row.date:%-m-%d}'
-            parts.append(date_str)
 
-        if pd.notnull(row.fly_num):
-            fly_num_str = f'{row.fly_num:0.0f}'
-            parts.append(fly_num_str)
+        if hasattr(row, 'fly_id') and pd.notnull(row.fly_id):
+            fly_id = row.fly_id
+            assert type(fly_id) is str
+            parts.append(fly_id)
+
+        # TODO option to have these (or fly_id) parenthetical, and still show all 3
+        # vars?
+        else:
+            if hasattr(row, 'date') and pd.notnull(row.date):
+                date_str = f'{row.date:%-m-%d}'
+                parts.append(date_str)
+
+            if hasattr(row, 'fly_num') and pd.notnull(row.fly_num):
+                fly_num_str = f'{row.fly_num:0.0f}'
+                parts.append(fly_num_str)
 
         # TODO also support a 'fly'/'fly_id' key in place of (date, fly[_num])?
         # (for lettered/sequential simplified IDs, for nicer plots)
@@ -3443,6 +3491,7 @@ def fly_roi_id(row, *, fly_only: bool = False) -> str:
         return '/'.join(parts)
 
     except AttributeError:
+        assert not fly_only, "no fly ID vars ('fly_id' or ['date', 'fly_num'])"
         return f'{row.roi}'
 
 
@@ -5361,10 +5410,10 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     odor_order_with_repeats = [format_odor_list(x) for x in odor_lists]
     odor_order, n_repeats = olf.remove_consecutive_repeats(odor_order_with_repeats)
 
-    # TODO TODO TODO build this up across flies (for use in diag example response matrix
+    # TODO TODO build this up across flies (for use in diag example response matrix
     # plotting, which is currently part of acrossfly_response_matrix_plots)
     # TODO or maybe i should just move that in here?
-    # TODO TODO TODO also apply target_glomerulus_renames to that (prob make that global too)
+    # TODO TODO also apply target_glomerulus_renames to that (prob make that global too)
     #
     # TODO delete if i manage to refactor code below to only do the formatting of odors
     # right before plotting, rather than in the few lines before this
@@ -9288,6 +9337,124 @@ def hemibrain_wPNKC(_use_matt_wPNKC=False) -> pd.DataFrame:
     #
 
     return wPNKC
+
+
+# TODO try to use in filling i do in main (copied/adapted from there)
+# TODO also try to use in modelling stuff?
+def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.DataFrame:
+
+    # TODO replace w/ call to hemibrain_wPNKC (w/ _use_matt_wPNKC=False)?
+    # TODO + assert data/ subdir CSV matches
+    #
+    # NOTE: the md5 of this file (3710390cdcfd4217e1fe38e0782961f6) matches what I
+    # uploaded to initial Dropbox folder (Tom/hong_depasquale_collab) for Grant from
+    # the DePasquale lab.
+    #
+    # Also matches ALL wPNKC.csv outputs I currently have under modeling output
+    # subdirs, except those created w/ _use_matt_wPNKC=True (those wPNKC.csv files
+    # have md5 2bc8b74c5cfd30f782ae5c2048126562). Though, none of my current outputs
+    # had drop_receptors_not_in_hallem=True, which would lead to a different CSV.
+    #
+    # Also equal to wPNKC right after call to hemibrain_wPNKC(_use_matt_wPNKC=False)
+    prat_hemibrain_wPNKC_csv = \
+        'data/sent_to_grant/2024-04-05/connectivity/wPNKC.csv'
+
+    # TODO cache, at least
+    wPNKC_for_filling = pd.read_csv(prat_hemibrain_wPNKC_csv).set_index('bodyid')
+    wPNKC_for_filling.columns.name = 'glomerulus'
+
+    hemibrain_glomeruli = set(wPNKC_for_filling.columns)
+    glomeruli = set(df.columns.get_level_values('roi'))
+
+    # TODO switch to just warning (probably not true if not always using
+    # consensus/certain input)
+    glomeruli_not_in_hemibrain = glomeruli - hemibrain_glomeruli
+    assert len(glomeruli_not_in_hemibrain) == 0, ('glomeruli '
+        f'{glomeruli_not_in_hemibrain} in data, but missing from hemibrain wPNKC'
+    )
+
+    hemibrain_glomeruli_not_in_data = hemibrain_glomeruli - glomeruli
+    assert len(hemibrain_glomeruli_not_in_data) > 0
+
+    hemibrain_glomeruli_not_in_data = sorted(hemibrain_glomeruli_not_in_data)
+
+    # TODO also print value counts of glomeruli present across my data?
+    # TODO delete?
+    if verbose:
+        print('hemibrain glomeruli not in data:')
+        print(hemibrain_glomeruli_not_in_data)
+        print()
+    #
+
+    df = df.copy()
+
+    # TODO replace w/ just MultiIndex path (assuming code can be adapted to work for
+    # both)?
+    if not isinstance(df.columns, pd.MultiIndex):
+        assert df.columns.name == 'roi'
+        # TODO replace w/ reindexing or something like that (just forcing columns to be
+        # hemibrain glomeruli, essentially, automatically filling NaN for values not in
+        # index previously)? would probably simplify.
+        #
+        # this adds new columns
+        df[hemibrain_glomeruli_not_in_data] = value
+    else:
+        assert df.columns.names == ['date', 'fly_num', 'roi']
+        # TODO easier/cleaner way?
+        fly_df_list = []
+        for fly, fly_df in df.groupby(level=['date', 'fly_num'], axis='columns'):
+            fly_df = fly_df.loc[:, fly].copy()
+
+            # TODO delete?
+            fly_glomeruli = set(fly_df.columns.get_level_values('roi'))
+            hemibrain_glomeruli_not_in_fly = hemibrain_glomeruli - fly_glomeruli
+
+            if verbose:
+                print(fly)
+                print('hemibrain glomeruli not in fly:')
+                print(hemibrain_glomeruli_not_in_fly)
+                print()
+
+            # TODO delete
+            # (yup, it fails)
+            '''
+            try:
+                # TODO TODO may need to use hemibrain not in fly instead tho?
+                # similar to where i copied this code from?
+                # (and then may also need to use some of the more complicated filling logic
+                # from where i copied this from...)
+                assert hemibrain_glomeruli_not_in_fly == set(
+                    hemibrain_glomeruli_not_in_data
+                ), 'need to fix if this assertion fails (fill on fly below, +extra logic)'
+            except AssertionError:
+                import ipdb; ipdb.set_trace()
+            '''
+            #
+
+            # TODO TODO do i actually want that more complicated filling logic
+            # (i seem to be moving closer and closer to that...)?
+            # or can i just fill NaN everywhere?
+
+            # NOTE: works w/ `df[...] = x` but NOT `df.loc[...] = x`.
+            # TODO why?
+            fly_df[sorted(hemibrain_glomeruli_not_in_fly)] = value
+
+            # TODO delete
+            # already sorted
+            #fly_df[hemibrain_glomeruli_not_in_data] = value
+
+            # NOTE: ROI names no longer sorted at this point
+
+            fly_df = util.addlevel(fly_df, ['date', 'fly_num'], fly, axis='columns')
+            fly_df_list.append(fly_df)
+
+        # does not sort the column axis, and no options for that (only for non-concat
+        # axis)
+        df = pd.concat(fly_df_list, axis='columns', verify_integrity=True)
+
+    df = df.sort_index(axis='columns')
+
+    return df
 
 
 # TODO delete Optional in RHS of return Tuple after implementing in other cases
@@ -14539,7 +14706,7 @@ def acrossfly_correlation_plots(output_root: Path, trial_df: pd.DataFrame, *,
 
     # TODO TODO where to decide on GH146 glomeruli? pretty sure there's not just some i
     # could pull out if analysis was more final / if i had other landmarks?
-    # also get 
+    # also get
     # TODO only restrict to GH146 glomeruli in pebbled analysis, but maybe err if GH146
     # analysis has any glomeruli not in set we determine. at least if we determine that
     # set with some other data than just loading my GH146 outputs, which would be
@@ -14592,7 +14759,7 @@ def acrossfly_correlation_plots(output_root: Path, trial_df: pd.DataFrame, *,
             # TODO delete
             # TODO can i define hallem_for_corr_df after `corr_df = for_corr.T.corr()`,
             # to save a line? try!
-            #hallem_for_corr_df2 = 
+            #hallem_for_corr_df2 =
 
             meta = {
                 'date': date,
@@ -14796,7 +14963,13 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
 
     # want one range for all of these plots in paper, to more easily compare across
     # panels (though might still not make 100% sense w/o any kind of scaling per fly)
-    vmin = -0.331
+    #
+    # TODO TODO just use -0.5 instead of -.33 or -.35?
+    #
+    # just about min that fits data, but leads to ugly cbar (either tick not at bottom,
+    # or too many sigfigs needed)
+    #vmin = -0.331
+    vmin = -0.35
     vmax = 2.5
     assert min_mean >= vmin, f'{min_mean=} < (hardcoded) {vmin=}'
     assert max_mean <= vmax, f'{max_mean=} > (hardcoded) {vmax=}'
@@ -14807,7 +14980,11 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     #cbar_ticks = [-0.3, 0, 2.5]
     # everything after -0.3 here is what would automatically be shown if cbar_kws not
     # passed below
-    cbar_ticks = [-0.3, 0, 0.5, 1.0, 1.5, 2.0, 2.5]
+    #cbar_ticks = [-0.3, 0, 0.5, 1.0, 1.5, 2.0, 2.5]
+    # TODO TODO this work (or can i make it if i set float formatting right?)?
+    # (yes, it does show same number of sig figs for all)
+    # TODO TODO try to change formatter to fix
+    cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
     cbar_kws = dict(ticks=cbar_ticks)
     # TODO delete (after stopping hardcode)
     print(f'response_matrix_plots: HARDCODING {vmin=} {vmax=}')
@@ -14883,6 +15060,10 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
 
     response_matrix_plots(across_fly_ijroi_dir, trial_df)
 
+    filled_trial_df = fill_to_hemibrain(trial_df)
+    response_matrix_plots(across_fly_ijroi_dir, filled_trial_df, 'filled')
+    del filled_trial_df
+
     # TODO cluster all uncertain ROIs? to see there are any things that could be added?
 
     # TODO and what would it take to include ROI positions in clustering again?
@@ -14902,6 +15083,7 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         diag_df = dropna(diag_df)
     else:
         diag_df = None
+
 
     for panel, panel_df in trial_df.groupby('panel', sort=False):
         _printed_any_flies = False
@@ -14944,21 +15126,18 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # TODO move all after stuff we also wanna do w/ diag panel -> dedent + continue
         # if diag panel (before stuff we don't wanna do for diag panel alone)
         if diag_df is not None and panel != diag_panel_str:
-            # TODO TODO still want stuff in panel_df but w/o diags tho. modify
-            # (though in data i'm currently analyzing, this shouldn't ever be the
-            # case...)
-            # (join='outer' -> separate call dropping any stuff null for all of current
-            # panel?)
+            # NOTE: currently assuming all flies in current data have some diagnostic
+            # panel data (in addition to current panel, presumably)
             #
             # join='inner' to drop ROIs (columns) that are only in one of the inputs
+            # (e.g. when flies in diagnostics aren't in current panel. diag_df should
+            # contain data from all panels)
+            assert all(x in diag_df.columns for x in panel_df.columns)
             diag_and_panel_df = pd.concat([diag_df, panel_df], join='inner',
                 verify_integrity=True
             )
-            # TODO warn + skip if current panel doesn't have any associated diag data
-            # (shouldn't be the case in any data i'm analyzing rn, but people might want
-            # it)
 
-            # TODO TODO TODO still make a version not dropping these?
+            # TODO TODO still make a version not dropping these?
             if driver == 'GH146':
                 # TODO refactor
                 gh146_glomeruli = get_gh146_glomeruli()
@@ -14978,6 +15157,16 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             # TODO replace above response_matrix_call w/ this one (when we have diags,
             # at least?)
             response_matrix_plots(panel_ijroi_dir, diag_and_panel_df, 'with-diags')
+
+            # NOTE: want diag_and_panel_df.loc[diag_panel_str] instead of diag_df
+            # because diag_df also includes diagnostic data from flies that don't have
+            # any data from this panel (presumably flies that have other panel(s) +
+            # diags)
+            filled_panel_diag_df = fill_to_hemibrain(
+                diag_and_panel_df.loc[diag_panel_str]
+            )
+            response_matrix_plots(panel_ijroi_dir, filled_panel_diag_df, 'diags')
+            del filled_panel_diag_df
 
             # TODO TODO TODO need to at least drop stuff from GH146 plots that get
             # dropped in get_gh146_glomeruli (the stuff in <1/2 of flies)
@@ -15457,10 +15646,12 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                     **{**single_fly_roi_plot_kws, **_extra_kws}
                 )
 
-            # TODO TODO TODO try to make sure that (for the non-diag plots at least, but
-            # probably all?) all the glomeruli shown is the same on each (NaNing rows
-            # where appropriate, when not found in certain flies) (to compare plots
-            # across flies)
+            # TODO try to make sure that (for the non-diag plots at least, but probably
+            # all?) all the glomeruli shown is the same on each (NaNing rows where
+            # appropriate, when not found in certain flies) (to compare plots across
+            # flies)
+            # (can use fill_to_hemibrain now, which i'm already doing in some places i
+            # want it)
 
             # TODO maybe use same dF/F range as in plot_rois invocations that
             # produce diagnostic examples (clipped)?
@@ -16920,11 +17111,6 @@ def main():
 
     roi_best_plane_depths = sort_fly_roi_cols(roi_best_plane_depths, flies_first=True)
 
-    # TODO also save csv per panel, so they don't always overwrite each other (or just
-    # include panel in name?) (doing for a version of consensus df below, but those
-    # currently kinda have weird filling B requested. want to do for anything else?
-    # trial_df? certain_df?)
-
     # TODO in a global cache that is saved (for use in real time analysis when drawing
     # ROIs. not currently implemented anymore), probably only update it to REMOVE flies
     # if they become marked exclude in google sheet (and otherwise just filter data to
@@ -16932,58 +17118,27 @@ def main():
 
     certain_df = select_certain_rois(trial_df)
 
-    # TODO delete. loop below is equiv to running this on relevant subsets.
-    '''
-    # TODO refactor to share w/ stuff dropping for mean response matrix plotting?
-    # or just pass this as input (either exlusively or as one option?)
-    n_flies = len(
-        certain_df.columns.to_frame(index=False)[['date','fly_num']].drop_duplicates()
-    )
-    # >= half of flies (the flies w/ any certain ROIs, at least)
-    n_for_consensus = int(np.ceil(n_flies / 2))
-
-    certain_glom_counts = certain_df.columns.get_level_values('roi').value_counts()
-    consensus_gloms = set(
-        certain_glom_counts[certain_glom_counts >= n_for_consensus].index
-    )
-    old_consensus_df = certain_df.loc[
-        :, certain_df.columns.get_level_values('roi').isin(consensus_gloms)
-    ]
-    # must have been added only after i finished the megamat flies, right?
-    #
-    # TODO when was this ever a diagnostic, and what was it targeting?
-    # only see it for fly 2024-01-05/1 (a validation2 fly). no megamat flies.
-    #
-    # it was to try to identify VA4 (since used this megamat odor to ID it in the past,
-    # and no validation2 odors seemed to activate it, assuming it was in the FOV)
-    #
-    # TODO is it included in glomeruli_diagnostics.yaml on the 2p computer? should i
-    # commit it? not in version on my workstation
-    #y = ('glomeruli_diagnostics', False, '2h @ -3')
-    #print(f'{y in certain_df.index=}')
-    #print(f'{y in old_consensus_df.index=}')
-    #old_consensus_df.to_pickle('old_megamat_consensus_df.p')
-    #old_consensus_df.to_pickle('old_validation2_consensus_df.p')
-    import ipdb; ipdb.set_trace()
-    sys.exit()
-    '''
-
-    # TODO either check this doesn't screw anyting up, or revert and just make sure we
-    # aren't using fly_id in anything saved/run after the loop (currently dropping
-    # shortly after the loop)
-    # (previously ids were added in each loop run, so e.g. fly A would mean different
-    # things depending on the panel)
     certain_df = add_fly_id(certain_df.T, letter=True).set_index('fly_id', append=True
         ).reorder_levels(['fly_id'] + certain_df.columns.names).T
 
-    # TODO rename "for_vlad" part to something more descriptive of what they are
-    mean_df_for_vlad_list = []
-    stddev_df_for_vlad_list = []
+    fly_id_legend = index_uniq(certain_df.columns, ['fly_id','date','fly_num'])
+    to_csv(fly_id_legend, output_root / 'fly_ids.csv', date_format=date_fmt_str,
+        index=False
+    )
 
+    mean_df_list = []
+    stddev_df_list = []
     n_per_odor_and_glom_list = []
+
+    dropped_fly_rois = set()
 
     consensus_dfs = []
     for panel, panel_df in certain_df.groupby(level='panel', sort=False):
+
+        if verbose:
+            print()
+            print(f'{panel=}')
+            print()
 
         panel_df = panel_df.dropna(axis='columns', how='all')
 
@@ -17013,30 +17168,31 @@ def main():
         # >= half of flies (the flies w/ any certain ROIs, at least)
         n_for_consensus = int(np.ceil(n_flies / 2))
 
-        certain_glom_counts = panel_and_diag_df.columns.get_level_values('roi'
-            ).value_counts()
-
         if panel != diag_panel_str:
-            # TODO TODO TODO for diag panel, maybe define this as glomeruli consensus in
-            # any of the OTHER panels? see all-panel_mean_zero-mask.pdf generated after
-            # loop. currently have e.g. VM4 null in all diag and megamat, but not null
-            # for validation2 panel. of course we have diagnostics for those glomeruli
-            # though...  (may need to re-order loop so diags happen last then?)
-            # TODO TODO maybe just don't subset in diag case, and then subset the diag
-            # stuff after the loop?
-            #import ipdb; ipdb.set_trace()
+            certain_glom_counts = panel_and_diag_df.columns.get_level_values('roi'
+                ).value_counts()
 
             consensus_gloms = set(
                 certain_glom_counts[certain_glom_counts >= n_for_consensus].index
             )
+            consensus_glom_mask = panel_and_diag_df.columns.get_level_values('roi'
+                ).isin(consensus_gloms)
+
+            will_drop = panel_and_diag_df.loc[:, ~consensus_glom_mask].columns
+
+            warn(f'dropping glomeruli seen <{n_for_consensus} (n_for_consensus) times '
+                f'in {panel=} flies:\n{format_index_uniq(will_drop)}\n'
+            )
+
+            # TODO could use a dict of panel -> this instead? (and convert after loop)
+            assert not any(x in dropped_fly_rois for x in will_drop)
+            dropped_fly_rois.update(will_drop)
 
             # NOTE: this is what gets concatenated to form consensus_df used for
             # downstream analyses. remainder of this loop is to make additional outputs
             # (with filling Betty requested), which generated megamat consensus CSV I
             # initially sent Grant from the DePasquale lab.
-            panel_consensus_df = panel_and_diag_df.loc[:,
-                panel_and_diag_df.columns.get_level_values('roi').isin(consensus_gloms)
-            ]
+            panel_consensus_df = panel_and_diag_df.loc[:, consensus_glom_mask]
             del consensus_gloms
 
         # in this diagnostic panel case, we'll subset data after loop based on consensus
@@ -17044,59 +17200,91 @@ def main():
         # panel but not the diagnostics). should only be relevant to mean/stddev/N
         # variables built up in here.
         else:
+            if verbose:
+                print('not defining/dropping glomeruli for diagnostic panel! '
+                    'should be dropped after loop instead, based on consensus glomeruli'
+                    ' from other panels.'
+                )
+
             panel_consensus_df = panel_and_diag_df
 
         del panel_and_diag_df
 
-        # TODO TODO warn about glom dropped separtely for each panel (yea, probably move
-        # warn from after loop up to here)?
-
+        # TODO TODO do i want to drop e.g. 'aphe @ -4' in the megamat flies, even though
+        # it's consensus in the validation2 flies (and we still have 'aphe @ -4' for 2/9
+        # megamat flies, and no 'aphe @ -5' for those 2)?
+        # how to do things differently if not?
+        #
+        # Warning: dropping odors seen <7 (n_for_consensus) times in
+        #  panel='glomeruli_diagnostics' flies:
+        #                 panel   odor1  n_flies
+        # glomeruli_diagnostics 2h @ -3        1
+        # glomeruli_diagnostics CO2 @ 0        1
+        #
+        # Warning: dropping odors seen <5 (n_for_consensus) times in panel='megamat'
+        #  flies:
+        #                 panel     odor1  n_flies
+        # glomeruli_diagnostics   2h @ -3        0
+        # glomeruli_diagnostics aphe @ -4        2
+        # glomeruli_diagnostics   CO2 @ 0        1
+        #
+        # Warning: dropping odors seen <3 (n_for_consensus) times in panel='validation2'
+        #  flies:
+        #                 panel     odor1  n_flies
+        # glomeruli_diagnostics   2h @ -3        1
+        # glomeruli_diagnostics aphe @ -5        0
+        # glomeruli_diagnostics   CO2 @ 0        0
+        #
+        # NOTE: doing this non-consensus odor dropping only in non-diag panels didn't
+        # seem to change anything in a direction I wanted (consensus_df after loop same
+        # shape in either case, and still didn't have 'aphe @ -4' for megamat panel
+        # flies)
+        #
+        # if a fly has any glomeruli w/ non-NaN data an odor, that fly will contribute
+        # one count in the sum.
         odor_counts = panel_consensus_df.groupby(['date','fly_num'], axis='columns',
             sort=False).apply(lambda x: x.notna().any(axis='columns')
             ).sum(axis='columns')
 
-        # TODO TODO TODO warn about which odors are dropped here
-        # (or same place i want to warn about where glomeruli are dropped, if that helps
-        # me get nicer, more consolidated, outputs)
-        # TODO delete
-        print()
-        print('DROPPING SOME ODORS SEEM LESS THAN CONSENSUS NUMBER OF TIMES')
-        print(f'(before dropping) {panel_consensus_df.shape=}')
-        #
+        # TODO move elsewhere? once at end? be consistent w/ warning about similar
+        # droppingon glomeruli? put same place i want to warn about where glomeruli are
+        # dropped, if that helps me get nicer, more consolidated, outputs
+        if (odor_counts < n_for_consensus).any():
+            odor_counts.name = 'n_flies'
+
+            msg = f'dropping odors seen <{n_for_consensus} (n_for_consensus) times '
+            msg += f'in {panel=} flies:\n'
+            msg += format_uniq(odor_counts[odor_counts < n_for_consensus],
+                ['panel','odor1','n_flies']
+            )
+            msg += '\n'
+
+            warn(msg)
 
         panel_consensus_df = panel_consensus_df[odor_counts >= n_for_consensus].copy()
 
-        # TODO delete
-        print(f'(AFTER dropping) {panel_consensus_df.shape=}')
-        print()
-        #
+        # panel_consensus_df still has diagnostic panel here (when `panel` variable
+        # refers to any of the other panels)
+        panel_df = panel_consensus_df.loc[panel].copy()
 
-        # TODO delete
-        '''
-        if driver == 'pebbled' and indicator == '6f' and panel != diag_panel_str:
-            old_consensus_df = pd.read_pickle(f'old_{panel}_consensus_df.p')
-            odf = old_consensus_df
-            # TODO also compare to concatenated output, subset to just megamat panel
-            # (after loop)?
-            ndf = panel_consensus_df
-            # TODO also true w/ panel == 'validation2'?
-            assert odf.columns.equals(ndf.columns)
-            assert len(odf.index.difference(ndf.index)) == 0
-            # this was just a diagnostic i only added for some validation2 flies (just
-            # 2024-01-05/1), to try to ID VA4 (which didn't seem reliably activated by
-            # any validation2 odors)
-            #
-            # ipdb> ndf.index.difference(odf.index)
-            # MultiIndex([('glomeruli_diagnostics', False, '2h @ -3', 'solvent', 0),
-            #             ('glomeruli_diagnostics', False, '2h @ -3', 'solvent', 1),
-            #             ('glomeruli_diagnostics', False, '2h @ -3', 'solvent', 2)],
-            #            names=['panel', 'is_pair', 'odor1', 'odor2', 'repeat'])
-            #
-            # > ndf.loc[('glomeruli_diagnostics', False, '2h @ -3')].isna().all().all()
-            # True
-            assert ndf.dropna(how='all').equals(odf)
-        '''
-        #
+        # each element of consensus_dfs should contain both its own data, as well as all
+        # the diagnostic panel data for the same flies, so we don't need to append when
+        # the panel is the diagnostic panel.
+        if panel != diag_panel_str:
+            assert diag_panel_str in panel_consensus_df.index.get_level_values('panel')
+            consensus_dfs.append(panel_consensus_df)
+
+        if verbose:
+            print('panel flies:')
+            # TODO also use in load_antennal_csv.py
+            print_index_uniq(panel_df.columns, ['fly_id','date','fly_num'])
+            print()
+
+        panel_df = panel_df.droplevel(['is_pair', 'odor2'])
+        panel_df = panel_df.droplevel(['date','fly_num'], axis='columns')
+
+        # TODO TODO probably only do this style of filling if driver is pebbled. we'd
+        # expected a certain set of other glomeruli to be missing in e.g. GH146 case
 
         # TODO replace w/ call to hemibrain_wPNKC (w/ _use_matt_wPNKC=False)?
         # TODO + assert data/ subdir CSV matches
@@ -17117,14 +17305,11 @@ def main():
         wPNKC_for_filling = pd.read_csv(prat_hemibrain_wPNKC_csv).set_index('bodyid')
         wPNKC_for_filling.columns.name = 'glomerulus'
 
-        # TODO fill 0 for all wPNKC stuff not detected in any flies, NaN for stuff
-        # detected in some flies but not all (done i think? do probably want to tweak
-        # slightly...)
-
+        hemibrain_glomeruli = set(wPNKC_for_filling.columns)
         glomeruli_in_panel_flies = set(
             panel_consensus_df.columns.get_level_values('roi')
         )
-        hemibrain_glomeruli = set(wPNKC_for_filling.columns)
+
         glomeruli_not_in_hemibrain = glomeruli_in_panel_flies - hemibrain_glomeruli
         # seems to be true on all of my data (validation2 panel included), at least
         # since this loop is using certain ROIs
@@ -17136,56 +17321,24 @@ def main():
         hemibrain_glomeruli_not_in_panel_flies = (
             hemibrain_glomeruli - glomeruli_in_panel_flies
         )
+        assert len(hemibrain_glomeruli_not_in_panel_flies) > 0
 
-        # panel_consensus_df still has diagnostic panel here (when `panel` variable
-        # refers to any of the other panels)
-        panel_df = panel_consensus_df.loc[panel].copy()
-
-        # each element of consensus_dfs should contain both its own data, as well as all
-        # the diagnostic panel data for the same flies, so we don't need to append when
-        # the panel is the diagnostic panel.
-        if panel != diag_panel_str:
-            assert diag_panel_str in panel_consensus_df.index.get_level_values('panel')
-            consensus_dfs.append(panel_consensus_df)
-
-        panel_df = panel_df.droplevel(['is_pair', 'odor2'])
-
-        # TODO delete (seems to be working fine adding to certain_df above now)
-        #panel_df = add_fly_id(panel_df.T, letter=True).set_index('fly_id', append=True
-        #    ).reorder_levels(['fly_id'] + panel_df.columns.names).T
-
-        # TODO save to csv? (-> delete print)
-        # TODO or, if keeping, at least also print context about what this is...
-        print()
-        print(f'{panel=}')
-        # TODO TODO TODO why only 5 flies here for validatoin2 panel? shouldn't there be
-        # 7?
-        print(panel_df.columns.to_frame(index=False)[['fly_id','date','fly_num']
-            ].drop_duplicates().to_string(index=False)
-        )
-        print()
-        #
-
-        panel_df = panel_df.droplevel(['date','fly_num'], axis='columns')
-
-        # TODO also print value counts of glomeruli present across any of the panel
-        # flies?
         # TODO delete?
-        print('hemibrain glomeruli not panel flies:')
-        print(sorted(hemibrain_glomeruli_not_in_panel_flies))
-        print()
+        if verbose:
+            # TODO also print value counts of glomeruli present across any of the panel
+            # flies?
+            print('hemibrain glomeruli not panel flies:')
+            print(sorted(hemibrain_glomeruli_not_in_panel_flies))
+            print()
         #
-
-        # TODO TODO probably only do this style of filling if driver is pebbled. we'd
-        # expected a certain set of other glomeruli to be missing in e.g. GH146 case
 
         _first_fly_cols = None
 
         filled_fly_dfs = []
-        for fly_id, fly_df in panel_df.groupby('fly_id', axis='columns'):
-            # TODO factor out this filling to a fn (-> also use in modelling stuff)?
+        for fly_id, fly_df in panel_df.groupby(level='fly_id', axis='columns'):
             # TODO delete (/ include in more proper message)
-            print(f'{fly_id=}')
+            if verbose:
+                print(f'{fly_id=}')
             #
 
             assert type(fly_id) is str
@@ -17203,18 +17356,21 @@ def main():
                 'some odors measured in this fly for only some glomeruli. unexpected.'
 
             fly_glomeruli = set(fly_df.columns.get_level_values('roi'))
-            glomeruli_only_in_other_flies = glomeruli_in_panel_flies - fly_glomeruli
-            if len(glomeruli_only_in_other_flies) > 0:
-                # TODO delete (/ include in more proper message)
-                #print(f'{fly_glomeruli=}')
-                print('glomeruli only in other panel flies: '
-                    f'{sorted(glomeruli_only_in_other_flies)}'
-                )
-                #
-                # TODO TODO warn about what we are doing here
-                fly_df[sorted(glomeruli_only_in_other_flies)] = float('nan')
 
-            assert len(hemibrain_glomeruli_not_in_panel_flies) > 0
+            glomeruli_only_in_other_panel_flies = \
+                glomeruli_in_panel_flies - fly_glomeruli
+
+            if len(glomeruli_only_in_other_panel_flies) > 0:
+                # TODO delete (/ include in more proper message)
+                if verbose:
+                    #print(f'{fly_glomeruli=}')
+                    print('glomeruli only in other panel flies: '
+                        f'{sorted(glomeruli_only_in_other_panel_flies)}'
+                    )
+                #
+
+                # TODO TODO warn about what we are doing here
+                fly_df[sorted(glomeruli_only_in_other_panel_flies)] = float('nan')
 
             # might make some calculations on filled data easier if this were true
             # (and we'd never expected the dF/F to be *exactly* 0 for any real data)
@@ -17231,7 +17387,6 @@ def main():
             # assertion above should ensure this is behaving correctly.
             fly_df.loc[fly_odors_all_nan] = float('nan')
 
-            # TODO why? do i want this?
             fly_df = fly_df.sort_index(axis='columns')
 
             if _first_fly_cols is None:
@@ -17247,12 +17402,17 @@ def main():
             filled_fly_dfs.append(fly_df)
 
             # TODO delete (/ include in more proper message)
-            print()
+            if verbose:
+                print()
 
         # TODO now that i'm only dropping non-consensus glomeruli AFTER the loop for the
         # diagnostic panel, check diag csv reasonable, or maybe don't save it
         # (probably wasn't gonna use/send it anyway... so nbd)
         filled_df = pd.concat(filled_fly_dfs, axis='columns', verify_integrity=True)
+        # TODO assert filled_df has columns.is_monotonic_increasing?
+        # (since we are sorting pre-concat, unlike newer fill_to_hemibrain fn...)
+        # prob doesn't matter.
+
         # TODO also say filled/similar in name?
         to_csv(filled_df, output_root / f'{panel}_consensus.csv',
             # TODO date_format even doing anything?
@@ -17264,12 +17424,44 @@ def main():
         # still have separate fly info in 'fly_id' column level info after this.
         trialmean_df = filled_df.groupby(level='odor1', sort=False).mean()
 
-        # TODO just don't remove this panel earlier?
+        # TODO delete
+        #'''
+        if panel == diag_panel_str:
+            #po = 'aphe @ -4'
+            # TODO TODO plot these (at least fdf) for sanity checking calc?
+            # (am/was plotting tdf)
+            #fdf = filled_df.copy()
+            tdf = trialmean_df.copy()
+            # TODO TODO trying to figure out why aphe @ -4 diff in mean_df vs
+            # mean_consensus_df (after loop)
+            #
+            # ipdb> tdf.loc['aphe @ -4']
+            # fly_id  roi
+            # A       D            NaN
+            #         DA1          NaN
+            #         DA2          NaN
+            #         DA3          NaN
+            #         DA4l         NaN
+            #                   ...
+            # N       VM7v    0.140321
+            #         VP1d    0.000000
+            #         VP1m    0.000000
+            #         VP2     0.000000
+            #         VP4     0.000000
+            # Name: aphe @ -4, Length: 756, dtype: float64
+            # ipdb> tdf.loc['aphe @ -4'].isna().sum()
+            # 418
+            # ipdb> (tdf.loc['aphe @ -4'] == 0).sum()
+            # 77
+            #import ipdb; ipdb.set_trace()
+        #'''
+        #
+
         trialmean_df = util.addlevel(trialmean_df, 'panel', panel)
 
-        mean_df_for_vlad = trialmean_df.groupby(level='roi', sort=False, axis='columns'
+        mean_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
             ).mean()
-        stddev_df_for_vlad = trialmean_df.groupby(level='roi', sort=False,
+        stddev_df = trialmean_df.groupby(level='roi', sort=False,
             axis='columns').std()
 
         n_per_odor_and_glom = count_n_per_odor_and_glom(trialmean_df,
@@ -17277,21 +17469,15 @@ def main():
             # exactly 0.0 values already existed in data
             count_zero=False
         )
-        # TODO TODO TODO why N=5 here???
-        # TODO delete
-        if panel == 'validation2':
-            print('WHY N=5 FOR VALIDATION2 PANEL???')
-            import ipdb; ipdb.set_trace()
-        #
-        assert mean_df_for_vlad.index.equals(n_per_odor_and_glom.index)
-        assert mean_df_for_vlad.columns.equals(n_per_odor_and_glom.columns)
+        assert mean_df.index.equals(n_per_odor_and_glom.index)
+        assert mean_df.columns.equals(n_per_odor_and_glom.columns)
         assert (
             n_per_odor_and_glom.sum().sum() ==
             trialmean_df.replace(0.0, np.nan).notna().sum().sum()
         )
 
-        zeromean_gloms = (mean_df_for_vlad == 0).any()
-        assert zeromean_gloms.equals((mean_df_for_vlad == 0).all())
+        zeromean_gloms = (mean_df == 0).any()
+        assert zeromean_gloms.equals((mean_df == 0).all())
 
         # otherwise, our filling could be skewing the mean of some glomeruli we do
         # actually detect sometimes.
@@ -17301,14 +17487,17 @@ def main():
         )
         del zeromean_gloms
 
-        panels_in_mean = set(mean_df_for_vlad.index.get_level_values('panel'))
+        panels_in_mean = set(mean_df.index.get_level_values('panel'))
         assert panels_in_mean == {panel}
         del panels_in_mean
 
-        mean_df_for_vlad_list.append(mean_df_for_vlad)
-        stddev_df_for_vlad_list.append(stddev_df_for_vlad)
+        mean_df_list.append(mean_df)
+        stddev_df_list.append(stddev_df)
         n_per_odor_and_glom_list.append(n_per_odor_and_glom)
 
+        # TODO TODO finish implementing csvdiff CLI (in load_antennal_csv.py) -> use
+        # that to compare these things (and whatever else i want to) -> delete below
+        #
         # TODO + do the same load+compare against what i gave to remy/anoop
         # (load from 2 CSVs in data/sent_to_anoop/v1)
         # TODO refactor stuff from load_antennal_csv.py i sent him here
@@ -17318,7 +17507,6 @@ def main():
         # that changed when making example ROI figures
         # TODO for validation2, will need to exclude fly 6 (which was originally in what
         # i sent to anoop/remy)
-
         # TODO delete?
         '''
         compare_to_sent = True
@@ -17329,34 +17517,38 @@ def main():
             # TODO delete
             #assert old_sent_csv.exists()
             # TODO TODO finish (use stuff from load_antennal_csv.py to load)
-            #old = 
+            #old =
             #import ipdb; ipdb.set_trace()
         '''
-
-        print()
     #
 
-    # TODO delete comments (should be ok now that i'm only concatting for other panels
-    # in loop above...)
-    # TODO TODO fix how this has overlap in column (fly) axis when also including
-    # diagnostic panel
-    # TODO TODO at least drop diag panel before concatting
-    # (can't fully skip in loop above, but maybe could avoid concatting?)
-    #
     # TODO add assertion(s) to indicate which axis has preserved order, if any
     # TODO and do columns more or less line up in order, or is this process re-ordering
+    # (think so? think it's just re-ordering rows?)
     # TODO possible to get this to not sort the row index? currently it seems to...
     # (or is it [one of] input(s) that is reordered?)
     consensus_df = pd.concat(consensus_dfs, verify_integrity=True, axis='columns')
 
+    # TODO TODO warn about which of these odors are being dropped (for not having
+    # been presented a consensus number of times)
+    # (do prob need separate warning from in loop above, as long as i'm also applying
+    # this operation to *certain_df*)
+    #
     # these should just be the odors dropped (for each panel) in the loop above,
     # for not being presented at least the consensus number of times
-    to_drop = list(set(certain_df.index) - set(consensus_df.index))
-    # TODO TODO maybe just drop these in certain_df itself anyway? pretty much never
-    # want these...
-    # TODO TODO TODO warn about which of these odors are being dropped (for not having
-    # been presented a consensus number of times)
-    certain_df = certain_df.drop(to_drop)
+    odors_to_drop = certain_df.index.difference(consensus_df.index)
+    if len(odors_to_drop) > 0:
+        # NOTE: this is irrelevant if I don't return to actually doing anything with
+        # certain_df below (should restore writing of it, so should be at least a little
+        # relevant, but may still use consensus_df instead for much of the other
+        # downstream analyses)
+        #
+        # (across all sets of non-diag panel flies. could still be odors only
+        # non-consensus within the diagnostic data for all sets of panel flies)
+        warn('certain_df: dropping odors seen < # for consensus times in *each* '
+            f'non-diag panel:\n{format_index_uniq(odors_to_drop, ["panel", "odor1"])}\n'
+        )
+        certain_df = certain_df.drop(odors_to_drop)
 
     # TODO replace reindexing w/ sorting? any reason i can't (easily)?
     # (along the index, which has levels ['panel','is_pair','odor1','odor2','repeat'].
@@ -17375,17 +17567,13 @@ def main():
     )
 
     if consensus_df.shape[1] < certain_df.shape[1]:
-        # TODO just move this all up into loop?
-        dropped_rois = certain_df.columns.difference(consensus_df.columns).to_frame(
-            index=False
+        dropped_rois = certain_df.columns.difference(consensus_df.columns)
+        assert set(dropped_rois) == dropped_fly_rois
+
+        warn('dropped fly-glomeruli seen < # for consensus times in each non-diag '
+            f'panel:\n{format_index_uniq(dropped_rois)}\n'
         )
-        # TODO TODO update to reflect that n_for_consensus varies per panel
-        # (rest of warning should be correct) (easier to move this difference + print
-        # into loop above?)
-        #warn(f'dropping the following data from glomeruli measured <{n_for_consensus} '
-        warn(f'dropping the following data from glomeruli measured < # for consensus '
-            f'times:\n{dropped_rois.to_string(index=False)}'
-        )
+        del dropped_rois, dropped_fly_rois
 
     # NOTE: seems to be no need to drop GH146-IDed-only stuff in pebbled case
     # (at least as glomeruli are currently IDed, as there currently aren't any (after
@@ -17410,8 +17598,10 @@ def main():
     # place i'm planning to use that, so shouldn't matter.
     roi_best_plane_depths = roi_best_plane_depths.loc[:, consensus_df.columns]
 
-    # TODO TODO also save certain_df still?
-    # TODO TODO rename these to "consensus", either way
+    # TODO TODO TODO also save certain_df still
+    # TODO TODO TODO rename these to "consensus", either way
+    # (but be careful to not cause confusion w/ other people who already have some of
+    # these files)
     to_csv(consensus_df, output_root / 'ij_certain-roi_stats.csv',
         date_format=date_fmt_str
     )
@@ -17419,130 +17609,93 @@ def main():
 
     # since we already filled, these should all be hemibrain glomeruli
     assert all(
-        x.columns.equals(mean_df_for_vlad_list[0].columns)
-        for x in mean_df_for_vlad_list
+        x.columns.equals(mean_df_list[0].columns)
+        for x in mean_df_list
     )
 
-    mean_df_for_vlad = pd.concat(mean_df_for_vlad_list, verify_integrity=True)
-    stddev_df_for_vlad = pd.concat(stddev_df_for_vlad_list, verify_integrity=True)
-    # TODO also write this to CSV, alongside mean/stddev
+    mean_df = pd.concat(mean_df_list, verify_integrity=True)
+    stddev_df = pd.concat(stddev_df_list, verify_integrity=True)
     n_per_odor_and_glom = pd.concat(n_per_odor_and_glom_list, verify_integrity=True)
 
-    assert len(mean_df_for_vlad) == sum(x.shape[0] for x in mean_df_for_vlad_list)
+    assert len(mean_df) == sum(x.shape[0] for x in mean_df_list)
 
-    assert stddev_df_for_vlad.index.equals(mean_df_for_vlad.index)
-    assert stddev_df_for_vlad.columns.equals(mean_df_for_vlad.columns)
+    assert stddev_df.index.equals(mean_df.index)
+    assert stddev_df.columns.equals(mean_df.columns)
 
-    assert n_per_odor_and_glom.index.equals(mean_df_for_vlad.index)
-    assert n_per_odor_and_glom.columns.equals(mean_df_for_vlad.columns)
+    assert n_per_odor_and_glom.index.equals(mean_df.index)
+    assert n_per_odor_and_glom.columns.equals(mean_df.columns)
 
-    non_diag = mean_df_for_vlad[
-        mean_df_for_vlad.index.get_level_values('panel') != diag_panel_str
+    non_diag_mean = mean_df[
+        mean_df.index.get_level_values('panel') != diag_panel_str
     ]
-    assert not non_diag.isna().any().any()
-    # all NaN entries after changing diagnostic consensus glomeruli calculation:
-    # ipdb> mean_df_for_vlad.isna().sum().sum()
-    #
-    # ipdb> mean_df_for_vlad.T.loc[:, mean_df_for_vlad.isna().T.any()]
-    # panel glomeruli_diagnostics
-    # odor1             aphe @ -5 aphe @ -4
-    # roi
-    # 5
-    # ...
-    # DL4                     NaN  0.137573
-    # V                  0.120386       NaN
-    # VC5                0.060084       NaN
-    # VM1                     NaN  0.020156
-    # VM4                     NaN  0.057757
+    assert not non_diag_mean.isna().any().any()
 
-    gloms_never_consensus = (non_diag == 0).all()
-    #import ipdb; ipdb.set_trace()
-    # TODO TODO TODO why is this not getting rid of all the remaining NaN?
-    # ipdb> mean_df_for_vlad.loc[diag_panel_str, gloms_never_consensus].isna().sum().sum()
-    # 3
-    # ipdb> mean_df_for_vlad.loc[diag_panel_str].isna().sum().sum()
-    # 5
-    # ipdb> mean_df_for_vlad.loc[diag_panel_str, mean_df_for_vlad.isna().any()]
-    # roi               DL4         V       VC5       VM1       VM4
-    # odor1
-    # ...
-    # aphe @ -5         NaN  0.120386  0.060084       NaN       NaN
-    # aphe @ -4    0.137573       NaN       NaN  0.020156  0.057757
-    # ...
-    # (after the line below, the above is only null in DL4 and VM4 columns)
-    mean_df_for_vlad.loc[diag_panel_str, gloms_never_consensus] = 0.0
-    stddev_df_for_vlad.loc[diag_panel_str, gloms_never_consensus] = 0.0
-    n_per_odor_and_glom.loc[diag_panel_str, gloms_never_consensus] = 0
+    gloms_never_consensus = (non_diag_mean == 0).all()
+    if gloms_never_consensus.any():
 
-    # TODO rename / delete
-    mean_df_for_vlad_path = output_root / 'mean_df_for_vlad.p'
-    if mean_df_for_vlad_path.exists():
-        mdf2 = pd.read_pickle(mean_df_for_vlad_path)
-        print()
-        print('VLAD MEAN PICKLE MATCH?')
-        print(f'{mdf2.equals(mean_df_for_vlad)=}')
+        diag_subset = mean_df.loc[diag_panel_str, gloms_never_consensus]
 
-        assert mdf2[mdf2.index.get_level_values('panel') != diag_panel_str
-            ].equals(non_diag)
+        # this is all just to know that we can only warn about the columns other than
+        # the all 0 ones, and only those should have at least some real data worth
+        # warning about zero-ing
+        assert not diag_subset.isna().all().any()
+        assert not ( diag_subset.isna().any() & (diag_subset == 0).any() ).any()
+        assert (diag_subset == 0).any().equals( (diag_subset == 0).all() )
 
-        mdf_null_gloms = set(
-            mean_df_for_vlad.columns[(mean_df_for_vlad.loc[diag_panel_str] == 0).all()]
+        have_diag_data = ~ (diag_subset == 0).all()
+
+        warn('zero-ing diagnostic panel glomeruli not consensus in *any* other panel:'
+            f'\n{sorted(diag_subset.loc[:, have_diag_data].columns)}\n'
         )
-        mdf2_null_gloms = set(mdf2.columns[(mdf2.loc[diag_panel_str] == 0).all()])
-        #assert mdf_null_gloms - mdf2_null_gloms == set()
-        print(f'{mdf2_null_gloms - mdf_null_gloms=}')
 
-        # TODO TODO TODO check non-diag portion same w/ new consensus calculation
+        # TODO maybe do same 0-filling to a copy of mean consensus df, to compare?
 
-        #import ipdb; ipdb.set_trace()
+        mean_df.loc[diag_panel_str, gloms_never_consensus] = 0.0
+        stddev_df.loc[diag_panel_str, gloms_never_consensus] = 0.0
+        n_per_odor_and_glom.loc[diag_panel_str, gloms_never_consensus] = 0
 
-    # TODO TODO TODO null portion of diag subset of these three dfs (mean/stddev/n)
-    # according to which glomeruli are null in ALL other panels
+    del gloms_never_consensus
 
-    # TODO delete
-    #to_pickle(mean_df_for_vlad, mean_df_for_vlad_path)
-
-    # TODO TODO TODO restore!
-    #assert not mean_df_for_vlad.isna().any().any()
-    #assert not stddev_df_for_vlad.isna().any().any()
+    assert (mean_df == 0).equals(stddev_df == 0)
+    assert mean_df.isna().equals(stddev_df.isna())
     assert not n_per_odor_and_glom.isna().any().any()
 
-    assert (mean_df_for_vlad == 0).equals(stddev_df_for_vlad == 0)
+    # TODO also restrict based on start/end date we are using?
+    if driver == 'pebbled' and indicator == '6f':
+        # it does make sense that these NaN remain, as each is for a glomerulus only
+        # found in (or at least, only consensus in) the validation2 panel flies (DL4 and
+        # VM4), and I had switched aphe from -5 to -4 by the time I did these flies.
+        #
+        # i switched before last 2 [/9] megamat flies, so all validation2 flies had
+        # aphe at -4. aphe -4 did not reach consensus (odor not presented in >= half of
+        # flies) in megamat flies, so null in
+        # ijroi/by_panel/glomeruli_diagnostics/certain.pdf.
+        #
+        # compare pdf/all-panel_mean_zero-mask.pdf with pdf/ijroi/certain.pdf to see
+        # where the NaN are coming from.
+        panelodor_with_some_nan = (diag_panel_str, 'aphe @ -5')
 
-    # TODO compare mean diagnostic panel responses from just megamat flies vs just
-    # validation2 flies (e.g. does the impression change much if just take mean w/in
-    # megamat flies vs if we use all)?
-    # (could compare to left side of some of the ijroi/<panel>/with-diags* plots)
-    # TODO TODO version of with-diags plots that fill to same set of glomeruli (and in
-    # same order, if necessary) to these, to compare more easily
+        assert set(mean_df.columns[
+            mean_df.loc[panelodor_with_some_nan].isna()
+        ]) == {'DL4', 'VM4'}
 
-    # TODO TODO TODO check that 2 'ms @ -3' vectors not too diff (maybe drop diag one if
-    # so)
-    # vcs = mean_df_for_vlad.index.to_frame(index=False).odor1.value_counts()
-    # ipdb> vcs[vcs > 1]
-    # ms @ -3    2
-    # Name: odor1, dtype: int64
+        assert not mean_df[
+            mean_df.index != panelodor_with_some_nan
+        ].isna().any().any()
 
-    # TODO maybe i want NaN for stuff in one panel but not consensus for the other?
-    # replace here as a separate step?
-    #
-    # ipdb> mean_df_for_vlad.loc[:, (mean_df_for_vlad == 0).any() !=
-    #     (mean_df_for_vlad == 0).all()]
-    #
-    # roi                                     DL4       VA4       VL1       VM4
-    # panel                 odor1
-    # glomeruli_diagnostics 3mtp @ -5    0.000000  0.041498  0.050483  0.000000
-    #                       va @ -4      0.000000  0.043805  0.104049  0.000000
-    #                       t2h @ -6     0.000000  0.041238  0.029601  0.000000
-    #                       ms @ -3      0.000000  0.061726  0.035785  0.000000
-    #                       a-terp @ -3  0.000000  0.045025  0.025960  0.000000
-    # ...                                     ...       ...       ...       ...
-    # validation2           1p3one @ -5 -0.030700  0.000000  0.000000  0.129805
-    #                       1o3one @ -4  0.003097  0.000000  0.000000  0.124268
-    #                       EtOct @ -2   0.028664  0.000000  0.000000  0.078726
-    #                       2-mba @ -3  -0.013708  0.000000  0.000000  0.143269
-    #                       Z4-7al @ -4  0.049073  0.000000  0.000000  0.065620
-    # [64 rows x 4 columns]
+    dmin = mean_df.min().min()
+    dmax = mean_df.max().max()
+    vmin = -0.35
+    vmax = 2.5
+    assert dmin >= vmin, f'{dmin=} < {vmin=}'
+    assert dmax <= vmax, f'{dmax=} > {vmax=}'
+    del dmin, dmax
+    # TODO TODO are these just changing the labels (breaking meaning of their position
+    # on the cbar?) why else are these not at the limits?
+    # (no, i think it was just vmin2/vmax2 had a larger range than dmin/dmax)
+    # TODO check another plot actually using vmin/vmax tho
+    cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
+    cbar_kws = dict(ticks=cbar_ticks)
 
     # TODO align more w/ roimean_plot_kws, to have mean/stddev output font size /
     # spacing look more like n_per_odor_and_glom plot below (other things already seem
@@ -17555,80 +17708,574 @@ def main():
         xticklabels=format_mix_from_strs, yticklabels=True, levels_from_labels=False,
         # TODO (savefig first tho!) vgroup_label_offset: too small: 0.1
         # ok, but bit too far: 0.13
-        vline_level_fn=format_panel, vline_group_text=True, vgroup_label_offset=0.12
+        vline_level_fn=format_panel, vline_group_text=True, vgroup_label_offset=0.12,
+        cbar_kws=cbar_kws
     )
     prefix = 'all-panel_'
-    vmin = mean_df_for_vlad.min().min()
-    vmax = mean_df_for_vlad.max().max()
 
     # TODO TODO replace all mean/stddev plotting w/ plot_all...? why not?
 
-    # TODO TODO make sure (maybe via changing hong2p.viz default behavior) that cbar for
+    # TODO make sure (maybe via changing hong2p.viz default behavior) that cbar for
     # mean/stddev plots both have max of cbar labelled (and maybe also have min
     # labelled?). share w/ other code that hardcodes cbar ticks?
 
-    fig, _ = viz.matshow(mean_df_for_vlad.T, vmin=vmin, vmax=vmax,
-        **diverging_cmap_kwargs, **shared_kws
+    fig, _ = viz.matshow(mean_df.T, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs,
+        **shared_kws
     )
     savefig(fig, plot_root, f'{prefix}mean', bbox_inches='tight')
 
-    fig, _ = viz.matshow(stddev_df_for_vlad.T, vmin=0, vmax=vmax,
-        **diverging_cmap_kwargs, **shared_kws
+    fig, _ = viz.matshow(stddev_df.T, vmin=0, vmax=vmax, **diverging_cmap_kwargs,
+        **shared_kws
     )
     savefig(fig, plot_root, f'{prefix}stddev', bbox_inches='tight')
 
+
     cmap = diverging_cmap.copy()
+    # TODO are there already under/over before i set them (yes)?
     cmap.set_under('black')
 
-    # TODO actually, maybe *just* keep this version. useful. (rename/remove suffix?)
-    # TODO version of this for stddev?
-    fig, _ = viz.matshow(mean_df_for_vlad.replace(0, vmin - 1e-5).T,
-        vmin=vmin, vmax=vmax, norm='two-slope', cmap=cmap, **shared_kws
+    # TODO delete
+    #'''
+    # so ROIs are actually grouped together
+    tdf_to_plot = tdf.sort_index(level='roi', axis='columns')
+
+    id2datenum = fly_id_legend.set_index('fly_id', drop=True)
+    new_fly_cols = tdf_to_plot.columns.get_level_values('fly_id').map(
+        lambda x: tuple(id2datenum.loc[x])
     )
-    savefig(fig, plot_root, f'{prefix}mean_zero-mask_SEPNAN', bbox_inches='tight')
+    new_fly_cols.names = ['date', 'fly_num']
+
+    for_index = new_fly_cols.to_frame(index=False)
+    assert tdf_to_plot.columns.names == ['fly_id', 'roi']
+    for_index['roi'] = tdf_to_plot.columns.get_level_values('roi')
+    new_index = pd.MultiIndex.from_frame(for_index)
+
+    # comment this line if you want 'fly_id' instead of ['date','fly_num'] in plot
+    tdf_to_plot.columns = new_index
+
+    vmin2 = tdf.min().min()
+    vmax2 = tdf.max().max()
+
+    kws = dict(shared_kws)
+    kws['yticklabels'] = lambda x: fly_roi_id(x, fly_only=True)
+    # wrong range for this plot
+    del kws['cbar_kws']
+
+    kws['cbar_kws'] = dict(extend='both')
+
+    # TODO TODO can i automatically set colorbar(...) kwarg extend='both'|'min'|'max'
+    # appropriately (maybe by detecting if set_over/under set? or are there always
+    # indistinguishable defaults for cmaps i'm using anyway?).
+    # would want to detect + set in viz.matshow or viz.add_colorbar
+    #
+    # TODO test set_under/over w/ TwoSlopeNorm here
+    #cmap2 = cmap.copy()
+
+    # TODO delete. just to test set_over
+    #vmax2 = 2.5
+    #
+    #cmap2.set_over('magenta')
+    # TODO 'red' (yea, ish) |'orangered' distinct enough?
+    # https://matplotlib.org/stable/gallery/color/named_colors.html
+    #cmap2.set_over('red')
+
+    # TODO TODO how to get colorbar to indicate over/under colors (maybe just as
+    # unlabelled triangles?)
+
+    fig, _ = viz.matshow(tdf_to_plot.replace(0, vmin2 - 1e-5).T, vmin=vmin2, vmax=vmax2,
+        norm='two-slope', cmap=cmap, hline_level_fn=roi_label, hline_group_text=True,
+        inches_per_cell=0.08, fontsize=4.5, linewidth=0.5, dpi=300, linecolor='k',
+        hgroup_label_offset=0.2, **kws
+    )
+    savefig(fig, plot_root, 'DELETEME_mean_df_diag_input', bbox_inches='tight')
+    #'''
     #
 
-    # TODO keep these *_zero-mask versions?
-    fig, _ = viz.matshow(mean_df_for_vlad.replace(0, np.nan).T, vmin=vmin, vmax=vmax,
-        **diverging_cmap_kwargs, **shared_kws
+    fig, _ = viz.matshow(mean_df.replace(0, vmin - 1e-5).T, vmin=vmin, vmax=vmax,
+        norm='two-slope', cmap=cmap, **shared_kws
     )
     savefig(fig, plot_root, f'{prefix}mean_zero-mask', bbox_inches='tight')
 
-    fig, _ = viz.matshow(stddev_df_for_vlad.replace(0, np.nan).T, vmin=0, vmax=vmax,
-        **diverging_cmap_kwargs, **shared_kws
+    fig, _ = viz.matshow(stddev_df.replace(0, -1e-5).T, vmin=0, vmax=vmax,
+        norm='two-slope', cmap=cmap, **shared_kws
     )
     savefig(fig, plot_root, f'{prefix}stddev_zero-mask', bbox_inches='tight')
-    #
-    del vmin, vmax
-
+    # TODO still drop 'ms @ -3' from diag panel before sending to vlad?
+    # talk to betty about it?
     # TODO delete
-    '''
-    max_n = n_per_odor_and_glom.max().max()
-    cmap = plt.get_cmap('cividis', max_n)
-    cmap.set_under('white')
-    fig, _ = viz.matshow(n_per_odor_and_glom.T,
-        vmin=0.5, vmax=(max_n + 0.5), cbar_kws=dict(ticks=np.arange(1, max_n + 1)),
-        cbar_label='number of flies (n)', cmap=cmap,
-        title='sample size (n) per (glomerulus X odor)',
-        **shared_kws
-    )
-    savefig(fig, plot_root, f'{prefix}_n_per_odor_and_glom2', bbox_inches='tight')
-    '''
+    # was checking that 2 'ms @ -3' vectors not too diff.
     #
-    del shared_kws
+    # biggest difference is in D. almost everything else is small and pretty similar
+    # across the 2 'ms @ -3' vials (including DL1, the target of this diagnostic).
+    #
+    # ipdb> mean_df[mean_df.index.get_level_values('odor1') ==
+    #     'ms @ -3'].T
+    # panel glomeruli_diagnostics   megamat
+    # odor1               ms @ -3   ms @ -3
+    # roi
+    # D                  0.789951  0.295207
+    # ...
+    # DL1                0.465520  0.408943
+    # ...
+    #ms_mean = mean_df[
+    #    mean_df.index.get_level_values('odor1') == 'ms @ -3'
+    #]
+    #fig, _ = viz.matshow(ms_mean.replace(0, vmin - 1e-5).T,
+    #    vmin=vmin, vmax=vmax, norm='two-slope', cmap=cmap, **shared_kws
+    #)
+    #savefig(fig, plot_root, 'ms_comparison_mean_zero-mask', bbox_inches='tight')
+    #
+    del vmin, vmax, shared_kws
 
-    # TODO TODO TODO why does it seem to be showing N <= 5(?) for validation2 panel?
-    # should be 7, right? loop above dropping some data unintentionally?
-    # (it's not just the colorscale. max for that panel IS 5 in n_per_odor_and_glom)
-    print('WHY N FOR VALIDATION2 SEEM ~5 (not the 7 i was expecting)?')
-    #
     # nothing in shared_kws above should be meaningfully different from what this fn
     # will provide, though font size and spacing seem to be slightly diff from above
     fig, _ = plot_n_per_odor_and_glom(n_per_odor_and_glom, input_already_counts=True)
     savefig(fig, plot_root, f'{prefix}_n_per_odor_and_glom', bbox_inches='tight')
     del prefix
 
+    # TODO delete
+    # TODO compare mean diagnostic panel responses from just megamat flies vs just
+    # validation2 flies (e.g. does the impression change much if just take mean w/in
+    # megamat flies vs if we use all)?
+    #
+    # there's a few instances where they differ, but they aren't THAT different. i think
+    # i can just proceed with averaging all the data.
+    # compare ijroi/by_panel/[megamat|validation2]/diags_certain_mean.pdf to each other
+    # (and also compare to left hand side of all-panel_mean_zero-mask.pdf)
+    #
+    # TODO should i drop HCl because i think there might have just been
+    # a problem with the odor vial (at least, for almost all of the validation2 flies)
+    # (eh, can still see DC4 signal in all-panel_mean_zero-mask.pdf fine)
+
+    trialmean_consensus_df = consensus_df.groupby(level=['panel','odor1'], sort=False
+        ).mean()
+    mean_consensus_df = trialmean_consensus_df.groupby(level='roi', axis='columns'
+        ).mean()
+    # ipdb> mean_df.shape
+    # (64, 54)
+    # ipdb> mcdf.shape
+    # (64, 40)
+    # ipdb> set(mcdf.columns) - set(mean_df.loc[:, (mean_df != 0).all()].columns)
+    # {'VL1', 'VA4', 'DL4', 'VM4'}
+    #
+    # everything == or isclose other than cols in set above? (no)
+    tcdf = trialmean_consensus_df.copy()
+    mcdf = mean_consensus_df
+
+    mdf = mean_df.replace(0, np.nan).dropna(how='all', axis='columns')
+
+    assert mdf.columns.equals(mcdf.columns)
+    assert mdf.index.equals(mcdf.index)
+
+    # it's just the diagnostic panel portion that has anything differing
+    assert mdf.loc[mdf.index.get_level_values('panel') != diag_panel_str
+        ].equals(mcdf.loc[mcdf.index.get_level_values('panel') != diag_panel_str])
+
+    assert mdf.drop('aphe @ -4', level='odor1').drop(columns=['VA4', 'VL1']
+        ).equals(mcdf.drop('aphe @ -4', level='odor1').drop(columns=['VA4', 'VL1']))
+
+    # seems mdf has 1 extra NaN in VA4 and VL1 (which odor(s)?)
+
+    # just to make easier to compare against (what used to be) NaNs
+    mdf0 = mdf.fillna(0)
+    mcdf0 = mcdf.fillna(0)
+
+    diff = (mdf0 != mcdf0)
+    # ipdb> diff.sum().sum()
+    # 84
+
+    diff_rows = diff.T.sum() > 0
+    diff_cols = diff.sum() > 0
+
+    # TODO more idiomatic way? i feel like there has to be...
+    def index_set_where_true(ser):
+        assert ser.dtype == bool
+
+        # seems to work.
+        # x[-1] is to select 'odor1' values (assuming panel level first, which should
+        # all be diag_panel_str if stuff actually differing anyway)
+        #return ', '.join([ (x[-1] if type(x) is tuple else x) for x in ser.index[ser]])
+
+        # also seems to work.
+        ret = [ (x[-1] if type(x) is tuple else x) for x in ser.index[ser] ]
+
+        if len(ret) == 0:
+            return np.nan
+
+        return ret
+
+
+    def print_diff(ser: pd.Series, *, max_width: int = 125,  min_spaces: int = 2):
+
+        index_strs = []
+        for index in ser.index:
+
+            if ser.index.name == 'roi':
+                index_str = index
+            else:
+                # just getting odor, assuming panel is always same
+                assert index[0] == diag_panel_str
+                index_str = index[-1]
+
+            index_strs.append(index_str)
+
+        max_index_str_len = max(len(x) for x in index_strs)
+
+        # TODO actually wrapping at width? seems to cut sooner... tmux doing something
+        # weird?
+        width = max_width - (max_index_str_len + min_spaces)
+        # TODO some way to show only what doesn't differ when almost everything does
+        # (would need access to extra info in here...)?
+        # (e.g. when only 'aphe @ -5' matches for mdf/mcdf, in ['VA4', 'VL1'])
+        ser = ser.map(lambda x: pformat(x, width=width, compact=True))
+        ser = ser.str.strip('[]').str.replace("'", '')
+
+        if ser.index.name == 'roi':
+            ser = ser.str.replace('@ ', '')
+
+        indent_level = max_index_str_len + min_spaces
+
+        for index_str, diff_list_str in zip(index_strs, ser):
+
+            lines = diff_list_str.splitlines()
+            lines = [lines[0]] + [(' ' * indent_level) + x.strip() for x in lines[1:]]
+            diff_list_str = '\n'.join(lines)
+
+            n_spaces = indent_level - len(index_str)
+            spaces = ' ' * n_spaces
+            print(f'{index_str}{spaces}{diff_list_str}')
+
+
+    # TODO compare to not using .loc before apply. should be same when output non empty
+    # at least
+    assert diff.loc[:, diff_cols].apply(index_set_where_true).equals(
+        diff.apply(index_set_where_true).loc[diff_cols]
+    )
+    odors_diff_per_glom = diff.apply(index_set_where_true).dropna()
+    # (all 1 in the ... parts)
+    # ipdb> diff.sum()[diff_cols]
+    # roi
+    # D        1
+    # ...
+    # VA3      1
+    # VA4     24
+    # VA5      1
+    # ...
+    # VC4      1
+    # VL1     24
+    # VL2a     1
+    # ...
+    # VM7v     1
+    assert diff.sum()[diff_cols].equals(odors_diff_per_glom.str.len())
+    print()
+    print('#' * 90)
+    print('differences between mean_df and mean of consensus_df:')
+    print('odors that differ for each glomerulus:')
+    print_diff(odors_diff_per_glom)
+    #print(odors_diff_per_glom.to_string())
+
+    # these are only 2 that differ by 24 entries (and they are same odors)
+    assert odors_diff_per_glom['VA4'] == odors_diff_per_glom['VL1']
+    # (all diagnostic odors, except 'aphe @ -5'. currently 25 diag odors in `diff`,
+    # including 'aphe @ -4')
+    # ipdb> len(odors_diff_per_glom['VA4'])
+    # 24
+
+    assert diff.loc[diff_rows].apply(index_set_where_true, axis='columns').equals(
+        diff.apply(index_set_where_true, axis='columns').loc[diff_rows]
+    )
+    gloms_diff_per_odor = diff.apply(index_set_where_true, axis='columns').dropna()
+    assert diff.T.sum()[diff_rows].equals(gloms_diff_per_odor.str.len())
+    print()
+    print('glomeruli that differ for each odor:')
+    #print(gloms_diff_per_odor.to_string())
+    print_diff(gloms_diff_per_odor)
+    # (all 2 where ...)
+    # ipdb> diff.T.sum()[diff_rows]
+    # panel                  odor1
+    # glomeruli_diagnostics  3mtp @ -5       2
+    # ...
+    #                        p-cre @ -3      2
+    #                        aphe @ -4      38
+    #                        1-6ol @ -6      2
+    # ...
+    #                        elac @ -7       2
+    #import ipdb; ipdb.set_trace()
+    print('#' * 90)
+    print()
+
+    # TODO TODO how do these things actually differ tho? and where is diff in
+    # non-'aphe @ -4' case coming from???
+    #
+    # from comparing pdf/DELETEME_mean_df_diag_input.pdf and pdf/ijroi/certain.pdf:
+    # VA4 has data from 11-21/2 and 1-05/1 (validation2 flies, which wouldn't reach
+    # consensus in just diag panel, as it's 2/5 flies) in mean_df input but not
+    # consensus_df.
+    #
+    # VL1 is similar, w/ 11-21/3 and 1-05/1 having data, but no other validation2 flies.
+    #
+    #
+    # TODO also look at magnitude of diffs?
+    # TODO check NaNing those last 2 megamat flies (in input to mean_df calc) in aphe @
+    # -4 can recapitulate diff for that odor?
+
+    # TODO TODO probably update my consensus_df calc to behave more like for mean_df
+    # (where 'aphe @ -4' not dropped for last 2 megamat flies, which don't have 'aphe @
+    # -5')
+    #
+    # just want to change handling of diag panel, so shouldn't affect outputs i
+    # gave to other people, or at least not the non-diag part of them
+    # (could change modeling slightly, only insofar as it changes dF/F->spiking fn, so
+    # maybe not worth? so i don't have to resend modeling outputs to anoop)
+
+    # TODO delete
+    '''
+    # TODO TODO 0s in any() but not all() matter here?
+    #ipdb> (mean_df != 0).all().equals( (mean_df != 0).any() )
+    #False
+    # shape=(64, 40)
+    #m1 = mean_df.loc[:, (mean_df != 0).all()]
+    # these other glom also in m1 if defined using .any(), i think
+    #m2 = mcdf.loc[:, (~ mcdf.columns.isin({'VL1', 'VA4', 'DL4', 'VM4'}))]
+    #3
+    # TODO TODO TODO but m2[rest].equals(m1[rest]) == False w/ these defs!
+    # (see r1/r2 below tho)
+    m1 = mean_df.loc[:, (mean_df != 0).any()]
+    m2 = mcdf.copy()
+    #
+    #
+    rest = m1.index.get_level_values('odor1') != 'aphe @ -4'
+    # ipdb> m2.index.equals(m1.index)
+    # True
+    print()
+    print(f'{m2[rest].equals(m1[rest])=}')
+
+    # TODO actually need to subset cols of both of these this way???
+    r1 = m1.loc[rest, (~ m1.columns.isin({'VL1', 'VA4', 'DL4', 'VM4'}))]
+    r2 = m2.loc[rest, (~ m2.columns.isin({'VL1', 'VA4', 'DL4', 'VM4'}))]
+    print(f'{r1.equals(r2)=}')
+    # ipdb> r1.equals(r2)
+    # True
+    # ipdb> m1.equals(m2)
+    # False
+    # ipdb> np.allclose(m1.values, m2.values)
+    # False
+    # ipdb> (~np.isclose(m1.values, m2.values)).sum(axis=0)
+    # array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    #        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+    # ipdb> (~np.isclose(m1.values, m2.values)).sum(axis=1)
+    # array([ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    #         0,  0,  0, 36,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    #         0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    #         0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0])
+    # ipdb> (~np.isclose(m1.values, m2.values)).sum(axis=1).shape
+    # (64,)
+    # ipdb> m1.shape
+    # (64, 36)
+    #
+    # ipdb> m1.loc[(~np.isclose(m1.values, m2.values)).sum(axis=1) > 0]
+    # roi                                     D ...      VM5v      VM7d      VM7v
+    # panel                 odor1               ...
+    # glomeruli_diagnostics aphe @ -4  0.297253 ...  0.138248  0.247877  0.028844
+    # [1 rows x 36 columns]
+    #
+    # ipdb> m2.loc[(~np.isclose(m1.values, m2.values)).sum(axis=1) > 0]
+    # roi                                     D ...      VM5v      VM7d      VM7v
+    # panel                 odor1               ...
+    # glomeruli_diagnostics aphe @ -4  0.372953 ...  0.175241  0.282777  0.025168
+    # [1 rows x 36 columns]
+    #
+    #
+    # TODO TODO where does 'VM1' get dropped then?
+    # ipdb> set(tdf.loc['aphe @ -4'].replace(0, np.nan).dropna().groupby('roi').mean(
+    #    ).index) - set(consensus_df.columns.get_level_values('roi'))
+    # {'VM1'}
+    print()
+    print("tdf.loc['aphe @ -4'].replace(0, np.nan).dropna():")
+    print(tdf.loc['aphe @ -4'].replace(0, np.nan).dropna())
+    print()
+    #
+    # THANK GOD:
+    # tmp1 = tdf.loc['aphe @ -4'].replace(0, np.nan).dropna().groupby('roi').mean()
+    # ipdb> tmp1.loc[[x for x in tmp1.index if x != 'VM1']].equals(m1.loc[ppo])
+    # True
+    #
+    # ipdb> tdf.loc['aphe @ -4'].replace(0, np.nan).dropna()
+    # fly_id  roi
+    # H       D       0.125408
+    #         DA2     0.057652
+    #         DC1    -0.168048
+    #         DC2     0.057679
+    #         DC3    -0.086319
+    #                   ...
+    # N       VM2     0.257809
+    #         VM5d    0.182176
+    #         VM5v    0.154518
+    #         VM7d    0.198841
+    #         VM7v    0.140321
+    # Name: aphe @ -4, Length: 261, dtype: float64
+    #
+    # NOTE: 11-19/1 is fly J above (so above contains prob 2 extra flies, H and I)
+    # ipdb> tcdf.loc[ppo].dropna()
+    # date        fly_num  roi
+    # 2023-11-19  1        D       0.341995
+    #                      DA2     0.038311
+    #                      DC1    -0.096977
+    #                      DC2     0.048877
+    #                      DC3    -0.161653
+    #                                ...
+    # 2024-01-05  1        VM2     0.257809
+    #                      VM5d    0.182176
+    #                      VM5v    0.154518
+    #                      VM7d    0.198841
+    #                      VM7v    0.140321
+    #Name: (glomeruli_diagnostics, aphe @ -4), Length: 184, dtype: float64
+    #
+    # panel='glomeruli_diagnostics'
+    # dropping odors seen less than n_for_consensus=7 times:
+    #                 panel   odor1  n_flies
+    # glomeruli_diagnostics 2h @ -3        1
+    # glomeruli_diagnostics CO2 @ 0        1
+    #
+    # panel='megamat'
+    # dropping odors seen less than n_for_consensus=5 times:
+    #                 panel     odor1  n_flies
+    # glomeruli_diagnostics   2h @ -3        0
+    # glomeruli_diagnostics aphe @ -4        2
+    # glomeruli_diagnostics   CO2 @ 0        1
+    #
+    # panel='validation2'
+    # dropping odors seen less than n_for_consensus=3 times:
+    #                 panel     odor1  n_flies
+    # glomeruli_diagnostics   2h @ -3        1
+    # glomeruli_diagnostics aphe @ -5        0
+    # glomeruli_diagnostics   CO2 @ 0        0
+    #
+    # ipdb> tdf.loc[po, ~tdf.columns.get_level_values('fly_id').isin(('H', 'I'))
+    #     ].replace(0, np.nan).dropna()
+    # fly_id  roi
+    # J       D       0.341995
+    #         DA2     0.038311
+    #         DC1    -0.096977
+    #         DC2     0.048877
+    #         DC3    -0.161653
+    #                   ...
+    # N       VM2     0.257809
+    #         VM5d    0.182176
+    #         VM5v    0.154518
+    #         VM7d    0.198841
+    #         VM7v    0.140321
+    # Name: aphe @ -4, Length: 189, dtype: float64
+    # ipdb> tcdf2.loc[ppo].dropna()
+    # fly_id  roi
+    # J       D       0.341995
+    #         DA2     0.038311
+    #         DC1    -0.096977
+    #         DC2     0.048877
+    #         DC3    -0.161653
+    #                   ...
+    # N       VM2     0.257809
+    #         VM5d    0.182176
+    #         VM5v    0.154518
+    #         VM7d    0.198841
+    #         VM7v    0.140321
+    # Name: (glomeruli_diagnostics, aphe @ -4), Length: 184, dtype: float64
+    #
+    # ipdb> x1 = tdf.loc[po, ~tdf.columns.get_level_values('fly_id').isin(('H', 'I'))
+    #     ].replace(0, np.nan).dropna()
+    #
+    # ipdb> x2 = tcdf2.loc[ppo].dropna()
+    # ipdb> x1.index.difference(x2.index)
+    # MultiIndex([('L', 'VA4'),
+    #             ('M', 'VL1'),
+    #             ('N', 'VA4'),
+    #             ('N', 'VL1'),
+    #             ('N', 'VM1')],
+    #            names=['fly_id', 'roi'])
+    # ipdb> x2.index.difference(x1.index)
+    # MultiIndex([], names=['fly_id', 'roi'])
+    #
+    # TODO TODO TODO why only aphe @ -4 diff?
+    # TODO TODO TODO also, what's up with other 4 glomeruli (not in m1)?
+    ppo = (diag_panel_str, po)
+
+    fl2 = fly_id_legend.set_index(['date', 'fly_num'], drop=True)
+    tcdf_fly_ids = [fl2.loc[x].iat[0] for x in
+        tcdf.columns.to_frame(index=False)[['date','fly_num']].itertuples(index=False)
+    ]
+    tcdf2 = tcdf.copy()
+    new_index = pd.MultiIndex.from_frame(
+        pd.DataFrame({
+            'fly_id': tcdf_fly_ids, 'roi': tcdf.columns.get_level_values('roi')
+        })
+    )
+    tcdf2.columns = new_index
+
+
+    cdf = consensus_df.loc[diag_panel_str].copy()
+
+    cdf_fly_ids = [fl2.loc[x].iat[0] for x in
+        cdf.columns.to_frame(index=False)[['date','fly_num']].itertuples(index=False)
+    ]
+    new_index = pd.MultiIndex.from_frame(
+        pd.DataFrame({
+            'fly_id': cdf_fly_ids, 'roi': cdf.columns.get_level_values('roi')
+        })
+    )
+    cdf.columns = new_index
+
+    # TODO compare to cdf
+    # TODO TODO TODO and then compare tdf vs mean computed from it (any surprises?)
+    tdf2 = tdf.replace(0, np.nan).dropna(how='all', axis='columns')
+    assert not (tdf2 == 0).any().any()
+
+    # TODO TODO maybe compare cdf to fdf instead of tdf (so i don't need to mean cdf
+    # first?)
+    cdfm = cdf.groupby(level='odor1', sort=False).mean()
+    assert cdfm.index.equals(tdf2.index)
+    # ipdb> cdfm.columns.difference(tdf2.columns)
+    # MultiIndex([], names=['fly_id', 'roi'])
+    # ipdb> tdf2.columns.difference(cdfm.columns)
+    # MultiIndex([('G',   'V'),
+    #             ('G', 'VC5'),
+    #             ('L', 'VA4'),
+    #             ('M', 'VL1'),
+    #             ('N', 'VA4'),
+    #             ('N', 'VL1'),
+    #             ('N', 'VM1')],
+    #            names=['fly_id', 'roi'])
+
     import ipdb; ipdb.set_trace()
+    print()
+    '''
+    #
+
+    output_prefix = 'consensus_'
+    # TODO refactor below
+
+    to_csv(mean_df, output_root / f'{output_prefix}mean.csv', date_format=date_fmt_str)
+    to_pickle(mean_df, output_root / f'{output_prefix}mean.p')
+
+    to_csv(stddev_df, output_root / f'{output_prefix}stddev.csv',
+        date_format=date_fmt_str
+    )
+    to_pickle(stddev_df, output_root / f'{output_prefix}stddev.p')
+
+    to_csv(n_per_odor_and_glom, output_root / f'{output_prefix}n_per_odor_and_glom.csv',
+        date_format=date_fmt_str
+    )
+    to_pickle(n_per_odor_and_glom,
+        output_root / f'{output_prefix}n_per_odor_and_glom.p'
+    )
+
+    # TODO TODO organize alongside odor metadata remy gave me
+    # (+ expand on that, matching format, for my diagnostic odors)
+
+    # only have 14/54 hemibrain glomeruli that we never find via consensus:
+    # ipdb> ( ~(mean_df.isna() | (mean_df == 0) ).all() ).sum()
+    # 40
+    # ipdb> ( (mean_df.isna() | (mean_df == 0) ).all() ).sum()
+    # 14
 
     # TODO TODO any way to get date_format to apply to stuff in MultiIndex?
     # or is the issue that it's a pd.Timestamp and not datetime?

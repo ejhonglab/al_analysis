@@ -2,6 +2,12 @@
 [build-system]
 # https://packaging.python.org/en/latest/guides/writing-pyproject-toml/
 # example had 61.0, but I had 56.0 installe, so replaced w/ that
+#
+# TODO maybe i should upgrade to 62 (or 64?)? this post seems to say one of those
+# required for editable installs to work correctly (seemed ok so far though... not sure
+# what is missing...)
+# https://stackoverflow.com/questions/69711606
+# my current pip version seems to be 22.3.1, so maybe thats why it's working (somewhat)?
 requires = ["setuptools >= 56.0"]
 build-backend = "setuptools.build_meta"
 
