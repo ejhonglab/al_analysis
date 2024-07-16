@@ -23,7 +23,7 @@ The default skipped steps should be mentioned in the `-s` section of the
 
 
 megamat:
-- all pebbled data:
+- all pebbled data (9 flies):
   - 2 flies on 2023-04-22 had water for va/aa, but i had typically been including them.
     first fly after 2023-04-22 was on 2023-04-26. va was still in the diagnostics on
     2023-04-22, but solvent was also water there (and thus also nulled for across-fly
@@ -38,7 +38,7 @@ megamat:
   ```
 
 
-- all GH146>6f data:
+- all GH146>6f data (7 flies):
   - i also had a similar amount of GH146 data w/ 8s/8m (mostly latter), from
     2023-10-18 to 2023-11-30, but may never have analyzed that to same standard,
     b/c we decided to use same indicator as pebbled (6f), to try to keep comparison more

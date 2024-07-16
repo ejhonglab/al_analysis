@@ -1,17 +1,4 @@
 
-- `rdm_concat__kc_soma__megamat__mean_peak__correlation__trialavg.nc`
-  - contents:
-    - correlations from Remy's final 4 megamat flies (17x17 odors).
-      should be same correlations as shown throughout paper.
-
-  - received from: Remy (include date + medium received from)
-
-  - used by:
-    - `al_analysis.py`:
-      - to make fig (#?) comparing model KC vs real KC (check this true)
-      - any other figs? check.
-
-
 - `sent_to_remy`
   - `2023-01-06`
     These 4 files (2 CSVs, and 2 pickle files with same data) probably contain the data
@@ -42,6 +29,54 @@
   - `v2`
      - model KC outputs that still had the offset in the dF/F -> est. spike delta fn,
        and thus still had unnecessarily high KC correlations. Anoop never really used.
+
+
+- `from_remy`
+  - `megamat17`
+    - downloaded from Dropbox folder `Remy/odor_space_collab/for_mendy` on 2024-07-05
+      (though shouldn't have changed in a while, and should be same data Anoop is
+      loading). only copied the KC soma subset of the data from that (large) Dropbox
+      folder.
+
+    - `per_fly`
+      - copied + renamed from `for_mendy/data/megamat17`
+      - used by:
+        - `al_analysis.py`:
+          - to make figs (#?) comparing model vs real KC correlations
+          - any other figs? check.
+
+        - this is also the subset of the Dropbox data that Anoop is loading
+
+    - `respvec_concat`
+      - copied from `for_mendy/concatenated_respvecs_by_imaging_type/kc_soma/megamat17/respvec_concat`
+
+    - `README.html`
+      - some of the folder / file structure descriptions may be wrong now, given my
+        re-organization of the above
+
+
+  - `response_rates`
+    - was used (by `al_analysis.py`) to calculate new 0.0915 response rate target now
+      used for all modelling (was previously using 0.1 target)
+
+    - `refstim__ep_at_-3.0__median__0.120-0.130`
+      - downloaded from Dropbox folder:
+        `Remy/odor_space_collab/analysis_outputs/multistage/multiregion_data/response_breadth/by_trialavg_ref_stim/megamat`
+
+      - received: 2024-04-04, via a Dropbox link on Slack (files may have been on
+        Dropbox for longer)
+
+    - `old_megamat_sparsities`
+      - received: 2024-04-03, via Slack
+
+      - only used to verify one of the files match the corresponding file from folder
+        above (they did).
+
+
+  - `2024-06-05`
+    - odor metadata (full names, PubChem CIDs, etc) for megamat and validation2 panel
+      odors
+    - renamed `megamat17.xlsx` to `megamat.xlsx`
 
 
 - `ann_model_outputs`

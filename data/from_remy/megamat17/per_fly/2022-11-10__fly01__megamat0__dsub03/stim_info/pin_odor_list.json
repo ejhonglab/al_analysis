@@ -1,0 +1,359 @@
+[
+    [
+        {
+            "name": "2-heptanone",
+            "log10_conc": -3.0,
+            "abbrev": "2h"
+        }
+    ],
+    [
+        {
+            "name": "isoamyl acetate",
+            "log10_conc": -3.0,
+            "abbrev": "IaA"
+        }
+    ],
+    [
+        {
+            "name": "pentyl acetate",
+            "log10_conc": -3.0,
+            "abbrev": "pa"
+        }
+    ],
+    [
+        {
+            "name": "acetic acid",
+            "log10_conc": -3.0,
+            "abbrev": "aa"
+        }
+    ],
+    [
+        {
+            "name": "ethyl propionate",
+            "log10_conc": -3.0,
+            "abbrev": "ep"
+        }
+    ],
+    [
+        {
+            "name": "1-hexanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-6ol"
+        }
+    ],
+    [
+        {
+            "name": "2-butanone",
+            "log10_conc": -3.0,
+            "abbrev": "2-but"
+        }
+    ],
+    [
+        {
+            "name": "ethyl butyrate",
+            "log10_conc": -3.0,
+            "abbrev": "eb"
+        }
+    ],
+    [
+        {
+            "name": "methyl salicylate",
+            "log10_conc": -3.0,
+            "abbrev": "ms"
+        }
+    ],
+    [
+        {
+            "name": "1-octanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-8ol"
+        }
+    ],
+    [
+        {
+            "name": "B-citronellol",
+            "log10_conc": -3.0,
+            "abbrev": "B-cit"
+        }
+    ],
+    [
+        {
+            "name": "1-pentanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-5ol"
+        }
+    ],
+    [
+        {
+            "name": "linalool",
+            "log10_conc": -3.0,
+            "abbrev": "Lin"
+        }
+    ],
+    [
+        {
+            "name": "pentanoic acid",
+            "log10_conc": -3.0,
+            "abbrev": "va"
+        }
+    ],
+    [
+        {
+            "name": "hexanal",
+            "log10_conc": -3.0,
+            "abbrev": "6al"
+        }
+    ],
+    [
+        {
+            "name": "benzaldehyde",
+            "log10_conc": -3.0,
+            "abbrev": "benz"
+        }
+    ],
+    [
+        {
+            "name": "trans-2-hexenal",
+            "log10_conc": -3.0,
+            "abbrev": "t2h"
+        }
+    ],
+    [
+        {
+            "name": "linalool",
+            "log10_conc": -3.0,
+            "abbrev": "Lin"
+        }
+    ],
+    [
+        {
+            "name": "trans-2-hexenal",
+            "log10_conc": -3.0,
+            "abbrev": "t2h"
+        }
+    ],
+    [
+        {
+            "name": "pentanoic acid",
+            "log10_conc": -3.0,
+            "abbrev": "va"
+        }
+    ],
+    [
+        {
+            "name": "B-citronellol",
+            "log10_conc": -3.0,
+            "abbrev": "B-cit"
+        }
+    ],
+    [
+        {
+            "name": "2-heptanone",
+            "log10_conc": -3.0,
+            "abbrev": "2h"
+        }
+    ],
+    [
+        {
+            "name": "acetic acid",
+            "log10_conc": -3.0,
+            "abbrev": "aa"
+        }
+    ],
+    [
+        {
+            "name": "ethyl propionate",
+            "log10_conc": -3.0,
+            "abbrev": "ep"
+        }
+    ],
+    [
+        {
+            "name": "hexanal",
+            "log10_conc": -3.0,
+            "abbrev": "6al"
+        }
+    ],
+    [
+        {
+            "name": "1-octanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-8ol"
+        }
+    ],
+    [
+        {
+            "name": "isoamyl acetate",
+            "log10_conc": -3.0,
+            "abbrev": "IaA"
+        }
+    ],
+    [
+        {
+            "name": "1-hexanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-6ol"
+        }
+    ],
+    [
+        {
+            "name": "ethyl butyrate",
+            "log10_conc": -3.0,
+            "abbrev": "eb"
+        }
+    ],
+    [
+        {
+            "name": "pentyl acetate",
+            "log10_conc": -3.0,
+            "abbrev": "pa"
+        }
+    ],
+    [
+        {
+            "name": "2-butanone",
+            "log10_conc": -3.0,
+            "abbrev": "2-but"
+        }
+    ],
+    [
+        {
+            "name": "1-pentanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-5ol"
+        }
+    ],
+    [
+        {
+            "name": "benzaldehyde",
+            "log10_conc": -3.0,
+            "abbrev": "benz"
+        }
+    ],
+    [
+        {
+            "name": "methyl salicylate",
+            "log10_conc": -3.0,
+            "abbrev": "ms"
+        }
+    ],
+    [
+        {
+            "name": "isoamyl acetate",
+            "log10_conc": -3.0,
+            "abbrev": "IaA"
+        }
+    ],
+    [
+        {
+            "name": "linalool",
+            "log10_conc": -3.0,
+            "abbrev": "Lin"
+        }
+    ],
+    [
+        {
+            "name": "methyl salicylate",
+            "log10_conc": -3.0,
+            "abbrev": "ms"
+        }
+    ],
+    [
+        {
+            "name": "acetic acid",
+            "log10_conc": -3.0,
+            "abbrev": "aa"
+        }
+    ],
+    [
+        {
+            "name": "hexanal",
+            "log10_conc": -3.0,
+            "abbrev": "6al"
+        }
+    ],
+    [
+        {
+            "name": "benzaldehyde",
+            "log10_conc": -3.0,
+            "abbrev": "benz"
+        }
+    ],
+    [
+        {
+            "name": "ethyl butyrate",
+            "log10_conc": -3.0,
+            "abbrev": "eb"
+        }
+    ],
+    [
+        {
+            "name": "pentanoic acid",
+            "log10_conc": -3.0,
+            "abbrev": "va"
+        }
+    ],
+    [
+        {
+            "name": "2-butanone",
+            "log10_conc": -3.0,
+            "abbrev": "2-but"
+        }
+    ],
+    [
+        {
+            "name": "ethyl propionate",
+            "log10_conc": -3.0,
+            "abbrev": "ep"
+        }
+    ],
+    [
+        {
+            "name": "1-hexanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-6ol"
+        }
+    ],
+    [
+        {
+            "name": "pentyl acetate",
+            "log10_conc": -3.0,
+            "abbrev": "pa"
+        }
+    ],
+    [
+        {
+            "name": "2-heptanone",
+            "log10_conc": -3.0,
+            "abbrev": "2h"
+        }
+    ],
+    [
+        {
+            "name": "B-citronellol",
+            "log10_conc": -3.0,
+            "abbrev": "B-cit"
+        }
+    ],
+    [
+        {
+            "name": "1-octanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-8ol"
+        }
+    ],
+    [
+        {
+            "name": "trans-2-hexenal",
+            "log10_conc": -3.0,
+            "abbrev": "t2h"
+        }
+    ],
+    [
+        {
+            "name": "1-pentanol",
+            "log10_conc": -3.0,
+            "abbrev": "1-5ol"
+        }
+    ]
+]

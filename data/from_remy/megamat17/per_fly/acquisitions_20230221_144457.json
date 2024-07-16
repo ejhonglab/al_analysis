@@ -1,0 +1,50 @@
+[
+    {
+        "date_imaged": "2022-10-10",
+        "fly_num": 1,
+        "thorimage": "megamat0",
+        "thorsync": "SyncData002",
+        "olf_config": "20221010_181537_stimuli_.yaml",
+        "movie_type": "megamat0",
+        "s2p_stat_file": "2022-10-10/1/megamat0/source_extraction_s2p/suite2p/combined/stat.npy",
+        "bad_trials": [],
+        "imaging_type": "kc_soma",
+        "consecutive_repeats": false
+    },
+    {
+        "date_imaged": "2022-10-10",
+        "fly_num": 2,
+        "thorimage": "megamat0",
+        "thorsync": "SyncData003",
+        "olf_config": "20221010_225908_stimuli_.yaml",
+        "movie_type": "megamat0",
+        "s2p_stat_file": "2022-10-10/2/megamat0/source_extraction_s2p/suite2p/combined/stat.npy",
+        "bad_trials": [],
+        "imaging_type": "kc_soma",
+        "consecutive_repeats": false
+    },
+    {
+        "date_imaged": "2022-10-11",
+        "fly_num": 1,
+        "thorimage": "megamat0",
+        "thorsync": "SyncData003",
+        "olf_config": "20221011_224150_stimuli_.yaml",
+        "movie_type": "megamat0",
+        "s2p_stat_file": "2022-10-11/1/megamat0/source_extraction_s2p/suite2p/combined/stat.npy",
+        "bad_trials": [],
+        "imaging_type": "kc_soma",
+        "consecutive_repeats": false
+    },
+    {
+        "date_imaged": "2022-11-10",
+        "fly_num": 1,
+        "thorimage": "megamat0__dsub03",
+        "thorsync": "SyncData001",
+        "olf_config": "20221110_195736_stimuli_.yaml",
+        "movie_type": "megamat0",
+        "s2p_stat_file": "2022-11-10/1/megamat0__dsub03/source_extraction_s2p/suite2p/combined/stat.npy",
+        "bad_trials": [],
+        "imaging_type": "kc_soma",
+        "consecutive_repeats": false
+    }
+]
