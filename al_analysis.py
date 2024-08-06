@@ -52,7 +52,7 @@ from matplotlib_scalebar.scalebar import ScaleBar
 import seaborn as sns
 import colorcet as cc
 from scipy.optimize import curve_fit
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, f_oneway
 from sklearn.preprocessing import maxabs_scale as sk_maxabs_scale
 from sklearn.preprocessing import minmax_scale as sk_minmax_scale
 from sklearn import metrics
@@ -103,12 +103,13 @@ from natmix import write_corr_dataarray as _write_corr_dataarray
 from hong_logging import init_logger
 
 
-# not sure i'll be able to fix this one...
-# can't seem to convert this warning to error this way.
 # RuntimeWarning: invalid value encountered in scalar multiply
 warnings.filterwarnings('error', 'invalid value encountered in')
 
-# TODO fix!
+# TODO delete or add note about what was previously causing this (+ shorten/remove
+# traceback)
+#
+# TODO fix! (can i repro this now? maybe fixed?)
 # (venv) tom@atlas:~/src/al_analysis$ ./al_analysis.py -d pebbled -n 6f -t 2023-11-19
 # ...
 # thorimage_dir: 2024-01-05/1/diagnostics1
@@ -135,32 +136,16 @@ warnings.filterwarnings('error', 'invalid value encountered in')
 #     fig_path = savefig(fig, ij_plot_dir, f'all_rois_on_{bg_desc}')
 #   File "./al_analysis.py", line 1578, in savefig
 #     fig_or_seaborngrid.savefig(fig_path, **kwargs)
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/figure.py", line 3378, in savefig
-#     self.canvas.print_figure(fname, **kwargs)
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/backends/backend_qtagg.py", line 75, in print_figure
-#     super().print_figure(*args, **kwargs)
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/backend_bases.py", line 2342, in print_figure
-#     self.figure.draw(renderer)
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/artist.py", line 95, in draw_wrapper
-#     result = draw(artist, renderer, *args, **kwargs)
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/artist.py", line 72, in draw_wrapper
-#     return draw(artist, renderer)
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/figure.py", line 3169, in draw
-#     self.get_layout_engine().execute(self)
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/layout_engine.py", line 274, in execute
-#     return do_constrained_layout(fig, w_pad=w_pad, h_pad=h_pad,
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/_constrained_layout.py", line 106, in do_constrained_layout
-#     _api.warn_external('There are no gridspecs with layoutgrids. '
-#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/_api/__init__.py", line 390, in warn_external
-#     warnings.warn(message, category, stacklevel)
+#   ...
 # UserWarning: There are no gridspecs with layoutgrids. Possibly did not call parent GridSpec with the "figure" keyword
-# to filter on substring of message: https://stackoverflow.com/questions/65761137
 #warnings.filterwarnings('error', message='There are no gridspecs with layoutgrids.*')
 
 # should be resolved now. was from a sns.lineplot call with kwargs indicating we wanted
 # error, but without anything to compute error over in input data.
 warnings.filterwarnings('error', message='All-NaN axis encountered')
 
+# to filter on substring of message: https://stackoverflow.com/questions/65761137
+#
 # may need to restrict this, as i think it might still be getting triggered some places.
 # i think this might be the only way to make sure we don't have plots with text outside
 # visible plot, as for ax.text added for viz.matshow group labels (if offsets, etc,
@@ -172,8 +157,6 @@ warnings.filterwarnings('error', message='All-NaN axis encountered')
 # automatically during call?
 warnings.filterwarnings('error', message='constrained_layout not applied.*')
 
-# TODO TODO restore (fix in new catplot fig 2E case)
-#
 # initially encountered when making FacetGrids w/o disabling constrained layout in
 # context manager
 #warnings.filterwarnings('error', message='The figure layout has changed to tight')
@@ -1139,9 +1122,10 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     corr_ser = corr_df.stack(dropna=False)
 
     if ordered_pairs is not None:
-        # could maybe relax this, but only case i'm using ordered_pairs currently has
-        # this True
-        assert set(ordered_pairs) - set(corr_ser.index) == set()
+        # does fail in call from end of load_remy_2e...
+        # (only happened to be true for my first use case. don't think it actually
+        # matters)
+        #assert set(ordered_pairs) - set(corr_ser.index) == set()
 
         pairs = [(b,a) if (b,a) in ordered_pairs else (a,b) for a,b in pairs]
 
@@ -1191,6 +1175,10 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None):
     # least)
     odor1 = for_odor_index.get_level_values('odor1').unique()
     odor2 = for_odor_index.get_level_values('odor2').unique()
+
+    # TODO TODO try to make work without these assertions (would need to change how
+    # odor_indx is defined below). these seem to work if index is sorted, but not for
+    # (at least some) indices before sort_index call.
     assert all(odor2[:-1] == odor1[1:])
     assert odor1[0] not in set(odor2)
     assert odor2[-1] not in set(odor1)
@@ -12130,8 +12118,6 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         df['pair_is_megamat'] = df[['odor1_is_megamat','odor2_is_megamat']
             ].all(axis='columns')
 
-        # TODO TODO need to switch error handing in any of the other
-        # comparison_[orns|kcs] calls???
         if 'seed' in model_corr_df.columns:
             errorbar = seed_errorbar
             err_kws = dict(err_style='bars', errorbar=errorbar, seed=bootstrap_seed)
@@ -12369,6 +12355,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         results = spearmanr(df.model_corr, df.observed_kc_corr)
         spear = results.correlation
         pval = results.pvalue
+        # .2E will show 2 places after decimal then exponent (scientific notation),
+        # e.g. 1.89E-180
         ax.set_title(f'{title}\n\nspearman rho={spear:.2f}, p={pval:.2E}')
 
         ax.set_xlabel('KC correlation distance (observed)')
@@ -13229,73 +13217,116 @@ def load_remy_megamat_mean_kc_corrs() -> pd.DataFrame:
 
 remy_2e_metric = 'correlation_distance'
 
-# TODO TODO fix UserWarning: The figure layout has changed to tight
+_fig2e_shared_plot_kws = dict(
+    x='odor_pair_str',
+    y=remy_2e_metric,
+
+    errorbar=seed_errorbar,
+    seed=bootstrap_seed,
+    err_kws=dict(linewidth=1.5),
+
+    markersize=7,
+    markeredgewidth=0,
+)
+
+# TODO add some kind of module level dict of fig ID -> pair_order, and use to check each
+# fig is getting the same pair_order across these two calls? or use so that only first
+# call even takes pair_order, but then assert model pairs are a subset in the
+# subsequence call(s)?
+#
+# need @no_constrained_layout since otherwise FacetGrid creation would warn with
+# Warning: The figure layout has changed to tight
+# (since my MPL config has constrained layout as default)
+@no_constrained_layout
 def _create_2e_plot_with_obs_kc_corrs(df_obs: pd.DataFrame, pair_order: np.array
     ) -> sns.FacetGrid:
+
+    odor_pair_set = set(pair_order)
+    assert odor_pair_set == set(df_obs.odor_pair_str.unique())
+    assert len(odor_pair_set) == len(pair_order)
+
+    # don't have any identity correlations (odors correlated with themselves)
+    assert not (df_obs.abbrev_row == df_obs.abbrev_col).any()
+
     # other types besides array might work for pair_order, but I've only been using
     # arrays (as in Remy's code I adapted from)
     g = sns.catplot(
         data=df_obs,
-        x='odor_pair_str',
-        y=remy_2e_metric,
 
-        # TODO work to omit?
+        # TODO work to omit if input has x='odor_pair_str' values in sorted order i
+        # want (and would it matter if subsequent calls had same order, or would it be
+        # aligned?)
+        # TODO what about if x column is a pd.Categorical(..., ordered=True)
+        # (and if there are sometimes cases where data isn't aligned correctly across
+        # calls, does this change the situation?)
         order=pair_order,
 
         kind='point',
-        errorbar=seed_errorbar,
 
-        # TODO so it's jittering? can i seed that? not that it really
-        # matters, except for running w/ -c flag...
-        # i'm assuming seed= doesn't also seed jitter?
+        # TODO so it's jittering? can i seed that? not that it really matters, except
+        # for running w/ -c flag...  i'm assuming seed= doesn't also seed jitter?
+        # (haven't had -c flag trip, so i'm assuming it's not actually jittering [maybe
+        # not enough data that there is a need?] or same seed controls that)
         #
         # jitter=False,
 
         color='k',
+
         aspect=2.5,
         height=7,
-        markersize=7,
-        markeredgewidth=0,
         linewidth=1,
-        # TODO share linewidth def w/ model call?
-        err_kws=dict(linewidth=1.5),
 
-        seed=bootstrap_seed,
+        **_fig2e_shared_plot_kws
     )
+
+    # test output same whether input is 'correlation' or 'correlation_distance', as
+    # expected.
+    pair_metrics = []
+    for _, gdf in df_obs.groupby('odor_pair_str'):
+        pair_metrics.append(gdf[remy_2e_metric].to_numpy())
+
+    # one way ANOVA (null is that groups have same population mean. groups can be diff
+    # sizes)
+    result = f_oneway(*pair_metrics)
+    # from scipy docs:
+    # result.statistic: "The computed F statistic of the test."
+    # result.pvalue: "The associated p-value from the F distribution."
+
+    g.ax.set_title(
+        f'{len(odor_pair_set)} non-identity odor pairs\n'
+        # .2E will show 2 places after decimal w/ exponent (scientific notation)
+        f'(one way ANOVA) F-statistic: {result.statistic:.2f}, p={result.pvalue:.2E}'
+    )
+
     return g
 
 
+@no_constrained_layout
 def _2e_plot_model_corrs(g: sns.FacetGrid, df: pd.DataFrame, pair_order: np.ndarray,
     **kwargs) -> None:
 
-    # TODO refactor some of these kws to share w/ catplot fn?
     sns.pointplot(data=df,
-        x='odor_pair_str',
-        y=remy_2e_metric,
-
-        # TODO work to omit?
         order=pair_order,
 
-        errorbar=seed_errorbar,
-        ax=g.ax,
-        err_kws=dict(linewidth=1.5),
         linestyle='none',
-        markersize=7,
-        markeredgewidth=0,
-        seed=bootstrap_seed,
-        **kwargs
+        ax=g.ax,
+
+        **_fig2e_shared_plot_kws, **kwargs
     )
 
 
+@no_constrained_layout
 def _finish_remy_2e_plot(g: sns.FacetGrid) -> None:
     g.set_axis_labels('odor pairs', remy_2e_metric)
-    g.fig.subplots_adjust(bottom=0.2, top=0.9)
+    # 0.9 wasn't enough to have axes title and suptitle not overlap
+    g.fig.subplots_adjust(bottom=0.2, top=0.85)
 
     # TODO use paper's 1.2 instead? or just leave unset? just set min to 0?
-    # TODO why does it seem to be showing as 1.2 w/ this at 1.4 anyway?
+    # TODO TODO why does it seem to be showing as 1.2 w/ this at 1.4 anyway?
     g.ax.set_ylim(0, 1.4)
 
     g.fig.suptitle(f'odor-odor {remy_2e_metric}\nerrorbar={seed_errorbar}')
+
     sns.despine(fig=g.fig, trim=True, offset=2)
     g.ax.xaxis.set_tick_params(rotation=90, labelsize=8)
 
@@ -13303,7 +13334,15 @@ def _finish_remy_2e_plot(g: sns.FacetGrid) -> None:
 
 
 # TODO rename to ...corr_dists or something?
-def load_remy_2e_corrs() -> pd.DataFrame:
+def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFrame:
+
+    # just for some debug outputs (currently 1 CSV w/ flies listed for each odor pair,
+    # and recreation of Remy's old 2E plot). nothing hugely important.
+    if plot_dir is not None:
+        output_root = plot_dir
+    else:
+        output_root = Path('.')
+
     # TODO move relevant data to my own path in this repo (to pin version, independent
     # of what remy pushes to this repo) (-> use those files below)
     repo_root = Path.home() / 'src/OdorSpaceShare'
@@ -13313,7 +13352,6 @@ def load_remy_2e_corrs() -> pd.DataFrame:
 
     # TODO roughly compare old vs new data? or just make plots w/ both (after settling
     # on error repr...)
-    use_preprint_data = False
     if use_preprint_data:
         warn('using pre-print data for 2E (set use_preprint_data=False to use newer '
             'data)!'
@@ -13348,14 +13386,15 @@ def load_remy_2e_corrs() -> pd.DataFrame:
 
     # (currently renaming my model output odors to match remy's, during creation of my
     # 2E plots, so no need for now)
-    # TODO TODO rename 'MethOct' -> 'moct', to be consistent w/ mine
-    #import ipdb; ipdb.set_trace()
+    # TODO rename 'MethOct' -> 'moct', to be consistent w/ mine
 
     # TODO refactor to share def of these 2 odor cols w/ elsewhere?
     #
     # within each fly, expect each pair to only be reported once
     assert not df_obs.duplicated(subset=['datefly','abbrev_row','abbrev_col']).any()
 
+    # TODO TODO maybe do load + use this if use_preprint_data=True though? can i
+    # recreate her plot exactly otherwise?
     # TODO delete
     '''
     pair_order = np.load(data_folder.joinpath('odor_pair_ord_trialavg.npy'),
@@ -13382,11 +13421,6 @@ def load_remy_2e_corrs() -> pd.DataFrame:
         # [0][0] for (array([i]),) -> i
         lambda x: np.where(x == pair_order)[0][0]
     )
-    # TODO TODO TODO just replace sorting to pair_order w/ sorting on mean correlation?
-    # it seems that's pretty much what pair_order was doing...
-    # (would only not want to, so that i could recreate preprint fig ~exactly)
-    print('define my own pair_order w/ sorting on mean KC correlation')
-
     df_obs = df_obs.sort_values('pair_index', kind='stable')
     '''
     # plot ordering of odor pairs (ascending observed correlations)
@@ -13451,7 +13485,6 @@ def load_remy_2e_corrs() -> pd.DataFrame:
     del s1
 
     # TODO delete?
-    # TODO move outside? so i can save CSV in appropriate path (w/o having to pass in)
     n_summary = pd.concat([
             df_obs.groupby('odor_pair_str', sort=False).size(),
             unique_datefly_per_pair
@@ -13462,9 +13495,14 @@ def load_remy_2e_corrs() -> pd.DataFrame:
     assert np.array_equal(n_summary.index, pair_order)
 
     n_summary.datefly = n_summary.datefly.map(lambda x: ', '.join(x))
-    # TODO pass in directory and save this under there?
+
+    if use_preprint_data:
+        suffix = '_OLD-PREPRINT-DATA'
+    else:
+        suffix = ''
+
     # TODO TODO inspect with remy
-    to_csv(n_summary, 'remy_2e_n_per_pair.csv')
+    to_csv(n_summary, output_root / f'remy_2e_n_per_pair{suffix}.csv')
     #
 
     df_obs['correlation_distance'] = 1 - df_obs.correlation
@@ -13499,8 +13537,19 @@ def load_remy_2e_corrs() -> pd.DataFrame:
         #'odor_pair',
     ]]
 
-    # TODO restore (passing plot dir in?)?
-    plot = False
+    # only want to make this plot (to show we can recreate preprint figure), when data
+    # we are loading is same as in preprint. currently i'm only ever using that data to
+    # show we can recreate this plot.
+    plot = use_preprint_data
+
+    # TODO fix so i can pass new errorbar into plotting fns, so that i can force
+    # that seed_errorbar value for reproducing this plot
+    # TODO change to err in meantime? only point of this call w/ use_preprint_data=True
+    # is to make this plot...
+    if seed_errorbar != ('ci', 95):
+        warn("set seed_errorbar=('ci', 95) if you want to reproduce preprint 2E")
+        plot = False
+
     if plot:
         g = _create_2e_plot_with_obs_kc_corrs(df_obs, pair_order)
 
@@ -13535,23 +13584,123 @@ def load_remy_2e_corrs() -> pd.DataFrame:
 
         _finish_remy_2e_plot(g)
 
-        # TODO refactor to share? delete (w/ surrounding code too?)?
-        if seed_errorbar is None:
-            err_part = ''
-        elif type(seed_errorbar) is not str:
-            err_part = f'_{"-".join([str(x) for x in seed_errorbar])}'
-        else:
-            err_part = f'_{seed_errorbar}'
-        #
+        # NOTE: no seed_errorbar part in filename here, as only saving this if it's same
+        # as preprints ('ci', 95)
+        savefig(g, output_root, '2e_preprint-repro_old_data')
 
-    # TODO delete
-    df = df_obs
-    # TODO TODO TODO compare (at least megamat subset of) df_obs against my correlations
-    # computed elsewhere (probably after subsetting by panel and which fly, warning if
-    # there are e.g. more megamat flies in df_obs)
-    print('FINISH COMPARING 2E CORRS TO OTHER CORRS IM LOADING')
-    #mean_responses = _load_remy_megamat_kc_corrs()
-    #import ipdb; ipdb.set_trace()
+
+    checks = True
+    if checks and not use_preprint_data:
+        # data from best 4 "final" flies, which are the only megamat odor correlations
+        # used anywhere in the paper except for figure 2E.
+        mean_responses = _load_remy_megamat_kc_corrs()
+
+        final_megamat_datefly = set(mean_responses.index.get_level_values('datefly'))
+        assert n_final_megamat_kc_flies == len(final_megamat_datefly)
+
+        mean_responses.columns = mean_responses.columns.map(olf.parse_odor_name)
+        assert not mean_responses.columns.duplicated().any()
+        assert set(mean_responses.columns) == megamat_odor_names
+
+        # TODO refactor w/ place copied from in model_mb...?
+        remy_pairs = set(list(zip(df_obs.abbrev_row, df_obs.abbrev_col)))
+
+        corrs = mean_responses.groupby(level='datefly').apply(
+            lambda x: corr_triangular(x.corr(), ordered_pairs=remy_pairs)
+        )
+        assert not corrs.isna().any().any()
+
+        n_megamat_only_pairs = n_choose_2(n_megamat_odors)
+        assert len(corrs.columns) == n_megamat_only_pairs
+
+        # all the (ordered) pairs we have in corrs are in df_obs.odor_pair_str
+        assert set(
+                corrs.columns.get_level_values('odor1') + ', ' +
+                corrs.columns.get_level_values('odor2')
+            ) - set(df_obs.odor_pair_str) == set()
+
+        for datefly in corrs.index:
+            fly_df = df_obs[df_obs.datefly == datefly]
+            # none of the final 4 flies had other odor pairs measured
+            assert len(fly_df) == n_megamat_only_pairs
+
+            fly_ser = fly_df[['abbrev_row', 'abbrev_col', 'correlation_distance']
+                ].set_index(['abbrev_row', 'abbrev_col'])
+
+            # just to convert from shape (n, 1) to (n,)
+            fly_ser = fly_ser.iloc[:, 0]
+
+            fly_ser.index.names = ['odor1', 'odor2']
+
+            # convert from correlation distance to correlation (to match what we have in
+            # corrs)
+            fly_ser = 1 - fly_ser
+            fly_ser.name = 'correlation'
+
+            fly_ser2 = corrs.loc[datefly]
+            assert set(fly_ser.index) == set(fly_ser2.index)
+
+            assert np.allclose(fly_ser.loc[fly_ser2.index], fly_ser2)
+
+        df_megamat = df_obs[
+            df_obs.abbrev_row.isin(megamat_odor_names) &
+            df_obs.abbrev_col.isin(megamat_odor_names)
+        ]
+
+        assert final_megamat_datefly - set(df_megamat.datefly) == set()
+        df_megamat_nonfinal = df_megamat[
+            ~df_megamat.datefly.isin(final_megamat_datefly)
+        ]
+
+        # only the 4 "final" flies have all 17 odors measured (-> all 136 non-identity
+        # pairs)
+        #
+        # ipdb> [len(x) for _, x in df_megamat_nonfinal.groupby('datefly')]
+        # [47, 10, 28, 30, 21, 38, 38, 36, 36, 36, 57, 79, 71, 71, 3, 3, 3, 3]
+        assert all(len(x) < n_megamat_only_pairs
+            for _, x in df_megamat_nonfinal.groupby('datefly')
+        )
+
+        assert remy_2e_metric == 'correlation_distance'
+        mean_nonfinal_corrdist = df_megamat_nonfinal.groupby(['abbrev_row','abbrev_col']
+            )[remy_2e_metric].mean()
+
+        mean_nonfinal_corrdist.index.names = ['odor1', 'odor2']
+
+        square_nonfinal_corrdist = invert_corr_triangular(mean_nonfinal_corrdist,
+            diag_value=0, _index=corrs.columns
+        )
+
+        square_nonfinal_corrs = 1 - square_nonfinal_corrdist
+
+        # since sorting expects concentrations apparently...
+        square_nonfinal_corrs.columns = square_nonfinal_corrs.columns + ' @ -3'
+        square_nonfinal_corrs.index = square_nonfinal_corrs.index + ' @ -3'
+
+        square_nonfinal_corrs = sort_odors(util.addlevel(
+                util.addlevel(square_nonfinal_corrs, 'panel', 'megamat').T,
+            'panel', 'megamat'
+            ), warn=False
+        )
+
+        square_nonfinal_corrs = square_nonfinal_corrs.droplevel('panel', axis='columns'
+            ).droplevel('panel', axis='index')
+
+        plot_corr(square_nonfinal_corrs, output_root,
+            '2e_remy_nonfinal-flies-only_corr', xlabel='non-final flies only'
+        )
+
+        # TODO actually plot this / delete
+        '''
+        nonfinal_pair_n = df_megamat_nonfinal.groupby(['abbrev_row','abbrev_col']
+            ).size()
+        # TODO just rename these cols in dataframe before (so we don't have to do this
+        # here and for mean)
+        nonfinal_pair_n.index.names = ['odor1', 'odor2']
+        nonfinal_pair_n = invert_corr_triangular(nonfinal_pair_n, diag_value=np.nan,
+            _index=corrs.columns
+        )
+        '''
     #
 
     return df_obs
@@ -15807,12 +15956,11 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         if panel != 'megamat':
             continue
 
-        # TODO TODO check that we can subset to same flies as in correlations
-        # otherwise (?)
-        # TODO implement above check by returning something other than mean from the
-        # correlation loading fn? or helper that appends fly metadata, which the
-        # mean fn uses?
-        remy_2e_corrs = load_remy_2e_corrs()
+        remy_2e_corrs = load_remy_2e_corrs(panel_plot_dir)
+
+        # don't actually care about output data here, but it will save extra a plot
+        # showing we can recreate the preprint fig 2E when use_preprint_data=True
+        load_remy_2e_corrs(panel_plot_dir, use_preprint_data=True)
 
         # should already be sorted by mean-pair-correlation in load_remy_2e_corrs,
         # with all entries of each pair grouped together
@@ -15920,8 +16068,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
                 color = label2color[label]
 
-                # TODO TODO TODO check plot_n_odors_per_cell still works with these
-                # stripped (or copy this to a backup, and use that there)
                 responses.columns = responses.columns.map(olf.parse_odor_name)
                 assert not responses.columns.isna().any()
                 assert not responses.columns.duplicated().any()
@@ -16110,38 +16256,43 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     assert first_model_pairs is None
                     first_model_pairs = model_pairs
 
-                    remy_2e_corrs_in_model_mask = remy_2e_corrs.apply(
-                        lambda x: (x.abbrev_row, x.abbrev_col) in model_pairs, axis=1
-                    )
-                    # TODO reset_index(drop=True)? prob no real effect on plots...
-                    remy_2e_corrs_in_model = remy_2e_corrs[remy_2e_corrs_in_model_mask]
+                    if desc != 'hallem':
+                        remy_2e_corrs_in_model_mask = remy_2e_corrs.apply(lambda x:
+                            (x.abbrev_row, x.abbrev_col) in model_pairs, axis=1
+                        )
+                        # TODO reset_index(drop=True)? prob no real effect on plots...
+                        remy_2e_corrs_in_model = remy_2e_corrs[
+                            remy_2e_corrs_in_model_mask
+                        ]
 
-                    assert 0 == len(
-                        # in pebbled+megamat case, the two sets should also be equal.
-                        # in hallem case, model_pairs will have many pairs not in what
-                        # Remy gave me (but all of Remy's pairs should have both odors
-                        # in Hallem).
-                        set(list(zip(
-                            remy_2e_corrs_in_model.abbrev_row,
-                            remy_2e_corrs_in_model.abbrev_col
-                        ))) - model_pairs
-                    )
+                        assert 0 == len(
+                            # in pebbled+megamat case, the two sets should also be
+                            # equal.  in hallem case, model_pairs will have many pairs
+                            # not in what Remy gave me (but all of Remy's pairs should
+                            # have both odors in Hallem).
+                            set(list(zip(
+                                remy_2e_corrs_in_model.abbrev_row,
+                                remy_2e_corrs_in_model.abbrev_col
+                            ))) - model_pairs
+                        )
 
-                    # unlike pair sets, elements here are str (e.g. 'a, b')
-                    remy_2e_pair_order_in_model = np.array([
-                        x for x in remy_2e_pair_order
-                        if tuple(x.split(', ')) in model_pairs
-                    ])
-                    assert (
-                        set(remy_2e_corrs_in_model.odor_pair_str) ==
-                        set(remy_2e_pair_order_in_model)
-                    )
+                        # unlike pair sets, elements here are str (e.g. 'a, b')
+                        remy_2e_pair_order_in_model = np.array([
+                            x for x in remy_2e_pair_order
+                            if tuple(x.split(', ')) in model_pairs
+                        ])
+                        assert (
+                            set(remy_2e_corrs_in_model.odor_pair_str) ==
+                            set(remy_2e_pair_order_in_model)
+                        )
 
-                    # making a version of this where we show all KC pairs (and only
-                    # model data when we can) before this loop.
-                    remy_2e_modelsubset_facetgrid = _create_2e_plot_with_obs_kc_corrs(
-                        remy_2e_corrs_in_model, remy_2e_pair_order_in_model
-                    )
+                        # making a version of this where we show all KC pairs (and only
+                        # model data when we can) before this loop.
+                        remy_2e_modelsubset_facetgrid = \
+                            _create_2e_plot_with_obs_kc_corrs(
+                                remy_2e_corrs_in_model,
+                                remy_2e_pair_order_in_model
+                        )
                 else:
                     assert first_model_pairs is not None
                     # checking each iteration of this loop would be plotting the same
@@ -16166,10 +16317,11 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     remy_2e_pair_order, color=color, label=label
                 )
 
-                assert remy_2e_modelsubset_facetgrid is not None
-                _2e_plot_model_corrs(remy_2e_modelsubset_facetgrid, corr_dists,
-                    remy_2e_pair_order_in_model, color=color, label=label
-                )
+                if desc != 'hallem':
+                    assert remy_2e_modelsubset_facetgrid is not None
+                    _2e_plot_model_corrs(remy_2e_modelsubset_facetgrid, corr_dists,
+                        remy_2e_pair_order_in_model, color=color, label=label
+                    )
 
                 # TODO why does the hemibrain line on this seem more like ~0.6 than
                 # the ~0.5 in preprint? matter (remy wasn't concerned enough to
@@ -16190,9 +16342,11 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 plot_n_odors_per_cell(responses, s1c_ax, label=label, color=color)
 
 
-            assert remy_2e_modelsubset_facetgrid is not None
             _finish_remy_2e_plot(remy_2e_facetgrid)
-            _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid)
+
+            if desc != 'hallem':
+                assert remy_2e_modelsubset_facetgrid is not None
+                _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid)
 
             # TODO refactor to share
             # seed_errorbar is used internally by plot_n_odors_per_cell
@@ -16205,9 +16359,12 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             #
 
             savefig(remy_2e_facetgrid, panel_plot_dir, f'2e_{desc}{err_part}')
-            savefig(remy_2e_modelsubset_facetgrid, panel_plot_dir,
-                f'2e_{desc}_model-subset_{err_part}'
-            )
+
+            # model subset same in this case
+            if desc != 'hallem':
+                savefig(remy_2e_modelsubset_facetgrid, panel_plot_dir,
+                    f'2e_{desc}_model-subset_{err_part}'
+                )
 
             # TODO double check error bars are 95% ci. some reason matt's are so much
             # larger? previous remy data really much more noisy here?
