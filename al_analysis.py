@@ -414,7 +414,9 @@ diverging_cmap = plt.get_cmap('RdBu_r')
 
 # since default set_bad seems to be ~white, which was fine for 'plasma' (which doesn't
 # contain white), but now is not distinct from cmap midpoint (0.)
-diverging_cmap.set_bad('gray')
+#
+# lighter gray than 'gray', and according to Sam, B takes less issue with this color
+diverging_cmap.set_bad((0.8, 0.8, 0.8))
 
 # TODO actually set colors for stuff outside diverging_cmap range?
 # (just need cmap.set_[over|under] and extend='both' (or 'min'|'max', if only want
@@ -11444,28 +11446,35 @@ seed_errorbar = ('ci', 95)
 # was at B'c request to make new 2E versions using ('ci', 95), taking the first 20
 # (/100) seeds.
 #
-# TODO TODO clarify. not sure yet if she wants me to handle other seed_errorbar plots
-# this way too...
-# TODO TODO revert to 20 (but maybe ignore for 3B scatterplots [and S1C?])
+# TODO clarify. not sure yet if she wants me to handle other seed_errorbar plots
+# this way too... (don't think we do)
+# TODO revert to 20 (but maybe ignore for 3B scatterplots [and S1C?])
 #n_first_seeds_for_errorbar = 20
 n_first_seeds_for_errorbar = None
 
+def _get_seed_err_text_and_fname_suffix(*, errorbar=seed_errorbar,
+    n_first_seeds=n_first_seeds_for_errorbar):
 
-if seed_errorbar is None:
-    seed_err_fname_suffix = ''
-elif type(seed_errorbar) is not str:
-    seed_err_fname_suffix = f'_{"-".join([str(x) for x in seed_errorbar])}'
-else:
-    seed_err_fname_suffix = f'_{seed_errorbar}'
+    if errorbar is None:
+        fname_suffix = ''
+    elif type(errorbar) is not str:
+        fname_suffix = f'_{"-".join([str(x) for x in errorbar])}'
+    else:
+        fname_suffix = f'_{errorbar}'
 
-# for use in plot titles / similar
-seed_err_text = f'errorbar={seed_errorbar}'
+    # for use in plot titles / similar
+    err_text = f'errorbar={errorbar}'
 
-if n_first_seeds_for_errorbar is not None:
-    seed_err_fname_suffix += f'_{n_first_seeds_for_errorbar}first-seeds-only'
-    seed_err_text += (f'\nonly analyzing first {n_first_seeds_for_errorbar}/{n_seeds} '
-        'seeds'
-    )
+    if n_first_seeds is not None:
+        fname_suffix += f'_{n_first_seeds}first-seeds-only'
+        err_text += (f'\nonly analyzing first {n_first_seeds}/{n_seeds} '
+            'seeds'
+        )
+
+    return err_text, fname_suffix
+
+seed_err_text, seed_err_fname_suffix = _get_seed_err_text_and_fname_suffix()
+
 
 # TODO use in other places that do something similar?
 # TODO factor to hong2p.util?
@@ -11479,9 +11488,11 @@ def is_sequential(data) -> bool:
     return set(range(data.min(), data.max() + 1)) == set(data)
 
 
-def select_first_n_seeds(df: pd.DataFrame) -> pd.DataFrame:
+def select_first_n_seeds(df: pd.DataFrame, *,
+    n_first_seeds: Optional[int] = n_first_seeds_for_errorbar) -> pd.DataFrame:
+
     # assuming this function simply won't be called otherwise
-    assert n_first_seeds_for_errorbar is not None
+    assert n_first_seeds is not None
 
     # assuming this fn only called on data w/ seed information (either as a column or
     # row index level)
@@ -11491,10 +11502,9 @@ def select_first_n_seeds(df: pd.DataFrame) -> pd.DataFrame:
         assert 'seed' in df.index.names
         seed_vals = df.index.get_level_values('seed')
 
-    if verbose:
-        warn(f'subsetting model data to first {n_first_seeds_for_errorbar} seeds!')
+    warn(f'subsetting model data to first {n_first_seeds} seeds!')
 
-    first_n_seeds = seed_vals.sort_values().unique()[:n_first_seeds_for_errorbar]
+    first_n_seeds = seed_vals.sort_values().unique()[:n_first_seeds]
     assert seed_vals.min() == first_n_seeds.min() and is_sequential(first_n_seeds)
 
     # NOTE: not copy-ing. assuming caller won't try to mutate output w/o manually
@@ -11504,7 +11514,7 @@ def select_first_n_seeds(df: pd.DataFrame) -> pd.DataFrame:
     # wouldn't play nice if there were ever e.g. a diff number of cells per seed, but
     # that's not how it is now. this assertion isn't super important though, just a
     # sanity check.
-    assert np.isclose(len(subset) / len(df), n_first_seeds_for_errorbar / n_seeds)
+    assert np.isclose(len(subset) / len(df), n_first_seeds / n_seeds)
 
     return subset
 
@@ -11530,6 +11540,9 @@ def plot_n_odors_per_cell(responses, ax, *, ax_for_ylabel=None, title=None,
     n_odor_index = pd.RangeIndex(0, (n_odors + 1), name=n_odors_col)
 
     lineplot_kws = dict(
+        # TODO refactor to share (subset of) these w/ other plots using seed_errorbar?
+        #
+        # like 'white' more than 'None' for markerfacecolor here.
         marker='o', markerfacecolor='white', linestyle=linestyle, legend=False,
         ax=ax
     )
@@ -12182,10 +12195,12 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         if 'seed' in sparsity_per_odor.columns:
             assert n_first_seeds_for_errorbar is None, 'implement here if using'
 
-            # TODO have markerfacecolor='white', whether or not we want to show
-            # errorbars (maybe after a -c check that hemibrain stuff unchanged w/o)?
-            # TODO refactor to share these w/ plot_n_odors_per_cell (+ other places that
+            # TODO factor (subset of?) these kws into a seed_errorbar_style_kws or
+            # something? to share these w/ plot_n_odors_per_cell (+ other places that
             # should use same errorbar style)
+            #
+            # TODO have markerfacecolor='None', whether or not we want to show
+            # errorbars (maybe after a -c check that hemibrain stuff unchanged w/o)?
             err_kws = dict(markerfacecolor='white', errorbar=seed_errorbar,
                 seed=bootstrap_seed, err_style='bars'
             )
@@ -12204,10 +12219,6 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # TODO how to label this? label='tuned'?
             color = 'gray'
             sns.lineplot(comparison_sparsity_per_odor, x=odor_col, y=sparsity_col,
-                # TODO revert? trying out filled markers for the sparsity plot, for
-                # purposes of combining w/ below plot (which i'll use non-filled markers
-                # for)
-                #markerfacecolor='white'
                 color=color, marker='o', markeredgecolor=color, legend=False,
                 label=f'{ylabel} (tuned)', ax=ax, **err_kws
             )
@@ -12703,7 +12714,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
             marker_only_kws = dict(
                 markers=True, marker='o', errorbar=None,
+
                 # to remove white edge of markers (were not respecting alpha)
+                # (seem to work file w/ alpha, at least when set in non-'palette' case
+                # below... was probably an issue when using hue/palette?)
                 markeredgecolor='none',
             )
             # TODO should point / error display not be consistent between this and S1C /
@@ -12714,8 +12728,19 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             )
             # more trouble than worth w/ palette (where values are 4 tuples w/ alpha)
             if 'palette' not in color_kws:
+                # seems to default to white otherwise
+                marker_only_kws['markeredgecolor'] = color_kws['color']
+                # TODO if i like, refactor to share w/ other seed_errorbar plots?
+                # TODO TODO like 'None' more than 'white' here? for some other pltos
+                # (mainly those w/ lines thru them too), i liked 'white' more.
+                marker_only_kws['markerfacecolor'] = 'None'
+
+                # TODO still want some alpha < 1, when just showing edge (not face) of
+                # markers?
+                #
                 # .3 too high, .2 pretty good, .15 maybe too low
                 marker_only_kws['alpha'] = 0.175
+
                 # 0.5 maybe verging on too low by itself, but still bit too crowded when
                 # overlapping. .4 pretty good
                 err_only_kws['alpha'] = 0.35
@@ -13659,7 +13684,7 @@ _fig2e_shared_plot_kws = dict(
     err_kws=dict(linewidth=1.5),
 
     markersize=7,
-    markeredgewidth=0,
+    #markeredgewidth=0,
 )
 
 # TODO add some kind of module level dict of fig ID -> pair_order, and use to check each
@@ -13671,8 +13696,8 @@ _fig2e_shared_plot_kws = dict(
 # Warning: The figure layout has changed to tight
 # (since my MPL config has constrained layout as default)
 @no_constrained_layout
-def _create_2e_plot_with_obs_kc_corrs(df_obs: pd.DataFrame, pair_order: np.array
-    ) -> sns.FacetGrid:
+def _create_2e_plot_with_obs_kc_corrs(df_obs: pd.DataFrame, pair_order: np.array, *,
+    fill_markers=True) -> sns.FacetGrid:
 
     odor_pair_set = set(pair_order)
     assert odor_pair_set == set(df_obs.odor_pair_str.unique())
@@ -13680,6 +13705,15 @@ def _create_2e_plot_with_obs_kc_corrs(df_obs: pd.DataFrame, pair_order: np.array
 
     # don't have any identity correlations (odors correlated with themselves)
     assert not (df_obs.abbrev_row == df_obs.abbrev_col).any()
+
+    color = 'k'
+
+    if fill_markers:
+        marker_kws = dict(markeredgewidth=0)
+    else:
+        # TODO TODO why are lines on these points thinner than in model corr plot call
+        # (below)? (was because linewidth)
+        marker_kws = dict(markerfacecolor='white', markeredgecolor=color)
 
     # other types besides array might work for pair_order, but I've only been using
     # arrays (as in Remy's code I adapted from)
@@ -13703,13 +13737,14 @@ def _create_2e_plot_with_obs_kc_corrs(df_obs: pd.DataFrame, pair_order: np.array
         #
         # jitter=False,
 
-        color='k',
+        color=color,
 
         aspect=2.5,
         height=7,
-        linewidth=1,
+        #linewidth=1,
 
-        **_fig2e_shared_plot_kws
+        **_fig2e_shared_plot_kws,
+        **marker_kws
     )
 
     # test output same whether input is 'correlation' or 'correlation_distance', as
@@ -13736,10 +13771,20 @@ def _create_2e_plot_with_obs_kc_corrs(df_obs: pd.DataFrame, pair_order: np.array
 
 @no_constrained_layout
 def _2e_plot_model_corrs(g: sns.FacetGrid, df: pd.DataFrame, pair_order: np.ndarray,
-    **kwargs) -> None:
+    n_first_seeds: Optional[int] = n_first_seeds_for_errorbar, **kwargs) -> None:
 
-    if n_first_seeds_for_errorbar is not None and 'seed' in df.columns:
-        df = select_first_n_seeds(df)
+    if n_first_seeds is not None and 'seed' in df.columns:
+        df = select_first_n_seeds(df, n_first_seeds=n_first_seeds)
+
+    # TODO some way to get hue/palette to work w/ markeredgecolor? i assume not
+    if 'hue' not in kwargs:
+        assert 'color' in kwargs
+        # TODO like? factor to share w/ other seed_errorbar plots?
+        marker_kws = dict(markerfacecolor='None', markeredgecolor=kwargs['color'])
+    else:
+        # TODO keep? remy had before, but obviously prevents markeredgecolor working in
+        # above case. not sure i care about this in hue/palette case.
+        marker_kws = dict(markeredgewidth=0)
 
     sns.pointplot(data=df,
         order=pair_order,
@@ -13747,12 +13792,14 @@ def _2e_plot_model_corrs(g: sns.FacetGrid, df: pd.DataFrame, pair_order: np.ndar
         linestyle='none',
         ax=g.ax,
 
-        **_fig2e_shared_plot_kws, **kwargs
+        **_fig2e_shared_plot_kws, **kwargs, **marker_kws
     )
 
 
 @no_constrained_layout
-def _finish_remy_2e_plot(g: sns.FacetGrid) -> None:
+def _finish_remy_2e_plot(g: sns.FacetGrid, *, n_first_seeds=n_first_seeds_for_errorbar
+    ) -> None:
+
     g.set_axis_labels('odor pairs', remy_2e_metric)
     # 0.9 wasn't enough to have axes title and suptitle not overlap
     g.fig.subplots_adjust(bottom=0.2, top=0.85)
@@ -13760,6 +13807,8 @@ def _finish_remy_2e_plot(g: sns.FacetGrid) -> None:
     # TODO use paper's 1.2 instead? or just leave unset? just set min to 0?
     # TODO TODO why does it seem to be showing as 1.2 w/ this at 1.4 anyway?
     g.ax.set_ylim(0, 1.4)
+
+    seed_err_text, _ = _get_seed_err_text_and_fname_suffix(n_first_seeds=n_first_seeds)
 
     g.fig.suptitle(f'odor-odor {remy_2e_metric}\n{seed_err_text}')
 
@@ -16406,6 +16455,14 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         if panel != 'megamat':
             continue
 
+        # NOTE: special casing handling of this plot. other plots dealing with errorbars
+        # across seeds will NOT subset seeds to first 20 (using global
+        # `n_first_seeds_for_errorbar = None` instead)
+        fig2e_n_first_seeds = 20
+        _, fig2e_seed_err_fname_suffix = _get_seed_err_text_and_fname_suffix(
+            n_first_seeds=fig2e_n_first_seeds
+        )
+
         remy_2e_corrs = load_remy_2e_corrs(panel_plot_dir)
 
         # don't actually care about output data here, but it will save extra a plot
@@ -16499,7 +16556,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # inside the loop, we also make another version that only shows the KC data
             # that also has model data
             remy_2e_facetgrid = _create_2e_plot_with_obs_kc_corrs(remy_2e_corrs,
-                remy_2e_pair_order
+                remy_2e_pair_order, fill_markers=False
             )
 
             s1c_fig, s1c_ax = plt.subplots()
@@ -16740,8 +16797,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                         # model data when we can) before this loop.
                         remy_2e_modelsubset_facetgrid = \
                             _create_2e_plot_with_obs_kc_corrs(
-                                remy_2e_corrs_in_model,
-                                remy_2e_pair_order_in_model
+                                remy_2e_corrs_in_model, remy_2e_pair_order_in_model,
+                                fill_markers=False
                         )
                 else:
                     assert first_model_pairs is not None
@@ -16764,7 +16821,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 )
 
                 _2e_plot_model_corrs(remy_2e_facetgrid, corr_dists,
-                    remy_2e_pair_order, color=color, label=label
+                    remy_2e_pair_order, color=color, label=label,
+                    n_first_seeds=fig2e_n_first_seeds
                 )
 
                 if desc != 'hallem':
@@ -16792,7 +16850,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 plot_n_odors_per_cell(responses, s1c_ax, label=label, color=color)
 
 
-            _finish_remy_2e_plot(remy_2e_facetgrid)
+            _finish_remy_2e_plot(remy_2e_facetgrid, n_first_seeds=fig2e_n_first_seeds)
 
             if desc != 'hallem':
                 assert remy_2e_modelsubset_facetgrid is not None
@@ -16800,13 +16858,13 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
             # seed_errorbar is used internally by plot_n_odors_per_cell
             savefig(remy_2e_facetgrid, panel_plot_dir,
-                f'2e_{desc}{seed_err_fname_suffix}'
+                f'2e_{desc}{fig2e_seed_err_fname_suffix}'
             )
 
             # model subset same in this case
             if desc != 'hallem':
                 savefig(remy_2e_modelsubset_facetgrid, panel_plot_dir,
-                    f'2e_{desc}_model-subset{seed_err_fname_suffix}'
+                    f'2e_{desc}_model-subset{fig2e_seed_err_fname_suffix}'
                 )
 
             # TODO double check error bars are 95% ci. some reason matt's are so much
