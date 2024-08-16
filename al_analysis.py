@@ -12264,7 +12264,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         fig, ax = plt.subplots()
         # TODO TODO adjust formatting so outlier points don't overlap (reduce alpha /
         # jitter?) (see pebbled/hemidraw one, which may be the one we want to use)
-        sns.boxplot(data=s1d_sparsities, x=odor_col, y=sparsity_col, ax=ax)
+        sns.boxplot(data=s1d_sparsities, x=odor_col, y=sparsity_col, ax=ax, color='k',
+            fill=False, flierprops=dict(alpha=0.175)
+        )
         ax.set_title(title_including_silent_cells)
         savefig(fig, param_dir, 's1d_private_odor_sparsity')
 
