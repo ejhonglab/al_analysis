@@ -16830,7 +16830,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 if desc != 'hallem':
                     assert remy_2e_modelsubset_facetgrid is not None
                     _2e_plot_model_corrs(remy_2e_modelsubset_facetgrid, corr_dists,
-                        remy_2e_pair_order_in_model, color=color, label=label
+                        remy_2e_pair_order_in_model, color=color, label=label,
+                        n_first_seeds=fig2e_n_first_seeds
                     )
 
                 # TODO why does the hemibrain line on this seem more like ~0.6 than
@@ -16856,7 +16857,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
             if desc != 'hallem':
                 assert remy_2e_modelsubset_facetgrid is not None
-                _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid)
+                _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid,
+                    n_first_seeds=fig2e_n_first_seeds
+                )
 
             # seed_errorbar is used internally by plot_n_odors_per_cell
             savefig(remy_2e_facetgrid, panel_plot_dir,
