@@ -20398,7 +20398,9 @@ def main():
     # in the diagnostic vs megamat panel is likely due to contamination in the
     # diagnostic vial, and likely to cause confusion having an odor in 2 panels. likely
     # more correct to just use megamat values here, rather than taking mean of both.
-    drop_diag_panel_ms = True
+    # TODO restore True?
+    #drop_diag_panel_ms = True
+    drop_diag_panel_ms = False
     if drop_diag_panel_ms:
         warn("dropping diagnostic 'ms @ -3' data, to avoid confusion with megamat data"
             ' (because drop_diag_panel_ms=True)'
@@ -20438,7 +20440,9 @@ def main():
 
         cmap = diverging_cmap.copy()
         # TODO are there already under/over before i set them (yes)?
-        cmap.set_under('black')
+        #cmap.set_under('black')
+        # TODO refactor to share w/ set_bad gray def above
+        cmap.set_under((0.8, 0.8, 0.8))
 
         # TODO delete
         #'''
