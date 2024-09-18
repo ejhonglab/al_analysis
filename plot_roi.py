@@ -20,19 +20,17 @@ MAX_LIFETIME_S = 60 * 60 * 2
 
 
 def main():
-    # TODO TODO TODO make sure this is actually set up such that both server and clients
-    # log all errors (esp fatal ones) to a sensible place (maybe one log file, as long
-    # as info to distinguish PIDs and server/client easily is added)
-    # (so that when killing a hung process, i can see where it is hung, to fix it)
+    # TODO too annoying (adds a message printing which file is being logged to)? revert?
+    verbose = True
 
     # TODO might be useful to use filename in log format (now that i'm using same exact
-    # config in plot_roi_util.py)?
+    # config in plot_roi_util.py)? (? delete?)
     #
-    # Just gonna hardcode this and then use that in plot_roi_util.py for now
-    log = init_logger('plot_roi', __file__)
+    # just gonna hardcode this and then use that in plot_roi_util.py for now
+    log = init_logger('plot_roi', __file__, verbose=verbose)
 
     ## TODO replace log w/ just logging (now that init_logger is changing root logger)?
-    #log = init_logger(__name__, __file__)
+    #log = init_logger(__name__, __file__, verbose=verbose)
 
     # TODO TODO make a fn for printing all PIDs in tree under the parent python process
     # -> intersperse below to figure out which calls are actually making new processes
@@ -64,7 +62,7 @@ def main():
         ' from -d/--analysis_dir, rather than also plotting relevant cached data above '
         'it.'
     )
-    parser.add_argument('-p', '--pairs', action='store_true', help='Also plots'
+    parser.add_argument('-p', '--pairs', action='store_true', help='Also plots '
         'pair experiment data, when available. Excluded from plots by default.'
     )
     # TODO i just would still want to see neighboring concentrations, if available...
@@ -183,9 +181,6 @@ def main():
 
     p = Process(target=get_client_args_loop)
     log.debug('listener: starting process to queue incoming client args')
-    # TODO can i get PID from `p`? do i need to start it first?  just get logging
-    # working correctly inside it, then use that to show PID and other stuff (what is
-    # sys.argv inside there tho? don't want to duplicate from parent...)
     p.start()
 
     # TODO wrap p.terminate in something that also log.debug-s?
@@ -202,6 +197,8 @@ def main():
     # TODO also log current / max lifetime atexit, to see if any things are somehow
     # exceeding lifetime
 
+    _reached_max_lifetime = True
+
     while time.time() - start_time_s < MAX_LIFETIME_S:
         try:
             client_args = arg_queue.get_nowait()
@@ -211,6 +208,9 @@ def main():
         # TODO keep printing args? OK format (pformat?)?
         log.debug(f'listener: calling load_and_plot with args={client_args}')
 
+        # NOTE: client_args seems to currently be of type argparse.Namespace
+        # TODO convert to dict (and modify load_and_plot to work w/ that?)? can i also
+        # serialize (pickle) these args as is?
         load_and_plot(client_args)
 
         # TODO TODO is this causing issues? delete?
@@ -224,7 +224,11 @@ def main():
             log.debug('listener: breaking because args.analysis_dir (from client args '
                 'queue) was None'
             )
+            _reached_max_lifetime = False
             break
+
+    if _reached_max_lifetime:
+        log.debug('listener: exiting after having reached max lifetime')
 
 
 if __name__ == '__main__':

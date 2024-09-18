@@ -207,6 +207,7 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         #
         # odor abbreviating happens inside here (in odor_lists_to_multiindex call)
         trial_df = al.compute_trial_stats(traces, bounding_frames, odor_lists)
+        # TODO assert all trial_df indices have same length (+ same levels)
 
         # now we should be subsetting via indices= kwarg to ijroi_masks above
         subset_df = trial_df
@@ -225,6 +226,8 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         )
 
         subset_dfs.append(subset_df)
+
+    subset_dfs = olf.pad_odor_indices_to_max_components(subset_dfs)
 
     try:
         df = pd.concat(subset_dfs, verify_integrity=True)
@@ -420,11 +423,10 @@ def plot(df, sort_rois=True, **kwargs):
     # color to something like grey (from white), so that it's easier to see the
     # divisions against a border of a lot of missing data
 
-    # TODO also/only try slightly changing odor ticklabel text color between changes in
-    # odor name?
-    # TODO TODO try replacing this w/ something similar to vline_level_fn in across-fly
-    # ijroi part of al_analysis.py code (format_panel, w/ levels_from_labels=False)?
-    vline_level_fn = lambda odor_str: olf.parse_odor_name(odor_str)
+    # TODO just delete vline_level_fn (or set None)?
+    # (currently draws a lot of lines, mostly just flanking single cells. maybe add some
+    # threshold number of non-length-1 blocks needed to draw these? just having any?)
+    vline_level_fn = lambda odor_str: olf.strip_concs_from_odor_str(odor_str)
 
     # The cached ROIs will have '/' in ROI name (e.g. '3-30/1/DM4'), and only the last
     # row from the newly extracted data will not. We want a white line between these two
@@ -551,6 +553,8 @@ keep_comparison_to_cache = False
 most_recent_plot_proc = None
 plotting_processes = []
 
+# TODO modify to work w/ dict args instead of argparse.Namespace it's currently
+# expecting?
 @profile
 def load_and_plot(args):
     global newly_analyzed_dfs
@@ -664,7 +668,6 @@ def load_and_plot(args):
 
         fly_odor_set = {tuple(x[1:]) for x in _get_odor_name_df(new_df).itertuples()}
 
-
         # TODO want to actually limit to top n? leaning no, b/c ruling stuff out also
         # useful...
         if hallem:
@@ -691,6 +694,8 @@ def load_and_plot(args):
             # TODO TODO also use lower concentration data (not loaded by current version
             # of drosolf)
 
+            # TODO TODO also handle cases where odor2 is not None (maybe just drop for
+            # stuff like this?)
             odor1_name_set = {x[0] for x in fly_odor_set if x[1] == None}
 
             # TODO i already have a fn i can use for this?
@@ -797,6 +802,12 @@ def load_and_plot(args):
             subset_df.loc[subset_df.index.get_level_values('is_pair') == False, :]
         )
 
+    # TODO TODO also check that odor2 meets same criteria (if we have odor there but
+    # not for odor1, still want to plot)
+    #
+    # TODO handle in more general way (don't hardcode 'pfo @ 0'. hong2p.olf to parse
+    # odor name at least, maybe using hong2p.olf def for solvent, or at least manually
+    # checking name against 'pfo' here?)
     subset_df = subset_df[subset_df.index.get_level_values('odor1') != 'pfo @ 0']
 
     # TODO care to have same order as manually specified in panel2name_order in

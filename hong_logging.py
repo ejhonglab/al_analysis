@@ -8,11 +8,16 @@ import logging
 from pathlib import Path
 import shlex
 import sys
+from typing import Optional
 
 # NOTE: this 3rd party package doesn't work on Windows
 # (and may have issues in some other specific circumstances, such as if there are
 # threads involved too)
 from multiprocessing_logging import install_mp_handler
+
+# TODO profile extra time this import adds -> delete/type-checking-guard if it's
+# anything >.2s or so
+from hong2p.types import Pathlike
 
 
 # NOTE: currently (at least up to 2023-12-12) only logging initial command and any
@@ -26,7 +31,8 @@ from multiprocessing_logging import install_mp_handler
 # [assuming being called correctly, as in docstring here])
 # (NO, i think it just modifies excepthook and does the initial log of argv...)
 # TODO delete multiprocessing kwarg if i don't ever really benefit from disabling it
-def init_logger(module_name, script_path, *, multiprocessing: bool = True):
+def init_logger(module_name: Optional[str], script_path: Pathlike, *,
+    multiprocessing: bool = True, verbose: bool = False) -> logging.Logger:
     """Logs sys.argv and future uncaught exceptions to file + stderr.
 
     Logs are saved to a logs/ directory (created if needed) at the same level as
@@ -38,6 +44,8 @@ def init_logger(module_name, script_path, *, multiprocessing: bool = True):
     any called modules).
 
     >>> log = init_logger(__name__, __file__)
+
+    If `verbose=True`, will print to stdout which file we are logging to.
     """
     # TODO rename to logger_name or name if i'm also sometimes hardcoding it (as in
     # plot_roi.py now)
@@ -57,6 +65,10 @@ def init_logger(module_name, script_path, *, multiprocessing: bool = True):
 
     log_path = log_dir / f'{script_path.stem}.log'
     del script_path
+
+    if verbose:
+        # using stderr, to be consistent w/ where stream_handler below will output
+        print(f'logging to {log_path}', file=sys.stderr)
 
     # TODO some way to read the log that lets me easily look at stuff from just single
     # PIDs? feel like i probably don't want to save each run to a separate file, but
@@ -93,12 +105,12 @@ def init_logger(module_name, script_path, *, multiprocessing: bool = True):
     # TODO log all environment variables? ones i use in here / hong2p (might be annoying
     # to implement, and could diverge...)?
 
-    # To also print to stderr
+    # To also print to stderr (default behavior of StreamHandler. should not be any
+    # output to stdout.)
     stream_handler = logging.StreamHandler()
     # DEBUG < INFO < WARN < ERROR < CRITICAL
     stream_handler.setLevel(logging.INFO)
     logger.addHandler(stream_handler)
-
 
     # TODO TODO also [an option to] log git commit/remote[/maybe any unstaged changes?]
     # of enclosing repo. maybe even save patch for unstaged changes to log[/separate]

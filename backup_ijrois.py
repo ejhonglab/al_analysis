@@ -26,6 +26,9 @@ def format_time(timestamp: datetime) -> str:
 
 def main():
     parser = ArgumentParser()
+    # TODO also doc that -vv can be passed for extra-verbosity (and what else will get
+    # printed in each case?)
+    #
     # https://stackoverflow.com/questions/6076690
     parser.add_argument('-v', '--verbose', action='count', default=0)
     args = parser.parse_args()
@@ -42,8 +45,9 @@ def main():
     # used for backups of the RoiSet.zip files.
     backup_dir_name = 'ijroi_backups'
 
-    # TODO TODO TODO also support a list of paths here, and make sure hong dropbox
-    # folder is also added
+    # TODO also support a list of paths here (to backup to multiple places)
+    # (-> make sure appropriate tensor path also included)
+    # TODO take as CLI arg if this env var not set (or to overwrite env var?)?
     central_backup_dir_envvar = 'AL_IJROI_BACKUP_DIR'
     central_backup_dir_root = getenv(central_backup_dir_envvar)
 

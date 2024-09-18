@@ -60,7 +60,6 @@ import statsmodels.api as sm
 import colorama
 from termcolor import cprint, colored
 import olfsysm as osm
-import drosolf
 from drosolf import orns, pns
 from latex.exc import LatexBuildError
 from tqdm import tqdm
@@ -103,8 +102,9 @@ from natmix import write_corr_dataarray as _write_corr_dataarray
 from hong_logging import init_logger
 
 
+# TODO TODO TODO restore (triggered in dF/F calc for test no-fly dry-run data)
 # RuntimeWarning: invalid value encountered in scalar multiply
-warnings.filterwarnings('error', 'invalid value encountered in')
+#warnings.filterwarnings('error', 'invalid value encountered in')
 
 # TODO delete or add note about what was previously causing this (+ shorten/remove
 # traceback)
@@ -2575,6 +2575,24 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     except AssertionError:
         print(f'{abs_fig_path=}')
         print(f'{desc=}')
+        # TODO TODO TODO fix:
+        # no uncertain ROIs. not generating uncertain_by_max_resp fig
+        # done
+        # Warning: correlation shapes unequal (in plot_corrs input)! shapes->counts: {(33, 33): 10, (72, 72): 5}
+        # some mean correlations will have more N than others!
+        # PREFIX DRIVER/INDICATOR IF I CAN (WORTH PASSING? COMPUTE FROM DIR)
+        # RESTORE CSV SAVING (AFTER DE-DUPING...)
+        # writing pebbled_6f/pdf/ijroi/corr_certain_only/control_flies.csv
+        # PREFIX DRIVER/INDICATOR IF I CAN (WORTH PASSING? COMPUTE FROM DIR)
+        # RESTORE CSV SAVING (AFTER DE-DUPING...)
+        # writing pebbled_6f/pdf/ijroi/corr_certain_only/kiwi_flies.csv
+        # abs_fig_path=PosixPath('/home/tom/src/al_analysis/pebbled_6f/pdf/ijroi/corr_certain_only/kiwi/2024-09-03_1.pdf')
+        # desc='2024-09-03_1'
+        # > /home/tom/src/al_analysis/al_analysis.py(2581)savefig()
+        # -> 2581     _savefig_seen_paths.add(abs_fig_path)
+        # ipdb> u
+        # > /home/tom/src/al_analysis/al_analysis.py(8313)plot_corrs()
+        # -> 8313         fig_path = savefig(fig, panel_dir, fly_plot_prefix)
         import ipdb; ipdb.set_trace()
     #
 
@@ -3439,7 +3457,7 @@ def compute_trial_stats(traces, bounding_frames,
     # inhibition), and max by default for GH146 (b/c PN spontaneous activity. this make
     # sense? was it max and not mean that worked for me for GH146? maybe it was the
     # other way around?)
-    # TODO TODO TODO TODO check GH146 correlations again to see which looked better: max
+    # TODO TODO TODO check GH146 correlations again to see which looked better: max
     # or mean (and maybe doesn't matter on new data?)
     # TODO might need to change dF/F scale now that i'm going back to mean? check
     #stat=lambda x: np.max(x, axis=0),
@@ -5090,9 +5108,8 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
 
         start_frame, first_odor_frame, _ = trial_bounds
 
-        # TODO TODO replace w/ general odor mixture handling that supports odor2 !=
-        # 'solvent'. hack for lab meeting. index 0 = odor1
-        trial_odor, _, repeat = trial_odors
+        trial_odors = dict(zip(odor_index.names, trial_odors))
+        repeat = trial_odors['repeat']
 
         if repeat > 2:
             # TODO warn?
@@ -5164,16 +5181,17 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
         #    ax.yaxis.set_ticks([])
         ax.yaxis.set_ticks([])
 
-        # TODO TODO where is alignment issue coming from? colorbar really changing size
+        # TODO where is alignment issue coming from? colorbar really changing size
         # of first axes more (and vertically, too!)?
         # something in viz.matshow?
 
-        # TODO fix hack
+        # TODO fix hack (what was hack? just assuming 2 is max?)
         if repeat == 2:
             fig.colorbar(im, ax=axs, shrink=0.6)
 
-            title = trial_odor
-            for_filename = f'{curr_odor_i}_{trial_odor}_trials'
+            mix_str = format_mix_from_strs(trial_odors)
+            title = mix_str
+            for_filename = f'{curr_odor_i}_{mix_str}_trials'
             if debug:
                 title = f'{title}\nfirst_odor_frames={pformat(first_odor_frames)}'
                 for_filename = f'debug_{for_filename}'
@@ -6496,34 +6514,9 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
 
     for i, odor_str in enumerate(odor_order):
 
-        try:
-            abbrev_odor_str = olf.abbrev(odor_str)
+        abbrev_odor_str = olf.abbrev(odor_str)
 
-        # TODO TODO fix. code no longer supports old is_pair=True data.
-        # ./al_analysis.py -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model -i ijroi
-        # ...
-        # pebbled_6f/png/2022-03-11_3_control1_ramps/4_2-heptanone_-7.png
-        #
-        # Uncaught exception
-        # Traceback (most recent call last):
-        #   File "./al_analysis.py", line 13495, in <module>
-        #     # TODO worth warning that model won't be run otherwise?
-        #   File "./al_analysis.py", line 12544, in main
-        #     # switching between no registration / whole registration / movie-by-movie
-        #   File "./al_analysis.py", line 5335, in process_recording
-        #     abbrev_odor_str = olf.abbrev(odor_str)
-        #   File "/home/tom/src/hong2p/hong2p/olf.py", line 122, in abbrev
-        #     odor = parse_odor(odor_str, require_conc=True)
-        #   File "/home/tom/src/hong2p/hong2p/olf.py", line 256, in parse_odor
-        #     'name': parse_odor_name(odor_str),
-        #   File "/home/tom/src/hong2p/hong2p/olf.py", line 249, in parse_odor_name
-        #     raise ValueError(f'unexpected number of {conc_delimiter=} in {odor_str}')
-        # ValueError: unexpected number of conc_delimiter='@' in 1-octen-3-ol @ -5 +
-        # 2-heptanone @ -7
-        except ValueError:
-            assert is_pair
-            abbrev_odor_str = odor_str
-
+        # TODO more clear if i do .replace(' @ ', ' ')?
         abbrev_odor_str = abbrev_odor_str.replace(' @', '')
 
         if odor_str in odor_str2target_glomeruli:
@@ -7385,7 +7378,7 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     return input_tiff2movie_range
 
 
-def should_flip_lr(date, fly_num) -> Optional[bool]:
+def should_flip_lr(date, fly_num, _warn=True) -> Optional[bool]:
     # TODO unify w/ half-implemented hong2p flip_lr metadata key?
     # TODO why .at not working all of a sudden?
     try:
@@ -7404,17 +7397,19 @@ def should_flip_lr(date, fly_num) -> Optional[bool]:
     # has frame<->odor assignment working and everything)
 
     if pd.isnull(side_imaged):
-        # TODO maybe err / warn w/ higher severity (red?), especially if i require
-        # downstream analysis to use the flipped version
-        # TODO don't warn if there are no non-glomeruli diagnostic recordings
-        # for a given fly? might want to do this even if i do make skip handling
-        # consistent w/ process_recording.
-        # TODO TODO or maybe just warn separately if not in spreadsheet (but only if
-        # some real data seems to be there. maybe add a column in the sheet to mark
-        # stuff that should be marked bad and not warned about too)
-        warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
-            ' in Google Sheet'
-        )
+        if _warn:
+            # TODO maybe err / warn w/ higher severity (red?), especially if i require
+            # downstream analysis to use the flipped version
+            # TODO don't warn if there are no non-glomeruli diagnostic recordings
+            # for a given fly? might want to do this even if i do make skip handling
+            # consistent w/ process_recording.
+            # TODO TODO or maybe just warn separately if not in spreadsheet (but only if
+            # some real data seems to be there. maybe add a column in the sheet to mark
+            # stuff that should be marked bad and not warned about too)
+            warn(f'fly {format_date(date)}/{fly_num} needs side labelled left/right'
+                ' in Google Sheet'
+            )
+
         # This will produce a tiff called 'raw.tif', rather than 'flipped.tif'
         flip_lr = None
     else:
@@ -7699,19 +7694,29 @@ def register_all_fly_recordings_together(keys_and_paired_dirs, verbose: bool = F
 
         thorimage_dirs = []
         tiffs = []
+        have_some_known_panels = False
+
+        # TODO TODO consider min_input here? what if min_input='raw'? wouldn't we want
+        # to concat all of those? (or otherwise, maybe delete min_input + related?)
+        tiff_name_to_register = 'flipped.tif'
+
+        assert len(all_thorimage_dirs) > 0
+
         for thorimage_dir in all_thorimage_dirs:
             panel = get_panel(thorimage_dir)
-            # TODO may also wanna try excluding 'glomeruli_diagnostic' panel
-            # recordings
-            # TODO warn though?
+            # TODO warn though (maybe just after loop, if we haven't already warned
+            # about NO recognized panels being found?)?
             if panel is None:
                 continue
+
+            have_some_known_panels = True
 
             # TODO may also need to filter on shape (hasn't been an issue so far)
 
             analysis_dir = get_analysis_dir(date, fly_num, thorimage_dir)
-            tiff_fname = analysis_dir / 'flipped.tif'
+            tiff_fname = analysis_dir / tiff_name_to_register
             del analysis_dir
+
             if not tiff_fname.exists():
                 warn(f'TIFF {tiff_fname} did not exist! will not include in across '
                     'recording registration (if there are any other valid TIFFs for'
@@ -7722,16 +7727,21 @@ def register_all_fly_recordings_together(keys_and_paired_dirs, verbose: bool = F
             thorimage_dirs.append(thorimage_dir)
             tiffs.append(tiff_fname)
 
+
         if len(thorimage_dirs) == 0:
-            # TODO TODO better error message if we are only in this situation because we
-            # didn't have side (left/right) labelled in gsheet (and thus didni't have
-            # the flipped.tif files) (maybe just need a message somewhere else in that
-            # case?)
-            warn(f'no panels we want to register for fly {fly_str}. modify get_panel to'
-                ' return a panel str for matching ThorImage output directories! '
-                # TODO test!
-                f'ThorImage output dirs for this fly:\n{pformat(all_thorimage_dirs)}\n'
-            )
+
+            if have_some_known_panels:
+                warn(f'{fly_str}: no {tiff_name_to_register} TIFFs to register! other '
+                    'TIFFs not included in across-recording registration. may need to '
+                    "populate 'Side' column in Google Sheet."
+                )
+            else:
+                warn(f'{fly_str}: no recognized panels! other recordings not included '
+                    'in across-recording registration! modify get_panel to return a '
+                    'panel str for matching ThorImage output directories.\n\nThorImage '
+                    f'output dirs for this fly:\n{pformat(all_thorimage_dirs)}\n'
+                )
+
             continue
 
         # TODO write text/yaml not in suite2p directory explaining what all data
@@ -12504,6 +12514,18 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # 1-6ol      2
             print(f'{len(set(df.index))=}')
             print(f'{len(df.index)=}')
+
+            # TODO also, why are 'pfo' row / col NaN here (including identity...)? data?
+            # mishandling? want to drop pfo anyway?
+
+            # TODO TODO TODO TODO has air mix been handled appropriately up until here?
+            # seeems like we may have just dropped odor2 and lumped them in w/ ea/oct,
+            # which would be bad. prob want to keep air mix? could also drop and just
+            # use in-vial 2-component mix
+
+            # TODO TODO TODO fix for new kiwi vs control data
+            # (seems to be caused by dilutions of mixture. just drop those first? could
+            # call the natmix fn for that)
             import ipdb; ipdb.set_trace()
 
         assert len(set(df.columns)) == len(df.columns)
@@ -15526,6 +15548,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # so we have a record of which scaling choice we made (modelling plots already show
     # many parameters and this one isn't going to vary across modelling outputs from a
     # given run)
+    # TODO TODO save this and other non-plot outputs we need to load saved dF/F->spiking
+    # fit outside of plot dirs, so i can swap between png and pdf w/o issue...
     dff_to_spiking_model_choices_csv = plot_dir / 'dff2spiking_model_choices.csv'
 
     # TODO anything else i need to include in this?
@@ -15663,6 +15687,10 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             )
             sys.exit()
 
+        # TODO TODO save this and other non-plot outputs we need to load saved
+        # dF/F->spiking fit outside of plot dirs, so i can swap between png and pdf w/o
+        # issue...
+        #
         # possible this alone has the input data, but save/loading that in parallel,
         # since i couldn't figure out how to access from here
         model = sm.load(dff_to_spiking_model_path)
@@ -16043,9 +16071,14 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 gh146_glomeruli - set(raw_dff_panel_df.columns.get_level_values('roi'))
             )
         else:
-            assert 0 == len(
-                gh146_glomeruli - set(raw_dff_panel_df.columns.get_level_values('roi'))
-            )
+            # TODO TODO TODO relax to not err on new data? presumably this is what was
+            # failing?
+            # TODO TODO just warn instead? only do anything if we seem to be running on
+            # the final megamat data?
+            print('update / delete gh146 glomeruli checking code')
+            #assert 0 == len(
+            #    gh146_glomeruli - set(raw_dff_panel_df.columns.get_level_values('roi'))
+            #)
 
         fly_dff_gh146_subset = raw_dff_panel_df.loc[:,
             raw_dff_panel_df.columns.get_level_values('roi').isin(gh146_glomeruli)
@@ -16148,6 +16181,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         savefig(fig, plot_dir,
             f'{pebbled_param_dir_prefix}hist_est-spike-delta_{panel}'
         )
+        del tidy_est
 
         pebbled_input_df = panel_df
         responses_to_suffix = ''
@@ -16159,7 +16193,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         comparison_orns = None
         comparison_kc_corrs = None
 
-        # TODO delete
+        # TODO delete (still want this? or maybe for other panels, e.g. kiwi?)
         if panel != 'megamat':
             print('GET COMPARISON_ORNS (+ COMPARISON_KCS) WORKING ON VALIDATION2 DATA')
         #
@@ -17280,33 +17314,38 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
 
     # want one range for all of these plots in paper, to more easily compare across
     # panels (though might still not make 100% sense w/o any kind of scaling per fly)
-    #
-    # TODO TODO just use -0.5 instead of -.33 or -.35?
-    #
-    # just about min that fits data, but leads to ugly cbar (either tick not at bottom,
-    # or too many sigfigs needed)
-    #vmin = -0.331
     vmin = -0.35
     vmax = 2.5
-    assert min_mean >= vmin, f'{min_mean=} < (hardcoded) {vmin=}'
-    assert max_mean <= vmax, f'{max_mean=} > (hardcoded) {vmax=}'
-
-    # TODO or calculate rather than hardcoding (prob hard...)?
-    # TODO err if vmin/vmax very different from cbar limits / the former doesn't contain
-    # latter?
-    #cbar_ticks = [-0.3, 0, 2.5]
-    # everything after -0.3 here is what would automatically be shown if cbar_kws not
-    # passed below
-    #cbar_ticks = [-0.3, 0, 0.5, 1.0, 1.5, 2.0, 2.5]
-    # TODO TODO this work (or can i make it if i set float formatting right?)?
-    # (yes, it does show same number of sig figs for all)
-    # TODO TODO try to change formatter to fix
-    cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
-    cbar_kws = dict(ticks=cbar_ticks)
-    # TODO delete (after stopping hardcode)
-    print(f'response_matrix_plots: HARDCODING {vmin=} {vmax=}')
-    print(f'response_matrix_plots: HARDCODING CBAR TICKS TO {cbar_ticks=}')
-    #
+    if vmin <= min_mean and max_mean <= vmax:
+        # TODO or calculate rather than hardcoding (prob hard...)?
+        # TODO err if vmin/vmax very different from cbar limits / the former doesn't
+        # contain latter?
+        #cbar_ticks = [-0.3, 0, 2.5]
+        # everything after -0.3 here is what would automatically be shown if cbar_kws
+        # not passed below
+        #cbar_ticks = [-0.3, 0, 0.5, 1.0, 1.5, 2.0, 2.5]
+        # TODO TODO this work (or can i make it if i set float formatting right?)?
+        # (yes, it does show same number of sig figs for all)
+        # TODO TODO try to change formatter to fix
+        cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
+        cbar_kws = dict(ticks=cbar_ticks)
+        # TODO delete (after stopping hardcode)
+        print(f'response_matrix_plots: HARDCODING {vmin=} {vmax=}')
+        print(f'response_matrix_plots: HARDCODING CBAR TICKS TO {cbar_ticks=}')
+        #
+    else:
+        # TODO does it matter to have one consistent scale in this context? if so, may
+        # still need to hardcode / similar...
+        # TODO round up/down to nearest multiple of 0.5/0.25 or something, when using
+        # dmin/dmax?
+        # TODO just leave None?
+        #vmin = min_mean
+        #vmax = max_mean
+        # (defaults)
+        vmin = None
+        vmax = None
+        # the default
+        cbar_kws = None
 
     # TODO refactor to not duplicate defs of so many kwargs across the two calls below
     # (just make another var here)
@@ -17948,6 +17987,10 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 )
                 # TODO TODO TODO also do a version averaged across trials
 
+                # TODO TODO fix how for this plot (and presumably others), '2h @ -5' and
+                # '2h @ -5' + 'oct @ -3' do NOT have a vline between them (b/c 'odor1'
+                # same, despite 'odor2' being diff). see how i changed plot_roi_util.py
+                # vline_level_fn to new hong2p.olf.strip_concs_... fn.
                 plot_responses_and_scaled_versions(fly_df, each_fly_diag_response_dir,
                     f'{fly_str}_certain_trials', title=f'{fly_str}\n({title})',
                     single_fly=True,
@@ -18007,6 +18050,8 @@ def main():
     global exit_after_saving_fig_containing
     global verbose
     global check_outputs_unchanged
+    # TODO add other things modified like this
+    global ij_trial_dfs
 
     # TODO actually use log/delete / go back to global?
     # (might just get a lot of matplotlib, etc logging there (maybe regardless)
@@ -18333,6 +18378,11 @@ def main():
     ))
     del common_paired_thor_dirs_kwargs
 
+    if len(keys_and_paired_dirs) == 0:
+        # TODO mention which run params relevant here (just start/end date and
+        # matching_substr?)?
+        raise IOError('no flies found with current run parameters')
+
     # TODO try to get autocomplete to work for panels / indicators (+ dates?)
 
     not_in_gsheet = [(k, d) for k, d in keys_and_paired_dirs if k not in gdf.index]
@@ -18350,6 +18400,12 @@ def main():
             if k in gdf.index and gdf.loc[k, 'driver'] == driver
         ]
         if len(keys_and_paired_dirs) == 0:
+            # TODO maybe this (and all below) should be some kind of IOError instead?
+            # (to be consistent w/ above)
+            # TODO TODO maybe this (and 2 errors in indicator branch below) should also
+            # show which flies we did find [and we should have some, b/c
+            # len(keys_and_paired_dirs) check above] (that presumably just aren't
+            # labelled in sheet yet)? better error message
             raise ValueError(f'no flies with {driver=} to analyze')
 
     if indicator is not None:
@@ -19358,6 +19414,7 @@ def main():
 
     n_before = sum([num_notnull(x) for x in ij_trial_dfs])
 
+    ij_trial_dfs = olf.pad_odor_indices_to_max_components(ij_trial_dfs)
     trial_df = pd.concat(ij_trial_dfs, axis='columns', verify_integrity=True)
 
     roi_best_plane_depths = pd.concat(roi2best_plane_depth_list, axis='columns',
@@ -19546,9 +19603,6 @@ def main():
             warn(f'dropping glomeruli seen <{n_for_consensus} (n_for_consensus) times '
                 f'in {panel=} flies:\n{format_index_uniq(will_drop)}\n'
             )
-
-            # TODO could use a dict of panel -> this instead? (and convert after loop)
-            assert not any(x in dropped_fly_rois for x in will_drop)
             dropped_fly_rois.update(will_drop)
 
             # NOTE: this is what gets concatenated to form consensus_df used for
@@ -19865,12 +19919,49 @@ def main():
         n_per_odor_and_glom_list.append(n_per_odor_and_glom)
     #
 
-    # TODO add assertion(s) to indicate which axis has preserved order, if any
-    # TODO and do columns more or less line up in order, or is this process re-ordering
-    # (think so? think it's just re-ordering rows?)
-    # TODO possible to get this to not sort the row index? currently it seems to...
-    # (or is it [one of] input(s) that is reordered?)
-    consensus_df = pd.concat(consensus_dfs, verify_integrity=True, axis='columns')
+
+    # NOTE: this will sort the row index (don't think it's avoidable, esp since the
+    # input df row indices aren't guaranteed to all be the same)
+    consensus_df = pd.concat(consensus_dfs, axis='columns')
+
+    # TODO factor out?
+    def _nondiag_subset(df):
+        return df[df.index.get_level_values('panel') != diag_panel_str]
+
+    def merge_across_nondiag_panels(df):
+        n_nondiag_before = num_notnull(_nondiag_subset(df))
+
+        def merge_one_flyroi_across_panels(fdf):
+            nondiag = _nondiag_subset(fdf)
+            # TODO can i do == 1 instead of <= 1? revert to <= 1 if this fails
+            assert (nondiag.notna().sum(axis='columns') == 1).all()
+
+            diag = fdf.loc[fdf.index.difference(nondiag.index)]
+            # TODO any reasons this would have issues? test if different consensus
+            # judgements made based on the different non-diag panels? (won't be the case
+            # for the current 2024 kiwi / control data)
+            assert diag.T.duplicated(keep=False).all()
+
+            filled_ser = fdf.bfill(axis='columns').iloc[:, 0]
+            return filled_ser
+
+        df = df.groupby(df.columns.names, axis='columns', sort=False).apply(
+            merge_one_flyroi_across_panels
+        )
+        n_nondiag_after = num_notnull(_nondiag_subset(df))
+        assert n_nondiag_after == n_nondiag_before
+        return df
+
+    # consensus_dfs currently has one entry for each non-diag panel, and if a fly has 2
+    # such panels, the diag component will be duplicated. this is to reduce across such
+    # duplicate columns, filling data across non-diag panels (shouldn't change number of
+    # non-NaN in non-diag portion)
+    consensus_df = merge_across_nondiag_panels(consensus_df)
+
+    # TODO TODO TODO assert consensus_df output (megamat+validation) still matches what
+    # i gave anoop (since adding merge_across_nondiag_panels step, rather than just
+    # verify_integrity=True in concat)
+    print('CHECK MERGE_ACROSS_NONDIAG_PANELS WOULD NOT CHANGED OLD CSVS SENT TO ANOOP')
 
     # these should just be the odors dropped (for each panel) in the loop above,
     # for not being presented at least the consensus (e.g. half flies each panel)
@@ -19904,9 +19995,11 @@ def main():
     # both)
     assert consensus_df.index.equals(certain_df.index)
 
+    # since the diag component duplicated across consensus_dfs for flies w/ multiple
+    # non-diag panels, need to only check the non-diag part
     assert (
-        sum([x.notna().sum().sum() for x in consensus_dfs]) ==
-        consensus_df.notna().sum().sum()
+        sum([num_notnull(_nondiag_subset(x)) for x in consensus_dfs]) ==
+        num_notnull(_nondiag_subset(consensus_df))
     )
 
     if consensus_df.shape[1] < certain_df.shape[1]:
@@ -20338,16 +20431,33 @@ def main():
     dmin = mean_df.min().min()
     dmax = mean_df.max().max()
     vmin = -0.35
+    # value I had been using for megamat/validation data. new 2024 kiwi/control data
+    # seems to go outside this somewhat...
     vmax = 2.5
-    assert dmin >= vmin, f'{dmin=} < {vmin=}'
-    assert dmax <= vmax, f'{dmax=} > {vmax=}'
-    del dmin, dmax
-    # TODO TODO are these just changing the labels (breaking meaning of their position
-    # on the cbar?) why else are these not at the limits?
-    # (no, i think it was just vmin2/vmax2 had a larger range than dmin/dmax)
-    # TODO check another plot actually using vmin/vmax tho
-    cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
-    cbar_kws = dict(ticks=cbar_ticks)
+    if vmin <= dmin and dmax <= vmax:
+        # TODO TODO are these just changing the labels (breaking meaning of their
+        # position on the cbar?) why else are these not at the limits?
+        # (no, i think it was just vmin2/vmax2 had a larger range than dmin/dmax)
+        # TODO check another plot actually using vmin/vmax tho
+        #
+        # was using these for old megamat/validation analysis (pre 2024 kiwi/control)
+        # TODO generate these dynamically
+        cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
+
+        cbar_kws = dict(ticks=cbar_ticks)
+    else:
+        # TODO does it matter to have one consistent scale in this context? if so, may
+        # still need to hardcode / similar...
+        # TODO round up/down to nearest multiple of 0.5/0.25 or something, when using
+        # dmin/dmax?
+        # TODO just leave None?
+        #vmin = dmin
+        #vmax = dmax
+        # (defaults)
+        vmin = None
+        vmax = None
+        # the default
+        cbar_kws = None
 
     # TODO align more w/ roimean_plot_kws, to have mean/stddev output font size /
     # spacing look more like n_per_odor_and_glom plot below (other things already seem
@@ -20754,7 +20864,12 @@ def main():
                 print()
 
         else:
-            assert panel == diag_panel_str
+            # TODO reorganize code to do this earlier in loop, and try to reduce overall
+            # nesting
+            if panel != diag_panel_str:
+                warn(f'not including {panel=} in odor metadata CSV')
+                continue
+            #
 
             # TODO also use this for defining target glomeruli (elsewhere)? or do i also
             # have those in output yamls? how am i handling now?
@@ -20818,6 +20933,7 @@ def main():
 
     odor_metadata['pubchem_url'] = odor_metadata.cid.map(pubchem_url)
 
+    # TODO also only compute above odor_metadata if this is true? not used below...
     if being_run_on_all_final_pebbled_data:
         to_csv(odor_metadata, output_root / 'odor_metadata.csv', index=False)
 
@@ -20932,6 +21048,8 @@ def main():
         ], sort=False).mean_dff.mean().reset_index()
 
         intensities_plot_dir = across_fly_ijroi_dir / 'activation_strengths'
+        # TODO TODO make sure these are also including the new 2-component mixtures
+        # included. (or at least that some versions are)
         natmix_activation_strength_plots(mean_df, intensities_plot_dir)
 
     # would not be true for versions of repo from before I added data/ (affect Sam?)
