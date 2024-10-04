@@ -4,6 +4,7 @@ import argparse
 from os.path import getmtime
 from pathlib import Path
 from pprint import pformat, pprint
+from typing import Dict, Any
 
 import pandas as pd
 import numpy as np
@@ -35,6 +36,7 @@ def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
 
 def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
     check_vs_pickle: bool = True, verbose: bool = True) -> pd.DataFrame:
+    # TODO doc output format (w/ example str repr)
 
     csv = Path(csv)
     assert csv.exists(), f'CSV {csv} did not exist!'
@@ -248,18 +250,55 @@ def summarize_old_panel_csvs(*, verbose=True):
 
 
 def csvinfo_cli():
+    # TODO does editable install work? doc either way
+    """
+    CLI install specified via `pyproject.toml`
+    """
     parser = argparse.ArgumentParser()
     # TODO include message about what happens by default if not passed
     # (though i might change what that is now...)
     parser.add_argument('csv', nargs='?', type=Path, help='path to CSV to summarize')
     parser.add_argument('-q', '--quiet', action='store_true', help='prints less info')
-    parser.add_argument('-p', '--plot', action='store_true', help='plots individual '
-        'fly-ROI and mean-ROI matrices and saves alongside input CSV'
+    # const='' only set if -p passed alone. plot=None if -p not passed.
+    parser.add_argument('-p', '--plot', nargs='?', const='', help='plots individual '
+        'fly-ROI and mean-ROI matrices and saves alongside input CSV. can pass optional'
+        ' (comma-separated) str of plotting kwargs (e.g. -p vmax=1.5), assuming all '
+        'values will be floats.'
     )
     args = parser.parse_args()
     csv = args.csv
     plot = args.plot
     verbose = not args.quiet
+
+    def parse_cli_plot_kw_str(plot_kw_str: str) -> Dict[str, Any]:
+        parts = plot.split(',')
+
+        cli_plot_kws = dict()
+        for p in parts:
+            p = p.strip()
+            # mainly to handle case where -p passed alone (-> plot_kw_str='')
+            if p == '':
+                continue
+
+            assert p.count('=') == 1
+            var_name, value = p.split('=')
+
+            var_name = var_name.strip()
+            value = value.strip()
+            assert len(var_name) > 0
+            assert len(value) > 0
+
+            assert var_name not in cli_plot_kws
+            # assuming all values will be floats for now
+            cli_plot_kws[var_name] = float(value)
+
+        return cli_plot_kws
+
+    if plot is not None:
+        cli_plot_kws = parse_cli_plot_kw_str(plot)
+        plot = True
+    else:
+        plot = False
 
     if csv is not None:
         df = read_csv(csv)
@@ -284,8 +323,15 @@ def csvinfo_cli():
 
             mean_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
                 ).mean()
-            vmin = mean_df.min().min()
-            vmax = mean_df.max().max()
+
+            vmin = cli_plot_kws.pop('vmin', mean_df.min().min())
+            vmax = cli_plot_kws.pop('vmax', mean_df.max().max())
+
+            roimean_plot_kws.update(cli_plot_kws)
+
+            # TODO add args to calls below s.t. warnings get triggered if (many) values
+            # are above/below vmin/vmax limits (should already have such a param
+            # exposed [/nearly]?)
 
             fig, _ = plot_all_roi_mean_responses(mean_df, vmin=vmin, vmax=vmax,
                 **roimean_plot_kws
@@ -347,10 +393,12 @@ def csvdiff_cli():
         return unique_flies
     '''
 
+    # TODO TODO some of code i added to al_analysis.main (for same/similar purpose)
+    # useful here?
     # TODO TODO TODO implement
     import ipdb; ipdb.set_trace()
 
 
 if __name__ == '__main__':
-    main()
+    csvinfo_cli()
 

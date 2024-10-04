@@ -27,4 +27,4 @@ version = "0.0.0"
 
 [project.scripts]
 csvinfo = "load_antennal_csv:csvinfo_cli"
-csvdiff = "load_antennal_csv:csvdiff_cli"
+#csvdiff = "load_antennal_csv:csvdiff_cli"
