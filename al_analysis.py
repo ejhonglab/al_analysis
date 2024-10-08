@@ -677,7 +677,15 @@ roi_plot_kws = dict(
     # controls spacing from glomerulus names and <date>/<fly_num> IDs in yticklabels
     # (only relevant for plots w/ data from multiple flies).
     # default 0.12 was also OK here, just a bit much.
-    hgroup_label_offset=0.095,
+    #
+    # was using this before trying to find a value for kiwi/control matrices
+    #hgroup_label_offset=0.095,
+    #
+    # TODO TODO can one value work for both megamat/validation/etc (w/ many odors), and
+    # just kiwi/control (when shown w/o diags)? or define dynamically based on number of
+    # odors? layout method that is agnostic?
+    # TODO this even doing anything? .15 was not clearly diff from .095
+    hgroup_label_offset=0.5,
 
     # controls spacing between odor xticklabels and panel strings above them (for matrix
     # plots where we have data from multiple panels)
@@ -1373,6 +1381,11 @@ def _print_diff_series(ser: pd.Series, *, max_width: int = 125,  min_spaces: int
 
         index_strs.append(index_str)
 
+    # TODO right base case?
+    # need this (for now) so max(...) below won't fail for empty input
+    if len(index_strs) == 0:
+        return
+
     max_index_str_len = max(len(x) for x in index_strs)
 
     # TODO actually wrapping at width? seems to cut sooner... tmux doing something
@@ -1732,6 +1745,8 @@ def sort_concs(df: pd.DataFrame) -> pd.DataFrame:
 # that is effectively like an argsort, and use that to index some other type of object
 # (where we convert it to a DataFrame just for sorting)
 # TODO olf.sort_odors allow specifying axis?
+# TODO TODO TODO how to get this to not sort control panel '2h @ -5 + oct @ -3' (air
+# mix, using odor2 level) right after '2h @ -5'? (and same for kiwi)
 def sort_odors(df: pd.DataFrame, add_panel: Optional[str] = None, **kwargs
     ) -> pd.DataFrame:
 
@@ -1785,6 +1800,7 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
     to_concat = [df.columns.to_frame(index=False)]
 
     assert 'not_named' not in df.columns.names
+    # TODO option to do certain instead of named?
     not_named = df.columns.get_level_values('roi').map(
         lambda x: not is_ijroi_named(x)).to_frame(index=False, name='not_named')
 
@@ -1821,9 +1837,14 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
     # being in order?) (would probably have to sort the numbered section separately from
     # the named one, casting the numbered ROI names to ints)
 
-    # The order of level here determines the sort-priority of each level.
-    return df.sort_index(level=levels, sort_remaining=False, kind='stable',
+    # the order of level here determines the sort-priority of each level.
+    sorted_df = df.sort_index(level=levels, sort_remaining=False, kind='stable',
         axis='columns').droplevel(levels_to_drop, axis='columns')
+
+    # index_names were column names at input
+    assert sorted_df.columns.names == index_names
+
+    return sorted_df
 
 
 recording_col = 'thorimage_id'
@@ -6275,6 +6296,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             full_bad_suite2p_analysis_dirs.append(analysis_dir)
             print_if_not_skipped('not making suite2p plots because outputs marked bad')
 
+    # TODO print which file this is hitting on (to debug)?
+    # make a verbose flag for that?
     nonroi_last_analysis = nonroi_last_analysis_time(plot_dir)
 
     try:
@@ -6305,6 +6328,11 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             nonroi_analysis_current = tiff_mtime < nonroi_last_analysis
 
         if not nonroi_analysis_current:
+            # TODO TODO this accurate? did rsync update a time on something it shouldn't
+            # have? or does this just get printed in ijroi changing case too (/similar)?
+            # TODO print tiff_path to debug? and is it a link? what determines mtime on
+            # a symlink? can you touch it? is rsync effectively doing that?
+            # TODO or was it just that i switched plot_fmt?
             print_if_not_skipped(
                 'TIFF (/ motion correction) changed. updating non-ROI outputs.'
             )
@@ -6350,29 +6378,49 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     do_ij_analysis = False
     if analyze_ijrois:
         have_ijrois = has_ijrois(analysis_dir)
-
         fly_key = (date, fly_num)
-        if (not have_ijrois and fly_key in fly2diag_thorimage_dir and
+
+        if (fly_key in fly2diag_thorimage_dir and
             (fly_analysis_dir / mocorr_concat_tiff_basename).exists()):
 
             diag_analysis_dir = thorimage2analysis_dir(fly2diag_thorimage_dir[fly_key])
             diag_ijroi_fname = ijroi_filename(diag_analysis_dir, must_exist=False)
 
-            if diag_ijroi_fname.is_file():
-                diag_ijroi_link = analysis_dir / ijroiset_default_basename
+            if not have_ijrois:
+                if diag_ijroi_fname.is_file():
+                    diag_ijroi_link = analysis_dir / ijroiset_default_basename
 
-                # TODO maybe i should switch to saving RoiSet.zip's in fly analysis dirs
-                # (at root, rather than under each recording's subdir) -> delete all
-                # RoiSet.zip symlinking code?
-                print_if_not_skipped(f'no {ijroiset_default_basename}. linking to ROIs'
-                    ' defined on diagnostic recording '
-                    f'{shorten_path(diag_analysis_dir)}.'
-                )
-                # NOTE: changing the target of the link should also trigger
-                # recomputation of ImageJ ROI outputs for directories w/ links to the
-                # changed RoiSet.zip. tested.
-                symlink(diag_ijroi_fname, diag_ijroi_link)
-                have_ijrois = True
+                    # TODO maybe i should switch to saving RoiSet.zip's in fly analysis
+                    # dirs (at root, rather than under each recording's subdir) ->
+                    # delete all RoiSet.zip symlinking code?
+                    print_if_not_skipped(f'no {ijroiset_default_basename}. linking to '
+                        'ROIs defined on diagnostic recording '
+                        f'{shorten_path(diag_analysis_dir)}'
+                    )
+                    # NOTE: changing the target of the link should also trigger
+                    # recomputation of ImageJ ROI outputs for directories w/ links to
+                    # the changed RoiSet.zip. tested.
+                    symlink(diag_ijroi_fname, diag_ijroi_link)
+                    have_ijrois = True
+            else:
+                # checking whether we saved the RoiSet.zip in the right place
+                # (currently needs to be in the chronologically first recording)
+                if not diag_ijroi_fname.exists():
+                    ijroi_fname = ijroi_filename(analysis_dir)
+                    # delete link if this gets triggered (but it shouldn't)
+                    assert not ijroi_fname.is_symlink()
+                    # this will return True for symlinks too, so we check that above
+                    assert ijroi_fname.is_file()
+
+                    # TODO just support this path too? might be more effort than i want
+                    raise IOError('expected RoiSet.zip at chronologically first '
+                        f'recording:\n{shorten_path(diag_analysis_dir)}\n\n'
+                        f'found non-symlink ROIs at:\n{shorten_path(analysis_dir)}'
+                        '\n\nmove this RoiSet.zip to expected location!'
+                    )
+
+        # TODO err if any one fly has >1 non-symlink RoiSet.zip and any symlink ones
+        # (b/c probably not set up right) (or if any other dirs missing files/links)
 
         if have_ijrois:
             dirs_with_ijrois.append(analysis_dir)
@@ -10079,13 +10127,6 @@ def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.Da
     hemibrain_glomeruli = set(wPNKC_for_filling.columns)
     glomeruli = set(df.columns.get_level_values('roi'))
 
-    # TODO switch to just warning (probably not true if not always using
-    # consensus/certain input)
-    glomeruli_not_in_hemibrain = glomeruli - hemibrain_glomeruli
-    assert len(glomeruli_not_in_hemibrain) == 0, ('glomeruli '
-        f'{glomeruli_not_in_hemibrain} in data, but missing from hemibrain wPNKC'
-    )
-
     hemibrain_glomeruli_not_in_data = hemibrain_glomeruli - glomeruli
     assert len(hemibrain_glomeruli_not_in_data) > 0
 
@@ -10165,7 +10206,45 @@ def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.Da
         # axis)
         df = pd.concat(fly_df_list, axis='columns', verify_integrity=True)
 
-    df = df.sort_index(axis='columns')
+    roi_names = df.columns.get_level_values('roi')
+    certain_mask = [is_ijroi_certain(x) for x in roi_names]
+
+    certain_roi_set = {x for x, c in zip(roi_names, certain_mask) if c}
+
+    certain_rois_not_in_hemibrain = certain_roi_set - hemibrain_glomeruli
+    assert len(certain_rois_not_in_hemibrain) == 0, ('certain ROIs '
+        f'{certain_rois_not_in_hemibrain} in data, but missing from hemibrain wPNKC'
+    )
+
+    # TODO TODO kwarg flag option to drop this non-certain stuff instead?
+    if len(set(roi_names) - certain_roi_set) > 0:
+        warn('fill_to_hemibrain: have some non-certain (thus non-hemibrain) ROIs. '
+            'will not currently be dropped (unimplemented)!'
+        )
+
+    # TODO issue that sorting now groups all ROIs of same name together, rather than
+    # keeping all data from one fly together (as df.sort_index(axis='columns') did)?
+    # probably not...
+    #
+    # negating mask so non-certain are all at end (rather than all at start)
+    df = sort_fly_roi_cols(df, sort_first_on=[not x for x in certain_mask])
+
+    # TODO delete
+    # TODO TODO can i only repro this if the second call is in ipdb?
+    # (yea, it seems like it... wtf! i'm copy-pasting this line verbatim into ipdb too)
+    # TODO TODO this case broken (some levels seem left over from first call), when
+    # called twice in a row?
+    #print()
+    #print('trying to sort again...')
+    #df = sort_fly_roi_cols(df, sort_first_on=[
+    #    not is_ijroi_certain(x) for x in df.columns.get_level_values('roi')
+    #])
+    #print()
+    #print('THIRD sort...')
+    #sort_fly_roi_cols(df, sort_first_on=[
+    #    not is_ijroi_certain(x) for x in df.columns.get_level_values('roi')
+    #])
+    #
 
     return df
 
@@ -10202,7 +10281,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
     print_olfsysm_log: Optional[bool] = None, plot_dir: Optional[Path] = None,
     make_plots: bool = True, title: str = '',
-    drop_silent_cells_before_analyses: bool = True, repro_preprint_s1d: bool = True,
+    drop_silent_cells_before_analyses: bool = True, repro_preprint_s1d: bool = False,
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
     # TODO TODO doc point of sim_odors. do we need to pass them in?
     # (even when neither tuning nor running on any hallem data?)
@@ -10429,8 +10508,10 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         to_csv(hallem_orn_deltas_for_csv, hallem_delta_csv)
         to_csv(sfr_for_csv, hallem_sfr_csv)
 
-        deltas_from_csv = hallem_orn_deltas_for_csv.copy()
-        sfr_from_csv = sfr_for_csv.copy()
+        # TODO delete? unused
+        #deltas_from_csv = hallem_orn_deltas_for_csv.copy()
+        #sfr_from_csv = sfr_for_csv.copy()
+        #
 
     del hallem_orn_deltas_for_csv, sfr_for_csv
 
@@ -12615,7 +12696,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         return fig, ax
 
 
-    repro_preprint_s1d = True
+    repro_preprint_s1d = model_kws.get('repro_preprint_s1d', False)
 
     eb_mask = responses.columns.get_level_values(odor_col).str.startswith('eb @')
     assert eb_mask.sum() <= 1
@@ -12819,6 +12900,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     pearson = _resort_corr(pearson, add_panel)
 
+    # TODO TODO try deleting this and checking i can remake all the same
+    # megamat/validation plots? feel like i might not need this anymore (or maybe i want
+    # to stop needing it anyway... could then support mix dilutions for kiwi/control)
     # TODO refactor to share w/ other places?
     def _strip_index_and_col_concs(df):
         assert df.index.name.startswith('odor')
@@ -13474,6 +13558,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # excluding target_sparsity b/c that is mutually exclusive w/ fixing
             # threshold and KC<->APL inhibition, as all these calls will.
             'target_sparsity',
+            # will default to False (via fit_mb_model default) once I remove this, which
+            # is what I want
+            'repro_preprint_s1d',
         )}
         # TODO try to not need to specially treat wAPLKC / fixed_thr (instead trying to
         # continue handling just via model_kws) tho? make things too difficult?
@@ -13489,11 +13576,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             )
             # TODO silence output here? makes surrounding prints hard to follow
             responses2, _, _ = fit_mb_model(sim_odors=sim_odors,
-                fixed_thr=tuned_fixed_thr, wAPLKC=tuned_wAPLKC,
-                # need repro_preprint_s1d=False, so responses2 doesn't have those extra
-                # odors added (which we have already removed from responses we are
-                # comparing to)
-                repro_preprint_s1d=False, **shared_model_kws
+                fixed_thr=tuned_fixed_thr, wAPLKC=tuned_wAPLKC, **shared_model_kws
             )
             assert responses_including_silent.equals(responses2)
             print(' we can!\n')
@@ -15105,8 +15188,12 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
     # TODO factor into fn alongside current abbrev handling
     #
-    # TODO TODO TODO actually check this? reason to think this? why did remy originally
-    # choose to do -3 for everything? PID?
+    # TODO actually check this? reason to think this? why did remy originally choose to
+    # do -3 for everything? PID?
+    # (don't think it was b/c they had reason to think that was the best intensity-match
+    # of the Hallem olfactometer... think it might have just been fear of
+    # contamination...)?
+    #
     # TODO make adjustments for everything else then?
     # TODO TODO guess-and-check scalar adjustment factor to decrease all hallem spike
     # deltas to make more like our -3? or not matter / scalar not helpful?
@@ -15433,12 +15520,31 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # TODO TODO decide how to handle panel when merging w/ hallem
     # (mean first for fitting dF/F -> spike delta fn, but then separately merge w/in
     # each panel for running model?)
-    merged_dff_and_hallem = fly_mean_df.merge(hallem_delta, on=['odor', 'glomerulus']
-        ).reset_index()
+    # (what is currently happening?)
+    #
+    # TODO to make this merging easier, might actually want to format mixtures down to
+    # one str column, so that if [hypothetically, not in current data] odor1=solvent and
+    # odor2 is in hallem, we can still match it up
+    # TODO just rename hallem 'odor' -> 'odor1', and reset_index() on both
+    # TODO add solvent odor2 to hallem and merge on=(odor_cols + ['glomerulus'])?
+    #
+    # if we only have odor2 odors for mixtures where odor1 is also an odor, we would
+    # never want to merge those with hallem anyway, so we can just drop those rows
+    # before merging
+    odor1 = fly_mean_df.index.get_level_values('odor1')
+    odor2 = fly_mean_df.index.get_level_values('odor2')
+    assert not (odor1[odor2 != solvent_str] == solvent_str).any()
+    # .reset_index() b/c left_on didn't seem to work w/ a mix of cols and index levels
+    for_merging = fly_mean_df[odor2 == solvent_str].reset_index()
+
+    merged_dff_and_hallem = for_merging.merge(hallem_delta,
+        left_on=['odor1', 'glomerulus'], right_on=['odor', 'glomerulus']
+    ).reset_index()
 
     assert not merged_dff_and_hallem[spike_delta_col].isna().any()
 
     # TODO delete
+    # (note this was before 'odor'->odor_cols change)
     # TODO what's going on here? don't i have geraniol dF/F data?
     # (2024-05-09: can't repro, at least not passing all data as input. maybe passing
     # just validation2? not seeing geraniol at all now tho... that an issue?
@@ -16378,7 +16484,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         f'dff2spiking_{k}': v for k, v in dff_to_spiking_model_choices.to_dict().items()
     }
 
-
     # slightly nicer number (less sig figs) that is almost exactly the same as the
     # sparsity computed on remy's data (from binarized outputs she gave me on
     # 2024-04-03)
@@ -16874,6 +16979,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             for target_sparsity in target_sparsities:
                 _model_kws = dict(model_kws)
                 _model_kws['target_sparsity'] = target_sparsity
+
+                if panel == 'megamat':
+                    _model_kws['repro_preprint_s1d'] = True
 
                 do_sensitivity_analysis = False
 
@@ -17504,7 +17612,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     # things more comparable?
                     xlabel='Euclidean-of-Pearsons', cmap=cmap
                 )
-                savefig(fig, panel_plot_dir, 'euclidean_of_pearsons', debug=True)
+                savefig(fig, panel_plot_dir, 'euclidean_of_pearsons')
 
                 # TODO TODO save CSV of pearson ranks (sorted by observed KC ranks?)
                 # (for everything in merged_corrs, maybe making one new rank col for
@@ -20095,10 +20203,27 @@ def main():
         [('+' in x) for x in trial_df.columns.get_level_values('roi')]
     )
 
-    # to justify indexing it the same below
-    assert trial_df.columns.get_level_values('roi').equals(
-        roi_best_plane_depths.columns.get_level_values('roi')
-    )
+    # TODO fix failing assertion below
+    try:
+        # to justify indexing it the same below
+        # TODO maybe i should check more than just the roi level tho?
+        assert trial_df.columns.get_level_values('roi').equals(
+            roi_best_plane_depths.columns.get_level_values('roi')
+        )
+
+    # TODO can i still repro (maybe on the run when the symlinks are set up?)?
+    # TODO delete
+    except AssertionError:
+        print()
+        v1 = trial_df.columns.get_level_values("roi")
+        v2 = roi_best_plane_depths.columns.get_level_values("roi")
+        print(f'{v1=}')
+        print(f'{v2=}')
+        # (so far only seen this been True after fixing symlink issue, in the one time
+        # there was for some reason a failure b/c of wrong order)
+        print(f'{(set(v1) == set(v2))=}')
+        import ipdb; ipdb.set_trace()
+    #
 
     # no need to copy, because indexing with a bool mask always does
     trial_df = trial_df.loc[:, ~contained_plus]
@@ -20646,6 +20771,9 @@ def main():
 
     if consensus_df.shape[1] < certain_df.shape[1]:
         dropped_rois = certain_df.columns.difference(consensus_df.columns)
+
+        # TODO add comment explaining what this means (/ at least give better var
+        # names)
         assert set(dropped_rois) == dropped_fly_rois
 
         warn('dropped fly-glomeruli seen < # for consensus times in each non-diag '
@@ -20678,10 +20806,10 @@ def main():
 
     # TODO TODO only save these two if being run on all data?
     # (or just move saving to per panel directory [/name w/ panel] if not?)
-    # TODO TODO TODO also save certain_df still
-    # TODO TODO TODO rename these to "consensus", either way
+    # TODO TODO also save certain_df still
+    # TODO TODO rename these to "consensus", either way
     # (but be careful to not cause confusion w/ other people who already have some of
-    # these files)
+    # these files...)
     to_csv(consensus_df, output_root / 'ij_certain-roi_stats.csv',
         date_format=date_fmt_str
     )
@@ -20972,7 +21100,46 @@ def main():
                 diff.apply(_index_set_where_true).loc[diff_cols]
             )
 
-        assert diff.sum()[diff_cols].equals(odors_diff_per_glom.str.len())
+        # TODO TODO TODO fix
+        # AttributeError: 'DataFrame' object has no attribute 'str'
+        try:
+            assert diff.sum()[diff_cols].equals(odors_diff_per_glom.str.len())
+        # TODO delete
+        except AttributeError:
+            print()
+            # ipdb> diff.sum()[diff_cols]
+            # roi
+            # D       10
+            # DA2     10
+            # DC1     10
+            # DC3     10
+            # DC4     10
+            # DL1     10
+            # DL5     10
+            # DM1     10
+            # DM2     10
+            # DM3     10
+            # DM4     10
+            # DM5     10
+            # DM6     10
+            # DP1m    10
+            # VA2     10
+            # VA6     10
+            # VC1     10
+            # VC2     10
+            # VC3     10
+            # VC4     10
+            # VM2     10
+            # VM5d    10
+            # dtype: int64
+            # ipdb> odors_diff_per_glom
+            # Empty DataFrame
+            # Columns: [D, DA2, DC1, DC3, DC4, DL1, DL5, DM1, DM2, DM3, DM4, DM5, DM6, DP1m, VA2, VA6, VC1, VC2, VC3, VC4, VL2a, VM2, VM5d, VM7d]
+            # Index: []
+            print(f'{odors_diff_per_glom=}')
+            print(f'{type(odors_diff_per_glom)=}')
+            #import ipdb; ipdb.set_trace()
+        #
 
         print()
         print('#' * 90)
@@ -20980,12 +21147,20 @@ def main():
         print('odors that differ for each glomerulus:')
         _print_diff_series(odors_diff_per_glom)
 
-        # these are only 2 that differ by 24 entries (and they are same odors)
-        assert odors_diff_per_glom['VA4'] == odors_diff_per_glom['VL1']
-        # (all diagnostic odors, except 'aphe @ -5'. currently 25 diag odors in `diff`,
-        # including 'aphe @ -4')
-        # ipdb> len(odors_diff_per_glom['VA4'])
-        # 24
+        # TODO TODO fix / gate so doesn't err on new kiwi/control data
+        #
+        try:
+            # these are only 2 that differ by 24 entries (and they are same odors)
+            assert odors_diff_per_glom['VA4'] == odors_diff_per_glom['VL1']
+            # (all diagnostic odors, except 'aphe @ -5'. currently 25 diag odors in `diff`,
+            # including 'aphe @ -4')
+            # ipdb> len(odors_diff_per_glom['VA4'])
+            # 24
+        except KeyError as err:
+            print('FIX ME')
+            print(err)
+            #import ipdb; ipdb.set_trace()
+
 
     if diff_rows.any():
         gloms_diff_per_odor = diff.apply(_index_set_where_true, axis='columns').dropna()
@@ -21624,21 +21799,9 @@ def main():
     # reasons...)
     to_pickle(trial_df, output_root / ij_roi_responses_cache)
 
-    # TODO factor index reshuffling into natmix.drop_mix_dilutions?
-    # would it screw with usage internal to natmix (for some DataFrame inputs)?
-    #
     # TODO still want to keep this?
     # This is dropping '~kiwi' and 'control mix' at concentrations other than undiluted
     # ('@ 0') concentration.
-    # TODO TODO test still works on new (without natmix odors) and old (with natmix
-    # odors) data, now that i moved index reshuffling into natmix.drop_mix_dilutions
-    #
-    # TODO TODO TODO this screwing up type of 'date' in columns (yes! fix!)? testing in
-    # model_mb_responses, when trying to add this to certain_df processing there, seemed
-    # to be changing that dtype (to object...) (also changing fly_num from int to
-    # object)
-    print('FIX NATMIX.DROP_MIX_DILUTIONS CHANGING COLUMN LEVEL DTYPES')
-    #import ipdb; ipdb.set_trace()
     trial_df = natmix.drop_mix_dilutions(trial_df)
 
     # TODO delete / fix.
@@ -21649,20 +21812,20 @@ def main():
         print('DROPPING ALL PAIR DATA SINCE SOME OF ACROSS FLY IJROI PLOTTING BROKEN')
         trial_df = trial_df[trial_df.index.get_level_values('is_pair') == False]
 
+    # TODO CLI flag for this?
     # TODO TODO delete (/ change analyses to select consensus theirselves? or pass
     # both as input, so certain plots can still be made w/ uncertain or non-consensus
     # ROIs, where we might want that, e.g. ijroi response plots.)
     #
     # NOTE: WANT this True for paper figures, for now.
-    # TODO TODO decide whether this should also apply to (all?) modeling calls
-    # below. USED to be that only certain_df was ever passed as input there, but now
-    # only consensus_df is ever used (regardless of this flag)!
-    use_consensus_for_all_acrossfly = True
-    #use_consensus_for_all_acrossfly = False
+    # NOTE: modelling is currently only downstream analysis that will always use
+    # TODO reason for that?
+    # consensus_df. everything else uses trial_df.
+    #use_consensus_for_all_acrossfly = True
+    use_consensus_for_all_acrossfly = False
     # TODO delete + fix
     print(f'{use_consensus_for_all_acrossfly=} (should be True for paper figures)')
     #
-
     if use_consensus_for_all_acrossfly:
         warn('using consensus_df instead of trial_df for all across fly analyses!!! '
             'may want to change!'
@@ -21672,9 +21835,11 @@ def main():
         # creation to share w/ this
         trial_df = consensus_df
 
-        # only modelling below currently using this instead of trial_df.
+        # TODO delete? not currently used after here...
+        #
+        # only modelling below [WAS] currently using this instead of trial_df.
         # consensus_df should already only be certain ROIs.
-        certain_df = consensus_df
+        #certain_df = consensus_df
     #
 
     across_fly_ijroi_dir = plot_root / across_fly_ijroi_dirname
@@ -21700,7 +21865,6 @@ def main():
         # analysis steps?)
         acrossfly_correlation_plots(output_root, trial_df, certain_only=True)
         acrossfly_correlation_plots(output_root, trial_df, certain_only=False)
-
 
     # TODO if --verbose, print when we skip this
     if 'intensity' not in steps_to_skip:
