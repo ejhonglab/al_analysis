@@ -1056,10 +1056,23 @@ dirs_with_ijrois = []
 
 megamat_odor_names = set(panel2name_order['megamat'])
 
-def odor_is_megamat(odor: str) -> bool:
+def odor_is_megamat(odor: Union[str, Tuple[str, str]]) -> bool:
     """Takes odor str (with conc) like 'va @ -3' to whether it's among 17 megamat odors.
+
+    Tuple[str, str] is for .map-ing over index w/ ['odor1','odor2'] levels.
     """
-    return olf.parse_odor_name(odor) in megamat_odor_names
+    if type(odor) is str:
+        return olf.parse_odor_name(odor) in megamat_odor_names
+    else:
+        odor1, odor2 = odor
+
+        if odor2 == solvent_str:
+            return odor_is_megamat(odor1)
+
+        # TODO delete?
+        assert odor1 != solvent_str
+        #
+        return False
 
 
 # TODO also want to (and does it?) return DataFrame when input has single level?
@@ -1116,8 +1129,28 @@ def n_choose_2(n: int) -> int:
 
 
 # TODO refactor to hong2p (replace util.melt_symmetric [used once in here])?
-def corr_triangular(corr_df, *, ordered_pairs=None):
+def corr_triangular(corr_df, *, ordered_pairs=None, suffixes=('_a', '_b')):
     assert corr_df.index.equals(corr_df.columns)
+
+    # b/c stack(dropna=True) will drop existing NaN in the input (but also we need it to
+    # not get combinations we don't want in the output, which would add even more
+    # NaNs... at least w/ current implementation)
+    nan_placeholder = float('inf')
+    assert nan_placeholder not in corr_df.values
+    corr_df = corr_df.fillna(nan_placeholder)
+
+    names = corr_df.index.names
+
+    # TODO delete?
+    # TODO make more general than assuming 'odor' prefix?
+    #assert len(corr_ser.index.names) == 2
+    assert all(x.startswith('odor') for x in names)
+
+    # .equals (above) does NOT check index .names
+    # (otherwise, we would need to pick one of them, which we could)
+    assert names == corr_df.columns.names
+
+    corr_ser = corr_df.stack(level=names)
 
     # TODO this causing difficulties later? alternatives?
     # (w/ needing to sort again)
@@ -1128,8 +1161,6 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     # pair).
     # TODO .loc still work w/ list(...)?
     pairs = list(itertools.combinations(corr_df.index.sort_values(), 2))
-
-    corr_ser = corr_df.stack(dropna=False)
 
     if ordered_pairs is not None:
         # does fail in call from end of load_remy_2e...
@@ -1143,21 +1174,37 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     # itself. in other words, we won't be keeping the identity correlations.
     assert not any(a == b for a, b in pairs)
 
-    # itertools.combinations essentially selects one triangular, excluding diagonal
-    corr_ser = corr_ser.loc[pairs]
-
-    # TODO switch to assertion(s) on input index/column names?
-    # (just to fail sooner / be more clear)
+    # TODO or re-organize index so it's still just 2 levels, but each level takes a
+    # tuple for index (to not need re-organizing of pairs, and maybe other code would be
+    # simpler too?)
     #
-    # TODO make more general than assuming 'odor' prefix?
-    assert len(corr_ser.index.names) == 2
-    assert all(x.startswith('odor') for x in corr_ser.index.names)
+    # from elements like:
+    # (('EtOH @ -2', 'solvent'), ('IAol @ -3.6', 'solvent'))
+    # to elements like:
+    # ('EtOH @ -2', 'solvent', 'IAol @ -3.6', 'solvent')
+    if len(names) > 1:
+        # this even work for len(names) > 2?
+        pairs = [tuple(component for mix in p for component in mix) for p in pairs]
 
-    # TODO do 'a','b' instead? other suffix ('_row','_col')? (to not confused w/
-    # 'odor1'/'odor2' used in many other MultiIndex levels in here, where 'odor2' is a
-    # almost-never-used-anymore optional 2nd odor, where 2 delivered at same time
-    # (most recently in kiwi/control 2-component ramp experiments).
-    corr_ser.index.names = ['odor1', 'odor2']
+    # TODO TODO how to get this to work w/ input that has odor2 levels on each axis
+    # already?
+    try:
+        # itertools.combinations essentially selects one triangular, excluding diagonal
+        corr_ser = corr_ser.loc[pairs]
+    except:
+        # TODO delete
+        print()
+        print('pairs:')
+        pprint(pairs)
+        print(f'{len(pairs)=}')
+        print('corr_ser:')
+        print(corr_ser)
+        #
+        import ipdb; ipdb.set_trace()
+
+    corr_ser = corr_ser.replace(nan_placeholder, np.nan)
+
+    corr_ser.index.names = [f'{n}{s}' for s in suffixes for n in names]
 
     # TODO sort output so odors appear in same order as in input (within each component
     # of pair, at least)?
@@ -1165,17 +1212,35 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     return corr_ser
 
 
-def invert_corr_triangular(corr_ser, diag_value=1., _index=None):
+def invert_corr_triangular(corr_ser, diag_value=1., _index=None, suffixes=('_a','_b')):
     if _index is None:
         for_odor_index = corr_ser.index
     else:
         for_odor_index = _index
 
+    # TODO TODO TODO look for '_a' and '_b' suffixes (and correspondence between
+    # prefixes of matching elements)?
+    #
     # TODO make more general than assuming 'odor' prefix?
     # TODO + factor to share w/ what corr_triangual sets by default (at least), in case
     # i change suffix added there
-    assert for_odor_index.names == ['odor1', 'odor2']
+    #assert for_odor_index.names == ['odor1', 'odor2']
 
+    # TODO any point to dealing w/ suffixes? i really want to remove them?
+    names = corr_ser.index.names
+
+    # TODO check whether i want to swap row/col in these var names at end
+    row_names = names[:len(names)//2]
+    row_suffix = suffixes[0]
+    assert all(x.endswith(row_suffix) for x in row_names)
+
+    col_names = names[len(names)//2:]
+    col_suffix = suffixes[1]
+    assert all(x.endswith(col_suffix) for x in col_names)
+    #
+
+    # TODO TODO TODO how to adapt to work w/ multiple odor1/odor2 input
+    import ipdb; ipdb.set_trace()
     # unique values for odor1 and odor2 will not be same (each should have one value not
     # in other). could just sort, for purposes of generating one combined order.
     # for now, assuming (correctly, it seems) that first value in odor1 and last value
@@ -1183,18 +1248,18 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None):
     #
     # pandas <Series>.unique() keeps order of input (assuming all are adjacent, at
     # least)
-    odor1 = for_odor_index.get_level_values('odor1').unique()
-    odor2 = for_odor_index.get_level_values('odor2').unique()
+    odor_a = for_odor_index.get_level_values('odor_a').unique()
+    odor_b = for_odor_index.get_level_values('odor_b').unique()
 
     # TODO TODO try to make work without these assertions (would need to change how
     # odor_indx is defined below). these seem to work if index is sorted, but not for
     # (at least some) indices before sort_index call.
-    assert all(odor2[:-1] == odor1[1:])
-    assert odor1[0] not in set(odor2)
-    assert odor2[-1] not in set(odor1)
+    assert all(odor_b[:-1] == odor_a[1:])
+    assert odor_a[0] not in set(odor_b)
+    assert odor_b[-1] not in set(odor_a)
 
-    # TODO maybe columns and index should have diff names? keep odor1/odor2?
-    odor_index = pd.Index(list(odor1) + [odor2[-1]], name='odor')
+    # TODO maybe columns and index should have diff names? keep odor_a/odor_b?
+    odor_index = pd.Index(list(odor_a) + [odor_b[-1]], name='odor')
 
     square_corr = pd.DataFrame(index=odor_index, columns=odor_index, data=float('nan'))
     for a in odor_index:
@@ -1254,6 +1319,8 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     #
     # assumes 'odor2' level, if present, doesn't vary.
     # TODO assert assumption about possible 'odor2' level?
+    #trialmean_df = df.groupby(level=['odor1', 'odor2'], sort=False).mean()
+    # TODO TODO TODO revert to this if needed
     trialmean_df = df.groupby(level='odor1', sort=False).mean()
     n_odors = len(trialmean_df)
 
@@ -10474,8 +10541,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # since we are appending ' @ -2' to hallem_orn_deltas.columns below
         hallem_sim_odors = [f'{n} @ -2' for n in hallem_sim_odors]
 
-    # TODO factor to drosolf.orns?
     assert hallem_orn_deltas.columns.name == 'odor'
+    hallem_orn_deltas.columns.name = 'odor1'
     hallem_orn_deltas.columns += ' @ -2'
 
     # so that glomerulus order in Hallem CSVs will match eventual wPNKC output (which
@@ -10495,7 +10562,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         deltas_from_csv = pd.read_csv(hallem_delta_csv, index_col='glomerulus')
         sfr_from_csv = pd.read_csv(hallem_sfr_csv, index_col='glomerulus')
 
-        deltas_from_csv.columns.name = 'odor'
+        deltas_from_csv.columns.name = 'odor1'
 
         assert sfr_from_csv.shape[1] == 1
         sfr_from_csv = sfr_from_csv.iloc[:, 0].copy()
@@ -10630,7 +10697,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     extra_orn_deltas = None
     # TODO delete/comment after i'm done?
     #'''
-    eb_mask = orn_deltas.columns.get_level_values('odor').str.startswith('eb @')
+    # TODO don't want to run this on kiwi data tho, which also has eb
+    eb_mask = orn_deltas.columns.get_level_values('odor1').str.startswith('eb @')
     # should be true for megamat and hallem
     if repro_preprint_s1d and eb_mask.sum() == 1:
         # TODO TODO finish support for "extra" odors (to be simmed, but not tuned on)
@@ -10660,8 +10728,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         extra_orn_deltas = pd.DataFrame(index=orn_deltas.index, columns=fake_odors,
             data=0
         )
-        assert 'odor' in orn_deltas.columns.names
-        extra_orn_deltas.columns.name = 'odor'
+        assert 'odor1' in orn_deltas.columns.names
+        extra_orn_deltas.columns.name = 'odor1'
         # TODO handle appending ' @ 0' automatically if needed (only if i actually
         # expose extra_orn_deltas as a kwarg)?
 
@@ -10671,6 +10739,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
 
         eb_deltas = orn_deltas.loc[:, eb_mask]
 
+        # TODO TODO also need to deal w/ possible 'odor2' level here?
         if 'panel' in eb_deltas.columns.names:
             eb_deltas = eb_deltas.droplevel('panel', axis='columns')
 
@@ -10765,7 +10834,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
             # whatever is processing orn_deltas before it's passed to fit_mb_model?)
             # (the issue seems to be created before we get into fit_mb_model)
             assert sim_odors is None or sim_odors == set(
-                odor_index.get_level_values('odor')
+                odor_index.get_level_values('odor1')
             ), 'why'
         except AssertionError:
             import ipdb; ipdb.set_trace()
@@ -10832,11 +10901,10 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # dF/F -> spike delta estimation process, or is it a limitation of my
         # measurements / the differences between the hallem data and ours
 
-    # TODO TODO probably still support just one .name == 'odor' tho...
-    # (esp for calls w/ just hallem input, either old ones here or model_test.py?)
     # TODO move earlier?
-    assert orn_deltas.columns.name == 'odor' or (
-        orn_deltas.columns.names == ['panel', 'odor']
+    # TODO TODO TODO how to make agnostic to 'odor2' presence
+    assert orn_deltas.columns.name == 'odor1' or (
+        orn_deltas.columns.names == ['panel', 'odor1', 'odor2']
     )
 
     # TODO would we or would we not have removed it in that case? and what about
@@ -11414,7 +11482,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         input_odor_names = {olf.parse_odor_name(x) for x in sim_odors}
     else:
         input_odor_names = {
-            olf.parse_odor_name(x) for x in odor_index.get_level_values('odor')
+            olf.parse_odor_name(x) for x in odor_index.get_level_values('odor1')
         }
 
     # TODO may want to discard some for some plots (e.g. in cases when input is not
@@ -11569,6 +11637,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
                 if sim_odors is None:
                     return df
                 else:
+                    # TODO TODO TODO make odor/odor1 agnostic
+                    import ipdb; ipdb.set_trace()
                     return df.loc[:, [x in sim_odors for x in df.columns]]
 
             # assuming we won't be passing sim_odors for other cases (other than what?
@@ -11688,6 +11758,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     # for tuning running on the full set of (hallem) odors, with subsequent simulation
     # running on a different set of stuff
     if hallem_input and sim_odors is not None:
+        # TODO TODO TODO make odor/odor1 agnostic
+        import ipdb; ipdb.set_trace()
         assert all(x in responses.columns for x in hallem_sim_odors)
         # TODO delete (replace w/ setting up sim_only s.t. only hallem_sim_odors are
         # simulated)
@@ -12567,6 +12639,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     )
     del param_series
 
+    # TODO delete
+    '''
     # TODO even need to rename at this point? anything downstream actually not work with
     # 'odor' instead of 'odor1'?
     # TODO just fix natmix.plot_corr to also work w/ level named 'odor'?
@@ -12576,6 +12650,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # not
     assert len(responses.columns.shape) == 1 and responses.columns.name == 'odor'
     responses.columns.name = 'odor1'
+    '''
+    # TODO even want this? delete add_panel stuff below (or maybe don't do it for
+    # non-hallem, if i still have panel from input?)?
+    assert 'panel' not in responses.columns.names
 
     if responses_to == 'hallem':
         add_panel = 'megamat'
@@ -12887,6 +12965,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     else:
         pearson = responses.corr()
 
+        # TODO TODO TODO fix corr_triangular for odor2 (or process into one level...)
+        #import ipdb; ipdb.set_trace()
         corr_ser = corr_triangular(pearson)
         corr_ser.name = 'model_corr'
         model_corr_df = corr_ser.reset_index()
@@ -13020,6 +13100,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
         mean_orn_corrs.name = 'orn_corr'
 
+        # TODO TODO TODO replace odor1/2 w/ a/b /something
         model_corr_df_odor_pairs = set(
             model_corr_df.set_index(['odor1', 'odor2']).index
         )
@@ -13064,11 +13145,16 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         df['model_corr_dist'] = 1 - df['model_corr']
         df['orn_corr_dist'] = 1 - df['orn_corr']
 
-        # TODO only do in megamat case
+        # TODO only do in megamat case (i have a flag for that or something by here?
+        # panel?)
+        # TODO replace 1/2 w/ a/b to disambiguate (now that i'm using odor1/odor2 cols
+        # for mixtures in here)
         df['odor1_is_megamat'] = df.odor1.map(odor_is_megamat)
         df['odor2_is_megamat'] = df.odor2.map(odor_is_megamat)
         df['pair_is_megamat'] = df[['odor1_is_megamat','odor2_is_megamat']
             ].all(axis='columns')
+        # TODO remove 'odor<1|2>_is_megamat' columns
+        import ipdb; ipdb.set_trace()
 
         if n_first_seeds_for_errorbar is not None and 'seed' in df.columns:
             df = select_first_n_seeds(df)
@@ -13207,6 +13293,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             ax.set_box_aspect(1)
 
             if 'seed' in df.columns:
+                # TODO TODO TODO replace odor1|2 w/ a|b /something, now that i'm also
+                # including those mixture levels in here
+                #
                 # averaging correlations over seed, before calculating bootstrapped
                 # spearman (so that CI is correct. otherwise showed no error)
                 for_spearman = df.groupby(['odor1','odor2'])[[model_col,orn_col]].mean()
@@ -15120,30 +15209,26 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         assert (roi_depths.index.get_level_values('is_pair') == False).all()
         roi_depths = roi_depths.droplevel('is_pair', axis='index')
 
-    # TODO TODO TODO also drop mix dilutions here probably
-
-    # TODO TODO TODO deal with (/drop) odor2 != solvent_str here
-    # TODO TODO temp hack mapping (odor1, odor2) combos to a single odor str?
-    #
+    # TODO TODO TODO use -c to check megamat modelling outputs from before
+    # 'odor'->odor_cols change are still the same (maybe commit and then temp checkout
+    # last commit, or stash / similar)
     # TODO delete
-    print()
-    print('HANDLE ODOR2 DEFINED')
-    print(certain_df.index.to_frame(index=False)[['odor1','odor2']].drop_duplicates())
-    #import ipdb; ipdb.set_trace()
+    print('CHECK MEGAMAT OUTPUTS FROM BEFORE ODOR2 CHANGE W/ -C')
     #
 
-    # TODO TODO may want to preserve panel just so i can fit dF/F -> spike delta fn
-    # on all, then subset to specific panels for certain plots
-    #
-    # TODO maybe ['panel', 'odor1']? or just drop diagnostic panel 'ms @ -3'?
-    # TODO sort=False? (since i didn't have that pre-panel support, may need to sort to
-    # compare to that output, regardless...)
-    fly_mean_df = certain_df.groupby(['panel', 'odor1'], sort=False).mean()
-    # this is just to rename 'odor1' -> 'odor1'
-    fly_mean_df.index.names = ['panel', 'odor']
-    # TODO delete if adding panel preservation works
-    #fly_mean_df = certain_df.groupby('odor1').mean()
-    #fly_mean_df.index.name = 'odor'
+    # TODO TODO fix internal odor handling to not always need to strip the concs for so
+    # many things, then try restoring these
+    # (mainly care about full strength mix anyway, for now, at least)
+    len_before = len(certain_df)
+    certain_df = natmix.drop_mix_dilutions(certain_df)
+    if len(certain_df) < len_before:
+        warn('model_mb_responses: dropping natmix mixture dilutions since downstream '
+            'code currently broken w/ multiple concs of one odor'
+        )
+
+    odor_cols = ['odor1', 'odor2']
+    # TODO var for panel + odor_cols too?
+    fly_mean_df = certain_df.groupby(['panel'] + odor_cols, sort=False).mean()
 
     n_before = num_notnull(fly_mean_df)
     shape_before = fly_mean_df.shape
@@ -15158,7 +15243,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # column level names kinda non-sensical at this intermediate ['panel', 'odor'], but
     # I think it's all fine again by end of reshaping (shape, #-not-null, and set of
     # dtypes don't change)
-    fly_ids = fly_ids.droplevel('odor', axis='columns')
+    # TODO delete
+    #fly_ids = fly_ids.droplevel('odor', axis='columns')
+    fly_ids = fly_ids.droplevel(odor_cols, axis='columns')
     # nulling out nonsensical 'panel' name
     fly_ids.columns.name = None
 
@@ -15242,7 +15329,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     roi_depth_col = 'roi_depth_um'
 
     if roi_depths is not None:
-        # should be ['panel', 'odor']
+        # should be ['panel', 'odor1', 'odor2']
         index_levels_before = fly_mean_df.index.names
         shape_before = fly_mean_df.shape
 
@@ -15290,6 +15377,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # also each odor / (fly X odor)?
 
     # TODO delete? also grouping on odor (like this) useful?
+    # (would need to update odor col from 'odor' -> ['odor1','odor2'] otherwise)
     '''
     fly_odor_maxes = fly_mean_df.groupby(['fly_id', 'panel', 'odor'], sort=False
         )[dff_col].max().reset_index()
@@ -15560,7 +15648,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     #{'ger @ -3'}
 
     # TODO print odors left after merging. something like
-    # sorted(merged_dff_and_hallem.odor.unique())
+    # merged_dff_and_hallem[odor_cols].drop_duplicates()
+    # (or str format all mixtures and print sorted?)
     # TODO print # of (fly X glomeruli) combos (at least those that overlap w/
     # hallem) too, for each odor
 
@@ -16070,7 +16159,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         del saved
 
         # TODO also add depth col (when available) here?
-        cols_to_save = ['fly_id', 'odor', 'glomerulus', dff_col]
+        # TODO delete
+        #cols_to_save = ['fly_id', 'odor', 'glomerulus', dff_col]
+        cols_to_save = ['fly_id'] + odor_cols + ['glomerulus', dff_col]
 
         if col_to_fit != dff_col:
             cols_to_save.append(col_to_fit)
@@ -16093,10 +16184,10 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         assert dff_to_spiking_data.shape == (shape_before[0], shape_before[1] + 2)
         assert num_null(dff_to_spiking_data) == 0
 
-        # NOTE: ['odor', 'fly_id', 'glomerulus'] would be unique if not for those few
-        # odors that are in two panels in one fly (e.g. 'ms @ -3' in diag and megamat).
-        # we don't currently have 'panel' info in this df, so may need to keep in mind
-        # if using saved data.
+        # NOTE: odor_cols + ['fly_id', 'glomerulus'] would be unique if not for those
+        # few odors that are in two panels in one fly (e.g. 'ms @ -3' in diag and
+        # megamat). we don't currently have 'panel' info in this df, so may need to
+        # keep in mind if using saved data.
         # TODO include panel? (would need to merge in a way that preserves that. don't
         # think i currently do... shouldn't really matter)
 
@@ -16408,12 +16499,12 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
     # TODO rename? it's a series here, not a df (tho that should change in next
     # re-assignment, the one where RHS is unstacked...)
-    mean_est_df = fly_mean_df.reset_index().groupby(['panel', 'odor', 'glomerulus'],
-        sort=False)[est_spike_delta_col].mean()
+    mean_est_df = fly_mean_df.reset_index().groupby(
+        ['panel'] + odor_cols + ['glomerulus'], sort=False)[est_spike_delta_col].mean()
 
     # then odors will be columns and glomeruli will be rows, which is same as
     # orns.orns().T
-    mean_est_df = mean_est_df.unstack(['panel', 'odor'])
+    mean_est_df = mean_est_df.unstack(['panel'] + odor_cols)
 
     # TODO factor all dF/F -> spike delta fitting (above, ending ~here) into one fn in
     # here at least, to make model_mb_responses more readable
@@ -16460,6 +16551,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     tidy_hallem = hallem_for_comparison.T.stack()
     # just to rename the second level from 'odor1'->'odor', to be consistent w/
     # above
+    # TODO back to 'odor' now that i'm using odor_cols, to distinguish?
     tidy_hallem.index.names = ['glomerulus', 'odor']
     tidy_hallem.name = spike_delta_col
     tidy_hallem = tidy_hallem.reset_index()
@@ -16622,6 +16714,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
         # TODO or just move before loop over panels?
         if panel == 'megamat':
+            # TODO TODO TODO how to implement for odor_cols?
+            import ipdb; ipdb.set_trace()
             hallem_megamat = hallem_delta_wide.loc[
                 # get_level_values('odor') should work whether panel_df has 'odor' as
                 # one level of a MultiIndex, or as single level of a regular Index
@@ -16663,7 +16757,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
         # TODO just use one of the previous things that was already tidy? and already
         # had hallem data?
-        tidy_est = panel_df.droplevel('panel', axis='columns').stack()
+        tidy_est = panel_df.droplevel('panel', axis='columns').stack(level=odor_cols)
         tidy_est.name = est_spike_delta_col
         tidy_est = tidy_est.reset_index()
 
