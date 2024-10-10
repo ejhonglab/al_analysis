@@ -15120,17 +15120,43 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         assert (roi_depths.index.get_level_values('is_pair') == False).all()
         roi_depths = roi_depths.droplevel('is_pair', axis='index')
 
-    # TODO TODO TODO also drop mix dilutions here probably
+    index_df = certain_df.index.to_frame(index=False)
 
-    # TODO TODO TODO deal with (/drop) odor2 != solvent_str here
-    # TODO TODO temp hack mapping (odor1, odor2) combos to a single odor str?
-    #
+    # TODO delete
+    #mix_strs = index_df.apply(format_mix_from_strs, axis=1)
+
+    mix_strs = (
+        index_df.odor1.apply(olf.parse_odor_name) + '+' +
+        index_df.odor2.apply(olf.parse_odor_name) + ' (air mix) @ 0'
+    )
+    # TODO work as-is (seems to...)? need to subset RHS to be same shape?
+    index_df.loc[index_df.odor2 != solvent_str, 'odor1'] = mix_strs
+
+    # TODO necessary? thought some code below might trip if this weren't there.
+    #index_df.loc[mix_strs != index_df.odor1, 'odor2'] = solvent_str
+
+    # TODO delete
+    #index_df['odor1'] = mix_strs
+
+    certain_df.index = pd.MultiIndex.from_frame(index_df)
+
     # TODO delete
     print()
     print('HANDLE ODOR2 DEFINED')
-    print(certain_df.index.to_frame(index=False)[['odor1','odor2']].drop_duplicates())
+    # NOTE: trying hack for now. WIP on adding odor2 support (in other branch) already a
+    # huge mess. maybe rename from 'odor'->'mix'/'odors' to be clear single level now
+    # can represent multiple odors?
+    print(index_df[['odor1','odor2']].drop_duplicates())
     #import ipdb; ipdb.set_trace()
+    print()
     #
+
+    len_before = len(certain_df)
+    certain_df = natmix.drop_mix_dilutions(certain_df)
+    if len(certain_df) < len_before:
+        warn('model_mb_responses: dropping natmix mixture dilutions since downstream '
+            'code currently broken w/ multiple concs of one odor'
+        )
 
     # TODO TODO may want to preserve panel just so i can fit dF/F -> spike delta fn
     # on all, then subset to specific panels for certain plots
@@ -15139,11 +15165,13 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # TODO sort=False? (since i didn't have that pre-panel support, may need to sort to
     # compare to that output, regardless...)
     fly_mean_df = certain_df.groupby(['panel', 'odor1'], sort=False).mean()
-    # this is just to rename 'odor1' -> 'odor1'
+    # TODO delete? restore and change code to expect 'odor' instead of 'odor1'?
+    # this is just to rename 'odor1' -> 'odor'
     fly_mean_df.index.names = ['panel', 'odor']
-    # TODO delete if adding panel preservation works
-    #fly_mean_df = certain_df.groupby('odor1').mean()
-    #fly_mean_df.index.name = 'odor'
+
+    # TODO TODO fix internal (fit_and_plot..., fit_mb_model) odor handling to not always
+    # need to strip the concs for so many things, then try restoring these
+    # (mainly care about full strength mix anyway, for now, at least)
 
     n_before = num_notnull(fly_mean_df)
     shape_before = fly_mean_df.shape
@@ -15520,7 +15548,10 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # TODO TODO decide how to handle panel when merging w/ hallem
     # (mean first for fitting dF/F -> spike delta fn, but then separately merge w/in
     # each panel for running model?)
-    # (what is currently happening?)
+    # (what is currently happening?)A
+
+    # TODO TODO delete? or move to before odor2 level effectively dropped?
+    # TODO gate behind there being and odor2 level?
     #
     # TODO to make this merging easier, might actually want to format mixtures down to
     # one str column, so that if [hypothetically, not in current data] odor1=solvent and
@@ -15531,14 +15562,20 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # if we only have odor2 odors for mixtures where odor1 is also an odor, we would
     # never want to merge those with hallem anyway, so we can just drop those rows
     # before merging
+    '''
     odor1 = fly_mean_df.index.get_level_values('odor1')
     odor2 = fly_mean_df.index.get_level_values('odor2')
+    # TODO TODO warn / err if any of this odor2 stuff is actually != solvent_str?
+    # (since not currently supporting that, nor thinking that's the way i'll try to do
+    # it...)
     assert not (odor1[odor2 != solvent_str] == solvent_str).any()
     # .reset_index() b/c left_on didn't seem to work w/ a mix of cols and index levels
     for_merging = fly_mean_df[odor2 == solvent_str].reset_index()
 
     merged_dff_and_hallem = for_merging.merge(hallem_delta,
-        left_on=['odor1', 'glomerulus'], right_on=['odor', 'glomerulus']
+    '''
+    merged_dff_and_hallem = fly_mean_df.reset_index().merge(hallem_delta,
+        left_on=['odor', 'glomerulus'], right_on=['odor', 'glomerulus']
     ).reset_index()
 
     assert not merged_dff_and_hallem[spike_delta_col].isna().any()
@@ -16591,6 +16628,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         # delta fn (-> recomputing)? should i be doing that w/ all of modeling?
         # (no, Betty and i agreed it wasn't worth it)
 
+        # TODO TODO TODO fix sorting to match plots made inside fit_and_plot...
+
         # TODO TODO also save this to a csv (for analysis by other people)
         # TODO TODO just/also one master one w/ all panels above?
         #
@@ -16603,6 +16642,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         # (b/c usage as comparison_orns below)
         est_df = panel_df.droplevel('panel', axis='columns').T.copy()
 
+        # TODO TODO also plot hemibrain filled version(s) of this
         est_corr = plot_responses_and_corr(est_df.T, panel_plot_dir,
             f'est_orn_spike_deltas_{dff2spiking_choices_str}',
             # TODO maybe borrow final part from scaling_method2desc (but current strs
