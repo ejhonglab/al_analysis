@@ -9646,10 +9646,9 @@ def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root,
     remy_df.index = remy_df.index.str.cat([' @ -2'] * len(remy_df))
 
     if plot_responses:
-        resp_df = sort_odors(remy_df, add_panel='megamat')
+        resp_df = sort_odors(remy_df, panel='megamat')
 
-        # b/c plot_all_roi_mean_responses is picky about index level names...
-        resp_df = resp_df.droplevel('panel')
+        # b/c plot_all_roi_mean_responses is picky about .name(s)...
         resp_df.index.name = 'odor1'
         resp_df.columns.name = 'roi'
 
@@ -11316,13 +11315,6 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         if 'panel' in extra_responses.columns.names:
             extra_responses = extra_responses.droplevel('panel', axis='columns')
 
-        # TODO delete
-        # don't think i want this. i still need to aggregate across seeds to make the
-        # plot i want? maybe just keep 'panel' level in output, so i can drop the
-        # panel='extra' part when i want? (or could also iloc off last 3 as a hack...)
-        #responses = responses.iloc[:, :-n_extra_odors].copy()
-        #spike_counts = spike_counts.iloc[:, :-n_extra_odors].copy()
-
         old_eb = responses.iloc[:, :-n_extra_odors].loc[:, eb_mask]
         if 'panel' in responses.columns.names:
             old_eb = old_eb.droplevel('panel', axis='columns')
@@ -11330,7 +11322,9 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         assert old_eb.shape[1] == 1
         old_eb = old_eb.iloc[:, 0]
 
-        new_eb = extra_responses.iloc[:, -1]
+        eb_idx = -1
+
+        new_eb = extra_responses.iloc[:, eb_idx]
         assert new_eb.name.startswith('eb @')
 
         assert new_eb.equals(old_eb)
@@ -11338,9 +11332,10 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # just removing eb, so there won't be that duplicate, which could cause some
         # problems later (did cause some of the plotting code in here to fail i think).
         # doesn't matter now that we know new and old are equal.
-        responses = responses.iloc[:, :-1].copy()
-        spike_counts = spike_counts.iloc[:, :-1].copy()
+        responses = responses.iloc[:, :eb_idx].copy()
+        spike_counts = spike_counts.iloc[:, :eb_idx].copy()
 
+        # TODO delete? am i not removing 'eb' now anyway?
         if make_plots:
             # causes errors re: duplicate ticklabels in some of the orn_deltas plots
             # currently (would need to remove 'eb' from all of those plots, but also
@@ -11349,9 +11344,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
             warn('fit_mb_model: setting make_plots=False since not currently supported '
                 'in extra_orn_deltas case'
             )
-
         make_plots = False
-
+        #
 
     # TODO delete
     # TODO TODO was spontaneous activity of PNs not in hallem handled reasonably
@@ -11454,7 +11448,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     del input_odor_names
     if megamat:
         # TODO assert 'panel' only megamat if we do have it?
-        add_panel = None if 'panel' in orn_deltas.columns.names else 'megamat'
+        panel = None if 'panel' in orn_deltas.columns.names else 'megamat'
 
         if not hallem_input:
             # at least as configured now, this isn't doing anything.
@@ -11470,40 +11464,33 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
             # (but still want to sort when input is hallem, adding megamat, so all
             # megamat odors are first)
 
-            # TODO TODO refactor to also only droplevel if we don't already have it?
-            orn_deltas_pre_filling = sort_odors(orn_deltas_pre_filling.T,
-                add_panel=add_panel, warn=False).droplevel('panel').T
+            orn_deltas_pre_filling = sort_odors(orn_deltas_pre_filling, panel=panel,
+                warn=False
+            )
 
-        orn_deltas = sort_odors(orn_deltas.T, add_panel=add_panel, warn=False
-            ).droplevel('panel').T
+        orn_deltas = sort_odors(orn_deltas, panel=panel, warn=False)
 
         # TODO maybe only do this one on a copy we don't return? probably don't really
         # care if it's already sorted tho...
         # TODO even care to do this? if just for a corr diff thing, even need?
-        responses = sort_odors(responses.T, add_panel=add_panel, warn=False
-            ).droplevel('panel').T
+        responses = sort_odors(responses, panel=panel, warn=False)
+        spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
 
-        spike_counts = sort_odors(spike_counts.T, add_panel=add_panel, warn=False
-            ).droplevel('panel').T
-
-        orn_df = sort_odors(orn_df, add_panel=add_panel, warn=False).droplevel('panel')
-        pn_df = sort_odors(pn_df, add_panel=add_panel, warn=False).droplevel('panel')
-
+        orn_df = sort_odors(orn_df, panel=panel, warn=False)
+        pn_df = sort_odors(pn_df, panel=panel, warn=False)
     else:
         # TODO delete if i modify below to also make plots for other panels
         # (replacing w/ sorting -> dropping levels for all these, as above)
         #
         # the only place these should all be used is in the plotting code below, which
         # currently only runs in `megamat == True` case
-        del orn_deltas, spike_counts, orn_df, pn_df
+        del orn_deltas, orn_df, pn_df
 
-        if 'panel' in responses.columns.names:
-            # TODO just sort if we have panel (before dropping)?
-            responses = responses.droplevel('panel', axis='columns')
-
-    # TODO TODO TODO also drop panel level in panel='validation2' case
-    # (for consistency w/ above)
-    # (...or don't drop in either case)
+    # TODO still want?
+    if 'panel' in responses.columns.names:
+        assert 'panel' in spike_counts.columns.names
+        responses = responses.droplevel('panel', axis='columns')
+        spike_counts = spike_counts.droplevel('panel', axis='columns')
 
     # TODO probably also do for other panels?
     #if plot_dir is not None and make_plots:
@@ -11583,15 +11570,9 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
             # TODO delete?
             #assert sim_odors is not None
 
-            # TODO work OK?
             def subset_sim_odors(df):
                 if megamat:
-                    # specifying axis='index' so that both axes don't try to get
-                    # sorted for correlation matrix input (where only one will have
-                    # panel added via add_panel, so other will fail inside
-                    # olf.sort_odors)
-                    df = sort_odors(df.T, add_panel='megamat', warn=False,
-                        axis='index').droplevel('panel').T
+                    df = sort_odors(df, panel='megamat', warn=False)
 
                 if sim_odors is None:
                     return df
@@ -11639,8 +11620,11 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # downstream of response caching.
         if drop_silent_cells_before_analyses:
             model_kc_corr = drop_silent_model_cells(responses).corr()
+            # drop_silent_model_cells should also work w/ spike count input
+            spike_count_corr = drop_silent_model_cells(spike_counts).corr()
         else:
             model_kc_corr = responses.corr()
+            spike_count_corr = spike_counts.corr()
 
         # for sanity checking some of the diffs. should also be saving this outside.
         plot_corr(model_kc_corr, plot_dir, f'kcs_corr{suffix}', title=title)
@@ -11649,7 +11633,6 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # inputs (to check i'm using the right ones, etc)? should be exactly same as
         # orn-deltas_corr.pdf / orns_corr.pdf generated above.
 
-        spike_count_corr = spike_counts.corr()
         plot_corr(spike_count_corr, plot_dir, f'kcs_spike-count_corr{suffix}',
             title=title
         )
@@ -11708,9 +11691,6 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
                 title=title, xlabel=f'model KC - model ORN (avg of dynamics) corr'
             )
 
-    # TODO switch to mainly (/ additionally) returning (/using) spike_counts instead of
-    # (binarized) responses? (probably won't at this point)
-
     # NOTE: currently doing after simulation, because i haven't yet implemented support
     # for tuning running on the full set of (hallem) odors, with subsequent simulation
     # running on a different set of stuff
@@ -11719,6 +11699,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # TODO delete (replace w/ setting up sim_only s.t. only hallem_sim_odors are
         # simulated)
         responses = responses[hallem_sim_odors].copy()
+        spike_counts = spike_counts[hallem_sim_odors].copy()
 
         # TODO also print fraction of silent KCs here
         # (refactor that printing to an internal fn here)
@@ -11727,20 +11708,12 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # scalar? (may want to use these values from one run / tuning to parameterize
         # for more glomeruli / diff runs?)
 
-        # TODO TODO TODO also need to subset spike_counts here?
-        import ipdb; ipdb.set_trace()
-
-    # TODO TODO TODO return both binarized responses and spike counts (+ also save spike
-    # counts [probably externally, same as where i save responses], even if i mostly
-    # don't use them, so that i can use them for kiwi/control stuff)
+    # TODO also return model if i can make it pickle-able (+ verify that. it's possible,
+    # but not likely, that it can already be [de]serialized)
     #
     # TODO maybe in wPNKC index name clarify which connectome they came from (or
     # something similarly appropriate for each type of random draws)
-    # TODO try to shuffle things around so i don't need this second return value
-    # (pass in gkc_wide and only use for checking if passed?)
-    return responses, wPNKC, param_dict
-    # TODO delete
-    #return spike_counts, wPNKC, param_dict
+    return responses, spike_counts, wPNKC, param_dict
 
 
 n_seeds = 100
@@ -12165,6 +12138,7 @@ def bootstrapped_spearman(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
 
 
 model_responses_cache_name = 'responses.p'
+model_spikecounts_cache_name = 'spike_counts.p'
 
 _fit_and_plot_seen_param_dirs = set()
 # TODO why is sim_odors an explicit kwarg? just to not have included in strs describing
@@ -12368,11 +12342,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     params_for_csv['output_dir'] = param_dir.name
 
-    # TODO TODO return + save both this and spike counts, so that i can pick at run
-    # time which to use (and so i can cache them separately). always plot mean
-    # correlation for each (across all seeds, not just the first seed version available
-    # in model_internals/)
     model_responses_cache = param_dir / model_responses_cache_name
+    model_spikecounts_cache = param_dir / model_spikecounts_cache_name
     # TODO rename this to have "fit"/"tuned" in name or something (and change
     # model_mb_responses `tuned` var/outputs to not), since this is all tuned, and
     # latter is a mix (stuff from this, but also stuff hardcoded from above / output
@@ -12385,18 +12356,30 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     extra_responses_cache = param_dir / extra_responses_cache_name
     extra_responses = None
 
+    extra_spikecounts_cache_name = 'extra_spikecounts.p'
+    extra_spikecounts_cache = param_dir / extra_spikecounts_cache_name
+    extra_spikecounts = None
+
     print()
     # TODO TODO default to also skipping any plots made before returning? maybe add
     # another ignore-existing option ('model-plots'?) if i really want to be able to
     # remake plots w/o changing model outputs? takes a lot of time to make plots on all
     # the model outputs...
-    if not should_ignore_existing('model') and model_responses_cache.exists():
+    if not should_ignore_existing('model') and (
+            # checking both since i had previously only been returning+saving the 1st
+            model_responses_cache.exists() and model_spikecounts_cache.exists()
+        ):
+
         print(f'loading model responses (+params) from cache {model_responses_cache}')
         responses = pd.read_pickle(model_responses_cache)
+        spike_counts = pd.read_pickle(model_spikecounts_cache)
         param_dict = read_pickle(param_dict_cache)
 
         if extra_responses_cache.exists():
             extra_responses = pd.read_pickle(extra_responses_cache)
+
+        if extra_spikecounts_cache.exists():
+            extra_spikecounts = pd.read_pickle(extra_spikecounts_cache)
     else:
         # doensn't necessarily matter if it already existed. will be deleted if sparsity
         # outside bounds (and inside a sensitivity analysis call)
@@ -12434,6 +12417,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             #desc=f'{draw_type} ({n_claws=})'
             seeds = []
             responses_list = []
+            spikecounts_list = []
             param_dict_list = []
             first_param_dict = None
             wPNKC_list = []
@@ -12443,9 +12427,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
                 seeds.append(seed)
                 assert 'seed' not in model_kws
 
-                responses, wPNKC, param_dict = fit_mb_model(sim_odors=sim_odors,
+                responses, spike_counts, wPNKC, param_dict = fit_mb_model(
                     # TODO or can i handle fixed_thr/wAPLKC thru model_kws (prob not)?
-                    fixed_thr=fixed_thr, wAPLKC=wAPLKC, seed=seed,
+                    sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, seed=seed,
                     # ORN/PN plots would be redundant, and overwrite each other.
                     # currently those are the only plots I'm making in here.
                     make_plots=(i == 0), **model_kws
@@ -12458,6 +12442,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
                     return None
 
                 responses = util.addlevel(responses, 'seed', seed)
+                spike_counts = util.addlevel(spike_counts, 'seed', seed)
 
                 # TODO assert order of wPNKC columns same in each?
                 wPNKC = util.addlevel(wPNKC, 'seed', seed)
@@ -12468,11 +12453,13 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
                     assert param_dict.keys() == first_param_dict.keys()
 
                 responses_list.append(responses)
+                spikecounts_list.append(spike_counts)
                 param_dict_list.append(param_dict)
 
                 wPNKC_list.append(wPNKC)
 
             responses = pd.concat(responses_list, verify_integrity=True)
+            spike_counts = pd.concat(spikecounts_list, verify_integrity=True)
             wPNKC = pd.concat(wPNKC_list, verify_integrity=True)
 
             # TODO work ok? need to adapt downstream stuff?
@@ -12481,9 +12468,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             }
         else:
             # TODO rename param_dict everywhere -> tuned_params?
-            responses, wPNKC, param_dict = fit_mb_model(sim_odors=sim_odors,
+            responses, spike_counts, wPNKC, param_dict = fit_mb_model(
                 # TODO or can i handle fixed_thr/wAPLKC thru model_kws (prob not)?
-                fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
+                sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
             )
 
         print('done', flush=True)
@@ -12511,8 +12498,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             assert responses.columns[:len(input_odors)].equals(input_odors)
             # (defined as None above)
             extra_responses = responses.iloc[:, len(input_odors):].copy()
+            extra_spikecounts = spike_counts.iloc[:, len(input_odors):].copy()
 
             responses = responses.iloc[:, :len(input_odors)].copy()
+            spike_counts = spike_counts.iloc[:, :len(input_odors)].copy()
 
         del input_odors
 
@@ -12540,6 +12529,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # NOTE: saving raw (unsorted, etc) responses to cache for now, so i can modify
         # that bit. CSV saving is currently after all sorting / post-processing.
         to_pickle(responses, model_responses_cache)
+        to_pickle(spike_counts, model_spikecounts_cache)
         to_pickle(wPNKC, wPNKC_cache)
 
         # TODO update this comment? i think param_dict might have a lot more stuff
@@ -12563,13 +12553,20 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # against old/new outputs have an opportunity to trip and fail before this is
         # written
         if extra_responses is not None:
+            assert extra_spikecounts is not None
             to_pickle(extra_responses, extra_responses_cache)
+            to_pickle(extra_spikecounts, extra_spikecounts_cache)
         else:
+            assert extra_spikecounts is None
+
             # delete any existing extra_responses pickles
             # (don't want stale versions of these being loaded alongside newer
             # responses.p data)
             if extra_responses_cache.exists():
                 extra_responses_cache.unlink()
+
+            if extra_spikecounts_cache.exists():
+                extra_spikecounts_cache.unlink()
 
     # TODO change order so sparsity comes after target_sparsity?
     # (potentially just moving target_sparsity to end of input params?
@@ -12624,8 +12621,12 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     assert len(responses.columns.shape) == 1 and responses.columns.name == 'odor'
     responses.columns.name = 'odor1'
 
+    assert len(spike_counts.columns.shape) == 1 and spike_counts.columns.name == 'odor'
+    spike_counts.columns.name = 'odor1'
+
     if responses_to == 'hallem':
-        add_panel = 'megamat'
+        # the non-megamat odors will just be sorted to end
+        panel = 'megamat'
     else:
         orn_deltas = model_kws['orn_deltas']
         assert 'panel' in orn_deltas.columns.names
@@ -12633,19 +12634,15 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         panels = set(orn_deltas.columns.get_level_values('panel'))
         del orn_deltas
         assert len(panels) == 1
-        add_panel = panels.pop()
-        assert type(add_panel) is str
+        panel = panels.pop()
+        assert type(panel) is str
 
-    responses = sort_odors(responses.T, add_panel=add_panel, warn=False).T.droplevel(
-        'panel', axis='columns'
-    )
+    responses = sort_odors(responses, panel=panel, warn=False)
+    spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
 
     # TODO update these wrappers to also make dir if not exist (if they don't already)
-    # TODO TODO this currently have wrong panel for [non?]megamat stuff? (b/c hardcode
-    # hack above)? (only relevant if i try to restore commented sorting, which is what
-    # added panel)
     to_csv(responses, param_dir / 'responses.csv', verbose=(fixed_thr is None))
-
+    to_csv(spike_counts, param_dir / 'spike_counts.csv', verbose=(fixed_thr is None))
 
     # TODO use one/both of these col defs outside of just for s1d?
     odor_col = 'odor1'
@@ -12945,7 +12942,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         pearson.index.name = 'odor'
         pearson.columns.name = 'odor'
 
-    pearson = _resort_corr(pearson, add_panel)
+    pearson = _resort_corr(pearson, panel)
 
     # TODO TODO try deleting this and checking i can remake all the same
     # megamat/validation plots? feel like i might not need this anymore (or maybe i want
@@ -13284,7 +13281,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # work.... (doesn't seem like we've been failing w/ same AssertionError i had
         # needed to catch in other place...)
         square_mean_orn_corrs = _resort_corr(invert_corr_triangular(mean_orn_corrs),
-            add_panel
+            panel
         )
 
         # stripping conc to match processing of `pearson` above
@@ -13623,7 +13620,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
                 'fixed_thr/wAPLKC...', end=''
             )
             # TODO silence output here? makes surrounding prints hard to follow
-            responses2, _, _ = fit_mb_model(sim_odors=sim_odors,
+            # TODO also check spike_counts (2nd / 4 returned values)?
+            responses2, _, _, _ = fit_mb_model(sim_odors=sim_odors,
                 fixed_thr=tuned_fixed_thr, wAPLKC=tuned_wAPLKC, **shared_model_kws
             )
             assert responses_including_silent.equals(responses2)

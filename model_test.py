@@ -193,7 +193,7 @@ def main():
         # to include the allowdd code)
         # TODO flag to disable printing olfsysm output (and use that by default)
         # TODO or save log to each directory (eh...)?
-        responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
+        responses, _, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
             _use_matt_wPNKC=True, fixed_thr=fixed_thr, wAPLKC=wAPLKC
         )
 
@@ -333,7 +333,7 @@ def main():
     # TODO delete (as long as 2 param call works [which it does], don't need 3 param
     # version)
     '''
-    responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
+    responses, _, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
         _use_matt_wPNKC=True, fixed_thr=uniform_fixed_thr, wAPLKC=uniform_wAPLKC,
         wKCAPL=uniform_wKCAPL
     )
@@ -352,7 +352,7 @@ def main():
     '''
 
     # now also working
-    responses, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
+    responses, _, gkc_wide, _ = fit_mb_model(pn2kc_connections='hemibrain',
         _use_matt_wPNKC=True, fixed_thr=uniform_fixed_thr, wAPLKC=uniform_wAPLKC,
     )
     sparsity110 = responses.mean().mean()
@@ -370,7 +370,7 @@ def main():
     # or are even fit thresholds in mp?) as input (and return from fit_model?)?
     # TODO modify so i don't need to return gkc_wide here (or at least be more clear
     # about what it is, both in docs and in name)?
-    responses, gkc_wide, _ = fit_mb_model(tune_on_hallem=True,
+    responses, _, gkc_wide, _ = fit_mb_model(tune_on_hallem=True,
         pn2kc_connections='hemibrain', _use_matt_wPNKC=True
     )
     # (i might decide to change this index name, inside fit_mb_model...)
@@ -394,7 +394,7 @@ def main():
     # TODO TODO TODO compare that to passing just the megamat subset
     # TODO TODO TODO and also compare to passing megamat subset, but w/
     # tune_on_hallem=True
-    r1, _, _ = fit_mb_model(orn_deltas, tune_on_hallem=True,
+    r1, _, _, _ = fit_mb_model(orn_deltas, tune_on_hallem=True,
         pn2kc_connections='hemibrain', _use_matt_wPNKC=True
     )
 
@@ -406,7 +406,7 @@ def main():
         ((r1.columns + ' @ -2') == responses.columns).sum() / len(r1.columns) >= 0.5
     ), 'assuming more than half of hallem odors not in odoresponsesabbrev'
 
-    r3, _, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
+    r3, _, _, _ = fit_mb_model(tune_on_hallem=True, pn2kc_connections='hemibrain',
         # it's not an issue that remy_odors has '@ -3' suffix in sim_odors here.
         # fit_mb_model allows concs in [-3, -1) to match hallem.
         #
@@ -430,7 +430,7 @@ def main():
     assert all(x in orn_deltas.columns for x in megamat_odors)
     megamat_deltas = orn_deltas[megamat_odors].copy()
 
-    r4, _, _ = fit_mb_model(megamat_deltas, tune_on_hallem=True,
+    r4, _, _, _ = fit_mb_model(megamat_deltas, tune_on_hallem=True,
         pn2kc_connections='hemibrain', _use_matt_wPNKC=True
     )
 
@@ -498,7 +498,7 @@ def main():
             # (w/ last param = True), as matt does?
             # TODO regenerate matt's hemidraw / uniform responses w/ the methanoic acid
             # bug fixed?
-            curr_responses, _, _ = fit_mb_model(pn2kc_connections=draw_type,
+            curr_responses, _, _, _ = fit_mb_model(pn2kc_connections=draw_type,
                 n_claws=n_claws, _use_matt_wPNKC=True, seed=(seed + i),
                 # TODO regen matt's things with methanoic acid mistake fixed -> compare
                 # to that -> delete this flag
