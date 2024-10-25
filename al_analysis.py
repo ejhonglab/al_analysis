@@ -835,8 +835,17 @@ unused_glomeruli_diagnostics = (
 panel2name_order = deepcopy(natmix.panel2name_order)
 panel_order = list(natmix.panel_order)
 
-# TODO TODO any reason for this order? just use order loaded from config /
+# to support hacky combination of mix concentrations into name part of odor strings, so
+# that modelling code (which currently strips concentrations at some points) works.
+# (see hack_strs_to_fix_mix_dilutions def)
+panel2name_order['kiwi'].extend(['kmix0', 'kmix-1', 'kmix-2'])
+panel2name_order['control'].extend(['cmix0', 'cmix-1', 'cmix-2'])
+
+# TODO any reason for this order (i think it might be same as order in yaml [which more
+# or less goes from odors activating glomeruli in higher planes to lower planes], so
+# maybe could load from there now?)? just use order loaded from config /
 # glomeruli_diagnostics.yaml?
+#
 # TODO actually load from generator config (union of all loaded w/ this panel?)
 # -> use associated glomeruli keys of odors to sort
 #
@@ -3854,7 +3863,8 @@ def names2fname_prefix(name1, name2):
 
 
 def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
-    as_corr_dist: bool = False, verbose=False, **kwargs) -> pd.DataFrame:
+    as_corr_dist: bool = False, verbose: bool = False, _save_kws=None, **kwargs
+    ) -> pd.DataFrame:
 
     # otherwise, we assume input is already a correlation (/ difference of correlations)
     if not df.columns.equals(df.index):
@@ -3912,8 +3922,11 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
     if len(title) > 0:
         fig.suptitle(title)
 
-    # TODO thread thru bbox_inches kwarg here?
-    savefig(fig, plot_dir, prefix, debug=verbose)
+    if _save_kws is None:
+        _save_kws = dict()
+
+    # TODO any downside to hardcoding bbox_inches='tight'? was unspecified before
+    savefig(fig, plot_dir, prefix, bbox_inches='tight', debug=verbose, **_save_kws)
 
     return corr
 
@@ -3922,20 +3935,27 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
 # plot_all...? see also mean_df/etc plotting in main, that recreates much of those
 # kwargs for use w/ viz.matshow)
 def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
-    vmin=None, vmax=None, title: str = '', **kwargs) -> None:
+    vmin=None, vmax=None, title: str = '', _save_kws=None, **kwargs) -> None:
 
     fig, _ = viz.matshow(df, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs, **kwargs)
 
     if len(title) > 0:
         fig.suptitle(title)
 
-    # TODO thread thru bbox_inches kwarg here?
-    savefig(fig, plot_dir, prefix)
+    if _save_kws is None:
+        _save_kws = dict()
+
+    # TODO any downside to hardcoding bbox_inches='tight'? was unspecified before
+    savefig(fig, plot_dir, prefix, bbox_inches='tight', **_save_kws)
 
 
 # TODO also break out a plot_responses fn from first part (-> use here)?
 def plot_responses_and_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
     vmin=None, vmax=None, title: str = '', **kwargs) -> pd.DataFrame:
+
+    # TODO expose bbox_inches (or remove kwarg in plot_[responses|corr], and just accept
+    # the hardcode to bbox_inches='tight' in both of those, if no downside)? ever need
+    # diff between the two calls?
 
     plot_responses(df, plot_dir, prefix, vmin=vmin, vmax=vmax, title=title, **kwargs)
 
@@ -5304,7 +5324,8 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
 
     curr_odor_i = 0
 
-    # TODO TODO probably cluster to order rows by default
+    # TODO probably cluster to order rows (=rois?) by default (just use cluster_rois if
+    # so? already calling that in here below...)
 
     axs = None
     # TODO if i'm not gonna concat dff_traces into some xarray thing, maybe just use
@@ -5433,8 +5454,8 @@ def trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
     # TODO factor cmap handling into cluster_rois defaults?
     # TODO group xticklabels on this one
     #
-    # TODO TODO TODO why is this not having same recursion error issue as newer attepmts
-    # to use this for plot model KC responses?
+    # TODO why is this not having same recursion error issue as newer attempts to use
+    # this for plot model KC responses? (i assume it was just a data size thing...)
     # trial_df.columns.name = 'roi'
     # trial_df.indiex.names = ['odor1', 'odor2', 'repeat']
     # trial_df.shape = (30, 40)
@@ -8419,8 +8440,7 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
             # TODO update this code to not just assume these are the only w/
             # concentration varying within a panel. actual compute which that is true
             # for.
-            # TODO TODO update to kmix/cmix, in time
-            if any(ostr.startswith(p) for p in ('~kiwi', 'control mix')):
+            if any(ostr.startswith(p) for p in ('kmix','cmix', '~kiwi', 'control mix')):
                 return ostr
             # For the other odors, we can drop the concentration information to tidy up
             # the xticklabels.
@@ -9341,7 +9361,7 @@ def analyze_cache():
         pair_df = onepair_dfs(name1, name2, df)[0]
         analyze_onepair(pair_df)
 
-    # TODO TODO TODO try to cluster odor mixture behavior types across odor pairs, but
+    # TODO TODO try to cluster odor mixture behavior types across odor pairs, but
     # either sorting so ~most activating is always A or maybe by adding data duplicated
     # such that it appears once for A=x,B=y and once for A=y,B=x
     # TODO other ways to achieve some kind of symmetry here?
@@ -9370,6 +9390,7 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
         # just in case we didn't sort above. we still don't want to modify input...
         df = df.T.copy()
 
+    # TODO plus, this will screw up [h|v]line_level_fn stuff...
     # TODO warn/fail if this is not the case? accidentally didn't hit this when there
     # was a bug in above
     if 'odor1' in df.columns.names:
@@ -9377,8 +9398,8 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
         # formatted str fn? isn't that what i do w/ hong2p.viz.matshow calls?
         df.columns = df.columns.get_level_values('odor1')
 
-    # TODO TODO option to use color by clustering (there's an option for that, right?)
-    # to show which fly data came from?
+    # TODO TODO TODO option to use color by clustering (there's an option for that,
+    # right?) to show which fly data came from?
 
     cg = viz.clustermap(df, col_cluster=False, cmap=cmap, **kwargs)
     ax = cg.ax_heatmap
@@ -9644,6 +9665,7 @@ def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root,
     remy_corr = remy_df.T.corr()
     remy_corr_da = odor_corr_frame_to_dataarray(remy_corr)
 
+    # TODO replace w/ plot_corr from in here [/ in hong2p.viz, if i move there]?
     # TODO share kwargs w/ other places i'm defining them for plotting correlations
     # for remy's experiment
     fig = natmix.plot_corr(remy_corr_da, **remy_corr_matshow_kwargs)
@@ -10501,7 +10523,12 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         sfr_from_csv = sfr_from_csv.iloc[:, 0].copy()
 
         assert sfr_for_csv.equals(sfr_from_csv)
-        assert hallem_orn_deltas_for_csv.equals(deltas_from_csv)
+        # changing abbreviations of some odors broke this previously
+        # (hence why i replaced it w/ the two assertions below. now ignoring odor
+        # columns)
+        #assert hallem_orn_deltas_for_csv.equals(deltas_from_csv)
+        assert np.array_equal(hallem_orn_deltas_for_csv, deltas_from_csv)
+        assert hallem_orn_deltas_for_csv.index.equals(deltas_from_csv.index)
     else:
         # TODO assert columns of the two match here (so i don't need to check from
         # loaded versions, and so i can only check one against wPNKC, not both)
@@ -11700,6 +11727,13 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # scalar? (may want to use these values from one run / tuning to parameterize
         # for more glomeruli / diff runs?)
 
+        # TODO TODO TODO also need to subset spike_counts here?
+        import ipdb; ipdb.set_trace()
+
+    # TODO TODO TODO return both binarized responses and spike counts (+ also save spike
+    # counts [probably externally, same as where i save responses], even if i mostly
+    # don't use them, so that i can use them for kiwi/control stuff)
+    #
     # TODO maybe in wPNKC index name clarify which connectome they came from (or
     # something similarly appropriate for each type of random draws)
     # TODO try to shuffle things around so i don't need this second return value
@@ -11958,13 +11992,20 @@ def plot_n_odors_per_cell(responses, ax, *, ax_for_ylabel=None, title=None,
 # NOTE: need to re-sort since corr_triangular necessarily (why? can't i have it sort
 # to original order or something?) sorts internally
 def _resort_corr(corr, add_panel):
-    # TODO make less ugly jesus christ
+    # TODO delete (check that below is equiv first)
     #
     # can't use add_panel kwarg to sort_odors because that only adds to index
     # levels, but we also need to add to column levels here.
-    corr = sort_odors(util.addlevel(util.addlevel(corr, 'panel', add_panel).T,
+    corr2 = sort_odors(util.addlevel(util.addlevel(corr, 'panel', add_panel).T,
         'panel', add_panel), warn=False).droplevel('panel',
         axis='columns').droplevel('panel', axis='index')
+    #
+
+    corr = sort_odors(corr, panel=add_panel)
+
+    # TODO delete
+    assert corr.equals(corr2)
+    #
 
     return corr
 
@@ -12129,6 +12170,9 @@ _fit_and_plot_seen_param_dirs = set()
 # TODO why is sim_odors an explicit kwarg? just to not have included in strs describing
 # model params? i already special case orn_deltas to exclude it. why not do something
 # like that (if i keep the param at all)?
+# TODO TODO try to get [h|v]lines between components, 2-component mixes, and 5-component
+# mix for new kiwi/control data (at least for responses and correlation matrices)
+# (could just check for '+' character, to handle all cases)
 def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # TODO rename comparison_responses to indicate it's only used for sensitivity
     # analysis stuff? (and to be more clear how it differs from comparison_[kcs|orns])
@@ -12481,6 +12525,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # just saving these for manual reference, or for use in -c check.
             # not loaded elsewhere in the code.
             to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
+
+            # TODO also save a hemibrain-filled version of this?
+            #
             # current format like:
             # panel	megamat	         megamat          ...
             # odor	2h @ -3	         IaA @ -3         ...
@@ -13570,6 +13617,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         assert tuned_fixed_thr is not None and tuned_wAPLKC is not None
 
         checks = True
+        # TODO move to some kind of unit test. in olfsysm, maybe?
         if checks:
             print('checking we can recreate responses by hardcoding tuned '
                 'fixed_thr/wAPLKC...', end=''
@@ -15122,41 +15170,39 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
     index_df = certain_df.index.to_frame(index=False)
 
-    # TODO delete
-    #mix_strs = index_df.apply(format_mix_from_strs, axis=1)
-
+    odor1_names = index_df.odor1.apply(olf.parse_odor_name)
     mix_strs = (
-        index_df.odor1.apply(olf.parse_odor_name) + '+' +
+        odor1_names + '+' +
         index_df.odor2.apply(olf.parse_odor_name) + ' (air mix) @ 0'
     )
     # TODO work as-is (seems to...)? need to subset RHS to be same shape?
+    # (could add assertions that other part, i.e. `index_df.odor2 == solvent_str`
+    # doesn't change)
     index_df.loc[index_df.odor2 != solvent_str, 'odor1'] = mix_strs
 
-    # TODO necessary? thought some code below might trip if this weren't there.
-    #index_df.loc[mix_strs != index_df.odor1, 'odor2'] = solvent_str
+    # NOTE: see panel2name_order modifications up top, which define order of these hacky
+    # new "odors" ('kmix0', 'kmix-1', ... 'cmix0', 'cmix-1', ...)
+    #
+    # e.g. 'kmix @ 0' -> 'kmix0' (so concentration not recognized as such, and thus it
+    # should work in modelling code that currently strips that)
+    hack_strs_to_fix_mix_dilutions = (
+        odor1_names + index_df.odor1.apply(olf.parse_log10_conc).map(
+            lambda x: f'{x:.0f}'
+        )
+    )
+    # expecting all these to get stripped off in modelling code
+    hack_strs_to_fix_mix_dilutions = hack_strs_to_fix_mix_dilutions + ' @ 0'
 
-    # TODO delete
-    #index_df['odor1'] = mix_strs
+    index_df.loc[odor1_names.str.endswith('mix'), 'odor1'] = \
+        hack_strs_to_fix_mix_dilutions
 
     certain_df.index = pd.MultiIndex.from_frame(index_df)
+    del index_df
 
-    # TODO delete
-    print()
-    print('HANDLE ODOR2 DEFINED')
-    # NOTE: trying hack for now. WIP on adding odor2 support (in other branch) already a
-    # huge mess. maybe rename from 'odor'->'mix'/'odors' to be clear single level now
-    # can represent multiple odors?
-    print(index_df[['odor1','odor2']].drop_duplicates())
-    #import ipdb; ipdb.set_trace()
-    print()
-    #
-
-    len_before = len(certain_df)
-    certain_df = natmix.drop_mix_dilutions(certain_df)
-    if len(certain_df) < len_before:
-        warn('model_mb_responses: dropping natmix mixture dilutions since downstream '
-            'code currently broken w/ multiple concs of one odor'
-        )
+    # after above two hacks, for kiwi/control data, sort_odors should order odors as:
+    # pfo, components, 2-component mix, 2-component air mix, 5-component mix, dilutions
+    # of 5-component mix (with more dilute mixtures further towards the end)
+    certain_df = sort_odors(certain_df)
 
     # TODO TODO may want to preserve panel just so i can fit dF/F -> spike delta fn
     # on all, then subset to specific panels for certain plots
@@ -15168,10 +15214,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # TODO delete? restore and change code to expect 'odor' instead of 'odor1'?
     # this is just to rename 'odor1' -> 'odor'
     fly_mean_df.index.names = ['panel', 'odor']
-
-    # TODO TODO fix internal (fit_and_plot..., fit_mb_model) odor handling to not always
-    # need to strip the concs for so many things, then try restoring these
-    # (mainly care about full strength mix anyway, for now, at least)
 
     n_before = num_notnull(fly_mean_df)
     shape_before = fly_mean_df.shape
@@ -15314,44 +15356,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             return f'{method}_scaled_{dff_col}'
 
 
-    # TODO TODO maybe scatterplot of min/max[/some quantiles?] for each fly
-    # also each odor / (fly X odor)?
-
-    # TODO delete? also grouping on odor (like this) useful?
-    '''
-    fly_odor_maxes = fly_mean_df.groupby(['fly_id', 'panel', 'odor'], sort=False
-        )[dff_col].max().reset_index()
-
-    fly_odor_max_summaries = fly_odor_maxes.groupby(['panel', 'odor'],
-        sort=False)[dff_col].quantile(q=[0.0, 0.5, 1.0]).unstack()
-
-    fly_odor_max_summaries['mean'] = fly_odor_maxes.groupby(['panel', 'odor'],
-        sort=False)[dff_col].mean()
-
-
-    # TODO refactor to share w/ above?
-    fly_odor_mins = fly_mean_df.groupby(['fly_id', 'panel', 'odor'], sort=False
-        )[dff_col].min().reset_index()
-
-    fly_odor_min_summaries = fly_odor_mins.groupby(['panel', 'odor'],
-        sort=False)[dff_col].quantile(q=[0.0, 0.5, 1.0]).unstack()
-
-    fly_odor_min_summaries['mean'] = fly_odor_mins.groupby(['panel', 'odor'],
-        sort=False)[dff_col].mean()
-
-    # TODO delete
-    print()
-    print('fly_odor_min_summaries:')
-    print(fly_odor_min_summaries)
-    print()
-    print('fly_odor_max_summaries:')
-    print(fly_odor_max_summaries)
-    print()
-    #
-    '''
-    # TODO try extreme quantiles (maybe .01/.99) instead of min/max?
-    # (seemed pretty similar. delete those quantiles from calc below?)
-    #
     # quantile 0 = min, 1 = max. after unstacking, columns will be quantiles.
     fly_quantiles = fly_mean_df.groupby('fly_id')[dff_col].quantile(
         [0, 0.01, 0.05, 0.5, 0.95, 0.99, 1]).unstack()
@@ -15359,7 +15363,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     avg_flymin = fly_quantiles[0].mean()
     avg_flymax = fly_quantiles[1].mean()
 
-    # TODO TODO TODO compare to quantiles after applying new transform i come up with
+    # TODO TODO compare to quantiles after applying new transform i come up with
     #
     # NOTE: seems to be more variation in upper end than in inhibitory values
     # TODO maybe i should be scaling the two sides diff then?
@@ -15631,6 +15635,14 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             ).columns.to_frame(index=False)[['date','fly_num']].drop_duplicates()
             ) >= 7:
         '''
+
+        # TODO TODO TODO also only want to do this if the input is
+        # megamat+validation+diags, not any other combinations of things (right? or
+        # should i be recomputing now that i collected the new kiwi/control data after
+        # the imaging system had a lot of time to drift?)
+        # TODO at least make similar plots from this new data? to try to evaluate
+        # reasonableness of using old fit...
+
         # TODO TODO cleaner solution for this hack (probably involving preserving
         # panel throughout, and splitting each panel out before passing thru model, then
         # just always recompute model and do all in one run? now doing a prior run just
@@ -15639,6 +15651,13 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         # hack to only fit model if we are passing all panel (including validation)
         # data, on all flies (shape is 198x517 there)
         if certain_df.shape[1] > 500 and len(certain_df) > 150:
+
+            # TODO delete. if this get triggered while working on new kiwi/control data
+            # (before checking if fitting dF/F -> spiking fn reasonable on new data),
+            # then need to change condition for this conditional, to only trigger on old
+            # megamat+validation+diag input
+            import ipdb; ipdb.set_trace()
+            #
 
             use_saved_dff_to_spiking_model = False
         else:
@@ -16188,6 +16207,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         # TODO (reword to update / delete) use _model kwarg in predict to check
         # serialized->deser model is behaving same (below, where predict is called)
     else:
+        # TODO TODO print some short summary of this data (panels, numbers of flies,
+        # etc)
         cprint(f'using saved dF/F -> spiking model {dff_to_spiking_model_path}',
             _cprint_color
         )
@@ -16548,15 +16569,19 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
     assert target_sparsity_for_sensitivity_analysis in target_sparsities
 
+    # TODO TODO TODO try to run kiwi+control data w/in one model, then split them apart
+    # right after? (easier to have one panel_plot_dir or two?)
+    # (easier to make a temporary 'kiwi_and_control' panel, or change code to be able
+    # to run on multiple?)
+
     # TODO want to drop the panel column level? or want to use it inside calls to
     # fit_and_plot...? groupby kwarg for dropping, if i want former?
-    for panel, panel_df in mean_est_df.groupby('panel', axis='columns', sort=False):
+    for panel, panel_est_df in mean_est_df.groupby('panel', axis='columns', sort=False):
 
         if panel == diag_panel_str:
             continue
 
-        # TODO need warn=False?
-        panel_df = sort_odors(panel_df)
+        panel_est_df = sort_odors(panel_est_df)
 
         panel_plot_dir = plot_dir / panel
         makedirs(panel_plot_dir)
@@ -16566,16 +16591,29 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         model_param_csv = panel_plot_dir / 'tuned_params.csv'
         model_params = None
 
-        # TODO TODO TODO TODO at least drop 'odor2' != solvent_str (erring if it's not
-        # dropped, assuming we don't update code to support) + also drop mix dilutions
-
-        # TODO fix plot order in one like this generated outside (where?) -> see if we
-        # can delete this dupe
-        # TODO TODO drop mix dilutions from this? other things? currently has 'odor2',
-        # though fly_mean_df+derivatives don't
-        raw_dff_panel_df = certain_df.loc[panel]
+        raw_dff_panel_df = sort_odors(certain_df.loc[panel], panel=panel)
 
         mean_fly_dff_corr = mean_of_fly_corrs(raw_dff_panel_df)
+
+        # just checking that mean_of_fly_corrs isn't screwing up odor order, since
+        # raw_dff_panel_df odors are sorted (and easier to check against panel_est_df,
+        # as that doesn't have the repeats in it like raw_dff_panel_does, but the order
+        # of the odors in the two should be the same)
+        assert mean_fly_dff_corr.columns.equals(mean_fly_dff_corr.index)
+        # this doesn't check .name, which is good, b/c mean_fly_dff_corr has 'odor1',
+        # not 'odor'
+        assert mean_fly_dff_corr.columns.equals(
+            panel_est_df.columns.get_level_values('odor')
+        )
+
+        # TODO (just for ticklabels in plots) for kiwi/control at least (but maybe for
+        # everything?) hide the '@ 0' part of conc strs [maybe unless there is another
+        # odor w/ a diff conc, but may not matter]
+
+        # TODO restore response matrix plot versions of these (i.e. plot responses in
+        # addition to just corrs) (would technically be duped w/ ijroi versions, for
+        # convenient comparison to 'est_orn_spike_deltas*' versions? or symlink to the
+        # ijroi one?
         plot_corr(mean_fly_dff_corr, panel_plot_dir, 'orn_dff_corr',
             xlabel=f'ORN {dff_latex}'
         )
@@ -16626,21 +16664,17 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
         # should i also be passing each *individual fly* data thru dF/F -> est spike
         # delta fn (-> recomputing)? should i be doing that w/ all of modeling?
-        # (no, Betty and i agreed it wasn't worth it)
+        # (no, Betty and i agreed it wasn't worth it for now)
 
-        # TODO TODO TODO fix sorting to match plots made inside fit_and_plot...
-
-        # TODO TODO also save this to a csv (for analysis by other people)
-        # TODO TODO just/also one master one w/ all panels above?
-        #
-        # TODO rename panel_df above to maybe panel_est_df or something -> rename all
-        # panel_df + est_df to that. no need for copy, right?
-        #
+        # TODO no need for copy, right?
         # TODO maybe i don't need to drop panel here?
         #
         # also, why the double transpose here? est_df used apart from for this plot?
         # (b/c usage as comparison_orns below)
-        est_df = panel_df.droplevel('panel', axis='columns').T.copy()
+        #
+        # NOTE: this should currently be saved as a pickle+CSV under each model output
+        # directory, at orn_deltas.[csv|p] (done by fit_and_plot...)
+        est_df = panel_est_df.droplevel('panel', axis='columns').T.copy()
 
         # TODO TODO also plot hemibrain filled version(s) of this
         est_corr = plot_responses_and_corr(est_df.T, panel_plot_dir,
@@ -16663,9 +16697,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         # TODO or just move before loop over panels?
         if panel == 'megamat':
             hallem_megamat = hallem_delta_wide.loc[
-                # get_level_values('odor') should work whether panel_df has 'odor' as
-                # one level of a MultiIndex, or as single level of a regular Index
-                panel_df.columns.get_level_values('odor')
+                # get_level_values('odor') should work whether panel_est_df has 'odor'
+                # as one level of a MultiIndex, or as single level of a regular Index
+                panel_est_df.columns.get_level_values('odor')
             ].sort_index(axis='columns')
 
             # TODO label cbar w/ spike delta units
@@ -16686,7 +16720,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # TODO does this change correlation (yes, moderately increased)?
             # TODO plot delta corr wrt above?
             # TODO print about what the reindex is dropping (if verbose?)?
-            zerofilled_hallem = hallem_megamat.reindex(panel_df.index,
+            zerofilled_hallem = hallem_megamat.reindex(panel_est_df.index,
                 axis='columns').fillna(0)
             plot_responses_and_corr(zerofilled_hallem.T, panel_plot_dir,
                 'hallem_spike_deltas_filled', xlabel='Hallem OR spike deltas\n'
@@ -16703,7 +16737,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
         # TODO just use one of the previous things that was already tidy? and already
         # had hallem data?
-        tidy_est = panel_df.droplevel('panel', axis='columns').stack()
+        tidy_est = panel_est_df.droplevel('panel', axis='columns').stack()
         tidy_est.name = est_spike_delta_col
         tidy_est = tidy_est.reset_index()
 
@@ -16717,7 +16751,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         )
         del tidy_est
 
-        pebbled_input_df = panel_df
+        pebbled_input_df = panel_est_df
         responses_to_suffix = ''
 
         # TODO check outputs against those run previous way (without
@@ -16757,8 +16791,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # TODO replace these two lines w/ just sorting, if that works (would have to
             # add panel to both column and index, at least one manually...)
             # (name order already cluster order, in panel2name_order?)
-            # (current strategy will probably no longer work w/ panel_df/est_df having
-            # panel level...)
+            # (current strategy will probably no longer work w/ panel_est_df/est_df
+            # having panel level...)
             assert set(est_df.index) == set(comparison_kc_corrs.index)
             comparison_kc_corrs = comparison_kc_corrs.loc[est_df.index, est_df.index
                 ].copy()
@@ -18121,6 +18155,7 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
 
     # TODO just check # of columns to decide if we want to add bbox_inches='tight'
     # (between diags + megamat and that number + validation2)? or always pass it?
+    # what is the downside to always passing it?
     plot_responses_and_scaled_versions(certain_df, plot_dir, f'{fname_prefix}certain',
         # NOTE: wasn't planning on passing vmin/vmax, but need to so stddev plot can
         # share limit w/ mean plots generated in next call
@@ -20186,6 +20221,9 @@ def main():
     ij_trial_dfs = olf.pad_odor_indices_to_max_components(ij_trial_dfs)
     trial_df = pd.concat(ij_trial_dfs, axis='columns', verify_integrity=True)
 
+    # TODO why did this ValueError get triggered again after running:
+    # (at least subsequent call w/o ijroi arg to -i didn't trip it...)
+    # ./al_analysis.py -t 2024-09-03 -s corr,ijroi,intensity -i ijroi,model -v
     # TODO fix base case:
     # Traceback (most recent call last):
     #   File "./al_analysis.py", line 21601, in <module>
@@ -21267,6 +21305,8 @@ def main():
     def convert_my_abbrevs_to_remy(df: pd.DataFrame) -> pd.DataFrame:
         assert df.index.names == ['panel', 'odor1']
 
+        # TODO replace (part of) below w/ abbrev(x, abbrevs=my_abbrev2remy)?
+
         odor_dicts = df.index.get_level_values('odor1').map(olf.parse_odor)
 
         new_odor_dicts = []
@@ -21839,10 +21879,11 @@ def main():
     # reasons...)
     to_pickle(trial_df, output_root / ij_roi_responses_cache)
 
+    # TODO delete? probably
     # TODO still want to keep this?
     # This is dropping '~kiwi' and 'control mix' at concentrations other than undiluted
     # ('@ 0') concentration.
-    trial_df = natmix.drop_mix_dilutions(trial_df)
+    #trial_df = natmix.drop_mix_dilutions(trial_df)
 
     # TODO delete / fix.
     # some across fly ijroi plotting currently broken w/ pair data (or maybe just when
@@ -21908,6 +21949,9 @@ def main():
 
     # TODO if --verbose, print when we skip this
     if 'intensity' not in steps_to_skip:
+        # TODO drop mix dilutions here (now that i'm not doing to trial_df
+        # unconditionally above, at least when it's not overwritten by consensus_df...)?
+
         trial_ser = trial_df.stack(trial_df.columns.names)
         assert trial_df.notnull().sum().sum() == trial_ser.notnull().sum()
         tidy_trial_df = trial_ser.reset_index(name='mean_dff')
