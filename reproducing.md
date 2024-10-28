@@ -24,6 +24,16 @@ The default skipped steps should be mentioned in the `-s` section of the
 
 megamat:
 - all pebbled data (9 flies):
+  - 2023-04-22/2
+  - 2023-04-22/3
+  - 2023-04-26/2
+  - 2023-04-26/3
+  - 2023-05-08/1
+  - 2023-05-08/3
+  - 2023-05-09/1
+  - 2023-05-10/1
+  - 2023-06-22/1
+
   - 2 flies on 2023-04-22 had water for va/aa, but i had typically been including them.
     first fly after 2023-04-22 was on 2023-04-26. va was still in the diagnostics on
     2023-04-22, but solvent was also water there (and thus also nulled for across-fly
@@ -49,11 +59,14 @@ megamat:
   ```
 
 
-# TODO TODO also list (/ include references to files listing) flies in each output,
-# in case Google Sheet metadata changes (e.g. changing the Exclude checkbox)
 validation2:
 - pebbled data (at final concentrations only):
-  - 5 good flies (after dropping 2024-01-05/4 at B's request, for looking anomalous)
+  - 5 good flies (after dropping 2024-01-05/4 at B's request, for looking anomalous):
+    - 2023-11-19/1
+    - 2023-11-21/1
+    - 2023-11-21/2
+    - 2023-11-21/3
+    - 2024-01-05/1
 
   ```
   ./al_analysis.py -d pebbled -n 6f -t 2023-11-19 -e 2024-01-05

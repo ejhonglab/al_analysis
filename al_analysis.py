@@ -2560,6 +2560,12 @@ def _check_output_would_not_change(path: Path, save_fn, data=None, **kwargs) -> 
     raise RuntimeError(err_msg)
 
 
+# if one output would get written two twice in one run of this script.
+# for most outputs, we only intend to write them once, and this indicates an error.
+class MultipleSavesPerRunException(IOError):
+    pass
+
+
 # TODO TODO move to hong2p.util
 # TODO unit test?
 #
@@ -2601,11 +2607,14 @@ def produces_output(_fn=None, *, verbose=True):
             assert fn.__name__ in _fn2seen_inputs
 
             seen_inputs = _fn2seen_inputs[fn.__name__]
+
             # TODO want to have wrapper add a kwarg to disable this assertion?
             # TODO test w/ both Path and str (and mix)
-            assert path not in seen_inputs, (f'would have overwritten output {path} ('
-                'previously written elsewhere in this run)!'
-            )
+            if path in seen_inputs:
+                raise MultipleSavesPerRunException('would have overwritten output '
+                    f' {path} (previously written elsewhere in this run)!'
+                )
+
             seen_inputs.add(path)
 
             path = Path(path)
@@ -10648,7 +10657,6 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         assert sfr.index.equals(orn_deltas.index)
     #
 
-    # TODO TODO also support panel level for this? what else would need to change?
     odor_index = orn_deltas.columns
     n_input_odors = orn_deltas.shape[1]
 
@@ -11716,6 +11724,13 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     return responses, spike_counts, wPNKC, param_dict
 
 
+# e.g. before calculating correlations across model KC populations.
+#
+# Remy generally DOES drop "bad" cells, which are largely silent cells, but that isn't
+# controlled by this flag. my analysis of her data generally also drops the same cells
+# she does.
+drop_silent_model_kcs = True
+
 n_seeds = 100
 # TODO TODO and re-run whole script once implemented for those 2 (to compare
 # sd / ('ci',95) / ('pi',95|50) for each)
@@ -12151,16 +12166,19 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # TODO rename comparison_responses to indicate it's only used for sensitivity
     # analysis stuff? (and to be more clear how it differs from comparison_[kcs|orns])
     comparison_responses: Optional[pd.DataFrame] = None,
-    # TODO delete restrict_sparsity? seems unused?
     n_seeds: int = 1, restrict_sparsity: bool = False,
     min_sparsity: float = 0.03, max_sparsity: float = 0.25,
+    _in_sens_analysis: bool = False,
     # TODO just use model_kws for fixed_thr/wAPLKC?
+    # (may now make sense, if i'm gonna add a flag to indicate whether we are in a
+    # sensitivity analysis subcall)
     fixed_thr: Optional[float] = None, wAPLKC: Optional[float] = None,
-    drop_silent_cells_before_analyses: bool = True,
+    drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     _add_combined_plot_legend=False, sim_odors=None, comparison_orns=None,
     comparison_kc_corrs=None, responses_to_suffix='',
     _strip_concs_comparison_kc_corrs=False, param_dir_prefix: str = '',
-    extra_params: Optional[dict] = None, **model_kws):
+    title_prefix: str= '', extra_params: Optional[dict] = None,
+    _only_return_params: bool = False, **model_kws):
     # TODO doc which extra plots made by each of comparison* inputs (or which plots are
     # changed, if no new ones)
     """
@@ -12199,7 +12217,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         responses_to = 'hallem'
     #
 
-    # TODO TODO also try tuning on remy's subset of hallem odors?
+    # TODO also try tuning on remy's subset of hallem odors?
     # (did i already? is it clear that what's in preprint was not done this way?)
 
     # TODO share default w/ fit_mb_model somehow?
@@ -12208,6 +12226,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         tune_from = 'hallem'
     else:
         tune_from = my_data
+    del my_data
 
     # TODO fix (give actual default? make positional?) (is this ever not available?
     # when?)
@@ -12223,7 +12242,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         'pn2kc_connections': 'pn2kc',
         'target_sparsity': 'target_sp',
     }
-    exclude_params = ('orn_deltas', 'title')
+    exclude_params = ('orn_deltas', 'title', 'repro_preprint_s1d')
     # TODO sort params first? (so changing order in code doesn't cause
     # cache miss...)
     param_str = ', '.join([''] + [
@@ -12232,8 +12251,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     ])
     if fixed_thr is not None or wAPLKC is not None:
         assert fixed_thr is not None and wAPLKC is not None
-        # TODO fix (posible existing param_str empty?). refactor?
-        param_str += f', fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}'
+
+        # TODO TODO maybe only do if _in_sens_analysis. don't think i actually want in
+        # hemibrain case (other than within sens analysis subcalls)
+        #
+        # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be too
+        # cumbersome to format into this
+        if n_seeds == 1:
+            param_str += f', fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}'
 
     if n_seeds > 1:
         param_str += f', n_seeds={n_seeds}'
@@ -12265,13 +12290,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     params_for_csv.update(
         {k: v for k, v in model_kws.items() if k not in exclude_params}
     )
-
-    # TODO delete commented version of same below if this works
-    # (was split into 2 regions) (still there?)
-    #
-    # this top case should currently only be encountered when running sensitivity
-    # analysis, and only then within the recursive fit_and_plot... calls.
-    if fixed_thr is not None or wAPLKC is not None:
+    # prefix defaults to empty str
+    title = title_prefix
+    if _in_sens_analysis:
         assert fixed_thr is not None and wAPLKC is not None
 
         # assumed to be passed in (but not created by) sensitivity analysis calls
@@ -12281,9 +12302,11 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # the need to also include here.
         param_dir = plot_dir
 
+        # TODO TODO if i allow vector fixed_thr/wAPLKC, will need to special case here
         # TODO delete? should always be redefed below...
-        #title = f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f} (sparsity={sparsity:.2f})'
-        title = f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f}'
+        # (if so, then why is this code even here?)
+        #title += f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f} (sparsity={sparsity:.2f})'
+        title += f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f}'
         title_including_silent_cells = title
     else:
         # TODO refactor for_dirname handling to not specialcase responses_to/others?
@@ -12302,23 +12325,46 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # (and only contains stuff downstream of dF/F -> spiking model
         # creation/application)
         param_dir = plot_dir / f'{param_dir_prefix}{for_dirname}'
+        del for_dirname
 
-        assert ('target_sparsity' in model_kws and
-            model_kws['target_sparsity'] is not None
-        )
         # TODO will this title get cut off (about a 1/3rd of last (of 3) lines, yes)?
-        # fix!
-        title = (
+        # fix! (still?)
+        title += (
             # TODO TODO be clear in the drop_nonhallem=True
             # (drop_receptors_not_in_hallem=True) case about the fact that each of these
             # is a subset?
+            #
+            # TODO TODO remove / condense these first two parts of title?
+            # pretty much always the same these days... (may also want tune_from to be
+            # able to indicate we tuned on kiwi+control data (can it currently?)
+            # TODO TODO and do the same w/ param_str def, so dirnames aren't as
+            # cluttered
             f'KC thresh [/APL inh] from: {tune_from}\n'
+            # TODO even need this one? were hallem / pebbled (i.e. megamat) plots ever
+            # possible to confuse?
             f'responses to: {responses_to}\n'
+
             f'wPNKC: {pn2kc_connections}\n'
+        )
+
+        if 'target_sparsity' in model_kws:
+            assert model_kws['target_sparsity'] is not None
+            assert fixed_thr is None and wAPLKC is None
             # .3g will show up to 3 sig figs (regardless of their position wrt decimal
             # point), but also strip any trailing 0s (0.0915 -> '0.0915', 0.1 -> '0.1')
-            f'target_sparsity: {model_kws["target_sparsity"]:.3g}\n'
-        )
+            title += f'target_sparsity: {model_kws["target_sparsity"]:.3g}\n'
+
+        elif fixed_thr is not None or wAPLKC is not None:
+            assert fixed_thr is not None and wAPLKC is not None
+
+            # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be
+            # too cumbersome to format into this
+            if n_seeds == 1:
+                title += f'fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}\n'
+        else:
+            # should be unreachable
+            assert False
+
         # NOTE: this is for analyses that either always include or always drop silent
         # cells, regardless of value of `drop_silent_cells_before_analyses`
         # (e.g. should be used for analyses using `responses_including_silent_cells`)
@@ -12348,8 +12394,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # model_mb_responses `tuned` var/outputs to not), since this is all tuned, and
     # latter is a mix (stuff from this, but also stuff hardcoded from above / output
     # statistics)
-    param_dict_cache = param_dir / 'params_for_csv.p'
-    wPNKC_cache = param_dir / 'wPNKC.p'
+    param_cache_name = 'params_for_csv.p'
+    param_dict_cache = param_dir / param_cache_name
+    wPNKC_cache_name = 'wPNKC.p'
+    wPNKC_cache = param_dir / wPNKC_cache_name
     made_param_dir = False
 
     extra_responses_cache_name = 'extra_responses.p'
@@ -12360,15 +12408,84 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     extra_spikecounts_cache = param_dir / extra_spikecounts_cache_name
     extra_spikecounts = None
 
+    use_cache = not should_ignore_existing('model') and (
+        # checking both since i had previously only been returning+saving the 1st
+        model_responses_cache.exists() and model_spikecounts_cache.exists()
+    )
+
+    tuning_output_dir = None
+    # TODO delete? or implement somewhere else? (maybe just add flag to force ignore on
+    # certain calls, and handle in model_mb...?)
+    # TODO refactor def of 'tuning_output_dir' str
+    if (extra_params is not None and 'tuning_output_dir' in extra_params and
+        # NOTE: currently code in this conditional not working on _in_sens_analysis=True
+        # subcalls, and we don't need anything defined in here in any of those cases
+        # anyway
+        not _in_sens_analysis):
+
+        assert 'tuning_panels' in extra_params
+        tuning_panels_str = extra_params['tuning_panels']
+
+        # e.g. plot_dir=PosixPath('pebbled_6f/pdf/ijroi/mb_modeling/kiwi') ->
+        # tuning_panel_dir=PosixPath('pebbled_6f/pdf/ijroi/mb_modeling/control-kiwi')
+        tuning_panel_dir = plot_dir.parent / tuning_panels_str
+        # NOTE: before i added `not _in_sens_analysis` condition, this was tripped in
+        # those subcalls
+        assert tuning_panel_dir.is_dir()
+
+        tuning_output_dir = tuning_panel_dir / extra_params['tuning_output_dir']
+        assert tuning_output_dir.is_dir()
+
+        tuning_responses_cache = tuning_output_dir / model_responses_cache_name
+        assert tuning_responses_cache.exists()
+
+        # TODO delete? doesn't really matter unless fixed_thr/wAPLKC actually changed,
+        # right? isn't that what i should be testing?
+        if model_responses_cache.exists():
+            curr_cache_mtime = getmtime(model_responses_cache)
+            tuning_cache_mtime = getmtime(tuning_responses_cache)
+
+            if tuning_cache_mtime >= curr_cache_mtime:
+                warn(f'{tuning_responses_cache} was newer than {model_responses_cache}'
+                    '! setting use_cache=False!'
+                )
+                use_cache = False
+
+        if param_dict_cache.exists():
+            param_dict = read_pickle(param_dict_cache)
+
+            # np.array_equal works with both float and list-of-float inputs
+            if (not np.array_equal(fixed_thr, param_dict['fixed_thr']) or
+                not np.array_equal(wAPLKC, param_dict['wAPLKC'])
+                ):
+
+                warn(f'{param_dict_cache} fixed_thr/wAPLKC did not match current '
+                    'inputs! setting use_cache=False!'
+                )
+                use_cache = False
+        else:
+            assert not use_cache
+
+        # TODO also check that cached params references same tuning_output_dir (and set
+        # use_cache = False if not)? or just assert it's same if already in cache?
+        # NOTE: would have to load the param CSV instead of the pickle. the pickle
+        # doesn't have those extra params
+    #
+
+    # to make sure we are accounting for all parameters we might vary in filename
+    if param_dir in _fit_and_plot_seen_param_dirs:
+        # otherwise, param_dir being in seen set would indicate an error
+        assert _only_return_params, f'{param_dir=} already seen!'
+        use_cache = True
+
+    _fit_and_plot_seen_param_dirs.add(param_dir)
+
     print()
     # TODO TODO default to also skipping any plots made before returning? maybe add
     # another ignore-existing option ('model-plots'?) if i really want to be able to
     # remake plots w/o changing model outputs? takes a lot of time to make plots on all
     # the model outputs...
-    if not should_ignore_existing('model') and (
-            # checking both since i had previously only been returning+saving the 1st
-            model_responses_cache.exists() and model_spikecounts_cache.exists()
-        ):
+    if use_cache:
 
         print(f'loading model responses (+params) from cache {model_responses_cache}')
         responses = pd.read_pickle(model_responses_cache)
@@ -12388,15 +12505,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # TODO use makedirs instead? (so if empty at end, will be deleted?)
         param_dir.mkdir(exist_ok=True, parents=True)
 
-        # to make sure we are accounting for all parameters we might vary in filename
-        assert param_dir not in _fit_and_plot_seen_param_dirs
-        _fit_and_plot_seen_param_dirs.add(param_dir)
-
         print(f'fitting model ({responses_to=}{param_str})...', flush=True)
 
         # TODO check i can replace model_test.py portion like this w/ this
         # implementation?
         if n_seeds > 1:
+            assert fixed_thr is None or type(fixed_thr) is list
+            assert wAPLKC is None or type(wAPLKC) is list
+
             # only to regenerate model internal plots (which only ever are saved on the
             # first seed, in cases where there would be multiple runs w/ diff seeds)
             # without waiting for rest of seed runs to finish. will NOT write to
@@ -12422,18 +12538,61 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             first_param_dict = None
             wPNKC_list = []
 
+            _fixed_thr = None
+            _wAPLKC = None
+
+            if fixed_thr is not None:
+                # this branch should not run in any sensitivity analyis subcalls, as
+                # currently only doing that for n_seeds=1 (i.e. hemibrain) case
+                # (otherwise, we would need to test if tuning_output_dir is None / etc)
+                assert not _in_sens_analysis
+
+                assert len(fixed_thr) == len(wAPLKC) == n_seeds
+
+                assert tuning_output_dir is not None
+
+                tuning_wPNKC_cache = tuning_output_dir / wPNKC_cache_name
+                assert tuning_wPNKC_cache.exists()
+
+                tuning_wPNKC = read_pickle(tuning_wPNKC_cache)
+                # assuming all entries of a given seed are at adjacent indices in the
+                # seed level values (should never be False given how i'm implementing
+                # things)
+                tuning_seeds = tuning_wPNKC.index.get_level_values('seed').unique()
+
+            # TODO TODO include at least pn2kc_... in progress bar
+            # TODO some way to have a nested progress bar, so that outer on (in
+            # model_mb_... i'm imagining) increments for each model type, and this inner
+            # one increments for each seed? or do something else to indicate outer
+            # progress?
             for i in tqdm(range(n_seeds), unit='seed'):
                 seed = initial_seed + i
                 seeds.append(seed)
                 assert 'seed' not in model_kws
 
+                if fixed_thr is not None:
+                    _fixed_thr = fixed_thr[i]
+                    _wAPLKC = wAPLKC[i]
+                    # would need to use same seed sequence if this ever failed
+                    assert seed == tuning_seeds[i]
+
                 responses, spike_counts, wPNKC, param_dict = fit_mb_model(
                     # TODO or can i handle fixed_thr/wAPLKC thru model_kws (prob not)?
-                    sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, seed=seed,
+                    # (maybe i will soon be able to, if i'm gonna replace some of their
+                    # usage with a flag to indicate whether we are in a sensitivity
+                    # analysis subcall...)
+                    sim_odors=sim_odors, fixed_thr=_fixed_thr, wAPLKC=_wAPLKC,
+                    seed=seed,
                     # ORN/PN plots would be redundant, and overwrite each other.
                     # currently those are the only plots I'm making in here.
                     make_plots=(i == 0), **model_kws
                 )
+
+                if fixed_thr is not None:
+                    # could prob delete. should be sufficienet to check the seeds equal,
+                    # as we are doing above
+                    assert tuning_wPNKC.loc[seed].equals(wPNKC)
+
                 if first_seed_only:
                     warn('stopping after model run with first seed '
                         '(first_seed_only=True)! model response caches / downstream '
@@ -12462,14 +12621,20 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             spike_counts = pd.concat(spikecounts_list, verify_integrity=True)
             wPNKC = pd.concat(wPNKC_list, verify_integrity=True)
 
-            # TODO work ok? need to adapt downstream stuff?
             param_dict = {
                 k: [x[k] for x in param_dict_list] for k in first_param_dict.keys()
             }
         else:
+            # isinstance works w/ both float and np.float64 (but not int)
+            assert fixed_thr is None or isinstance(fixed_thr, float)
+            assert wAPLKC is None or isinstance(wAPLKC, float)
+
             # TODO rename param_dict everywhere -> tuned_params?
             responses, spike_counts, wPNKC, param_dict = fit_mb_model(
                 # TODO or can i handle fixed_thr/wAPLKC thru model_kws (prob not)?
+                # (maybe i will soon be able to, if i'm gonna replace some of their
+                # usage with a flag to indicate whether we are in a sensitivity analysis
+                # subcall...)
                 sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
             )
 
@@ -12546,8 +12711,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # in both seed and no seed cases
         # TODO don't save in sensitivity analysis subcalls, as this should not change
         # across those
-        # TODO at least set verbose=False for subcalls? (for this and next 2 CSVs saved)
-        to_csv(wPNKC, param_dir / 'wPNKC.csv', verbose=(fixed_thr is None))
+        to_csv(wPNKC, param_dir / 'wPNKC.csv', verbose=(not _in_sens_analysis))
 
         # saving after all the other things, so that (if script run w/ -c) checks
         # against old/new outputs have an opportunity to trip and fail before this is
@@ -12589,26 +12753,44 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     sparsity = (responses > 0).mean().mean()
     params_for_csv['sparsity'] = sparsity
 
-    # TODO only do if panel is megamat?
     # TODO factor out this subsetting to (internal?) fn? or just use megamat_responses
     # directly below?
-    megamat_responses = responses.loc[:, responses.columns.map(odor_is_megamat)]
-    megamat_sparsity = (megamat_responses > 0).mean().mean()
-    del megamat_responses
-    params_for_csv['megamat_sparsity'] = megamat_sparsity
+    # TODO .get_level_values if i restore panel level preservation thru fit_mb_model
+    megamat_mask = responses.columns.map(odor_is_megamat)
+
+    # should be true in both hallem (which has ~110 odors, including all the 17
+    # megamat) and pebbled-megamat input cases
+    have_megamat = megamat_mask.values.sum() >= 17
+
+    if have_megamat:
+        megamat_responses = responses.loc[:, megamat_mask]
+        megamat_sparsity = (megamat_responses > 0).mean().mean()
+        del megamat_responses
+        params_for_csv['megamat_sparsity'] = megamat_sparsity
 
     if extra_params is not None:
         assert not any(k in params_for_csv for k in extra_params.keys())
         params_for_csv.update(extra_params)
 
-    param_series = pd.Series(params_for_csv)
     # TODO does param_series have anything useful for repro that we dont have in
     # params_for_csv.p (param_dict_cache, saved earlier)?
-    #
-    # just to manually inspect all relevant parameters for outputs in a given param_dir
-    to_csv(param_series, param_dir / 'params.csv', header=False,
-        verbose=(fixed_thr is None)
-    )
+    param_series = pd.Series(params_for_csv)
+    try:
+        # just to manually inspect all relevant parameters for outputs in a given
+        # param_dir
+        to_csv(param_series, param_dir / 'params.csv', header=False,
+            verbose=(not _in_sens_analysis)
+        )
+
+    # TODO change code to avoid this happening in the first place?
+    # (should only happen on second call used for getting inh params on a panel set, to
+    # then run a model with a single panel and those inh params later)
+    except MultipleSavesPerRunException:
+        if _only_return_params:
+            return params_for_csv
+        else:
+            raise
+
     del param_series
 
     # TODO even need to rename at this point? anything downstream actually not work with
@@ -12624,7 +12806,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     assert len(spike_counts.columns.shape) == 1 and spike_counts.columns.name == 'odor'
     spike_counts.columns.name = 'odor1'
 
+    panel = None
     if responses_to == 'hallem':
+        assert have_megamat
         # the non-megamat odors will just be sorted to end
         panel = 'megamat'
     else:
@@ -12633,16 +12817,39 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
         panels = set(orn_deltas.columns.get_level_values('panel'))
         del orn_deltas
-        assert len(panels) == 1
-        panel = panels.pop()
-        assert type(panel) is str
 
-    responses = sort_odors(responses, panel=panel, warn=False)
-    spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
+        if len(panels) == 1:
+            panel = panels.pop()
+            assert type(panel) is str
+        else:
+            # should currently only be true in the calls w/ multiple panel inputs (e.g.
+            # for pre-tuning on kiwi+control, to then run this fn w/ just kiwi input).
+            # just gonna return early w/ params, skipping this stuff, fow now.
+            panel = None
+
+    if panel is not None:
+        responses = sort_odors(responses, panel=panel, warn=False)
+        spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
 
     # TODO update these wrappers to also make dir if not exist (if they don't already)
-    to_csv(responses, param_dir / 'responses.csv', verbose=(fixed_thr is None))
-    to_csv(spike_counts, param_dir / 'spike_counts.csv', verbose=(fixed_thr is None))
+    to_csv(responses, param_dir / 'responses.csv', verbose=(not _in_sens_analysis))
+    to_csv(spike_counts, param_dir / 'spike_counts.csv',
+        verbose=(not _in_sens_analysis)
+    )
+
+    if _only_return_params:
+        return params_for_csv
+
+    # TODO delete? should be handled by _only_return_params (cases they are triggered
+    # should be the same)
+    if panel is None:
+        # TODO is there any code below that actually doesn't work w/ multiple panels?
+        # care to get plots (prob not)?
+        warn('returning from fit_and_plot_model before making plots, because input had'
+            ' multiple panels (currently unsupported)'
+        )
+        return params_for_csv
+    #
 
     # TODO use one/both of these col defs outside of just for s1d?
     odor_col = 'odor1'
@@ -12782,7 +12989,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # NOTE: important this happens after def of sparsity above
         responses = drop_silent_model_cells(responses)
 
-    # TODO delete
+    # TODO delete (/ move up before early return, right after sparsity calc)
     # TODO is there a big mismatch betweeen target_sparsity and sparsity (yes, see
     # below)?
     # TODO err / warn if differs much at all
@@ -12850,8 +13057,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         #if not np.isclose(sparsity, model_kws['target_sparsity'], atol=0.005):
         #    import ipdb; ipdb.set_trace()
 
-        if not np.isclose(megamat_sparsity, sparsity):
-            print(f'megamat_sparsity={megamat_sparsity:.3g}')
+        if have_megamat:
+            if not np.isclose(megamat_sparsity, sparsity):
+                print(f'megamat_sparsity={megamat_sparsity:.3g}')
 
         print()
     #
@@ -12859,8 +13067,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # TODO drop panel here (before computing) if need be (after switching to pass input
     # that has that as a level on odor axis)
     if responses.index.name is None and 'seed' in responses.index.names:
-        # TODO refactor to use new mean_of_fly_corrs (passing in 'seed' for id level)?
-        # NOTE: NOT equivalent to pearson calculation in else below (though quite close)
+        # TODO TODO refactor to use new mean_of_fly_corrs (passing in 'seed' for id
+        # level)?
         corr_list = []
         seeds = []
         # level=<x> vs <x> didn't seem to matter here (at least, checking seed_corrs
@@ -12987,12 +13195,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # TODO also, why are 'pfo' row / col NaN here (including identity...)? data?
             # mishandling? want to drop pfo anyway?
 
-            # TODO TODO TODO TODO has air mix been handled appropriately up until here?
+            # TODO TODO has air mix been handled appropriately up until here?
             # seeems like we may have just dropped odor2 and lumped them in w/ ea/oct,
             # which would be bad. prob want to keep air mix? could also drop and just
             # use in-vial 2-component mix
 
-            # TODO TODO TODO fix for new kiwi vs control data
+            # (not currently an issue since i added the hack to move conc info to name
+            # part for those odors)
+            # TODO fix for new kiwi vs control data
             # (seems to be caused by dilutions of mixture. just drop those first? could
             # call the natmix fn for that)
             import ipdb; ipdb.set_trace()
@@ -13002,7 +13212,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     pearson = _strip_index_and_col_concs(pearson)
 
-    if fixed_thr is not None or wAPLKC is not None:
+    if _in_sens_analysis:
+        assert fixed_thr is not None and wAPLKC is not None
 
         if ((min_sparsity is not None and sparsity < min_sparsity) or
             (max_sparsity is not None and sparsity > max_sparsity)):
@@ -13015,6 +13226,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # that handles that for me automatically? factor out of savefig/whatever i
             # have that currently does something like that?)?
             if made_param_dir:
+                # TODO err here if -c CLI arg passed?
                 print('deleting {param_dir}!')
                 shutil.rmtree(param_dir)
 
@@ -13024,7 +13236,12 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # (return above)
         params_for_csv['pearson'] = pearson
 
-        title = f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f} (sparsity={sparsity:.3g})'
+        if n_seeds == 1:
+            title = (
+                f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f} (sparsity={sparsity:.3g})'
+            )
+        else:
+            title = f'sparsity={sparsity:.3g}'
 
     plot_corr(pearson, param_dir, 'corr', xlabel=title)
 
@@ -13436,6 +13653,15 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     silent_cells = (to_cluster == 0).all(axis='columns')
 
+    # TODO better error message when silent_cells is all the cells
+    # (got that when i tried using inh params from megamat when running model on
+    # new control/kiwi panel data. tripped on first run (control + hemibrain))
+    # (getting ValueError mentioned below)
+    #
+    # TODO fix when running w/ all megamat + kiwi/control data, where i'm getting:
+    # ValueError: The number of observations cannot be determined on an empty distance
+    # matrix.
+    #
     # ~30" height worked for ~1837 cells, but don't need all that when not plotting
     # silent cells
     cg = cluster_rois(to_cluster[~ silent_cells].T, odor_sort=False, figsize=(7, 12),
@@ -13570,7 +13796,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     # only want to save this combined plot in case of senstivity analysis
     # (where we need as much space as we can save)
-    if fixed_thr is not None or wAPLKC is not None:
+    if _in_sens_analysis:
+        assert fixed_thr is not None and wAPLKC is not None
+
         plot_n_odors_per_cell(responses_including_silent, n_odor_ax,
             ax_for_ylabel=n_odor_ax_for_ylabel, linestyle='dashed', log_yscale=True
         )
@@ -13590,10 +13818,17 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         savefig(combined_fig, param_dir, 'combined_odors-per-cell_and_sparsity')
 
     if sensitivity_analysis:
-        assert fixed_thr is None and wAPLKC is None
-        assert ('target_sparsity' in model_kws and
-            model_kws['target_sparsity'] is not None
-        )
+        # TODO probably remove these assertions (to do sensitivity analysis around each
+        # of kiwi/control runs, where they had inh params set from one run w/
+        # kiwi+control data)
+        #
+        # TODO delete
+        print('want to restore some of these assertions?')
+        #assert fixed_thr is None and wAPLKC is None
+        #assert ('target_sparsity' in model_kws and
+        #    model_kws['target_sparsity'] is not None
+        #)
+
         shared_model_kws = {k: v for k, v in model_kws.items() if k not in (
             # plot_dir would conflict with first positional arg of
             # fit_and_plot_mb_model, and we don't want plots for sensitivity analysis
@@ -13674,6 +13909,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # 10.0 was used for most of early versions of this
         wAPLKC_param_lim_factor = 5.0
 
+        # TODO TODO expose as kwarg, so i can set a wider one for kiwi/control case than
+        # i used for megamat paper supp figures (-> maybe use these wider commented
+        # vals)
+        #
         # TODO delete (maybe first use to regen sparsities wide CSV -> pick steps?)
         '''
         n_steps = 9
@@ -13684,7 +13923,6 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
         drop_nonpositive_fixed_thr = True
         drop_negative_wAPLKC = True
-
 
         def steps_around_tuned(tuned_param, param_lim_factor, param_name, *,
             drop_negative=True, drop_zero=False):
@@ -13831,7 +14069,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
             curr_params = fit_and_plot_mb_model(output_dir,
                 comparison_responses=responses_including_silent,
-                sensitivity_analysis=False, sim_odors=sim_odors,
+                sim_odors=sim_odors, sensitivity_analysis=False, _in_sens_analysis=True,
                 fixed_thr=fixed_thr, wAPLKC=wAPLKC,
                 _add_combined_plot_legend=_add_combined_plot_legend,
                 # not passing param_dir_prefix here, b/c that should be in parent
@@ -13853,11 +14091,6 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
             sparsity = curr_params['sparsity']
             print(f'sparsity={sparsity:.3g}')
-
-            # should be True as i'm only running sensitivity analysis in cases where
-            # model is only using megamat odors. would want to print megamat_sparsity if
-            # this ever fails.
-            assert np.isclose(sparsity, curr_params['megamat_sparsity'])
 
             if output_dir.exists():
                 tried_wide.loc[wAPLKC, fixed_thr] = sparsity
@@ -15166,6 +15399,31 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         assert (roi_depths.index.get_level_values('is_pair') == False).all()
         roi_depths = roi_depths.droplevel('is_pair', axis='index')
 
+    drop_pfo = True
+    # shouldn't be in megamat/validation/diagnostic data. added for new kiwi/control
+    # data.
+    if drop_pfo:
+        odor_names = certain_df.index.get_level_values('odor1').map(
+            olf.parse_odor_name
+        )
+        odor_concs = certain_df.index.get_level_values('odor1').map(
+            olf.parse_log10_conc
+        )
+
+        pfo_mask = odor_names == 'pfo'
+        if pfo_mask.any():
+            pfo_conc_set = set(odor_concs[pfo_mask])
+
+            # TODO if this gets triggered by None/NaN, adapt to also include None/NaN
+            # (if there are any negative float concs, that would indicate a bug)
+            #
+            # NOTE: {0.0} == {0} is True
+            assert pfo_conc_set == {0}
+
+            # TODO warn that we are dropping (if any actually dropped)
+            certain_df = certain_df.loc[~pfo_mask].copy()
+
+
     index_df = certain_df.index.to_frame(index=False)
 
     odor1_names = index_df.odor1.apply(olf.parse_odor_name)
@@ -15634,12 +15892,14 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             ) >= 7:
         '''
 
-        # TODO TODO TODO also only want to do this if the input is
-        # megamat+validation+diags, not any other combinations of things (right? or
-        # should i be recomputing now that i collected the new kiwi/control data after
-        # the imaging system had a lot of time to drift?)
-        # TODO at least make similar plots from this new data? to try to evaluate
-        # reasonableness of using old fit...
+        # TODO TODO TODO should i be recomputing now that i collected the new
+        # kiwi/control data after the imaging system had a lot of time to drift?
+        # check hists of dF/F / something (to compare old megamat/etc to new
+        # kiwi/control data)?
+        # TODO TODO maybe now i should switch to always z-scoring/similar the dF/F input
+        # (before passing thru a fn to get spike deltas out), so that i can tune on one
+        # panel and run on another more easily? (current attempt to tune on megamat and
+        # run on control/kiwi had all silent cells in first call)
 
         # TODO TODO cleaner solution for this hack (probably involving preserving
         # panel throughout, and splitting each panel out before passing thru model, then
@@ -15648,14 +15908,18 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         #
         # hack to only fit model if we are passing all panel (including validation)
         # data, on all flies (shape is 198x517 there)
-        if certain_df.shape[1] > 500 and len(certain_df) > 150:
+        if (certain_df.shape[1] > 500 and len(certain_df) > 150 and
 
-            # TODO delete. if this get triggered while working on new kiwi/control data
-            # (before checking if fitting dF/F -> spiking fn reasonable on new data),
-            # then need to change condition for this conditional, to only trigger on old
-            # megamat+validation+diag input
-            import ipdb; ipdb.set_trace()
-            #
+                set(certain_df.index.get_level_values('panel')) == {
+                    'megamat', 'validation2', 'glomeruli_diagnostics'
+                } and len(
+                    certain_df.columns.to_frame(index=False)[['date','fly_num']
+                        ].drop_duplicates()
+                # NOTE: 9 final megamat flies and 5 final validation2 flies (after
+                # dropping the 1 Betty wanted). see reproducing.md or
+                # CSVs under data/sent_to_anoop/v1 for the specific flies.
+                ) == (9 + 5)
+            ):
 
             use_saved_dff_to_spiking_model = False
         else:
@@ -16471,6 +16735,14 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # orns.orns().T
     mean_est_df = mean_est_df.unstack(['panel', 'odor'])
 
+    # TODO delete?
+    # TODO why was this getting triggered when run w/ megamat data, but not w/
+    # kiwi/control data? not sure it matters...
+    # was gonna sort again here, but seems true already
+    #assert mean_est_df.equals(sort_odors(mean_est_df))
+    #
+    mean_est_df = sort_odors(mean_est_df)
+
     # TODO factor all dF/F -> spike delta fitting (above, ending ~here) into one fn in
     # here at least, to make model_mb_responses more readable
 
@@ -16567,10 +16839,59 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
     assert target_sparsity_for_sensitivity_analysis in target_sparsities
 
-    # TODO TODO TODO try to run kiwi+control data w/in one model, then split them apart
-    # right after? (easier to have one panel_plot_dir or two?)
-    # (easier to make a temporary 'kiwi_and_control' panel, or change code to be able
-    # to run on multiple?)
+    # TODO delete eventually
+    assert mean_est_df.equals(sort_odors(mean_est_df))
+
+    # TODO support list values (-> iterate over)? (as long as directories would have
+    # diff names)
+    #
+    # which panel(s) to use to "tune" the model (i.e. set the two inhibitory
+    # parameters), to achieve the target sparsity. if a panel is not included in keys
+    # here, it will just be tuned on it's own data.
+    panel2tuning_panels = {
+        'kiwi': ('kiwi', 'control'),
+        'control': ('kiwi', 'control'),
+
+        # TODO any way to salvage this idea? check dF/F distributions between the two
+        # first? maybe z-score first or something? currently getting all silent cells in
+        # first model (control + hemibrain) run this way.
+        # TODO TODO and how do the parameters compare across the panels again?
+        # i thought they were in a similar range? different enough i guess?
+        #
+        # running w/ `./al_analysis.py -d pebbled -n 6f -t 2023-04-22` for this.
+        # (certain_df only has the flies i expected, which is the 9 megamat +
+        # 5 validation + 9 kiwi/control flies)
+        #'kiwi': ('megamat',),
+        #'control': ('megamat',),
+
+        # TODO also try using 'megamat' tuning for 'validation', and see how that
+        # affects things?
+
+        # TODO delete? was to test pre-tuning code working as expected.
+        # (used new script al_analysis/check_pretuned_vs_not.py to compare responses +
+        # spike counts from each)
+        #
+        # TODO TODO how to keep this in as an automated check? or move to a separate
+        # test script (model_test.py, or something simliar?)? currently i need to
+        # manually compare the outputs across the old/new dirs
+        # (add panel2tuning_panels as kwarg of model_mb_responses -> make 2 calls?)
+        #'megamat': ('megamat',)
+        #
+    }
+    assert all(type(x) is tuple for x in panel2tuning_panels.values())
+    # sorting so dir (which will include tuning panels) will always be the same
+    panel2tuning_panels = {k: tuple(sorted(v)) for k, v in panel2tuning_panels.items()}
+
+    tuning_panel_delim = '-'
+
+    new_panels = {tuning_panel_delim.join(x) for x in panel2tuning_panels.values()}
+    existing_panels = set(mean_est_df.columns.get_level_values('panel'))
+    if any(x in existing_panels for x in new_panels):
+        warn(f'some of {new_panels=} are already in {existing_panels=}! should only '
+            'see this warning if testing that we can reproduce model output by '
+            'pre-tuning with the same panel we later use to run the model!'
+        )
+    del new_panels, existing_panels
 
     # TODO want to drop the panel column level? or want to use it inside calls to
     # fit_and_plot...? groupby kwarg for dropping, if i want former?
@@ -16579,7 +16900,12 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         if panel == diag_panel_str:
             continue
 
-        panel_est_df = sort_odors(panel_est_df)
+        # TODO delete eventually
+        assert panel_est_df.equals(sort_odors(panel_est_df))
+        #
+        # TODO delete (assertion above passing. seems we can rely on mean_est_df being
+        # sorted)
+        #panel_est_df = sort_odors(panel_est_df)
 
         panel_plot_dir = plot_dir / panel
         makedirs(panel_plot_dir)
@@ -17082,9 +17408,98 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     # fitting) is not relevant.
                     param_dir_prefix = ''
 
+                # TODO TODO is this loop working as expected? in run on kiwi+control
+                # data, i feel like i've seen more progress bars than i expected...
+                # (should be 2 * 3, no? i.e. {hemidraw, uniform} X {control-kiwi,
+                # control, kiwi}?) none of the duplicate-save-within-run detection
+                # seemed to trip tho...
+
+                fixed_thr = None
+                wAPLKC = None
+                _extra_params = dict(extra_params)
+                # checking for orn_deltas because we don't want to ever do this
+                # pre-tuning for hallem data (where the ORN data isn't passed here, but
+                # loaded inside fit_mb_model)
+                if 'orn_deltas' in model_kws and panel in panel2tuning_panels:
+                    tuning_panels = panel2tuning_panels[panel]
+                    tuning_panels_str = tuning_panel_delim.join(tuning_panels)
+
+                    tuning_panels_plot_dir = plot_dir / tuning_panels_str
+                    makedirs(tuning_panels_plot_dir)
+
+                    panel_mask = mean_est_df.columns.get_level_values('panel'
+                        ).isin(tuning_panels)
+
+                    if panel_mask.sum() == 0:
+                        raise RuntimeError(f'no data from {tuning_panels=}!\n\nedit '
+                            'panel2tuning_panels if you do not intended to tune '
+                            f'{panel=} data on these panels.\n\nyou may also just need '
+                            'to change script CLI args to include this data.'
+                        )
+
+                    tuning_df = mean_est_df.loc[:, panel_mask]
+
+                    tuning_model_kws = {k: v for k, v in _model_kws.items()
+                        if k not in (
+                            'orn_deltas', 'comparison_kc_corrs', 'comparison_orns'
+                        )
+                    }
+
+                    # NOTE: if i wanted to do this pre-tuning on hallem data (which is
+                    # loaded in fit_mb_model if orn_deltas not passed here), i'd need to
+                    # not pass this. no real need to use this on hallem data tho.
+                    #
+                    # TODO (delete) need to drop panel level on tuning_df first
+                    # (doesn't seem so...)? (if so, prob also want to prefix panel
+                    # to odor names, or otherwise ensure no dupes?)
+                    tuning_model_kws['orn_deltas'] = tuning_df
+
+                    param_dict = fit_and_plot_mb_model(tuning_panels_plot_dir,
+                        param_dir_prefix=param_dir_prefix,
+                        extra_params=extra_params,
+                        # TODO maybe set False for 'megamat' (if also tuning on
+                        # 'megamat'), so that we can compare those two directories more
+                        # easily, and maybe leave that test code in?
+                        _only_return_params=True,
+                        **tuning_model_kws
+                    )
+
+                    fixed_thr = param_dict['fixed_thr']
+                    wAPLKC = param_dict['wAPLKC']
+                    assert fixed_thr is not None
+                    assert wAPLKC is not None
+
+                    try:
+                        # should be a list if it has a len
+                        len(fixed_thr)
+                        # will only get here if model has multiple seeds
+                        # (i.e. if fixed_thr is a list)
+                        assert len(fixed_thr) == len(wAPLKC)
+
+                        # NOTE: currently relying on the pre-tuning + actual modelling
+                        # calls using the same sequences of seeds (which they do, b/c
+                        # initial seed currently hardcoded, and i always increment
+                        # following seeds by one from there), so that applying the
+                        # sequence of inh params across the two makes sense
+
+                    # to catch:
+                    # TypeError: object of type 'int' has no len()
+                    # TypeError: object of type 'float' has no len()
+                    except TypeError:
+                        pass
+
+                    del _model_kws['target_sparsity']
+                    _model_kws['title_prefix'] = f'tuning panels: {tuning_panels_str}\n'
+
+                    _extra_params['tuning_panels'] = tuning_panels_str
+                    _extra_params['tuning_output_dir'] = param_dict['output_dir']
+
+                    param_dir_prefix = \
+                        f'tuned-on_{tuning_panels_str}__{param_dir_prefix}'
+
                 params_for_csv = fit_and_plot_mb_model(panel_plot_dir,
-                    param_dir_prefix=param_dir_prefix, extra_params=extra_params,
-                    **_model_kws
+                    param_dir_prefix=param_dir_prefix, extra_params=_extra_params,
+                    fixed_thr=fixed_thr, wAPLKC=wAPLKC, **_model_kws
                 )
 
                 # should only be the case if first_seed_only=True inside fit_and_plot...
@@ -17307,12 +17722,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
                 responses_including_silent = responses.copy()
 
-                # TODO TODO refactor to share def of this flag across other 2
-                # places used
-                # TODO TODO or factor corr calc + dropping into one fn, and call that
-                # in the 3 places that currently use this?
-                drop_silent_cells_before_analyses = True
-                if drop_silent_cells_before_analyses:
+                # TODO or factor corr calc + dropping into one fn, and call that in the
+                # 3 places that currently use this?
+                if drop_silent_model_kcs:
                     responses = drop_silent_model_cells(responses)
 
                 # TODO refactor to combine dropping -> correlation [->mean across seeds]
