@@ -79,6 +79,23 @@
     - renamed `megamat17.xlsx` to `megamat.xlsx`
 
 
+  - `2024-11-12`
+    - old megamat data (from prior to final 4 flies I had been using until now). these
+      experiments each only have a subset of the 17 megamat odors. Betty asked us to
+      include all the megamat data for all paper KC correlations now, so I'll use these
+      in combination with the 4 flies I had already been using
+
+      - from `matrix/Remy-Data/projects/odor_space_collab/outputs/megamat`
+
+    - `stim_rdms__iscell_good_xid0__correlation.xlsx` and `xrda_stim_rdm_concat__iscell_good_xid0__correlation.nc`
+      - these are the two files Remy asked Anoop to use in an email the week before she
+        oriented me to the old megamata data. I copied these in to check against
+        correlations I compute from the old data.
+
+      - from Remy's private repo `ejhonglab/OdorSpaceShare`, under `manuscript/data/by_imaging_panel/megamat_new_and_old_by_fly_17/kc_soma_nls`
+
+
+
 - `ann_model_outputs`
   - contents:
     - CSVs with ORN (Hallem) / KC responses and correlations.

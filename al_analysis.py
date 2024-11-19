@@ -52,7 +52,7 @@ from matplotlib_scalebar.scalebar import ScaleBar
 import seaborn as sns
 import colorcet as cc
 from scipy.optimize import curve_fit
-from scipy.stats import spearmanr, f_oneway
+from scipy.stats import spearmanr, pearsonr, f_oneway
 from sklearn.preprocessing import maxabs_scale as sk_maxabs_scale
 from sklearn.preprocessing import minmax_scale as sk_minmax_scale
 from sklearn import metrics
@@ -1125,6 +1125,13 @@ def n_choose_2(n: int) -> int:
 
 
 # TODO refactor to hong2p (replace util.melt_symmetric [used once in here])?
+# TODO TODO test that a given pair will always be returned in a fixed order, so that no
+# matter the set of odors we pass in here, we can average across outputs from diff calls
+# to this fn. relevant for now loading old megamat data. not sure current implementation
+# has this property... (as long as i'm always using ordered_pairs where needed, should
+# be ok... kind of a hack though)
+# TODO TODO add option to pass sequence of odors, to generate something like ordered
+# pairs? (for convenience when averaging over groups w/ diff sets of odors/pairs)
 def corr_triangular(corr_df, *, ordered_pairs=None):
     assert corr_df.index.equals(corr_df.columns)
 
@@ -1174,7 +1181,7 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     return corr_ser
 
 
-def invert_corr_triangular(corr_ser, diag_value=1., _index=None):
+def invert_corr_triangular(corr_ser, diag_value=1., _index=None, name='odor'):
     if _index is None:
         for_odor_index = corr_ser.index
     else:
@@ -1183,7 +1190,10 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None):
     # TODO make more general than assuming 'odor' prefix?
     # TODO + factor to share w/ what corr_triangual sets by default (at least), in case
     # i change suffix added there
-    assert for_odor_index.names == ['odor1', 'odor2']
+    #assert for_odor_index.names == ['odor1', 'odor2']
+    # TODO rename all "odor" stuff to be more general (now that i'm not requiring
+    # 'odor1'/'odor2')
+    assert len(for_odor_index.names) == 2
 
     # unique values for odor1 and odor2 will not be same (each should have one value not
     # in other). could just sort, for purposes of generating one combined order.
@@ -1192,8 +1202,8 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None):
     #
     # pandas <Series>.unique() keeps order of input (assuming all are adjacent, at
     # least)
-    odor1 = for_odor_index.get_level_values('odor1').unique()
-    odor2 = for_odor_index.get_level_values('odor2').unique()
+    odor1 = for_odor_index.get_level_values(0).unique()
+    odor2 = for_odor_index.get_level_values(1).unique()
 
     # TODO TODO try to make work without these assertions (would need to change how
     # odor_indx is defined below). these seem to work if index is sorted, but not for
@@ -1203,7 +1213,8 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None):
     assert odor2[-1] not in set(odor1)
 
     # TODO maybe columns and index should have diff names? keep odor1/odor2?
-    odor_index = pd.Index(list(odor1) + [odor2[-1]], name='odor')
+    # TODO get shared prefix of cols for name=? accept as kwarg?
+    odor_index = pd.Index(list(odor1) + [odor2[-1]], name=name)
 
     square_corr = pd.DataFrame(index=odor_index, columns=odor_index, data=float('nan'))
     for a in odor_index:
@@ -1259,6 +1270,7 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
         id_cols = ['date', 'fly_num']
 
     # TODO TODO also work w/ 'odor' level (have in loaded model responses)
+    # (or just expose as kwarg?)
     # TODO only do if 'repeat' level present? assert it's there?
     #
     # assumes 'odor2' level, if present, doesn't vary.
@@ -1269,6 +1281,8 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     # TODO also want to  keep track of and append metadata?
     fly_corrs = []
     for fly, fly_df in trialmean_df.groupby(level=id_cols, axis='columns', sort=False):
+        # TODO TODO pass in ordered_pairs? just expose as kwarg to this fn? (or fix
+        # corr_triangular to always have a pair in a fixed order? even possible?)
         corr = corr_triangular(fly_df.T.corr())
         fly_corrs.append(corr)
 
@@ -2726,6 +2740,10 @@ exit_after_saving_fig_containing = None
 # TODO TODO try to replace logic w/ this decorator
 #@produces_output(verbose=False)
 _savefig_seen_paths = set()
+# TODO possible to use verbose kwarg alongside global verbose?
+# (for using this fn in other scripts, would rather have kwarg, but also don't want to
+# have to pass verbose=verbose everywhere in here, nor use global as default kwarg,
+# which wouldn't be update by CLI arg correctly...)
 def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     fig_dir: Pathlike, desc: str, *, close: bool = True, normalize_fname: bool = True,
     debug: bool = False, **kwargs) -> Path:
@@ -8786,10 +8804,10 @@ def analyze_response_volumes(response_volumes_list, output_root, write_cache=Tru
     intensities_plot_dir = plot_root_dir / 'activation_strengths'
     natmix_activation_strength_plots(df, intensities_plot_dir)
 
-    # TODO TODO TODO maybe rename basename here + factor into
+    # TODO TODO maybe rename basename here + factor into
     # natmix_activation_strength_plots (to remove reference to 'pixel') (change any
     # model_mixes_mb code that currently hardcodes this filename)
-    # TODO TODO TODO also save the equivalent from the ijroi analysis elsewhere
+    # TODO TODO also save the equivalent from the ijroi analysis elsewhere
     # (again, for use w/ model_mixes_mb)
     # TODO need to update name to be more clear what this is, now that it's not in an
     # 'activation_strengths' directory?
@@ -9391,8 +9409,12 @@ def analyze_cache():
 # shouldn't need any more generality (Grid was used above to include FacetGrid)
 def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap,
     **kwargs) -> sns.axisgrid.Grid:
+    # TODO doc expectations on what rows / columns of input are
 
+    # TODO why transposing? stop doing that (-> change all inputs). will just cause
+    # confusion if i use [row/col]_colors...
     if odor_sort:
+        # TODO why olf.sort_odors not one defined in here?
         # After transpose: columns=odors
         df = olf.sort_odors(df.T)
     else:
@@ -9407,8 +9429,8 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
         # formatted str fn? isn't that what i do w/ hong2p.viz.matshow calls?
         df.columns = df.columns.get_level_values('odor1')
 
-    # TODO TODO TODO option to use color by clustering (there's an option for that,
-    # right?) to show which fly data came from?
+    # TODO TODO add option to color rows by fly (-> generate row_colors Series in here)
+    # (values of series should be colors)
 
     cg = viz.clustermap(df, col_cluster=False, cmap=cmap, **kwargs)
     ax = cg.ax_heatmap
@@ -10284,8 +10306,11 @@ def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
     # (or 1.0/0.0, instead of True/False)
     nonsilent_cells = responses.T.any()
 
+    # TODO maybe restore as warning, or behind a checks flag or something.
     # (also works if index.name == 'model_kc')
-    assert 'model_kc' in nonsilent_cells.index.names
+    # (commented cause was failing b/c index name was diff in natmix_data/analysis.py
+    # script, though i could have changed that...)
+    #assert 'model_kc' in nonsilent_cells.index.names
 
     return responses.loc[nonsilent_cells].copy()
 
@@ -10301,6 +10326,7 @@ def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
 # TODO doc that sim_odors is Optional[Set[str]]
 # TODO actually, probably can delete sim_odors now? why even have it? to tune on a diff
 # set than to return responses for?
+# TODO default tune_on_hallem to False?
 def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True,
     pn2kc_connections: str = 'hemibrain', n_claws: Optional[int] = None,
     drop_multiglomerular_receptors: bool = True,
@@ -12006,13 +12032,18 @@ def add_unity_line(ax: Axes, *, linestyle='--', color='r', **kwargs) -> None:
 # TODO delete? (for debugging)
 _spear_inputs2dfs = dict()
 #
-def bootstrapped_spearman(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
-    # TODO delete debug kwarg
-    _plot_dir=None) -> str:
+def bootstrapped_corr(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
+    # TODO default to 95% ci?
+    # TODO delete debug _plot_dir kwarg?
+    ci=90, method='spearman', _plot_dir=None) -> str:
+    # TODO update doc to include new values also returned:
+    # corr_text, corr, ci_lower, ci_upper, pval
     """Returns str summary of Spearman's R between columns x and y.
 
     Summary contains Spearman's R, the associated p-value, and a bootstrapped 95% CI.
     """
+    assert 0 < ci < 100, 'ci must be between 0 and 100'
+
     # TODO delete
     # (after replacing model_mb...  _spear_inputs2dfs usage w/ equiv corrs from loaded
     # responses)
@@ -12023,6 +12054,8 @@ def bootstrapped_spearman(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
         # should already have an equivalent 'orn_corr' version here (w/ corresponding
         # non-dist y too)
         y != 'orn_corr_dist'):
+
+        assert method == 'spearman'
 
         key = (_plot_dir, x, y)
         assert key not in _spear_inputs2dfs, f'{key=} already seen!'
@@ -12077,6 +12110,12 @@ def bootstrapped_spearman(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
     del to_check
 
     if df[[x,y]].isna().any().any():
+        # TODO fix NaN handling in method='pearson' case
+        # (just dropna in all cases, and remove nan_policy arg to spearmanr)
+        assert method == 'spearman', ('would need to restore NaN dropping. pearsonr '
+            'does not have the same nan_policy arg spearmanr does.'
+        )
+
         # TODO delete
         # only the Hallem cases (which dont' pass _plot_dir) should have any null model
         # corrs
@@ -12088,27 +12127,29 @@ def bootstrapped_spearman(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
         # pandas calc does by default)
         #df = df.dropna(subset=[x])
 
-    # nan_policy='omit' consistent w/ pandas behavior. should only be relevant for a
-    # small subset of the Hallem model outputs (default spearmanr behavior would be to
-    # return NaN here)
-    results = spearmanr(df[x], df[y], nan_policy='omit')
-    spear = results.correlation
+    if method == 'spearman':
+        # nan_policy='omit' consistent w/ pandas behavior. should only be relevant for a
+        # small subset of the Hallem model outputs (default spearmanr behavior would be
+        # to return NaN here)
+        results = spearmanr(df[x], df[y], nan_policy='omit')
+
+    elif method == 'pearson':
+        # NOTE: no nan_policy arg here. would need to manually drop, as I had before.
+        results = pearsonr(df[x], df[y])
+
+    else:
+        raise ValueError(f"{method=} unrecognized. should be either "
+            "'spearman'/'pearson'"
+        )
+
+    corr = results.correlation
     pval = results.pvalue
 
-    # TODO delete
-    #
     # the .at[x,y] is to get a scalar from matrix like
     #                mean_kc_corr  mean_orn_corr
     # mean_kc_corr       1.000000       0.657822
     # mean_orn_corr      0.657822       1.000000
-    try:
-        assert np.isclose(df[[x,y]].corr(method='spearman').at[x,y], spear)
-    except AssertionError:
-        print()
-        print(f"{df[[x,y]].corr(method='spearman').at[x,y]=}")
-        print(f'{spear=}')
-        import ipdb; ipdb.set_trace()
-    #
+    assert np.isclose(df[[x,y]].corr(method=method).at[x,y], corr)
 
     # TODO try this kind of CI as well?
     # https://stats.stackexchange.com/questions/18887
@@ -12122,34 +12163,34 @@ def bootstrapped_spearman(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
                 n=len(df), replace=True, random_state=(bootstrap_seed + i)
             ).reset_index(drop=True)
 
-        curr_results = spearmanr(resampled_df[x], resampled_df[y])
+        if method == 'spearman':
+            # TODO TODO also need nan_policy='omit' here? (or just drop in advance, to
+            # also work in pearson case...)
+            curr_results = spearmanr(resampled_df[x], resampled_df[y])
+        elif method == 'pearson':
+            curr_results = pearsonr(resampled_df[x], resampled_df[y])
+
         result_list.append({
             'sample': i,
-            'spearman': curr_results.correlation,
+            method: curr_results.correlation,
             'pval': curr_results.pvalue,
         })
 
-    bootstrap_spearmans = pd.DataFrame(result_list)
+    bootstrap_corrs = pd.DataFrame(result_list)
 
-    # TODO expose (+ rename?)
-    # for 95% CI
-    #alpha = 0.025
-    # 90% CI
-    alpha = 0.05
+    alpha = (1 - ci / 100) / 2
 
-    spearman_ci = bootstrap_spearmans.spearman.quantile(q=[alpha, 1 - alpha])
-    spearman_ci_lower = spearman_ci.iloc[0]
-    spearman_ci_upper = spearman_ci.iloc[1]
-    spearman_ci_text = (f'{100*(1 - alpha*2):.0f}% CI = '
-        f'[{spearman_ci_lower:.2f}, {spearman_ci_upper:.2f}]'
-    )
+    corr_ci = bootstrap_corrs[method].quantile(q=[alpha, 1 - alpha])
+    corr_ci_lower = corr_ci.iloc[0]
+    corr_ci_upper = corr_ci.iloc[1]
+    corr_ci_text = f'{ci:.0f}% CI = [{corr_ci_lower:.2f}, {corr_ci_upper:.2f}]'
 
     # TODO put n_resamples in text too?
 
     # .2E will show 2 places after decimal then exponent (scientific notation),
     # e.g. 1.89E-180
-    spear_text = f'spearman rho={spear:.2f}, p={pval:.2E}, {spearman_ci_text}'
-    return spear_text
+    corr_text = f'{method}={corr:.2f}, p={pval:.2E}, {corr_ci_text}'
+    return corr_text, corr, corr_ci_lower, corr_ci_upper, pval
 
 
 model_responses_cache_name = 'responses.p'
@@ -12245,6 +12286,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     exclude_params = ('orn_deltas', 'title', 'repro_preprint_s1d')
     # TODO sort params first? (so changing order in code doesn't cause
     # cache miss...)
+    # TODO why adding [''] again? why not just prepend ', ' to output if i want?
     param_str = ', '.join([''] + [
         f'{param_abbrevs[k] if k in param_abbrevs else k}={v}'
         for k, v in model_kws.items() if k not in exclude_params
@@ -12486,7 +12528,6 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # remake plots w/o changing model outputs? takes a lot of time to make plots on all
     # the model outputs...
     if use_cache:
-
         print(f'loading model responses (+params) from cache {model_responses_cache}')
         responses = pd.read_pickle(model_responses_cache)
         spike_counts = pd.read_pickle(model_spikecounts_cache)
@@ -13474,7 +13515,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             else:
                 for_spearman = df.copy()
 
-            spear_text = bootstrapped_spearman(for_spearman, model_col, orn_col,
+            spear_text, _, _, _, _ = bootstrapped_corr(for_spearman, model_col, orn_col,
                 # TODO delete (for debugging)
                 # don't want to do for 'orn-est-spike-delta' case, as would need code
                 # changes and don't care about that
@@ -13596,8 +13637,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             color='black', scatter=False, truncate=False, seed=bootstrap_seed
         )
 
-        spear_text = bootstrapped_spearman(df, 'model_corr_dist',
-            'observed_kc_corr_dist',
+        spear_text, _, _, _, _ = bootstrapped_corr(df, 'model_corr_dist',
+            'observed_kc_corr_dist', method='spearman',
             # TODO delete (for debugging)
             _plot_dir=param_dir,
             #
@@ -13653,15 +13694,17 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     silent_cells = (to_cluster == 0).all(axis='columns')
 
-    # TODO better error message when silent_cells is all the cells
-    # (got that when i tried using inh params from megamat when running model on
-    # new control/kiwi panel data. tripped on first run (control + hemibrain))
-    # (getting ValueError mentioned below)
-    #
-    # TODO fix when running w/ all megamat + kiwi/control data, where i'm getting:
-    # ValueError: The number of observations cannot be determined on an empty distance
-    # matrix.
-    #
+    if silent_cells.all():
+        # TODO also return before generating the corr plots (+ any others) above?
+        # TODO err instead?
+        #
+        # TODO why was* (can not currently repro) this the case for ALL attempts in
+        # 'kiwi' case now?  really need steps so different from 'megamat' case? if so,
+        # why? or am i just not calling it right at all for some reason (related to
+        # that failing check to repro output w/ fixed wAPLKC/fixed_thr?)
+        warn('all model cells were silent! returning before generating further plots!')
+        return params_for_csv
+
     # ~30" height worked for ~1837 cells, but don't need all that when not plotting
     # silent cells
     cg = cluster_rois(to_cluster[~ silent_cells].T, odor_sort=False, figsize=(7, 12),
@@ -13854,6 +13897,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             print('checking we can recreate responses by hardcoding tuned '
                 'fixed_thr/wAPLKC...', end=''
             )
+            # TODO TODO figure out why this wasn't working on some runs of
+            # kiwi/control data (re-running w/ `-i model` seemed to fix it, but unclear
+            # on why that would be. using cache after break it again?) (doesn't seem
+            # like it...)
+            # TODO why *was* responses2.sum().sum() == 0 in kiwi/control case???
+            # (prob same reason sens analysis failing there)
+            # (not sure i can repro, same as w/ failing assertion below)
+            #
             # TODO silence output here? makes surrounding prints hard to follow
             # TODO also check spike_counts (2nd / 4 returned values)?
             responses2, _, _, _ = fit_mb_model(sim_odors=sim_odors,
@@ -13909,9 +13960,11 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # 10.0 was used for most of early versions of this
         wAPLKC_param_lim_factor = 5.0
 
-        # TODO TODO expose as kwarg, so i can set a wider one for kiwi/control case than
-        # i used for megamat paper supp figures (-> maybe use these wider commented
+        # TODO TODO expose as kwarg , so i can set a wider one for kiwi/control case
+        # than i used for megamat paper supp figures (-> maybe use these wider commented
         # vals)
+        # (need special handling so they don't end up in param_strs / CSVs in places i
+        # don't want?)
         #
         # TODO delete (maybe first use to regen sparsities wide CSV -> pick steps?)
         '''
@@ -14189,14 +14242,31 @@ remy_fly_id = 'acq'
 # e.g. '1-5ol @ -3.0'
 remy_odor_col = 'stim'
 
-def _load_remy_megamat_kc_corrs() -> pd.DataFrame:
+# TODO put in docstring which files we are loading from
+def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True) -> pd.DataFrame:
     n_odors = len(megamat_odor_names)
     assert n_odors == n_megamat_odors
 
-    remy_fly_response_root = remy_data_dir / 'megamat17' / 'per_fly'
+    fly_response_root = remy_data_dir / 'megamat17' / 'per_fly'
     response_file_to_use = 'xrds_suite2p_respvec_mean_peak.nc'
     # Remy confirmed it's this one
     response_calc_to_use = 'Fc_zscore'
+
+    olddata_fly_response_root = remy_data_dir / '2024-11-12'
+    olddata_response_file_to_use = 'xrds_responses.nc'
+
+    # TODO is it a problem that we are using peak_amp here and something zscored above?
+    # is this actually zscored too? matter?
+    #
+    # other variables in these Datasets:
+    # Data variables:
+    #     peak_amp          (trials, cells) float64 ...
+    #     peak_response     (trials, cells) float64 ...
+    #     bin_response      (trials, cells) int64 ...
+    #     baseline_std      (trials, cells) float64 ...
+    #     baseline_med      (trials, cells) float64 ...
+    #     peak_idx          (trials, cells) int64 ...
+    olddata_response_calc_to_use = 'peak_amp'
 
     if verbose:
         print()
@@ -14205,7 +14275,7 @@ def _load_remy_megamat_kc_corrs() -> pd.DataFrame:
     _seen_date_fly_combos = set()
     mean_response_list = []
 
-    for _, fly_dir in enumerate(remy_fly_response_root.glob('*/')):
+    for fly_dir in fly_response_root.glob('*/'):
 
         if not fly_dir.is_dir():
             continue
@@ -14219,17 +14289,18 @@ def _load_remy_megamat_kc_corrs() -> pd.DataFrame:
             print(fly_response_file)
 
         responses = xr.open_dataset(fly_response_file)
-        if verbose:
-            # NOTE: responses.attrs[x] seems to be equiv to responses.x
-            print('/'.join(
-                [str(responses.attrs[x]) for x in remy_fly_cols] + [responses.thorimage]
-            ))
 
         date = pd.Timestamp(responses.attrs[remy_date_col])
         assert len(remy_fly_cols) == 2 and 'fly_num' == remy_fly_cols[1]
         # should already be an int, just weird numpy.int64 type, and not sure that
         # behaves same in sets (prob does).
         fly_num = int(responses.attrs['fly_num'])
+        thorimage = responses.thorimage
+        if verbose:
+            # NOTE: responses.attrs[x] seems to be equiv to responses.x
+            print('/'.join(
+                [str(responses.attrs[x]) for x in remy_fly_cols] + [thorimage]
+            ))
 
         # excluding thorimage, b/c also don't want 2 recordings from one fly making it
         # in, like happened w/ her precomputed corrs
@@ -14357,17 +14428,106 @@ def _load_remy_megamat_kc_corrs() -> pd.DataFrame:
         datefly = f'{format_date(date)}/{fly_num}'
         mean_response_df = util.addlevel(mean_response_df, 'datefly', datefly)
 
+        # just to conform to format in loop below. only one recording for each of these
+        # flies.
+        mean_response_df = util.addlevel(mean_response_df, 'thorimage', thorimage)
+
         mean_response_list.append(mean_response_df)
 
         if verbose:
             print()
 
+    # TODO delete. just to try to get new concat of new + old data to be in a similar
+    # format.
+    new_mean_responses = pd.concat(mean_response_list, verify_integrity=True)
+    #
+
+    # TODO TODO refactor to share as much of body of loop w/ above (convert to one loop,
+    # and just special case a few things based on parent dir?). currently copied from
+    # loop above.
+    #
+    # for this old data, don't have the same set of cells across any of the multiple
+    # recordings for any one fly. always gonna be a diff set of cells.
+    for fly_dir in olddata_fly_response_root.glob('*/'):
+
+        if not fly_dir.is_dir():
+            continue
+
+        # corresponding correlation .nc file in fly_dir / 'RDM_trials' should also be
+        # equiv to one element of above `corrs`
+        fly_response_dir = fly_dir / 'respvec'
+        fly_response_file = fly_response_dir / olddata_response_file_to_use
+
+        if verbose:
+            print(fly_response_file)
+
+        responses = xr.open_dataset(fly_response_file)
+
+        date = pd.Timestamp(responses.attrs[remy_date_col])
+        assert len(remy_fly_cols) == 2 and 'fly_num' == remy_fly_cols[1]
+        # should already be an int, just weird numpy.int64 type, and not sure that
+        # behaves same in sets (prob does).
+        fly_num = int(responses.attrs['fly_num'])
+        thorimage = responses.thorimage
+        if verbose:
+            # NOTE: responses.attrs[x] seems to be equiv to responses.x
+            print('/'.join(
+                [str(responses.attrs[x]) for x in remy_fly_cols] + [thorimage]
+            ))
+
+        n_cells = responses.sizes['cells']
+        if verbose:
+            print(f'{n_cells=}')
+
+        # old data doesn't have the attributes iscell or bad_trials
+
+        # from Remy's code snippet she sent on 2024-11-12 via slack
+        good_cells_mask = responses['iscell_responder'] == 1
+
+        n_good_cells = good_cells_mask.sum().item()
+        assert n_good_cells < n_cells
+
+        n_bad_cells = (~ good_cells_mask).sum().item()
+        if verbose:
+            print(f'{n_bad_cells=}')
+
+        assert (n_good_cells + n_bad_cells) == responses.sizes['cells']
+
+        # another way to do the same thing:
+        # responses = responses.where(good_cells_mask, drop=True)
+        responses = responses.sel(cells=good_cells_mask)
+        assert responses.sizes['cells'] == n_good_cells
+
+        responses = responses[olddata_response_calc_to_use]
+
+        # odors X cells
+        mean_responses = responses.groupby('stim').mean(dim='trials')
+
+        # the reset_index(drop=True) is to remove cell numbers (which currently have
+        # missing cells, because of dropping above, which might be confusing)
+        mean_response_df = mean_responses.to_pandas().T.reset_index(drop=True)
+        mean_response_df.index.name = 'cell'
+
+        # referring to flies this way should make it simpler to compare to corrs in CSVs
+        # Remy gave me for making fig 2E (which have a 'datefly' column, that should be
+        # formatted like this)
+        datefly = f'{format_date(date)}/{fly_num}'
+        mean_response_df = util.addlevel(mean_response_df, 'datefly', datefly)
+
+        # multiple recordings for most/all flies, presumably each w/ diff odors
+        mean_response_df = util.addlevel(mean_response_df, 'thorimage', thorimage)
+
+        mean_response_list.append(mean_response_df)
+        if verbose:
+            print()
+
+    # TODO compare format to new_mean_responses (temp debug var)
     mean_responses = pd.concat(mean_response_list, verify_integrity=True)
 
     odors = [olf.parse_odor(x) for x in mean_responses.columns]
 
-    names = {x['name'] for x in odors}
-    assert names == megamat_odor_names, 'remy abbrevs differ'
+    names = [x['name'] for x in odors]
+    assert megamat_odor_names - set(names) == set(), 'missing some megamat odors'
 
     # cast_int_concs=True to convert '-3.0' to '-3', to be consistent w/ mine
     odor_strs = [olf.format_odor(x, cast_int_concs=True) for x in odors]
@@ -14376,10 +14536,51 @@ def _load_remy_megamat_kc_corrs() -> pd.DataFrame:
     # so mean_of_fly_corrs works
     mean_responses.columns.name = 'odor1'
 
+    # when also loading old (prior to final 4 flies) megamat data:
+    # (set(names) - megamat_odor_names)={'PropAc', '1p3ol', 'pfo', 'g-6lac', 'eug',
+    # 'd-dlac', 'MethOct', 'ECin'}
+    if drop_nonmegamat:
+        megamat_mean_responses = mean_responses.loc[:,
+            [x in megamat_odor_names for x in names]
+        ]
+        if verbose:
+            nonmegamat_odors = mean_responses.columns.difference(
+                megamat_mean_responses.columns
+            )
+            warn('dropping the following non-megamat odors:\n'
+                f'{pformat(list(nonmegamat_odors))}'
+            )
+
+        mean_responses = megamat_mean_responses
+
     return mean_responses
 
 
-def load_remy_megamat_mean_kc_corrs() -> pd.DataFrame:
+# TODO rename all of these fns to remove '_megamat' (unless i actually drop down to just
+# megamat, but i don't think i want that?)? or just do it anyway to shorten these names?
+def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, **kwargs) -> pd.DataFrame:
+    mean_responses = _load_remy_megamat_kc_responses(**kwargs)
+
+    # TODO move some functionality like this into mean_of_fly_corrs (to average within
+    # fly across recordings first)?
+    recording_corrs = mean_responses.groupby(level=['datefly', 'thorimage'], sort=False
+        ).apply(lambda x: corr_triangular(x.corr(), ordered_pairs=ordered_pairs))
+
+    fly_corrs = recording_corrs.groupby(level='datefly', sort=False).mean()
+
+    # TODO delete
+    # TODO check above equiv to this, at least if we no longer load old data?
+    # TODO check this works if there are multiple thorimage level values (i.e.
+    # recordings) for one pair (e.g. 1-6ol, 2-but) for any fly. should average the corrs
+    # first, then compute average across flies.
+    #mean_corr = mean_of_fly_corrs(mean_responses.T, id_cols=['datefly'])
+
+    return fly_corrs
+
+
+# don't need ordered_pairs here b/c output of this fn should be square, so it no longer
+# matters.
+def load_remy_megamat_mean_kc_corrs(**kwargs) -> pd.DataFrame:
     """Returns mean of fly correlations, for Remy's 4 final megamat KC flies.
 
     Drops cells from bad clusters (as Remy does, using xarray attrs['good_xid'] that she
@@ -14390,8 +14591,9 @@ def load_remy_megamat_mean_kc_corrs() -> pd.DataFrame:
     computed across these correlations. This should all be consistent with how Remy
     computes correlations.
     """
-    mean_responses = _load_remy_megamat_kc_corrs()
-    mean_corr = mean_of_fly_corrs(mean_responses.T, id_cols=['datefly'])
+    fly_corrs = _remy_megamat_flymean_kc_corrs(**kwargs)
+    mean_corr_ser = fly_corrs.mean()
+    mean_corr = invert_corr_triangular(mean_corr_ser)
     return mean_corr
 
 
@@ -14590,6 +14792,8 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         data_folder = preprint_data_folder
         csv_name = 'df_obs_plot_trialavg.csv'
     else:
+        # TODO TODO TODO which flies are in this but not in old megamat data i'm now
+        # loading for a lot of things? any?
         data_folder = repo_root / 'manuscript/data/figure-02/02e'
         # df_obs.csv in the same folder was one of her earlier attempts to get me a
         # newer version of this data, but was not completely consistent w/ format of old
@@ -14809,38 +15013,143 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
 
     checks = True
     if checks and not use_preprint_data:
-        # data from best 4 "final" flies, which are the only megamat odor correlations
-        # used anywhere in the paper except for figure 2E.
-        mean_responses = _load_remy_megamat_kc_corrs()
-
-        final_megamat_datefly = set(mean_responses.index.get_level_values('datefly'))
-        assert n_final_megamat_kc_flies == len(final_megamat_datefly)
-
-        mean_responses.columns = mean_responses.columns.map(olf.parse_odor_name)
-        assert not mean_responses.columns.duplicated().any()
-        assert set(mean_responses.columns) == megamat_odor_names
+        # TODO delete
+        print('ARE CHANGES TO 2E CHECKS CORRECT?')
+        # TODO TODO TODO and how does data i'm loading now (old megamat + same new
+        # megamat i had been loading) compare to the corrs from this csv remy gave me?
+        # am i matching all the data now, or am i dropping one or the other to not be
+        # comparing all the data?
+        #
 
         # TODO refactor w/ place copied from in model_mb...?
         remy_pairs = set(list(zip(df_obs.abbrev_row, df_obs.abbrev_col)))
 
-        corrs = mean_responses.groupby(level='datefly').apply(
-            lambda x: corr_triangular(x.corr(), ordered_pairs=remy_pairs)
+        # TODO does it actually matter? does df_obs have all the corrs i would compute
+        # for old flies anyway? maybe just expand checks below to also check those
+        # flies?
+        #
+        # TODO TODO TODO can i switch things to using corrs from
+        # _load_remy_megamat_kc_responses? cause otherwise would prob need to have Remy
+        # regen this file, including older megamat data betty now wants us to include...
+        #
+        # TODO TODO use -c check to verify i 2e outputs not changed by switching this
+        # fn? add option to -c to pass substrs of outputs to check (ignoring rest)?
+        #
+        # TODO update comment. no longer just final 4.
+        # data from best 4 "final" flies, which are the only megamat odor correlations
+        # used anywhere in the paper except for figure 2E.
+        #
+        # TODO delete
+        #mean_responses = _load_remy_megamat_kc_responses(drop_nonmegamat=False)
+        #
+        flymean_corrs = _remy_megamat_flymean_kc_corrs(ordered_pairs=remy_pairs,
+            drop_nonmegamat=False
         )
-        assert not corrs.isna().any().any()
+
+        final_megamat_datefly = set(flymean_corrs.index.get_level_values('datefly'))
+        # TODO delete (or update to include final 4 + however many old megamat flies i'm
+        # now supposed to include)
+        assert n_final_megamat_kc_flies <= len(final_megamat_datefly)
+
+        flymean_corrs.columns = pd.MultiIndex.from_frame(
+            flymean_corrs.columns.to_frame(index=False).applymap(olf.parse_odor_name)
+        )
+        assert not flymean_corrs.columns.duplicated().any()
+        # TODO delete
+        #mean_responses.columns = mean_responses.columns.map(olf.parse_odor_name)
+        #assert not mean_responses.columns.duplicated().any()
+
+        # TODO relax to include other pairs? or just drop? i assume we still won't have
+        # all the data in df_obs if we just don't drop from latest set of (the old)
+        # flies i'm loading?
+        #assert set(mean_responses.columns) == megamat_odor_names
+
+        # TODO delete? (replace w/ flymean_corrs)
+        #corrs = mean_responses.groupby(level='datefly').apply(
+        #    lambda x: corr_triangular(x.corr(), ordered_pairs=remy_pairs)
+        #)
+        #assert not corrs.isna().any().any()
+        #
+
+        # TODO move this dropna into above fn?
+        flymean_corrs = flymean_corrs.dropna(how='all', axis='columns')
+
+        # TODO also move this into fn above?
+        flymean_corrs = flymean_corrs.loc[:,
+            (flymean_corrs.columns.to_frame() != 'pfo').T.all()
+        ]
+
+        corrs = flymean_corrs
 
         n_megamat_only_pairs = n_choose_2(n_megamat_odors)
-        assert len(corrs.columns) == n_megamat_only_pairs
+        # TODO delete? already relaxed from == to >=
+        assert len(corrs.columns) >= n_megamat_only_pairs
 
-        # all the (ordered) pairs we have in corrs are in df_obs.odor_pair_str
-        assert set(
+        # TODO TODO fix (/delete?)
+        s1 = set(
                 corrs.columns.get_level_values('odor1') + ', ' +
                 corrs.columns.get_level_values('odor2')
-            ) - set(df_obs.odor_pair_str) == set()
+        )
+        s2 = set(df_obs.odor_pair_str)
+
+        # (this was before i was .dropna-ing flymean_corrs above)
+        # TODO need to do anything about s1 - s2? e.g.
+        # {'pfo, va', '6al, MethOct', 'MethOct, pa', '1p3ol, 6al', 'IaA, d-dlac',
+        # '1-8ol, pfo', 'aa, d-dlac', '2-but, pfo', '1-8ol, ECin', 'B-cit, PropAc',
+        # '1p3ol, pfo', 'benz, pfo', '1-8ol, g-6lac', '1p3ol, aa', 'pfo, t2h', '6al,
+        # g-6lac', 'eb, pfo', '1-5ol, d-dlac', 'g-6lac, pfo', 'g-6lac, pa', 'B-cit,
+        # ECin', 'ms, pfo', 'd-dlac, pfo', '6al, PropAc', 'ECin, aa', 'd-dlac, eb', 'aa,
+        # pfo', 'B-cit, pfo', '2h, pfo', 'ECin, t2h', '2h, PropAc', '1p3ol, eb',
+        # 'PropAc, t2h', '1-5ol, g-6lac', 'ECin, pa', 'B-cit, d-dlac', 'Lin, pfo',
+        # 'd-dlac, va', 'ep, pfo', 'ECin, IaA', '1-5ol, 1p3ol', 'pa, pfo', '6al,
+        # d-dlac', '1-8ol, 1p3ol', 'ECin, pfo', '1p3ol, B-cit', 'ECin, ep', 'MethOct,
+        # pfo', 'aa, eug', '1-5ol, pfo', 'PropAc, ms', 'd-dlac, pa', 'g-6lac, t2h',
+        # 'MethOct, aa', '1-5ol, MethOct', 'MethOct, t2h', 'aa, g-6lac', 'B-cit,
+        # g-6lac', 'eug, pfo', 'eb, g-6lac', 'g-6lac, va', 'd-dlac, t2h', '1p3ol, pa',
+        # 'Lin, PropAc', '6al, pfo', 'IaA, pfo', '1-5ol, ECin', 'Lin, d-dlac', 'PropAc,
+        # eb', '1-8ol, d-dlac', '2h, ECin', 'PropAc, pfo', '1-6ol, pfo', '1p3ol, ms',
+        # 'eug, pa', 'ECin, Lin', 'B-cit, MethOct', '1p3ol, t2h'}
+
+        # TODO TODO fix. (is it just supposed to be s1 - s2? think so)
+        try:
+            #assert s2 - s1 == set()
+            assert s1 - s2 == set()
+        except:
+            import ipdb; ipdb.set_trace()
+        '''
+        try:
+            # all the (ordered) pairs we have in corrs are in df_obs.odor_pair_str
+            assert set(
+                    corrs.columns.get_level_values('odor1') + ', ' +
+                    corrs.columns.get_level_values('odor2')
+                ) - set(df_obs.odor_pair_str) == set()
+        except:
+            s1 = set(
+                    corrs.columns.get_level_values('odor1') + ', ' +
+                    corrs.columns.get_level_values('odor2')
+            )
+            s2 = set(df_obs.odor_pair_str)
+            print()
+            print(f'{s1=}')
+            print(f'{s2=}')
+            import ipdb; ipdb.set_trace()
+        '''
 
         for datefly in corrs.index:
             fly_df = df_obs[df_obs.datefly == datefly]
-            # none of the final 4 flies had other odor pairs measured
-            assert len(fly_df) == n_megamat_only_pairs
+
+            # TODO delete
+            '''
+            try:
+                # none of the final 4 flies had other odor pairs measured
+                # (not just using those 4 flies now)
+                assert len(fly_df) >= n_megamat_only_pairs
+            except:
+                print()
+                print(f'{len(fly_df)=}')
+                print(f'{n_megamat_only_pairs=}')
+                import ipdb; ipdb.set_trace()
+            '''
 
             fly_ser = fly_df[['abbrev_row', 'abbrev_col', 'correlation_distance']
                 ].set_index(['abbrev_row', 'abbrev_col'])
@@ -14855,29 +15164,68 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
             fly_ser = 1 - fly_ser
             fly_ser.name = 'correlation'
 
+            # TODO TODO need some dropna or something now?
+            # TODO just delete the assertion?
             fly_ser2 = corrs.loc[datefly]
-            assert set(fly_ser.index) == set(fly_ser2.index)
+            # (this didn't fail yet, i just think it might)
+            '''
+            try:
+                assert set(fly_ser.index) == set(fly_ser2.index)
+            except:
+                import ipdb; ipdb.set_trace()
+            '''
 
-            assert np.allclose(fly_ser.loc[fly_ser2.index], fly_ser2)
+            # TODO delete?
+            #assert np.allclose(fly_ser.loc[fly_ser2.index], fly_ser2)
+            #
+            assert np.allclose(fly_ser2.loc[fly_ser.index], fly_ser)
 
         df_megamat = df_obs[
             df_obs.abbrev_row.isin(megamat_odor_names) &
             df_obs.abbrev_col.isin(megamat_odor_names)
         ]
 
+        # TODO TODO TODO are all of the old megamat flies that i'm now supposed to use a
+        # subset of these? do the correlations match what i would compute?
+        #
+        # ipdb> len(set(df_megamat.datefly) - final_megamat_datefly)
+        # 18
+        # ipdb> pp (set(df_megamat.datefly) - final_megamat_datefly)
+        # {'2018-10-21/1',
+        #  '2019-03-06/3',
+        #  '2019-03-06/4',
+        #  '2019-03-07/2',
+        #  '2019-04-26/4',
+        #  '2019-05-09/4',
+        #  '2019-05-09/5',
+        #  '2019-05-23/2',
+        #  '2019-05-24/1',
+        #  '2019-05-24/3',
+        #  '2019-05-24/4',
+        #  '2019-07-19/2',
+        #  '2019-09-12/1',
+        #  '2019-09-12/2',
+        #  '2022-09-21/1',
+        #  '2022-09-22/2',o
+        #  '2022-09-26/1',
+        #  '2022-09-26/3'}
+        # TODO TODO TODO just compare db_obs.datefly set to set i have from flymean corr
+        # fn
         assert final_megamat_datefly - set(df_megamat.datefly) == set()
         df_megamat_nonfinal = df_megamat[
             ~df_megamat.datefly.isin(final_megamat_datefly)
         ]
 
+        # TODO delete (/update) (no longer just using final 4 flies)
+        #
         # only the 4 "final" flies have all 17 odors measured (-> all 136 non-identity
         # pairs)
         #
         # ipdb> [len(x) for _, x in df_megamat_nonfinal.groupby('datefly')]
         # [47, 10, 28, 30, 21, 38, 38, 36, 36, 36, 57, 79, 71, 71, 3, 3, 3, 3]
-        assert all(len(x) < n_megamat_only_pairs
-            for _, x in df_megamat_nonfinal.groupby('datefly')
-        )
+        #assert all(len(x) < n_megamat_only_pairs
+        #    for _, x in df_megamat_nonfinal.groupby('datefly')
+        #)
 
         assert remy_2e_metric == 'correlation_distance'
         mean_nonfinal_corrdist = df_megamat_nonfinal.groupby(['abbrev_row','abbrev_col']
@@ -14885,40 +15233,48 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
 
         mean_nonfinal_corrdist.index.names = ['odor1', 'odor2']
 
-        square_nonfinal_corrdist = invert_corr_triangular(mean_nonfinal_corrdist,
-            diag_value=0, _index=corrs.columns
-        )
+        # TODO better check than this try/except
+        try:
+            square_nonfinal_corrdist = invert_corr_triangular(mean_nonfinal_corrdist,
+                diag_value=0, _index=corrs.columns
+            )
 
-        square_nonfinal_corrs = 1 - square_nonfinal_corrdist
+            square_nonfinal_corrs = 1 - square_nonfinal_corrdist
 
-        # since sorting expects concentrations apparently...
-        square_nonfinal_corrs.columns = square_nonfinal_corrs.columns + ' @ -3'
-        square_nonfinal_corrs.index = square_nonfinal_corrs.index + ' @ -3'
+            # since sorting expects concentrations apparently...
+            square_nonfinal_corrs.columns = square_nonfinal_corrs.columns + ' @ -3'
+            square_nonfinal_corrs.index = square_nonfinal_corrs.index + ' @ -3'
 
-        square_nonfinal_corrs = sort_odors(util.addlevel(
-                util.addlevel(square_nonfinal_corrs, 'panel', 'megamat').T,
-            'panel', 'megamat'
-            ), warn=False
-        )
+            square_nonfinal_corrs = sort_odors(util.addlevel(
+                    util.addlevel(square_nonfinal_corrs, 'panel', 'megamat').T,
+                'panel', 'megamat'
+                ), warn=False
+            )
 
-        square_nonfinal_corrs = square_nonfinal_corrs.droplevel('panel', axis='columns'
+            square_nonfinal_corrs = square_nonfinal_corrs.droplevel('panel',
+                axis='columns'
             ).droplevel('panel', axis='index')
 
-        plot_corr(square_nonfinal_corrs, output_root,
-            '2e_remy_nonfinal-flies-only_corr', xlabel='non-final flies only'
-        )
+            plot_corr(square_nonfinal_corrs, output_root,
+                '2e_remy_nonfinal-flies-only_corr', xlabel='non-final flies only'
+            )
 
-        # TODO actually plot this / delete
-        '''
-        nonfinal_pair_n = df_megamat_nonfinal.groupby(['abbrev_row','abbrev_col']
-            ).size()
-        # TODO just rename these cols in dataframe before (so we don't have to do this
-        # here and for mean)
-        nonfinal_pair_n.index.names = ['odor1', 'odor2']
-        nonfinal_pair_n = invert_corr_triangular(nonfinal_pair_n, diag_value=np.nan,
-            _index=corrs.columns
-        )
-        '''
+            # TODO actually plot this / delete
+            '''
+            nonfinal_pair_n = df_megamat_nonfinal.groupby(['abbrev_row','abbrev_col']
+                ).size()
+            # TODO just rename these cols in dataframe before (so we don't have to do
+            # this here and for mean)
+            nonfinal_pair_n.index.names = ['odor1', 'odor2']
+            nonfinal_pair_n = invert_corr_triangular(nonfinal_pair_n, diag_value=np.nan,
+                _index=corrs.columns
+            )
+            '''
+        # ...
+        #   File "./al_analysis.py", line 1208, in invert_corr_triangular
+        #     assert all(odor2[:-1] == odor1[1:])
+        except AssertionError:
+            warn('could not plot 2e square matrix corr plots')
     #
 
     return df_obs
@@ -15263,7 +15619,7 @@ def maxabs_scale(data: pd.Series) -> pd.Series:
 
 
 def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
-    skip_sensitivity_analysis=False):
+    skip_sensitivity_analysis=False, skip_models_with_seeds=False):
     # TODO delete. for debugging.
     global _spear_inputs2dfs
     #
@@ -16832,12 +17188,15 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
     target_sparsities = (remy_sparsity,)
 
+    # TODO delete (/ expand to collection + include kiwi/control)
+    # (now that we also want sensitivity analysis there)
+    # (replace w/ list of panels to NOT run sens analysis on? e.g. validation)
+    #
     # if model_kws (in loop below) contains sensitivity_analysis=True, will only do that
     # analysis for this specific panel and target sparsity
-    panel_for_sensitivity_analysis = 'megamat'
-    target_sparsity_for_sensitivity_analysis = remy_sparsity
-
-    assert target_sparsity_for_sensitivity_analysis in target_sparsities
+    #panel_for_sensitivity_analysis = 'megamat'
+    #target_sparsity_for_sensitivity_analysis = remy_sparsity
+    #assert target_sparsity_for_sensitivity_analysis in target_sparsities
 
     # TODO delete eventually
     assert mean_est_df.equals(sort_odors(mean_est_df))
@@ -17109,7 +17468,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
             # TODO rename to comparison_kc_corrs or something? observed_mean_kc_corrs?
             #
-            # this is a mean-of-fly-corrs (for Remy's 4 final KC flies)
+            # this is a mean-of-fly-corrs (WAS for Remy's 4 final KC flies, but now
+            # adapting to also load the older data too)
             comparison_kc_corrs = load_remy_megamat_mean_kc_corrs()
 
             # TODO replace these two lines w/ just sorting, if that works (would have to
@@ -17201,7 +17561,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # should give us an Axes that is of square size in figure coordinates
             ax.set_box_aspect(1)
 
-            spear_text = bootstrapped_spearman(merged_corrs, kc_col, orn_col,
+            spear_text, _, _, _, _ = bootstrapped_corr(merged_corrs, kc_col, orn_col,
+                method='spearman',
                 # TODO delete (for debugging)
                 _plot_dir=panel_plot_dir
             )
@@ -17362,14 +17723,13 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
         # hack to skip long running models, if I want to test something on pebbled and
         # hallem cases w/o re-running many seeds before getting an answer on the test.
-        _skip_models_with_seeds = False
-        if _skip_models_with_seeds:
+        if skip_models_with_seeds:
             old_len = len(model_kw_list)
             model_kw_list = [x for x in model_kw_list if 'n_seeds' not in x]
 
             n_skipped = old_len - len(model_kw_list)
-            warn(f'set _skip_models_with_seeds=False! currently skipping {n_skipped} '
-                'models with seeds!'
+            warn(f'currently skipping {n_skipped} models with seeds! (because '
+                '`-s model-seeds` CLI option)'
             )
 
         for model_kws in model_kw_list:
@@ -17384,10 +17744,12 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 do_sensitivity_analysis = False
 
                 if model_kws.get('sensitivity_analysis', False):
-                    if (panel == panel_for_sensitivity_analysis and
-                        target_sparsity == target_sparsity_for_sensitivity_analysis):
+                    # TODO delete (replace w/ checking list of panels to NOT run sens
+                    # analysis on? e.g. validation)
+                    #if (panel == panel_for_sensitivity_analysis and
+                    #    target_sparsity == target_sparsity_for_sensitivity_analysis):
 
-                        do_sensitivity_analysis = True
+                    do_sensitivity_analysis = True
 
                 if skip_sensitivity_analysis or not do_sensitivity_analysis:
                     try:
@@ -17509,9 +17871,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 if params_for_csv is None:
                     continue
 
-                if _skip_models_with_seeds:
+                if skip_models_with_seeds:
                     warn(f'not writing to {model_param_csv} (b/c '
-                        '_skip_models_with_seeds=True)!'
+                        'skip_models_with_seeds=True)!'
                     )
                     continue
 
@@ -17535,9 +17897,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 # saved this run.
                 model_params.to_csv(model_param_csv, index=False)
 
-        if _skip_models_with_seeds:
+        if skip_models_with_seeds:
             warn('not making across-model plots (S1C/2E) (b/c '
-                '_skip_models_with_seeds=True)!'
+                'skip_models_with_seeds=True)!'
             )
             continue
 
@@ -18071,16 +18433,60 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 assert (merged_corrs.min() < 0).all()
                 assert (merged_corrs.max() < 1).all()
 
-                spearman_of_pearsons = merged_corrs.corr(method='spearman')
-                plot_corr(spearman_of_pearsons, panel_plot_dir, 'spearman_of_pearsons',
-                    overlay_values=True, xlabel="Spearmans-of-Pearsons"
-                )
+                col_pairs = list(itertools.combinations(merged_corrs.columns, 2))
+                # TODO names matter (for invert*)? omit?
+                index = pd.MultiIndex.from_tuples(col_pairs, names=['c1', 'c2'])
 
-                # TODO keep?
-                pearson_of_pearsons = merged_corrs.corr(method='pearson')
-                plot_corr(pearson_of_pearsons, panel_plot_dir, 'pearson_of_pearsons',
-                    overlay_values=True, xlabel="Pearsons-of-Pearsons"
-                )
+                # TODO 95% instead?
+                ci = 90
+                ci_str = f'{ci:.0f}% CI'
+                # TODO TODO do something other than average over 100 seeds before then
+                # ignoring the 
+
+                # TODO keep pearson?
+                # TODO also try to get euclidean (below) to work here? prob just wanna
+                # delete it...
+                for method in ('spearman', 'pearson'):
+                    corr_of_pearsons = merged_corrs.corr(method=method)
+                    xlabel = f"{method.title()}s-of-Pearsons"
+                    plot_corr(corr_of_pearsons, panel_plot_dir, f'{method}_of_pearsons',
+                        overlay_values=True, xlabel=xlabel
+                    )
+
+                    import ipdb; ipdb.set_trace()
+                    corrs = []
+                    lower_cis = []
+                    upper_cis = []
+                    for x, y in col_pairs:
+                        _, corr, ci_lower, ci_upper, _, = bootstrapped_corr(
+                            merged_corrs, x, y, method=method, ci=ci
+                        )
+                        corrs.append(corr)
+                        lower_cis.append(ci_lower)
+                        upper_cis.append(ci_upper)
+
+                    corr_df = pd.DataFrame(
+                        {'corr': corrs, 'lower': lower_cis, 'upper': upper_cis},
+                        index=index
+                    )
+
+                    square_corr = invert_corr_triangular(corr_df['corr'], name=None)
+                    assert pd_allclose(square_corr, corr_of_pearsons)
+
+                    # TODO are CI's symmetric (no) (i.e. can i get one measure of error
+                    # for each matrix element, or will it make more sense to have 2
+                    # extra matrix plots, one for lower CI and one for upper CI?)
+                    square_lower = invert_corr_triangular(corr_df['lower'], name=None)
+                    square_upper = invert_corr_triangular(corr_df['upper'], name=None)
+
+                    plot_corr(square_lower, panel_plot_dir,
+                        f'{method}_of_pearsons_lower', overlay_values=True,
+                        xlabel=f'{xlabel}\nlower side of {ci_str}'
+                    )
+                    plot_corr(square_upper, panel_plot_dir,
+                        f'{method}_of_pearsons_upper', overlay_values=True,
+                        xlabel=f'{xlabel}\nupper side of {ci_str}'
+                    )
 
                 # TODO want to try plotting any other distances/metrics/norms?
                 #
@@ -19325,7 +19731,9 @@ def main():
     # TODO or maybe -s (with no string following) should skip default, and no steps
     # skipped if -s isn't passed (probably)?
     # TODO add across fly pdfs to this (probably also in defaults?)?
-    skippable_steps = ('intensity', 'corr', 'model', 'model-sensitivity', 'ijroi')
+    skippable_steps = ('intensity', 'corr', 'model', 'model-sensitivity',
+        'model-seeds', 'ijroi'
+    )
     # NOTE: model-sensitivity can only run as part of model step
     default_steps_to_skip = ('intensity', 'corr', 'model')
     # TODO add options for sensitivity_analysis + any MB model fitting w/ n_seeds>1?
@@ -22397,6 +22805,9 @@ def main():
         assert 'model-sensitivity' in skippable_steps
         skip_sensitivity_analysis = 'model-sensitivity' in steps_to_skip
 
+        assert 'model-seeds' in skippable_steps
+        skip_models_with_seeds = 'model-seeds' in steps_to_skip
+
         # TODO worth warning that model won't be run otherwise?
         # TODO TODO TODO was this not consensus_df before? what do i want?
         # TODO TODO TODO compare cached input to dF/F -> spiking model (if i had one
@@ -22409,7 +22820,8 @@ def main():
             # above)
             model_mb_responses(consensus_df, across_fly_ijroi_dir,
                 roi_depths=roi_best_plane_depths,
-                skip_sensitivity_analysis=skip_sensitivity_analysis
+                skip_sensitivity_analysis=skip_sensitivity_analysis,
+                skip_models_with_seeds=skip_models_with_seeds,
             )
         else:
             print(f'not running MB model(s), as driver not in {orn_drivers=}')
