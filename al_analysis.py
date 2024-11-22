@@ -835,12 +835,6 @@ unused_glomeruli_diagnostics = (
 panel2name_order = deepcopy(natmix.panel2name_order)
 panel_order = list(natmix.panel_order)
 
-# to support hacky combination of mix concentrations into name part of odor strings, so
-# that modelling code (which currently strips concentrations at some points) works.
-# (see hack_strs_to_fix_mix_dilutions def)
-panel2name_order['kiwi'].extend(['kmix0', 'kmix-1', 'kmix-2'])
-panel2name_order['control'].extend(['cmix0', 'cmix-1', 'cmix-2'])
-
 # TODO any reason for this order (i think it might be same as order in yaml [which more
 # or less goes from odors activating glomeruli in higher planes to lower planes], so
 # maybe could load from there now?)? just use order loaded from config /
@@ -6419,6 +6413,43 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
 
     zstep_um = thor.get_thorimage_zstep_um(xml)
 
+    # only defined inside here b/c add_metadata call currently also is (and needs to
+    # be, to avoid passing the metadata it uses)
+    def _compute_roi2best_plane_depth(full_rois, best_plane_rois) -> pd.Series:
+        # full_rois has more metadata on roi index, including roi_z that we want
+
+        full_rois_bestplane = full_rois[dict(roi=best_plane_rois.roi_index.values)]
+
+        assert np.array_equal(full_rois_bestplane, best_plane_rois)
+        assert np.array_equal(
+            best_plane_rois.roi.values, full_rois_bestplane.roi_name.values
+        )
+        assert (
+            len(set(full_rois_bestplane.roi_name.values)) ==
+            len(full_rois_bestplane.roi_name)
+        )
+        roi2best_plane = dict(zip(
+            full_rois_bestplane.roi_name.values,
+            full_rois_bestplane.roi_z.values
+        ))
+        # assuming we start at same point. would add complexity to register
+        # to anat (-> get better depth), and may not help muc
+        roi2best_plane_depth = {k: v * zstep_um for k, v in roi2best_plane.items()}
+        roi2best_plane_depth = pd.Series(roi2best_plane_depth,
+            name='best_plane_depth_um'
+        )
+        roi2best_plane_depth.index.name = 'roi'
+        roi2best_plane_depth = add_metadata(roi2best_plane_depth.to_frame().T)
+        junk_level = -1
+        assert (
+            set(roi2best_plane_depth.index.get_level_values(junk_level)) ==
+            {'best_plane_depth_um'}
+        )
+        assert roi2best_plane_depth.index.names[junk_level] is None
+        roi2best_plane_depth = roi2best_plane_depth.droplevel(junk_level, axis='index')
+        return roi2best_plane_depth
+
+
     full_rois = None
 
     # TODO am i currently refusing to do any imagej ROI analysis on non-mocorred
@@ -6511,55 +6542,17 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                     if best_plane_rois_cache.exists():
                         best_plane_rois = read_pickle(best_plane_rois_cache)
                     else:
+                        # TODO should this be an error instead? feels like it...
                         warn(f'{best_plane_rois_cache} did not exist, but '
                             f'{full_rois_cache} did. can add `-i ijroi` to CLI args to '
                             'regenerate.'
                         )
                     #
 
-                    # TODO TODO TODO refactor to share w/ other place ij_trial_dfs is
-                    # appended to below (case where they are computed de novo)
-                    #
-                    # full_rois has more metadata on roi index, including roi_z that we
-                    # want
-                    full_rois_bestplane = full_rois[
-                        dict(roi=best_plane_rois.roi_index.values)
-                    ]
-                    assert np.array_equal(full_rois_bestplane, best_plane_rois)
-                    assert np.array_equal(
-                        best_plane_rois.roi.values, full_rois_bestplane.roi_name.values
-                    )
-                    assert (
-                        len(set(full_rois_bestplane.roi_name.values)) ==
-                        len(full_rois_bestplane.roi_name)
-                    )
-                    roi2best_plane = dict(zip(
-                        full_rois_bestplane.roi_name.values,
-                        full_rois_bestplane.roi_z.values
-                    ))
-                    # assuming we start at same point. would add complexity to register
-                    # to anat (-> get better depth), and may not help muc
-                    roi2best_plane_depth = {
-                        k: v * zstep_um for k, v in roi2best_plane.items()
-                    }
-                    roi2best_plane_depth = pd.Series(roi2best_plane_depth,
-                        name='best_plane_depth_um'
-                    )
-                    roi2best_plane_depth.index.name = 'roi'
-                    roi2best_plane_depth = add_metadata(
-                        roi2best_plane_depth.to_frame().T
-                    )
-                    junk_level = -1
-                    assert (
-                        set(roi2best_plane_depth.index.get_level_values(junk_level)) ==
-                        {'best_plane_depth_um'}
-                    )
-                    assert roi2best_plane_depth.index.names[junk_level] is None
-                    roi2best_plane_depth = roi2best_plane_depth.droplevel(junk_level,
-                        axis='index'
+                    roi2best_plane_depth = _compute_roi2best_plane_depth(full_rois,
+                        best_plane_rois
                     )
                     roi2best_plane_depth_list.append(roi2best_plane_depth)
-                    #
                 else:
                     print_inputs_once(yaml_path)
                     print('ImageJ ROIs were modified. re-analyzing.')
@@ -6572,14 +6565,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     # TODO maybe we should do_nonskipped... here, to use it more for stuff skipped for
     # what the raw data+metadata IS, rather than what analysis outputs we already have?
     # distinction could make factoring out skip logic easier
-
-    # TODO delete (just to not have to regen all these for stuff where i just want a pdf
-    # version of some of the across fly plots)
-    # TODO maybe provide an option to do this in general tho? maybe extend skip CLI arg
-    # to work on some of the steps referenced by -i flag?
-    #print('RETURNING EARLY')
-    #return
-    #
 
     if not (do_nonroi_analysis or do_ij_analysis):
         # (technically we could have already loaded movie if we converted raw to TIFF in
@@ -6637,13 +6622,13 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         to_pickle(ij_trial_df, ij_trial_df_cache)
         ij_trial_dfs.append(ij_trial_df)
 
-        # TODO TODO TODO refactor code computing + appending roi->best plane depth
-        # (from branch above loading saved data) -> share here
-        # TODO compare what ij_trial_df looked like before add_metadata, to see how i
-        # could add_metadata on roi->depth data?
-        #import ipdb; ipdb.set_trace()
-
         assert full_rois is not None and best_plane_rois is not None
+
+        roi2best_plane_depth = _compute_roi2best_plane_depth(full_rois,
+            best_plane_rois
+        )
+        roi2best_plane_depth_list.append(roi2best_plane_depth)
+
         # probably wanna move all this after process_recording anyway though, computing
         # everything on concatenated data...
         #
@@ -15792,8 +15777,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # doesn't change)
     index_df.loc[index_df.odor2 != solvent_str, 'odor1'] = mix_strs
 
-    # NOTE: see panel2name_order modifications up top, which define order of these hacky
-    # new "odors" ('kmix0', 'kmix-1', ... 'cmix0', 'cmix-1', ...)
+    # NOTE: see panel2name_order modifications in natmix.olf.panel2name_order, which
+    # define order of these hacky new "odors" ('kmix0','kmix-1',...'cmix0','cmix-1',...)
     #
     # e.g. 'kmix @ 0' -> 'kmix0' (so concentration not recognized as such, and thus it
     # should work in modelling code that currently strips that)
@@ -19731,6 +19716,8 @@ def main():
     # TODO or maybe -s (with no string following) should skip default, and no steps
     # skipped if -s isn't passed (probably)?
     # TODO add across fly pdfs to this (probably also in defaults?)?
+    # TODO extend skip CLI arg to work on some of the steps referenced by -i flag?
+    # (was nonroi one of the more time consuming ones?)
     skippable_steps = ('intensity', 'corr', 'model', 'model-sensitivity',
         'model-seeds', 'ijroi'
     )
@@ -21039,22 +21026,8 @@ def main():
     ij_trial_dfs = olf.pad_odor_indices_to_max_components(ij_trial_dfs)
     trial_df = pd.concat(ij_trial_dfs, axis='columns', verify_integrity=True)
 
-    # TODO why did this ValueError get triggered again after running:
-    # (at least subsequent call w/o ijroi arg to -i didn't trip it...)
-    # ./al_analysis.py -t 2024-09-03 -s corr,ijroi,intensity -i ijroi,model -v
-    # TODO fix base case:
-    # Traceback (most recent call last):
-    #   File "./al_analysis.py", line 21601, in <module>
-    #     main()
-    #   File "./al_analysis.py", line 19894, in main
-    #     roi_best_plane_depths = pd.concat(roi2best_plane_depth_list, axis='columns',
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/pandas/util/_decorators.py", line 311, in wrapper
-    #     return func(*args, **kwargs)
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/pandas/core/reshape/concat.py", line 294, in concat
-    #     op = _Concatenator(
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/pandas/core/reshape/concat.py", line 351, in __init__
-    #     raise ValueError("No objects to concatenate")
-    # ValueError: No objects to concatenate
+    assert len(ij_trial_dfs) == len(roi2best_plane_depth_list)
+
     roi_best_plane_depths = pd.concat(roi2best_plane_depth_list, axis='columns',
         verify_integrity=True
     )
@@ -21099,27 +21072,11 @@ def main():
         [('+' in x) for x in trial_df.columns.get_level_values('roi')]
     )
 
-    # TODO fix failing assertion below
-    try:
-        # to justify indexing it the same below
-        # TODO maybe i should check more than just the roi level tho?
-        assert trial_df.columns.get_level_values('roi').equals(
-            roi_best_plane_depths.columns.get_level_values('roi')
-        )
-
-    # TODO can i still repro (maybe on the run when the symlinks are set up?)?
-    # TODO delete
-    except AssertionError:
-        print()
-        v1 = trial_df.columns.get_level_values("roi")
-        v2 = roi_best_plane_depths.columns.get_level_values("roi")
-        print(f'{v1=}')
-        print(f'{v2=}')
-        # (so far only seen this been True after fixing symlink issue, in the one time
-        # there was for some reason a failure b/c of wrong order)
-        print(f'{(set(v1) == set(v2))=}')
-        import ipdb; ipdb.set_trace()
-    #
+    # to justify indexing it the same below
+    # TODO maybe i should check more than just the roi level tho?
+    assert trial_df.columns.get_level_values('roi').equals(
+        roi_best_plane_depths.columns.get_level_values('roi')
+    )
 
     # no need to copy, because indexing with a bool mask always does
     trial_df = trial_df.loc[:, ~contained_plus]
@@ -21195,6 +21152,7 @@ def main():
     to_csv(fly_id_legend, output_root / 'fly_ids.csv', date_format=date_fmt_str,
         index=False
     )
+    id2datenum = fly_id_legend.set_index('fly_id', drop=True)
 
 
     # if False, only non-consensus *glomeruli* will be dropped, and all odors will
@@ -21410,10 +21368,12 @@ def main():
 
         filled_fly_dfs = []
         for fly_id, fly_df in panel_df.groupby(level='fly_id', axis='columns'):
-            # TODO delete (/ include in more proper message)
             if verbose:
-                print(f'{fly_id=}')
-            #
+                date, fly_num = id2datenum.loc[fly_id]
+                date_str = format_date(date)
+                fly_str = f'{date_str}/{fly_num}'
+
+                print(f'{fly_id=} ({fly_str})')
 
             assert type(fly_id) is str
             assert set(fly_df.columns.get_level_values('fly_id')) == {fly_id}
@@ -21435,16 +21395,17 @@ def main():
                 glomeruli_in_panel_flies - fly_glomeruli
 
             if len(glomeruli_only_in_other_panel_flies) > 0:
-                # TODO delete (/ include in more proper message)
                 if verbose:
-                    #print(f'{fly_glomeruli=}')
                     print('glomeruli only in other panel flies: '
                         f'{sorted(glomeruli_only_in_other_panel_flies)}'
                     )
-                #
 
-                # TODO TODO warn about what we are doing here
+                # TODO warn about what we are doing here?
                 fly_df[sorted(glomeruli_only_in_other_panel_flies)] = float('nan')
+
+            else:
+                if verbose:
+                    print('no glomeruli only in other panel flies')
 
             # might make some calculations on filled data easier if this were true
             # (and we'd never expected the dF/F to be *exactly* 0 for any real data)
@@ -21475,7 +21436,6 @@ def main():
 
             filled_fly_dfs.append(fly_df)
 
-            # TODO delete (/ include in more proper message)
             if verbose:
                 print()
 
@@ -22280,7 +22240,6 @@ def main():
         # so ROIs are actually grouped together
         mean_df_diag_input = mean_df_diag_input.sort_index(level='roi', axis='columns')
 
-        id2datenum = fly_id_legend.set_index('fly_id', drop=True)
         new_fly_cols = mean_df_diag_input.columns.get_level_values('fly_id').map(
             lambda x: tuple(id2datenum.loc[x])
         )

@@ -31,6 +31,34 @@ from al_analysis import (ij_roi_responses_cache, dropna, plot_all_roi_mean_respo
 import al_analysis as al
 
 
+# TODO TODO TODO are panels getting sorted in new kiwi/control data? why is clicking on
+# an odor sending me to wrong index in TIFF? (see 2024-10-01/1)
+# need to regen json (doesn't seem like it)?  might have been made before diagnostic
+# redo was in or something?
+#
+# TODO TODO TODO fix (could be related to above) (unclear if this is just when moving
+# mouse, or requires clicking, or what triggers it exactly. seems to be when hovering
+# over certain cells. maybe those at upper [/one end] of cmap range?):
+# Traceback (most recent call last):
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/cbook/__init__.py", line 314, in process
+#     func(*args, **kwargs)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/backend_bases.py", line 3150, in mouse_move
+#     self.set_message(self._mouse_event_to_message(event))
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/backend_bases.py", line 3142, in _mouse_event_to_message
+#     data_str = a.format_cursor_data(data).rstrip()
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/artist.py", line 1362, in format_cursor_data
+#     g_sig_digits = cbook._g_sig_digits(data, delta)
+#   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/cbook/__init__.py", line 2218, in _g_sig_digits
+#     - math.floor(math.log10(delta))) if math.isfinite(value) else 0
+# OverflowError: cannot convert float infinity to integer
+
+# TODO TODO TODO for two slope norm (the only cmap used now...), have a more reasonable
+# default vmin, only decreasing if data goes beyond it (but far enough below 0 that
+# negligible inhibition like -.08 dF/F or something is not exaggerated)
+# TODO or at least always clearly label bottom (+top) of cbar (could be only points
+# labelled) (rather than just [0, 1] as only points that seem to be labelled now)
+
+
 # TODO TODO fix plotting so it's always a fixed horizontal size (the actual Axes area),
 # so that plots are easy to line up and compare to each other
 # TODO in add_to_plot=True case, try to keep window in roughly the same position as
@@ -252,37 +280,29 @@ def send_odor_index_to_imagej_script(odor_index):
     # same port as in overlay_rois_in_curr_z.py
     port = 49007
 
-    _debug = False
+    debug_prefix = 'send_odor_index_to_imagej_script: '
 
     # TODO something more elegant than looping until connection is not refused? want to
     # continue showing plot too... make another thread?
     while True:
         try:
-            log.debug(f'trying to connect socket to {port=}')
-            if _debug:
-                print(f'connecting on {port=}')
+            log.debug(f'{debug_prefix}trying to connect socket to {port=}')
 
             client.connect(('0.0.0.0', 49007))
             break
 
         # TODO which error is this actually? what to catch (to be specific)?
         except:
-            log.debug('could not connect! returning!')
-            if _debug:
-                print('could not connect! returning!')
+            log.debug(f'{debug_prefix}could not connect! returning!')
 
             return
 
-    log.debug('connected')
-    if _debug:
-        print('connected')
+    log.debug(f'{debug_prefix}connected')
 
     # '!' = "network encoding" (big Endian)
     client.send(pack('!i', odor_index))
 
-    log.debug(f'sent {odor_index}')
-    if _debug:
-        print(f'sent {odor_index}')
+    log.debug(f'{debug_prefix}sent {odor_index}')
 
     # TODO replace w/ context manager for real deal
     client.close()
@@ -307,16 +327,23 @@ def _get_fig_df(event):
 
 
 def on_click(event):
+    # TODO log when this gets triggered? and/or when conditional below gets entered?
+    # is that the issue, or is it (also?) not getting received properly on the imagej
+    # side?
+
     # TODO if i only associate df with fig (what i'm currently doing) and not the
     # specific axes (i.e. not the colorbar axes), check behavior in case we click on the
     # colorbar (+ probably need to find a way to exclude actions there)
     # TODO did i get `is` (rather than `==`) checking from an example? is that the right
     # way here? add comment if so.
     if event.button is MouseButton.LEFT:
+        # TODO TODO log debug that we are here
+
         xdata = event.xdata
 
         # TODO when does this actually happen? need it?
         if xdata is None:
+            # TODO log debug if this happened?
             return
         #
 
@@ -349,6 +376,9 @@ def on_click(event):
             matching_rows = df.loc[
                 tuple(uniques.to_frame(index=False).iloc[sorted_odor_index])
             ]
+
+        # TODO TODO log debug some info about which odor/index was clicked, and how
+        # we are translating that to an index in the (processed) tiffs
 
         unique_indices = matching_rows.index.get_level_values('odor_index').unique()
         assert len(unique_indices) == 1
