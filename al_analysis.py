@@ -1161,7 +1161,10 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     #
     # TODO make more general than assuming 'odor' prefix?
     assert len(corr_ser.index.names) == 2
-    assert all(x.startswith('odor') for x in corr_ser.index.names)
+
+    # TODO delete?
+    assert all(x.startswith('odor') for x in corr_ser.index.names), \
+        f'{corr_ser.index.names=}'
 
     # TODO do 'a','b' instead? other suffix ('_row','_col')? (to not confused w/
     # 'odor1'/'odor2' used in many other MultiIndex levels in here, where 'odor2' is a
@@ -2739,8 +2742,8 @@ _savefig_seen_paths = set()
 # have to pass verbose=verbose everywhere in here, nor use global as default kwarg,
 # which wouldn't be update by CLI arg correctly...)
 def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
-    fig_dir: Pathlike, desc: str, *, close: bool = True, normalize_fname: bool = True,
-    debug: bool = False, **kwargs) -> Path:
+    fig_dir: Pathlike, desc: str, *, plot_fmt: str = plot_fmt, close: bool = True,
+    normalize_fname: bool = True, debug: bool = False, **kwargs) -> Path:
 
     global exit_after_saving_fig_containing
 
@@ -9393,7 +9396,11 @@ def analyze_cache():
 # TODO find where sns.ClusterGrid is actually defined and use that as return type?
 # shouldn't need any more generality (Grid was used above to include FacetGrid)
 def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap,
-    **kwargs) -> sns.axisgrid.Grid:
+    return_linkages: bool = False, **kwargs) -> sns.axisgrid.Grid:
+    """
+    Args:
+        return_linkages: passed to `hong2p.viz.clustermap`
+    """
     # TODO doc expectations on what rows / columns of input are
 
     # TODO why transposing? stop doing that (-> change all inputs). will just cause
@@ -9417,7 +9424,14 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
     # TODO TODO add option to color rows by fly (-> generate row_colors Series in here)
     # (values of series should be colors)
 
-    cg = viz.clustermap(df, col_cluster=False, cmap=cmap, **kwargs)
+    ret = viz.clustermap(df, col_cluster=False, cmap=cmap,
+        return_linkages=return_linkages, **kwargs
+    )
+    if not return_linkages:
+        cg = ret
+    else:
+        cg, row_linkage, col_linkage = ret
+
     ax = cg.ax_heatmap
     ax.set_yticks([])
     ax.set_xlabel('odor')
@@ -9426,7 +9440,7 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
         ax.set_title(title)
         #cg.fig.suptitle(title)
 
-    return cg
+    return ret
 
 
 # TODO refactor (duped in pn_convergence_vs_hallem_corr.py)
@@ -13846,6 +13860,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         savefig(combined_fig, param_dir, 'combined_odors-per-cell_and_sparsity')
 
     if sensitivity_analysis:
+        # TODO TODO where are dirs like
+        # <panel>/tuned-on_control-kiwi__dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__fixed-thr_0__wAPLKC_0.00
+        # coming from??? something not working right?
+
         # TODO probably remove these assertions (to do sensitivity analysis around each
         # of kiwi/control runs, where they had inh params set from one run w/
         # kiwi+control data)
@@ -14228,9 +14246,8 @@ remy_fly_id = 'acq'
 remy_odor_col = 'stim'
 
 # TODO put in docstring which files we are loading from
-def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True) -> pd.DataFrame:
-    n_odors = len(megamat_odor_names)
-    assert n_odors == n_megamat_odors
+def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool = True
+    ) -> pd.DataFrame:
 
     fly_response_root = remy_data_dir / 'megamat17' / 'per_fly'
     response_file_to_use = 'xrds_suite2p_respvec_mean_peak.nc'
@@ -14511,7 +14528,7 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True) -> pd.DataFram
 
     odors = [olf.parse_odor(x) for x in mean_responses.columns]
 
-    names = [x['name'] for x in odors]
+    names = np.array([x['name'] for x in odors])
     assert megamat_odor_names - set(names) == set(), 'missing some megamat odors'
 
     # cast_int_concs=True to convert '-3.0' to '-3', to be consistent w/ mine
@@ -14525,9 +14542,9 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True) -> pd.DataFram
     # (set(names) - megamat_odor_names)={'PropAc', '1p3ol', 'pfo', 'g-6lac', 'eug',
     # 'd-dlac', 'MethOct', 'ECin'}
     if drop_nonmegamat:
-        megamat_mean_responses = mean_responses.loc[:,
-            [x in megamat_odor_names for x in names]
-        ]
+        megamat_mask = [x in megamat_odor_names for x in names]
+        megamat_mean_responses = mean_responses.loc[:, megamat_mask]
+
         if verbose:
             nonmegamat_odors = mean_responses.columns.difference(
                 megamat_mean_responses.columns
@@ -14537,6 +14554,13 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True) -> pd.DataFram
             )
 
         mean_responses = megamat_mean_responses
+
+    # elif because we will have already dropped pfo if drop_nonmegamat=True
+    # (pfo is not considered part of megamat)
+    elif drop_pfo:
+        pfo_mask = names == 'pfo'
+        assert pfo_mask.sum() > 0
+        mean_responses = mean_responses.loc[:, ~pfo_mask]
 
     return mean_responses
 
@@ -14552,6 +14576,112 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, **kwargs) -> pd.DataFrame
         ).apply(lambda x: corr_triangular(x.corr(), ordered_pairs=ordered_pairs))
 
     fly_corrs = recording_corrs.groupby(level='datefly', sort=False).mean()
+
+    checks = True
+    if checks:
+        old_megamat_root = remy_data_dir / '2024-11-12'
+        # TODO also load + check against stim_rdms__iscell_good_xid0__correlation.xlsx?
+        # (it should have been generated from this .nc, w/ remy providing a script to
+        # generate this xlsx file from it, but still...)
+        corr_file_for_anoop = (
+            old_megamat_root / 'xrda_stim_rdm_concat__iscell_good_xid0__correlation.nc'
+        )
+
+        # adapted from the example script Remy emailed (2024-11-07) Anoop alongside this
+        # data (demo_megamat_new_and_old_by_fly_17_kc_soma_nls.py, from OdorSpaceShare
+        # repo)
+        da_stim_rdm_concat = xr.load_dataarray(corr_file_for_anoop)
+
+        # otherwise .to_index() call below doesn't give me what i want
+        da_stim_rdm_concat = da_stim_rdm_concat.set_index({
+            'acq': remy_fly_cols + ['thorimage_name']
+        })
+
+        #            date_imaged  fly_num              thorimage_name
+        # 0   2022-10-10        1                    megamat0
+        # 1   2022-10-10        2                    megamat0
+        # 2   2022-10-11        1                    megamat0
+        # 3   2022-11-10        1            megamat0__dsub03
+        # 4   2018-10-21        1         _002+_003+_004+_005
+        # 5   2019-03-06        3                        _002
+        # 6   2019-03-06        4                        _003
+        # 7   2019-03-07        2                  _003+_0057
+        # 8   2019-04-26        4                     fn_0002
+        # 9   2019-05-09        4             fn_0001+fn_0003
+        # 10  2019-05-09        5             fn_0001+fn_0002
+        # 11  2019-05-23        2                     fn_0001
+        # 12  2019-05-24        1                     fn_0003
+        # 13  2019-05-24        3                     fn_0001
+        # 14  2019-05-24        4             fn_0001+fn_0002
+        # 15  2019-07-19        2  movie001+movie002+movie003
+        # 16  2019-09-12        1             fn_0002+fn_0003
+        # 17  2019-09-12        2             fn_0001+fn_0002
+        fly_metadata = da_stim_rdm_concat.coords['acq'].to_index().to_frame(index=False)
+        # we already have combined data across recordings (for flies that have multiple.
+        # see rows w/ '+' in thorimage_name in comment above)
+        assert len(fly_metadata) == len(fly_metadata[remy_fly_cols].drop_duplicates())
+
+        assert fly_corrs.index.name == 'datefly'
+        recalced_flies = set(fly_corrs.index)
+
+        datefly_strs = fly_metadata[remy_fly_cols].astype(str).agg('/'.join, axis=1)
+        flies_for_anoop = set(datefly_strs)
+        assert recalced_flies == flies_for_anoop
+
+        da_stim_rdm_concat = da_stim_rdm_concat.assign_coords(
+            {'datefly': ('acq', datefly_strs)}).set_index({'acq': 'datefly'}
+        )
+
+        fly_corrs_has_dropped_non_megamat = kwargs.get('drop_nonmegamat', True)
+
+        if fly_corrs_has_dropped_non_megamat:
+            # (to compare to the single fly corrs in the .nc file Remy gave Anoop in
+            # November 2024, which also included old megamat data, in addition to the
+            # final 4 flies we had been using)
+            corrs_to_compare_to_anoop_data = fly_corrs
+        else:
+            megamat_pairs = fly_corrs.columns.to_frame().applymap(odor_is_megamat
+                ).all(axis='columns')
+            corrs_to_compare_to_anoop_data = fly_corrs.loc[:, megamat_pairs]
+
+            n_megamat_only_pairs = n_choose_2(n_megamat_odors)
+            assert len(corrs_to_compare_to_anoop_data.columns) == n_megamat_only_pairs
+
+
+        for datefly in corrs_to_compare_to_anoop_data.index:
+            fly_corr = corrs_to_compare_to_anoop_data.loc[datefly]
+            fly_corr = fly_corr.dropna()
+
+            # need to go from '1-5ol @ -3.0' format row/col index odors have here,
+            # to '1-5ol @ -3' as in fly_corr index
+            fly_da_stim_rdm = da_stim_rdm_concat.sel(acq=datefly).to_pandas()
+
+            odor_strs = [
+                # TODO refactor this parsing -> formatting, to a fn just for normalizing
+                # repr of conc part of str (to int)?
+                olf.format_odor(olf.parse_odor(x), cast_int_concs=True)
+                for x in fly_da_stim_rdm.index
+            ]
+            assert fly_da_stim_rdm.columns.equals(fly_da_stim_rdm.index)
+            fly_da_stim_rdm.index = odor_strs
+            fly_da_stim_rdm.columns = odor_strs
+
+            # TODO delete if i remove assertion in corr_triangular that index/columns
+            # names have to start with 'odor'
+            fly_da_stim_rdm.index.name = 'odor'
+            fly_da_stim_rdm.columns.name = 'odor'
+
+            anoop_fly_corr = corr_triangular(1 - fly_da_stim_rdm,
+                # TODO TODO do we actually need this tho? or was it the other changes
+                # that made a diff?
+                ordered_pairs=fly_corr.index
+            )
+
+            # TODO work? (comment what intention / effect is?)
+            anoop_fly_corr = anoop_fly_corr.dropna()
+
+            # seems we don't need to pass particular pairs into corr_triangular
+            assert pd_allclose(fly_corr, anoop_fly_corr, equal_nan=True)
 
     # TODO delete
     # TODO check above equiv to this, at least if we no longer load old data?
@@ -14998,14 +15128,6 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
 
     checks = True
     if checks and not use_preprint_data:
-        # TODO delete
-        print('ARE CHANGES TO 2E CHECKS CORRECT?')
-        # TODO TODO TODO and how does data i'm loading now (old megamat + same new
-        # megamat i had been loading) compare to the corrs from this csv remy gave me?
-        # am i matching all the data now, or am i dropping one or the other to not be
-        # comparing all the data?
-        #
-
         # TODO refactor w/ place copied from in model_mb...?
         remy_pairs = set(list(zip(df_obs.abbrev_row, df_obs.abbrev_col)))
 
@@ -15013,7 +15135,7 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         # for old flies anyway? maybe just expand checks below to also check those
         # flies?
         #
-        # TODO TODO TODO can i switch things to using corrs from
+        # TODO TODO can i switch things to using corrs from
         # _load_remy_megamat_kc_responses? cause otherwise would prob need to have Remy
         # regen this file, including older megamat data betty now wants us to include...
         #
@@ -15056,122 +15178,57 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         #assert not corrs.isna().any().any()
         #
 
-        # TODO move this dropna into above fn?
+        # TODO move this dropna into above fn? this even doing anything? why would a
+        # column be all NaN (and is that the right interpretation of axis='columns'?)?
         flymean_corrs = flymean_corrs.dropna(how='all', axis='columns')
-
-        # TODO also move this into fn above?
-        flymean_corrs = flymean_corrs.loc[:,
-            (flymean_corrs.columns.to_frame() != 'pfo').T.all()
-        ]
-
         corrs = flymean_corrs
 
         n_megamat_only_pairs = n_choose_2(n_megamat_odors)
         # TODO delete? already relaxed from == to >=
         assert len(corrs.columns) >= n_megamat_only_pairs
 
-        # TODO TODO fix (/delete?)
-        s1 = set(
-                corrs.columns.get_level_values('odor1') + ', ' +
-                corrs.columns.get_level_values('odor2')
-        )
-        s2 = set(df_obs.odor_pair_str)
-
-        # (this was before i was .dropna-ing flymean_corrs above)
-        # TODO need to do anything about s1 - s2? e.g.
-        # {'pfo, va', '6al, MethOct', 'MethOct, pa', '1p3ol, 6al', 'IaA, d-dlac',
-        # '1-8ol, pfo', 'aa, d-dlac', '2-but, pfo', '1-8ol, ECin', 'B-cit, PropAc',
-        # '1p3ol, pfo', 'benz, pfo', '1-8ol, g-6lac', '1p3ol, aa', 'pfo, t2h', '6al,
-        # g-6lac', 'eb, pfo', '1-5ol, d-dlac', 'g-6lac, pfo', 'g-6lac, pa', 'B-cit,
-        # ECin', 'ms, pfo', 'd-dlac, pfo', '6al, PropAc', 'ECin, aa', 'd-dlac, eb', 'aa,
-        # pfo', 'B-cit, pfo', '2h, pfo', 'ECin, t2h', '2h, PropAc', '1p3ol, eb',
-        # 'PropAc, t2h', '1-5ol, g-6lac', 'ECin, pa', 'B-cit, d-dlac', 'Lin, pfo',
-        # 'd-dlac, va', 'ep, pfo', 'ECin, IaA', '1-5ol, 1p3ol', 'pa, pfo', '6al,
-        # d-dlac', '1-8ol, 1p3ol', 'ECin, pfo', '1p3ol, B-cit', 'ECin, ep', 'MethOct,
-        # pfo', 'aa, eug', '1-5ol, pfo', 'PropAc, ms', 'd-dlac, pa', 'g-6lac, t2h',
-        # 'MethOct, aa', '1-5ol, MethOct', 'MethOct, t2h', 'aa, g-6lac', 'B-cit,
-        # g-6lac', 'eug, pfo', 'eb, g-6lac', 'g-6lac, va', 'd-dlac, t2h', '1p3ol, pa',
-        # 'Lin, PropAc', '6al, pfo', 'IaA, pfo', '1-5ol, ECin', 'Lin, d-dlac', 'PropAc,
-        # eb', '1-8ol, d-dlac', '2h, ECin', 'PropAc, pfo', '1-6ol, pfo', '1p3ol, ms',
-        # 'eug, pa', 'ECin, Lin', 'B-cit, MethOct', '1p3ol, t2h'}
-
-        # TODO TODO fix. (is it just supposed to be s1 - s2? think so)
-        try:
-            #assert s2 - s1 == set()
-            assert s1 - s2 == set()
-        except:
-            import ipdb; ipdb.set_trace()
-        '''
-        try:
-            # all the (ordered) pairs we have in corrs are in df_obs.odor_pair_str
-            assert set(
-                    corrs.columns.get_level_values('odor1') + ', ' +
-                    corrs.columns.get_level_values('odor2')
-                ) - set(df_obs.odor_pair_str) == set()
-        except:
-            s1 = set(
-                    corrs.columns.get_level_values('odor1') + ', ' +
-                    corrs.columns.get_level_values('odor2')
-            )
-            s2 = set(df_obs.odor_pair_str)
-            print()
-            print(f'{s1=}')
-            print(f'{s2=}')
-            import ipdb; ipdb.set_trace()
-        '''
-
         for datefly in corrs.index:
             fly_df = df_obs[df_obs.datefly == datefly]
 
-            # TODO delete
-            '''
-            try:
-                # none of the final 4 flies had other odor pairs measured
-                # (not just using those 4 flies now)
-                assert len(fly_df) >= n_megamat_only_pairs
-            except:
-                print()
-                print(f'{len(fly_df)=}')
-                print(f'{n_megamat_only_pairs=}')
-                import ipdb; ipdb.set_trace()
-            '''
-
-            fly_ser = fly_df[['abbrev_row', 'abbrev_col', 'correlation_distance']
-                ].set_index(['abbrev_row', 'abbrev_col'])
+            remy_2e_csv_ser = fly_df[['abbrev_row', 'abbrev_col',
+                'correlation_distance']].set_index(['abbrev_row', 'abbrev_col'])
 
             # just to convert from shape (n, 1) to (n,)
-            fly_ser = fly_ser.iloc[:, 0]
+            remy_2e_csv_ser = remy_2e_csv_ser.iloc[:, 0]
 
-            fly_ser.index.names = ['odor1', 'odor2']
+            remy_2e_csv_ser.index.names = ['odor1', 'odor2']
 
             # convert from correlation distance to correlation (to match what we have in
             # corrs)
-            fly_ser = 1 - fly_ser
-            fly_ser.name = 'correlation'
+            remy_2e_csv_ser = 1 - remy_2e_csv_ser
+            remy_2e_csv_ser.name = 'correlation'
 
-            # TODO TODO need some dropna or something now?
-            # TODO just delete the assertion?
-            fly_ser2 = corrs.loc[datefly]
-            # (this didn't fail yet, i just think it might)
-            '''
-            try:
-                assert set(fly_ser.index) == set(fly_ser2.index)
-            except:
-                import ipdb; ipdb.set_trace()
-            '''
+            recalced_ser = corrs.loc[datefly]
 
-            # TODO delete?
-            #assert np.allclose(fly_ser.loc[fly_ser2.index], fly_ser2)
-            #
-            assert np.allclose(fly_ser2.loc[fly_ser.index], fly_ser)
+            # since corrs is of shape (<n_flies>, <n_total_odor_pairs>), this will drop
+            # the pairs down to those actually measured in this fly
+            recalced_ser = recalced_ser.dropna()
+            assert not remy_2e_csv_ser.isna().any()
+
+            recalced_pair_set = set(recalced_ser.index)
+            # neither index should have any duplicate pairs
+            assert len(recalced_pair_set) == len(recalced_ser)
+            assert len(recalced_pair_set) == len(remy_2e_csv_ser)
+
+            assert recalced_pair_set == set(remy_2e_csv_ser.index)
+
+            # above assertion justifies indexing one by the other, as it's just the
+            # order that is different, not that either series has any different pairs
+            assert pd_allclose(recalced_ser, remy_2e_csv_ser.loc[recalced_ser.index])
 
         df_megamat = df_obs[
             df_obs.abbrev_row.isin(megamat_odor_names) &
             df_obs.abbrev_col.isin(megamat_odor_names)
         ]
 
-        # TODO TODO TODO are all of the old megamat flies that i'm now supposed to use a
-        # subset of these? do the correlations match what i would compute?
+        # TODO (delete? satisfied?) are all of the old megamat flies that i'm now
+        # supposed to use a subset of these? do the correlations match what i would
+        # compute?
         #
         # ipdb> len(set(df_megamat.datefly) - final_megamat_datefly)
         # 18
@@ -15194,8 +15251,6 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         #  '2022-09-22/2',o
         #  '2022-09-26/1',
         #  '2022-09-26/3'}
-        # TODO TODO TODO just compare db_obs.datefly set to set i have from flymean corr
-        # fn
         assert final_megamat_datefly - set(df_megamat.datefly) == set()
         df_megamat_nonfinal = df_megamat[
             ~df_megamat.datefly.isin(final_megamat_datefly)
@@ -15518,6 +15573,8 @@ def remy_megamat_sparsity() -> float:
     # TODO just force ep to be last? sort order actually diff (-> imply data is diff?)?
     # maybe just slightly though... (?)
 
+    # TODO TODO TODO save this again + compare to model response rates
+    # (or did i have another plot directly making that comparison?)
     plot = False
     if plot:
         fig, ax = plt.subplots()
@@ -18425,8 +18482,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 # TODO 95% instead?
                 ci = 90
                 ci_str = f'{ci:.0f}% CI'
-                # TODO TODO do something other than average over 100 seeds before then
-                # ignoring the 
+                # TODO TODO do something other than average over 100 seeds?
 
                 # TODO keep pearson?
                 # TODO also try to get euclidean (below) to work here? prob just wanna
@@ -18438,7 +18494,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                         overlay_values=True, xlabel=xlabel
                     )
 
-                    import ipdb; ipdb.set_trace()
                     corrs = []
                     lower_cis = []
                     upper_cis = []
