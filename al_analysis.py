@@ -369,7 +369,6 @@ save_figs = True
 # time)
 # TODO add CLI arg to override this?
 plot_fmt = os.environ.get('plot_fmt', 'pdf')
-#plot_fmt = os.environ.get('plot_fmt', 'png')
 
 # Overall folder structure should be: <driver>_<indicator>/<plot_fmt>/...
 across_fly_ijroi_dirname = 'ijroi'
@@ -2742,10 +2741,14 @@ _savefig_seen_paths = set()
 # have to pass verbose=verbose everywhere in here, nor use global as default kwarg,
 # which wouldn't be update by CLI arg correctly...)
 def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
-    fig_dir: Pathlike, desc: str, *, plot_fmt: str = plot_fmt, close: bool = True,
-    normalize_fname: bool = True, debug: bool = False, **kwargs) -> Path:
+    fig_dir: Pathlike, desc: str, *, close: bool = True, normalize_fname: bool = True,
+    debug: bool = False, **kwargs) -> Path:
 
     global exit_after_saving_fig_containing
+
+    # TODO delete (after checking i never actually added code that actually used the
+    # plot_fmt kwarg i had on this fn for a little bit late 2024, removed in december)
+    assert 'plot_fmt' not in kwargs
 
     if normalize_fname:
         prefix = util.to_filename(desc)
@@ -18479,75 +18482,72 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 # TODO names matter (for invert*)? omit?
                 index = pd.MultiIndex.from_tuples(col_pairs, names=['c1', 'c2'])
 
-                # TODO 95% instead?
-                ci = 90
-                ci_str = f'{ci:.0f}% CI'
-                # TODO TODO do something other than average over 100 seeds?
+                for ci in (90, 95):
+                    ci_str = f'{ci:.0f}'
+                    ci_title_str = f'{ci_str}% CI'
+                    # TODO do something other than average over 100 seeds?
 
-                # TODO keep pearson?
-                # TODO also try to get euclidean (below) to work here? prob just wanna
-                # delete it...
-                for method in ('spearman', 'pearson'):
-                    corr_of_pearsons = merged_corrs.corr(method=method)
-                    xlabel = f"{method.title()}s-of-Pearsons"
-                    plot_corr(corr_of_pearsons, panel_plot_dir, f'{method}_of_pearsons',
-                        overlay_values=True, xlabel=xlabel
-                    )
+                    # compare mean-ORN / mean-KC / model Pearson's correlations, using
+                    # Spearman's correlation
+                    #
+                    # TODO add kendall-tau to make remy happy (prob not) (would have to
+                    # modify bootstrapped_corr to support)?
+                    for method in ('spearman',):
+                        corr_of_pearsons = merged_corrs.corr(method=method)
+                        xlabel = f"{method.title()}s-of-Pearsons"
 
-                    corrs = []
-                    lower_cis = []
-                    upper_cis = []
-                    for x, y in col_pairs:
-                        _, corr, ci_lower, ci_upper, _, = bootstrapped_corr(
-                            merged_corrs, x, y, method=method, ci=ci
+                        output_name = f'{method}_of_pearsons_ci{ci_str}'
+
+                        plot_corr(corr_of_pearsons, panel_plot_dir, output_name,
+                            overlay_values=True, xlabel=xlabel
                         )
-                        corrs.append(corr)
-                        lower_cis.append(ci_lower)
-                        upper_cis.append(ci_upper)
 
-                    corr_df = pd.DataFrame(
-                        {'corr': corrs, 'lower': lower_cis, 'upper': upper_cis},
-                        index=index
-                    )
+                        corrs = []
+                        lower_cis = []
+                        upper_cis = []
+                        pvals = []
+                        for x, y in col_pairs:
+                            # TODO add one extra sigfig (in spear_text, the first
+                            # returned arg from bootstrapped_corr) for the correlation
+                            # and CI part (from 2 sigfigs -> 3)
+                            _, corr, ci_lower, ci_upper, pval = bootstrapped_corr(
+                                merged_corrs, x, y, method=method, ci=ci
+                            )
+                            corrs.append(corr)
+                            lower_cis.append(ci_lower)
+                            upper_cis.append(ci_upper)
+                            pvals.append(pval)
 
-                    square_corr = invert_corr_triangular(corr_df['corr'], name=None)
-                    assert pd_allclose(square_corr, corr_of_pearsons)
+                        corr_df = pd.DataFrame({
+                                'corr': corrs, 'lower': lower_cis, 'upper': upper_cis,
+                                'pval': pvals
+                            }, index=index
+                        )
+                        to_csv(corr_df, panel_plot_dir / f'{output_name}.csv')
 
-                    # TODO are CI's symmetric (no) (i.e. can i get one measure of error
-                    # for each matrix element, or will it make more sense to have 2
-                    # extra matrix plots, one for lower CI and one for upper CI?)
-                    square_lower = invert_corr_triangular(corr_df['lower'], name=None)
-                    square_upper = invert_corr_triangular(corr_df['upper'], name=None)
+                        square_corr = invert_corr_triangular(corr_df['corr'], name=None)
+                        assert pd_allclose(square_corr, corr_of_pearsons)
 
-                    plot_corr(square_lower, panel_plot_dir,
-                        f'{method}_of_pearsons_lower', overlay_values=True,
-                        xlabel=f'{xlabel}\nlower side of {ci_str}'
-                    )
-                    plot_corr(square_upper, panel_plot_dir,
-                        f'{method}_of_pearsons_upper', overlay_values=True,
-                        xlabel=f'{xlabel}\nupper side of {ci_str}'
-                    )
+                        # are CI's symmetric (no) (i.e. can i get one measure of error
+                        # for each matrix element, or will it make more sense to have 2
+                        # extra matrix plots, one for lower CI and one for upper CI?)
+                        square_lower = invert_corr_triangular(corr_df['lower'],
+                            name=None
+                        )
+                        square_upper = invert_corr_triangular(corr_df['upper'],
+                            name=None
+                        )
 
-                # TODO want to try plotting any other distances/metrics/norms?
-                #
-                # metric can be anything scipy pdist takes
-                euclidean_of_pearsons = frame_pdist(merged_corrs, metric='euclidean')
-                # TODO delete. don't want to support non-corr vmin/vmax, which euclidean
-                # would need.
-                #plot_corr(euclidean_of_pearsons, panel_plot_dir,
-                #    'euclidean_of_pearsons', overlay_values=True
-                #)
-                fig, _ = viz.matshow(euclidean_of_pearsons, overlay_values=True,
-                    # TODO or just use red half of the diverging cmap, to try to keep
-                    # things more comparable?
-                    xlabel='Euclidean-of-Pearsons', cmap=cmap
-                )
-                savefig(fig, panel_plot_dir, 'euclidean_of_pearsons')
-
-                # TODO TODO save CSV of pearson ranks (sorted by observed KC ranks?)
-                # (for everything in merged_corrs, maybe making one new rank col for
-                # each existing, to have side by side? or two CSVs, one like this and
-                # one w/ just ranks?)
+                        plot_corr(square_lower, panel_plot_dir,
+                            f'{method}_of_pearsons_lower_ci{ci_str}',
+                            overlay_values=True,
+                            xlabel=f'{xlabel}\nlower side of {ci_title_str}'
+                        )
+                        plot_corr(square_upper, panel_plot_dir,
+                            f'{method}_of_pearsons_upper_ci{ci_str}',
+                            overlay_values=True,
+                            xlabel=f'{xlabel}\nupper side of {ci_title_str}'
+                        )
 
                 assert remy_2e_modelsubset_facetgrid is not None
                 _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid,
@@ -19853,6 +19853,10 @@ def main():
     # TODO TODO maybe this should prompt for pickles/csvs by default (w/ option to
     # approve single or all?)? maybe backup ones that would be replaced too?
     parser.add_argument('-c', '--check-outputs-unchanged', action='store_true',
+        # TODO TODO update doc? is it actually true there are any plot formats i don't
+        # support? or at least, this isn't the reason anymore, right? now it should just
+        # be anything that mpl fn i'm using (which converts things to png i think) works w/?
+        #
         # TODO TODO specifically call out which formats this will/won't work for (png?)
         # work for PDF? implement some kind of image based diffing to support those?
         # TODO or maybe just err if this is passed with an unsupported plot format being
