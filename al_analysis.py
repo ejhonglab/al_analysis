@@ -2611,23 +2611,31 @@ def produces_output(_fn=None, *, verbose=True):
             # (if specified)?
             # see: https://stackoverflow.com/questions/71082545 for one way
 
+            path = Path(path)
+
+            # so that no matter how input is specified, check on whether we already
+            # wrote to it (via `seen_inputs`) not have any false negatives.
+            #
+            # from `Path.resolve` docs:
+            # "Make the path absolute, resolving any symlinks."
+            # "'..' components are also eliminated"
+            normalized_path = path.resolve()
+
             # TODO add option (for use during debugging) that checks outputs
             # have not changed since last run (to the extent the format allows it...)
+            # (currently have this via global `check_outputs_unchanged`. do i actually
+            # want it to specifically be a kwarg added by the wrapper instead?)
 
             assert fn.__name__ in _fn2seen_inputs
-
             seen_inputs = _fn2seen_inputs[fn.__name__]
 
-            # TODO want to have wrapper add a kwarg to disable this assertion?
-            # TODO test w/ both Path and str (and mix)
-            if path in seen_inputs:
+            # TODO have wrapper add a kwarg to allow disabling this assertion
+            if normalized_path in seen_inputs:
                 raise MultipleSavesPerRunException('would have overwritten output '
                     f' {path} (previously written elsewhere in this run)!'
                 )
 
-            seen_inputs.add(path)
-
-            path = Path(path)
+            seen_inputs.add(normalized_path)
 
             if check_outputs_unchanged and path.exists():
                 try:
@@ -2650,8 +2658,6 @@ def produces_output(_fn=None, *, verbose=True):
             if verbose:
                 print(f'writing {path}')
 
-            # TODO delete
-            #fn(data, path, *args, **kwargs)
             fn(data, path, **kwargs)
 
         return wrapped_fn
@@ -2665,16 +2671,21 @@ def produces_output(_fn=None, *, verbose=True):
 
 @produces_output
 # input could be at least Series|DataFrame
-def to_csv(data, path: Pathlike, **kwargs) -> None:
+def to_csv(data, path: Path, **kwargs) -> None:
+    """
+    NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
+    """
     data.to_csv(path, **kwargs)
+
 
 @produces_output(verbose=False)
 # input could be at least Series|DataFrame
 # TODO add flag (maybe via changes to wrapper?) that allow overwriting same thing
 # written already in current run
-def to_pickle(data, path: Pathlike) -> None:
-    path = Path(path)
-
+def to_pickle(data, path: Path) -> None:
+    """
+    NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
+    """
     if isinstance(data, xr.DataArray):
         path = Path(path)
         # read via: pickle.loads(path.read_bytes())
@@ -2711,6 +2722,15 @@ def read_series_csv(csv: Pathlike, **kwargs) -> pd.Series:
     ser.name = None
 
     return ser
+
+
+@produces_output(verbose=False)
+def np_save(data: np.ndarray, path: Path, **kwargs) -> None:
+    """
+    NOTE: opposite order of args to `np.save`, which has path first and data second.
+    necessary to work w/ my `produces_output` wrapper.
+    """
+    np.save(path, data, **kwargs)
 
 
 # TODO check this behaves as verbose=True
@@ -8632,7 +8652,9 @@ def natmix_activation_strength_plots(df: pd.DataFrame, intensities_plot_dir: Pat
     )
     savefig(g1, intensities_plot_dir, 'mean_activations_per_fly', bbox_inches=None)
 
-    g2 = natmix.plot_activation_strength(df, _checks=_checks, _debug=_debug)
+    g2 = natmix.plot_activation_strength(df, seed=bootstrap_seed, _checks=_checks,
+        _debug=_debug
+    )
     savefig(g2, intensities_plot_dir, 'mean_activations', bbox_inches=None)
 
 
@@ -12360,6 +12382,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         for_dirname = f'data_{responses_to}'
         if len(param_str) > 0:
             for_dirname += '__'
+            # TODO factor this into some fn? single flag (for_fname?) to
+            # util.format_params to enable this kind of behavior?
             for_dirname += param_str.strip(', ').replace('_','-').replace(', ','__'
                 ).replace('=','_')
 
