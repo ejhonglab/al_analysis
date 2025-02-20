@@ -90,3 +90,8 @@ validation2 panels, as well as glomeruli diagnostics for those flies):
 ./al_analysis.py -d pebbled -n 6f -t 2023-04-22 -e 2024-01-05
 ```
 
+NOTE: above command (which analyzes both megamat and validation2 data) will currently
+cause script to exit after saving dF/F -> spiking model, rather than going on to run
+modeling for both of those panels. to actually run the MB models, use commands which
+restrict data to only either megamat OR validation2 date ranges (see above), AFTER
+running this command to output one dF/F -> spiking model.

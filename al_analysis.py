@@ -47,6 +47,7 @@ import matplotlib.pyplot as plt
 # TODO need to install something else for this, in a new env?
 # (might have manually installed before in current one...)
 from matplotlib.testing import compare as mpl_compare
+from matplotlib.testing.exceptions import ImageComparisonFailure
 #
 from matplotlib_scalebar.scalebar import ScaleBar
 import seaborn as sns
@@ -101,6 +102,11 @@ from natmix import write_corr_dataarray as _write_corr_dataarray
 # TODO move this to hong2p probably
 from hong_logging import init_logger
 
+
+# TODO delete? didn't seem to fix issue (also w/ font changes below)
+# was defaulting to QtAgg
+mpl.use('Agg')
+#
 
 # TODO TODO TODO restore (triggered in dF/F calc for test no-fly dry-run data)
 # RuntimeWarning: invalid value encountered in scalar multiply
@@ -185,6 +191,25 @@ plt.rcParams['figure.constrained_layout.hspace'] = 0
 # KeyError: 'lines.dashed_style is not a valid rc parameter ...
 plt.rcParams['lines.dashed_pattern'] = [2.0, 1.0]
 
+# TODO delete? didn't seem to fix issue (also w/ mpl.use('Agg'))
+# TODO need these settings from set_font_settings_for_testing from here:
+# https://github.com/matplotlib/matplotlib/blob/v3.10.0/lib/matplotlib/testing/__init__.py#L24-L25
+plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['text.hinting'] = 'none'
+plt.rcParams['text.hinting_factor'] = 8
+
+mpl.rcParams['svg.hashsalt'] = 'matplotlib'
+# ...in order to get reproducible PDFs for compare_images calls?
+# doesn't seem to have helped my issue.
+#
+
+# TODO delete?
+# https://stackoverflow.com/questions/15896174
+#mpl.rcParams['text.usetex'] = True
+#
+
+# TODO this screwing up reproducbility of pdfs? (and thus, ability to use -c/-C to check
+# output plots aren't changing)?
 # TODO also add to a matplotlibrc file (under ~/.matplotlib?)?
 # TODO 42 same as TrueType?
 plt.rcParams['pdf.fonttype'] = 42
@@ -284,6 +309,9 @@ analyze_glomeruli_diagnostics = True
 # directories.
 analyze_2d_tests = False
 
+# TODO delete? i assume it's something else that controls currently used suite2p
+# registration outputs?
+#
 # Whether to run the suite2p pipeline (generates outputs among raw data, in 'suite2p'
 # subdirectories)
 do_suite2p = False
@@ -522,9 +550,9 @@ diag_example_plot_roi_kws = dict(
     #linestyles=(0, (2., 20.)),
     #linestyles=(2., 20.),
 
-    # TODO TODO check this is actually working
+    # TODO check this is actually working
     # https://stackoverflow.com/questions/35099130
-    # TODO TODO TODO is this not working?
+    # TODO TODO is this not working?
     #dashes=(4, 20),
     #linestyles='dotted',
 
@@ -553,13 +581,8 @@ diag_example_plot_roi_kws = dict(
     # think i might leave it at red. i find it easy enough to see against other red, and
     # i'm assuming that isn't colorvision dependent.
     #focus_roi_color='green',
-    # harder to see against often dim-red dF/F (/ white regions nearby)
-    #focus_roi_color='orange',
-    # TODO TODO TODO just draw small white outline around this / others? how?
-    # TODO TODO TODO purple? which?
+    # TODO TODO just draw small white outline around this / others? how?
     # https://matplotlib.org/stable/gallery/color/named_colors.html
-    #focus_roi_color='magenta',
-    #focus_roi_color='deeppink',
     focus_roi_color='darkviolet',
 
     # B didn't want the name overlay.
@@ -974,7 +997,10 @@ print_skipped = False
 verbose = False
 
 bootstrap_seed = 1337
+# True|False|'nonmain'
 check_outputs_unchanged = False
+
+prompt_if_changed = False
 
 is_acquisition_host = util.is_acquisition_host()
 if is_acquisition_host:
@@ -2430,12 +2456,13 @@ def _check_output_would_not_change(path: Path, save_fn, data=None, **kwargs) -> 
     # suffix)
 
     to_delete = []
-    # TODO TODO also include mtime of existing file in message
-    err_msg = f'{path} would have changed! (run without -c to ignore)'
+    mtime_str = format_mtime(path, year=True, seconds=True)
+    err_msg = f'{path} ({mtime_str}) would have changed! (run without -c/-C to ignore)'
 
-    # TODO TODO TODO factor out file comparison fn from this
+    # TODO factor out file comparison fn(s) from this?
     # (-> use to check certain key outputs same as what is committed to repo, e.g.
     # CSVs w/ model responses in data/sent_to_anoop vs current ones)
+    # TODO + make available as CLI?
 
     if not use_mpl_comparison:
         # https://stackoverflow.com/questions/1072569
@@ -2483,19 +2510,49 @@ def _check_output_would_not_change(path: Path, save_fn, data=None, **kwargs) -> 
 
         # TODO want to actually use tolerance > 0 ever? (reading mpl's code, if tol is
         # 0, np.array_equal is used, rather than mpl_compare.calculate_rms)
+        #
+        # 2025-02-19: getting some PDFs i can't visually tell apart, w/ rms ~3.84
+        # (mb_modeling/hist_hallem.pdf)
         tolerance = 0
+        # TODO keep something like this? worried it'd also miss a point meaningfully
+        # moving around / similar... (as opposed to weird text spacing changes that
+        # seemed non-deterministic)
+        #tolerance = 15
+
+        # TODO fix ImageComparisonFailure (can i repro?):
+        # ...
+        #   File "./al_analysis.py", line 4095, in plot_corr
+        #     savefig(fig, plot_dir, prefix, bbox_inches='tight', debug=verbose, **_save_kws)
+        #   File "./al_analysis.py", line 2988, in savefig
+        #     _check_output_would_not_change(fig_path, save_fn, **kwargs)
+        #   File "./al_analysis.py", line 2503, in _check_output_would_not_change
+        #     diff_dict = mpl_compare.compare_images(path, str(temp_file_path), tolerance,
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 466, in compare_images
+        #     rms = calculate_rms(expected_image, actual_image)
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 363, in calculate_rms
+        #     raise ImageComparisonFailure(
+        # matplotlib.testing.exceptions.ImageComparisonFailure: Image sizes do not match expected size: (359, 382, 3) actual size (359, 383, 3)
 
         # compare_images seems to save a png alongside input image, and i don't think
         # there are options to not do that, so i'm just deleting those files after
         #
         # https://matplotlib.org/devdocs/api/testing_api.html#module-matplotlib.testing.compare
         #
-        # from docs: "Return None if the images are equal within the given tolerance."
-        diff_dict = mpl_compare.compare_images(path, str(temp_file_path), tolerance,
-            # TODO remove this, since i couldn't really use it to find files to delete
-            # anyway (since it's None if no diff)?
-            in_decorator=True
-        )
+        unchanged = None
+        try:
+            # from docs: "Return None if the images are equal within the given
+            # tolerance."
+            diff_dict = mpl_compare.compare_images(path, str(temp_file_path), tolerance,
+                # TODO remove this, since i couldn't really use it to find files to
+                # delete anyway (since it's None if no diff)?
+                in_decorator=True
+            )
+
+        except ImageComparisonFailure as err:
+            # TODO fix
+            warn(err)
+            #
+            unchanged = False
 
         # paths in diff_dict (for temp_file_path=/tmp/tmpdcsvhhzb.pdf) should look like:
         # 'actual': '/tmp/tmpdcsvhhzb_pdf.png',
@@ -2520,30 +2577,23 @@ def _check_output_would_not_change(path: Path, save_fn, data=None, **kwargs) -> 
                 with_suffix(path, f'_{plot_fmt}.png')
             ])
 
-        if diff_dict is None:
-            # TODO delete
-            # NOTE: i think this one is only created if comparison fails
-            # (and we probably want to keep it then anyway)
-            '''
-            if plot_fmt != 'png':
-                # TODO TODO is this one just <x>_failed-diff.png for path=<x>.png ?
-                to_delete.append(temp_with_suffix(f'_{plot_fmt}-failed-diff.png'))
-            '''
-            #
+        if unchanged is None:
+            if diff_dict is None:
+                unchanged = True
+            else:
+                # NOTE: <x>_failed-diff[_<plot-format>].png created in this case, but we
+                # probably want to keep it for inspection, so not adding to to_delete
+                unchanged = False
+                err_msg += ('\n\nmatplotlib.testing.compare.compare_images output:\n'
+                    f'{pformat(diff_dict)}\n\ndiff image kept for inspection'
+                )
+                # TODO assert diff_dict['actual'] is same as temp_file_path?
 
-            unchanged = True
-        else:
-            unchanged = False
-            err_msg += ('\n\nmatplotlib.testing.compare.compare_images output:\n'
-                f'{pformat(diff_dict)}\n\ndiff image kept for inspection'
-            )
-            # TODO assert diff_dict['actual'] is same as temp_file_path?
-
-            # TODO also open up (xdg-open / whatever) temp png matplotlib wrote (the
-            # diff image)?
-            # (and yes, it does convert everything to PNG for this, named like
-            # /tmp/tmpa3hi5nxy_pdf-failed-diff.png (for diff), /tmp/tmpa3hi5nxy_pdf.png)
-
+                # TODO also open up (xdg-open / whatever) temp png matplotlib wrote (the
+                # diff image)?
+                # (and yes, it does convert everything to PNG for this, named like
+                # /tmp/tmpa3hi5nxy_pdf-failed-diff.png (for diff),
+                # /tmp/tmpa3hi5nxy_pdf.png)
 
     # want to leave this file around if changed, so we can compare to existing output
     if unchanged:
@@ -2576,6 +2626,69 @@ class MultipleSavesPerRunException(IOError):
     pass
 
 
+def _output_change_prompt_or_err(err: RuntimeError, path: Path) -> bool:
+    """Returns whether `path` should be written to with new version.
+    """
+    assert err is not None
+    if not prompt_if_changed:
+        raise err
+
+    assert len(err.args) == 1
+    msg = err.args[0]
+    # TODO still show lineno (of fn calling wrapped_fn) in this case?
+    warn(msg)
+
+    overwrite = None
+    while True:
+        # TODO option to accept all future prompts too? (would still want to warn for
+        # each)
+        # TODO maybe for anything <= current rms (prompting again if new max)?
+        response = input(f'overwrite {path}?\n[y]es / [n]o (quit) / [s]kip (continue) '
+            '(press enter after selection)'
+        )
+        response = response.lower()
+
+        if response == 'y':
+            overwrite = True
+            break
+
+        elif response == 'n':
+            raise err
+
+        # [s]kip
+        elif response == 's':
+            overwrite = False
+            break
+        else:
+            print('invalid response. expected y/n/s.')
+
+    assert overwrite is not None
+    return overwrite
+
+
+def caller_info() -> traceback.FrameSummary:
+    """Returns FrameSummary from one stack level above.
+
+    FrameSummary objects have attributes: filename, lineno, name, line (as well as
+    locals).
+    """
+    stack = traceback.extract_stack()
+    assert len(stack) >= 4
+    # NOTE: .name of each element is the function name of that element
+    # of the stack. if at module level (not within a function), .name
+    # should be (literal, not w/ actual module name) '<module>'
+    assert stack[0].name == '<module>'
+    assert stack[-1].name == 'caller_info' and not any(
+        x.name == 'caller_info' for x in stack[:-1]
+    )
+    # n_levels_up=1 would just put us in the caller of caller_info, which is not useful.
+    # we want the caller of caller_info's caller.
+    # TODO expose as kwarg? no use less than 2 tho
+    n_levels_up = 2
+    frame_summary = stack[-1 - n_levels_up]
+    return frame_summary
+
+
 # TODO TODO move to hong2p.util
 # TODO unit test?
 #
@@ -2602,7 +2715,15 @@ def produces_output(_fn=None, *, verbose=True):
 
         @wraps(fn)
         # TODO delete *args (if assertion it's unused passes for a wihle)
-        def wrapped_fn(data, path: Pathlike, *args, verbose=verbose, **kwargs):
+        def wrapped_fn(data, path: Pathlike, *args, verbose: bool = verbose,
+            multiple_saves_per_run_ok: bool = False, **kwargs):
+            """
+            Args:
+                multiple_saves_per_run_ok: if False, will raise
+                    MultipleSavesPerRunException if same absolute path is written to
+                    twice in one run (which is assumed to usually be a programming
+                    mistake)
+            """
             # TODO delete (probably delete *args in sig above if so)
             assert len(args) == 0
             #
@@ -2627,13 +2748,16 @@ def produces_output(_fn=None, *, verbose=True):
             # want it to specifically be a kwarg added by the wrapper instead?)
 
             assert fn.__name__ in _fn2seen_inputs
+            # TODO probably don't want different fns to be able to save to same path
+            # either tho... (not that they currently would). maybe seen_inputs should be
+            # one global?
             seen_inputs = _fn2seen_inputs[fn.__name__]
 
-            # TODO have wrapper add a kwarg to allow disabling this assertion
-            if normalized_path in seen_inputs:
-                raise MultipleSavesPerRunException('would have overwritten output '
-                    f' {path} (previously written elsewhere in this run)!'
-                )
+            if not multiple_saves_per_run_ok:
+                if normalized_path in seen_inputs:
+                    raise MultipleSavesPerRunException('would have overwritten output '
+                        f'{path} (previously written elsewhere in this run)!'
+                    )
 
             seen_inputs.add(normalized_path)
 
@@ -2645,20 +2769,49 @@ def produces_output(_fn=None, *, verbose=True):
                     _check_output_would_not_change(path, fn, data, **kwargs)
                     return
 
-                except RuntimeError:
-                    raise
+                except RuntimeError as err:
+                    # TODO also need to apply this logic in savefig? or just replace
+                    # savefig w/ a simpler version (wrapped w/ @produces_output)?
+                    # no plots really saved directly under main (at least not
+                    # unconditionally...)
+                    calling_fn = caller_info().name
+                    if calling_fn == 'main':
+                        if check_outputs_unchanged == 'nonmain':
+                            # TODO refactor to share mtime/etc parts of message w/ other
+                            # main places similar message (w/ 'would have changed')
+                            # defined? not sure it matters enough here...
+                            warn(f'{path} would have changed!\nnot failing because -C '
+                                'passed (instead of -c), and this output saved directly'
+                                ' in main().\nremove -C/-c and re-run to overwrite.'
+                            )
+                            # TODO option to not return (which would allow the `fn` call
+                            # below to overwrite this output)?
+                            return
 
-            # TODO test! (and test arg kwarg actually useable on wrapped fn, whether or
-            # not already wrapped fn has this kwarg. can start by assuming it doesn't
-            # have this kwarg tho...)!
-            #
-            # (have already manually tested cases where wrapped fns do not have existin
-            # verbose= kwarg. just need to test case where wrapped fn DOES have existing
-            # verbose= kwarg now.)
-            if verbose:
-                print(f'writing {path}')
+                        elif check_outputs_unchanged == True:
+                            assert len(err.args) == 1
+                            curr_msg = err.args[0]
+                            err = RuntimeError(f'{curr_msg}\n\nor pass -C instead of '
+                                '-c, to ignore outputs (like this one) saved directly '
+                                'from main()'
+                            )
 
-            fn(data, path, **kwargs)
+                    write_output = _output_change_prompt_or_err(err, path)
+            else:
+                write_output = True
+
+            if write_output:
+                # TODO test! (and test arg kwarg actually useable on wrapped fn, whether
+                # or not already wrapped fn has this kwarg. can start by assuming it
+                # doesn't have this kwarg tho...)!
+                #
+                # (have already manually tested cases where wrapped fns do not have
+                # existin verbose= kwarg. just need to test case where wrapped fn DOES
+                # have existing verbose= kwarg now.)
+                if verbose:
+                    print(f'writing {path}')
+
+                fn(data, path, **kwargs)
 
         return wrapped_fn
 
@@ -2733,6 +2886,14 @@ def np_save(data: np.ndarray, path: Path, **kwargs) -> None:
     np.save(path, data, **kwargs)
 
 
+@produces_output(verbose=False)
+# TODO correct type hint for model?
+# (statsmodels.regression.linear_model.RegressionResultsWrapper, but maybe something
+# more general / not the wrapper?)
+def save_model(model, path: Path) -> None:
+    model.save(path)
+
+
 # TODO check this behaves as verbose=True
 # (esp if that fn already has verbose kwarg in natmix. want to test that case)
 write_corr_dataarray = produces_output(_write_corr_dataarray)
@@ -2769,6 +2930,13 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     # TODO delete (after checking i never actually added code that actually used the
     # plot_fmt kwarg i had on this fn for a little bit late 2024, removed in december)
     assert 'plot_fmt' not in kwargs
+
+    # TODO delete
+    if plot_fmt == 'pdf':
+        # even needed in current mpl? not referenced in current docs, and not obviously
+        # in settings current mpl testing code enforces for tests
+        kwargs['metadata'] = {'creationDate': None}
+    #
 
     if normalize_fname:
         prefix = util.to_filename(desc)
@@ -2879,12 +3047,39 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
             _check_output_would_not_change(fig_path, save_fn, **kwargs)
             _skip_saving = True
 
-        except RuntimeError:
-            raise
+        except RuntimeError as err:
+            # TODO TODO TODO does answering [y] to this actually overwrite? test!
+            overwrite = _output_change_prompt_or_err(err, fig_path)
+            _skip_saving = not overwrite
     #
 
+    # TODO should i be passing metadata={'creationDate': None} in pdf case?
+    # would that help make diffing easier / more reliable? still needed?
+    # https://matplotlib.org/2.1.1/users/whats_new.html#reproducible-ps-pdf-and-svg-output
     if save_figs and not _skip_saving:
         fig_or_seaborngrid.savefig(fig_path, **kwargs)
+
+        # TODO delete
+        # TODO TODO why this call always seem to fail (w/ below exception)?
+        # TODO TODO fix:
+        # ...
+        #     diff_dict = mpl_compare.compare_images(fig_path, fig_path, tolerance,
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 445, in compare_images
+        #     actual = convert(actual, cache=True)
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 310, in convert
+        #     convert(path, newpath)
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 135, in __call__
+        #     raise ImageComparisonFailure(
+        # matplotlib.testing.exceptions.ImageComparisonFailure: Processing pages 1 through 1.
+        # Page 1
+        # GS>
+        #tolerance = 0
+        #diff_dict = mpl_compare.compare_images(fig_path, fig_path, tolerance,
+        #    in_decorator=True
+        #)
+        #assert diff_dict is None, f'{fig_path} NOT equal to itself (compare_images)'
+        #print(f'{fig_path} was equal to itself (according to compare_images)')
+        #
 
     fig = None
     if isinstance(fig_or_seaborngrid, Figure):
@@ -3886,12 +4081,19 @@ def nonroi_last_analysis_time(plot_dir, **kwargs):
     return util.most_recent_contained_file_mtime(plot_dir, recurse=False, **kwargs)
 
 
-# TODO include in a format_time, which also accepts datetime / Timestamp input?
-# TODO move to hong2p.util
-def format_mtime(mtime: float, year: bool = False) -> str:
+# TODO move to hong2p.util?
+def format_mtime(mtime_or_path: Union[float, Pathlike], *, year: bool = False,
+    seconds: bool = False) -> str:
     """Formats mtime like default `ls -l` output (e.g. 'Oct 11 18:24').
     """
+    if isinstance(mtime_or_path, float):
+        mtime = mtime_or_path
+    else:
+        mtime = getmtime(mtime_or_path)
+
     fstr = '%b %d %H:%M'
+    if seconds:
+        fstr += ':%S'
     if year:
         fstr += ' %Y'
 
@@ -3900,8 +4102,9 @@ def format_mtime(mtime: float, year: bool = False) -> str:
 
 # TODO factor to a format_time fn (hong2p.util?)?
 # TODO probably switch to just using one format str...
-# TODO include seconds too?
-def format_time(t):
+# TODO include seconds too (kwarg for it?)?
+def format_time(t: Union[datetime, pd.Timestamp]) -> str:
+    # TODO doc w/ example
     return f'{format_date(t)} {t.strftime("%H:%M")}'
 
 
@@ -4454,6 +4657,10 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         # label seems to be '' here.
         assert '<colorbar>' != ax.get_label()
 
+        # TODO factor this box drawing into some hong2p.viz fn?
+        # (use for some plots of sensitivity analysis, to highlight the tuned param
+        # combo stepped around? like the one in here, or the one in
+        # natmix_data/analysis.py?)
         for combo in odor_glomerulus_combos_to_highlight:
             odor1 = combo['odor']
             roi = combo['glomerulus']
@@ -5669,6 +5876,8 @@ def load_default_ops(_cache=True):
     return ops.copy()
 
 
+# TODO delete? not sure this is used in any of my current registration pipeline...
+#
 # TODO maybe refactor (part of?) this to hong2p.suite2p
 def run_suite2p(thorimage_dir, analysis_dir, overwrite=False):
     """
@@ -7914,7 +8123,11 @@ def preprocess_recordings(keys_and_paired_dirs, verbose=False) -> None:
             # outputs that depend on it (nonroi stuff esp, but probably just everything)
             convert_raw_to_tiff(thorimage_dir, date, fly_num)
 
+        # TODO TODO TODO is it even possible for trial_bounding_frames.yaml to overwrite
+        # this? need that to work, right? (for sam+george new experiments, where frame
+        # assignment not working)
         # TODO maybe also don't do this in is_acquisition_host case?
+        #
         # just don't even call preprocess_recordings? then delete
         # do_convert_raw_to_tiff flag?
         odor_data = write_trial_and_frame_json(thorimage_dir, thorsync_dir)
@@ -9425,6 +9638,8 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
     """
     Args:
         return_linkages: passed to `hong2p.viz.clustermap`
+
+        **kwargs: passed to `hong2p.viz.clustermap`
     """
     # TODO doc expectations on what rows / columns of input are
 
@@ -9448,6 +9663,7 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
 
     # TODO TODO add option to color rows by fly (-> generate row_colors Series in here)
     # (values of series should be colors)
+    # (see natmix_data/analysis.py get_fly_color_series)
 
     ret = viz.clustermap(df, col_cluster=False, cmap=cmap,
         return_linkages=return_linkages, **kwargs
@@ -10954,10 +11170,12 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         assert 'DA4m' in sfr.index and 'DA4m' in orn_deltas.index
 
     # TODO delete
-    if not have_DA4m:
-        print()
-        print('did not have DA4m in sfr.index. add comment explaining current input')
-        import ipdb; ipdb.set_trace()
+    # currently getting tripped by model_test.py case that passes in hallem orn_deltas
+    #print(f'{have_DA4m=}')
+    #if not have_DA4m:
+    #    print()
+    #    print('did not have DA4m in sfr.index. add comment explaining current input')
+    #    import ipdb; ipdb.set_trace()
     #
 
     # TODO also only do if _use_matt_wPNKC=True (prat's seems to have DA4m...)?
@@ -11435,6 +11653,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     orn_sims = np.array(rv.orn.sims)
     # orn_sims.shape=(110, 22, 5500)
 
+    # orn_sims is of shape (n_odors, n_glomeruli, n_timepoints)
     n_samples = orn_sims.shape[-1]
     # from default parameters:
     # p.time.pre_start  = -2.0;
@@ -11452,6 +11671,10 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     # pn_sims.shape=(110, 22, 5500)
     pn_sims = np.array(rv.pn.pn_sims)
     assert pn_sims.shape[-1] == n_samples
+
+    if tune_on_hallem and not hallem_input:
+        orn_sims = orn_sims[n_hallem_odors:]
+        pn_sims = pn_sims[n_hallem_odors:]
 
     ts = np.linspace(mp.time_pre_start, mp.time_end, num=n_samples)
 
@@ -11490,6 +11713,9 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     )
 
     if sim_odors is not None:
+        # TODO have parse_odor_name return input (rather than current ValueError), if
+        # input doesn't have '@' in it (or add in model_test.py r1 call that currently
+        # is failing b/c of this)
         input_odor_names = {olf.parse_odor_name(x) for x in sim_odors}
     else:
         input_odor_names = {
@@ -11526,16 +11752,21 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
                 warn=False
             )
 
-        orn_deltas = sort_odors(orn_deltas, panel=panel, warn=False)
+            # TODO is it a problem that i'm now also only are only doing all below if
+            # `not hallem_input`? (change any outputs in my main al_analysis.py
+            # remy-paper analyses?) changed to fix impact of sorting on check in
+            # model_test.py, but could also add kwarg to disable this sorting...
 
-        # TODO maybe only do this one on a copy we don't return? probably don't really
-        # care if it's already sorted tho...
-        # TODO even care to do this? if just for a corr diff thing, even need?
-        responses = sort_odors(responses, panel=panel, warn=False)
-        spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
+            orn_deltas = sort_odors(orn_deltas, panel=panel, warn=False)
 
-        orn_df = sort_odors(orn_df, panel=panel, warn=False)
-        pn_df = sort_odors(pn_df, panel=panel, warn=False)
+            # TODO maybe only do this one on a copy we don't return? probably don't
+            # really care if it's already sorted tho...
+            # TODO even care to do this? if just for a corr diff thing, even need?
+            responses = sort_odors(responses, panel=panel, warn=False)
+            spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
+
+            orn_df = sort_odors(orn_df, panel=panel, warn=False)
+            pn_df = sort_odors(pn_df, panel=panel, warn=False)
     else:
         # TODO delete if i modify below to also make plots for other panels
         # (replacing w/ sorting -> dropping levels for all these, as above)
@@ -11629,8 +11860,10 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
             #assert sim_odors is not None
 
             def subset_sim_odors(df):
+                # TODO delete? still necessary? seems we currently do this earlier
                 if megamat:
                     df = sort_odors(df, panel='megamat', warn=False)
+                #
 
                 if sim_odors is None:
                     return df
@@ -11752,6 +11985,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     # NOTE: currently doing after simulation, because i haven't yet implemented support
     # for tuning running on the full set of (hallem) odors, with subsequent simulation
     # running on a different set of stuff
+    # TODO why checking sim_odors is not None if i'm just using hallem_sim_odors here?
+    # this a mistake?
     if hallem_input and sim_odors is not None:
         assert all(x in responses.columns for x in hallem_sim_odors)
         # TODO delete (replace w/ setting up sim_only s.t. only hallem_sim_odors are
@@ -13811,6 +14046,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     #sparsity_ylim_max = 0.5
     # to exceed .706 in (fixed_thr=120.85, wAPLKC=0.0) param case
     sparsity_ylim_max = 0.71
+    # TODO TODO are these the ylims used for validation2 modelling plots in current
+    # (2025-02-18) modeling.svg for paper? are any other plots in paper using this?
+    # maybe for sensitivity analysis?
     sparsity_ax.set_ylim([0, sparsity_ylim_max])
     # comparison_sparsity_per_odor isn't being pushed to the same extreme, and should be
     # well within this limit.
@@ -13967,6 +14205,15 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         else:
             tried = pd.DataFrame(columns=['fixed_thr', 'wAPLKC', 'sparsity'])
 
+        # TODO TODO try implementing alternative means of specifying bounds of sens
+        # analysis: try sweeping each parameter until we reach some 2nd target response
+        # rate (e.g.  2-5%, << typical target response rate when tuning both params of
+        # ~10%) (then go the same distance [relative?] the other way? or what? not sure
+        # this works...)
+        #
+        # want to avoid trial-and-error setting of below parameters such that corners of
+        # grid each see similarly low/extreme response rates
+
         # needs to be odd so grid has tuned values (that produce outputs used elsewhere
         # in paper) as center.
         n_steps = 3
@@ -13981,7 +14228,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # param doubled, and n_steps=5 rather than 3)
         fixed_thr_param_lim_factor = 0.5
 
-        # TODO TODO try seeing if we can push this high enough to start getting missing
+        # TODO try seeing if we can push this high enough to start getting missing
         # correlations. 1000? why only getting those for high fixed_thr? and where
         # exactly do they come from?
         #
@@ -13990,26 +14237,21 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # 10.0 was used for most of early versions of this
         wAPLKC_param_lim_factor = 5.0
 
-        # TODO TODO expose as kwarg , so i can set a wider one for kiwi/control case
+        # TODO expose as kwarg, so i can set a wider one for kiwi/control case
         # than i used for megamat paper supp figures (-> maybe use these wider commented
         # vals)
         # (need special handling so they don't end up in param_strs / CSVs in places i
         # don't want?)
-        #
-        # TODO delete (maybe first use to regen sparsities wide CSV -> pick steps?)
-        '''
-        n_steps = 9
-        fixed_thr_param_lim_factor = 1.0
-        wAPLKC_param_lim_factor = 10.0
-        '''
-        #
 
         drop_nonpositive_fixed_thr = True
         drop_negative_wAPLKC = True
 
-        def steps_around_tuned(tuned_param, param_lim_factor, param_name, *,
-            drop_negative=True, drop_zero=False):
+        # TODO factor out?
+        def steps_around_tuned(tuned_param: float, param_lim_factor: float,
+            param_name: Optional[str] = None, *, n_steps: int = n_steps,
+            drop_negative: bool = True, drop_zero: bool = False):
 
+            # TODO rename this? it's not the size of the single steps, now is it?
             step_size = tuned_param * param_lim_factor
             param_steps = np.linspace(tuned_param - step_size, tuned_param + step_size,
                 num=n_steps
@@ -14018,6 +14260,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             if drop_zero:
                 assert drop_negative
 
+            prefix = '' if param_name is None else f'{param_name=}: '
             if drop_negative:
                 param_steps[param_steps < 0] = 0
 
@@ -14029,7 +14272,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
                         first_idx_to_use += 1
 
                     if first_idx_to_use > 0:
-                        warn(f'{param_name=}: setting lowest {first_idx_to_use} steps '
+                        warn(f'{prefix}setting lowest {first_idx_to_use} steps '
                             '(negative) to 0'
                         )
 
@@ -14037,19 +14280,22 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
                     if not drop_zero:
                         bottom_step_size = np.diff(param_steps[:2])[0]
-                        warn(f'{param_name=}: step sizes uneven after setting negative '
-                            f'values to 0. step size previously all {step_size:.4f} '
+                        # TODO update to include actual step size ref (current
+                        # `step_size` var is half range, not related to number of steps)
+                        warn(f'{prefix}step sizes uneven after setting negative values '
+                            f'to 0. step size previously all {step_size:.4f} '
                             f'(from {param_lim_factor=}). bottom step now '
                             f'{bottom_step_size:.4f}'
                         )
 
-            assert len(param_steps) >= 3, ('{param_name=}: must have at least 1 step on'
-                ' either side of tuned param'
+            assert len(param_steps) >= 3, (f'{prefix}must have at least 1 step on '
+                'either side of tuned param'
             )
-
             assert np.isclose(tuned_param, param_steps).sum() == 1, \
-                f'{param_name=}: tuned param not in steps'
+                f'{prefix}tuned param not in steps'
 
+            # TODO uh, why do i have this if drop_negative=False is even an option?
+            # (delete option / this?)
             # TODO or (given how it's actually implemented) are negative values
             # meaningful for threshold? (surely not for wAPLKC)
             assert (param_steps >= 0).all()
@@ -16393,6 +16639,10 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             fig, ax = plt.subplots()
             sns.histplot(data=tidy_pebbled, x=curr_dff_col, bins=n_bins, ax=ax)
             ax.set_title('all pebbled')
+            # TODO why this (and others) getting overwritten when being run w/ -C?
+            # same w/ -c now (yes)? -P matter (don't think so)? seems to be a font
+            # spacing issue for the most part? not sure why i'm just seeing it now
+            # (2025)
             savefig(fig, plot_dir, f'hist_pebbled_{curr_dff_col}')
 
             # TODO also hist megamat subset of each of these? or at least of the pebbled
@@ -16400,32 +16650,13 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # TODO or just loop over panels? easier below?
 
 
-    # TODO iterate over options and verify that what i'm using is actually the best (or
-    # not far off)?
+    # TODO iterate over options (just None and 'to-avg-max'? others worse) and verify
+    # that what i'm using is actually the best (or not far off)?
     #scaling_method_to_use = None
-
     # 'to-avg-max'/'split-minmax-to-avg'/None all produce extremely visually similar
     # megamat/est_orn_spike_deltas*.pdf plots (including the correlation plots)
     # (as expected, since they keep 0)
-    #
-    # fit quality between these two identical, as expected
-    # (one is the other multiplied by scalar)
     scaling_method_to_use = 'to-avg-max'
-    #
-    # TODO delete
-    #scaling_method_to_use = 'maxabs'
-
-    # TODO delete
-    # fit quality also identical between these two.
-    #
-    # pretty junk w/ just a single line, b/c so much less negative data.
-    # also pretty junk w/ 2 no-constant lines. negative one actually has opposite slope
-    # from what i'd expect...
-    #scaling_method_to_use = 'split-minmax'
-    #scaling_method_to_use = 'split-minmax-to-avg'
-
-    # TODO delete. not good.
-    #scaling_method_to_use = 'zscore'
 
     add_constant = False
 
@@ -16609,7 +16840,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             scatter: if True, scatterplot merged data w/ a hue for each fly. otherwise,
                 plot a 2d histogram of data.
         """
-
         assert col_to_fit in df.columns
         assert spike_delta_col in df.columns
 
@@ -16854,21 +17084,14 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         cprint(f'saving dF/F -> spike delta model to {dff_to_spiking_model_path}',
             _cprint_color
         )
-        # TODO delete
-        # TODO TODO is this deterministic (seems so? diffing output file against
-        # an older one returned no change)? can i seed it to make it so (if not)?  test
-        # w/ -c! (reason for pebbled/uniform repro issue?)
-        #print(f'is {dff_to_spiking_model_path} saving deterministic? can it be?')
-        #import ipdb; ipdb.set_trace()
-        #
-        model.save(dff_to_spiking_model_path)
+        save_model(model, dff_to_spiking_model_path)
 
         if separate_inh_model:
             cprint(
                 f'saving separate inhibition model to {dff_to_spiking_inh_model_path}',
                 _cprint_color
             )
-            inh_model.save(dff_to_spiking_inh_model_path)
+            save_model(model, dff_to_spiking_inh_model_path)
 
         # TODO delete / put behind checks flag
         #deserialized_model = sm.load(dff_to_spiking_model_path)
@@ -16978,6 +17201,16 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         # TODO factor into same fn that fits model?
         plot_dff2spiking_fit(merged_dff_and_hallem, model)
         # normalize_fname=False to prevent '__' from getting replaced w/ '_'
+        # TODO TODO fix -c/-C failure here!
+        # TODO add a to_csv(merged_dff_and_hallem, <some-path>) call first, to
+        # sanity check input data not changing (pretty sure it's not)?
+        # TODO need to change tolerance values in savefig (-c/-C) check of output
+        # equivalence? or possible to make this completely deterministic (can i repro
+        # this -c/-C failure on adjacent runs? maybe something actually did change?)?
+        # sns.scatterplot and mpl.scatterplot (which former calls) both seem
+        # deterministic though... or at least don't seem to have any seed kwargs / etc.
+        # this was also the part of the plot that seemed (from the diff) like it had
+        # changed...
         savefig(fig, plot_dir, plot_fname, normalize_fname=False)
 
         fig, _ = plt.subplots()
@@ -17142,7 +17375,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # (plus now rest of modeling code loops over panels anyway, no?)
     if not use_saved_dff_to_spiking_model:
         print('EXITING EARLY AFTER HAVING SAVED MODEL ON ALL DATA (analyze specific '
-            'panels with additional al_analysis runs)!'
+            'panels with additional al_analysis runs, restricting date range to only '
+            'one panel)!'
         )
         sys.exit()
     #
@@ -17219,6 +17453,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     fig, ax = plt.subplots()
     sns.histplot(data=tidy_hallem, x=spike_delta_col, bins=n_bins, ax=ax)
     ax.set_title('all Hallem')
+    # TODO TODO fix -c failure (just a tolerance thing?)
     savefig(fig, plot_dir, 'hist_hallem')
 
     # TODO move inside loop (doing for every panel, not just megamat)?
@@ -17494,6 +17729,10 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         tidy_est = tidy_est.reset_index()
 
         fig, ax = plt.subplots()
+        # TODO TODO why did the xticks seem to change (comparing old vs new version of
+        # dff_scale-to-avg-max_hist_est-spike-delta_validation2.pdf, highlighted by -C)?
+        # shape of rest seems the same. something meaningful? diff input subset or
+        # something?
         sns.histplot(data=tidy_est, x=est_spike_delta_col, bins=n_bins, ax=ax)
         ax.set_title(f'pebbled {panel}')
         # TODO or save in panel dir? this consistent w/ saving of hallem megamat stuff
@@ -19734,6 +19973,7 @@ def main():
     global exit_after_saving_fig_containing
     global verbose
     global check_outputs_unchanged
+    global prompt_if_changed
     # TODO add other things modified like this
     global ij_trial_dfs
 
@@ -19870,16 +20110,18 @@ def main():
         'computer).'
     )
 
+    group = parser.add_mutually_exclusive_group()
     # TODO option to warn but not err as well?
     # TODO warn in cases like sensitivity_analysis's deletion of it's root output folder
     # before starting (invalidating these checks...) (err if any folder would be
     # deleted when we have this flag?)
     # TODO TODO maybe this should prompt for pickles/csvs by default (w/ option to
     # approve single or all?)? maybe backup ones that would be replaced too?
-    parser.add_argument('-c', '--check-outputs-unchanged', action='store_true',
+    group.add_argument('-c', '--check-outputs-unchanged', action='store_true',
         # TODO TODO update doc? is it actually true there are any plot formats i don't
         # support? or at least, this isn't the reason anymore, right? now it should just
-        # be anything that mpl fn i'm using (which converts things to png i think) works w/?
+        # be anything that mpl fn i'm using (which converts things to png i think) works
+        # w/?
         #
         # TODO TODO specifically call out which formats this will/won't work for (png?)
         # work for PDF? implement some kind of image based diffing to support those?
@@ -19890,6 +20132,16 @@ def main():
         'is a descrepancy, exit with an error. Currently do not support certain plot '
         'formats (where metadata includes things like file creation time, so same '
         'strategy can not be used to check files for equality).'
+    )
+    group.add_argument('-C', '--check-nonmain-outputs-unchanged', action='store_true',
+        help='Like -c, but excludes outputs saved in main() from checks, so that '
+        'per-panel analysis outputs can be checked separately. Outputs that would '
+        'trigger a warning with this flag will not be overwritten.'
+    )
+    parser.add_argument('-P', '--prompt-if-changed', action='store_true',
+        help='If -c/-C would trigger an error because a file changed, will instead '
+        'prompt about the would-be change, and pause execution until user indicates '
+        'whether the file should be overwritten.'
     )
 
     args = parser.parse_args()
@@ -19918,6 +20170,14 @@ def main():
     print_skipped = verbose
 
     check_outputs_unchanged = args.check_outputs_unchanged
+    check_nonmain_outputs_unchanged = args.check_nonmain_outputs_unchanged
+    if check_nonmain_outputs_unchanged:
+        assert not check_outputs_unchanged
+        check_outputs_unchanged = 'nonmain'
+
+    prompt_if_changed = args.prompt_if_changed
+    if prompt_if_changed:
+        assert check_outputs_unchanged != False
 
     # TODO share --ignore-existing and --skip parsing (prob refactoring into parser arg
     # to add_argument calls?) (make sure to handle no-string-passed --skip and bool
@@ -21220,6 +21480,30 @@ def main():
         print(f'{n_flies} flies:')
         print_uniq(fly_id_legend, all_fly_id_cols)
 
+    being_run_on_all_final_pebbled_data = (start_date == '2023-04-22' and
+        end_date == '2024-01-05' and driver == 'pebbled' and indicator == '6f'
+    )
+    final_pebbled_flies = {
+        # megamat flies
+        ('2023-04-22', 2),
+        ('2023-04-22', 3),
+        ('2023-04-26', 2),
+        ('2023-04-26', 3),
+        ('2023-05-08', 1),
+        ('2023-05-08', 3),
+        ('2023-05-09', 1),
+        ('2023-05-10', 1),
+        ('2023-06-22', 1),
+
+        # validation2 flies
+        ('2023-11-19', 1),
+        ('2023-11-21', 1),
+        ('2023-11-21', 2),
+        ('2023-11-21', 3),
+        ('2024-01-05', 1)
+    }
+
+    fly_id_csv = output_root / 'fly_ids.csv'
     # (note: same issue in comments here also affects consensus_df CSV/pickle saved
     # below)
     #
@@ -21230,11 +21514,17 @@ def main():
     # of the other main outputs, e.g. CSVs)
     # TODO TODO or maybe just include start/end date in it? defeat the point?
     # am i giving this CSV to anyone now? what do i actually want to use it for?
-    # TODO TODO TODO are these fly_ids not deleted before any real use? is it just used
-    # for mean_df/etc? move this saving there then?
-    to_csv(fly_id_legend, output_root / 'fly_ids.csv', date_format=date_fmt_str,
-        index=False
-    )
+    # TODO TODO are these fly_ids not deleted (by what?) before any real use? is it just
+    # used for mean_df/etc? move this saving there then?
+    if being_run_on_all_final_pebbled_data:
+        curr_fly_set = {
+            (format_date(date), fly)
+            for date, fly in fly_id_legend[fly_keys].itertuples(index=False)
+        }
+        assert curr_fly_set == final_pebbled_flies
+
+        to_csv(fly_id_legend, fly_id_csv, date_format=date_fmt_str, index=False)
+
     id2datenum = fly_id_legend.set_index('fly_id', drop=True)
 
 
@@ -21530,14 +21820,20 @@ def main():
         # (since we are sorting pre-concat, unlike newer fill_to_hemibrain fn...)
         # prob doesn't matter.
 
-        # TODO save in a way where -c won't get triggered if run on diff set of flies?
-        # (may mainly be an issue w/ diag panel, which will be present for many other
-        # diff sets of flies)
+        # TODO TODO other panels also require gating behind being_run_on_all_final...?
+        # (i.e. does computation of filled_df, e.g. for megamat panel, depend on whether
+        # we are running on megamat vs megamat + validation data?)
+        #
+        # NOTE: i think the contents of filled_df don't depend on whether we are we are
+        # running on e.g. validation2 data only vs validation2 + megamat data, BUT the
+        # columns (letters from fly_id_legend) currently DO differ based on this, so we
+        # can't compare these outputs if we aren't running on all data
+        consensus_csv = output_root / f'{panel}_consensus.csv'
+
         # TODO also say filled/similar in name?
-        to_csv(filled_df, output_root / f'{panel}_consensus.csv',
-            # TODO date_format even doing anything?
-            date_format=date_fmt_str
-        )
+        # TODO date_format even doing anything?
+        to_csv(filled_df, consensus_csv, date_format=date_fmt_str)
+
         del filled_fly_dfs
 
         # TODO delete?
@@ -21743,8 +22039,10 @@ def main():
     # place i'm planning to use that, so shouldn't matter.
     roi_best_plane_depths = roi_best_plane_depths.loc[:, consensus_df.columns]
 
-    # TODO TODO only save these two if being run on all data?
+    # TODO only save these two if being run on all data?
     # (or just move saving to per panel directory [/name w/ panel] if not?)
+    # (less of an issue now that -C is an option to not overwrite these when running on
+    # diff subsets of data)
     # TODO TODO also save certain_df still
     # TODO TODO rename these to "consensus", either way
     # (but be careful to not cause confusion w/ other people who already have some of
@@ -21823,9 +22121,6 @@ def main():
 
     assert not n_per_odor_and_glom.isna().any().any()
 
-    being_run_on_all_final_pebbled_data = (start_date == '2023-04-22' and
-        end_date == '2024-01-05' and driver == 'pebbled' and indicator == '6f'
-    )
     if being_run_on_all_final_pebbled_data:
         # it does make sense that these NaN remain, as each is for a glomerulus only
         # found in (or at least, only consensus in) the validation2 panel flies (DL4 and
@@ -22301,6 +22596,9 @@ def main():
         # assuming same holds true for other 2 DataFrames (checked indexes equal above).
         assert not mean_df.droplevel('panel').index.duplicated().any()
 
+    # TODO say (print? warn?) that we aren't saving these plots b/c this is False, in
+    # that case?
+    # TODO TODO CLI option to save thes plots despite this flag being False?
     if being_run_on_all_final_pebbled_data:
         fig, _ = viz.matshow(mean_df.T, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs,
             **shared_kws
@@ -22765,7 +23063,9 @@ def main():
     #use_consensus_for_all_acrossfly = True
     use_consensus_for_all_acrossfly = False
     # TODO delete + fix
-    print(f'{use_consensus_for_all_acrossfly=} (should be True for paper figures)')
+    print(f'{use_consensus_for_all_acrossfly=} (should be True for paper figures, but '
+        'model will use consensus either way)'
+    )
     #
     if use_consensus_for_all_acrossfly:
         warn('using consensus_df instead of trial_df for all across fly analyses!!! '

@@ -13,7 +13,7 @@ from hong2p.roi import certain_roi_indices
 from hong2p.types import Pathlike
 
 from al_analysis import (format_mtime, roi_plot_kws, roimean_plot_kws,
-    plot_all_roi_mean_responses, plot_n_per_odor_and_glom, warn
+    plot_all_roi_mean_responses, plot_n_per_odor_and_glom, warn, sort_odors
 )
 from al_analysis import gdf as gsheet
 
@@ -259,7 +259,6 @@ def csvinfo_cli():
     # (though i might change what that is now...)
     parser.add_argument('csv', nargs='?', type=Path, help='path to CSV to summarize')
     parser.add_argument('-q', '--quiet', action='store_true', help='prints less info')
-    # const='' only set if -p passed alone. plot=None if -p not passed.
     parser.add_argument('-p', '--plot', nargs='?', const='', help='plots individual '
         'fly-ROI and mean-ROI matrices and saves alongside input CSV. can pass optional'
         ' (comma-separated) str of plotting kwargs (e.g. -p vmax=1.5), assuming all '
@@ -295,13 +294,23 @@ def csvinfo_cli():
         return cli_plot_kws
 
     if plot is not None:
-        cli_plot_kws = parse_cli_plot_kw_str(plot)
+        if csv is None and plot.lower().endswith('.csv'):
+            csv = Path(plot)
+            cli_plot_kws = dict()
+        else:
+            cli_plot_kws = parse_cli_plot_kw_str(plot)
+
         plot = True
     else:
         plot = False
 
     if csv is not None:
         df = read_csv(csv)
+
+        # TODO should summarize_antennal_data be doing this internally? calling it from
+        # anywhere else?
+        df = sort_odors(df)
+
         summarize_antennal_data(df, verbose=verbose)
 
         if plot:
@@ -351,6 +360,8 @@ def csvinfo_cli():
             # data/sent_to_remy/v1/2023-01-06)
             fig, _ = plot_n_per_odor_and_glom(trialmean_df, title=False)
             savefig(fig, '_n-per-odor-and-glom') #, bbox_inches='tight')
+
+            # TODO TODO version of all of the above, but filling to hemibrain glomeruli?
     else:
         # TODO TODO update to now just load ij_certain-roi_stats.csv (and maybe also
         # other csvs i'm now saving). NO LONGER saving these csvs w/ panel prefix in
@@ -363,6 +374,8 @@ def csvinfo_cli():
         summarize_old_panel_csvs(verbose=verbose)
 
 
+# TODO TODO just call csvinfo on each and diff the text output? i did that manually and
+# it can be helpful
 def csvdiff_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument('csv1', type=Path, help='path to CSV to summarize')

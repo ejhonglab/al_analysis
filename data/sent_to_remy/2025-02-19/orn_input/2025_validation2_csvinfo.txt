@@ -1,0 +1,139 @@
+loading ij_certain-roi_stats.csv
+modified Feb 19 15:21 2025
+
+CSV data matches pickle ij_certain-roi_stats.p
+
+number of trials ("repeats", 0-indexed) per odor: 3
+number of unique odors (diff concs counted separately) for each panel:
+glomeruli_diagnostics    25
+validation2              22
+
+panel='glomeruli_diagnostics' odors:
+['3mtp @ -5',
+ 'va @ -4',
+ 't2h @ -6',
+ 'ms @ -3',
+ 'a-terp @ -3',
+ 'geos @ -5',
+ 'e3hb @ -6',
+ 'mhex @ -7',
+ 'ma @ -7',
+ 'ea @ -8',
+ '2-but @ -6',
+ '2h @ -6',
+ '2h @ -3',
+ 'ga @ -4',
+ 'HCl @ -1',
+ 'carene @ -3',
+ 'farn @ -2',
+ '4h-ol @ -6',
+ '2,3-b @ -6',
+ 'p-cre @ -3',
+ 'aphe @ -4',
+ '1-6ol @ -6',
+ 'paa @ -5',
+ 'fench @ -5',
+ 'elac @ -7']
+
+panel='validation2' odors:
+['+pul @ -2',
+ 'menth @ -3',
+ 'long @ -2',
+ 'sab @ -3',
+ '-bCar @ -3',
+ '-aPine @ -1.5',
+ 'euc @ -1.75',
+ '2-mib @ -4',
+ 'geos @ -4',
+ 'guai @ -3',
+ 'mchav @ -3',
+ 'PEA @ -4',
+ 'paa @ -4',
+ 'bbenz @ -2',
+ 'B-myr @ -2',
+ 'ger @ -2',
+ '1-3ol @ -3',
+ '1p3one @ -5',
+ '1o3one @ -4',
+ 'EtOct @ -2',
+ '2-mba @ -3',
+ 'Z4-7al @ -4']
+
+
+no glomeruli names indicate uncertainty in identity
+unique glomeruli (38):
+['D',
+ 'DA2',
+ 'DC1',
+ 'DC2',
+ 'DC3',
+ 'DC4',
+ 'DL1',
+ 'DL2d',
+ 'DL2v',
+ 'DL4',
+ 'DL5',
+ 'DM1',
+ 'DM2',
+ 'DM3',
+ 'DM4',
+ 'DM5',
+ 'DM6',
+ 'DP1l',
+ 'DP1m',
+ 'VA2',
+ 'VA3',
+ 'VA5',
+ 'VA6',
+ 'VA7l',
+ 'VA7m',
+ 'VC1',
+ 'VC2',
+ 'VC3',
+ 'VC4',
+ 'VL2a',
+ 'VL2p',
+ 'VM2',
+ 'VM3',
+ 'VM4',
+ 'VM5d',
+ 'VM5v',
+ 'VM7d',
+ 'VM7v']
+
+number of glomeruli per fly (avg: 36.8):
+date        fly_num
+2023-11-19  1          38
+2023-11-21  1          37
+            2          36
+            3          38
+2024-01-05  1          35
+
+
+n_flies=5
+      date  fly_num
+2023-11-19        1
+2023-11-21        1
+2023-11-21        2
+2023-11-21        3
+2024-01-05        1
+
+flies by panel:
+panel='glomeruli_diagnostics'
+n_flies=5
+      date  fly_num
+2023-11-19        1
+2023-11-21        1
+2023-11-21        2
+2023-11-21        3
+2024-01-05        1
+
+panel='validation2'
+n_flies=5
+      date  fly_num
+2023-11-19        1
+2023-11-21        1
+2023-11-21        2
+2023-11-21        3
+2024-01-05        1
+

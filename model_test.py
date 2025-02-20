@@ -388,6 +388,13 @@ def main():
     # on my data
     orn_deltas = orns.orns(columns='receptor', add_sfr=False).T
 
+    orn_deltas = abbrev_hallem_odor_index(orn_deltas, axis='columns')
+
+    odor_names = list(orn_deltas.columns)
+    orn_deltas.columns += ' @ -2'
+
+    # TODO TODO address `not have_DA4m` breakpoint in fit_mb_model (currently commented)
+    #
     # TODO TODO also test if input has glomeruli instead of receptors
     # TODO TODO TODO compare output to if we pass orn_deltas (w/ glomeruli?) but set
     # tune_on_hallem=False
@@ -401,6 +408,7 @@ def main():
     assert np.array_equal(r1.values, responses.values)
     # (model_kc)
     assert r1.index.equals(responses.index)
+    # TODO fix comment / assert message. i think it's odor2abbrev...
     # this won't be true for odors passed through odoresponsesabbrev
     assert (
         ((r1.columns + ' @ -2') == responses.columns).sum() / len(r1.columns) >= 0.5
@@ -426,8 +434,11 @@ def main():
     megamat_odors = panel2name_order['megamat']
     assert len(megamat_odors) == 17
 
-    orn_deltas = abbrev_hallem_odor_index(orn_deltas, axis='columns')
-    assert all(x in orn_deltas.columns for x in megamat_odors)
+    # TODO delete (if moving earlier works)
+    #orn_deltas = abbrev_hallem_odor_index(orn_deltas, axis='columns')
+    #assert all(x in orn_deltas.columns for x in megamat_odors)
+    #
+    assert all(x in odor_names for x in megamat_odors)
     megamat_deltas = orn_deltas[megamat_odors].copy()
 
     r4, _, _, _ = fit_mb_model(megamat_deltas, tune_on_hallem=True,
