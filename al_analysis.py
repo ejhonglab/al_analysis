@@ -3001,8 +3001,10 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
         print('SAVING ONE OF WHAT WILL BE A DUPLICATE FIGURE NAME')
         traceback.print_stack(file=sys.stdout)
         #import ipdb; ipdb.set_trace()
-
     #
+
+    # TODO (option to) also save traceback at each, for easier debugging?
+
     try:
         assert abs_fig_path not in _savefig_seen_paths
     except AssertionError:
@@ -11132,7 +11134,12 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     )
     # TODO check that nothing else depends on order of columns (glomeruli) in these
     wPNKC = connectome_wPNKC(connectome=connectome, weight_divisor=weight_divisor,
-        plot_dir=plot_dir, _use_matt_wPNKC=_use_matt_wPNKC
+        # disabling plot_dir here b/c models that are run w/ multiple seeds (handled in
+        # code that calls this fn, not within here), would end up trying to make the
+        # same plots for each seed (which would trigger savefig assertion that we aren't
+        # writing to same path more than once)
+        plot_dir=plot_dir if pn2kc_connections in connectome_options else None,
+        _use_matt_wPNKC=_use_matt_wPNKC
     )
     glomerulus_index = wPNKC.columns
 
