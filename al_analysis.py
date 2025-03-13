@@ -103,12 +103,7 @@ from natmix import write_corr_dataarray as _write_corr_dataarray
 from hong_logging import init_logger
 
 
-# TODO delete? didn't seem to fix issue (also w/ font changes below)
-# was defaulting to QtAgg
-mpl.use('Agg')
-#
-
-# TODO TODO TODO restore (triggered in dF/F calc for test no-fly dry-run data)
+# TODO TODO restore (triggered in dF/F calc for test no-fly dry-run data)
 # RuntimeWarning: invalid value encountered in scalar multiply
 #warnings.filterwarnings('error', 'invalid value encountered in')
 
@@ -9967,427 +9962,701 @@ def handle_multiglomerular_receptors(df: pd.DataFrame,
     return df
 
 
-matt_data_dir = Path('../matt/matt-modeling/data')
+# TODO add 'hemibrain-matt' here, and replace _use_matt_wPNKC w/ that?
+# NOTE: FAFB = FlyWire
+connectome_options = {'hemibrain', 'fafb-left', 'fafb-right'}
 
-def hemibrain_wPNKC(_use_matt_wPNKC=False) -> pd.DataFrame:
+_connectome2glomset = dict()
+def connectome_wPNKC(connectome: str = 'hemibrain',
+    weight_divisor: Optional[float] = None, plot_dir: Optional[Path] = None,
+    _use_matt_wPNKC=False) -> pd.DataFrame:
     # TODO doc
     """
     """
+    assert connectome in connectome_options
+    if _use_matt_wPNKC:
+        assert connectome == 'hemibrain'
 
-    # TODO refactor to share w/ calling code (also defined there...)?
+    # TODO refactor to share w/ calling code (also defined there...) (/cache?)?
     glomerulus2receptors = orns.task_glomerulus2receptors()
-
-    # TODO TODO TODO which was that other CSV (that maybe derived these?) that was
-    # full PN->KC connectome matrix?
     #
-    # NOTE: gkc-halfmat[-wide].csv have 22 columns for glomeruli (/receptors).
-    # This should be the number excluding 2a and 33b.
-    gkc_wide = pd.read_csv(matt_data_dir / 'hemibrain/halfmat/gkc-halfmat-wide.csv')
-
-    # TODO TODO TODO see if above include more than hallem glomeruli (and find
-    # scripts that generated these -> figure out how to regen w/ more than hallem
-    # glomeruli)
-    # TODO TODO TODO process gkc_wide to have consistent glomerulus/receptor labels
-    # where possible (consistent w/ what i hope to also return in random
-    # connectivity cases, etc) (presumbly if it's already a subset, should be
-    # possible for all of that subset?)
-    #import ipdb; ipdb.set_trace()
-
-    # All other columns are glomerulus names.
-    assert gkc_wide.columns[0] == 'bodyid'
-
-    wPNKC = gkc_wide.set_index('bodyid', verify_integrity=True)
-    wPNKC.columns.name = 'glomerulus'
-
-    # TODO TODO TODO why are these max values in the 1-4 range? synapse counts (/
-    # weights) in what prat gave me are almost all >10 (he sets cutoff of >= 5 to even
-    # count connection...). does matt's code actually do anything with any of these >1?
-    # wPNKC.max()
-
-    # TODO TODO TODO where are values >1 coming from in here:
-    # ipdb> mdf.w.value_counts()
-    # 1    9218
-    # 2     359
-    # 3      15
-    # 4       1
-    mdf = pd.read_csv(matt_data_dir / 'hemibrain/glom-kc-cxns.csv')
-    mdf.glom = mdf.glom.replace({'VC3l': 'VC3', 'VC3m': 'VC3'})
-
-    # NOTE: if we do this, mdf_wide.max() is only >1 for VC3 (and it's 2 there, from
-    # merging VC3l and VC3m)
-    #mdf.loc[mdf.w > 1, 'w'] = 1
-
-    # TODO are all >1 weights below coming from 'w' values that are already >1 before
-    # this sum? set all to 1, recompute, and see?
-    # (seems so?)
-    # TODO replace groupby->pivot w/ pivot_table (aggfunc='count'/'sum')?
-    # seemed possible w/ pratyush input (but 'weight' input there was max 1...)
-    mcounts = mdf.groupby(['glom', 'bodyid']).sum('w').reset_index()
-
-    mdf_wide = mcounts.pivot(columns='glom', index='bodyid', values='w').fillna(0
-        ).astype(int)
-
-    # TODO try to remove need for orns.orns + handle_multiglomerular_receptors in here
-    # TODO refactor to share w/ code calling hemibrain_wPNKC? or get from a module level
-    # const in drosolf (maybe add one)?
-    hallem_orn_deltas = orns.orns(add_sfr=False, drop_sfr=False, columns='glomerulus').T
-    hallem_glomeruli = handle_multiglomerular_receptors(hallem_orn_deltas,
-        drop_multiglomerular_receptors=True
-    ).index
-    del hallem_orn_deltas
-
-    mdf_wide = mdf_wide[[x for x in hallem_glomeruli if x != 'DA4m']].copy()
-
-    mdf_wide = mdf_wide[mdf_wide.sum(axis='columns') > 0].copy()
-
-    # TODO move creation of mdf_wide + checking against wPNKC to model_test.py / similar
-    assert wPNKC.columns.equals(mdf_wide.columns)
-    assert set(mdf_wide.index) == set(wPNKC.index)
-    mdf_wide = mdf_wide.loc[wPNKC.index].copy()
-    assert mdf_wide.equals(wPNKC)
-    del mdf_wide
-
-    # from matt-hemibrain/docs/data-loading.html
-    # pn_gloms <- read_csv("data/misc/pn-major-gloms.csv")
-    # pn_kc_cxns <- read_csv("data/cxns/pn-kc-cxns.csv")
-    # glom_kc_cxns <- pn_kc_cxns %>%
-    #   filter(weight >= 3) %>%
-    #   inner_join(pn_gloms, by=c("bodyid_pre" = "bodyid")) %>%
-    #   group_by(major_glom, bodyid_post) %>%
-    #   summarize(w = n(), .groups = "drop") %>%
-    #   rename(bodyid = bodyid_post, glom = major_glom)
-    # write_csv(glom_kc_cxns, "data/cxns/glom-kc-cxns.csv")
-
-    # inspecting some of the files from above:
-    # tom@atlas:~/src/matt/matt-hemibrain/data/misc$ head pn-major-gloms.csv
-    # bodyid,major_glom
-    # 294792184,DC1
-    # 480927537,DC1
-    # 541632990,DC1
-    # 542311358,DC2
-    # 542634818,DM1
-    # ...
-    # tom@atlas:~/src/matt/matt-hemibrain/data$ head cxns/pn-kc-cxns.csv
-    # bodyid_pre,bodyid_post,weight,weight_hp
-    # 542634818,487489028,17,9
-    # 542634818,548885313,1,0
-    # 542634818,549222167,1,1
-    # 542634818,5813021736,6,4
-    # ...
-    # NOTE: pn-kc-cxns.csv above should also be what matt uses to generate distribution
-    # of # claws per KC (in matt-hemibrain/docs/mb-claws.html)
-
-    # TODO TODO TODO does distribution of synapse counts in wPNKC (from matt's gkc-...)
-    # match what we expect? does matt already make this somewhere?
-    # TODO TODO TODO what about double draw (KC drawing from same glomerulus)
-    # frequencies? those match the literature? matt make this somewhere?
-
-    # (looks like it was c.weight > 3 actually)
-    #
-    # This should be from Pratyush, generated on v1.2.1, via something like:
-    # MATCH (a:Neuron)-[c.ConnectsTo]->(b:Neuron)
-    # WHERE a.Instance CONTAINS "PN"
-    # AND b.Instance CONTAINS "KC"
-    # AND c.weight > 5
-    # RETURN a.bodyId, a.Instance, a.type, b.bodyId, b.Instance, b.type, c.weight
-    df = pd.read_excel('data/PNtoKC_connections_raw.xlsx')
-
-    # a.type should all be roughly of form: <glomerulus-str>_<PN-group>, where
-    # PN-group are distributed as follows:
-    # adPN       6927
-    # lPN        2367
-    # ilPN        296
-    # lvPN        262
-    # l2PN1       250
-    # l2PN        137
-    # adPNm4       85
-    # ivPN         76
-    # il2PN        49
-    # lPNm11D      42
-    # vPN          23
-    # lvPN2        10
-    # l2PNm16       7
-    # adPNm5        5
-    # lPNm13        2
-    # adPNm7        1
-    # lvPN1         1
-    assert (df['a.type'].str.count('_') == 1).all()
-
-    glom_strs = df['a.type'].str.split('_').apply(lambda x: x[0])
-    # glom_strs.value_counts()
-    # DP1m         481
-    # DM1          377
-    # DC1          342
-    # DL1          327
-    # DM2          312
-    # VM5d         310
-    # DP1l         309
-    # VC3l         301
-    # DM6          297
-    # DA1          290
-    # DM4          283
-    # VA2          280
-    # VL2p         270
-    # VC3m         255
-    # VP1d+VP4     250
-    # VA4          237
-    # VA7m         231
-    # DC2          231
-    # VA3          228
-    # DC3          226
-    # VA6          217
-    # VC4          207
-    # DM3          207
-    # DM5          205
-    # VL2a         203
-    # DL2d         197
-    # V            195
-    # D            179
-    # VA5          168
-    # VC2          159
-    # VM3          154
-    # VM2          150
-    # DA2          147
-    # VC5          142
-    # M            142
-    # VP1m         137
-    # DL2v         137
-    # DL5          136
-    # VM5v         133
-    # VA1d         131
-    # VA7l         129
-    # VC1          125
-    # VM7d         109
-    # VM7v          99
-    # VM4           98
-    # VA1v          93
-    # DA4l          83
-    # VM1           78
-    # VP3+VP1l      76
-    # VP2           71
-    # VP1m+VP5      64
-    # DC4           55
-    # VP1d          49
-    # DL4           38
-    # DL3           38
-    # VL1           37
-    # DA3           35
-    # DA4m          29
-    # VP3+          17
-    # VP5+Z         17
-    # VP1m+VP2      11
-    # VP4            6
-
-    df['glomerulus'] = glom_strs
-
-    hemibrain_gloms = set(df.glomerulus.unique())
-
     task_gloms = set(glomerulus2receptors.keys())
-    # TODO matt only had 67 VM2 connections, but it seems even in 1.1 and 1.2 had 150
-    # VM2 connections (and 1.0 right?) (nor did earlier version seem to have diff VA1v
-    # connections, right?)
-    # TODO TODO TODO investigate wPNKC differences further! (VM2 & VA1v diffs first)
+    del glomerulus2receptors
 
-    # TODO TODO TODO try to recreate matt's wPNKC matrix by subsetting prat's stuff to
-    # hallem glomeruli and body IDs of KCs that have some connections from them
+    glomerulus_renames = {'VC3l': 'VC3', 'VC3m': 'VC3'}
+    assert all(x in task_gloms for x in glomerulus_renames.values())
+    # wouldn't necessarily need to be true, if we were shuffling names around, but we
+    # currently aren't...
+    assert not any(x in task_gloms for x in glomerulus_renames.keys())
 
-    # TODO TODO what to do about these (more the latter probably)?
-    # > task_gloms - hemibrain_gloms
-    # {'VC3', 'VP3', 'VM6v', 'VM6m', 'VM6l', 'VP5', 'VP1l'}
-    # > hemibrain_gloms - task_gloms
-    # {'VC3m', 'VP3+', 'VP5+Z', 'VC3l', 'VP1m+VP2', 'M', 'VP3+VP1l', 'VP1m+VP5', 'VP1d+VP4'}
+    glomerulus_col = 'glomerulus'
 
-    # TODO maybe combine these after pivoting? will probably need pivot_table instead of
-    # pivot otherwise?
-    df.glomerulus = df.glomerulus.replace({'VC3l': 'VC3', 'VC3m': 'VC3'})
+    def _underscore_part(ser, i=0):
+        return ser.str.split('_').apply(lambda x: x[i])
 
-    # TODO TODO TODO fix how w/ aggfunc='count', max is 1 (inconsistent wrt matt's), but
-    # w/ aggfunc='sum' currently uses weights that i don't want to use
-    # TODO TODO TODO want to count each 'a.bodyId' (PN) separately, right?
-    # (seems this is doing that?)
-    wPNKC2 = pd.pivot_table(df, values='c.weight', index='b.bodyId',
-        columns='glomerulus', aggfunc='count').fillna(0).astype(int)
+    def _first_underscore_part(ser):
+        return _underscore_part(ser, i=0)
 
-    wPNKC2.index.name = 'bodyid'
+    def _add_glomerulus_col_from_hemibrain_type(df, pn_type_col):
+        assert glomerulus_col not in df.columns
 
-    # TODO make distribution of this, like in matt-hemibrain/docs/mb-claws.html
-    # (seems to match up pretty well by inspecting .value_counts())
-    #wPNKC2.sum(axis='columns')
+        assert not df[pn_type_col].isna().any()
+        # TODO (askprat) are there specific PN types (RHS after '_') that i should
+        # categorically be dropping? (prob not. what are prefixes anyway? all lineage
+        # info, or anything closer to what i actually care about?).
+        # Prat: no. keep all.
+        #
+        # a.type should all be roughly of form: <glomerulus-str>_<PN-group>, where
+        # PN-group are distributed as follows (w/ connectome='hemibrain' data):
+        # adPN       6927
+        # lPN        2367
+        # ilPN        296
+        # lvPN        262
+        # l2PN1       250
+        # l2PN        137
+        # adPNm4       85
+        # ivPN         76
+        # il2PN        49
+        # lPNm11D      42
+        # vPN          23
+        # lvPN2        10
+        # l2PNm16       7
+        # adPNm5        5
+        # lPNm13        2
+        # adPNm7        1
+        # lvPN1         1
+        try:
+            assert (df[pn_type_col].str.count('_') == 1).all()
 
-    # TODO TODO TODO does prat's excel sheet somehow already exclude multiglomerular
-    # PNs? these things are both (length) 135, if it means anything:
-    # df['a.bodyId'].nunique()
-    # df[['a.bodyId', 'glomerulus']].drop_duplicates()
+        # TODO change handling + delete?
+        except AssertionError:
+            assert (df[pn_type_col].str.count('_') >= 1).all()
 
-    # TODO delete
-    w2 = wPNKC2[wPNKC.columns].copy()
-    # ipdb> (w2.sum(axis='columns') > 0).sum()
-    # 1652
-    w2 = w2[(w2.sum(axis='columns') > 0)].copy()
+            # TODO delete
+            # (askprat: are any of below MG PNs, or something i want to include? what
+            # are these weird glomeruli names? trailing +?)
+            # Prat: their alignment produced duplicates. not MG PNs. he doesn't know
+            # what 'M' is. M multiglomerular actually, but not easy to get info on which
+            # they are, without more work. he was saying if we really cared, we could
+            # use the previously defined glomerular boundaries to count and figure out
+            # which.
+            #
+            # connectome='hemibrain' has no rows w/ multiple '_'
+            #
+            # connectome='fafb-left'
+            # M_adPNm4,M_adPNm5                120
+            # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2     23
+            # M_lPNm12,M_lPNm13                 20
+            # M_ilPNm90,M_ilPN8t91               4
+            #
+            # connectome='fafb-right'
+            # M_adPNm4,M_adPNm5                86
+            # M_lPNm12,M_lPNm13                12
+            # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2    12
+            # M_ilPNm90,M_ilPN8t91              5
+            n_multi_rows = (df[pn_type_col].str.count('_') >= 2).sum()
+            assert n_multi_rows > 0
+            warn(f'{connectome=} dropping {n_multi_rows} rows w/ multiple underscores '
+                'in PN type:\n' +
+                df[pn_type_col][df[pn_type_col].str.count('_') >= 2].value_counts(
+                ).to_string() + '\n'
+            )
 
-    # ipdb> w2.index.isin(wPNKC.index).all()
-    # False
-    # ipdb> wPNKC.index.isin(w2.index).all()
-    # False
-    #
-    # ipdb> len(set(wPNKC.index) - set(w2.index))
-    # 43
-    # ipdb> len(set(w2.index) - set(wPNKC.index))
-    # 65
-    #
-    # ipdb> w2.shape
-    # (1652, 22)
-    # ipdb> wPNKC.shape
-    # (1630, 22)
+            df = df[df[pn_type_col].str.count('_') == 1].copy()
+        #
 
-    # TODO maybe compare values between shared bodyids across w2 and wPNKC?
+        # TODO change handling + delete?
+        has_plus = df[pn_type_col].str.contains('+', regex=False)
+        if has_plus.any():
+            # TODO (askprat) what is meaning when it finishes w/ '+', w/o that
+            # being a separator between two glomerulus names?
+            # Prat: (re: VP3+ does go somewhere else, but either "not dense enough (in
+            # other place(s) it goes to)" or not going to somewhere in hemibrain volume,
+            # but that could still be in AL...)
+            #
+            # what is 'Z'? (Prat: Z=SEZ. it also goes there.)
+            #
+            # connectome='hemibrain'
+            # VP1d+VP4_l2PN1    250
+            # VP3+VP1l_ivPN      76
+            # VP1m+VP5_ilPN      64
+            # VP5+Z_adPN         17
+            # VP3+_vPN           17
+            # VP1m+VP2_lvPN2     10
+            # VP1m+VP2_lvPN1      1
+            #
+            # connectome='fafb-left'
+            # VP1d+VP4_l2PN1                   285
+            # VP3+VP1l_ivPN                    117
+            # VP1m+VP5_ilPN                     92
+            # VP5+Z_adPN                        47
+            # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2     23
+            # VP3+_vPN                          20
+            # VP1m+_lvPN                         6
+            # VP1l+VP3_ilPN                      2
+            # VP2+_adPN                          1
+            #
+            # connectome='fafb-right'
+            # VP1d+VP4_l2PN1                   303
+            # VP3+VP1l_ivPN                    112
+            # VP1m+VP5_ilPN                    106
+            # VP5+Z_adPN                        42
+            # VP3+_vPN                          20
+            # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2     12
+            # VP2+_adPN                          5
+            # VP1m+_lvPN                         4
+            # VP1l+VP3_ilPN                      3
+            warn(f'{connectome=} dropping {has_plus.sum()} rows w/ "+" in PN type:\n' +
+                df[pn_type_col][has_plus].value_counts().to_string()
+                + '\n'
+            )
+            df = df[~has_plus].copy()
+        #
 
-    # TODO TODO TODO seems like wPNKC tends to have some connections w2 doesn't...
-    # what's up with that?
-    #
-    # glomerulus
-    # DL5     0
-    # VM3     0
-    # DL1     0
-    # DC1     0
-    # DM2     0
-    # DA3     0
-    # VC3     0
-    # DA4l    0
-    # VM2     1
-    # DM3     0
-    # VA1v    0
-    # VA5     0
-    # DM4     0
-    # DL3     0
-    # DM6     0
-    # VC4     0
-    # VA6     0
-    # DM5     0
-    # VM5d    0
-    # DL4     0
-    # VA1d    0
-    # VM5v    0
-    # dtype: int64
-    # ipdb> (w2[w2.index.isin(wPNKC.index)] - wPNKC[wPNKC.index.isin(w2.index)]).max().max()
-    # 1
-    # ipdb> (w2[w2.index.isin(wPNKC.index)] - wPNKC[wPNKC.index.isin(w2.index)]).min().min()
-    # -2
-    # ipdb> (w2[w2.index.isin(wPNKC.index)] - wPNKC[wPNKC.index.isin(w2.index)]).min()
-    # glomerulus
-    # DL5    -1
-    # VM3    -1
-    # DL1    -1
-    # DC1    -1
-    # DM2    -1
-    # DA3    -1
-    # VC3    -2
-    # DA4l   -1
-    # VM2    -1
-    # DM3    -1
-    # VA1v   -1
-    # VA5    -1
-    # DM4    -1
-    # DL3     0
-    # DM6    -2
-    # VC4    -1
-    # VA6    -1
-    # DM5    -1
-    # VM5d   -1
-    # DL4    -1
-    # VA1d   -1
-    # VM5v   -1
-    #
-    # looks like ~70% of KCs have same connections:
-    # ipdb> (w2[w2.index.isin(wPNKC.index)].sort_index() == wPNKC[wPNKC.index.isin(w2.index)].sort_index())
-    # .all(axis='columns').sum()
-    # 1143
-    # ipdb> w2.shape
-    # (1652, 22)
-    # ipdb> 1143/1652
-    # 0.6918886198547215
-    #
-    # ipdb> w2[w2.index.isin(wPNKC.index)].sort_index()[(w2[w2.index.isin(wPNKC.index)].sort_index() != wPN
-    # KC[wPNKC.index.isin(w2.index)].sort_index())].sum()
-    # glomerulus
-    # DL5      0.0
-    # VM3      0.0
-    # DL1      0.0
-    # DC1      3.0
-    # DM2      0.0
-    # DA3      0.0
-    # VC3     23.0
-    # DA4l     0.0
-    # VM2     82.0
-    # DM3      0.0
-    # VA1v    16.0
-    # VA5      0.0
-    # DM4      0.0
-    # DL3      0.0
-    # DM6      1.0
-    # VC4      0.0
-    # VA6      0.0
-    # DM5      2.0
-    # VM5d     3.0
-    # DL4      0.0
-    # VA1d     0.0
-    # VM5v     0.0
+        # TODO also print count of unique PN bodyids within each glom_strs value?
+        # (here might not be the place anymore, if i even still care about this...)
+        glom_strs = _first_underscore_part(df[pn_type_col])
 
-    # TODO are they close enough at this point?
-    # maybe the differences don't matter?
+        # (ran after end of first loop over model_kw_list, in model_mb_responses)
+        # ipdb> {k: len(v) for k, v in _connectome2glomset.items()}
+        # {'fafb-left': 57, 'fafb-right': 56, 'hemibrain': 56}
+        # ipdb> sh = _connectome2glomset['hemibrain']
+        # ipdb> sl = _connectome2glomset['fafb-left']
+        # ipdb> sr = _connectome2glomset['fafb-right']
+        #
+        # ipdb> sl - sr
+        # {'MZ'}
+        # ipdb> sr - sl
+        # set()
+        #
+        # ipdb> sr == sh
+        # True
+        glom_str_set = set(glom_strs)
+        if connectome not in _connectome2glomset:
+            _connectome2glomset[connectome] = glom_str_set
+        else:
+            assert _connectome2glomset[connectome] == glom_str_set
 
-    #
+        # glom_strs.value_counts() (w/ connectome='hemibrain' data):
+        # DP1m         481
+        # DM1          377
+        # DC1          342
+        # DL1          327
+        # DM2          312
+        # VM5d         310
+        # DP1l         309
+        # VC3l         301
+        # DM6          297
+        # DA1          290
+        # DM4          283
+        # VA2          280
+        # VL2p         270
+        # VC3m         255
+        # VP1d+VP4     250
+        # VA4          237
+        # VA7m         231
+        # DC2          231
+        # VA3          228
+        # DC3          226
+        # VA6          217
+        # VC4          207
+        # DM3          207
+        # DM5          205
+        # VL2a         203
+        # DL2d         197
+        # V            195
+        # D            179
+        # VA5          168
+        # VC2          159
+        # VM3          154
+        # VM2          150
+        # DA2          147
+        # VC5          142
+        # M            142
+        # VP1m         137
+        # DL2v         137
+        # DL5          136
+        # VM5v         133
+        # VA1d         131
+        # VA7l         129
+        # VC1          125
+        # VM7d         109
+        # VM7v          99
+        # VM4           98
+        # VA1v          93
+        # DA4l          83
+        # VM1           78
+        # VP3+VP1l      76
+        # VP2           71
+        # VP1m+VP5      64
+        # DC4           55
+        # VP1d          49
+        # DL4           38
+        # DL3           38
+        # VL1           37
+        # DA3           35
+        # DA4m          29
+        # VP3+          17
+        # VP5+Z         17
+        # VP1m+VP2      11
+        # VP4            6
+        df[glomerulus_col] = glom_strs
 
-    # TODO TODO TODO print columns being discarded
-    # ipdb> task_gloms - set(wPNKC2.columns)
-    # {'VM6v', 'VP5', 'VM6l', 'VP3', 'VP1l', 'VM6m'}
-    # ipdb> set(wPNKC2.columns) - task_gloms
-    # {'VP5+Z', 'VP3+VP1l', 'VP1d+VP4', 'VP1m+VP2', 'VP3+', 'VP1m+VP5', 'M'}
-    #import ipdb; ipdb.set_trace()
-    wPNKC2 = wPNKC2[task_gloms & set(wPNKC2.columns)].copy()
+        return df
 
-    # TODO sort wPNKC2 so that all hallem stuff is first?
 
-    # TODO TODO delete? not sure this will work. might also want conditional on
-    # hallem_input?
+    if connectome == 'hemibrain':
+        if _use_matt_wPNKC:
+            matt_data_dir = Path('data/from_matt/hemibrain')
+
+            # TODO which was that other CSV (that maybe derived these?) that was full
+            # PN->KC connectome matrix?
+            #
+            # NOTE: gkc-halfmat[-wide].csv have 22 columns for glomeruli (/receptors).
+            # This should be the number excluding 2a and 33b.
+            gkc_wide = pd.read_csv(matt_data_dir / 'halfmat/gkc-halfmat-wide.csv')
+
+            # TODO TODO see if above include more than hallem glomeruli (and find
+            # scripts that generated these -> figure out how to regen w/ more than
+            # hallem glomeruli)
+            # TODO TODO process gkc_wide to have consistent glomerulus/receptor labels
+            # where possible (consistent w/ what i hope to also return in random
+            # connectivity cases, etc) (presumbly if it's already a subset, should be
+            # possible for all of that subset?)
+
+            # All other columns are glomerulus names.
+            assert gkc_wide.columns[0] == 'bodyid'
+
+            wPNKC = gkc_wide.set_index('bodyid', verify_integrity=True)
+            wPNKC.columns.name = 'glomerulus'
+            assert wPNKC.columns.isin(task_gloms).all()
+
+            # TODO TODO where are values >1 coming from in here:
+            # ipdb> mdf.w.value_counts()
+            # 1    9218
+            # 2     359
+            # 3      15
+            # 4       1
+            mdf = pd.read_csv(matt_data_dir / 'glom-kc-cxns.csv')
+
+            mdf.glom = mdf.glom.replace(glomerulus_renames)
+
+            # NOTE: if we do this, mdf_wide.max() is only >1 for VC3 (and it's 2 there,
+            # from merging VC3l and VC3m)
+            #mdf.loc[mdf.w > 1, 'w'] = 1
+
+            # TODO are all >1 weights below coming from 'w' values that are already >1
+            # before this sum? set all to 1, recompute, and see? (seems so?)
+            # TODO replace groupby->pivot w/ pivot_table (aggfunc='count'/'sum')?
+            # seemed possible w/ pratyush input (but 'weight' input there was max 1...)
+            # TODO factor out similar pivoting (w/ pivot_table) below -> share w/ here?
+            mcounts = mdf.groupby(['glom', 'bodyid']).sum('w').reset_index()
+            mdf_wide = mcounts.pivot(columns='glom', index='bodyid', values='w').fillna(
+                0).astype(int)
+            # TODO uncomment
+            #del mcounts
+
+            # TODO implement? delete?
+            if weight_divisor is not None:
+                import ipdb; ipdb.set_trace()
+            #
+
+            # TODO try to remove need for orns.orns + handle_multiglomerular_receptors
+            # in here?
+            # TODO refactor to share w/ code calling connectome_wPNKC? or get from a
+            # module level const in drosolf (maybe add one)?
+            hallem_orn_deltas = orns.orns(add_sfr=False, drop_sfr=False,
+                columns='glomerulus').T
+
+            hallem_glomeruli = handle_multiglomerular_receptors(hallem_orn_deltas,
+                drop_multiglomerular_receptors=True
+            ).index
+            del hallem_orn_deltas
+
+            mdf_wide = mdf_wide[[x for x in hallem_glomeruli if x != 'DA4m']].copy()
+            del hallem_glomeruli
+
+            mdf_wide = mdf_wide[mdf_wide.sum(axis='columns') > 0].copy()
+
+            # TODO move creation of mdf_wide + checking against wPNKC to model_test.py /
+            # similar
+            assert wPNKC.columns.equals(mdf_wide.columns)
+            assert set(mdf_wide.index) == set(wPNKC.index)
+            mdf_wide = mdf_wide.loc[wPNKC.index].copy()
+            assert mdf_wide.equals(wPNKC)
+            del mdf_wide
+
+            # from matt-hemibrain/docs/data-loading.html
+            # pn_gloms <- read_csv("data/misc/pn-major-gloms.csv")
+            # pn_kc_cxns <- read_csv("data/cxns/pn-kc-cxns.csv")
+            # glom_kc_cxns <- pn_kc_cxns %>%
+            #   filter(weight >= 3) %>%
+            #   inner_join(pn_gloms, by=c("bodyid_pre" = "bodyid")) %>%
+            #   group_by(major_glom, bodyid_post) %>%
+            #   summarize(w = n(), .groups = "drop") %>%
+            #   rename(bodyid = bodyid_post, glom = major_glom)
+            # write_csv(glom_kc_cxns, "data/cxns/glom-kc-cxns.csv")
+
+            # inspecting some of the files from above:
+            # tom@atlas:~/src/matt/matt-hemibrain/data/misc$ head pn-major-gloms.csv
+            # bodyid,major_glom
+            # 294792184,DC1
+            # 480927537,DC1
+            # 541632990,DC1
+            # 542311358,DC2
+            # 542634818,DM1
+            # ...
+            # tom@atlas:~/src/matt/matt-hemibrain/data$ head cxns/pn-kc-cxns.csv
+            # bodyid_pre,bodyid_post,weight,weight_hp
+            # 542634818,487489028,17,9
+            # 542634818,548885313,1,0
+            # 542634818,549222167,1,1
+            # 542634818,5813021736,6,4
+            # ...
+            # NOTE: pn-kc-cxns.csv above should also be what matt uses to generate
+            # distribution of # claws per KC (in matt-hemibrain/docs/mb-claws.html)
+
+            n_kcs = len(wPNKC)
+        else:
+            data_path = Path('data/PNtoKC_connections_raw.xlsx')
+
+            # (looks like it was c.weight > 3 actually)
+            #
+            # This should be from Pratyush, generated on v1.2.1, via something like:
+            # MATCH (a:Neuron)-[c.ConnectsTo]->(b:Neuron)
+            # WHERE a.Instance CONTAINS "PN"
+            # AND b.Instance CONTAINS "KC"
+            # AND c.weight > 5
+            # RETURN a.bodyId, a.Instance, a.type, b.bodyId, b.Instance, b.type, c.weight
+            #
+            # TODO move this one to appropriate subdir in data/from_prat -> update path
+            # here
+            df = pd.read_excel(data_path)
+
+            pn_id_col = 'a.bodyId'
+            kc_id_col = 'b.bodyId'
+            weight_col = 'c.weight'
+
+            hemibrain_pn_type = 'a.type'
+            # TODO move this call into `not _use_matt_wPNKC` case below (to share w/
+            # connectome='fafb-[left|right]' cases below)?
+            df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type)
+    else:
+        fafb_dir = Path('data/from_pratyush/2024-09-13')
+
+        if connectome == 'fafb-left':
+            data_path = fafb_dir / 'FlyWire_PNKC_Left.csv'
+        else:
+            assert connectome == 'fafb-right'
+            data_path = fafb_dir / 'FlyWire_PNKC_Right.csv'
+
+        df = pd.read_csv(data_path)
+
+        cols_with_nan = df.isna().any()
+        assert set(cols_with_nan[cols_with_nan].index) == {
+            'source_cell_type', 'target_cell_type'
+        }
+
+        assert (df.source_cell_class == 'ALPN').all()
+        assert (df.target_cell_class == 'Kenyon_Cell').all()
+
+        if connectome == 'fafb-left':
+            assert (df.source_side == 'left').all()
+
+            # TODO (askprat) drop those w/ target side == 'right'?
+            # Prat: eh, any of these options could work. up to me.
+            # (prob doesn't matter much anyway, looking at which glomeruli it is...)
+            #
+            # TODO or just use them too? could turn to be roughly equiv to using values
+            # from other csv (appending two w/ same 'target_side' together)?
+            # TODO TODO or load both csvs and add both together, based on target
+            # side (prob doesn't matter hugely w/ how many fewer connections there are)?
+            # TODO is there anything else special about these PNs that cross midline?
+            # (maybe we'd exclude already anyway, for some other reason?)
+            #
+            # ipdb> df.target_side.value_counts()
+            # left     13774
+            # right      275
+            #
+            # Prat: below mostly/all the bilateral PNs he was excited about before, that
+            # i had helped him image
+            #
+            # ipdb> df.loc[df.target_side == 'right', 'source_hemibrain_type'].value_counts()
+            # V_ilPN                  87
+            # VP3+VP1l_ivPN           65
+            # VP1m+VP5_ilPN           45
+            # VP1d_il2PN              42
+            # VL1_ilPN                29
+            # M_ilPNm90,M_ilPN8t91     3
+            # VP1l+VP3_ilPN            2
+            # M_smPNm1                 1
+            # M_smPN6t2                1
+        else:
+            assert (df.source_side == 'right').all()
+            # ipdb> df.target_side.value_counts()
+            # right    13485
+            # left       314
+            #
+            # ipdb> df.loc[df.target_side == 'left', 'source_hemibrain_type'].value_counts()
+            # V_ilPN                  145
+            # VP1m+VP5_ilPN            60
+            # VP3+VP1l_ivPN            48
+            # VP1d_il2PN               30
+            # VL1_ilPN                 25
+            # M_ilPNm90,M_ilPN8t91      3
+            # M_smPN6t2                 2
+            # VP1l+VP3_ilPN             1
+
+        pn_id_col = 'source'
+        kc_id_col = 'target'
+        weight_col = 'weight'
+
+        hemibrain_pn_type = 'source_hemibrain_type'
+        df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type)
+
+        # this should be the same as the min_weight from hemibrain, where in that case
+        # prat's query is what filtered stuff w/ smaller weight
+        df = df[df[weight_col] >= 4].copy()
+
+        # TODO delete
+        # fafb_types = df.source_cell_type.dropna()
+        # # true for at least fafb-left
+        # assert (fafb_types.str.count('_') == 1).all()
+        # fafb_gloms = _first_underscore_part(fafb_types)
+        # odf = df.dropna(subset=['source_cell_type'])
+        # assert odf.index.equals(fafb_gloms.index)
+        # print(pd.concat([fafb_gloms, odf.glomerulus], axis=1).drop_duplicates())
+        #
+        # (askprat) want to change handling of any of these? have been
+        # merging VC3l and VC3m into "VC3" (w/ old hemibrain stuff, at least). should
+        # glomerulus_renames reflect this?
+        # Prat: just completely ignore the source_cell_type values. almost certainly not
+        # meaningful corrections made by the flywire people.
+        #
+        # why does task not split them? same receptor or something?
+        # (task doesn't refer to VC3l/m, but does list diff receptors/etc for VC3 and
+        # VC5. they also split VM6 into VM6v/m/l [all w/ at least mostly same
+        # receptors]. they might also be saying that the "canonical" VM6 was VM6v?)
+        #
+        # (same combinations for both left/right)
+        #       source_cell_type glomerulus
+        # 630                VC3       VC3l
+        # 9868               VC5       VC3m
+        # 10678              VM6        VC5
+        #
+        # ipdb> 'VM6' in set(df.glomerulus)
+        # False
+
+        # TODO delete
+        # TODO (askprat) do anything w/ 'target_hemibrain_type'? e.g. 'KCab-s', 'KCg-m',
+        # etc (prob not)
+        # Prat: final part after dash is from clustering on connectome. no reason to
+        # exclude any of this.
+        #
+        # connectome='fafb-left'
+        # ipdb> df.target_hemibrain_type.value_counts()
+        # KCg-m         6463
+        # KCab-m        1893
+        # KCab-s        1874
+        # KCab-c        1221
+        # KCa'b'-m       765
+        # KCa'b'-ap2     553
+        # KCa'b'-ap1     421
+        # KCg-d           66
+        # KCab-p          44
+        # KCg-s2           6
+        # KCg-s3           4
+        # KCg-s1           2
+        #
+        # connectome='fafb-right'
+        # ipdb> df.target_hemibrain_type.value_counts()
+        # KCg-m         6555
+        # KCab-s        1800
+        # KCab-m        1542
+        # KCab-c        1357
+        # KCa'b'-m       745
+        # KCa'b'-ap2     613
+        # KCa'b'-ap1     346
+        # KCg-d           73
+        # KCab-p          51
+        # KCg-s2           5
+        # KCg-s3           1
+        # KCg-s1           1
+
+
+    # TODO replace `glomerulus` w/ `glomerulus_col` below? or revert to hardcode above?
+
     if not _use_matt_wPNKC:
-        #import ipdb; ipdb.set_trace()
-        wPNKC = wPNKC2
-        print('USING PRAT WPNKC (W/ SOME INCONSISTENCIES WRT MATT VERSION)')
-    #
+        # TODO also get working in _use_matt_wPNKC case?
+        assert len(df[[pn_id_col, kc_id_col]].drop_duplicates()) == len(df)
 
-    # TODO or do i want it so that all the hallem ones are first, in that order? matter
-    # elsewhere?
-    # TODO restore. see if i can also sort output in uniform case (b/c if not, might
-    # suggest there is other order-of-glomeruli dependence in fit_mb_model THAT THERE
-    # SHOULD NOT BE)
+        # TODO (askprat) so does this mean prat has already excluded
+        # multiglomeruli PNs (intentionally or not), or are they all contained w/in
+        # stuff dropped above?
+        # Prat: doesn't think it's likely any of his queries would have missed MG PNs
+        #
+        # seems True for both hemibrain and fafb (at least as long as we are dropping
+        # stuff w/ multiple '_' or '+' in PN types above...)
+        assert (
+            len(df[[pn_id_col, 'glomerulus']].drop_duplicates()) ==
+            df[pn_id_col].nunique()
+        )
+
+        assert not df[kc_id_col].isna().any()
+        n_kcs = df[kc_id_col].nunique()
+
+        # TODO delete
+        # (was passing no matter whether connectome='hemibrain'|'fafb-[left|right' nor
+        # _use_matt_wPNKC)
+        #assert not df.glomerulus.str.startswith('VM6').any()
+        #
+        if plot_dir is not None:
+            # TODO delete
+            # (this was before limiting fafb to same min_weight above)
+            #
+            # connectome='hemibrain'
+            # NOTE: has no weights < 4 (b/c Prat's query excluded them)
+            # 4     226
+            # 5     254
+            # 6     305
+            # ...
+            #
+            # connectome='fafb-left'
+            # 1.0     1491
+            # 2.0      498
+            # 3.0      403
+            # 4.0      434
+            # 5.0      443
+            # 6.0      460
+            # ...
+            #
+            # connectome='fafb-right'
+            # 1.0     1457
+            # 2.0      573
+            # 3.0      502
+            # 4.0      515
+            # 5.0      572
+            # 6.0      549
+            # ...
+            assert not df[weight_col].isna().any()
+            min_weight = df[weight_col].min()
+            assert min_weight > 0
+            #
+
+            # was true b/c query in hemibrain case, and b/c subsetting above in fafb
+            # cases
+            assert min_weight == 4
+
+            # TODO also move this plot after we drop non-task glomeruli? (prob doesn't
+            # matter)
+            fig, ax = plt.subplots()
+            # TODO also put input filename formatted mtime in a title line? prob not...
+            sns.histplot(df[weight_col], discrete=True, ax=ax)
+            ax.set_title(f'{connectome} PN->KC weights\n{min_weight=}\n{data_path.name}'
+                f'\n{n_kcs=}'
+            )
+            savefig(fig, plot_dir, f'wPNKC_hist_{connectome}')
+
+        to_rename = df.glomerulus.isin(glomerulus_renames)
+        if to_rename.any():
+            old_names = df.glomerulus[to_rename]
+            warn(f'{connectome=} renaming glomeruli as {glomerulus_renames}:\n' +
+                old_names.value_counts().to_string() + '\n'
+            )
+
+        glom_set = set(df.glomerulus)
+        missing_old_names = set(glomerulus_renames.keys()) - glom_set
+        assert len(missing_old_names) == 0
+        # TODO print which if this assertion ever fails
+
+        # TODO actually check it doesn't matter whether i do this before vs after pivot?
+        # (or at least, that i intend for current behavior)
+        df.glomerulus = df.glomerulus.replace(glomerulus_renames)
+
+        if weight_divisor is None:
+            # TODO refactor pivoting to share across branches of this conditional, and
+            # with above processing of matt's CSVs
+            wPNKC = pd.pivot_table(df, values=weight_col, index=kc_id_col,
+                columns='glomerulus', aggfunc='count').fillna(0).astype(int)
+
+            # TODO delete?
+            df_bin = df.copy()
+            assert (df[weight_col] > 0).all()
+            df_bin[weight_col] = (df_bin[weight_col] > 0).astype(int)
+            assert (df_bin[weight_col] == 1).all()
+            wb = pd.pivot_table(df_bin, values=weight_col, index=kc_id_col,
+                columns='glomerulus', aggfunc='sum').fillna(0).astype(int)
+            assert wb.equals(wPNKC)
+            del df_bin, wb
+            #
+        else:
+            assert weight_divisor > 0
+
+            using_count = pd.pivot_table(df, values=weight_col, index=kc_id_col,
+                columns='glomerulus', aggfunc='count').fillna(0).astype(int)
+
+            df[weight_col] = np.ceil(df[weight_col] / weight_divisor)
+
+            wPNKC = pd.pivot_table(df, values=weight_col, index=kc_id_col,
+                columns='glomerulus', aggfunc='sum').fillna(0).astype(int)
+
+            assert (wPNKC >= using_count).all().all()
+            # if weight_divisor is too large, this could fail
+            # TODO maybe check it does (i.e. that wPNKC.equals(using_count), for high
+            # enough weight_divisor)?
+            assert (wPNKC > using_count).any().any()
+            del using_count
+
+    # sanity check
+    assert n_kcs > 1000
+
+    # TODO only do for 'hemibrain'? use more generic term ('kc_id'?)?
+    wPNKC.index.name = 'bodyid'
+
+    non_task_gloms = set(wPNKC.columns) - task_gloms
+    if len(non_task_gloms) > 0:
+        # connectome='hemibrain'|'fafb-right'
+        # ['M']
+        #
+        # connectome='fafb-left'
+        # ['M', 'MZ']
+        warn(f'dropping glomeruli in {connectome=} but NOT task: '
+            f'{sorted(non_task_gloms)}'
+        )
+
+    non_connectome_gloms = task_gloms - set(wPNKC.columns)
+    if len(non_connectome_gloms) > 0:
+        # connectome='hemibrain'|'fafb-left'|'fafb-right'
+        # ['VM6l', 'VM6m', 'VM6v', 'VP1l', 'VP3', 'VP5']
+        warn(f'glomeruli in task but NOT {connectome=}: {sorted(non_connectome_gloms)}')
+
+    wPNKC = wPNKC[task_gloms & set(wPNKC.columns)].copy()
+
+    if plot_dir is not None:
+        # NOTE: mean of this w/ connectome='hemibrain' is 5.44 (NOT n_claws=7 used
+        # by uniform)
+        n_inputs_per_kc = wPNKC.T.sum()
+
+        fig, ax = plt.subplots()
+        sns.histplot(n_inputs_per_kc, discrete=True, ax=ax)
+        ax.set_title(f'total inputs per KC\n{connectome=}\n{weight_divisor=}\n{n_kcs=}')
+        savefig(fig, plot_dir, f'wPNKC-summed-within-KC_hist_{connectome}')
+
+        # TODO also plot sums within glomeruli?
+
+        # TODO also plot (hierarchichally clustered) wPNKC (w/ plot+colorscale as in
+        # natmix_data/analysis.py?)?
+
+    # TODO assert no KCs w/ no connections? or are there some?
+    assert len(wPNKC) == n_kcs
+
+    # TODO see if i can also sort output in uniform case (b/c if not, might suggest
+    # there is other order-of-glomeruli dependence in fit_mb_model THAT THERE SHOULD NOT
+    # BE)
     # TODO i can not seem to recreate uniform output (by sorting wPNKC post-hoc), but
     # i'm not sure that's actually a problem. maybe input *should* always just be in a
     # particular order, and shouldn't necessarily matter that it's this one...
     wPNKC = wPNKC.sort_index(axis='columns')
-
-    # TODO delete
-    #
-    # TODO TODO does this fn (for matt=False case, at least) have deterministic column
-    # order in output? if so, what else is re-ordering cols in hemibrain case
-    # (see comparison of wPNKC to cache_wPNKC)?
-    '''
-    hemi_wPNKC_cache = Path(f'DELETEME_hemibrain_wPNKC_matt{_use_matt_wPNKC}.p')
-    if hemi_wPNKC_cache.exists():
-        # TODO TODO TODO why this False? sort columns before subsetting to task_gloms?
-        # TODO TODO TODO order wrt other things it's used against matter? or
-        # appropriately indexed (b/c both DFs? enough in my usage context?) after that?
-        print('HEMIBRAIN wPNKC equal to cache contents?')
-        cache_wPNKC = pd.read_pickle(hemi_wPNKC_cache)
-        print(wPNKC.equals(cache_wPNKC))
-        #import ipdb; ipdb.set_trace()
-
-    try:
-        to_pickle(wPNKC, hemi_wPNKC_cache)
-    except AssertionError:
-        print('hemibrain wPNKC cache already written this run')
-    '''
-    #
 
     return wPNKC
 
@@ -10396,7 +10665,7 @@ def hemibrain_wPNKC(_use_matt_wPNKC=False) -> pd.DataFrame:
 # TODO also try to use in modelling stuff?
 def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.DataFrame:
 
-    # TODO replace w/ call to hemibrain_wPNKC (w/ _use_matt_wPNKC=False)?
+    # TODO replace w/ call to connectome_wPNKC (w/ _use_matt_wPNKC=False)?
     # TODO + assert data/ subdir CSV matches
     #
     # NOTE: the md5 of this file (3710390cdcfd4217e1fe38e0782961f6) matches what I
@@ -10408,7 +10677,7 @@ def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.Da
     # have md5 2bc8b74c5cfd30f782ae5c2048126562). Though, none of my current outputs
     # had drop_receptors_not_in_hallem=True, which would lead to a different CSV.
     #
-    # Also equal to wPNKC right after call to hemibrain_wPNKC(_use_matt_wPNKC=False)
+    # Also equal to wPNKC right after call to connectome_wPNKC(_use_matt_wPNKC=False)
     prat_hemibrain_wPNKC_csv = \
         'data/sent_to_grant/2024-04-05/connectivity/wPNKC.csv'
 
@@ -10568,8 +10837,8 @@ def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
 # set than to return responses for?
 # TODO default tune_on_hallem to False?
 def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True,
-    pn2kc_connections: str = 'hemibrain', n_claws: Optional[int] = None,
-    drop_multiglomerular_receptors: bool = True,
+    pn2kc_connections: str = 'hemibrain', weight_divisor: Optional[float] = None,
+    n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
     target_sparsity: Optional[float] = None,
     _use_matt_wPNKC=False, _add_back_methanoic_acid_mistake=False,
@@ -10596,7 +10865,9 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     # or err [/ assert same odors as orn_deltas]? would then need to conditionally pass
     # in calls in here...
 
-    pn2kc_connections_options = {'uniform', 'caron', 'hemidraw', 'hemibrain'}
+    pn2kc_connections_options = {'uniform', 'caron', 'hemidraw'}
+    pn2kc_connections_options.update(connectome_options)
+
     if pn2kc_connections not in pn2kc_connections_options:
         raise ValueError(f'{pn2kc_connections=} not in {pn2kc_connections_options}')
 
@@ -10604,6 +10875,9 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # TODO TODO support? may need for comparisons to ann's model?
         raise NotImplementedError
 
+    # TODO rename? there is a fixed number of claws, just that we can set them w/
+    # n_claws for these models, as opposed to wPNKC determining it (from whatever
+    # connectome) in other cases.
     variable_n_claw_options = {'uniform', 'caron', 'hemidraw'}
     variable_n_claws = False
     if pn2kc_connections not in variable_n_claw_options:
@@ -10683,7 +10957,9 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         #fixed_thr = 147
         mp.kc.fixed_thr = fixed_thr
 
+        # TODO TODO add comment explaining what this is
         mp.kc.add_fixed_thr_to_spont = True
+
         # actually do need this. may or may not need thr_type='fixed' too
         mp.kc.use_fixed_thr = True
         mp.kc.thr_type = 'fixed'
@@ -10848,23 +11124,28 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     '''
     #
 
-    # TODO TODO check that nothing else depends on order of columns (glomeruli) in these
-    wPNKC = hemibrain_wPNKC(_use_matt_wPNKC=_use_matt_wPNKC)
+    connectome = (
+        # NOTE: this means that if pn2kc_connections == 'hemidraw', it will use marginal
+        # probabilities from 'hemibrain' connectome. no current support for using either
+        # fafb data source for that.
+        pn2kc_connections if pn2kc_connections in connectome_options else 'hemibrain'
+    )
+    # TODO check that nothing else depends on order of columns (glomeruli) in these
+    wPNKC = connectome_wPNKC(connectome=connectome, weight_divisor=weight_divisor,
+        plot_dir=plot_dir, _use_matt_wPNKC=_use_matt_wPNKC
+    )
     glomerulus_index = wPNKC.columns
 
     if not hallem_input:
         zero_filling = (~ glomerulus_index.isin(orn_deltas.index))
         if zero_filling.any():
-            msg = 'zero filling spike deltas for glomeruli not in data:'
-            # TODO TODO sort by glomerulus (and elsewhere)
-            # TODO refactor to share printing w/ other similar code?
-            # TODO TODO condense this warning to one line when reasonably possible
-            msg += '\n- '.join([''] + [f'{g}' for g in glomerulus_index[zero_filling]])
-            msg += '\n'
+            msg = ('zero filling spike deltas for glomeruli not in data: '
+                f'{sorted(glomerulus_index[zero_filling])}'
+            )
             warn(msg)
 
-        # TODO TODO if i add 'uniform' draw path, make sure zero filling is keeping
-        # glomeruli that would implicitly be dropped in connectome (/ hemidraw / caron)
+        # TODO TODO (?) if i add 'uniform' draw path, make sure zero filling is keeping
+        # glomeruli that would implicitly be dropped in hemibrain (/ hemidraw / caron)
         # cases (as we don't need wPNKC info in 'uniform' case, as all glomeruli are
         # sampled equally, without using any explicit connectivity / distribution)
         # (don't warn there either)
@@ -11246,6 +11527,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
 
     # TODO also take an optional parameter to control this number?
     # (for variable_n_claws cases mainly)
+    # TODO or if always gonna use wPNKC, option to use # from [one of] fafb data
+    # sources (2482 in left), instead of hemibrain?
     mp.kc.N = len(wPNKC)
 
     if variable_n_claws:
@@ -11255,10 +11538,13 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         mp.kc.seed = seed
         mp.kc.nclaws = n_claws
 
-    if pn2kc_connections == 'hemibrain':
+    if pn2kc_connections in connectome_options:
         mp.kc.preset_wPNKC = True
 
     elif pn2kc_connections == 'hemidraw':
+        # TODO support using wPNKC from fafb-left/fafb-right (currently just hemibrain,
+        # w/ _use_matt_wPNKC=False. i.e. using the newer data from prat's query)?
+
         # TODO check index (glomeruli) is same as sfr/etc (all other things w/ glomeruli
         # that model uses)
         # TODO just set directly into mp.kc.cxn_distrib?
@@ -11352,9 +11638,6 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
 
         mp.kc.tune_apl_weights = False
 
-        # TODO delete
-        #print(f'(hardcoded via kwarg) {wAPLKC=}')
-
         # NOTE: min/max for these should all be the same. they are essentially scalars,
         # at least as tuned before
         # rv.kc.wKCAPL.shape=(1, 1630)
@@ -11372,18 +11655,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # that?)?
 
         if wKCAPL is not None:
-            # TODO delete
-            #print(f'(hardcoded via kwarg) {wKCAPL=}')
-
             rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
-
-            # TODO delete
-            '''
-            calc_wKCAPL = wAPLKC / mp.kc.N
-            print(f'{calc_wKCAPL=}')
-            print(f'{wKCAPL - calc_wKCAPL=}')
-            '''
-            #
         else:
             wKCAPL = wAPLKC / mp.kc.N
             # this shape should be correct (wAPLKC's shape is transposed, so defining
@@ -11391,14 +11663,14 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
             # this in does NOT work correctly (how to get model to recognize that?).
             rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
 
-        # TODO TODO try setting wAPLKC = 1 (or another reasonable constant), and only
-        # vary wKCAPL?
+        # TODO try setting wAPLKC = 1 (or another reasonable constant), and only vary
+        # wKCAPL?
         # (or probably vice versa, where wKCAPL = 1 / mp.kc.N, and wAPLKC varies)
 
         # TODO save/print APL activity (timecourse?) to check it's reasonable?
         # (but it's non-spiking... what is reasonable?)
 
-    if pn2kc_connections == 'hemibrain':
+    if pn2kc_connections in connectome_options:
         rv.kc.wPNKC = wPNKC
 
     osm.run_ORN_LN_sims(mp, rv)
@@ -11499,6 +11771,18 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
 
     Path(temp_log_path).unlink()
 
+    try:
+        # line that would trigger the AttributeError
+        spont_in = rv.kc.spont_in
+
+    # to allow trying older versions of olfsysm, that didn't have rv.kc.spont_in
+    # (which is what this would be doing, if i WAS still `pass`-ing instead of
+    # `raise`-ing below)
+    except AttributeError:
+        # was previously just `pass`-ing here, but don't think i need to support this
+        # again moving forward.
+        raise
+
     if fixed_thr is not None:
         # just checking what we set above hasn't changed
         assert mp.kc.fixed_thr == fixed_thr
@@ -11506,27 +11790,21 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # actually do need this. may or may not need thr_type='fixed' too
         assert mp.kc.use_fixed_thr == True
         assert mp.kc.thr_type == 'fixed'
+        # TODO some assertion w/ spont_in here? should we be able to calculate fixed_thr
+        # same way?
     else:
         thr = rv.kc.thr
-        try:
-            # line that would trigger the AttributeError
-            spont_in = rv.kc.spont_in
 
-            # this should correspond to the thr_const variable inside
-            # olfsysm.choose_KC_thresh_uniform (and can be set by passing as the
-            # fixed_thr kwarg to this function, which will also set
-            # mp.kc.add_fixed_thr_to_spont=True)
-            unique_fixed_thrs = np.unique(thr - 2*spont_in)
-            # could take median instead? shouldn't really matter tho...
-            fixed_thr = unique_fixed_thrs[0]
-            assert np.allclose(fixed_thr, unique_fixed_thrs)
+        # this should correspond to the thr_const variable inside
+        # olfsysm.choose_KC_thresh_uniform (and can be set by passing as the fixed_thr
+        # kwarg to this function, which will also set mp.kc.add_fixed_thr_to_spont=True)
+        unique_fixed_thrs = np.unique(thr - 2*spont_in)
+        # could take median instead? shouldn't really matter tho...
+        fixed_thr = unique_fixed_thrs[0]
+        assert np.allclose(fixed_thr, unique_fixed_thrs)
 
-            # TODO return / put in input dict instead (/ too)?
-            print(f'fixed_thr: {fixed_thr}')
-
-        # to allow trying older versions of olfsysm, that didn't have rv.kc.spont_in
-        except AttributeError:
-            pass
+        # TODO return / put in input dict instead (/ too)?
+        print(f'fixed_thr: {fixed_thr}')
 
     # these should either be the same as any hardcoded wAPLKC [+ wKCAPL] inputs, or the
     # values chosen by the tuning process. _single_unique_val will raise AssertionError
@@ -11554,6 +11832,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         'fixed_thr': fixed_thr,
         'wAPLKC': wAPLKC,
         'wKCAPL': wKCAPL,
+
+        'kc_spont_in': spont_in,
     }
 
     tuning_dict = {
@@ -12228,6 +12508,8 @@ def plot_n_odors_per_cell(responses, ax, *, ax_for_ylabel=None, title=None,
     )
 
     if log_yscale:
+        # TODO increase if needed (i.e. if we ever use fafb wPNKC / cell #s, which have
+        # 2482 in fafb-left, and probably similar # in right)
         n_cells_for_ylim = 2000
 
         # TODO this working w/ twinx() (seems to be, but why? why only need to use
@@ -12259,28 +12541,12 @@ def plot_n_odors_per_cell(responses, ax, *, ax_for_ylabel=None, title=None,
 
 # TODO TODO still needed? don't i have some corr calc that resorts to input order?
 # plot_corr?
-#
 # TODO try to fix corr calc to not re-order stuff (was that the issue?) -> delete
 # this?
 # NOTE: need to re-sort since corr_triangular necessarily (why? can't i have it sort
 # to original order or something?) sorts internally
-def _resort_corr(corr, add_panel):
-    # TODO delete (check that below is equiv first)
-    #
-    # can't use add_panel kwarg to sort_odors because that only adds to index
-    # levels, but we also need to add to column levels here.
-    corr2 = sort_odors(util.addlevel(util.addlevel(corr, 'panel', add_panel).T,
-        'panel', add_panel), warn=False).droplevel('panel',
-        axis='columns').droplevel('panel', axis='index')
-    #
-
-    corr = sort_odors(corr, panel=add_panel)
-
-    # TODO delete
-    assert corr.equals(corr2)
-    #
-
-    return corr
+def _resort_corr(corr, add_panel, **kwargs):
+    return sort_odors(corr, panel=add_panel, **kwargs)
 
 
 # TODO factor to hong2p.viz?
@@ -12332,28 +12598,6 @@ def bootstrapped_corr(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
             pdf[y] = 1 - pdf[y]
         else:
             assert not y.endswith('_dist')
-
-        # TODO delete (along with containing debug code,
-        '''
-        panel = 'megamat'
-
-        try:
-            # verbose=True should cause savefig to print where these are being written
-            plot_corr(
-                _resort_corr(invert_corr_triangular(pdf[x]), panel),
-                _plot_dir, f'_debug-corr_{x}{_suffix}', verbose=True
-            )
-            plot_corr(
-                _resort_corr(invert_corr_triangular(pdf[y]), panel),
-                _plot_dir, f'_debug-corr_{y}{_suffix}', verbose=True
-            )
-        except:
-            print()
-            traceback.print_exc()
-            print()
-            import ipdb; ipdb.set_trace()
-        '''
-    #
 
     to_check = df.copy()
     if x.endswith('_dist'):
@@ -12650,6 +12894,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             f'wPNKC: {pn2kc_connections}\n'
         )
 
+        weight_divisor = model_kws.get('weight_divisor')
+        if weight_divisor is not None:
+            title += f'weight_divisor: {weight_divisor:.1f}\n'
+
         if 'target_sparsity' in model_kws:
             assert model_kws['target_sparsity'] is not None
             assert fixed_thr is None and wAPLKC is None
@@ -12701,6 +12949,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     param_dict_cache = param_dir / param_cache_name
     wPNKC_cache_name = 'wPNKC.p'
     wPNKC_cache = param_dir / wPNKC_cache_name
+    kc_spont_in_cache = param_dir / 'kc_spont_in.p'
     made_param_dir = False
 
     extra_responses_cache_name = 'extra_responses.p'
@@ -12977,6 +13226,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # TODO load and re-save mb_modeling/dff2spiking_model_input.csv? could figure
         # out model from that at least?
 
+        # TODO TODO also pass in + save a copy of full input ORN data (same as in
+        # ij_certain-roi_stats.[csv|p], maybe just load that in here, to not need to
+        # pass? assuming mtime is since the start of run?). or just shutil copy
+        # ij_certain-roi_stats.[csv+p]?
         if orn_deltas is not None:
             # just saving these for manual reference, or for use in -c check.
             # not loaded elsewhere in the code.
@@ -12999,6 +13252,16 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         to_pickle(spike_counts, model_spikecounts_cache)
         to_pickle(wPNKC, wPNKC_cache)
 
+        # TODO just save w/ param_dict? poping to have this make old outputs trip -c/-C
+        # checks
+        # TODO edit earlier (in fit_mb_model?) to be a pandas object w/ same cell
+        # labels, rather than just numpy array?
+        kc_spont_in = param_dict.pop('kc_spont_in')
+        # TODO convert to pandas series before saving? did seem to get loading of this
+        # working in natmix_data/analysis.py (which is only place that uses this now)
+        # tho...
+        to_pickle(kc_spont_in, kc_spont_in_cache)
+
         # TODO update this comment? i think param_dict might have a lot more stuff
         # now...
         #
@@ -13009,9 +13272,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # n_seeds)
         to_pickle(param_dict, param_dict_cache)
 
-        # TODO check these look ok (+ roughly match what i already uploaded for depasq),
-        # in both seed and no seed cases
-        # TODO don't save in sensitivity analysis subcalls, as this should not change
+        # TODO don't save in sensitivity analysis subcalls? as this should not change
         # across those
         to_csv(wPNKC, param_dir / 'wPNKC.csv', verbose=(not _in_sens_analysis))
 
@@ -13191,8 +13452,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # TODO refactor to use this for s1d (maybe w/ boxplot=True option or something?
     # requiring box plot if there are multiple seeds on input?)?
     # TODO move def outside of fit_and_plot... (near plot_n_odors_per_cell def?)?
-    def plot_sparsity_per_odor(sparsity_per_odor, comparison_sparsity_per_odor, suffix
-        ) -> Tuple[Figure, Axes]:
+    def plot_sparsity_per_odor(sparsity_per_odor, comparison_sparsity_per_odor, suffix,
+        *, ylim=None) -> Tuple[Figure, Axes]:
 
         fig, ax = plt.subplots()
         # TODO rename sparsity -> response_fraction in all variables / col names too
@@ -13244,6 +13505,18 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
         ax.set_title(title)
         ax.set_ylabel(ylabel)
+
+        if ylim is not None:
+            ymin, ymax = ylim
+
+            assert (sparsity_per_odor['response rate'] >= ymin).all()
+            assert (sparsity_per_odor['response rate'] <= ymax).all()
+
+            if comparison_sparsity_per_odor is not None:
+                assert (comparison_sparsity_per_odor['response rate'] >= ymin).all()
+                assert (comparison_sparsity_per_odor['response rate'] <= ymax).all()
+
+            ax.set_ylim([ymin, ymax])
 
         savefig(fig, param_dir, f'sparsity_per_odor{suffix}')
         return fig, ax
@@ -13422,9 +13695,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         mean_pearson_ser = seed_corr_ser.groupby(level=odor_levels, sort=False).mean()
 
         # TODO below 2 comments still an issue?
-        # TODO TODO TODO fix! (only in hallem/uniform, after no longer only passing
+        # TODO TODO fix! (only in hallem/uniform, after no longer only passing
         # megamat odors as sim_odors)
-        # TODO TODO TODO check at input of this what is reducing length of
+        # TODO TODO check at input of this what is reducing length of
         # triangular series below expected shape. missing at least (in either order):
         # a='g-decalactone @ -2'
         # b='glycerol @ -2'
@@ -13452,7 +13725,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         pearson.index.name = 'odor'
         pearson.columns.name = 'odor'
 
-    pearson = _resort_corr(pearson, panel)
+    pearson = _resort_corr(pearson, panel,
+        warn=False if responses_to == 'hallem' else True
+    )
 
     # TODO TODO try deleting this and checking i can remake all the same
     # megamat/validation plots? feel like i might not need this anymore (or maybe i want
@@ -13800,7 +14075,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # work.... (doesn't seem like we've been failing w/ same AssertionError i had
         # needed to catch in other place...)
         square_mean_orn_corrs = _resort_corr(invert_corr_triangular(mean_orn_corrs),
-            panel
+            panel, warn=False if responses_to == 'hallem' else True
         )
 
         # stripping conc to match processing of `pearson` above
@@ -14039,8 +14314,18 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             '_megamat'
         )
 
+    panel2sparsity_ylims = {
+        # TODO add one for megamat? (only sensitivity analysis currently has these figs
+        # in paper for megamat, but maybe betty will end up wanting these plots alone
+        # anyway? in both cases, just need to find a range that works).
+        #
+        # 0.21 not enough for some.
+        'validation2': [0, 0.22],
+    }
+    # ylim=None will let plot_sparsity_per_odor set it
+    ylim = panel2sparsity_ylims.get(panel)
     combined_fig, sparsity_ax = plot_sparsity_per_odor(sparsity_per_odor,
-        comparison_sparsity_per_odor, ''
+        comparison_sparsity_per_odor, '', ylim=ylim
     )
 
     #sparsity_ylim_max = 0.5
@@ -14050,9 +14335,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # (2025-02-18) modeling.svg for paper? are any other plots in paper using this?
     # maybe for sensitivity analysis?
     sparsity_ax.set_ylim([0, sparsity_ylim_max])
+    # TODO TODO fix sensitivity analysis to not give us stuff outside this
     # comparison_sparsity_per_odor isn't being pushed to the same extreme, and should be
     # well within this limit.
-    assert not (sparsity_per_odor[sparsity_col] > sparsity_ylim_max).any()
+    #assert not (sparsity_per_odor[sparsity_col] > sparsity_ylim_max).any()
 
     # https://stackoverflow.com/questions/33264624
     # NOTE: without other fiddling, need to keep references to both of these axes, as
@@ -14168,7 +14454,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # TODO TODO figure out why this wasn't working on some runs of
             # kiwi/control data (re-running w/ `-i model` seemed to fix it, but unclear
             # on why that would be. using cache after break it again?) (doesn't seem
-            # like it...)
+            # like it...) (encountered again 2025-02-20. going to re-run w/ `-i model`,
+            # but do have a recent backup of whole mb_modeling dir, if i want to compare
+            # outputs)
             # TODO why *was* responses2.sum().sum() == 0 in kiwi/control case???
             # (prob same reason sens analysis failing there)
             # (not sure i can repro, same as w/ failing assertion below)
@@ -14178,7 +14466,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             responses2, _, _, _ = fit_mb_model(sim_odors=sim_odors,
                 fixed_thr=tuned_fixed_thr, wAPLKC=tuned_wAPLKC, **shared_model_kws
             )
-            assert responses_including_silent.equals(responses2)
+            try:
+                assert responses_including_silent.equals(responses2)
+            except AssertionError:
+                # TODO delete
+                r1 = responses_including_silent
+                r2 = responses2
+                import ipdb; ipdb.set_trace()
+                #
             print(' we can!\n')
 
         parent_output_dir = param_dir / 'sensitivity_analysis'
@@ -14216,7 +14511,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
         # needs to be odd so grid has tuned values (that produce outputs used elsewhere
         # in paper) as center.
-        n_steps = 3
+        #n_steps = 3
+        n_steps = 7
 
         # TODO might need to be <1 to have lower end be reasonable?  but that prob won't
         # be enough (meaning? delete comment or elaborate) for upper ends...
@@ -14226,7 +14522,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         #
         # for getting upper left 3x3 from original 4x4 (which was generated w/ this
         # param doubled, and n_steps=5 rather than 3)
-        fixed_thr_param_lim_factor = 0.5
+        #fixed_thr_param_lim_factor = 0.5
+        fixed_thr_param_lim_factor = 0.75
 
         # TODO try seeing if we can push this high enough to start getting missing
         # correlations. 1000? why only getting those for high fixed_thr? and where
@@ -17627,6 +17924,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 gh146_glomeruli - set(raw_dff_panel_df.columns.get_level_values('roi'))
             )
         else:
+            # TODO TODO TODO commit a file that defines set of gh146 glomeruli under
+            # data/ (-> use that)
+            #
             # TODO TODO TODO relax to not err on new data? presumably this is what was
             # failing?
             # TODO TODO just warn instead? only do anything if we seem to be running on
@@ -17903,6 +18203,49 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
 
+            # TODO delete
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='hemibrain',
+                weight_divisor=5,
+                # TODO do sensitivity analysis here IF we like output?
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='hemibrain',
+                weight_divisor=10,
+                # TODO do sensitivity analysis here IF we like output?
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            #
+
+            # TODO keep? does actually improve spearman a fair bit...
+            #
+            # weight_divisor=10,5 (and probably 2) didn't improve things, in terms of
+            # either obvious impression of correlation (vs real KC corrs) or spearman's
+            # corr between them
+            #
+            # same as in main hemibrain call (w/o weight_divisor), but now increasing
+            # wPNKC values in proportion to connectome weight, rather than just counting
+            # each unique PN with weight >=4.
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='hemibrain',
+                weight_divisor=20,
+                # TODO do sensitivity analysis here IF we like output?
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+
             # TODO restore?
             ## TODO TODO this actually make sense to try (w/ tune_on_hallem=True
             ## and drop_receptors_not_in_hallem=False?) does my code even support
@@ -17921,10 +18264,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             #    pn2kc_connections='hemibrain'
             #),
 
-            ## TODO what should i actually use for n_claws?
-
-            # TODO TODO + correlation plotting including that error, plotting error
-            # in a separate stddev plot, as for rest of data elsewhere
+            # NOTE: uniform/hemibrain models currently use # of KCs from hemibrain
+            # connectome (1830). model would default to 2000 otherwise. fafb data more
+            # cells (2482 in left, probably similar in right).
             dict(
                 orn_deltas=pebbled_input_df,
                 responses_to_suffix=responses_to_suffix,
@@ -17933,7 +18275,27 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 comparison_orns=comparison_orns,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
-
+            # TODO delete? also try n_claws=5,6 for hemidraw?
+            # since mean # connections is 5.44 in connectome='hemibrain' case [and
+            # probably similar for fafb inputs]). prob just b/c matt had settled on it,
+            # we had been using n_claws=7 for most things.
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='uniform', n_claws=6, n_seeds=n_seeds,
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='uniform', n_claws=5, n_seeds=n_seeds,
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            # TODO try hemidraw updated to use weight_divisor hemibrain wPNKC?
             dict(
                 orn_deltas=pebbled_input_df,
                 responses_to_suffix=responses_to_suffix,
@@ -17943,12 +18305,48 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
 
+            # TODO TODO TODO version like hemidraw, but by pre-generating wPNKC, to have
+            # similar distribution to below (but otherwise keeping draws of each input
+            # indep). possible? (should be...). try just taking each cell in real
+            # connectome, taking # of connections from that cell, then drawing from
+            # whatever distribution up to that number of connections? (in contrast to
+            # current hemidraw/uniform cases which both have a fixed number of
+            # connections [called "claws" in modelling code, not synapses, but maybe
+            # assumed to be somewhat interchangeable?] per model KC)
+
+            # TODO TODO maybe try a version of model where we use connectome weights for
+            # either APL->KC or KC->APL, and then we [try to] scale one/both of them
+            # up/down to achieve target sparsity? (would have to modify model code
+            # somewhat)
+
             ## TODO TODO this actually make sense to try (w/ tune_on_hallem=True and
             ## drop_receptors_not_in_hallem=False?) does my code even support
             ## currently?
             ##dict(orn_deltas=pebbled_input_df, tune_on_hallem=True,
             ##    pn2kc_connections='uniform', n_claws=7, n_seeds=n_seeds
             ##),
+
+            # TODO delete/comment fafb stuff below
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='fafb-left',
+                # didn't help, unlike in hemibrain case
+                #weight_divisor=20,
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='fafb-right',
+                # didn't help, unlike in hemibrain case
+                #weight_divisor=20,
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
         ]
         if panel == 'megamat':
             # TODO TODO make sure that my derived wPNKC from pratyush's data
@@ -17980,8 +18378,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
                 dict(pn2kc_connections='hemibrain',
 
-                    # TODO TODO TODO delete/comment
-                    # need to fix breakpoint hit in fit_mb_model
+                    # TODO TODO delete/comment
+                    # need to fix breakpoint hit in fit_mb_model (currently just
+                    # commented it...)
                     _use_matt_wPNKC=True,
 
                     sim_odors=sim_odors,
@@ -21683,7 +22082,7 @@ def main():
         # TODO TODO probably only do this style of filling if driver is pebbled. we'd
         # expected a certain set of other glomeruli to be missing in e.g. GH146 case
 
-        # TODO replace w/ call to hemibrain_wPNKC (w/ _use_matt_wPNKC=False)?
+        # TODO replace w/ call to connectome_wPNKC (w/ _use_matt_wPNKC=False)?
         # TODO + assert data/ subdir CSV matches
         #
         # NOTE: the md5 of this file (3710390cdcfd4217e1fe38e0782961f6) matches what I
@@ -21695,7 +22094,8 @@ def main():
         # have md5 2bc8b74c5cfd30f782ae5c2048126562). Though, none of my current outputs
         # had drop_receptors_not_in_hallem=True, which would lead to a different CSV.
         #
-        # Also equal to wPNKC right after call to hemibrain_wPNKC(_use_matt_wPNKC=False)
+        # Also equal to wPNKC right after call to
+        # connectome_wPNKC(_use_matt_wPNKC=False)
         prat_hemibrain_wPNKC_csv = \
             'data/sent_to_grant/2024-04-05/connectivity/wPNKC.csv'
 

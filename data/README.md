@@ -1,4 +1,16 @@
 
+- `from_prat`
+  - `2024-09-13`
+    - `weight` # of T-bar-to-PSD connections between two neurons (same as for hemibrain
+       input, though maybe called `x.weight` there). generally threshold at >= 5 (not
+       sure if this is what I did previously)
+
+  - `PNtoKC_connections_raw.xlsx` (currently under root `data/`. need to move to subdir
+     here) was received 2023-08-08 on Slack. contains hemibrain data. his neuprint query
+     already filtered stuff where `c.weight > 5` (well, according to the code snippet
+     Pratyush gave me, but `df['c.weight'].min() == 4`, so maybe it was `>= 4`?)
+
+
 - `sent_to_remy`
   - `2023-01-06`
     These 4 files (2 CSVs, and 2 pickle files with same data) probably contain the data
@@ -10,6 +22,9 @@
 
   - `2023-10-29`
     - should be final megamat data (pebbled and GH146)
+      (`pebbled_ij_certain-roi_stats.csv` here is exactly the same as
+      `sent_to_anoop/v1/megamat_ij_certain-roi_stats.csv`)
+
     - sent on: Slack
 
   - `2024-01-12`
@@ -94,6 +109,12 @@
 
       - from Remy's private repo `ejhonglab/OdorSpaceShare`, under `manuscript/data/by_imaging_panel/megamat_new_and_old_by_fly_17/kc_soma_nls`
 
+
+- `from_matt`:
+  - copied from my local copy of his code (`~/src/matt/matt-modeling/data/hemibrain`),
+    which I had previously copied from his code on hal.
+
+  - removed some larger files and some I don't use.
 
 
 - `ann_model_outputs`

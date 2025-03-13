@@ -3,6 +3,8 @@ TODO:
   this work?
   ./al_analysis.py -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model
 
+- mention new kiwi/control data (how to get model outputs for natmix_data/analysis.py)
+  `./al_analysis.py -d pebbled -n 6f -t 2024-09-03 -e 2024-10-01` work?
 
 - mention which data are good candidates for diagnostic examples
   - aphe was bumped from -5 to -4 starting with fly 2023-05-10, so it only was at final
