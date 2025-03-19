@@ -1058,6 +1058,7 @@ flies_with_new_processed_tiffs = []
 # NOTE: currently only populating for stuff not skipping (via early return) in
 # process_recording.
 experiment2recording_dirs = dict()
+experiment2method_data = dict()
 
 ###################################################################################
 # Modified inside `run_suite2p`
@@ -2885,6 +2886,7 @@ def np_save(data: np.ndarray, path: Path, **kwargs) -> None:
 # TODO correct type hint for model?
 # (statsmodels.regression.linear_model.RegressionResultsWrapper, but maybe something
 # more general / not the wrapper?)
+# TODO also add load_model(Path)?
 def save_model(model, path: Path) -> None:
     model.save(path)
 
@@ -6186,6 +6188,21 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     single_plane_fps, xy, z, c, n_flyback, _, xml = thor.load_thorimage_metadata(
         thorimage_dir, return_xml=True
     )
+    # TODO TODO use for computing appropriate n_volumes_for_response?
+    # TODO refactor to share w/ hong2p.suite2p.suite2p_params?
+    volumes_per_second = single_plane_fps / (z + n_flyback)
+    method_data = {
+        # NOTE: w/o splitting up 'xy' tuple, pd.concat later would have 'xy'=[198, 198],
+        # with all other columns duplicated twice.
+        'x': xy[0],
+        'y': xy[1],
+
+        'z': z,
+        'c': c,
+        'n_flyback': n_flyback,
+        'single_plane_fps': single_plane_fps,
+        'volumes_per_second': volumes_per_second,
+    }
 
     if not analyze_2d_tests and z == 1:
         print_skip('skipping because experiment is single plane')
@@ -6236,18 +6253,40 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     if print_skipped:
         print_inputs_once(yaml_path)
 
-    pulse_s = float(int(yaml_data['settings']['timing']['pulse_us']) / 1e6)
-    assert pulse_s <= 3
-    if pulse_s < 3:
+    def _timing_param_in_seconds(key):
+        val_s = float(int(yaml_data['settings']['timing'][key]) / 1e6)
+        assert val_s > 0
+        return val_s
+
+    pre_pulse_s = _timing_param_in_seconds('pre_pulse_us')
+    # TODO TODO use to automatically pick a reasonable n_volumes_for_response?
+    # (in combination w/ volumetric sampling rate)
+    pulse_s = _timing_param_in_seconds('pulse_us')
+    post_pulse_s = _timing_param_in_seconds('post_pulse_us')
+
+    method_data.update({
+        'pre_pulse_s': pre_pulse_s,
+        'pulse_s': pulse_s,
+        'post_pulse_s': post_pulse_s,
+    })
+
+    # TODO delete? which flies were affected
+    if pulse_s != 3:
+        # TODO delete (or delete containing block). just to check i can delete
+        # containing block w/o affecting things.
+        # TODO TODO TODO re-run on all paper inputs first
+        assert False
+
         warn_if_not_skipped(f'odor {pulse_s=} not the standard 3 seconds')
 
         # Remy started the config she gave me as 2s pulses, but we are now on 3s.
         # I might still want to average the 2s pulse data...
         if panel != 'megamat':
-            print_skip(f'skipping because odor pulses were {pulse_s} (<3s) long (old)',
+            print_skip(f'skipping because odor pulses were {pulse_s} (!= 3s) long',
                 yaml_path
             )
             return
+    #
 
     is_pair = is_pairgrid(odor_lists)
     if is_pair:
@@ -6435,17 +6474,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                     yaml_path, color='red'
                 )
                 return
-
-    # NOTE: trying to move towards using 'experiment' to mean one (or more) recordings,
-    # in a particular fly, with a common set of odors (whose presentations might be
-    # split across recordings). 'recording' should now mean the output of a single Thor
-    # acquisition run.
-    experiment_key = (date, fly_num, panel, is_pair)
-
-    if experiment_key not in experiment2recording_dirs:
-        experiment2recording_dirs[experiment_key] = [(thorimage_dir, thorsync_dir)]
-    else:
-        experiment2recording_dirs[experiment_key].append((thorimage_dir, thorsync_dir))
 
     before = time.time()
 
@@ -6643,7 +6671,119 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # not what it's loading)
         response_volumes_list.append(load_corr_dataarray(response_volume_cache_fname))
 
+    n_averaged_frames = thor.get_thorimage_n_averaged_frames_xml(xml)
     zstep_um = thor.get_thorimage_zstep_um(xml)
+    xy_pixelsize_um = thor.get_thorimage_pixelsize_um(xml)
+    # TODO consolidate all imaging params method_data into a hong2p fn that returns all
+    # of them in a dict, without having to separately parse and add things (-> use to
+    # get which keys are imaging params, to use for warning if any of them change w/in
+    # fly?)? maybe even have it call parse_thorimage_notes? or at least move these
+    # imaging param entries up above curr def of method_data?
+    method_data['n_averaged_frames'] = n_averaged_frames
+    method_data['zstep_um'] = zstep_um
+    method_data['xy_pixelsize_um'] = xy_pixelsize_um
+    # TODO get thorimage power regulator setting (to use later to invalidate ffilling
+    # power measurement past this, for systems where regulator has hysteresis, like
+    # downstairs non-pockel one)
+    # TODO also invalidate if PowerRegulator/offset changes?
+
+    x_fov_um = method_data['x'] * xy_pixelsize_um
+    y_fov_um = method_data['y'] * xy_pixelsize_um
+
+    lsm = xml.find('LSM').attrib
+    width_um = float(lsm['widthUM'])
+    height_um = float(lsm['heightUM'])
+    # TODO and is width = x and height = y? test w/ recording where x != y
+    # TODO move checks bellow into new thor fn(s) to get fov sizes?
+    # NOTE: there is actually a small difference. not sure which might be more accurate.
+    # the difference is probably smaller than anything that might matter.
+    # e.g. width_um=95.58 vs x_fov_um=95.616
+    assert np.isclose(width_um, x_fov_um, rtol=.001)
+    assert np.isclose(height_um, y_fov_um, rtol=.001)
+    del width_um, height_um
+
+    method_data['x_fov_um'] = x_fov_um
+    method_data['y_fov_um'] = y_fov_um
+
+    # e.g. '3.0.2016.10131'
+    thorimage_version = thor.get_thorimage_version(xml)
+    method_data['thorimage_version'] = thorimage_version
+
+    # TODO possible to tell upstairs vs downstairs system easily? (and beyond just
+    # software version). prob not.
+    # <User name="User" /> (lowercase 'user' is only difference between User/Computer in
+    # Yang's output she sent me. same in what george sent me.)
+    # <Computer name="USER-PC" />
+
+    scanner = thor.get_thorimage_scannertype(xml)
+    method_data['scanner'] = scanner
+
+    # TODO delete after checking whether i can rule out some recordings accidentally not
+    # using piezo? (='ThorStage' for all, so unless it was misconfigured for all...)
+    # see comments around this thor fn tho, for tests i would need to do downstairs.
+    #
+    # TODO TODO maybe this was an error in me setting up this aquisition tho (check
+    # other experiments? at least for `-d pebbled -n 6f -t 2023-04-22 -e 2023-06-22`,
+    # zstage_type is all 'ThorStage'? thinking the downstairs system + software might
+    # just always call it this? probably doesn't mean something isn't set up wrong...
+    #
+    # TODO really no reference to piezo (or multiple ztages even...) in xml? searched in
+    # 2023-04-22/2/diagnostics1 xml and didn't see...
+    # (in yang's output, there is a ZStage tag w/ name="ThorZPiezo", and that's only
+    # explicit reference)
+    # TODO Streaming/zFastEnable="1" enough to imply we are using a piezo (same question
+    # also in a comment in get_thorimage_zstage_type fn def)?
+    # NO! (at least it's possible to misconfigure downstairs system so that non-piezo
+    # stage is selected for both primary/secondary, and it will still let you collect a
+    # recording with fast Z apparently enabled)
+    #
+    # zstage_type can be either 'ThorStage' or 'ThorZPiezo', but so far seems that it
+    # might always say 'ThorStage' from downstairs system, even if piezo was actually
+    # what was being used.
+    zstage_type = thor.get_thorimage_zstage_type(xml)
+    method_data['zstage'] = zstage_type
+    method_data['fast_z'] = thor.is_fast_z_enabled_xml(xml)
+    # TODO care about Streaming/useReferenceVoltageForFastZPockels?
+
+    # regtype currently either 'pockel' or 'non-pockel' (i.e. some kind of rotating
+    # [half?  quarter?] waveplate, which i think is downstream from an element to select
+    # only a particular polarization of the laser light)
+    regtype, power_level = thor.get_thorimage_power_regtype_and_level(xml)
+    method_data['power_regulator'] = regtype
+    method_data['power_level'] = power_level
+
+    # TODO care about <LSM ... dwellTime="2.4" />?
+
+    # TODO delete
+    #print()
+    #print()
+    #thor.print_xml(xml)
+    #print()
+    #print(f'{thorimage_dir=}')
+    #import ipdb; ipdb.set_trace()
+    #
+
+    note_data = thor.parse_thorimage_notes(xml)
+    # important that method_data is not updated after we add note_data, as then it's
+    # possible for key collisions/overwriting
+    assert not any(k in method_data for k in note_data.keys())
+    method_data.update(note_data)
+
+    # NOTE: trying to move towards using 'experiment' to mean one (or more) recordings,
+    # in a particular fly, with a common set of odors (whose presentations might be
+    # split across recordings). 'recording' should now mean the output of a single Thor
+    # acquisition run.
+    experiment_key = (date, fly_num, panel, is_pair)
+
+    if experiment_key not in experiment2recording_dirs:
+        experiment2recording_dirs[experiment_key] = [(thorimage_dir, thorsync_dir)]
+        experiment2method_data[experiment_key] = {thorimage_dir: method_data}
+    else:
+        experiment2recording_dirs[experiment_key].append((thorimage_dir, thorsync_dir))
+
+        assert thorimage_dir not in experiment2method_data[experiment_key]
+        experiment2method_data[experiment_key][thorimage_dir] = method_data
+    del method_data
 
     # only defined inside here b/c add_metadata call currently also is (and needs to
     # be, to avoid passing the metadata it uses)
@@ -6884,8 +7024,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
 
     def micrometer_depth_title(ax, z_index) -> None:
         viz.micrometer_depth_title(ax, zstep_um, z_index, fontsize=ax_fontsize)
-
-    xy_pixelsize_um = thor.get_thorimage_pixelsize_um(xml)
 
     scalebar_kws = dict(font_properties=dict(size=3.5))
 
@@ -9971,7 +10109,7 @@ connectome_options = {'hemibrain', 'fafb-left', 'fafb-right'}
 _connectome2glomset = dict()
 def connectome_wPNKC(connectome: str = 'hemibrain',
     weight_divisor: Optional[float] = None, plot_dir: Optional[Path] = None,
-    _use_matt_wPNKC=False) -> pd.DataFrame:
+    _use_matt_wPNKC=False, _drop_glom_with_plus: bool = True) -> pd.DataFrame:
     # TODO doc
     """
     """
@@ -9999,7 +10137,9 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
     def _first_underscore_part(ser):
         return _underscore_part(ser, i=0)
 
-    def _add_glomerulus_col_from_hemibrain_type(df, pn_type_col):
+    def _add_glomerulus_col_from_hemibrain_type(df, pn_type_col: str, *,
+        check_no_multi_underscores: bool = False):
+
         assert glomerulus_col not in df.columns
 
         assert not df[pn_type_col].isna().any()
@@ -10030,18 +10170,24 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         try:
             assert (df[pn_type_col].str.count('_') == 1).all()
 
-        # TODO change handling + delete?
         except AssertionError:
+            # can do this for hemibrain input, but not fafb (b/c this type column in
+            # fafb comes from aligning to hemibrain types, which are better annotated,
+            # and i believe this multiple-underscore cases are all from a small number
+            # of instances where this alignment process is ambiguous
+            if check_no_multi_underscores:
+                raise
+
             assert (df[pn_type_col].str.count('_') >= 1).all()
 
-            # TODO delete
-            # (askprat: are any of below MG PNs, or something i want to include? what
-            # are these weird glomeruli names? trailing +?)
-            # Prat: their alignment produced duplicates. not MG PNs. he doesn't know
-            # what 'M' is. M multiglomerular actually, but not easy to get info on which
-            # they are, without more work. he was saying if we really cared, we could
-            # use the previously defined glomerular boundaries to count and figure out
-            # which.
+            # askprat: are any of below MG PNs, or something i want to include? what
+            # are these weird glomeruli names? trailing +?
+            # Prat: their alignment produced duplicates. not MG PNs. he thinks 'M' is to
+            # indicate multiglomerular (or at least that it goes to multiple areas,
+            # perhaps including things other than glomeruli), but not easy to get info
+            # on which they are, without more work. he was saying if we really cared, we
+            # could use the previously defined glomerular boundaries to count and figure
+            # out which.
             #
             # connectome='hemibrain' has no rows w/ multiple '_'
             #
@@ -10058,86 +10204,95 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             # M_ilPNm90,M_ilPN8t91              5
             n_multi_rows = (df[pn_type_col].str.count('_') >= 2).sum()
             assert n_multi_rows > 0
+            # TODO TODO include bit about how this changes number of KCs in output (only
+            # relevant change, for most things)
             warn(f'{connectome=} dropping {n_multi_rows} rows w/ multiple underscores '
                 'in PN type:\n' +
                 df[pn_type_col][df[pn_type_col].str.count('_') >= 2].value_counts(
                 ).to_string() + '\n'
             )
-
             df = df[df[pn_type_col].str.count('_') == 1].copy()
-        #
 
-        # TODO change handling + delete?
-        has_plus = df[pn_type_col].str.contains('+', regex=False)
-        if has_plus.any():
-            # TODO (askprat) what is meaning when it finishes w/ '+', w/o that
-            # being a separator between two glomerulus names?
-            # Prat: (re: VP3+ does go somewhere else, but either "not dense enough (in
-            # other place(s) it goes to)" or not going to somewhere in hemibrain volume,
-            # but that could still be in AL...)
-            #
-            # what is 'Z'? (Prat: Z=SEZ. it also goes there.)
-            #
-            # connectome='hemibrain'
-            # VP1d+VP4_l2PN1    250
-            # VP3+VP1l_ivPN      76
-            # VP1m+VP5_ilPN      64
-            # VP5+Z_adPN         17
-            # VP3+_vPN           17
-            # VP1m+VP2_lvPN2     10
-            # VP1m+VP2_lvPN1      1
-            #
-            # connectome='fafb-left'
-            # VP1d+VP4_l2PN1                   285
-            # VP3+VP1l_ivPN                    117
-            # VP1m+VP5_ilPN                     92
-            # VP5+Z_adPN                        47
-            # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2     23
-            # VP3+_vPN                          20
-            # VP1m+_lvPN                         6
-            # VP1l+VP3_ilPN                      2
-            # VP2+_adPN                          1
-            #
-            # connectome='fafb-right'
-            # VP1d+VP4_l2PN1                   303
-            # VP3+VP1l_ivPN                    112
-            # VP1m+VP5_ilPN                    106
-            # VP5+Z_adPN                        42
-            # VP3+_vPN                          20
-            # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2     12
-            # VP2+_adPN                          5
-            # VP1m+_lvPN                         4
-            # VP1l+VP3_ilPN                      3
-            warn(f'{connectome=} dropping {has_plus.sum()} rows w/ "+" in PN type:\n' +
-                df[pn_type_col][has_plus].value_counts().to_string()
-                + '\n'
-            )
-            df = df[~has_plus].copy()
-        #
+        if _drop_glom_with_plus:
+            has_plus = df[pn_type_col].str.contains('+', regex=False)
+            if has_plus.any():
+                # TODO (askprat) what is meaning when it finishes w/ '+', w/o that
+                # being a separator between two glomerulus names?
+                # Prat: (re: VP3+ does go somewhere else, but either "not dense enough
+                # (in other place(s) it goes to)" or not going to somewhere in hemibrain
+                # volume, but that could still be in AL...)
+                #
+                # what is 'Z'? (Prat: Z=SEZ. it also goes there.)
+                #
+                # connectome='hemibrain'
+                # VP1d+VP4_l2PN1    250
+                # VP3+VP1l_ivPN      76
+                # VP1m+VP5_ilPN      64
+                # VP5+Z_adPN         17
+                # VP3+_vPN           17
+                # VP1m+VP2_lvPN2     10
+                # VP1m+VP2_lvPN1      1
+                #
+                # connectome='fafb-left'
+                # VP1d+VP4_l2PN1                   285
+                # VP3+VP1l_ivPN                    117
+                # VP1m+VP5_ilPN                     92
+                # VP5+Z_adPN                        47
+                # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2     23
+                # VP3+_vPN                          20
+                # VP1m+_lvPN                         6
+                # VP1l+VP3_ilPN                      2
+                # VP2+_adPN                          1
+                #
+                # connectome='fafb-right'
+                # VP1d+VP4_l2PN1                   303
+                # VP3+VP1l_ivPN                    112
+                # VP1m+VP5_ilPN                    106
+                # VP5+Z_adPN                        42
+                # VP3+_vPN                          20
+                # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2     12
+                # VP2+_adPN                          5
+                # VP1m+_lvPN                         4
+                # VP1l+VP3_ilPN                      3
+                #
+                # TODO TODO include bit about how this changes number of KCs in output
+                # (only relevant change, for most things)
+                warn(f'{connectome=} dropping {has_plus.sum()} rows w/ "+" in PN type:'
+                    '\n' + df[pn_type_col][has_plus].value_counts().to_string() + '\n'
+                )
+                df = df[~has_plus].copy()
+            else:
+                warn(f"not dropping glomeruli with '+' in their name, because "
+                    f'{_drop_glom_with_plus=}. this preserves old hemibrain model '
+                    'behavior exactly, but should probably be removed moving forward.'
+                )
 
         # TODO also print count of unique PN bodyids within each glom_strs value?
         # (here might not be the place anymore, if i even still care about this...)
         glom_strs = _first_underscore_part(df[pn_type_col])
 
-        # (ran after end of first loop over model_kw_list, in model_mb_responses)
-        # ipdb> {k: len(v) for k, v in _connectome2glomset.items()}
-        # {'fafb-left': 57, 'fafb-right': 56, 'hemibrain': 56}
-        # ipdb> sh = _connectome2glomset['hemibrain']
-        # ipdb> sl = _connectome2glomset['fafb-left']
-        # ipdb> sr = _connectome2glomset['fafb-right']
-        #
-        # ipdb> sl - sr
-        # {'MZ'}
-        # ipdb> sr - sl
-        # set()
-        #
-        # ipdb> sr == sh
-        # True
-        glom_str_set = set(glom_strs)
-        if connectome not in _connectome2glomset:
-            _connectome2glomset[connectome] = glom_str_set
-        else:
-            assert _connectome2glomset[connectome] == glom_str_set
+        # only doing if _drop_glom_with_plus, so i don't have to also add that flag to
+        # dict key (cause it will change set of glomeruli, e.g. w/ hemibrain)
+        if _drop_glom_with_plus:
+            # (ran after end of first loop over model_kw_list, in model_mb_responses)
+            # ipdb> {k: len(v) for k, v in _connectome2glomset.items()}
+            # {'fafb-left': 57, 'fafb-right': 56, 'hemibrain': 56}
+            # ipdb> sh = _connectome2glomset['hemibrain']
+            # ipdb> sl = _connectome2glomset['fafb-left']
+            # ipdb> sr = _connectome2glomset['fafb-right']
+            #
+            # ipdb> sl - sr
+            # {'MZ'}
+            # ipdb> sr - sl
+            # set()
+            #
+            # ipdb> sr == sh
+            # True
+            glom_str_set = set(glom_strs)
+            if connectome not in _connectome2glomset:
+                _connectome2glomset[connectome] = glom_str_set
+            else:
+                assert _connectome2glomset[connectome] == glom_str_set
 
         # glom_strs.value_counts() (w/ connectome='hemibrain' data):
         # DP1m         481
@@ -10340,9 +10495,12 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             weight_col = 'c.weight'
 
             hemibrain_pn_type = 'a.type'
+
             # TODO move this call into `not _use_matt_wPNKC` case below (to share w/
             # connectome='fafb-[left|right]' cases below)?
-            df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type)
+            df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type,
+                check_no_multi_underscores=True
+            )
     else:
         fafb_dir = Path('data/from_pratyush/2024-09-13')
 
@@ -10641,7 +10799,17 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
 
         fig, ax = plt.subplots()
         sns.histplot(n_inputs_per_kc, discrete=True, ax=ax)
-        ax.set_title(f'total inputs per KC\n{connectome=}\n{weight_divisor=}\n{n_kcs=}')
+
+        ax.set_xlabel('inputs per KC\n(after processing connectome weights)')
+
+        # relevant for picking appropriate n_claws for uniform/hemidraw cases, or for
+        # picking weight_divisor that produces closest avg to the n_claws=7 we had
+        # already been using
+        avg_n_inputs_per_kc = n_inputs_per_kc.mean()
+
+        ax.set_title(f'total inputs per KC\n{connectome=}\n{weight_divisor=}\n{n_kcs=}'
+            f'\nmean inputs per KC: {avg_n_inputs_per_kc:.2f}'
+        )
         savefig(fig, plot_dir, f'wPNKC-summed-within-KC_hist_{connectome}')
 
         # TODO also plot sums within glomeruli?
@@ -10812,6 +10980,7 @@ def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.Da
     return df
 
 
+# TODO doc expected input format (i.e. what are rows / cols)
 def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
     # .any() checks for any non-zero, so should also work for spike counts
     # (or 1.0/0.0, instead of True/False)
@@ -10824,6 +10993,33 @@ def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
     #assert 'model_kc' in nonsilent_cells.index.names
 
     return responses.loc[nonsilent_cells].copy()
+
+
+# e.g. before calculating correlations across model KC populations.
+#
+# Remy generally DOES drop "bad" cells, which are largely silent cells, but that isn't
+# controlled by this flag. my analysis of her data generally also drops the same cells
+# she does.
+drop_silent_model_kcs = True
+
+def _get_silent_cell_suffix(responses_including_silent, responses_without_silent=None
+    ) -> str:
+    if responses_without_silent is None:
+        responses_without_silent = drop_silent_model_cells(responses_including_silent)
+
+    assert responses_without_silent.shape[1] == responses_including_silent.shape[1]
+    n_total_cells = len(responses_including_silent)
+    n_silent_cells = n_total_cells - len(responses_without_silent)
+
+    # TODO could relax to assert >=, if ever fails
+    # (same as asserting len(responses_without_silent) > 0)
+    assert n_total_cells > n_silent_cells
+
+    # titles these will be appended to should already end w/ '\n'
+    title_suffix = f'(dropped {n_silent_cells}/{n_total_cells} silent cells)'
+    # TODO also return n_[total|silent]_cells? only if useful in some existing calling
+    # code
+    return title_suffix
 
 
 # TODO delete Optional in RHS of return Tuple after implementing in other cases
@@ -10843,12 +11039,14 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
     target_sparsity: Optional[float] = None,
-    _use_matt_wPNKC=False, _add_back_methanoic_acid_mistake=False,
+    _use_matt_wPNKC=False, _drop_glom_with_plus=True,
+    _add_back_methanoic_acid_mistake=False,
     fixed_thr: Optional[float] = None,
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
     print_olfsysm_log: Optional[bool] = None, plot_dir: Optional[Path] = None,
     make_plots: bool = True, title: str = '',
-    drop_silent_cells_before_analyses: bool = True, repro_preprint_s1d: bool = False,
+    drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
+    repro_preprint_s1d: bool = False,
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
     # TODO TODO doc point of sim_odors. do we need to pass them in?
     # (even when neither tuning nor running on any hallem data?)
@@ -11139,7 +11337,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # same plots for each seed (which would trigger savefig assertion that we aren't
         # writing to same path more than once)
         plot_dir=plot_dir if pn2kc_connections in connectome_options else None,
-        _use_matt_wPNKC=_use_matt_wPNKC
+        _use_matt_wPNKC=_use_matt_wPNKC,
+        _drop_glom_with_plus=_drop_glom_with_plus,
     )
     glomerulus_index = wPNKC.columns
 
@@ -12086,11 +12285,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         )
         savefig(fig, plot_dir, 'sfr')
 
-        # NOTE: assuming input title already reflects whether we are dropping silent
-        # cells (which it should) (or that we don't care that title shows it).
-        # this could be confusing for ORN/PN plots, which currently are UNAFFECTED by
-        # this flag. only silent model KCs are ever dropped b/c of this flag!
-
+        # TODO rename to be clear it's just orn/pn stuff?
         def _plot_internal_responses_and_corrs(subset_fn=lambda x: x, suffix='',
             **plot_kws):
 
@@ -12197,6 +12392,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         # still returning silent cells regardless, so stuff can make this decision
         # downstream of response caching.
         if drop_silent_cells_before_analyses:
+            title += _get_silent_cell_suffix(responses)
             model_kc_corr = drop_silent_model_cells(responses).corr()
             # drop_silent_model_cells should also work w/ spike count input
             spike_count_corr = drop_silent_model_cells(spike_counts).corr()
@@ -12295,13 +12491,6 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     # something similarly appropriate for each type of random draws)
     return responses, spike_counts, wPNKC, param_dict
 
-
-# e.g. before calculating correlations across model KC populations.
-#
-# Remy generally DOES drop "bad" cells, which are largely silent cells, but that isn't
-# controlled by this flag. my analysis of her data generally also drops the same cells
-# she does.
-drop_silent_model_kcs = True
 
 n_seeds = 100
 # TODO TODO and re-run whole script once implemented for those 2 (to compare
@@ -12714,6 +12903,7 @@ _fit_and_plot_seen_param_dirs = set()
 # mix for new kiwi/control data (at least for responses and correlation matrices)
 # (could just check for '+' character, to handle all cases)
 def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
+    sens_analysis_kws: Optional[Dict[str, Any]] = None,
     # TODO rename comparison_responses to indicate it's only used for sensitivity
     # analysis stuff? (and to be more clear how it differs from comparison_[kcs|orns])
     comparison_responses: Optional[pd.DataFrame] = None,
@@ -12792,6 +12982,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         'tune_on_hallem': 'hallem-tune',
         'pn2kc_connections': 'pn2kc',
         'target_sparsity': 'target_sp',
+        '_drop_glom_with_plus': 'drop-plusgloms',
     }
     exclude_params = ('orn_deltas', 'title', 'repro_preprint_s1d')
     # TODO sort params first? (so changing order in code doesn't cause
@@ -12804,7 +12995,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     if fixed_thr is not None or wAPLKC is not None:
         assert fixed_thr is not None and wAPLKC is not None
 
-        # TODO TODO maybe only do if _in_sens_analysis. don't think i actually want in
+        # TODO maybe only do if _in_sens_analysis. don't think i actually want in
         # hemibrain case (other than within sens analysis subcalls)
         #
         # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be too
@@ -12854,13 +13045,21 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # the need to also include here.
         param_dir = plot_dir
 
-        # TODO TODO if i allow vector fixed_thr/wAPLKC, will need to special case here
+        # TODO if i allow vector fixed_thr/wAPLKC, will need to special case here
         # TODO delete? should always be redefed below...
         # (if so, then why is this code even here?)
         #title += f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f} (sparsity={sparsity:.2f})'
         title += f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f}'
         title_including_silent_cells = title
     else:
+        # TODO one hardcode flag to control whether these are dropped or not?
+        # TODO TODO start excluding parts from dirname unless they are different from
+        # some default? parts to consider excluding for default values (hardly change):
+        # - dff_scale-to-avg-max
+        # - data_pebbled
+        # - hallem-tune_False
+        # - target-sp_0.0915
+
         # TODO refactor for_dirname handling to not specialcase responses_to/others?
         # possible to have simple code not split by fixed_thr/wAPLKC None or not?
         # TODO need to pass thru util.to_filename / simliar normalization myself now
@@ -12926,17 +13125,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # NOTE: this is for analyses that either always include or always drop silent
         # cells, regardless of value of `drop_silent_cells_before_analyses`
         # (e.g. should be used for analyses using `responses_including_silent_cells`)
+        # TODO move this below too? (to where title is updated w/ silent cells suffix)
         title_including_silent_cells = title
-
-        # TODO say how many silent cells dropped (but maybe only in case where we aren't
-        # averaging over seeds, because then would need to report average number of
-        # cells dropped) (and couldn't compute that up here, esp before passing in to
-        # fit_mb_model anwyay, which currently relies on the silent cell part of title
-        # being added here, despite dropping silent cells for its internal plots)
-        if drop_silent_cells_before_analyses:
-            title += '(silent cells dropped)'
-        else:
-            title += '(silent cells INCLUDED)'
 
         # to save plots of internal ORN / PN matrices (and their correlations, etc),
         # exactly as used to run model
@@ -13039,6 +13229,8 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     _fit_and_plot_seen_param_dirs.add(param_dir)
 
+    params_for_csv['used_model_cache'] = use_cache
+
     print()
     # TODO TODO default to also skipping any plots made before returning? maybe add
     # another ignore-existing option ('model-plots'?) if i really want to be able to
@@ -13046,6 +13238,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # the model outputs...
     if use_cache:
         print(f'loading model responses (+params) from cache {model_responses_cache}')
+        # TODO why using my read_pickle wrapper for only some of these?
         responses = pd.read_pickle(model_responses_cache)
         spike_counts = pd.read_pickle(model_spikecounts_cache)
         param_dict = read_pickle(param_dict_cache)
@@ -13056,7 +13249,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         if extra_spikecounts_cache.exists():
             extra_spikecounts = pd.read_pickle(extra_spikecounts_cache)
     else:
-        # doensn't necessarily matter if it already existed. will be deleted if sparsity
+        # doesn't necessarily matter if it already existed. will be deleted if sparsity
         # outside bounds (and inside a sensitivity analysis call)
         made_param_dir = True
 
@@ -13227,11 +13420,6 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             spike_counts = spike_counts.iloc[:, :len(input_odors)].copy()
 
         del input_odors
-
-        # TODO also copy over mb_modeling/dff2spiking_fit.p (so we can actually
-        # repro that) (how to do in a way i can easily support w/ -c?)
-        # TODO load and re-save mb_modeling/dff2spiking_model_input.csv? could figure
-        # out model from that at least?
 
         # TODO TODO also pass in + save a copy of full input ORN data (same as in
         # ij_certain-roi_stats.[csv|p], maybe just load that in here, to not need to
@@ -13570,6 +13758,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     if drop_silent_cells_before_analyses:
         # NOTE: important this happens after def of sparsity above
         responses = drop_silent_model_cells(responses)
+        # TODO in n_seeds > 1 case, use old suffix w/o saying total numbers of cells?
+        # (or some other format?)
+        title += _get_silent_cell_suffix(responses_including_silent, responses)
 
     # TODO delete (/ move up before early return, right after sparsity calc)
     # TODO is there a big mismatch betweeen target_sparsity and sparsity (yes, see
@@ -14376,14 +14567,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         )
 
         assert comparison_responses is None
+        # TODO delete?
         # if assertion fails, will also need to subset comparison_responses to megamat
         # odors (in commented code below)
-        '''
-        if comparison_responses is not None:
-            plot_n_odors_per_cell(comparison_responses, ax, label_suffix=' (tuned)',
-                color='gray', title=title_including_silent_cells
-            )
-        '''
+        #if comparison_responses is not None:
+        #    plot_n_odors_per_cell(comparison_responses, ax, label_suffix=' (tuned)',
+        #        color='gray', title=title_including_silent_cells
+        #    )
+
         savefig(fig, param_dir, 'n_odors_per_cell_megamat')
 
     # only currently running sensitivity analysis in pebbled/hemibrain case.
@@ -14507,19 +14698,35 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         else:
             tried = pd.DataFrame(columns=['fixed_thr', 'wAPLKC', 'sparsity'])
 
+        sens_analysis_kw_defaults = dict(
+            n_steps=3,
+            fixed_thr_param_lim_factor=0.5,
+            wAPLKC_param_lim_factor=5.0,
+            drop_nonpositive_fixed_thr=True,
+            drop_negative_wAPLKC=True,
+        )
+        if sens_analysis_kws is None:
+            sens_analysis_kws = dict()
+        else:
+            assert all(k in sens_analysis_kw_defaults for k in sens_analysis_kws.keys())
+
+        sens_analysis_kws = {**sens_analysis_kw_defaults, **sens_analysis_kws}
+
         # TODO TODO try implementing alternative means of specifying bounds of sens
         # analysis: try sweeping each parameter until we reach some 2nd target response
-        # rate (e.g.  2-5%, << typical target response rate when tuning both params of
+        # rate (e.g. 2-5%, << typical target response rate when tuning both params of
         # ~10%) (then go the same distance [relative?] the other way? or what? not sure
         # this works...)
         #
         # want to avoid trial-and-error setting of below parameters such that corners of
         # grid each see similarly low/extreme response rates
+        # TODO TODO TODO easier to implement such a thing by just slightly modifying
+        # olfsysm C++ code?
 
         # needs to be odd so grid has tuned values (that produce outputs used elsewhere
         # in paper) as center.
-        #n_steps = 3
-        n_steps = 7
+        n_steps = sens_analysis_kws['n_steps']
+        assert n_steps % 2 == 1, f'n_steps must be odd (got {nsteps=})'
 
         # TODO might need to be <1 to have lower end be reasonable?  but that prob won't
         # be enough (meaning? delete comment or elaborate) for upper ends...
@@ -14529,8 +14736,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         #
         # for getting upper left 3x3 from original 4x4 (which was generated w/ this
         # param doubled, and n_steps=5 rather than 3)
-        #fixed_thr_param_lim_factor = 0.5
-        fixed_thr_param_lim_factor = 0.75
+        fixed_thr_param_lim_factor = sens_analysis_kws['fixed_thr_param_lim_factor']
 
         # TODO try seeing if we can push this high enough to start getting missing
         # correlations. 1000? why only getting those for high fixed_thr? and where
@@ -14539,16 +14745,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # NOTE: was not seemingly able to get odors w/ no cells responding to them by
         # increasing this param (up to 100.0)...
         # 10.0 was used for most of early versions of this
-        wAPLKC_param_lim_factor = 5.0
+        wAPLKC_param_lim_factor = sens_analysis_kws['wAPLKC_param_lim_factor']
 
-        # TODO expose as kwarg, so i can set a wider one for kiwi/control case
-        # than i used for megamat paper supp figures (-> maybe use these wider commented
-        # vals)
-        # (need special handling so they don't end up in param_strs / CSVs in places i
-        # don't want?)
-
-        drop_nonpositive_fixed_thr = True
-        drop_negative_wAPLKC = True
+        drop_nonpositive_fixed_thr = sens_analysis_kws['drop_nonpositive_fixed_thr']
+        drop_negative_wAPLKC = sens_analysis_kws['drop_negative_wAPLKC']
 
         # TODO factor out?
         def steps_around_tuned(tuned_param: float, param_lim_factor: float,
@@ -14630,11 +14830,10 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         step_choice_params = pd.Series({
             'tuned_fixed_thr': tuned_fixed_thr,
             'tuned_wAPLKC': tuned_wAPLKC,
-            'n_steps': n_steps,
 
+            'n_steps': n_steps,
             'fixed_thr_param_lim_factor': fixed_thr_param_lim_factor,
             'wAPLKC_param_lim_factor': wAPLKC_param_lim_factor,
-
             'drop_negative_wAPLKC': drop_negative_wAPLKC,
             'drop_nonpositive_fixed_thr': drop_nonpositive_fixed_thr,
 
@@ -14710,6 +14909,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
                 extra_params=extra_params,
                 **shared_model_kws
             )
+            # shouldn't need to call _write_inputs_for_reproducibility here, as should
+            # also be in parent dir
+
             # should only be None in first_seed_only=True case, but not doing any
             # multi-seed runs w/ sensitivity analysis. only doing sensitivity analysis
             # for hemibrain + pebbled case currently.
@@ -16237,6 +16439,9 @@ def maxabs_scale(data: pd.Series) -> pd.Series:
     return pd.Series(index=data.index, name=data.name, data=sk_maxabs_scale(data))
 
 
+# TODO modify to accept csv path for certain_df too (if that makes it easier to get some
+# basic versions of the model runnable for other people)? either way, want to commit
+# some example AL data to use.
 def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     skip_sensitivity_analysis=False, skip_models_with_seeds=False):
     # TODO delete. for debugging.
@@ -16365,6 +16570,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     ])
     # True for now, but may not always be?
     assert our_glomeruli_in_task.all()
+
+    unmodified_orn_dff_input_df = certain_df.copy()
 
     # TODO TODO assert that 'is_pair' is all False? maybe drop it in a separate step
     # before this? (want to also drop is_pair for roi_depths in a consistent way.
@@ -17295,11 +17502,17 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         ax.set_xlabel(f'{col_to_fit}\n{desc}')
 
 
+    copy_to_model_dirs = []
+
     dff_to_spiking_model_path = plot_dir / 'dff2spiking_fit.p'
+    copy_to_model_dirs.append(dff_to_spiking_model_path)
+
     if separate_inh_model:
         dff_to_spiking_inh_model_path = plot_dir / 'dff2spiking_inh_fit.p'
+        copy_to_model_dirs.append(dff_to_spiking_inh_model_path)
 
     dff_to_spiking_data_csv = plot_dir / 'dff2spiking_model_input.csv'
+    copy_to_model_dirs.append(dff_to_spiking_data_csv)
 
     # TODO move all fitting + plotting up above (~where current seaborn plotting
     # is), so i can do for all scaling choices, like w/ current seaborn plots (still
@@ -17311,6 +17524,50 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # TODO TODO save this and other non-plot outputs we need to load saved dF/F->spiking
     # fit outside of plot dirs, so i can swap between png and pdf w/o issue...
     dff_to_spiking_model_choices_csv = plot_dir / 'dff2spiking_model_choices.csv'
+    copy_to_model_dirs.append(dff_to_spiking_data_csv)
+
+    def _write_inputs_for_reproducibility(plot_root: Path, param_dict: Dict[str, Any]
+        ) -> None:
+        # plot_root should be the panel plot dir,
+        # e.g. pebbled_6f/pdf/ijroi/mb_modeling/megamat
+        assert plot_root.is_dir()
+
+        output_dir = plot_root / param_dict['output_dir']
+        assert output_dir.is_dir()
+
+        used_model_cache = param_dict.get('used_model_cache', True)
+        # should be ok to write these files regardless of `-c`
+        # (check_outputs_unchanged) flag value, because we must have made it
+        # thru fit_and_plot... above w/o it tripping anything
+        if used_model_cache:
+            return
+
+        if verbose:
+            print(f'copying model inputs to {output_dir.name}:')
+
+        for to_copy in copy_to_model_dirs:
+            # would need to check copy2 behavior in this case, if wanted to support
+            assert not to_copy.is_symlink()
+
+            dst = output_dir / to_copy.name
+
+            if verbose:
+                print(f'copying {to_copy}')
+
+            # TODO or load/save, using diff fns for this depending on ext? not sure i
+            # gain anything from that...
+            #
+            # should preserve as much file metadata as possible (e.g. modification
+            # time). will overwrite `dst`, if it already exists.
+            shutil.copy2(to_copy, dst)
+
+        # TODO refactor to share date_format= part w/ consensus_df saving i copied this
+        # from? / delete? not sure it's even relevant if date is in index...
+        to_csv(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.csv',
+            date_format=date_fmt_str
+        )
+        to_pickle(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.p')
+
 
     # TODO anything else i need to include in this?
     dff_to_spiking_model_choices = pd.Series({
@@ -17796,15 +18053,8 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
     target_sparsities = (remy_sparsity,)
 
-    # TODO delete (/ expand to collection + include kiwi/control)
-    # (now that we also want sensitivity analysis there)
-    # (replace w/ list of panels to NOT run sens analysis on? e.g. validation)
-    #
-    # if model_kws (in loop below) contains sensitivity_analysis=True, will only do that
-    # analysis for this specific panel and target sparsity
-    #panel_for_sensitivity_analysis = 'megamat'
-    #target_sparsity_for_sensitivity_analysis = remy_sparsity
-    #assert target_sparsity_for_sensitivity_analysis in target_sparsities
+    # TODO hardcode list of panels to NOT run sensitivity analysis on (just
+    # validation2?)?
 
     # TODO delete eventually
     assert mean_est_df.equals(sort_odors(mean_est_df))
@@ -18061,7 +18311,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
 
         # TODO delete (still want this? or maybe for other panels, e.g. kiwi?)
         if panel != 'megamat':
-            print('GET COMPARISON_ORNS (+ COMPARISON_KCS) WORKING ON VALIDATION2 DATA')
+            print('GET COMPARISON_ORNS (+ COMPARISON_KCS) WORKING ON non-megamat DATA')
         #
         if panel == 'megamat':
             # TODO TODO don't i still want comparison_orns in validation case?
@@ -18201,37 +18451,27 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 tune_on_hallem=False,
                 pn2kc_connections='hemibrain',
 
-                # NOTE: this will be removed for all target_sparsity values (and all
-                # panels) except ones specified above to be used for sensitivity
-                # analysis
+                # required to restore the 7 extra no-connection KCs that would be
+                # dropped with new default behavior here, which slightly but
+                # mostly-inconsequentially changed old hemibrain model resposnses.
+                # not planning to use for newer call using weight_divisor=20, whose
+                # outputs should replace those from these call in the paper.
+                # the cells are those w/ bodyid: [519206240, 861280857, 943118619,
+                # 1172713521, 1203779116, 5812979314, 5813081175]
+                _drop_glom_with_plus=False,
+
                 sensitivity_analysis=True,
+                sens_analysis_kws=dict(
+                    n_steps=3,
+                    fixed_thr_param_lim_factor=0.5,
+                    wAPLKC_param_lim_factor=5.0,
+                    drop_nonpositive_fixed_thr=True,
+                    drop_negative_wAPLKC=True,
+                ),
 
                 comparison_orns=comparison_orns,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
-
-            # TODO delete
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=5,
-                # TODO do sensitivity analysis here IF we like output?
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=10,
-                # TODO do sensitivity analysis here IF we like output?
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            #
 
             # TODO keep? does actually improve spearman a fair bit...
             #
@@ -18248,7 +18488,23 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 tune_on_hallem=False,
                 pn2kc_connections='hemibrain',
                 weight_divisor=20,
-                # TODO do sensitivity analysis here IF we like output?
+
+                # also including for new weight_divisor=20 entry, just so that i don't
+                # have to resend remy new uniform/hemidraw outputs, or update those
+                # plots. if i were to start over again, i would still leave this at
+                # default True.
+                _drop_glom_with_plus=False,
+
+                # TODO like these steps (in this new context, w/ weight_divisor=20)?
+                sensitivity_analysis=True,
+                sens_analysis_kws=dict(
+                    n_steps=3,
+                    fixed_thr_param_lim_factor=0.5,
+                    wAPLKC_param_lim_factor=5.0,
+                    drop_nonpositive_fixed_thr=True,
+                    drop_negative_wAPLKC=True,
+                ),
+
                 comparison_orns=comparison_orns,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
@@ -18272,8 +18528,22 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             #),
 
             # NOTE: uniform/hemibrain models currently use # of KCs from hemibrain
-            # connectome (1830). model would default to 2000 otherwise. fafb data more
-            # cells (2482 in left, probably similar in right).
+            # connectome (1837 if _drop_glom_with_plus=False [= old behavior], or 1830
+            # otherwise). model would default to 2000 otherwise. fafb data more cells
+            # (2482 in left, probably similar in right).
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='uniform', n_claws=7, n_seeds=n_seeds,
+                # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
+                # to reproduce previous outputs (probably just b/c hemibrain KC number
+                # is reduced by 7 if this is True, so these models use less cells?)
+                _drop_glom_with_plus=False,
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            # TODO delete _drop_glom_with_plus=True (default) uniform?
             dict(
                 orn_deltas=pebbled_input_df,
                 responses_to_suffix=responses_to_suffix,
@@ -18282,27 +18552,43 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 comparison_orns=comparison_orns,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
+
             # TODO delete? also try n_claws=5,6 for hemidraw?
             # since mean # connections is 5.44 in connectome='hemibrain' case [and
             # probably similar for fafb inputs]). prob just b/c matt had settled on it,
             # we had been using n_claws=7 for most things.
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='uniform', n_claws=6, n_seeds=n_seeds,
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='uniform', n_claws=5, n_seeds=n_seeds,
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
+            # dict(
+            #     orn_deltas=pebbled_input_df,
+            #     responses_to_suffix=responses_to_suffix,
+            #     tune_on_hallem=False,
+            #     pn2kc_connections='uniform', n_claws=6, n_seeds=n_seeds,
+            #     comparison_orns=comparison_orns,
+            #     comparison_kc_corrs=comparison_kc_corrs,
+            # ),
+            # dict(
+            #     orn_deltas=pebbled_input_df,
+            #     responses_to_suffix=responses_to_suffix,
+            #     tune_on_hallem=False,
+            #     pn2kc_connections='uniform', n_claws=5, n_seeds=n_seeds,
+            #     comparison_orns=comparison_orns,
+            #     comparison_kc_corrs=comparison_kc_corrs,
+            # ),
             # TODO try hemidraw updated to use weight_divisor hemibrain wPNKC?
+            # TODO TODO test that _drop_glom_with_plus=False also works (+ is required)
+            # to repro old hemibrain outputs
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='hemidraw', n_claws=7, n_seeds=n_seeds,
+                # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
+                # to reproduce previous outputs (probably just b/c hemibrain KC number
+                # is reduced by 7 if this is True, so these models use less cells?)
+                _drop_glom_with_plus=False,
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            # TODO delete _drop_glom_with_plus=True (default) uniform?
             dict(
                 orn_deltas=pebbled_input_df,
                 responses_to_suffix=responses_to_suffix,
@@ -18333,27 +18619,27 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             ##    pn2kc_connections='uniform', n_claws=7, n_seeds=n_seeds
             ##),
 
-            # TODO delete/comment fafb stuff below
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='fafb-left',
-                # didn't help, unlike in hemibrain case
-                #weight_divisor=20,
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='fafb-right',
-                # didn't help, unlike in hemibrain case
-                #weight_divisor=20,
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
+            # TODO delete?
+            #dict(
+            #    orn_deltas=pebbled_input_df,
+            #    responses_to_suffix=responses_to_suffix,
+            #    tune_on_hallem=False,
+            #    pn2kc_connections='fafb-left',
+            #    # didn't help, unlike in hemibrain case
+            #    weight_divisor=20,
+            #    comparison_orns=comparison_orns,
+            #    comparison_kc_corrs=comparison_kc_corrs,
+            #),
+            #dict(
+            #    orn_deltas=pebbled_input_df,
+            #    responses_to_suffix=responses_to_suffix,
+            #    tune_on_hallem=False,
+            #    pn2kc_connections='fafb-right',
+            #    # didn't help, unlike in hemibrain case
+            #    weight_divisor=20,
+            #    comparison_orns=comparison_orns,
+            #    comparison_kc_corrs=comparison_kc_corrs,
+            #),
         ]
         if panel == 'megamat':
             # TODO TODO make sure that my derived wPNKC from pratyush's data
@@ -18364,10 +18650,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # w/o _use_matt_wPNKC...
             # TODO TODO can pass hallem data in explicitly if that makes it
             # easier to get things handled exactly the same
-            #
-            # TODO delete (/ move inside fit_and_plot..., behind conditional checking
-            # use_matt_wPNKC or whatever it's called)
-            #print('switch matt calls to prats wPNKC!')
 
             # NOTE: model responses (including cache) should only include these odors.
             # could `-i model` if wanted to change and regen cache.
@@ -18380,9 +18662,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # data as input (that Matt did when making those figures, before we had our
             # own ORN outputs)
             preprint_repro_model_kw_list = [
-                # TODO TODO also try fitting on just 17-odor megamat subset of
-                # hallem, to see if that really is part of the issue
-
                 dict(pn2kc_connections='hemibrain',
 
                     # TODO TODO delete/comment
@@ -18458,11 +18737,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 do_sensitivity_analysis = False
 
                 if model_kws.get('sensitivity_analysis', False):
-                    # TODO delete (replace w/ checking list of panels to NOT run sens
-                    # analysis on? e.g. validation)
-                    #if (panel == panel_for_sensitivity_analysis and
-                    #    target_sparsity == target_sparsity_for_sensitivity_analysis):
-
                     do_sensitivity_analysis = True
 
                 if skip_sensitivity_analysis or not do_sensitivity_analysis:
@@ -18474,6 +18748,28 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     except KeyError:
                         pass
 
+                else:
+                    # TODO TODO also skip anything other than 1 or 2 hemibrain calls for
+                    # these panels? move calls to natmix_data/analysis.py itself?
+                    if panel in ('kiwi', 'control'):
+                        # these values were for trying to find better combinations for
+                        # use on newer kiwi/control data (for analysis in
+                        # natmix_data/analysis.py). not 100% happy with outputs yet.
+                        natmix_sens_analysis_kws = dict(
+                            n_steps=7,
+                            fixed_thr_param_lim_factor=0.75,
+
+                            # TODO just leave these last 3 at default (that's what these
+                            # values are)?
+                            wAPLKC_param_lim_factor=5.0,
+                            drop_nonpositive_fixed_thr=True,
+                            drop_negative_wAPLKC=True,
+                        )
+                        warn('using diff sens_analysis_kws for kiwi/control panels:\n' +
+                            pformat(natmix_sens_analysis_kws)
+                        )
+                        _model_kws['sens_analysis_kws'] = natmix_sens_analysis_kws
+
                 if ('orn_deltas' in model_kws and
                     model_kws['orn_deltas'] is pebbled_input_df):
 
@@ -18484,7 +18780,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     # fitting) is not relevant.
                     param_dir_prefix = ''
 
-                # TODO TODO is this loop working as expected? in run on kiwi+control
+                # TODO is this loop working as expected? in run on kiwi+control
                 # data, i feel like i've seen more progress bars than i expected...
                 # (should be 2 * 3, no? i.e. {hemidraw, uniform} X {control-kiwi,
                 # control, kiwi}?) none of the duplicate-save-within-run detection
@@ -18539,6 +18835,9 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                         _only_return_params=True,
                         **tuning_model_kws
                     )
+                    _write_inputs_for_reproducibility(tuning_panels_plot_dir,
+                        param_dict
+                    )
 
                     fixed_thr = param_dict['fixed_thr']
                     wAPLKC = param_dict['wAPLKC']
@@ -18577,6 +18876,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     param_dir_prefix=param_dir_prefix, extra_params=_extra_params,
                     fixed_thr=fixed_thr, wAPLKC=wAPLKC, **_model_kws
                 )
+                _write_inputs_for_reproducibility(panel_plot_dir, params_for_csv)
 
                 # should only be the case if first_seed_only=True inside fit_and_plot...
                 # (just used to regen model internal plots, which are made on first seed
@@ -18702,6 +19002,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         # cells included for these type of plots.
         remy_binary_responses = load_remy_megamat_kc_binary_responses()
 
+        # TODO comment explaining what all is done in this loop (/ below)?
         for desc, mask in (('pebbled', pebbled_mask), ('hallem', ~ pebbled_mask)):
 
             if mask.sum() == 0:
@@ -18732,6 +19033,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             first_model_pairs = None
             remy_2e_modelsubset_facetgrid = None
 
+            # TODO comment explaining what all is done in this loop (/ below)?
             for i, row in enumerate(curr_model_params.itertuples()):
                 output_dirname = row.output_dir
                 output_dir = panel_plot_dir / output_dirname
@@ -19161,7 +19463,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     #
                     # TODO add kendall-tau to make remy happy (prob not) (would have to
                     # modify bootstrapped_corr to support)?
-                    for method in ('spearman',):
+                    for method in ('spearman', 'pearson'):
                         corr_of_pearsons = merged_corrs.corr(method=method)
                         xlabel = f"{method.title()}s-of-Pearsons"
 
@@ -21117,6 +21419,7 @@ def main():
             }
 
     if verbose:
+        # TODO TODO also say how many flies/experiments?
         print(f'Checked {len(was_processed)} recordings(s)')
 
         n_processed = sum([x is not None for x in was_processed])
@@ -21765,6 +22068,160 @@ def main():
             'suite2p outputs where no ROIs were merged', no_merges
         )
     '''
+
+    methods_list = []
+    # TODO assert certain things constant within each fly, across all values for
+    # remaining (panel, is_pair) keys?
+    index_dict = None
+    for experiment, thorimage2method_data in experiment2method_data.items():
+        date, fly_num, panel, is_pair = experiment
+
+        for thorimage_dir, method_data in thorimage2method_data.items():
+            index_dict = {
+                'date': date,
+                # NOTE: 'fly' is the string value for the 'fly:' key
+                'fly_num': fly_num,
+                'panel': panel,
+                'is_pair': is_pair,
+
+                'thorimage_dir': shorten_path(thorimage_dir),
+            }
+            assert not any(k in index_dict for k in method_data)
+            # TODO change how index is specified (want concat to be able to detect
+            # duplicates)? possible w/ Series? if switch back to trying DataFrames, need
+            # to check each is only one row (could be more if iterables in method_data
+            # values get interpreted wrong, as happened for 'xy' tuple)
+            curr_methods = pd.Series({**index_dict, **method_data})
+            methods_list.append(curr_methods)
+
+    # TODO warn about any flies missing certain keys completely?
+    # (or assert keys same in all, as they prob are, and that missing values are just
+    # represented as None/NaN)
+    method_df = pd.concat(methods_list, axis='columns').T.copy()
+    assert len(methods_list) == len(method_df)
+
+    # to homogenize how some note fields have both NaN and None (at least 'power_note')
+    # (NaN coming from dataframe creation? None should all be from parsing)
+    method_df = method_df.replace({None: np.nan})
+
+    assert index_dict is not None
+    method_df = method_df.set_index(list(index_dict.keys()), verify_integrity=True)
+
+    if 'driver' in method_df.columns:
+        # to match what i would use to specify this driver at CLI, e.g. `-d pebbled`.
+        # indicator strs should already all match CLI counterpart.
+        method_df.driver = method_df.driver.replace({'pb': 'pebbled'})
+    # TODO warn if non-NaN driver/indicator don't match CLI specified ones (if
+    # specified)
+
+    # just to get better dtypes for numeric columns (to more easily summarize ranges of
+    # data for each column later). doesn't change contents, or anything besides dtypes.
+    method_df = method_df.infer_objects()
+
+    # TODO remove single_plane_fps col (/ don't add it in first place?), at least if we
+    # have volumetric fps (or z>1 anywhere)?
+    move_to_end = ['prose', 'power_level', 'power_note', 'c', 'scanner', 'zstage',
+        'fast_z', 'power_regulator', 'n_flyback', 'n_averaged_frames',
+        'single_plane_fps', 'fly', 'odors', 'thorimage_version'
+    ]
+    method_df = method_df[
+        [c for c in method_df.columns if c not in move_to_end] +
+        [c for c in move_to_end if c in method_df.columns]
+    ].copy()
+
+    def save_method_csvs(df, suffix='', *, by_fly_version=False):
+        if (df.index.get_level_values('is_pair') == False).all():
+            df = df.copy()
+            df.index = df.index.droplevel('is_pair')
+
+        # TODO save all w/ start/stop date range and driver+indicator CLI args (if
+        # passed?) and/or n_flies in csv fnames?
+        # TODO or move/copy all to a dir named that way?
+
+        to_csv(df, f'methods_by-recording{suffix}.csv')
+        # TODO also only do this one if by_fly_version? (rename flag if so)
+        to_csv(df.sort_values('panel', kind='stable'),
+            f'methods_by-recording{suffix}_panel-sort.csv'
+        )
+
+        # TODO actually save by_fly_version in unfilled case too? prob not.
+        # <groupby>.first() skips NaN (unless all NaN) by default anyway
+        #
+        # using this flag to only save in filled-within-fly case, b/c if there's a mix
+        # of NaN/not (much more common in unfilled case), prob don't care about the
+        # NaN...
+        if by_fly_version:
+            group_over = [x for x in df.index.names if x != 'thorimage_dir']
+            by_fly = df.groupby(group_over).first()
+
+            to_csv(by_fly, f'methods_by-fly{suffix}.csv')
+            to_csv(by_fly.sort_values('panel', kind='stable'),
+                f'methods_by-fly{suffix}_panel-sort.csv'
+            )
+
+        range_df = df.select_dtypes(include=[float, int])
+        # new index will be ['min','max'], w/ same columns as range_df
+        # (but w/o any of the old range_df index values:
+        # ['date', 'fly_num', 'panel', 'thorimage_dir']
+        lim_df = range_df.agg(['min','max'])
+
+        #Index(['fast_z', 'fly', 'odors', 'power_note', 'power_regulator', 'prose',
+        #       'scanner', 'thorimage_version', 'zstage'],
+        object_or_bool_cols = df.columns.difference(range_df.columns)
+        # TODO -> save into one summary csv
+        rest_df = df[object_or_bool_cols]
+        # could do this for all columns, but don't think these values give me more than
+        # just extra noise for any columns in range_df.
+        unique_vals = rest_df.apply(lambda x: x.unique()).to_frame('unique_vals').T
+
+        # all lim_df.columns will be before all unique_vals.columns
+        summary_df = pd.concat([lim_df, unique_vals])
+        to_csv(summary_df, f'methods_summary{suffix}.csv')
+
+
+    unfilled_method_df = method_df.copy()
+    # to inspect and sanity check ffilling isn't doing anything too crazy
+    save_method_csvs(unfilled_method_df, '_no-ffill')
+
+    # TODO update comment below, now that we should have NaN instead of empty string
+    # for certain cols
+    #
+    # at least for final megamat pebbled data, only these cols have any missing values:
+    # ipdb> unfilled_method_df.isna().any().replace(False, np.nan).dropna()
+    # power_mw      True
+    # n_days_old    True
+    # power_note    True
+    # fly           True
+    # odors         True
+
+    # TODO use thorimage power_level (+offset/similar, which would need to add to
+    # parseing) to invalidate ffilling power (or even the same power being listed?),
+    # assuming that setting ever changed (at least on the non-pockels one, w/
+    # hysteresis)?
+    # TODO + have non-empty (/non-matching, e.g. excluding stuff w/ 'just measured' or
+    # 'unchanged' maybe) power_note str also invalidate?
+
+    method_df = method_df.groupby(['date', 'fly_num'], sort=False).ffill()
+    # TODO assert imaging params don't change w/in any fly (across recordings)?
+    # most? all, except maybe gain/power_level, but even that should maybe generate a
+    # warning? at least x,y,z,c, xy_pixel_size, zstep_um. gain? anything else?
+
+    # TODO update comment below, now that we should have NaN instead of empty string
+    # for certain cols
+    #
+    # cols still missing some values after ffilling within fly (again, for final megamat
+    # pebbled data):
+    # ipdb> method_df.isna().any().replace(False, np.nan).dropna()
+    # power_mw      True
+    # power_note    True
+    # odors         True
+    # TODO do some ffilling within ['date'] alone? how much would that help eliminate
+    # remaining missing values?
+
+    assert unfilled_method_df.index.equals(method_df.index)
+
+    save_method_csvs(method_df, by_fly_version=True)
+
 
     if len(ij_trial_dfs) == 0:
         cprint('No ImageJ ROIs defined for current experiments!', 'yellow')
@@ -23558,8 +24015,8 @@ def main():
         skip_models_with_seeds = 'model-seeds' in steps_to_skip
 
         # TODO worth warning that model won't be run otherwise?
-        # TODO TODO TODO was this not consensus_df before? what do i want?
-        # TODO TODO TODO compare cached input to dF/F -> spiking model (if i had one
+        # TODO TODO was this not consensus_df before? what do i want?
+        # TODO TODO compare cached input to dF/F -> spiking model (if i had one
         # yet, if not regen after making decision) to figure out whether i used
         # consensus_df or certain_df for that, and do i want to change that? maybe after
         # forming consensus glomeruli only within each panel?

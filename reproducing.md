@@ -1,10 +1,7 @@
 TODO:
 - also talk about old kiwi/control data
   this work?
-  ./al_analysis.py -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model
-
-- mention new kiwi/control data (how to get model outputs for natmix_data/analysis.py)
-  `./al_analysis.py -d pebbled -n 6f -t 2024-09-03 -e 2024-10-01` work?
+  `./al_analysis.py -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model`
 
 - mention which data are good candidates for diagnostic examples
   - aphe was bumped from -5 to -4 starting with fly 2023-05-10, so it only was at final
@@ -97,3 +94,11 @@ cause script to exit after saving dF/F -> spiking model, rather than going on to
 modeling for both of those panels. to actually run the MB models, use commands which
 restrict data to only either megamat OR validation2 date ranges (see above), AFTER
 running this command to output one dF/F -> spiking model.
+
+
+newer kiwi/control data:
+to get model outputs for `natmix_data/analysis.py`
+```
+./al_analysis.py -d pebbled -n 6f -t 2024-09-03 -e 2024-10-01 -s model-seeds
+```
+
