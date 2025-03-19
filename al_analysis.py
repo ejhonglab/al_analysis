@@ -10137,13 +10137,20 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
     def _first_underscore_part(ser):
         return _underscore_part(ser, i=0)
 
-    def _add_glomerulus_col_from_hemibrain_type(df, pn_type_col: str, *,
-        check_no_multi_underscores: bool = False):
+    def _add_glomerulus_col_from_hemibrain_type(df: pd.DataFrame, pn_type_col: str,
+        kc_id_col: str, *, check_no_multi_underscores: bool = False) -> pd.DataFrame:
 
         assert glomerulus_col not in df.columns
 
+        assert not df[kc_id_col].isna().any()
+        n_kcs_initial = df[kc_id_col].nunique()
+        def _kc_drop_message(n_kcs_dropped):
+            return (f'(also means that {n_kcs_dropped}/{n_kcs_initial} KCs only '
+                'connected to these "glomeruli" dropped)'
+            )
+
         assert not df[pn_type_col].isna().any()
-        # TODO (askprat) are there specific PN types (RHS after '_') that i should
+        # askprat: are there specific PN types (RHS after '_') that i should
         # categorically be dropping? (prob not. what are prefixes anyway? all lineage
         # info, or anything closer to what i actually care about?).
         # Prat: no. keep all.
@@ -10202,21 +10209,24 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             # M_lPNm12,M_lPNm13                12
             # VP1m+VP2_lvPN1,VP1m+VP2_lvPN2    12
             # M_ilPNm90,M_ilPN8t91              5
-            n_multi_rows = (df[pn_type_col].str.count('_') >= 2).sum()
+            multi_rows = df[pn_type_col].str.count('_') >= 2
+            n_multi_rows = multi_rows.sum()
             assert n_multi_rows > 0
-            # TODO TODO include bit about how this changes number of KCs in output (only
-            # relevant change, for most things)
+
+            df_no_multi = df[~multi_rows].copy()
+            n_kcs_dropped = n_kcs_initial - df_no_multi[kc_id_col].nunique()
+
             warn(f'{connectome=} dropping {n_multi_rows} rows w/ multiple underscores '
                 'in PN type:\n' +
-                df[pn_type_col][df[pn_type_col].str.count('_') >= 2].value_counts(
-                ).to_string() + '\n'
+                df[pn_type_col][multi_rows].value_counts().to_string() + '\n' +
+                _kc_drop_message(n_kcs_dropped) + '\n'
             )
-            df = df[df[pn_type_col].str.count('_') == 1].copy()
+            df = df_no_multi
 
         if _drop_glom_with_plus:
             has_plus = df[pn_type_col].str.contains('+', regex=False)
             if has_plus.any():
-                # TODO (askprat) what is meaning when it finishes w/ '+', w/o that
+                # askprat: what is meaning when it finishes w/ '+', w/o that
                 # being a separator between two glomerulus names?
                 # Prat: (re: VP3+ does go somewhere else, but either "not dense enough
                 # (in other place(s) it goes to)" or not going to somewhere in hemibrain
@@ -10254,13 +10264,13 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
                 # VP2+_adPN                          5
                 # VP1m+_lvPN                         4
                 # VP1l+VP3_ilPN                      3
-                #
-                # TODO TODO include bit about how this changes number of KCs in output
-                # (only relevant change, for most things)
+                df_no_plus = df[~has_plus].copy()
+                n_kcs_dropped = n_kcs_initial - df_no_plus[kc_id_col].nunique()
                 warn(f'{connectome=} dropping {has_plus.sum()} rows w/ "+" in PN type:'
-                    '\n' + df[pn_type_col][has_plus].value_counts().to_string() + '\n'
+                    '\n' + df[pn_type_col][has_plus].value_counts().to_string() + '\n' +
+                    _kc_drop_message(n_kcs_dropped) + '\n'
                 )
-                df = df[~has_plus].copy()
+                df = df_no_plus
             else:
                 warn(f"not dropping glomeruli with '+' in their name, because "
                     f'{_drop_glom_with_plus=}. this preserves old hemibrain model '
@@ -10499,7 +10509,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             # TODO move this call into `not _use_matt_wPNKC` case below (to share w/
             # connectome='fafb-[left|right]' cases below)?
             df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type,
-                check_no_multi_underscores=True
+                kc_id_col, check_no_multi_underscores=True
             )
     else:
         fafb_dir = Path('data/from_pratyush/2024-09-13')
@@ -10523,7 +10533,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         if connectome == 'fafb-left':
             assert (df.source_side == 'left').all()
 
-            # TODO (askprat) drop those w/ target side == 'right'?
+            # askprat: drop those w/ target side == 'right'?
             # Prat: eh, any of these options could work. up to me.
             # (prob doesn't matter much anyway, looking at which glomeruli it is...)
             #
@@ -10572,7 +10582,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         weight_col = 'weight'
 
         hemibrain_pn_type = 'source_hemibrain_type'
-        df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type)
+        df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type, kc_id_col)
 
         # this should be the same as the min_weight from hemibrain, where in that case
         # prat's query is what filtered stuff w/ smaller weight
@@ -10607,9 +10617,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         # ipdb> 'VM6' in set(df.glomerulus)
         # False
 
-        # TODO delete
-        # TODO (askprat) do anything w/ 'target_hemibrain_type'? e.g. 'KCab-s', 'KCg-m',
-        # etc (prob not)
+        # askprat: do anything w/ 'target_hemibrain_type'? e.g. 'KCab-s', 'KCg-m',
+        # etc (prob not, at least not categorically filtering out any of them)
         # Prat: final part after dash is from clustering on connectome. no reason to
         # exclude any of this.
         #
@@ -10650,10 +10659,12 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         # TODO also get working in _use_matt_wPNKC case?
         assert len(df[[pn_id_col, kc_id_col]].drop_duplicates()) == len(df)
 
-        # TODO (askprat) so does this mean prat has already excluded
-        # multiglomeruli PNs (intentionally or not), or are they all contained w/in
-        # stuff dropped above?
+        # askprat: so does this mean prat has already excluded multiglomeruli PNs
+        # (intentionally or not), or are they all contained w/in stuff dropped above?
+        #
         # Prat: doesn't think it's likely any of his queries would have missed MG PNs
+        # (and as other comments say 'M' in PN type str probably means multiglomerular,
+        # or at least includes them)
         #
         # seems True for both hemibrain and fafb (at least as long as we are dropping
         # stuff w/ multiple '_' or '+' in PN types above...)
@@ -10665,50 +10676,18 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         assert not df[kc_id_col].isna().any()
         n_kcs = df[kc_id_col].nunique()
 
-        # TODO delete
-        # (was passing no matter whether connectome='hemibrain'|'fafb-[left|right' nor
-        # _use_matt_wPNKC)
-        #assert not df.glomerulus.str.startswith('VM6').any()
-        #
         if plot_dir is not None:
-            # TODO delete
-            # (this was before limiting fafb to same min_weight above)
-            #
-            # connectome='hemibrain'
-            # NOTE: has no weights < 4 (b/c Prat's query excluded them)
-            # 4     226
-            # 5     254
-            # 6     305
-            # ...
-            #
-            # connectome='fafb-left'
-            # 1.0     1491
-            # 2.0      498
-            # 3.0      403
-            # 4.0      434
-            # 5.0      443
-            # 6.0      460
-            # ...
-            #
-            # connectome='fafb-right'
-            # 1.0     1457
-            # 2.0      573
-            # 3.0      502
-            # 4.0      515
-            # 5.0      572
-            # 6.0      549
-            # ...
             assert not df[weight_col].isna().any()
             min_weight = df[weight_col].min()
             assert min_weight > 0
-            #
-
-            # was true b/c query in hemibrain case, and b/c subsetting above in fafb
-            # cases
+            # was true b/c Prat's query in hemibrain case, and b/c subsetting above in
+            # fafb cases
             assert min_weight == 4
 
-            # TODO also move this plot after we drop non-task glomeruli? (prob doesn't
-            # matter)
+            # TODO TODO also move this plot after we drop non-task glomeruli? (prob
+            # doesn't matter) (actually would keep bins more sane in
+            # _drop_glom_with_plus, b/c data should match _drop_glom_with_plus=True case
+            # after dropping non-task glomeruli)
             fig, ax = plt.subplots()
             # TODO also put input filename formatted mtime in a title line? prob not...
             sns.histplot(df[weight_col], discrete=True, ax=ax)
@@ -10790,7 +10769,23 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         # ['VM6l', 'VM6m', 'VM6v', 'VP1l', 'VP3', 'VP5']
         warn(f'glomeruli in task but NOT {connectome=}: {sorted(non_connectome_gloms)}')
 
+    def _get_kcs_without_input(wPNKC):
+        kcs_without_input = (wPNKC == 0).T.all()
+        n_kcs_without_input = kcs_without_input.sum()
+        return kcs_without_input, n_kcs_without_input
+
+    # these KC ids are already gone from df before pivot-ing into wPNKC
+    # (dropped by _add_glom...)
+    _, n_without_input_before = _get_kcs_without_input(wPNKC)
+    assert n_without_input_before == 0
+
     wPNKC = wPNKC[task_gloms & set(wPNKC.columns)].copy()
+
+    kcs_without_input, n_kcs_without_input = _get_kcs_without_input(wPNKC)
+    if n_kcs_without_input > 0:
+        warn(f'{n_kcs_without_input}/{len(wPNKC)} KCs without input, after dropping '
+            f'non-Task glomeruli:\n{sorted(kcs_without_input[kcs_without_input].index)}'
+        )
 
     if plot_dir is not None:
         # NOTE: mean of this w/ connectome='hemibrain' is 5.44 (NOT n_claws=7 used
@@ -10810,6 +10805,11 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         ax.set_title(f'total inputs per KC\n{connectome=}\n{weight_divisor=}\n{n_kcs=}'
             f'\nmean inputs per KC: {avg_n_inputs_per_kc:.2f}'
         )
+        # TODO why these look so different for fafb inputs (vs hemibrain)? for similar
+        # avg_n_inputs_per_kc (adjusting fafb weight_divisor to roughly match the value
+        # for hemibrain w/ weight_divisor=20), we get much more of the right lobe in the
+        # fafb plots. are there less (PN, KC) pairs for some reason (what should be the
+        # only lobe w/ weight_divisor=None, or the left lobe in others)?
         savefig(fig, plot_dir, f'wPNKC-summed-within-KC_hist_{connectome}')
 
         # TODO also plot sums within glomeruli?
@@ -10817,7 +10817,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         # TODO also plot (hierarchichally clustered) wPNKC (w/ plot+colorscale as in
         # natmix_data/analysis.py?)?
 
-    # TODO assert no KCs w/ no connections? or are there some?
     assert len(wPNKC) == n_kcs
 
     # TODO see if i can also sort output in uniform case (b/c if not, might suggest
@@ -16093,6 +16092,7 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         #   File "./al_analysis.py", line 1208, in invert_corr_triangular
         #     assert all(odor2[:-1] == odor1[1:])
         except AssertionError:
+            # TODO elaborate on why?
             warn('could not plot 2e square matrix corr plots')
     #
 
@@ -16443,7 +16443,9 @@ def maxabs_scale(data: pd.Series) -> pd.Series:
 # basic versions of the model runnable for other people)? either way, want to commit
 # some example AL data to use.
 def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
-    skip_sensitivity_analysis=False, skip_models_with_seeds=False):
+    skip_sensitivity_analysis=False, skip_models_with_seeds=False,
+    skip_hallem_models=False):
+
     # TODO delete. for debugging.
     global _spear_inputs2dfs
     #
@@ -18444,37 +18446,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             # TODO TODO why is DA4m in in these but not in regular hallem input call in
             # separate list below? conform preprocessing to match (+ sort glomeruli in
             # all those internal plots?)
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
 
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-
-                # required to restore the 7 extra no-connection KCs that would be
-                # dropped with new default behavior here, which slightly but
-                # mostly-inconsequentially changed old hemibrain model resposnses.
-                # not planning to use for newer call using weight_divisor=20, whose
-                # outputs should replace those from these call in the paper.
-                # the cells are those w/ bodyid: [519206240, 861280857, 943118619,
-                # 1172713521, 1203779116, 5812979314, 5813081175]
-                _drop_glom_with_plus=False,
-
-                sensitivity_analysis=True,
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-
-            # TODO keep? does actually improve spearman a fair bit...
-            #
             # weight_divisor=10,5 (and probably 2) didn't improve things, in terms of
             # either obvious impression of correlation (vs real KC corrs) or spearman's
             # corr between them
@@ -18508,6 +18480,39 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 comparison_orns=comparison_orns,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
+
+            # would need to uncomment this (and comment other hemibrain entry) to
+            # reproduce preprint/paper plots that predated weight_divisor code.
+            # initial submission (>= March 2025) should use weight_divisor
+            # hemibrain version.
+            #dict(
+            #    orn_deltas=pebbled_input_df,
+            #    responses_to_suffix=responses_to_suffix,
+
+            #    tune_on_hallem=False,
+            #    pn2kc_connections='hemibrain',
+
+            #    # required to restore the 7 extra no-connection KCs that would be
+            #    # dropped with new default behavior here, which slightly but
+            #    # mostly-inconsequentially changed old hemibrain model resposnses.
+            #    # not planning to use for newer call using weight_divisor=20, whose
+            #    # outputs should replace those from these call in the paper.
+            #    # the cells are those w/ bodyid: [519206240, 861280857, 943118619,
+            #    # 1172713521, 1203779116, 5812979314, 5813081175]
+            #    _drop_glom_with_plus=False,
+
+            #    sensitivity_analysis=True,
+            #    sens_analysis_kws=dict(
+            #        n_steps=3,
+            #        fixed_thr_param_lim_factor=0.5,
+            #        wAPLKC_param_lim_factor=5.0,
+            #        drop_nonpositive_fixed_thr=True,
+            #        drop_negative_wAPLKC=True,
+            #    ),
+
+            #    comparison_orns=comparison_orns,
+            #    comparison_kc_corrs=comparison_kc_corrs,
+            #),
 
             # TODO restore?
             ## TODO TODO this actually make sense to try (w/ tune_on_hallem=True
@@ -18543,15 +18548,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 comparison_orns=comparison_orns,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
-            # TODO delete _drop_glom_with_plus=True (default) uniform?
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='uniform', n_claws=7, n_seeds=n_seeds,
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
 
             # TODO delete? also try n_claws=5,6 for hemidraw?
             # since mean # connections is 5.44 in connectome='hemibrain' case [and
@@ -18574,8 +18570,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             #     comparison_kc_corrs=comparison_kc_corrs,
             # ),
             # TODO try hemidraw updated to use weight_divisor hemibrain wPNKC?
-            # TODO TODO test that _drop_glom_with_plus=False also works (+ is required)
-            # to repro old hemibrain outputs
             dict(
                 orn_deltas=pebbled_input_df,
                 responses_to_suffix=responses_to_suffix,
@@ -18585,15 +18579,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 # to reproduce previous outputs (probably just b/c hemibrain KC number
                 # is reduced by 7 if this is True, so these models use less cells?)
                 _drop_glom_with_plus=False,
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            # TODO delete _drop_glom_with_plus=True (default) uniform?
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='hemidraw', n_claws=7, n_seeds=n_seeds,
                 comparison_orns=comparison_orns,
                 comparison_kc_corrs=comparison_kc_corrs,
             ),
@@ -18625,8 +18610,15 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             #    responses_to_suffix=responses_to_suffix,
             #    tune_on_hallem=False,
             #    pn2kc_connections='fafb-left',
+
             #    # didn't help, unlike in hemibrain case
-            #    weight_divisor=20,
+            #    # NOTE: seems like somewhere around 12-13 will produce similar value for
+            #    # avg # of synapses per model KC (as in hemibrain w/ weight_divisor=20:
+            #    # ~7.36). despite matching this one value, spearman-of-pearsons [model
+            #    # vs real KCs] is still just as bad, or even slightly worse, with
+            #    # weight_divisor=12 (compared to both weight_divisor=None|20)
+            #    weight_divisor=12,
+
             #    comparison_orns=comparison_orns,
             #    comparison_kc_corrs=comparison_kc_corrs,
             #),
@@ -18635,8 +18627,10 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             #    responses_to_suffix=responses_to_suffix,
             #    tune_on_hallem=False,
             #    pn2kc_connections='fafb-right',
-            #    # didn't help, unlike in hemibrain case
-            #    weight_divisor=20,
+
+            #    # didn't help. see comment for fafb-left above.
+            #    #weight_divisor=12,
+
             #    comparison_orns=comparison_orns,
             #    comparison_kc_corrs=comparison_kc_corrs,
             #),
@@ -18712,7 +18706,15 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                     _strip_concs_comparison_kc_corrs=True,
                 ),
             ]
-            model_kw_list = model_kw_list + preprint_repro_model_kw_list
+            if not skip_hallem_models:
+                # all entries in preprint_repro_model_kw_list use hallem data, and all
+                # entries in model_kw_list (before line below) should not use hallem
+                # data
+                model_kw_list = model_kw_list + preprint_repro_model_kw_list
+            else:
+                warn('skipping all models using Hallem data (rather than our measured '
+                    'ORN data) as input (because `-s model-hallem` CLI option)'
+                )
 
         # hack to skip long running models, if I want to test something on pebbled and
         # hallem cases w/o re-running many seeds before getting an answer on the test.
@@ -19006,7 +19008,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         for desc, mask in (('pebbled', pebbled_mask), ('hallem', ~ pebbled_mask)):
 
             if mask.sum() == 0:
-                warn(f'no {desc} data in current model runs. skipping 2E/S1C!')
+                warn(f'no {desc} data in current model runs. skipping 2E/S1C/etc!')
                 continue
 
             # one row per model run
@@ -19016,8 +19018,18 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 kind='stable', key=lambda x: x.map(_sort_pn2kc)
             )
 
-            # since we'll use this for line labels (e.g. 'hemibrain', 'uniform')
-            assert not curr_model_params.pn2kc_connections.duplicated().any()
+            try:
+                # TODO just drop_duplicates to keep first row for each, and warn we are
+                # doing that instead?
+                #
+                # since we'll use this for line labels (e.g. 'hemibrain', 'uniform')
+                assert not curr_model_params.pn2kc_connections.duplicated().any()
+            except AssertionError:
+                warn(f'duplicate pn2kc_connections values across {desc} models! '
+                    'skipping 2E/S1C/etc!\n\ncomment/remove model_kw_list values to '
+                    'remove these duplicates, to generate skipped plots.'
+                )
+                continue
 
             # e.g. 'hemibrain' -> DataFrame (Series?) with hemibrain model correlations
             pn_kc_cxn2model_corrs = dict()
@@ -19453,25 +19465,24 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
                 # TODO names matter (for invert*)? omit?
                 index = pd.MultiIndex.from_tuples(col_pairs, names=['c1', 'c2'])
 
-                for ci in (90, 95):
-                    ci_str = f'{ci:.0f}'
-                    ci_title_str = f'{ci_str}% CI'
-                    # TODO do something other than average over 100 seeds?
+                # compare mean-ORN / mean-KC / model Pearson's correlations, using
+                # Spearman's correlation
+                for method in ('spearman', 'pearson'):
+                    corr_of_pearsons = merged_corrs.corr(method=method)
+                    xlabel = f"{method.title()}s-of-Pearsons"
 
-                    # compare mean-ORN / mean-KC / model Pearson's correlations, using
-                    # Spearman's correlation
-                    #
-                    # TODO add kendall-tau to make remy happy (prob not) (would have to
-                    # modify bootstrapped_corr to support)?
-                    for method in ('spearman', 'pearson'):
-                        corr_of_pearsons = merged_corrs.corr(method=method)
-                        xlabel = f"{method.title()}s-of-Pearsons"
+                    output_name_without_ci = f'{method}_of_pearsons'
 
-                        output_name = f'{method}_of_pearsons_ci{ci_str}'
+                    plot_corr(corr_of_pearsons, panel_plot_dir, output_name_without_ci,
+                        overlay_values=True, xlabel=xlabel
+                    )
 
-                        plot_corr(corr_of_pearsons, panel_plot_dir, output_name,
-                            overlay_values=True, xlabel=xlabel
-                        )
+                    for ci in (90, 95):
+                        ci_str = f'{ci:.0f}'
+                        ci_title_str = f'{ci_str}% CI'
+                        # TODO do something other than average over 100 seeds?
+
+                        output_name = f'{output_name_without_ci}_ci{ci_str}'
 
                         corrs = []
                         lower_cis = []
@@ -20746,7 +20757,7 @@ def main():
     # TODO extend skip CLI arg to work on some of the steps referenced by -i flag?
     # (was nonroi one of the more time consuming ones?)
     skippable_steps = ('intensity', 'corr', 'model', 'model-sensitivity',
-        'model-seeds', 'ijroi'
+        'model-seeds', 'model-hallem', 'ijroi'
     )
     # NOTE: model-sensitivity can only run as part of model step
     default_steps_to_skip = ('intensity', 'corr', 'model')
@@ -22138,10 +22149,10 @@ def main():
         # passed?) and/or n_flies in csv fnames?
         # TODO or move/copy all to a dir named that way?
 
-        to_csv(df, f'methods_by-recording{suffix}.csv')
+        to_csv(df, output_root / f'methods_by-recording{suffix}.csv')
         # TODO also only do this one if by_fly_version? (rename flag if so)
         to_csv(df.sort_values('panel', kind='stable'),
-            f'methods_by-recording{suffix}_panel-sort.csv'
+            output_root / f'methods_by-recording{suffix}_panel-sort.csv'
         )
 
         # TODO actually save by_fly_version in unfilled case too? prob not.
@@ -22154,9 +22165,9 @@ def main():
             group_over = [x for x in df.index.names if x != 'thorimage_dir']
             by_fly = df.groupby(group_over).first()
 
-            to_csv(by_fly, f'methods_by-fly{suffix}.csv')
+            to_csv(by_fly, output_root / f'methods_by-fly{suffix}.csv')
             to_csv(by_fly.sort_values('panel', kind='stable'),
-                f'methods_by-fly{suffix}_panel-sort.csv'
+                output_root / f'methods_by-fly{suffix}_panel-sort.csv'
             )
 
         range_df = df.select_dtypes(include=[float, int])
@@ -22176,7 +22187,7 @@ def main():
 
         # all lim_df.columns will be before all unique_vals.columns
         summary_df = pd.concat([lim_df, unique_vals])
-        to_csv(summary_df, f'methods_summary{suffix}.csv')
+        to_csv(summary_df, output_root / f'methods_summary{suffix}.csv')
 
 
     unfilled_method_df = method_df.copy()
@@ -24014,6 +24025,9 @@ def main():
         assert 'model-seeds' in skippable_steps
         skip_models_with_seeds = 'model-seeds' in steps_to_skip
 
+        assert 'model-hallem' in skippable_steps
+        skip_hallem_models = 'model-hallem' in steps_to_skip
+
         # TODO worth warning that model won't be run otherwise?
         # TODO TODO was this not consensus_df before? what do i want?
         # TODO TODO compare cached input to dF/F -> spiking model (if i had one
@@ -24028,6 +24042,7 @@ def main():
                 roi_depths=roi_best_plane_depths,
                 skip_sensitivity_analysis=skip_sensitivity_analysis,
                 skip_models_with_seeds=skip_models_with_seeds,
+                skip_hallem_models=skip_hallem_models,
             )
         else:
             print(f'not running MB model(s), as driver not in {orn_drivers=}')
