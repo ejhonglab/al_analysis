@@ -13228,6 +13228,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     _fit_and_plot_seen_param_dirs.add(param_dir)
 
+    # NOTE: this currently will cause -c/-C checks to fail. want to fix that (i.e.
+    # remove this from that output, but still keep long enough to use for what i
+    # wanted? possible?)?
     params_for_csv['used_model_cache'] = use_cache
 
     print()
