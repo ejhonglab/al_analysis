@@ -7,6 +7,7 @@ from os.path import join, split, exists, expanduser, islink, getmtime
 from pprint import pprint, pformat
 from collections import defaultdict, Counter
 from copy import deepcopy
+import difflib
 from functools import wraps
 import filecmp
 from datetime import datetime
@@ -25,7 +26,7 @@ import itertools
 import multiprocessing
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Optional, Tuple, List, Type, Union, Dict, Set, Any
+from typing import Optional, Tuple, List, Type, Union, Dict, Set, Any, Callable
 import json
 import re
 from tempfile import NamedTemporaryFile
@@ -1913,7 +1914,22 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
         # looping over index elements below just gives us tuples (of row index values)
         # tho.
         assert fly_df.index.names[0] == 'panel'
-        assert fly_df.index.names[2:4] == ['odor1', 'odor2']
+        # TODO TODO fix how this failed on gh146 data (when re-analyzed 2025):
+        # ./al_analysis.py -d GH146 -n 6f -t 2023-06-22 -e 2023-07-28 -s intensity,corr -v -i ijroi
+        # (no odors actually in redone_odors below tho, so inconsequential in that case)
+
+        # TODO TODO would this also fail on pebbled data if i were to re-analyze it
+        # (probably)?
+        try:
+            assert fly_df.index.names[2:4] == ['odor1', 'odor2']
+        # TODO delete
+        except AssertionError:
+            print()
+            print(f'{fly_df.index.names=}')
+            print(f'{fly_df.index.names[2:4]=}')
+            warn('ASSERTION FAILED. FIX.')
+            #import ipdb; ipdb.set_trace()
+        #
 
         recordings = fly_df.columns.get_level_values('thorimage_id').unique()
 
@@ -1921,15 +1937,24 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
             recording_has_curr_odor = recording_has_odor.loc[panel_odor]
             final_recording = recording_has_curr_odor[::-1].idxmax()
 
-            # TODO TODO TODO how to warn about which ones we are tossing this way tho???
+            # TODO TODO how to warn about which ones we are tossing this way tho???
             nonfinal_recordings= (
                 fly_df.columns.get_level_values('thorimage_id') != final_recording
             )
 
             panel = panel_odor[0]
+            # TODO TODO TODO update this line to not depend on specific indices (or at
+            # least compute them earlier based on position of odor1[[/odor2]/etc] levels
             # NOTE: ignoring 'repeat' (which might be different across recordings in
             # someone elses use, but isn't in any of my data)
             odors = panel_odor[2:4]
+            # TODO delete
+            if 'odor2' not in fly_df.index.names:
+                print()
+                print(f'{panel_odor=}')
+                print(f'{odors=}')
+                import ipdb; ipdb.set_trace()
+            #
 
             nonfinal_recording_set = (
                 set(recording_has_curr_odor[recording_has_curr_odor].index)
@@ -2371,251 +2396,6 @@ def load_olf_input_yaml(yaml_name: str, olf_config_dir: Optional[Path] = None,
     return df
 
 
-# TODO TODO unit test all combinations of changed/unchanged w/ CSV / pickle / some plot
-# formats
-# TODO option to use np.isclose or something instead of exact file comparison?
-# (mainly thinking for CSVs, where the specific way the computation is done might change
-# and just lead to a non-important numerical change. hasn't been an issue so far though)
-# TODO change so save_fn is the optional one (rather than data) and automatically use
-# .savefig if that positional argument has that attribute (or is a Figure/FacetGrid?
-# checking for savefig attr probably better...)
-# TODO also support objects w/ .save(path) method? (e.g. statsmodels models)
-# TODO option to touch files-that-would-be-unchanged to have mtime as if they were just
-# written?
-def _check_output_would_not_change(path: Path, save_fn, data=None, **kwargs) -> None:
-    """Raises RuntimeError if output would change.
-
-    Args:
-        path: must already exist (raises IOError if not)
-        *args, **kwargs: passed to `save_fn`
-    """
-    if not path.exists():
-        raise IOError(f'{path} did not exist!')
-
-    # TODO derive name in deterministic way from path, so that same input will always
-    # overwrite any pre-existing temp outputs? not a huge priority, just some temp files
-    # could get left around as-is (which is probably fine. generally get deleted on
-    # reboot)
-    #
-    # TODO test w/ input where output filename doesn't already have suffix?
-    # support that?
-    # (if input doesn't have '.' in name, suffix is ''. if input name starts with '.',
-    # and there isn't another '.', suffix is also '')
-    #
-    # need to use existing suffix when savefig is matplotlib Figure.savefig, as it will
-    # save to `temp_file + '.png'` instead of `temp_file`.
-    # path.suffix for e.g. Path('x/y/z.pdf') is '.pdf'.
-    temp_file = NamedTemporaryFile(delete=False, suffix=path.suffix)
-    # also includes directory
-    temp_file_path = Path(temp_file.name)
-
-    # TODO move some/all of use_mpl_comparison/is_pickle def to just before conditional
-    # (as part of factoring out a file comparison fn from within this)
-    use_mpl_comparison = False
-
-    # for save_fn input like:
-    # <bound method Figure.savefig of <Figure size 1920x1440 with 1 Axes>>
-    # I wasn't actually seeing __name__ in dir(save_fn) for that, but accessing
-    # .__name__ still worked (providing 'savefig'). __func__ / __self__ may be the
-    # function and bound instance, but not sure, and this seems like it might work ok.
-    #
-    # TODO test w/ seaborn input
-    if save_fn.__name__ == 'savefig':
-        use_mpl_comparison = True
-
-    is_pickle = False
-    if path.suffix == '.p':
-        # TODO could also check if save_fn is to_pickle (or has 'pickle' in name, or
-        # name split on '_'?). i always name pickles w/ .p, but if anyone else uses this
-        # fn (for pickles), might matter.
-        # TODO more generally, check if there is a read_<x> fn defined in same scope as
-        # input to_<x> fn name (-> use read fn to compare if filecmp fails). or accept
-        # read fn as optional input?
-        assert not use_mpl_comparison
-        is_pickle = True
-
-    # TODO set verbose=False if save_fn already had that?
-    # assuming we don't need to for now. any other issues w/ calling wrapped
-    # fn twice?
-    # TODO possible to refactor to not need to check data (maybe using *args, and
-    # changing all fns using produces_output to swap order of data and path args?)?
-    if data is not None:
-        save_fn(data, temp_file_path, **kwargs)
-    else:
-        # TODO assert use_mpl_comparison here (and only here?)? (should be only case i'm
-        # currently not passing in data, and no real plans for that to change)
-        save_fn(temp_file_path, **kwargs)
-
-    temp_file.close()
-    # TODO assert some bytes have been written to file?
-    # (would have caught save_fn appending suffix issue before i was using existing
-    # suffix)
-
-    to_delete = []
-    mtime_str = format_mtime(path, year=True, seconds=True)
-    err_msg = f'{path} ({mtime_str}) would have changed! (run without -c/-C to ignore)'
-
-    # TODO factor out file comparison fn(s) from this?
-    # (-> use to check certain key outputs same as what is committed to repo, e.g.
-    # CSVs w/ model responses in data/sent_to_anoop vs current ones)
-    # TODO + make available as CLI?
-
-    if not use_mpl_comparison:
-        # https://stackoverflow.com/questions/1072569
-        unchanged = filecmp.cmp(path, temp_file_path, shallow=False)
-
-        # could also *always* do this comparison, instead of filecmp above, but I'm
-        # assuming actually loading the pickles is more expensive than the above.
-        # if the filecmp approach *usually* works for pickles (as it seems to), then
-        # it's probably better to only load+compare the pickles if that check fails.
-        if is_pickle and not unchanged:
-            # TODO these read_pickle fns always return output consistent w/
-            # pd.read_pickle (in only case checked so far, yes)?
-            old = read_pickle(path)
-            new = read_pickle(temp_file_path)
-
-            if hasattr(old, 'equals'):
-                unchanged = old.equals(new)
-            else:
-                unchanged = old == new
-                try:
-                    unchanged = bool(unchanged)
-
-                # will trigger if old/new are like numpy arrays, like:
-                # ValueError: The truth value of an array with more than one element is
-                # ambiguous. Use a.any() or a.all()
-                #
-                # even though the `old.equals(new)` check above should be used for
-                # pandas objects (and probably anything else that would have this type
-                # of error...), a similarly worded error would be emitted if trying to
-                # coerce pandas elementwise comparisons to a single bool. e.g.
-                # ValueError: The truth value of a DataFrame is ambiguous. Use a.empty,
-                # a.bool(), a.item(), a.any() or a.all().
-                except ValueError as err:
-                    # TODO also filter on err msg, only trying to coerce check w/ .all()
-                    # if msg matches [some parts of] expected err msg?
-                    unchanged = np.all(unchanged)
-    else:
-        # TODO TODO when factoring out file comparison fn, def use_mpl_comparison from
-        # whether extension is in `mpl_compare.comparable_formats()`?
-        # (currently ['png', 'pdf', 'eps', 'svg'])
-        #
-        # TODO can i remove this? what happens if compare_images gets an input w/ a
-        # non-comparable format?
-        assert path.suffix[1:].lower() in mpl_compare.comparable_formats()
-
-        # TODO want to actually use tolerance > 0 ever? (reading mpl's code, if tol is
-        # 0, np.array_equal is used, rather than mpl_compare.calculate_rms)
-        #
-        # 2025-02-19: getting some PDFs i can't visually tell apart, w/ rms ~3.84
-        # (mb_modeling/hist_hallem.pdf)
-        tolerance = 0
-        # TODO keep something like this? worried it'd also miss a point meaningfully
-        # moving around / similar... (as opposed to weird text spacing changes that
-        # seemed non-deterministic)
-        #tolerance = 15
-
-        # TODO fix ImageComparisonFailure (can i repro?):
-        # ...
-        #   File "./al_analysis.py", line 4095, in plot_corr
-        #     savefig(fig, plot_dir, prefix, bbox_inches='tight', debug=verbose, **_save_kws)
-        #   File "./al_analysis.py", line 2988, in savefig
-        #     _check_output_would_not_change(fig_path, save_fn, **kwargs)
-        #   File "./al_analysis.py", line 2503, in _check_output_would_not_change
-        #     diff_dict = mpl_compare.compare_images(path, str(temp_file_path), tolerance,
-        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 466, in compare_images
-        #     rms = calculate_rms(expected_image, actual_image)
-        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 363, in calculate_rms
-        #     raise ImageComparisonFailure(
-        # matplotlib.testing.exceptions.ImageComparisonFailure: Image sizes do not match expected size: (359, 382, 3) actual size (359, 383, 3)
-
-        # compare_images seems to save a png alongside input image, and i don't think
-        # there are options to not do that, so i'm just deleting those files after
-        #
-        # https://matplotlib.org/devdocs/api/testing_api.html#module-matplotlib.testing.compare
-        #
-        unchanged = None
-        try:
-            # from docs: "Return None if the images are equal within the given
-            # tolerance."
-            diff_dict = mpl_compare.compare_images(path, str(temp_file_path), tolerance,
-                # TODO remove this, since i couldn't really use it to find files to
-                # delete anyway (since it's None if no diff)?
-                in_decorator=True
-            )
-
-        except ImageComparisonFailure as err:
-            # TODO fix
-            warn(err)
-            #
-            unchanged = False
-
-        # paths in diff_dict (for temp_file_path=/tmp/tmpdcsvhhzb.pdf) should look like:
-        # 'actual': '/tmp/tmpdcsvhhzb_pdf.png',
-        # 'diff': '/tmp/tmpdcsvhhzb_pdf-failed-diff.png',
-        # 'expected': 'pebbled_6f/pdf/ijroi/mb_modeling/hist_hallem_pdf.png',
-
-        # TODO try to move the to_delete handling to after this conditional
-        # (so i can factor this whole conditional, w/ some of earlier stuff, into fn for
-        # just comparing files, not doing any of the temp file creation / cleanup)
-
-        # bit more flexible than Path.with_suffix
-        def with_suffix(filepath, suffix):
-            return filepath.parent / f'{filepath.stem}{suffix}'
-
-        def temp_with_suffix(suffix):
-            return with_suffix(temp_file_path, suffix)
-
-        if plot_fmt != 'png':
-            # don't think i need to worry about these two if plot_fmt == 'png'
-            to_delete.extend([
-                temp_with_suffix(f'_{plot_fmt}.png'),
-                with_suffix(path, f'_{plot_fmt}.png')
-            ])
-
-        if unchanged is None:
-            if diff_dict is None:
-                unchanged = True
-            else:
-                # NOTE: <x>_failed-diff[_<plot-format>].png created in this case, but we
-                # probably want to keep it for inspection, so not adding to to_delete
-                unchanged = False
-                err_msg += ('\n\nmatplotlib.testing.compare.compare_images output:\n'
-                    f'{pformat(diff_dict)}\n\ndiff image kept for inspection'
-                )
-                # TODO assert diff_dict['actual'] is same as temp_file_path?
-
-                # TODO also open up (xdg-open / whatever) temp png matplotlib wrote (the
-                # diff image)?
-                # (and yes, it does convert everything to PNG for this, named like
-                # /tmp/tmpa3hi5nxy_pdf-failed-diff.png (for diff),
-                # /tmp/tmpa3hi5nxy_pdf.png)
-
-    # want to leave this file around if changed, so we can compare to existing output
-    if unchanged:
-        to_delete.append(temp_file_path)
-    else:
-        err_msg += ('\n\ncompare with what would have been new output, saved at: '
-            f'{temp_file_path}'
-        )
-
-    for temp_path in to_delete:
-        assert temp_path.exists(), f'{temp_path=} did not exist!'
-        temp_path.unlink()
-
-    if unchanged:
-        if verbose:
-            print(f'{path} would be unchanged')
-
-        return
-
-    # TODO move temp file into place, if DOESN'T match (after warning) (would need new
-    # value for -c, to warn instead of err. not sure i want)?
-    # (also, would have to handle in callers)
-
-    raise RuntimeError(err_msg)
-
-
 # if one output would get written two twice in one run of this script.
 # for most outputs, we only intend to write them once, and this indicates an error.
 class MultipleSavesPerRunException(IOError):
@@ -2635,10 +2415,12 @@ def _output_change_prompt_or_err(err: RuntimeError, path: Path) -> bool:
     warn(msg)
 
     overwrite = None
+    # TODO try to have Ctrl-c behave same as 'n'?
     while True:
         # TODO option to accept all future prompts too? (would still want to warn for
         # each)
         # TODO maybe for anything <= current rms (prompting again if new max)?
+        # TODO option to start debugger here (to step up and inspect difference)?
         response = input(f'overwrite {path}?\n[y]es / [n]o (quit) / [s]kip (continue) '
             '(press enter after selection)'
         )
@@ -3047,7 +2829,6 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
             _skip_saving = True
 
         except RuntimeError as err:
-            # TODO TODO TODO does answering [y] to this actually overwrite? test!
             overwrite = _output_change_prompt_or_err(err, fig_path)
             _skip_saving = not overwrite
     #
@@ -3117,6 +2898,297 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
         plt.close(fig)
 
     return fig_path
+
+
+def text_diff(f1: Path, f2: Path) -> str:
+    lines1 = f1.read_text().strip().splitlines(keepends=True)
+    lines2 = f2.read_text().strip().splitlines(keepends=True)
+
+    # TODO add git diff style coloring (would conflict w/ how current output is returned
+    # as a str which gets often displayed via a `warn` call that already colors output
+    # yellow. could return to calling sys.stderr.writelines in here, but would
+    # complicate keeping style consistent w/ warning in general)?
+    #
+    # for reference, default ubuntu diff output on same two files as below:
+    # $ diff .../params.csv /tmp/tmph87sfj7j.csv
+    # 10c10
+    # < used_model_cache,True
+    # ---
+    # > used_model_cache,False
+    #
+    # example output:
+    # --- .../params.csv
+    # +++ /tmp/tmph87sfj7j.csv
+    # @@ -10 +10 @@
+    # -used_model_cache,True
+    # +used_model_cache,False
+    #
+    # TODO also populate fromdate [+todate?] fields? (w/ mtime? what format?)
+    # (seems they take str, so pre-formatted as i want)
+    #
+    # NOTE: do need to convert path to str for fromfile/tofile
+    diff = difflib.unified_diff(lines1, lines2, fromfile=str(f1), tofile=str(f2), n=0)
+
+    # elements in `diff` seem to already have linesep chars at end, so don't need
+    # '\n'.join(diff)
+    return ''.join(diff)
+
+
+_save_fn_name2diff_fn = {
+    'to_csv': text_diff,
+}
+# TODO TODO unit test all combinations of changed/unchanged w/ CSV / pickle / some plot
+# formats
+# TODO option to use np.isclose or something instead of exact file comparison?
+# (mainly thinking for CSVs, where the specific way the computation is done might change
+# and just lead to a non-important numerical change. hasn't been an issue so far though)
+# TODO change so save_fn is the optional one (rather than data) and automatically use
+# .savefig if that positional argument has that attribute (or is a Figure/FacetGrid?
+# checking for savefig attr probably better...)
+# TODO also support objects w/ .save(path) method? (e.g. statsmodels models)
+# TODO option to touch files-that-would-be-unchanged to have mtime as if they were just
+# written?
+def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **kwargs
+    ) -> None:
+    """Raises RuntimeError if output would change.
+
+    Args:
+        path: must already exist (raises IOError if not)
+        *args, **kwargs: passed to `save_fn`
+    """
+    if not path.exists():
+        raise IOError(f'{path} did not exist!')
+
+    # TODO derive name in deterministic way from path, so that same input will always
+    # overwrite any pre-existing temp outputs? not a huge priority, just some temp files
+    # could get left around as-is (which is probably fine. generally get deleted on
+    # reboot)
+    #
+    # TODO test w/ input where output filename doesn't already have suffix?
+    # support that?
+    # (if input doesn't have '.' in name, suffix is ''. if input name starts with '.',
+    # and there isn't another '.', suffix is also '')
+    #
+    # need to use existing suffix when savefig is matplotlib Figure.savefig, as it will
+    # save to `temp_file + '.png'` instead of `temp_file`.
+    # path.suffix for e.g. Path('x/y/z.pdf') is '.pdf'.
+    temp_file = NamedTemporaryFile(delete=False, suffix=path.suffix)
+    # also includes directory
+    temp_file_path = Path(temp_file.name)
+
+    # TODO move some/all of use_mpl_comparison/is_pickle def to just before conditional
+    # (as part of factoring out a file comparison fn from within this)
+    use_mpl_comparison = False
+
+    # for save_fn input like:
+    # <bound method Figure.savefig of <Figure size 1920x1440 with 1 Axes>>
+    # I wasn't actually seeing __name__ in dir(save_fn) for that, but accessing
+    # .__name__ still worked (providing 'savefig'). __func__ / __self__ may be the
+    # function and bound instance, but not sure, and this seems like it might work ok.
+    #
+    # TODO test w/ seaborn input
+    if save_fn.__name__ == 'savefig':
+        use_mpl_comparison = True
+
+    is_pickle = False
+    if path.suffix == '.p':
+        # TODO could also check if save_fn is to_pickle (or has 'pickle' in name, or
+        # name split on '_'?). i always name pickles w/ .p, but if anyone else uses this
+        # fn (for pickles), might matter.
+        # TODO more generally, check if there is a read_<x> fn defined in same scope as
+        # input to_<x> fn name (-> use read fn to compare if filecmp fails). or accept
+        # read fn as optional input?
+        assert not use_mpl_comparison
+        is_pickle = True
+
+    # TODO set verbose=False if save_fn already had that?
+    # assuming we don't need to for now. any other issues w/ calling wrapped
+    # fn twice?
+    # TODO possible to refactor to not need to check data (maybe using *args, and
+    # changing all fns using produces_output to swap order of data and path args?)?
+    if data is not None:
+        save_fn(data, temp_file_path, **kwargs)
+    else:
+        # TODO assert use_mpl_comparison here (and only here?)? (should be only case i'm
+        # currently not passing in data, and no real plans for that to change)
+        save_fn(temp_file_path, **kwargs)
+
+    temp_file.close()
+    # TODO assert some bytes have been written to file?
+    # (would have caught save_fn appending suffix issue before i was using existing
+    # suffix)
+
+    to_delete = []
+    mtime_str = format_mtime(path, year=True, seconds=True)
+    err_msg = f'{path} ({mtime_str}) would have changed! (run without -c/-C to ignore)'
+
+    # TODO factor out file comparison fn(s) from this?
+    # (-> use to check certain key outputs same as what is committed to repo, e.g.
+    # CSVs w/ model responses in data/sent_to_anoop vs current ones)
+    # TODO + make available as CLI?
+
+    if not use_mpl_comparison:
+        # https://stackoverflow.com/questions/1072569
+        unchanged = filecmp.cmp(path, temp_file_path, shallow=False)
+
+        # could also *always* do this comparison, instead of filecmp above, but I'm
+        # assuming actually loading the pickles is more expensive than the above.
+        # if the filecmp approach *usually* works for pickles (as it seems to), then
+        # it's probably better to only load+compare the pickles if that check fails.
+        if is_pickle and not unchanged:
+            # TODO these read_pickle fns always return output consistent w/
+            # pd.read_pickle (in only case checked so far, yes)?
+            old = read_pickle(path)
+            new = read_pickle(temp_file_path)
+
+            if hasattr(old, 'equals'):
+                unchanged = old.equals(new)
+            else:
+                unchanged = old == new
+                try:
+                    unchanged = bool(unchanged)
+
+                # will trigger if old/new are like numpy arrays, like:
+                # ValueError: The truth value of an array with more than one element is
+                # ambiguous. Use a.any() or a.all()
+                #
+                # even though the `old.equals(new)` check above should be used for
+                # pandas objects (and probably anything else that would have this type
+                # of error...), a similarly worded error would be emitted if trying to
+                # coerce pandas elementwise comparisons to a single bool. e.g.
+                # ValueError: The truth value of a DataFrame is ambiguous. Use a.empty,
+                # a.bool(), a.item(), a.any() or a.all().
+                except ValueError as err:
+                    # TODO also filter on err msg, only trying to coerce check w/ .all()
+                    # if msg matches [some parts of] expected err msg?
+                    unchanged = np.all(unchanged)
+    else:
+        # TODO TODO when factoring out file comparison fn, def use_mpl_comparison from
+        # whether extension is in `mpl_compare.comparable_formats()`?
+        # (currently ['png', 'pdf', 'eps', 'svg'])
+        #
+        # TODO can i remove this? what happens if compare_images gets an input w/ a
+        # non-comparable format?
+        assert path.suffix[1:].lower() in mpl_compare.comparable_formats()
+
+        # TODO want to actually use tolerance > 0 ever? (reading mpl's code, if tol is
+        # 0, np.array_equal is used, rather than mpl_compare.calculate_rms)
+        #
+        # 2025-02-19: getting some PDFs i can't visually tell apart, w/ rms ~3.84
+        # (mb_modeling/hist_hallem.pdf)
+        tolerance = 0
+        # TODO keep something like this? worried it'd also miss a point meaningfully
+        # moving around / similar... (as opposed to weird text spacing changes that
+        # seemed non-deterministic)
+        #tolerance = 15
+
+        # TODO fix ImageComparisonFailure (can i repro?):
+        # ...
+        #   File "./al_analysis.py", line 4095, in plot_corr
+        #     savefig(fig, plot_dir, prefix, bbox_inches='tight', debug=verbose, **_save_kws)
+        #   File "./al_analysis.py", line 2988, in savefig
+        #     _check_output_would_not_change(fig_path, save_fn, **kwargs)
+        #   File "./al_analysis.py", line 2503, in _check_output_would_not_change
+        #     diff_dict = mpl_compare.compare_images(path, str(temp_file_path), tolerance,
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 466, in compare_images
+        #     rms = calculate_rms(expected_image, actual_image)
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 363, in calculate_rms
+        #     raise ImageComparisonFailure(
+        # matplotlib.testing.exceptions.ImageComparisonFailure: Image sizes do not match expected size: (359, 382, 3) actual size (359, 383, 3)
+
+        # compare_images seems to save a png alongside input image, and i don't think
+        # there are options to not do that, so i'm just deleting those files after
+        #
+        # https://matplotlib.org/devdocs/api/testing_api.html#module-matplotlib.testing.compare
+        #
+        unchanged = None
+        try:
+            # from docs: "Return None if the images are equal within the given
+            # tolerance."
+            diff_dict = mpl_compare.compare_images(path, str(temp_file_path), tolerance,
+                # TODO remove this, since i couldn't really use it to find files to
+                # delete anyway (since it's None if no diff)?
+                in_decorator=True
+            )
+
+        except ImageComparisonFailure as err:
+            # TODO fix
+            warn(err)
+            #
+            unchanged = False
+
+        # paths in diff_dict (for temp_file_path=/tmp/tmpdcsvhhzb.pdf) should look like:
+        # 'actual': '/tmp/tmpdcsvhhzb_pdf.png',
+        # 'diff': '/tmp/tmpdcsvhhzb_pdf-failed-diff.png',
+        # 'expected': 'pebbled_6f/pdf/ijroi/mb_modeling/hist_hallem_pdf.png',
+
+        # TODO try to move the to_delete handling to after this conditional
+        # (so i can factor this whole conditional, w/ some of earlier stuff, into fn for
+        # just comparing files, not doing any of the temp file creation / cleanup)
+
+        # bit more flexible than Path.with_suffix
+        def with_suffix(filepath, suffix):
+            return filepath.parent / f'{filepath.stem}{suffix}'
+
+        def temp_with_suffix(suffix):
+            return with_suffix(temp_file_path, suffix)
+
+        if plot_fmt != 'png':
+            # don't think i need to worry about these two if plot_fmt == 'png'
+            to_delete.extend([
+                temp_with_suffix(f'_{plot_fmt}.png'),
+                with_suffix(path, f'_{plot_fmt}.png')
+            ])
+
+        if unchanged is None:
+            if diff_dict is None:
+                unchanged = True
+            else:
+                # NOTE: <x>_failed-diff[_<plot-format>].png created in this case, but we
+                # probably want to keep it for inspection, so not adding to to_delete
+                unchanged = False
+                err_msg += ('\n\nmatplotlib.testing.compare.compare_images output:\n'
+                    f'{pformat(diff_dict)}\n\ndiff image kept for inspection'
+                )
+                # TODO assert diff_dict['actual'] is same as temp_file_path?
+
+                # TODO also open up (xdg-open / whatever) temp png matplotlib wrote (the
+                # diff image)?
+                # (and yes, it does convert everything to PNG for this, named like
+                # /tmp/tmpa3hi5nxy_pdf-failed-diff.png (for diff),
+                # /tmp/tmpa3hi5nxy_pdf.png)
+
+    # want to leave this file around if changed, so we can compare to existing output
+    if unchanged:
+        to_delete.append(temp_file_path)
+
+    for temp_path in to_delete:
+        assert temp_path.exists(), f'{temp_path=} did not exist!'
+        temp_path.unlink()
+
+    if unchanged:
+        if verbose:
+            print(f'{path} would be unchanged')
+
+        return
+
+    # TODO (delete?) move temp file into place, if DOESN'T match (after warning)
+    # (would need new value for -c, to warn instead of err. not sure i want)?
+    # (also, would have to handle in callers)
+
+    save_fn_name = save_fn.__name__
+    if save_fn_name in _save_fn_name2diff_fn:
+        diff_fn = _save_fn_name2diff_fn[save_fn_name]
+        diff_str = diff_fn(path, temp_file_path)
+        err_msg += f'\n\n{diff_str}'
+    else:
+        err_msg += ('\n\ncompare with what would have been new output, saved at: '
+            f'{temp_file_path}'
+        )
+
+    raise RuntimeError(err_msg)
+
+
 
 
 _dirs_to_delete_if_empty = []
@@ -3900,27 +3972,18 @@ def delta_f_over_f(movie_length_array, bounding_frames, *,
         yield dff
 
 
-# TODO maybe default to mean in a fixed window as below? or not matter as much since i'm
-# actually using this on data already meaned within an ROI (though i could use on other
-# data later)?
-# TODO TODO homogenize stat (max here, mean elsewhere) behavior here vs in response
-# volume calculation in process_recording (still an issue?)
-# TODO TODO TODO compare results w/ old stat=max (using all volumes from onset to end of
-# trial) on old data, and if nothing really gets worse (and it improves results on new
-# PN data, as I expect), then stick with mean for everything
-# (otherwise make driver -> settings dict or something, and only use for PNs)
+# TODO homogenize stat (max here, mean elsewhere) behavior here vs in response volume
+# calculation in process_recording (still an issue?)
 def compute_trial_stats(traces, bounding_frames,
     odor_order_with_repeats: Optional[ExperimentOdors] = None, *,
-    # TODO TODO TODO special case so it's mean by default for pebbled (to better capture
-    # inhibition), and max by default for GH146 (b/c PN spontaneous activity. this make
+    # TODO special case so it's mean by default for pebbled (to better capture
+    # inhibition), and max by default for GH146? (b/c PN spontaneous activity. this make
     # sense? was it max and not mean that worked for me for GH146? maybe it was the
     # other way around?)
-    # TODO TODO TODO check GH146 correlations again to see which looked better: max
-    # or mean (and maybe doesn't matter on new data?)
-    # TODO might need to change dF/F scale now that i'm going back to mean? check
+    # TODO check GH146 correlations again to see which looked better: max or mean (and
+    # maybe doesn't matter on new data?) (paper GH146 outputs were using same
+    # `n_volumes_for_response=2, stat=mean` as everything else)
     #stat=lambda x: np.max(x, axis=0),
-    # TODO TODO double check all response matrices i've been sending to people were
-    # using this (and document alongside those outputs)
     stat=lambda x: np.mean(x, axis=0),
     n_volumes_for_response: Optional[int] = n_volumes_for_response
     ):
@@ -4501,6 +4564,8 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
 
     # TODO delete
     if trial_df.index.name == 'odor1':
+        # TODO assert no 'repeat' in column names? (that's the mean it's talking about,
+        # right?)
         print("also support trial_df.index.name = 'odor1' (.names = None, right?)")
         print(f'{trial_df.index.names=}')
         #import ipdb; ipdb.set_trace()
@@ -4665,10 +4730,13 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
             roi = combo['glomerulus']
 
             matching_roi = mean_df.index.get_level_values('roi') == roi
-            matching_odor = (
-                (mean_df.columns.get_level_values('odor1') == odor1) &
-                (mean_df.columns.get_level_values('odor2') == solvent_str)
-            )
+
+            matching_odor = mean_df.columns.get_level_values('odor1') == odor1
+            if 'odor2' in mean_df.columns.names:
+                matching_odor &= (
+                    mean_df.columns.get_level_values('odor2') == solvent_str
+                )
+
             if matching_roi.sum() == 0 or matching_odor.sum() == 0:
                 continue
 
@@ -6763,7 +6831,10 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     #import ipdb; ipdb.set_trace()
     #
 
-    note_data = thor.parse_thorimage_notes(xml)
+    # can set debug=True for more information on parsing. mainly useful for making
+    # changes to parse_thorimage_notes. debug=False should be the default.
+    note_data = thor.parse_thorimage_notes(xml, debug=False)
+
     # important that method_data is not updated after we add note_data, as then it's
     # possible for key collisions/overwriting
     assert not any(k in method_data for k in note_data.keys())
@@ -10787,6 +10858,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             f'non-Task glomeruli:\n{sorted(kcs_without_input[kcs_without_input].index)}'
         )
 
+    assert not (wPNKC == 0).all().any(), 'had Task glomeruli providing no input to KCs'
+
     if plot_dir is not None:
         # NOTE: mean of this w/ connectome='hemibrain' is 5.44 (NOT n_claws=7 used
         # by uniform)
@@ -11038,6 +11111,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
     target_sparsity: Optional[float] = None,
+    target_sparsity_factor_pre_APL: Optional[float] = None,
     _use_matt_wPNKC=False, _drop_glom_with_plus=True,
     _add_back_methanoic_acid_mistake=False,
     fixed_thr: Optional[float] = None,
@@ -11146,6 +11220,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
 
     if fixed_thr is not None:
         assert target_sparsity is None
+        assert target_sparsity_factor_pre_APL is None
         assert wAPLKC is not None, 'for now, assuming both passed if either is'
 
         # TODO move these values / notes to model_test.py, or wherever sensitivity
@@ -11165,10 +11240,47 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     else:
         mp.kc.thr_type = 'uniform'
 
+    # TODO delete
+    # just to try to confirm actual sparsity after setting thresh is ~2 * sp_target.
+    # may not work.
+    # TODO TODO make a test that does this, and then checks sparsity is within tolerance
+    # (or even tigher, almost exactly?) after target_sparsity_factor_pre_APL
+    #print('HARDCODING TUNE_APL_WEIGHTS=FALSE')
+    #mp.kc.tune_apl_weights = False
+    #
+    #pre_APL_sparsity_should_be = target_sparsity * target_sparsity_factor_pre_APL
+    #
+
     # TODO after getting model to accept hardcoded wAPLKC and wKCAPL, only do this if
     # not hardcoding those (+ fixed thr)
     if target_sparsity is not None:
         mp.kc.sp_target = target_sparsity
+
+    # target_sparsity_factor_pre_APL=2 would preserve old default behavior, where KC
+    # threshold set to achieve 2 * sp_target, then APL tuned to bring down to sp_target
+    if target_sparsity_factor_pre_APL is not None:
+        # since APL should only be able to decrease response rate from where we set it
+        # by picking KC spike threshold
+        assert target_sparsity_factor_pre_APL >= 1
+
+        if target_sparsity is not None:
+            sp_target = target_sparsity
+        else:
+            # should be the olfsysm default (get from mp.kc?)
+            sp_target = .1
+        assert sp_target * target_sparsity_factor_pre_APL <= 1.0
+        del sp_target
+
+        mp.kc.sp_factor_pre_APL = target_sparsity_factor_pre_APL
+
+        # TODO TODO test that if this is 1.0, then APL is kept off (or will one
+        # iteration of tuning loop still happen + change things?), or at least doesn't
+        # change responses/spike_counts
+        # TODO TODO what's max value of this (min that forces threshold to do nothing,
+        # with only APL bringing activity down? or does that not max sense?) maybe i
+        # should change olfsysm to use something with a more sensible max (so i can go
+        # between two extremes of all-threshold vs all-APL more easily)?
+        # (probably just `1 / target_sparsity`?)
 
     # TODO assert that this csv is equiv to orn_deltas / orns.orns data?
     hc_data_csv = str(Path('~/src/olfsysm/hc_data.csv').expanduser())
@@ -11182,9 +11294,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         drop_multiglomerular_receptors=drop_multiglomerular_receptors
     )
 
-    # TODO TODO TODO how to handle this for stuff not in hallem? matter if it's 0?
-    # (currently imputing mean sfr, but maybe try 0 and see if output differs?)
-
+    # how to handle this for stuff not in hallem? (currently imputing mean Hallem sfr)
     sfr_col = 'spontaneous firing rate'
     sfr = hallem_orn_deltas[sfr_col]
     assert hallem_orn_deltas.columns[-1] == sfr_col
@@ -11303,11 +11413,11 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
                 -2,-14,31,0,33,-8,-6,-9,8,-1,-20,3,25,2,5,12,-8,-9,14,7,0,4,14
             ]
 
-    # TODO TODO (delete?) implement means of getting threshold from hallem input +
-    # hallem glomeruli only -> somehow applying that threshold [+APL inh?] globally (and
+    # TODO (delete?) implement means of getting threshold from hallem input + hallem
+    # glomeruli only -> somehow applying that threshold [+APL inh?] globally (and
     # running subsequent stuff w/ all glomeruli, including non-hallem ones) (even
     # possible?)
-    # TODO TODO now that i can just hardcode the 2 params, can i make plots where i
+    # TODO (delete?) now that i can just hardcode the 2 params, can i make plots where i
     # "tune" on hallem and then apply those params to the model using my data as input,
     # w/ all glomeruli (or does it still not make sense to use the same global params,
     # w/ new PNs w/ presumably new spontaneous input now there? think it might not make
@@ -11722,10 +11832,6 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     mp.orn.data.spont = sfr.copy()
     mp.orn.data.delta = orn_deltas.copy()
 
-    # TODO in narrow-odors-jupyter/modeling.ipynb, why does matt set
-    # mp.kc.tune_from = np.arange(110, step=2)
-    # (only tuning on every other odor from hallem, it seems)
-
     # TODO need to remove DA4m (2a) from wPNKC first too (already out, it seems)?
     # don't see matt doing it in hemimat-modeling... (i don't think i need to.
     # rv.pn.pn_sims below had receptor-dim length of 22)
@@ -11839,6 +11945,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     # hardcoding (and especially in step that goes from 0.2 to 0.1 response rate)
     if wAPLKC is not None:
         assert target_sparsity is None
+        assert target_sparsity_factor_pre_APL is None
         assert fixed_thr is not None, 'for now, assuming both passed if either is'
 
         mp.kc.tune_apl_weights = False
@@ -11896,11 +12003,38 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     responses = rv.kc.responses.copy()
     responses_after_tuning = responses.copy()
 
+    if target_sparsity is not None:
+        # TODO delete
+        print()
+        print(f'{responses.shape=}')
+        print(f'{mp.kc.tune_from=}')
+        #
+        if len(mp.kc.tune_from) > 0:
+            # mp.kc.tune_from is an empty list if not explicitly set
+            sp_actual = responses[:, mp.kc.tune_from].mean()
+        else:
+            sp_actual = responses.mean()
+
+        # TODO delete
+        print(f'{sp_actual=}')
+        #
+
+        # NOTE: if this fails, may want to check if
+        # (rv.kc.tuning_iters == mp.kc.max_iters)
+        # (and increase if needed [/ add a check we haven't reached max_iters])
+        #
+        # matt's tuning loop runs while:
+        # (abs(sp - p.kc.sp_target) > (p.kc.sp_acc * p.kc.sp_target)
+        abs_sp_diff = abs(sp_actual - mp.kc.sp_target)
+        rel_sp_diff = abs_sp_diff / mp.kc.sp_target
+        # (if tune_apl_weights is hardcoded True above, this will likely fail)
+        assert rel_sp_diff <= mp.kc.sp_acc
+
     spike_counts = rv.kc.spike_counts.copy()
 
     if extra_orn_deltas is not None:
-        # TODO TODO maybe just sim the last bit and concat to existing responses,
-        # instead of re-running all
+        # TODO maybe just sim the last bit and concat to existing responses,
+        # instead of re-running all (check equiv tho)
         #mp.sim_only = range(n_input_odors, n_input_odors + n_extra_odors)
         mp.sim_only = range(n_input_odors + n_extra_odors)
 
@@ -12000,6 +12134,8 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     else:
         thr = rv.kc.thr
 
+        # TODO use _single_unique_val for this too?
+        #
         # this should correspond to the thr_const variable inside
         # olfsysm.choose_KC_thresh_uniform (and can be set by passing as the fixed_thr
         # kwarg to this function, which will also set mp.kc.add_fixed_thr_to_spont=True)
@@ -12042,9 +12178,19 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     }
 
     tuning_dict = {
+        # TODO TODO expose at least these first two (sp_acc, max_iters) as kwargs.
+        # prob also sp_lr_coeff.
+        # TODO TODO TODO + maybe default to smaller tolerance (+ more iterations if
+        # needed). what currently happens if tolerance not reached in max_iters?
+        # add my own assertion (in this script) that we are w/in sp_acc?
+        #
         # parameters relevant to model threshold + APL tuning process
+        # default=0.1 (fraction +/- sp_target)
         'sp_acc': mp.kc.sp_acc,
+
+        # default=10
         'max_iters': mp.kc.max_iters,
+
         'sp_lr_coeff': mp.kc.sp_lr_coeff,
         'apltune_subsample': mp.kc.apltune_subsample,
 
@@ -12981,6 +13127,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         'tune_on_hallem': 'hallem-tune',
         'pn2kc_connections': 'pn2kc',
         'target_sparsity': 'target_sp',
+        'target_sparsity_factor_pre_APL': 'sp_factor_pre_APL',
         '_drop_glom_with_plus': 'drop-plusgloms',
     }
     exclude_params = ('orn_deltas', 'title', 'repro_preprint_s1d')
@@ -13112,6 +13259,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
         elif fixed_thr is not None or wAPLKC is not None:
             assert fixed_thr is not None and wAPLKC is not None
+            # TODO assert target_sparsity_factor_pre_APL is None?
 
             # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be
             # too cumbersome to format into this
@@ -13228,9 +13376,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
 
     _fit_and_plot_seen_param_dirs.add(param_dir)
 
-    # NOTE: this currently will cause -c/-C checks to fail. want to fix that (i.e.
-    # remove this from that output, but still keep long enough to use for what i
-    # wanted? possible?)?
+    # NOTE: this currently will cause -c/-C checks to fail
+    # TODO TODO want to fix that (i.e. remove this from that output, but still keep long
+    # enough to use for what i wanted? possible?)?
     params_for_csv['used_model_cache'] = use_cache
 
     print()
@@ -13492,10 +13640,6 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             if extra_spikecounts_cache.exists():
                 extra_spikecounts_cache.unlink()
 
-    # TODO change order so sparsity comes after target_sparsity?
-    # (potentially just moving target_sparsity to end of input params?
-    # not sure. fixed_thr, wAPLKC, wKCAPL currently between them)
-    #
     # param_dict should include 'fixed_thr', 'wAPLKC' and 'wKCAPL' parameters, as
     # they are at the end of the model run (either tuned or
     # hardcoded-from-the-beginning)
@@ -13706,12 +13850,18 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         if ylim is not None:
             ymin, ymax = ylim
 
-            assert (sparsity_per_odor['response rate'] >= ymin).all()
-            assert (sparsity_per_odor['response rate'] <= ymax).all()
+            response_rates = sparsity_per_odor[sparsity_col]
+            assert (response_rates >= ymin).all(), f'{response_rates.min()=}'
+            assert (response_rates <= ymax).all(), f'{response_rates.max()=}'
 
             if comparison_sparsity_per_odor is not None:
-                assert (comparison_sparsity_per_odor['response rate'] >= ymin).all()
-                assert (comparison_sparsity_per_odor['response rate'] <= ymax).all()
+                comparison_response_rates = comparison_sparsity_per_odor[sparsity_col]
+
+                assert (comparison_response_rates >= ymin).all(), \
+                    f'{comparison_response_rates.min()=}'
+
+                assert (comparison_response_rates <= ymax).all(), \
+                    f'{comparison_response_rates.max()=}'
 
             ax.set_ylim([ymin, ymax])
 
@@ -14521,6 +14671,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         #
         # 0.21 not enough for some.
         'validation2': [0, 0.22],
+        # could prob do [0, 2], but might as well keep same as validation2. could just
+        # hardcode this in general (or at least as long as the data is within limit?)?
+        # TODO TODO fix (+ update validation?) actually some stuff is past this
+        # apparently... (oh, it was actually on hallem data that it was failing, in the
+        # uniform model)
+        # TODO TODO fix so we fall back to no scale set (w/ warning), or so hallem isn't
+        # considered megamat here (almost certainly former)?
+        #'megamat': [0, 0.22],
     }
     # ylim=None will let plot_sparsity_per_odor set it
     ylim = panel2sparsity_ylims.get(panel)
@@ -14634,6 +14792,9 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             # excluding target_sparsity b/c that is mutually exclusive w/ fixing
             # threshold and KC<->APL inhibition, as all these calls will.
             'target_sparsity',
+            # TODO also add target_sparsity_factor_pre_APL here? matter?
+            #'target_sparsity_factor_pre_APL',
+
             # will default to False (via fit_mb_model default) once I remove this, which
             # is what I want
             'repro_preprint_s1d',
@@ -15630,12 +15791,7 @@ def _2e_plot_model_corrs(g: sns.FacetGrid, df: pd.DataFrame, pair_order: np.ndar
         # above case. not sure i care about this in hue/palette case.
         marker_kws = dict(markeredgewidth=0)
 
-    sns.pointplot(data=df,
-        order=pair_order,
-
-        linestyle='none',
-        ax=g.ax,
-
+    sns.pointplot(data=df, order=pair_order, linestyle='none', ax=g.ax,
         **_fig2e_shared_plot_kws, **kwargs, **marker_kws
     )
 
@@ -18573,18 +18729,18 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
             #     comparison_kc_corrs=comparison_kc_corrs,
             # ),
             # TODO try hemidraw updated to use weight_divisor hemibrain wPNKC?
-            dict(
-                orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
-                tune_on_hallem=False,
-                pn2kc_connections='hemidraw', n_claws=7, n_seeds=n_seeds,
-                # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
-                # to reproduce previous outputs (probably just b/c hemibrain KC number
-                # is reduced by 7 if this is True, so these models use less cells?)
-                _drop_glom_with_plus=False,
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
+            #dict(
+            #    orn_deltas=pebbled_input_df,
+            #    responses_to_suffix=responses_to_suffix,
+            #    tune_on_hallem=False,
+            #    pn2kc_connections='hemidraw', n_claws=7, n_seeds=n_seeds,
+            #    # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
+            #    # to reproduce previous outputs (probably just b/c hemibrain KC number
+            #    # is reduced by 7 if this is True, so these models use less cells?)
+            #    _drop_glom_with_plus=False,
+            #    comparison_orns=comparison_orns,
+            #    comparison_kc_corrs=comparison_kc_corrs,
+            #),
 
             # TODO TODO TODO version like hemidraw, but by pre-generating wPNKC, to have
             # similar distribution to below (but otherwise keeping draws of each input
@@ -20449,6 +20605,11 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # (not doing for any other panels...)
         if panel == diag_panel_str:
             # only did CO2 in one fly, and not planning on routinely presenting it.
+            # TODO this not still working? also include '2h @ -3' (what was that for /
+            # which fly was it in anyway? seems to have been in some pebbled megamat or
+            # validation2 fly)? or was there some other mechanism to drop these from the
+            # across-panel plots? diff consensus_df computation, that also included
+            # odors?
             diags_to_drop = ['CO2 @ 0']
             certain_df = certain_df.loc[
                 ~ certain_df.index.get_level_values('odor1').isin(diags_to_drop), :
@@ -22190,6 +22351,8 @@ def main():
 
         # all lim_df.columns will be before all unique_vals.columns
         summary_df = pd.concat([lim_df, unique_vals])
+        # TODO also only save this one for by_fly_version (or another flag w/ maybe a
+        # new name, but probably using same flag for all but one csv?)
         to_csv(summary_df, output_root / f'methods_summary{suffix}.csv')
 
 
@@ -22267,7 +22430,6 @@ def main():
 
     util.check_index_vals_unique(trial_df)
     assert num_notnull(trial_df) == n_before
-
     trial_df = drop_redone_odors(trial_df)
 
     # this does the same checks as above, internally
@@ -22554,7 +22716,11 @@ def main():
             print_index_uniq(panel_df.columns, all_fly_id_cols)
             print()
 
-        panel_df = panel_df.droplevel(['is_pair', 'odor2'])
+        odor_levels_to_drop = ['is_pair', 'odor2']
+        panel_df = panel_df.droplevel(
+            # b/c we might not have 'odor2' level now
+            [x for x in odor_levels_to_drop if x in panel_df.index.names]
+        )
         panel_df = panel_df.droplevel(['date','fly_num'], axis='columns')
 
         # TODO TODO probably only do this style of filling if driver is pebbled. we'd
@@ -22984,6 +23150,11 @@ def main():
 
     del gloms_never_consensus
 
+    # TODO fix (failing in gh146 case, re-running 2025) (still?)
+    # (think i was actually running w/ 'pebbled' for driver in comomand below, and there
+    # probably aren't any pebbled flies in this date range? prob still want a better
+    # error message in that case tho)
+    # ./al_analysis.py -d pebbled -n 6f -t 2023-06-22 -e 2023-07-28 -s intensity,corr -v
     assert (mean_df == 0).equals(stddev_df == 0)
 
     # TODO fix hack in this case (failing b/c of 'aphe @ -4' and glomeruli measured now
@@ -23938,8 +24109,8 @@ def main():
     # NOTE: modelling is currently only downstream analysis that will always use
     # TODO reason for that?
     # consensus_df. everything else uses trial_df.
-    #use_consensus_for_all_acrossfly = True
-    use_consensus_for_all_acrossfly = False
+    use_consensus_for_all_acrossfly = True
+    #use_consensus_for_all_acrossfly = False
     # TODO delete + fix
     print(f'{use_consensus_for_all_acrossfly=} (should be True for paper figures, but '
         'model will use consensus either way)'
