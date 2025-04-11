@@ -13201,7 +13201,7 @@ def main():
 
     # TODO at least if --verbose, print we are skipping step (and in all cases we skip
     # steps)
-    # TODO TODO get this to work if script is run with megamat + validation input
+    # TODO get this to work if script is run with megamat + validation input
     # (and ideally make sure megamat is run first, esp if we serialize model params
     # there to use in validation panel, for the dff->spikedelta transform)
     # (not happy w/ current behavior?)
@@ -13216,11 +13216,6 @@ def main():
         skip_hallem_models = 'model-hallem' in steps_to_skip
 
         # TODO worth warning that model won't be run otherwise?
-        # TODO TODO was this not consensus_df before? what do i want?
-        # TODO TODO compare cached input to dF/F -> spiking model (if i had one
-        # yet, if not regen after making decision) to figure out whether i used
-        # consensus_df or certain_df for that, and do i want to change that? maybe after
-        # forming consensus glomeruli only within each panel?
         if driver in orn_drivers:
             # NOTE: use_consensus_for_all_acrossfly must be False if I want to try using
             # certain_df again here (if True, certain_df is redefined to consensus_df

@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+"""
+Wrappers to facilitate running `olfsysm` MB models, mainly:
+- `model_mb_responses`: highest-level function. takes multiple-fly ORN dF/F data and
+  runs multiple parameterizations of the model (as well as saving plots and other
+  outputs to subdirs).
+
+- `fit_and_plot_mb_model`: takes mean ORN data (already scaled into units of spike rate
+  deltas), and runs one parameterization of the model (making multiple `fit_mb_model`
+  calls only when multiple seeds are needed), saving plots/etc in a created directory
+
+- `fit_mb_model`: the loosest wrapper around `olfsysm`. returns model outputs, but
+  typically does not make any plots (though there is some debug code for that).
+  when needed, it:
+  - fills glomeruli to intersection of those in hemibrain and Task et al. 2022
+  - imputes mean Hallem SFR
+
+See also docstring for `connectome_wPNKC` below.
+"""
 
 import itertools
 from os.path import getmtime
@@ -55,8 +73,13 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
 import al_util
 
 
-# TODO also use for saving modeling choices series i'm already writing (not the
-# dF/F->spiking model. the downstream stuff)
+# e.g. before calculating correlations across model KC populations.
+#
+# Remy generally DOES drop "bad" cells, which are largely silent cells, but that isn't
+# controlled by this flag. my analysis of her data generally also drops the same cells
+# she does.
+drop_silent_model_kcs = True
+
 def read_series_csv(csv: Pathlike, **kwargs) -> pd.Series:
     df = pd.read_csv(csv, header=None, index_col=0, **kwargs)
     assert df.shape[1] == 1
@@ -98,11 +121,40 @@ def handle_multiglomerular_receptors(df: pd.DataFrame,
 connectome_options = {'hemibrain', 'fafb-left', 'fafb-right'}
 
 _connectome2glomset = dict()
+# TODO compare to what ann had been using (does she have her own fully formed connectome
+# based PN->KC matrix, or is it all random draws with certain connectome inspired
+# probabilities?)
+# TODO TODO add parameter for thresholding PN-KC pairs above the existing cutoffs of >=4
+# (which was enforced by neuprint query that produced the hemibrain data we have, or we
+# do manually here for the fafb datasets) (-> try to get total # of claws closer to
+# reported ~5.[2-6?] mean claws in Davi Bock paper, through varying both this and
+# weight_divisor. currently weight_divisor=20 brings us way above their reported mean #
+# of claws, given threshold of >4 we are stuck w/ in hemibrain case. maybe Bock # of
+# claws is partially just b/c that brain is abnormal [i.e. many more KCs, etc]?)
 def connectome_wPNKC(connectome: str = 'hemibrain',
     weight_divisor: Optional[float] = None, plot_dir: Optional[Path] = None,
     _use_matt_wPNKC=False, _drop_glom_with_plus: bool = True) -> pd.DataFrame:
-    # TODO doc
     """
+    Args:
+        connectome: which connectome of hemibrain/fafb-left/fafb-right to use.
+            should be one of `connectome_options`.
+
+        weight_divisor: if None, one model claw is added for each PN-KC pair exceeding
+            minimum total number of unitary synapses (currently de facto >=4 for
+            hemibrain, b/c of query that pulled hemibrain data, and also hardcoded to
+            that in this function for FAFB datasets).
+
+            If float, each PN-KC pair gets `ceil(total_synapses / weight_divisor)`
+            claws.
+
+            Note that glomeruli have different numbers of cognate PNs, and that only in
+            the `weight_divisor=<float>` case can there be multiple claws assigned to
+            one particular PN (for a given KC).
+
+        plot_dir: if passed, saves plots histograms of: 1) PN-KC connectome weights, and
+            2) #-claws-per-model-KC (#2 depends on `weight_divisor`)
+
+    Returns dataframe of shape (#-KCs [in selected connectome], #-glomeruli).
     """
     assert connectome in connectome_options
     if _use_matt_wPNKC:
@@ -838,13 +890,6 @@ def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
     return responses.loc[nonsilent_cells].copy()
 
 
-# e.g. before calculating correlations across model KC populations.
-#
-# Remy generally DOES drop "bad" cells, which are largely silent cells, but that isn't
-# controlled by this flag. my analysis of her data generally also drops the same cells
-# she does.
-drop_silent_model_kcs = True
-
 def _get_silent_cell_suffix(responses_including_silent, responses_without_silent=None
     ) -> str:
     if responses_without_silent is None:
@@ -867,12 +912,13 @@ def _get_silent_cell_suffix(responses_including_silent, responses_without_silent
 
 # TODO delete all these? or re-organize? want to minimize how much mb_model stuff
 # assumes a certain output folder structure
+#
 # TODO also use for wPNKC(s)? anything else?
 data_outputs_root = Path('data')
 hallem_csv_root = data_outputs_root / 'preprocessed_hallem'
-
 hallem_delta_csv = hallem_csv_root / 'hallem_orn_deltas.csv'
 hallem_sfr_csv = hallem_csv_root / 'hallem_sfr.csv'
+#
 
 # TODO delete Optional in RHS of return Tuple after implementing in other cases
 # TODO if orn_deltas is passed, should we assume we should tune on hallem? or assume we
@@ -885,35 +931,109 @@ hallem_sfr_csv = hallem_csv_root / 'hallem_sfr.csv'
 # TODO doc that sim_odors is Optional[Set[str]]
 # TODO actually, probably can delete sim_odors now? why even have it? to tune on a diff
 # set than to return responses for?
-# TODO default tune_on_hallem to False?
-def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True,
-    pn2kc_connections: str = 'hemibrain', weight_divisor: Optional[float] = None,
-    n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
+# TODO check new default for tune_on_hallem didn't break any of my existing calling code
+def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
+    tune_on_hallem: bool = False, pn2kc_connections: str = 'hemibrain',
+    weight_divisor: Optional[float] = None, n_claws: Optional[int] = None,
+    drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
     target_sparsity: Optional[float] = None,
     target_sparsity_factor_pre_APL: Optional[float] = None,
     _use_matt_wPNKC=False, _drop_glom_with_plus=True,
     _add_back_methanoic_acid_mistake=False,
     fixed_thr: Optional[float] = None,
+    # TODO update float type if i support vector wAPLKC/wKCAPL (for connectome inputs)
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
     print_olfsysm_log: Optional[bool] = None, plot_dir: Optional[Path] = None,
     make_plots: bool = True, title: str = '',
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     repro_preprint_s1d: bool = False,
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
-    # TODO TODO doc point of sim_odors. do we need to pass them in?
+    # TODO doc point of sim_odors. do we need to pass them in (not typically, no)?
     # (even when neither tuning nor running on any hallem data?)
+    # TODO does matt's code support float wPNKC? can i just directly normalize wPNKC and
+    # pass that in, rather than dealing w/ weight_divisor=<float>?
+    # TODO TODO have responses [/spike_counts] returned w/ row indices using same
+    # connectome cell IDs are wPNKC row index ('bodyid' as called in hemibrain data prat
+    # assembled) (or have wPNKC also use same sequential int index)
     """
     Args:
-        title: only used if plot_dir passed. used as prefix for titles of plots.
+        orn_deltas: dataframe of shape (# glomeruli, # odors). values should be in units
+            of change in spike deltas (`model_mb_responses` will do this scaling for
+            you). Input should only contain one value per (glomerulus, odor) pair, so
+            take a mean across flies (if applicable) before passing.
+
+            Odor (column) index should also not have multiple repeats of the same odor.
+            Odor strings (in at least one index level) should be in format like:
+            '<odor-name-abbreviation> @ <log10-conc>', e.g. 'eb @ -3'.
+            Odor index may also have a 'panel' level, to group odors by experiment,
+            though output `responses` and `spike_counts` currently do not preserve
+            this level [could implement].
+
+            Only glomeruli in intersection of connectome (hemibrain, unless otherwise
+            specified) and Task et al 2022 glomeruli will be included in model.
+            Additional input glomeruli will be dropped, and any of these glomeruli
+            missing from input will have their spike-change-deltas imputed as 0.
+            Glomeruli will use SFRs reported in Hallem, when cognate OR is in Hallem
+            dataset, or mean Hallem SFR otherwise.
+
+        target_sparsity: target mean response rate (across tuned odors, which is all
+            odors by default). By default, model is only tuned until mean response
+            rate is within +/- 10% (sp_acc) of target. If passed, `fixed_thr` and
+            `wAPLKC` should not be.
+
+        fixed_thr: added to each KCs spontaneous firing rate (SFR) to produce the spike
+            threshold. `olfsysm` has options to not add this, but not currently exposed
+            by this wrapper. expected that only either this and `wAPLKC` OR
+            `target_sparsity` are specified.
+
+        wAPLKC: weight from APL to every KC. `wKCAPL` defined from this, unless both are
+            passed.
+
+        pn2kc_connections_options: for connectome (non-RNG) options, passed to
+            `connectome_wPNKC`
+
+        weight_divisor: passed to `connectome_wPNKC` (only relevant for connectome
+            `pn2kc_connections` options)
+
+        _drop_glom_with_plus: passed to `connectome_wPNKC`
+
+        seed: if using one of `pn2kc_connections` options that uses RNG to generate the
+            PN->KC weight matrix (e.g. 'uniform', 'hemidraw', NOT 'hemibrain'), this
+            seeds that RNG. The model (as configured by default, and as presented by
+            this wrapper) is otherwise deterministic. NOTE: seeded by default.
+
+        n_claws: for relevant `pn2kc_connections` (e.g. 'uniform', 'hemidraw', NOT
+            'hemibrain') this sets that number of PNs each KC draws (i.e. # of claws for
+            each KC)
 
         drop_silent_cells_before_analyses: only relevant if `make_plots=True`
 
-        repro_preprint_s1d: whether to add fake odors + return data to allow
-            reproduction of preprint figure S1D (showing model response rates to fake
-            CO2, fake ms, and real eb)
+        title: (internal use only) only used if plot_dir passed. used as prefix for
+            titles of plots.
 
-    Returns responses, wPNKC
+        repro_preprint_s1d: (internal use only) whether to add fake odors + return data
+            to allow reproduction of preprint figure S1D (showing model response rates
+            to fake CO2, fake ms, and real eb)
+
+
+    Returns:
+        responses: `spike_counts`, but binarized so any amount of spikes = True, else
+            False.
+
+        spike_counts: dataframe of shape (# KCs, # odors). If input had 'panel' level in
+            odor (column) index, this currently does not preserve that level.
+            If `repro_preprint_s1d=True` (which is NOT the default), extra
+            (synthetic) odors for that plot will be included in output.
+
+        wPNKC: dataframe of shape (# KCs, # glomeruli).
+
+            Currently, I've only tested Matt's code with integer values, which can be
+            interpreted as # of claws between PNs (of each glomerulus) to each KC.
+
+        param_dict: dict containing tuned parameters (e.g. 'fixed_thr', 'wAPLKC'),
+            certain model intermediates (e.g. 'kc_spont_in'), and certain parameters
+            relevant for reproducibility (e.g. 'sp_acc', 'max_iters').
     """
     # TODO maybe make it so sim_odors is ignored if orn_deltas is passed in?
     # or err [/ assert same odors as orn_deltas]? would then need to conditionally pass
@@ -926,7 +1046,9 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
         raise ValueError(f'{pn2kc_connections=} not in {pn2kc_connections_options}')
 
     if pn2kc_connections == 'caron':
-        # TODO TODO support? may need for comparisons to ann's model?
+        # TODO support? may need for comparisons to ann's model (but hopefully there's a
+        # determinstic version of her model, like our 'hemibrain', if i really care
+        # about that? not sure i could get same RNG wPNKC in Matt's code vs hers...)?
         raise NotImplementedError
 
     # TODO rename? there is a fixed number of claws, just that we can set them w/
@@ -2408,10 +2530,7 @@ def fit_mb_model(orn_deltas=None, sim_odors=None, *, tune_on_hallem: bool = True
     return responses, spike_counts, wPNKC, param_dict
 
 
-n_seeds = 3
-print('RESTORE N_SEEDS=100')
-# TODO TODO TODO TODO restore
-#n_seeds = 100
+n_seeds = 100
 
 # TODO TODO and re-run whole script once implemented for those 2 (to compare
 # sd / ('ci',95) / ('pi',95|50) for each)
@@ -2822,11 +2941,11 @@ _fit_and_plot_seen_param_dirs = set()
 # TODO why is sim_odors an explicit kwarg? just to not have included in strs describing
 # model params? i already special case orn_deltas to exclude it. why not do something
 # like that (if i keep the param at all)?
-# TODO TODO try to get [h|v]lines between components, 2-component mixes, and 5-component
+# TODO try to get [h|v]lines between components, 2-component mixes, and 5-component
 # mix for new kiwi/control data (at least for responses and correlation matrices)
 # (could just check for '+' character, to handle all cases)
-def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
-    sens_analysis_kws: Optional[Dict[str, Any]] = None,
+def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
+    sens_analysis_kws: Optional[Dict[str, Any]] = None, try_cache: bool = True,
     # TODO rename comparison_responses to indicate it's only used for sensitivity
     # analysis stuff? (and to be more clear how it differs from comparison_[kcs|orns])
     comparison_responses: Optional[pd.DataFrame] = None,
@@ -2842,27 +2961,47 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     comparison_kc_corrs=None, responses_to_suffix='',
     _strip_concs_comparison_kc_corrs=False, param_dir_prefix: str = '',
     title_prefix: str= '', extra_params: Optional[dict] = None,
-    _only_return_params: bool = False, **model_kws):
+    _only_return_params: bool = False, **model_kws) -> Optional[Dict[str, Any]]:
     # TODO doc which extra plots made by each of comparison* inputs (or which plots are
     # changed, if no new ones)
     """
     Args:
-        min_sparsity: only used for models parameterized with fixed `fixed_thr` and
-            `wAPLKC` (typically in context of sensitivity analysis). return before
-            generating plots if output sparsity is outside these bounds.
+        plot_dir: parent to directory that will be created to contain model outputs and
+            plots. created model output directories will have names incuding key
+            parameters.
 
-        max_sparsity: see min_sparsity.
+        sensitivity_analysis: if True, will run multiple versions of the model
+            (saving output for each to a separte subdirectory), with `fixed_thr` and
+            `wAPLKC` stepped around tuned values from primary model outputs.
+            use `sens_analysis_kws` to control steps.
+
+        try_cache: set False to force* any model cache to be ignored. Calls via
+            `al_analysis.py` CLI with `-i model` will have the same effect.
+
+        min_sparsity: (internal use only) only used for models parameterized with fixed
+            `fixed_thr` and `wAPLKC` (typically in context of sensitivity analysis).
+            return before generating plots if output sparsity is outside these bounds.
+
+        max_sparsity: (internal use only) see min_sparsity.
 
         extra_params: saved alongside internal params in cache pickle/CSV
             (for keeping tracking of important external parameters, for reproducibility)
+
+        **model_kws: passed to `fit_mb_model` (see its docstring, particularly for key
+            inputs, such as `orn_deltas`)
+
+    Returns dict with key model parameters (some tuned), any input `extra_params`, as
+    well as 'output_dir' with name of created directory (which contains model outputs
+    and plots).
+
+    Notes:
+    The contents of the `orn_deltas.csv` files copied to each model output directory
+    should reflect the `model_kws['orn_deltas']` input to this function.
     """
-    # TODO doc
-
-    # TODO also save input data to csv for each?
-    # (for more easy reproducibility w/o needing to re-load + run dF/F->spike delta fn)
-
     assert n_seeds >= 1
 
+    # TODO delete restrict_sparsity? currently used?
+    # TODO delete [min|max]_sparsity too?
     if not restrict_sparsity:
         min_sparsity = 0
         max_sparsity = 1
@@ -2885,16 +3024,14 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     # (did i already? is it clear that what's in preprint was not done this way?)
 
     # TODO share default w/ fit_mb_model somehow?
-    tune_on_hallem = model_kws.get('tune_on_hallem', True)
+    tune_on_hallem = model_kws.get('tune_on_hallem', False)
     if tune_on_hallem:
         tune_from = 'hallem'
     else:
         tune_from = my_data
     del my_data
 
-    # TODO fix (give actual default? make positional?) (is this ever not available?
-    # when?)
-    pn2kc_connections = model_kws['pn2kc_connections']
+    pn2kc_connections = model_kws.get('pn2kc_connections', 'hemibrain')
 
     # TODO also use param_str for title? maybe just replace in the other direction, to
     # add dff_latex in pebbled case as necessary?). or just use filename only for many
@@ -3028,14 +3165,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         if weight_divisor is not None:
             title += f'weight_divisor: {weight_divisor:.1f}\n'
 
-        if 'target_sparsity' in model_kws:
-            assert model_kws['target_sparsity'] is not None
-            assert fixed_thr is None and wAPLKC is None
-            # .3g will show up to 3 sig figs (regardless of their position wrt decimal
-            # point), but also strip any trailing 0s (0.0915 -> '0.0915', 0.1 -> '0.1')
-            title += f'target_sparsity: {model_kws["target_sparsity"]:.3g}\n'
-
-        elif fixed_thr is not None or wAPLKC is not None:
+        if fixed_thr is not None or wAPLKC is not None:
             assert fixed_thr is not None and wAPLKC is not None
             # TODO assert target_sparsity_factor_pre_APL is None?
 
@@ -3044,8 +3174,17 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
             if n_seeds == 1:
                 title += f'fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}\n'
         else:
-            # should be unreachable
-            assert False
+            if 'target_sparsity' in model_kws:
+                assert model_kws['target_sparsity'] is not None
+                target_sparsity = model_kws['target_sparsity']
+            else:
+                target_sparsity = 0.1
+                warn(f'using default target_sparsity of {target_sparsity:.3g}')
+
+            assert fixed_thr is None and wAPLKC is None
+            # .3g will show up to 3 sig figs (regardless of their position wrt decimal
+            # point), but also strip any trailing 0s (0.0915 -> '0.0915', 0.1 -> '0.1')
+            title += f'target_sparsity: {target_sparsity:.3g}\n'
 
         # NOTE: this is for analyses that either always include or always drop silent
         # cells, regardless of value of `drop_silent_cells_before_analyses`
@@ -3082,7 +3221,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
     extra_spikecounts_cache = param_dir / extra_spikecounts_cache_name
     extra_spikecounts = None
 
-    use_cache = not should_ignore_existing('model') and (
+    use_cache = try_cache and (not should_ignore_existing('model')) and (
         # checking both since i had previously only been returning+saving the 1st
         model_responses_cache.exists() and model_spikecounts_cache.exists()
     )
@@ -3146,6 +3285,7 @@ def fit_and_plot_mb_model(plot_dir, sensitivity_analysis: bool = False,
         # doesn't have those extra params
     #
 
+    # TODO give better explanation as to why this is here.
     # to make sure we are accounting for all parameters we might vary in filename
     if param_dir in _fit_and_plot_seen_param_dirs:
         # otherwise, param_dir being in seen set would indicate an error
@@ -4963,7 +5103,6 @@ def maxabs_scale(data: pd.Series) -> pd.Series:
 # TODO correct type hint for model?
 # (statsmodels.regression.linear_model.RegressionResultsWrapper, but maybe something
 # more general / not the wrapper?)
-# TODO also add load_model(Path)?
 def save_model(model, path: Path) -> None:
     model.save(path)
 
@@ -4971,9 +5110,36 @@ def save_model(model, path: Path) -> None:
 # TODO modify to accept csv path for certain_df too (if that makes it easier to get some
 # basic versions of the model runnable for other people)? either way, want to commit
 # some example AL data to use.
-def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
-    skip_sensitivity_analysis=False, skip_models_with_seeds=False,
-    skip_hallem_models=False):
+# TODO rename certain_df to just df (or something less loaded)
+# TODO TODO add kwarg to hardcode a dF/F -> spike delta scaling factor (or a
+# general fn), and have it bypass the computation of this fn / related plotting/cache.
+# (-> use for simple example uses of this fn, hardcoding scale factor = 127 from
+# Remy-paper)
+def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
+    roi_depths=None, skip_sensitivity_analysis: bool = False,
+    skip_models_with_seeds: bool = False, skip_hallem_models: bool = False) -> None:
+    # TODO TODO when is it ok for certain_df to have NaNs? does seem current input has
+    # some NaNs, which are only for some odors [for which no odors is NaN for all
+    # fly-glomeruli]. any restrictions (if none, why was sam having issues?)
+    """
+    Args:
+        certain_df: dataframe of shape (# odors [including repeats], # fly-glomeruli),
+            with dF/F values from [potentially multiple] flies.
+
+            Column index names should be ['date', 'fly_num', 'roi' (i.e. glomerulus
+            name)].
+
+            Row index names should be ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
+            (possible that not all are required, but 'panel' and 'odor1' should be)
+
+        parent_plot_dir: where a 'mb_modeling' subdirectory will be created to contain
+            any model output directories (and other across-model plots).
+
+            In typical use from `al_analysis.py`, this might be 'pebbled_6f/pdf/ijroi'.
+    """
+    # TODO (not using roi_depths really, so not a big deal) why do roi_depths seem to
+    # have one row per panel, rather than per recording?  current input has column
+    # levels ['date', 'fly_num', 'roi'] and row levels ['panel', 'is_pair'])
 
     # TODO delete. for debugging.
     global _spear_inputs2dfs
@@ -5474,7 +5640,6 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         gdf[new_dff_col] = scaled
         return gdf
 
-
     columns_before = fly_mean_df.columns
 
     methods = [
@@ -5638,6 +5803,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         else:
             use_saved_dff_to_spiking_model = True
 
+    # TODO what exacty triggers this? doc in comment
     except KeyError:
         use_saved_dff_to_spiking_model = True
 
@@ -5723,6 +5889,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
     # TODO refactor to move type of model to one place above?
     # NOTE: RegressionResults does not seem to be a subclass of
     # RegressionResultsWrapper. sad.
+    # TODO move outside this fn
     def fit_dff2spiking_model(to_fit: pd.DataFrame) -> Tuple[RegressionResultsWrapper,
         Optional[RegressionResultsWrapper]]:
 
@@ -5759,6 +5926,7 @@ def model_mb_responses(certain_df, parent_plot_dir, roi_depths=None,
         return model, inh_model
 
 
+    # TODO move outside this fn
     def predict_spiking_from_dff(df: pd.DataFrame, model: RegressionResultsWrapper,
         inh_model: Optional[RegressionResultsWrapper] = None, *, alpha=0.05,
         ) -> pd.DataFrame:
@@ -9183,9 +9351,68 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
     return df_obs
 
 
-
-
 def main():
+    model_output_dir1 = Path('data/sent_to_remy/2025-03-18/'
+        'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
+        'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
+    ).resolve()
+
+    # panel          megamat   ...
+    # odor           2h @ -3   ...   benz @ -3    ms @ -3
+    # glomerulus               ...
+    # D            40.363954   ...   42.445274  41.550370
+    # DA2          15.144943   ...   12.363544   3.856004
+    # ...
+    # VM7d        108.535394   ...   58.686294  20.230297
+    # VM7v         59.896953   ...   13.250292   8.446418
+    orn_deltas = pd.read_csv(model_output_dir1 / 'orn_deltas.csv', header=[0,1],
+        index_col=0
+    )
+    assert orn_deltas.columns.names == ['panel', 'odor']
+    assert orn_deltas.index.names == ['glomerulus']
+
+    reproduce_input = True
+    # TODO TODO TODO restore
+    #reproduce_input = False
+    kws = dict()
+    if reproduce_input:
+        kws = dict(
+            # I would not normally recommend you hardcode any of these except perhaps
+            # weight_divisor=20. The defaults target_sparsity=0.1 and
+            # _drop_glom_with_plus=True should be fine.
+            target_sparsity=0.0915, weight_divisor=20, _drop_glom_with_plus=False
+        )
+
+    plot_root = Path('mb_model_example').resolve()
+    # TODO modify this fn so dirname includes all same params by default (rather than
+    # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
+    # by calls in model_mb_... (prob behaving diff b/c e.g.
+    # pn2kc_connections='hemibrain' is explicitly passed there)
+    param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+        try_cache=False, **kws
+    )
+
+    output_dir = (plot_root / param_dict['output_dir']).resolve()
+    assert output_dir.is_dir()
+    assert output_dir.parent == plot_root
+
+    #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
+    # model_kc                              ...
+    # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
+    # 1             0.0       0.0      0.0  ...         0.0        0.0      0.0
+    # ...           ...       ...      ...  ...         ...        ...      ...
+    # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
+    # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
+    df = pd.read_csv(output_dir / 'spike_counts.csv', index_col='model_kc')
+
+    if reproduce_input:
+        idf = pd.read_csv(model_output_dir1 / 'spike_counts.csv', index_col='model_kc')
+        assert idf.equals(df)
+
+
+    # TODO TODO also include an example w/ kiwi/control data (as used by natmix_data)
+    # (either committing data in al_analysis too, or moving this whole example to
+    # another repo)
     import ipdb; ipdb.set_trace()
 
 

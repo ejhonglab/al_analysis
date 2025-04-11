@@ -1,3 +1,9 @@
+- plot_roi_util.py: check i don't need to import warn/sort_odors from al_util instead of
+  al now (if latter works, it would only be b/c it was first imported in al_analysis)
+
+- am i really not using my ijroi fork here? seems i just have a [presumably generic
+  pypi, but maybe my version # just got inherited from that?] 0.4.1.dev0 installed?
+
 - (med) add Z information for each glomerulus, and revisit glomerulus specific
   fitting? (now using depth instead of glomerulus ID, potentially giving us enough
   data to see an effect?)
