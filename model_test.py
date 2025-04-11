@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from drosolf import orns
 
 from hong2p import viz
-from al_analysis import (matt_data_dir, fit_mb_model, savefig, diverging_cmap, cmap,
+from al_analysis import (fit_mb_model, savefig, diverging_cmap, cmap,
     abbrev_hallem_odor_index, panel2name_order
 )
 import al_analysis
@@ -50,6 +50,10 @@ remy_odors = [
 
 # TODO convert this to unit test(s)?
 def main():
+    # TODO commit relevant outputs in data and use those. already have them (not all,
+    # only the hemibrain subdir)?
+    matt_data_dir = Path('../matt/matt-modeling/data')
+
     # TODO TODO fix code that generated hemimatrix.npy / delete
     # (to remove effect of hc_data.csv methanoic acid bug that persisted in many copies
     # of this csv) (won't be equal to `wide` until fixed)
