@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 # editable installs seem to work fine so far
-py-modules = ["al_analysis", "hong_logging", "load_antennal_csv"]
+py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antennal_csv"]
 
 [project]
 name = "al_analysis"

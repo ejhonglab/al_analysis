@@ -11318,6 +11318,13 @@ def main():
         [c for c in move_to_end if c in method_df.columns]
     ].copy()
 
+    # TODO have that code automatically generate it from fns defined in main instead?
+    # TODO TODO or make wrapper also take kwarg flag to include indivdual calls under
+    # -C? could also use for saving mean_est_spike_deltas.csv in modelling code
+    #
+    # hack to get -C to to also ignore stuff saved by save_method_csvs
+    al_util._consider_as_main.append('save_method_csvs')
+
     def save_method_csvs(df, suffix='', *, by_fly_version=False):
         if (df.index.get_level_values('is_pair') == False).all():
             df = df.copy()

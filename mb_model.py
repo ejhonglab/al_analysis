@@ -116,6 +116,12 @@ def handle_multiglomerular_receptors(df: pd.DataFrame,
     return df
 
 
+def _plot_connectome_raw_weight_hist(weight_ser: pd.Series) -> Tuple[Figure, Axes]:
+    fig, ax = plt.subplots()
+    sns.histplot(weight_ser, discrete=True, ax=ax)
+    return fig, ax
+
+
 # TODO add 'hemibrain-matt' here, and replace _use_matt_wPNKC w/ that?
 # NOTE: FAFB = FlyWire
 connectome_options = {'hemibrain', 'fafb-left', 'fafb-right'}
@@ -719,21 +725,18 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         assert not df[kc_id_col].isna().any()
         n_kcs = df[kc_id_col].nunique()
 
-        if plot_dir is not None:
-            assert not df[weight_col].isna().any()
-            min_weight = df[weight_col].min()
-            assert min_weight > 0
-            # was true b/c Prat's query in hemibrain case, and b/c subsetting above in
-            # fafb cases
-            assert min_weight == 4
+        assert not df[weight_col].isna().any()
+        min_weight = df[weight_col].min()
+        assert min_weight > 0
+        # was true b/c Prat's query in hemibrain case, and b/c subsetting above in
+        # fafb cases
+        assert min_weight == 4
 
-            # TODO TODO also move this plot after we drop non-task glomeruli? (prob
-            # doesn't matter) (actually would keep bins more sane in
-            # _drop_glom_with_plus, b/c data should match _drop_glom_with_plus=True case
-            # after dropping non-task glomeruli)
-            fig, ax = plt.subplots()
-            # TODO also put input filename formatted mtime in a title line? prob not...
-            sns.histplot(df[weight_col], discrete=True, ax=ax)
+        # TODO TODO also move this plot after we drop non-task glomeruli? (prob doesn't
+        # matter) (actually would keep bins more sane in _drop_glom_with_plus, b/c data
+        # should match _drop_glom_with_plus=True case after dropping non-task glomeruli)
+        if plot_dir is not None:
+            fig, ax = _plot_connectome_raw_weight_hist(df[weight_col])
             ax.set_title(f'{connectome} PN->KC weights\n{min_weight=}\n{data_path.name}'
                 f'\n{n_kcs=}'
             )
@@ -761,7 +764,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             wPNKC = pd.pivot_table(df, values=weight_col, index=kc_id_col,
                 columns='glomerulus', aggfunc='count').fillna(0).astype(int)
 
-            # TODO delete?
+            # TODO delete? (/ move to unit test)
             df_bin = df.copy()
             assert (df[weight_col] > 0).all()
             df_bin[weight_col] = (df_bin[weight_col] > 0).astype(int)
@@ -875,6 +878,421 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
     return wPNKC
 
 
+def connectome_APL_weights(connectome: str = 'hemibrain', *,
+    wPNKC: Optional[pd.DataFrame] = None, plot_dir: Optional[Path] = None
+    ) -> Tuple[pd.Series, pd.Series]:
+    # TODO add param to support imputing something non-zero (min_weight?) for KC IDs in
+    # wPNKC but not APL-KC data
+    # TODO actually want to support weight_divisor (prob not, especially if i'm
+    # scaling everything anyway? and prob wouldn't same to be same as for PN->KC data
+    # anyway...)?
+    # TODO param for min_weight? maybe add smilar one for connectome_wPNKC, and share
+    # min_weight value across these two fns? (even if doesn't make sense to share
+    # weight_divisor)?
+    """Returns wAPLKC, wKCAPL (each a `Series` with KC IDs in index, and weight values)
+
+    Args:
+        connectome: same as for `connectome_wPNKC`
+
+        wPNKC: dataframe of shape (# KCs, # glomeruli), with index being KC body IDs
+            from same connectome as requested. If passed, KCs with IDs not in this index
+            will be dropped from output, and KC IDs in `wPNKC.index` but not in APL-KC
+            data will have weight set to 0.
+
+        plot_dir: same as for `connectome_wPNKC`
+    """
+    assert connectome in connectome_options
+
+    if connectome != 'hemibrain':
+        raise NotImplementedError('currently only have data for APL-KC connections'
+            " for connectome='hemibrain'"
+        )
+
+    apl_data_dir = Path('data/from_pratyush/2025-04-03')
+
+    apl2kc_csv = apl_data_dir / 'APL2KC_Connectivity.csv'
+    # columns: bodyId_pre, type_pre, instance_pre, bodyId_post, type_post,
+    # instance_post, roi, weight
+    apl2kc_df = pd.read_csv(apl2kc_csv)
+    # ipdb> apl2kc_df.instance_pre.unique()
+    # array(['APL_R', 'APL fragment?', 'APL or DPM', 'APL fragment_L'],
+
+    # unique roi values before filtering:
+    # [gL(R), CA(R), b'L(R), a'L(R), aL(R), bL(R), PED(R), SLP(R), PLP(R), SCL(R),
+    # b'L(L), NotPrimary, ICL(R), SIP(R), CRE(R)]
+    assert {'CA(R)'} == set(
+        apl2kc_df.roi[apl2kc_df.roi.str.contains('CA')].unique()
+    )
+    apl2kc_df = apl2kc_df[apl2kc_df.roi == 'CA(R)'].copy()
+
+    # filtering pratyush recommended. he doesn't think the other fragments (which
+    # may or may not have been from the right APL as well, but may also have been
+    # DPM, left APL, or something else) represent much of the data, or are worth
+    # using.
+    # TODO actually see what fraction of calyx connections are excluded by this
+    # filtering?
+    apl2kc_df = apl2kc_df[apl2kc_df.instance_pre == 'APL_R'].copy()
+    # unique values for non-int columns before/after filtering from line above:
+    # (via `apl2kc_df[apl2kc_df.select_dtypes('object').columns].apply(lambda x:
+    #  list(x.unique())).to_dict()` )
+    #
+    # BEFORE:
+    # {'instance_post': ['KCy(half)',
+    #                    'KCg-m_R',
+    #                    'KCg-t_R',
+    #                    'KCg-d_R',
+    #                    'KCab-m_R',
+    #                    'KC part due to gap',
+    #                    'KCab-c_R',
+    #                    "KCa'b'-m_R",
+    #                    "KCa'b'-ap2_R",
+    #                    'KC(incomplete?)',
+    #                    'KCg-s3_R',
+    #                    'KCab-s_R',
+    #                    'KCg-s2(super)_R',
+    #                    'KCab-p_R',
+    #                    "KCa'b'-ap1_R",
+    #                    'KCg-s4_R'],
+    #  'instance_pre': ['APL_R', 'APL or DPM'],
+    #  'roi': ['CA(R)'],
+    #  'type_post': [nan,
+    #                'KCg-m',
+    #                'KCg-t',
+    #                'KCg-d',
+    #                'KCab-m',
+    #                'KCab-c',
+    #                "KCa'b'-m",
+    #                "KCa'b'-ap2",
+    #                'KCg-s3',
+    #                'KCab-s',
+    #                'KCg-s2',
+    #                'KCab-p',
+    #                "KCa'b'-ap1",
+    #                'KCg-s4'],
+    #  'type_pre': ['APL', nan]}
+    #
+    #
+    # AFTER:
+    # {'instance_post': ['KCy(half)',
+    #                    'KCg-m_R',
+    #                    'KCg-t_R',
+    #                    'KCg-d_R',
+    #                    'KCab-m_R',
+    #                    'KC part due to gap',
+    #                    'KCab-c_R',
+    #                    "KCa'b'-m_R",
+    #                    "KCa'b'-ap2_R",
+    #                    'KC(incomplete?)',
+    #                    'KCg-s3_R',
+    #                    'KCab-s_R',
+    #                    'KCg-s2(super)_R',
+    #                    'KCab-p_R',
+    #                    "KCa'b'-ap1_R",
+    #                    'KCg-s4_R'],
+    #  'instance_pre': ['APL_R'],
+    #  'roi': ['CA(R)'],
+    #  'type_post': [nan,
+    #                'KCg-m',
+    #                'KCg-t',
+    #                'KCg-d',
+    #                'KCab-m',
+    #                'KCab-c',
+    #                "KCa'b'-m",
+    #                "KCa'b'-ap2",
+    #                'KCg-s3',
+    #                'KCab-s',
+    #                'KCg-s2',
+    #                'KCab-p',
+    #                "KCa'b'-ap1",
+    #                'KCg-s4'],
+    #  'type_pre': ['APL']}
+
+    # TODO why are there NaN in type post (how many? 80/1951 rows) (seems they are
+    # all for uncertain / fragment KCs)? just drop those i assume?
+    #
+    # ipdb> apl2kc_df[apl2kc_df.type_post.isna()].instance_post.unique()
+    # array(['KCy(half)', 'KC part due to gap', 'KC(incomplete?)'], dtype=object)
+    #
+    # ipdb> apl2kc_df[~ apl2kc_df.type_post.isna()].instance_post.unique()
+    # array(['KCg-m_R', 'KCg-t_R', 'KCg-d_R', 'KCab-m_R', 'KCab-c_R',
+    #        "KCa'b'-m_R", "KCa'b'-ap2_R", 'KCg-s3_R', 'KCab-s_R',
+    #        'KCg-s2(super)_R', 'KCab-p_R', "KCa'b'-ap1_R", 'KCg-s4_R'],
+    #       dtype=object)
+    apl2kc_df = apl2kc_df[apl2kc_df.type_post.notna()].copy()
+    assert not apl2kc_df.isna().any().any()
+
+    # ipdb> apl2kc_df.weight.value_counts().sort_index()
+    # 1      60
+    # 2      49
+    # 3      42
+    # 4      42
+    # 5      53
+    # 6      93
+    # 7     104
+    # 8     116
+    # 9     124
+    # 10    144
+    # 11    112
+    # 12    103
+    # 13     64
+    # 14     74
+    # 15     50
+    # 16     43
+    # 17     35
+    # 18     40
+    # 19     35
+    # 20     39
+    # 21     56
+    # 22     54
+    # 23     53
+    # 24     48
+    # 25     34
+    # 26     45
+    # 27     40
+    # 28     39
+    # 29     26
+    # 30      9
+    # 31     11
+    # 32     11
+    # 33      9
+    # 34      4
+    # 35      5
+    # 36      1
+    # 37      2
+    # 38      2
+    # Name: weight, dtype: int64
+
+
+    kc2apl_csv = apl_data_dir / 'KC2APL_Connectivity.csv'
+    # columns same as above
+    kc2apl_df = pd.read_csv(kc2apl_csv)
+
+    # TODO refactor to share most filtering w/ above (almost exactly the same)
+    assert {'CA(R)'} == set(
+        kc2apl_df.roi[kc2apl_df.roi.str.contains('CA')].unique()
+    )
+    kc2apl_df = kc2apl_df[kc2apl_df.roi == 'CA(R)'].copy()
+
+    # NOTE: using instance_post here instead of instance_pre above
+    kc2apl_df = kc2apl_df[kc2apl_df.instance_post == 'APL_R'].copy()
+    # TODO delete (and similar comment for apl2kc_df above). replace w/ similar
+    # comment after next (and final) filtering to exclude NaN KC cell types below.
+    #
+    # before/after filtering from line above:
+    # BEFORE
+    # {'instance_post': ['APL_R', 'APL or DPM'],
+    #  'instance_pre': ['KCy(half)',
+    #                   'KCab-c_R',
+    #                   'KCg-m_R',
+    #                   'KCab-m_R',
+    #                   'KC part due to gap',
+    #                   'KCg-t_R',
+    #                   'KCab-s_R',
+    #                   "KCa'b'-m_R",
+    #                   "KCa'b'-ap2_R",
+    #                   "KCa'b'-ap1_R",
+    #                   'KCg-d_R',
+    #                   'KC(incomplete?)',
+    #                   'KCg-s3_R',
+    #                   'KCab-p_R',
+    #                   'KCg-s2(super)_R',
+    #                   'KCg-s4_R'],
+    #  'roi': ['CA(R)'],
+    #  'type_post': ['APL', nan],
+    #  'type_pre': [nan,
+    #               'KCab-c',
+    #               'KCg-m',
+    #               'KCab-m',
+    #               'KCg-t',
+    #               'KCab-s',
+    #               "KCa'b'-m",
+    #               "KCa'b'-ap2",
+    #               "KCa'b'-ap1",
+    #               'KCg-d',
+    #               'KCg-s3',
+    #               'KCab-p',
+    #               'KCg-s2',
+    #               'KCg-s4']}
+    #
+    # AFTER
+    # {'instance_post': ['APL_R'],
+    #  'instance_pre': ['KCy(half)',
+    #                   'KCab-c_R',
+    #                   'KCg-m_R',
+    #                   'KCab-m_R',
+    #                   'KC part due to gap',
+    #                   'KCg-t_R',
+    #                   'KCab-s_R',
+    #                   "KCa'b'-m_R",
+    #                   "KCa'b'-ap2_R",
+    #                   "KCa'b'-ap1_R",
+    #                   'KCg-d_R',
+    #                   'KC(incomplete?)',
+    #                   'KCg-s3_R',
+    #                   'KCab-p_R',
+    #                   'KCg-s2(super)_R',
+    #                   'KCg-s4_R'],
+    #  'roi': ['CA(R)'],
+    #  'type_post': ['APL'],
+    #  'type_pre': [nan,
+    #               'KCab-c',
+    #               'KCg-m',
+    #               'KCab-m',
+    #               'KCg-t',
+    #               'KCab-s',
+    #               "KCa'b'-m",
+    #               "KCa'b'-ap2",
+    #               "KCa'b'-ap1",
+    #               'KCg-d',
+    #               'KCg-s3',
+    #               'KCab-p',
+    #               'KCg-s2',
+    #               'KCg-s4']}
+
+    # NOTE: seems like only 79 NaN here, despite seemingly 80 at this point in
+    # filtering for apl2kc_df above. almost certainly doesn't matter.
+    # NOTE: using type_pre, instead of type_post for apl2kc_df above
+    kc2apl_df = kc2apl_df[kc2apl_df.type_pre.notna()].copy()
+    assert not kc2apl_df.isna().any().any()
+
+    # ipdb> kc2apl_df.weight.value_counts().sort_index()
+    # 1      65
+    # 2      69
+    # 3      87
+    # 4     104
+    # 5     116
+    # 6     131
+    # 7     105
+    # 8      98
+    # 9      70
+    # 10    101
+    # 11     84
+    # 12    104
+    # 13    112
+    # 14    127
+    # 15    132
+    # 16    110
+    # 17     75
+    # 18     64
+    # 19     38
+    # 20     23
+    # 21      9
+    # 22      7
+    # 23      2
+    # 24      3
+    # 26      1
+    # 27      1
+    # Name: weight, dtype: int64
+
+    # KC IDs in each of these sets
+    apl2kc_ids = set(apl2kc_df.bodyId_post)
+    kc2apl_ids = set(kc2apl_df.bodyId_pre)
+
+    # ipdb> len(pn2kc_ids) # (defined below now)
+    # 1837
+    # ipdb> len(apl2kc_ids)
+    # 1871
+    # ipdb> len(kc2apl_ids)
+    # 1838
+    #
+    # ipdb> len(apl2kc_ids - pn2kc_ids)
+    # 117
+    # ipdb> len(pn2kc_ids - apl2kc_ids)
+    # 83
+    #
+    # ipdb> len(kc2apl_ids - pn2kc_ids)
+    # 94
+    # ipdb> len(pn2kc_ids - kc2apl_ids)
+    # 93
+
+    if plot_dir is not None:
+        min_weight = apl2kc_df['weight'].min()
+        assert min_weight > 0
+        fig, ax = _plot_connectome_raw_weight_hist(apl2kc_df['weight'])
+        ax.set_title(f'{connectome} APL->KC weights\n{min_weight=}\n{apl2kc_csv.name}\n'
+            f'n_kcs={len(apl2kc_ids)}'
+        )
+        savefig(fig, plot_dir, f'wAPLKC_hist_{connectome}')
+
+        min_weight = kc2apl_df['weight'].min()
+        assert min_weight > 0
+        fig, ax = _plot_connectome_raw_weight_hist(kc2apl_df['weight'])
+        ax.set_title(f'{connectome} KC->APL weights\n{min_weight=}\n{kc2apl_csv.name}\n'
+            f'n_kcs={len(kc2apl_ids)}'
+        )
+        savefig(fig, plot_dir, f'wKCAPL_hist_{connectome}')
+
+    if wPNKC is None:
+        # TODO test filling below works w/ this branch. expecting to mainly use branch
+        # below (where wPNKC is passed in)
+        kc_index = pd.Index((apl2kc_ids | kc2apl_ids), name='bodyid')
+    else:
+        kc_index = wPNKC.index.copy()
+
+        pn2kc_ids = set(wPNKC.index)
+
+        n_kcs_dropped_apl2kc = len(apl2kc_ids - pn2kc_ids)
+        if n_kcs_dropped_apl2kc > 0:
+            warn(f'{connectome=} dropping {n_kcs_dropped_apl2kc}/{len(apl2kc_ids)} '
+                'KCs in APL->KC data, but not in wPNKC'
+            )
+
+        n_kcs_dropped_kc2apl = len(kc2apl_ids - pn2kc_ids)
+        if n_kcs_dropped_kc2apl > 0:
+            warn(f'{connectome=} dropping {n_kcs_dropped_kc2apl}/{len(kc2apl_ids)} '
+                'KCs in KC->APL data, but not in wPNKC'
+            )
+
+    assert not apl2kc_df.bodyId_post.duplicated().any()
+    apl2kc_weights = apl2kc_df[['bodyId_post','weight']].set_index('bodyId_post'
+        ).squeeze()
+
+    wAPLKC = pd.Series(index=kc_index, data=apl2kc_weights)
+    # TODO delete (assertion passes)
+    #wAPLKC2 = pd.Series(index=kc_index, data=np.nan)
+    #for k, w in apl2kc_weights.items():
+    #    if k in wAPLKC2.index:
+    #        wAPLKC2[k] = w
+    #assert wAPLKC2.equals(wAPLKC)
+    #
+
+    assert not kc2apl_df.bodyId_pre.duplicated().any()
+    kc2apl_weights = kc2apl_df[['bodyId_pre','weight']].set_index('bodyId_pre'
+        ).squeeze()
+
+    wKCAPL = pd.Series(index=kc_index, data=kc2apl_weights)
+    # TODO delete (assertion passes)
+    #wKCAPL2 = pd.Series(index=kc_index, data=np.nan)
+    #for k, w in kc2apl_weights.items():
+    #    if k in wKCAPL2.index:
+    #        wKCAPL2[k] = w
+    #assert wKCAPL2.equals(wKCAPL)
+    #
+
+    # TODO would it be better to impute some non-zero min value, so those cells activity
+    # could still be scaled (add param for that?)?
+    fill_weight = 0
+
+    n_filled_apl2kc = wAPLKC.isna().sum()
+    if n_filled_apl2kc > 0:
+        warn(f'{connectome=} filling weight (={fill_weight}) for {n_filled_apl2kc}'
+            f'/{len(kc_index)} KCs in wPNKC (or in wKCAPL) but not in APL->KC data'
+        )
+        wAPLKC = wAPLKC.fillna(fill_weight)
+
+    n_filled_kc2apl = wKCAPL.isna().sum()
+    if n_filled_kc2apl > 0:
+        warn(f'{connectome=} filling weight (={fill_weight}) for {n_filled_kc2apl}'
+            f'/{len(kc_index)} KCs in wPNKC (or in wAPLKC) but not in KC->APL data'
+        )
+        wKCAPL = wKCAPL.fillna(fill_weight)
+
+    assert not wAPLKC.isna().any()
+    assert not wKCAPL.isna().any()
+
+    return wAPLKC, wKCAPL
+
+
 # TODO doc expected input format (i.e. what are rows / cols)
 def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
     # .any() checks for any non-zero, so should also work for spike counts
@@ -934,8 +1352,8 @@ hallem_sfr_csv = hallem_csv_root / 'hallem_sfr.csv'
 # TODO check new default for tune_on_hallem didn't break any of my existing calling code
 def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     tune_on_hallem: bool = False, pn2kc_connections: str = 'hemibrain',
-    weight_divisor: Optional[float] = None, n_claws: Optional[int] = None,
-    drop_multiglomerular_receptors: bool = True,
+    weight_divisor: Optional[float] = None, use_connectome_APL_weights: bool = False,
+    n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
     target_sparsity: Optional[float] = None,
     target_sparsity_factor_pre_APL: Optional[float] = None,
@@ -943,6 +1361,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     _add_back_methanoic_acid_mistake=False,
     fixed_thr: Optional[float] = None,
     # TODO update float type if i support vector wAPLKC/wKCAPL (for connectome inputs)
+    # (or use these as scale factors for those vectors, in that case? prob would be a
+    # bit confusing to have the same variables doing two different things...)
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
     print_olfsysm_log: Optional[bool] = None, plot_dir: Optional[Path] = None,
     make_plots: bool = True, title: str = '',
@@ -1121,6 +1541,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # code...)
     mp.kc.ignore_ffapl = True
 
+    # may or may not care to relax this later
+    # (so that we can let either be defined from one, or to try varying separately)
+    if wAPLKC is None and wKCAPL is not None:
+        raise NotImplementedError('wKCAPL can only be specified if wAPLKC is too')
+
     if fixed_thr is not None:
         assert target_sparsity is None
         assert target_sparsity_factor_pre_APL is None
@@ -1154,8 +1579,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     #pre_APL_sparsity_should_be = target_sparsity * target_sparsity_factor_pre_APL
     #
 
-    # TODO after getting model to accept hardcoded wAPLKC and wKCAPL, only do this if
-    # not hardcoding those (+ fixed thr)
+    # TODO after getting model to accept hardcoded wAPLKC and wKCAPL (should have been
+    # done for a while now, at least for scaling values... so is rest of comment still
+    # relevant?), only do this if not hardcoding those (+ fixed thr)
     if target_sparsity is not None:
         mp.kc.sp_target = target_sparsity
 
@@ -1183,10 +1609,20 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # with only APL bringing activity down? or does that not max sense?) maybe i
         # should change olfsysm to use something with a more sensible max (so i can go
         # between two extremes of all-threshold vs all-APL more easily)?
-        # (probably just `1 / target_sparsity`?)
+        # (probably just `1 / target_sparsity`? maybe accounting for how `sp_acc` would
+        # factor into that)
+        # TODO add unit test that my `1 / target_sparsity` guess above correct
 
-    # TODO assert that this csv is equiv to orn_deltas / orns.orns data?
-    hc_data_csv = str(Path('~/src/olfsysm/hc_data.csv').expanduser())
+    # TODO can i change to not load this when i'm just passing in my own data? necssary
+    # even then?
+    # TODO assert that this csv is equiv to orn_deltas / orns.orns data? (/ equal to
+    # olfsysm version, assuming we have olfsysm at ~/src/olfsysm?)
+    #hc_data_csv = str(Path('~/src/olfsysm/hc_data.csv').expanduser())
+    #
+    # NOTE: I committed olfsysm/hc_data.csv under al_analysis/data, since I couldn't
+    # find a nice mechanism to install that CSV as part of olfsysm setup. This should be
+    # the same as the olfsysm CSV.
+    hc_data_csv = str(Path('data/hc_data.csv').resolve())
     # TODO TODO add comment explaining what this is doing
     osm.load_hc_data(mp, hc_data_csv)
     del hc_data_csv
@@ -1359,6 +1795,59 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         _drop_glom_with_plus=_drop_glom_with_plus,
     )
     glomerulus_index = wPNKC.columns
+
+
+    if use_connectome_APL_weights:
+        wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
+            plot_dir=plot_dir
+        )
+        assert wAPLKC.index.equals(wKCAPL.index)
+        assert wPNKC.index.equals(wAPLKC.index)
+        # (min is 1 for both of these)
+        # ipdb> wAPLKC.max()
+        # 38.0
+        # ipdb> wKCAPL.max()
+        # 27.0
+
+        # TODO still need this scaling?
+        # TODO TODO TODO want initial scales more like what we had before? would prob
+        # make same step-size / stepping code more applicable, at least... e.g. (for a
+        # few random models, from tuned_params.csv):
+        # wAPLKC:
+        # 4.62295081967213
+        # 3.6790042023174045
+        # wKCAPL:
+        # 0.00251657638523252
+        # [0.0020027241166670684, 0.002025624649931575, 0.002004071206859098]
+        # 0.00283616614703812
+        # [0.002836166147038117, 0.002836166147038117, 0.002836166147038117]
+        print()
+        print('before scaling hack:')
+        print(f'{wAPLKC.mean()=}')
+        print(f'{wKCAPL.mean()=}')
+        # TODO TODO TODO fix tuning procedure to work w/ new ranges -> delete this hack
+        warn('scaling wAPLKC/wKCAPL to so .mean() is similar to previous tune ranges!'
+            ' fix olfsysm APL tuning procedure and delete this hack!'
+        )
+        # means will now equal hardcoded values in these expressions
+        wAPLKC = (wAPLKC / (wAPLKC.mean() / 4))
+        wKCAPL = (wKCAPL / (wKCAPL.mean() / 0.002))
+        print()
+        print('AFTER scaling hack:')
+        print(f'{wAPLKC.mean()=}')
+        print(f'{wAPLKC.min()=}')
+        print(f'{(wAPLKC == 0).sum()=}')
+        print(f'{wAPLKC.max()=}')
+        print()
+        print(f'{wKCAPL.mean()=}')
+        print(f'{wKCAPL.min()=}')
+        print(f'{(wKCAPL == 0).sum()=}')
+        print(f'{wKCAPL.max()=}')
+        print()
+        #
+
+        # TODO TODO maybe only scale one or the other?
+
 
     if not hallem_input:
         zero_filling = (~ glomerulus_index.isin(orn_deltas.index))
@@ -1813,6 +2302,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         wPNKC = None
 
+    # TODO also support older versions of model that didn't have these?
+    # TODO add additional kwargs, to allow setting and/or scaling only one of these at
+    # at time?
+    if use_connectome_APL_weights:
+        mp.kc.preset_wAPLKC = True
+        mp.kc.preset_wKCAPL = True
+
     rv = osm.RunVars(mp)
 
     # TODO need delete=False?
@@ -1839,11 +2335,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO is this currently the path being taken?
         pass
 
-    # may or may not care to relax this later
-    # (so that we can let either be defined from one, or to try varying separately)
-    if wAPLKC is None and wKCAPL is not None:
-        raise NotImplementedError('wKCAPL can only be specified if wAPLKC is too')
-
     def _single_unique_val(arr: np.ndarray) -> float:
         """Returns single unique value from array.
 
@@ -1853,11 +2344,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert len(unique_vals) == 1
         return unique_vals.pop()
 
-    # TODO TODO double check olfsysm flag that used to be called enable_apl
-    # actually only affected tuning, and that my hardcoded weights are still being used
-    # TODO TODO double check olfsysm tuning is only changing the 3 params i'm
-    # hardcoding (and especially in step that goes from 0.2 to 0.1 response rate)
-    if wAPLKC is not None:
+    # TODO should i maybe move these mp modifications up above (before line that defines
+    # RunVars from them). ig i probably would have noticed by now if it matters?
+    if not use_connectome_APL_weights and wAPLKC is not None:
         assert target_sparsity is None
         assert target_sparsity_factor_pre_APL is None
         assert fixed_thr is not None, 'for now, assuming both passed if either is'
@@ -1870,15 +2359,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # rv.kc.wKCAPL.max()=0.002386503067484662
         # rv.kc.wAPLKC.shape=(1630, 1)
         # rv.kc.wAPLKC.max()=3.8899999999999992
-        #
-        # TODO still need allclose/similar (at output)?
-        # TODO TODO specify one by dividing other by / double(p.kc.N)
-        #wAPLKC = 3.8899999999999992
         rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
-
-        # TODO TODO (delete) what is required to go from 0.2 to 0.1 response rate again
-        # (and why am i having such a hard time finding other values that will do
-        # that?)?
 
         if wKCAPL is not None:
             rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
@@ -1898,6 +2379,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     if pn2kc_connections in connectome_options:
         rv.kc.wPNKC = wPNKC
+
+    # TODO add additional kwargs, to allow setting and/or scaling only one of these at
+    # at time (would also want to change block above setting mp.kc.preset_w[APLKC|KCAPL]
+    # above)?
+    if use_connectome_APL_weights:
+        wAPLKC_arr = np.expand_dims(wAPLKC.values, 1)
+        assert wAPLKC_arr.shape == (mp.kc.N, 1)
+        rv.kc.wAPLKC = wAPLKC_arr
+
+        wKCAPL_arr = np.expand_dims(wKCAPL.values, 0)
+        assert wKCAPL_arr.shape == (1, mp.kc.N)
+        rv.kc.wKCAPL = wKCAPL_arr
 
     osm.run_ORN_LN_sims(mp, rv)
     osm.run_PN_sims(mp, rv)
@@ -1933,7 +2426,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         abs_sp_diff = abs(sp_actual - mp.kc.sp_target)
         rel_sp_diff = abs_sp_diff / mp.kc.sp_target
         # (if tune_apl_weights is hardcoded True above, this will likely fail)
-        assert rel_sp_diff <= mp.kc.sp_acc
+        assert rel_sp_diff <= mp.kc.sp_acc, f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
 
     spike_counts = rv.kc.spike_counts.copy()
 
@@ -1955,7 +2448,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert np.array_equal(
             responses_after_tuning[:, :n_input_odors], responses[:, :n_input_odors]
         )
-
 
     if tune_on_hallem and not hallem_input:
         # TODO TODO fix!
@@ -2052,65 +2544,69 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO return / put in input dict instead (/ too)?
         print(f'fixed_thr: {fixed_thr}')
 
-    # these should either be the same as any hardcoded wAPLKC [+ wKCAPL] inputs, or the
-    # values chosen by the tuning process. _single_unique_val will raise AssertionError
-    # if the input arrays contain more than one unique value.
-    rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
-    rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
+    if not use_connectome_APL_weights:
+        # these should either be the same as any hardcoded (scalar) wAPLKC [+ wKCAPL]
+        # inputs, or the values chosen by the tuning process. _single_unique_val will
+        # raise AssertionError if the input arrays contain more than one unique value.
+        rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
+        rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
 
-    if wAPLKC is not None:
-        # TODO delete? just checking what we set above hasn't changed
-        assert mp.kc.tune_apl_weights == False
+        if wAPLKC is not None:
+            # TODO delete? just checking what we set above hasn't changed
+            assert mp.kc.tune_apl_weights == False
 
-        assert rv_scalar_wAPLKC == wAPLKC
+            assert rv_scalar_wAPLKC == wAPLKC
 
-        # this should now be defined whenever wAPLKC is, whether passed in or not...
-        assert wKCAPL is not None
-        assert rv_scalar_wKCAPL == wKCAPL
+            # this should now be defined whenever wAPLKC is, whether passed in or not...
+            assert wKCAPL is not None
+            assert rv_scalar_wKCAPL == wKCAPL
+        else:
+            # TODO delete prints?
+            print(f'wAPLKC: {rv_scalar_wAPLKC}')
+            print(f'wKCAPL: {rv_scalar_wKCAPL}')
+            wAPLKC = rv_scalar_wAPLKC
+            wKCAPL = rv_scalar_wKCAPL
     else:
-        # TODO delete prints?
-        print(f'wAPLKC: {rv_scalar_wAPLKC}')
-        print(f'wKCAPL: {rv_scalar_wKCAPL}')
-        wAPLKC = rv_scalar_wAPLKC
-        wKCAPL = rv_scalar_wKCAPL
+        # TODO TODO TODO add an assertion that # 0 entries isn't changed by olfsysm
+        # tuning procedure (would need to change if so) (it currently IS, b/c tuning
+        # adds/subtracts from wAPLKC and wKCAPL, rather than scaling)
 
-    param_dict = {
-        'fixed_thr': fixed_thr,
-        'wAPLKC': wAPLKC,
-        'wKCAPL': wKCAPL,
+        # TODO delete
+        # TODO convert back to pd.Series? (or will that just interfere w/
+        # trying to save these into various downstream outputs [e.g. param csv(s)]? keep
+        # as arrays/lists if so?). currently giving me at least one ValueError about
+        # ambiguous truth values:
+        # TODO was that just old vs new had only one Series tho? test again
+        # w/o checking against old outputs via -C/-c? (yea, seems like it was just an
+        # issue w/ -C/-c)
+        # ```
+        # ...
+        #   File "/home/tom/src/al_analysis/mb_model.py", line 4089, in
+        #   fit_and_plot_mb_model
+        # to_pickle(param_dict, param_dict_cache)
+        # ...
+        # File "/home/tom/src/al_analysis/al_util.py", line 483, in
+        # _check_output_would_not_change
+        # unchanged = old == new
+        # ...
+        # ```
+        wAPLKC = pd.Series(index=wAPLKC.index, data=rv.kc.wAPLKC.squeeze())
+        wKCAPL = pd.Series(index=wKCAPL.index, data=rv.kc.wKCAPL.squeeze())
 
-        'kc_spont_in': spont_in,
-    }
-
-    tuning_dict = {
-        # TODO TODO expose at least these first two (sp_acc, max_iters) as kwargs.
-        # prob also sp_lr_coeff.
-        # TODO TODO TODO + maybe default to smaller tolerance (+ more iterations if
-        # needed). what currently happens if tolerance not reached in max_iters?
-        # add my own assertion (in this script) that we are w/in sp_acc?
-        #
-        # parameters relevant to model threshold + APL tuning process
-        # default=0.1 (fraction +/- sp_target)
-        'sp_acc': mp.kc.sp_acc,
-
-        # default=10
-        'max_iters': mp.kc.max_iters,
-
-        'sp_lr_coeff': mp.kc.sp_lr_coeff,
-        'apltune_subsample': mp.kc.apltune_subsample,
-
-        # should be how many iterations it took to tune,
-        'tuning_iters': rv.kc.tuning_iters,
-
-        # removed tuning_time_s from this, because it would cause -c checks to fail
-    }
-    if fixed_thr is None:
-        print('tuning parameters:')
-        pprint(tuning_dict)
-        print('tuning time: {tuning_time_s:.1f}s')
+        # TODO delete
         print()
-
-    param_dict = {**param_dict, **tuning_dict}
+        print('AFTER TUNING:')
+        print(f'{wAPLKC.mean()=}')
+        print(f'{wAPLKC.min()=}')
+        print(f'{(wAPLKC == 0).sum()=}')
+        print(f'{wAPLKC.max()=}')
+        print()
+        print(f'{wKCAPL.mean()=}')
+        print(f'{wKCAPL.min()=}')
+        print(f'{(wKCAPL == 0).sum()=}')
+        print(f'{wKCAPL.max()=}')
+        print()
+        #
 
     assert responses.shape[1] == (n_input_odors + n_extra_odors)
     responses = pd.DataFrame(responses, columns=odor_index)
@@ -2171,6 +2667,56 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wPNKC = pd.DataFrame(data=wPNKC, index=responses.index,
             columns=glomerulus_index
         )
+
+    # TODO TODO change responses.index to be connectome bodyid ints, rather than
+    # sequential int index, at least for connectome pn2kc_connections cases. (so it's
+    # consistent w/ KC index of other outputs there, like wAPLKC / kc_spont_in)
+
+    spont_in = pd.Series(index=wPNKC.index, data=spont_in.squeeze())
+
+    param_dict = {
+        'fixed_thr': fixed_thr,
+
+        # still want these here in the use_connectome_APL_weights=True case?
+        # (yes, but they will be popped from output and serialized separately in that
+        # case, like kc_spont_in always is. they would otherwise interfere w/ how i'm
+        # currently formatted + saving params into CSVs)
+        'wAPLKC': wAPLKC,
+        'wKCAPL': wKCAPL,
+
+        'kc_spont_in': spont_in,
+    }
+
+    tuning_dict = {
+        # TODO TODO expose at least these first two (sp_acc, max_iters) as kwargs.
+        # prob also sp_lr_coeff.
+        # TODO TODO TODO + maybe default to smaller tolerance (+ more iterations if
+        # needed). what currently happens if tolerance not reached in max_iters?
+        # add my own assertion (in this script) that we are w/in sp_acc?
+        #
+        # parameters relevant to model threshold + APL tuning process
+        # default=0.1 (fraction +/- sp_target)
+        'sp_acc': mp.kc.sp_acc,
+
+        # default=10
+        'max_iters': mp.kc.max_iters,
+
+        'sp_lr_coeff': mp.kc.sp_lr_coeff,
+        'apltune_subsample': mp.kc.apltune_subsample,
+
+        # should be how many iterations it took to tune,
+        'tuning_iters': rv.kc.tuning_iters,
+
+        # removed tuning_time_s from this, because it would cause -c checks to fail
+    }
+    if fixed_thr is None:
+        print('tuning parameters:')
+        pprint(tuning_dict)
+        print('tuning time: {tuning_time_s:.1f}s')
+        print()
+
+    param_dict = {**param_dict, **tuning_dict}
+
 
     # TODO why is this seemingly a list of arrays, while the equiv kc variable seems to
     # be an array immediately? binding code seems similar...
@@ -2531,6 +3077,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
 
 n_seeds = 100
+# TODO just add cli flag for this, at this point?
+# (for testing code faster, in a way that includes n_seeds > 1 model cases)
+#n_seeds = 3
 
 # TODO TODO and re-run whole script once implemented for those 2 (to compare
 # sd / ('ci',95) / ('pi',95|50) for each)
@@ -2545,23 +3094,42 @@ n_seeds = 100
 # this should be same as ('sd', 1), if i understand docs correctly.
 #seed_errorbar = 'sd'
 #
+# NOTE: trying this again 2025-04-14 to see if Betty likes it now for fig 3B.
 # IQR (i.e. 25th - 75th percentile)
+# TODO TODO TODO special case this one for 3B (similar to how i have a separate param
+# for 2E), if they go with it
+# TODO TODO how do they like this one for 3B?
 #seed_errorbar = ('pi', 50)
-# TODO TODO also try iqr ('pi', 50), or other percentile based methods?
-# default errorbar is ('ci', 95) (and this is what the preprint says it is
-# plotting)
 #
+# TODO restore? for things other than 3B at least?
 seed_errorbar = ('ci', 95)
 
 # was at B'c request to make new 2E versions using ('ci', 95), taking the first 20
 # (/100) seeds.
 #
+# TODO TODO TODO update paper methods. only mention in fig2E legend that it was first 20
+# seeds, and remove sentence about subsetting to first 20 seeds from end of that methods
+# section
+# TODO TODO wait, which have i been using? what are current paper plots using:
+# (pretty sure all plots say in title if they are only using first 20 seeds, and only 2E
+# says that in modeling.svg)
+# - 3B?
+# - S1C?
+# - S1D?
+# - validation/megamat sparsity plots?
+# NOTE: fig 2E has this configured separately (via `fig2e_n_first_seeds`, currently 20)
 # TODO clarify. not sure yet if she wants me to handle other seed_errorbar plots
 # this way too... (don't think we do)
-# TODO revert to 20 (but maybe ignore for 3B scatterplots [and S1C?])
+# TODO (still want to revert? idk... only if betty asks) revert to 20 (but maybe ignore
+# for 3B scatterplots [and S1C?])
 #n_first_seeds_for_errorbar = 20
 n_first_seeds_for_errorbar = None
 
+# TODO warn for anything using n_first_seeds other than module-level
+# n_first_seeds_for_errorbar (have enough context for meaningful message? inspect?)?
+# TODO also explain (in another line of text?) what seed=('pi', 50) means (+ maybe
+# similar confusing ones). ('pi', 50) means "percentile interval" for 25th - 75th
+# percentiles.
 def _get_seed_err_text_and_fname_suffix(*, errorbar=seed_errorbar,
     n_first_seeds=n_first_seeds_for_errorbar):
 
@@ -2738,9 +3306,89 @@ def plot_n_odors_per_cell(responses, ax, *, ax_for_ylabel=None, title=None,
     else:
         frac_responding_to_n_odors = _n_odors2frac_per_cell(n_odors_per_cell)
 
-    sns.lineplot(frac_responding_to_n_odors, label=label, color=color,
-        markeredgecolor=color, **lineplot_kws
-    )
+    # NOTE: did just downgrade to matplotlib==3.4.3, so this is not currently an issue.
+    # hopefully seaborn fixes it soon, so I can upgrade back to >=3.7.3
+    # (see comments below)
+    #
+    # TODO did this actually have negative values? (just in the way seaborn calculates
+    # the err, at least up to 0.13.2)
+    #
+    # ...
+    # pebbled_6f/pdf/ijroi/mb_modeling/megamat/dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_uniform__n-claws_7__drop-plusgloms_False__target-sp_0.0915__n-seeds_100/sparsity_per_odor.pdf
+    # Uncaught exception
+    # Traceback (most recent call last):
+    #   File "./al_analysis.py", line 13234, in <module>
+    #     main()
+    #   File "./al_analysis.py", line 13223, in main
+    #     model_mb_responses(consensus_df, across_fly_ijroi_dir,
+    #   File "/home/tom/src/al_analysis/mb_model.py", line 8232, in model_mb_responses
+    #     params_for_csv = fit_and_plot_mb_model(panel_plot_dir,
+    #   File "/home/tom/src/al_analysis/mb_model.py", line 5222, in fit_and_plot_mb_model
+    #     plot_n_odors_per_cell(responses_including_silent, ax,
+    #   File "/home/tom/src/al_analysis/mb_model.py", line 3280, in plot_n_odors_per_cell
+    #     sns.lineplot(frac_responding_to_n_odors, label=label, color=color,
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/seaborn/relational.py", line 507, in lineplot
+    #     p.plot(ax, kwargs)
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/seaborn/relational.py", line 354, in plot
+    #     ebars = ax.errorbar(
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/__init__.py", line 1446, in inner
+    #     return func(ax, *map(sanitize_sequence, args), **kwargs)
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/axes/_axes.py", line 3636, in errorbar
+    #     raise ValueError(
+    # ValueError: 'yerr' must not contain negative values
+    try:
+        sns.lineplot(frac_responding_to_n_odors, label=label, color=color,
+            markeredgecolor=color, **lineplot_kws
+        )
+    except ValueError:
+        # still a problem after upgrading from seaborn 0.13.0 to 0.13.2 (which does
+        # appear to be latest seaborn, as of 2025-04-14). could probably downgrade to
+        # 3.4.3 (https://github.com/sktime/pytorch-forecasting/issues/1145) but not sure
+        # that's a great long term solution. see also:
+        # https://github.com/matplotlib/matplotlib/issues/26187
+        #
+        # ipdb> pp lineplot_kws
+        # {'ax': <Axes: >,
+        #  'err_style': 'bars',
+        #  'errorbar': ('pi', 50),
+        #  'legend': False,
+        #  'linestyle': '-',
+        #  'marker': 'o',
+        #  'markerfacecolor': 'white',
+        #  'seed': 1337,
+        #  'x': 'n_odors',
+        #  'y': 'frac_responding_to_n_odors'}
+        #
+        # ipdb> frac_responding_to_n_odors
+        #        seed  n_odors  frac_responding_to_n_odors
+        # 0     94895        0                    0.589548
+        # 1     94895        1                    0.107784
+        # 2     94895        2                    0.076756
+        # 3     94895        3                    0.053892
+        # 4     94895        4                    0.039194
+        # ...     ...      ...                         ...
+        # 1795  94994       13                    0.004899
+        # 1796  94994       14                    0.000544
+        # 1797  94994       15                    0.000544
+        # 1798  94994       16                    0.000000
+        # 1799  94994       17                    0.000000
+        # [1800 rows x 3 columns]
+        #
+        # ipdb> frac_responding_to_n_odors.min()
+        # seed                          94895.0
+        # n_odors                           0.0
+        # frac_responding_to_n_odors        0.0
+        # dtype: float64
+        # ipdb> frac_responding_to_n_odors.max()
+        # seed                          94994.00000
+        # n_odors                          17.00000
+        # frac_responding_to_n_odors        0.63963
+        # dtype: float64
+        # ipdb> frac_responding_to_n_odors.isna().any()
+        # seed                          False
+        # n_odors                       False
+        # frac_responding_to_n_odors    False
+        import ipdb; ipdb.set_trace()
 
     if log_yscale:
         # TODO increase if needed (i.e. if we ever use fafb wPNKC / cell #s, which have
@@ -3031,7 +3679,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         tune_from = my_data
     del my_data
 
+    # TODO share defaults w/ fit_mb_model somehow?
     pn2kc_connections = model_kws.get('pn2kc_connections', 'hemibrain')
+    use_connectome_APL_weights = model_kws.get('use_connectome_APL_weights', False)
 
     # TODO also use param_str for title? maybe just replace in the other direction, to
     # add dff_latex in pebbled case as necessary?). or just use filename only for many
@@ -3044,6 +3694,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         'target_sparsity': 'target_sp',
         'target_sparsity_factor_pre_APL': 'sp_factor_pre_APL',
         '_drop_glom_with_plus': 'drop-plusgloms',
+        'use_connectome_APL_weights': 'connectome-APL',
     }
     exclude_params = ('orn_deltas', 'title', 'repro_preprint_s1d')
     # TODO sort params first? (so changing order in code doesn't cause
@@ -3097,6 +3748,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # prefix defaults to empty str
     title = title_prefix
     if _in_sens_analysis:
+        # TODO also assert wAPLKC is a (scalar) float (and not a vector float array from
+        # use_connectome_APL_weight=True code)?
         assert fixed_thr is not None and wAPLKC is not None
 
         # assumed to be passed in (but not created by) sensitivity analysis calls
@@ -3165,6 +3818,12 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         if weight_divisor is not None:
             title += f'weight_divisor: {weight_divisor:.1f}\n'
 
+        # TODO TODO and probably also need to say whether/how we are tuning APL in that
+        # context (unless i decide only one way ends up making sense [unlikely])
+        if use_connectome_APL_weights:
+            # TODO shorten at all?
+            title += f'use_connectome_APL_weights: True\n'
+
         if fixed_thr is not None or wAPLKC is not None:
             assert fixed_thr is not None and wAPLKC is not None
             # TODO assert target_sparsity_factor_pre_APL is None?
@@ -3210,8 +3869,18 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     param_dict_cache = param_dir / param_cache_name
     wPNKC_cache_name = 'wPNKC.p'
     wPNKC_cache = param_dir / wPNKC_cache_name
+
+    # TODO TODO also save kc_spont_in / vector wAPLKC/wKCAPL as CSVs? wPNKC (don't
+    # already have?)?
     kc_spont_in_cache = param_dir / 'kc_spont_in.p'
-    made_param_dir = False
+
+    # NOTE: these two only used for vector values (specifically, just the
+    # use_connectome_APL_weights=True case, which should always produce such values,
+    # unlike any other current path). If they are a scalar (including a whole vector
+    # with just one value repeated), these two params will be saved as elements of usual
+    # param pickle+CSV outputs.
+    wAPLKC_cache = param_dir / 'wAPLKC.p'
+    wKCAPL_cache = param_dir / 'wKCAPL.p'
 
     extra_responses_cache_name = 'extra_responses.p'
     extra_responses_cache = param_dir / extra_responses_cache_name
@@ -3225,6 +3894,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # checking both since i had previously only been returning+saving the 1st
         model_responses_cache.exists() and model_spikecounts_cache.exists()
     )
+
+    made_param_dir = False
 
     tuning_output_dir = None
     # TODO delete? or implement somewhere else? (maybe just add flag to force ignore on
@@ -3266,6 +3937,14 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
         if param_dict_cache.exists():
             param_dict = read_pickle(param_dict_cache)
+
+            # TODO need to handle vector wAPLKC here (from
+            # use_connectome_APL_weights=True)?
+            # TODO assert use_connectome_APL_weights=False for now?
+            # TODO delete
+            if use_connectome_APL_weights:
+                import ipdb; ipdb.set_trace()
+            #
 
             # np.array_equal works with both float and list-of-float inputs
             if (not np.array_equal(fixed_thr, param_dict['fixed_thr']) or
@@ -3444,7 +4123,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 k: [x[k] for x in param_dict_list] for k in first_param_dict.keys()
             }
         else:
-            # isinstance works w/ both float and np.float64 (but not int)
+            # TODO TODO update to support use_connectome_APL_weights=True case
+            # (w/ vector wAPLKC and wKCAPL)
+            # isinstance works w/ both float and scalar np.float64 (but not int)
             assert fixed_thr is None or isinstance(fixed_thr, float)
             assert wAPLKC is None or isinstance(wAPLKC, float)
 
@@ -3515,16 +4196,34 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         to_pickle(spike_counts, model_spikecounts_cache)
         to_pickle(wPNKC, wPNKC_cache)
 
-        # TODO just save w/ param_dict? poping to have this make old outputs trip -c/-C
-        # checks
-        # TODO edit earlier (in fit_mb_model?) to be a pandas object w/ same cell
-        # labels, rather than just numpy array?
+        # popping to have this make old outputs trip -c/-C checks, but also the param
+        # CSVs/etc would almost certainly not handle array/series values, at least not
+        # without extra work
         kc_spont_in = param_dict.pop('kc_spont_in')
-        # TODO convert to pandas series before saving? did seem to get loading of this
-        # working in natmix_data/analysis.py (which is only place that uses this now)
-        # tho...
         to_pickle(kc_spont_in, kc_spont_in_cache)
 
+        # currently just assuming that both will be in same format
+        # (both either np.arrays/pd.Series [depending on which i end up settling on
+        # for implementation] in only use_connectome_APL_weights=True case)
+        wAPLKC = param_dict.get('wAPLKC', None)
+        if wAPLKC is not None and not isinstance(wAPLKC, float):
+            assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
+
+            # only want to pop anything in this branch, cause other code depends on
+            # these values still being in param_dict
+            wAPLKC = param_dict.pop('wAPLKC')
+            to_pickle(wAPLKC, wAPLKC_cache)
+
+            wKCAPL = param_dict.pop('wKCAPL')
+            assert wKCAPL.shape == wAPLKC.shape
+            to_pickle(wKCAPL, wKCAPL_cache)
+        else:
+            wKCAPL = param_dict['wKCAPL']
+            assert wKCAPL is None or isinstance(wKCAPL, float)
+
+        # TODO update comment to reflect fact that use_connectome_APL_weights=True case
+        # gives us vector wAPLKC/wKCAPL now
+        #
         # TODO update this comment? i think param_dict might have a lot more stuff
         # now...
         #
@@ -3558,6 +4257,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             if extra_spikecounts_cache.exists():
                 extra_spikecounts_cache.unlink()
 
+    # TODO update comment to reflect fact that use_connectome_APL_weights=True case
+    # gives us vector wAPLKC/wKCAPL now
+    #
     # param_dict should include 'fixed_thr', 'wAPLKC' and 'wKCAPL' parameters, as
     # they are at the end of the model run (either tuned or
     # hardcoded-from-the-beginning)
@@ -3765,23 +4467,32 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         ax.set_title(title)
         ax.set_ylabel(ylabel)
 
+        # TODO assert no NaN (closer to start of fn? why not def this up there?)?
+        response_rates = sparsity_per_odor[sparsity_col]
+
         if ylim is not None:
             ymin, ymax = ylim
-
-            response_rates = sparsity_per_odor[sparsity_col]
-            assert (response_rates >= ymin).all(), f'{response_rates.min()=}'
             assert (response_rates <= ymax).all(), f'{response_rates.max()=}'
+        else:
+            ymin = 0
+            ymax = response_rates.max()
 
-            if comparison_sparsity_per_odor is not None:
-                comparison_response_rates = comparison_sparsity_per_odor[sparsity_col]
+        assert (response_rates >= ymin).all(), f'{response_rates.min()=}'
 
+        if comparison_sparsity_per_odor is not None:
+            comparison_response_rates = comparison_sparsity_per_odor[sparsity_col]
+
+            if ylim is None:
+                ymax = max(ymax, comparison_response_rates.max())
+            else:
                 assert (comparison_response_rates >= ymin).all(), \
                     f'{comparison_response_rates.min()=}'
 
+                # TODO just warn and increase max in cases where this would fail
                 assert (comparison_response_rates <= ymax).all(), \
                     f'{comparison_response_rates.max()=}'
 
-            ax.set_ylim([ymin, ymax])
+        ax.set_ylim([ymin, ymax])
 
         savefig(fig, param_dir, f'sparsity_per_odor{suffix}')
         return fig, ax
@@ -4049,6 +4760,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     pearson = _strip_index_and_col_concs(pearson)
 
     if _in_sens_analysis:
+        # TODO assert not use_connectome_APL_weights?
+
         assert fixed_thr is not None and wAPLKC is not None
 
         if ((min_sparsity is not None and sparsity < min_sparsity) or
@@ -4170,7 +4883,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         if n_first_seeds_for_errorbar is not None and 'seed' in df.columns:
             df = select_first_n_seeds(df)
 
-        def _save_kc_vs_orn_corr_scatterplot(metric_name):
+        def _save_kc_vs_orn_corr_scatterplot(metric_name: str) -> None:
             # to recreate preprint fig 3B
 
             if metric_name == 'correlation distance':
@@ -4231,7 +4944,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             model_col = f'model{col_suffix}'
 
             lineplot_kws = dict(
-                ax=ax, data=df, x=orn_col, y=model_col, linestyle='',
+                ax=ax, data=df, x=orn_col, y=model_col, linestyle='None',
             )
             lineplot_kws = {**lineplot_kws, **color_kws}
 
@@ -4710,6 +5423,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         )}
         # TODO try to not need to specially treat wAPLKC / fixed_thr (instead trying to
         # continue handling just via model_kws) tho? make things too difficult?
+
+        # TODO TODO support use_connectome_APL_weights=True (w/ vector wAPLKC/wKCAPL)?
+        assert not use_connectome_APL_weights
 
         tuned_fixed_thr = param_dict['fixed_thr']
         tuned_wAPLKC = param_dict['wAPLKC']
@@ -6113,7 +6829,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         fill_between_kws = dict(alpha=0.2,
             # TODO each of these needed? try to recreate seaborn (set color_palette the
             # same / use that seaborn blue?)
-            linestyle='', linewidth=0, edgecolor='white'
+            linestyle='None', linewidth=0, edgecolor='white'
         )
         ax.plot(xs, est_df[est_spike_delta_col], color=color)
         ax.fill_between(xs, est_df[ci_lower_col], est_df[ci_upper_col], color=color,
@@ -6654,6 +7370,10 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     #
     mean_est_df = sort_odors(mean_est_df)
 
+    # TODO try to special case checking of this, to fall under -C not -c?
+    # (add wrapper kwarg for that?)
+    to_csv(mean_est_df, plot_dir / 'mean_est_spike_deltas.csv')
+
     # TODO factor all dF/F -> spike delta fitting (above, ending ~here) into one fn in
     # here at least, to make model_mb_responses more readable
 
@@ -7094,7 +7814,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             fig, ax = plt.subplots()
             add_unity_line(ax)
             lineplot_kws = dict(
-                ax=ax, data=merged_corrs, x=orn_col, y=kc_col, linestyle='',
+                ax=ax, data=merged_corrs, x=orn_col, y=kc_col, linestyle='None',
                 color='black'
             )
             marker_only_kws = dict(
@@ -7142,6 +7862,27 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
 
         model_kw_list = [
+            # TODO delete. for testing new use_connectome_APL_weights=True code
+            dict(
+                orn_deltas=pebbled_input_df,
+                responses_to_suffix=responses_to_suffix,
+                tune_on_hallem=False,
+                pn2kc_connections='hemibrain',
+                weight_divisor=20,
+
+                # also including for new weight_divisor=20 entry, just so that i don't
+                # have to resend remy new uniform/hemidraw outputs, or update those
+                # plots. if i were to start over again, i would still leave this at
+                # default True.
+                _drop_glom_with_plus=False,
+
+                use_connectome_APL_weights=True,
+
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
+            #
+
             # TODO TODO why is DA4m in in these but not in regular hallem input call in
             # separate list below? conform preprocessing to match (+ sort glomeruli in
             # all those internal plots?)
@@ -7490,10 +8231,26 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 fixed_thr = None
                 wAPLKC = None
                 _extra_params = dict(extra_params)
+
+                # TODO delete
+                if ('orn_deltas' in model_kws and panel in panel2tuning_panels
+                    and model_kws.get('use_connectome_APL_weights', False)):
+
+                    warn('disabling shared tuning panels b/c '
+                        'use_connectome_APL_weights=True!!!'
+                    )
+                #
+
                 # checking for orn_deltas because we don't want to ever do this
                 # pre-tuning for hallem data (where the ORN data isn't passed here, but
                 # loaded inside fit_mb_model)
-                if 'orn_deltas' in model_kws and panel in panel2tuning_panels:
+                if ('orn_deltas' in model_kws and panel in panel2tuning_panels
+                    # TODO TODO TODO ideally, fix to also work in that case
+                    # (prob need to not pop wAPLKC/wKCAPL, but still avoid saving their
+                    # vector values as elements of param csvs, as that doesn't work
+                    # as-is) (-> delete warning above)
+                    and not model_kws.get('use_connectome_APL_weights', False)):
+
                     tuning_panels = panel2tuning_panels[panel]
                     tuning_panels_str = tuning_panel_delim.join(tuning_panels)
 
@@ -7541,6 +8298,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                     )
 
                     fixed_thr = param_dict['fixed_thr']
+                    # TODO TODO fix (for use_connectome_APL_weights=True case, that
+                    # currently pops this and wKCAPL)
                     wAPLKC = param_dict['wAPLKC']
                     assert fixed_thr is not None
                     assert wAPLKC is not None
@@ -9383,7 +10142,7 @@ def main():
             target_sparsity=0.0915, weight_divisor=20, _drop_glom_with_plus=False
         )
 
-    plot_root = Path('mb_model_example').resolve()
+    plot_root = Path('model_mb_example').resolve()
     # TODO modify this fn so dirname includes all same params by default (rather than
     # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
     # by calls in model_mb_... (prob behaving diff b/c e.g.

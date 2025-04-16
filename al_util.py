@@ -80,6 +80,9 @@ def format_mtime(mtime_or_path: Union[float, Pathlike], *, year: bool = False,
 
 # True|False|'nonmain'
 check_outputs_unchanged = False
+# hack so al_analysis can edit this to add functions i currently have defined under main
+# (e.g. save_method_csvs)
+_consider_as_main = []
 
 # TODO TODO move to hong2p.util
 # TODO unit test?
@@ -167,7 +170,7 @@ def produces_output(_fn=None, *, verbose=True):
                     # no plots really saved directly under main (at least not
                     # unconditionally...)
                     calling_fn = caller_info().name
-                    if calling_fn == 'main':
+                    if calling_fn == 'main' or calling_fn in _consider_as_main:
                         if check_outputs_unchanged == 'nonmain':
                             # TODO refactor to share mtime/etc parts of message w/ other
                             # main places similar message (w/ 'would have changed')
@@ -477,10 +480,27 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
             old = read_pickle(path)
             new = read_pickle(temp_file_path)
 
+            # TODO what about if new has 'equals' and old doesn't (could still get
+            # ValueError about truth value ambiguous, if new is series?)
             if hasattr(old, 'equals'):
                 unchanged = old.equals(new)
             else:
-                unchanged = old == new
+                # TODO also catch possible ValueError here
+                # (why need cast to bool in some but not all cases? Series vs
+                # DataFrames?)
+                # (this was b/c old and new were both dicts w/ some values that were
+                # pd.Series in old and np.array in new)
+                # (also got it when new was Series and old was np.array)
+                try:
+                    unchanged = old == new
+                except ValueError:
+                    # TODO delete
+                    print()
+                    print(f'{type(old)=}')
+                    print(f'{type(new)=}')
+                    import ipdb; ipdb.set_trace()
+                    #
+
                 try:
                     unchanged = bool(unchanged)
 
@@ -1366,7 +1386,7 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
 # generated was that...)
 #
 # actually, not switching to 'vlag', to not give Remy more work regenerating old figs
-diverging_cmap = plt.get_cmap('RdBu_r')
+diverging_cmap = plt.get_cmap('RdBu_r').copy()
 
 # since default set_bad seems to be ~white, which was fine for 'plasma' (which doesn't
 # contain white), but now is not distinct from cmap midpoint (0.)

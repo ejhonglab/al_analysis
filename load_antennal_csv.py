@@ -9,11 +9,13 @@ from typing import Dict, Any
 import pandas as pd
 import numpy as np
 
+from hong2p.olf import add_mix_str_index_level, solvent_str, mix_col
 from hong2p.roi import certain_roi_indices
 from hong2p.types import Pathlike
 
-from al_analysis import (format_mtime, roi_plot_kws, roimean_plot_kws,
-    plot_all_roi_mean_responses, plot_n_per_odor_and_glom, warn, sort_odors
+from al_util import format_mtime, warn, sort_odors
+from al_analysis import (roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
+    plot_n_per_odor_and_glom
 )
 from al_analysis import gdf as gsheet
 
@@ -26,11 +28,23 @@ index_levels = ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
 # glomeruli w/ all 0s or NaN)
 
 def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
-    # we can drop these. metadata intended for binary mixture experiments
-    # (not what we are dealing with here)
-    assert set(df.index.get_level_values('is_pair')) == {False}
-    assert set(df.index.get_level_values('odor2')) == {'solvent'}
-    df.index = df.index.droplevel(['is_pair', 'odor2'])
+    # for dropping metadata intended for binary mixture experiments
+    to_drop = []
+    if set(df.index.get_level_values('is_pair')) == {False}:
+        to_drop.append('is_pair')
+    else:
+        warn('index had some is_pair=True entries! not dropping is_pair level!')
+
+    if set(df.index.get_level_values('odor2')) == {solvent_str}:
+        to_drop.append('odor2')
+    else:
+        warn(f'index had some odor2 != {solvent_str} entries! not dropping odor2 '
+            'level!'
+        )
+
+    if len(to_drop) > 0:
+        df.index = df.index.droplevel(to_drop)
+
     return df
 
 
@@ -113,28 +127,27 @@ def get_unique_flies(df: pd.DataFrame) -> pd.DataFrame:
 
 def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
 
-    # TODO TODO also switch away from nunique here? see note below
-    n_repeats_per_odor = df.index.to_frame(index=False).groupby(['panel', 'odor1']
-        ).nunique('repeat')
+    df = add_mix_str_index_level(df)
 
-    assert n_repeats_per_odor.shape[1] == 1
-    n_repeats_per_odor = n_repeats_per_odor.iloc[:, 0]
+    # TODO TODO also switch away from nunique here? see note below
+    n_repeats_per_odor = df.index.to_frame(index=False).groupby(['panel', mix_col]
+        )['repeat'].nunique()
+
     max_repeats = n_repeats_per_odor.max()
     assert (n_repeats_per_odor == max_repeats).all()
     print(f'number of trials ("repeats", 0-indexed) per odor: {max_repeats}')
 
     print('number of unique odors (diff concs counted separately) for each panel:')
-    print(df.groupby('panel').apply(lambda x: len(x.index.unique('odor1'))
+    print(df.groupby('panel').apply(lambda x: len(x.index.unique(mix_col))
         ).to_string(header=False)
     )
     if verbose:
         print()
         for panel, pdf in df.groupby('panel'):
             print(f'{panel=} odors:')
-            pprint(list(pdf.index.unique('odor1')))
+            pprint(list(pdf.index.unique(mix_col)))
             print()
     print()
-
 
     # a glomerulus is one of ~50 named regions in the antennal lobe. each receives
     # input from all olfactory receptor neurons (ORNs) expressing a corresponding
@@ -321,7 +334,10 @@ def csvinfo_cli():
                 print(f'saving figure {fig_path}')
                 fig.savefig(fig_path, bbox_inches='tight', **kwargs)
 
-            trialmean_df = df.groupby(level=['panel', 'odor1'], sort=False).mean()
+            df = add_mix_str_index_level(df)
+
+            # NOTE: mix_col index level added by add_mix_str_index_level
+            trialmean_df = df.groupby(level=['panel', mix_col], sort=False).mean()
 
             # TODO also work back in al_analysis? why the diff?
             roi_plot_kws['vgroup_label_offset'] = 0.03
