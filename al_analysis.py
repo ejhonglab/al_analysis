@@ -678,61 +678,132 @@ bad_suite2p_analysis_dirs = (
     '2021-05-24/2/1o3ol_and_2h',
 )
 
-script_dir = Path(__file__).resolve().parent
-# TODO refactor google sheet metadata handling so it doesn't download until it's needed
-# (or at least not outside of __main__?)?
+gsheet_df = None
+
+def get_gsheet_metadata() -> pd.DataFrame:
+    """Downloads and formats Google Sheet experiment/fly metadata.
+
+    Loads 'metadata_gsheet_link.txt' from directory containing this script, which should
+    contain the full URL to your metadata Google Sheet.
+
+    Most important columns in this sheet are:
+    - 'Date': YYYY-MM-DD format dates for when experiments were conducted
+
+    - 'Fly': integers counting up from 1, numbering flies within each date
+
+    - 'Driver': the driver being used to drive indicator expression in this fly
+       (e.g. 'pebbled' for pebbled-Gal4, our standard all-ORN driver)
+
+    - 'Indicator': abbrevation for indicator the fly is expressing
+       (e.g. '6f' for UAS-GCaMP6f)
+
+    - 'Exclude': a checkbox-column where a check indicates the analysis should not be
+       run on this experiment
+
+    - 'Side': values should all be either 'right'|'left'|empty (I use a dropdown to
+       enforce this). My recordings have all been imaging only one hemisphere of the
+       brain at a time (either the left or the right), but we want to flip them all into
+       a standard orientation to make the spatial patterns more easily comparable across
+       experiments. All recordings will be flipped to `standard_side_orientation`, if
+       not already in that orientation.
+
+    My sheet is called 'tom_antennal_lobe_data' in the Hong lab Google Drive. Sam has
+    his own. New users of the pipeline should probably start by copying one of ours, to
+    get the right column names, data validation, etc.
+    """
+    script_dir = Path(__file__).resolve().parent
+
+    # TODO set bool_fillna_false=False (kwarg to gsheet_to_frame) and manually fix any
+    # unintentional NaN in these columns if I need to use the missing data for early
+    # diagnostic panels (w/o some of the odors only in newest set) for anything
+    #
+    # This file is intentionally not tracked in git, so you will need to create it and
+    # paste in the link to this Google Sheet as the sole contents of that file. The
+    # sheet is located on our drive at:
+    # 'Hong Lab documents/Tom - odor mixture experiments/tom_antennal_lobe_data'
+    #
+    # Sam has his own sheet following a similar format, as should any extra user of this
+    # pipeline.
+    df = util.gsheet_to_frame('metadata_gsheet_link.txt', normalize_col_names=True,
+        # so that the .txt file can be found no matter where we run this code from
+        # (hong2p defaults to checking current working dir and a hong2p root)
+        extra_search_dirs=[script_dir]
+    )
+    df.set_index(['date', 'fly'], verify_integrity=True, inplace=True)
+
+    # Currently has some explicitly labelled 'pebbled' (for new megamat experiments
+    # where I also have some some 'GH146' data), but all other data should come from
+    # pebbled flies.
+    df.driver = df.driver.fillna('pebbled')
+
+    # TODO if i don't switch off 8m for the PN experiments, first fillna w/ '8m' for
+    # GH146 flies
+    df.indicator = df.indicator.fillna('6f')
+
+    return df
+
+
+def get_diag_status_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Args:
+        df: as output by `get_gsheet_metadata`
+
+    Returns subset of Google Sheet metadata indicating whether we saw responses for each
+    (glomerulus, diagnostic-odor) pair (at least those with a corresponding
+    checkbox-column in your metadata Google Sheet).
+
+    Output columns should be all-lowercase glomeruli names, except the final
+    'all_labelled' column (from "All labelled" in sheet), which is used to indicate the
+    other values have actually been labelled for this fly (rather than not being
+    entered). Values should be all boolean. False should be interpreted as a missing
+    value if 'all_labelled' is False for a given fly.
+    """
+    # "Side" in my sheet (-> 'side' from `normalize_col_names=True`). All checkbox
+    # diagnostic status columns should immediately *follow* this column.
+    last_gsheet_col_before_glomeruli_diag_statuses = 'side'
+
+    # "All labelled" in my sheet (-> 'all_labelled' after `normalize_col_names=True`
+    # path in `gsheet_to_frame`). All checkbox diagnostic status columns should
+    # immediately *preceed* this column.
+    last_diag_status_col = 'all_labelled'
+
+    first_glomeruli_diag_col_idx = list(df.columns
+        ).index(last_gsheet_col_before_glomeruli_diag_statuses) + 1
+
+    last_glomeruli_diag_col_idx = list(df.columns
+        ).index(last_diag_status_col)
+
+    # This subset of Google Sheet data should should all be empty or checkboxes. Each
+    # column name in this range of the sheet (except the last) should be in the format:
+    # "<glomerulus-name> (<cognate-diagnostic-odor-abbrev> <diag-log10-conc>)", e.g.
+    # "DM4 (MA -7)", "DL5 (t2h -6)", etc.
+    #
+    # The last column, named "All labelled" in my sheet (-> 'all_labelled' by the time
+    # we are done defining this dataframe), is for indicating that any unchecked boxes
+    # in that row can be interpreted as the experiment actually missing that
+    # glomerulus's response to its diagnostic, rather than that we just hadn't checked
+    # the box yet.
+    glomeruli_diag_status_df = df.iloc[
+        :, first_glomeruli_diag_col_idx:(last_glomeruli_diag_col_idx + 1)
+    ]
+    # Column names should be lowercased names of target glomeruli after this.
+    glomeruli_diag_status_df.rename(columns=lambda x: x.split('_')[0], inplace=True)
+
+    # Since I called butanone's target glomerulus VM7 in my olfactometer config, but
+    # updated the name of the column in the gsheet to VM7d, as that is the specific part
+    # it should activate.
+    glomeruli_diag_status_df.rename(columns={'vm7d': 'vm7', 'all': 'all_labelled'},
+        inplace=True
+    )
+
+    assert (glomeruli_diag_status_df.dtypes == bool).all()
+
+    return glomeruli_diag_status_df
+
+
+# TODO delete? do i have another mechanism to deal with this now tho? not a very common
+# issue...
 #
-# TODO set bool_fillna_false=False (kwarg to gsheet_to_frame) and manually fix any
-# unintentional NaN in these columns if I need to use the missing data for early
-# diagnostic panels (w/o some of the odors only in newest set) for anything
-#
-# This file is intentionally not tracked in git, so you will need to create it and
-# paste in the link to this Google Sheet as the sole contents of that file. The
-# sheet is located on our drive at:
-# 'Hong Lab documents/Tom - odor mixture experiments/tom_antennal_lobe_data'
-#
-# Sam has his own sheet following a similar format, as should any extra user of this
-# pipeline.
-gdf = util.gsheet_to_frame('metadata_gsheet_link.txt', normalize_col_names=True,
-    # so that the .txt file can be found no matter where we run this code from
-    # (hong2p defaults to checking current working dir and a hong2p root)
-    extra_search_dirs=[script_dir]
-)
-gdf.set_index(['date', 'fly'], verify_integrity=True, inplace=True)
-
-# Currently has some explicitly labelled 'pebbled' (for new megamat experiments where I
-# also have some some 'GH146' data), but all other data should come from pebbled flies.
-gdf.driver = gdf.driver.fillna('pebbled')
-
-# TODO TODO edit sheet for 2022-07-02 flies to remove '?' from '6f?', or handle question
-# marks
-# TODO TODO if i don't switch off 8m for the PN experiments, first fillna w/ '8m' for
-# GH146 flies
-gdf.indicator = gdf.indicator.fillna('6f')
-
-# This is the name as converted by what `normalize_col_names=True` triggers.
-last_gsheet_col_before_glomeruli_diag_statuses = 'side'
-last_gsheet_col_glomeruli_diag_statuses = 'all_labelled'
-
-first_glomeruli_diag_col_idx = list(gdf.columns
-    ).index(last_gsheet_col_before_glomeruli_diag_statuses) + 1
-
-last_glomeruli_diag_col_idx = list(gdf.columns
-    ).index(last_gsheet_col_glomeruli_diag_statuses)
-
-glomeruli_diag_status_df = gdf.iloc[
-    :, first_glomeruli_diag_col_idx:(last_glomeruli_diag_col_idx + 1)
-]
-# Column names should be lowercased names of target glomeruli after this.
-glomeruli_diag_status_df.rename(columns=lambda x: x.split('_')[0], inplace=True)
-
-# Since I called butanone's target glomerulus VM7 in my olfactometer config, but updated
-# the name of the column in the gsheet to VM7d, as that is the specific part it should
-# activate.
-# TODO check all / all_bad still there after i renamed / moved some stuff in sheet
-glomeruli_diag_status_df.rename(columns={'vm7d': 'vm7', 'all': 'all_bad'}, inplace=True)
-
-
 # For cases where there were multiple glomeruli diagnostic experiments (e.g. both sides
 # imaged, and only one used for subsequent experiments w/in fly). Paths (relative to
 # data root) to the recordings not followed up on / representative should go here.
@@ -740,6 +811,7 @@ unused_glomeruli_diagnostics = (
     # glomeruli_diagnostics_otherside is the one used here
     '2021-05-25/2/glomeruli_diagnostics',
 )
+#
 
 if analyze_pairgrids_only:
     analyze_glomeruli_diagnostics = False
@@ -1210,7 +1282,7 @@ def output_dir2driver(path: Path) -> str:
     return driver
 
 
-# TODO TODO let root of this be overridden by env var, so i can put it on external hard
+# TODO let root of this be overridden by env var? so i can put it on external hard
 # drive if i'm running on my space limited laptop
 def get_plot_root(driver, indicator) -> Path:
     return driver_indicator_output_dir(driver, indicator) / plot_fmt
@@ -1219,7 +1291,9 @@ def get_plot_root(driver, indicator) -> Path:
 def fly2driver_indicator(date, fly_num) -> Tuple[str, str]:
     """Returns tuple with driver and indicator of fly, via Google sheet metadata lookup
     """
-    fly_row = gdf.loc[(pd.Timestamp(date), int(fly_num))]
+    # NOTE: gsheet_df currently actually defined in main
+    assert gsheet_df is not None
+    fly_row = gsheet_df.loc[(pd.Timestamp(date), int(fly_num))]
     return fly_row.driver, fly_row.indicator
 
 
@@ -4670,6 +4744,7 @@ def multiprocessing_namespace_to_globals(shared_state):
 # maybe have analysis types define what experiment types are valid input for them (and,
 # at least by default, just run all of those?)
 
+glomeruli_diag_status_df = None
 # TODO probably refactor so that this is essentially just populating lists[/listproxies]
 # of dataframes from s2p/ijroi stuff (extracting in ij case, merging in both cases, also
 # converting to trial stats in both), and then move most plotting to after this (and
@@ -4687,6 +4762,16 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         shared_state (multiprocessing.managers.DictProxy): str global variable names ->
         other proxy objects
     """
+    # TODO move after update_globals_from_shared_state? may want to just delete that
+    # bit, as well as multiprocessing option it was for anyway... haven't used in a long
+    # time
+    global gsheet_df
+    global glomeruli_diag_status_df
+    if glomeruli_diag_status_df is None:
+        assert gsheet_df is not None
+        glomeruli_diag_status_df = get_diag_status_df(gsheet_df)
+    #
+
     # Only relevant if called via multiprocessing, where this is how we get access to
     # the proxies that will feed back to the corresponding global variables that get
     # modified under this function.
@@ -6647,20 +6732,19 @@ def load_suite2p_binaries(suite2p_dir: Path, thorimage_dir: Path,
     return input_tiff2movie_range
 
 
-def should_flip_lr(date, fly_num, _warn=True) -> Optional[bool]:
+def should_flip_lr(date, fly_num, *, _warn=True) -> Optional[bool]:
+    # NOTE: gsheet_df currently actually defined in main
+    assert gsheet_df is not None
+
     # TODO unify w/ half-implemented hong2p flip_lr metadata key?
-    # TODO why .at not working all of a sudden?
     try:
         # np.nan / 'left' / 'right'
-        #side_imaged = gdf.at[(date, fly_num), 'side']
-        side_imaged = gdf.loc[(date, fly_num), 'side']
+        side_imaged = gsheet_df.loc[(date, fly_num), 'side']
+        # expecting .loc above to give us a single value, not a range of rows.
+        # (i.e. each (date, fly_num) combo should be unique to a single row)
         assert not hasattr(side_imaged, 'shape')
     except KeyError:
         side_imaged = None
-    # TODO delete (was for troubleshooting .at issue)
-    #except ValueError:
-    #    import ipdb; ipdb.set_trace()
-    #
 
     # TODO only warn if fly has at least one real experiment (that is also
     # has frame<->odor assignment working and everything)
@@ -9453,9 +9537,7 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 if len(missing_completely) > 0:
                     _print_flystr_if_havent()
 
-                    # TODO TODO TODO also just drop stuff in <=~2 (/9) flies?
-                    # (earlier? maybe even before saving CSV?)
-                    print('missing completely (marked certain in >=1 fly):')
+                    print('missing completely (marked certain in >=1 panel fly):')
                     _print_rois(missing_completely)
 
                 # TODO sort=False actually doing anything?
@@ -9864,8 +9946,8 @@ def main():
     global analyze_glomeruli_diagnostics
     global print_skipped
     global verbose
-    # TODO add other things modified like this
     global ij_trial_dfs
+    global gsheet_df
 
     # TODO actually use log/delete / go back to global?
     # (might just get a lot of matplotlib, etc logging there (maybe regardless)
@@ -9907,7 +9989,8 @@ def main():
     # TODO or to just delete all other runs wholly (probably also renumbering remaining
     # suite2p_runs/ subdir to '0/')
 
-    # TODO TODO what is currently causing this to hang on ~ when it is done with
+    # TODO delete all multiprocessing stuff? haven't used in a long time
+    # TODO what is currently causing this to hang on ~ when it is done with
     # iterating over the inputs? some big data it's trying to [de]serialize?
     parser.add_argument('-j', '--parallel', action='store_true',
         help='Enables parallel calls to process_recording. '
@@ -10000,6 +10083,10 @@ def main():
         'computer).'
     )
 
+    parser.add_argument('-G', '--only-report-missing-glomeruli', action='store_true',
+        help='Report which glomeruli are missing from current ImageJ ROIs, then exit.'
+    )
+
     group = parser.add_mutually_exclusive_group()
     # TODO option to warn but not err as well?
     # TODO warn in cases like sensitivity_analysis's deletion of it's root output folder
@@ -10047,6 +10134,8 @@ def main():
     retry_previously_failed = args.retry_failed
     analyze_glomeruli_diagnostics_only = args.glomeruli_diags_only
 
+    only_report_missing_glomeruli = args.only_report_missing_glomeruli
+
     driver = args.driver
     indicator = args.indicator
 
@@ -10061,6 +10150,7 @@ def main():
     # PREprocess_recording (now that i moved frame<->odor assignment fail handling code
     # there)
     verbose = args.verbose
+
     # used by some stuff defined in al_util, as well as by mb_model
     al_util.verbose = verbose
 
@@ -10080,8 +10170,9 @@ def main():
     # to add_argument calls?) (make sure to handle no-string-passed --skip and bool
     # --ignore-existing)
     if type(al_util.ignore_existing) is not bool:
-        al_util.ignore_existing = {x for x in al_util.ignore_existing.split(',') if len(x) > 0}
-
+        al_util.ignore_existing = {
+            x for x in al_util.ignore_existing.split(',') if len(x) > 0
+        }
         for x in al_util.ignore_existing:
             if x not in ignore_existing_options:
                 raise ValueError('-i/--ignore-existing must either be given no argument'
@@ -10234,7 +10325,9 @@ def main():
 
     # TODO try to get autocomplete to work for panels / indicators (+ dates?)
 
-    not_in_gsheet = [(k, d) for k, d in keys_and_paired_dirs if k not in gdf.index]
+    gsheet_df = get_gsheet_metadata()
+
+    not_in_gsheet = [(k,d) for k, d in keys_and_paired_dirs if k not in gsheet_df.index]
     flies_not_in_gsheet = set(k for k, d in not_in_gsheet)
     if len(flies_not_in_gsheet) > 0:
         warn('flies not in gsheet will not be analyzed if not added:\n'
@@ -10246,7 +10339,7 @@ def main():
 
     if driver is not None:
         keys_and_paired_dirs = [(k, d) for k, d in keys_and_paired_dirs
-            if k in gdf.index and gdf.loc[k, 'driver'] == driver
+            if k in gsheet_df.index and gsheet_df.loc[k, 'driver'] == driver
         ]
         if len(keys_and_paired_dirs) == 0:
             # TODO maybe this (and all below) should be some kind of IOError instead?
@@ -10259,7 +10352,7 @@ def main():
 
     if indicator is not None:
         keys_and_paired_dirs = [(k, d) for k, d in keys_and_paired_dirs
-            if k in gdf.index and gdf.loc[k, 'indicator'] == indicator
+            if k in gsheet_df.index and gsheet_df.loc[k, 'indicator'] == indicator
         ]
         if len(keys_and_paired_dirs) == 0:
             if driver is None:
@@ -10268,10 +10361,10 @@ def main():
                 raise ValueError(f'no flies with {driver=}, {indicator=} to analyze')
 
     fly_key_set = set((d, f) for (d, f), _ in keys_and_paired_dirs)
-    fly_key_set &= set(gdf.index.to_list())
+    fly_key_set &= set(gsheet_df.index.to_list())
 
     # Subset of the Google Sheet pertaining to the flies being analyzed.
-    gsheet_subset = gdf.loc[list(fly_key_set)]
+    gsheet_subset = gsheet_df.loc[list(fly_key_set)]
     del fly_key_set
 
     # Flies where 'Exclude' column in Google Sheet is True, indicating the whole fly
@@ -10294,7 +10387,7 @@ def main():
             warn(msg)
 
         keys_and_paired_dirs = [(k, d) for k, d in keys_and_paired_dirs
-            if not gdf.loc[k, 'exclude']
+            if not gsheet_df.loc[k, 'exclude']
         ]
         gsheet_subset = gsheet_subset[~gsheet_subset.exclude]
 
@@ -11368,6 +11461,23 @@ def main():
         rest_df = df[object_or_bool_cols]
         # could do this for all columns, but don't think these values give me more than
         # just extra noise for any columns in range_df.
+        #
+        # TODO TODO fix:
+        # ./al_analysis.py -d pebbled -n 6f -t 2023-11-29 -e 2023-11-29 -s model,corr,intensity -v -i ijroi
+
+        # ...
+        # writing pebbled_6f/methods_by-recording_no-ffill_panel-sort.csv
+        # Uncaught exception
+        # Traceback (most recent call last):
+        #   File "./al_analysis.py", line 13241, in <module>
+        #     main()
+        #   File "./al_analysis.py", line 11382, in main
+        #     save_method_csvs(unfilled_method_df, '_no-ffill')
+        #   File "./al_analysis.py", line 11371, in save_method_csvs
+        #     unique_vals = rest_df.apply(lambda x: x.unique()).to_frame('unique_vals').T
+        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/pandas/core/generic.py", line 5478, in __getattr__
+        #     return object.__getattribute__(self, name)
+        # AttributeError: 'DataFrame' object has no attribute 'to_frame'
         unique_vals = rest_df.apply(lambda x: x.unique()).to_frame('unique_vals').T
 
         # all lim_df.columns will be before all unique_vals.columns
@@ -11377,48 +11487,50 @@ def main():
         to_csv(summary_df, output_root / f'methods_summary{suffix}.csv')
 
 
-    unfilled_method_df = method_df.copy()
-    # to inspect and sanity check ffilling isn't doing anything too crazy
-    save_method_csvs(unfilled_method_df, '_no-ffill')
+    if not only_report_missing_glomeruli:
+        unfilled_method_df = method_df.copy()
+        # to inspect and sanity check ffilling isn't doing anything too crazy
+        save_method_csvs(unfilled_method_df, '_no-ffill')
 
-    # TODO update comment below, now that we should have NaN instead of empty string
-    # for certain cols
-    #
-    # at least for final megamat pebbled data, only these cols have any missing values:
-    # ipdb> unfilled_method_df.isna().any().replace(False, np.nan).dropna()
-    # power_mw      True
-    # n_days_old    True
-    # power_note    True
-    # fly           True
-    # odors         True
+        # TODO update comment below, now that we should have NaN instead of empty string
+        # for certain cols
+        #
+        # at least for final megamat pebbled data, only these cols have any missing
+        # values:
+        # ipdb> unfilled_method_df.isna().any().replace(False, np.nan).dropna()
+        # power_mw      True
+        # n_days_old    True
+        # power_note    True
+        # fly           True
+        # odors         True
 
-    # TODO use thorimage power_level (+offset/similar, which would need to add to
-    # parseing) to invalidate ffilling power (or even the same power being listed?),
-    # assuming that setting ever changed (at least on the non-pockels one, w/
-    # hysteresis)?
-    # TODO + have non-empty (/non-matching, e.g. excluding stuff w/ 'just measured' or
-    # 'unchanged' maybe) power_note str also invalidate?
+        # TODO use thorimage power_level (+offset/similar, which would need to add to
+        # parseing) to invalidate ffilling power (or even the same power being listed?),
+        # assuming that setting ever changed (at least on the non-pockels one, w/
+        # hysteresis)?
+        # TODO + have non-empty (/non-matching, e.g. excluding stuff w/ 'just measured'
+        # or 'unchanged' maybe) power_note str also invalidate?
 
-    method_df = method_df.groupby(['date', 'fly_num'], sort=False).ffill()
-    # TODO assert imaging params don't change w/in any fly (across recordings)?
-    # most? all, except maybe gain/power_level, but even that should maybe generate a
-    # warning? at least x,y,z,c, xy_pixel_size, zstep_um. gain? anything else?
+        method_df = method_df.groupby(['date', 'fly_num'], sort=False).ffill()
+        # TODO assert imaging params don't change w/in any fly (across recordings)?
+        # most? all, except maybe gain/power_level, but even that should maybe generate
+        # a warning? at least x,y,z,c, xy_pixel_size, zstep_um. gain? anything else?
 
-    # TODO update comment below, now that we should have NaN instead of empty string
-    # for certain cols
-    #
-    # cols still missing some values after ffilling within fly (again, for final megamat
-    # pebbled data):
-    # ipdb> method_df.isna().any().replace(False, np.nan).dropna()
-    # power_mw      True
-    # power_note    True
-    # odors         True
-    # TODO do some ffilling within ['date'] alone? how much would that help eliminate
-    # remaining missing values?
+        # TODO update comment below, now that we should have NaN instead of empty string
+        # for certain cols
+        #
+        # cols still missing some values after ffilling within fly (again, for final
+        # megamat pebbled data):
+        # ipdb> method_df.isna().any().replace(False, np.nan).dropna()
+        # power_mw      True
+        # power_note    True
+        # odors         True
+        # TODO do some ffilling within ['date'] alone? how much would that help
+        # eliminate remaining missing values?
 
-    assert unfilled_method_df.index.equals(method_df.index)
+        assert unfilled_method_df.index.equals(method_df.index)
 
-    save_method_csvs(method_df, by_fly_version=True)
+        save_method_csvs(method_df, by_fly_version=True)
 
 
     if len(ij_trial_dfs) == 0:
@@ -11534,7 +11646,7 @@ def main():
     all_fly_id_cols = ['fly_id', 'date', 'fly_num']
     fly_id_legend = index_uniq(certain_df.columns, all_fly_id_cols)
 
-    if verbose:
+    if verbose or only_report_missing_glomeruli:
         n_flies = len(fly_id_legend)
         print()
         print(f'{n_flies} flies:')
@@ -11601,7 +11713,8 @@ def main():
     consensus_dfs = []
     for panel, panel_df in certain_df.groupby(level='panel', sort=False):
 
-        if verbose:
+        if verbose or only_report_missing_glomeruli:
+            print()
             print()
             print(f'{panel=}')
             print()
@@ -11663,7 +11776,7 @@ def main():
         # panel but not the diagnostics). should only be relevant to mean/stddev/N
         # variables built up in here.
         else:
-            if verbose:
+            if verbose or only_report_missing_glomeruli:
                 print('not defining/dropping glomeruli for diagnostic panel! '
                     'should be dropped after loop instead, based on consensus glomeruli'
                     ' from other panels.'
@@ -11731,7 +11844,7 @@ def main():
         # refers to any of the other panels)
         panel_df = panel_consensus_df.loc[panel].copy()
 
-        if verbose:
+        if verbose or only_report_missing_glomeruli:
             print('panel flies:')
             # TODO also use in load_antennal_csv.py
             print_index_uniq(panel_df.columns, all_fly_id_cols)
@@ -11793,20 +11906,21 @@ def main():
         )
         assert len(hemibrain_glomeruli_not_in_panel_flies) > 0
 
-        # TODO delete?
-        if verbose:
-            # TODO also print value counts of glomeruli present across any of the panel
-            # flies?
-            print('hemibrain glomeruli not panel flies:')
+        if verbose or only_report_missing_glomeruli:
+            # TODO TODO some version of the glomeruli-missing report in a context where
+            # we aren't already dropping non-consensus glomeruli (as we are, earlier in
+            # this loop)?
+            # TODO maintain a list of ones we should be able to see (maybe from loading
+            # old data? hardcoded?), and (also?) report difference wrt that set?
+            print('hemibrain glomeruli not in panel flies:')
             print(sorted(hemibrain_glomeruli_not_in_panel_flies))
             print()
-        #
 
         _first_fly_cols = None
 
         filled_fly_dfs = []
         for fly_id, fly_df in panel_df.groupby(level='fly_id', axis='columns'):
-            if verbose:
+            if verbose or only_report_missing_glomeruli:
                 date, fly_num = id2datenum.loc[fly_id]
                 date_str = format_date(date)
                 fly_str = f'{date_str}/{fly_num}'
@@ -11833,7 +11947,7 @@ def main():
                 glomeruli_in_panel_flies - fly_glomeruli
 
             if len(glomeruli_only_in_other_panel_flies) > 0:
-                if verbose:
+                if verbose or only_report_missing_glomeruli:
                     print('glomeruli only in other panel flies: '
                         f'{sorted(glomeruli_only_in_other_panel_flies)}'
                     )
@@ -11842,7 +11956,7 @@ def main():
                 fly_df[sorted(glomeruli_only_in_other_panel_flies)] = float('nan')
 
             else:
-                if verbose:
+                if verbose or only_report_missing_glomeruli:
                     print('no glomeruli only in other panel flies')
 
             # might make some calculations on filled data easier if this were true
@@ -11874,7 +11988,7 @@ def main():
 
             filled_fly_dfs.append(fly_df)
 
-            if verbose:
+            if verbose or only_report_missing_glomeruli:
                 print()
 
         # TODO now that i'm only dropping non-consensus glomeruli AFTER the loop for the
@@ -11895,9 +12009,10 @@ def main():
         # can't compare these outputs if we aren't running on all data
         consensus_csv = output_root / f'{panel}_consensus.csv'
 
-        # TODO also say filled/similar in name?
-        # TODO date_format even doing anything?
-        to_csv(filled_df, consensus_csv, date_format=date_fmt_str)
+        if not only_report_missing_glomeruli:
+            # TODO also say filled/similar in name?
+            # TODO date_format even doing anything?
+            to_csv(filled_df, consensus_csv, date_format=date_fmt_str)
 
         del filled_fly_dfs
 
@@ -11981,6 +12096,8 @@ def main():
         n_per_odor_and_glom_list.append(n_per_odor_and_glom)
     #
 
+    if only_report_missing_glomeruli:
+        sys.exit()
 
     # NOTE: this will sort the row index (don't think it's avoidable, esp since the
     # input df row indices aren't guaranteed to all be the same)
@@ -12281,9 +12398,13 @@ def main():
         # these should be odors dropped in mean_df def (b/c non-consensus), but not
         # dropped in consensus_df construction b/c do_drop_nonconsensus_odors=False
         mdf_only_odors = mcdf0.index.difference(mdf0.index)
-        warn('odors in mean_df but not consensus_df, b/c do_drop_nonconsensus_odors='
-            f'False:\n{mdf_only_odors.to_frame(index=False).to_string(index=False)}'
-        )
+
+        if len(mdf_only_odors) > 0:
+            warn('odors in mean_df but not consensus_df, b/c do_drop_nonconsensus_odors'
+                '=False:\n'
+                f'{mdf_only_odors.to_frame(index=False).to_string(index=False)}'
+            )
+
         # this will drop the values not in mdf0.index
         mcdf0 = mcdf0.reindex(mdf0.index)
 

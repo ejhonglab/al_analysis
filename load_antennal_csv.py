@@ -15,9 +15,8 @@ from hong2p.types import Pathlike
 
 from al_util import format_mtime, warn, sort_odors
 from al_analysis import (roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
-    plot_n_per_odor_and_glom
+    plot_n_per_odor_and_glom, get_gsheet_metadata
 )
-from al_analysis import gdf as gsheet
 
 
 fly_cols = ['date', 'fly_num']
@@ -209,6 +208,9 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
             print(f'{panel=}')
             print_flies(pdf.dropna(how='all', axis='columns'))
 
+    # TODO cache gsheet at module level? change in al_analysis so it does that by
+    # default (w/ a module-level cache there)?
+    gsheet = get_gsheet_metadata()
 
     not_in_gsheet = []
     now_excluded = []

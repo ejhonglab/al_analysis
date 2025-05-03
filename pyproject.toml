@@ -28,3 +28,13 @@ version = "0.0.0"
 [project.scripts]
 csvinfo = "load_antennal_csv:csvinfo_cli"
 #csvdiff = "load_antennal_csv:csvdiff_cli"
+
+[tool.pytest.ini_options]
+# TODO `minversion = "6.0"` (or whichever version. using 8.3.5, but prob doesn't
+# matter much)?
+#
+# could add doctest here. see hong2p/pytest.ini
+addopts = "--pdbcls=IPython.terminal.debugger:Pdb --tb=native"
+testpaths = [
+    "test",
+]

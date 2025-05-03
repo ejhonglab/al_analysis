@@ -28,7 +28,7 @@ import shutil
 from tempfile import NamedTemporaryFile
 import time
 import traceback
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union
 
 import numpy as np
 import pandas as pd
@@ -1328,6 +1328,26 @@ def _get_silent_cell_suffix(responses_including_silent, responses_without_silent
     return title_suffix
 
 
+# TODO move to hong2p.util?
+def _single_unique_val(arr: Union[np.ndarray, pd.Series], *, exact: bool = True
+    ) -> float:
+    """Returns single unique value from array.
+
+    Raises AssertionError if array has more than one unique value (including NaNs).
+    """
+    unique_vals = set(np.unique(arr))
+    if exact:
+        assert len(unique_vals) == 1
+        return unique_vals.pop()
+    else:
+        # TODO support NaN in this branch? (prob not...)
+        v0 = unique_vals.pop()
+        for v in unique_vals:
+            assert np.isclose(v, v0)
+
+        return v0
+
+
 # TODO delete all these? or re-organize? want to minimize how much mb_model stuff
 # assumes a certain output folder structure
 #
@@ -1376,6 +1396,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO TODO have responses [/spike_counts] returned w/ row indices using same
     # connectome cell IDs are wPNKC row index ('bodyid' as called in hemibrain data prat
     # assembled) (or have wPNKC also use same sequential int index)
+    # TODO allow passing in wPNKC matrix directly? mainly thinking of using for tests
+    # now... would have to override pn2kc_connections (or take as option to that param)
     """
     Args:
         orn_deltas: dataframe of shape (# glomeruli, # odors). values should be in units
@@ -1559,7 +1581,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         #fixed_thr = 147
         mp.kc.fixed_thr = fixed_thr
 
-        # TODO TODO add comment explaining what this is
+        # except for "homeostatic" variants, Ann also sets "KC thresholds to a fixed
+        # amount above [the time-averaged spontaneous PN input they receive]"
+        # (from her thesis)
         mp.kc.add_fixed_thr_to_spont = True
 
         # actually do need this. may or may not need thr_type='fixed' too
@@ -1809,44 +1833,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # ipdb> wKCAPL.max()
         # 27.0
 
-        # TODO still need this scaling?
-        # TODO TODO TODO want initial scales more like what we had before? would prob
-        # make same step-size / stepping code more applicable, at least... e.g. (for a
-        # few random models, from tuned_params.csv):
-        # wAPLKC:
-        # 4.62295081967213
-        # 3.6790042023174045
-        # wKCAPL:
-        # 0.00251657638523252
-        # [0.0020027241166670684, 0.002025624649931575, 0.002004071206859098]
-        # 0.00283616614703812
-        # [0.002836166147038117, 0.002836166147038117, 0.002836166147038117]
-        print()
-        print('before scaling hack:')
-        print(f'{wAPLKC.mean()=}')
-        print(f'{wKCAPL.mean()=}')
-        # TODO TODO TODO fix tuning procedure to work w/ new ranges -> delete this hack
-        warn('scaling wAPLKC/wKCAPL to so .mean() is similar to previous tune ranges!'
-            ' fix olfsysm APL tuning procedure and delete this hack!'
-        )
-        # means will now equal hardcoded values in these expressions
-        wAPLKC = (wAPLKC / (wAPLKC.mean() / 4))
-        wKCAPL = (wKCAPL / (wKCAPL.mean() / 0.002))
-        print()
-        print('AFTER scaling hack:')
-        print(f'{wAPLKC.mean()=}')
-        print(f'{wAPLKC.min()=}')
-        print(f'{(wAPLKC == 0).sum()=}')
-        print(f'{wAPLKC.max()=}')
-        print()
-        print(f'{wKCAPL.mean()=}')
-        print(f'{wKCAPL.min()=}')
-        print(f'{(wKCAPL == 0).sum()=}')
-        print(f'{wKCAPL.max()=}')
-        print()
-        #
+        # TODO delete? print if verbose?
+        #warn('scaling wAPLKC/wKCAPL to mean of 1')
 
-        # TODO TODO maybe only scale one or the other?
+        wAPLKC = wAPLKC / wAPLKC.mean()
+        wKCAPL = wKCAPL / wKCAPL.mean()
+        # TODO maybe only scale one or the other? (does seem to work* scaling both...)
 
 
     if not hallem_input:
@@ -2335,15 +2327,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO is this currently the path being taken?
         pass
 
-    def _single_unique_val(arr: np.ndarray) -> float:
-        """Returns single unique value from array.
-
-        Raises AssertionError if array has more than one unique value (including NaNs).
-        """
-        unique_vals = set(np.unique(arr))
-        assert len(unique_vals) == 1
-        return unique_vals.pop()
-
     # TODO should i maybe move these mp modifications up above (before line that defines
     # RunVars from them). ig i probably would have noticed by now if it matters?
     if not use_connectome_APL_weights and wAPLKC is not None:
@@ -2391,6 +2374,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wKCAPL_arr = np.expand_dims(wKCAPL.values, 0)
         assert wKCAPL_arr.shape == (1, mp.kc.N)
         rv.kc.wKCAPL = wKCAPL_arr
+
+        n_zero_input_wAPLKC = (wAPLKC == 0).sum()
+        n_zero_input_wKCAPL = (wKCAPL == 0).sum()
+        input_wAPLKC = wAPLKC.copy()
+        input_wKCAPL = wKCAPL.copy()
 
     osm.run_ORN_LN_sims(mp, rv)
     osm.run_PN_sims(mp, rv)
@@ -2564,13 +2552,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # TODO delete prints?
             print(f'wAPLKC: {rv_scalar_wAPLKC}')
             print(f'wKCAPL: {rv_scalar_wKCAPL}')
+            #
             wAPLKC = rv_scalar_wAPLKC
             wKCAPL = rv_scalar_wKCAPL
     else:
-        # TODO TODO TODO add an assertion that # 0 entries isn't changed by olfsysm
-        # tuning procedure (would need to change if so) (it currently IS, b/c tuning
-        # adds/subtracts from wAPLKC and wKCAPL, rather than scaling)
-
         # TODO delete
         # TODO convert back to pd.Series? (or will that just interfere w/
         # trying to save these into various downstream outputs [e.g. param csv(s)]? keep
@@ -2590,23 +2575,33 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # unchanged = old == new
         # ...
         # ```
+        #
+        # TODO (outside this fn?) make histograms of these scaled values somewhere,
+        # similar histograms of connectome weights
         wAPLKC = pd.Series(index=wAPLKC.index, data=rv.kc.wAPLKC.squeeze())
         wKCAPL = pd.Series(index=wKCAPL.index, data=rv.kc.wKCAPL.squeeze())
 
-        # TODO delete
-        print()
-        print('AFTER TUNING:')
-        print(f'{wAPLKC.mean()=}')
-        print(f'{wAPLKC.min()=}')
-        print(f'{(wAPLKC == 0).sum()=}')
-        print(f'{wAPLKC.max()=}')
-        print()
-        print(f'{wKCAPL.mean()=}')
-        print(f'{wKCAPL.min()=}')
-        print(f'{(wKCAPL == 0).sum()=}')
-        print(f'{wKCAPL.max()=}')
-        print()
-        #
+        n_zero_tuned_wAPLKC = (wAPLKC == 0).sum()
+        n_zero_tuned_wKCAPL = (wKCAPL == 0).sum()
+        # might need to update olfsysm tuning to avoid adding extra zeros in these
+        # vectors, if it ever does
+        assert n_zero_input_wAPLKC == n_zero_tuned_wAPLKC
+        assert n_zero_input_wKCAPL == n_zero_tuned_wKCAPL
+
+        wAPLKC_scale = rv.kc.wAPLKC_scale
+        wKCAPL_scale = rv.kc.wKCAPL_scale
+
+        # may need to add exact=False to this call too, if it ever triggers an
+        # AssertionError
+        wAPLKC_scale_recomputed = _single_unique_val(
+            wAPLKC[input_wAPLKC > 0] / input_wAPLKC[input_wAPLKC > 0]
+        )
+        wKCAPL_scale_recomputed = _single_unique_val(
+            wKCAPL[input_wKCAPL > 0] / input_wKCAPL[input_wKCAPL > 0], exact=False
+        )
+        assert np.isclose(wAPLKC_scale, wAPLKC_scale_recomputed)
+        assert np.isclose(wKCAPL_scale, wKCAPL_scale_recomputed)
+
 
     assert responses.shape[1] == (n_input_odors + n_extra_odors)
     responses = pd.DataFrame(responses, columns=odor_index)
@@ -6214,10 +6209,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     avg_flymin = fly_quantiles[0].mean()
     avg_flymax = fly_quantiles[1].mean()
 
-    # TODO TODO compare to quantiles after applying new transform i come up with
-    #
     # NOTE: seems to be more variation in upper end than in inhibitory values
-    # TODO maybe i should be scaling the two sides diff then?
+    # maybe i should be scaling the two sides diff then? (didn't seem worth it)
     #
     #             0.00      0.01      0.05      0.50      0.95      0.99      1.00
     # fly_id
@@ -6265,7 +6258,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
     # TODO factor out?
     # TODO rename to "add_scaled_dff_col" or something?
-    def scale_one_fly(gdf, method='zscore'):
+    def scale_one_fly(gdf: pd.DataFrame, method: str = 'to-avg-max'):
         """Adds <method>_scaled_<dff_col> column with scaled <dff_col> values.
 
         Does not change any existing columns of input.
