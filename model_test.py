@@ -18,11 +18,12 @@ from al_analysis import (fit_mb_model, savefig, diverging_cmap, cmap,
 import al_analysis
 
 
-# TODO TODO TODO re: narrow-odors-jupyter/modeling.ipynb:
+# TODO re: narrow-odors-jupyter/modeling.ipynb:
 # - what is diff between "connection-weighted" vs "synapse-weighted" Hemibrain matrix?
 # - which (if either) was used to produce hemibrain plot in preprint?
 # TODO relevant to disrepancy between matt's / my (via prat) wPNKC matrix?
 
+# TODO why? delete? that's the default there now anyway
 al_analysis.plot_fmt = 'pdf'
 
 # Hardcoded from what value this takes in fit_and_plot_mb_model calls in
@@ -438,10 +439,6 @@ def main():
     megamat_odors = panel2name_order['megamat']
     assert len(megamat_odors) == 17
 
-    # TODO delete (if moving earlier works)
-    #orn_deltas = abbrev_hallem_odor_index(orn_deltas, axis='columns')
-    #assert all(x in orn_deltas.columns for x in megamat_odors)
-    #
     assert all(x in odor_names for x in megamat_odors)
     megamat_deltas = orn_deltas[megamat_odors].copy()
 
@@ -477,6 +474,8 @@ def main():
     # behavior on average). Just need to revert olfsysm/libolfsysm/src/olfsysm.cpp to
     # get stuff to a state where we can set this True (at least when repo is otherwise
     # in c70b0e7f)
+    # TODO TODO TODO is this still relevant? have i not now reverted the
+    # once-problematic part of olfsysm? delete?
     olfsysm_is_pre_c70b0e7f = True
     #olfsysm_is_pre_c70b0e7f = False
 
