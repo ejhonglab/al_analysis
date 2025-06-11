@@ -46,16 +46,45 @@ def formatwarning_msg_only(msg, category, *args, **kwargs):
     warn_type = category.__name__ if category.__name__ != 'UserWarning' else 'Warning'
     return colored(f'{warn_type}: {msg}\n', 'yellow')
 
-# TODO do just in main?
-# TODO TODO maybe also toggle this w/ -v CLI flag (still have it colored orange tho...)
-# (or a dedicated flag for this?)
+# TODO do just in main? (/ after some call?)
 warnings.formatwarning = formatwarning_msg_only
 
 
+def in_pytest() -> bool:
+    """Returns whether code is currently being executed by pytest.
+    """
+    # https://docs.pytest.org/en/latest/example/simple.html#pytest-current-test-environment-variable
+    return 'PYTEST_CURRENT_TEST' in os.environ
+
+
+def is_pytest_capturing_stderr() -> bool:
+    """Returns whether pytest is capturing stderr (as can be disabled by -s).
+
+    There are probably other ways to disable capture other than `-s`, which disables all
+    capturing (stdout as well). This method will probably also work in that context.
+    """
+    # from my testing (w/ pytest 8.3.5 and python 3.8.12), it seems .name on sys.stderr
+    # can distinguish whether pytest was called with `-s` or not.
+    #
+    # with -s, it's: '<stderr>'
+    #
+    # without -s, it's like: "<_io.FileIO name=8 mode='rb+' closefd=True>"
+    return sys.stderr.name != '<stderr>'
+
+
 # TODO maybe log all warnings?
-# TODO TODO replace w/ logging.warning (have init_logger just hook into warnings.warn?
-# some standard mechanism for that?)
-def warn(msg):
+def warn(msg) -> None:
+    # since i couldn't otherwise figure out how to get pytest to show warnings before
+    # debugger breakpoint, especially if pytest is configured to ignore warnings, so now
+    # we'll just also print it before pytest cleanup.
+    #
+    # if pytest is capturing stderr, we probably aren't debugging, and thus shouldn't
+    # need these extra prints.
+    if in_pytest() and not is_pytest_capturing_stderr():
+        print(colored(str(msg), 'yellow'))
+
+    # TODO replace w/ logging.warning? (have init_logger just hook into warnings.warn?
+    # some standard mechanism for that?)
     warnings.warn(str(msg))
 
 
@@ -111,6 +140,7 @@ def produces_output(_fn=None, *, verbose=True):
         @wraps(fn)
         # TODO delete *args (if assertion it's unused passes for a wihle)
         def wrapped_fn(data, path: Pathlike, *args, verbose: bool = verbose,
+            ignore_output_change_check: Union[bool, str] = False,
             multiple_saves_per_run_ok: bool = False, **kwargs):
             """
             Args:
@@ -122,6 +152,8 @@ def produces_output(_fn=None, *, verbose=True):
             # TODO delete (probably delete *args in sig above if so)
             assert len(args) == 0
             #
+
+            assert ignore_output_change_check in (True, False, 'warn')
 
             # TODO easy to check type of matching positional arg is Path/Pathlike
             # (if specified)?
@@ -156,11 +188,9 @@ def produces_output(_fn=None, *, verbose=True):
 
             seen_inputs.add(normalized_path)
 
+            write_output = True
             if check_outputs_unchanged and path.exists():
                 try:
-                    # TODO wrapper kwarg (that would be added to some/all decorations)
-                    # for disabling this for some calls? e.g. for formats where they can
-                    # change for uninteresting reasons, like creation time
                     _check_output_would_not_change(path, fn, data, **kwargs)
                     return
 
@@ -191,9 +221,16 @@ def produces_output(_fn=None, *, verbose=True):
                                 'from main()'
                             )
 
-                    write_output = _output_change_prompt_or_err(err, path)
-            else:
-                write_output = True
+                    # TODO add kwarg to only ignore if diff matches a certain value?
+                    _warn_only = False
+                    if ignore_output_change_check and check_outputs_unchanged != False:
+                        _warn_only = True
+
+                    # 'warn'|False will still enter this conditional
+                    if ignore_output_change_check != True:
+                        write_output = _output_change_prompt_or_err(err, path,
+                            _warn_only=_warn_only
+                        )
 
             if write_output:
                 # TODO test! (and test arg kwarg actually useable on wrapped fn, whether
@@ -226,17 +263,24 @@ class MultipleSavesPerRunException(IOError):
 # set True by al_analysis if -P passed as CLI arg
 prompt_if_changed = False
 
-def _output_change_prompt_or_err(err: RuntimeError, path: Path) -> bool:
+def _output_change_prompt_or_err(err: RuntimeError, path: Path, *,
+    _warn_only: bool = False) -> bool:
     """Returns whether `path` should be written to with new version.
+
+    If `al_util.prompt_if_changed = True`, prompts user to choose what to do with file
+    (whether to overwrite/skip/exit). If `al_util.prompt_if_changed = False`, raises
+    `err` passed in.
     """
     assert err is not None
-    if not prompt_if_changed:
+    if not prompt_if_changed and not _warn_only:
         raise err
 
     assert len(err.args) == 1
     msg = err.args[0]
     # TODO still show lineno (of fn calling wrapped_fn) in this case?
     warn(msg)
+    if _warn_only:
+        return True
 
     overwrite = None
     # TODO try to have Ctrl-c behave same as 'n'?

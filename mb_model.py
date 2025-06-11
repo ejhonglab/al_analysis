@@ -18,7 +18,9 @@ Wrappers to facilitate running `olfsysm` MB models, mainly:
 See also docstring for `connectome_wPNKC` below.
 """
 
+import filecmp
 import itertools
+import os
 from os.path import getmtime
 from pathlib import Path
 from pprint import pprint, pformat
@@ -29,6 +31,16 @@ from tempfile import NamedTemporaryFile
 import time
 import traceback
 from typing import Optional, Tuple, Dict, Any, Union
+
+# TODO delete
+import warnings
+warnings.filterwarnings('error', category=FutureWarning)
+# (doesn't work to catch numpy percentile interpolation= warning anyway,
+# at least from pytest w/ or w/o pytest ignoring warnings...)
+warnings.filterwarnings('error', category=DeprecationWarning)
+# also doesn't seem to work
+warnings.filterwarnings('error', message='the `interpolation=` argument.*')
+#
 
 import numpy as np
 import pandas as pd
@@ -49,6 +61,7 @@ from tqdm import tqdm
 from termcolor import cprint
 # for type hinting
 from statsmodels.regression.linear_model import RegressionResultsWrapper
+from rastermap import Rastermap
 
 from hong2p import olf, util, viz
 from hong2p.olf import solvent_str
@@ -73,12 +86,18 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
 import al_util
 
 
+repo_root = Path(__file__).parent
+
 # e.g. before calculating correlations across model KC populations.
 #
 # Remy generally DOES drop "bad" cells, which are largely silent cells, but that isn't
 # controlled by this flag. my analysis of her data generally also drops the same cells
 # she does.
-drop_silent_model_kcs = True
+drop_silent_model_kcs: bool = True
+
+KC_ID: str = 'kc_id'
+# TODO use (+ in test_mb_model.py and elsewhere) (replacing hardcoded str w/ same value)
+KC_TYPE: str = 'kc_type'
 
 def read_series_csv(csv: Pathlike, **kwargs) -> pd.Series:
     df = pd.read_csv(csv, header=None, index_col=0, **kwargs)
@@ -94,14 +113,13 @@ def read_series_csv(csv: Pathlike, **kwargs) -> pd.Series:
     return ser
 
 
-# TODO refactor to share drop_multiglomerular_receptors default w/ fit_mb_model
-# TODO TODO check there aren't some cases where drop_maximal_extent_rois=True (in ROI ->
-# mask generation code) is leaving '+' in some ROI names (maybe if they aren't at end in
-# input, e.g. if there's something like 'DM5+?' (and handle / change that code if so)
-def handle_multiglomerular_receptors(df: pd.DataFrame,
-    drop_multiglomerular_receptors: bool = True) -> pd.DataFrame:
+def handle_multiglomerular_receptors(df: pd.DataFrame, *, drop: bool = True,
+    verbose: bool = False) -> pd.DataFrame:
 
-    if not drop_multiglomerular_receptors:
+    # TODO if this is false, could add to each glomerulus? doubt it would matter much at
+    # all. this fn should only be handling 'DM3+DM5' (where 'DM3' and 'DM5' are also in
+    # hallem data)
+    if not drop:
         raise NotImplementedError
 
     assert df.index.name == 'glomerulus'
@@ -110,15 +128,134 @@ def handle_multiglomerular_receptors(df: pd.DataFrame,
     # of the glomeruli in the string.
     multiglomerular_receptors = df.index.str.contains('+', regex=False)
     if multiglomerular_receptors.any():
-        # TODO warn? at least is some verbose flag is True?
+        # 'DM3+DM5' should correspond to Or33b coreceptor Hallem adata
+        expected_mg_receptors = {'DM3+DM5'}
+        mg_receptors = set(df.index[multiglomerular_receptors])
+        # in case some of my weird names for uncertain glomeruli have slipped thru to
+        # here by accident (none of the calls to this use my glom names tho...)
+        assert mg_receptors == expected_mg_receptors, (
+            'had unexpected multiglomerular receptors:\n'
+            f'{pformat(mg_receptors - expected_mg_receptors)}'
+        )
+
+        # defaulting to verbose=False, b/c it seems all calls to this are not on my
+        # input data (just on hallem, or in an unused path where my input is given w/
+        # receptor names, which are then converted to glomeruli names)
+        if verbose:
+            warn(f'dropping multiglomerular receptors: {mg_receptors}')
+
         df = df.loc[~multiglomerular_receptors, :].copy()
 
     return df
 
 
-def _plot_connectome_raw_weight_hist(weight_ser: pd.Series) -> Tuple[Figure, Axes]:
+def _print_response_rates(responses: pd.DataFrame) -> None:
+    """Prints mean response rates for bool responded/not data of shape (# KCs, # odors)
+
+    If input index has a `KC_TYPE` level, also prints response rate within each KC
+    subtype, and how many cells of each type.
+    """
+    # TODO may want to add support to summarize by odor (not kc_type) if this assertion
+    # ever trips
+    assert KC_TYPE in responses.index.names
+
+    # ab         802
+    # g          612
+    # a'b'       336
+    # unknown     80
+    n_kcs_by_type = responses.index.get_level_values(KC_TYPE).value_counts()
+
+    response_rate_by_type = responses.groupby(KC_TYPE).sum().T / n_kcs_by_type
+
+    # TODO still breakdown by odor if we don't have KC type?
+    # (should have a plot for that, so idk...)
+
+    # TODO refactor sparsity float formatting?
+    print(f'mean response rate: {responses.mean().mean():.4f}', end='')
+    print('. by KC type:')
+    avg_response_rate_by_type = response_rate_by_type.mean(
+        ).to_frame(name='avg_response_rate')
+
+    avg_response_rate_by_type['n_kcs_of_type'] = n_kcs_by_type
+
+    # mean response rate: 0.1074. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.074230            336
+    # ab                0.106718            802
+    # g                 0.131200            612
+    # unknown           0.072059             80
+    print(avg_response_rate_by_type.to_string())
+    print()
+    print('mean response rate by odor and KC type:')
+    print(response_rate_by_type.to_string())
+
+
+# TODO factor to hong2p.util?
+def delim_sep_part(ser: pd.Series, *, sep: str = '_', i: int = 0) -> pd.Series:
+    return ser.str.split(sep).apply(lambda x: x[i])
+
+def first_delim_sep_part(ser, *, sep: str = '_') -> pd.Series:
+    return delim_sep_part(ser, sep=sep, i=0)
+#
+
+
+# TODO move 'unknown' into this set?
+expected_kc_types = {'g', 'ab', "a'b'"}
+#
+kc_type_hue_order = list(expected_kc_types) + ['unknown']
+
+def add_kc_type_col(df: pd.DataFrame, type_col: str) -> pd.DataFrame:
+    # TODO replace NaN w/ 'unknown' here, instead of adding it after the fact
+    # potentially inconsistently
+    """Modifies `df` inplace, adding a 'kc_type' column (vals={'g', 'ab', "a'b'"", NaN})
+    """
+    # TODO also use for fafb inputs? or need diff processing there?
+
+    sep_count = df[type_col].dropna().str.count('-')
+    multiple_sep = sep_count > 1
+    assert not multiple_sep.any()
+    missing_sep = sep_count == 0
+    assert not missing_sep.any()
+
+    kc_types = first_delim_sep_part(df[type_col].dropna(), sep='-')
+
+    # after this, should all be one of {"g", "ab", "a'b'"}
+    # (or NaN after assigning back into `df`)
+    kc_types = kc_types.str.strip('KC')
+
+    assert set(kc_types) == expected_kc_types
+
+    assert KC_TYPE not in df.columns
+    # from hemibrain wPNKC input:
+    # ipdb> df[KC_TYPE].str.strip('KC').value_counts(dropna=False)
+    # g       4639
+    # ab      3759
+    # a'b'    1469
+    # NaN      238
+    df[KC_TYPE] = kc_types
+
+    # important this happens after line above, which will often be what introduces the
+    # NaN (by assigning back into df)
+    # TODO add separate module-level variable for 'unknown'?
+    df[KC_TYPE] = df[KC_TYPE].fillna('unknown')
+
+    return df
+
+
+def _plot_connectome_raw_weight_hist(weights: Union[pd.Series, pd.DataFrame],
+    **kwargs) -> Tuple[Figure, Axes]:
+
+    if isinstance(weights, pd.DataFrame):
+        assert 'x' in kwargs, 'must pass x= if weights are a DataFrame'
+        weight_ser = weights[kwargs['x']]
+    else:
+        weight_ser = weights
+
+    # discrete=True wouldn't make sense otherwise, right?
+    assert (weight_ser.astype(int) == weight_ser.astype(float)).all()
+
     fig, ax = plt.subplots()
-    sns.histplot(weight_ser, discrete=True, ax=ax)
+    sns.histplot(weights, discrete=True, ax=ax, **kwargs)
     return fig, ax
 
 
@@ -137,7 +274,7 @@ _connectome2glomset = dict()
 # weight_divisor. currently weight_divisor=20 brings us way above their reported mean #
 # of claws, given threshold of >4 we are stuck w/ in hemibrain case. maybe Bock # of
 # claws is partially just b/c that brain is abnormal [i.e. many more KCs, etc]?)
-def connectome_wPNKC(connectome: str = 'hemibrain',
+def connectome_wPNKC(connectome: str = 'hemibrain', *,
     weight_divisor: Optional[float] = None, plot_dir: Optional[Path] = None,
     _use_matt_wPNKC=False, _drop_glom_with_plus: bool = True) -> pd.DataFrame:
     """
@@ -179,16 +316,12 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
     assert not any(x in task_gloms for x in glomerulus_renames.keys())
 
     glomerulus_col = 'glomerulus'
-
-    def _underscore_part(ser, i=0):
-        return ser.str.split('_').apply(lambda x: x[i])
-
-    def _first_underscore_part(ser):
-        return _underscore_part(ser, i=0)
-
     def _add_glomerulus_col_from_hemibrain_type(df: pd.DataFrame, pn_type_col: str,
         kc_id_col: str, *, check_no_multi_underscores: bool = False) -> pd.DataFrame:
+        """Modifies `df` inplace, adding a 'glomerulus'  column.
 
+        Glomerulus parsed from `df[pn_type_col]`.
+        """
         assert glomerulus_col not in df.columns
 
         assert not df[kc_id_col].isna().any()
@@ -272,6 +405,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             )
             df = df_no_multi
 
+        # TODO replace this kwarg w/ one talking about dropping glomeruli w/ no
+        # task-glomeruli inputs instead? could it be equiv, or no? or otherwise rename
+        # it to be more clear about what it's currently dropping (multiglomerular PNs?
+        # anything else?)?
         if _drop_glom_with_plus:
             has_plus = df[pn_type_col].str.contains('+', regex=False)
             if has_plus.any():
@@ -325,10 +462,19 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
                     f'{_drop_glom_with_plus=}. this preserves old hemibrain model '
                     'behavior exactly, but should probably be removed moving forward.'
                 )
+            # TODO delete (figuring out explanation for why i'm dropping these for
+            # tianpei / to give this flag a better name)
+            '''
+            print()
+            print(f'{_drop_glom_with_plus=}')
+            print(f'{has_plus.sum()=}')
+            import ipdb; ipdb.set_trace()
+            '''
+            #
 
         # TODO also print count of unique PN bodyids within each glom_strs value?
         # (here might not be the place anymore, if i even still care about this...)
-        glom_strs = _first_underscore_part(df[pn_type_col])
+        glom_strs = first_delim_sep_part(df[pn_type_col], sep='_')
 
         # only doing if _drop_glom_with_plus, so i don't have to also add that flag to
         # dict key (cause it will change set of glomeruli, e.g. w/ hemibrain)
@@ -423,7 +569,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
 
     if connectome == 'hemibrain':
         if _use_matt_wPNKC:
-            matt_data_dir = Path('data/from_matt/hemibrain')
+            matt_data_dir = repo_root / 'data/from_matt/hemibrain'
 
             # TODO which was that other CSV (that maybe derived these?) that was full
             # PN->KC connectome matrix?
@@ -485,7 +631,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
                 columns='glomerulus').T
 
             hallem_glomeruli = handle_multiglomerular_receptors(hallem_orn_deltas,
-                drop_multiglomerular_receptors=True
+                drop=True
             ).index
             del hallem_orn_deltas
 
@@ -534,7 +680,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
 
             n_kcs = len(wPNKC)
         else:
-            data_path = Path('data/PNtoKC_connections_raw.xlsx')
+            data_path = repo_root / 'data/PNtoKC_connections_raw.xlsx'
 
             # (looks like it was c.weight > 3 actually)
             #
@@ -560,8 +706,57 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             df = _add_glomerulus_col_from_hemibrain_type(df, hemibrain_pn_type,
                 kc_id_col, check_no_multi_underscores=True
             )
+
+            # ipdb> df['b.instance'].isna().sum()
+            # 0
+            # ipdb> df['b.instance'].value_counts()
+            # KCg-m_R               4581
+            # KCab-m_R              1560
+            # KCab-s_R              1262
+            # KCab-c_R               932
+            # KCa'b'-ap2_R           614
+            # KCa'b'-m_R             581
+            # KCa'b'-ap1_R           274
+            # KC part due to gap     224
+            # KCg-t_R                 33
+            # KCg-d_R                 16
+            # KC(incomplete?)          7
+            # KCy(half)                7
+            # KCab-p_R                 5
+            # KCg-s2(super)_R          5
+            # KCg-s3_R                 2
+            # KCg-s4_R                 2
+            #
+            # ipdb> df['b.type'].value_counts(dropna=False)
+            # KCg-m         4581
+            # KCab-m        1560
+            # KCab-s        1262
+            # KCab-c         932
+            # KCa'b'-ap2     614
+            # KCa'b'-m       581
+            # KCa'b'-ap1     274
+            # NaN            238
+            # KCg-t           33
+            # KCg-d           16
+            # KCab-p           5
+            # KCg-s2           5
+            # KCg-s3           2
+            # KCg-s4           2
+            #
+            # ipdb> df.loc[df['b.type'].isna()]['b.instance'].value_counts()
+            # KC part due to gap    224
+            # KC(incomplete?)         7
+            # KCy(half)               7
+            #
+            # TODO how many of these w/ missing type are in final wPNKC?
+            #
+            # how many are also in the hemibrain wAPLKC/wKCAPL processed series? how
+            # many of the ones missing from wAPLKC/wKCAPL? (comments+code in
+            # connectome_APL_weights should answer this to some extent. try to delete
+            # this comment.)
+            df = add_kc_type_col(df, 'b.type')
     else:
-        fafb_dir = Path('data/from_pratyush/2024-09-13')
+        fafb_dir = repo_root / 'data/from_pratyush/2024-09-13'
 
         if connectome == 'fafb-left':
             data_path = fafb_dir / 'FlyWire_PNKC_Left.csv'
@@ -641,7 +836,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         # fafb_types = df.source_cell_type.dropna()
         # # true for at least fafb-left
         # assert (fafb_types.str.count('_') == 1).all()
-        # fafb_gloms = _first_underscore_part(fafb_types)
+        # fafb_gloms = first_delim_sep_part(fafb_types, sep='_')
         # odf = df.dropna(subset=['source_cell_type'])
         # assert odf.index.equals(fafb_gloms.index)
         # print(pd.concat([fafb_gloms, odf.glomerulus], axis=1).drop_duplicates())
@@ -704,6 +899,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
 
     # TODO replace `glomerulus` w/ `glomerulus_col` below? or revert to hardcode above?
 
+    kc_types = None
     if not _use_matt_wPNKC:
         # TODO also get working in _use_matt_wPNKC case?
         assert len(df[[pn_id_col, kc_id_col]].drop_duplicates()) == len(df)
@@ -731,16 +927,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         # was true b/c Prat's query in hemibrain case, and b/c subsetting above in
         # fafb cases
         assert min_weight == 4
-
-        # TODO TODO also move this plot after we drop non-task glomeruli? (prob doesn't
-        # matter) (actually would keep bins more sane in _drop_glom_with_plus, b/c data
-        # should match _drop_glom_with_plus=True case after dropping non-task glomeruli)
-        if plot_dir is not None:
-            fig, ax = _plot_connectome_raw_weight_hist(df[weight_col])
-            ax.set_title(f'{connectome} PN->KC weights\n{min_weight=}\n{data_path.name}'
-                f'\n{n_kcs=}'
-            )
-            savefig(fig, plot_dir, f'wPNKC_hist_{connectome}')
 
         to_rename = df.glomerulus.isin(glomerulus_renames)
         if to_rename.any():
@@ -780,10 +966,12 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             using_count = pd.pivot_table(df, values=weight_col, index=kc_id_col,
                 columns='glomerulus', aggfunc='count').fillna(0).astype(int)
 
-            df[weight_col] = np.ceil(df[weight_col] / weight_divisor)
+            wdf = df.copy()
+            wdf[weight_col] = np.ceil(wdf[weight_col] / weight_divisor)
 
-            wPNKC = pd.pivot_table(df, values=weight_col, index=kc_id_col,
+            wPNKC = pd.pivot_table(wdf, values=weight_col, index=kc_id_col,
                 columns='glomerulus', aggfunc='sum').fillna(0).astype(int)
+            del wdf
 
             assert (wPNKC >= using_count).all().all()
             # if weight_divisor is too large, this could fail
@@ -792,11 +980,38 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             assert (wPNKC > using_count).any().any()
             del using_count
 
+        # TODO also implement for fafb inputs?
+        if KC_TYPE in df.columns:
+            # TODO delete?
+            kc_ids_and_types = wPNKC.index.to_frame(index=False).merge(
+                df[[kc_id_col, KC_TYPE]].drop_duplicates(), left_on=kc_id_col,
+                right_on=kc_id_col
+            )
+            # TODO what is this checking? kinda seems like a merge above isn't getting
+            # us anything...
+            assert np.array_equal(kc_ids_and_types[kc_id_col], wPNKC.index)
+            #
+            kc_types = kc_ids_and_types[KC_TYPE]
+        #
+
     # sanity check
     assert n_kcs > 1000
 
-    # TODO only do for 'hemibrain'? use more generic term ('kc_id'?)?
-    wPNKC.index.name = 'bodyid'
+    wPNKC.index.name = KC_ID
+
+    if kc_types is not None:
+        kc_index = pd.MultiIndex.from_arrays([wPNKC.index, kc_types])
+
+        assert kc_index.to_frame(index=False).equals(
+            kc_ids_and_types.rename(columns={kc_id_col: KC_ID})
+        )
+        # (for hemibrain)
+        # ipdb> kc_index.get_level_values(KC_TYPE).value_counts(dropna=False)
+        # ab      802
+        # g       612
+        # a'b'    336
+        # NaN      80
+        wPNKC.index = kc_index
 
     non_task_gloms = set(wPNKC.columns) - task_gloms
     if len(non_task_gloms) > 0:
@@ -825,7 +1040,11 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
     _, n_without_input_before = _get_kcs_without_input(wPNKC)
     assert n_without_input_before == 0
 
-    wPNKC = wPNKC[task_gloms & set(wPNKC.columns)].copy()
+    # more recent versions of pandas (>1.3.1, certainly by 1.5.0) complain about
+    # indexing w/ set, via FutureWarning (hence conversion to list)
+    wPNKC = wPNKC[list(task_gloms & set(wPNKC.columns))].copy()
+    # TODO TODO TODO summarize what tianpe should do regarding this
+    assert not (wPNKC == 0).all().any(), 'had Task glomeruli providing no input to KCs'
 
     kcs_without_input, n_kcs_without_input = _get_kcs_without_input(wPNKC)
     if n_kcs_without_input > 0:
@@ -833,23 +1052,46 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             f'non-Task glomeruli:\n{sorted(kcs_without_input[kcs_without_input].index)}'
         )
 
-    assert not (wPNKC == 0).all().any(), 'had Task glomeruli providing no input to KCs'
-
     if plot_dir is not None:
+        # at least in connectome='hemibrain' & _drop_glom_with_plus=True, wPNKC here has
+        # two KCs with no input connections, which are not in reprocessed df.
+        # doesn't matter tho.
+        df = df[df.glomerulus.isin(wPNKC.columns)]
+
+        fig, ax = _plot_connectome_raw_weight_hist(df[weight_col])
+        ax.set_title(f'{connectome} PN->KC weights\n{min_weight=}\n{data_path.name}'
+            f'\n{n_kcs=}'
+        )
+        # bbox_inches='tight' necessary for title to not be cut off
+        savefig(fig, plot_dir, f'wPNKC_hist_{connectome}', bbox_inches='tight')
+
+        fig, ax = _plot_connectome_raw_weight_hist(df, x=weight_col, hue=KC_TYPE,
+            hue_order=kc_type_hue_order
+        )
+        ax.set_title(f'{connectome} PN->KC weights\n{min_weight=}\n{data_path.name}'
+            f'\n{n_kcs=}'
+        )
+        savefig(fig, plot_dir, f'wPNKC_hist_{connectome}_by-kc-type',
+            bbox_inches='tight'
+        )
+
         # NOTE: mean of this w/ connectome='hemibrain' is 5.44 (NOT n_claws=7 used
         # by uniform)
         n_inputs_per_kc = wPNKC.T.sum()
-
-        fig, ax = plt.subplots()
-        sns.histplot(n_inputs_per_kc, discrete=True, ax=ax)
-
-        ax.set_xlabel('inputs per KC\n(after processing connectome weights)')
 
         # relevant for picking appropriate n_claws for uniform/hemidraw cases, or for
         # picking weight_divisor that produces closest avg to the n_claws=7 we had
         # already been using
         avg_n_inputs_per_kc = n_inputs_per_kc.mean()
 
+        # so that the value column has a name after reset_index()
+        n_inputs_per_kc.name = 'n_claws'
+
+        # TODO label y-axis for two below (and *differently* for those above)?
+
+        fig, ax = plt.subplots()
+        sns.histplot(n_inputs_per_kc, discrete=True, ax=ax)
+        ax.set_xlabel('# "claws" per KC\n(after processing connectome weights)')
         ax.set_title(f'total inputs per KC\n{connectome=}\n{weight_divisor=}\n{n_kcs=}'
             f'\nmean inputs per KC: {avg_n_inputs_per_kc:.2f}'
         )
@@ -858,7 +1100,23 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
         # for hemibrain w/ weight_divisor=20), we get much more of the right lobe in the
         # fafb plots. are there less (PN, KC) pairs for some reason (what should be the
         # only lobe w/ weight_divisor=None, or the left lobe in others)?
-        savefig(fig, plot_dir, f'wPNKC-summed-within-KC_hist_{connectome}')
+        savefig(fig, plot_dir, f'wPNKC_nclaws-sum-per-KC_hist_{connectome}',
+            bbox_inches='tight'
+        )
+
+        # TODO refactor to share w/ above?
+        fig, ax = plt.subplots()
+        sns.histplot(n_inputs_per_kc.reset_index(), discrete=True, ax=ax, x='n_claws',
+            hue=KC_TYPE, hue_order=kc_type_hue_order
+        )
+        ax.set_xlabel('# "claws" per KC\n(after processing connectome weights)')
+        ax.set_title(f'total inputs per KC\n{connectome=}\n{weight_divisor=}\n{n_kcs=}'
+            f'\nmean inputs per KC: {avg_n_inputs_per_kc:.2f}'
+        )
+        savefig(fig, plot_dir, f'wPNKC_nclaws-sum-per-KC_hist_{connectome}_by-kc-type',
+            bbox_inches='tight'
+        )
+        #
 
         # TODO also plot sums within glomeruli?
 
@@ -873,14 +1131,16 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
     # TODO i can not seem to recreate uniform output (by sorting wPNKC post-hoc), but
     # i'm not sure that's actually a problem. maybe input *should* always just be in a
     # particular order, and shouldn't necessarily matter that it's this one...
+    #
+    # sorting columns (glomeruli) alphanumerically
     wPNKC = wPNKC.sort_index(axis='columns')
 
     return wPNKC
 
 
 def connectome_APL_weights(connectome: str = 'hemibrain', *,
-    wPNKC: Optional[pd.DataFrame] = None, plot_dir: Optional[Path] = None
-    ) -> Tuple[pd.Series, pd.Series]:
+    wPNKC: Optional[pd.DataFrame] = None, kc_types: Optional[pd.Series] = None,
+    plot_dir: Optional[Path] = None) -> Tuple[pd.Series, pd.Series]:
     # TODO add param to support imputing something non-zero (min_weight?) for KC IDs in
     # wPNKC but not APL-KC data
     # TODO actually want to support weight_divisor (prob not, especially if i'm
@@ -889,6 +1149,8 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     # TODO param for min_weight? maybe add smilar one for connectome_wPNKC, and share
     # min_weight value across these two fns? (even if doesn't make sense to share
     # weight_divisor)?
+    # TODO why do i need both wPNKC and kc_types? just always pass kc_index (which may
+    # or may not include kc_types, but don't otherwise pass wPNKC?)
     """Returns wAPLKC, wKCAPL (each a `Series` with KC IDs in index, and weight values)
 
     Args:
@@ -908,7 +1170,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
             " for connectome='hemibrain'"
         )
 
-    apl_data_dir = Path('data/from_pratyush/2025-04-03')
+    apl_data_dir = repo_root / 'data/from_pratyush/2025-04-03'
 
     apl2kc_csv = apl_data_dir / 'APL2KC_Connectivity.csv'
     # columns: bodyId_pre, type_pre, instance_pre, bodyId_post, type_post,
@@ -932,80 +1194,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     # TODO actually see what fraction of calyx connections are excluded by this
     # filtering?
     apl2kc_df = apl2kc_df[apl2kc_df.instance_pre == 'APL_R'].copy()
-    # unique values for non-int columns before/after filtering from line above:
-    # (via `apl2kc_df[apl2kc_df.select_dtypes('object').columns].apply(lambda x:
-    #  list(x.unique())).to_dict()` )
-    #
-    # BEFORE:
-    # {'instance_post': ['KCy(half)',
-    #                    'KCg-m_R',
-    #                    'KCg-t_R',
-    #                    'KCg-d_R',
-    #                    'KCab-m_R',
-    #                    'KC part due to gap',
-    #                    'KCab-c_R',
-    #                    "KCa'b'-m_R",
-    #                    "KCa'b'-ap2_R",
-    #                    'KC(incomplete?)',
-    #                    'KCg-s3_R',
-    #                    'KCab-s_R',
-    #                    'KCg-s2(super)_R',
-    #                    'KCab-p_R',
-    #                    "KCa'b'-ap1_R",
-    #                    'KCg-s4_R'],
-    #  'instance_pre': ['APL_R', 'APL or DPM'],
-    #  'roi': ['CA(R)'],
-    #  'type_post': [nan,
-    #                'KCg-m',
-    #                'KCg-t',
-    #                'KCg-d',
-    #                'KCab-m',
-    #                'KCab-c',
-    #                "KCa'b'-m",
-    #                "KCa'b'-ap2",
-    #                'KCg-s3',
-    #                'KCab-s',
-    #                'KCg-s2',
-    #                'KCab-p',
-    #                "KCa'b'-ap1",
-    #                'KCg-s4'],
-    #  'type_pre': ['APL', nan]}
-    #
-    #
-    # AFTER:
-    # {'instance_post': ['KCy(half)',
-    #                    'KCg-m_R',
-    #                    'KCg-t_R',
-    #                    'KCg-d_R',
-    #                    'KCab-m_R',
-    #                    'KC part due to gap',
-    #                    'KCab-c_R',
-    #                    "KCa'b'-m_R",
-    #                    "KCa'b'-ap2_R",
-    #                    'KC(incomplete?)',
-    #                    'KCg-s3_R',
-    #                    'KCab-s_R',
-    #                    'KCg-s2(super)_R',
-    #                    'KCab-p_R',
-    #                    "KCa'b'-ap1_R",
-    #                    'KCg-s4_R'],
-    #  'instance_pre': ['APL_R'],
-    #  'roi': ['CA(R)'],
-    #  'type_post': [nan,
-    #                'KCg-m',
-    #                'KCg-t',
-    #                'KCg-d',
-    #                'KCab-m',
-    #                'KCab-c',
-    #                "KCa'b'-m",
-    #                "KCa'b'-ap2",
-    #                'KCg-s3',
-    #                'KCab-s',
-    #                'KCg-s2',
-    #                'KCab-p',
-    #                "KCa'b'-ap1",
-    #                'KCg-s4'],
-    #  'type_pre': ['APL']}
 
     # TODO why are there NaN in type post (how many? 80/1951 rows) (seems they are
     # all for uncertain / fragment KCs)? just drop those i assume?
@@ -1020,6 +1208,12 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     #       dtype=object)
     apl2kc_df = apl2kc_df[apl2kc_df.type_post.notna()].copy()
     assert not apl2kc_df.isna().any().any()
+
+    apl2kc_df = add_kc_type_col(apl2kc_df, 'instance_post')
+    assert not apl2kc_df[KC_TYPE].isna().any()
+    # I guess inputs are missing what I would need to independently define type for
+    # these (or that this is the reality / this data is not available)
+    assert not (apl2kc_df[KC_TYPE] == 'unknown').any()
 
     # ipdb> apl2kc_df.weight.value_counts().sort_index()
     # 1      60
@@ -1060,8 +1254,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     # 36      1
     # 37      2
     # 38      2
-    # Name: weight, dtype: int64
-
 
     kc2apl_csv = apl_data_dir / 'KC2APL_Connectivity.csv'
     # columns same as above
@@ -1075,85 +1267,17 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
 
     # NOTE: using instance_post here instead of instance_pre above
     kc2apl_df = kc2apl_df[kc2apl_df.instance_post == 'APL_R'].copy()
-    # TODO delete (and similar comment for apl2kc_df above). replace w/ similar
-    # comment after next (and final) filtering to exclude NaN KC cell types below.
-    #
-    # before/after filtering from line above:
-    # BEFORE
-    # {'instance_post': ['APL_R', 'APL or DPM'],
-    #  'instance_pre': ['KCy(half)',
-    #                   'KCab-c_R',
-    #                   'KCg-m_R',
-    #                   'KCab-m_R',
-    #                   'KC part due to gap',
-    #                   'KCg-t_R',
-    #                   'KCab-s_R',
-    #                   "KCa'b'-m_R",
-    #                   "KCa'b'-ap2_R",
-    #                   "KCa'b'-ap1_R",
-    #                   'KCg-d_R',
-    #                   'KC(incomplete?)',
-    #                   'KCg-s3_R',
-    #                   'KCab-p_R',
-    #                   'KCg-s2(super)_R',
-    #                   'KCg-s4_R'],
-    #  'roi': ['CA(R)'],
-    #  'type_post': ['APL', nan],
-    #  'type_pre': [nan,
-    #               'KCab-c',
-    #               'KCg-m',
-    #               'KCab-m',
-    #               'KCg-t',
-    #               'KCab-s',
-    #               "KCa'b'-m",
-    #               "KCa'b'-ap2",
-    #               "KCa'b'-ap1",
-    #               'KCg-d',
-    #               'KCg-s3',
-    #               'KCab-p',
-    #               'KCg-s2',
-    #               'KCg-s4']}
-    #
-    # AFTER
-    # {'instance_post': ['APL_R'],
-    #  'instance_pre': ['KCy(half)',
-    #                   'KCab-c_R',
-    #                   'KCg-m_R',
-    #                   'KCab-m_R',
-    #                   'KC part due to gap',
-    #                   'KCg-t_R',
-    #                   'KCab-s_R',
-    #                   "KCa'b'-m_R",
-    #                   "KCa'b'-ap2_R",
-    #                   "KCa'b'-ap1_R",
-    #                   'KCg-d_R',
-    #                   'KC(incomplete?)',
-    #                   'KCg-s3_R',
-    #                   'KCab-p_R',
-    #                   'KCg-s2(super)_R',
-    #                   'KCg-s4_R'],
-    #  'roi': ['CA(R)'],
-    #  'type_post': ['APL'],
-    #  'type_pre': [nan,
-    #               'KCab-c',
-    #               'KCg-m',
-    #               'KCab-m',
-    #               'KCg-t',
-    #               'KCab-s',
-    #               "KCa'b'-m",
-    #               "KCa'b'-ap2",
-    #               "KCa'b'-ap1",
-    #               'KCg-d',
-    #               'KCg-s3',
-    #               'KCab-p',
-    #               'KCg-s2',
-    #               'KCg-s4']}
-
     # NOTE: seems like only 79 NaN here, despite seemingly 80 at this point in
     # filtering for apl2kc_df above. almost certainly doesn't matter.
     # NOTE: using type_pre, instead of type_post for apl2kc_df above
     kc2apl_df = kc2apl_df[kc2apl_df.type_pre.notna()].copy()
     assert not kc2apl_df.isna().any().any()
+
+    kc2apl_df = add_kc_type_col(kc2apl_df, 'instance_pre')
+    assert not kc2apl_df[KC_TYPE].isna().any()
+    # I guess inputs are missing what I would need to independently define type for
+    # these (or that this is the reality / this data is not available)
+    assert not (kc2apl_df[KC_TYPE] == 'unknown').any()
 
     # ipdb> kc2apl_df.weight.value_counts().sort_index()
     # 1      65
@@ -1188,23 +1312,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     apl2kc_ids = set(apl2kc_df.bodyId_post)
     kc2apl_ids = set(kc2apl_df.bodyId_pre)
 
-    # ipdb> len(pn2kc_ids) # (defined below now)
-    # 1837
-    # ipdb> len(apl2kc_ids)
-    # 1871
-    # ipdb> len(kc2apl_ids)
-    # 1838
-    #
-    # ipdb> len(apl2kc_ids - pn2kc_ids)
-    # 117
-    # ipdb> len(pn2kc_ids - apl2kc_ids)
-    # 83
-    #
-    # ipdb> len(kc2apl_ids - pn2kc_ids)
-    # 94
-    # ipdb> len(pn2kc_ids - kc2apl_ids)
-    # 93
-
     if plot_dir is not None:
         min_weight = apl2kc_df['weight'].min()
         assert min_weight > 0
@@ -1212,7 +1319,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
         ax.set_title(f'{connectome} APL->KC weights\n{min_weight=}\n{apl2kc_csv.name}\n'
             f'n_kcs={len(apl2kc_ids)}'
         )
-        savefig(fig, plot_dir, f'wAPLKC_hist_{connectome}')
+        savefig(fig, plot_dir, f'wAPLKC_hist_{connectome}', bbox_inches='tight')
 
         min_weight = kc2apl_df['weight'].min()
         assert min_weight > 0
@@ -1220,16 +1327,41 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
         ax.set_title(f'{connectome} KC->APL weights\n{min_weight=}\n{kc2apl_csv.name}\n'
             f'n_kcs={len(kc2apl_ids)}'
         )
-        savefig(fig, plot_dir, f'wKCAPL_hist_{connectome}')
+        savefig(fig, plot_dir, f'wKCAPL_hist_{connectome}', bbox_inches='tight')
 
     if wPNKC is None:
         # TODO test filling below works w/ this branch. expecting to mainly use branch
         # below (where wPNKC is passed in)
-        kc_index = pd.Index((apl2kc_ids | kc2apl_ids), name='bodyid')
+        kc_index = pd.Index((apl2kc_ids | kc2apl_ids), name=KC_ID)
     else:
         kc_index = wPNKC.index.copy()
+        pn2kc_ids = set(kc_index)
+        # ipdb> len(pn2kc_ids)
+        # 1837
+        # ipdb> len(apl2kc_ids)
+        # 1871
+        # ipdb> len(kc2apl_ids)
+        # 1838
+        #
+        # ipdb> len(apl2kc_ids | kc2apl_ids)
+        # 1887
+        # ipdb> len((apl2kc_ids | kc2apl_ids) & pn2kc_ids)
+        # 1749
+        # ipdb> len((apl2kc_ids | kc2apl_ids) - pn2kc_ids)
+        # 138
+        #
+        # ipdb> len(apl2kc_ids - pn2kc_ids)
+        # 117
+        # ipdb> len(pn2kc_ids - apl2kc_ids)
+        # 83
+        #
+        # ipdb> len(kc2apl_ids - pn2kc_ids)
+        # 94
+        # ipdb> len(pn2kc_ids - kc2apl_ids)
+        # 93
 
-        pn2kc_ids = set(wPNKC.index)
+        # NOTE: if any KC IDs are "dropped" below, it will be because they are not in
+        # kc_index, which is used below to define wAPLKC/wKCAPL indices
 
         n_kcs_dropped_apl2kc = len(apl2kc_ids - pn2kc_ids)
         if n_kcs_dropped_apl2kc > 0:
@@ -1276,6 +1408,98 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     assert not wAPLKC.isna().any()
     assert not wKCAPL.isna().any()
 
+    if kc_types is not None and plot_dir is not None:
+        # explore whether subtypes have diff weights in either (esp a'/b' vs others),
+        # along lines of inada/kazama paper (they don't, but can i force them to, so
+        # that effect is similar? presumably?). anything else to look at?
+
+        # kc_index should be same as wAPLKC and wKCAPL indices
+        assert len(kc_types) == len(kc_index)
+
+        assert (kc_types == 'unknown').any()
+
+        # is it consistent w/ expectation that a/b (802) are more numerous than gamma
+        # (612)? (betty thought they counts across all 3 seemed reasonable)
+        type2count = kc_types.value_counts()
+        old_type_index = type2count.index.copy()
+        type2count.index = type2count.index + ' (' + type2count.astype(str).values + ')'
+
+        # converting to Series since Index doesn't have a .replace method
+        kc_types = pd.Series(kc_types)
+
+        type2type_with_count = dict(zip(old_type_index, type2count.index))
+        kc_types = kc_types.replace(type2type_with_count)
+
+        # do need this for some reason, or else adding kc_type col to
+        # w[APLKC|KCAPL]_with_types will only add an all-NaN kc_type column
+        kc_types = pd.Index(kc_types)
+
+        wAPLKC_with_types = wAPLKC.to_frame()
+        wAPLKC_with_types[KC_TYPE] = kc_types
+
+        wKCAPL_with_types = wKCAPL.to_frame()
+        wKCAPL_with_types[KC_TYPE] = kc_types
+
+        wAPLKC_max_weight_by_type = wAPLKC_with_types.groupby(KC_TYPE).weight.max()
+        wKCAPL_max_weight_by_type = wKCAPL_with_types.groupby(KC_TYPE).weight.max()
+
+        wAPLKC_0weight_types = wAPLKC_max_weight_by_type == 0
+        wAPLKC_unknown_type_has_0weight  = False
+        if wAPLKC_0weight_types.any():
+            assert len(wAPLKC_max_weight_by_type.index[wAPLKC_0weight_types]) == 1
+            assert wAPLKC_max_weight_by_type.index[wAPLKC_0weight_types].str.startswith(
+                'unknown (').all()
+            wAPLKC_unknown_type_has_0weight = True
+
+        wKCAPL_0weight_types = wKCAPL_max_weight_by_type == 0
+        wKCAPL_unknown_type_has_0weight  = False
+        if wKCAPL_0weight_types.any():
+            assert len(wKCAPL_max_weight_by_type.index[wKCAPL_0weight_types]) == 1
+            assert wKCAPL_max_weight_by_type.index[wKCAPL_0weight_types].str.startswith(
+                'unknown (').all()
+            wKCAPL_unknown_type_has_0weight = True
+
+        n_unknown_type = None
+        if wAPLKC_unknown_type_has_0weight and wKCAPL_unknown_type_has_0weight:
+            wAPLKC_unknown_type = wAPLKC_with_types[KC_TYPE].str.startswith('unknown (')
+            wAPLKC_with_types = wAPLKC_with_types[~wAPLKC_unknown_type]
+
+            wKCAPL_unknown_type = wKCAPL_with_types[KC_TYPE].str.startswith('unknown (')
+            wKCAPL_with_types = wKCAPL_with_types[~wKCAPL_unknown_type]
+
+            n_unknown_type = wAPLKC_unknown_type.sum()
+            assert n_unknown_type == wKCAPL_unknown_type.sum()
+        else:
+            assert False
+
+        # otherwise it will show up in legend, without a correponding histogram element
+        # (b/c no rows have that type here, and they should also all be of weight 0
+        # anyway, unless there was a bug w/ how I was getting the types from wPNKC...),
+        # which is confusing
+        hue_order = [
+            type2type_with_count[x] for x in kc_type_hue_order if x != 'unknown'
+        ]
+
+        fig, ax = _plot_connectome_raw_weight_hist(wAPLKC_with_types, x='weight',
+            hue=KC_TYPE, hue_order=hue_order
+        )
+        ax.set_title(f'{connectome} APL->KC weights\nn_kcs={len(wAPLKC)}'
+            f'\n{n_unknown_type} KCs with unknown type (all with 0 APL->KC weight)'
+        )
+        savefig(fig, plot_dir, f'wAPLKC_hist_{connectome}_by-kc-type',
+            bbox_inches='tight'
+        )
+
+        fig, ax = _plot_connectome_raw_weight_hist(wKCAPL_with_types, x='weight',
+            hue=KC_TYPE, hue_order=hue_order
+        )
+        ax.set_title(f'{connectome} KC->APL weights\nn_kcs={len(wKCAPL)}'
+            f'\n{n_unknown_type} KCs with unknown type (all with 0 KC->APL weight)'
+        )
+        savefig(fig, plot_dir, f'wKCAPL_hist_{connectome}_by-kc-type',
+            bbox_inches='tight'
+        )
+
     return wAPLKC, wKCAPL
 
 
@@ -1286,10 +1510,13 @@ def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
     nonsilent_cells = responses.T.any()
 
     # TODO maybe restore as warning, or behind a checks flag or something.
-    # (also works if index.name == 'model_kc')
+    # (now that i should be using KC_ID='kc_id' everywhere, rather than a mix of
+    # 'model_kc' and 'bodyid'/similar connectome stuff, might be more realistic)
+    #
+    # (also works if index.name == KC_ID)
     # (commented cause was failing b/c index name was diff in natmix_data/analysis.py
     # script, though i could have changed that...)
-    #assert 'model_kc' in nonsilent_cells.index.names
+    #assert KC_ID in nonsilent_cells.index.names
 
     return responses.loc[nonsilent_cells].copy()
 
@@ -1334,6 +1561,137 @@ def _single_unique_val(arr: Union[np.ndarray, pd.Series], *, exact: bool = True
         return v0
 
 
+def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 100, n_clusters: int = 5,
+    ax: Optional[Axes] = None, verbose: bool = False, **kwargs) -> Optional[Figure]:
+    # TODO also silence warnings about not finding enough clusters, at least when
+    # verbose=False?
+    """
+    Args:
+        spks: of shape (#-neurons, #-timepoints), with values all 0 or 1
+
+        **kwargs: passed to `Rastermap(...)` initialization (not the `Rastermap.fit`
+            call)
+    """
+    xlim = None
+
+    time_index = spks.columns
+    if time_index.dtype == float:
+        assert time_index.is_monotonic_increasing
+        assert not time_index.isna().any()
+        xlim = (time_index.min(), time_index.max())
+
+    # ipdb> spks.shape
+    # (1830, 5500)
+    # ipdb> set(spks.flat)
+    # {0.0, 1.0}
+    # rastermap call below gets unhappy if we omit .values (leaving spks a DataFrame)
+    spks = spks.values.astype('float32')
+    # TODO maybe try converting to spike times in seconds, and using
+    # `rastermap.io.load_spike_times(<spike-time-npy>, <spike-cluster-npy>,
+    # st_bin=100)` (or whatever it does)?
+    # TODO TODO or just try re-binning my spike time matrix into one with a bin of
+    # 100ms (from st_bin above)? do we ever have two spikes within one of those
+    # bins? how does rastermap fn handle that? add? is output binary or not?
+    assert not np.isnan(spks).any()
+
+    # getting responders only. leaves 214 of the initial 1830 cells.
+    # seems to help avoid some rastermap errors.
+    spks = spks[(spks == 1).any(axis=1)]
+    if len(spks) == 0:
+        raise ValueError('no responders in input!')
+
+    # before dropping non-responders and also changing some other rastermap config
+    # (decrease n_PCs and n_clusters, tho maybe both not needed?) was getting this
+    # error:
+    #   File "./mb_model.py", line 3296, in fit_mb_model
+    #     model = Rastermap(n_PCs=200, n_clusters=100, locality=0.75,
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/rastermap/rastermap.py", line 327, in fit
+    #     Usv_valid = SVD(X[igood][:, itrain] if itrain is not None else X[igood],
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/rastermap/svd.py", line 33, in SVD
+    #     U = TruncatedSVD(n_components=nmin,
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/utils/_set_output.py", line 140, in wrapped
+    #     data_to_wrap = f(self, X, *args, **kwargs)
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/base.py", line 1151, in wrapper
+    #     return fit_method(estimator, *args, **kwargs)
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/decomposition/_truncated_svd.py", line 246, in fit_transform
+    #     U, Sigma, VT = randomized_svd(
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/utils/extmath.py", line 450, in randomized_svd
+    #     Q = randomized_range_finder(
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/utils/extmath.py", line 279, in randomized_range_finder
+    #     Q, _ = linalg.lu(safe_sparse_dot(A.T, Q), permute_l=True)
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/scipy/linalg/_decomp_lu.py", line 213, in lu
+    #     a1 = asarray_chkfinite(a)
+    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/numpy/lib/function_base.py", line 628, in asarray_chkfinite
+    #     raise ValueError(
+    # ValueError: array must not contain infs or NaNs
+
+    # TODO does time lag actually matter? not clearly better w/ it set vs default, when
+    # using n_clusters=5, n_PCs=100 (and locality default/0, which i think are same)
+    # TODO how does this compare to version w/ locality + time_lag_window set above?
+    # (should be pretty much the same) prefer either? try diff (lower?)
+    # n_PCs/n_clusters?
+    #
+    # remy came up with this calculation. not immediately clear to me (from rastermap
+    # docs) that this is the appropriate value.
+    # dt=0.0005 is from the olfsysm time_dt setting.
+    #dt = 0.0005
+    #time_lag_window_seconds = 0.1
+    #time_lag_window = int(time_lag_window_seconds / dt)
+
+    # TODO try smoothing parameters / diff binning?
+    #
+    # works after dropping non-responders (see scripts/test_rastermap.py for some
+    # discussion on choice of parameters, including kwarg defaults in plot_spike_rasters
+    # def)
+    try:
+        model = Rastermap(n_PCs=n_PCs, n_clusters=n_clusters, verbose=verbose, **kwargs
+            ).fit(spks)
+
+    # TODO fix! under what circumstances is this triggered? how to fix? input just empty
+    # or something trivial?
+    except np.linalg.LinAlgError as err:
+        # TODO warn with more error context
+        warn(str(err))
+        #
+        return None
+
+    y = model.embedding # neurons x 1
+    isort = model.isort
+
+    # visualize binning over neurons
+    X_embedding = model.X_embedding
+
+    if ax is None:
+        fig = plt.figure(figsize=(12,5))
+        ax = fig.add_subplot(111)
+    else:
+        # TODO this what i want? just don't return anything (either in general, or in
+        # this case)? just getting this so i can consistently return the relevant Figure
+        # object [whether we created it or not]
+        fig = ax.figure
+
+    extent = None
+    if xlim is not None:
+        # TODO need to swap top and bottom? (seems fine as is)
+        top = len(spks) + 0.5
+        bottom = -0.5
+
+        # TODO what to add/subtract, (if anything and) if not -0.5 (half of dt?)?
+        left, right = xlim
+
+        # https://matplotlib.org/stable/users/explain/artists/imshow_extent.html
+        # exent: (left, right, bottom, top)
+        # TODO use a colormap w/o white=0 to test this?
+        extent = (left, right, bottom, top)
+
+    # TODO why vmax=1.5? are values not 0/1?
+    ax.imshow(X_embedding, vmin=0, vmax=1.5, cmap='gray_r', aspect='auto',
+        extent=extent
+    )
+
+    return fig
+
+
 # TODO delete all these? or re-organize? want to minimize how much mb_model stuff
 # assumes a certain output folder structure
 #
@@ -1366,11 +1724,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     target_sparsity: Optional[float] = None,
     target_sparsity_factor_pre_APL: Optional[float] = None,
     _use_matt_wPNKC=False, _drop_glom_with_plus=True,
-    _add_back_methanoic_acid_mistake=False,
+    _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
+    ab_prime_response_rate_target: Optional[float] = None,
+    # TODO update type on this if i want to continuie to support Union[float,
+    # np.ndarray] (as current test_vector_thr)
     fixed_thr: Optional[float] = None,
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
-    print_olfsysm_log: Optional[bool] = None, plot_dir: Optional[Path] = None,
-    make_plots: bool = True, title: str = '',
+    print_olfsysm_log: Optional[bool] = None, return_dynamics: bool = False,
+    plot_dir: Optional[Path] = None, make_plots: bool = True,
+    _plot_example_dynamics: bool = False, title: str = '',
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     repro_preprint_s1d: bool = False,
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
@@ -1445,6 +1807,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         n_claws: for relevant `pn2kc_connections` (e.g. 'uniform', 'hemidraw', NOT
             'hemibrain') this sets that number of PNs each KC draws (i.e. # of claws for
             each KC)
+
+        return_dynamics: if True, returns all available model internals, all as new
+            elements of already-returned `param_dict`. This includes model ORN & PN
+            firing rates, KC membrane potentials, KC spikes, APL membrane potential, and
+            mean current from KCs to the APL, and potentially some other variables.
 
         plot_dir: if passed, will save some model-internals plots under this directory
             (which should be unique across all calls, within one run), and will copy the
@@ -1540,6 +1907,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if orn_deltas.index.name not in valid_orn_index_names:
             raise ValueError(f"{orn_deltas.index.name=} not in {valid_orn_index_names}")
 
+        # TODO delete this path? shouldn't really be used...
         if orn_deltas.index.name == 'receptor':
             # TODO delete? (/ use to explain what is happening in case where
             # verbose=True and we are dropping stuff below)
@@ -1555,10 +1923,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             orn_deltas.index = glomeruli
             orn_deltas.index.name = 'glomerulus'
 
-            # Should drop any input glomeruli w/ '+' in name (e.g. 'DM3+DM5')
+            # should drop any input glomeruli w/ '+' in name (e.g. 'DM3+DM5')
             orn_deltas = handle_multiglomerular_receptors(orn_deltas,
-                drop_multiglomerular_receptors=drop_multiglomerular_receptors
+                drop=drop_multiglomerular_receptors
             )
+        #
 
         # TODO if orn_deltas.index.name == 'glomerulus', assert all input are in
         # task/connectome glomerulus names
@@ -1582,17 +1951,25 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         raise NotImplementedError('wKCAPL can only be specified if wAPLKC is too')
 
     if fixed_thr is not None:
+        # TODO TODO TODO probably still allow non-None target_sparsity if there is
+        # vector fixed_thr? (currently just also hardcoding wAPLKC from call in
+        # test_vector_thr)
         assert target_sparsity is None
         assert target_sparsity_factor_pre_APL is None
+        #
         assert wAPLKC is not None, 'for now, assuming both passed if either is'
 
-        # TODO move these values / notes to model_test.py, or wherever sensitivity
-        # analysis gets moved to.
-        #fixed_thr = 145.973
-        # these both break exact similarity to matt's hemimat outputs, as expected:
-        #fixed_thr = 140
-        #fixed_thr = 147
-        mp.kc.fixed_thr = fixed_thr
+        # TODO need to support int type too (in both of the two isinstance calls below)?
+        # isinstance(<int>, float) is False
+        if isinstance(fixed_thr, float):
+            mp.kc.fixed_thr = fixed_thr
+        else:
+            # NOTE: will set rv.kc.thr below in this case, and mp.kc.fixed_thr should
+            # not be used
+            # TODO check olfsysm actually not using fixed_thr in this case
+            assert isinstance(fixed_thr, np.ndarray)
+            # TODO assert length matches other relevant dimensions (and if i change
+            # type to Series from ndarray, also check metadata matches?)
 
         # except for "homeostatic" variants, Ann also sets "KC thresholds to a fixed
         # amount above [the time-averaged spontaneous PN input they receive]"
@@ -1605,20 +1982,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     else:
         mp.kc.thr_type = 'uniform'
 
-    # TODO delete
-    # just to try to confirm actual sparsity after setting thresh is ~2 * sp_target.
-    # may not work.
-    # TODO TODO make a test that does this, and then checks sparsity is within tolerance
-    # (or even tigher, almost exactly?) after target_sparsity_factor_pre_APL
-    #print('HARDCODING TUNE_APL_WEIGHTS=FALSE')
-    #mp.kc.tune_apl_weights = False
-    #
-    #pre_APL_sparsity_should_be = target_sparsity * target_sparsity_factor_pre_APL
-    #
-
-    # TODO after getting model to accept hardcoded wAPLKC and wKCAPL (should have been
-    # done for a while now, at least for scaling values... so is rest of comment still
-    # relevant?), only do this if not hardcoding those (+ fixed thr)
     if target_sparsity is not None:
         assert wAPLKC is None and wKCAPL is None
         mp.kc.sp_target = target_sparsity
@@ -1640,9 +2003,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         mp.kc.sp_factor_pre_APL = target_sparsity_factor_pre_APL
 
-        # TODO TODO test that if this is 1.0, then APL is kept off (or will one
-        # iteration of tuning loop still happen + change things?), or at least doesn't
-        # change responses/spike_counts
+        # TODO TODO (move to test_mb_model.py) test that if this is 1.0, then APL is
+        # kept off (or will one iteration of tuning loop still happen + change things?),
+        # or at least doesn't change responses/spike_counts
         # TODO TODO what's max value of this (min that forces threshold to do nothing,
         # with only APL bringing activity down? or does that not max sense?) maybe i
         # should change olfsysm to use something with a more sensible max (so i can go
@@ -1651,24 +2014,102 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # factor into that)
         # TODO add unit test that my `1 / target_sparsity` guess above correct
 
-    # TODO can i change to not load this when i'm just passing in my own data? necssary
-    # even then?
-    # TODO assert that this csv is equiv to orn_deltas / orns.orns data? (/ equal to
-    # olfsysm version, assuming we have olfsysm at ~/src/olfsysm?)
-    #hc_data_csv = str(Path('~/src/olfsysm/hc_data.csv').expanduser())
-    #
     # NOTE: I committed olfsysm/hc_data.csv under al_analysis/data, since I couldn't
     # find a nice mechanism to install that CSV as part of olfsysm setup. This should be
     # the same as the olfsysm CSV.
-    hc_data_csv = str(Path('data/hc_data.csv').resolve())
-    # TODO TODO add comment explaining what this is doing
-    osm.load_hc_data(mp, hc_data_csv)
-    del hc_data_csv
+    hc_data_csv = repo_root / 'data/hc_data.csv'
+    # get crypic `ValueError: stod` in `osm.load_hc_data` below, if this doesn't exist
+    assert hc_data_csv.exists()
+
+    # just assuming olfsysm is at the path I would typically clone it to. this check
+    # isn't super important. just establishing that the hc_data.csv committed in this
+    # repo matches where we copied it from.
+    olfsysm_repo = Path('~/src/olfsysm').expanduser()
+    if olfsysm_repo.exists():
+        olfsysm_hc_data_csv = olfsysm_repo / 'hc_data.csv'
+        assert olfsysm_hc_data_csv.exists()
+
+        # checking files are exactly the same
+        unchanged = filecmp.cmp(hc_data_csv, olfsysm_hc_data_csv, shallow=False)
+        assert unchanged
+
+        del olfsysm_hc_data_csv
+    del olfsysm_repo
+
+    # TODO can i change to not load this when i'm just passing in my own data? necessary
+    # even then? (add unit test to check?) (shouldn't be, if we are ourselves setting or
+    # not using the 3 variables mentioned in comment below)
+    #
+    # initializes:
+    # - mp.orn.data.delta to (#-hallem-gloms, #-hallem-odors)
+    # - mp.orn.data.spont to (#-hallem-gloms, 1)
+    # - mp.kc.cxn_distrib to values currently hardcoded inside load_hc_data
+    #
+    # load_hc_data does not use the supplemental-odor section of the CSV, despite them
+    # being present in the olfsysm CSV (and this one we copied+committed to this repo).
+    # just the 110 main-text odors + sfr_col.
+    osm.load_hc_data(mp, str(hc_data_csv))
 
     hallem_orn_deltas = orns.orns(add_sfr=False, drop_sfr=False, columns='glomerulus').T
-    # Should drop 'DM3+DM5'
+
+    checks = True
+    if checks:
+        # columns: [glomeruli, receptors]
+        hc_data = pd.read_csv(hc_data_csv, header=[0,1], index_col=[0,1])
+        # [odor "class" (int: [0, 12]), odor name (w/ conc suffix for supplemental)]
+        hc_data.index.names = ['class', 'odor']
+        hc_data.index = hc_data.index.droplevel('class')
+        hc_data.columns.names = ['glomerulus', 'receptor']
+        hc_data = hc_data.T
+
+        coreceptor_idx = hc_data.index.get_level_values('receptor').get_loc('33b')
+        # get_loc can return other type if there isn't just one match
+        assert isinstance(coreceptor_idx, int)
+        hc_data.index = hc_data.index.droplevel('receptor')
+        hc_data_gloms = list(hc_data.index)
+        # renaming from duplicate 'dm3'
+        hc_data_gloms[coreceptor_idx] = 'dm3+dm5'
+        hc_data.index = pd.Index(data=hc_data_gloms, name='glomerulus')
+        assert not hc_data.index.duplicated().any()
+
+        # hc_data.columns[110:-1] are all the supplemental odors, which are not in
+        # current hallem_orn_deltas. columns[-1] is sfr_col for both hc_data and
+        # hallem_orn_deltas. first 110 should be same main-text Hallem odors (in same
+        # order) for each, just formatted slightly differently for these few.
+        #
+        # {'2 3-butanediol': '2,3-butanediol',
+        #  '2 3-butanedione': '2,3-butanedione',
+        #  'ammoniumhydroxide': 'ammonium hydroxide',
+        #  'ethylcinnamate': 'ethyl cinnamate',
+        #  'linoleum acid': 'linoleic acid',
+        #  'methanoicacid': 'methanoic acid',
+        #  'nonionic acid': 'nonanoic acid',
+        #  'pyretic acid': 'pyruvic acid'}
+        hc_data_odor_renames = {
+            k: v for k, v in zip(hc_data.columns[:110], hallem_orn_deltas.columns[:110])
+            if k != v
+        }
+        hc_data.columns = hc_data.columns.map(lambda x: hc_data_odor_renames.get(x, x))
+        assert not hc_data.columns.isna().any()
+        assert not hc_data.columns.duplicated().any()
+
+        hc_supp_odors = hc_data.columns[110:-1]
+        assert not hc_supp_odors.isin(hallem_orn_deltas.columns).any()
+        hc_data = hc_data.drop(columns=hc_supp_odors)
+
+        assert hc_data.columns.equals(hallem_orn_deltas.columns)
+        assert hallem_orn_deltas.index.str.lower().equals(hc_data.index)
+        assert np.array_equal(hallem_orn_deltas, hc_data)
+
+        del hc_data_csv, hc_data
+
+    assert not hallem_orn_deltas.index.duplicated().any()
+    # Or33b ('DM3+DM5' in my drosolf output, a duplicate 'dm3' in Matt's olfsysm CSV) is
+    # the co-receptor for both DM3 (Or47a) and DM5 (Or85a)
+    assert all(x in hallem_orn_deltas.index for x in ('DM3', 'DM5'))
+    # should drop 'DM3+DM5'
     hallem_orn_deltas = handle_multiglomerular_receptors(hallem_orn_deltas,
-        drop_multiglomerular_receptors=drop_multiglomerular_receptors
+        drop=drop_multiglomerular_receptors
     )
 
     # how to handle this for stuff not in hallem? (currently imputing mean Hallem sfr)
@@ -1686,7 +2127,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO any code i'm still using break if hallem_input=True and sim_odors is not
     # passed in? not currently passing in sim_odors anymore...
     # (only 1 call in model_test.py explicitly passes in, and only to check against
-    # calls that don't)
+    # calls that don't) (also used in all preprint_repro_model_kw_list items below...
+    # remove it from them [+ check output unchanged])?
     '''
     if hallem_input:
         assert sim_odors is None
@@ -1825,6 +2267,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # fafb data source for that.
         pn2kc_connections if pn2kc_connections in connectome_options else 'hemibrain'
     )
+    kc_types = None
     if _wPNKC is None:
         # TODO check that nothing else depends on order of columns (glomeruli) in these
         wPNKC = connectome_wPNKC(connectome=connectome, weight_divisor=weight_divisor,
@@ -1836,6 +2279,20 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             _use_matt_wPNKC=_use_matt_wPNKC,
             _drop_glom_with_plus=_drop_glom_with_plus,
         )
+
+        if KC_TYPE in wPNKC.index.names:
+            kc_types = wPNKC.index.get_level_values(KC_TYPE)
+
+            # TODO delete? currently tempted to assign this kc_type col back into a
+            # level of wPNKC index below (and want all outputs w/ a KC index to have
+            # them consistent)
+            other_level_names = set(wPNKC.index.names) - {KC_TYPE}
+            assert len(other_level_names) == 1
+            kc_id_col = other_level_names.pop()
+
+            wPNKC = wPNKC.droplevel(KC_TYPE)
+            assert wPNKC.index.names == [kc_id_col]
+            #
     else:
         wPNKC = _wPNKC.copy()
 
@@ -1926,7 +2383,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     eb_mask = orn_deltas.columns.get_level_values('odor').str.startswith('eb @')
     # should be true for megamat and hallem
     if repro_preprint_s1d and eb_mask.sum() == 1:
-        # TODO TODO finish support for "extra" odors (to be simmed, but not tuned on)
+        # TODO finish support for "extra" odors (to be simmed, but not tuned on)
         # (expose as kwarg eventually prob)
         # (would not be conditional on eb if so... just a hack to skip validation, and
         # only want S1D if we do have eb, as thats what preprint one used)
@@ -2117,16 +2574,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             glomerulus_index = glomerulus_index[~receptors_not_in_hallem].copy()
             wPNKC = wPNKC.loc[:, ~receptors_not_in_hallem].copy()
 
-        # TODO TODO another option to use this input for fitting thresholds (+ APL
-        # inhibition), w/o using hallem at all?
-
-        # TODO TODO am i not seeing inhibition to the extent that i might expect by
-        # comparing the deltas to hallem? is it something i can improve by changing my
-        # dF/F -> spike delta estimation process, or is it a limitation of my
-        # measurements / the differences between the hallem data and ours
-
     # TODO TODO probably still support just one .name == 'odor' tho...
     # (esp for calls w/ just hallem input, either old ones here or model_test.py?)
+    # (could just check 'odor' in .names that works even if single level)
+    # TODO do i only want to allow [the possibility of] a single other 'panel' level, or
+    # allow arbitrary other levels?
     # TODO move earlier?
     assert orn_deltas.columns.name == 'odor' or (
         orn_deltas.columns.names == ['panel', 'odor']
@@ -2196,10 +2648,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # (maybe just subset to what's in sfr/orn_deltas but not orn_deltas_pre_filling,
         # but down by usage of orn_deltas_pre_filling?)
 
-    # TODO don't do if 'uniform' draw path (/ cxn_distrib, but check that there)?
     assert sfr.index.equals(orn_deltas.index)
-    # TODO TODO warn here? this always OK?
-    # TODO what is purpose here? comment explaining
 
     # TODO delete
     _wPNKC_shape_changed = False
@@ -2211,6 +2660,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     # TODO TODO also need to subset glomerulus_index here now? just always use
     # wPNKC.columns and remove glomerulus_index?
+    # TODO just add assertion that wPNKC shape unchanged by this? i haven't seen the
+    # surrounding debug prints trigger in a while, and i'm not sure if we path we care
+    # about can reproduce them...
     wPNKC = wPNKC[sfr.index].copy()
 
     # TODO delete
@@ -2335,6 +2787,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # that model uses)
         # TODO just set directly into mp.kc.cxn_distrib?
         # (and in other places that set this)
+        #
+        # TODO have olfsysm use same appropriate to internally normalize (to mean of 1)
+        # connectome wAPLKC/wKCAPL (as i currently do in here)
+        #
+        # should be normalized (to mean of 1? check) inside olfsysm
         cxn_distrib = wPNKC.sum()
 
         # TODO delete?
@@ -2344,9 +2801,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert mp.kc.cxn_distrib.shape == (1, n_hallem_glomeruli)
         #
 
-        # TODO TODO TODO what currently happens if using # glomeruli other > hallem?
+        # TODO TODO what currently happens if using # glomeruli other > hallem?
         # seems like it may already be broken? (and also in uniform case. not sure if
-        # this is why tho)
+        # this is why tho) (? delete?)
         #
         # TODO can we modify olfsysm to break if input shape is wrong? why does it work
         # for mp.orn.data.spont but not this? (shape of mp.orn.data.spont is (n, 1)
@@ -2374,40 +2831,44 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         wPNKC = None
 
-    # TODO also support older versions of model that didn't have these?
     # TODO add additional kwargs, to allow setting and/or scaling only one of these at
     # at time?
     if use_connectome_APL_weights:
         mp.kc.preset_wAPLKC = True
         mp.kc.preset_wKCAPL = True
 
+    if _plot_example_dynamics:
+        # NOTE: if these are left to default of False, seems the rv.kc.vm_sims (or
+        # whatever cognate output variable) will seem like an empty list here.
+        #
+        # These will all save output to `rv.kc.<var-name>` for save flag like
+        # `mp.kc.save_<var-name>`.
+        mp.kc.save_vm_sims = True
+        mp.kc.save_spike_recordings = True
+        mp.kc.save_inh_sims = True
+        mp.kc.save_Is_sims = True
+        # if `mp.kc.ves_p == 0`, the "vesicle depletion" part of olfsysm is disabled.
+        # see related comments around use of nves_sims below.
+        if mp.kc.ves_p != 0:
+            mp.kc.save_nves_sims = True
+
     rv = osm.RunVars(mp)
 
-    # TODO need delete=False?
-    temp_log_file = NamedTemporaryFile(suffix='.olfsysm.log', delete=False)
+    # TODO need to support int type too (in both of the two isinstance calls below)?
+    # isinstance(<int>, float) is False
+    if fixed_thr is not None and not isinstance(fixed_thr, float):
+        # TODO assert (in fit_and_plot...) not passing vector fixed_thr w/
+        # do_sensitivity_analysis=True
+        mp.kc.use_vector_thr = True
 
-    # also includes directory
-    temp_log_path = temp_log_file.name
+        assert len(fixed_thr.shape) == 1
+        # TODO necessary? not sure (run test_vector_thr again after finishing vector
+        # fixed_thr support -> try to see if required)
+        thr = np.expand_dims(fixed_thr, 1)
+        #thr = fixed_thr
 
-    if print_olfsysm_log is None:
-        # TODO add new verbose kwarg in here (put all unconditional prints inside there
-        # too)
-        print_olfsysm_log = al_util.verbose
-
-    if print_olfsysm_log:
-        print(f'writing olfsysm log to {temp_log_path}')
-
-    try:
-        # it seems to just append to this file, if it already exists (should no longer
-        # an issue now that I'm making temp files)
-        rv.log.redirect(temp_log_path)
-
-    # TODO just `raise` (/ remove try/except)? shouldn't need to support olfsysm
-    # versions this old anymore
-    #
-    # just so i can experiment w/ reverting to old olfsysm, before i added this
-    except AttributeError:
-        pass
+        rv.kc.thr = thr
+        del thr
 
     if wAPLKC is not None:
         assert target_sparsity_factor_pre_APL is None
@@ -2442,6 +2903,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # (but it's non-spiking... what is reasonable?)
 
     if pn2kc_connections in connectome_options or _wPNKC is not None:
+        # if `_wPNKC is not None`, its contents were already copied into wPNKC above
         rv.kc.wPNKC = wPNKC
 
     wAPLKC_scale = None
@@ -2461,7 +2923,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             rv.kc.wKCAPL_scale = wKCAPL_scale
 
         wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
-            plot_dir=plot_dir
+            kc_types=kc_types, plot_dir=plot_dir
         )
         assert wAPLKC.index.equals(wKCAPL.index)
         assert wPNKC.index.equals(wAPLKC.index)
@@ -2471,8 +2933,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # ipdb> wKCAPL.max()
         # 27.0
 
-        # TODO delete? print if verbose?
-        #warn('scaling wAPLKC/wKCAPL to mean of 1')
+        warn(f'scaling {connectome=} wAPLKC & wKCAPL, each to mean of 1')
 
         wAPLKC = wAPLKC / wAPLKC.mean()
         wKCAPL = wKCAPL / wKCAPL.mean()
@@ -2480,16 +2941,41 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         wAPLKC_arr = np.expand_dims(wAPLKC.values, 1)
         assert wAPLKC_arr.shape == (mp.kc.N, 1)
-        rv.kc.wAPLKC = wAPLKC_arr
+        rv.kc.wAPLKC = wAPLKC_arr.copy()
 
         wKCAPL_arr = np.expand_dims(wKCAPL.values, 0)
         assert wKCAPL_arr.shape == (1, mp.kc.N)
-        rv.kc.wKCAPL = wKCAPL_arr
+        rv.kc.wKCAPL = wKCAPL_arr.copy()
 
         n_zero_input_wAPLKC = (wAPLKC == 0).sum()
         n_zero_input_wKCAPL = (wKCAPL == 0).sum()
         input_wAPLKC = wAPLKC.copy()
         input_wKCAPL = wKCAPL.copy()
+
+    # TODO need delete=False?
+    temp_log_file = NamedTemporaryFile(suffix='.olfsysm.log', delete=False)
+
+    # also includes directory (e.g. '/tmp/tmp5lhlb2n0.olfsysm.log')
+    temp_log_path: str = temp_log_file.name
+    try:
+        # it seems to just append to this file, if it already exists (should no longer
+        # an issue now that I'm making temp files)
+        rv.log.redirect(temp_log_path)
+
+    # TODO just `raise` (/ remove try/except)? shouldn't need to support olfsysm
+    # versions this old anymore
+    #
+    # just so i can experiment w/ reverting to old olfsysm, before i added this
+    except AttributeError:
+        pass
+
+    if print_olfsysm_log is None:
+        # TODO add new verbose kwarg in here (put all unconditional prints inside there
+        # too)
+        print_olfsysm_log = al_util.verbose
+
+    if print_olfsysm_log:
+        print(f'writing olfsysm log to {temp_log_path}')
 
     osm.run_ORN_LN_sims(mp, rv)
     osm.run_PN_sims(mp, rv)
@@ -2509,7 +2995,32 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     responses = rv.kc.responses.copy()
     responses_after_tuning = responses.copy()
 
-    if target_sparsity is not None:
+    # TODO clarify whether this is just from stim_start:stim_end
+    # (bit hard to tell from quick look at olfsysm. possible this is over all time
+    # points...? that might not be what i want...).
+    #
+    # ok, well at least these are true (from hemibrain run on megamat data):
+    # ipdb> spike_recordings[:, :, :stim_start_idx].sum()
+    # 0.0
+    # ipdb> spike_recordings[:, :, stim_end_idx:].sum()
+    # 2.0
+    #
+    # yes, it does seem (the 2) spikes after stim_end_idx are also counted
+    # ipdb> spike_counts.sum().sum()
+    # 5468.0
+    # ipdb> spike_recordings.sum()
+    # 5468.0
+    spike_counts = rv.kc.spike_counts.copy()
+
+    # TODO if tune_apl_weights=False, assert wAPLKC/wKCAPL (and *_scale counterparts,
+    # for preset_*=True cases) do not change from initialization to end?
+    #
+    # could be True even if `target_sparsity is None` (if olfsysm default of 0.1 is
+    # used), but scalar fixed_thr/wAPLKC/wKCAPL should not be passed then
+    if mp.kc.tune_apl_weights:
+        # TODO assert that things mentioned in comment above are actually None (or
+        # vector, not scalar, for at least fixed_thr)?
+
         if len(mp.kc.tune_from) > 0:
             # mp.kc.tune_from is an empty list if not explicitly set
             sp_actual = responses[:, mp.kc.tune_from].mean()
@@ -2527,9 +3038,20 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # if tune_apl_weights is hardcoded True above, this will likely fail
         assert rel_sp_diff <= mp.kc.sp_acc, f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
 
-    spike_counts = rv.kc.spike_counts.copy()
+        del sp_actual, abs_sp_diff, rel_sp_diff
+
+    # TODO delete
+    # TODO TODO move extra_orn_deltas and/or tune_on_hallem conditionals below after
+    # equalize_type_sparsity branch below? (for now, just not sure i care to support
+    # either of those branches when equalize_kc_type_sparsity =True)
+    print('need to move extra_orn_deltas/tune_on_hallem code below equalize_*???')
+    print()
+    #
 
     if extra_orn_deltas is not None:
+        # TODO add unit test to confirm (some way of) simming just last bit is equiv to
+        # re-simming all and subsetting to last bit (then replace code that re-sims all
+        # w/ code that just sims extra odors)
         # TODO maybe just sim the last bit and concat to existing responses,
         # instead of re-running all (check equiv tho)
         #mp.sim_only = range(n_input_odors, n_input_odors + n_extra_odors)
@@ -2540,9 +3062,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # Don't want to do either build_wPNKC or fit_sparseness here (after tuning)
         osm.run_KC_sims(mp, rv, False)
 
-        # TODO also .copy() for both here (or don't above), for consistency
-        responses = rv.kc.responses
-        spike_counts = rv.kc.spike_counts
+        responses = rv.kc.responses.copy()
+        spike_counts = rv.kc.spike_counts.copy()
 
         assert np.array_equal(
             responses_after_tuning[:, :n_input_odors], responses[:, :n_input_odors]
@@ -2578,14 +3099,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # Don't want to do either build_wPNKC or fit_sparseness here (after tuning)
         osm.run_KC_sims(mp, rv, False)
 
-        # TODO also .copy() for both here (or don't above), for consistency
-        responses = rv.kc.responses
-        spike_counts = rv.kc.spike_counts
-
-        # TODO TODO in hallem/hemibrain (or hemidraw???) case, add fake MS / CO2 odor
-        # responses (300Hz in each cognate glomerulus) -> check i can recreate S1D? i
-        # assume it's all actually from hemibrain (despite what legend says)? ms input
-        # actually is just 300Hz, or did they use hallem data there?
+        responses = rv.kc.responses.copy()
+        spike_counts = rv.kc.spike_counts.copy()
 
         assert np.array_equal(
             responses_after_tuning[:, :n_hallem_odors], responses[:, :n_hallem_odors]
@@ -2595,10 +3110,577 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # hallem (maybe missing [one random/first/last] row?)
         responses = responses[:, n_hallem_odors:]
         spike_counts = spike_counts[:, n_hallem_odors:]
+    #
 
+    if variable_n_claws:
+        assert mp.kc.seed == seed
 
+        wPNKC = rv.kc.wPNKC.copy()
+        # TODO should these not also be the case in variable_n_claws == False case?
+        # move these two assertions out?
+        assert wPNKC.shape[1] == len(glomerulus_index)
+        assert len(wPNKC) == len(responses)
+
+        # TODO don't define from responses.index (that's just a default range index w/
+        # name KC_ID anyway) (-> move earlier -> define kc_types from wPNKC index
+        # -> define all other KC indices from that)
+        wPNKC = pd.DataFrame(data=wPNKC, columns=glomerulus_index)
+        # TODO move KC ID col def to a central place (-> prob rename to 'kc_id' after)
+        wPNKC.index.name = KC_ID
+
+    # TODO skip this whole first branch if i change code above to not drop kc_type level
+    # from wPNKC index?
+    if kc_types is not None:
+        assert not kc_types.isna().any()
+        kc_index = pd.MultiIndex.from_arrays([wPNKC.index, kc_types])
+        wPNKC.index = kc_index
+    else:
+        kc_index = wPNKC.index.copy()
+
+    try:
+        # line that would trigger the AttributeError
+        spont_in = rv.kc.spont_in.copy()
+
+    # to allow trying older versions of olfsysm, that didn't have rv.kc.spont_in
+    # (which is what this would be doing, if i WAS still `pass`-ing instead of
+    # `raise`-ing below)
+    except AttributeError:
+        # was previously just `pass`-ing here, but don't think i need to support this
+        # again moving forward.
+        raise
+
+    type2target_response_rate = None
+    if fixed_thr is not None:
+        # TODO need to support int type too (in both of the two isinstance calls below)?
+        # isinstance(<int>, float) is False
+        #
+        # just checking what we set above hasn't changed
+        if isinstance(fixed_thr, float):
+            assert mp.kc.fixed_thr == fixed_thr
+
+        assert mp.kc.add_fixed_thr_to_spont == True
+        # actually do need this (or else what? it's tuned?). may or may not need
+        # thr_type='fixed' too
+        assert mp.kc.use_fixed_thr == True
+        assert mp.kc.thr_type == 'fixed'
+        # TODO some assertion w/ spont_in here? should we be able to calculate fixed_thr
+        # same way?
+    else:
+        thr = rv.kc.thr
+
+        # TODO delete
+        #
+        # this should correspond to the thr_const variable inside
+        # olfsysm.choose_KC_thresh_uniform (and can be set by passing as the fixed_thr
+        # kwarg to this function, which will also set mp.kc.add_fixed_thr_to_spont=True)
+        #unique_fixed_thrs = np.unique(thr - 2*spont_in)
+        # could take median instead? shouldn't really matter tho...
+        #fixed_thr = unique_fixed_thrs[0]
+        #
+        unique_thrs_and_counts = pd.Series((thr - 2*spont_in).squeeze()).value_counts()
+        unique_fixed_thrs = unique_thrs_and_counts.index
+        # TODO TODO try min/max instead of value w/ max count? any possibility of
+        # avoiding the numerical issue causing this?
+        # TODO take this kind of strategy by default for _single_unique_val?
+        # seems we couldn't use current implementation of that here
+        # (but haven't proven that this strategy is an improvement...)
+        #
+        # pick one w/ biggest count (assuming that is least likely to have been affected
+        # by numerical issues...). values are the counts (w/ largest count at -1).
+        # index contains the thresholds.
+        fixed_thr = unique_thrs_and_counts.sort_values().index[-1]
+        # TODO delete
+        #print('USING MIN() TO SELECT FIXED_THR')
+        #fixed_thr = unique_thrs_and_counts.index.min()
+        #
+        assert np.allclose(fixed_thr, unique_fixed_thrs)
+
+        # TODO put behind verbose kwarg (/delete)
+        print(f'fixed_thr: {fixed_thr}')
+
+        # TODO delete most of this comment block
+        #
+        # ipdb> pks.shape
+        # (1830, 17)
+        #
+        # hmmm... seems pretty much twice target response rate...
+        # ipdb> (pks >= fixed_thr).mean()
+        # 0.20003214400514305
+        #
+        # TODO so should i define fixed_thr from this instead? general way around this?
+        # TODO or pick whichever produces mean response rate closest to sp_target *
+        # sp_factor_pre_APL? seems pretty much exact in most cases
+        # ipdb> (pks >= unique_fixed_thrs.max()).mean()
+        # 0.2
+        # ipdb> (pks > unique_fixed_thrs.max()).mean()
+        # 0.2
+        #
+        # TODO TODO move below into a unit test (that also hardcodes
+        # tune_apl_weights=False)? can i use it to figure out if there's a strategy than
+        # can consistently pick which of numerically-slightly-diff thresholds to use to
+        # exactly recreate what responses would have been pre-APL?
+        #
+        # ***w/ mp.kc.tune_apl_weights hardcoded above rv def to False*** :
+        # ipdb> np.array_equal(pks >= unique_fixed_thrs.max(), responses)
+        # True
+        #
+        # ipdb> (pks > unique_fixed_thrs.min()).mean()
+        # 0.20003214400514305
+        # ipdb> (pks >= unique_fixed_thrs.min()).mean()
+        # 0.20003214400514305
+        #
+        # ipdb> unique_fixed_thrs.min()
+        # 256.8058676548658
+        # ipdb> unique_fixed_thrs.max()
+        # 256.8058676548659
+
+        pks = pd.DataFrame(data=rv.kc.pks, index=kc_index, columns=odor_index)
+
+        # TODO summarize+delete most of comment block below
+        #
+        # ipdb> pks.stack().iloc[:, 0].quantile(q=[0, 0.2, 0.5, 0.8, 1])
+        # 0.0    -228.153484
+        # 0.2       9.505707
+        # 0.5     113.635038
+        # 0.8     256.812860
+        # 1.0    1232.700436
+        # Name: megamat, dtype: float64
+        # ipdb> pks.stack().iloc[:, 0].sort_values()
+        # kc_id       kc_type  odor
+        # 415852518   g        aa @ -3       -228.153484
+        # 5813020132  g        B-cit @ -3    -211.070698
+        # 5812981441  g        2-but @ -3    -191.946836
+        # 415852518   g        va @ -3       -191.910623
+        # 5812982766  g        2-but @ -3    -182.479178
+        #                                       ...
+        # 693500652   g        eb @ -3        970.448394
+        #                      2h @ -3        971.923691
+        #                      1-6ol @ -3    1122.538275
+        #                      IaA @ -3      1184.759164
+        #                      pa @ -3       1232.700436
+        #
+        # ipdb> pks.stack().squeeze().quantile(q=1 - mp.kc.sp_target *
+        #    mp.kc.sp_factor_pre_APL, interpolation='higher')
+        # 256.84082743722297
+        # ipdb> fixed_thr
+        # 256.8058676548658
+        # ipdb> pks.stack().squeeze().quantile(
+        #    q=1 - mp.kc.sp_target * mp.kc.sp_factor_pre_APL, interpolation='lower')
+        # 256.80586765486584
+        # ipdb> mp.kc.sp_target * mp.kc.sp_factor_pre_APL
+        # 0.2
+        # ipdb> lower = pks.stack().squeeze().quantile(q=1 - mp.kc.sp_target *
+        #    mp.kc.sp_factor_pre_APL, interpolation='lower')
+        # ipdb> higher = pks.stack().squeeze().quantile(q=1 - mp.kc.sp_target *
+        #    mp.kc.sp_factor_pre_APL, interpolation='higher')
+        # ipdb> (pks >= lower).mean()
+        # panel    odor
+        # megamat  2h @ -3       0.350273
+        #          IaA @ -3      0.276503
+        #          pa @ -3       0.343169
+        #          2-but @ -3    0.208743
+        #          eb @ -3       0.289617
+        #          ep @ -3       0.248634
+        #          aa @ -3       0.045902
+        #          va @ -3       0.110929
+        #          B-cit @ -3    0.009836
+        #          Lin @ -3      0.055191
+        #          6al @ -3      0.248087
+        #          t2h @ -3      0.249727
+        #          1-8ol @ -3    0.142077
+        #          1-5ol @ -3    0.301093
+        #          1-6ol @ -3    0.329508
+        #          benz @ -3     0.156831
+        #          ms @ -3       0.034426
+        # dtype: float64
+        # ipdb> (pks >= lower).mean().mean()
+        # 0.20003214400514305
+        # ipdb> (pks > lower).mean().mean()
+        # 0.19999999999999998
+        # ipdb> (pks > higher).mean().mean()
+        # 0.19996785599485697
+        # ipdb> (pks >= higher).mean().mean()
+        # 0.19999999999999998
+        pks = pks.stack().squeeze()
+
+        # olfsysm defaults: mp.kc.sp_target=0.1, mp.kc.sp_factor_pre_APL=2.0
+        target_response_rate_pre_apl = mp.kc.sp_target * mp.kc.sp_factor_pre_APL
+
+        # TODO delete (/ turn into tests).
+        # almost entire purpose of this was to justify my interpolation method was
+        # consistent w/ how threshold was calculated inside olfsysm.
+        """
+        #interpolation_for_thr = 'midpoint'
+        # fails sooner than 'lower' (w/ >=)?
+        #interpolation_for_thr = 'higher'
+        # initially this seemed right (w/ >=). now it seems inconsistent? maybe that's
+        # the best i can do?
+        #interpolation_for_thr = 'lower'
+        for interpolation_for_thr in ('lower', 'higher'):
+
+            # NOTE: updating from pandas 1.3.1 to 1.5.0 seemed to fix a DeprecationWarning
+            # here (about interpolation= being replaced w/ method=, despite all pandas
+            # versions seemingly using interpolation= for Series.quantile). numpy==1.24.4
+            fixed_thr2 = pks.quantile(q=1 - target_response_rate_pre_apl,
+                interpolation=interpolation_for_thr
+            )
+
+            # TODO delete
+            print()
+            print(f'{interpolation_for_thr=} (to define fixed_thr2)')
+            print()
+            print(f'{fixed_thr=}')
+            print(f'{fixed_thr2=}')
+            print()
+            print(f'{(pks >= fixed_thr).equals(pks >= fixed_thr2)=}')
+            print(f'{(pks > fixed_thr).equals(pks > fixed_thr2)=}')
+            print()
+            #
+
+            #print(pd.Series((thr - 2*spont_in).squeeze()).value_counts())
+            # 195.742763    821
+            # 195.742763    508
+            # 195.742763    501
+            #
+            #print(pd.Series((thr - 2*spont_in).squeeze()).value_counts().index)
+            # Float64Index([195.7427633158587, 195.74276331585867, 195.74276331585872],
+            #   dtype='float64')
+            #
+            # ipdb> pd.Series((thr - 2*spont_in).squeeze()).max()
+            # 195.74276331585872
+            # ipdb> pd.Series((thr - 2*spont_in).squeeze()).min()
+            # 195.74276331585867
+            #print()
+
+            # TODO TODO unit test taking selected fixed_thr, setting that into olfsysm
+            # fixed_thr, and re-running model (or running equiv new model) ->
+            # checking/verifying which one reproduces output spike_counts exactly?
+            #
+            # TODO delete (try to move to unit test)
+            #mp.kc.use_fixed_thr = True
+            #mp.kc.thr_type = 'fixed'
+            #mp.kc.add_fixed_thr_to_spont = True
+            #mp.kc.tune_apl_weights = False
+
+            #mp.kc.fixed_thr = fixed_thr2
+            ## looks like i do need regen=True to get thr change to take effect
+            #osm.run_KC_sims(mp, rv, True)
+            #spike_counts2 = rv.kc.spike_counts.copy()
+            #print(f'{np.array_equal(spike_counts, spike_counts2)=}')
+            #print()
+
+            for fthr in sorted(unique_fixed_thrs):
+                print(f'{fthr=}')
+                print(f'{unique_thrs_and_counts[fthr]=}')
+                print(f'{(pks >= fthr).equals(pks >= fixed_thr2)=}')
+                print(f'{(pks > fthr).equals(pks > fixed_thr2)=}')
+
+                #mp.kc.fixed_thr = fthr
+                # looks like i do need regen=True to get thr change to take effect
+                #osm.run_KC_sims(mp, rv, True)
+                #spike_counts2 = rv.kc.spike_counts.copy()
+                # TODO TODO why was this always true despite thresholding on pks being
+                # different (for diff choice of threshold)?
+                #print(f'{np.array_equal(spike_counts, spike_counts2)=}')
+
+                print()
+
+            # so at least we can actually get diff output for different-enough
+            # fixed_thr...
+            #
+            # ipdb> mp.kc.fixed_thr
+            # 195.74276331585872
+            # ipdb> mp.kc.fixed_thr = 195.7
+            # ipdb> osm.run_KC_sims(mp, rv, True)
+            # ipdb> spike_counts2 = rv.kc.spike_counts.copy()
+            # ipdb> print(f'{np.array_equal(spike_counts, spike_counts2)=}')
+            # np.array_equal(spike_counts, spike_counts2)=False
+
+            import ipdb; ipdb.set_trace()
+            #
+            #
+
+        #assert np.isclose(fixed_thr, fixed_thr2)
+        try:
+            # TODO i can't assert it's exactly equal can i? aren't i just picking a
+            # value from a list tho? why can i not get it exact?
+            assert np.isclose(fixed_thr, fixed_thr2)
+        except AssertionError:
+            warn(f'{fixed_thr=} != {fixed_thr2=}')
+            # TODO TODO TODO why broken now (sometimes?)?
+            # ipdb> fixed_thr
+            # 268.0375322649455
+            # ipdb> fixed_thr2
+            # 268.0081239925118
+            import ipdb; ipdb.set_trace()
+
+        # TODO TODO try other interpolation methods (+ combos w/ other choices? what?)?
+        # maybe i picked the wrong approach?
+        #
+        # TODO delete?
+        #
+        # seems this will also fail if above fails
+        #assert (pks >= fixed_thr).equals(pks >= fixed_thr2)
+        try:
+            # TODO TODO restore?
+            #assert (pks >= fixed_thr).equals(pks >= fixed_thr2)
+            #
+            assert (pks > fixed_thr).equals(pks > fixed_thr2)
+        # TODO TODO TODO fix
+        except AssertionError:
+            warn(f'fixed_thr and fixed_thr2 produce diff thresholded pks!!!')
+            import ipdb; ipdb.set_trace()
+        """
+        #
+
+        interpolation_for_thr = 'lower'
+        fixed_thr2 = pks.quantile(q=1 - target_response_rate_pre_apl,
+            interpolation=interpolation_for_thr
+        )
+
+        # TODO also assert we can recreate responses by using this threshold?
+        # (prob more important) (would need to be in a context where responses don't
+        # have APL used to compute them tho)
+
+        # TODO do something with this? at least put in param dict
+        #
+        # "reponse_rate" same units/meaning as "target_sparsity", but better name
+        pre_apl_response_rate = (pks >= fixed_thr2).mean().mean()
+
+        # TODO in future, could add a param that's a type->target_rate dict, but would
+        # be more complicated(/longer) in filenames and stuff, so some extra
+        # clutter/complexity (already have such a dict below. would just need to expose
+        # it as a new kwarg)
+
+        # TODO TODO i think if i want a certain response rate at output, i really might
+        # have to modify olfsysm to run the APL tuning probably jointly on all types...
+
+        if equalize_kc_type_sparsity:
+            # TODO need to support int type too (in both of the two isinstance calls
+            # below)? isinstance(<int>, float) is False
+            #
+            # if we already had vector thresholds, then they won't be particularly
+            # meaningful after we overwrite those outputs with those using cell_thrs
+            # below.
+            assert fixed_thr is None or isinstance(fixed_thr, float)
+            assert not mp.kc.use_vector_thr
+
+            # probably don't care to implement this, but would need to rethink current
+            # ordering of olfsysm calls if so
+            if tune_on_hallem:
+                raise NotImplementedError
+
+            # TODO fix + support this? (might just need to re-order some code)
+            assert extra_orn_deltas is None, 'need to check support for this'
+
+            # to compare against the output of the call that will happen below this
+            # conditional (before and after attempt at equalizing KC response rates)
+            print('response rates BEFORE attempting to equalize pre-APL response rates'
+                ' across KC types:'
+            )
+            _print_response_rates(
+                pd.DataFrame(responses, index=kc_index, columns=odor_index)
+            )
+            print()
+
+            kc_type_set = set(kc_types)
+            type2target_response_rate = {
+                t: r for t, r in
+                zip(sorted(kc_type_set), [mp.kc.sp_target] * len(kc_type_set))
+            }
+            if ab_prime_response_rate_target is not None:
+                assert 0 <= ab_prime_response_rate_target <= 1
+
+                # otherwise, either we have the wrong input data or the "a'b'" KCs are
+                # called something else.
+                assert "a'b'" in type2target_response_rate
+
+                type2target_response_rate["a'b'"] = ab_prime_response_rate_target
+
+            # kc_type
+            # a'b'       213.766788
+            # ab         247.624665
+            # g          304.647391
+            # unknown    150.569856
+            # Name: megamat, dtype: float64
+            #
+            # x.name will be a str kc_type
+            thr_by_type = pks.groupby(KC_TYPE).apply(lambda x: x.quantile(
+                # TODO see how the final rates of each class differ after tuning
+                q=1 - type2target_response_rate[x.name] * mp.kc.sp_factor_pre_APL,
+                interpolation=interpolation_for_thr
+            ))
+            cell_thrs = kc_types.map(thr_by_type)
+
+            # TODO keep this print (/warn) for a verbose branch?
+            print('thr_by_type:')
+            print(thr_by_type.to_string())
+
+            # TODO check that these thresholds (if APL is skipped) produce
+            # sp-factor * type-target in each type?
+
+            # TODO delete
+            # can we add another osm.run_KC_sims(mp, rv, True/False) in
+            # here w/o getting otherwise divergent results from on first run (except
+            # beyond change to thr I want to make)? (seems so)
+            # (if i can't, easiest workaround would be to make two separate calls to
+            # this fn. could recurse from here?)
+            # TODO TODO unit test doing so, but setting in same thr we get out
+            # (just a copy of `rv.kc.thr`) (could copy some of below into one)
+
+            mp.kc.use_vector_thr = True
+            mp.kc.add_fixed_thr_to_spont = True
+            # actually do need this. may or may not need thr_type='fixed' too
+            mp.kc.use_fixed_thr = True
+            mp.kc.thr_type = 'fixed'
+
+            # TODO necessary? not sure (run test_vector_thr again after finishing vector
+            # fixed_thr support -> try to see if required)
+            thr = np.expand_dims(cell_thrs.values, 1)
+            #thr = fixed_thr
+
+            rv.kc.thr = thr
+
+            # TODO TODO probably also expose the whole type->thr (/fraction) dict below,
+            # as does seem (for some reason...) we will need to tweak gamma-KC response
+            # fraction up (after APL brings it down to 0.07, below 0.1 target)
+            # (under which circumstances did it do this again? connectome APL?)
+            #
+            # TODO rename to return_apl=?
+            # TODO TODO expose this as kwarg? does =False actually make sense? (seems
+            # like it might, yea)
+            # TODO TODO TODO restore False? (then we'd have avg output response rate
+            # match scalar target, at least)
+            #use_old_apl_weights_with_new_thrs = False
+            use_old_apl_weights_with_new_thrs = True
+
+            # TODO TODO TODO also need this in use_old...=True case?
+            # (moved from the `if use_old...:` conditional below)
+            if use_connectome_APL_weights:
+                # TODO duplicate (/refactor to share) assertions below on output
+                # wAPLKC/wKCAPL (so that we can also check here before overwriting
+                # them)?
+                # TODO could also change olfsysm so rv.kc.w[APLKC|KCAPL] store the
+                # unscaled versions? not sure i care to though.
+                #
+                # since current rv.kc.w[APLKC|KCAPL] matrices are scaled by the
+                # corresponding rv.kc.w[APLKC|KCAPL]_scale scalars before
+                # osm.fit_sparseness returns, we need to restart them at a mean of 1
+                # before re-scaling, so that the *_scale variables are interpretable
+                # in the same manner.
+                #
+                # TODO TODO check that these values are then scaled by the
+                # (still updated) rv.kc.w[APLKC|KCAPL]_scale vars (inside
+                # fit_sparseness)
+                # TODO assert w[APLKC|wKCAPL]_scale != (default of) 1?
+                rv.kc.wAPLKC = wAPLKC_arr
+                rv.kc.wKCAPL = wKCAPL_arr
+            #
+
+            # TODO TODO TODO how to fix the use_old_apl_weights_with_new_thrs=False
+            # branch for use_connectome_APL_weights=True case (output response rates
+            # currently ~2x desired)
+            # TODO TODO TODO why does wAPLKC seem to be blowing up over the 10 tuning
+            # iterations (by orders of magnitude) there? only gets worse until max #
+            # iterations is reached...
+            if use_old_apl_weights_with_new_thrs:
+                # TODO TODO TODO this work w/ use_connectome_APL_weights=True?
+                # seems like something might be broken. can i change olfsysm to fix it?
+                mp.kc.tune_apl_weights = False
+
+            checks = True
+            # TODO move/dupe these checks to a unit test
+            if checks:
+                # TODO check that another run_KC_sims call before changing rv gives us
+                # same outputs? prob not worth it...
+
+                # ipdb> spike_counts.mean()
+                # 0.18492446158791384
+                # NOTE: .copy() is necessary
+                # TODO check for other cases where i assign vars from olfsysm vars, and
+                # then assign to the same var after (esp if using both at once [e.g.
+                # comparing them]) (-> prob just add defensive .copy() if not already
+                # there)
+                old_spike_counts = spike_counts.copy()
+
+                # TODO assert output of these two are diff from above, but same as each
+                # other
+                osm.run_KC_sims(mp, rv, False)
+                # ipdb> spike_counts_type_thresh.mean()
+                # 0.9981999357119897
+                spike_counts_type_thresh = rv.kc.spike_counts.copy()
+                assert not np.array_equal(old_spike_counts, spike_counts_type_thresh)
+
+                # TODO TODO compare to a recursive fit_mb_model call output (passing
+                # fixed_thr=thr (or cell_thrs.values, if having already adding singleton
+                # dim at end is an issue w/ fixed_thr [which it very well could be, esp
+                # since another one will probably get added in recursive call])?
+                # TODO how to get all kwargs nicely tho? refactor this fn to pass them
+                # all as a dict (basically just to make recursive calls easier)? would
+                # come at the cost of having them all explicitly in kwargs tho, unless
+                # maybe i broke out a separate fn to initialize the defaults, w/ all
+                # kwargs there?
+
+                osm.run_KC_sims(mp, rv, False)
+                # ipdb> spike_counts_type_thresh2.mean()
+                # 0.9981999357119897
+                spike_counts_type_thresh2 = rv.kc.spike_counts.copy()
+                assert np.array_equal(
+                    spike_counts_type_thresh, spike_counts_type_thresh2
+                )
+
+            # TODO so what (if anything) is changing here (via regen=True) and do i want
+            # it (/ like it's properties on the output)?
+            # TODO we get same output if we move it before the above two arg[2]=False
+            # calls? (assuming i care about this regen=True output)
+            #
+            # ipdb> spike_counts.mean()
+            # 0.3629058180649309
+            osm.run_KC_sims(mp, rv, True)
+            # TODO are thresholds / pks different after regen=True? or why else would
+            # output be diff? just diff starting conditions?
+            responses = rv.kc.responses.copy()
+            spike_counts = rv.kc.spike_counts.copy()
+
+            if checks:
+                assert not np.array_equal(spike_counts, old_spike_counts)
+                assert not np.array_equal(spike_counts, spike_counts_type_thresh2)
+
+                # TODO delete
+                # copy necessary? yes (test and remove on all if not)? (to
+                # avoid contents being potentially overwritten by next osm.run_KC_sims
+                # call) is accessing the values via pybind11 by value or reference?
+                #
+                # copy=False
+                # old_spike_counts.mean()=0.18492446158791384
+                # spike_counts_type_thresh.mean()=0.3629058180649309
+                # spike_counts_type_thresh2.mean()=0.3629058180649309
+                # spike_counts.mean()=0.3629058180649309
+                #
+                # copy=True
+                # old_spike_counts.mean()=0.18492446158791384
+                # spike_counts_type_thresh.mean()=0.9981999357119897
+                # spike_counts_type_thresh2.mean()=0.9981999357119897
+                # spike_counts.mean()=0.3629058180649309
+                #
+
+            # TODO assert spont_in/wPNKC didn't change. anything else?
+            wPNKC2 = rv.kc.wPNKC.copy()
+            assert np.array_equal(wPNKC, wPNKC2)
+
+            spont_in2 = rv.kc.spont_in.copy()
+            assert np.array_equal(spont_in, spont_in2)
+
+            del thr, spont_in2, wPNKC2
+
+    # want this to be after last olfsysm call
     temp_log_file.close()
 
+    # TODO replace w/ wrappers for each osm call, that prints right after each call?
+    # (or some combined approach?) (seeing these outputs interleaved w/ python debug
+    # prints would prob make some debugging easier)
+    # TODO or read lines after each call, and only print new ones? (so we can still have
+    # one master log too, if we want that...)
     if print_olfsysm_log:
         print('olfsysm log:')
         log_txt = Path(temp_log_path).read_text()
@@ -2625,43 +3707,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     Path(temp_log_path).unlink()
 
-    try:
-        # line that would trigger the AttributeError
-        spont_in = rv.kc.spont_in
-
-    # to allow trying older versions of olfsysm, that didn't have rv.kc.spont_in
-    # (which is what this would be doing, if i WAS still `pass`-ing instead of
-    # `raise`-ing below)
-    except AttributeError:
-        # was previously just `pass`-ing here, but don't think i need to support this
-        # again moving forward.
-        raise
-
-    if fixed_thr is not None:
-        # just checking what we set above hasn't changed
-        assert mp.kc.fixed_thr == fixed_thr
-        assert mp.kc.add_fixed_thr_to_spont == True
-        # actually do need this. may or may not need thr_type='fixed' too
-        assert mp.kc.use_fixed_thr == True
-        assert mp.kc.thr_type == 'fixed'
-        # TODO some assertion w/ spont_in here? should we be able to calculate fixed_thr
-        # same way?
-    else:
-        thr = rv.kc.thr
-
-        # TODO use _single_unique_val for this too?
-        #
-        # this should correspond to the thr_const variable inside
-        # olfsysm.choose_KC_thresh_uniform (and can be set by passing as the fixed_thr
-        # kwarg to this function, which will also set mp.kc.add_fixed_thr_to_spont=True)
-        unique_fixed_thrs = np.unique(thr - 2*spont_in)
-        # could take median instead? shouldn't really matter tho...
-        fixed_thr = unique_fixed_thrs[0]
-        assert np.allclose(fixed_thr, unique_fixed_thrs)
-
-        # TODO at least put behind new verbose kwarg
-        print(f'fixed_thr: {fixed_thr}')
-
     if not use_connectome_APL_weights:
         # these should either be the same as any hardcoded (scalar) wAPLKC [+ wKCAPL]
         # inputs, or the values chosen by the tuning process. _single_unique_val will
@@ -2679,17 +3724,36 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert wKCAPL is not None
             assert rv_scalar_wKCAPL == wKCAPL
         else:
-            # TODO delete prints? (at least put behind new verbose kwarg)
+            # TODO delete prints? (at least put behind a verbose kwarg)
             print(f'wAPLKC: {rv_scalar_wAPLKC}')
             print(f'wKCAPL: {rv_scalar_wKCAPL}')
             #
             wAPLKC = rv_scalar_wAPLKC
             wKCAPL = rv_scalar_wKCAPL
     else:
+        # TODO delete if i can get both of these (+ wPNKC) to preserve kc_type level, if
+        # wPNKC ever has it (currently just hemibrain)
+        #
+        # TODO why does it seem kc_type has already been dropped from the .index of each
+        # of these? just don't do that (rather than adding it back)
+        # (would need to stat by not dropping it from wPNKC, which is then passed to
+        # connectome_APL_weights(). could prob then remove separate kc_types= kwarg to
+        # that fn)
+        kc_ids = kc_index.get_level_values(KC_ID)
+        assert kc_ids.equals(wAPLKC.index)
+        assert kc_ids.equals(wKCAPL.index)
+
+        assert kc_ids.equals(input_wAPLKC.index)
+        assert kc_ids.equals(input_wKCAPL.index)
+        input_wAPLKC.index = kc_index
+        input_wKCAPL.index = kc_index
+        #
+
         # TODO (outside this fn?) make histograms of these scaled values somewhere,
-        # similar histograms of connectome weights
-        wAPLKC = pd.Series(index=wAPLKC.index, data=rv.kc.wAPLKC.squeeze())
-        wKCAPL = pd.Series(index=wKCAPL.index, data=rv.kc.wKCAPL.squeeze())
+        # similar histograms of connectome weights?
+        # TODO any point copying here?
+        wAPLKC = pd.Series(index=kc_index, data=rv.kc.wAPLKC.squeeze())
+        wKCAPL = pd.Series(index=kc_index, data=rv.kc.wKCAPL.squeeze())
 
         n_zero_tuned_wAPLKC = (wAPLKC == 0).sum()
         n_zero_tuned_wKCAPL = (wKCAPL == 0).sum()
@@ -2715,7 +3779,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wAPLKC_scale_recomputed = _single_unique_val(
             wAPLKC[input_wAPLKC > 0] / input_wAPLKC[input_wAPLKC > 0], exact=False
         )
-        assert np.isclose(wAPLKC_scale, wAPLKC_scale_recomputed)
+        try:
+            assert np.isclose(wAPLKC_scale, wAPLKC_scale_recomputed)
+        # TODO TODO TODO fix
+        # TODO or just relax this assertion? (but under what circumstances? seems
+        # use_connectome_APL_weights=True & use_old_apl_weights_with_new_thrs=True)
+        except AssertionError:
+            print()
+            print(f'{wAPLKC_scale=}')
+            print(f'{wAPLKC_scale_recomputed=}')
+            import ipdb; ipdb.set_trace()
+        #
 
         wKCAPL_scale_recomputed = _single_unique_val(
             wKCAPL[input_wKCAPL > 0] / input_wKCAPL[input_wKCAPL > 0], exact=False
@@ -2724,13 +3798,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
 
     assert responses.shape[1] == (n_input_odors + n_extra_odors)
-    responses = pd.DataFrame(responses, columns=odor_index)
-    responses.index.name = 'model_kc'
+    responses = pd.DataFrame(responses, index=kc_index, columns=odor_index)
 
     assert spike_counts.shape[1] == (n_input_odors + n_extra_odors)
     assert len(responses) == len(spike_counts)
-    spike_counts = pd.DataFrame(spike_counts, columns=odor_index)
-    spike_counts.index.name = 'model_kc'
+    spike_counts = pd.DataFrame(spike_counts, index=kc_index, columns=odor_index)
 
     if extra_orn_deltas is not None:
         extra_responses = responses.iloc[:, -n_extra_odors:]
@@ -2770,24 +3842,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         make_plots = False
         #
 
-    if variable_n_claws:
-        assert mp.kc.seed == seed
-
-        wPNKC = rv.kc.wPNKC
-        # TODO should these not also be the case in variable_n_claws == False case?
-        # move these two assertions out?
-        assert wPNKC.shape[1] == len(glomerulus_index)
-        assert len(wPNKC) == len(responses)
-
-        wPNKC = pd.DataFrame(data=wPNKC, index=responses.index,
-            columns=glomerulus_index
-        )
-
-    # TODO TODO change responses.index to be connectome bodyid ints, rather than
-    # sequential int index, at least for connectome pn2kc_connections cases. (so it's
-    # consistent w/ KC index of other outputs there, like wAPLKC / kc_spont_in)
-
-    spont_in = pd.Series(index=wPNKC.index, data=spont_in.squeeze())
+    spont_in = pd.Series(index=kc_index, data=spont_in.squeeze())
 
     param_dict = {
         'fixed_thr': fixed_thr,
@@ -2802,14 +3857,23 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         'kc_spont_in': spont_in,
     }
+
+    # NOTE: currently will probably not be able to achieve these after APL tuning
+    # (until olfsysm is modified to tune within subtypes), but (if not None) per-type
+    # thresholds will be picked to achieve sparsities here scaled by
+    # mp.kc.sp_factor_pre_APL (default=2.0).
+    if type2target_response_rate is not None:
+        # TODO this cause problems (with value being a dict)?
+        param_dict['type2target_response_rate'] = type2target_response_rate
+
     if use_connectome_APL_weights:
         assert wAPLKC_scale is not None and wKCAPL_scale is not None
         param_dict.update({'wAPLKC_scale': wAPLKC_scale, 'wKCAPL_scale': wKCAPL_scale})
 
     tuning_dict = {
-        # TODO TODO expose at least these first two (sp_acc, max_iters) as kwargs.
+        # TODO expose at least these first two (sp_acc, max_iters) as kwargs.
         # prob also sp_lr_coeff.
-        # TODO TODO TODO + maybe default to smaller tolerance (+ more iterations if
+        # TODO TODO + maybe default to smaller tolerance (+ more iterations if
         # needed). what currently happens if tolerance not reached in max_iters?
         # add my own assertion (in this script) that we are w/in sp_acc?
         #
@@ -2828,6 +3892,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # removed tuning_time_s from this, because it would cause -c checks to fail
     }
+    # TODO still do in some cases where fixed_thr is a vector?
     if fixed_thr is None:
         print('tuning parameters:')
         pprint(tuning_dict)
@@ -2836,14 +3901,60 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     param_dict = {**param_dict, **tuning_dict}
 
+    # TODO put prints below behind a verbose flag? (this whole conditional basically)
+    # TODO delete
+    print()
+    print(f'{use_connectome_APL_weights=}')
+    print(f'{equalize_kc_type_sparsity=}')
+    print(f'{ab_prime_response_rate_target=}')
+    if equalize_kc_type_sparsity:
+        print(f'{use_old_apl_weights_with_new_thrs=}')
+    print()
+    #
+    _print_response_rates(responses)
+
+    # TODO can i not just assert this now?
+    if KC_TYPE in responses.index.names:
+        n_kcs_by_type = responses.index.get_level_values(KC_TYPE).value_counts()
+
+        silent_kcs = (responses == 0).T.all()
+        silent_frac_by_type = silent_kcs.groupby(KC_TYPE).sum() / n_kcs_by_type
+        # TODO still (at least if verbose) print this (one number) if no type
+        print()
+        print('silent_frac_by_type:')
+        print(silent_frac_by_type.to_string())
+        print()
+
+        # TODO check that if i use uniform/whatever instead of hemibrain wPNKC, this
+        # bias favoring heavily responsive gamma KCs goes down?
+        # TODO TODO should wPNKC be set in a way that normalizes within type, to
+        # avoid this bias introduced? or should i address it in some other way instead?
+        # in a separate step than what i end up using to implement the Inada paper a'/b'
+        # vs other cell type responsiveness (which might just be threshold in their
+        # paper?)
+        # TODO TODO should i test that i can actually use non-int wPNKC now?
 
     # TODO why is this seemingly a list of arrays, while the equiv kc variable seems to
     # be an array immediately? binding code seems similar...
     orn_sims = np.array(rv.orn.sims)
     # orn_sims.shape=(110, 22, 5500)
 
+    # also a list out of the box
+    # pn_sims.shape=(110, 22, 5500)
+    pn_sims = np.array(rv.pn.pn_sims)
+
+    if tune_on_hallem and not hallem_input:
+        orn_sims = orn_sims[n_hallem_odors:]
+        pn_sims = pn_sims[n_hallem_odors:]
+
+        if _plot_example_dynamics:
+            # TODO also subset other dynamics vars, at least if we are gonna return them
+            # (or use them for _plot_example_dynamics)?
+            raise NotImplementedError('prob need to subset those vars below')
+
     # orn_sims is of shape (n_odors, n_glomeruli, n_timepoints)
     n_samples = orn_sims.shape[-1]
+    assert pn_sims.shape[-1] == n_samples
     # from default parameters:
     # p.time.pre_start  = -2.0;
     # p.time.start      = -0.5;
@@ -2856,42 +3967,327 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         mp.time_end
     )
 
-    # also a list out of the box
-    # pn_sims.shape=(110, 22, 5500)
-    pn_sims = np.array(rv.pn.pn_sims)
-    assert pn_sims.shape[-1] == n_samples
+    ts = pd.Series(name='seconds',
+        data=np.linspace(mp.time_pre_start, mp.time_end, num=n_samples)
+    )
 
-    if tune_on_hallem and not hallem_input:
-        orn_sims = orn_sims[n_hallem_odors:]
-        pn_sims = pn_sims[n_hallem_odors:]
+    # time_start = "start of KC stimulation" [from spont PN activity]
+    # (it's before stimulus comes on at time_stim_start)
+    start_idx = np.searchsorted(ts, mp.time_start)
+    stim_start_idx = np.searchsorted(ts, mp.time_stim_start)
+    stim_end_idx = np.searchsorted(ts, mp.time_stim_end)
 
-    ts = np.linspace(mp.time_pre_start, mp.time_end, num=n_samples)
+    if return_dynamics or _plot_example_dynamics:
+        # TODO rename (+ move rv to param) -> move out of fit_mb_model? just to
+        # declutter this fn...
+        def _get_sim_var(name) -> np.ndarray:
+            # all appear as #-odor-length lists w/o np.array(...) applied
+            arr = np.array(getattr(rv.kc, name))
 
-    # TODO delete
-    # units seems to be firing rates (absolute i think. actually, there are some
-    # negative values, even in hallem_input=True [w/ matt config] case. that's not a
-    # mistake though, is it?)
-    '''
-    dl5 = glomerulus_index.get_loc('DL5')
-    t2h = odor_index.get_loc('t2h @ -2')
+            _debug = False
+            if not _debug:
+                return arr
 
-    fig, ax = plt.subplots()
+            print(f'{name=}')
 
-    ax.plot(ts, orn_sims[t2h, dl5, :], label='ORN')
-    ax.plot(ts, pn_sims[t2h, dl5, :], label='PN')
+            # this should be a vector of length equal to #-timepoints
+            all0 = (arr == 0).all(axis=(0,1))
 
-    ax.axvline(mp.time_stim_start, label='stim start')
-    ax.axvline(mp.time_stim_end, label='stim end')
+            # NOTE: only not true for nves_sims, which isn't all 0 anywhere
+            # (it's all 1 everywhere. prob disabled. see below.)
+            #print(f'{all0[:(start_idx + 1)].all()=}')
+            # only vm_sims has this as False (excluding nves_sims)
+            # (others still all 0 at +3 too)
+            #print(f'{all0[:(start_idx + 2)].all()=}')
 
-    ax.set_title('DL5 response to t2h')
-    ax.legend()
-    '''
+            # TODO use this (to get mean/min/max/etc within)?
+            after_start = arr[:, :, start_idx:]
+            # TODO also print min/max/mean/[np.quantile 0.5] for each?
+            # maybe only within non-zero part? and/or only within stim window?
+
+            if all0.any():
+                first_non_all0_idx = np.argwhere(~all0)[0][0]
+                print(f'{first_non_all0_idx=}')
+
+                # last index all 0
+                last_all0_idx = np.argwhere(all0)[-1][0]
+                print(f'{last_all0_idx=}')
+
+                all0_to_last = (arr[:, :, :(last_all0_idx + 1)] == 0).all()
+                print(f'{all0_to_last=}')
+            else:
+                print('not all0 anywhere!')
+            print()
+
+            return arr
+
+        # TODO which of these are all 0 before stim_start_idx?
+        #
+        # these first 3 are of shape (#-odors, #-KCs, #-timepoints)
+        #
+        # "Membrane voltage"
+        vm_sims = _get_sim_var('vm_sims')
+
+        # presumably 0/1 recording which time bins have spikes in them?
+        spike_recordings = _get_sim_var('spike_recordings')
+        # this assertion takes a sec (put behind a checks flag?)
+        assert set(spike_recordings.flat) == {0, 1}
+
+        # this has been 0 by default my whole time working with the model. presumably
+        # matt also decided pretty quickly to not use this, tho not sure why.
+        #
+        # I assume this is either not in Ann's model, or primarily not used there?
+        # TODO TODO is this true? what might we get from adding this back in to the
+        # model?
+        #
+        # if `mp.kc.ves_p == 0`, the "vesicle depletion" part of olfsysm is disabled
+        if mp.kc.ves_p != 0:
+            # "vesicle depletion factor"
+            nves_sims = _get_sim_var('nves_sims')
+            # this is probably  only the case if we get it when `mp.kc.ves_p != 0`,
+            # which i haven't tested, and not sure we care to
+            #assert (nves_sims == 1).all()
+        else:
+            warn('nves_sims are disabled, as has typically been the case for olfsysm')
+
+        # these two are of shape (#-odors, 1, #-timepoints), with the length-1 component
+        # removed by squeeze. both properties of scalar APL (hence 1 vs #-KCs).
+        #
+        # "APL potential" (mV?)
+        inh_sims = _get_sim_var('inh_sims').squeeze()
+        # "KC->APL synapse current"
+        # TODO so this must be the current across all KCs, right?
+        Is_sims = _get_sim_var('Is_sims').squeeze()
+
+
+        # NOTE: just chose 'stim' for that dim name b/c xarray complained that
+        # 'odor' overlapped with the odor_index level of the same name.
+        #
+        # wasn't also an issue with 'glomerulus' being the .name of
+        # glomerulus_index, presumably b/c not multiple levels there.
+        coords = {'stim': odor_index, 'time_s': ts}
+
+        al_dims = ['stim', 'glomerulus', 'time_s']
+        al_coords = {**coords, 'glomerulus': glomerulus_index}
+
+        # TODO TODO fix:
+        # ValueError: coordinate stim has dimensions ('odor',), but these are not a subset of the DataArray dimensions ['stim', 'glomerulus', 'time_s']
+        # (needed _plot_example_dynamics=True, from scripts/model_banana_iaa_concs.py)
+        orn_sims = xr.DataArray(data=orn_sims, dims=al_dims, coords=al_coords)
+        pn_sims = xr.DataArray(data=pn_sims, dims=al_dims, coords=al_coords)
+
+        kc_dims = ['stim', 'kc', 'time_s']
+        kc_coords = {**coords, 'kc': kc_index}
+
+        vm_sims = xr.DataArray(data=vm_sims, dims=kc_dims, coords=kc_coords)
+        spike_recordings = xr.DataArray(data=spike_recordings, dims=kc_dims,
+            coords=kc_coords
+        )
+        if mp.kc.ves_p != 0:
+            nves_sims = xr.DataArray(data=nves_sims, dims=kc_dims, coords=kc_coords)
+
+        # may change if we end up having multiple APL compartments
+        apl_dims = ['stim', 'time_s']
+        apl_coords = coords
+
+        inh_sims = xr.DataArray(data=inh_sims, dims=apl_dims, coords=apl_coords)
+        Is_sims = xr.DataArray(data=Is_sims, dims=apl_dims, coords=apl_coords)
+
+        if return_dynamics:
+            dynamics_dict = {
+                'orn_sims': orn_sims,
+                'pn_sims': pn_sims,
+
+                'inh_sims': inh_sims,
+                'Is_sims': Is_sims,
+
+                'vm_sims': vm_sims,
+                'spike_recordings': spike_recordings,
+            }
+            if mp.kc.ves_p != 0:
+                dynamics_dict['nves_sims'] = nves_sims
+
+            assert not any(k in param_dict for k in dynamics_dict.keys())
+            param_dict.update(dynamics_dict)
+            # TODO TODO make sure fit_and_plot... saving of these is working to (want to
+            # automatically pop+save any outputs of relevant few data types now)
+
+    if _plot_example_dynamics:
+        assert plot_dir is not None and make_plots
+        assert plot_dir.exists(), f'{plot_dir=} did not exist'
+
+        # TODO always plot whichever glomerulus has the biggest response (and say so)?
+        # would make this code useful for more input data...
+        glom = 'DL5'
+        dl5_idx = glomerulus_index.get_loc(glom)
+
+        # TODO pick odor in a way that would work for all input data?
+        #
+        # will fail if input data doesn't have t2h (and probably also at this conc)
+        odor = 't2h @ -3'
+        t2h_idx = odor_index.get_level_values('odor').get_loc(odor)
+
+        # TODO TODO still keep one version of plot showing full timecourse, in case
+        # understanding the ramp up ~"start" time (< "stim_start") is important?
+        # (just set xlim differently and re-save?)
+
+        # TODO factor out this plotting (so someone could run on saved dynamics
+        # outputs)?
+
+        # seem to need constrained layout to get fig.legend() reliably outside bounds of
+        # Axes (at least w/o manual positioning...)?
+        fig, (ax, spike_raster_ax) = plt.subplots(nrows=2, layout='constrained',
+            sharex=True, figsize=(10, 10)
+        )
+
+        # TODO TODO TODO finish
+        #def _plot_normed()
+        #
+
+        # TODO make fn (/find a library for) plotting a stimlus bar along some time axis
+        # (-> use that here instead)?
+        #
+        # used to have these are 'stim start' / 'stim end' in legend, but legend is
+        # already too busy as-is.
+        ax.axvline(mp.time_stim_start, color='k')
+        ax.axvline(mp.time_stim_end, color='k')
+
+        # TODO TODO is there some reason orn_sims.min() is not sfr.min()?
+        # min seems to be 17, if i'm computing it right...
+        # is it just that orn_sims is not in firing rate units?
+
+        # TODO TODO refactor this normalized plotted
+        #
+        # TODO directly index odor/glom by name, now that we are using xarray?
+        #
+        # TODO add units for these (firing rate in Hz?) (via y-axis label?)
+        #
+        # units seems to be firing rates (absolute i think. actually, there are some
+        # negative values, even in hallem_input=True [w/ matt config] case. that's not a
+        # mistake though, is it?)
+        ax.plot(ts, orn_sims[t2h_idx, dl5_idx] / orn_sims[t2h_idx, dl5_idx].max(),
+            label=f'{glom} ORN'
+        )
+        ax.plot(ts, pn_sims[t2h_idx, dl5_idx] / pn_sims[t2h_idx, dl5_idx].max(),
+            label=f'{glom} PN'
+        )
+
+        # TODO TODO TODO drop non-responding KCs before all plots using them
+        # (both dynamics plots and whichever spike raster things i ultimately use)
+        # TODO TODO also say in title (below) if we drop non-responders, if we do
+
+        # plotting these before the KC mean[+types] now, since that part of the plot
+        # can vary (in terms of # of lines), so having this earlier fixes the colors for
+        # these
+        ax.plot(ts, inh_sims[t2h_idx] / inh_sims[t2h_idx].max(),
+            label='APL Vm'
+        )
+        ax.plot(ts, Is_sims[t2h_idx] / Is_sims[t2h_idx].max(),
+            label='KC->APL current'
+        )
+
+        # TODO TODO or maybe i don't want to always drop non-responders from vm_sims
+        # plots? at least have a version not dropping them? (would need to get indices
+        # from determination on spike_recordings / t2h_spikes anyway)
+
+        # TODO TODO label plot with how many responders there are out of how many total
+        # cells
+        # TODO TODO per kc_type labels w/ how many silent in each? too noisy? separate
+        # plot/something for that instead?
+        # ipdb> t2h_spikes[t2h_spikes.T.sum() > 0].shape
+        # (214, 5500)
+        # ipdb> t2h_spikes.shape
+        # (1830, 5500)
+        t2h_spikes = spike_recordings[t2h_idx].to_pandas()
+
+        # TODO delete
+        # TODO to what extent is this just a thing for t2h specifically? evident in mean
+        # wPNKC connections from t2h responsive glomeruli?
+        # ipdb> nonsilent_frac_by_type
+        # kc_type
+        # a'b'       0.041667
+        # ab         0.049875
+        # g          0.254902
+        # unknown    0.050000
+        # (from when silent_frac_by_type was defined from t2h_spikes)
+        #nonsilent_frac_by_type = 1 - silent_frac_by_type
+        #
+
+        # TODO maybe plot clusters? per cell-type clusters?
+        # TODO or random sample a few and plot on axis by itself (w/ original scale. not
+        # normalized)?
+        t2h_vm_sims = vm_sims[t2h_idx]
+
+        # taking mean over KCs, giving us a series of length equal to #-timepoints
+        mean_vm_sims = t2h_vm_sims.mean('kc')
+        ax.plot(ts, mean_vm_sims / mean_vm_sims.max(), label='mean KC Vm')
+
+        # TODO TODO make a version of all these plots w/ each quantity on a separate
+        # facet (or at least, only those w/ comparable units sharing a facet), so that
+        # axes can all have the right units
+
+        # TODO TODO modify fit_mb_model to accept arbitrary wAPLKC/wKCAPL, like i
+        # had for _wPNKC (-> use to play around w/ per-subtype scales from here)
+        # (how equiv to code i've been adding to set thr by type? prob not? not sure i
+        # need per-cell wAPLKC/wKCAPL once i get per-cell thr)
+        # TODO or should the cell type variations happen by effectively scaling
+        # spontaneous input to each cell (where fixed_thr currently added to that
+        # anyway)? that feels much more likely to be equiv to just scaling the
+        # thresholds/fixed_thr values per cell type... (scaling wPNKC could probably do
+        # that?)
+        # TODO TODO what was the issue with having a constant fixed_thr again (the
+        # reason that ann/matt added to spontaneous firing rate)? ann explain in her
+        # thesis / preprint?
+
+        # TODO TODO TODO hline for threshold (per-KC, ofc)? to sanity check at least?
+        # TODO TODO also for spont_in
+
+        # could also use `t2h_vm_sims.coords['kc'].to_index()`, which was defined from
+        # `kc_index`, and should be equiv. not sure if there's a more idiomatic xarray
+        # way to count these w/o converting to a pandas Index
+        # ipdb> kc_index.to_frame(index=False)[KC_TYPE].value_counts()
+        # ab         802
+        # g          612
+        # a'b'       336
+        # unknown     80
+        vm_sims_by_type = t2h_vm_sims.groupby(KC_TYPE).mean()
+
+        # normalizing to max of 1, as elsewhere
+        vm_sims_by_type = vm_sims_by_type / vm_sims_by_type.max('time_s')
+        kc_type_labels = [f'mean {x}-KC Vm' for x in vm_sims_by_type[KC_TYPE].values]
+
+        # TODO TODO TODO make this plot again after trying to rescale a'/b' to be
+        # relatively more effective at recruiting/etc APL (and also after dropping
+        # silent KCs first, for both existing and rescaled-within-type version of plot)
+        ax.plot(ts, vm_sims_by_type.T, label=kc_type_labels)
+
+        # TODO TODO restore something like my spikes -> spike times -> sns.rugplot for
+        # best responding cell (never committed, unfortunately), or just directly use
+        # imshow/similar (like rastermap does), -> use to show spiking against
+        # threshold/spont_in context for an example cell? or do that in separate plot(s)
+        # specifically for it?
+
+        # NOTE: plot_spike_rasters currently drops silent cells itself anyway
+        # TODO but modify it to have it say somewhere how many it dropped?
+        # or like a kwarg flag to enabled putting that info in y-label or something?
+        plot_spike_rasters(t2h_spikes, ax=spike_raster_ax)
+
+        # applies to both ax and spike_raster_ax, b/c sharex=True above
+        ax.set_xlim([-0.05, 0.7])
+        ax.set_xlabel('time (s)')
+
+        ax.set_ylabel('normalized response (max=1)')
+
+        ax.set_title(f'{title}\nmodel {glom} (& downstream pop.) response to {odor}')
+        fig.legend(loc='outside right center')
+
+        # TODO move under model_internals stuff saved below?
+        # TODO get ' @ ' from hong2p.olf?
+        savefig(fig, plot_dir, f'model_dynamics_{odor.replace(" @ ", "_")}')
+
     # TODO so should i average starting a bit after stim start? seems it still take
     # a bit to peak. what did matt do?
     # in (DL5, t2h) case, PN peak is ~0.047, and ORN plateaus after ~0.077
-
-    stim_start_idx = np.searchsorted(ts, mp.time_stim_start)
-    stim_end_idx = np.searchsorted(ts, mp.time_stim_end)
 
     # TODO stim_end_idx + 1?
     orn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index,
@@ -3094,6 +4490,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # plotting this fn does (and thus, the only time this flag is relevant here).
         # still returning silent cells regardless, so stuff can make this decision
         # downstream of response caching.
+        # TODO can i share silent cell handling w/ _plot_example_dynamics stuff that
+        # also wants to drop silent KCs (might be tricky...)?
         if drop_silent_cells_before_analyses:
             title += _get_silent_cell_suffix(responses)
             model_kc_corr = drop_silent_model_cells(responses).corr()
@@ -3711,6 +5109,7 @@ _fit_and_plot_seen_param_dirs = set()
 # TODO try to get [h|v]lines between components, 2-component mixes, and 5-component
 # mix for new kiwi/control data (at least for responses and correlation matrices)
 # (could just check for '+' character, to handle all cases)
+# TODO TODO add flag to toggle showing all KC subtype mean resopnse rates in all titles?
 def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     sens_analysis_kws: Optional[Dict[str, Any]] = None, try_cache: bool = True,
     # TODO rename comparison_responses to indicate it's only used for sensitivity
@@ -3722,13 +5121,14 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # TODO just use model_kws for fixed_thr/wAPLKC?
     # (may now make sense, if i'm gonna add a flag to indicate whether we are in a
     # sensitivity analysis subcall)
-    fixed_thr: Optional[float] = None, wAPLKC: Optional[float] = None,
+    fixed_thr: Optional[Union[float, np.ndarray]] = None,
+    wAPLKC: Optional[float] = None,
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     _add_combined_plot_legend=False, sim_odors=None, comparison_orns=None,
-    comparison_kc_corrs=None, responses_to_suffix='',
-    _strip_concs_comparison_kc_corrs=False, param_dir_prefix: str = '',
-    title_prefix: str= '', extra_params: Optional[dict] = None,
-    _only_return_params: bool = False, **model_kws) -> Optional[Dict[str, Any]]:
+    comparison_kc_corrs=None, _strip_concs_comparison_kc_corrs=False,
+    param_dir_prefix: str = '', title_prefix: str= '',
+    extra_params: Optional[dict] = None, _only_return_params: bool = False, **model_kws
+    ) -> Optional[Dict[str, Any]]:
     # TODO doc which extra plots made by each of comparison* inputs (or which plots are
     # changed, if no new ones)
     """
@@ -3777,11 +5177,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # (before being used, right?)
     my_data = f'pebbled {dff_latex}'
 
-    # TODO fix how this might misrepresent stuff if i pass hallem data in manually?
-    # currently using responses_to_suffix to try to clarify it is in fact (modified)
-    # hallem input in those cases
-
     if 'orn_deltas' in model_kws:
+        # TODO fix how this might misrepresent stuff if i pass hallem data in manually?
+        # (allow passing in description of the data, overriding this?)
         responses_to = my_data
     else:
         responses_to = 'hallem'
@@ -3815,13 +5213,32 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         '_drop_glom_with_plus': 'drop-plusgloms',
         'use_connectome_APL_weights': 'connectome-APL',
     }
-    exclude_params = ('orn_deltas', 'title', 'repro_preprint_s1d')
+
+    # excluded from param_str and params_for_csv
+    exclude_params = (
+        'orn_deltas',
+        'title',
+        'repro_preprint_s1d',
+        '_plot_example_dynamics',
+    )
+
+    # TODO just use default values (from fit_mb_model def, via introspection? how else?)
+    # for these instead?
+    #
+    # will be excluded from param_str (and thus created param_dir names) if values match
+    # those in this dict. to remove clutter in these names. keys should be full param
+    # names, not the abbreviated values in param_abbrevs.
+    exclude_if_value_matches = {
+        'tune_on_hallem': False,
+    }
+
     # TODO sort params first? (so changing order in code doesn't cause
     # cache miss...)
     # TODO why adding [''] again? why not just prepend ', ' to output if i want?
     param_str = ', '.join([''] + [
         f'{param_abbrevs[k] if k in param_abbrevs else k}={v}'
-        for k, v in model_kws.items() if k not in exclude_params
+        for k, v in model_kws.items() if k not in exclude_params and
+        (k not in exclude_if_value_matches or v != exclude_if_value_matches[k])
     ])
     if fixed_thr is not None or wAPLKC is not None:
         assert fixed_thr is not None and wAPLKC is not None
@@ -3829,9 +5246,12 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # TODO maybe only do if _in_sens_analysis. don't think i actually want in
         # hemibrain case (other than within sens analysis subcalls)
         #
+        # TODO need to support int type too (in both of the two isinstance calls below)?
+        # isinstance(<int>, float) is False
+        #
         # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be too
         # cumbersome to format into this
-        if n_seeds == 1:
+        if n_seeds == 1 and isinstance(fixed_thr, float):
             param_str += f', fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}'
 
     if n_seeds > 1:
@@ -3844,12 +5264,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
     if tune_from.startswith('pebbled'):
         tune_from = 'pebbled'
-
-    responses_to = f'{responses_to}{responses_to_suffix}'
-    # TODO rename this kwarg (responses_to_suffix) to indicate it applies to tune_from
-    # as well?
-    if not tune_on_hallem:
-        tune_from = f'{tune_from}{responses_to_suffix}'
 
     # this way it will also be included in params_for_csv, and we won't need to manually
     # pass to all fit_mb_model calls
@@ -3870,6 +5284,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # TODO also assert wAPLKC is a (scalar) float (and not a vector float array from
         # use_connectome_APL_weight=True code)?
         assert fixed_thr is not None and wAPLKC is not None
+        # TODO TODO need to support int type too? isinstance(<int>, float) is False!!!
+        assert isinstance(fixed_thr, float)
 
         # assumed to be passed in (but not created by) sensitivity analysis calls
         # (recursive calls below)
@@ -3878,7 +5294,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # the need to also include here.
         param_dir = plot_dir
 
-        # TODO if i allow vector fixed_thr/wAPLKC, will need to special case here
         # TODO delete? should always be redefed below...
         # (if so, then why is this code even here?)
         #title += f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f} (sparsity={sparsity:.2f})'
@@ -3897,9 +5312,16 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # possible to have simple code not split by fixed_thr/wAPLKC None or not?
         # TODO need to pass thru util.to_filename / simliar normalization myself now
         # (since i'm putting this in a dirname now, not the final filename of the plot)
-        for_dirname = f'data_{responses_to}'
+        for_dirname = ''
+        # NOTE: responses_to set to 'pebbled' above if orn_deltas is passed, so could be
+        # confusing if hallem data passed in as orn_deltas
+        if responses_to != 'pebbled':
+            for_dirname = f'data_{responses_to}'
+
         if len(param_str) > 0:
-            for_dirname += '__'
+            if len(for_dirname) > 0:
+                for_dirname += '__'
+
             # TODO factor this into some fn? single flag (for_fname?) to
             # util.format_params to enable this kind of behavior?
             for_dirname += param_str.strip(', ').replace('_','-').replace(', ','__'
@@ -3910,7 +5332,37 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # param_dir contains outputs from model run w/ specific choice of params
         # (and only contains stuff downstream of dF/F -> spiking model
         # creation/application)
-        param_dir = plot_dir / f'{param_dir_prefix}{for_dirname}'
+        param_dir_name = f'{param_dir_prefix}{for_dirname}'
+        param_dir = plot_dir / param_dir_name
+
+        # TODO delete after renaming all i want
+        #
+        # TODO TODO do i even want to do this? won't params.csv have wrong output_name?
+        # do i care? (renaming for now, and can deal with that later if i care)
+        #
+        # hack to rename dirs from old, overly-verbose format like:
+        # dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__weight-divisor_20__drop-plusgloms_False__target-sp_0.0915
+        # to new format like:
+        # pn2kc_hemibrain__weight-divisor_20__drop-plusgloms_False__target-sp_0.0915
+        if not param_dir.exists():
+            old_prefix = 'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__'
+
+            old_dir = plot_dir / f'{param_dir_prefix}{old_prefix}{for_dirname}'
+            if old_dir.exists():
+                warn(f'(under {param_dir.parent}) renaming\n{old_dir.name}'
+                    f'\n->\n{param_dir.name}'
+                )
+
+                # this does not change mtime of directory, consistent w/ what would
+                # happen using `mv` CLI tool (directory mtimes normally get updated when
+                # files are added/removed from dir automatically, and not sure it's
+                # actually stored separately from the mtimes of files within...)
+                os.rename(old_dir, param_dir)
+
+                assert param_dir.exists()
+                assert not old_dir.exists()
+        #
+
         del for_dirname
 
         # TODO will this title get cut off (about a 1/3rd of last (of 3) lines, yes)?
@@ -3926,6 +5378,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # TODO TODO and do the same w/ param_str def, so dirnames aren't as
             # cluttered
             f'KC thresh [/APL inh] from: {tune_from}\n'
+
+            # TODO remove this (at least if it's 'pebbled'), or define whole title from
+            # param_str (/params_for_csv, esp if param_str def is updated to also use
+            # that)
             # TODO even need this one? were hallem / pebbled (i.e. megamat) plots ever
             # possible to confuse?
             f'responses to: {responses_to}\n'
@@ -3949,7 +5405,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
             # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be
             # too cumbersome to format into this
-            if n_seeds == 1:
+            #
+            # TODO TODO need to support int type too? isinstance(<int>, float) is
+            # False!!!
+            if n_seeds == 1 and isinstance(fixed_thr, float):
                 title += f'fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}\n'
         else:
             if 'target_sparsity' in model_kws:
@@ -3957,8 +5416,13 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 target_sparsity = model_kws['target_sparsity']
             else:
                 target_sparsity = 0.1
+                # TODO replace .3g w/ a format_sparsity fn? (doing .3g [or .2g?] if
+                # there are 0s after decimal point, and maybe .2f otherwise? some way to
+                # accomplish something like that within f-str syntax?)
                 warn(f'using default target_sparsity of {target_sparsity:.3g}')
 
+            # TODO include something else for case where fixed_thr is vector (which
+            # currently requires wAPLKC set, to a float as before)?
             assert fixed_thr is None and wAPLKC is None
             # .3g will show up to 3 sig figs (regardless of their position wrt decimal
             # point), but also strip any trailing 0s (0.0915 -> '0.0915', 0.1 -> '0.1')
@@ -4057,17 +5521,17 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         if param_dict_cache.exists():
             param_dict = read_pickle(param_dict_cache)
 
-            # TODO need to handle vector wAPLKC here (from
-            # use_connectome_APL_weights=True)?
-            # TODO assert use_connectome_APL_weights=False for now?
-            # TODO delete
-            if use_connectome_APL_weights:
-                import ipdb; ipdb.set_trace()
-            #
+            if 'wAPLKC' in param_dict:
+                assert 'wAPLKC_scale' not in param_dict
+                cached_wAPLKC = param_dict['wAPLKC']
+            else:
+                assert use_connectome_APL_weights
+                assert 'wAPLKC' not in param_dict
+                cached_wAPLKC = param_dict['wAPLKC_scale']
 
             # np.array_equal works with both float and list-of-float inputs
             if (not np.array_equal(fixed_thr, param_dict['fixed_thr']) or
-                not np.array_equal(wAPLKC, param_dict['wAPLKC'])
+                not np.array_equal(wAPLKC, cached_wAPLKC)
                 ):
 
                 warn(f'{param_dict_cache} fixed_thr/wAPLKC did not match current '
@@ -4242,11 +5706,17 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 k: [x[k] for x in param_dict_list] for k in first_param_dict.keys()
             }
         else:
+            # TODO need to support int type too (in both of the two isinstance calls
+            # below)? isinstance(<int>, float) is False!!!
+
             # isinstance works w/ both float and scalar np.float64 (but not int)
-            assert fixed_thr is None or isinstance(fixed_thr, float)
+            # TODO update to include ndarray
+            #assert fixed_thr is None or isinstance(fixed_thr, float)
 
             # NOTE: wKCAPL is set from wAPLKC, if only wAPLKC is passed. The reverse is
             # not true though, so if only one is passed, it must be wAPLKC.
+            # TODO need to support int type too (in both of the two isinstance calls
+            # below)? isinstance(<int>, float) is False
             assert wAPLKC is None or isinstance(wAPLKC, float)
 
             # TODO rename param_dict everywhere -> tuned_params?
@@ -4312,6 +5782,16 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         to_pickle(spike_counts, model_spikecounts_cache)
         to_pickle(wPNKC, wPNKC_cache)
 
+        # TODO TODO automatically pop and save anything that's a
+        # np.ndarray/pd.[Series|DataFrame] [/xarray, if i end up using that for model
+        # dynamics?], and save as a pickle under the name of the key? (maybe just
+        # warning if it's not on a list of expected things, w/ message about which
+        # variable to add the name to?
+        # (-> use for this [+ wAPLKC/wKCAPL, in use_connectome_APL_weights=True case,
+        # where they are vector]?)
+        # (would then also be useful if i sometimes return model dynamics, like vm_sims,
+        # using the same dict)
+        #
         # popping to have this make old outputs trip -c/-C checks, but also the param
         # CSVs/etc would almost certainly not handle array/series values, at least not
         # without extra work
@@ -4322,6 +5802,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # (both either np.arrays/pd.Series [depending on which i end up settling on
         # for implementation] in only use_connectome_APL_weights=True case)
         wAPLKC = param_dict.get('wAPLKC', None)
+        # TODO need to support int type too (in both of the two isinstance calls below)?
+        # isinstance(<int>, float) is False
         if wAPLKC is not None and not isinstance(wAPLKC, float):
             assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
 
@@ -4338,6 +5820,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             to_pickle(wKCAPL, wKCAPL_cache)
         else:
             wKCAPL = param_dict['wKCAPL']
+            # TODO need to support int type too (in both of the two isinstance calls
+            # below)? isinstance(<int>, float) is False
             assert wKCAPL is None or isinstance(wKCAPL, float)
 
         # In n_seeds=1 case, param_dict keys are:
@@ -4424,6 +5908,14 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # just to manually inspect all relevant parameters for outputs in a given
         # param_dir
         to_csv(param_series, param_dir / 'params.csv', header=False,
+            # NOTE: only ignoring b/c adding the use_cache=True/False component of these
+            # is now causing -c/-C checks to fail when I otherwise don't really want
+            # them too.
+            # TODO also build in a way to only ignore the changes if the change matches
+            # what we expect (i.e. just a change in this use_cache=True/False line)?
+            # TODO maybe replace w/ just saving the use_cache value to its own file?
+            ignore_output_change_check='warn',
+            #
             verbose=(not _in_sens_analysis)
         )
 
@@ -4448,6 +5940,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     assert len(responses.columns.shape) == 1 and responses.columns.name == 'odor'
     responses.columns.name = 'odor1'
 
+    # TODO fix (when called from model_banana_iaa_concs.py). need a panel level?
     assert len(spike_counts.columns.shape) == 1 and spike_counts.columns.name == 'odor'
     spike_counts.columns.name = 'odor1'
 
@@ -4846,6 +6339,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # assuming dropping concentration info hasn't created duplicates
             # (which would happen if input has any 1 odor presented at >1 conc...)
             assert len(set(df.index)) == len(df.index)
+
+        # TODO TODO fix how this now trips from scripts/model_banana_iaa_concs.py
         except AssertionError:
             # TODO deal with other odors duplicated
             # (either by also mangling before, like 'ms @ -3' -> 'diag ms @ -3', or by
@@ -4868,17 +6363,24 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # which would be bad. prob want to keep air mix? could also drop and just
             # use in-vial 2-component mix
 
+            raise
             # (not currently an issue since i added the hack to move conc info to name
             # part for those odors)
             # TODO fix for new kiwi vs control data
             # (seems to be caused by dilutions of mixture. just drop those first? could
             # call the natmix fn for that)
-            import ipdb; ipdb.set_trace()
+            #import ipdb; ipdb.set_trace()
 
         assert len(set(df.columns)) == len(df.columns)
         return df
 
-    pearson = _strip_index_and_col_concs(pearson)
+    try:
+        pearson = _strip_index_and_col_concs(pearson)
+    except AssertionError:
+        warn('_strip_index_and_col_concs failed with AssertionError! probably have '
+            'multiple concs for some odors. skipping rest of plots.'
+        )
+        return params_for_csv
 
     if _in_sens_analysis:
         assert fixed_thr is not None and wAPLKC is not None
@@ -5563,8 +7065,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         assert tuned_fixed_thr is not None and tuned_wAPLKC is not None
 
         checks = True
-        # TODO TODO move to unit test in test_mb_model.py
-        # TODO TODO + one version of the unit test w/ use_connectome_APL_weights=True
+        # TODO want to keep after i finish test_mb_model.test_fixed_inh_params?
+        # probably, just to be sure it would work in this context (args might be
+        # slightly diff)
         if checks:
             print('checking we can recreate responses by hardcoding tuned '
                 'fixed_thr/wAPLKC...', end=''
@@ -7294,8 +8797,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         for k, v in params_for_suffix.items()
     ])
 
-    pebbled_param_dir_prefix = f'{dff2spiking_choices_str}__'
-
     if not use_saved_dff_to_spiking_model:
         plot_fname = f'dff_vs_hallem__{dff2spiking_choices_str}'
 
@@ -7495,9 +8996,13 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     #
     mean_est_df = sort_odors(mean_est_df)
 
-    # TODO try to special case checking of this, to fall under -C not -c?
-    # (add wrapper kwarg for that?)
-    to_csv(mean_est_df, plot_dir / 'mean_est_spike_deltas.csv')
+    # can fail -C/-c, cause this saves directly under:
+    # <driver>_<indicator>/<plot_fmt>/ijroi/mb_modeling (instead of any panel-specific
+    # subdirectory of `mb_modeling`), so multiple runs with different panels (typically
+    # defined by start/end date args to `al_analysis.py`) will have different data here.
+    to_csv(mean_est_df, plot_dir / 'mean_est_spike_deltas.csv',
+        ignore_output_change_check=True
+    )
 
     # TODO factor all dF/F -> spike delta fitting (above, ending ~here) into one fn in
     # here at least, to make model_mb_responses more readable
@@ -7843,12 +9348,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         # TODO or save in panel dir? this consistent w/ saving of hallem megamat stuff
         # above tho...
         savefig(fig, plot_dir,
-            f'{pebbled_param_dir_prefix}hist_est-spike-delta_{panel}'
+            f'{dff2spiking_choices_str}__hist_est-spike-delta_{panel}'
         )
         del tidy_est
 
         pebbled_input_df = panel_est_df
-        responses_to_suffix = ''
 
         # TODO check outputs against those run previous way (without
         # explicitly passing inputs, when using + tuning on hallem)
@@ -7985,12 +9489,10 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             savefig(fig, panel_plot_dir, 'remy-kc_vs_orn-raw-dff_corrs')
             # (end part to refactor to share w/ copied code)
 
-
         model_kw_list = [
             # TODO delete. for testing new use_connectome_APL_weights=True code
             dict(
                 orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
                 tune_on_hallem=False,
                 pn2kc_connections='hemibrain',
                 weight_divisor=20,
@@ -8049,7 +9551,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # each unique PN with weight >=4.
             dict(
                 orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
                 tune_on_hallem=False,
                 pn2kc_connections='hemibrain',
                 weight_divisor=20,
@@ -8080,7 +9581,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # hemibrain version.
             #dict(
             #    orn_deltas=pebbled_input_df,
-            #    responses_to_suffix=responses_to_suffix,
 
             #    tune_on_hallem=False,
             #    pn2kc_connections='hemibrain',
@@ -8131,7 +9631,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # (2482 in left, probably similar in right).
             dict(
                 orn_deltas=pebbled_input_df,
-                responses_to_suffix=responses_to_suffix,
                 tune_on_hallem=False,
                 pn2kc_connections='uniform', n_claws=7, n_seeds=n_seeds,
                 # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
@@ -8148,7 +9647,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # we had been using n_claws=7 for most things.
             # dict(
             #     orn_deltas=pebbled_input_df,
-            #     responses_to_suffix=responses_to_suffix,
             #     tune_on_hallem=False,
             #     pn2kc_connections='uniform', n_claws=6, n_seeds=n_seeds,
             #     comparison_orns=comparison_orns,
@@ -8156,7 +9654,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # ),
             # dict(
             #     orn_deltas=pebbled_input_df,
-            #     responses_to_suffix=responses_to_suffix,
             #     tune_on_hallem=False,
             #     pn2kc_connections='uniform', n_claws=5, n_seeds=n_seeds,
             #     comparison_orns=comparison_orns,
@@ -8165,7 +9662,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # TODO try hemidraw updated to use weight_divisor hemibrain wPNKC?
             #dict(
             #    orn_deltas=pebbled_input_df,
-            #    responses_to_suffix=responses_to_suffix,
             #    tune_on_hallem=False,
             #    pn2kc_connections='hemidraw', n_claws=7, n_seeds=n_seeds,
             #    # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
@@ -8200,7 +9696,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # TODO delete?
             #dict(
             #    orn_deltas=pebbled_input_df,
-            #    responses_to_suffix=responses_to_suffix,
             #    tune_on_hallem=False,
             #    pn2kc_connections='fafb-left',
 
@@ -8217,7 +9712,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             #),
             #dict(
             #    orn_deltas=pebbled_input_df,
-            #    responses_to_suffix=responses_to_suffix,
             #    tune_on_hallem=False,
             #    pn2kc_connections='fafb-right',
 
@@ -8364,15 +9858,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                         )
                         _model_kws['sens_analysis_kws'] = natmix_sens_analysis_kws
 
-                if ('orn_deltas' in model_kws and
-                    model_kws['orn_deltas'] is pebbled_input_df):
-
-                    param_dir_prefix = pebbled_param_dir_prefix
-                else:
-                    # these cases should be all and only the hallem input data cases,
-                    # where the only parameter in this prefix (the dF/F scaling before
-                    # fitting) is not relevant.
-                    param_dir_prefix = ''
+                # used to have this like 'dff_scale-<scaling-method>', for pebbled
+                # input, but didn't like how it cluttered up dir names (since almost all
+                # of them have this part of their name, and I only ever scale my pebbled
+                # data one way these days, so it was always 'dff_scale-to-avg-max__')
+                param_dir_prefix = ''
 
                 # TODO (delete?) is this loop working as expected? in run on
                 # kiwi+control data, i feel like i've seen more progress bars than i
@@ -8424,7 +9914,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                     tuning_model_kws['orn_deltas'] = tuning_df
 
                     param_dict = fit_and_plot_mb_model(tuning_panels_plot_dir,
-                        param_dir_prefix=param_dir_prefix,
                         extra_params=extra_params,
                         # TODO maybe set False for 'megamat' (if also tuning on
                         # 'megamat'), so that we can compare those two directories more
@@ -9826,10 +11315,10 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
 
     # TODO move relevant data to my own path in this repo (to pin version, independent
     # of what remy pushes to this repo) (-> use those files below)
-    repo_root = Path.home() / 'src/OdorSpaceShare'
-    assert repo_root.is_dir()
+    _repo_root = Path.home() / 'src/OdorSpaceShare'
+    assert _repo_root.is_dir()
 
-    preprint_data_folder = repo_root / 'preprint/data/figure-02/02e'
+    preprint_data_folder = _repo_root / 'preprint/data/figure-02/02e'
 
     # TODO roughly compare old vs new data? or just make plots w/ both (after settling
     # on error repr...)
@@ -9842,7 +11331,7 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
     else:
         # TODO TODO TODO which flies are in this but not in old megamat data i'm now
         # loading for a lot of things? any?
-        data_folder = repo_root / 'manuscript/data/figure-02/02e'
+        data_folder = _repo_root / 'manuscript/data/figure-02/02e'
         # df_obs.csv in the same folder was one of her earlier attempts to get me a
         # newer version of this data, but was not completely consistent w/ format of old
         # CSV (and also had 'correlation' col that was actually correlation distance).
@@ -10255,11 +11744,18 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
 
 
 def main():
+    # TODO print names of plots we are saving (by default, and prob unconditionally),
+    # as if -v/--verbose were passed to al_analysis.py
+
     model_output_dir1 = Path('data/sent_to_remy/2025-03-18/'
         'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
         'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
     ).resolve()
 
+    # TODO TODO commit + use kiwi/control data for one? (could just temporarily change
+    # this path to one for kiwi/control data) (might be more complicated, since i
+    # typically tune on both panels there, but i could skip that?)
+    #
     # panel          megamat   ...
     # odor           2h @ -3   ...   benz @ -3    ms @ -3
     # glomerulus               ...
@@ -10274,10 +11770,222 @@ def main():
     assert orn_deltas.columns.names == ['panel', 'odor']
     assert orn_deltas.index.names == ['glomerulus']
 
-    reproduce_input = True
-    # TODO TODO TODO restore
-    #reproduce_input = False
-    kws = dict()
+
+    # TODO delete all per-subtype threshold stuff below (should be able to simplify to
+    # just passing a dict of type -> scaling factor (or thr maybe), and not much more.
+    # working on getting test_vector_thr to check that)
+    # (the new kwargs that will replace manually vector fixed_thr are still somewhat in
+    # flux...)
+    """
+    connectome = 'hemibrain'
+    wPNKC_kws = dict(
+        weight_divisor=20,
+    )
+    wPNKC = connectome_wPNKC(connectome=connectome, **wPNKC_kws)
+    assert len(wPNKC.index.names) > 1
+    assert KC_TYPE in wPNKC.index.names
+    kc_types = wPNKC.index.get_level_values(KC_TYPE)
+    # should all be filled in w/ 'unknown', for now
+    assert not kc_types.isna().any()
+
+    type2thr_factor = {
+        # avg_response_rate_by_type:
+        # kc_type
+        # a'b'       0.103817
+        # ab         0.101511
+        # g          0.101019
+        # unknown    0.101471
+        #
+        "a'b'": 0.8,
+        'ab': 0.9,
+        ## TODO is it not surprising that just a 15% change to threshold account for all
+        ## the difference in g-KC response rate (from ~5% to ~15%!)?
+        'g': 1.15,
+        'unknown': 0.6,
+
+        # now trying for an a'b' boosted version
+        # .1353
+        #"a'b'": 0.7,
+        # 0.174545
+        #"a'b'": 0.6,
+        #"a'b'": 0.6,
+        #'ab': 0.9,
+        #'g': 1.15,
+        #'unknown': 0.6,
+    }
+    # TODO TODO TODO also get his from another call (prob needs updated for connectome
+    # APL)
+    hb_thr = 256.8058676548658
+    type2thr = {k: f * hb_thr for k, f in type2thr_factor.items()}
+    # TODO need to convert to numpy array (via .values)?
+    kc_thrs = kc_types.map(type2thr).values
+
+    # TODO TODO TODO use another call to get this wAPLKC value, instead of hardcoding?
+    # (or get olfsysm to actually tune w/in each type? just make multiple osm calls, one
+    # per subtype?)
+    # (probably only need another call for initial threshold, if anything, and can then
+    # let olfsysm tuning work on this, after modifying fit_mb_model to not err w/
+    # fixed_thr passed w/o this)
+    wAPLKC = 4.7491654236210685
+    """
+    #
+
+    # currently only way to enable olfsysm log prints
+    al_util.verbose = True
+
+    # TODO delete reproduce_input=True path?
+    #reproduce_input = True
+    reproduce_input = False
+
+
+    # TODO TODO TODO also include equalize_kc_type_sparsity=False for all below
+    # TODO TODO pick from kwargs described in comments below
+    #
+    # use_connectome_APL_weights=True
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=None
+    # use_old_apl_weights_with_new_thrs=True
+    # mean response rate: 0.1158. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.124475            336
+    # ab                0.121534            802
+    # g                 0.092561            612
+    # unknown           0.200000             80
+    #
+    # use_connectome_APL_weights=True
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.2
+    # use_old_apl_weights_with_new_thrs=True
+    # mean response rate: 0.1377. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.294293            336
+    # ab                0.111706            802
+    # g                 0.077566            612
+    # unknown           0.200000             80
+    #
+    # use_connectome_APL_weights=True
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.15
+    # use_old_apl_weights_with_new_thrs=True
+    # mean response rate: 0.1279. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.212885            336
+    # ab                0.117207            802
+    # g                 0.085736            612
+    # unknown           0.200000             80
+    #
+    #
+    # use_connectome_APL_weights=False
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=None
+    # use_old_apl_weights_with_new_thrs=True
+    # mean response rate: 0.0951. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.101716            336
+    # ab                0.087355            802
+    # g                 0.099097            612
+    # unknown           0.114706             80
+    #
+    # use_connectome_APL_weights=False
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.2
+    # use_old_apl_weights_with_new_thrs=True
+    # mean response rate: 0.1024. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.239146            336
+    # ab                0.065645            802
+    # g                 0.077278            612
+    # unknown           0.089706             80
+    #
+    # use_connectome_APL_weights=False
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.15
+    # use_old_apl_weights_with_new_thrs=True
+    # mean response rate: 0.1004. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.174020            336
+    # ab                0.077527            802
+    # g                 0.089869            612
+    # unknown           0.101471             80
+    #
+    #
+    # use_connectome_APL_weights=False
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=None
+    # use_old_apl_weights_with_new_thrs=False
+    # mean response rate: 0.1096. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.113270            336
+    # ab                0.103125            802
+    # g                 0.114379            612
+    # unknown           0.123529             80
+    #
+    # use_connectome_APL_weights=False
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.2
+    # use_old_apl_weights_with_new_thrs=False
+    # mean response rate: 0.0930. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.223389            336
+    # ab                0.058163            802
+    # g                 0.068627            612
+    # unknown           0.080147             80
+    #
+    # use_connectome_APL_weights=False
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.15
+    # use_old_apl_weights_with_new_thrs=False
+    # mean response rate: 0.0961. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.168242            336
+    # ab                0.074153            802
+    # g                 0.085160            612
+    # unknown           0.097794             80
+    #
+    #
+    # use_connectome_APL_weights=True
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=None
+    # use_old_apl_weights_with_new_thrs=False
+    # mean response rate: 0.0996. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.109769            336
+    # ab                0.105252            802
+    # g                 0.073626            612
+    # unknown           0.200000             80
+    #
+    # use_connectome_APL_weights=True
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.2
+    # use_old_apl_weights_with_new_thrs=False
+    # mean response rate: 0.0984. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.241772            336
+    # ab                0.071586            802
+    # g                 0.041619            612
+    # unknown           0.200000             80
+    #
+    # use_connectome_APL_weights=True
+    # equalize_kc_type_sparsity=True
+    # ab_prime_response_rate_target=0.15
+    # use_old_apl_weights_with_new_thrs=False
+    # mean response rate: 0.0996. by KC type:
+    #          avg_response_rate  n_kcs_of_type
+    # a'b'              0.178046            336
+    # ab                0.087575            802
+    # g                 0.059208            612
+    # unknown           0.200000             80
+
+    kws = dict(
+        weight_divisor=20,
+
+        # TODO add a =False path?
+        use_connectome_APL_weights=True,
+    )
+
+    # TODO TODO try dropping all kc_type == 'unknown' cells before running
+    # (in fit_mb_model)?
+
     if reproduce_input:
         kws = dict(
             # I would not normally recommend you hardcode any of these except perhaps
@@ -10287,31 +11995,63 @@ def main():
         )
 
     plot_root = Path('model_mb_example').resolve()
-    # TODO modify this fn so dirname includes all same params by default (rather than
-    # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
-    # by calls in model_mb_... (prob behaving diff b/c e.g.
-    # pn2kc_connections='hemibrain' is explicitly passed there)
-    param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
-        try_cache=False, **kws
-    )
 
-    output_dir = (plot_root / param_dict['output_dir']).resolve()
-    assert output_dir.is_dir()
-    assert output_dir.parent == plot_root
+    # TODO delete this product thing, and just switch to a kws_list?
+    # TODO TODO TODO restore?
+    '''
+    try_each_with_kws = [
+        # TODO TODO TODO make sure output dirs have something in name for
+        # use_vector_thr=True case (i.e. case where fixed_thr vector here)
+        # (just pass via suffix? or extra params? might need to restore the code for
+        # that...) (param_dir_prefix? still also add something to extra params to
+        # include in plot titles hopefully (or those not used that way?)?)
+        # TODO maybe mean response rate per subtype? or thr for each?
+        # TODO TODO at least include thr multiplier for each as a parameter?
+        # (and maybe include in titles?)
+        #
+        # probably always want `kws` unmodified too. that's what this empty dict is for.
+        dict(),
 
-    #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
-    # model_kc                              ...
-    # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
-    # 1             0.0       0.0      0.0  ...         0.0        0.0      0.0
-    # ...           ...       ...      ...  ...         ...        ...      ...
-    # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
-    # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
-    df = pd.read_csv(output_dir / 'spike_counts.csv', index_col='model_kc')
+        dict(use_connectome_APL_weights=True),
+    ]
+    '''
+    try_each_with_kws = [
+        dict(equalize_kc_type_sparsity=True),
 
+        dict(equalize_kc_type_sparsity=True, ab_prime_response_rate_target=0.2),
+
+        dict(equalize_kc_type_sparsity=True, ab_prime_response_rate_target=0.15),
+    ]
     if reproduce_input:
-        idf = pd.read_csv(model_output_dir1 / 'spike_counts.csv', index_col='model_kc')
-        assert idf.equals(df)
+        # the kwargs relevant for reproduce_input=True should be exactly equal to the
+        # contents of `kws` by itself, so we don't want any of these modifications for
+        # that.
+        assert any(x == dict() for x in try_each_with_kws)
 
+    for extra_kws in try_each_with_kws:
+        # extra_kws will override kws without warning, if they have common keys
+        param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+            # TODO disable _plot_example_dynamics (resource intensive)?
+            try_cache=False, _plot_example_dynamics=True, **{**kws, **extra_kws}
+        )
+        output_dir = (plot_root / param_dict['output_dir']).resolve()
+        assert output_dir.is_dir()
+        assert output_dir.parent == plot_root
+
+        #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
+        # kc_id         ...
+        # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
+        # 1             0.0       0.0      0.0  ...         0.0        0.0      0.0
+        # ...           ...       ...      ...  ...         ...        ...      ...
+        # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
+        # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
+        df = pd.read_csv(output_dir / 'spike_counts.csv', index_col=KC_ID)
+
+        # TODO move this to a unit test? is this meaningfully different from my existing
+        # hemibrain paper repro test?
+        if reproduce_input and extra_kws == dict():
+            idf = pd.read_csv(model_output_dir1 / 'spike_counts.csv', index_col=KC_ID)
+            assert idf.equals(df)
 
     # TODO TODO also include an example w/ kiwi/control data (as used by natmix_data)
     # (either committing data in al_analysis too, or moving this whole example to
