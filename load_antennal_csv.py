@@ -434,7 +434,9 @@ def csvinfo_cli():
 
 
 # TODO TODO just call csvinfo on each and diff the text output? i did that manually and
-# it can be helpful
+# it can be helpful. if i take this approach, may want to add csvinfo option to suppress
+# output of lines i don't care to see in the diff (e.g. 'loading data <x>', 'CSV data
+# matches <x>', etc)
 def csvdiff_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument('csv1', type=Path, help='path to CSV to summarize')
