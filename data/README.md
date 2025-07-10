@@ -13,7 +13,7 @@
 
 - `sent_to_remy`
   - `2023-01-06`
-    These 4 files (2 CSVs, and 2 pickle files with same data) probably contain the data
+    These 4 files (2 CSVs, and 2 pickle files with same data) should contain the data
     Remy used to generate the original ORN / PN correlation matrices in the preprint.
 
     The preprint was posted 2023-02-16 originally, and this was the only data I had

@@ -25,6 +25,7 @@ version = "0.0.0"
 # TODO reference requirements.txt? how to consolidate? seems that might not let me
 # install editable?
 
+# TODO repackage backup_rois.py under here?
 [project.scripts]
 csvinfo = "load_antennal_csv:csvinfo_cli"
 #csvdiff = "load_antennal_csv:csvdiff_cli"

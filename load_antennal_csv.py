@@ -21,7 +21,12 @@ from al_analysis import (roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_respo
 
 fly_cols = ['date', 'fly_num']
 col_levels = fly_cols + ['roi']
-index_levels = ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
+
+# TODO maybe don't require is_pair? panel?
+#
+# can have more 'odor<x>' row index levels if there are multiple odors presented at once
+# (via air mixing). will have a number of levels equal to maximum presented at once.
+required_index_levels = ['panel', 'is_pair', 'odor1', 'repeat']
 
 # TODO provide fn to invert zero filling i had done for some new outputs (dropping
 # glomeruli w/ all 0s or NaN)
@@ -29,17 +34,20 @@ index_levels = ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
 def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
     # for dropping metadata intended for binary mixture experiments
     to_drop = []
-    if set(df.index.get_level_values('is_pair')) == {False}:
-        to_drop.append('is_pair')
-    else:
-        warn('index had some is_pair=True entries! not dropping is_pair level!')
 
-    if set(df.index.get_level_values('odor2')) == {solvent_str}:
-        to_drop.append('odor2')
-    else:
-        warn(f'index had some odor2 != {solvent_str} entries! not dropping odor2 '
-            'level!'
-        )
+    if 'is_pair' in df.index.names:
+        if set(df.index.get_level_values('is_pair')) == {False}:
+            to_drop.append('is_pair')
+        else:
+            warn('index had some is_pair=True entries! not dropping is_pair level!')
+
+    if 'odor2' in df.index.names:
+        if set(df.index.get_level_values('odor2')) == {solvent_str}:
+            to_drop.append('odor2')
+        else:
+            warn(f'index had some odor2 != {solvent_str} entries! not dropping odor2 '
+                'level!'
+            )
 
     if len(to_drop) > 0:
         df.index = df.index.droplevel(to_drop)
@@ -59,25 +67,58 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
         print(f'modified {format_mtime(getmtime(csv), year=True)}')
         print()
 
-    # TODO specify by name instead? possible? might be easier to also optionally
-    # support 'fly_id' instead/plus ['date', 'fly_num'] levels
+    # this line will start with the level names for the row index, e.g.
+    # ['panel', 'is_pair', 'odor1', 'repeat', nan, ...]
+    # (for data with a maximum of one odor component mixed-in-air)
+    #
+    # if there are additional components, there will be additional 'odor<N>' index
+    # levels, up to the maximum # of components presented at once (via air mixing. odors
+    # mixed in vial are represented by their own unique name, not via separate levels).
+    # most I've ever used (via air mixing) is 2.
+    #
+    # not sure if there might be data after these level names, or if it will always be
+    # NaN for everything else in that row (but doesn't matter for this).
+    index_row = pd.read_csv(csv, skiprows=3, nrows=1, header=None).squeeze()
+    # 'repeat' should always be the last level, so if we find that, we know we only have
+    # to read index_col up to there (in next read_csv call)
+    eq_repeat = index_row == 'repeat'
+    assert eq_repeat.sum() == 1
+    # index starts at 0, so we will need to read 1 more index_col level past this
+    repeat_idx = eq_repeat.idxmax()
+    n_index_col_levels = repeat_idx + 1
+
     df = pd.read_csv(csv,
-        # index level names: ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
-        #
         # can't pass list of names here when specifying column MultiIndex via header.
         # trying raises ValueError to that effect.
-        index_col=list(range(5)),
+        index_col=list(range(n_index_col_levels)),
 
-        # column level names: ['date', 'fly_num', 'roi']
-        #
         # doesn't take list of str, and names= seems to only set column level names,
         # rather than finding them by name.
-        header=list(range(3))
+        header=list(range(len(col_levels)))
     )
+    # this is assumed in section above that determines how many index levels there are
+    assert df.index.names[-1] == 'repeat'
 
     assert df.columns.names == col_levels
-    assert df.index.names == index_levels
+    assert set(required_index_levels) - set(df.index.names) == set()
 
+    # the only row index levels not in required_index_levels should be extra air-mix
+    # components (with names in 'odor<N>' form)
+    prefix = 'odor'
+    for x in set(df.index.names) - set(required_index_levels):
+        assert x.startswith(prefix)
+        try:
+            component_num = int(x[len(prefix):])
+        # only intending to catch int parsing failure like:
+        # ValueError: invalid literal for int() with base 10: ...
+        except ValueError:
+            # TODO include better message about malformed index level name
+            raise
+
+        # TODO assert all contiguous?
+        assert component_num >= 1
+
+    # TODO refactor?
     assert df.columns.names[0] == fly_cols[0]
     df.columns = df.columns.set_levels(pd.to_datetime(df.columns.levels[0]),
         level=0, verify_integrity=True

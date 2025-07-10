@@ -23,7 +23,24 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 # TODO need to install something else for this, in a new env?
 # (might have manually installed before in current one...)
-from matplotlib.testing import compare as mpl_compare
+# TODO TODO why is this import causing hanging sometimes?
+#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 252, in <module>
+#    _update_converter()
+#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 240, in _update_converter
+#    mpl._get_executable_info("inkscape")
+#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/__init__.py", line 406, in _get_executable_info
+#    return impl(["inkscape", "--without-gui", "-V"],
+#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/__init__.py", line 363, in impl
+#    output = subprocess.check_output(
+#  File "/usr/lib/python3.8/subprocess.py", line 415, in check_output
+#    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+#  File "/usr/lib/python3.8/subprocess.py", line 495, in run
+#    stdout, stderr = process.communicate(input, timeout=timeout)
+#  File "/usr/lib/python3.8/subprocess.py", line 1015, in communicate
+#    stdout = self.stdout.read()
+#KeyboardInterrupt
+#from matplotlib.testing import compare as mpl_compare
+#
 from matplotlib.testing.exceptions import ImageComparisonFailure
 #
 import seaborn as sns
@@ -439,6 +456,7 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
         path: must already exist (raises IOError if not)
         *args, **kwargs: passed to `save_fn`
     """
+
     if not path.exists():
         raise IOError(f'{path} did not exist!')
 
@@ -564,6 +582,10 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
                     unchanged = np.all(unchanged)
     else:
         # TODO TODO when factoring out file comparison fn, def use_mpl_comparison from
+        # conditional import for this b/c it can hang sometimes (for unclear reasons).
+        # see comment by original import up top.
+        from matplotlib.testing import compare as mpl_compare
+
         # whether extension is in `mpl_compare.comparable_formats()`?
         # (currently ['png', 'pdf', 'eps', 'svg'])
         #
@@ -1252,6 +1274,8 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     return corr_ser
 
 
+# TODO unit test
+# TODO remove "private" '_' prefix of _index kwarg?
 def invert_corr_triangular(corr_ser, diag_value=1., _index=None, name='odor'):
     if _index is None:
         for_odor_index = corr_ser.index
@@ -1465,9 +1489,12 @@ diverging_cmap_kwargs = dict(
 )
 
 
+# TODO don't require prefix, and save to plot_dir / 'corr.<plot_fmt>' by default?
 def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
     as_corr_dist: bool = False, verbose: bool = False, _save_kws=None, **kwargs
     ) -> pd.DataFrame:
+    """Saves odor-odor correlation plot under <plot_dir>/<prefix>.<plot_fmt>
+    """
 
     # otherwise, we assume input is already a correlation (/ difference of correlations)
     if not df.columns.equals(df.index):
@@ -1477,8 +1504,8 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
             import ipdb; ipdb.set_trace()
         #
 
-        # TODO TODO use new al_util.mean_of_fly_corrs instead (when appropriate, e.g. when input
-        # has multiple flies [/ model seeds])?
+        # TODO TODO use new al_util.mean_of_fly_corrs instead (when appropriate, e.g.
+        # when input has multiple flies [/ model seeds])?
         corr = df.corr()
     else:
         corr = df.copy()
@@ -1586,7 +1613,13 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
         return_linkages: passed to `hong2p.viz.clustermap`
 
         **kwargs: passed to `hong2p.viz.clustermap`
+
+    One way `row_colors` can be passed is as a `Series` with index matching
+    `df.columns`, where values are color (RGB?) 3-tuples.
     """
+    # TODO TODO provide a simpler way of specifying row_colors? (maybe just a level [/
+    # palette / hue_order])?
+
     # TODO doc expectations on what rows / columns of input are
 
     # TODO why transposing? stop doing that (-> change all inputs). will just cause
@@ -1634,9 +1667,10 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
 # mb_model, rather than here in al_util? (al_analysis can import from mb_model, mb_model
 # just can't import from al_analysis)
 
+data_root = Path(__file__).resolve().parent / 'data'
 # TODO also anchor path to script dir? would only be to support running from elsewhere,
 # which i prob don't care about
-remy_data_dir = Path('data/from_remy')
+remy_data_dir = data_root / 'from_remy'
 
 n_final_megamat_kc_flies = 4
 
@@ -1688,6 +1722,7 @@ def load_remy_fly_binary_responses(fly_sparsity_path: Path,
     acq_ledger: Optional[pd.DataFrame]=None, *, reset_index: bool = True,
     _seen_date_fly_combos=None) -> pd.DataFrame:
     # TODO check row/col is correct
+    # TODO update doc? is it actually reading netcdf? loooks like i'm reading csvs...
     """Loads single fly NetCDF file to boolean (cell row X odor column) DataFrame.
 
     Args:
