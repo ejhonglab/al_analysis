@@ -8,7 +8,7 @@ import pytest
 
 import al_util
 from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC, KC_ID,
-    KC_TYPE
+    KC_TYPE, step_around
 )
 
 
@@ -58,6 +58,10 @@ def _fit_mb_model(*args, **kwargs):
     ret = fit_mb_model(*args, **kwargs)
     print('done', flush=True)
     return ret
+
+
+def _fit_and_plot_mb_model(*args, **kwargs):
+    return fit_and_plot_mb_model(*args, try_cache=False, **kwargs)
 
 
 def test_vector_thr(orn_deltas):
@@ -324,6 +328,29 @@ def test_vector_thr(orn_deltas):
     # which i think it should be, at least for non-Tianpei code)
 
 
+def test_homeostatic_thrs(orn_deltas):
+    _, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
+        homeostatic_thrs=True
+    )
+
+    thrs = params['fixed_thr']
+    assert len(thrs) == len(spike_counts)
+    # actual range of thresholds seems to be [-57, 574] in current test, so atol could
+    # be as much as this difference (but keeping smaller in case i ever make thresholds
+    # more meaningful, where the range of differences should be smaller)
+    assert not np.allclose(thrs[0], thrs, atol=3)
+    assert not np.isnan(thrs).any()
+
+    wAPLKC = params['wAPLKC']
+    # also works for np.float64 scalars (what it actually seems to be)
+    assert isinstance(wAPLKC, float)
+
+    _, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas, fixed_thr=thrs,
+        wAPLKC=wAPLKC
+    )
+    assert spike_counts.equals(spike_counts2)
+
+
 def test_spatial_wPNKC_equiv(orn_deltas):
     """
     Tests that one-row-per-claw wPNKC can recreate one-row-per-KC hemibrain outputs,
@@ -446,6 +473,10 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     # is probably a more important test than shuffling rows)
 
 
+def _read_spike_counts(output_dir: Path) -> pd.DataFrame:
+    return pd.read_csv(output_dir / 'spike_counts.csv', index_col=[KC_ID, KC_TYPE])
+
+
 def test_fixed_inh_params(orn_deltas):
     """
     Tests that outputs of calls where APL<->KC weights are tuned to a target response
@@ -462,7 +493,8 @@ def test_fixed_inh_params(orn_deltas):
     # case that does (and probably another that terminates immediately, or after 1
     # iteration)
 
-    # TODO TODO one where fixed_thr is vector? do i even want to support that?
+    # TODO one where fixed_thr is vector? do i even want to support that (yea, currently
+    # using as part of equalize_kc*=True implementation, when tuned in prior step)?
     for kws in [dict(), dict(use_connectome_APL_weights=True)]:
         print(f'{kws=}')
         responses, spike_counts, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
@@ -472,6 +504,8 @@ def test_fixed_inh_params(orn_deltas):
         assert isinstance(fixed_thr, float)
 
         if kws.get('use_connectome_APL_weights', False):
+            # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model,
+            # and there is no current support for passing in vector wAPLKC, right?
             wAPLKC = params['wAPLKC_scale']
         else:
             wAPLKC = params['wAPLKC']
@@ -523,6 +557,202 @@ def test_fixed_inh_params(orn_deltas):
         print()
 
 
+# TODO combine w/ above? /rename?
+def test_fixed_inh_params2(tmp_path, orn_deltas):
+    """
+    Tests equalize_kc_type_sparsity=True output can be reproduced by setting
+    fixed_thr to appropriate vector (with a threshold for each KC) and wAPLKC as before.
+    """
+    # TODO also test w/ below + use_connectome_APL_weights=True? (prob not super
+    # critical. shouldn't interact much w/ this)
+    kws = dict(
+        equalize_kc_type_sparsity=True, ab_prime_response_rate_target=0.2
+    )
+    plot_root = tmp_path / 'equalize_fixed_inh_test'
+
+    param_dict = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, **kws)
+
+    output_dir = (plot_root / param_dict['output_dir']).resolve()
+    assert output_dir.is_dir()
+    assert output_dir.parent == plot_root
+
+    #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
+    # kc_id         ...
+    # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
+    # 1             0.0       0.0      0.0  ...         0.0        0.0      0.0
+    # ...           ...       ...      ...  ...         ...        ...      ...
+    # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
+    # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
+    df = _read_spike_counts(output_dir)
+
+    # TODO delete, i've since change this. assert it's an array w/ more than one unique
+    # value?
+    #
+    # not much probably relies on this, so could change. currently it's set to None
+    # mainly to be obvious that we no longer have the scalar float fixed_thr here
+    # (after tuning thr w/in each kc_type)
+    #assert param_dict['fixed_thr'] is None
+
+    # this must be in param_dict if equalize_kc_type_sparsity=True
+    type2thr = param_dict['type2thr']
+
+    wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
+    kc_types = wPNKC.index.get_level_values(KC_TYPE)
+    assert not kc_types.isna().any()
+    assert set(kc_types) == set(type2thr.keys())
+    cell_thrs = kc_types.map(type2thr)
+    fixed_thr = cell_thrs.values.copy()
+
+    fixed_kws = {k: v for k, v in kws.items()
+        if k not in ('equalize_kc_type_sparsity', 'ab_prime_response_rate_target')
+    }
+
+    if kws.get('use_connectome_APL_weights', False):
+        assert 'wAPLKC' not in param_dict
+        # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model, and
+        # there is no current support for passing in vector wAPLKC, right?
+        wAPLKC = param_dict['wAPLKC_scale']
+    else:
+        assert 'wAPLKC_scale' not in param_dict
+        wAPLKC = param_dict['wAPLKC']
+
+    param_dict2 = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+        fixed_thr=fixed_thr, wAPLKC=wAPLKC, **fixed_kws
+    )
+    # TODO any assertions on contents of param_dict2 [vs param_dict?]? (e.g. on
+    # fixed_thr)
+
+    output_dir2 = (plot_root / param_dict2['output_dir']).resolve()
+    assert output_dir2.is_dir()
+    assert output_dir2.parent == plot_root
+    df2 = _read_spike_counts(output_dir2)
+
+    assert df.equals(df2)
+
+
+def test_multiresponder_APL_boost(orn_deltas):
+    # TODO refactor this handling of test data path? also used in test_al_analysis.py
+    data_dir = Path(__file__).resolve().parent / 'test_data'
+
+    # ipdb> mask
+    # kc_id
+    # 300968622     False
+    # 301309622     False
+    # 301314150     False
+    # 301314154     False
+    # 301314208     False
+    #               ...
+    # 5901202076    False
+    # 5901202102    False
+    # 5901205770    False
+    # 5901207528    False
+    # 5901225361    False
+    # Length: 1830, dtype: bool
+    #
+    # ipdb> mask.sum()
+    # 139
+    mask = pd.read_csv(data_dir / 'kiwi-control-multiresponder-mask.csv'
+        ).set_index('kc_id').squeeze()
+    mask.name = None
+    # TODO also assert that we initially have some cells responding to multiple odors in
+    # here? or at least some spikes at all?
+    assert mask.sum() > 0
+
+    # NOTE: first implementation only supports use_connectome_APL_weights=True case
+    kws = dict(use_connectome_APL_weights=True)
+
+    _, sc1, _, params1 = _fit_mb_model(orn_deltas=orn_deltas, **kws)
+    assert sc1.index.get_level_values('kc_id').equals(mask.index)
+
+    _, sc2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        multiresponder_APL_boost=3.0, _multiresponder_mask=mask, **kws
+    )
+    # TODO can i check output has APL boosted for those cells? will it, or still just a
+    # scalar returned?
+
+    # TODO should wAPLKC_scale be different? figure out after behavior of spike_counts
+
+    # TODO TODO TODO check sc2 actually has less spikes in boosted APL cells
+    # (or at least that responses overall are different)
+
+    # wtf is going on: (from when multiresponder APL was boosted as very last thing in
+    # fit_mb_model, rather than when initially setting wAPLKC weights from connectome,
+    # and with True as last arg to run_KC_sims)
+    # ipdb> sc1.sum().sum()
+    # 6308.0
+    # ipdb> sc2.sum().sum()
+    # 19576.0
+    #
+    # ipdb> params1['wAPLKC'][~mask.values].mean()
+    # 4.014387762041912
+    # ipdb> params1['wAPLKC'][mask.values].mean()
+    # 2.376764707821043
+    #
+    # ipdb> params2['wAPLKC'][~mask.values].mean()
+    # 15.615968394343037
+    # ipdb> params2['wAPLKC'][mask.values].mean()
+    # 27.736844140271568
+
+    # TODO delete
+    print()
+    print(f'{params1["wAPLKC_scale"]=}')
+    print(f'{params2["wAPLKC_scale"]=}')
+    print()
+    print(f'{sc1.sum().sum()=}')
+    print(f'{sc2.sum().sum()=}')
+    print()
+    print(f'{sc1[mask.values].sum().sum()=}')
+    print(f'{sc2[mask.values].sum().sum()=}')
+    print()
+    print(f"{params1['wAPLKC'][~mask.values].mean()=}")
+    print(f"{params1['wAPLKC'][mask.values].mean()=}")
+    print()
+    print(f"{params2['wAPLKC'][~mask.values].mean()=}")
+    print(f"{params2['wAPLKC'][mask.values].mean()=}")
+    #
+
+    # now w/ multiresponder APL scaling still as last operation w/ model, but with False
+    # as last arg to run_KC_sims:
+    # params1["wAPLKC_scale"]=3.8899999999999992
+    # params2["wAPLKC_scale"]=3.8899999999999992
+    #
+    # sc1.sum().sum()=6308.0
+    # sc2.sum().sum()=5228.0
+    #
+    # sc1[mask.values].sum().sum()=2693.0
+    # sc2[mask.values].sum().sum()=1359.0
+    #
+    # params1['wAPLKC'][~mask.values].mean()=4.014387762041912
+    # params1['wAPLKC'][mask.values].mean()=2.376764707821043
+    #
+    # params2['wAPLKC'][~mask.values].mean()=4.014387762041912
+    # params2['wAPLKC'][mask.values].mean()=7.13029412346313
+    #
+    # so was it something else about context i have in actual kiwi/control input call
+    # (which is tuned on both panels, which might be the main issue)? (YES! fixed now)
+    # need to move this boosting to initial tuning, and then somehow propagate thru? (or
+    # have it take affect despite being pre-tuned?) (doing the latter for now, and
+    # excluding this param from the pre-tuning part)
+    #
+    # TODO if i decide i want to only support setting the APL boost after
+    # pre-tuning, add something here to test that? might be hard. could work better as
+    # some assertions in live code (in model_mb_responses, between pre-tuning and
+    # subsequent calls)?
+
+    # responses in other cells might get slightly elevated, b/c of decreased APL
+    # activity caused by decreased activity among the multiresponders. seemed to be
+    # pretty subtle.
+    assert (sc1[~mask.values] <= sc2[~mask.values]).all().all()
+
+    # TODO TODO TODO add main assertions here now (should be working)
+
+    # TODO TODO also test w/o connectome APL? work in that case, given how currently
+    # implemented? (if not, restore assertion triggering in !connectome_APL & boost_APL
+    # case, in fit_mb_model)
+
+    import ipdb; ipdb.set_trace()
+
+
 # TODO TODO test that confirms scaling wPNKC doesn't change output (not sure it's even
 # true...) (w/ appropriate tolerance on output check + tuning params) (to maybe justify
 # using all synapses for wPNKC, instead of trying to group/cluster into claws)
@@ -552,6 +782,9 @@ def test_fixed_inh_params(orn_deltas):
 # diff in matlab vs olfsysm), but could have ann's code generate the wPNKCs and then
 # pass easy via new _wPNKC kwarg to fit_mb_model?
 
+# TODO TODO test like this for paper uniform outputs (hemidraw prob less important b/c
+# it's flawed and i think we'll likely leave out of submitted version, unless we end up
+# making it match new wPNKC (from weight_divisor=20) better)
 def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     """
     Tests that, starting from committed estimated-ORN-spike-deltas, we can reproduce
@@ -578,9 +811,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
     # by calls in model_mb_... (prob behaving diff b/c e.g.
     # pn2kc_connections='hemibrain' is explicitly passed there)
-    param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
-        try_cache=False, **kws
-    )
+    param_dict = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, **kws)
 
     output_dir = (plot_root / param_dict['output_dir']).resolve()
     assert output_dir.is_dir()
@@ -593,7 +824,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     # ...           ...       ...      ...  ...         ...        ...      ...
     # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
     # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
-    df = pd.read_csv(output_dir / 'spike_counts.csv', index_col=[KC_ID, KC_TYPE])
+    df = _read_spike_counts(output_dir)
 
     # TODO rename 'model_kc' -> KC_ID (='kc_id') in those committed outputs?
     # NOTE: older output still used 'model_kc' instead of KC_ID, for KC ID column
@@ -676,4 +907,67 @@ def test_hemibrain_matt_repro():
 # `mp.kc.tune_apl_weights = False`? might be easiest way unless i end up implementing
 # sparsity calculation + saving both before and after APL)
 # (see some other comments circa sp_factor_pre_APL code in mb_model.fit_mb_model)
+
+
+def test_step_around():
+    # TODO do i want absolute step size the same for each or (what i assume is current
+    # behavior of) same relative step size? something else?  (prob happy enough w/
+    # "relative" as it is)
+
+    # TODO do another call matching fixed_thr steps?
+    #
+    # checking i can recreate wAPLKC steps used in sens analysis for paper w/ remy
+    s1 = step_around(4.6, param_lim_factor=5.0, n_steps=3,
+        drop_negative=True
+    )
+    paper_wAPLKC_steps = [0, 4.6, 27.6]
+    assert np.allclose(paper_wAPLKC_steps, s1)
+
+    s2 = step_around(np.array([4.6, 4.6]), param_lim_factor=5.0, n_steps=3,
+        drop_negative=True
+    )
+    col1 = s2[:, 0]
+    col2 = s2[:, 1]
+    assert np.array_equal(col1, col2)
+    assert np.allclose(s1, col1)
+
+    # TODO delete?
+    s1 = step_around(4.6, param_lim_factor=1, n_steps=5,
+        drop_negative=True, drop_zero=True
+    )
+    s2 = step_around(np.array([4.6, 1.3]), param_lim_factor=1, n_steps=5,
+        drop_negative=True, drop_zero=True
+    )
+    assert (s1 > 0).all()
+    assert (s2 > 0).all()
+    #
+
+    n_steps = 5
+    kws = dict(n_steps=n_steps, drop_negative=True)
+
+    x = 249.665
+
+    eps = 1e-4
+    nz_steps = step_around(x, 1.0 - eps, **kws)
+    assert len(nz_steps) == n_steps
+    assert nz_steps[0] > 0
+
+    # first param_lim_factor[=2.0] should produce 2 <=0 values w/ n_steps=5
+    for param_lim_factor in (2.0, 1.0):
+
+        raw_steps = step_around(x, param_lim_factor, n_steps=n_steps,
+            drop_negative=False
+        )
+        steps = step_around(x, param_lim_factor, **kws)
+        # TODO similar check that works for 2d steps (for vector center)
+        assert len(steps) + (raw_steps < 0).sum() == n_steps
+
+        if param_lim_factor >= 1:
+            # as long as drop_zero=False, which is default
+            assert steps[0] == 0
+
+        if param_lim_factor == 1:
+            assert np.isclose(steps[-1], x * 2)
+
+        # TODO similar cases w/ vector input? already covered well enough above?
 

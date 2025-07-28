@@ -3373,7 +3373,6 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     single_fly: bool = False,
     odor_glomerulus_combos_to_highlight: Optional[List[Dict]] = None, **kwargs):
     # TODO rename odor_sort -> conc_sort (or delete altogether)
-    # TODO TODO add fly_min_max_scale flag (like roi_min_max_scale)?
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
 
     Args:
@@ -3420,39 +3419,23 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         # TODO or change fn to handle them gracefully (sorting alphabetically w/in?)
         avg_levels = ['panel'] + avg_levels
 
-    # TODO delete
     if trial_df.index.name == 'odor1':
-        # TODO assert no 'repeat' in column names? (that's the mean it's talking about,
-        # right?)
-        print("also support trial_df.index.name = 'odor1' (.names = None, right?)")
-        print(f'{trial_df.index.names=}')
-        #import ipdb; ipdb.set_trace()
-        # TODO fix hack?
-        print('ASSUMING INPUT IS MEAN ALREADY')
+        # assuming input is mean already columns probably are still just 'roi', as I
+        # assume is also true in most cases below (as we are only ever computing
+        # groupby->mean across row groups in this fn)
         mean_df = trial_df.copy()
-    #
     else:
         avg_levels = [x for x in avg_levels if x in trial_df.index.names]
 
         if not avg_repeats:
-            # TODO want this first assertion?
             assert 'repeat' in trial_df.index.names
-
             assert 'repeat' not in avg_levels
             avg_levels.append('repeat')
 
-        # This will throw away any metadata in multiindex levels other than these two
+        # This will throw away any metadata in multiindex levels other than these
         # (so can't just add metadata once at beginning and have it propate through
         # here, without extra work at least)
         mean_df = trial_df.groupby(avg_levels, sort=False).mean()
-
-        # TODO assertion of the set of remaining levels (besides avg_levels) there are?
-        # it should just be 'repeat' and stuff that shouldn't vary / matter, right?
-        # (at most. some input probably doesn't have even that?)
-
-        if not avg_repeats:
-            # TODO want this assertion?
-            assert 'repeat' in mean_df.index.names
 
     # TODO might wanna drop 'panel' level after mean in keep_panels_separate case, so
     # that we don't get the format_mix_from_strs warning about other levels (or just
@@ -7451,7 +7434,23 @@ def register_all_fly_recordings_together(keys_and_paired_dirs, verbose: bool = F
         print()
 
 
-def load_and_concat_traces_with_metadata(keys_and_paired_dirs, verbose: bool = False):
+# TODO rename just recompute_responses_per_panel?
+def recompute_responses_from_traces_per_panel(keys_and_paired_dirs, *,
+    zscore: bool = False, verbose: bool = False) -> List[pd.DataFrame]:
+    """Loads cached raw traces, concatenates within (fly, panel), and returns responses.
+
+    Loads `full_traces_cache_name` from each fly analysis dir. This must have already
+    been computed and saved within a `process_recording` call (via the `'ijroi'`
+    analysis path in there).
+
+    Also re-computes best plane for each ROI, based on current method of response
+    calculation used in here (for each panel, across all fly-recordings, picks plane
+    with highest response calculation).
+
+    Returns list of response dataframes, with one response statistic for each (fly,
+    panel, trial). Output is in similar format to `ij_trial_dfs` used elsewhere,
+    although one element per (fly, panel) instead of one element per recording.
+    """
     # TODO share some /all of this w/ register_all... it was adapted from?
 
     date_and_fly2thor_dirs = defaultdict(list)
@@ -7550,7 +7549,7 @@ def load_and_concat_traces_with_metadata(keys_and_paired_dirs, verbose: bool = F
                 assert traces.columns.get_level_values('roi').duplicated().any()
                 # TODO TODO also try averaging over all planes?
 
-                df = compute_trial_stats(traces, bounding_frames, odors, zscore=True)
+                df = compute_trial_stats(traces, bounding_frames, odors, zscore=zscore)
                 roi_quality = df.max()
 
                 for_index = roi_quality.index.to_frame()
@@ -7569,12 +7568,12 @@ def load_and_concat_traces_with_metadata(keys_and_paired_dirs, verbose: bool = F
                 )
 
                 d2 = compute_trial_stats(traces.iloc[:, indices_maximizing_each_glom],
-                    bounding_frames, odors, zscore=True
+                    bounding_frames, odors, zscore=zscore
                 ).droplevel('z', axis='columns')
                 assert d2.equals(df)
             else:
                 assert not traces.columns.get_level_values('roi').duplicated().any()
-                df = compute_trial_stats(traces, bounding_frames, odors, zscore=True)
+                df = compute_trial_stats(traces, bounding_frames, odors, zscore=zscore)
 
             # TODO delete? work?
             # TODO TODO after modifying merging code to work w/ panel on columns instead
@@ -9167,6 +9166,8 @@ def most_recent_GH146_output_dir():
 
 
 _gh146_glomeruli = None
+# TODO TODO modify to load from committed paper (megamat?) data (or at least warn if
+# output would be different from that)
 def get_gh146_glomeruli() -> Optional[Set[str]]:
     # TODO doc what is loaded, and how to recompute it
     """Returns set of glomerulus names that are in >= 1/2 of GH146 flies.
@@ -9194,7 +9195,7 @@ def get_gh146_glomeruli() -> Optional[Set[str]]:
     )
 
     if not gh146_output.exists():
-        # TODO TODO err instead (and update type hint return)
+        # TODO err instead (and update type hint return)
         warn(f'no GH146 data found at {_fmt_rel_path(gh146_output_dir)}. can not '
             'generate correlation plots restricted to GH146 glomeruli!'
         )
@@ -9212,8 +9213,11 @@ def get_gh146_glomeruli() -> Optional[Set[str]]:
 
     certain_gh146_df = select_certain_rois(gh146_df)
 
-    gh146_glom_counts = certain_gh146_df.groupby(level='roi', axis='columns'
-        ).size()
+    # may not need the sort_index() call. just keeping for consistency w/ old
+    # calculation
+    gh146_glom_counts = certain_gh146_df.columns.get_level_values('roi').value_counts(
+        ).sort_index()
+
     gh146_glom_counts.index.name = 'glomerulus'
     gh146_glom_counts.name = 'n_flies'
 
@@ -9223,43 +9227,11 @@ def get_gh146_glomeruli() -> Optional[Set[str]]:
     # TODO refactor to share dropping with subsetting in gh146 plot making?
     reliable_gh146_gloms = gh146_glom_counts >= (n_flies / 2)
 
-    # (delete this comment if i can not repro w/ a run on pebbled data. no longer making
-    # the offending call in `driver == 'GH146'` case)
-    # TODO fix: ValueError: The truth value of a Series is ambiguous. ...
-    # (triggered re-analyzing GH146 data w/ `-i ijroi`)
-    # ...
-    # ASSUMING INPUT IS MEAN ALREADY
-    # Warning: setting vmin=-1e-06 (was 0) to make vmin < vcenter=0 True
-    # loading GH146 glomeruli from ./GH146_6f/ij_roi_stats.p, to subset current glomeruli
-    # Uncaught exception
-    # Traceback (most recent call last):
-    #   File "./al_analysis.py", line 13374, in <module>
-    #     main()
-    #   File "./al_analysis.py", line 13307, in main
-    #     acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver,
-    #   File "./al_analysis.py", line 9403, in acrossfly_response_matrix_plots
-    #     gh146_glomeruli = get_gh146_glomeruli()
-    #   File "./al_analysis.py", line 8892, in get_gh146_glomeruli
-    try:
-        if (~ reliable_gh146_gloms).any():
-            # TODO sanity check this set
-            warn(f'excluding GH146 glomeruli seen in <1/2 of {n_flies} GH146 '
-                f'flies:\n{gh146_glom_counts[~reliable_gh146_gloms].to_string()}'
-            )
-    except ValueError:
-        # ipdb> reliable_gh146_gloms.shape
-        # (123, 33)
-        # ipdb> reliable_gh146_gloms
-        # roi                                                D ...   VM3  VM7d  VM7v
-        # panel                 is_pair odor1     repeat       ...
-        # glomeruli_diagnostics False   3mtp @ -5 0       True ...  True  True  True
-        # ...                                              ... ...   ...   ...   ...
-        # megamat               False   benz @ -3 1       True ...  True  True  True
-        # ...
-        #                                         2       True ...  True  True  True
-        print()
-        print(f'{reliable_gh146_gloms=}')
-        import ipdb; ipdb.set_trace()
+    if (~ reliable_gh146_gloms).any():
+        # TODO sanity check this set
+        warn(f'excluding GH146 glomeruli seen in <1/2 of {n_flies} GH146 '
+            f'flies:\n{gh146_glom_counts[~reliable_gh146_gloms].to_string()}'
+        )
 
     # TODO warn instead?
     assert reliable_gh146_gloms.sum() > 0, ('no glomeruli confidently '
@@ -9830,9 +9802,6 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
 
             # TODO still check GH146 glomeruli against output of get_gh146_glomeruli, if
             # `driver == 'GH146'? (maybe in main or something tho?)??
-            # TODO TODO TODO fix. also causing issues w/ ORN input now.
-            print('fix me')
-            '''
             if driver in orn_drivers:
                 gh146_glomeruli = get_gh146_glomeruli()
                 gh146_only_diag_and_panel_df = diag_and_panel_df.loc[:,
@@ -9845,7 +9814,6 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 # TODO should i be making my own correlation plots here (w/o
                 # diags)? or also hand off to remy? (currently doing from outputs i sent
                 # remy, in separate script under scripts/ dir)
-            '''
 
             # TODO some reason i'm not using .map(...)?
             mask = np.array([ijroi_comparable_via_name(x)
@@ -10356,6 +10324,7 @@ def main():
     global print_skipped
     global verbose
     global ij_trial_dfs
+    global roi2best_plane_depth_list
     global gsheet_df
 
     # TODO actually use log/delete / go back to global?
@@ -11462,12 +11431,47 @@ def main():
         save_method_csvs(method_df, by_fly_version=True)
 
 
-    # TODO rename this fn
-    zscore_flypanel_dfs = load_and_concat_traces_with_metadata(keys_and_paired_dirs)
-    # TODO delete hack
-    print('DELETE ME! OVERWRITING IJ_TRIAL_DFS W/ ZSCORE_FLYPANEL_DFS')
-    ij_trial_dfs = zscore_flypanel_dfs
+    # TODO delete. didn't seem reasonable on my ORN / PN data.
+    #zscore_flypanel_dfs = recompute_responses_from_traces_per_panel(
+    #    keys_and_paired_dirs, zscore=True
+    #)
+    #ij_trial_dfs = zscore_flypanel_dfs
+    #roi2best_plane_depth_list = None
     #
+
+    # used some of same code to reanalyze my typical dF/F way (rather than
+    # remy-style z-scoring this was for), just picking best-ROIs per panel. didn't have
+    # a huge effect for either my ORN or PN dendrite megamat data (see some slides in
+    # my Google Slides 2025-07-07_pn_forensics).
+    #
+    # TODO TODO ...and then make ROI example plots based on these chosen indices?
+    # (only if i decide it's worth replacing my current outputs with those. might be for
+    # PN dendrite data?)
+    #
+    # TODO add CLI option to do this?
+    # TODO delete?
+    #print('REPLACING IJ_TRIAL_DFS WITH RESPONSES RECOMPUTED PER-PANEL!!!')
+    #ij_flypanel_dfs = recompute_responses_from_traces_per_panel(keys_and_paired_dirs)
+    #ij_trial_dfs = ij_flypanel_dfs
+    #roi2best_plane_depth_list = None
+    #
+
+    # TODO TODO try averaging over all planes instead of picking best?
+    # (-> compare to current w/ best plane picked only)
+    #
+    # (would need to know at least # of pixels per ROI to weight properly... could load
+    # them but recompute_responses... currently doesn't)
+
+    # TODO TODO try some method of scaling by variability (defined from just
+    # pre-odor period? sufficiently far towards end of trial too? def don't want to use
+    # response portion for that)
+
+    # TODO TODO TODO add script to compute the same trace files recompute_responses...
+    # uses, but from a directory organized as remy does, and re-extracting her suite2p
+    # data to form my own traces (or getting timeseries of F from her suite2p
+    # extraction, if available, but i don't think it is), that also then pushes all of
+    # them through recompute_responses... and downstream (e.g. to re-extract for her
+    # kiwi/control data, to compare to my model outputs)
 
     if len(ij_trial_dfs) == 0:
         cprint('No ImageJ ROIs defined for current experiments!', 'yellow')
@@ -11479,28 +11483,31 @@ def main():
     ij_trial_dfs = olf.pad_odor_indices_to_max_components(ij_trial_dfs)
     trial_df = pd.concat(ij_trial_dfs, axis='columns', verify_integrity=True)
 
-    # TODO TODO TODO restore all this stuff after refactoring it out so i can skip for
-    # zscored input (or figure out why there is mismatch)
-    '''
-    assert len(ij_trial_dfs) == len(roi2best_plane_depth_list)
+    # NOTE: roi2best_plane_depth_list must either be set None or recomputed, if using
+    # responses computed across recordings
+    # (e.v. via recompute_responses_from_traces_per_panel), rather than using my usual
+    # per-recording responses from ij_trial_dfs.
+    if roi2best_plane_depth_list is not None:
+        assert len(ij_trial_dfs) == len(roi2best_plane_depth_list)
 
-    roi_best_plane_depths = pd.concat(roi2best_plane_depth_list, axis='columns',
-        verify_integrity=True
-    )
-    util.check_index_vals_unique(roi_best_plane_depths)
+        roi_best_plane_depths = pd.concat(roi2best_plane_depth_list, axis='columns',
+            verify_integrity=True
+        )
+        util.check_index_vals_unique(roi_best_plane_depths)
 
-    # failing assertion (b/c depth defined for each recording, and not differentiated by
-    # odor metadata along row axis, as w/ trial_df)
-    #roi_best_plane_depths = merge_rois_across_recordings(roi_best_plane_depths)
-    #
-    # TODO TODO this what i want for merging depths across recordings? can i change to
-    # not take average, and use depth for each specific recording? good enough?
-    roi_best_plane_depths = roi_best_plane_depths.groupby(
-        level=[x for x in roi_best_plane_depths.columns.names if x != 'thorimage_id'],
-        sort=False, axis='columns'
-    ).mean()
-    util.check_index_vals_unique(roi_best_plane_depths)
-    '''
+        # failing assertion (b/c depth defined for each recording, and not
+        # differentiated by odor metadata along row axis, as w/ trial_df)
+        #roi_best_plane_depths = merge_rois_across_recordings(roi_best_plane_depths)
+        #
+        # TODO TODO this what i want for merging depths across recordings? can i change
+        # to not take average, and use depth for each specific recording? good enough?
+        roi_best_plane_depths = roi_best_plane_depths.groupby(level=[
+                x for x in roi_best_plane_depths.columns.names if x != 'thorimage_id'
+            ], sort=False, axis='columns'
+        ).mean()
+        util.check_index_vals_unique(roi_best_plane_depths)
+    else:
+        roi_best_plane_depths = None
 
     util.check_index_vals_unique(trial_df)
     assert num_notnull(trial_df) == n_before
@@ -11530,22 +11537,23 @@ def main():
         [('+' in x) for x in trial_df.columns.get_level_values('roi')]
     )
 
-    # to justify indexing it the same below
-    # TODO maybe i should check more than just the roi level tho?
-    '''
-    assert trial_df.columns.get_level_values('roi').equals(
-        roi_best_plane_depths.columns.get_level_values('roi')
-    )
-    '''
-
     # no need to copy, because indexing with a bool mask always does
     trial_df = trial_df.loc[:, ~contained_plus]
     # TODO add comment explaining what this drops (+ doc in doc str for this fn)
     trial_df = drop_superfluous_uncertain_rois(trial_df)
-    '''
-    roi_best_plane_depths = roi_best_plane_depths.loc[:, ~contained_plus]
-    roi_best_plane_depths = drop_superfluous_uncertain_rois(roi_best_plane_depths)
-    '''
+
+    if roi_best_plane_depths is not None:
+        # to justify indexing it the same
+        # TODO maybe i should check more than just the roi level tho?
+        assert trial_df.columns.get_level_values('roi').equals(
+            roi_best_plane_depths.columns.get_level_values('roi')
+        )
+        roi_best_plane_depths = roi_best_plane_depths.loc[:, ~contained_plus]
+        roi_best_plane_depths = drop_superfluous_uncertain_rois(roi_best_plane_depths)
+
+        roi_best_plane_depths = sort_fly_roi_cols(roi_best_plane_depths,
+            flies_first=True
+        )
 
     # TODO TODO should i always merge DL2d/v data? should be same exact receptors, etc?
     # and don't always have a good number of planes labelled for each, b/c often unclear
@@ -11578,10 +11586,6 @@ def main():
 
     trial_df = sort_fly_roi_cols(trial_df, flies_first=True)
     trial_df = sort_odors(trial_df)
-
-    '''
-    roi_best_plane_depths = sort_fly_roi_cols(roi_best_plane_depths, flies_first=True)
-    '''
 
     # TODO in a global cache that is saved (for use in real time analysis when drawing
     # ROIs. not currently implemented anymore), probably only update it to REMOVE flies
@@ -12169,13 +12173,12 @@ def main():
     consensus_df = consensus_df.droplevel('fly_id', axis='columns')
     #
 
-    # TODO want to also allow a version of this using certain_df instead of
-    # consensus_df?
-    # modelling currently hardcoding consensus_df as input (below), and this is only
-    # place i'm planning to use that, so shouldn't matter.
-    '''
-    roi_best_plane_depths = roi_best_plane_depths.loc[:, consensus_df.columns]
-    '''
+    if roi_best_plane_depths is not None:
+        # TODO want to also allow a version of this using certain_df instead of
+        # consensus_df?
+        # modelling currently hardcoding consensus_df as input (below), and this is only
+        # place i'm planning to use that, so shouldn't matter.
+        roi_best_plane_depths = roi_best_plane_depths.loc[:, consensus_df.columns]
 
     # TODO only save these two if being run on all data?
     # (or just move saving to per panel directory [/name w/ panel] if not?)
@@ -12764,7 +12767,7 @@ def main():
         cmap.set_under((0.8, 0.8, 0.8))
 
         # TODO delete
-        #'''
+        #"""
         # so ROIs are actually grouped together
         mean_df_diag_input = mean_df_diag_input.sort_index(level='roi', axis='columns')
 
@@ -12813,7 +12816,7 @@ def main():
             dpi=300, hgroup_label_offset=0.2, **kws
         )
         savefig(fig, plot_root, 'DELETEME_mean_df_diag_input', bbox_inches='tight')
-        #'''
+        #"""
         #
 
         fig, _ = viz.matshow(mean_df.replace(0, vmin - 1e-5).T, vmin=vmin, vmax=vmax,
@@ -13301,6 +13304,10 @@ def main():
 
         # TODO worth warning that model won't be run otherwise?
         if driver in orn_drivers:
+            # TODO TODO may want to skip in general if we have trial responses redefined
+            # from post-processed per-panel_concat traces, and not just if
+            # zscore_traces_per_recording=True (or just if zscore was True when
+            # recomputing...) (via recompute_responses_from_traces_per_panel)
             if zscore_traces_per_recording:
                 # TODO TODO add way of telling how cached outputs were computed, so we
                 # can check here (or err if any inconsistent choices among files being
@@ -13316,8 +13323,7 @@ def main():
             # certain_df again here (if True, certain_df is redefined to consensus_df
             # above)
             model_mb_responses(consensus_df, across_fly_ijroi_dir,
-                # TODO TODO TODO restore
-                #roi_depths=roi_best_plane_depths,
+                roi_depths=roi_best_plane_depths,
                 skip_sensitivity_analysis=skip_sensitivity_analysis,
                 skip_models_with_seeds=skip_models_with_seeds,
                 skip_hallem_models=skip_hallem_models,

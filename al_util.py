@@ -4,6 +4,7 @@ import difflib
 from functools import wraps
 import filecmp
 import itertools
+from math import factorial
 import os
 from os.path import getmtime
 from pathlib import Path
@@ -1209,7 +1210,21 @@ def abbrev_hallem_odor_index(df: pd.DataFrame, axis='index') -> pd.DataFrame:
 
 # TODO move to hong2p.util or something?
 def n_choose_2(n: int) -> int:
+    # TODO assert n > 0? > 1?
     ret = (n - 1) * n / 2
+    assert np.isclose(ret, int(ret))
+    return int(ret)
+
+
+def n_multichoose_k(n: int, k: int) -> int:
+    """Returns number of size-k unordered "multisets" that can be drawn from n options.
+
+    Multisets can contain one element multiple times, but are still unordered. This can
+    answer how many ways a population can be resampled with replacement.
+
+    https://en.wikipedia.org/wiki/Multiset#Counting_multisets
+    """
+    ret = factorial(n + k - 1) / (factorial(k) * factorial(n - 1))
     assert np.isclose(ret, int(ret))
     return int(ret)
 
@@ -1359,9 +1374,12 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
         square: if True, returns square correlation matrix as a DataFrame. otherwise,
             returns one triangular (excluding diagonal) as a Series.
     """
+    # TODO add checks= kwarg to disable all the assertions?
 
     # TODO also allow selecting 'fly_id' as default, if there?
     if id_cols is None:
+        # TODO use some module-level fly_cols def? move here to al_util if not already
+        # here
         id_cols = ['date', 'fly_num']
 
     # TODO TODO also work w/ 'odor' level (have in loaded model responses)
@@ -1369,13 +1387,20 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     # TODO only do if 'repeat' level present? assert it's there?
     #
     # assumes 'odor2' level, if present, doesn't vary.
-    # TODO assert assumption about possible 'odor2' level?
+    # TODO TODO assert assumption about possible 'odor2' level?
+    # TODO TODO assert no variation in any level other than odor1 and repeat?
     trialmean_df = df.groupby(level='odor1', sort=False).mean()
     n_odors = len(trialmean_df)
 
+    first_row_index = None
     # TODO also want to  keep track of and append metadata?
     fly_corrs = []
     for fly, fly_df in trialmean_df.groupby(level=id_cols, axis='columns', sort=False):
+        if first_row_index is None:
+            first_row_index = fly_df.index.copy()
+        else:
+            assert fly_df.index.equals(first_row_index)
+
         # TODO TODO pass in ordered_pairs? just expose as kwarg to this fn? (or fix
         # corr_triangular to always have a pair in a fixed order? even possible?)
         corr = corr_triangular(fly_df.T.corr())
@@ -1418,6 +1443,9 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
 
     n_flies = len(fly_corrs)
 
+    # TODO TODO separate check that there are no duplicates in columns? think i might
+    # have come across some other cases where verify_integrity=True did not do what i
+    # expected when concatenating across columns
     corrs = pd.concat(fly_corrs, axis='columns', verify_integrity=True)
     assert corrs.shape[1] == n_flies
 

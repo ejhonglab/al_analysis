@@ -11,6 +11,8 @@ from al_analysis import trial_response_traces, delta_f_over_f, compute_trial_sta
 
 
 # TODO better way to store (+ reference paths to) test_data for pytest?
+# TODO refactor (put where?)? also used in test_mb_model.test_multiresponder_APL_boost
+# now
 data_dir = Path(__file__).resolve().parent / 'test_data'
 
 @pytest.fixture(scope='session')
