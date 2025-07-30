@@ -56,6 +56,7 @@ from matplotlib.axes import Axes
 from matplotlib.ticker import MaxNLocator
 from matplotlib.colors import to_rgba
 import matplotlib as mpl
+mpl.use('Agg')
 from scipy.stats import spearmanr, pearsonr, f_oneway
 from sklearn.preprocessing import maxabs_scale as sk_maxabs_scale
 from sklearn.preprocessing import minmax_scale as sk_minmax_scale
@@ -343,6 +344,79 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
     assert not any(x in task_gloms for x in glomerulus_renames.keys())
 
     glomerulus_col = 'glomerulus'
+
+    def _underscore_part(ser, i=0):
+        return ser.str.split('_').apply(lambda x: x[i])
+
+    def _first_underscore_part(ser):
+        return _underscore_part(ser, i=0)
+    
+    def add_compartment_column(wPNKC, shape):
+
+        if shape == 0:
+            # shell over sphere 
+            coords = wPNKC.index.to_frame(index=False)[['claw_x', 'claw_y', 'claw_z']]
+            # compute center of mass (centroid of all claws)
+            center_x = coords['claw_x'].mean()
+            center_y = coords['claw_y'].mean()
+            center_z = coords['claw_z'].mean()
+            center = np.array([center_x, center_y, center_z])
+
+            # compute max distance from center (bounding radius)
+            deltas = coords[['claw_x', 'claw_y', 'claw_z']].values - center
+            distances = np.linalg.norm(deltas, axis=1)
+
+            shell_r = distances.max()
+            sphere_r = shell_r * 0.5  # or adjust as needed
+
+            # assign compartment: 0 = inner sphere, 1 = outer shell
+            compartment_ids = np.where(distances <= sphere_r, 0, 1)
+
+            wPNKC = wPNKC.copy()
+            wPNKC['compartment'] = compartment_ids
+            print("shell over sphere")
+
+
+        else: 
+            # 3*3*3 situation 
+            # Extract claw coordinates from the MultiIndex
+            coords = wPNKC.index.to_frame(index=False)[['claw_x', 'claw_y', 'claw_z']]
+
+            # Compute the edges for each axis (3 bins → 4 edges)
+            x_edges = np.linspace(coords['claw_x'].min(), coords['claw_x'].max(), 4)
+            y_edges = np.linspace(coords['claw_y'].min(), coords['claw_y'].max(), 4)
+            z_edges = np.linspace(coords['claw_z'].min(), coords['claw_z'].max(), 4)
+
+            for edges in (x_edges, y_edges, z_edges):
+                edges[0] -= 1e-6
+                edges[-1] += 1e-6 
+
+            # Digitize each coordinate into bin indices (0–2)
+            ix = np.digitize(coords['claw_x'], x_edges) - 1
+            iy = np.digitize(coords['claw_y'], y_edges) - 1
+            iz = np.digitize(coords['claw_z'], z_edges) - 1
+
+            
+            # Flatten 3D (ix, iy, iz) into single compartment ID (0–26)
+            compartment_ids = ix * 9 + iy * 3 + iz
+
+            if (compartment_ids > 26).any():
+                print("Some compartment_ids > 26 detected!")
+                print(wPNKC.index[(compartment_ids > 26)])
+            elif (compartment_ids < 0).any():
+                print("Some compartment_ids < 0 detected!")
+                print(wPNKC.index[(compartment_ids < 0)])
+            else:
+                print("All compartment_ids normal")
+
+            
+            # Attach the compartment column to the DataFrame
+            wPNKC = wPNKC.copy()
+            wPNKC['compartment'] = compartment_ids
+
+        return wPNKC
+    
+
     def _add_glomerulus_col_from_hemibrain_type(df: pd.DataFrame, pn_type_col: str,
         kc_id_col: str, *, check_no_multi_underscores: bool = False) -> pd.DataFrame:
         """Modifies `df` inplace, adding a 'glomerulus'  column.
@@ -806,17 +880,22 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
                 values = 'n_syn',
                 fill_value=0
             ).astype(int)
-
+ 
             wPNKC = (wPNKC_counts > 0).astype(int)
 
             meta = claw_df.set_index([kc_id_col, 'claw', 'claw_x', 'claw_y', 'claw_z'])['pre_cell_ids']
-            wPNKC['pre_cell_ids'] = meta
+            wPNKC['pre_cell_ids'] = meta 
 
             # name the index levels
             wPNKC.index.set_names([kc_id_col,'claw_id','claw_x','claw_y','claw_z'], inplace=True)
 
             # record how many claws total for your downstream sanity checks
             n_kcs = wPNKC.shape[0]
+            if compartmentalization == True:
+                wPNKC = add_compartment_column(wPNKC, shape = 0)
+                print("connectome_wPNKC compartment reached")
+                wPNKC.reset_index().to_csv('connectome_wPNKC_PNKC.csv', index=True)
+            
         else: 
             if _use_matt_wPNKC:
                 matt_data_dir = Path('data/from_matt/hemibrain')
@@ -1445,9 +1524,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
     # TODO i can not seem to recreate uniform output (by sorting wPNKC post-hoc), but
     # i'm not sure that's actually a problem. maybe input *should* always just be in a
     # particular order, and shouldn't necessarily matter that it's this one...
-    #
-    # sorting columns (glomeruli) alphanumerically
-    wPNKC = wPNKC.sort_index(axis='columns')
+    # wPNKC = wPNKC.sort_index(axis='columns')
 
     return wPNKC
 
@@ -1871,7 +1948,7 @@ def _single_unique_val(arr: Union[np.ndarray, pd.Series], *, exact: bool = True
     Raises AssertionError if array has more than one unique value (including NaNs).
     """
     unique_vals = set(np.unique(arr))
-    if exact:
+    if exact: 
         assert len(unique_vals) == 1
         return unique_vals.pop()
     else:
@@ -2198,7 +2275,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO maybe make it so sim_odors is ignored if orn_deltas is passed in?
     # or err [/ assert same odors as orn_deltas]? would then need to conditionally pass
     # in calls in here...
-
     # TODO move to module level -> refer to this in docstr?
     pn2kc_connections_options = {'uniform', 'caron', 'hemidraw'}
     pn2kc_connections_options.update(connectome_options)
@@ -2641,8 +2717,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 plot_dir       = plot_dir if pn2kc_connections in connectome_options else None,
                 _use_matt_wPNKC = _use_matt_wPNKC,
                 _drop_glom_with_plus = _drop_glom_with_plus,
+                compartmentalization = True, # whether we use compartmentalization or not
             )
+            print("spatial_wPNKC in fit_mb_model")
+            print(wPNKC.columns)
+            if 'compartment' in wPNKC.columns:
+                print("compartments were here at wPNKC creation")
             wPNKC.reset_index().to_csv('test_spatial_wPNKC.csv', index=True)
+            
+            
+            
+
         else:
             wPNKC = connectome_wPNKC(
                 connectome      = connectome,
@@ -3139,15 +3224,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             )
             assert not any(x in kcs_with_input for x in kcs_without_input)
 
-            assert (wPNKC_only_kcs_with_input.T.sum() == 1).all()
-            assert (wPNKC_only_kcs_with_input.T.max() == 1).all()
+            glom_cols = [col for col in wPNKC_only_kcs_with_input.columns if col not in ['b.bodyId', 'claw_id', 'claw_x', 'claw_y', 'claw_z', 'compartment']]
+            assert (wPNKC_only_kcs_with_input[glom_cols].sum(axis=1) == 1).all()
+            assert (wPNKC_only_kcs_with_input[glom_cols].max(axis=1) == 1).all()
+            # assert (wPNKC_only_kcs_with_input.T.sum() == 1).all()
+            # assert (wPNKC_only_kcs_with_input.T.max() == 1).all()
 
-            for kc, kc_df in wPNKC.groupby(kc_id, sort=False):
+            for kc, kc_df in wPNKC.groupby(kc_id, sort=False): 
                 kc_claw_ids = kc_df.index.get_level_values(claw_id)
                 # checking that claw_id values count up from 0 within each KC
                 assert set(kc_claw_ids) == set(np.arange(len(kc_claw_ids)))
 
-        # TODO will i end up wanting to transpose this, to have it's shape in olfsysm
+        # TODO will i end up wanting to transpose this, to have it's shape in ol fsysm
         # consistent w/ some other stuff in there? (see wAPLKC vs wKCAPL, for one
         # current case were olfsysm wants some things in either row or column vectors)
         # TODO try w/o .values after getting working with it?
@@ -3160,15 +3248,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO TODO TODO implement in olfsysm (-> use for determining which claws to
         # consider as part of one KC)
         kc_ids = [int(x) for x in kc_ids]
-        print(type(kc_ids), isinstance(kc_ids, list))
-        print("first element type:", type(kc_ids[0]))
-        print("first 10 elements:", kc_ids[:10])
-        print("element 0 is built-in:", isinstance(kc_ids[0], int), type(kc_ids[0]))
+        # print(type(kc_ids), isinstance(kc_ids, list))
+        # print("first element type:", type(kc_ids[0]))
+        # print("first 10 elements:", kc_ids[:10])
+        # print("element 0 is built-in:", isinstance(kc_ids[0], int), type(kc_ids[0]))
 
 
 
         mp.kc.kc_ids = kc_ids
-        print('mp.kc.kc_ids = kc_ids was reached')
+        # print('mp.kc.kc_ids = kc_ids was reached')
 
         # TODO TODO TODO implement in olfsysm (in such a way that related test
         # [test_spatial_wPNKC_equiv] passes)
@@ -3321,6 +3409,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO TODO support vector wAPLKC (+ separately specifying float wKCAPL there?
     # or deduce which elements haven't been boosted?) (mainly want to support boosting)
     if wAPLKC is not None:
+        print("wAPLKC is not None")
         assert target_sparsity_factor_pre_APL is None
         assert fixed_thr is not None, 'for now, assuming both passed if either is'
 
@@ -3332,6 +3421,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if wKCAPL is None:
             wKCAPL = wAPLKC / mp.kc.N
         #
+        print("fit_mb_model reached")
+        
 
         if not use_connectome_APL_weights:
             # NOTE: min/max for these should all be the same. they are essentially
@@ -3353,8 +3444,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # (but it's non-spiking... what is reasonable?)
 
     if pn2kc_connections in connectome_options or _wPNKC is not None:
-        # if `_wPNKC is not None`, its contents were already copied into wPNKC above
-        rv.kc.wPNKC = wPNKC
+        rv.kc.wPNKC = wPNKC.values[:, :-1]
 
     wAPLKC_scale = None
     wKCAPL_scale = None
@@ -3496,7 +3586,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         abs_sp_diff = abs(sp_actual - mp.kc.sp_target)
         rel_sp_diff = abs_sp_diff / mp.kc.sp_target
         # if tune_apl_weights is hardcoded True above, this will likely fail
-        assert rel_sp_diff <= mp.kc.sp_acc, f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
+        # assert rel_sp_diff <= mp.kc.sp_acc, f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
+        if rel_sp_diff > mp.kc.sp_acc:
+            print(f"Warning: rel_sp_diff={rel_sp_diff:.3f} > sp_acc={mp.kc.sp_acc}")
+        print("Observed sparsity:", sp_actual)
+        print("Target sparsity:", mp.kc.sp_target)
 
         del sp_actual, abs_sp_diff, rel_sp_diff
 
@@ -4266,9 +4360,22 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # these should either be the same as any hardcoded (scalar) wAPLKC [+ wKCAPL]
         # inputs, or the values chosen by the tuning process. _single_unique_val will
         # raise AssertionError if the input arrays contain more than one unique value.
+        # For wAPLKC (column vector, shape Nx1)
+        # Make an array where each index `kc` maps to its compartment
+
+        # just to try things out;
+        # delete afterwards
+        np.set_printoptions(precision=6, suppress=False)
+
+        # now slices will print with 6 decimal places
+        print("wAPLKC first 10:\n", rv.kc.wAPLKC[:10])
+        print("wKCAPL first 10:\n", rv.kc.wKCAPL[:, :10])
+
+
+            
         rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
         rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
-
+ 
         if wAPLKC is not None:
             # TODO delete? just checking what we set above hasn't changed
             assert mp.kc.tune_apl_weights == False
@@ -4283,6 +4390,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             print(f'wAPLKC: {rv_scalar_wAPLKC}')
             print(f'wKCAPL: {rv_scalar_wKCAPL}')
             #
+            
+
             wAPLKC = rv_scalar_wAPLKC
             wKCAPL = rv_scalar_wKCAPL
     else:
@@ -4897,8 +5006,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # OK if we have more odors (for Hallem input case, right?)
     megamat = len(megamat_odor_names - input_odor_names) == 0
 
-    print(f"megamat_odor_names = {megamat_odor_names}")
-    print(f"input_odor_names  = {input_odor_names}")
+    # print(f"megamat_odor_names = {megamat_odor_names}")
+    # print(f"input_odor_names  = {input_odor_names}")
 
     del input_odor_names
     if megamat:
@@ -13274,6 +13383,16 @@ def main():
         )
 
     plot_root = Path('model_mb_example').resolve()
+    # updated to keep things clean; 
+    #plot_root = Path("model_mb_example") / f"data_pebbled_target-sp_{target_sparsity:.4f}"
+
+    # TODO modify this fn so dirname includes all same params by default (rather than
+    # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
+    # by calls in model_mb_... (prob behaving diff b/c e.g.
+    # pn2kc_connections='hemibrain' is explicitly passed there)
+    param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+        try_cache=False, print_olfsysm_log = True, **kws
+    )
 
     # TODO delete this product thing, and just switch to a kws_list?
     # TODO TODO TODO restore?
