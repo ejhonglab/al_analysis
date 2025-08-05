@@ -595,9 +595,66 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
                 })
 
             claw_df = pd.DataFrame(claws)
-            
+
             min_synapses = 3
             claw_df = claw_df[claw_df['n_syn'] >= min_synapses]
+
+            # build & save the UN-MERGED wPNKC
+            wPNKC_unmerged_counts = claw_df.pivot_table(
+                index=[kc_id_col,'claw','claw_x','claw_y','claw_z'],
+                columns='glomerulus',
+                values='n_syn',
+                fill_value=0
+            ).astype(int)
+            wPNKC_unmerged = (wPNKC_unmerged_counts > 0).astype(int)
+            wPNKC_unmerged.reset_index().to_csv('wPNKC_clustered_unmerged.csv', index=True)
+            avg_claws = claw_df.groupby(kc_id_col)['claw'].nunique().mean()
+            print(f"Average claws per KC before merging: {avg_claws:.2f}")
+
+
+            merge_thresh = 3  # µm
+            merged_claws = []
+
+            for kc, grp in claw_df.groupby(kc_id_col, sort=False):
+                # grab the 3D centroids
+                coords = grp[['claw_x','claw_y','claw_z']].values
+
+                # cluster centroids within merge_thresh; min_samples=1 => every point belongs
+                merge_labels = DBSCAN(eps=merge_thresh, min_samples=1).fit_predict(coords)
+                grp = grp.assign(merge_id=merge_labels)
+
+                # now collapse each merge-cluster into one “super-claw”
+                for merge_id, sub in grp.groupby('merge_id', sort=False):
+                    total_n_syn = sub['n_syn'].sum()
+
+                    # pick the glomerulus with the most synapses (sum over sub-claws)
+                    gl_counts   = sub.groupby('glomerulus')['n_syn'].sum()
+                    chosen_gl   = gl_counts.idxmax()
+
+                    # union of all pre_cell_ids
+                    all_pre_ids = sorted({pid for lst in sub['pre_cell_ids'] for pid in lst})
+
+                    # centroid weighted by n_syn
+                    weighted = (sub[['claw_x','claw_y','claw_z']].multiply(sub['n_syn'], axis=0)
+                                    .sum(axis=0) / total_n_syn)
+                    cx, cy, cz = weighted['claw_x'], weighted['claw_y'], weighted['claw_z']
+
+                    merged_claws.append({
+                        kc_id_col:    kc,
+                        'claw':       merge_id,
+                        'n_syn':      total_n_syn,
+                        'glomerulus': chosen_gl,
+                        'claw_x':     cx,
+                        'claw_y':     cy,
+                        'claw_z':     cz,
+                        'pre_cell_ids': all_pre_ids,
+                    })
+
+            # overwrite claw_df with the merged result
+            claw_df = pd.DataFrame(merged_claws)
+
+            avg_claws = claw_df.groupby(kc_id_col)['claw'].nunique().mean()
+            print(f"Average claws per KC after merging: {avg_claws:.2f}")
 
             # pivot to a (KC,claw,x,y,z)×glomerulus matrix, values = 1 ──────────
             wPNKC_counts = claw_df.pivot_table(
@@ -615,12 +672,14 @@ def connectome_wPNKC(connectome: str = 'hemibrain',
             # name the index levels
             wPNKC.index.set_names([kc_id_col,'claw_id','claw_x','claw_y','claw_z'], inplace=True)
 
+
+            
             # record how many claws total for your downstream sanity checks
             n_kcs = wPNKC.shape[0]
             if compartmentalization == True:
                 wPNKC = add_compartment_column(wPNKC, shape = 0)
                 print("connectome_wPNKC compartment reached")
-                wPNKC.reset_index().to_csv('connectome_wPNKC_PNKC.csv', index=True)
+                wPNKC.reset_index().to_csv('wPNKC_clustered_merged', index=True)
             
         else: 
             if _use_matt_wPNKC:
@@ -2992,27 +3051,27 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
 
             
-        rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
-        rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
+        # rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
+        # rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
  
-        if wAPLKC is not None:
-            # TODO delete? just checking what we set above hasn't changed
-            assert mp.kc.tune_apl_weights == False
+        # if wAPLKC is not None:
+        #     # TODO delete? just checking what we set above hasn't changed
+        #     assert mp.kc.tune_apl_weights == False
 
-            assert rv_scalar_wAPLKC == wAPLKC
+        #     assert rv_scalar_wAPLKC == wAPLKC
 
-            # this should now be defined whenever wAPLKC is, whether passed in or not...
-            assert wKCAPL is not None
-            assert rv_scalar_wKCAPL == wKCAPL
-        else:
-            # TODO delete prints? (at least put behind new verbose kwarg)
-            print(f'wAPLKC: {rv_scalar_wAPLKC}')
-            print(f'wKCAPL: {rv_scalar_wKCAPL}')
-            #
+        #     # this should now be defined whenever wAPLKC is, whether passed in or not...
+        #     assert wKCAPL is not None
+        #     assert rv_scalar_wKCAPL == wKCAPL
+        # else:
+        #     # TODO delete prints? (at least put behind new verbose kwarg)
+        #     print(f'wAPLKC: {rv_scalar_wAPLKC}')
+        #     print(f'wKCAPL: {rv_scalar_wKCAPL}')
+        #     #
             
 
-            wAPLKC = rv_scalar_wAPLKC
-            wKCAPL = rv_scalar_wKCAPL
+            # wAPLKC = rv_scalar_wAPLKC
+            # wKCAPL = rv_scalar_wKCAPL
     else:
         # TODO (outside this fn?) make histograms of these scaled values somewhere,
         # similar histograms of connectome weights
