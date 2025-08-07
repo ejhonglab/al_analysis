@@ -10401,6 +10401,11 @@ def main():
         f'Elements must be in {skippable_steps}. '
         '-s with no following string skips NO steps.'
     )
+    parser.add_argument('-M', '--first-model-only', action='store_true',
+        help='When calling model_mb_responses, sets first_model_kws_only=True to skip '
+        'all but the first set of model parameters (in model_kw_list internal to that '
+        'function).'
+    )
     parser.add_argument('-r', '--retry-failed', action='store_true',
         help='Retry steps that previously failed (frame-to-odor assignment or suite2p).'
     )
@@ -10509,6 +10514,7 @@ def main():
     al_util.ignore_existing = args.ignore_existing
     #
     steps_to_skip = args.skip
+    first_model_kws_only = args.first_model_only
     retry_previously_failed = args.retry_failed
     analyze_glomeruli_diagnostics_only = args.glomeruli_diags_only
 
@@ -11495,6 +11501,7 @@ def main():
         )
         util.check_index_vals_unique(roi_best_plane_depths)
 
+        # TODO delete? did i ever actually need this for roi_best_plane_depths?
         # failing assertion (b/c depth defined for each recording, and not
         # differentiated by odor metadata along row axis, as w/ trial_df)
         #roi_best_plane_depths = merge_rois_across_recordings(roi_best_plane_depths)
@@ -11507,6 +11514,7 @@ def main():
         ).mean()
         util.check_index_vals_unique(roi_best_plane_depths)
     else:
+        # TODO warning here saying we are throwing this away?
         roi_best_plane_depths = None
 
     util.check_index_vals_unique(trial_df)
@@ -11523,6 +11531,13 @@ def main():
     assert not trial_df_isna.all(axis='columns').any()
     assert not trial_df_isna.all(axis='rows').any()
     del trial_df_isna
+
+    if roi_best_plane_depths is not None:
+        # to justify indexing it the same
+        # TODO maybe i should check more than just the roi level tho?
+        assert trial_df.columns.get_level_values('roi').equals(
+            roi_best_plane_depths.columns.get_level_values('roi')
+        )
 
     # TODO maybe warn about / don't drop anything where it's not in a '?+' or '+?'
     # suffix (e.g. so 'VM2+VM3' will still show up in some plots?)
@@ -11543,17 +11558,16 @@ def main():
     trial_df = drop_superfluous_uncertain_rois(trial_df)
 
     if roi_best_plane_depths is not None:
-        # to justify indexing it the same
-        # TODO maybe i should check more than just the roi level tho?
-        assert trial_df.columns.get_level_values('roi').equals(
-            roi_best_plane_depths.columns.get_level_values('roi')
-        )
         roi_best_plane_depths = roi_best_plane_depths.loc[:, ~contained_plus]
         roi_best_plane_depths = drop_superfluous_uncertain_rois(roi_best_plane_depths)
 
         roi_best_plane_depths = sort_fly_roi_cols(roi_best_plane_depths,
             flies_first=True
         )
+
+        # TODO another assertion here (or pre-sort line above) that
+        # roi_best_plane_depths and trial_df still have same column index (or at least
+        # 'roi' level, but prob all), after processing both above?
 
     # TODO TODO should i always merge DL2d/v data? should be same exact receptors, etc?
     # and don't always have a good number of planes labelled for each, b/c often unclear
@@ -13327,6 +13341,7 @@ def main():
                 skip_sensitivity_analysis=skip_sensitivity_analysis,
                 skip_models_with_seeds=skip_models_with_seeds,
                 skip_hallem_models=skip_hallem_models,
+                first_model_kws_only=first_model_kws_only,
             )
         else:
             print(f'not running MB model(s), as driver not in {orn_drivers=}')

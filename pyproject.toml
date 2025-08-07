@@ -39,3 +39,11 @@ addopts = "--pdbcls=IPython.terminal.debugger:Pdb --tb=native"
 testpaths = [
     "test",
 ]
+# pytest's builtin tmp_path fixture will create temp dirs under /tmp/pytest-of-<user>,
+# and default retention policy ("all") does not clear their contents. The "none"
+# retention policy will remove all of these temp dirs after test completion, regardless
+# of test failure/success.
+#
+# Setting this to prevent disk space issues caused by just a few runs of
+# test_mb_model.py (where system is not restarted in between, which would clear /tmp).
+tmp_path_retention_policy = "none"

@@ -426,6 +426,8 @@ def main():
 
     vcf_emb_dir = data_root / 'from_remy' / '2025-07-07'
     vcf_emb_path = (vcf_emb_dir /
+        # NOTE: this file is 158M, so can't commit, or else Github will block me from
+        # pushing it (limit should be ~100M)
         'VCFQuantHMDS_N0452_S2190_StandardScaler_pearson_MP05__ND030__lsf__shepard.tsv'
     )
 
@@ -433,6 +435,7 @@ def main():
     # dimensions on [2, 10]
     vcf = pd.read_csv(vcf_emb_path, sep='\t')
 
+    # TODO TODO TODO split out and commit just seed 8, so it's under 100M github limit
     emb_col = 'VCFQuantHMDS_N0452_S2190_StandardScaler_pearson_MP05__ND030_D03_seed08'
     # TODO also look at 'data' raw data distances? (may need to use to mask missing
     # pairs? does remy? she does both ways and it doesn't really matter which. it's only

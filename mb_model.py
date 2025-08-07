@@ -30,7 +30,7 @@ import shutil
 from tempfile import NamedTemporaryFile
 import time
 import traceback
-from typing import Optional, Tuple, Dict, Any, Union
+from typing import Optional, Tuple, Dict, Any, Union, Literal
 
 # TODO delete
 import warnings
@@ -1150,6 +1150,9 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
     return wPNKC
 
 
+# TODO TODO TODO make sure this is only loading connections from calyx (might be
+# already? i assume lobe[/other? are there other?] connections not relevant for calyx /
+# soma activity?
 def connectome_APL_weights(connectome: str = 'hemibrain', *,
     wPNKC: Optional[pd.DataFrame] = None, kc_types: Optional[pd.Series] = None,
     plot_dir: Optional[Path] = None) -> Tuple[pd.Series, pd.Series]:
@@ -1197,6 +1200,8 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     assert {'CA(R)'} == set(
         apl2kc_df.roi[apl2kc_df.roi.str.contains('CA')].unique()
     )
+    # TODO TODO TODO what fraction of rows are 'CA(R)'? what are other big components,
+    # if any? (and same for kc2apl. put in comment if don't already have)
     apl2kc_df = apl2kc_df[apl2kc_df.roi == 'CA(R)'].copy()
 
     # filtering pratyush recommended. he doesn't think the other fragments (which
@@ -1753,9 +1758,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     repro_preprint_s1d: bool = False, return_olfsysm_vars: bool = False,
     # TODO TODO implement
-    # TODO rename 'broadcell_...'?
+    # TODO rename 'broadcell_...'? (actually just rename to something generic, then add
+    # other kwargs to control what defines the cells to boost)
+    # TODO TODO TODO add other options for defining cells to boost APL on. want
+    # multiresponders as one option [could keep them defined by mask saved by
+    # natmix_data/analysis.py], but also want options for:
+    # 1) KCs w/ more community PN input (or more input from some input set of
+    #    glomeruli?)
+    # 2) KCs w/ more input from periphery
     multiresponder_APL_boost: Optional[float] = None,
     _multiresponder_mask: Optional[pd.Series] = None,
+    boost_wKCAPL: Literal[False, True, 'only'] = False,
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
     # TODO doc point of sim_odors. do we need to pass them in (not typically, no)?
     # (even when neither tuning nor running on any hallem data?)
@@ -1846,6 +1859,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         repro_preprint_s1d: (internal use only) whether to add fake odors + return data
             to allow reproduction of preprint figure S1D (showing model response rates
             to fake CO2, fake ms, and real eb)
+
+        boost_wKCAPL: if boosting APL via `multiresponder_APL_boost=<float>`, will only
+            boost `wAPLKC` if this is False.
+
+            If True, will boost both `wAPLKC` and `wKCAPL` (by the same
+            `multiresponder_APL_boost` factor).
+
+            If 'only', will NOT boost `wAPLKC` and will only boost `wKCAPL` for these
+            cells.
 
 
     Returns:
@@ -3036,52 +3058,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wKCAPL = wKCAPL / wKCAPL.mean()
         # TODO maybe only scale one or the other? (does seem to work* scaling both...)
 
-        # TODO delete? (implemented below, though imperfect, since it's after tuning.
-        # eh, i might prefer it after tuning anyway?)
-        # TODO also implement for use_connectome_APL_weights=False case (+
-        # check interacting correctly w/ equalize_* branch below, which seems to use
-        # this [wAPLKC/wKCAPL]_arr)
-        """
-        if multiresponder_APL_boost is not None:
-            if _multiresponder_mask is None:
-                # NOTE: just assuming we want to union all the per-panel masks in this
-                # dir (as long as this branch is only hit in the pre-tuning on
-                # control+kiwi data, that should be ok)
-                mask_dir = Path(
-                    '~/src/natmix_data/pdf/scaled_model_versions/final_scaling'
-                ).expanduser()
-
-                mask_paths = list(mask_dir.glob('multiresponder_*.p'))
-                assert len(mask_paths) == 2
-
-                mask = pd.Series(index=wAPLKC.index, data=False)
-                # TODO TODO compare multiresponders across panels
-                # (+ plot clustering of responses across both panels?)
-                for mask_path in mask_paths:
-                    panel_mask = pd.read_pickle(mask_path).droplevel('kc_type')
-                    assert mask.index.names == panel_mask.index.names
-                    # indices can differ b/c cells were already dropped in natmix_data,
-                    # so we can't directly union the Series
-                    mask[panel_mask[panel_mask].index] = True
-
-                    # TODO warn about how many cells we have for each, how many
-                    # overlap?
-            else:
-                mask = _multiresponder_mask
-
-            # TODO TODO assert index of mask matches something else?
-
-            warn(f'scaling wAPLKC by {multiresponder_APL_boost=} for '
-                f'{mask.sum()} cells (hack to try to remove multi-responders)!'
-            )
-
-            # NOTE: JUST boosting wAPLKC for now, not also wKCAPL
-            # TODO TODO problem that mean is no longer 1? did anything rely on that?
-            # can i scale after tuning instead? (does some combinations of olfsysm
-            # options support that?)
-            wAPLKC.loc[mask] = wAPLKC.loc[mask] * multiresponder_APL_boost
-        """
-
         wAPLKC_arr = np.expand_dims(wAPLKC.values, 1)
         assert wAPLKC_arr.shape == (mp.kc.N, 1)
         rv.kc.wAPLKC = wAPLKC_arr.copy()
@@ -3768,9 +3744,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         spike_counts = spike_counts[:, n_hallem_odors:]
     #
 
+    # TODO TODO check this multiresponder_APL_boost path also works in
+    # use_connectome_APL_weights=False case. (add to unit test, if not already there)
+    # (+ probably support if not)
+    #
     # TODO TODO modify so we can pass vector wAPLKC, and move this earlier?
     # (may even work to have passed vector wAPLKC take place of connectome_wAPLKC
     # outputs, where it is scaled to mean of 1 and then scaled via wAPLKC_scale)
+    # (had initially tried this boost pre-tuning, but didn't get it working there.
+    # commented block with that code exists in first commit w/ multiresponder_APL_boost)
     #
     # NOTE: currently need to implement in all final calls (after any pre-tuning calls),
     # since we don't have a way to pass vector wAPLKC into subsequent calls. this is
@@ -3805,35 +3787,67 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO assert index of mask matches something else?
 
-        warn(f'scaling wAPLKC by {multiresponder_APL_boost=} for '
-            f'{mask.sum()} cells (hack to try to remove multi-responders)!'
-        )
+        # TODO or delete all these None defs, and define these + print whether we are
+        # boosting each specific var or not?
+        mask_mean_wAPLKC_before = None
+        nonmask_mean_wAPLKC = None
+        mask_mean_wAPLKC_after = None
+
+        mask_mean_wKCAPL_before = None
+        nonmask_mean_wKCAPL = None
+        mask_mean_wKCAPL_after = None
+
+        boosting_wAPLKC = False
+        boosting_wKCAPL = False
+        #
 
         wAPLKC_arr = rv.kc.wAPLKC.copy()
 
-        mask_mean_wAPLKC_before = wAPLKC_arr[mask].mean()
-        nonmask_mean_wAPLKC = wAPLKC_arr[~mask].mean()
+        # for boost_wKCAPL=True, both wAPLKC and wKCAPL are boosted.
+        # for boost_wKCAPL=False, only wAPLKC boosted.
+        if boost_wKCAPL in (False, True):
+            if boost_wKCAPL == False:
+                vars_being_boosted = 'wAPLKC (NOT wKCAPL)'
+            else:
+                vars_being_boosted = 'wAPLKC AND wKCAPL'
+                boosting_wKCAPL = True
 
-        wAPLKC_arr[mask] *= multiresponder_APL_boost
+            boosting_wAPLKC = True
 
-        mask_mean_wAPLKC_after = wAPLKC_arr[mask].mean()
+            mask_mean_wAPLKC_before = wAPLKC_arr[mask].mean()
+            nonmask_mean_wAPLKC = wAPLKC_arr[~mask].mean()
 
-        rv.kc.wAPLKC = wAPLKC_arr
+            wAPLKC_arr[mask] *= multiresponder_APL_boost
+
+            mask_mean_wAPLKC_after = wAPLKC_arr[mask].mean()
+
+            rv.kc.wAPLKC = wAPLKC_arr
+        else:
+            assert boost_wKCAPL == 'only'
+            vars_being_boosted = 'ONLY wKCAPL (not wAPLKC)'
+            boosting_wKCAPL = True
+
+        if boost_wKCAPL in (True, 'only'):
+            wKCAPL_arr = rv.kc.wKCAPL.copy()
+
+            assert wKCAPL_arr.shape[0] == 1 and len(wKCAPL_arr.shape) == 2
+            assert len(wAPLKC_arr) == wKCAPL_arr.shape[1]
+
+            mask_mean_wKCAPL_before = wKCAPL_arr[:, mask].mean()
+            nonmask_mean_wKCAPL = wKCAPL_arr[:, ~mask].mean()
+
+            wKCAPL_arr[:, mask] *= multiresponder_APL_boost
+
+            mask_mean_wKCAPL_after = wKCAPL_arr[:, mask].mean()
+
+            rv.kc.wKCAPL = wKCAPL_arr
+
+        warn(f'scaling {vars_being_boosted} by {multiresponder_APL_boost=} for '
+            f'{mask.sum()} cells (hack to try to remove multi-responders)!'
+        )
 
         mp.kc.tune_apl_weights = False
 
-        # TODO delete comment.
-        #
-        # need True to get new weights to apply?(seems to be doing nothing? huh?)
-        # def wasn't doing nothing, when looking from new unit test. probably only
-        # appeared to be doing nothing when was not propagating from pre-tuning to
-        # kiwi/control single panel run after. False still seems likely more of what i
-        # want.
-        #osm.run_KC_sims(mp, rv, True)
-        #
-        # try with False again (does seem more reasonable in test, where
-        # we are just using megamat data w/ no pretuning, and same kiwi/control mask)?
-        #
         osm.run_KC_sims(mp, rv, False)
 
         spike_counts_before = spike_counts.copy()
@@ -3841,11 +3855,27 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         responses = rv.kc.responses.copy()
         spike_counts = rv.kc.spike_counts.copy()
 
-        # TODO turn some of this into (also?) assertions?
-        warn(f'boosting multiresponder wAPLKC:\n'
-            f' mean non-multiresponder wAPLKC:    {nonmask_mean_wAPLKC:.3f}\n'
-            f' mean multiresponder wAPLKC before: {mask_mean_wAPLKC_before:.3f}\n'
-            f' mean multiresponder wAPLKC after:  {mask_mean_wAPLKC_after:.3f}\n'
+        boost_msg = f'boosting multiresponder {vars_being_boosted}:\n'
+        # TODO move boost_msg def above, and remove boosting_w[APLKC|KCAPL] vars (only
+        # used for this)?
+        if boosting_wAPLKC:
+            boost_msg += (
+                f' mean non-multiresponder wAPLKC:    {nonmask_mean_wAPLKC:.3f}\n'
+                f' mean multiresponder wAPLKC before: {mask_mean_wAPLKC_before:.3f}\n'
+                f' mean multiresponder wAPLKC after:  {mask_mean_wAPLKC_after:.3f}\n'
+            )
+        if boosting_wKCAPL:
+            boost_msg += (
+                f' mean non-multiresponder wKCAPL:    {nonmask_mean_wKCAPL:.3f}\n'
+                f' mean multiresponder wKCAPL before: {mask_mean_wKCAPL_before:.3f}\n'
+                f' mean multiresponder wKCAPL after:  {mask_mean_wKCAPL_after:.3f}\n'
+            )
+        #
+
+        # TODO turn some of this into (also?) assertions (/tests? happy w/ tests
+        # as-is?) (that responses actually decreased in class w/ wAPLKC boosted, as long
+        # as it wasn't just wKCAPL that was boosted)?
+        warn(boost_msg +
 
             ' total multiresponder spikes before:     '
                 f'{spike_counts_before[mask.values].sum()}\n'
@@ -3860,8 +3890,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 f'{spike_counts[~mask.values].sum()}'
         )
 
-        del (spike_counts_before, nonmask_mean_wAPLKC, mask_mean_wAPLKC_after,
-            mask_mean_wAPLKC_before
+        del (vars_being_boosted, spike_counts_before, nonmask_mean_wAPLKC,
+            mask_mean_wAPLKC_after, mask_mean_wAPLKC_before, nonmask_mean_wKCAPL,
+            mask_mean_wKCAPL_after, mask_mean_wKCAPL_before, boosting_wAPLKC,
+            boosting_wKCAPL, wAPLKC_arr
         )
     #
 
@@ -7351,6 +7383,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # so we won't have responses on both panels as currently run, unless we explicitly
     # added a call to run on both panels [in a separate step after pre-tuning])
 
+    # TODO TODO also version that shows any mask used for apl boosting, for row colors
+    # (maybe in addition to KC_TYPE colors, if easily possible, in which case it
+    # wouldn't need to be in separate plot(s))
+
     # TODO TODO also make a plot that is clustering on spike_counts, and showing
     # subtypes when available, just as natmix_data does (could maybe just move that code
     # here? don't need in two places)
@@ -8059,11 +8095,21 @@ def save_model(model, path: Path) -> None:
 # Remy-paper)
 def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     roi_depths=None, skip_sensitivity_analysis: bool = False,
-    skip_models_with_seeds: bool = False, skip_hallem_models: bool = False) -> None:
-    # TODO TODO when is it ok for certain_df to have NaNs? does seem current input has
+    skip_models_with_seeds: bool = False, skip_hallem_models: bool = False,
+    first_model_kws_only: bool = False) -> None:
+    # TODO when is it ok for certain_df to have NaNs? does seem current input has
     # some NaNs, which are only for some odors [for which no odors is NaN for all
     # fly-glomeruli]. any restrictions (if none, why was sam having issues?)
-    """
+    # TODO allow passing in model_kw_list?
+    """Passes input through dF/F -> est spike delta function, runs through MB model.
+
+    Calls `fit_and_plot_mb_model` for each of several parameter options for the model,
+    currently defined below in `model_kw_list`. Each call will have a directory created
+    with model outputs (under `parent_plot_dir / 'mb_modeling/<panel>/<param_dir>'`).
+
+    Some outputs under `parent_plot_dir / 'mb_modeling'` and `<panel>` sub-directories
+    describe dF/F -> est spike delta function, parameters, and outputs.
+
     Args:
         certain_df: dataframe of shape (# odors [including repeats], # fly-glomeruli),
             with dF/F values from [potentially multiple] flies.
@@ -8078,6 +8124,9 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             any model output directories (and other across-model plots).
 
             In typical use from `al_analysis.py`, this might be 'pebbled_6f/pdf/ijroi'.
+
+        first_model_kws_only: only runs the model with the first set of parameters (in
+            `model_kw_list` in this function), to more quickly test changes to model.
     """
     # TODO (not using roi_depths really, so not a big deal) why do roi_depths seem to
     # have one row per panel, rather than per recording?  current input has column
@@ -10112,73 +10161,54 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         # TODO add assertion below that there are no dupes in this list (exclude things
         # that don't actually affect model outputs)
         model_kw_list = [
-            # TODO delete? prob
-            #dict(
-            #    orn_deltas=pebbled_input_df,
-            #    tune_on_hallem=False,
-            #    pn2kc_connections='hemibrain',
-            #    weight_divisor=20,
-
-            #    homeostatic_thrs=True,
-
-            #    use_connectome_APL_weights=True,
-
-            #    comparison_orns=comparison_orns,
-            #    comparison_kc_corrs=comparison_kc_corrs,
-            #),
-            #dict(
-            #    orn_deltas=pebbled_input_df,
-            #    tune_on_hallem=False,
-            #    pn2kc_connections='hemibrain',
-            #    weight_divisor=20,
-
-            #    homeostatic_thrs=True,
-
-            #    comparison_orns=comparison_orns,
-            #    comparison_kc_corrs=comparison_kc_corrs,
-            #),
-            #
-
             # TODO delete?
             # TODO TODO TODO or restore, replacing multiresponder_APL_boost w/ something
             # similar for other classes of KCs (e.g. based on # of inputs from
             # "community" PNs or # of inputs in core/periphery)
             #
-            # dict(
-            #     orn_deltas=pebbled_input_df,
-            #     tune_on_hallem=False,
-            #     pn2kc_connections='hemibrain',
-            #     weight_divisor=20,
+            dict(
+                orn_deltas=pebbled_input_df,
+                tune_on_hallem=False,
+                pn2kc_connections='hemibrain',
+                weight_divisor=20,
 
-            #     use_connectome_APL_weights=True,
-            #     equalize_kc_type_sparsity=True,
+                use_connectome_APL_weights=True,
+                equalize_kc_type_sparsity=True,
 
-            #     # TODO TODO need to do as a second call w/ fixed_thr=<vector>
-            #     # (since assertions tripping if only this passed, and may be hard to
-            #     # fix?) (may also need to not do in equalize_kc_type_sparsity=True...)
-            #     # (moving that second call into fit_mb_model now)
-            #     #wAPLKC=4.83,
+                # TODO TODO need to do as a second call w/ fixed_thr=<vector>
+                # (since assertions tripping if only this passed, and may be hard to
+                # fix?) (may also need to not do in equalize_kc_type_sparsity=True...)
+                # (moving that second call into fit_mb_model now)
+                #wAPLKC=4.83,
 
-            #     multiresponder_APL_boost=10.0,
-            #     #multiresponder_APL_boost=3.0,
-            #     # TODO TODO rename to something more generic, like APL_boost
-            #     # (and _multiresponder_mask to _APL_boost_mask or something)
-            #     #multiresponder_APL_boost=20.0,
+                # TODO TODO try this boost without equalize_kc_type_sparsity=True?
+                multiresponder_APL_boost=10.0,
+                #multiresponder_APL_boost=3.0,
+                # TODO TODO rename to something more generic, like APL_boost
+                # (and _multiresponder_mask to _APL_boost_mask or something)
+                #multiresponder_APL_boost=20.0,
 
-            #     sensitivity_analysis=True,
-            #     # TODO refactor to use common megamat sens kws by default (share w/
-            #     # below)?
-            #     sens_analysis_kws=dict(
-            #         n_steps=3,
-            #         fixed_thr_param_lim_factor=0.5,
-            #         wAPLKC_param_lim_factor=5.0,
-            #         drop_nonpositive_fixed_thr=True,
-            #         drop_negative_wAPLKC=True,
-            #     ),
+                # TODO TODO TODO add other kwargs to control whether wKCAPL
+                # also/exclusively gets boosted
+                # TODO option to boost this by a different factor? how to choose tho?
+                boost_wKCAPL=True,
+                # TODO delete
+                #boost_wKCAPL='only',
 
-            #     comparison_orns=comparison_orns,
-            #     comparison_kc_corrs=comparison_kc_corrs,
-            # ),
+                sensitivity_analysis=True,
+                # TODO refactor to use common megamat sens kws by default (share w/
+                # below)?
+                sens_analysis_kws=dict(
+                    n_steps=3,
+                    fixed_thr_param_lim_factor=0.5,
+                    wAPLKC_param_lim_factor=5.0,
+                    drop_nonpositive_fixed_thr=True,
+                    drop_negative_wAPLKC=True,
+                ),
+
+                comparison_orns=comparison_orns,
+                comparison_kc_corrs=comparison_kc_corrs,
+            ),
             #
 
             dict(
@@ -10697,8 +10727,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                         # stuff here?
                         if k not in (
                             'orn_deltas', 'comparison_kc_corrs', 'comparison_orns',
-                            # TODO TODO like this here?
-                            'multiresponder_APL_boost'
+
+                            # NOTE: would need to move these APL boost params out of
+                            # here, if I were to move boosting to pre-tuning
+                            'multiresponder_APL_boost', '_multiresponder_mask',
+                            'boost_wKCAPL',
                         )
                     }
 
@@ -10819,22 +10852,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                             f'{target_sparsity_factor_pre_APL:.1f}'
                         )
 
-                    # TODO TODO TODO move this to only calls after pre-tuning?
-                    # (+exclude this param from those used for pre-tuning)
-                    '''
-                    multiresponder_APL_boost = model_kws.get('multiresponder_APL_boost',
-                        None
-                    )
-                    if multiresponder_APL_boost:
-                        assert multiresponder_APL_boost is not None
-                        assert isinstance(multiresponder_APL_boost, float)
-                        tuning_param_str += ('_multiresponder-APL-boost_'
-                            f'{multiresponder_APL_boost:.1f}'
-                        )
-                        del _model_kws['multiresponder_APL_boost']
-                    '''
-                    #
-
                     homeostatic_thrs = model_kws.get('homeostatic_thrs', False)
                     if homeostatic_thrs:
                         tuning_param_str += '_hstatic-thrs_True'
@@ -10916,11 +10933,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 # saved this run.
                 model_params.to_csv(model_param_csv, index=False)
 
-            # TODO delete
-            # TODO TODO convert this into CLI arg to break after first item
-            #print('BREAK-ing AFTER FIRST MODEL_KW_LIST ENTRY. delete me!')
-            #break
-            #
+            if first_model_kws_only:
+                warn('breaking after first model_kw_list entry, because '
+                    f'{first_model_kws_only=}!'
+                )
+                break
 
         if skip_models_with_seeds:
             warn('not making across-model plots (S1C/2E) (b/c '

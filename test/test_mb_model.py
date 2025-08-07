@@ -664,93 +664,52 @@ def test_multiresponder_APL_boost(orn_deltas):
     _, sc1, _, params1 = _fit_mb_model(orn_deltas=orn_deltas, **kws)
     assert sc1.index.get_level_values('kc_id').equals(mask.index)
 
+    boost_factor = 3.0
     _, sc2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
-        multiresponder_APL_boost=3.0, _multiresponder_mask=mask, **kws
+        multiresponder_APL_boost=boost_factor, _multiresponder_mask=mask, **kws
     )
-    # TODO can i check output has APL boosted for those cells? will it, or still just a
-    # scalar returned?
 
-    # TODO should wAPLKC_scale be different? figure out after behavior of spike_counts
+    assert params1['wAPLKC'][~mask.values].equals(params2['wAPLKC'][~mask.values])
 
-    # TODO TODO TODO check sc2 actually has less spikes in boosted APL cells
-    # (or at least that responses overall are different)
+    # NOTE: if i moved boosting pre-tuning, would not be true that
+    # wAPLKC_scale/wKCAPL_scale would be the same. if i did add suport for that, may
+    # still want to leave a path that keeps current post-tuning-APL-boost behavior.
+    #
+    # NOTE: if boost_wKCAPL=True/'only' (not default =False), then wKCAPL Series would
+    # be expected to change (only in mask, as w/ wAPLKC)
+    should_be_unchanged = ['wAPLKC_scale', 'wKCAPL_scale', 'wKCAPL']
+    # TODO refactor this check? don't have a fn for this already (dict_equal?)?
+    for k in should_be_unchanged:
+        v1 = params1[k]
+        v2 = params2[k]
+        if hasattr(v1, 'equals'):
+            assert v1.equals(v2)
+        else:
+            # shouldn't need np.isclose b/c it should be the same unchanged value
+            assert v1 == v2
 
-    # wtf is going on: (from when multiresponder APL was boosted as very last thing in
-    # fit_mb_model, rather than when initially setting wAPLKC weights from connectome,
-    # and with True as last arg to run_KC_sims)
-    # ipdb> sc1.sum().sum()
-    # 6308.0
-    # ipdb> sc2.sum().sum()
-    # 19576.0
-    #
-    # ipdb> params1['wAPLKC'][~mask.values].mean()
-    # 4.014387762041912
-    # ipdb> params1['wAPLKC'][mask.values].mean()
-    # 2.376764707821043
-    #
-    # ipdb> params2['wAPLKC'][~mask.values].mean()
-    # 15.615968394343037
-    # ipdb> params2['wAPLKC'][mask.values].mean()
-    # 27.736844140271568
-
-    # TODO delete
-    print()
-    print(f'{params1["wAPLKC_scale"]=}')
-    print(f'{params2["wAPLKC_scale"]=}')
-    print()
-    print(f'{sc1.sum().sum()=}')
-    print(f'{sc2.sum().sum()=}')
-    print()
-    print(f'{sc1[mask.values].sum().sum()=}')
-    print(f'{sc2[mask.values].sum().sum()=}')
-    print()
-    print(f"{params1['wAPLKC'][~mask.values].mean()=}")
-    print(f"{params1['wAPLKC'][mask.values].mean()=}")
-    print()
-    print(f"{params2['wAPLKC'][~mask.values].mean()=}")
-    print(f"{params2['wAPLKC'][mask.values].mean()=}")
-    #
-
-    # now w/ multiresponder APL scaling still as last operation w/ model, but with False
-    # as last arg to run_KC_sims:
-    # params1["wAPLKC_scale"]=3.8899999999999992
-    # params2["wAPLKC_scale"]=3.8899999999999992
-    #
-    # sc1.sum().sum()=6308.0
-    # sc2.sum().sum()=5228.0
-    #
-    # sc1[mask.values].sum().sum()=2693.0
-    # sc2[mask.values].sum().sum()=1359.0
-    #
-    # params1['wAPLKC'][~mask.values].mean()=4.014387762041912
-    # params1['wAPLKC'][mask.values].mean()=2.376764707821043
-    #
-    # params2['wAPLKC'][~mask.values].mean()=4.014387762041912
-    # params2['wAPLKC'][mask.values].mean()=7.13029412346313
-    #
-    # so was it something else about context i have in actual kiwi/control input call
-    # (which is tuned on both panels, which might be the main issue)? (YES! fixed now)
-    # need to move this boosting to initial tuning, and then somehow propagate thru? (or
-    # have it take affect despite being pre-tuned?) (doing the latter for now, and
-    # excluding this param from the pre-tuning part)
-    #
-    # TODO if i decide i want to only support setting the APL boost after
-    # pre-tuning, add something here to test that? might be hard. could work better as
-    # some assertions in live code (in model_mb_responses, between pre-tuning and
-    # subsequent calls)?
+    # TODO also test including new boost_wKCAPL (w/ at least =False and =True values)
+    assert params1['wAPLKC'][~mask.values].equals(params2['wAPLKC'][~mask.values])
+    assert (params1['wAPLKC'][mask.values] * boost_factor).equals(
+        params2['wAPLKC'][mask.values]
+    )
 
     # responses in other cells might get slightly elevated, b/c of decreased APL
     # activity caused by decreased activity among the multiresponders. seemed to be
     # pretty subtle.
     assert (sc1[~mask.values] <= sc2[~mask.values]).all().all()
 
-    # TODO TODO TODO add main assertions here now (should be working)
+    # TODO check at least some fraction has had spike counts reduced (or was already 0
+    # for that (odor, cell) pair)?
+    # NOTE: not all (cell, odor) pairs w/ non-zero spikes have had # of spikes reduced
+    # (but at least none should be increased)
+    assert (sc1[mask.values] > sc2[mask.values]).any().any()
+
+    assert (sc1[mask.values].sum().sum() * .75) > sc2[mask.values].sum().sum()
 
     # TODO TODO also test w/o connectome APL? work in that case, given how currently
     # implemented? (if not, restore assertion triggering in !connectome_APL & boost_APL
     # case, in fit_mb_model)
-
-    import ipdb; ipdb.set_trace()
 
 
 # TODO TODO test that confirms scaling wPNKC doesn't change output (not sure it's even
@@ -791,7 +750,12 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     paper hemibrain model outputs (at least in terms of spike counts, which are among
     committed outputs).
 
-    `tmp_path` is a pytest fixture for a temporary path.
+    `tmp_path` is a pytest fixture for a temporary path. Will be saved under a subdir of
+    `/tmp` that pytest creates (currently under `/tmp/pytest-of-<user>` for me).
+    Contents would by default be preserved (until `/tmp` is cleared by restarting), but
+    I've configured pytest (via `pyproject.toml`) to remove each of these after each
+    test finishes (as contents can be quite large in total; enough to cause disk space
+    issues).
     """
     model_output_dir1 = Path('data/sent_to_remy/2025-03-18/'
         'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
