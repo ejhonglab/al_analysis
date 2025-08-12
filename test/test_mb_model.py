@@ -477,6 +477,9 @@ def _read_spike_counts(output_dir: Path) -> pd.DataFrame:
     return pd.read_csv(output_dir / 'spike_counts.csv', index_col=[KC_ID, KC_TYPE])
 
 
+# TODO TODO add test that use_connectome_APL_weights=True path w/ those vectors set to
+# all 1 [would have to add way of hardcoding them] (the normalized weight vectors)
+# produces same effect as use_connectome_APL_weights=False (any reason it shouldn't?)?
 def test_fixed_inh_params(orn_deltas):
     """
     Tests that outputs of calls where APL<->KC weights are tuned to a target response
@@ -557,7 +560,7 @@ def test_fixed_inh_params(orn_deltas):
         print()
 
 
-# TODO combine w/ above? /rename?
+# TODO combine w/ above? /rename (to something w/ "equalize", at least?)?
 def test_fixed_inh_params2(tmp_path, orn_deltas):
     """
     Tests equalize_kc_type_sparsity=True output can be reproduced by setting
