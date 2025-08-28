@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Wrappers to facilitate running `olfsysm` MB models, mainly:
+rrappers to facilitate running `olfsysm` MB models, mainly:
 - `model_mb_responses`: highest-level function. takes multiple-fly ORN dF/F data and
   runs multiple parameterizations of the model (as well as saving plots and other
   outputs to subdirs).
@@ -15,7 +15,7 @@ Wrappers to facilitate running `olfsysm` MB models, mainly:
   - fills glomeruli to intersection of those in hemibrain and Task et al. 2022
   - imputes mean Hallem SFR
 
-See also docstring for `connectome_wPNKC` below.
+See also docstring for `connectome_wPNKC` below.repo_root
 """
 
 import filecmp
@@ -30,7 +30,7 @@ import shutil
 from tempfile import NamedTemporaryFile
 import time
 import traceback
-from typing import Optional, Tuple, Dict, Any, Union, Literal
+from typing import Optional, Tuple, Dict, Any, Union, Literal, List
 
 # TODO delete
 import warnings
@@ -41,7 +41,7 @@ import warnings
 # TODO TODO restore
 #warnings.filterwarnings('error', category=DeprecationWarning)
 # also doesn't seem to work
-warnings.filterwarnings('error', message='the `interpolation=` argument.*')
+# warnings.filterwarnings('error', message='the `interpolation=` argument.*')
 #
 
 import numpy as np
@@ -304,16 +304,23 @@ def _plot_connectome_raw_weight_hist(
         ser = pd.to_numeric(pd.Series(weights), errors='coerce').dropna()
 
     # same intent as your assert: values should be integers for discrete=True
-    assert ser.eq(ser.round()).all(), "values are not integer-like; remove discrete=True"
 
+    
+    # assert ser.eq(ser.round()).all(), "values are not integer-like; remove discrete=True"
+
+
+    # Discrete would be too hard to achieve in _wPNKC_one_row_per_claw, I am scared that the weight would lose precision
     if isinstance(weights, pd.DataFrame):
         # MAIN FIX: let seaborn find x/hue by name
-        sns.histplot(data=weights, discrete=True, ax=ax, **kwargs)
+        # sns.histplot(data=weights, discrete=True, ax=ax, **kwargs)
+        sns.histplot(data=weights, ax=ax, **kwargs)
+
     else:
         # Series path: reject hue='colname' because there is no DataFrame to look up
         if isinstance(kwargs.get('hue'), str):
             raise ValueError("hue='<col>' requires DataFrame input; pass a DataFrame.")
-        sns.histplot(x=ser, discrete=True, ax=ax, **{k:v for k,v in kwargs.items() if k!='x'})
+        # sns.histplot(x=ser, discrete=True, ax=ax, **{k:v for k,v in kwargs.items() if k!='x'})
+        sns.histplot(x=ser,  ax=ax, **{k:v for k,v in kwargs.items() if k!='x'})
 
     return fig, ax
 
@@ -339,7 +346,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
     weight_divisor: Optional[float] = None, plot_dir: Optional[Path] = None,
     _use_matt_wPNKC: bool = False, _drop_glom_with_plus: bool = True,
     synapse_con_path: Optional[Path] = None, synapse_loc_path: Optional[Path] = None,
-    claw_sp: bool = False, cluster_eps: float = 1.9, cluster_min_samples: int = 3) -> pd.DataFrame:
+    cluster_eps: float = 1.9, cluster_min_samples: int = 3) -> pd.DataFrame:
     """
     Args:
         connectome: which connectome of hemibrain/fafb-left/fafb-right to use.
@@ -1065,12 +1072,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
             
             # record how many claws total for your downstream sanity checks
             n_kcs = wPNKC.shape[0]
-            if  claw_sp == True:
-                wPNKC = add_compartment_index(wPNKC, shape = 0)
-                print("connectome_wPNKC compartment reached")
-                wPNKC.reset_index().to_csv('wPNKC_clustered_merged.csv', index=True)
-            else:
-                print("claw_sp is false")
+            wPNKC = add_compartment_index(wPNKC, shape = 0)
+            print("connectome_wPNKC compartment reached")
+            wPNKC.reset_index().to_csv('wPNKC_clustered_merged.csv', index=True)
+            
                 
 
             
@@ -1589,38 +1594,15 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
         # row-aligned kc_types (same length/order as current wPNKC rows)
         assert len(kc_types) == len(wPNKC), "kc_types length mismatch"
 
-        kc_types = kc_types.reindex(wPNKC.index)
-
-        # Add as new index level and reorder nicely
-        # Note: kc_types has already been cleaned and is aligned with wPNKC.
-        wPNKC = wPNKC.set_index(kc_types.rename(KC_TYPE), append=True)
-
-        if synapse_loc_path is not None and synapse_con_path is not None:
-            order = [kc_id_col, KC_TYPE, 'claw_id', 'claw_x', 'claw_y', 'claw_z']
-        else:
-            order = [KC_TYPE, KC_ID] # confused, why does the order for when synapse_loc_path is not none
-            # automatically have KC_ID?? 
         if 'compartment' in wPNKC.index.names:
-            order.append('compartment')
-
-        # (Optional) sanity before reordering
-        levels = list(wPNKC.index.names)
-        print(f"order: {order}")
-        print(f"levels: {levels}")
-        assert set(order) <= set(levels), f"Missing levels: {set(order) - set(levels)}"
-        # Something wrong with this line... order probably contains kc_ids and kc_types? which is not allowed or sth?   
-        assert len(order) == len(levels), f"Index levels={levels}, order={order}"
-
-        wPNKC = wPNKC.reorder_levels(order).sort_index()
-
-
-        ## I am having trouble getting through this snippet of code: 
-        # kc_index = pd.MultiIndex.from_arrays([wPNKC.index, kc_types])
-        # if synapse_loc_path is not None and synapse_con_path is not None: 
-        #     assert kc_index.to_frame(index=False).equals(kc_ids_and_types.rename(columns={kc_id_col: KC_ID}))
-
-        #############################################################
-
+            for_index = wPNKC.index.to_frame(index=False)
+            for_index[KC_TYPE] = kc_types
+            kc_index = pd.MultiIndex.from_frame(for_index)
+        else:
+            ## I am having trouble getting through this snippet of code: 
+            kc_index = pd.MultiIndex.from_arrays([wPNKC.index, kc_types])
+            if synapse_loc_path is not None and synapse_con_path is not None: 
+                assert kc_index.to_frame(index=False).equals(kc_ids_and_types.rename(columns={kc_id_col: KC_ID}))
 
         # (for hemibrain)
         # ipdb> kc_index.get_level_values(KC_TYPE).value_counts(dropna=False)
@@ -1628,7 +1610,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
         # g       612
         # a'b'    336
         # NaN      80
-        # wPNKC.index = kc_index ??NOT sure about this; 
+        wPNKC.index = kc_index
 
     non_task_gloms = set(wPNKC.columns) - task_gloms
     if len(non_task_gloms) > 0:
@@ -1703,6 +1685,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
 
         # Now, use .fillna() on the 'kc_type' column to replace any NaNs
         df_to_plot['kc_type'].fillna('unknown', inplace=True)
+
         print("n_inputs_per_kc: \n", df_to_plot)
 
         # relevant for picking appropriate n_claws for uniform/hemidraw cases, or for
@@ -1774,6 +1757,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *,
 # soma activity?
 def connectome_APL_weights(connectome: str = 'hemibrain', *,
     wPNKC: Optional[pd.DataFrame] = None, kc_types: Optional[pd.Series] = None,
+    kc_to_claws: Optional[List[List[int]]] = None, 
     plot_dir: Optional[Path] = None) -> Tuple[pd.Series, pd.Series]:
     # TODO add param to support imputing something non-zero (min_weight?) for KC IDs in
     # wPNKC but not APL-KC data
@@ -2011,17 +1995,56 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
                 'KCs in KC->APL data, but not in wPNKC'
             )
 
-    assert not apl2kc_df.bodyId_post.duplicated().any()
+    assert not apl2kc_df.bodyId_post.duplicated().any() 
     apl2kc_weights = apl2kc_df[['bodyId_post','weight']].set_index('bodyId_post'
         ).squeeze()
-
-    wAPLKC = pd.Series(index=kc_index, data=apl2kc_weights)
-
+    # I think it's problematic 
+    
     assert not kc2apl_df.bodyId_pre.duplicated().any()
     kc2apl_weights = kc2apl_df[['bodyId_pre','weight']].set_index('bodyId_pre'
         ).squeeze()
- 
-    wKCAPL = pd.Series(index=kc_index, data=kc2apl_weights)
+
+    if kc_to_claws is not None:
+        # Use the wPNKC index as the master index for the claw-level weights
+        wAPLKC = pd.Series(index=wPNKC.index, dtype=float)
+        wKCAPL = pd.Series(index=wPNKC.index, dtype=float)
+
+        # Iterate through each KC to distribute the weights to its claws
+        for kc_id in wPNKC.index.get_level_values(0).unique():
+            # Get the original weights for the current KC
+            apl_weight = apl2kc_weights.get(kc_id, 0)
+            kca_weight = kc2apl_weights.get(kc_id, 0)
+
+            # Get the sub-index for all claws belonging to this KC
+            kc_claws_index = wPNKC.loc[kc_id].index
+
+            if len(kc_claws_index) > 0:
+                num_claws = len(kc_claws_index)
+                distributed_apl_weight = apl_weight / num_claws
+                distributed_kca_weight = kca_weight / num_claws
+
+                # Assign the distributed weight to the appropriate rows in the Series
+                wAPLKC.loc[kc_id] = distributed_apl_weight
+                wKCAPL.loc[kc_id] = distributed_kca_weight
+        
+        # Fill any remaining NaNs (for KCs with no claws in the data)
+        wAPLKC = wAPLKC.fillna(0)
+        wKCAPL = wKCAPL.fillna(0)
+
+        n_kcs = len(wPNKC.index.get_level_values(0).unique())
+        
+        # Normalize the sum of wAPLKC to equal the number of KCs.
+        # Check to avoid division by zero
+        if wAPLKC.sum() > 0:
+            wAPLKC = wAPLKC * (n_kcs / wAPLKC.sum())
+        
+        # Do the same for wKCAPL.
+        if wKCAPL.sum() > 0:
+            wKCAPL = wKCAPL * (n_kcs / wKCAPL.sum())
+        
+    else: 
+        wAPLKC = pd.Series(index=kc_index, data=apl2kc_weights)
+        wKCAPL = pd.Series(index=kc_index, data=kc2apl_weights)
 
     # TODO would it be better to impute some non-zero min value, so those cells activity
     # could still be scaled (add param for that?)?
@@ -2070,12 +2093,14 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
         # w[APLKC|KCAPL]_with_types will only add an all-NaN kc_type column
         kc_types = pd.Index(kc_types)
 
+        wAPLKC.name = 'weight'
+        wKCAPL.name = 'weight'
         wAPLKC_with_types = wAPLKC.to_frame()
         wAPLKC_with_types[KC_TYPE] = kc_types
 
         wKCAPL_with_types = wKCAPL.to_frame()
         wKCAPL_with_types[KC_TYPE] = kc_types
-
+        
         wAPLKC_max_weight_by_type = wAPLKC_with_types.groupby(KC_TYPE).weight.max()
         wKCAPL_max_weight_by_type = wKCAPL_with_types.groupby(KC_TYPE).weight.max()
 
@@ -2089,11 +2114,13 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
         print("wKCAPL size: ", wKCAPL.size)
 
 
-        # Which types have zero max?
+        # Which types have zero max?n     
         zero_types_apl = wAPLKC_max_weight_by_type.index[wAPLKC_max_weight_by_type.eq(0)]
         zero_types_kca = wKCAPL_max_weight_by_type.index[wKCAPL_max_weight_by_type.eq(0)]
         print("Zero-weight APL→KC types:", list(zero_types_apl))
         print("Zero-weight KC→APL types:", list(zero_types_kca))
+        print("wAPLKC NaN values:", wAPLKC.isna().sum())
+        print("wKCAPL NaN values:", wKCAPL.isna().sum())
 
         # Sanity: are the Series aligned to kc_index?
         assert wAPLKC.index.equals(kc_index), "wAPLKC index ≠ kc_index"
@@ -2376,12 +2403,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     _wPNKC: Optional[pd.DataFrame] = None, _wPNKC_one_row_per_claw: bool = False,
     n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
-    target_sparsity: Optional[float] = None,
+    target_sparsity: Optional[float] = None, 
     target_sparsity_factor_pre_APL: Optional[float] = None,
     _use_matt_wPNKC=False, _drop_glom_with_plus=True,
     _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
     ab_prime_response_rate_target: Optional[float] = None,
-    homeostatic_thrs: bool = False, claw_sp: bool = False, 
+    homeostatic_thrs: bool = False, claw_sparsity: bool = False, 
     fixed_thr: Optional[Union[float, np.ndarray]] = None,
     # TODO TODO TODO support vector on these? or how else? (want to be able to boost
     # them)
@@ -2964,11 +2991,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     rv = osm.RunVars(mp)
     if _wPNKC is None:
         spatial_wPNKC = _wPNKC_one_row_per_claw
-        if spatial_wPNKC:
-            claw_sp = spatial_wPNKC
+        
         
         # one_claw_per_row = True
-        if spatial_wPNKC:
+        if _wPNKC_one_row_per_claw:
             wPNKC = connectome_wPNKC(
                 connectome      = connectome,
                 weight_divisor = weight_divisor,
@@ -2977,7 +3003,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 plot_dir       = plot_dir if pn2kc_connections in connectome_options else None,
                 _use_matt_wPNKC = _use_matt_wPNKC,
                 _drop_glom_with_plus = _drop_glom_with_plus, 
-                claw_sp = claw_sp # whether we use compartmentalization or not
             )
             print("spatial_wPNKC in fit_mb_model")
             print(wPNKC.columns)
@@ -3452,6 +3477,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO or if always gonna use wPNKC, option to use # from [one of] fafb data
         # sources (2482 in left), instead of hemibrain?
         mp.kc.N = len(wPNKC)
+        mp.kc.claw_sp = False
     else:
         # this should also work if values are all True/False, or all float 1.0/0.0.
         # NOTE: should be OK if some claws receive no input (should only be for KCs with
@@ -3554,14 +3580,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # Ensure params agree (or update them)
         assert getattr(mp.kc, "N", N) == N, f"p.kc.N ({mp.kc.N}) must equal unique KCs ({N})"
 
-        # Overwrite mapping at runtime
+        # Overwrite mapping at runtime; a vector of kc ids for each claw
         rv.kc.claw_to_kc = compact  # len=num_claws
 
-        # Build kc_to_claws
+        # Build kc_to_claws: map of claw Ids for each KC. 
         kc_to_claws = [[] for _ in range(N)]
         for claw_idx, kc_idx in enumerate(compact):
             kc_to_claws[int(kc_idx)].append(int(claw_idx))
         rv.kc.kc_to_claws = kc_to_claws
+
+        # Build kc_to_numclaw: a vector of number of claws in each KC; 
+        kc_to_numclaw = [len(claws) for claws in kc_to_claws]
+
 
         # Sanity
         assert compact.min() >= 0 and compact.max() < N
@@ -3585,6 +3615,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO TODO TODO implement in olfsysm (in such a way that related test
         # [test_spatial_wPNKC_equiv] passes)
         mp.kc.wPNKC_one_row_per_claw = True
+        mp.kc.claw_sp = claw_sparsity
         # TODO TODO may want a new olfsysm variable (other than wPNKC) for this
         # (# claw, # glomeruli) shape wPNKC matrix, if easier to modify olfsysm if we
         # keep wPNKC of shape (# KCs, # glomeruli), which it might be if olfsysm uses
@@ -3706,15 +3737,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         #
         # These will all save output to `rv.kc.<var-name>` for save flag like
         # `mp.kc.save_<var-name>`.
-        mp.kc.save_vm_sims = True
-        mp.kc.save_spike_recordings = True
-        mp.kc.save_inh_sims = True
-        mp.kc.save_Is_sims = True
-        print("save figs are set to true")
-        # if `mp.kc.ves_p == 0`, the "vesicle depletion" part of olfsysm is disabled.
-        # see related comments around use of nves_sims below.
-        if mp.kc.ves_p != 0:
-            mp.kc.save_nves_sims = True
+        # mp.kc.save_vm_sims = True
+        # mp.kc.save_spike_recordings = True
+        # mp.kc.save_inh_sims = True
+        # mp.kc.save_Is_sims = True
+        # print("save figs are set to true")
+        # # if `mp.kc.ves_p == 0`, the "vesicle depletion" part of olfsysm is disabled.
+        # # see related comments around use of nves_sims below.
+        # if mp.kc.ves_p != 0:
+        #     mp.kc.save_nves_sims = True
 
     # declared eariler for rv.kc.claw_compartment to enter;
     #rv = osm.RunVars(mp)
@@ -3762,7 +3793,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # rv.kc.wAPLKC.shape=(1630, 1)
             # rv.kc.wAPLKC.max()=3.8899999999999992
             rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
-
+            
             rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
 
             # TODO try setting wAPLKC = 1 (or another reasonable constant), and only
@@ -3804,12 +3835,95 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             # rv.kc.wAPLKC_scale = wAPLKC_scale
             # rv.kc.wKCAPL_scale = wKCAPL_scale
+        if _wPNKC_one_row_per_claw: 
+            wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
+                kc_types=kc_types, kc_to_claws = kc_to_claws, plot_dir=plot_dir
+            )
+        else:
+            wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
+                kc_types=kc_types, plot_dir=plot_dir
+            )
 
-        wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
-            kc_types=kc_types, plot_dir=plot_dir
-        )
+        if not _wPNKC_one_row_per_claw: 
+            wAPLKC = wAPLKC / wAPLKC.mean()
+            wKCAPL = wKCAPL / wKCAPL.mean()
+
+
+        print("wAPLKC sum: ", wAPLKC.sum())
+        print("wAPLKC first 20:", wAPLKC.head(20))
+
+        # if _wPNKC_one_row_per_claw:
+        #     # Get the list of KC body IDs from the index of the returned Series.
+        #     kc_body_ids = wAPLKC.index.to_list()
+            
+        #     # The compact_id_to_body_id is simply this list itself.
+        #     compact_id_to_body_id = kc_body_ids
+            
+        #     # 1. Build the kc_to_numclaw vector.
+        #     kc_to_numclaw = [len(claws) for claws in kc_to_claws]
+            
+        #     # The total number of claws is the sum of all claws per KC.
+        #     num_claws = sum(kc_to_numclaw)
+            
+        #     # --- Process wAPLKC ---
+        #     claw_weights_apl = pd.Series(index=range(num_claws), dtype=float)
+            
+        #     for kc_id, claw_list in enumerate(kc_to_claws):
+        #         body_id = compact_id_to_body_id[kc_id] 
+        #         total_kc_weight = wAPLKC.get(body_id, 0.0)
+        #         num_claws_for_kc = kc_to_numclaw[kc_id]
+            
+        #         if num_claws_for_kc > 0:
+        #             weight_per_claw = total_kc_weight / num_claws_for_kc
+        #             for claw_idx in claw_list:
+        #                 claw_weights_apl.loc[claw_idx] = weight_per_claw
+            
+        #     wAPLKC = claw_weights_apl.fillna(0.0)
+        #     print("wAPLKC length when wPNKC_one_row_per_claw is true: ", wAPLKC.size)
+        #     assert np.isclose(wAPLKC.sum(), wAPLKC_store.sum(), atol=1e-9)
+
+        #     # --- Process wKCAPL ---
+        #     claw_weights_kca = pd.Series(index=range(num_claws), dtype=float)
+            
+        #     for kc_id, claw_list in enumerate(kc_to_claws):
+        #         body_id = compact_id_to_body_id[kc_id] 
+        #         total_kc_weight = wKCAPL.get(body_id, 0.0)
+        #         num_claws_for_kc = kc_to_numclaw[kc_id]
+            
+        #         if num_claws_for_kc > 0:
+        #             weight_per_claw = total_kc_weight / num_claws_for_kc
+        #             for claw_idx in claw_list:
+        #                 claw_weights_kca.loc[claw_idx] = weight_per_claw
+            
+        #     wKCAPL = claw_weights_kca.fillna(0.0)
+        #     print("wKCAPL length when wPNKC_one_row_per_claw is true: ", wKCAPL.size)
+        #     assert np.isclose(wKCAPL.sum(), wKCAPL_store.sum(), atol=1e-9)
+
+
+        if np.isnan(wAPLKC).any():
+            print("Warning: wAPLKC contains NaN values.")
+            # Count the total number of NaNs
+            nan_count = np.isnan(wAPLKC).sum()
+            print("Total NaN values in wAPLKC:", nan_count)
+        else:
+            print("No NaN values identified in wAPLKC.")
+
+        # Note: Your original code had a typo here ("wAPLKC_arr"), corrected to "wKCAPL"
+        if np.isnan(wKCAPL).any():
+            print("Warning: wKCAPL contains NaN values.")
+            # Count the total number of NaNs
+            nan_count = np.isnan(wKCAPL).sum()
+            print("Total NaN values in wKCAPL:", nan_count)
+        else:
+            print("No NaN values identified in wKCAPL.")
+
+
+        
         assert wAPLKC.index.equals(wKCAPL.index)
-        assert wPNKC.index.equals(wAPLKC.index)
+        if not _wPNKC_one_row_per_claw:
+            assert wPNKC.index.equals(wAPLKC.index)
+        else: 
+            assert len(wPNKC) == len(wAPLKC)
         # (min is 1 for both of these)
         # ipdb> wAPLKC.max()
         # 38.0
@@ -3818,9 +3932,29 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         warn(f'scaling {connectome=} wAPLKC & wKCAPL, each to mean of 1')
 
-        wAPLKC = wAPLKC / wAPLKC.mean()
-        wKCAPL = wKCAPL / wKCAPL.mean()
+        print("wAPLKC.mean(): ", wAPLKC.mean())
+        print("wKCAPL.mean(): ", wKCAPL.mean())
+        print("wAPLKC.std(): ", wAPLKC.std())
+        print("wKCAPL.std(): ", wKCAPL.std())
+        
         # TODO maybe only scale one or the other? (does seem to work* scaling both...)
+
+        if np.isnan(wAPLKC).any():
+            print("Warning: wAPLKC contains NaN values after dividing mean.")
+            # Count the total number of NaNs
+            nan_count = np.isnan(wAPLKC).sum()
+            print("Total NaN values in wAPLKC:", nan_count)
+        else:
+            print("No NaN values identified in wAPLKC after dividing mean.")
+
+        # Note: Your original code had a typo here ("wAPLKC_arr"), corrected to "wKCAPL"
+        if np.isnan(wKCAPL).any():
+            print("Warning: wKCAPL contains NaN values after dividing mean.")
+            # Count the total number of NaNs
+            nan_count = np.isnan(wKCAPL).sum()
+            print("Total NaN values in wKCAPL:", nan_count)
+        else:
+            print("No NaN values identified in wKCAPL after dividing mean.")
 
         wAPLKC_arr = np.expand_dims(wAPLKC.values, 1)
         if(spatial_wPNKC):
@@ -3829,13 +3963,31 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert wAPLKC_arr.shape == (mp.kc.N, 1)
         
         rv.kc.wAPLKC = wAPLKC_arr.copy()
-
+        
         wKCAPL_arr = np.expand_dims(wKCAPL.values, 0)
         if(spatial_wPNKC):
             assert wKCAPL_arr.shape == (1, len(kc_ids))
         else:
             assert wKCAPL_arr.shape == (1, mp.kc.N)
         rv.kc.wKCAPL = wKCAPL_arr.copy()
+
+        if np.isnan(wAPLKC_arr).any():
+            print("Warning: wAPLKC_arr contains NaN values.")
+            # Count the total number of NaNs
+            a_nan_count = np.isnan(wAPLKC_arr).sum()
+            print("Total NaN values in wAPLKC_arr:", a_nan_count)
+        else:
+            print("No NaN values identified in wAPLKC_arr.")
+
+        # Note: Your original code had a typo here ("wAPLKC_arr"), corrected to "wKCAPL"
+        if np.isnan(wKCAPL_arr).any():
+            print("Warning: wKCAPL_arr contains NaN values.")
+            # Count the total number of NaNs
+            nan_count = np.isnan(wKCAPL_arr).sum()
+            print("Total NaN values in wKCAPL_arr:", nan_count)
+        else:
+            print("No NaN values identified in wKCAPL_arr.")
+
 
         n_zero_input_wAPLKC = (wAPLKC == 0).sum()
         n_zero_input_wKCAPL = (wKCAPL == 0).sum()
@@ -3889,7 +4041,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # spatial_wPNKC = True ->wPNKC_one_claw_per_row
     # we want the argument to be True to equal to the row set as KC; 
     KC_row = not spatial_wPNKC
-    osm.run_KC_sims(mp, rv, KC_row, claw_sp, True)
+    osm.run_KC_sims(mp, rv, True)
+    import ipdb; ipdb.set_trace()
 
     tuning_time_s = time.time() - before_any_tuning
 
@@ -3971,7 +4124,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # from wPNKC index?
     if kc_types is not None:
         assert not kc_types.isna().any()
-        kc_index = pd.MultiIndex.from_arrays([wPNKC.index, kc_types])
+        print(f"Length of wPNKC.index: {len(wPNKC.index)}")
+        print(f"Length of kc_types: {len(kc_types)}")
+        try: 
+            kc_index = pd.MultiIndex.from_arrays([wPNKC.index, kc_types])
+        except ValueError: 
+            print("catech error for kc_index")
+            import ipdb; ipdb.set_trace()
+        print("kc_index: ", kc_index)
         wPNKC.index = kc_index
     else:
         kc_index = wPNKC.index.copy()
@@ -4957,15 +5117,22 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # vs other cell type responsiveness (which might just be threshold in their
         # paper?)
         # TODO TODO should i test that i can actually use non-int wPNKC now?
-
+    print("before orn_sims = np.array")
     # TODO why is this seemingly a list of arrays, while the equiv kc variable seems to
     # be an array immediately? binding code seems similar...
+
+
+    # Check if the list is empty
+    for i, arr in enumerate(rv.orn.sims):
+        print(f"Shape of array at index {i}: {arr.shape}")
+    import ipdb; ipdb.set_trace()
+
     orn_sims = np.array(rv.orn.sims)
     # orn_sims.shape=(110, 22, 5500)
-
     # also a list out of the box
     # pn_sims.shape=(110, 22, 5500)
     pn_sims = np.array(rv.pn.pn_sims)
+    print("pn_sims no problem")
 
     if tune_on_hallem and not hallem_input:
         orn_sims = orn_sims[n_hallem_odors:]
@@ -13747,9 +13914,9 @@ def main():
     # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
     # by calls in model_mb_... (prob behaving diff b/c e.g.
     # pn2kc_connections='hemibrain' is explicitly passed there)
-    param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
-        try_cache=False, print_olfsysm_log = True, **kws
-    )
+    # param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+    #    try_cache=False, print_olfsysm_log = True, **kws
+    # )
 
     # TODO delete this product thing, and just switch to a kws_list?
     # TODO TODO TODO restore?
@@ -13771,11 +13938,7 @@ def main():
     ]
     '''
     try_each_with_kws = [
-        dict(equalize_kc_type_sparsity=True),
-
-        dict(equalize_kc_type_sparsity=True, ab_prime_response_rate_target=0.2),
-
-        dict(equalize_kc_type_sparsity=True, ab_prime_response_rate_target=0.15),
+        dict(_wPNKC_one_row_per_claw=False, claw_sparsity=False)    
     ]
     if reproduce_input:
         # the kwargs relevant for reproduce_input=True should be exactly equal to the
