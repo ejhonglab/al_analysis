@@ -3970,10 +3970,20 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert len(kc_id_levels) == 2
         else:
             assert len(kc_id_levels) == 1
-        kc_id = kc_id_levels.pop()
+        # kc_id = kc_id_levels.pop()
+        kc_id_col = "b.bodyId"   # ← single source of truth
+        assert kc_id_col in wPNKC.index.names, f"Missing KC id level: {kc_id_col}"
 
+        kc_id = kc_id_col
+        idx = wPNKC.index.to_frame(index=False)
+        
+        print(kc_id)
+        dups_mask = idx.duplicated([kc_id, claw_id], keep=False)
+        print("[dup count]", dups_mask.sum())
+        print(idx.loc[dups_mask, [kc_id, claw_id, 'compartment' if 'compartment' in idx else kc_id]].head(20))
         assert not wPNKC.index.to_frame(index=False)[[kc_id, claw_id]].duplicated(
             ).any()
+        
 
         checks = True
         if checks:
@@ -14618,7 +14628,7 @@ def main():
     ]
     '''
     try_each_with_kws = [
-        dict(_wPNKC_one_row_per_claw=False, claw_sparsity=False)    
+        dict(_wPNKC_one_row_per_claw=True, claw_sparsity=False)    
     ]
     if reproduce_input:
         # the kwargs relevant for reproduce_input=True should be exactly equal to the
