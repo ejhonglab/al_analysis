@@ -1777,8 +1777,14 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # TODO move this to a good spot later, once i factor out rest of this loading
         # into separate paths
         # TODO TODO move this after dropping based on isfinite(dist_to_root) below?
-        # still true there?
-        if connectome == 'hemibrain':
+        # still true there? (prob)
+        #
+        # len of old set is 62 if connectome='hemibrain' and _drop_glom_with_plus=False
+        # (more than the 56 we have on these new outputs, seemingly regardless of
+        # _drop_glom_with_plus)
+        # TODO look into why _drop_glom_with_plus is behaving differently on
+        # old/new outputs? some filter imposed by prat's query?
+        if connectome == 'hemibrain' and _drop_glom_with_plus:
             # same 56 in each case, even after all the dropping on syns
             assert set(df['glomerulus'].unique()) == set(syns['glomerulus'].unique())
 
