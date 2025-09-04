@@ -448,6 +448,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     _, spike_counts, wPNKC2, _ = _fit_mb_model(orn_deltas=orn_deltas,
         pn2kc_connections=connectome, **wPNKC_kws
     )
+    
     assert wPNKC.equals(wPNKC2)
 
     # just establishing new path allowing us to hardcode _wPNKC works
@@ -815,6 +816,43 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     #
 
     assert idf.equals(df)
+
+
+def test_one_row_per_claw(tmp_path, orn_deltas): 
+
+    kws = dict(
+        # I would not normally recommend you hardcode any of these except perhaps
+        # weight_divisor=20. The defaults target_sparsity=0.1 and
+        # _drop_glom_with_plus=True should be fine.
+        weight_divisor=20, use_connectome_APL_weights=True, _wPNKC_one_row_per_claw=True
+    )
+
+    plot_root = tmp_path / 'one_row_per_claw'
+
+    param_dict_defined = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, fixed_thr=232.34284608546403, wAPLKC=9.5578, **kws)
+
+    # TODO modify this fn so dirname includes all same params by default (rather than
+    # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
+    # by calls in model_mb_... (prob behaving diff b/c e.g.
+    # pn2kc_connections='hemibrain' is explicitly passed there)
+    param_dict = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, **kws)
+
+    output_dir = (plot_root / param_dict['output_dir']).resolve()
+    assert output_dir.is_dir()
+    assert output_dir.parent == plot_root
+
+    #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
+    # kc_id         ...
+    # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
+    # 1             0.0       0.0      0.0  ...         0.0        0.0      0.0
+    # ...           ...       ...      ...  ...         ...        ...      ...
+    # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
+    # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
+    df = _read_spike_counts(output_dir)
+
+    df_ids = df.index.get_level_values(KC_ID)
+    assert not df_ids.duplicated().any()
+    assert not df_ids.isna().any()
 
 
 def test_hemibrain_matt_repro():
