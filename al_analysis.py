@@ -3401,8 +3401,18 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     """
     # TODO factor out this odor-index checking to hong2p.olf?
     # may also have 'panel', 'repeat', 'odor2', and arbitrary other metadata levels.
-    assert 'odor1' in trial_df.index.names or 'odor1' == trial_df.index.name, \
-        f'{trial_df.index=}'
+
+    # TODO delete try/except
+    try:
+        assert 'odor1' in trial_df.index.names or 'odor1' == trial_df.index.name, \
+            f'{trial_df.index=}'
+
+    # TODO TODO TODO fix how csvinfo plotting seems broken now. tried making some plots
+    # for ruoyi (late august 2025), from committed validation2/megamat data, and was
+    # getting this error (and garbage plots, which seemed to only have solvent?)
+    except AssertionError:
+        import ipdb; ipdb.set_trace()
+    #
 
     # TODO also check ROI index (and also factor that to hong2p)
     # TODO maybe also support just 'fly' on the column index (where plot title might be

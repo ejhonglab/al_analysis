@@ -81,13 +81,35 @@ def is_pytest_capturing_stderr() -> bool:
     There are probably other ways to disable capture other than `-s`, which disables all
     capturing (stdout as well). This method will probably also work in that context.
     """
+    # TODO does pytest directly expose it's capturing method in and env var or
+    # something? use that instead, if so?
+    # TODO maybe it also exposes whether it will show capture at end? use that too?
+
     # from my testing (w/ pytest 8.3.5 and python 3.8.12), it seems .name on sys.stderr
     # can distinguish whether pytest was called with `-s` or not.
     #
-    # with -s, it's: '<stderr>'
+    # with -s (--capture=no), it's: '<stderr>'
     #
     # without -s, it's like: "<_io.FileIO name=8 mode='rb+' closefd=True>"
-    return sys.stderr.name != '<stderr>'
+    stderr = sys.stderr
+    # should work for --capture=fd  (default), =no (-s), and =sys , but get:
+    # `AttributeError: '_io.BytesIO' object has no attribute 'name'` if using
+    # --capture=sys-tee
+    if hasattr(stderr, 'name'):
+        return stderr.name != '<stderr>'
+
+    # assuming we are in --capture=sys-tee or --capture=sys case here
+    # (both currently hit this code path on my system)
+    #
+    # (not sure --capture=sys-tee works w/ rest of my system here... i.e. that prints
+    # and warnings are still interleaved as i want [and ideally printed in real time],
+    # and that debugger interface can still be used normally. sys-tee seems like it
+    # might interfere w/ debugger being used normally, tho it does also print in real
+    # time [in addition to capturing])
+    #
+    # TODO TODO need a test case w/ some interleaved prints and warnings before a
+    # breakpoint, then try all the capturing methods and see which are available
+    return True
 
 
 # TODO maybe log all warnings?
@@ -95,9 +117,12 @@ def warn(msg) -> None:
     # since i couldn't otherwise figure out how to get pytest to show warnings before
     # debugger breakpoint, especially if pytest is configured to ignore warnings, so now
     # we'll just also print it before pytest cleanup.
+    # TODO check pytest config options again for something to disable warning-exclusive
+    # capturing / formatting / output control?
     #
     # if pytest is capturing stderr, we probably aren't debugging, and thus shouldn't
     # need these extra prints.
+    # TODO once per run, warn we are changing warning behavior based on this?
     if in_pytest() and not is_pytest_capturing_stderr():
         print(colored(str(msg), 'yellow'))
 

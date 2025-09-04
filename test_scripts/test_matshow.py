@@ -13,6 +13,8 @@ from hong2p import viz
 diverging_cmap = plt.get_cmap('RdBu_r')
 
 def main():
+    # TODO say what this is at least (+ maybe convert to another format and commit
+    # that?)
     s2 = pd.read_pickle('s2.p')
     print(s2)
 

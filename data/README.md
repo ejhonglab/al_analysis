@@ -45,6 +45,15 @@
      - model KC outputs that still had the offset in the dF/F -> est. spike delta fn,
        and thus still had unnecessarily high KC correlations. Anoop never really used.
 
+  - `2024-05-16`
+    - final megamat uniform model responses (binarized) (+ parameters & wPNKC)
+      (these responses also sent to Remy on Slack 2025-02-05).
+
+      `test_uniform_paper_repro` checks we can reproduce.
+
+    - also contains megamat hemibrain responses, but those are probably not quite the
+      final versions, as I believe the wd20 code came later (that included some
+      influence of synapse counts, rather than just counting each PN-KC pair as a claw).
 
 - `from_remy`
   - `megamat17`

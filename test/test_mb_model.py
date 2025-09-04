@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+from itertools import product
 
 import numpy as np
 import pandas as pd
@@ -24,10 +25,17 @@ al_util.verbose = True
 # repo)? easily possible?
 pytestmark = pytest.mark.filterwarnings('ignore::UserWarning')
 
-model_output_dir1 = Path('data/sent_to_remy/2025-03-18/'
+# TODO need .resolve() call? pytest only ever going to be called from repo root?
+sent_to_remy = Path('data/sent_to_remy').resolve()
+
+# TODO rename to indicate hemibrain / paper?
+model_output_dir1 = sent_to_remy / ('2025-03-18/'
     'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
     'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
-).resolve()
+)
+
+# TODO add tests checking the key parts of example scripts for sam / ruoyi / george /
+# yang all still work (how to organize?)
 
 @pytest.fixture(scope='session')
 # the name of this function is the name of the variable made accessible to test using
@@ -64,6 +72,8 @@ def _fit_and_plot_mb_model(*args, **kwargs):
     return fit_and_plot_mb_model(*args, try_cache=False, **kwargs)
 
 
+# TODO skip this test if i don't plan on fixing/finishing it anytime soon
+# (were there not meaningful portions of it working tho?)
 def test_vector_thr(orn_deltas):
     """
     Tests that `mp.kc.use_vector_thr` + hardcoded `rv.kc.thr` allows changing
@@ -145,6 +155,9 @@ def test_vector_thr(orn_deltas):
     # ab         0.099017
     # g          0.098904
     # unknown    0.073529
+    # TODO TODO now dropping KC_TYPE from variable_n_claw=True cases (like this one), so
+    # would need to add back if i wanted
+    # TODO TODO what is purpose of comparison to this anyway tho?
     u7_avg_response_rate_by_type = u7_responses.groupby(KC_TYPE).mean().T.mean()
     assert np.isclose(
         u7_avg_response_rate_by_type['g'], u7_avg_response_rate_by_type, rtol=0.35
@@ -269,7 +282,22 @@ def test_vector_thr(orn_deltas):
     print(f'{even_avg_response_rate=}')
     print('even_avg_response_rate_by_type:')
     print(even_avg_response_rate_by_type)
-    import ipdb; ipdb.set_trace()
+    breakpoint()
+    #
+    # TODO delete comment block below
+    # TODO try using breakpoint instead of this? work better (/ same, w/ less
+    # configuration required in pyproject.toml? may just require --pdb?)
+    # pytest.set_trace()?
+    # breakpoint() does seem to provide much nicer output than ipdb.set_trace() (at
+    # least when relying on --pdb instead of -s), even though breakpoint is now
+    # configured to also give us ipdb (it seems)
+    # TODO actually true pdb.set_trace() disables capturing automatically (yes, -s not
+    # needed. breakpoint() seems to do same)? some other part of my config interfering
+    # with that? or is it really special and neither breakpoint() (w/ my current
+    # debugger class) or ipdb.set_trace() can replace that?
+    #import pdb; pdb.set_trace()
+    # TODO try? nah (why not referenced in docs? deprecated?)
+    #pytest.set_trace()
     #
 
     # TODO TODO TODO (maybe in a script, not this test) compare consequences of using
@@ -311,7 +339,7 @@ def test_vector_thr(orn_deltas):
     print(f'{pboost_avg_response_rate=}')
     print('pboost_avg_response_rate_by_type:')
     print(pboost_avg_response_rate_by_type)
-    import ipdb; ipdb.set_trace()
+    breakpoint()
     #
 
     # TODO TODO TODO can i get vector thr to work with connectome APL weights?
@@ -351,6 +379,11 @@ def test_homeostatic_thrs(orn_deltas):
     assert spike_counts.equals(spike_counts2)
 
 
+# TODO remove this xfail mark after i merge tianpei's code
+@pytest.mark.xfail(reason='one-row-per-claw code not yet finished + merged',
+    # AttributeError: 'olfsysm.MPKC' object has no attribute 'kc_ids'
+    raises=AttributeError
+)
 def test_spatial_wPNKC_equiv(orn_deltas):
     """
     Tests that one-row-per-claw wPNKC can recreate one-row-per-KC hemibrain outputs,
@@ -474,8 +507,11 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     # is probably a more important test than shuffling rows)
 
 
-def _read_spike_counts(output_dir: Path) -> pd.DataFrame:
-    return pd.read_csv(output_dir / 'spike_counts.csv', index_col=[KC_ID, KC_TYPE])
+def _read_spike_counts(output_dir: Path, *, index_col=[KC_ID, KC_TYPE]) -> pd.DataFrame:
+    # TODO may need to special case reading ones with seeds (factor to mb_model at that
+    # point, if gonna add more complicated logic to read header and determine from
+    # there?)
+    return pd.read_csv(output_dir / 'spike_counts.csv', index_col=index_col)
 
 
 # TODO TODO add test that use_connectome_APL_weights=True path w/ those vectors set to
@@ -748,6 +784,10 @@ def test_multiresponder_APL_boost(orn_deltas):
 # TODO TODO test like this for paper uniform outputs (hemidraw prob less important b/c
 # it's flawed and i think we'll likely leave out of submitted version, unless we end up
 # making it match new wPNKC (from weight_divisor=20) better)
+#
+# TODO also check we can repro 2025-03-19 validation2 (hemibrain) outputs?
+# 2025-02-19/validation2_hemibrain_model*.csv(s)? what are the CSVs i should check
+# against?
 def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     """
     Tests that, starting from committed estimated-ORN-spike-deltas, we can reproduce
@@ -761,10 +801,10 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     test finishes (as contents can be quite large in total; enough to cause disk space
     issues).
     """
-    model_output_dir1 = Path('data/sent_to_remy/2025-03-18/'
+    model_output_dir1 = sent_to_remy / ('2025-03-18/'
         'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
         'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
-    ).resolve()
+    )
 
     kws = dict(
         # I would not normally recommend you hardcode any of these except perhaps
@@ -773,7 +813,10 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
         target_sparsity=0.0915, weight_divisor=20, _drop_glom_with_plus=False
     )
 
-    plot_root = tmp_path / 'hemibrain_paper_repro'
+    # TODO resolve actually needed?
+    # TODO this causing issues i'm doing resolve here and not below now?
+    # (maybe only in some weird cases like running two pytest processes at once?)
+    plot_root = (tmp_path / 'hemibrain_paper_repro').resolve()
 
     # TODO modify this fn so dirname includes all same params by default (rather than
     # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
@@ -781,7 +824,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     # pn2kc_connections='hemibrain' is explicitly passed there)
     param_dict = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, **kws)
 
-    output_dir = (plot_root / param_dict['output_dir']).resolve()
+    output_dir = plot_root / param_dict['output_dir']
     assert output_dir.is_dir()
     assert output_dir.parent == plot_root
 
@@ -853,6 +896,117 @@ def test_one_row_per_claw(tmp_path, orn_deltas):
     df_ids = df.index.get_level_values(KC_ID)
     assert not df_ids.duplicated().any()
     assert not df_ids.isna().any()
+
+
+# TODO also check against 2025-02-19/validation2_uniform_model*.csv(s)? (no megamat data
+# under 2025-02-19)
+# TODO mark this test as slow (~10min)
+def test_uniform_paper_repro(tmp_path, orn_deltas):
+    """Similar purpose to `test_hemibrain_paper_repro`, but for uniform wPNKC outputs.
+    """
+    # TODO need .resolve() call? pytest only ever going to be called from repo root?
+    sent_to_anoop = Path('data/sent_to_anoop').resolve()
+
+    # TODO delete this one + use below
+    # v2 dir outputs should never really have been used, and (from data/README.md)
+    # "still had the offset in the dF/F -> est. spike delta fn, and thus still had
+    # unnecessarily high KC correlations"
+    may26_dir = sent_to_anoop / 'v2'
+    #
+
+    # TODO also check uniform_model_wPNKC_n-seeds_100.csv /
+    # megamat_uniform_model_params.csv in same folder?
+    #
+    # contains close-to but probably not final hemibrain (wd20 came after), but what
+    # should be final uniform responses.
+    may29_dir = sent_to_anoop / '2024-05-16'
+
+    # NOTE: it is actually 2024-05-16 that I can repro (at least for first 2 seeds, and
+    # w/ _drop_gloms_with_plus=False, which does matters), and not v2.
+    # _drop_gloms_with_plus=True does not work to reproduce either.
+    #
+    uniform_response_csv_name = 'megamat_uniform_model_responses_n-seeds_100.csv'
+    paper_uniform_responses = may29_dir / uniform_response_csv_name
+    assert paper_uniform_responses.exists()
+
+    # TODO rename 'model_kc' -> KC_ID (='kc_id') in those committed outputs?
+    # NOTE: older output still used 'model_kc' instead of KC_ID, for KC ID column
+    pdf = pd.read_csv(paper_uniform_responses, index_col=['model_kc', 'seed'])
+    # TODO share w/ n_megamat_odors elsewhere?
+    assert len(pdf.columns) == 17
+
+    # TODO delete
+    #pdf2 = pd.read_csv(may26_dir / uniform_response_csv_name,
+    #    index_col=['model_kc', 'seed']
+    #)
+    #assert pdf.index.equals(pdf2.index)
+    #assert pdf.columns.equals(pdf2.columns)
+    #assert set(np.unique(pdf.values.flat)) == set(np.unique(pdf2.values.flat)) == {
+    #    0.0, 1.0
+    #}
+    #assert pdf.dtypes.equals(pdf2.dtypes)
+    ## TODO check first 2 don't happen two match (below)
+    #assert not pdf.equals(pdf2)
+    #
+
+    kws = dict(
+        pn2kc_connections='uniform', n_claws=7, target_sparsity=0.0915,
+    )
+
+    # TODO resolve actually needed?
+    plot_root = (tmp_path / 'uniform_paper_repro').resolve()
+    assert not plot_root.exists()
+
+    # TODO get 100 from mb_model.N_SEEDS?
+    # NOTE: this product() should give us all n_seeds=2 cases before the =100 ones
+    for n_seeds, _drop_glom_with_plus in product([2, 100], [False, True]):
+        print(f'{n_seeds=}')
+        print(f'{_drop_glom_with_plus=}')
+
+        if _drop_glom_with_plus and n_seeds > 2:
+            # neither committed sent_to_anoop output matches in
+            # _drop_glom_with_plus=True case, when looking at first 2 seeds. no need to
+            # run all the seeds there.
+            continue
+
+        param_dict = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+            # TODO actually need tune_on_hallem=False for some reason?
+            n_seeds=n_seeds, _drop_glom_with_plus=_drop_glom_with_plus, **kws
+        )
+        assert plot_root.is_dir()
+        output_dir = plot_root / param_dict['output_dir']
+        assert output_dir.is_dir()
+        assert output_dir.parent == plot_root
+
+        # TODO actually check this against  2024-05-16 dir contents? that seems like it
+        # might be dir to use anyway? (/delete)
+        wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
+        #
+
+        # TODO change fit_and_plot... so there is still a seed level in n_seeds=1 case?
+        # seed still available elsewhere for repro (param dict?)? prob not?
+        df = _read_spike_counts(output_dir, index_col=[KC_ID, 'seed'])
+
+        first_seeds = set(df.index.unique('seed'))
+        assert len(first_seeds) == n_seeds
+
+        # these committed responses were binarized. no spike counts in those two
+        # sent_to_anoop dirs (v2 / 2024-05-16)
+        df[df > 0] = 1
+
+        pdf2 = pdf[pdf.index.get_level_values('seed').isin(first_seeds)]
+
+        # TODO delete
+        #pdf2f = pdf2[pdf2.index.get_level_values('seed').isin(first_seeds)]
+        #assert not pdf2f.equals(df)
+        #
+
+        if not _drop_glom_with_plus:
+            assert pdf2.equals(df)
+        else:
+            assert not pdf2.equals(df)
+
+        print()
 
 
 def test_hemibrain_matt_repro():

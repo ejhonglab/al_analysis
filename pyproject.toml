@@ -32,13 +32,51 @@ csvinfo = "load_antennal_csv:csvinfo_cli"
 
 [tool.pytest.ini_options]
 # TODO `minversion = "6.0"` (or whichever version. using 8.3.5, but prob doesn't
-# matter much)?
+# matter much)? (for what? delete?)
+#
+# TODO -q already imply --no-header (not clear from -h output)?
+# may want some of other opts to reduce output (no summary?)
+# TODO some way to get --pdb non-capturing on breakpoints, but don't drop in to
+# post-mortem debugger ever?
+# TODO is there some way to quit out of all tests when exiting a breakpoint
+# encountered on one test (e.g. via Ctrl-D)? (just run pytest w/ -x?)
+#
+# NOTE: will still likely need -s, as currently configured, if breakpoint i want to stop
+# at is an explicit ipdb.set_trace() (or probably even breakpoint()/pdb.set_trace())
+# internal to one of the tests. I think capturing is only disabled automatically if
+# breakpoint()/pdb.set_trace() (and not ipdb.set_trace()) is called from directly within
+# one of the test functions (--pdb may also? not sure how that interacts w/ using
+# ipdb.set_trace()).
+#
+# how does pdbcls interact w/ PYTHONBREAKPOINT? if PYTHONBREAKPOINT=ipdb.set_trace,
+# breakpoint() in a test will no longer automatically disable capturing (need to pass
+# -s). without this env var set, both breakpoint() and pdb.set_trace() will
+# automatically disable capturing.
+# TODO try using conftest.py to manipulate os.environ based on ipython / ipdb
+# availability? may not be able to directly manipulate environ there; instead may need
+# something like: https://stackoverflow.com/questions/71418185/
+#
+# NOTE: --pdbcls=IPython.terminal.debugger:Pdb seems to not require ipdb installed,
+# despite the debug interface seeming the same to me (it may require ipython installed,
+# which is probably heavier. may prefer to find a way to reference ipdb itself?)
+#
+# TODO any reason NOT to just always -s (--capture=no)? could capture actually be
+# useful for me, other than to just suppress output?
+# TODO if ipdb is installed and configured w/ PYTHONBREAKPOINT, does this pdbcls
+# override that? what happens if ipython (or however we got IPython.terminal.debugger)
+# use this?
+#
+# NOTE: seems we must use :TerminalPdb instead of :Pdb, in order for tab complete to
+# work
 #
 # could add doctest here. see hong2p/pytest.ini
-addopts = "--pdbcls=IPython.terminal.debugger:Pdb --tb=native"
+addopts = "--no-header -q --tb=short --pdbcls=IPython.terminal.debugger:TerminalPdb -s"
 testpaths = [
     "test",
 ]
+# TODO try instead keeping some on failure (as long as we also exit on failure?)? w/
+# extra config to more aggressively clear the cache dir?
+#
 # pytest's builtin tmp_path fixture will create temp dirs under /tmp/pytest-of-<user>,
 # and default retention policy ("all") does not clear their contents. The "none"
 # retention policy will remove all of these temp dirs after test completion, regardless
@@ -47,3 +85,5 @@ testpaths = [
 # Setting this to prevent disk space issues caused by just a few runs of
 # test_mb_model.py (where system is not restarted in between, which would clear /tmp).
 tmp_path_retention_policy = "none"
+# TODO try adding pytest-checkipdb? (seems like it's basically a linter to remind you of
+# straggling breakpoints? just use a linter for that instead?)
