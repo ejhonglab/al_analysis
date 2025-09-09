@@ -77,9 +77,6 @@ from hong2p.types import Pathlike
 import olfsysm as osm
 from drosolf import orns
 
-# TODO delete? refactor?
-print("olfsysm loaded from: ", osm.__file__)
-
 import faulthandler, sys
 faulthandler.enable(file=sys.stderr, all_threads=True)
 
@@ -99,6 +96,12 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
 import al_util
 
 
+# TODO TODO add fn to load megamat fixed_thr / wAPLKC params used for model in paper?
+# (-> try using in some other contexts, like for yang's diagnostic mixture model)
+# TODO + include test checking output against params currently loaded but not used in
+# hemibrain repro test? or don't, if i load from there in the first place... then would
+# be a tautology
+
 repo_root = Path(__file__).parent
 
 # e.g. before calculating correlations across model KC populations.
@@ -112,6 +115,9 @@ KC_ID: str = 'kc_id'
 # TODO use (+ in test_mb_model.py and elsewhere) (replacing hardcoded str w/ same value)
 KC_TYPE: str = 'kc_type'
 
+# TODO rename to hemibrain or something? presumably this is specfic to that?
+# TODO move into the one place that uses it (tianpei's part of connectome_wPNKC)
+# (or keep module level and share w/ his script PNKC_claw_plots_dif_color.py?)
 PIXEL_TO_UM = 8/1000
 
 def read_series_csv(csv: Pathlike, **kwargs) -> pd.Series:
@@ -4064,9 +4070,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # (but it's non-spiking... what is reasonable?)
 
     if pn2kc_connections in connectome_options or _wPNKC is not None:
-        # TODO TODO TODO fix how tianpei seemed to need this instead of line below. he
-        # still need it?
-        #rv.kc.wPNKC = wPNKC.values[:, :-1]
         # if `_wPNKC is not None`, its contents were already copied into wPNKC above
         rv.kc.wPNKC = wPNKC
 
@@ -11349,7 +11352,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # (end part to refactor to share w/ copied code)
 
         # TODO TODO TODO remove all non-used kiwi/control odors before tuning (e.g.
-        # binary mixes, etc)?
+        # binary mixes, solvent, etc)?
 
         # TODO add assertion below that there are no dupes in this list (exclude things
         # that don't actually affect model outputs)

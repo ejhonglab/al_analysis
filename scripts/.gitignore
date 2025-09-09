@@ -1,3 +1,6 @@
 # subdirectories in this created by model_banana_iaa_concs.py, each with model outputs
 # for one paramterization of the MB model
 model_banana_iaa_concs/
+
+# model outputs for model_diags_and_synthetic_mixes.py
+diag_est-spike-deltas_for_yang/

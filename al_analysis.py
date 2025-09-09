@@ -3377,6 +3377,8 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
 
     Args:
         trial_df: ['odor1', 'odor2', 'repeat'] index names and a column for each ROI.
+            ['odor2', 'repeat'] are optional, and 'odor' may be used in place of
+            'odor1'.
 
         roi_sort: whether to sort columns
 
@@ -3397,28 +3399,23 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
             matches 'glomerulus' will have a red box drawn around them.
 
         **kwargs: passed thru to hong2p.viz.matshow
-
     """
     # TODO factor out this odor-index checking to hong2p.olf?
     # may also have 'panel', 'repeat', 'odor2', and arbitrary other metadata levels.
-
-    # TODO delete try/except
-    try:
-        assert 'odor1' in trial_df.index.names or 'odor1' == trial_df.index.name, \
-            f'{trial_df.index=}'
-
-    # TODO TODO TODO fix how csvinfo plotting seems broken now. tried making some plots
-    # for ruoyi (late august 2025), from committed validation2/megamat data, and was
-    # getting this error (and garbage plots, which seemed to only have solvent?)
-    except AssertionError:
-        import ipdb; ipdb.set_trace()
-    #
+    if 'odor' in trial_df.index.names:
+        assert 'odor1' not in trial_df.index.names
+        odor_var = 'odor'
+    else:
+        assert 'odor1' in trial_df.index.names
+        odor_var = 'odor1'
 
     # TODO also check ROI index (and also factor that to hong2p)
     # TODO maybe also support just 'fly' on the column index (where plot title might be
     # the glomerulus name, and we are showing all fly data for a particular glomerulus)
 
-    avg_levels = ['odor1']
+    avg_levels = [odor_var]
+    # TODO handle in a way agnostic to # of components? e.g. supporting also 'odor3',
+    # etc, if present
     if 'odor2' in trial_df.index.names:
         avg_levels.append('odor2')
 
@@ -3429,7 +3426,7 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         # TODO or change fn to handle them gracefully (sorting alphabetically w/in?)
         avg_levels = ['panel'] + avg_levels
 
-    if trial_df.index.name == 'odor1':
+    if trial_df.index.name == odor_var:
         # assuming input is mean already columns probably are still just 'roi', as I
         # assume is also true in most cases below (as we are only ever computing
         # groupby->mean across row groups in this fn)
@@ -3577,12 +3574,12 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         # combo stepped around? like the one in here, or the one in
         # natmix_data/analysis.py?)
         for combo in odor_glomerulus_combos_to_highlight:
-            odor1 = combo['odor']
+            odor = combo[odor_var]
             roi = combo['glomerulus']
 
             matching_roi = mean_df.index.get_level_values('roi') == roi
 
-            matching_odor = mean_df.columns.get_level_values('odor1') == odor1
+            matching_odor = mean_df.columns.get_level_values(odor_var) == odor
             if 'odor2' in mean_df.columns.names:
                 matching_odor &= (
                     mean_df.columns.get_level_values('odor2') == solvent_str

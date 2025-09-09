@@ -166,7 +166,22 @@ def get_unique_flies(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
+    """
+    Prints (if `verbose=True`):
+    - # of unique glomeruli, and a list of their names
 
+    - # of glomeruli per fly (and on average)
+
+    - # of flies, and their 'date' + 'fly_num' identifiers (numbers should be unique
+      within each day), with a separate list of any flies that are now marked for
+      exclusion in metadata Google Sheet.
+
+    - # of unique odors per panel, and a list of odors in each
+
+    - # of trials (assumed to be same for each odor?)
+
+    Prints somewhat less if `verbose=False`.
+    """
     df = add_mix_str_index_level(df)
 
     # TODO TODO also switch away from nunique here? see note below
@@ -217,6 +232,8 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
     certain_rois = certain_roi_indices(df)
     certain_df = df.loc[:, certain_rois]
 
+    # TODO TODO also include sam's _t0 / _t1 suffixes as part of uncertainty
+    # determination
     if certain_rois.all():
         print('no glomeruli names indicate uncertainty in identity')
     else:
