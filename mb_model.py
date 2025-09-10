@@ -667,6 +667,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # only doing if _drop_glom_with_plus, so i don't have to also add that flag to
         # dict key (cause it will change set of glomeruli, e.g. w/ hemibrain)
         if _drop_glom_with_plus:
+            print("drop_glom_with_pluse reached? ")
             # (ran after end of first loop over model_kw_list, in model_mb_responses)
             # ipdb> {k: len(v) for k, v in _connectome2glomset.items()}
             # {'fafb-left': 57, 'fafb-right': 56, 'hemibrain': 56}
@@ -3376,7 +3377,30 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 _drop_glom_with_plus=_drop_glom_with_plus,
             )
     else:
+        print("_wPNKC exists")
         wPNKC = _wPNKC.copy()
+        if _wPNKC_one_row_per_claw:
+            print("wPNKC_one_row_per_claw passed in _wPNKC")
+            claw_index = wPNKC.index.copy()
+            ix = wPNKC.index
+            to_drop = [lvl for lvl in ('claw_id','claw_x','claw_y','claw_z','compartment')
+                    if lvl in ix.names]
+            kc_index = (ix.droplevel(to_drop) if to_drop else ix).drop_duplicates()
+            claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
+        else: 
+            print("wPNKC_one_row_per_KC passed in _wPNKC")
+            kc_index = wPNKC.index
+        # Conditionally drop 'kc_type' from wPNKC
+        if isinstance(wPNKC.index, pd.MultiIndex) and (KC_TYPE in wPNKC.index.names):
+            wPNKC = wPNKC.droplevel(KC_TYPE)
+        # Conditionally drop 'kc_type' from kc_index
+        if isinstance(kc_index, pd.MultiIndex) and (KC_TYPE in kc_index.names):
+            kc_index = kc_index.droplevel(KC_TYPE)
+        
+    
+    # def enforce_wPNKC_order(wPNKC: pd.DataFrame, meta_cols=('pre_cell_ids',)) -> pd.DataFrame:
+    #     # canonical order: preserve dict order from task glomeruli
+    #     glom_order = list(orns.task_glomerulus2receptors().keys())
 
     if not _wPNKC_one_row_per_claw:
         # no claw_index needed here
@@ -3470,7 +3494,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 for x in wPNKC.columns
             ], index=glomerulus_index, columns=orn_deltas.columns
         )
-
+        print("orn_deltas pd.Datafram passed")
         # TODO need to be int (doesn't seem so)?
         mean_sfr = sfr.mean()
 
@@ -3522,6 +3546,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         extra_orn_deltas = pd.DataFrame(index=orn_deltas.index, columns=fake_odors,
             data=0
         )
+        print("extra_orn_deltas pd.Datafram passed")
         assert 'odor' in orn_deltas.columns.names
         extra_orn_deltas.columns.name = 'odor'
         # TODO handle appending ' @ 0' automatically if needed (only if i actually
@@ -4056,10 +4081,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # rv.kc.wKCAPL.shape=(1, 1630)
             # rv.kc.wKCAPL.max()=0.002386503067484662
             # rv.kc.wAPLKC.shape=(1630, 1)
-            # rv.kc.wAPLKC.max()=3.8899999999999992
-            rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
+            # rv.kc.wAPLKC.max()=3.8899999999999992 
+            if _wPNKC_one_row_per_claw: 
+                print("rv.kc.wAPLKC declared here")
+                
 
-            rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
+                rv.kc.wAPLKC = np.ones((compact.size, 1)) * wAPLKC
+                rv.kc.wAPLKC = np.ones((1, compact.size)) * wAPLKC
+                print("rv.kc.wAPLKC size: ", compact.size)
+            else: 
+                rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
+                rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
 
             # TODO try setting wAPLKC = 1 (or another reasonable constant), and only
             # vary wKCAPL? (also considering adding an olfsysm param to vary ratio
@@ -4129,7 +4161,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert wAPLKC_arr.shape == (len(kc_ids_per_claw), 1)
         else:
             assert wAPLKC_arr.shape == (mp.kc.N, 1)
-
         rv.kc.wAPLKC = wAPLKC_arr.copy()
 
         wKCAPL_arr = np.expand_dims(wKCAPL.values, 0)
@@ -4182,7 +4213,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     osm.run_ORN_LN_sims(mp, rv)
 
     osm.run_PN_sims(mp, rv)
-
     before_any_tuning = time.time()
 
     # This is the only place where build_wPNKC and fit_sparseness are called, and they
@@ -4270,6 +4300,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wPNKC = pd.DataFrame(data=wPNKC, columns=glomerulus_index)
         # TODO move KC ID col def to a central place (-> prob rename to 'kc_id' after)
         wPNKC.index.name = KC_ID
+        print("wPNKC pd.Datafram passed")
+
 
     # TODO skip this re-adding if i change above to not drop kc_type level from wPNKC
     # index? any code in between that would actually err w/o the dropping?
@@ -4376,6 +4408,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # ipdb> unique_fixed_thrs.max()
         # 256.8058676548659
         pks = pd.DataFrame(data=rv.kc.pks, index=kc_index, columns=tuning_odor_index)
+        print("pks pd.Datafram passed")
+
 
         # TODO summarize+delete most of comment block below
         #
@@ -4622,6 +4656,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 ' across KC types:'
             )
             pre_responses = pd.DataFrame(responses, index=kc_index, columns=odor_index)
+            print("pre_responses pd.Datafram passed")
             if extra_orn_deltas is not None:
                 # this subset of odors is not tuned, so we don't care about it here
                 # (and as a result values seem not even properly initialized here)
@@ -4919,7 +4954,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             wAPLKC_arr[mask] *= multiresponder_APL_boost
 
             mask_mean_wAPLKC_after = wAPLKC_arr[mask].mean()
-
             rv.kc.wAPLKC = wAPLKC_arr
         else:
             assert boost_wKCAPL == 'only'
@@ -5065,7 +5099,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # TODO delete? just checking what we set above hasn't changed
             assert mp.kc.tune_apl_weights == False
 
-            assert rv_scalar_wAPLKC == wAPLKC
+                # assert rv_scalar_wAPLKC == wAPLKC
 
             # this should now be defined whenever wAPLKC is, whether passed in or not...
             assert wKCAPL is not None
@@ -5158,10 +5192,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     assert responses.shape[1] == (n_input_odors + n_extra_odors)
     responses = pd.DataFrame(responses, index=kc_index, columns=odor_index)
+    print("responses pd.Datafram passed")
 
     assert spike_counts.shape[1] == (n_input_odors + n_extra_odors)
     assert len(responses) == len(spike_counts)
     spike_counts = pd.DataFrame(spike_counts, index=kc_index, columns=odor_index)
+    print("spike_counts pd.Datafram passed")
 
     if extra_orn_deltas is not None:
         extra_responses = responses.iloc[:, -n_extra_odors:]
@@ -5666,7 +5702,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     pn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index,
         data=pn_sims[:, :, stim_start_idx:stim_end_idx].mean(axis=-1)
     )
-
+    print("orn_pn_df pd.Datafram passed")
     if extra_orn_deltas is not None:
         orn_df = orn_df.drop(index=extra_orn_deltas.columns)
         pn_df = pn_df.drop(index=extra_orn_deltas.columns)
@@ -11996,7 +12032,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                         # some outputs, as currently implemented [e.g. the CSVs
                         # summarizing parameters for different runs])
                         wPNKC = pd.read_pickle(tuning_output_dir / 'wPNKC.p')
-
+ 
                         # TODO (delete/) refactor this part to share w/
                         # test_fixed_inh_params2 (copied this there)?
                         kc_types = wPNKC.index.get_level_values(KC_TYPE)
