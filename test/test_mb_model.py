@@ -6,6 +6,7 @@ from itertools import product
 import numpy as np
 import pandas as pd
 import pytest
+import math
 
 from hong2p.util import pd_allclose
 
@@ -401,14 +402,14 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     assert not wPNKC.index.get_level_values(KC_ID).duplicated().any()
 
     one_hot_claw_series_list = []
-    for kc_id, n_claws_per_glom in wPNKC.iterrows():
+    for (kc_id, kc_type), n_claws_per_glom in wPNKC.iterrows():
         claw_id = 0
 
         # if we don't add these elements, the two KCs with no claws will be in wPNKC's
         # index, but not final wPNKC_one_row_per_claw index
         if n_claws_per_glom.sum() == 0:
             one_hot_claw_series_list.append(pd.Series(index=wPNKC.columns, data=False,
-                name=(kc_id, claw_id)
+                name=(kc_id, kc_type, claw_id)
             ))
 
         for glom, n_claws_from_glom in n_claws_per_glom.items():
@@ -417,7 +418,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
                 # glomerulus to this KC), 0 for all others. name= contents will form
                 # 2-level MultiIndex w/ names=['kc_id','claw_id'], after loop.
                 one_hot_claw_series = pd.Series(index=wPNKC.columns, data=False,
-                    name=(kc_id, claw_id)
+                    name=(kc_id, kc_type, claw_id)
                 )
                 one_hot_claw_series.at[glom] = True
                 one_hot_claw_series_list.append(one_hot_claw_series)
@@ -435,7 +436,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
         verify_integrity=True
     )
     # values are the elements of the 2-tuples from the .name of each concatenated Series
-    wPNKC_one_row_per_claw.columns.names = ['kc_id', 'claw_id']
+    wPNKC_one_row_per_claw.columns.names = ['kc_id', 'kc_type', 'claw_id']
 
     # AFTER .T, rows will be ['kc_id', 'claw_id'] and columns will be 'glomerulus',
     # with claw_id values going from [0, <#-claws-per-(kc,glom)-pair> - 1]
@@ -476,16 +477,15 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     wPNKC_one_row_per_claw.index = claw_index
 
     # checking we didn't drop any claws through the one-hot-encoding process
-    assert wPNKC_one_row_per_claw.groupby('kc_id').sum().equals(wPNKC)
+    assert wPNKC_one_row_per_claw.groupby(['kc_id', 'kc_type']).sum().equals(wPNKC)
 
-    _, spike_counts, wPNKC2, _ = _fit_mb_model(orn_deltas=orn_deltas,
+    _, spike_counts, wPNKC2, _ = _fit_mb_model(orn_deltas=orn_deltas, use_connectome_APL_weights = True,
         pn2kc_connections=connectome, **wPNKC_kws
     )
-
     assert wPNKC.equals(wPNKC2)
 
     # just establishing new path allowing us to hardcode _wPNKC works
-    _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas, _wPNKC=wPNKC)
+    _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas, use_connectome_APL_weights = True, _wPNKC=wPNKC)
     assert spike_counts.equals(spike_counts2)
     del spike_counts2
 
@@ -497,6 +497,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
         # fit_mb_model to accept dtype=bool input)?
         # TODO TODO TODO implement _wPNKC_one_row_per_claw (and similar [+other required
         # changes] in olfsysm)
+        use_connectome_APL_weights = True,
         _wPNKC=wPNKC_one_row_per_claw, _wPNKC_one_row_per_claw=True
     )
     assert spike_counts.equals(spike_counts2)
@@ -517,6 +518,77 @@ def _read_spike_counts(output_dir: Path, *, index_col=[KC_ID, KC_TYPE]) -> pd.Da
 # TODO TODO add test that use_connectome_APL_weights=True path w/ those vectors set to
 # all 1 [would have to add way of hardcoding them] (the normalized weight vectors)
 # produces same effect as use_connectome_APL_weights=False (any reason it shouldn't?)?
+
+def test_fixed_inh_params_claw(orn_deltas):
+    connectome = 'hemibrain'
+    # for kws in [dict(_wPNKC_one_row_per_claw = True, use_connectome_APL_weights=True), 
+    #             dict(_wPNKC_one_row_per_claw = True)]:
+    for kws in [dict(_wPNKC_one_row_per_claw = True, use_connectome_APL_weights=True)]:
+        print(f'{kws=}')
+        responses, spike_counts, wPNKC, params = _fit_mb_model(
+            orn_deltas=orn_deltas, pn2kc_connections=connectome, **kws
+        )
+        fixed_thr = params['fixed_thr']
+        assert isinstance(fixed_thr, float)
+
+        if kws.get('use_connectome_APL_weights', False):
+            # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model,
+            # and there is no current support for passing in vector wAPLKC, right?
+            wAPLKC = params['wAPLKC_scale']
+            wKCAPL = params['wKCAPL_scale']
+        else:
+            wAPLKC = params['wAPLKC']
+            wKCAPL = params['wKCAPL']
+        assert isinstance(wAPLKC, float)
+
+        responses2, spike_counts2, wPNKC2, params2 = _fit_mb_model(
+            orn_deltas=orn_deltas, fixed_thr=fixed_thr, wAPLKC=wAPLKC, wKCAPL = wKCAPL, **kws
+        )
+
+        # TODO factor all the checking below into a fn to share w/ other tests?
+        
+        assert responses.equals(responses2)
+        assert spike_counts.equals(spike_counts2)
+        assert wPNKC.equals(wPNKC2)
+        print("passed the responses, spike_counts, wPNKC compare point")
+        # TODO always true? also in connectome APL case?
+        assert params.keys() == params2.keys()
+
+        param_types = {k: type(v) for k, v in params.items()}
+        param_types2 = {k: type(v) for k, v in params2.items()}
+        # to simplify logic in loop below, where we actually check values equal
+        assert param_types == param_types2
+
+        assert params2['tuning_iters'] == 0
+
+        # params that we'd expect to be different between the fixed thr/APL-weights call
+        # and the call that picked those values
+        exclude_params = ('tuning_iters',)
+
+        # TODO factor to a util dict_equal fn? already have one (maybe in hong2p)?
+        for k in params.keys():
+            if k in exclude_params:
+                continue
+
+            print(f'{k=}')
+
+            # unless assertions above about keys()+types being equal above fail,
+            # assuming keys are present in both and types equal.
+            v = params[k]
+            v2 = params2[k]
+            if hasattr(v, 'equals'):
+                assert v.equals(v2)
+            elif isinstance(v, np.ndarray):
+                assert np.array_equal(v, v2)
+            else:
+                if isinstance(v, float):
+                    assert math.isclose(v, v2, rel_tol=1e-14, abs_tol=0.0)
+                elif isinstance(v, np.floating):
+                    assert np.isclose(v, v2, rtol=1e-14, atol=0.0)
+
+        print()
+
+
 def test_fixed_inh_params(orn_deltas):
     """
     Tests that outputs of calls where APL<->KC weights are tuned to a target response
