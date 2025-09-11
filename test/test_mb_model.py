@@ -941,15 +941,10 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
 
     assert a1.keys() == b1.keys()
     for k in a1.keys():
-        # could remove this continue-ing after fixing source of issue
-        if k in ('wAPLKC', 'wKCAPL'):
-            continue
-        #
-
         assert np.isclose(a1[k], b1[k])
 
-    # TODO TODO TODO fix how (only) wAPLKC and wKCAPL are not isclose
-
+    # TODO delete / check against each other
+    #
     # responses_to                                                                   pebbled
     # tune_from                                                                      pebbled
     # tune_on_hallem                                                                   False
@@ -1144,19 +1139,7 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
     # TODO share w/ n_megamat_odors elsewhere?
     assert len(pdf.columns) == 17
 
-    # TODO delete
-    #pdf2 = pd.read_csv(may26_dir / uniform_response_csv_name,
-    #    index_col=['model_kc', 'seed']
-    #)
-    #assert pdf.index.equals(pdf2.index)
-    #assert pdf.columns.equals(pdf2.columns)
-    #assert set(np.unique(pdf.values.flat)) == set(np.unique(pdf2.values.flat)) == {
-    #    0.0, 1.0
-    #}
-    #assert pdf.dtypes.equals(pdf2.dtypes)
-    ## TODO check first 2 don't happen two match (below)
-    #assert not pdf.equals(pdf2)
-    #
+    params = read_series_csv(may29_dir / 'megamat_uniform_model_params.csv')
 
     kws = dict(
         pn2kc_connections='uniform', n_claws=7, target_sparsity=0.0915,
@@ -1188,10 +1171,29 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
         assert output_dir.is_dir()
         assert output_dir.parent == plot_root
 
-        # TODO actually check this against  2024-05-16 dir contents? that seems like it
-        # might be dir to use anyway? (/delete)
-        wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
-        #
+        # if i do end up switching wAPLKC/wKCAPL handling to also pop them in n_seeds>1
+        # case (similar to when dealing w/ vector APL weights in non-variable_n_claw
+        # cases), will need to compare wAPLKC/wKCAPL to paper params from loading them
+        # separately. currently trying to keep these list-of-floats in CSV, as seemed to
+        # work for committed paper outputs.
+        params2 = read_series_csv(output_dir / 'params.csv')
+
+        if not _drop_glom_with_plus:
+            # TODO switch handling? does de-serialize as a string, which needs eval'd...
+            wAPLKC = eval(params['wAPLKC'])
+            wAPLKC2 = eval(params2['wAPLKC'])
+            assert wAPLKC[:len(wAPLKC2)] == wAPLKC2
+
+            wKCAPL = eval(params['wKCAPL'])
+            wKCAPL2 = eval(params2['wKCAPL'])
+            assert wKCAPL[:len(wKCAPL2)] == wKCAPL2
+
+            # TODO check other parts of params (vs params2) as well
+
+            # TODO actually check this against 2024-05-16 dir contents? that seems like
+            # it might be dir to use anyway? (/delete)
+            wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
+            #
 
         # TODO change fit_and_plot... so there is still a seed level in n_seeds=1 case?
         # seed still available elsewhere for repro (param dict?)? prob not?
@@ -1264,6 +1266,13 @@ def test_hemibrain_matt_repro():
     # TODO delete?
     #assert np.array_equal(hemi, wide.values)
     #del hemi
+
+    # TODO why again did i not need _add_back_methanoic_acid_mistake=True here?
+    # delete that code, if not needed to reproduce anything i currently care about?
+    # (was there some reason it only mattered for uniform case, and not hemibrain?)
+
+    # TODO also check we can recreate his uniform model outputs?
+    # (something from old test script we can move in here for that?)
 
     # TODO rename to run_model? or have a separate fn for that? take `mp` (and `rv` too,
     # or are even fit thresholds in mp?) as input (and return from fit_model?)?
@@ -1345,4 +1354,19 @@ def test_step_around():
             assert np.isclose(steps[-1], x * 2)
 
         # TODO similar cases w/ vector input? already covered well enough above?
+
+
+# TODO TODO add test we can recreate connectome_APL_weights=False output w/
+# connectome_APL_weights=True path (really, the preset_wAPLKC/similar paths in olfsysm)
+# if we set all of the preset weights to be either 1 or all uniform w/ mean of 1
+# (and which of those two options is correct?)
+
+# TODO add test we can manually pass in hallem inputs and get same results as using some
+# of the calls that don't pass in orn_deltas (may need to specify tune_on_hallem=True?
+# or not if orn_deltas not passed?)
+
+# TODO do variable_n_claws cases support sensitivity_analysis? is it just a matter of
+# tracking some of the metadata getting cumbersome, as to why i decided not to support
+# it? add test confirming failure is at least as expected (presumably w/ reasonably
+# information error message), if i try sensitivity_analysis=True in one of those cases?
 
