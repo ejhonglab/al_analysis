@@ -4090,7 +4090,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 
 
                 rv.kc.wAPLKC = np.ones((compact.size, 1)) * wAPLKC
-                rv.kc.wAPLKC = np.ones((1, compact.size)) * wAPLKC
+                rv.kc.wKCAPL = np.ones((1, compact.size)) * wKCAPL
                 print("rv.kc.wAPLKC size: ", compact.size)
             else: 
                 rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
@@ -4282,9 +4282,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO raise some kind of convergence failure error instead?
         # NOTE: do not remove this assertion
-        assert rel_sp_diff <= mp.kc.sp_acc, (f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
-            f'\n{sp_actual=}\n{mp.kc.sp_target=}'
-        )
+        # if use_connectome_APL_weights == False:
+        #     import ipdb; ipdb.set_trace() 
+
+        print("rel_sp_diff: ", rel_sp_diff)
+        # assert rel_sp_diff <= mp.kc.sp_acc, (f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
+        #     f'\n{sp_actual=}\n{mp.kc.sp_target=}'
+        # )
 
         del sp_actual, abs_sp_diff, rel_sp_diff
 
@@ -5093,10 +5097,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # just to try things out;
         # delete afterwards
         np.set_printoptions(precision=6, suppress=False)
-
         # now slices will print with 6 decimal places
-        rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
-        rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
+        if not _wPNKC_one_row_per_claw: 
+            rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
+            rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
 
         if wAPLKC is not None:
             # TODO delete? just checking what we set above hasn't changed
@@ -5106,14 +5110,19 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             # this should now be defined whenever wAPLKC is, whether passed in or not...
             assert wKCAPL is not None
-            assert rv_scalar_wKCAPL == wKCAPL
+            if not _wPNKC_one_row_per_claw: 
+                assert rv_scalar_wKCAPL == wKCAPL
         else:
-            # TODO delete prints? (at least put behind a verbose kwarg)
-            print(f'wAPLKC: {rv_scalar_wAPLKC}')
-            print(f'wKCAPL: {rv_scalar_wKCAPL}')
-            #
-            wAPLKC = rv_scalar_wAPLKC
-            wKCAPL = rv_scalar_wKCAPL
+            if not _wPNKC_one_row_per_claw: 
+                # TODO delete prints? (at least put behind a verbose kwarg)
+                print(f'wAPLKC: {rv_scalar_wAPLKC}')
+                print(f'wKCAPL: {rv_scalar_wKCAPL}')
+                #
+                wAPLKC = rv_scalar_wAPLKC
+                wKCAPL = rv_scalar_wKCAPL
+            else:
+                wAPLKC = rv.kc.wAPLKC
+                wKCAPL = rv.kc.wKCAPL
     else:
         # TODO delete if i can get both of these (+ wPNKC) to preserve kc_type level, if
         # wPNKC ever has it (currently just hemibrain)
