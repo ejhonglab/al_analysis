@@ -16,6 +16,7 @@ import pandas as pd
 import al_util
 #
 from al_util import warn
+from al_analysis import process_sam_glomeruli_names
 from mb_model import fit_and_plot_mb_model
 
 
@@ -25,32 +26,21 @@ plot_root = Path('model_banana_iaa_concs').resolve()
 
 def main():
     # sent to me by Sam, over Slack, on 2025-05-22
-    sam_dff = pd.read_csv('mono_nat_ramp_cond_IaA_Ban.csv', header=0, index_col=0).T
+    # TODO TODO transpose after process_sam_glomeruli_names, so that can be changed to
+    # always expect ROIs in columns
+    sam_dff = pd.read_csv('mono_nat_ramp_cond_IaA_Ban.csv', header=0, index_col=0)
 
-    sam_dff.index.name = 'glomerulus'
+    sam_dff.columns.name = 'glomerulus'
     # renaming from 'odor1'. might not be necessary.
-    sam_dff.columns.name = 'odor'
+    sam_dff.index.name = 'odor'
 
     assert not sam_dff.isna().any().any()
 
-    # TODO warn about how many of each of these there are (and out of how many total)?
-    #
-    # removing the '_t0' / '_t1' suffixes Sam has for some of the glomeruli names
-    # (could also drop one or both of the uncertainty levels)
-    glomeruli = sam_dff.index.str.split('_').map(lambda x: x[0])
-    sam_dff.index = glomeruli
+    # TODO have process_sam* automatically work w/ either 'glomerulus' or 'roi', and
+    # then remove 2nd arg here?
+    sam_dff = process_sam_glomeruli_names(sam_dff, 'glomerulus')
 
-    # TODO or maybe pick one instead of assigning same vector into each?
-    # or just drop all these? just 'VA1d/VA1v'
-    to_split = glomeruli.str.contains('/')
-    for gloms_str in glomeruli[to_split]:
-        gloms = gloms_str.split('/')
-        warn(f'duplicating data from {gloms_str} to {gloms}')
-        for glom in gloms:
-            assert glom not in sam_dff.index
-            sam_dff.loc[glom] = sam_dff.loc[gloms_str]
-
-    sam_dff = sam_dff.loc[~ sam_dff.index.str.contains('/')].sort_index()
+    sam_dff = sam_dff.T
 
     # dF/F -> est spike delta scaling constant from my fit on subset of
     # megamat/validation2/glomeruli_diagnostics data that ~overlaps with Hallem
@@ -77,7 +67,7 @@ def main():
     # ban @ -0    1.671884
     #
     # ipdb> sam_dff.T.max().T
-    # glomerulus
+    # roi
     # D               0.564991
     # DA1_t0          0.074277
     # DA2             0.209837

@@ -30,7 +30,7 @@ import shutil
 from tempfile import NamedTemporaryFile
 import time
 import traceback
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
+from typing import Any, Dict, Hashable, List, Literal, Optional, Set, Tuple, Union
 
 # TODO delete
 import warnings
@@ -3170,10 +3170,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         mp.kc.sp_factor_pre_APL = target_sparsity_factor_pre_APL
 
-        # TODO TODO (move to test_mb_model.py) test that if this is 1.0, then APL is
+        # TODO (move to test_mb_model.py) test that if this is 1.0, then APL is
         # kept off (or will one iteration of tuning loop still happen + change things?),
         # or at least doesn't change responses/spike_counts
-        # TODO TODO what's max value of this (min that forces threshold to do nothing,
+        # TODO what's max value of this (min that forces threshold to do nothing,
         # with only APL bringing activity down? or does that not max sense?) maybe i
         # should change olfsysm to use something with a more sensible max (so i can go
         # between two extremes of all-threshold vs all-APL more easily)?
@@ -3995,11 +3995,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # keep wPNKC of shape (# KCs, # glomeruli), which it might be if olfsysm uses
         # wPNKC extensively for getting # KCs, etc
 
-
     if pn2kc_connections in connectome_options:
         mp.kc.preset_wPNKC = True
 
     elif pn2kc_connections == 'hemidraw':
+        # TODO version like hemidraw, but by pre-generating wPNKC, to have similar
+        # distribution to whatever real wPNKC we end up settling on from connectome (but
+        # otherwise keeping draws of each input indep)
+        # try just taking each cell in real connectome, taking # of connections from
+        # that cell, then drawing from whatever distribution up to that number of
+        # connections? (in contrast to current hemidraw/uniform cases which both have a
+        # fixed number of "claws" per model KC)
+
         # TODO support using wPNKC from fafb-left/fafb-right (currently just hemibrain,
         # w/ _use_matt_wPNKC=False. i.e. using the newer data from prat's query)?
         # (and/or also support arbitrary _wPNKC input)
@@ -4177,8 +4184,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         rv.kc.thr = thr
         del thr
 
-    # TODO TODO support vector wAPLKC (+ separately specifying float wKCAPL there?
-    # or deduce which elements haven't been boosted?) (mainly want to support boosting)
     if wAPLKC is not None:
         assert target_sparsity_factor_pre_APL is None
         assert fixed_thr is not None, 'for now, assuming both passed if either is'
@@ -4393,7 +4398,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         abs_sp_diff = abs(sp_actual - mp.kc.sp_target)
         rel_sp_diff = abs_sp_diff / mp.kc.sp_target
 
-        # TODO raise some kind of convergence failure error instead?
+        # TODO raise some kind of custom convergence failure error instead, with message
+        # including which parameters can be changed to try to get it to converge
+        #
         # NOTE: do not remove this assertion
         # if use_connectome_APL_weights == False:
         #     import ipdb; ipdb.set_trace() 
@@ -6881,7 +6888,7 @@ _fit_and_plot_seen_param_dirs = set()
 # TODO try to get [h|v]lines between components, 2-component mixes, and 5-component
 # mix for new kiwi/control data (at least for responses and correlation matrices)
 # (could just check for '+' character, to handle all cases)
-# TODO TODO add flag to toggle showing all KC subtype mean resopnse rates in all titles?
+# TODO add flag to toggle showing all KC subtype mean response rates in all titles?
 def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     sens_analysis_kws: Optional[Dict[str, Any]] = None, try_cache: bool = True,
     # TODO rename comparison_responses to indicate it's only used for sensitivity
@@ -6950,7 +6957,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
     # TODO delete. isn't responses_to just overwritten w/ 'pebbled' below
     # (before being used, right?)
-    # TODO TODO use one of newer strs in al_analysis.py for this (-> move to al_util?)?
+    # TODO use one of newer strs in al_analysis.py for this (-> move to al_util?)?
     # might this ever be 'Z-scored F' instead of dF/F?
     my_data = f'pebbled {dff_latex}'
 
@@ -7608,7 +7615,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # NOTE: might break some of new vector-fixed_thr code if i start popping that
         # (but might want to still save separately there, as not being saved correctly
         # in params.csv/similar there)
-        #
         _warned = False
         for k in list(param_dict.keys()):
             v = param_dict[k]
@@ -7647,14 +7653,12 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # TODO need to support int type too (in all isinstance calls below)?
         # isinstance(<int>, float) is False
         if wAPLKC is not None and not isinstance(wAPLKC, float):
-            # only want to pop anything in this branch, cause other code depends on
-            # these values still being in param_dict
-            # TODO TODO is that true for any variable_n_claws cases? any of those depend
-            # on them still being in param dict?
-            wAPLKC = param_dict.pop('wAPLKC')
-            wKCAPL = param_dict.pop('wKCAPL')
-
             if not variable_n_claws:
+                # only want to pop anything in this branch, cause other code depends on
+                # these values still being in param_dict
+                wAPLKC = param_dict.pop('wAPLKC')
+                wKCAPL = param_dict.pop('wKCAPL')
+
                 # TODO will this always be true? added after other assertions here
                 assert use_connectome_APL_weights
                 #
@@ -7664,7 +7668,17 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 assert 'wKCAPL_scale' in param_dict
 
                 assert wKCAPL.shape == wAPLKC.shape
+
+                to_pickle(wAPLKC, wAPLKC_cache)
+                to_pickle(wKCAPL, wKCAPL_cache)
             else:
+                # TODO or go back to handling list-of-floats same as array of floats
+                # (like in `not variable_n_claws` case above) regardless of fact that
+                # (at least in some circumstances), keeping lists of floats seemed to
+                # allow serialization to CSV? prob not w/o some reason...
+                # TODO TODO switch handling? does de-serialize as a string, which needs
+                # eval'd...
+
                 # may work as-is, but then it'd be a list of arrays? would need to test
                 assert not use_connectome_APL_weights
 
@@ -7674,13 +7688,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 assert type(wAPLKC) is list and all(
                     isinstance(x, float) for x in wAPLKC
                 )
-                # TODO i assume lists cause same issues as arrays, if left in
-                # param_dict?
-                # TODO TODO want to pickle the lists as-is in variable_n_claws case, or
-                # something else?
-
-            to_pickle(wAPLKC, wAPLKC_cache)
-            to_pickle(wKCAPL, wKCAPL_cache)
+                assert type(param_dict['wKCAPL']) is list and all(
+                    isinstance(x, float) for x in param_dict['wKCAPL']
+                )
         else:
             # in this branch, wAPLKC/wKCAPL should be in a format (e.g. single
             # scalar floats) where they don't cause issues if saved as part of
@@ -8035,34 +8045,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # (or some other format?)
         title += _get_silent_cell_suffix(responses_including_silent, responses)
 
-    # TODO delete (/ move up before early return, right after sparsity calc)
-    # TODO is there a big mismatch betweeen target_sparsity and sparsity (yes, see
-    # below)?
-    # TODO err / warn if differs much at all
-    # TODO inspect cases where it differs (including olfsysm log)
-    # (seems like nearly every case differs somewhat seriously)
-    # ...
-    # fitting model (responses_to='pebbled', tune_on_hallem=True,
-    #   drop_receptors_not_in_hallem=True, pn2kc_connections=hemibrain,
-    #   target_sparsity=0.1)...
-    # ...
-    # model_kws.get("target_sparsity")=0.1
-    # sparsity=0.1804732780428448
-    # ...
-    # fitting model (responses_to='pebbled', tune_on_hallem=True,
-    #   drop_receptors_not_in_hallem=True, pn2kc_connections=hemibrain,
-    #   target_sparsity=0.05)...
-    # ...
-    # fixed_thr: 221.8443262928323
-    # wAPLKC: 5.523460576698389
-    # wKCAPL: 0.0030067831119751703
-    # done
-    # responses.shape=(1837, 17)
-    # model_kws.get("target_sparsity")=0.05
-    # sparsity=0.08511319606775754
-    #
-    # TODO TODO anything i can change to make tuning converge better?
-    # relevant parameters:
+    # parameters relevant for tuning:
     # rv.kc.tuning_iters (not a cap tho, just to keep track of it?)
     # mp.kc.max_iters (a cap for above) (default=10)
     # mp.kc.apltune_subsample (default=1)
@@ -8082,6 +8065,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # tuning proceeds while: ( (abs(sp-p.kc.sp_target)>(p.kc.sp_acc*p.kc.sp_target)) &&
     # (rv.kc.tuning_iters <= p.kc.max_iters) )
     if 'target_sparsity' in model_kws:
+        # TODO move to similar section of fit_mb_model? (near check of output vs target
+        # sparsity)
         target_sparsity = model_kws['target_sparsity']
         print()
         print(f'target_sparsity={target_sparsity:.3g}')
@@ -8089,12 +8074,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
         adiff = sparsity - target_sparsity
         rdiff = adiff / target_sparsity
-        # TODO TODO use to inspect improvement when increasing tuning time (+ also
-        # time model running, to see how much extra time extra tuning adds)
         print(f'{(rdiff * 100):.1f}% rel sparsity diff')
         print(f'{adiff:.2g} abs sparsity diff')
-
-        # TODO TODO assert one/both below some threshold? warn above some thresh?
+        #
 
         # TODO delete?
         # TODO what fraction is passing atol=0.005? should i make it higher? .01?
@@ -8583,14 +8565,12 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # depending on whether input is Hallem vs pebbled data?)
         # TODO check + comment where each should be saved?
 
-
     if comparison_orns is not None:
         if type(comparison_orns) is dict:
             for desc, comparison_data in comparison_orns.items():
                 _compare_model_kc_to_orn_data(comparison_data, desc)
         else:
             _compare_model_kc_to_orn_data(comparison_orns)
-
 
     if comparison_kc_corrs is not None:
         # TODO assert input odors match comparison_kc_corrs odors exactly?
@@ -9485,75 +9465,31 @@ def save_model(model, path: Path) -> None:
     model.save(path)
 
 
-# TODO modify to accept csv path for certain_df too (if that makes it easier to get some
-# basic versions of the model runnable for other people)? either way, want to commit
-# some example AL data to use.
-# TODO rename certain_df to just df (or something less loaded)
-# TODO TODO add kwarg to hardcode a dF/F -> spike delta scaling factor (or a
-# general fn), and have it bypass the computation of this fn / related plotting/cache.
-# (-> use for simple example uses of this fn, hardcoding scale factor = 127 from
-# Remy-paper)
-def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
-    roi_depths=None, skip_sensitivity_analysis: bool = False,
-    skip_models_with_seeds: bool = False, skip_hallem_models: bool = False,
-    first_model_kws_only: bool = False) -> None:
-    # TODO when is it ok for certain_df to have NaNs? does seem current input has
-    # some NaNs, which are only for some odors [for which no odors is NaN for all
-    # fly-glomeruli]. any restrictions (if none, why was sam having issues?)
-    # TODO allow passing in model_kw_list?
-    """Passes input through dF/F -> est spike delta function, runs through MB model.
+spike_delta_col: str = 'delta_spike_rate'
+est_spike_delta_col: str = f'est_{spike_delta_col}'
 
-    Calls `fit_and_plot_mb_model` for each of several parameter options for the model,
-    currently defined below in `model_kw_list`. Each call will have a directory created
-    with model outputs (under `parent_plot_dir / 'mb_modeling/<panel>/<param_dir>'`).
+# for histograms of dF/F, transformed versions, or estimated spike deltas derived from
+# one of the former
+n_bins: int = 50
 
-    Some outputs under `parent_plot_dir / 'mb_modeling'` and `<panel>` sub-directories
-    describe dF/F -> est spike delta function, parameters, and outputs.
+# TODO add some kwargs to explicitly control whether we fit dF/F->est-spiking fn?
+def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.DataFrame,
+    roi_depths: Optional[pd.DataFrame] = None, *, dff_col: str = 'delta_f_over_f'
+    ) -> Tuple[pd.DataFrame, Dict[str, Any], str, pd.DataFrame, List[Path]]:
+    # TODO doc
 
-    Args:
-        certain_df: dataframe of shape (# odors [including repeats], # fly-glomeruli),
-            with dF/F values from [potentially multiple] flies.
-
-            Column index names should be ['date', 'fly_num', 'roi' (i.e. glomerulus
-            name)].
-
-            Row index names should be ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
-            (possible that not all are required, but 'panel' and 'odor1' should be)
-
-        parent_plot_dir: where a 'mb_modeling' subdirectory will be created to contain
-            any model output directories (and other across-model plots).
-
-            In typical use from `al_analysis.py`, this might be 'pebbled_6f/pdf/ijroi'.
-
-        first_model_kws_only: only runs the model with the first set of parameters (in
-            `model_kw_list` in this function), to more quickly test changes to model.
-    """
-    # TODO (not using roi_depths really, so not a big deal) why do roi_depths seem to
-    # have one row per panel, rather than per recording?  current input has column
-    # levels ['date', 'fly_num', 'roi'] and row levels ['panel', 'is_pair'])
-
-    # TODO delete. for debugging.
-    global _spear_inputs2dfs
-    #
-
-    # TODO make and use a subdir in plot_dir (for everything in here, including
-    # fit_and_plot... calls)
-
-    plot_dir = parent_plot_dir / 'mb_modeling'
-
-    # TODO w/ a verbose flag to say which odors / glomeruli overlapped
+    # TODO w/ a verbose flag, say which odors / glomeruli overlapped w/ hallem
 
     # I think deltas make more sense to fit than absolute rates, as both can go negative
     # and then we could better filter out points from non-responsive (odor, glomerulus)
     # combinations, if we wanted to.
     hallem_delta = orns.orns(columns='glomerulus', add_sfr=False)
-
     hallem_delta = abbrev_hallem_odor_index(hallem_delta)
 
     #our_odors = {olf.parse_odor_name(x) for x in certain_df.index.unique('odor1')}
 
     # TODO delete?
-    # TODO TODO TODO or print intersection of these w/ stuff here (or at least stuff
+    # TODO or print intersection of these w/ stuff here (or at least stuff
     # that also matches some nearness criteria on the concentration? where is that
     # currently handled, if it is at all?)
     #hallem_odors = set(hallem_delta.index)
@@ -9567,21 +9503,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # TODO delete?
     #unmatched_odors = our_odors - hallem_odors
 
-    # TODO delete
-    #validation_odors = {olf.parse_odor_name(x) for x in
-    #    certain_df.loc['validation2'].index.unique('odor1')
-    #}
-    #print(f'{len(validation_odors)=}')
-    #print(f'{validation_odors & hallem_odors=}')
-    ## (len 7 as expected)
-    #print(f'{len(validation_odors & hallem_odors)=}')
-    #
-
-    # TODO TODO TODO match glomeruli up to hallem names
-    # (may need to make some small decisions)
+    # TODO (prob delete. handling prob can not be improved) match glomeruli up to hallem
+    # names (may need to make some small decisions)
     # (basically, are there any that are currently unmatched that can be salveaged?)
 
-    # TODO TODO TODO also check which of our_odors are in hallem lower conc data
+    # TODO TODO also check which of our_odors are in hallem lower conc data
     # TODO TODO may want to first fix drosolf so it gives us that too
     # (or just read a csv here myself?)
     #
@@ -9615,8 +9541,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # TODO TODO check pdf receptor names matches what i get from drosolf w/o passing
     # columns='glomerulus', then use drosolf receptors to check these
     # TODO TODO check receptors of all these are not in hallem
-    # TODO TODO TODO print this out and check again. not clear on why DM3 was ever
-    # here...
+    # TODO TODO print this out and check again. not clear on why DM3 was ever here...
     # - VA2 (92a)
     # - DP1m (Ir64a)
     # - VA4 (85d)
@@ -9651,6 +9576,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         x in glomerulus2receptors.keys() for x in hallem_glomeruli
     ])
     assert set(hallem_glomeruli[~ hallem_glomeruli_in_task]) == {'DM3+DM5'}
+    del hallem_glomeruli, hallem_glomeruli_in_task
 
     our_glomeruli = np.array(sorted(our_glomeruli))
     our_glomeruli_in_task = np.array([
@@ -9658,77 +9584,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     ])
     # True for now, but may not always be?
     assert our_glomeruli_in_task.all()
-
-    unmodified_orn_dff_input_df = certain_df.copy()
-
-    # TODO TODO assert that 'is_pair' is all False? maybe drop it in a separate step
-    # before this? (want to also drop is_pair for roi_depths in a consistent way.
-    assert (certain_df.index.get_level_values('is_pair') == False).all()
-    certain_df = certain_df.droplevel('is_pair', axis='index')
-    if roi_depths is not None:
-        assert (roi_depths.index.get_level_values('is_pair') == False).all()
-        roi_depths = roi_depths.droplevel('is_pair', axis='index')
-
-    drop_pfo = True
-    # shouldn't be in megamat/validation/diagnostic data. added for new kiwi/control
-    # data.
-    if drop_pfo:
-        odor_names = certain_df.index.get_level_values('odor1').map(
-            olf.parse_odor_name
-        )
-        odor_concs = certain_df.index.get_level_values('odor1').map(
-            olf.parse_log10_conc
-        )
-
-        pfo_mask = odor_names == 'pfo'
-        if pfo_mask.any():
-            pfo_conc_set = set(odor_concs[pfo_mask])
-
-            # TODO if this gets triggered by None/NaN, adapt to also include None/NaN
-            # (if there are any negative float concs, that would indicate a bug)
-            #
-            # NOTE: {0.0} == {0} is True
-            assert pfo_conc_set == {0}
-
-            # TODO warn that we are dropping (if any actually dropped)
-            certain_df = certain_df.loc[~pfo_mask].copy()
-
-
-    index_df = certain_df.index.to_frame(index=False)
-
-    odor1_names = index_df.odor1.apply(olf.parse_odor_name)
-    mix_strs = (
-        odor1_names + '+' +
-        index_df.odor2.apply(olf.parse_odor_name) + ' (air mix) @ 0'
-    )
-    # TODO work as-is (seems to...)? need to subset RHS to be same shape?
-    # (could add assertions that other part, i.e. `index_df.odor2 == solvent_str`
-    # doesn't change)
-    index_df.loc[index_df.odor2 != solvent_str, 'odor1'] = mix_strs
-
-    # NOTE: see panel2name_order modifications in natmix.olf.panel2name_order, which
-    # define order of these hacky new "odors" ('kmix0','kmix-1',...'cmix0','cmix-1',...)
-    #
-    # e.g. 'kmix @ 0' -> 'kmix0' (so concentration not recognized as such, and thus it
-    # should work in modelling code that currently strips that)
-    hack_strs_to_fix_mix_dilutions = (
-        odor1_names + index_df.odor1.apply(olf.parse_log10_conc).map(
-            lambda x: f'{x:.0f}'
-        )
-    )
-    # expecting all these to get stripped off in modelling code
-    hack_strs_to_fix_mix_dilutions = hack_strs_to_fix_mix_dilutions + ' @ 0'
-
-    index_df.loc[odor1_names.str.endswith('mix'), 'odor1'] = \
-        hack_strs_to_fix_mix_dilutions
-
-    certain_df.index = pd.MultiIndex.from_frame(index_df)
-    del index_df
-
-    # after above two hacks, for kiwi/control data, sort_odors should order odors as:
-    # pfo, components, 2-component mix, 2-component air mix, 5-component mix, dilutions
-    # of 5-component mix (with more dilute mixtures further towards the end)
-    certain_df = sort_odors(certain_df)
+    del our_glomeruli, our_glomeruli_in_task
 
     # TODO TODO may want to preserve panel just so i can fit dF/F -> spike delta fn
     # on all, then subset to specific panels for certain plots
@@ -9809,10 +9665,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
     # TODO TODO allow slop of +/- 1 order of magnitude in general for merging w/
     # hallem (for validation stuff in particular)?
-
-    dff_col = 'delta_f_over_f'
-    spike_delta_col = 'delta_spike_rate'
-    est_spike_delta_col = f'est_{spike_delta_col}'
 
     # TODO TODO delete all mean_df stuff if i get fly_mean_df version working
     # (which i think i have?)?
@@ -9910,7 +9762,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # 14     -0.351293 -0.218182 -0.056444  0.093895  0.878827  1.745915  2.475087
 
     # TODO share w/ plots from model fitting below?
-    # TODO TODO use one of newer strs in al_analysis.py for this (-> move to al_util?)?
+    # TODO use one of newer strs in al_analysis.py for this (-> move to al_util?)?
     # might this ever be 'Z-scored F' instead of dF/F?
     dff_desc = f'mean glomerulus {dff_latex}'
     # TODO refactor to preprend dff_desc inside loop (rather than manually for each
@@ -10065,67 +9917,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     )
     #
 
-    # TODO delete
-    # TODO better name for df... (or factor to fn so it doesn't matter)
-    # (renamed fdf->merged_dff_and_hallem. need to also rename this, or probably just
-    # delete it)
-    #
-    # doesn't seem to matter that odor is index and glomerulus is column. equiv to:
-    # pd.merge(mean_df.reset_index(), hallem_delta.reset_index(),
-    #     on=['odor', 'glomerulus']
-    # )
-    #df = mean_df.merge(hallem_delta, on=['odor', 'glomerulus']).reset_index()
-
-    # TODO TODO decide how to handle panel when merging w/ hallem
-    # (mean first for fitting dF/F -> spike delta fn, but then separately merge w/in
-    # each panel for running model?)
-    # (what is currently happening?)A
-
-    # TODO TODO delete? or move to before odor2 level effectively dropped?
-    # TODO gate behind there being and odor2 level?
-    #
-    # TODO to make this merging easier, might actually want to format mixtures down to
-    # one str column, so that if [hypothetically, not in current data] odor1=solvent and
-    # odor2 is in hallem, we can still match it up
-    # TODO just rename hallem 'odor' -> 'odor1', and reset_index() on both
-    # TODO add solvent odor2 to hallem and merge on=(odor_cols + ['glomerulus'])?
-    #
-    # if we only have odor2 odors for mixtures where odor1 is also an odor, we would
-    # never want to merge those with hallem anyway, so we can just drop those rows
-    # before merging
-    '''
-    odor1 = fly_mean_df.index.get_level_values('odor1')
-    odor2 = fly_mean_df.index.get_level_values('odor2')
-    # TODO TODO warn / err if any of this odor2 stuff is actually != solvent_str?
-    # (since not currently supporting that, nor thinking that's the way i'll try to do
-    # it...)
-    assert not (odor1[odor2 != solvent_str] == solvent_str).any()
-    # .reset_index() b/c left_on didn't seem to work w/ a mix of cols and index levels
-    for_merging = fly_mean_df[odor2 == solvent_str].reset_index()
-
-    merged_dff_and_hallem = for_merging.merge(hallem_delta,
-    '''
     merged_dff_and_hallem = fly_mean_df.reset_index().merge(hallem_delta,
         left_on=['odor', 'glomerulus'], right_on=['odor', 'glomerulus']
     ).reset_index()
 
     assert not merged_dff_and_hallem[spike_delta_col].isna().any()
-
-    # TODO delete
-    # (note this was before 'odor'->odor_cols change)
-    # TODO what's going on here? don't i have geraniol dF/F data?
-    # (2024-05-09: can't repro, at least not passing all data as input. maybe passing
-    # just validation2? not seeing geraniol at all now tho... that an issue?
-    # can't repro w/ that input either. maybe if i don't use consensus df for input?
-    # that'd probably still be dropped above tho...)
-    #
-    # must have been one that changed conc? after also excluding flies 2023-10-15/1,2
-    # and 2023-10-19/2 (and 2024-01-05/4, not that I think this one mattered here), now
-    # I'm getting the empty set for this (and geraniol not here anymore, as it's been -2
-    # since 2023-11-19)
-    #ipdb> set(merged_dff_and_hallem.odor.unique()) -
-    # set(merged_dff_and_hallem.dropna().odor.unique())
-    #{'ger @ -3'}
 
     # TODO print odors left after merging. something like
     # sorted(merged_dff_and_hallem.odor.unique())
@@ -10156,21 +9952,13 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # overlaps well enough w/ hallem], and has at least 7 flies there, we should).
     # otherwise, we should try to load a saved model, and use that.
     try:
+        # TODO TODO require both this and other condition?
         # TODO delete
         '''
         if len(certain_df.loc['megamat'].dropna(axis='columns', how='all'
             ).columns.to_frame(index=False)[['date','fly_num']].drop_duplicates()
             ) >= 7:
         '''
-
-        # TODO TODO TODO should i be recomputing now that i collected the new
-        # kiwi/control data after the imaging system had a lot of time to drift?
-        # check hists of dF/F / something (to compare old megamat/etc to new
-        # kiwi/control data)?
-        # TODO TODO maybe now i should switch to always z-scoring/similar the dF/F input
-        # (before passing thru a fn to get spike deltas out), so that i can tune on one
-        # panel and run on another more easily? (current attempt to tune on megamat and
-        # run on control/kiwi had all silent cells in first call)
 
         # TODO TODO cleaner solution for this hack (probably involving preserving
         # panel throughout, and splitting each panel out before passing thru model, then
@@ -10210,10 +9998,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             '\n\nexiting!'
         )
         sys.exit()
-
-    # for histograms of dF/F, transformed versions, or estimated spike deltas derived
-    # from one of the former
-    n_bins = 50
 
     if not use_saved_dff_to_spiking_model:
         # just for histogram in loop below
@@ -10595,6 +10379,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         ax.set_xlabel(f'{col_to_fit}\n{desc}')
 
 
+    # TODO move def of these to module level? (maybe prepending plot_dir inside usage?)
     copy_to_model_dirs = []
 
     dff_to_spiking_model_path = plot_dir / 'dff2spiking_fit.p'
@@ -10614,53 +10399,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # so we have a record of which scaling choice we made (modelling plots already show
     # many parameters and this one isn't going to vary across modelling outputs from a
     # given run)
-    # TODO TODO save this and other non-plot outputs we need to load saved dF/F->spiking
+    # TODO save this and other non-plot outputs we need to load saved dF/F->spiking
     # fit outside of plot dirs, so i can swap between png and pdf w/o issue...
     dff_to_spiking_model_choices_csv = plot_dir / 'dff2spiking_model_choices.csv'
     copy_to_model_dirs.append(dff_to_spiking_data_csv)
-
-    def _write_inputs_for_reproducibility(plot_root: Path, param_dict: Dict[str, Any]
-        ) -> None:
-        # plot_root should be the panel plot dir,
-        # e.g. pebbled_6f/pdf/ijroi/mb_modeling/megamat
-        assert plot_root.is_dir()
-
-        output_dir = plot_root / param_dict['output_dir']
-        assert output_dir.is_dir()
-
-        used_model_cache = param_dict.get('used_model_cache', True)
-        # should be ok to write these files regardless of `-c`
-        # (check_outputs_unchanged) flag value, because we must have made it
-        # thru fit_and_plot... above w/o it tripping anything
-        if used_model_cache:
-            return
-
-        if al_util.verbose:
-            print(f'copying model inputs to {output_dir.name}:')
-
-        for to_copy in copy_to_model_dirs:
-            # would need to check copy2 behavior in this case, if wanted to support
-            assert not to_copy.is_symlink()
-
-            dst = output_dir / to_copy.name
-
-            if al_util.verbose:
-                print(f'copying {to_copy}')
-
-            # TODO or load/save, using diff fns for this depending on ext? not sure i
-            # gain anything from that...
-            #
-            # should preserve as much file metadata as possible (e.g. modification
-            # time). will overwrite `dst`, if it already exists.
-            shutil.copy2(to_copy, dst)
-
-        # TODO refactor to share date_format= part w/ consensus_df saving i copied this
-        # from? / delete? not sure it's even relevant if date is in index...
-        to_csv(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.csv',
-            date_format=date_fmt_str
-        )
-        to_pickle(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.p')
-
+    #
 
     # TODO anything else i need to include in this?
     dff_to_spiking_model_choices = pd.Series({
@@ -10845,6 +10588,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         f'{param_abbrevs[k] if k in param_abbrevs else k}-{v}'
         for k, v in params_for_suffix.items()
     ])
+    del params_for_suffix
 
     if not use_saved_dff_to_spiking_model:
         plot_fname = f'dff_vs_hallem__{dff2spiking_choices_str}'
@@ -10853,7 +10597,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         # TODO factor into same fn that fits model?
         plot_dff2spiking_fit(merged_dff_and_hallem, model)
         # normalize_fname=False to prevent '__' from getting replaced w/ '_'
-        # TODO TODO fix -c/-C failure here!
+        # TODO TODO (still an issue?) fix -c/-C failure here!
         # TODO add a to_csv(merged_dff_and_hallem, <some-path>) call first, to
         # sanity check input data not changing (pretty sure it's not)?
         # TODO need to change tolerance values in savefig (-c/-C) check of output
@@ -11008,7 +10752,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # whatever) (maybe refactor above to share + use panel_prefix from below?)
     # TODO + do same under each panel dir, for each panels data?
 
-    # TODO TODO test whether downstream code works fine w/o stopping here (at least
+    # TODO test whether downstream code works fine w/o stopping here (at least
     # check equiv in megamat case. may want to hardcode a skip of the validation2 panel
     # by default anyway [w/ a flag])
     # TODO would checking megamat subset of fly_mean_df is same between two runs (w/ all
@@ -11032,19 +10776,21 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # re-assignment, the one where RHS is unstacked...)
     mean_est_df = fly_mean_df.reset_index().groupby(['panel', 'odor', 'glomerulus'],
         sort=False)[est_spike_delta_col].mean()
+    del fly_mean_df
 
     # then odors will be columns and glomeruli will be rows, which is same as
     # orns.orns().T
     mean_est_df = mean_est_df.unstack(['panel', 'odor'])
 
-    # TODO delete?
-    # TODO why was this getting triggered when run w/ megamat data, but not w/
-    # kiwi/control data? not sure it matters...
-    # was gonna sort again here, but seems true already
-    #assert mean_est_df.equals(sort_odors(mean_est_df))
-    #
     mean_est_df = sort_odors(mean_est_df)
 
+    # TODO save w/ panel(s)/similar in name, or under panel dirs? at least as duplicate?
+    # (then remove ignore_output_change_check=True, if so)
+    # do we actually need anything at this path exactly (prob not)?
+    # (or do i actually often want this to contain multiple panels? maybe? really lose
+    # anything if i switch to per-panel? yes, prob cause diagnostics will differ
+    # depending of context of other panels they are presented with)
+    #
     # can fail -C/-c, cause this saves directly under:
     # <driver>_<indicator>/<plot_fmt>/ijroi/mb_modeling (instead of any panel-specific
     # subdirectory of `mb_modeling`), so multiple runs with different panels (typically
@@ -11052,9 +10798,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     to_csv(mean_est_df, plot_dir / 'mean_est_spike_deltas.csv',
         ignore_output_change_check=True
     )
-
-    # TODO factor all dF/F -> spike delta fitting (above, ending ~here) into one fn in
-    # here at least, to make model_mb_responses more readable
 
     # TODO TODO possible to get spike rates for any of the other door data sources?
     # available in their R package?
@@ -11072,30 +10815,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # also my ORN input subset to hallem stuff
     # (computing correlation in each case, with nothing going thru MB model first)
 
-    # TODO drop all non-megamat odors prior to running through fit_mb_model?
-    # (no, want to model other stuff now too...) (am i not currently doing this tho?)
-    # (diagnostics prob gonna produce much lower KC sparsity)
-    # (are any of the non-HALLEM odors (which is probably most non-megamat odors?)
-    # actually influencing model in fit_mb_model tho?)
+    tidy_hallem = hallem_delta_wide.T.stack()
 
-    # TODO are relative sparsities recapitulating what remy seems? even broadly?
-
-    # TODO TODO try fitting on hallem, and then running on my data passed thru
-    # dF/F model (fitting on all hallem might produce very different thresholds from
-    # fitting on the subset of odors remy uses!!!)
-
-    hallem_for_comparison = hallem_delta_wide.copy()
-    assert hallem_for_comparison.index.str.contains(' @ -3').all()
-    # so things line up in comparison_orns path (fit_mb_model hallem data has '@ -2'
-    # for each conc)
-    hallem_for_comparison.index = hallem_for_comparison.index.str.replace(
-        ' @ -3', ' @ -2'
-    )
-    # TODO delete? actually needed by anything?
-    hallem_for_comparison.index.name = 'odor1'
-
-    # TODO move all hallem version of this above loop over panels (done?)
-    tidy_hallem = hallem_for_comparison.T.stack()
     # just to rename the second level from 'odor1'->'odor', to be consistent w/
     # above
     tidy_hallem.index.names = ['glomerulus', 'odor']
@@ -11107,7 +10828,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # TODO TODO fix -c failure (just a tolerance thing?)
     savefig(fig, plot_dir, 'hist_hallem')
 
-    # TODO move inside loop (doing for every panel, not just megamat)?
+    # TODO move inside new loop over panels (doing for every panel, not just megamat)?
     tidy_hallem_megamat = tidy_hallem.loc[
         tidy_hallem.odor.apply(odor_is_megamat)
     ].copy()
@@ -11116,6 +10837,192 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     sns.histplot(data=tidy_hallem_megamat, x=spike_delta_col, bins=n_bins, ax=ax)
     ax.set_title('Hallem megamat')
     savefig(fig, plot_dir, 'hist_hallem_megamat')
+    #
+
+    return (mean_est_df, dff_to_spiking_model_choices, dff2spiking_choices_str,
+        hallem_delta_wide, copy_to_model_dirs
+    )
+
+
+# TODO modify to accept csv path for certain_df too (if that makes it easier to get some
+# basic versions of the model runnable for other people)? either way, want to commit
+# some example AL data to use.
+# TODO rename certain_df to just df (or something less loaded)
+# TODO TODO add kwarg to hardcode a dF/F -> spike delta scaling factor (or a
+# general fn), and have it bypass the computation of this fn / related plotting/cache.
+# (-> use for simple example uses of this fn, hardcoding scale factor = 127 from
+# Remy-paper)
+def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
+    roi_depths=None, skip_sensitivity_analysis: bool = False,
+    skip_models_with_seeds: bool = False, skip_hallem_models: bool = False,
+    first_model_kws_only: bool = False) -> None:
+    # TODO when is it ok for certain_df to have NaNs? does seem current input has
+    # some NaNs, which are only for some odors [for which no odors is NaN for all
+    # fly-glomeruli]. any restrictions (if none, why was sam having issues?)
+    # TODO allow passing in model_kw_list?
+    """Passes input through dF/F -> est spike delta function, runs through MB model.
+
+    Calls `fit_and_plot_mb_model` for each of several parameter options for the model,
+    currently defined below in `model_kw_list`. Each call will have a directory created
+    with model outputs (under `parent_plot_dir / 'mb_modeling/<panel>/<param_dir>'`).
+
+    Some outputs under `parent_plot_dir / 'mb_modeling'` and `<panel>` sub-directories
+    describe dF/F -> est spike delta function, parameters, and outputs.
+
+    Args:
+        certain_df: dataframe of shape (# odors [including repeats], # fly-glomeruli),
+            with dF/F values from [potentially multiple] flies.
+
+            Column index names should be ['date', 'fly_num', 'roi' (i.e. glomerulus
+            name)].
+
+            Row index names should be ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
+            (possible that not all are required, but 'panel' and 'odor1' should be)
+
+        parent_plot_dir: where a 'mb_modeling' subdirectory will be created to contain
+            any model output directories (and other across-model plots).
+
+            In typical use from `al_analysis.py`, this might be 'pebbled_6f/pdf/ijroi'.
+
+        first_model_kws_only: only runs the model with the first set of parameters (in
+            `model_kw_list` in this function), to more quickly test changes to model.
+    """
+    # TODO (not using roi_depths really, so not a big deal) why do roi_depths seem to
+    # have one row per panel, rather than per recording?  current input has column
+    # levels ['date', 'fly_num', 'roi'] and row levels ['panel', 'is_pair'])
+
+    # TODO delete. for debugging.
+    global _spear_inputs2dfs
+    #
+
+    # TODO make and use a subdir in plot_dir (for everything in here, including
+    # fit_and_plot... calls)
+
+    # TODO have this taken in, rather than hardcoding 'mb_modeling'?
+    plot_dir = parent_plot_dir / 'mb_modeling'
+
+    # written below in _write_inputs_for_reproducibility.
+    # not otherwise used.
+    unmodified_orn_dff_input_df = certain_df.copy()
+
+    assert (certain_df.index.get_level_values('is_pair') == False).all()
+    certain_df = certain_df.droplevel('is_pair', axis='index')
+    if roi_depths is not None:
+        assert (roi_depths.index.get_level_values('is_pair') == False).all()
+        roi_depths = roi_depths.droplevel('is_pair', axis='index')
+
+    drop_pfo = True
+    # shouldn't be in megamat/validation/diagnostic data. added for new kiwi/control
+    # data.
+    if drop_pfo:
+        odor_names = certain_df.index.get_level_values('odor1').map(
+            olf.parse_odor_name
+        )
+        odor_concs = certain_df.index.get_level_values('odor1').map(
+            olf.parse_log10_conc
+        )
+
+        pfo_mask = odor_names == 'pfo'
+        if pfo_mask.any():
+            pfo_conc_set = set(odor_concs[pfo_mask])
+
+            # TODO if this gets triggered by None/NaN, adapt to also include None/NaN
+            # (if there are any negative float concs, that would indicate a bug)
+            #
+            # NOTE: {0.0} == {0} is True
+            assert pfo_conc_set == {0}
+
+            # TODO warn that we are dropping (if any actually dropped)
+            certain_df = certain_df.loc[~pfo_mask].copy()
+
+    index_df = certain_df.index.to_frame(index=False)
+
+    odor1_names = index_df.odor1.apply(olf.parse_odor_name)
+    if 'odor2' in certain_df.index.names:
+        mix_strs = (
+            odor1_names + '+' +
+            index_df.odor2.apply(olf.parse_odor_name) + ' (air mix) @ 0'
+        )
+        # TODO work as-is (seems to...)? need to subset RHS to be same shape?
+        # (could add assertions that other part, i.e. `index_df.odor2 == solvent_str`
+        # doesn't change)
+        index_df.loc[index_df.odor2 != solvent_str, 'odor1'] = mix_strs
+
+    # NOTE: see panel2name_order modifications in natmix.olf.panel2name_order, which
+    # define order of these hacky new "odors" ('kmix0','kmix-1',...'cmix0','cmix-1',...)
+    #
+    # e.g. 'kmix @ 0' -> 'kmix0' (so concentration not recognized as such, and thus it
+    # should work in modelling code that currently strips that)
+    hack_strs_to_fix_mix_dilutions = (
+        odor1_names + index_df.odor1.apply(olf.parse_log10_conc).map(
+            lambda x: f'{x:.0f}'
+        )
+    )
+    # expecting all these to get stripped off in modelling code
+    # (may no longer be true? may not matter)
+    hack_strs_to_fix_mix_dilutions = hack_strs_to_fix_mix_dilutions + ' @ 0'
+
+    index_df.loc[odor1_names.str.endswith('mix'), 'odor1'] = \
+        hack_strs_to_fix_mix_dilutions
+
+    certain_df.index = pd.MultiIndex.from_frame(index_df)
+    del index_df
+
+    # after above two hacks, for kiwi/control data, sort_odors should order odors as:
+    # pfo, components, 2-component mix, 2-component air mix, 5-component mix, dilutions
+    # of 5-component mix (with more dilute mixtures further towards the end)
+    certain_df = sort_odors(certain_df)
+
+    ret = scale_dff_to_est_spike_deltas_using_hallem(plot_dir, certain_df, roi_depths)
+
+    (mean_est_df, dff_to_spiking_model_choices, dff2spiking_choices_str,
+        hallem_delta_wide, copy_to_model_dirs
+    ) = ret
+
+    def _write_inputs_for_reproducibility(plot_root: Path, param_dict: Dict[str, Any]
+        ) -> None:
+        # plot_root should be the panel plot dir,
+        # e.g. pebbled_6f/pdf/ijroi/mb_modeling/megamat
+        assert plot_root.is_dir()
+
+        output_dir = plot_root / param_dict['output_dir']
+        assert output_dir.is_dir()
+
+        used_model_cache = param_dict.get('used_model_cache', True)
+        # should be ok to write these files regardless of `-c`
+        # (check_outputs_unchanged) flag value, because we must have made it
+        # thru fit_and_plot... above w/o it tripping anything
+        if used_model_cache:
+            return
+
+        if al_util.verbose:
+            print(f'copying model inputs to {output_dir.name}:')
+
+        for to_copy in copy_to_model_dirs:
+            # would need to check copy2 behavior in this case, if wanted to support
+            assert not to_copy.is_symlink()
+
+            dst = output_dir / to_copy.name
+
+            if al_util.verbose:
+                print(f'copying {to_copy}')
+
+            # TODO or load/save, using diff fns for this depending on ext? not sure i
+            # gain anything from that...
+            #
+            # should preserve as much file metadata as possible (e.g. modification
+            # time). will overwrite `dst`, if it already exists.
+            shutil.copy2(to_copy, dst)
+
+        # TODO refactor to share date_format= part w/ consensus_df saving i copied this
+        # from? / delete? not sure it's even relevant if date is in index...
+        to_csv(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.csv',
+            date_format=date_fmt_str
+        )
+        to_pickle(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.p')
+
+    # TODO explicitly compare fitting on hallem vs hallem-megamat vs remy's megamat data
+    # passed thru fn to get est spike deltas
 
     # TODO also include actual equation for scaling in this (just one constant w/
     # current choices)? currently just includes choices that influence that, but since
@@ -11149,15 +11056,140 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         # remy_sparsity_exact - remy_sparsity: -8.317100850752102e-06
         assert abs(remy_sparsity_exact - remy_sparsity) <= 1e-5
 
-    # TODO TODO switch to using default of 0.1 for kiwi stuff. nicer number (and
-    # close to this anyway) (maybe for anything unless panels is in megamat/validation2,
-    # in which case i can override default in loop below)
-    target_sparsities = (remy_sparsity,)
+    # TODO TODO break out a new script that just loads kiwi/control consensus df and
+    # runs it through model_mb_responses (then move special casing for kiwi/control
+    # panel below to some parameters passed in from there [/similar]?)
+    # (+ prob put script in natmix_data repo)
+
+    # TODO expose this as kwarg (+ maybe thread thru from CLI arg?)
+    # TODO unit test model_mb_responses w/ this True, checking we can recreate committed
+    # outputs
+    # TODO set this True by default if input just has megamat/validation2 (+diags)?
+    # TODO add test based on the =True branch of this? would be a bit redundant w/ some
+    # existing tests, but still
+    repro_remy_paper = False
+
+    if not repro_remy_paper:
+        # TODO allow overriding this w/ kwarg (or entries in kwarg list passed in?
+        # both?)?
+        # TODO default to None instead (or not specifying?) (letting inner fns default
+        # apply)
+        target_sparsity = 0.1
+    else:
+        # TODO move this special casing into def of input_model_kw_list below (in
+        # repro_remy_paper=True conditional)?
+        target_sparsity = remy_sparsity
+        warn(f'since {repro_remy_paper=} using {target_sparsity=}')
+
+    # TODO accept this as optional input kwarg?
+    input_model_kw_list = [
+        dict(
+            weight_divisor=20,
+            use_connectome_APL_weights=True,
+
+            # TODO remove this? (at least for first element of this list,
+            # which is the one that will be run w/ -M)
+            # (or do i actually want this to be standard?)
+            equalize_kc_type_sparsity=True,
+        ),
+
+        dict(
+            weight_divisor=20,
+            equalize_kc_type_sparsity=True,
+        ),
+
+        # TODO delete? if i'm satisfied to always equalize_kc_type_sparsity=True now...
+        # not sure i am.
+        dict(
+            weight_divisor=20,
+            use_connectome_APL_weights=True,
+        ),
+        dict(
+            weight_divisor=20,
+        ),
+        #
+
+        # NOTE: uniform/hemibrain models currently use # of KCs from hemibrain
+        # connectome (1837 if _drop_glom_with_plus=False [= old behavior], or 1830
+        # otherwise). model would default to 2000 otherwise. fafb data more cells
+        # (2482 in left, probably similar in right).
+        dict(
+            # TODO just move n_seeds=N_SEEDS either into defaults, or set in loop below,
+            # if pn2kc_connections in a variable_n_claws case?
+            pn2kc_connections='uniform', n_claws=7, n_seeds=N_SEEDS,
+        ),
+    ]
+
+    for model_kws in input_model_kw_list:
+        # otherwise next check, that converts dicts to frozensets, probably won't be
+        # correct. NON-hashable things (like sens_analysis_kws, are thus added after
+        # these checks)
+        assert all(isinstance(v, Hashable) for v in model_kws.values())
+
+    # checking we don't have duplicate entries in list above
+    assert (
+        len(set(frozenset(x.items()) for x in input_model_kw_list)) ==
+        len(input_model_kw_list)
+    )
+
+    paper_sens_analysis_kws = dict(
+        n_steps=3,
+        fixed_thr_param_lim_factor=0.5,
+        wAPLKC_param_lim_factor=5.0,
+        # TODO why not keeping 0? that not work? actually matter (what
+        # happened?)?
+        drop_nonpositive_fixed_thr=True,
+        drop_negative_wAPLKC=True,
+    )
+
+    # these values were for trying to find better combinations for
+    # use on newer kiwi/control data (for analysis in
+    # natmix_data/analysis.py). not 100% happy with outputs yet.
+    natmix_sens_analysis_kws = dict(
+        n_steps=7,
+        fixed_thr_param_lim_factor=0.75,
+
+        # TODO just leave these last 3 at default (that's what these
+        # values are)?
+        wAPLKC_param_lim_factor=5.0,
+        drop_nonpositive_fixed_thr=True,
+        drop_negative_wAPLKC=True,
+    )
+
+    # TODO just explicitly pass nothing and use defaults of inner fns? same as this?
+    # TODO or default to values i'm now using for kiwi stuff?
+    default_sens_analysis_kws = paper_sens_analysis_kws
+
+    if repro_remy_paper:
+        warn('replacing input_model_kw_list with list to recreate Remy-paper outputs, '
+            f'since {repro_remy_paper=}'
+        )
+        input_model_kw_list = [
+            dict(
+                weight_divisor=20,
+                # may need to explicitly set use_connectome_APL_weights=False, if
+                # default for that ever changes
+
+                _drop_glom_with_plus=False,
+
+                # TODO still set this False in loop below, if panel == 'validation2'?
+                # (i.e. not 'megamat')
+                sensitivity_analysis=True,
+            ),
+
+            dict(
+                # TODO be consistent about 100 vs N_SEEDS (maybe switch preprint repro
+                # stuff below to 100? or have a var shared between repro cases that is
+                # also defined to 100?)
+                pn2kc_connections='uniform', n_claws=7, n_seeds=100,
+
+                _drop_glom_with_plus=False,
+            ),
+        ]
 
     # TODO hardcode list of panels to NOT run sensitivity analysis on (just
-    # validation2?)?
+    # validation2?)? (and only if repro_remy_paper?)
 
-    # TODO delete eventually
     assert mean_est_df.equals(sort_odors(mean_est_df))
 
     # TODO support list values (-> iterate over)? (as long as directories would have
@@ -11257,7 +11289,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         # convenient comparison to 'est_orn_spike_deltas*' versions? or symlink to the
         # ijroi one?
         plot_corr(mean_fly_dff_corr, panel_plot_dir, 'orn_dff_corr',
-            # TODO TODO use one of newer strs in al_analysis.py for this (-> move to
+            # TODO use one of newer strs in al_analysis.py for this (-> move to
             # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
             xlabel=f'ORN {dff_latex}'
         )
@@ -11270,56 +11302,16 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         mean_fly_dff_hallem_corr = mean_of_fly_corrs(fly_dff_hallem_subset)
         plot_corr(mean_fly_dff_hallem_corr, panel_plot_dir,
             'orn_dff_hallem-subset_corr',
-            # TODO TODO use one of newer strs in al_analysis.py for this (-> move to
+            # TODO use one of newer strs in al_analysis.py for this (-> move to
             # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
             xlabel=f'ORN {dff_latex}\nHallem glomeruli only'
         )
         plot_corr(mean_fly_dff_hallem_corr, panel_plot_dir,
             'orn_dff_hallem-subset_corr-dist',
-            # TODO TODO use one of newer strs in al_analysis.py for this (-> move to
+            # TODO use one of newer strs in al_analysis.py for this (-> move to
             # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
             xlabel=f'ORN {dff_latex}\nHallem glomeruli only', as_corr_dist=True
         )
-
-        # TODO delete / move to al_analysis (get_gh146_glomeruli was only used in
-        # al_analysis.py other than here, so didn't refactor it to al_util)
-        '''
-        gh146_glomeruli = get_gh146_glomeruli()
-        # NOTE: true for megamat at least, may not be true for validation2
-        if panel == 'validation2':
-            assert {'VA4'} == (
-                gh146_glomeruli - set(raw_dff_panel_df.columns.get_level_values('roi'))
-            )
-        else:
-            # TODO TODO TODO commit a file that defines set of gh146 glomeruli under
-            # data/ (-> use that)
-            #
-            # TODO TODO TODO relax to not err on new data? presumably this is what was
-            # failing?
-            # TODO TODO just warn instead? only do anything if we seem to be running on
-            # the final megamat data?
-            print('update / delete gh146 glomeruli checking code')
-            #assert 0 == len(
-            #    gh146_glomeruli - set(raw_dff_panel_df.columns.get_level_values('roi'))
-            #)
-
-        fly_dff_gh146_subset = raw_dff_panel_df.loc[:,
-            raw_dff_panel_df.columns.get_level_values('roi').isin(gh146_glomeruli)
-        ]
-        mean_fly_dff_gh146_corr = mean_of_fly_corrs(fly_dff_gh146_subset)
-        plot_corr(mean_fly_dff_gh146_corr, panel_plot_dir,
-            'orn_dff_gh146-subset_corr',
-            # TODO TODO use one of newer strs in al_analysis.py for this (-> move to
-            # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
-            xlabel=f'ORN {dff_latex}\nGH146 glomeruli only'
-        )
-        plot_corr(mean_fly_dff_gh146_corr, panel_plot_dir,
-            'orn_dff_gh146-subset_corr-dist',
-            # TODO TODO use one of newer strs in al_analysis.py for this (-> move to
-            # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
-            xlabel=f'ORN {dff_latex}\nGH146 glomeruli only', as_corr_dist=True
-        )
-        '''
 
         # should i also be passing each *individual fly* data thru dF/F -> est spike
         # delta fn (-> recomputing)? should i be doing that w/ all of modeling?
@@ -11336,12 +11328,13 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         est_df = panel_est_df.droplevel('panel', axis='columns').T.copy()
 
         # TODO TODO also plot hemibrain filled version(s) of this
+        scaling_method_to_use = dff_to_spiking_model_choices['scaling_method_to_use']
         est_corr = plot_responses_and_corr(est_df.T, panel_plot_dir,
             f'est_orn_spike_deltas_{dff2spiking_choices_str}',
             # TODO maybe borrow final part from scaling_method2desc (but current strs
             # there have more info than i want)
             xlabel=('est. ORN spike deltas\n'
-                # TODO TODO use one of newer strs in al_analysis.py for this (-> move to
+                # TODO use one of newer strs in al_analysis.py for this (-> move to
                 # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
                 f'{dff_latex} scaling: {scaling_method_to_use}'
             ),
@@ -11418,22 +11411,11 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
         pebbled_input_df = panel_est_df
 
-        # TODO check outputs against those run previous way (without
-        # explicitly passing inputs, when using + tuning on hallem)
-        #hallem_input_df = hallem_for_comparison.T.copy()
-
         comparison_orns = None
         comparison_kc_corrs = None
 
-        # TODO delete (still want this? or maybe for other panels, e.g. kiwi?)
-        #if panel != 'megamat':
-        #    print('GET COMPARISON_ORNS (+ COMPARISON_KCS) WORKING ON non-megamat DATA')
-        #
+        # TODO also only do if repro_remy_paper=True?
         if panel == 'megamat':
-            # TODO TODO don't i still want comparison_orns in validation case?
-            # TODO TODO what about comparison_kcs in validation case? what betty
-            # has said so far (re: validation modelling figures) is that we only want
-            # sparsity + correlation, but not sure that'll remain true...
             comparison_orns = {
                 'raw-dff': raw_dff_panel_df,
 
@@ -11447,8 +11429,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 # (happy enough w/ corr_diff plots i added in fit_mb_model?)
             }
 
-            # TODO rename to comparison_kc_corrs or something? observed_mean_kc_corrs?
-            #
             # this is a mean-of-fly-corrs (WAS for Remy's 4 final KC flies, but now
             # adapting to also load the older data too)
             comparison_kc_corrs = load_remy_megamat_mean_kc_corrs()
@@ -11463,30 +11443,12 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 ].copy()
             #
 
-            # TODO also an as_corr_dist=True version of my mean ORN corrs (to finish off
-            # fig 3 C)
-            # TODO same for model corrs (corr.pdf under each model param dir)
-
-            # TODO delete similar code in comparison_kc_corrs branch inside
-            # fit_and_plot...
-            #
-            # TODO would probably need to redo diverging_cmap + vmin/vmax to work w/
-            # correlation distance (this was from before i converted correlations to
-            # correlation distances. could also move this before converting above...)
-            # TODO or convert back to correlations, if currently as distances
             plot_corr(comparison_kc_corrs, panel_plot_dir, 'remy_kc_corr',
                 xlabel='observed KCs'
             )
             plot_corr(comparison_kc_corrs, panel_plot_dir, 'remy_kc_corr-dist',
                 xlabel='observed KCs', as_corr_dist=True
             )
-            # TODO make corr diff plots wrt orn inputs
-            # (probably just the raw dF/F, or maybe also the transformed stuff before
-            # fitting?)
-            # TODO compare uniform - hemibrain corr to experimental correlation change
-            # from ORNs->KCs?
-            # TODO load responses.[p|csv] from each dir -> compute corrs -> diff from
-            # there (might just make a separate script for that...)?
 
             assert set(comparison_kc_corrs.index) == set(
                 raw_dff_panel_df.index.get_level_values('odor1')
@@ -11503,7 +11465,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
             merged_corrs = pd.concat([mean_orn_corrs, mean_kc_corrs], axis='columns')
 
-            # TODO TODO refactor to share w/ where i copied from
+            # TODO refactor to share w/ where i copied from
             fig, ax = plt.subplots()
             add_unity_line(ax)
             lineplot_kws = dict(
@@ -11523,7 +11485,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             sns.lineplot(**lineplot_kws, **marker_only_kws)
 
             metric_name = 'correlation'
-            # TODO TODO use one of newer strs in al_analysis.py for this (-> move to
+            # TODO use one of newer strs in al_analysis.py for this (-> move to
             # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
             ax.set_xlabel(f'{metric_name} of raw ORN {dff_latex} (observed)')
             ax.set_ylabel(f'{metric_name} of KCs (observed)')
@@ -11558,427 +11520,67 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         # TODO TODO TODO remove all non-used kiwi/control odors before tuning (e.g.
         # binary mixes, solvent, etc)?
 
-        # TODO add assertion below that there are no dupes in this list (exclude things
-        # that don't actually affect model outputs)
-        model_kw_list = [
-            # TODO delete?
-            # TODO TODO TODO or restore, replacing multiresponder_APL_boost w/ something
-            # similar for other classes of KCs (e.g. based on # of inputs from
-            # "community" PNs or # of inputs in core/periphery)
-            #
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=20,
+        model_kw_list = []
+        for model_kws in input_model_kw_list:
+            model_kws = dict(model_kws)
 
-                use_connectome_APL_weights=True,
+            assert 'orn_deltas' not in model_kws
+            model_kws['orn_deltas'] = pebbled_input_df
 
-                # TODO TODO TODO remove this? (at least for first element of this list,
-                # which is the one that will be run w/ -M)
-                equalize_kc_type_sparsity=True,
+            assert 'comparison_orns' not in model_kws
+            model_kws['comparison_orns'] = comparison_orns
 
-                # TODO TODO need to do as a second call w/ fixed_thr=<vector>
-                # (since assertions tripping if only this passed, and may be hard to
-                # fix?) (may also need to not do in equalize_kc_type_sparsity=True...)
-                # (moving that second call into fit_mb_model now)
-                #wAPLKC=4.83,
+            # TODO share 'hemibrain' default w/ two other places this defined
+            pn2kc_connections = model_kws.get('pn2kc_connections', 'hemibrain')
 
-                # TODO TODO try this boost without equalize_kc_type_sparsity=True?
-                multiresponder_APL_boost=10.0,
-                #multiresponder_APL_boost=3.0,
-                # TODO TODO rename to something more generic, like APL_boost
-                # (and _multiresponder_mask to _APL_boost_mask or something)
-                #multiresponder_APL_boost=20.0,
+            if 'sensitivity_analysis' not in model_kws:
+                if pn2kc_connections not in variable_n_claw_options:
+                    model_kws['sensitivity_analysis'] = True
 
-                # TODO TODO TODO add other kwargs to control whether wKCAPL
-                # also/exclusively gets boosted
-                # TODO option to boost this by a different factor? how to choose tho?
-                boost_wKCAPL=True,
-                # TODO delete
-                #boost_wKCAPL='only',
+            if model_kws.get('sensitivity_analysis', False):
+                if 'sens_analysis_kws' not in model_kws:
+                    model_kws['sens_analysis_kws'] = dict(default_sens_analysis_kws)
 
-                sensitivity_analysis=True,
-                # TODO refactor to use common megamat sens kws by default (share w/
-                # below)?
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
+            model_kw_list.append(model_kws)
 
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            #
 
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=20,
-
-                use_connectome_APL_weights=True,
-
-                # TODO TODO TODO remove this? (at least for first element of this list,
-                # which is the one that will be run w/ -M)
-                equalize_kc_type_sparsity=True,
-
-                sensitivity_analysis=True,
-                # TODO refactor to use common megamat sens kws by default (share w/
-                # below)?
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=20,
-
-                use_connectome_APL_weights=True,
-                equalize_kc_type_sparsity=True,
-                ab_prime_response_rate_target=0.15,
-                # TODO delete
-                #ab_prime_response_rate_target=0.2,
-
-                sensitivity_analysis=True,
-                # TODO refactor to use common megamat sens kws by default (share w/
-                # below)?
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=20,
-
-                equalize_kc_type_sparsity=True,
-
-                sensitivity_analysis=True,
-                # TODO refactor to use common megamat sens kws by default (share w/
-                # below)?
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=20,
-
-                equalize_kc_type_sparsity=True,
-                ab_prime_response_rate_target=0.15,
-                # TODO delete
-                #ab_prime_response_rate_target=0.2,
-
-                sensitivity_analysis=True,
-                # TODO refactor to use common megamat sens kws by default (share w/
-                # below)?
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=20,
-
-                # TODO TODO restore when analyzing remy-paper data (when panel is
-                # megamat/validation2, maybe also checking date range)
-                #
-                # also including for new weight_divisor=20 entry, just so that i don't
-                # have to resend remy new uniform/hemidraw outputs, or update those
-                # plots. if i were to start over again, i would still leave this at
-                # default True.
-                #_drop_glom_with_plus=False,
-
-                use_connectome_APL_weights=True,
-
-                sensitivity_analysis=True,
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-
-            # TODO why is DA4m in in these but not in regular hallem input call in
-            # separate list below? conform preprocessing to match (+ sort glomeruli in
-            # all those internal plots?)
-
-            # weight_divisor=10,5 (and probably 2) didn't improve things, in terms of
-            # either obvious impression of correlation (vs real KC corrs) or spearman's
-            # corr between them
-            #
-            # same as in main hemibrain call (w/o weight_divisor), but now increasing
-            # wPNKC values in proportion to connectome weight, rather than just counting
-            # each unique PN with weight >=4.
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='hemibrain',
-                weight_divisor=20,
-
-                # TODO TODO restore when analyzing remy-paper data (when panel is
-                # megamat/validation2, maybe also checking date range)
-                #
-                # also including for new weight_divisor=20 entry, just so that i don't
-                # have to resend remy new uniform/hemidraw outputs, or update those
-                # plots. if i were to start over again, i would still leave this at
-                # default True.
-                #_drop_glom_with_plus=False,
-
-                # TODO like these steps (in this new context, w/ weight_divisor=20)?
-                sensitivity_analysis=True,
-                sens_analysis_kws=dict(
-                    n_steps=3,
-                    fixed_thr_param_lim_factor=0.5,
-                    wAPLKC_param_lim_factor=5.0,
-                    # TODO TODO why not keeping 0? that not work? actually matter (what
-                    # happened?)?
-                    drop_nonpositive_fixed_thr=True,
-                    drop_negative_wAPLKC=True,
-                ),
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-
-            # would need to uncomment this (and comment other hemibrain entry) to
-            # reproduce preprint/paper plots that predated weight_divisor code.
-            # initial submission (>= March 2025) should use weight_divisor
-            # hemibrain version.
-            #dict(
-            #    orn_deltas=pebbled_input_df,
-
-            #    tune_on_hallem=False,
-            #    pn2kc_connections='hemibrain',
-
-            #    # required to restore the 7 extra no-connection KCs that would be
-            #    # dropped with new default behavior here, which slightly but
-            #    # mostly-inconsequentially changed old hemibrain model resposnses.
-            #    # not planning to use for newer call using weight_divisor=20, whose
-            #    # outputs should replace those from these call in the paper.
-            #    # the cells are those w/ bodyid: [519206240, 861280857, 943118619,
-            #    # 1172713521, 1203779116, 5812979314, 5813081175]
-            #    _drop_glom_with_plus=False,
-
-            #    sensitivity_analysis=True,
-            #    sens_analysis_kws=dict(
-            #        n_steps=3,
-            #        fixed_thr_param_lim_factor=0.5,
-            #        wAPLKC_param_lim_factor=5.0,
-            #        drop_nonpositive_fixed_thr=True,
-            #        drop_negative_wAPLKC=True,
-            #    ),
-
-            #    comparison_orns=comparison_orns,
-            #    comparison_kc_corrs=comparison_kc_corrs,
-            #),
-
-            # TODO restore?
-            ## TODO TODO this actually make sense to try (w/ tune_on_hallem=True
-            ## and drop_receptors_not_in_hallem=False?) does my code even support
-            ## currently?
-            ##dict(orn_deltas=pebbled_input_df, tune_on_hallem=True,
-            ##    pn2kc_connections='hemibrain'
-            ##),
-
-            #dict(orn_deltas=pebbled_input_df, tune_on_hallem=True,
-            #    drop_receptors_not_in_hallem=True,
-            #    pn2kc_connections='hemibrain'
-            #),
-
-            #dict(orn_deltas=pebbled_input_df, tune_on_hallem=False,
-            #    drop_receptors_not_in_hallem=True,
-            #    pn2kc_connections='hemibrain'
-            #),
-
-            # NOTE: uniform/hemibrain models currently use # of KCs from hemibrain
-            # connectome (1837 if _drop_glom_with_plus=False [= old behavior], or 1830
-            # otherwise). model would default to 2000 otherwise. fafb data more cells
-            # (2482 in left, probably similar in right).
-            dict(
-                orn_deltas=pebbled_input_df,
-                tune_on_hallem=False,
-                pn2kc_connections='uniform', n_claws=7, n_seeds=N_SEEDS,
-
-                # TODO TODO restore when analyzing remy-paper data (when panel is
-                # megamat/validation2, maybe also checking date range)
-                #
-                # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
-                # to reproduce previous outputs (probably just b/c hemibrain KC number
-                # is reduced by 7 if this is True, so these models use less cells?)
-                #_drop_glom_with_plus=False,
-
-                comparison_orns=comparison_orns,
-                comparison_kc_corrs=comparison_kc_corrs,
-            ),
-
-            # TODO delete? also try n_claws=5,6 for hemidraw?
-            # since mean # connections is 5.44 in connectome='hemibrain' case [and
-            # probably similar for fafb inputs]). prob just b/c matt had settled on it,
-            # we had been using n_claws=7 for most things.
-            # dict(
-            #     orn_deltas=pebbled_input_df,
-            #     tune_on_hallem=False,
-            #     pn2kc_connections='uniform', n_claws=6, n_seeds=N_SEEDS,
-            #     comparison_orns=comparison_orns,
-            #     comparison_kc_corrs=comparison_kc_corrs,
-            # ),
-            # dict(
-            #     orn_deltas=pebbled_input_df,
-            #     tune_on_hallem=False,
-            #     pn2kc_connections='uniform', n_claws=5, n_seeds=N_SEEDS,
-            #     comparison_orns=comparison_orns,
-            #     comparison_kc_corrs=comparison_kc_corrs,
-            # ),
-            # TODO try hemidraw updated to use weight_divisor hemibrain wPNKC?
-            #dict(
-            #    orn_deltas=pebbled_input_df,
-            #    tune_on_hallem=False,
-            #    pn2kc_connections='hemidraw', n_claws=7, n_seeds=N_SEEDS,
-            #    # NOTE: also need _drop_glom_with_plus=False for this and hemidraw,
-            #    # to reproduce previous outputs (probably just b/c hemibrain KC number
-            #    # is reduced by 7 if this is True, so these models use less cells?)
-            #    _drop_glom_with_plus=False,
-            #    comparison_orns=comparison_orns,
-            #    comparison_kc_corrs=comparison_kc_corrs,
-            #),
-
-            # TODO TODO TODO version like hemidraw, but by pre-generating wPNKC, to have
-            # similar distribution to below (but otherwise keeping draws of each input
-            # indep). possible? (should be...). try just taking each cell in real
-            # connectome, taking # of connections from that cell, then drawing from
-            # whatever distribution up to that number of connections? (in contrast to
-            # current hemidraw/uniform cases which both have a fixed number of
-            # connections [called "claws" in modelling code, not synapses, but maybe
-            # assumed to be somewhat interchangeable?] per model KC)
-
-            # TODO TODO maybe try a version of model where we use connectome weights for
-            # either APL->KC or KC->APL, and then we [try to] scale one/both of them
-            # up/down to achieve target sparsity? (would have to modify model code
-            # somewhat)
-
-            ## TODO TODO this actually make sense to try (w/ tune_on_hallem=True and
-            ## drop_receptors_not_in_hallem=False?) does my code even support
-            ## currently?
-            ##dict(orn_deltas=pebbled_input_df, tune_on_hallem=True,
-            ##    pn2kc_connections='uniform', n_claws=7, n_seeds=N_SEEDS
-            ##),
-
-            # TODO delete?
-            #dict(
-            #    orn_deltas=pebbled_input_df,
-            #    tune_on_hallem=False,
-            #    pn2kc_connections='fafb-left',
-
-            #    # didn't help, unlike in hemibrain case
-            #    # NOTE: seems like somewhere around 12-13 will produce similar value for
-            #    # avg # of synapses per model KC (as in hemibrain w/ weight_divisor=20:
-            #    # ~7.36). despite matching this one value, spearman-of-pearsons [model
-            #    # vs real KCs] is still just as bad, or even slightly worse, with
-            #    # weight_divisor=12 (compared to both weight_divisor=None|20)
-            #    weight_divisor=12,
-
-            #    comparison_orns=comparison_orns,
-            #    comparison_kc_corrs=comparison_kc_corrs,
-            #),
-            #dict(
-            #    orn_deltas=pebbled_input_df,
-            #    tune_on_hallem=False,
-            #    pn2kc_connections='fafb-right',
-
-            #    # didn't help. see comment for fafb-left above.
-            #    #weight_divisor=12,
-
-            #    comparison_orns=comparison_orns,
-            #    comparison_kc_corrs=comparison_kc_corrs,
-            #),
-        ]
+        # TODO do in separate script, regardless of panel? not even using that panel's
+        # data, right? (i suppose for KC comparison i still am, and using remy's data
+        # there?)
         if panel == 'megamat':
-            # TODO TODO make sure that my derived wPNKC from pratyush's data
-            # actually has KCs getting at least some input from all the PN types i have
-            # in wPNKC PN labels (and that i'm not subsetting down to "halfmat"
-            # unnecessarily, from earlier comparisons to matt's stuff, or whatever)
-            # TODO TODO could probably just compare outputs of hallem model w/ and
-            # w/o _use_matt_wPNKC...
-            # TODO TODO can pass hallem data in explicitly if that makes it
-            # easier to get things handled exactly the same
-
-            # NOTE: model responses (including cache) should only include these odors.
-            # could `-i model` if wanted to change and regen cache.
-            sim_odors = sorted(hallem_for_comparison.index)
-            # TODO make work again. need to make corr diff plot for all odors, w/
-            # megamat ones pulled out. this seemed the easiest way...
-            #sim_odors = None
+            hallem_for_comparison = hallem_delta_wide.copy()
+            assert hallem_for_comparison.index.str.contains(' @ -3').all()
+            # so things line up in comparison_orns path (fit_mb_model hallem data has '@
+            # -2' for each conc)
+            hallem_for_comparison.index = hallem_for_comparison.index.str.replace(
+                ' @ -3', ' @ -2'
+            )
+            # TODO delete? actually needed by anything?
+            hallem_for_comparison.index.name = 'odor1'
 
             # parameter combinations to recreate preprint figures, using same Hallem
             # data as input (that Matt did when making those figures, before we had our
             # own ORN outputs)
             preprint_repro_model_kw_list = [
-                dict(pn2kc_connections='hemibrain',
+                dict(
+                    pn2kc_connections='hemibrain',
 
-                    # TODO TODO delete/comment
+                    # TODO delete/comment
                     # need to fix breakpoint hit in fit_mb_model (currently just
                     # commented it...)
                     _use_matt_wPNKC=True,
 
-                    sim_odors=sim_odors,
-
                     comparison_orns=hallem_for_comparison,
-                    comparison_kc_corrs=comparison_kc_corrs,
 
-                    # TODO TODO don't require this passed in! (do unconditionally)
+                    # TODO don't require this passed in! (do unconditionally)
+                    # TODO or move to model_kws postprocesing in tune_on_hallem=True
+                    # case
                     _strip_concs_comparison_kc_corrs=True,
                 ),
+                dict(
+                    pn2kc_connections='uniform', n_claws=7, n_seeds=N_SEEDS,
 
-                dict(pn2kc_connections='uniform', n_claws=7,
-
-                    # TODO TODO TODO delete/comment
+                    # TODO delete/comment
                     # need to fix breakpoint hit in fit_mb_model
                     _use_matt_wPNKC=True,
 
@@ -11986,14 +11588,9 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                     # shouldn't matter...
                     #_add_back_methanoic_acid_mistake=True,
 
-                    n_seeds=N_SEEDS,
-
-                    sim_odors=sim_odors,
-
                     comparison_orns=hallem_for_comparison,
-                    comparison_kc_corrs=comparison_kc_corrs,
 
-                    # TODO TODO don't require this passed in! (do unconditionally)
+                    # TODO don't require this passed in! (do unconditionally)
                     #
                     # since outputs of model will have ' @ -2' when using Hallem input,
                     # but KC comparison data has ' @ -3'. this will strip conc from all
@@ -12001,12 +11598,10 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                     # NOTE: comparison_orns path currently strips unconditionally...
                     _strip_concs_comparison_kc_corrs=True,
                 ),
-                dict(pn2kc_connections='hemidraw', n_claws=7,
+                dict(
+                    pn2kc_connections='hemidraw', n_claws=7, n_seeds=N_SEEDS,
                     _use_matt_wPNKC=True,
-                    n_seeds=N_SEEDS,
-                    sim_odors=sim_odors,
                     comparison_orns=hallem_for_comparison,
-                    comparison_kc_corrs=comparison_kc_corrs,
                     _strip_concs_comparison_kc_corrs=True,
                 ),
             ]
@@ -12031,313 +11626,311 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 '`-s model-seeds` CLI option)'
             )
 
+        if repro_remy_paper:
+            # probably don't want to use some of the other choices of args in cases
+            # other than repro_remy_paper=True (e.g. _drop_glom_with_plus=False)
+            assert panel in ('megamat', 'validation2'), ('repro_remy_paper=True '
+                'probably does not make sense for use on new data'
+            )
+
+
         for model_kws in model_kw_list:
-            if panel not in ('kiwi', 'control'):
-                _target_sparsities = target_sparsities
+
+            model_kws = dict(model_kws)
+
+            # TODO only do if not already in model_kws
+            model_kws['target_sparsity'] = target_sparsity
+
+            model_kws['comparison_kc_corrs'] = comparison_kc_corrs
+
+            if repro_remy_paper and panel == 'megamat':
+                model_kws['repro_preprint_s1d'] = True
+
+            do_sensitivity_analysis = False
+            if model_kws.get('sensitivity_analysis', False):
+                do_sensitivity_analysis = True
+
+            if skip_sensitivity_analysis or not do_sensitivity_analysis:
+                try:
+                    # assumes the default is False. could also set False explicitly,
+                    # but not passing that in explicitly for other model_kws
+                    # iterated over.
+                    del model_kws['sensitivity_analysis']
+                except KeyError:
+                    pass
+
             else:
-                # TODO TODO TODO also set _drop_glom_with_plus=False here, and True
-                # above (or only True for megamat/validation2/glomeruli_diagnostics?)
+                # TODO TODO also skip anything other than 1 or 2 hemibrain calls for
+                # these panels? move calls to natmix_data/analysis.py itself?
+                if panel in ('kiwi', 'control'):
+                    # TODO also check whether sensitivity_analysis=True? or
+                    # sens_analysis_kws just ignored anyway, if it's False(/which i
+                    # assume is default?)?
+                    warn('using diff sens_analysis_kws for kiwi/control panels:\n' +
+                        pformat(natmix_sens_analysis_kws)
+                    )
+                    model_kws['sens_analysis_kws'] = natmix_sens_analysis_kws
+
+            # used to have this like 'dff_scale-<scaling-method>', for pebbled
+            # input, but didn't like how it cluttered up dir names (since almost all
+            # of them have this part of their name, and I only ever scale my pebbled
+            # data one way these days, so it was always 'dff_scale-to-avg-max__')
+            param_dir_prefix = ''
+
+            # TODO (delete?) is this loop working as expected? in run on
+            # kiwi+control data, i feel like i've seen more progress bars than i
+            # expected...
+            # (should be 2 * 3, no? i.e. {hemidraw, uniform} X {control-kiwi,
+            # control, kiwi}?) none of the duplicate-save-within-run detection
+            # seemed to trip tho...
+
+            fixed_thr = None
+            wAPLKC = None
+            _extra_params = dict(extra_params)
+
+            # checking for orn_deltas because we don't want to ever do this
+            # pre-tuning for hallem data (where the ORN data isn't passed here, but
+            # loaded inside fit_mb_model)
+            if 'orn_deltas' in model_kws and panel in panel2tuning_panels:
+
+                tuning_panels = panel2tuning_panels[panel]
+                tuning_panels_str = tuning_panel_delim.join(tuning_panels)
+
+                tuning_panels_plot_dir = plot_dir / tuning_panels_str
+                makedirs(tuning_panels_plot_dir)
+
+                panel_mask = mean_est_df.columns.get_level_values('panel'
+                    ).isin(tuning_panels)
+
+                if panel_mask.sum() == 0:
+                    raise RuntimeError(f'no data from {tuning_panels=}!\n\nedit '
+                        'panel2tuning_panels if you do not intended to tune '
+                        f'{panel=} data on these panels.\n\nyou may also just need '
+                        'to change script CLI args to include this data.'
+                    )
+
+                tuning_df = mean_est_df.loc[:, panel_mask]
+
+                tuning_model_kws = {k: v for k, v in model_kws.items()
+                    if k not in (
+                        'orn_deltas', 'comparison_kc_corrs', 'comparison_orns',
+
+                        # NOTE: would need to move these APL boost params out of
+                        # here, if I were to move boosting to pre-tuning
+                        'multiresponder_APL_boost', '_multiresponder_mask',
+                        'boost_wKCAPL',
+                    )
+                }
+
+                # NOTE: if i wanted to do this pre-tuning on hallem data (which is
+                # loaded in fit_mb_model if orn_deltas not passed here), i'd need to
+                # not pass this. no real need to use this on hallem data tho.
                 #
-                # TODO replace w/ special casing megamat/validation2 instead
-                warn('since panel was kiwi/control, using default 0.1 target sparsity')
-                _target_sparsities = (0.1,)
+                # TODO (delete) need to drop panel level on tuning_df first
+                # (doesn't seem so...)? (if so, prob also want to prefix panel
+                # to odor names, or otherwise ensure no dupes?)
+                tuning_model_kws['orn_deltas'] = tuning_df
 
-            for target_sparsity in _target_sparsities:
-                _model_kws = dict(model_kws)
-                _model_kws['target_sparsity'] = target_sparsity
+                param_dict = fit_and_plot_mb_model(tuning_panels_plot_dir,
+                    extra_params=extra_params,
 
-                if panel == 'megamat':
-                    _model_kws['repro_preprint_s1d'] = True
+                    # NOTE: this is intended to prevent any sensitivity analysis
+                    # recursive calls from running, and also skips most/all plotting
+                    # TODO still plot clustering (of spike_counts) across both
+                    # panels, to get a sense of overlap in multi-responders across
+                    # the two (if we want to tune APL within them, which would then
+                    # affect both panels, if we were to do it here)
+                    _only_return_params=True,
 
-                do_sensitivity_analysis = False
-                if model_kws.get('sensitivity_analysis', False):
-                    do_sensitivity_analysis = True
-
-                if skip_sensitivity_analysis or not do_sensitivity_analysis:
-                    try:
-                        # assumes the default is False. could also set False explicitly,
-                        # but not passing that in explicitly for other model_kws
-                        # iterated over.
-                        del _model_kws['sensitivity_analysis']
-                    except KeyError:
-                        pass
-
-                else:
-                    # TODO TODO also skip anything other than 1 or 2 hemibrain calls for
-                    # these panels? move calls to natmix_data/analysis.py itself?
-                    if panel in ('kiwi', 'control'):
-                        # TODO also check whether sensitivity_analysis=True? or
-                        # sens_analysis_kws just ignored anyway, if it's False(/which i
-                        # assume is default?)?
-                        #
-                        # these values were for trying to find better combinations for
-                        # use on newer kiwi/control data (for analysis in
-                        # natmix_data/analysis.py). not 100% happy with outputs yet.
-                        natmix_sens_analysis_kws = dict(
-                            n_steps=7,
-                            fixed_thr_param_lim_factor=0.75,
-
-                            # TODO just leave these last 3 at default (that's what these
-                            # values are)?
-                            wAPLKC_param_lim_factor=5.0,
-                            drop_nonpositive_fixed_thr=True,
-                            drop_negative_wAPLKC=True,
-                        )
-                        warn('using diff sens_analysis_kws for kiwi/control panels:\n' +
-                            pformat(natmix_sens_analysis_kws)
-                        )
-                        _model_kws['sens_analysis_kws'] = natmix_sens_analysis_kws
-
-                # used to have this like 'dff_scale-<scaling-method>', for pebbled
-                # input, but didn't like how it cluttered up dir names (since almost all
-                # of them have this part of their name, and I only ever scale my pebbled
-                # data one way these days, so it was always 'dff_scale-to-avg-max__')
-                param_dir_prefix = ''
-
-                # TODO (delete?) is this loop working as expected? in run on
-                # kiwi+control data, i feel like i've seen more progress bars than i
-                # expected...
-                # (should be 2 * 3, no? i.e. {hemidraw, uniform} X {control-kiwi,
-                # control, kiwi}?) none of the duplicate-save-within-run detection
-                # seemed to trip tho...
-
-                fixed_thr = None
-                wAPLKC = None
-                _extra_params = dict(extra_params)
-
-                # checking for orn_deltas because we don't want to ever do this
-                # pre-tuning for hallem data (where the ORN data isn't passed here, but
-                # loaded inside fit_mb_model)
-                if 'orn_deltas' in model_kws and panel in panel2tuning_panels:
-
-                    tuning_panels = panel2tuning_panels[panel]
-                    tuning_panels_str = tuning_panel_delim.join(tuning_panels)
-
-                    tuning_panels_plot_dir = plot_dir / tuning_panels_str
-                    makedirs(tuning_panels_plot_dir)
-
-                    panel_mask = mean_est_df.columns.get_level_values('panel'
-                        ).isin(tuning_panels)
-
-                    if panel_mask.sum() == 0:
-                        raise RuntimeError(f'no data from {tuning_panels=}!\n\nedit '
-                            'panel2tuning_panels if you do not intended to tune '
-                            f'{panel=} data on these panels.\n\nyou may also just need '
-                            'to change script CLI args to include this data.'
-                        )
-
-                    tuning_df = mean_est_df.loc[:, panel_mask]
-
-                    tuning_model_kws = {k: v for k, v in _model_kws.items()
-                        # TODO TODO TODO need to add any of the multiresponder APL boost
-                        # stuff here?
-                        if k not in (
-                            'orn_deltas', 'comparison_kc_corrs', 'comparison_orns',
-
-                            # NOTE: would need to move these APL boost params out of
-                            # here, if I were to move boosting to pre-tuning
-                            'multiresponder_APL_boost', '_multiresponder_mask',
-                            'boost_wKCAPL',
-                        )
-                    }
-
-                    # NOTE: if i wanted to do this pre-tuning on hallem data (which is
-                    # loaded in fit_mb_model if orn_deltas not passed here), i'd need to
-                    # not pass this. no real need to use this on hallem data tho.
-                    #
-                    # TODO (delete) need to drop panel level on tuning_df first
-                    # (doesn't seem so...)? (if so, prob also want to prefix panel
-                    # to odor names, or otherwise ensure no dupes?)
-                    tuning_model_kws['orn_deltas'] = tuning_df
-
-                    param_dict = fit_and_plot_mb_model(tuning_panels_plot_dir,
-                        extra_params=extra_params,
-
-                        # NOTE: this is intended to prevent any sensitivity analysis
-                        # recursive calls from running, and also skips most/all plotting
-                        # TODO still plot clustering (of spike_counts) across both
-                        # panels, to get a sense of overlap in multi-responders across
-                        # the two (if we want to tune APL within them, which would then
-                        # affect both panels, if we were to do it here)
-                        _only_return_params=True,
-
-                        **tuning_model_kws
-                    )
-                    _write_inputs_for_reproducibility(tuning_panels_plot_dir,
-                        param_dict
-                    )
-
-                    fixed_thr = param_dict['fixed_thr']
-
-                    if model_kws.get('use_connectome_APL_weights', False):
-                        assert 'wAPLKC' not in param_dict
-                        wAPLKC = param_dict['wAPLKC_scale']
-                    else:
-                        assert 'wAPLKC_scale' not in param_dict
-                        wAPLKC = param_dict['wAPLKC']
-
-                    equalize_kc_type_sparsity = model_kws.get(
-                        'equalize_kc_type_sparsity', False
-                    )
-                    if equalize_kc_type_sparsity:
-                        # TODO TODO fixed_thr should be array now. just pass that
-                        # directly instead of below? (wrote below when i was returning
-                        # fixed_thr=None)
-
-                        # TODO union [some of] this param_dict into one below? (e.g. for
-                        # type2thr)
-
-                        # this must be in param_dict if equalize_kc_type_sparsity=True
-                        type2thr = param_dict['type2thr']
-
-                        tuning_output_dir = (
-                            tuning_panels_plot_dir / param_dict['output_dir']
-                        )
-                        # TODO assert this has been written since run start?
-                        #
-                        # using this to get the kc type for each cell (nothing in
-                        # param_dict has it, and vector things in there tend to screw up
-                        # some outputs, as currently implemented [e.g. the CSVs
-                        # summarizing parameters for different runs])
-                        wPNKC = pd.read_pickle(tuning_output_dir / 'wPNKC.p')
- 
-                        # TODO (delete/) refactor this part to share w/
-                        # test_fixed_inh_params2 (copied this there)?
-                        kc_types = wPNKC.index.get_level_values(KC_TYPE)
-                        assert not kc_types.isna().any()
-                        assert set(kc_types) == set(type2thr.keys())
-                        cell_thrs = kc_types.map(type2thr)
-                        fixed_thr = cell_thrs.values.copy()
-
-                        del kc_types, cell_thrs, type2thr, wPNKC
-
-                        # TODO replace recomputed fixed_thr w/ one from param_dict
-                        # (-> delete code to recompute)
-                        assert np.array_equal(fixed_thr, param_dict['fixed_thr'])
-                    else:
-                        assert 'type2thr' not in param_dict
-
-                    assert fixed_thr is not None
-                    assert wAPLKC is not None
-
-                    # TODO share 'hemibrain' default w/ two other places this defined
-                    pn2kc_connections = model_kws.get('pn2kc_connections', 'hemibrain')
-                    if pn2kc_connections not in connectome_options:
-                        # should be one list element per seed.
-                        # all elements should be float (shouldn't need to support vector
-                        # fixed_thr there).
-                        assert type(fixed_thr) is list and type(wAPLKC) is list
-                        assert len(fixed_thr) == len(wAPLKC)
-
-                        # NOTE: currently relying on the pre-tuning + actual modelling
-                        # calls using the same sequences of seeds (which they do, b/c
-                        # initial seed currently hardcoded, and i always increment
-                        # following seeds by one from there), so that applying the
-                        # sequence of inh params across the two makes sense
-
-                    _model_kws['title_prefix'] = f'tuning panels: {tuning_panels_str}\n'
-
-                    _extra_params['tuning_panels'] = tuning_panels_str
-                    _extra_params['tuning_output_dir'] = param_dict['output_dir']
-
-                    tuning_param_str = ''
-
-                    target_sp = _model_kws.get('target_sparsity')
-                    del _model_kws['target_sparsity']
-                    if target_sparsity is not None:
-                        # TODO skip if it's some default value (0.1?)?
-                        # TODO refactor formatting?
-                        tuning_param_str += f'_target-sp_{target_sp:.3g}'
-
-                    target_sparsity_factor_pre_APL = _model_kws.get(
-                        'target_sparsity_factor_pre_APL'
-                    )
-                    if target_sparsity_factor_pre_APL is not None:
-                        tuning_param_str += (
-                            '_target-sp-factor-pre-APL_'
-                            f'{target_sparsity_factor_pre_APL:.1f}'
-                        )
-
-                    homeostatic_thrs = model_kws.get('homeostatic_thrs', False)
-                    if homeostatic_thrs:
-                        tuning_param_str += '_hstatic-thrs_True'
-                        del _model_kws['homeostatic_thrs']
-                        # TODO also assert fixed_thr is a vector that varies across the
-                        # cells?
-
-                    if equalize_kc_type_sparsity:
-                        tuning_param_str += '_equalize-types_True'
-
-                        # need to remove equalize_kc_type_sparsity=True from calls below
-                        # (w/ fixed fixed_thr and wAPLKC), since it operates by tuning
-                        # threshold within each KC type (which we already did above.
-                        # wouldn't make sense to do again).
-                        del _model_kws['equalize_kc_type_sparsity']
-
-                        ab_prime_response_rate_target = _model_kws.get(
-                            'ab_prime_response_rate_target'
-                        )
-                        if ab_prime_response_rate_target is not None:
-                            tuning_param_str += (
-                                f'_ab-prime_{ab_prime_response_rate_target:.3g}'
-                            )
-                            # same reason we are removing this one. it's only used
-                            # inside the equalize_kc_type_sparsity=True path.
-                            del _model_kws['ab_prime_response_rate_target']
-
-                    del equalize_kc_type_sparsity
-
-                    # TODO any other params that influence tuning?
-
-                    tuning_prefix = f'tuned-on_{tuning_panels_str}{tuning_param_str}__'
-                    param_dir_prefix = f'{tuning_prefix}{param_dir_prefix}'
-
-                # TODO TODO add comment about how large we should expect these outputs
-                # to be + maybe switch back off by default (add CLI arg for this?
-                # [default?] skip option?)
-                #save_dynamics = True
-                save_dynamics = False
-                if save_dynamics:
-                    _model_kws['return_dynamics'] = True
-
-                params_for_csv = fit_and_plot_mb_model(panel_plot_dir,
-                    param_dir_prefix=param_dir_prefix, extra_params=_extra_params,
-                    fixed_thr=fixed_thr, wAPLKC=wAPLKC, **_model_kws
+                    **tuning_model_kws
                 )
-                _write_inputs_for_reproducibility(panel_plot_dir, params_for_csv)
+                _write_inputs_for_reproducibility(tuning_panels_plot_dir,
+                    param_dict
+                )
 
-                # should only be the case if first_seed_only=True inside fit_and_plot...
-                # (just used to regen model internal plots, which are made on first seed
-                # for multi-seed runs. no downstream plots/caches are updated by
-                # fit_and_plot... in that case).
-                if params_for_csv is None:
-                    continue
+                fixed_thr = param_dict['fixed_thr']
 
-                if skip_models_with_seeds:
-                    warn(f'not writing to {model_param_csv} (b/c '
-                        'skip_models_with_seeds=True)!'
-                    )
-                    continue
-
-                # should only be added if wAPLKC/fixed_thr passed, which should not
-                # be the case in any of these calls
-                assert 'pearson' not in params_for_csv
-
-                if model_params is None:
-                    model_params = pd.Series(params_for_csv).to_frame().T
+                # if we were still popping the list-of-float wAPLKC/wKCAPL in the
+                # variable_n_claw=True cases (in fit_and_plot*), then would need to load
+                # wAPLKC/wKCAPL from separate pickles here
+                # TODO TODO TODO why haven't i encountered any other cases where i
+                # needed to load those? e.g. in a connectome APL weights=True case? or
+                # what else would i need to hit it? see other case that pops these in
+                # fit_and_plot*
+                if model_kws.get('use_connectome_APL_weights', False):
+                    assert 'wAPLKC' not in param_dict
+                    wAPLKC = param_dict['wAPLKC_scale']
                 else:
-                    # works (adding NaN) in both cases where appended row has
-                    # more/less columns than existing data.
-                    model_params = model_params.append(params_for_csv,
-                        ignore_index=True
+                    assert 'wAPLKC_scale' not in param_dict
+                    wAPLKC = param_dict['wAPLKC']
+
+                equalize_kc_type_sparsity = model_kws.get(
+                    'equalize_kc_type_sparsity', False
+                )
+                if equalize_kc_type_sparsity:
+                    # TODO TODO fixed_thr should be array now. just pass that
+                    # directly instead of below? (wrote below when i was returning
+                    # fixed_thr=None)
+
+                    # TODO union [some of] this param_dict into one below? (e.g. for
+                    # type2thr)
+
+                    # this must be in param_dict if equalize_kc_type_sparsity=True
+                    type2thr = param_dict['type2thr']
+
+                    tuning_output_dir = (
+                        tuning_panels_plot_dir / param_dict['output_dir']
+                    )
+                    # TODO assert this has been written since run start?
+                    #
+                    # using this to get the kc type for each cell (nothing in
+                    # param_dict has it, and vector things in there tend to screw up
+                    # some outputs, as currently implemented [e.g. the CSVs
+                    # summarizing parameters for different runs])
+                    wPNKC = pd.read_pickle(tuning_output_dir / 'wPNKC.p')
+
+                    # TODO (delete/) refactor this part to share w/
+                    # test_fixed_inh_params2 (copied this there)?
+                    kc_types = wPNKC.index.get_level_values(KC_TYPE)
+                    assert not kc_types.isna().any()
+                    assert set(kc_types) == set(type2thr.keys())
+                    cell_thrs = kc_types.map(type2thr)
+                    fixed_thr = cell_thrs.values.copy()
+
+                    del kc_types, cell_thrs, type2thr, wPNKC
+
+                    # TODO replace recomputed fixed_thr w/ one from param_dict
+                    # (-> delete code to recompute)
+                    assert np.array_equal(fixed_thr, param_dict['fixed_thr'])
+                else:
+                    assert 'type2thr' not in param_dict
+
+                assert fixed_thr is not None
+                assert wAPLKC is not None
+
+                # TODO share 'hemibrain' default w/ two other places this defined
+                pn2kc_connections = model_kws.get('pn2kc_connections', 'hemibrain')
+                if pn2kc_connections not in connectome_options:
+                    # should be one list element per seed.
+                    # all elements should be float (shouldn't need to support vector
+                    # fixed_thr there).
+                    assert type(fixed_thr) is list and type(wAPLKC) is list
+                    assert len(fixed_thr) == len(wAPLKC)
+
+                    # NOTE: currently relying on the pre-tuning + actual modelling
+                    # calls using the same sequences of seeds (which they do, b/c
+                    # initial seed currently hardcoded, and i always increment
+                    # following seeds by one from there), so that applying the
+                    # sequence of inh params across the two makes sense
+
+                model_kws['title_prefix'] = f'tuning panels: {tuning_panels_str}\n'
+
+                _extra_params['tuning_panels'] = tuning_panels_str
+                _extra_params['tuning_output_dir'] = param_dict['output_dir']
+
+                tuning_param_str = ''
+
+                target_sp = model_kws.get('target_sparsity')
+                del model_kws['target_sparsity']
+                if target_sparsity is not None:
+                    # TODO skip if it's some default value (0.1?)?
+                    # TODO refactor formatting?
+                    tuning_param_str += f'_target-sp_{target_sp:.3g}'
+
+                target_sparsity_factor_pre_APL = model_kws.get(
+                    'target_sparsity_factor_pre_APL'
+                )
+                if target_sparsity_factor_pre_APL is not None:
+                    tuning_param_str += (
+                        '_target-sp-factor-pre-APL_'
+                        f'{target_sparsity_factor_pre_APL:.1f}'
                     )
 
-                # just doing in loop so if i interrupt early i still get this. don't
-                # think i mind always overwritting this from past runs.
-                #
-                # NOTE: can't use wrapper here b/c it asserts output wasn't already
-                # saved this run.
-                model_params.to_csv(model_param_csv, index=False)
+                homeostatic_thrs = model_kws.get('homeostatic_thrs', False)
+                if homeostatic_thrs:
+                    tuning_param_str += '_hstatic-thrs_True'
+                    del model_kws['homeostatic_thrs']
+                    # TODO also assert fixed_thr is a vector that varies across the
+                    # cells?
+
+                if equalize_kc_type_sparsity:
+                    tuning_param_str += '_equalize-types_True'
+
+                    # need to remove equalize_kc_type_sparsity=True from calls below
+                    # (w/ fixed fixed_thr and wAPLKC), since it operates by tuning
+                    # threshold within each KC type (which we already did above.
+                    # wouldn't make sense to do again).
+                    del model_kws['equalize_kc_type_sparsity']
+
+                    ab_prime_response_rate_target = model_kws.get(
+                        'ab_prime_response_rate_target'
+                    )
+                    if ab_prime_response_rate_target is not None:
+                        tuning_param_str += (
+                            f'_ab-prime_{ab_prime_response_rate_target:.3g}'
+                        )
+                        # same reason we are removing this one. it's only used
+                        # inside the equalize_kc_type_sparsity=True path.
+                        del model_kws['ab_prime_response_rate_target']
+
+                del equalize_kc_type_sparsity
+
+                # TODO TODO variable_n_claws cases actually supported here? should
+                # fixed_thr / wAPLKC (or means) not also be appending to model output
+                # dir names? (not currently for uniform n_claws=7 outputs generated
+                # 2025-09-10) (if not, care to support?)
+
+                # TODO any other params that influence tuning?
+
+                tuning_prefix = f'tuned-on_{tuning_panels_str}{tuning_param_str}__'
+                param_dir_prefix = f'{tuning_prefix}{param_dir_prefix}'
+
+            # TODO add comment about how large we should expect these outputs
+            # to be + maybe switch back off by default (add CLI arg for this?
+            # [default?] skip option?)
+            #save_dynamics = True
+            save_dynamics = False
+            if save_dynamics:
+                model_kws['return_dynamics'] = True
+
+            params_for_csv = fit_and_plot_mb_model(panel_plot_dir,
+                param_dir_prefix=param_dir_prefix, extra_params=_extra_params,
+                fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
+            )
+            _write_inputs_for_reproducibility(panel_plot_dir, params_for_csv)
+
+            # should only be the case if first_seed_only=True inside fit_and_plot...
+            # (just used to regen model internal plots, which are made on first seed
+            # for multi-seed runs. no downstream plots/caches are updated by
+            # fit_and_plot... in that case).
+            if params_for_csv is None:
+                continue
+
+            if skip_models_with_seeds:
+                warn(f'not writing to {model_param_csv} (b/c '
+                    'skip_models_with_seeds=True)!'
+                )
+                continue
+
+            # should only be added if wAPLKC/fixed_thr passed, which should not
+            # be the case in any of these calls
+            assert 'pearson' not in params_for_csv
+
+            if model_params is None:
+                model_params = pd.Series(params_for_csv).to_frame().T
+            else:
+                # works (adding NaN) in both cases where appended row has
+                # more/less columns than existing data.
+                model_params = model_params.append(params_for_csv,
+                    ignore_index=True
+                )
+
+            # just doing in loop so if i interrupt early i still get this. don't
+            # think i mind always overwritting this from past runs.
+            #
+            # NOTE: can't use wrapper here b/c it asserts output wasn't already
+            # saved this run.
+            model_params.to_csv(model_param_csv, index=False)
 
             if first_model_kws_only:
                 warn('breaking after first model_kw_list entry, because '
@@ -12600,6 +12193,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 # 63
 
                 pairs = corrs.columns.to_frame(index=False)
+                # TODO need to check if we actually have odor2 (or diff meaning here?)?
+                #
                 # choosing 2 means none of the pairs are from the diagonal of the
                 # correlation matrix (no identity elements. no correlations of odors
                 # with themselves.)
