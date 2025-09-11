@@ -3379,39 +3379,42 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     else:
         print("_wPNKC exists")
         wPNKC = _wPNKC.copy()
-        if _wPNKC_one_row_per_claw:
-            print("wPNKC_one_row_per_claw passed in _wPNKC")
-            claw_index = wPNKC.index.copy()
-            ix = wPNKC.index
-            to_drop = [lvl for lvl in ('claw_id','claw_x','claw_y','claw_z','compartment')
-                    if lvl in ix.names]
-            kc_index = (ix.droplevel(to_drop) if to_drop else ix).drop_duplicates()
-            claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
-        else: 
-            print("wPNKC_one_row_per_KC passed in _wPNKC")
-            kc_index = wPNKC.index
         # Conditionally drop 'kc_type' from wPNKC
-        if isinstance(wPNKC.index, pd.MultiIndex) and (KC_TYPE in wPNKC.index.names):
-            wPNKC = wPNKC.droplevel(KC_TYPE)
-        # Conditionally drop 'kc_type' from kc_index
-        if isinstance(kc_index, pd.MultiIndex) and (KC_TYPE in kc_index.names):
-            kc_index = kc_index.droplevel(KC_TYPE)
-        
+        # if _wPNKC_one_row_per_claw:
+        #     print("wPNKC_one_row_per_claw passed in _wPNKC")
+        #     claw_index = wPNKC.index.copy()
+        #     ix = wPNKC.index
+        #     to_drop = [lvl for lvl in ('claw_id','claw_x','claw_y','claw_z','compartment')
+        #             if lvl in ix.names]
+        #     kc_index = (ix.droplevel(to_drop) if to_drop else ix).drop_duplicates()
+        #     claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
+        # else: 
+        #     print("wPNKC_one_row_per_KC passed in _wPNKC")
+        #     kc_index = wPNKC.index
     
-    # def enforce_wPNKC_order(wPNKC: pd.DataFrame, meta_cols=('pre_cell_ids',)) -> pd.DataFrame:
-    #     # canonical order: preserve dict order from task glomeruli
-    #     glom_order = list(orns.task_glomerulus2receptors().keys())
 
     if not _wPNKC_one_row_per_claw:
         # no claw_index needed here
         kc_index = wPNKC.index.copy()
     else:
+        # claw_index = wPNKC.index.copy()
+        # kc_index = claw_index.droplevel(
+        #     # TODO refactor to share w/ defs elsewhere (move claw_coord_cols to
+        #     # module level, etc)
+        #     ['claw_id','claw_x','claw_y','claw_z','compartment']
+        # ).drop_duplicates()
         claw_index = wPNKC.index.copy()
-        kc_index = claw_index.droplevel(
-            # TODO refactor to share w/ defs elsewhere (move claw_coord_cols to
-            # module level, etc)
-            ['claw_id','claw_x','claw_y','claw_z','compartment']
-        ).drop_duplicates()
+        to_drop = [lvl for lvl in ('claw_id','claw_x','claw_y','claw_z','compartment')
+                if lvl in claw_index.names]
+        kc_index = (claw_index.droplevel(to_drop) if to_drop else ix).drop_duplicates()
+        claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
+
+    # if isinstance(wPNKC.index, pd.MultiIndex) and (KC_TYPE in wPNKC.index.names):
+    #     wPNKC = wPNKC.droplevel(KC_TYPE)
+    # # Conditionally drop 'kc_type' from kc_index
+    # if isinstance(kc_index, pd.MultiIndex) and (KC_TYPE in kc_index.names):
+    #     kc_index = kc_index.droplevel(KC_TYPE)
+
 
     if KC_TYPE in wPNKC.index.names:
         # TODO TODO at least doc why we still need to drop this level (only to
@@ -14133,7 +14136,7 @@ def main():
     ]
     '''
     try_each_with_kws = [
-        dict(_wPNKC_one_row_per_claw=True, claw_sparsity=False)
+        dict(_wPNKC_one_row_per_claw=False, claw_sparsity=False)
     ]
 
     for extra_kws in try_each_with_kws:
