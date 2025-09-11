@@ -33,6 +33,10 @@
 
     - sent on: Slack
 
+  - `2025-03-18`
+    - contains final megamat hemibrain model responses
+      - wd20, but no connectome APL weights
+
 
 - `sent_to_anoop`
   - `v1`

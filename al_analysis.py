@@ -3574,7 +3574,9 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         # combo stepped around? like the one in here, or the one in
         # natmix_data/analysis.py?)
         for combo in odor_glomerulus_combos_to_highlight:
-            odor = combo[odor_var]
+            # TODO also check odor_glomerulus_combos_to_highlight for 'odor' vs 'odor1'?
+            # assuming for now it will always be the former
+            odor = combo['odor']
             roi = combo['glomerulus']
 
             matching_roi = mean_df.index.get_level_values('roi') == roi
@@ -10314,6 +10316,128 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
     print('done')
 
 
+# TODO factor to hong2p.util
+# TODO type hint MultiIndex specifically? (or, preferably, just test this also works w/
+# non-MultiIndex Index)
+# TODO test
+def get_levels(index: pd.Index, level: str) -> pd.Index:
+    # .index(level) will raise ValueError if level not in names
+    level_idx: int = index.names.index(level)
+
+    if not isinstance(index, pd.MultiIndex):
+        # TODO even want to support this case? (prob)
+        #
+        # won't have .levels, right? some equiv? .levels are unique, unlike
+        # get_level_values(...) output
+        #
+        # just return get_level_values() anyway? could at least be used in some similar
+        # ways... might cause confusion tho
+        assert not hasattr(index, 'levels')
+        return index.get_level_values(level)
+
+    return index.levels[level_idx]
+
+
+# TODO test this works w/ MultiIndex and Index input
+# TODO add option to drop one or both uncertainty levels?
+# TODO add option to not duplicate combo glomeruli (but instead assign into only one or
+# the other, but in a consistent way)?
+def process_sam_glomeruli_names(df: pd.DataFrame, glomerulus_col: str = 'roi', *,
+    verbose: bool = True) -> pd.DataFrame:
+    """Strips '_t0'|'_t1' uncertainty suffixes, and splits (duplicates) combo glomeruli
+
+    From Sam:
+    "t0 is for ones like DA1, minimal response but identified anatomically"
+
+    "t1 is for glomeruli that show notable responses but lack diagnostic data or
+    don't have a very distinctive/consistent diagnostic profile (also aided by
+    anatomical position); examples VM7v, DA4l etc"
+
+    "Combo" glomeruli meaning those w/ '/' in the name, e.g. 'VA1d/VA1v', which
+    is currently duplicated to each of the component names (e.g. duplicated to 'VA1d'
+    and 'VA1v'). Assuming for now he only uses this naming scheme for 'VA1d/VA1v'
+    specifically (will trip assertion otherwise).
+    """
+    assert glomerulus_col in df.columns.names
+
+    glomeruli = get_levels(df.columns, glomerulus_col)
+
+    parts = glomeruli.str.split('_')
+    n_parts = parts.str.len()
+    assert n_parts.isin((1, 2)).all()
+
+    has_suffix = n_parts == 2
+    suffixes = parts[has_suffix].map(lambda x: x[1])
+    expected_suffixes = ('t0', 't1')
+    assert suffixes.isin(expected_suffixes).all()
+
+    if verbose and has_suffix.any():
+        warn("stripping Sam's uncertainty suffixes from (w/ # of columns for each):\n" +
+            glomeruli[has_suffix].value_counts().to_string()
+        )
+
+    glomeruli = parts.map(lambda x: x[0])
+
+    df = df.copy()
+
+    if not isinstance(df.columns, pd.MultiIndex):
+        df.columns = glomeruli
+    else:
+        df.columns = df.columns.set_levels(glomeruli, level=glomerulus_col)
+
+    # TODO or maybe pick one instead of assigning same vector into each?
+    # or just drop all these? just 'VA1d/VA1v'
+    combo_gloms = glomeruli[glomeruli.str.contains('/')]
+
+    expected_combo_gloms = {'VA1d/VA1v'}
+    assert set(combo_gloms) - expected_combo_gloms == set(), f'{set(combo_gloms)=}'
+
+    if len(combo_gloms) > 0:
+        to_concat = []
+        for gloms_str in combo_gloms:
+            gloms = gloms_str.split('/')
+            assert len(gloms) == len(set(gloms))
+
+            if verbose:
+                # TODO say how many columns we are duplicating?
+                warn(f'duplicating data from {gloms_str} to {gloms}')
+
+            if isinstance(df.columns, pd.MultiIndex):
+                match = df.loc[:,
+                    df.columns.get_level_values(glomerulus_col) == gloms_str
+                ]
+                match.columns = match.columns.remove_unused_levels()
+
+            for glom in gloms:
+                assert glom not in glomeruli
+
+                if isinstance(df.columns, pd.MultiIndex):
+                    to_add = match.copy()
+                    # should be true after remove_unused_levels call above.
+                    # also checking we aren't mangling match.columns in prior
+                    # iterations.
+                    assert (
+                        list(get_levels(to_add.columns, glomerulus_col)) == [gloms_str]
+                    )
+                    to_add.columns = to_add.columns.set_levels([glom],
+                        level=glomerulus_col
+                    )
+                    to_concat.append(to_add)
+                else:
+                    df.loc[:, glom] = df.loc[:, gloms_str]
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df = pd.concat([df] + to_concat, axis='columns', verify_integrity=True)
+
+        df = df.loc[:, ~ df.columns.get_level_values(glomerulus_col).str.contains('/')]
+
+        # was to re-order glomeruli after appending split ones (or try to preserve order
+        # somehow?)
+        df = df.sort_index(axis='columns')
+
+    return df
+
+
 # TODO function for making "abbreviated" tiffs, each with the first ~2-3s of baseline,
 # 4-7s of response (~7 should allow some baseline after) per trial, for more quickly
 # drawing ROIs (without using some more processed version) (leaning towards just trying
@@ -10485,18 +10609,19 @@ def main():
     # TODO TODO maybe this should prompt for pickles/csvs by default (w/ option to
     # approve single or all?)? maybe backup ones that would be replaced too?
     group.add_argument('-c', '--check-outputs-unchanged', action='store_true',
-        # TODO TODO update doc? is it actually true there are any plot formats i don't
+        # TODO update doc? is it actually true there are any plot formats i don't
         # support? or at least, this isn't the reason anymore, right? now it should just
         # be anything that mpl fn i'm using (which converts things to png i think) works
         # w/?
         #
-        # TODO TODO specifically call out which formats this will/won't work for (png?)
+        # TODO specifically call out which formats this will/won't work for (png?)
         # work for PDF? implement some kind of image based diffing to support those?
         # TODO or maybe just err if this is passed with an unsupported plot format being
         # requested
-        help='For CSVs/pickles/plots (saved with my to_[csv|pickle]/savefig wrappers), '
-        'check new outputs against any existing outputs they would overwrite. If there '
-        'is a descrepancy, exit with an error. Currently do not support certain plot '
+        help='For CSVs/pickles/plots (saved with my to_[csv|pickle]/savefig wrappers, '
+        'or anything save function wrapped by `@produces_output` decorator), check new '
+        'outputs against any existing outputs they would overwrite. If there is a '
+        'descrepancy, exit with an error. Currently do not support certain plot '
         'formats (where metadata includes things like file creation time, so same '
         'strategy can not be used to check files for equality).'
     )
@@ -11564,9 +11689,22 @@ def main():
     # TODO add comment explaining what this drops (+ doc in doc str for this fn)
     trial_df = drop_superfluous_uncertain_rois(trial_df)
 
+    # TODO try to replace this w/ limited calls below, to keep suffixes intact for most
+    # things
+    # TODO or restore suffixes later? write a CSV summarizing them (add new returned var
+    # from process_sam*?)?
+    #
+    # TODO check this isn't changing anything if my old ROIs are run thru (or any
+    # megamat/validation2/etc data)
+    trial_df = process_sam_glomeruli_names(trial_df)
+
     if roi_best_plane_depths is not None:
         roi_best_plane_depths = roi_best_plane_depths.loc[:, ~contained_plus]
         roi_best_plane_depths = drop_superfluous_uncertain_rois(roi_best_plane_depths)
+
+        roi_best_plane_depths = process_sam_glomeruli_names(roi_best_plane_depths,
+            verbose=False
+        )
 
         roi_best_plane_depths = sort_fly_roi_cols(roi_best_plane_depths,
             flies_first=True
@@ -11674,6 +11812,48 @@ def main():
 
     id2datenum = fly_id_legend.set_index('fly_id', drop=True)
 
+
+    # TODO TODO probably only do this style of filling if driver is pebbled. we'd
+    # expected a certain set of other glomeruli to be missing in e.g. GH146 case
+
+    # TODO replace w/ call to connectome_wPNKC (w/ _use_matt_wPNKC=False)?
+    # TODO + assert data/ subdir CSV matches
+    #
+    # NOTE: the md5 of this file (3710390cdcfd4217e1fe38e0782961f6) matches what I
+    # uploaded to initial Dropbox folder (Tom/hong_depasquale_collab) for Grant from
+    # the DePasquale lab.
+    #
+    # Also matches ALL wPNKC.csv outputs I currently have under modeling output
+    # subdirs, except those created w/ _use_matt_wPNKC=True (those wPNKC.csv files
+    # have md5 2bc8b74c5cfd30f782ae5c2048126562). Though, none of my current outputs
+    # had drop_receptors_not_in_hallem=True, which would lead to a different CSV.
+    #
+    # Also equal to wPNKC right after call to
+    # connectome_wPNKC(_use_matt_wPNKC=False)
+    prat_hemibrain_wPNKC_csv = 'data/sent_to_grant/2024-04-05/connectivity/wPNKC.csv'
+
+    wPNKC_for_filling = pd.read_csv(prat_hemibrain_wPNKC_csv).set_index('bodyid')
+    wPNKC_for_filling.columns.name = 'glomerulus'
+
+    hemibrain_glomeruli = set(wPNKC_for_filling.columns)
+
+    # TODO TODO are any of these in any of the other hemibrain outputs i'm
+    # working with now (i.e. will i ever have them in wPNKC, and actually be
+    # able to use them in the model)?
+    #
+    # present in sam's analysis outputs (his ROIs on my kiwi/control data)
+    ok_nonhemibrain_gloms = {'DA1l', 'VP1'}
+
+    # NOTE: currently dropping these since loop (+ assertions after) failing when these
+    # glomeruli cause some panel mean dataframes to not all have the same columns
+    # TODO fix handling below (-> don't drop here)? not sure these glomeruli matter,
+    # esp for model
+    to_drop = certain_df.columns.get_level_values('roi').isin(ok_nonhemibrain_gloms)
+    if to_drop.any():
+        warn(f'dropping glomeruli in {ok_nonhemibrain_gloms=}, to avoid issues '
+            'in downstream code'
+        )
+        certain_df = certain_df.loc[:, ~ to_drop].copy()
 
     # if False, only non-consensus *glomeruli* will be dropped, and all odors will
     # remain, in both certain_df/consensus_df
@@ -11818,6 +11998,7 @@ def main():
         # panel_consensus_df still has diagnostic panel here (when `panel` variable
         # refers to any of the other panels)
         panel_df = panel_consensus_df.loc[panel].copy()
+        del panel_consensus_df
 
         if verbose or only_report_missing_glomeruli:
             print('panel flies:')
@@ -11832,53 +12013,37 @@ def main():
         )
         panel_df = panel_df.droplevel(['date','fly_num'], axis='columns')
 
-        # TODO TODO probably only do this style of filling if driver is pebbled. we'd
-        # expected a certain set of other glomeruli to be missing in e.g. GH146 case
-
-        # TODO replace w/ call to connectome_wPNKC (w/ _use_matt_wPNKC=False)?
-        # TODO + assert data/ subdir CSV matches
+        # TODO delete (or finish fixing this path, and use to keep suffixes in glomeruli
+        # names) (currently just going to remove this prefixes once above)
+        #for_glomset = process_sam_glomeruli_names(panel_df)
         #
-        # NOTE: the md5 of this file (3710390cdcfd4217e1fe38e0782961f6) matches what I
-        # uploaded to initial Dropbox folder (Tom/hong_depasquale_collab) for Grant from
-        # the DePasquale lab.
-        #
-        # Also matches ALL wPNKC.csv outputs I currently have under modeling output
-        # subdirs, except those created w/ _use_matt_wPNKC=True (those wPNKC.csv files
-        # have md5 2bc8b74c5cfd30f782ae5c2048126562). Though, none of my current outputs
-        # had drop_receptors_not_in_hallem=True, which would lead to a different CSV.
-        #
-        # Also equal to wPNKC right after call to
-        # connectome_wPNKC(_use_matt_wPNKC=False)
-        prat_hemibrain_wPNKC_csv = \
-            'data/sent_to_grant/2024-04-05/connectivity/wPNKC.csv'
-
-        wPNKC_for_filling = pd.read_csv(prat_hemibrain_wPNKC_csv).set_index('bodyid')
-        wPNKC_for_filling.columns.name = 'glomerulus'
-
-        hemibrain_glomeruli = set(wPNKC_for_filling.columns)
-        # TODO delete (so I can keep change from panel_consensus_df -> panel_df below)
-        assert panel_df.columns.get_level_values('roi').equals(
-            panel_consensus_df.columns.get_level_values('roi')
-        )
-        #
+        for_glomset = panel_df
         glomeruli_in_panel_flies = set(
-            # TODO can i use panel_df instead of panel_consensus_df here (should be able
-            # to)? could del panel_consensus_df where panel_df is defined if so
-            #panel_consensus_df.columns.get_level_values('roi')
-            panel_df.columns.get_level_values('roi')
+            for_glomset.columns.get_level_values('roi')
         )
 
         glomeruli_not_in_hemibrain = glomeruli_in_panel_flies - hemibrain_glomeruli
         # seems to be true on all of my data (validation2 panel included), at least
         # since this loop is using certain ROIs
-        assert len(glomeruli_not_in_hemibrain) == 0, ('glomeruli '
-            f'{glomeruli_not_in_hemibrain} in panel={panel} data, but missing from '
-            'hemibrain wPNKC'
-        )
+        if len(glomeruli_not_in_hemibrain) > 0:
+            warn(f'glomeruli {glomeruli_not_in_hemibrain} in panel={panel} data, but '
+                'missing from hemibrain wPNKC'
+            )
+
+            assert glomeruli_not_in_hemibrain - ok_nonhemibrain_gloms == set(), (
+                f'{glomeruli_not_in_hemibrain=} (also not in ok_nonhemibrain_gloms '
+                'whitelist)'
+            )
+            # TODO probably need to do something below to ensure set of glomeruli same
+            # in all cases, if this code is being reached. otherwise assertion after
+            # loop will trip, b/c diff panels will have mean dataframes w/ diff columns.
+            # (just going to drop these glomeruli before loop for now)
 
         hemibrain_glomeruli_not_in_panel_flies = (
             hemibrain_glomeruli - glomeruli_in_panel_flies
         )
+        # don't actually care that this passes tho, right? just doubt we'll ever
+        # actually label all
         assert len(hemibrain_glomeruli_not_in_panel_flies) > 0
 
         if verbose or only_report_missing_glomeruli:
@@ -11948,13 +12113,23 @@ def main():
             # this replaces any 0 (added above) for non-measured odors w/ NaN.
             # assertion above should ensure this is behaving correctly.
             fly_df.loc[fly_odors_all_nan] = float('nan')
+            # TODO TODO also handle the non-hemibrain whitelist ones we might have
 
             fly_df = fly_df.sort_index(axis='columns')
 
+            # TODO tripping in usage w/ sam's data (only when i was trying to process
+            # his glomeruli names in the loop above.  currently processing them on
+            # trial_df, much earlier)
+            # (delete this comment + try/except if not going to try to move glomerulus
+            # str processing back in this loop [while also adding in other places that
+            # would then require it])
             if _first_fly_cols is None:
                 _first_fly_cols = fly_df.columns
             else:
-                assert fly_df.columns.equals(_first_fly_cols)
+                try:
+                    assert fly_df.columns.equals(_first_fly_cols)
+                except AssertionError:
+                    breakpoint()
 
             # TODO warning message w/ fly_id and specific glomeruli in each fill
             # category
@@ -12075,6 +12250,16 @@ def main():
         n_per_odor_and_glom_list.append(n_per_odor_and_glom)
     #
 
+    # TODO fix (failing when run w/ sam's ROIs on my kiwi/control data now)
+    # (it's not sorting. sets are diff too, prob b/c non-hemibrain gloms)
+    # (currently dropping the non-hemibrain gloms before loop above, so shouldn't trip)
+    #
+    # since we already filled, these should all be hemibrain glomeruli
+    assert all(
+        x.columns.equals(mean_df_list[0].columns)
+        for x in mean_df_list
+    )
+
     if only_report_missing_glomeruli:
         sys.exit()
 
@@ -12120,12 +12305,6 @@ def main():
     # TODO fix panel sorting so that in new kiwi/control flies, diag panel still comes
     # before other two (currently control coming first)
 
-    # TODO TODO TODO assert consensus_df output (megamat+validation) still matches what
-    # i gave anoop (since adding merge_across_nondiag_panels step, rather than just
-    # verify_integrity=True in concat)
-    # (i'm not sure it does...)
-    print('CHECK MERGE_ACROSS_NONDIAG_PANELS WOULD NOT CHANGED OLD CSVS SENT TO ANOOP')
-
     # these should just be the odors dropped (for each panel) in the loop above,
     # for not being presented at least the consensus (e.g. half flies each panel)
     # number of times
@@ -12148,9 +12327,10 @@ def main():
         )
         certain_df = certain_df.drop(odors_to_drop)
 
-    # TODO TODO make separate fn to drop odors consistent w/ how i had been recently
-    # doing that here / above (to do right before plotting when needed, rather than
-    # doing that for the output here)?
+    # TODO factor out fn to drop non-consensus odors (as above), to do right before
+    # plotting when needed, rather than doing that before saving outputs below?
+    # (or am i OK w/ ij_certain-roi_stats.csv only having consensus odors? i assume i'm
+    # ok w/ it having only consensus glomeruli, so i might be ok with this too...)
 
     consensus_df = sort_odors(consensus_df)
     # odor metadata should be same (unless I implement odor-consensus-dropping for
@@ -12213,12 +12393,6 @@ def main():
         date_format=date_fmt_str
     )
     to_pickle(consensus_df, output_root / 'ij_certain-roi_stats.p')
-
-    # since we already filled, these should all be hemibrain glomeruli
-    assert all(
-        x.columns.equals(mean_df_list[0].columns)
-        for x in mean_df_list
-    )
 
     mean_df = pd.concat(mean_df_list, verify_integrity=True)
     stddev_df = pd.concat(stddev_df_list, verify_integrity=True)
@@ -12878,7 +13052,7 @@ def main():
             output_root / f'{output_prefix}n_per_odor_and_glom.p'
         )
 
-        # TODO TODO TODO which hemibrain glomeruli not in task? and vice versa?
+        # TODO TODO which hemibrain glomeruli not in task? and vice versa?
         # also add warnings about this in same hemibrain modelling code
         glomerulus2receptors = orns.task_glomerulus2receptors()
         receptors = mean_df.columns.map(lambda x: ','.join(glomerulus2receptors[x]))
@@ -13339,6 +13513,17 @@ def main():
                     'this way!)'
                 )
                 return
+
+            # TODO use being_run_on_all_final_pebbled_data to control (w/ some new
+            # kwarg to scale_dff_*, threaded thru model_mb_responses) whether dF/F ->
+            # est spike delta fn gets recomputed?
+
+            # TODO move inside model_mb_responses? (would then have to move this fn to
+            # al_util).
+            # currently done once above, but would like to replace that w/ more limited
+            # calls (like this one), to keep the suffixes for many outputs, including
+            # the ijroi plots and ij_certain-roi_stats.[csv|p]
+            #consensus_df = process_sam_glomeruli_names(consensus_df)
 
             # NOTE: use_consensus_for_all_acrossfly must be False if I want to try using
             # certain_df again here (if True, certain_df is redefined to consensus_df
