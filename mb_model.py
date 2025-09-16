@@ -2728,8 +2728,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     _wPNKC: Optional[pd.DataFrame] = None, _wPNKC_one_row_per_claw: bool = False,
     n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
-    target_sparsity: Optional[float] = None,
-    target_sparsity_factor_pre_APL: Optional[float] = None,
+    target_sparsity: Optional[float] = None, APL_coup_const: Optional[np.ndarray] = None,
+    target_sparsity_factor_pre_APL: Optional[float] = None, 
     _use_matt_wPNKC=False, _drop_glom_with_plus=True,
     _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
     ab_prime_response_rate_target: Optional[float] = None,
@@ -3325,7 +3325,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # it seems he had at one point also tried 1.0, but i'm assuming 1.5 is the
             # latest value he intended to use
             #mp.kc.sp_lr_coeff = 1.0
-            mp.kc.sp_lr_coeff = 1.5
+            mp.kc.sp_lr_coeff = 10
 
             warn('hardcoding new defaults for _wPNKC_one_row_per_claw=True case:\n'
                 f'{mp.kc.max_iters=} (was {old_max_iters})\n'
@@ -3404,10 +3404,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         #     ['claw_id','claw_x','claw_y','claw_z','compartment']
         # ).drop_duplicates()
         claw_index = wPNKC.index.copy()
+        if 'compartment' not in claw_index.names: 
+            claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
         to_drop = [lvl for lvl in ('claw_id','claw_x','claw_y','claw_z','compartment')
                 if lvl in claw_index.names]
-        kc_index = (claw_index.droplevel(to_drop) if to_drop else ix).drop_duplicates()
-        claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
+        kc_index = (claw_index.droplevel(to_drop) if to_drop else claw_index).drop_duplicates()
+        if APL_coup_const is not None: 
+            mp.kc.apl_coup_const = APL_coup_const
+
+        # mp.kc.apl_coup_const = APL_coup_const        
 
     # if isinstance(wPNKC.index, pd.MultiIndex) and (KC_TYPE in wPNKC.index.names):
     #     wPNKC = wPNKC.droplevel(KC_TYPE)
@@ -4018,6 +4023,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     kc_to_claws = None
     if _wPNKC_one_row_per_claw:
         rv.kc.claw_compartments = claw_comp
+        # 2) build compartment -> claws (list[list[int]])
+        C = int(claw_comp.max()) + 1 if claw_comp.size else 0
+        compartment_to_claws = [[] for _ in range(C)]
+        # stable order: original claw index order is preserved within each compartment
+        for claw_in_comp_id, comp_val in enumerate(claw_comp.tolist()):
+            compartment_to_claws[comp_val].append(int(claw_in_comp_id))
+        rv.kc.compartment_to_claws = compartment_to_claws
+        mp.kc.comp_num = C
+
         kc_ids_per_claw = np.asarray(kc_ids_per_claw, dtype=np.int64)
 
         # TODO replace this w/ more idiomatic / simply numpy/pandas code?
@@ -14144,8 +14158,9 @@ def main():
         dict(use_connectome_APL_weights=True),
     ]
     '''
+    #   APL_coup_const = 0.8,
     try_each_with_kws = [
-        dict(_wPNKC_one_row_per_claw=False, claw_sparsity=False)
+        dict(_wPNKC_one_row_per_claw=True, APL_coup_const = [0.2, 0.8], claw_sparsity=False)
     ]
 
     for extra_kws in try_each_with_kws:
