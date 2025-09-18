@@ -670,7 +670,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # only doing if _drop_glom_with_plus, so i don't have to also add that flag to
         # dict key (cause it will change set of glomeruli, e.g. w/ hemibrain)
         if _drop_glom_with_plus:
-            print("drop_glom_with_pluse reached? ")
             # (ran after end of first loop over model_kw_list, in model_mb_responses)
             # ipdb> {k: len(v) for k, v in _connectome2glomset.items()}
             # {'fafb-left': 57, 'fafb-right': 56, 'hemibrain': 56}
@@ -771,7 +770,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # VP4            6
         df[glomerulus_col] = glom_strs
 
-        return df    
+        return df
 
     # def expand_wPNKC_to_boutons(
     #     wPNKC: pd.DataFrame,
@@ -2140,10 +2139,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # actually a problem. maybe input *should* always just be in a particular order, and
     # shouldn't necessarily matter that it's this one...
     wPNKC = wPNKC.sort_index(axis='columns')
-    # maybe split Btn here? 
+    # maybe split Btn here?
     if Btn_separate:
         if not preset_Btn_coord:
-            # if wPNKC_one_row_per_claw 
+            # if wPNKC_one_row_per_claw
             print("make our own bouton matrix")
             wPNKC_btn = expand_wPNKC_to_boutons(
                 wPNKC=wPNKC,
@@ -2160,7 +2159,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         to_csv(wPNKC_btn.reset_index(),
             plot_dir / 'wPNKC_btn_separate.csv', index=True
         )
-    
+
     # TODO option to also return a version of (long-form) df, so i can use for a test
     # comparing old + new hemibrain version, as i'm currently doing w/ sloppy code
     # above?
@@ -2856,19 +2855,21 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     _wPNKC: Optional[pd.DataFrame] = None, _wPNKC_one_row_per_claw: bool = False,
     n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
-    target_sparsity: Optional[float] = None, target_sparsity_factor_pre_APL: Optional[float] = None, 
-    APL_coup_const: Optional[float] = None, 
-    Btn_separate: bool = False, preset_Btn_coord: bool = False, 
-    Btn_divide_per_glom: bool = True, Btn_num_per_glom: Optional[int] = 10, 
+    target_sparsity: Optional[float] = None,
+    target_sparsity_factor_pre_APL: Optional[float] = None,
+    APL_coup_const: Optional[float] = None,
+    Btn_separate: bool = False, preset_Btn_coord: bool = False,
+    Btn_divide_per_glom: bool = True, Btn_num_per_glom: Optional[int] = 10,
     _use_matt_wPNKC=False, _drop_glom_with_plus=True,
     _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
     ab_prime_response_rate_target: Optional[float] = None,
-    homeostatic_thrs: bool = False, claw_sparsity: bool = False,
+    homeostatic_thrs: bool = False,
     fixed_thr: Optional[Union[float, np.ndarray]] = None,
     # TODO TODO TODO support vector on these? or how else? (want to be able to boost
     # them)
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
     #
+    APL_coup_const: Optional[np.ndarray] = None,
     print_olfsysm_log: Optional[bool] = None, return_dynamics: bool = False,
     plot_dir: Optional[Path] = None, make_plots: bool = True,
     _plot_example_dynamics: bool = False, title: str = '',
@@ -2883,9 +2884,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # 1) KCs w/ more community PN input (or more input from some input set of
     #    glomeruli?)
     # 2) KCs w/ more input from periphery
-    multiresponder_APL_boost: Optional[float] = None, _multiresponder_mask: Optional[pd.Series] = None,
+    multiresponder_APL_boost: Optional[float] = None,
+    _multiresponder_mask: Optional[pd.Series] = None,
     boost_wKCAPL: Literal[False, True, 'only'] = False,
-) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
+    # TODO this return signature still accurate?
+    ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
     # TODO doc point of sim_odors. do we need to pass them in (not typically, no)?
     # (even when neither tuning nor running on any hallem data?)
     # TODO does matt's code support float wPNKC? can i just directly normalize wPNKC and
@@ -2895,6 +2898,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # assembled) (or have wPNKC also use same sequential int index)
     # TODO allow passing in wPNKC matrix directly? mainly thinking of using for tests
     # now... would have to override pn2kc_connections (or take as option to that param)
+    # TODO TODO doc equalize_kc_types
     """
     Args:
         orn_deltas: dataframe of shape (# glomeruli, # odors). values should be in units
@@ -3514,51 +3518,32 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 Btn_num_per_glom=Btn_num_per_glom
             )
     else:
-        print("_wPNKC exists")
         wPNKC = _wPNKC.copy()
-        # Conditionally drop 'kc_type' from wPNKC
-        # if _wPNKC_one_row_per_claw:
-        #     print("wPNKC_one_row_per_claw passed in _wPNKC")
-        #     claw_index = wPNKC.index.copy()
-        #     ix = wPNKC.index
-        #     to_drop = [lvl for lvl in ('claw_id','claw_x','claw_y','claw_z','compartment')
-        #             if lvl in ix.names]
-        #     kc_index = (ix.droplevel(to_drop) if to_drop else ix).drop_duplicates()
-        #     claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
-        # else: 
-        #     print("wPNKC_one_row_per_KC passed in _wPNKC")
-        #     kc_index = wPNKC.index
-
-        # for consistency reasons; leave like this for now; if needed, we can consider 
-        # expanding the input wPNKC by Btn_num_per_glom
 
     if not _wPNKC_one_row_per_claw:
         # no claw_index needed here
         kc_index = wPNKC.index.copy()
     else:
-        # claw_index = wPNKC.index.copy()
-        # kc_index = claw_index.droplevel(
-        #     # TODO refactor to share w/ defs elsewhere (move claw_coord_cols to
-        #     # module level, etc)
-        #     ['claw_id','claw_x','claw_y','claw_z','compartment']
-        # ).drop_duplicates()
         claw_index = wPNKC.index.copy()
-        if 'compartment' not in claw_index.names: 
+
+        # TODO delete? (/ move def below, near where used?)
+        if 'compartment' not in claw_index.names:
             claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
-        to_drop = [lvl for lvl in ('claw_id','claw_x','claw_y','claw_z','compartment')
-                if lvl in claw_index.names]
+        #
+
+        # TODO refactor to share w/ defs elsewhere (move claw_coord_cols to
+        # module level, etc)
+        to_drop = [x for x in ('claw_id','claw_x','claw_y','claw_z','compartment')
+            if x in claw_index.names
+        ]
+        # TODO make conditional more explicit
         kc_index = (claw_index.droplevel(to_drop) if to_drop else claw_index).drop_duplicates()
-        if APL_coup_const is not None: 
+
+        # TODO raise ValueError if this passed in non-one-row-per-claw case
+        if APL_coup_const is not None:
             mp.kc.apl_coup_const = APL_coup_const
 
-        # mp.kc.apl_coup_const = APL_coup_const        
-
-    # if isinstance(wPNKC.index, pd.MultiIndex) and (KC_TYPE in wPNKC.index.names):
-    #     wPNKC = wPNKC.droplevel(KC_TYPE)
-    # # Conditionally drop 'kc_type' from kc_index
-    # if isinstance(kc_index, pd.MultiIndex) and (KC_TYPE in kc_index.names):
-    #     kc_index = kc_index.droplevel(KC_TYPE)
-
+    # TODO check kc_index here instead of wPNKC.index?
     if KC_TYPE in wPNKC.index.names:
         # TODO TODO at least doc why we still need to drop this level (only to
         # re-add later), or remove
@@ -3581,7 +3566,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     if Btn_separate:
         mp.pn.preset_Btn = True
         mp.pn.Btn_num_per_glom = Btn_num_per_glom
-        glomerulus_index = wPNKC.columns.get_level_values("glomerulus") 
+        glomerulus_index = wPNKC.columns.get_level_values("glomerulus")
     else:
         glomerulus_index = wPNKC.columns
     if not hallem_input:
@@ -3637,40 +3622,45 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if Btn_separate:
             cols = wPNKC.columns
             if isinstance(cols, pd.MultiIndex):
-                gloms_for_cols = (cols.get_level_values("glomerulus")
-                                if "glomerulus" in cols.names else cols.get_level_values(0))
+                gloms_for_cols = (cols.get_level_values('glomerulus'
+                    # TODO prob just assert on what level 0 is, or delete that else
+                    # anyway...
+                    if 'glomerulus' in cols.names else cols.get_level_values(0)
+                )
             else:
                 # if you flattened names like "DM6#03", strip "#.."
-                gloms_for_cols = (wPNKC.columns.str.split("#", 1).str[0]
-                                if hasattr(wPNKC.columns, "str") and wPNKC.columns.str.contains("#").any()
-                                else pd.Index(wPNKC.columns))
-            gloms_for_cols = pd.Index(gloms_for_cols, name="glomerulus")  # length == number of wPNKC columns
+                gloms_for_cols = (
+                    wPNKC.columns.str.split("#", 1).str[0]
+                    if (
+                        hasattr(wPNKC.columns, "str") and
+                        wPNKC.columns.str.contains("#").any()
+                    )
+                    else pd.Index(wPNKC.columns)
+                )
 
-            # 1) fast lookup glomerulus -> row vector
+            # length == number of wPNKC columns
+            gloms_for_cols = pd.Index(gloms_for_cols, name="glomerulus")
+
             row_lookup = {g: orn_deltas.loc[g].to_numpy() for g in orn_deltas.index}
-
-            # 2) zero template for missing glomeruli
             zero_row = np.zeros(orn_deltas.shape[1], dtype=float)
-
-            # 3) build rows by *glomerulus per column*, not by column tuple
             rows = [row_lookup.get(g, zero_row) for g in gloms_for_cols]
+            orn_deltas = pd.DataFrame(rows, index=gloms_for_cols,
+                columns=orn_deltas.columns
+            )
 
-            # 4) construct DataFrame with a matching index length
-            orn_deltas = pd.DataFrame(rows, index=gloms_for_cols, columns=orn_deltas.columns)
-            # orn_deltas = orn_deltas.astype(float).div(Btn_num_per_glom)
+            # length G
+            glom_unique = pd.Index(pd.unique(gloms_for_cols), name="glomerulus")
 
-            glom_unique = pd.Index(pd.unique(gloms_for_cols), name="glomerulus")   # length G
-
-            # --- dedupe orn_deltas to glomerulus level (G × odors), keep first (or .mean()) ---
+            # dedupe orn_deltas to glomerulus level (G × odors), keep first (or .mean())
             if not orn_deltas.index.is_unique:
                 orn_deltas = orn_deltas.groupby(level=0, sort=False).first()
             # align to glomerulus universe; fill missing with 0
             orn_deltas = orn_deltas.reindex(glom_unique).fillna(0.0)
-        else: 
+        else:
             orn_deltas = pd.DataFrame([
                     orn_deltas.loc[x].values if x in orn_deltas.index
-                    # orn_deltas.index
-                    # TODO correct? after concat across odors in tune_on_hallem=True case?
+                    # TODO correct? after concat across odors in tune_on_hallem=True
+                    # case?
                     else np.zeros(len(orn_deltas.columns))
                     # TODO also use glomerulus_index here (instead of wPNKC.columns) for
                     # consistency w/ above?
@@ -3678,7 +3668,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 ], index=glomerulus_index, columns=orn_deltas.columns
             )
 
-        print("orn_deltas pd.Datafram passed")
         # TODO need to be int (doesn't seem so)?
         mean_sfr = sfr.mean()
 
@@ -3732,7 +3721,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         extra_orn_deltas = pd.DataFrame(index=orn_deltas.index, columns=fake_odors,
             data=0
         )
-        print("extra_orn_deltas pd.Datafram passed")
         assert 'odor' in orn_deltas.columns.names
         extra_orn_deltas.columns.name = 'odor'
         # TODO handle appending ' @ 0' automatically if needed (only if i actually
@@ -3898,7 +3886,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                         receptors[receptors_not_in_hallem])
                 ])
                 msg += '\n'
-       
+
     # TODO try removing .copy()?
     mp.orn.data.spont = sfr.copy()
     mp.orn.data.delta = orn_deltas.copy()
@@ -3912,7 +3900,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO should seed be Optional?
         mp.kc.seed = seed
         mp.kc.nclaws = n_claws
-    
+
     if not _wPNKC_one_row_per_claw:
         # TODO also take an optional parameter to control this number?
         # (for variable_n_claws cases mainly)
@@ -4138,7 +4126,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO add assertions checking kc_to_claws is correct?
 
-    # make a map for PN->Btn map; so each glom, what Btn index are associated with that; 
+    # make a map for PN->Btn map; so each glom, what Btn index are associated with that;
     # and vector of length total boutons, and each position
     # stores the glomeruli index.
     if Btn_separate:
@@ -4203,15 +4191,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # rv.kc.wKCAPL.shape=(1, 1630)
             # rv.kc.wKCAPL.max()=0.002386503067484662
             # rv.kc.wAPLKC.shape=(1630, 1)
-            # rv.kc.wAPLKC.max()=3.8899999999999992 
-            if _wPNKC_one_row_per_claw: 
+            # rv.kc.wAPLKC.max()=3.8899999999999992
+            if _wPNKC_one_row_per_claw:
                 print("rv.kc.wAPLKC declared here")
-                
+
 
                 rv.kc.wAPLKC = np.ones((compact.size, 1)) * wAPLKC
                 rv.kc.wKCAPL = np.ones((1, compact.size)) * wKCAPL
                 print("rv.kc.wAPLKC size: ", compact.size)
-            else: 
+            else:
                 rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
                 rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
 
@@ -4400,15 +4388,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO raise some kind of custom convergence failure error instead, with message
         # including which parameters can be changed to try to get it to converge
-        #
-        # NOTE: do not remove this assertion
-        # if use_connectome_APL_weights == False:
-        #     import ipdb; ipdb.set_trace() 
-
-        print("rel_sp_diff: ", rel_sp_diff)
-        # assert rel_sp_diff <= mp.kc.sp_acc, (f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
-        #     f'\n{sp_actual=}\n{mp.kc.sp_target=}'
-        # )
+        # NOTE: do not remove/comment this assertion
+        assert rel_sp_diff <= mp.kc.sp_acc, (f'{rel_sp_diff=} > {mp.kc.sp_acc=}'
+            f'\n{sp_actual=}\n{mp.kc.sp_target=}'
+        )
 
         del sp_actual, abs_sp_diff, rel_sp_diff
 
@@ -4427,8 +4410,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wPNKC = pd.DataFrame(data=wPNKC, columns=glomerulus_index)
         # TODO move KC ID col def to a central place (-> prob rename to 'kc_id' after)
         wPNKC.index.name = KC_ID
-        print("wPNKC pd.Datafram passed")
-
 
     # TODO skip this re-adding if i change above to not drop kc_type level from wPNKC
     # index? any code in between that would actually err w/o the dropping?
@@ -4535,8 +4516,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # ipdb> unique_fixed_thrs.max()
         # 256.8058676548659
         pks = pd.DataFrame(data=rv.kc.pks, index=kc_index, columns=tuning_odor_index)
-        print("pks pd.Datafram passed")
-
 
         # TODO summarize+delete most of comment block below
         #
@@ -4783,7 +4762,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 ' across KC types:'
             )
             pre_responses = pd.DataFrame(responses, index=kc_index, columns=odor_index)
-            print("pre_responses pd.Datafram passed")
             if extra_orn_deltas is not None:
                 # this subset of odors is not tuned, so we don't care about it here
                 # (and as a result values seem not even properly initialized here)
@@ -5218,7 +5196,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # delete afterwards
         np.set_printoptions(precision=6, suppress=False)
         # now slices will print with 6 decimal places
-        if not _wPNKC_one_row_per_claw: 
+        if not _wPNKC_one_row_per_claw:
             rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
             rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
 
@@ -5230,10 +5208,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             # this should now be defined whenever wAPLKC is, whether passed in or not...
             assert wKCAPL is not None
-            if not _wPNKC_one_row_per_claw: 
+            if not _wPNKC_one_row_per_claw:
                 assert rv_scalar_wKCAPL == wKCAPL
         else:
-            if not _wPNKC_one_row_per_claw: 
+            if not _wPNKC_one_row_per_claw:
                 # TODO delete prints? (at least put behind a verbose kwarg)
                 print(f'wAPLKC: {rv_scalar_wAPLKC}')
                 print(f'wKCAPL: {rv_scalar_wKCAPL}')
@@ -5324,12 +5302,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     assert responses.shape[1] == (n_input_odors + n_extra_odors)
     responses = pd.DataFrame(responses, index=kc_index, columns=odor_index)
-    print("responses pd.Datafram passed")
 
     assert spike_counts.shape[1] == (n_input_odors + n_extra_odors)
     assert len(responses) == len(spike_counts)
     spike_counts = pd.DataFrame(spike_counts, index=kc_index, columns=odor_index)
-    print("spike_counts pd.Datafram passed")
 
     if extra_orn_deltas is not None:
         extra_responses = responses.iloc[:, -n_extra_odors:]
@@ -5466,7 +5442,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # also a list out of the box
     # pn_sims.shape=(110, 22, 5500)
     pn_sims = np.array(rv.pn.pn_sims)
-    
+
     if tune_on_hallem and not hallem_input:
         orn_sims = orn_sims[n_hallem_odors:]
         pn_sims = pn_sims[n_hallem_odors:]
@@ -5593,7 +5569,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         al_dims = ['stim', 'glomerulus', 'time_s']
         al_coords_orn = {**coords, 'glomerulus': glomerulus_index.unique()}
         al_coords = {**coords, 'glomerulus': glomerulus_index}
-        
+
         # TODO TODO fix:
         # (was probably b/c panel wasn't a level passed at that point?)
         # ValueError: coordinate stim has dimensions ('odor',), but these are not a subset of the DataArray dimensions ['stim', 'glomerulus', 'time_s']
@@ -5712,7 +5688,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # 2. Select the data for all 'DL5' boutons for the chosen odor.
             # The result is a 2D xarray object with shape (10, 5500)
             # and dimensions ('glomerulus', 'time_s').
-            dl5_bouton_data = pn_sims.isel(stim=example_odor_idx, 
+            dl5_bouton_data = pn_sims.isel(stim=example_odor_idx,
                                         glomerulus=dl5_bouton_slice)
 
             # 3. Get the raw NumPy array and sum along the correct axis.
@@ -5860,10 +5836,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         bouton_definitions = []
         # Loop through each glomerulus by its index (0, 1, 2...)
         for glom_idx, glom_name in enumerate(unique_glom_names):
-            
+
             # Get the list of boutons for this specific glomerulus from your map
             boutons_for_this_glom = rv.pn.pn_to_Btns[glom_idx]
-            
+
             # Create a unique ID (0, 1, 2...) for each bouton WITHIN this glomerulus
             for i in range(len(boutons_for_this_glom)):
                 bouton_definitions.append((glom_name, i))
@@ -5876,11 +5852,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     pn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index_pn,
         data=pn_sims[:, :, stim_start_idx:stim_end_idx].mean(axis=-1)
     )
-
-    print("orn_pn_df pd.Datafram passed")
     if extra_orn_deltas is not None:
         orn_df = orn_df.drop(index=extra_orn_deltas.columns)
         pn_df = pn_df.drop(index=extra_orn_deltas.columns)
+
     # TODO TODO also drop from orn_deltas? assertion failing below b/c not doing so
     # (or is that how they get returned? maybe just drop for purpose of assertion or
     # within whatever plotting, if important)
@@ -13895,10 +13870,11 @@ def main():
         dict(use_connectome_APL_weights=True),
     ]
     '''
-    #   APL_coup_const = 0.8,
+    # APL_coup_const = 0.8,
     # APL_coup_const = [0.5, 0.5],
     try_each_with_kws = [
-        dict(_wPNKC_one_row_per_claw=False,  Btn_separate = True)
+        #dict(_wPNKC_one_row_per_claw=False, Btn_separate=True)
+        dict(_wPNKC_one_row_per_claw=True, APL_coup_const=[0.2, 0.8])
     ]
 
     for extra_kws in try_each_with_kws:
