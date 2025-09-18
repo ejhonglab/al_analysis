@@ -36,3 +36,6 @@ venv_backups/
 model_mb_example/
 
 202*_backup/
+
+__pycache__/
+*.pyc
