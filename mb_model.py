@@ -2728,7 +2728,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     _wPNKC: Optional[pd.DataFrame] = None, _wPNKC_one_row_per_claw: bool = False,
     n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
-    target_sparsity: Optional[float] = None, APL_coup_const: Optional[np.ndarray] = None,
+    target_sparsity: Optional[float] = None, APL_coup_const: Optional[float] = None,
     target_sparsity_factor_pre_APL: Optional[float] = None, 
     _use_matt_wPNKC=False, _drop_glom_with_plus=True,
     _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
@@ -14159,8 +14159,9 @@ def main():
     ]
     '''
     #   APL_coup_const = 0.8,
+    # APL_coup_const = [0.5, 0.5],
     try_each_with_kws = [
-        dict(_wPNKC_one_row_per_claw=True, APL_coup_const = [0.2, 0.8], claw_sparsity=False)
+        dict(_wPNKC_one_row_per_claw=True, APL_coup_const = 0.5, claw_sparsity=False)
     ]
 
     for extra_kws in try_each_with_kws:
