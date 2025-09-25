@@ -12,7 +12,7 @@ from hong2p.util import pd_allclose
 
 import al_util
 from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC, KC_ID,
-    KC_TYPE, step_around, read_series_csv
+    CLAW_ID, KC_TYPE, step_around, read_series_csv
 )
 
 
@@ -392,8 +392,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     olfsysm is modified and configured to interpret input rows as claws, but still
     having olfsysm ignore claw coordinate information.
     """
-    for kws in [dict(use_connectome_APL_weights=True),
-                dict()]:
+    for kws in [dict(use_connectome_APL_weights=True), dict()]:
 
         connectome = 'hemibrain'
         wPNKC_kws = dict(
@@ -408,11 +407,11 @@ def test_spatial_wPNKC_equiv(orn_deltas):
         for (kc_id, kc_type), n_claws_per_glom in wPNKC.iterrows():
             claw_id = 0
 
-            # if we don't add these elements, the two KCs with no claws will be in wPNKC's
-            # index, but not final wPNKC_one_row_per_claw index
+            # if we don't add these elements, the two KCs with no claws will be in
+            # wPNKC's index, but not final wPNKC_one_row_per_claw index
             if n_claws_per_glom.sum() == 0:
-                one_hot_claw_series_list.append(pd.Series(index=wPNKC.columns, data=False,
-                    name=(kc_id, kc_type, claw_id)
+                one_hot_claw_series_list.append(pd.Series(index=wPNKC.columns,
+                    data=False, name=(kc_id, kc_type, claw_id)
                 ))
 
             for glom, n_claws_from_glom in n_claws_per_glom.items():
@@ -430,43 +429,49 @@ def test_spatial_wPNKC_equiv(orn_deltas):
 
         n_claws = wPNKC.sum().sum()
         assert sum((x > 0).any() for x in one_hot_claw_series_list) == n_claws
+
+        # TODO TODO TODO what changed to make it now == n_claws exactly, instead of - 2?
+        # (same issue as was causing failure in another test [multiresponder APL boost].
+        # fix!!!)
         # since two KCs receive no input (in output of connectome_wPNKC call above, w/
         # essentially default args)
         assert len(one_hot_claw_series_list) - 2 == n_claws
+        #assert len(one_hot_claw_series_list) == n_claws
 
         # values will be True if there is a claw for the (kc,glom) pair, otherwise False
         wPNKC_one_row_per_claw = pd.concat(one_hot_claw_series_list, axis='columns',
             verify_integrity=True
         )
-        # values are the elements of the 2-tuples from the .name of each concatenated Series
-        wPNKC_one_row_per_claw.columns.names = ['kc_id', 'kc_type', 'claw_id']
+        # values are the elements of the 2-tuples from the .name of each concatenated
+        # Series
+        wPNKC_one_row_per_claw.columns.names = [KC_ID, KC_TYPE, CLAW_ID]
 
-        # AFTER .T, rows will be ['kc_id', 'claw_id'] and columns will be 'glomerulus',
+        # AFTER .T, rows will be [KC_ID, CLAW_ID] and columns will be 'glomerulus',
         # with claw_id values going from [0, <#-claws-per-(kc,glom)-pair> - 1]
         wPNKC_one_row_per_claw = wPNKC_one_row_per_claw.T.copy()
 
-        # TODO move/copy assertion that there are no duplicate ['kc_id', 'claw_id']
-        # combos (from _wPNKC_one_row_per_claw=True code in mb_model) here? refactor most
-        # checks to share?
+        # TODO move/copy assertion that there are no duplicate [KC_ID, CLAW_ID]
+        # combos (from _wPNKC_one_row_per_claw=True code in mb_model) here? refactor
+        # most checks to share?
 
         # TODO replace x/y/z/ ranges w/ those from actual hemibrain data
         # (in micrometers)
         x_min, y_min, z_min = (0, 0, 0)
         x_max, y_max, z_max = (100, 100, 100)
 
-        # .names = ['kc_id', 'claw_id']
+        # .names = [KC_ID, CLAW_ID]
         index = wPNKC_one_row_per_claw.index
 
-        # best practice would in theory be passing around np.random.Generator objects (a la
-        # https://stackoverflow.com/questions/68222756), but this global seed+rng should be
-        # fine here.
+        # best practice would in theory be passing around np.random.Generator objects (a
+        # la https://stackoverflow.com/questions/68222756), but this global seed+rng
+        # should be fine here.
         # NOTE: the issue is that it will also seed any numpy RNG in tests that happen
         # after, whether they were intended to be seeded or not
         np.random.seed(1)
         claw_coords = pd.DataFrame({
-            # TODO change to have input that are ints in same range as neuprint input (if
-            # that data is in ints... is it?), which are then multiplied by same 8/1000
-            # factor to get units of micrometers
+            # TODO change to have input that are ints in same range as neuprint input
+            # (if that data is in ints... is it?), which are then multiplied by same
+            # 8/1000 factor to get units of micrometers
             'claw_x': np.random.uniform(x_min, x_max, len(index)),
             'claw_y': np.random.uniform(y_min, y_max, len(index)),
             'claw_z': np.random.uniform(z_min, z_max, len(index)),
@@ -475,12 +480,12 @@ def test_spatial_wPNKC_equiv(orn_deltas):
             axis='columns', verify_integrity=True
         )
         claw_index = pd.MultiIndex.from_frame(for_claw_index)
-        # .names now ['kc_id', 'claw_id', 'claw_x', 'claw_y', 'claw_z'] with the x/y/z/
+        # .names now [KC_ID, CLAW_ID, 'claw_x', 'claw_y', 'claw_z'] with the x/y/z/
         # coord values randomly generated (deterministically)
         wPNKC_one_row_per_claw.index = claw_index
 
         # checking we didn't drop any claws through the one-hot-encoding process
-        assert wPNKC_one_row_per_claw.groupby(['kc_id', 'kc_type']).sum().equals(wPNKC)
+        assert wPNKC_one_row_per_claw.groupby([KC_ID, KC_TYPE]).sum().equals(wPNKC)
 
         _, spike_counts, wPNKC2, _ = _fit_mb_model(orn_deltas=orn_deltas, **kws,
             pn2kc_connections=connectome, **wPNKC_kws
@@ -488,26 +493,23 @@ def test_spatial_wPNKC_equiv(orn_deltas):
         assert wPNKC.equals(wPNKC2)
 
         # just establishing new path allowing us to hardcode _wPNKC works
-        _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas, **kws, _wPNKC=wPNKC)
+        _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas, **kws,
+            _wPNKC=wPNKC
+        )
         assert spike_counts.equals(spike_counts2)
         del spike_counts2
 
-        # NOTE: currently will fail. need to modify this test to configure olfsysm to
-        # interpret input as claws (and then need to modify olfsysm to support this new
-        # configuration we decide on)
         _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
             # TODO may need wPNKC_one_row_per_claw.astype(int) (or may need to modify
             # fit_mb_model to accept dtype=bool input)?
-            # TODO TODO TODO implement _wPNKC_one_row_per_claw (and similar [+other required
-            # changes] in olfsysm)
             **kws, _wPNKC=wPNKC_one_row_per_claw, _wPNKC_one_row_per_claw=True
         )
         assert spike_counts.equals(spike_counts2)
 
         # TODO add test like fit_mb_model call above, but shuffling order of wPNKC rows.
         # order of rows should not matter.
-        # TODO TODO also shuffling claw_id's within each KC (that also shouldn't matter, and
-        # is probably a more important test than shuffling rows)
+        # TODO also shuffling claw_id's within each KC (that also shouldn't matter,
+        # and is probably a more important test than shuffling rows)
 
 
 def _read_spike_counts(output_dir: Path, *, index_col=[KC_ID, KC_TYPE]) -> pd.DataFrame:
@@ -523,9 +525,10 @@ def _read_spike_counts(output_dir: Path, *, index_col=[KC_ID, KC_TYPE]) -> pd.Da
 
 def test_fixed_inh_params_claw(orn_deltas):
     connectome = 'hemibrain'
-    # for kws in [dict(_wPNKC_one_row_per_claw = True, use_connectome_APL_weights=True),
-    #             dict(_wPNKC_one_row_per_claw = True)]:
-    for kws in [dict(_wPNKC_one_row_per_claw = True), dict(_wPNKC_one_row_per_claw = True, use_connectome_APL_weights=True)]:
+    for kws in [
+            dict(_wPNKC_one_row_per_claw=True),
+            dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True)
+        ]:
 
         print(f'{kws=}')
         responses, spike_counts, wPNKC, params = _fit_mb_model(
@@ -535,25 +538,25 @@ def test_fixed_inh_params_claw(orn_deltas):
         assert isinstance(fixed_thr, float)
 
         if kws.get('use_connectome_APL_weights', False):
-            print("this is reached. right.")
             # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model,
             # and there is no current support for passing in vector wAPLKC, right?
             wAPLKC = params['wAPLKC_scale']
             wKCAPL = params['wKCAPL_scale']
             assert isinstance(wAPLKC, float)
         else:
-            print("wait, so use_connectome_APL_weights true??")
             wAPLKC = params['wAPLKC']
             wKCAPL = params['wKCAPL']
+
         responses2, spike_counts2, wPNKC2, params2 = _fit_mb_model(
-            orn_deltas=orn_deltas, fixed_thr=fixed_thr, wAPLKC=wAPLKC, wKCAPL = wKCAPL, **kws
+            orn_deltas=orn_deltas, fixed_thr=fixed_thr, wAPLKC=wAPLKC, wKCAPL=wKCAPL,
+            **kws
         )
 
         # TODO factor all the checking below into a fn to share w/ other tests?
         assert responses.equals(responses2)
         assert spike_counts.equals(spike_counts2)
         assert wPNKC.equals(wPNKC2)
-        print("passed the responses, spike_counts, wPNKC compare point")
+
         # TODO always true? also in connectome APL case?
         assert params.keys() == params2.keys()
 
@@ -791,7 +794,7 @@ def test_multiresponder_APL_boost(orn_deltas):
     # ipdb> mask.sum()
     # 139
     mask = pd.read_csv(data_dir / 'kiwi-control-multiresponder-mask.csv'
-        ).set_index('kc_id').squeeze()
+        ).set_index(KC_ID).squeeze()
     mask.name = None
     # TODO also assert that we initially have some cells responding to multiple odors in
     # here? or at least some spikes at all?
@@ -801,7 +804,7 @@ def test_multiresponder_APL_boost(orn_deltas):
     kws = dict(use_connectome_APL_weights=True)
 
     _, sc1, _, params1 = _fit_mb_model(orn_deltas=orn_deltas, **kws)
-    assert sc1.index.get_level_values('kc_id').equals(mask.index)
+    assert sc1.index.get_level_values(KC_ID).equals(mask.index)
 
     boost_factor = 3.0
     _, sc2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
@@ -941,7 +944,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
 
     assert a1.keys() == b1.keys()
     for k in a1.keys():
-        assert np.isclose(a1[k], b1[k])
+        assert np.isclose(a1[k], b1[k]), f'{k=}\n{a1[k]=}\n{b1[k]=}'
 
     # TODO delete / check against each other
     #

@@ -10,6 +10,26 @@
      already filtered stuff where `c.weight > 5` (well, according to the code snippet
      Pratyush gave me, but `df['c.weight'].min() == 4`, so maybe it was `>= 4`?)
 
+  - `2025-09-17`
+    - contains hemibrain connectome PN/KC/APL data, with synapses grouped into claws,
+      but not yet grouped into PN boutons
+
+    - PN->KC data should be final, but there may have been a bug (see Slack messages).
+      might still contain enough information to merge with last version
+      (`2025-09-11/PN-KC_Connectivity_Synapses.csv`), in order to get the x/y/z
+      coordinates that one (and all prior from Prat) was missing? This data
+      (`PN-KC_withPosns_v2.parquet`) was the only file actually sent on the 18th, not
+      the 17th.
+
+    - NOTE: can not currently commit `APL_Synapses_Pairwise_Distance.parquet`, as it is
+      3.7GB in current form. Try to reduce it down and commit that? Should only need
+      this data if we want to use his tree-distances for a version of the model with
+      coupling between APL "compartments", which Tianpei will probably not finish
+      implementing by end of his summer work. This file will currently be available on
+      our NAS `matrix`, where Pratyush originally put it, and I also copied it under my
+      `Tom` subdirectory on `tensor-archive`. (deleted that file and replaced w/ new
+      version of same: `2025-09-24/APL_Pairwise_Node_Distances.parquet`)
+
 
 - `sent_to_remy`
   - `2023-01-06`

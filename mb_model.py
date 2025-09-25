@@ -56,9 +56,11 @@ from matplotlib.axes import Axes
 from matplotlib.ticker import MaxNLocator
 from matplotlib.colors import to_rgba
 import matplotlib as mpl
+# TODO add CLI arg to switch this off?
 mpl.use('Agg')
 from sklearn.cluster import DBSCAN
-from scipy.stats import spearmanr, pearsonr, f_oneway
+from scipy.stats import spearmanr, pearsonr, f_oneway, percentileofscore
+from scipy.interpolate import interp1d
 from sklearn.preprocessing import maxabs_scale as sk_maxabs_scale
 from sklearn.preprocessing import minmax_scale as sk_minmax_scale
 import statsmodels.api as sm
@@ -116,6 +118,8 @@ KC_ID: str = 'kc_id'
 # TODO use (+ in test_mb_model.py and elsewhere) (replacing hardcoded str w/ same value)
 KC_TYPE: str = 'kc_type'
 
+CLAW_ID: str = 'claw_id'
+
 # TODO rename to hemibrain or something? presumably this is specfic to that?
 # TODO move into the one place that uses it (tianpei's part of connectome_wPNKC)
 # (or keep module level and share w/ his script PNKC_claw_plots_dif_color.py?)
@@ -124,6 +128,8 @@ PIXEL_TO_UM = 8/1000
 def read_series_csv(csv: Pathlike, **kwargs) -> pd.Series:
     # TODO doc
 
+    # TODO add option to drop a header (after using for name of series?)
+    # (-> use for prat clean KC ID csv, used in prat_claws condition)
     df = pd.read_csv(csv, header=None, index_col=0, **kwargs)
     assert df.shape[1] == 1
     ser = df.iloc[:, 0].copy()
@@ -226,31 +232,57 @@ def first_delim_sep_part(ser, *, sep: str = '_') -> pd.Series:
 #
 
 
-# TODO move 'unknown' into this set?
 expected_kc_types = {'g', 'ab', "a'b'"}
-#
+# TODO delete? still needed anywhere (newest [and prob final] v3 prat outputs shouldn't
+# have incomplete/gap for any types)
+#kc_type_hue_order = sorted(expected_kc_types) + ['unknown', 'incomplete', 'gap']
 kc_type_hue_order = sorted(expected_kc_types) + ['unknown']
+del expected_kc_types
 
 def add_kc_type_col(df: pd.DataFrame, type_col: str) -> pd.DataFrame:
     # TODO replace NaN w/ 'unknown' here, instead of adding it after the fact
     # potentially inconsistently
-    """Modifies `df` inplace, adding a 'kc_type' column (vals={'g', 'ab', "a'b'"", NaN})
+    """Returns new `df` with added 'kc_type' column
+
+    New column values should be a subset of `kc_type_hue_order` values.
     """
-    # TODO also use for fafb inputs? or need diff processing there?
+    # TODO also use for fafb inputs (not currently doing so)? or need diff processing
+    # there?
+    df = df.copy()
 
-    sep_count = df[type_col].dropna().str.count('-')
-    multiple_sep = sep_count > 1
-    assert not multiple_sep.any()
-    missing_sep = sep_count == 0
-    assert not missing_sep.any()
+    # TODO provide example of input str format (-> adapt to new prat outputs), where at
+    # least this assertion isn't working. from tianpei's one-row-per-claw case:
+    # ipdb> df[type_col].unique()
+    # array(['KCg-m', nan, 'KCg-s2', 'KCab-m', 'KCab-c', 'KCg-t', "KCa'b'-m",
+    #        "KCa'b'-ap1", 'KCg-d', 'KCab-s', "KCa'b'-ap2", 'KCab-p', 'KCg-s3',
+    #        'KCg-s4', 'KCg-s1'], dtype=object)
+    #
+    # from a more recent prat output, when trying to get prat_claws=True working (but
+    # not absolute latest PN->KC output from him):
+    # ipdb> df['kc_subtype'].unique()
+    # array(['KCab-c', 'KCab-m', 'KCab-s', 'KCg-m', "KCa'b'-m", "KCa'b'-ap2",
+    #        'KC part due to gap', "KCa'b'-ap1", 'KCg-t', 'KCg-d', 'KCg-s4',
+    #        'KC(incomplete?)', 'KCab-p', 'KCg-s2(super)'], dtype=object)
 
-    kc_types = first_delim_sep_part(df[type_col].dropna(), sep='-')
+    kc_types = df[type_col].dropna()
 
     # after this, should all be one of {"g", "ab", "a'b'"}
     # (or NaN after assigning back into `df`)
-    kc_types = kc_types.str.strip('KC')
+    kc_types = kc_types.str.strip('KC ').replace({
+        'part due to gap': 'gap',
+        # TODO TODO clarify which subtype these actually belong to (known? all
+        # gamma?)
+        '(incomplete?)': 'incomplete',
+    })
 
-    assert set(kc_types) == expected_kc_types
+    sep_count = kc_types.str.count('-')
+    multiple_sep = sep_count > 1
+    assert not multiple_sep.any()
+
+    kc_types = first_delim_sep_part(kc_types, sep='-')
+
+    # TODO also check no 'unknown' already in there?
+    assert len(set(kc_types) - set(kc_type_hue_order)) == 0
 
     assert KC_TYPE not in df.columns
     # from hemibrain wPNKC input:
@@ -269,6 +301,8 @@ def add_kc_type_col(df: pd.DataFrame, type_col: str) -> pd.DataFrame:
     return df
 
 
+# TODO delete (after checking i don't want to revert any of the changes tianpei made in
+# his version below)
 # def _plot_connectome_raw_weight_hist(weights: Union[pd.Series, pd.DataFrame],
 #     **kwargs) -> Tuple[Figure, Axes]:
 
@@ -281,16 +315,16 @@ def add_kc_type_col(df: pd.DataFrame, type_col: str) -> pd.DataFrame:
 #     # discrete=True wouldn't make sense otherwise, right?
 #     assert (weight_ser.astype(int) == weight_ser.astype(float)).all()
 
+# TODO fix, if i revert to using my old version (should be weight_ser not weights
+# below, right?)
 #     fig, ax = plt.subplots()
 #     sns.histplot(weights, discrete=True, ax=ax, **kwargs)
 #     return fig, ax
 
 # Should be the same performance as the previous version of def _plot_connectome_raw_weight_hist
 # Fixed some small issues.
-def _plot_connectome_raw_weight_hist(
-    weights: Union[pd.Series, pd.DataFrame],
-    **kwargs
-) -> Tuple[Figure, Axes]:
+def _plot_connectome_raw_weight_hist(weights: Union[pd.Series, pd.DataFrame], **kwargs
+    ) -> Tuple[Figure, Axes]:
     """
     If `weights` is a DataFrame, call with x='<col>' (and optional hue='<col>').
     If `weights` is a Series, call without hue-by-column-name.
@@ -309,13 +343,14 @@ def _plot_connectome_raw_weight_hist(
         ser = pd.to_numeric(pd.Series(weights), errors='coerce').dropna()
 
     # same intent as your assert: values should be integers for discrete=True
-
-
+    # TODO TODO restore?
     # assert ser.eq(ser.round()).all(), "values are not integer-like; remove discrete=True"
-
 
     # Discrete would be too hard to achieve in _wPNKC_one_row_per_claw, I am scared that the weight would lose precision
     if isinstance(weights, pd.DataFrame):
+        # TODO TODO probably need to use ser here too? or else why are we defining
+        # above?
+        #
         # MAIN FIX: let seaborn find x/hue by name
         # sns.histplot(data=weights, discrete=True, ax=ax, **kwargs)
         sns.histplot(data=weights, ax=ax, **kwargs)
@@ -330,6 +365,50 @@ def _plot_connectome_raw_weight_hist(
     return fig, ax
 
 
+def _check_claws_sequential_per_kc(wPNKC: pd.DataFrame) -> None:
+    """Raises AssertionError if claws not sequential on [0, n] per KC
+    """
+    for kc, kc_df in wPNKC.groupby(KC_ID, sort=False):
+        if CLAW_ID in kc_df.index.names:
+            assert CLAW_ID not in kc_df.columns
+            kc_claw_ids = kc_df.index.get_level_values(CLAW_ID)
+        else:
+            kc_claw_ids = kc_df[CLAW_ID]
+
+        # TODO also need to handle -2 here?
+        # TODO this work in both index-level/column cases (for where CLAW_ID is)?
+        unique_claw_ids = kc_claw_ids.replace(-1, np.nan).dropna().unique()
+        assert all(x >= 0 for x in unique_claw_ids)
+
+        if len(unique_claw_ids) == 0:
+            continue
+
+        assert min(unique_claw_ids) == 0
+
+        # checking that CLAW_ID values count up from 0 within each KC
+        # TODO TODO TODO fix for prat_claws=True (figure out earlier what is
+        # happening to missing ones. some step dropping them? already missing in
+        # his input?)
+        # TODO TODO also assert numbering starts at 0? (assuming we have dropped
+        # NaN/-1/etc)
+        try:
+            # TODO TODO TODO want to renumber in these cases or what? why are
+            # they missing in prat_claws=True cases?
+            # TODO TODO warn at least (/restore / raise below)
+            assert set(unique_claw_ids) == set(np.arange(len(unique_claw_ids)))
+            print('PASS')
+        except AssertionError:
+            print('FAIL')
+            # TODO delete
+            print(f'{kc=}')
+            print(kc_claw_ids.value_counts(dropna=False).sort_index())
+            print(f'{set(unique_claw_ids)=}')
+            print(f'{set(np.arange(len(unique_claw_ids)))=}')
+            breakpoint()
+            print()
+            #
+
+
 variable_n_claw_options: Set[str] = {'uniform', 'caron', 'hemidraw'}
 
 # TODO add 'hemibrain-matt' here, and replace _use_matt_wPNKC w/ that?
@@ -340,6 +419,13 @@ pn2kc_connections_options: Set[str] = set(variable_n_claw_options)
 pn2kc_connections_options.update(connectome_options)
 
 from_prat = repo_root / 'data/from_pratyush'
+
+# TODO rename
+# hemibrain PN/KC/APL weights (PN->KC, APL<->KC, APL<->PN), split by claw (using Prat's
+# dendritic-tree based claw determination) but not currently by bouton. no MB-C1 yet.
+# includes distances to "root", also from Prat's dendritic-tree based analysis, but
+# haven't yet found a good way to use those.
+prat_dir = from_prat / '2025-09-24'
 
 _connectome2glomset = dict()
 # TODO compare to what ann had been using (does she have her own fully formed connectome
@@ -358,10 +444,13 @@ _connectome2glomset = dict()
 # TODO experiment w/ my own scaling factors on his tree distances, or just use his
 # scaled versions?
 # TODO TODO get his code he used to produce those outputs
-# TODO make prat_claws default to true later?
+# TODO make prat_claws default to true later? (here and in other places)
+# TODO TODO TODO add parameters to also weight prat_claws=True wPNKC by distances to
+# "root" (/ ~SIZ)
 def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
-    weight_divisor: Optional[float] = None, plot_dir: Optional[Path] = None,
-    _use_matt_wPNKC: bool = False, _drop_glom_with_plus: bool = True,
+    dist_weight: Optional[str] = None, weight_divisor: Optional[float] = None,
+    plot_dir: Optional[Path] = None, _use_matt_wPNKC: bool = False,
+    _drop_glom_with_plus: bool = True,
     # TODO reconsider handling of synapse_*_path kwargs, and DBSCAN related param kws
     synapse_con_path: Optional[Path] = None, synapse_loc_path: Optional[Path] = None,
     cluster_eps: float = 1.9, cluster_min_samples: int = 3, Btn_separate: bool = False,
@@ -372,6 +461,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     Args:
         connectome: which connectome of hemibrain/fafb-left/fafb-right to use.
             should be one of `connectome_options`.
+
+        dist_weight: only relevant if `prat_claws=True`, then selects method for using
+            `1 / dist_to_root` (mean per-claw) to scale `wPNKC` values (from 0.1x to
+            10x)
 
         weight_divisor: if None, one model claw is added for each PN-KC pair exceeding
             minimum total number of unitary synapses (currently de facto >=4 for
@@ -394,6 +487,12 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     if _use_matt_wPNKC:
         assert connectome == 'hemibrain'
 
+    if prat_claws:
+        assert weight_divisor is None
+        assert connectome == 'hemibrain'
+        # TODO assert paths for tianpei's things are None? (change so that path is only
+        # enabled w/ one bool kwarg anyway tho)
+
     # TODO refactor to share w/ calling code (also defined there...) (/cache?)?
     glomerulus2receptors = orns.task_glomerulus2receptors()
     task_gloms = set(glomerulus2receptors.keys())
@@ -415,6 +514,9 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
     claw_coord_cols = ['claw_x', 'claw_y', 'claw_z']
     def add_compartment_index(wPNKC: pd.DataFrame, shape: int) -> pd.DataFrame:
+        # TODO delete shape!=0 path? (currently unused) or will it be in some of his
+        # other attempts at defining APL compartments? what are other values shape=
+        # might take? (doc + validate)
         """
         Compute compartment IDs and attach them as an INDEX LEVEL named 'compartment'.
         Returns a new DataFrame with the same rows, same glomerulus columns, and
@@ -436,6 +538,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             center = coords.mean().to_numpy()
             distances = np.linalg.norm(coords.to_numpy() - center, axis=1)
             shell_r = distances.max()
+            # TODO TODO allow overriding sphere_r w/ kwarg? or (also) define to equalize
+            # across two? or allow passing in absolute radius?
             sphere_r = 0.5 * shell_r
             compartment_ids = np.where(distances <= sphere_r, 0, 1).astype(np.int32)
             # TODO delete (/ put behind verbose)
@@ -995,6 +1099,973 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
             kc_id_col = 'bodyid'
 
+        elif prat_claws:
+            # TODO csv contents all same as parquet ones? (suffix='Synapses' only
+            # exists for CSV, and suffix='Claws' only exists as parquet. anything in
+            # 'Claws' one i need?)
+
+            # TODO delete (+ loading of outputs that are only in this old dir, all of
+            # which [that i care about] should be replaced by a combination of newer
+            # outputs)
+            prat_hemibrain_PNKC_claw_dir = from_prat / '2025-08-20'
+
+            prefix = 'PN-KC_Connectivity_'
+
+            # TODO delete
+            # columns:
+            # bodyId_pre, bodyId_post, node_id_post, connector_id_post, connector_type,
+            # anatomical_claw, dist_to_root, weight, type_post, instance_post,
+            # instance_pre, type_pre, dist_influence
+            #
+            # can ignore: node_id_post, connector_id_post, connector_type
+            '''
+            data_path = from_prat / '2025-09-11' / f'{prefix}Synapses.csv'
+            # now trying the last version he sent on 2025-09-11, which should hopefully
+            # also have claw assignments for the "incomplete" KCs.
+            # still has the issue that x/y/z coordinates are missing.
+            syns = pd.read_csv(data_path)
+            d1 = syns
+            '''
+            #
+
+            data_path = prat_dir / 'PN-to-KC_with_Synapses_v3.parquet'
+            syns = pd.read_parquet(data_path)
+
+            # TODO delete
+            '''
+            d2 = syns
+            try:
+                _check_claws_sequential_per_kc(d2.rename(columns={'bodyId_post': KC_ID,
+                    'anatomical_claw': CLAW_ID
+                }))
+                print('d2 claw numbering GOOD')
+            except AssertionError:
+                print('d2 claw numbering BAD')
+            #
+            breakpoint()
+            #
+
+            shared_cols = d2.columns.intersection(d1.columns)
+            d2 = d2.astype({'bodyId_post': int})
+            assert d2[shared_cols].dtypes.equals(d1[shared_cols].dtypes)
+            '''
+
+            # ipdb> d2.shape
+            # (189412, 17)
+            # ipdb> syns.shape
+            # (189412, 13)
+            #
+            # ipdb> d2.columns.intersection(d1.columns)
+            # Index(['bodyId_pre', 'bodyId_post', 'instance_pre', 'type_pre',
+            #        'instance_post', 'type_post', 'anatomical_claw'],
+            #       dtype='object')
+            #
+            # TODO TODO TODO what's going on with these two?
+            # ipdb> d2[shared_cols].isna().sum()
+            # bodyId_pre            0
+            # bodyId_post           0
+            # instance_pre          0
+            # type_pre              0
+            # instance_post         0
+            # type_post          3418
+            # anatomical_claw       7
+            # dtype: int64
+            # ipdb> d1[shared_cols].isna().sum()
+            # bodyId_pre         0
+            # bodyId_post        0
+            # instance_pre       0
+            # type_pre           0
+            # instance_post      0
+            # type_post          0
+            # anatomical_claw    0
+            #
+            # TODO TODO TODO also check # of -1 and -2 values in anatomical_claw, for
+            # both
+            #
+            #
+            # TODO should i use pre or post x/y/z coords? matter (doubt it)? prob post?
+            # (no NaN in any)
+            # TODO compare ranges of output coords to those tianpei came up with
+            # ipdb> d2.columns.difference(d1.columns)
+            # Index(['confidence_post', 'confidence_pre', 'roi_post', 'roi_pre', 'x_post',
+            #        'x_pre', 'y_post', 'y_pre', 'z_post', 'z_pre'],
+            #       dtype='object')
+            #
+            # TODO TODO TODO merge these in too, and drop based on these. seems we had
+            # synapses from ROIs other than 'CA(R)' in prior outputs, but no column
+            # indicating which came from which.
+            # ipdb> d2.roi_pre.unique()
+            # array(['CA(R)', 'SLP(R)', None, 'SCL(R)', 'SMP(R)', 'PLP(R)', 'gL(R)',
+            #        "b'L(R)"], dtype=object)
+            # ipdb> d2.roi_post.unique()
+            # array(['CA(R)', 'SLP(R)', None, 'SCL(R)', 'SMP(R)', 'PLP(R)', 'gL(R)',
+            #        "b'L(R)"], dtype=object)
+            #
+            #
+            # ipdb> d1.columns.difference(d2.columns)
+            # Index(['connector_id_post', 'connector_type', 'dist_influence', 'dist_to_root',
+            #        'node_id_post', 'weight'],
+            #       dtype='object')
+            #breakpoint()
+            #
+
+            assert (syns['weight'] == 1).all()
+
+            # different versions may not have all of these.
+            # 'type' here is "connector" type, and not meaningful.
+            # TODO also drop x/y/z_pre? (prob want x/y/z_post for computing claw coords)
+            to_drop = ['node_id_post', 'connector_id_post', 'connector_type', 'weight',
+                'connector_id', 'node_id', 'type'
+            ]
+            syns = syns.drop(columns=[c for c in to_drop if c in syns.columns])
+
+            # TODO update/delete
+            # ipdb> syns.bodyId_pre.unique().shape
+            # (158,)
+            # ipdb> syns.bodyId_post.unique().shape
+            # (1786,)
+
+            assert (len(syns[['type_pre', 'instance_pre']].drop_duplicates()) ==
+                syns.type_pre.nunique() == syns.instance_pre.nunique()
+            )
+
+            # TODO delete (would need to compare across 2 calls now)
+            #prior_kc_ids = df[kc_id_col].unique()
+            #
+            curr_kc_ids = syns.bodyId_post.unique()
+            # so there are 94 KC IDs we had before that are not here. and 50 of new set
+            # of IDs were not in the old set of IDs (how did that happen?)
+            #
+            # ipdb> len(set(prior_kc_ids) - set(curr_kc_ids))
+            # 94
+            # ipdb> len(set(curr_kc_ids) - set(prior_kc_ids))
+            # 50
+            #
+            # ipdb> np.isin(curr_kc_ids, prior_kc_ids).sum()
+            # 1736
+
+            # TODO check PN IDs too?
+
+            # TODO delete (/convert to warning)
+            # i believe these should all be from stuff clipped by his cuttiing volume?
+            print(f'{syns.anatomical_claw.isna().sum()=}')
+            #
+            assert syns.anatomical_claw.dropna().min() == -1
+
+            # TODO TODO warn about this dropping, w/ breakdown of NaN vs -1
+            syns = syns[(syns.anatomical_claw != -1) & syns.anatomical_claw.notna()]
+            # (will actually be less now that we are also dropping NaN claw IDs)
+            # len(syns)=173590
+
+            # TODO TODO ok maybe it actually was numbered within each (KC, PN) pair?
+            # change all comments saying numbered per-KC back. getting duplicates when
+            # trying to set index on claw means below (w/o using PN ID)
+            #
+            # should be numbered within each KC, from 0. -1 for synapses not assigned to
+            # any claw.
+            # TODO check numbered sequentially w/in each KC (and again after all
+            # dropping? or do we only ever drop all/no synapses per claw?) (matter?)
+            claw_ids = syns['anatomical_claw']
+
+            assert not claw_ids.isna().any()
+
+            assert pd_allclose(claw_ids, claw_ids.astype(int))
+            # max is 19! probably one of those weird KCs he was showing me? may not be
+            # real claws
+            # TODO TODO want to experiment w/ dropping claws w/o some threshold number
+            # of synapses? does that change upper end of #-claws-per-KC much?
+            syns['anatomical_claw'] = claw_ids.astype(int)
+            del claw_ids
+
+            # TODO other things to drop? certain [type|instance]_[post|pre] (no
+            # other columns worth dropping from)
+
+            # TODO TODO use these for types later, instead of just the coarser ones?
+            # provide both?
+            # ipdb> syns.instance_post.unique()
+            # array(['KCab-m', 'KCg-m', 'KCab-c', 'KCab-s', "KCa'b'-m", "KCa'b'-ap2",
+            #        'KCg-d', 'KCg-t', "KCa'b'-ap1", 'KCy(half)', 'KCg-s4',
+            #        'KCg-s2(super)', 'KCab-p', 'KC(incomplete?)', 'KCg-s1(super)',
+            #        'KCg-s3'], dtype=object)
+            #
+            # ipdb> syns.type_post.unique()
+            # array(['KCab', 'KCg', "KCa'b'", 'KCy(half)', 'KC(incomplete?)'],
+            #       dtype=object)
+
+
+            # TODO add comment explaining exactly what all is and is not in this
+            # does include the calyx fragments of cut KCs, to the extent prat could
+            # assign claws for them.
+            clean_kcs = pd.read_csv(prat_dir / 'Clean_KCs_for_Tom.csv').squeeze()
+            assert clean_kcs.dtype == int
+
+            # TODO why this False? just that we dropped some KCs that didn't have any >0
+            # anatomical_claws above (prob)?
+            # ipdb> clean_kcs.isin(syns.bodyId_post).all()
+            # False
+            #
+            # ipdb> len(set(clean_kcs) - set(syns.bodyId_post))
+            # 35
+            # TODO turn this into assertion?
+            # ipdb> len(set(syns.bodyId_post) - set(clean_kcs))
+            # 0
+            #
+            # don't need to subset. probably would if this came before dropping based on
+            # anatomical_claw above.
+            assert syns.bodyId_post.isin(set(clean_kcs)).all()
+
+            # TODO delete (should all be replaced by clean_kcs based dropping above)
+            #
+            # (this was before dropping anatomical_claw == -1)
+            # ipdb> syns.type_post.value_counts()
+            # KCg                99193
+            # KCab               61270
+            # KCa'b'             24969
+            # KCy(half)            242
+            # KC(incomplete?)      141
+            #
+            # TODO try with and without this?
+            # TODO any justification for keeping one or the other of these?
+            # TODO warn about these
+            # TODO TODO no longer drop KC(incomplete?) (+ check they all have claws now
+            # on 2nd version [or greater] of his PN->KC outputs)
+            ##kc_types_to_drop = ('KCy(half)', 'KC(incomplete?)')
+            # TODO TODO TODO actually just use his "clean" KC labels (load from separate
+            # file he provides. this will include the KC fragments where he can identify
+            # claws in calyx-only fragment)
+            #kc_types_to_drop = ('KCy(half)',)
+            #syns = syns[~ syns.type_post.isin(kc_types_to_drop)].copy()
+            # (will actually be less now that we are also dropping NaN claw IDs)
+            # len(syns)=173222
+            #
+
+            # TODO delete (check again after _add_glom... which also will drop some KCs)
+            # 150 PNs here, after two steps dropping KCs above
+
+            # TODO what glomeruli even do they correspond to? (they don't. wedge. yes,
+            # drop) just drop? and it's only 4 rows in all of df, so def feel safe
+            # dropping
+            #
+            # only 4 rows in df here (/ 173222) should have these values (2 each, with
+            # all having suffix of '_R' in instance_pre column. these should be the only
+            # rows that would cause check_no_multi_underscores=True to fail.
+            pn_types_to_drop = ('WEDPN12', 'WEDPN4')
+            syns = syns[~ syns['type_pre'].isin(pn_types_to_drop)].copy()
+            # TODO TODO TODO drop multiglomerular PNs if i'm not already doing elsewhere
+            # (may [all?] have M_ prefix or something. any exceptions?)
+            # TODO TODO TODO make sure these are all dropped by output at least (already
+            # handled by existing code? or important to drop before pivoting for some
+            # reason?)
+            # ipdb> syns.type_pre[syns.type_pre.str.startswith('M_')].unique()
+            # array(['M_adPNm5', 'M_smPNm1', 'M_lvPNm45', 'M_lPNm11C', 'M_l2PNm16',
+            #        'M_lPNm13', 'M_ilPN8t91', 'M_l2PNm15', 'M_lPNm11D', 'M_adPNm7',
+            #        'M_adPNm4', 'M_smPN6t2', 'M_lvPNm46'], dtype=object)
+            # TODO delete
+            #breakpoint()
+            #
+
+            # TODO TODO OK with all this? (from _drop_glom_with_plus=True)
+            # Warning: connectome='hemibrain' dropping 7309 rows w/ "+" in PN type:
+            # VP1d+VP4_l2PN1    4093
+            # VP3+VP1l_ivPN     1571
+            # VP1m+VP5_ilPN      818
+            # VP3+_vPN           539
+            # VP5+Z_adPN         176
+            # VP1m+VP2_lvPN2      80
+            # VP1m+_lvPN          16
+            # VP2+_adPN           10
+            # VP1m+VP2_lvPN1       5
+            # VP1l+VP3_ilPN        1
+            # (also means that 11/1768 KCs only connected to these "glomeruli" dropped)
+            # TODO TODO factor out these ID cols (+ PN ID one), as needed (esp after
+            # factoring all this new code to an appropriate home)
+            syns = _add_glomerulus_col_from_hemibrain_type(syns, 'type_pre',
+                'bodyId_post', check_no_multi_underscores=True
+            )
+            # TODO assert glomerulus 1:1 w/ type (or after all dropping below, if
+            # it's only then that it becomes true. it is currently true after all the
+            # dropping, where syn is len 164986). (_add_glomerulus_col* already do
+            # something like that?)
+            # (will actually be less now that we are also dropping NaN claw IDs)
+            # len after: 165909 (w/ _drop_glom_with_plus=True)
+
+            # TODO re: infs check one neuron not overrepresented, and check all
+            # stragglers (or most)
+            # TODO + assert all inf and no NaN? think it might be true w/ latest version
+            # at least?
+            syns = syns[np.isfinite(syns.dist_to_root)].copy()
+            #
+            # probably reasonable (in nm, so ~20uM max, and mostly much less)
+            # ipdb> syns.loc[np.isfinite(syns.dist_to_root)]['dist_to_root'].max()
+            # 19690.82444190979
+            # ipdb> syns.loc[np.isfinite(syns.dist_to_root)]['dist_to_root'
+            #   ].quantile(q=.99)
+            # 14128.878774452205
+            # ipdb> syns.loc[np.isfinite(syns.dist_to_root)]['dist_to_root'
+            #   ].quantile(q=.9)
+            # 10384.66800403595
+
+            # newest one doesn't have.  only older, slightly bad versions
+            if 'dist_influence' in syns.columns:
+                assert pd_allclose(1 / syns.dist_to_root, syns.dist_influence)
+            # TODO TODO even need? delete?
+            #else:
+            #    syns['dist_influence'] = 1 / syns.dist_to_root
+            #
+
+            # from Prat:
+            # dist_influence is sum of 1 / dist_to_root (nm), for each (PN, KC) pair
+            # total_weight is sum of dist_influence, per KC
+            # scaled_weight is dist_influence / total_weight
+
+            # TODO delete?
+            '''
+            # hack to remove the inf values causing issues in groupby mean
+            #
+            # ipdb> (syns.dist_to_root == 0).sum()
+            # 53
+            #
+            # 14.0 (nm)
+            min_nonzero_dist = syns.dist_to_root[syns.dist_to_root > 0].min()
+            # TODO warn about this (/ avoid need for it somehow? prob can't w/o prat
+            # doing something diff, and that may not make sense)
+            # TODO assert this doesn't change max dist_influence (barring float
+            # issues?)?
+            # TODO TODO instead, take mean of dist_to_root and then take inverse of that
+            # (might give us a bit more dynamic range for stuff we are currently just
+            # clipping?)
+            syns.loc[syns.dist_to_root == 0, 'dist_influence'] = 1 / min_nonzero_dist
+            assert np.isfinite(syns.dist_influence).all()
+            '''
+
+            # TODO check normalized outputs for cases where KCs include one of these
+            # really high finite dist_influence values?
+            # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].quantile(q=0.95)
+            # 0.0006495464542001794
+            # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].quantile(q=0.999)
+            # 0.007494860294504738
+            # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].max()
+            # 0.0714285714285714
+            #
+            # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].sort_values(
+            #   ).tail(n=20)
+            # 41421     0.044194
+            # 37379     0.044194
+            # 80148     0.044194
+            # 24389     0.044194
+            # 167281    0.044194
+            # 77341     0.055556
+            # 98631     0.055556
+            # 70127     0.055556
+            # 141742    0.055556
+            # 40985     0.055556
+            # 63845     0.055556
+            # 168557    0.062500
+            # 130844    0.062500
+            # 85544     0.062500
+            # 184048    0.062500
+            # 178763    0.062500
+            # 75959     0.062500
+            # 69110     0.062500
+            # 171826    0.062500
+            # 132006    0.071429
+            # TODO TODO can i still clearly see the effect of these outliers if i
+            # average within claws?
+            # TODO are some claws outliers themselves, with many synapses consistently
+            # above? i assume so... everything should be within a small number of
+            # microns, right?
+
+            # TODO reset_index() on syns somewhere after all the dropping above? prob
+            # doesn't matter...
+
+            # TODO TODO count how many synapses per claw (+ plot dist(s), maybe per
+            # subtype)
+
+            # TODO delete. probably do NOT want to include PN in claw cols
+            # (actually, i think i do, mainly since prat's approach has some claws w/
+            # significant input from mulitple PNs, and i want to [for now] split them
+            # out and pretend they are two claws)
+            claw_cols = ['bodyId_post', 'anatomical_claw', 'bodyId_pre']
+            extra_cols_to_keep = [glomerulus_col, 'type_post', 'instance_post']
+            #
+            # TODO TODO TODO separate check that each claw predominately (/exclusively?)
+            # gets input from single PNs tho? maybe removing component from other PNs?
+            # TODO TODO TODO may actually need PN ID (/glom?) back in claw_cols (at
+            # end), so that i can then drop all but biggest input for each claw (don't
+            # want to count synapses for other PNs in same claw, if i'm going to then
+            # pretend then all came from one glomerulus in next step anyway...)
+            #claw_cols = ['bodyId_post', 'anatomical_claw']
+            #extra_cols_to_keep = ['bodyId_pre', glomerulus_col, 'type_post',
+            #    'instance_post'
+            #]
+
+            # TODO maybe also dist_to_root (then rename to include '_nm' suffix)?
+            # (may also want to ONLY compute using that, then take inverse after mean
+            # w/in claw)
+            # TODO TODO delete dist_influence from here (+ replace usage below w/
+            # dist_to_root)?
+            # TODO subset to only those present in data (only would be needed to load
+            # old versions, which didn't have coords)
+            cols_to_avg = ['dist_to_root', 'x_post', 'y_post', 'z_post']
+            # TODO delete
+            #    'dist_influence'
+            #]
+
+            # TODO TODO TODO also add a new column counting synapses (.size()? check
+            # sum against len(syns))
+            by_claw = syns.groupby(claw_cols)
+            claws = by_claw.agg({
+                **{c: 'mean' for c in cols_to_avg},
+                **{c: 'unique' for c in extra_cols_to_keep}
+            })
+            assert (
+                cols_to_avg + extra_cols_to_keep == list(claws.columns)
+            )
+
+            unique_per_claw = claws[extra_cols_to_keep].apply(
+                lambda x: (x.str.len() == 1).all()
+            )
+            cols_unique_per_claw = list(unique_per_claw[unique_per_claw].index)
+
+            # TODO delete whichever case of this i don't end up using
+            if 'bodyId_pre' in claw_cols:
+                assert cols_unique_per_claw == [
+                    'glomerulus', 'type_post', 'instance_post'
+                ]
+                assert (~ unique_per_claw).sum() == 0
+            else:
+                # update as needed if we add/remove from extra_cols_to_keep
+                # (all should be in RHS of one if the two assertions below)
+                assert cols_unique_per_claw == ['type_post', 'instance_post']
+                assert (
+                    list(unique_per_claw[~ unique_per_claw].index) ==
+                    ['bodyId_pre', 'glomerulus']
+                )
+            #
+
+            claws[cols_unique_per_claw] = claws[cols_unique_per_claw].applymap(
+                lambda x: x[0]
+            )
+
+            n_synapses_per_claw = by_claw.size()
+            assert n_synapses_per_claw.index.equals(claws.index)
+            assert n_synapses_per_claw.sum() == len(syns)
+            claws['n_synapses'] = n_synapses_per_claw
+
+            # TODO some checks on this?
+            claws['dist_influence'] = 1 / claws.dist_to_root
+
+            # TODO TODO summarize extent of multiple PNs per claw (and maybe drop
+            # minority for each) (seem to affect a huge number of claws, since adding PN
+            # ID to group levels goes from 9786 to 12317 groups...)
+            #
+            # TODO TODO TODO drop stuff w/ subthreshold # synapses per claw (and see
+            # what fraction of mulitple-PNs-per-claw cases that removes. presumably some
+            # of remaining really are what look like single claws, where perhaps one
+            # side really does receive input from one PN and the other side from another
+            # PN.  will need to split stuff like these, but prat thinks it's much less
+            # likely i'll have a need to merge across his claw IDs, since defined from
+            # path length on tree)
+            # TODO TODO make hists of synapses per claw (-> use to pick dropping /
+            # splitting threshold)
+
+            claws = claws.reset_index().rename(columns={
+                'bodyId_post': KC_ID,
+
+                # more fine grained than the 3 values for KC_TYPE we wil have here
+                'instance_post': 'kc_subtype',
+
+                # TODO central def for this, like KC_ID/etc
+                'bodyId_pre': 'pn_id',
+            })
+
+            claws = add_kc_type_col(claws, 'type_post')
+            # TODO assert 318 'unknown' at output? (there are 318 in a manual check of
+            # KC_TYPE output) (# None entries in value_counts(dropna=False). no
+            # unknown/incomplete/gap in type_post at this point, w/ latest (v3) outputs
+            claws = claws.drop(columns='type_post')
+
+            # TODO update comment w/ new values (/delete)
+            # ipdb> qs = [0, 0.0005, 0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99,
+            #   0.999, 0.9995, 1]
+            # ipdb> claws.dist_influence.quantile(q=qs)
+            # 0.0000    0.000051
+            # 0.0005    0.000057
+            # 0.0010    0.000059
+            # 0.0100    0.000071
+            # 0.1000    0.000096
+            # 0.2500    0.000125
+            # 0.5000    0.000191
+            # 0.7500    0.000299
+            # 0.9000    0.000469
+            # 0.9900    0.002861
+            # 0.9990    0.008632
+            # 0.9995    0.010624
+            # 1.0000    0.037253
+            #
+            # TODO TODO are these not just getting swamped by large ones frequently tho?
+            # since they will often vary over orders of magnitude (and presumably within
+            # many individual KCs, not just across them).
+            # TODO TODO TODO matter? want to normalize in some way other than straight
+            # average of this?
+            # ipdb> claws.groupby(KC_ID).dist_influence.sum(
+            #   ).quantile(q=qs)
+            # 0.0000    0.000061
+            # 0.0005    0.000064
+            # 0.0010    0.000065
+            # 0.0100    0.000264
+            # 0.1000    0.000556
+            # 0.2500    0.000860
+            # 0.5000    0.001633
+            # 0.7500    0.002802
+            # 0.9000    0.004127
+            # 0.9900    0.009087
+            # 0.9990    0.017528
+            # 0.9995    0.022459
+            # 1.0000    0.039409
+            #
+            # TODO TODO plot subtype distributions of these diff quantities? per claw
+            # and per KC at least
+
+            # TODO delete if doesn't matter, with how i end up computing+assigning new
+            # labels
+            #
+            # to group things a tad nicer before we assign new claw IDs within each
+            # group
+            # TODO TODO fix(/delete) (issue is that pn_id were lists of PNs when
+            # this was failing, since prat's claws were not all from single PNs)
+            # (may change above to drop all but biggest input [or merge things, which
+            # would be more complicated] before this point)
+            claws = claws.sort_values([KC_ID, glomerulus_col, 'pn_id'])
+            #
+
+            fig, ax = plt.subplots()
+            sns.histplot(claws, ax=ax, x='n_synapses', discrete=True, hue=KC_TYPE,
+                hue_order=kc_type_hue_order
+            )
+            # TODO better title? (# claws defined this way?)
+            ax.set_title(f'input from each PN counted separately\n{data_path.name}')
+            savefig(fig, plot_dir, 'wPNKC_prat_syns-per-1pn-claw', bbox_inches='tight')
+
+            fig, ax = plt.subplots()
+            # adding KC_TYPE here should not change # of unique groups (it's just to
+            # access for hue in plot below)
+            syns_per_claw = claws.groupby([KC_ID, 'anatomical_claw', KC_TYPE]
+                ).n_synapses.sum().reset_index()
+            # this is b/c claw_cols should also have PN ID col above
+            assert len(syns_per_claw) < len(claws)
+            sns.histplot(syns_per_claw, ax=ax, x='n_synapses', discrete=True,
+                hue=KC_TYPE, hue_order=kc_type_hue_order
+            )
+            # TODO better title? (# claws defined this way?)
+            ax.set_title(f'claws can contain multiple PNs\n{data_path.name}')
+            # TODO drop unused types from legend
+            savefig(fig, plot_dir, 'wPNKC_prat_syns-per-claw', bbox_inches='tight')
+
+            # TODO separate hists for dist_influence / dist_to_root?
+
+            # TODO include this parameter in downstream stuff? (or thread thru at
+            # least?)
+            # TODO TODO see if choice of this matters anything on [2, 10] might make
+            # sense. def want to exclude 1.
+            synapse_per_1pn_claw_thresh = 5
+            # TODO TODO warn about how many dropped here (and say why)
+            claws = claws[claws.n_synapses >= synapse_per_1pn_claw_thresh]
+
+            # TODO check this against number from wPNKC below
+            avg_claws_per_kc = claws.groupby(KC_ID).size().mean()
+            # TODO also assert this is same as groupby([KC_ID, CLAW_ID]).ngroups?
+            total_n_claws = claws.groupby(KC_ID).size().sum()
+
+            # TODO remove? (no, do need to renumber since i want claws split by PN,
+            # whether or not i am adding back 0-olfactory-input claws from
+            # KC_Claw_Counts.csv, which should be before below, if added)
+            #
+            # TODO TODO combine w/ KC_Claw_Counts.csv file he sent on 2025-09-24, to
+            # fill up to # of claws for each KC (just to add ones w/ no PN input)
+            # OK now it should actually be numbered (w/ consecutive integers from 0)
+            # within each KC (should then not need this step, after filling in "claws"
+            # w/ no PN input)
+            claws[CLAW_ID] = claws.groupby(KC_ID).cumcount()
+            # TODO care? delete this warning if not
+            warn('currently not adding in claws with no olfactory input')
+            #
+            claws = claws.drop(columns='anatomical_claw')
+            claws = claws.set_index([KC_ID, CLAW_ID], verify_integrity=True)
+
+            for d in ['x', 'y', 'z']:
+                new_col = f'claw_{d}'
+                # TODO TODO need to also center x/y/z? (no, tianpei's fn adding
+                # compartment seems to do that internally? maybe i still want to center
+                # anyway?)
+                assert new_col not in claws.columns
+                claws[new_col] = claws[f'{d}_post'] * PIXEL_TO_UM
+
+            # TODO TODO why can i not seem to get the argsort and percentileofscore
+            # methods to match up? and doesn't seem to matter which kind= option is used
+            # for percentileofscore
+            # ipdb> percentileofscore(claws.dist_influence.values,
+            #   claws.dist_influence.values, kind='strict') / 100
+            # array([0.09, 0.17, 0.23, ..., 0.8 , 0.55, 0.61])
+            # ipdb> percentileofscore(claws.dist_influence.values,
+            #   claws.dist_influence.values, kind='weak') / 100
+            # array([0.09, 0.17, 0.23, ..., 0.8 , 0.55, 0.61])
+            # ipdb> percentileofscore(claws.dist_influence.values,
+            #   claws.dist_influence.values, kind='rank') / 100
+            # array([0.09, 0.17, 0.23, ..., 0.8 , 0.55, 0.61])
+            #
+            # s1 = percentileofscore(claws.dist_influence, claws.dist_influence) / 100
+            # ipdb> s1
+            # array([0.09, 0.17, 0.23, ..., 0.8 , 0.55, 0.61])
+            # ipdb> claws.dist_influence[-1]
+            # *** KeyError: -1
+            # ipdb> claws.dist_influence.iloc[-1]
+            # 0.00011660201365338888
+            # ipdb> percentileofscore(claws.dist_influence,
+            #   claws.dist_influence.iloc[-1]) / 100
+            # 0.614121835443038
+            # ipdb> claws.dist_influence.argsort() / len(claws)
+            # kc_id       claw_id
+            # 300968622   0          0.526206
+            #             1          0.199664
+            #             2          0.761373
+            # 301309622   0          0.162678
+            #             1          0.610265
+            #                          ...
+            # 5901225361  1          0.879846
+            #             2          0.993770
+            #             3          0.834256
+            #             4          0.861847
+            #             5          0.789557
+            # Name: dist_influence, Length: 10112, dtype: float64
+            # TODO want in reversed order? (neither seemed to be equiv to
+            # percentileofscore output...)
+            #s2 = claws.dist_influence.argsort() / (len(claws) - 1)
+            # ipdb> 1 - (claws.dist_influence.argsort() / len(claws))
+            # kc_id       claw_id
+            # 300968622   0          0.473794
+            #             1          0.800336
+            #             2          0.238627
+            # 301309622   0          0.837322
+            #             1          0.389735
+            #                          ...
+            # 5901225361  1          0.120154
+            #             2          0.006230
+            #             3          0.165744
+            #             4          0.138153
+            #             5          0.210443
+            #
+            # TODO delete
+            #plt.close('all')
+            #fig, ax = plt.subplots()
+            #ax.hist(s1, bins=50)
+            #
+            #fig, ax = plt.subplots()
+            #ax.hist(s2, bins=50)
+            #
+            # this was all over the place, basically uniform
+            #fig, ax = plt.subplots()
+            #ax.scatter(s1, s2)
+            #
+            #plt.show()
+            #breakpoint()
+            #
+
+            claws['dist_influence_percentile'] = percentileofscore(claws.dist_influence,
+                claws.dist_influence) / 100
+
+            # well, at least this method seems to be working as expected. could delete
+            # attempt at argsort based method.
+            assert (
+                claws.dist_influence.max() ==
+                claws.dist_influence.loc[claws.dist_influence_percentile.idxmax()]
+            )
+            assert (
+                claws.dist_influence.min() ==
+                claws.dist_influence.loc[claws.dist_influence_percentile.idxmin()]
+            )
+            assert (claws.loc[claws.dist_influence == claws.dist_influence.min(),
+                'dist_influence_percentile'].squeeze() ==
+                claws.dist_influence_percentile.min()
+            )
+            assert (claws.loc[claws.dist_influence == claws.dist_influence.max(),
+                'dist_influence_percentile'].squeeze() ==
+                claws.dist_influence_percentile.max()
+            )
+            assert np.isclose(claws.dist_influence_percentile.max(), 1)
+            # NOTE: min is not quite 0, but pretty close (would need to tweak isclose
+            # atol/rtol to get assertion to work, or maybe diff kind=?)
+            # ipdb> claws.dist_influence_percentile.min()
+            # 9.889240506329115e-05
+            # ipdb> np.isclose(claws.dist_influence_percentile.min(), 0)
+            # False
+
+            # TODO try kind = 'cubic' / 'quadratic' for interp1d?
+            # (dont' see other nonlinear options in there...)
+            # TODO or special case kind+range to method below anyway?
+            kind = 'linear'
+            output_range = [0.1, 1, 10.0]
+
+            dist_weight_col = 'dist_weight'
+            if dist_weight == 'percentile':
+                # TODO TODO want to do this any differently?
+                # TODO TODO TODO try from raw dist_influence rather than from
+                # percentiles?  (maybe after some non-linear scaling?)
+                # TODO TODO scale in a way where mean change is 1 (within KC?)?
+                # (possible to do via changing way we call interp1d? add point for
+                # mean?) (or just postprocess to achieve this?)
+                # TODO TODO try adding a point for 0.5->1, and check whether that
+                # has effect i want on output (or some kind of reasonable improvement on
+                # current output...)
+                #
+                # TODO delete. below does seem to be an improvement.
+                #interpolator = interp1d([0, 1], output_range, kind=kind)
+                #claws['dist_weight'] = interpolator(claws.dist_influence_percentile)
+
+                # TODO share input range def w/ what i do below (move above)
+                interpolator = interp1d([0, 0.5, 1], output_range, kind=kind)
+                claws['dist_weight'] = interpolator(claws.dist_influence_percentile)
+
+                # TODO delete
+                '''
+                i2 = interpolator
+                print(f'{i2(0.25)=}')
+                print(f'{i2(0.5)=}')
+
+                #i3 = interp1d([0, 0.5, 1], [0.1, 1, 10.0], kind='quadratic')
+                # oh this is negative... (-0.46). that's def not what i want
+                #print(f'{i3(0.25)=}')
+                #
+                print(f'{i3(0.5)=}')
+                # TODO try? (/delete)
+                # doesn't even work.
+                i4 = interp1d([0, 0.5, 1], [0.1, 1, 10.0], kind='cubic')
+                print(f'{i4(0.25)=}')
+                print(f'{i4(0.5)=}')
+                breakpoint()
+                '''
+                #
+
+            elif dist_weight == 'raw':
+                # TODO TODO implement (get min/max from data, and mean if that is
+                # helpful)
+                interpolator = interp1d(claws.dist_influence.quantile(q=[0, 0.5, 1]),
+                    output_range, kind=kind
+                )
+                claws['dist_weight'] = interpolator(claws.dist_influence)
+
+            else:
+                assert dist_weight is None
+                dist_weight_col = 'dist_influence'
+
+            # TODO TODO add assertion these don't change # of groups (on top of [KC_ID,
+            # CLAW_ID])
+            extra_cols = [KC_TYPE] + claw_coord_cols
+
+            dist_weights = claws.reset_index().set_index([KC_ID, CLAW_ID] + extra_cols
+                ).pivot(columns=glomerulus_col, values=dist_weight_col)
+
+            assert np.isclose(dist_weights.sum().sum(), claws[dist_weight_col].sum())
+
+            # (from when dist_weight_col='dist_influence')
+            # ipdb> dist_influence.T.sum()
+            # kc_id       claw_id  kc_type
+            # 300968622   0        ab         0.000077
+            #             1        ab         0.000083
+            #             2        ab         0.000087
+            # 301309622   0        ab         0.000142
+            #             1        ab         0.000125
+            #                                   ...
+            # 5901225361  1        g          0.000113
+            #             2        g          0.000121
+            #             3        g          0.000148
+            #             4        g          0.000110
+            #             5        g          0.000117
+            # Length: 10112, dtype: float64
+            # ipdb> dist_influence.T.sum().quantile(q=[0, 0.01, 0.1, 0.5, 0.9, 0.99, 1])
+            # 0.00    0.000048
+            # 0.01    0.000063
+            # 0.10    0.000077
+            # 0.50    0.000106
+            # 0.90    0.000200
+            # 0.99    0.001444
+            # 1.00    0.004267
+            #
+            # ipdb> dist_influence.replace(0, np.nan).stack().quantile(q=[0, 0.01, 0.1,
+            #    0.5, 0.9, 0.99, 1])
+            # 0.00    0.000048
+            # 0.01    0.000063
+            # 0.10    0.000077
+            # 0.50    0.000106
+            # 0.90    0.000200
+            # 0.99    0.001444
+            # 1.00    0.004267
+            # dtype: float64
+            # ipdb> dist_influence.stack().shape
+            # (10112,)
+
+            if dist_weight is None:
+                wPNKC = dist_weights.fillna(0).astype(bool).astype(int)
+                assert wPNKC.sum().sum() == total_n_claws
+            else:
+                # TODO TODO need to scale to mean is similar to above? see comments
+                # above.
+                wPNKC = dist_weights.fillna(0)
+
+            # TODO TODO TODO do version actually using dist_influence, depending on
+            # kwarg(s)
+            # TODO TODO try some fn scaling min dist_influence to maybe 10% original
+            # weight, and max to maybe 2-10x original weight (how to interpolate between
+            # those two extremes in a reasonable way though? some kind of percentile
+            # transform?)? (then keep wPNKC mean same/similar, per KC maybe?)
+            # TODO TODO some version with weight components from both synapse count as
+            # well as dist_influence?
+
+            # TODO TODO try diff radius than the 0.5 * max this currently hardcodes
+            # within?
+            # TODO TODO or at least summarize how many claws are in/out of this?
+            wPNKC = add_compartment_index(wPNKC, shape=0)
+
+            # TODO still need? delete if not
+            # wPNKC = wPNKC.reorder_levels(
+            #     [c for c in wPNKC.index.names if c != KC_TYPE] +
+            #     ([KC_TYPE] if KC_TYPE in wPNKC.index.names else [])
+            # )
+
+            # TODO TODO check against what pratyush had (was his not a bit lower?
+            # differences in dropping account for it?)
+            #
+            # ok this seems somewhat reasonable
+            # ipdb> claws.groupby(KC_ID).size().mean()
+            # 6.899596076168494
+
+            # TODO TODO does it actually make sense to normalize dist_influence w/in
+            # each KC? if all the claws are far away, shouldn't that behave different
+            # from if they are all close? and how much does this inverse quantity swing
+            # around at the upper end (bunch of small values i assume?)?
+
+            # TODO TODO move this(?) after dropping based on isfinite(dist_to_root)
+            # below?  still true there? (prob)
+
+            # TODO look at rows for one KC to sanity check my understanding of the
+            # values (both in syns and in claw means)
+
+
+            # TODO TODO does this also have NaN claw IDs like syns does? no! but does it
+            # have same number of claws after dropping? may need to compute before i
+            # drop other things from syns, for comparison?
+            #
+            # ipdb> claws[['bodyId_pre','bodyId_post','anatomical_claw']
+            #   ].drop_duplicates().shape
+            # (17313, 3)
+            #
+            # TODO delete
+            # ipdb> claws
+            #        bodyId_pre instance_pre type_pre  bodyId_post instance_post type_post  anatomical_claw  weight
+            # 0       542634818    DM1_lPN_R  DM1_lPN    301314208        KCab-c      KCab              0.0       6
+            # 1       542634818    DM1_lPN_R  DM1_lPN    331999156        KCab-c      KCab              3.0       1
+            # 2       542634818    DM1_lPN_R  DM1_lPN    332344592        KCab-c      KCab             -1.0       2
+            # 3       542634818    DM1_lPN_R  DM1_lPN    332344908        KCab-m      KCab              2.0       9
+            # 4       542634818    DM1_lPN_R  DM1_lPN    332353106        KCab-m      KCab             -1.0       1
+            # ...           ...          ...      ...          ...           ...       ...              ...     ...
+            # 17308  5901222910    DM2_lPN_R  DM2_lPN   5813109913        KCab-s      KCab             -1.0       3
+            # 17309  5901222910    DM2_lPN_R  DM2_lPN   5813110928        KCab-s      KCab             -1.0       2
+            # 17310  5901222910    DM2_lPN_R  DM2_lPN   5813110928        KCab-s      KCab              0.0       8
+            # 17311  5901222910    DM2_lPN_R  DM2_lPN   5901207528        KCab-c      KCab              0.0      34
+            # 17312  5901222910    DM2_lPN_R  DM2_lPN   5901225361         KCg-m       KCg              4.0       2
+            #
+            # [17313 rows x 8 columns]
+            # ipdb> claws.dtypes
+            # bodyId_pre           int64
+            # instance_pre        object
+
+            # type_pre            object
+            # bodyId_post          int64
+            # instance_post       object
+            # type_post           object
+            # anatomical_claw    float64
+            # weight               int64
+            #
+            claw_df = pd.read_parquet(
+                prat_hemibrain_PNKC_claw_dir / f'{prefix}Claws.parquet'
+            )
+
+            # TODO pick one (also including potentially one of above)? or provide a way
+            # to configure which one to use (prob default to pre-scaled, but maybe check
+            # i can recompute it) (will be computing from syns, but may check against
+            # some of other things)
+            for suffix in ('UnScaled', 'SynDist-Scaled'):
+                d1 = pd.read_csv(prat_hemibrain_PNKC_claw_dir / f'{prefix}{suffix}.csv')
+                d2 = pd.read_parquet(
+                    prat_hemibrain_PNKC_claw_dir / f'{prefix}{suffix}.parquet'
+                )
+                # would use pd_allclose but it has error now w/ dtype('O') input
+                # (see comment in hong2p, if i haven't fixed it yet)
+                assert d1.columns.equals(d2.columns)
+                assert d1.index.equals(d2.index)
+                assert d1.dtypes.equals(d2.dtypes)
+                for c in d1.columns:
+                    if d1.dtypes[c] == np.dtype('O'):
+                        assert not d1[c].isna().any()
+                        assert not d2[c].isna().any()
+                        assert d1[c].equals(d2[c])
+
+                    else:
+                        # all but scaled_weight (at least in UnScaled case) are also
+                        # exactly equal.
+                        # TODO why does suffix=unscaled one have a scaled weight col?
+                        # TODO what do NaN scaled weights in suffix=scaled case mean?
+                        assert pd_allclose(d1[c], d2[c], equal_nan=True)
+
+                if suffix == 'UnScaled':
+                    unscaled = d1
+                else:
+                    assert suffix == 'SynDist-Scaled'
+                    scaled = d1
+
+                # TODO delete
+                print(f'{suffix=}')
+                print(f'{d1.columns=}')
+                #breakpoint()
+                print()
+                #
+
+            # TODO TODO check i can recreate both unscaled and scaled values
+            # TODO TODO TODO then average scaled weights within each claw (will need to
+            # do myself)
+            # TODO TODO + check prat thinks how i'm normalizing weights (w/in diff
+            # units; KCs/claws/etc) makes sense
+
+            # TODO TODO assert set of IDs are same as in my previous hemibrain stuff, or
+            # summarize differences?
+
+            df = claws
+            # TODO move earlier + use in code in this branch of conditional (before
+            # renamed to KC_ID/etc)A
+            # TODO delete? (renamed in claws, but not in syns)
+            #pn_id_col = 'bodyId_pre'
+            #kc_id_col = 'bodyId_post'
+            #
+            pn_id_col = 'pn_id'
+            kc_id_col = KC_ID
+
+            weight_col = 'n_synapses'
+            # TODO delete? make separate hists of this one in this conditional?
+            #weight_col = 'dist_influence'
+            n_kcs = len(wPNKC)
+
+            # TODO TODO TODO delete hack.
+            # TODO why were hists below taking so much longer than in tianpei case? fix!
+            #warn('not making plots for prat_claws=True! fix!')
+            #plot_dir = None
+            #
+
+            # TODO TODO TODO finish integrating prat's new outputs, w/ options to load
+            # them instead
+            #breakpoint()
+            #
+
+
         elif synapse_con_path is not None and synapse_loc_path is not None:
             # used in title of histograms later
             # TODO or does the other one contain more of the important info? use both?
@@ -1041,8 +2112,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             df = df.merge(loc, on=[pn_id_col, kc_id_col], how='inner')
 
             input_coord_cols = ['x_pre', 'y_pre', 'z_pre']
-            for ax in input_coord_cols:
-                df[ax] *= PIXEL_TO_UM
+            for x in input_coord_cols:
+                df[x] *= PIXEL_TO_UM
 
             # DBSCAN cluster into pre_claw
             clustered = []
@@ -1173,11 +2244,13 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             print(f"Average claws per KC after merging: {avg_claws:.2f}")
 
             claw_levels = [kc_id_col, claw_col] + claw_coord_cols
+            # TODO TODO share below w/ prat_claws=True? is pivot[_table] call
+            # below not used in this case?
             # pivot to a (KC,claw,x,y,z)×glomerulus matrix, values = 1
             wPNKC_counts = claw_df.pivot_table(
                 index=claw_levels,
                 columns=glomerulus_col,
-                values = 'n_syn',
+                values='n_syn',
                 fill_value=0
             ).astype(int)
 
@@ -1189,14 +2262,24 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             meta = claw_df.set_index(claw_levels)['pre_cell_ids']
             wPNKC['pre_cell_ids'] = meta
 
-            # TODO why using claw_id here and not 'claw' as before? just change to
-            # claw_id above (assuming we do want output to be claw_id. prob also
+            # TODO why using CLAW_ID here and not 'claw' as before? just change to
+            # CLAW_ID above (assuming we do want output to be CLAW_ID. prob also
             # factor common CLAW_ID up top)?
-            wPNKC = wPNKC.rename_axis(index={claw_col: 'claw_id'})
+            wPNKC = wPNKC.rename_axis(index={claw_col: CLAW_ID})
 
             # record how many claws total for your downstream sanity checks
             n_kcs = wPNKC.shape[0]
             wPNKC = add_compartment_index(wPNKC, shape=0)
+
+            # TODO why are pre_cell_ids still a column? are they only added to index
+            # outside of connectome_wPNKC (no, only seem referenced in here...)? rectify
+            # that, if so
+            #
+            # TODO delete
+            # TODO TODO TODO use to match prat_claws=True output to here
+            # (+ maybe refactor to share)
+            breakpoint()
+            #
 
             # TODO still need? redundant w/ wPNKC that will be saved later
             # automatically?
@@ -1372,498 +2455,20 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     kc_types = None
     # TODO TODO also need to exclude path loading pratyush's new 2025-08-20 outputs?
     if not _use_matt_wPNKC:
-        # TODO delete
-
-        # TODO TODO TODO finish + move up into appropriate place in this fn
-
-        # TODO TODO csv contents all same as parquet ones? (suffix='Synapses' only
-        # exists for CSV, and suffix='Claws' only exists as parquet. anything in 'Claws'
-        # one i need?)
-        prat_hemibrain_PNKC_claw_dir = from_prat / '2025-08-20'
-
-        prefix = 'PN-KC_Connectivity_'
-
-        # columns:
-        # bodyId_pre, bodyId_post, node_id_post, connector_id_post, connector_type,
-        # anatomical_claw, dist_to_root, weight, type_post, instance_post, instance_pre,
-        # type_pre, dist_influence
-        #
-        # can ignore: node_id_post, connector_id_post, connector_type
-        syns = pd.read_csv(prat_hemibrain_PNKC_claw_dir / f'{prefix}Synapses.csv')
-
-        assert (syns['weight'] == 1).all()
-
-        syns = syns.drop(columns=['node_id_post', 'connector_id_post', 'connector_type',
-            'weight'
-        ])
-
-        # ipdb> syns.bodyId_pre.unique().shape
-        # (158,)
-        # ipdb> syns.bodyId_post.unique().shape
-        # (1786,)
-
-        assert (len(syns[['type_pre', 'instance_pre']].drop_duplicates()) ==
-            syns.type_pre.nunique() == syns.instance_pre.nunique()
-        )
-
-        prior_kc_ids = df[kc_id_col].unique()
-        curr_kc_ids = syns.bodyId_post.unique()
-        # so there are 94 KC IDs we had before that are not here.
-        # and 50 of new set of IDs were not in the old set of IDs (how did that happen?)
-        #
-        # ipdb> len(set(prior_kc_ids) - set(curr_kc_ids))
-        # 94
-        # ipdb> len(set(curr_kc_ids) - set(prior_kc_ids))
-        # 50
-        #
-        # ipdb> np.isin(curr_kc_ids, prior_kc_ids).sum()
-        # 1736
-
-        # TODO check PN IDs too?
-
-
-        # TODO delete
-        print(f'{syns.anatomical_claw.isna().sum()=}')
-        #
-
-        assert syns.anatomical_claw.dropna().min() == -1
-        # TODO delete
-        # ipdb> (syns.anatomical_claw == -1).sum()
-        # 12225
-        # ipdb> (syns.anatomical_claw == -1).sum() / len(syns)
-        # 0.06579124397922664
-        #
-        # only lost 13 KC IDs doing this
-        # ipdb> syns[syns.anatomical_claw != -1].bodyId_post.unique().shape
-        # (1773,)
-        #
-        # len(syns)=185815
-        #
-        # TODO warn about this dropping, w/ breakdown of NaN vs -1
-        syns = syns[(syns.anatomical_claw != -1) & syns.anatomical_claw.notna()].copy()
-        # (will actually be less now that we are also dropping NaN claw IDs)
-        # len(syns)=173590
-
-        # TODO TODO TODO ok maybe it actually was numbered within each (KC, PN) pair?
-        # change all comments saying numbered per-KC back. getting duplicates when
-        # trying to set index on claw means below (w/o using PN ID)
-        #
-        # should be numbered within each KC, from 0. -1 for synapses not assigned to any
-        # claw.
-        # TODO check numbered sequentially w/in each KC (and again after all
-        # dropping? or do we only ever drop all/no synapses per claw?) (matter?)
-        claw_ids = syns['anatomical_claw']
-
-        assert not claw_ids.isna().any()
-
-        assert pd_allclose(claw_ids, claw_ids.astype(int))
-        # max is 19! probably one of those weird KCs he was showing me? may not be real
-        # claws
-        # TODO TODO want to experiment w/ dropping claws w/o some threshold number of
-        # synapses? does that change upper end of #-claws-per-KC much?
-        syns['anatomical_claw'] = claw_ids.astype(int)
-        del claw_ids
-
-        # TODO TODO other things to drop? certain [type|instance]_[post|pre] (no other
-        # columns worth dropping from)
-
-        # TODO TODO use these for types later, instead of just the coarser ones? provide
-        # both?
-        # ipdb> syns.instance_post.unique()
-        # array(['KCab-m', 'KCg-m', 'KCab-c', 'KCab-s', "KCa'b'-m", "KCa'b'-ap2",
-        #        'KCg-d', 'KCg-t', "KCa'b'-ap1", 'KCy(half)', 'KCg-s4',
-        #        'KCg-s2(super)', 'KCab-p', 'KC(incomplete?)', 'KCg-s1(super)',
-        #        'KCg-s3'], dtype=object)
-        #
-        # ipdb> syns.type_post.unique()
-        # array(['KCab', 'KCg', "KCa'b'", 'KCy(half)', 'KC(incomplete?)'],
-        #       dtype=object)
-
-        # (this was before dropping anatomical_claw == -1)
-        # ipdb> syns.type_post.value_counts()
-        # KCg                99193
-        # KCab               61270
-        # KCa'b'             24969
-        # KCy(half)            242
-        # KC(incomplete?)      141
-        #
-        # TODO try with and without this?
-        # TODO any justification for keeping one or the other of these?
-        # TODO warn about these
-        kc_types_to_drop = ('KCy(half)', 'KC(incomplete?)')
-        syns = syns[~ syns.type_post.isin(kc_types_to_drop)].copy()
-        # (will actually be less now that we are also dropping NaN claw IDs)
-        # len(syns)=173222
-
-        # TODO delete (check again after _add_glom... which also will drop some KCs)
-        # 150 PNs here, after two steps dropping KCs above
-
-        # TODO what glomeruli even do they correspond to? (they don't. wedge. yes, drop)
-        # just drop? and it's only 4 rows in all of df, so def feel safe dropping
-        #
-        # only 4 rows in df here (/ 173222) should have these values (2 each, with all
-        # having suffix of '_R' in instance_pre column. these should be the only rows
-        # that would cause check_no_multi_underscores=True to fail.
-        pn_types_to_drop = ('WEDPN12', 'WEDPN4')
-        syns = syns[~ syns['type_pre'].isin(pn_types_to_drop)].copy()
-
-        # TODO TODO OK with all this? (from _drop_glom_with_plus=True)
-        # Warning: connectome='hemibrain' dropping 7309 rows w/ "+" in PN type:
-        # VP1d+VP4_l2PN1    4093
-        # VP3+VP1l_ivPN     1571
-        # VP1m+VP5_ilPN      818
-        # VP3+_vPN           539
-        # VP5+Z_adPN         176
-        # VP1m+VP2_lvPN2      80
-        # VP1m+_lvPN          16
-        # VP2+_adPN           10
-        # VP1m+VP2_lvPN1       5
-        # VP1l+VP3_ilPN        1
-        # (also means that 11/1768 KCs only connected to these "glomeruli" dropped)
-        # TODO TODO factor out these ID cols (+ PN ID one), as needed (esp after
-        # factoring all this new code to an appropriate home)
-        syns = _add_glomerulus_col_from_hemibrain_type(syns, 'type_pre', 'bodyId_post',
-            check_no_multi_underscores=True
-        )
-        # TODO TODO assert glomerulus 1:1 w/ type (or after all dropping below, if it's
-        # only then that it becomes true. it is currently true after all the dropping,
-        # where syn is len 164986). (_add_glomerulus_col* already do something like
-        # that?)
-        # (will actually be less now that we are also dropping NaN claw IDs)
-        # len after: 165909 (w/ _drop_glom_with_plus=True)
-
-        # TODO TODO how to interpret these?
-        # ipdb> (~ np.isfinite(syns.dist_to_root)).sum()
-        # 923
-        #
-        # ipdb> syns[(~ np.isfinite(syns.dist_to_root))]
-        #        bodyId_pre  bodyId_post  node_id_post  ...  type_pre dist_influence  glomerulus
-        # 3836   542634818   5812982192           NaN  ...   DM1_lPN            NaN         DM1
-        #
-        # ipdb> s1 = set(syns.loc[(~ np.isfinite(syns.dist_to_root))]['bodyId_post'])
-        # ipdb> s2 = set(syns.loc[(np.isfinite(syns.dist_to_root))]['bodyId_post'])
-        # ipdb> len(s1)
-        # 152
-        # ipdb> len(s2)
-        # 1733
-        # ipdb> len(s1 & s2)
-        # 128
-        # ipdb> syns.bodyId_post.nunique()
-        # 1757
-        #
-        # ipdb> s1 = set(syns.loc[(~ np.isfinite(syns.dist_to_root))]['bodyId_pre'])
-        # ipdb> s2 = set(syns.loc[(np.isfinite(syns.dist_to_root))]['bodyId_pre'])
-        # ipdb> len(s1)
-        # 63
-        # ipdb> len(s2)
-        # 131
-        # ipdb> len(s1 & s2)
-        # 61
-        # ipdb> len(s1 | s2)
-        # 133
-        #
-        # ipdb> syns.loc[~ np.isfinite(syns.dist_to_root)]['dist_to_root'
-        #    ].value_counts(dropna=False)
-        # NaN    869
-        # inf     54
-        # Name: dist_to_root, dtype: int64
-        # TODO TODO need to reset_index() before this? or use .loc? why still have some
-        # (~ np.isfinite(syns.dist_to_root)) values after?
-        syns = syns[np.isfinite(syns.dist_to_root)].copy()
-        #
-        # probably reasonable (in nm, so ~20uM max, and mostly much less)
-        # ipdb> syns.loc[np.isfinite(syns.dist_to_root)]['dist_to_root'].max()
-        # 19690.82444190979
-        # ipdb> syns.loc[np.isfinite(syns.dist_to_root)]['dist_to_root'].quantile(q=.99)
-        # 14128.878774452205
-        # ipdb> syns.loc[np.isfinite(syns.dist_to_root)]['dist_to_root'].quantile(q=.9)
-        # 10384.66800403595
-
-        assert pd_allclose(1 / syns.dist_to_root, syns.dist_influence)
-
-        # from Prat:
-        # dist_influence is sum of 1 / dist_to_root (nm), for each (PN, KC) pair
-        # total_weight is sum of dist_influence, per KC
-        # scaled_weight is dist_influence / total_weight
-
-        # hack to remove the inf values causing issues in groupby mean
-        #
-        # ipdb> (syns.dist_to_root == 0).sum()
-        # 53
-        #
-        # 14.0 (nm)
-        min_nonzero_dist = syns.dist_to_root[syns.dist_to_root > 0].min()
-        # TODO warn about this (/ avoid need for it somehow? prob can't w/o prat doing
-        # something diff, and that may not make sense)
-        # TODO assert this doesn't change max dist_influence (barring float issues?)?
-        # TODO TODO maybe take mean of dist_to_root and then take inverse of that (might
-        # give us a bit more dynamic range for stuff we are currently just clipping?)
-        syns.loc[syns.dist_to_root == 0, 'dist_influence'] = 1 / min_nonzero_dist
-        assert np.isfinite(syns.dist_influence).all()
-
-        # TODO check normalized outputs for cases where KCs include one of these really
-        # high finite dist_influence values?
-        # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].quantile(q=0.95)
-        # 0.0006495464542001794
-        # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].quantile(q=0.999)
-        # 0.007494860294504738
-        # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].max()
-        # 0.0714285714285714
-        #
-        # ipdb> syns.dist_influence[(syns.dist_to_root > 0)].sort_values().tail(n=20)
-        # 41421     0.044194
-        # 37379     0.044194
-        # 80148     0.044194
-        # 24389     0.044194
-        # 167281    0.044194
-        # 77341     0.055556
-        # 98631     0.055556
-        # 70127     0.055556
-        # 141742    0.055556
-        # 40985     0.055556
-        # 63845     0.055556
-        # 168557    0.062500
-        # 130844    0.062500
-        # 85544     0.062500
-        # 184048    0.062500
-        # 178763    0.062500
-        # 75959     0.062500
-        # 69110     0.062500
-        # 171826    0.062500
-        # 132006    0.071429
-        # TODO TODO can i still clearly see the effect of these outliers if i average
-        # within claws?
-        # TODO are some claws outliers themselves, with many synapses consistently
-        # above? i assume so... everything should be within a small number of microns,
-        # right?
-
-
-        # TODO reset_index() on syns somewhere after all the dropping above? prob
-        # doesn't matter...
-
-        # TODO TODO count how many synapses per claw (+ plot dist(s), maybe per subtype)
-
-        # TODO want any other columns in output?
-        claw_cols = ['bodyId_pre', 'bodyId_post', 'anatomical_claw']
-        extra_cols_to_keep = [glomerulus_col, 'type_post', 'instance_post']
-        # TODO maybe also dist_to_root (then rename to include '_nm' suffix)?
-        # (may also want to ONLY compute using that, then take inverse after mean w/in
-        # claw)
-        cols_to_avg = ['dist_influence']
-        assert (
-            len(syns[claw_cols].drop_duplicates()) ==
-            len(syns[claw_cols + extra_cols_to_keep].drop_duplicates())
-        )
-        claw_dist_influences = syns.groupby(claw_cols + extra_cols_to_keep)[cols_to_avg
-            ].mean()
-
-        # should be redundant w/ drop_duplicates check w/ same cols above
-        assert claw_dist_influences.droplevel(extra_cols_to_keep).equals(
-            syns.groupby(claw_cols)[cols_to_avg].mean()
-        )
-
-        # ipdb> claw_dist_influences.groupby(['bodyId_pre','bodyId_post']).size().mean()
-        # 1.1184173603965952
-        # ipdb> claw_dist_influences.groupby(['bodyId_pre','bodyId_post']).size().max()
-        # 15
-
-        claw_dist_influences = claw_dist_influences.reset_index().rename(columns={
-            'bodyId_post': KC_ID,
-            'type_post': KC_TYPE,
-
-            # more fine grained than the 3 values for KC_TYPE we wil have here
-            'instance_post': 'kc_subtype',
-
-            'bodyId_pre': 'pn_id',
-        })
-
-        # ipdb> qs = [0, 0.0005, 0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999, 0.9995, 1]
-        # ipdb> claw_dist_influences.dist_influence.quantile(q=qs)
-        # 0.0000    0.000051
-        # 0.0005    0.000057
-        # 0.0010    0.000059
-        # 0.0100    0.000071
-        # 0.1000    0.000096
-        # 0.2500    0.000125
-        # 0.5000    0.000191
-        # 0.7500    0.000299
-        # 0.9000    0.000469
-        # 0.9900    0.002861
-        # 0.9990    0.008632
-        # 0.9995    0.010624
-        # 1.0000    0.037253
-        #
-        # TODO TODO are these not just getting swamped by large ones frequently tho?
-        # since they will often vary over orders of magnitude (and presumably within
-        # many individual KCs, not just across them).
-        # TODO TODO TODO matter? want to normalize in some way other than straight
-        # average of this?
-        # ipdb> claw_dist_influences.groupby(KC_ID).dist_influence.sum().quantile(q=qs)
-        # 0.0000    0.000061
-        # 0.0005    0.000064
-        # 0.0010    0.000065
-        # 0.0100    0.000264
-        # 0.1000    0.000556
-        # 0.2500    0.000860
-        # 0.5000    0.001633
-        # 0.7500    0.002802
-        # 0.9000    0.004127
-        # 0.9900    0.009087
-        # 0.9990    0.017528
-        # 0.9995    0.022459
-        # 1.0000    0.039409
-        #
-        # TODO TODO plot subtype distributions of these diff quantities? per claw and
-        # per KC at least
-
-        # TODO delete if doesn't matter, with how i end up computing+assigning new
-        # labels
-        #
-        # to group things a tad nicer before we assign new claw IDs within each group
-        claw_dist_influences = claw_dist_influences.sort_values(
-            [KC_ID, glomerulus_col, 'pn_id']
-        )
-        #
-
-        # OK now it should actually be numbered (w/ consecutive integers from 0) within
-        # each KC
-        claw_dist_influences['claw_id'] = claw_dist_influences.groupby(KC_ID).cumcount()
-        claw_dist_influences = claw_dist_influences.drop(columns='anatomical_claw')
-        claw_dist_influences = claw_dist_influences.set_index(['kc_id', 'claw_id'],
-            verify_integrity=True
-        )
-
-        # TODO TODO check against what pratyush had (was his not a bit lower?
-        # differences in dropping account for it?)
-        #
-        # ok this seems somewhat reasonable
-        # ipdb> claw_dist_influences.groupby(KC_ID).size().mean()
-        # 6.899596076168494
-
-        # TODO TODO before returning, rename anatomical_claw -> claw/claw_id
-        # (will just add new column from renumbering, then drop anatomical_claw col
-        # probably)
-
-        # TODO TODO does it actually make sense to normalize dist_influence w/in each
-        # KC? if all the claws are far away, shouldn't that behave different from if
-        # they are all close? and how much does this inverse quantity swing around at
-        # the upper end (bunch of small values i assume?)?
-
-        # TODO move this to a good spot later, once i factor out rest of this loading
-        # into separate paths
-        # TODO TODO move this after dropping based on isfinite(dist_to_root) below?
-        # still true there? (prob)
-        #
         # len of old set is 62 if connectome='hemibrain' and _drop_glom_with_plus=False
         # (more than the 56 we have on these new outputs, seemingly regardless of
         # _drop_glom_with_plus)
         # TODO look into why _drop_glom_with_plus is behaving differently on
         # old/new outputs? some filter imposed by prat's query?
-        if (connectome == 'hemibrain' and _drop_glom_with_plus and
-            synapse_con_path is None):
-
-            # same 56 in each case, even after all the dropping on syns
-            assert set(df[glomerulus_col].unique()) == set(syns[glomerulus_col].unique())
-
-            # TODO assert count fractions are within some margin (more work, perhaps not
-            # worth)?
-
-        # TODO look at rows for one KC to sanity check my understanding of the
-        # values (both in syns and in claw means)
-
-
-        # TODO TODO does this also have NaN claw IDs like syns does? no! but does it
-        # have same number of claws after dropping? may need to compute before i drop
-        # other things from syns, for comparison?
-        #
-        # ipdb> claws[['bodyId_pre','bodyId_post','anatomical_claw']].drop_duplicates().shape
-        # (17313, 3)
-        #
         # TODO delete
-        # ipdb> claws
-        #        bodyId_pre instance_pre type_pre  bodyId_post instance_post type_post  anatomical_claw  weight
-        # 0       542634818    DM1_lPN_R  DM1_lPN    301314208        KCab-c      KCab              0.0       6
-        # 1       542634818    DM1_lPN_R  DM1_lPN    331999156        KCab-c      KCab              3.0       1
-        # 2       542634818    DM1_lPN_R  DM1_lPN    332344592        KCab-c      KCab             -1.0       2
-        # 3       542634818    DM1_lPN_R  DM1_lPN    332344908        KCab-m      KCab              2.0       9
-        # 4       542634818    DM1_lPN_R  DM1_lPN    332353106        KCab-m      KCab             -1.0       1
-        # ...           ...          ...      ...          ...           ...       ...              ...     ...
-        # 17308  5901222910    DM2_lPN_R  DM2_lPN   5813109913        KCab-s      KCab             -1.0       3
-        # 17309  5901222910    DM2_lPN_R  DM2_lPN   5813110928        KCab-s      KCab             -1.0       2
-        # 17310  5901222910    DM2_lPN_R  DM2_lPN   5813110928        KCab-s      KCab              0.0       8
-        # 17311  5901222910    DM2_lPN_R  DM2_lPN   5901207528        KCab-c      KCab              0.0      34
-        # 17312  5901222910    DM2_lPN_R  DM2_lPN   5901225361         KCg-m       KCg              4.0       2
+        #if (connectome == 'hemibrain' and _drop_glom_with_plus and
+        #    synapse_con_path is None and not prat_claws):
         #
-        # [17313 rows x 8 columns]
-        # ipdb> claws.dtypes
-        # bodyId_pre           int64
-        # instance_pre        object
-
-        # type_pre            object
-        # bodyId_post          int64
-        # instance_post       object
-        # type_post           object
-        # anatomical_claw    float64
-        # weight               int64
-        #
-        claws = pd.read_parquet(
-            prat_hemibrain_PNKC_claw_dir / f'{prefix}Claws.parquet'
-        )
-
-
-        # TODO pick one (also including potentially one of above)? or provide a way
-        # to configure which one to use (prob default to pre-scaled, but maybe check i
-        # can recompute it) (will be computing from syns, but may check against some of
-        # other things)
-        for suffix in ('UnScaled', 'SynDist-Scaled'):
-            d1 = pd.read_csv(prat_hemibrain_PNKC_claw_dir / f'{prefix}{suffix}.csv')
-            d2 = pd.read_parquet(
-                prat_hemibrain_PNKC_claw_dir / f'{prefix}{suffix}.parquet'
-            )
-            # would use pd_allclose but it has error now w/ dtype('O') input
-            # (see comment in hong2p, if i haven't fixed it yet)
-            assert d1.columns.equals(d2.columns)
-            assert d1.index.equals(d2.index)
-            assert d1.dtypes.equals(d2.dtypes)
-            for c in d1.columns:
-                if d1.dtypes[c] == np.dtype('O'):
-                    assert not d1[c].isna().any()
-                    assert not d2[c].isna().any()
-                    assert d1[c].equals(d2[c])
-
-                else:
-                    # all but scaled_weight (at least in UnScaled case) are also exactly
-                    # equal.
-                    # TODO why does suffix=unscaled one have a scaled weight col?
-                    # TODO what do NaN scaled weights in suffix=scaled case mean?
-                    assert pd_allclose(d1[c], d2[c], equal_nan=True)
-
-            if suffix == 'UnScaled':
-                unscaled = d1
-            else:
-                assert suffix == 'SynDist-Scaled'
-                scaled = d1
-
-            # TODO delete
-            print(f'{suffix=}')
-            print(f'{d1.columns=}')
-            #breakpoint()
-            print()
-            #
-
-        # TODO TODO check i can recreate both unscaled and scaled values
-        # TODO TODO TODO then average scaled weights within each claw (will need to do
-        # myself)
-        # TODO TODO + check prat thinks how i'm normalizing weights (w/in diff units;
-        # KCs/claws/etc) makes sense
-
-        # TODO TODO assert set of IDs are same as in my previous hemibrain stuff, or
-        # summarize differences?
-
-        # TODO TODO TODO finish integrating prat's new outputs, w/ options to load them
-        # instead
-        #breakpoint()
-        #
+        #   # TODO delete
+        #   # same 56 in each case, even after all the dropping on syns
+        #   #assert set(df[glomerulus_col].unique()) == set(syns[glomerulus_col].unique())
+        #   # TODO assert count fractions are within some margin (more work, perhaps not
+        #   # worth)?
 
         # this is only for non-spatial code thatbexpects unique PN-KC rows
         if synapse_con_path is None and synapse_loc_path is None:
@@ -1897,6 +2502,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             #    len(df[[pn_id_col, kc_id_col, 'pre_claw']].drop_duplicates()) == len(df)
             #)
 
+        # both of these assertions also work in prat_claws=True case (as of 2025-09-18)
         assert not df[weight_col].isna().any()
         min_weight = df[weight_col].min()
         assert min_weight > 0
@@ -1919,11 +2525,20 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # assert len(missing_old_names) == 0
         # TODO print which if this assertion ever fails
 
+        # TODO TODO TODO so are glomerulus_renames not used in one-row-per-claw case(s)?
+        # refactor so pivot still happens below here, if i care
+        #
         # TODO actually check it doesn't matter whether i do this before vs after pivot?
         # (or at least, that i intend for current behavior)
         df.glomerulus = df.glomerulus.replace(glomerulus_renames)
 
-        if not (synapse_loc_path is not None and synapse_con_path is not None):
+        # TODO TODO TODO also exclude prat_claws=True, if i don't manage to refactor
+        # above to also pivot down here in all one-row-per-claw cases (either way, would
+        # ideally like to share at least some code between processing of Tianpei's and
+        # Pratyush's outputs)
+        if not ((synapse_loc_path is not None and synapse_con_path is not None)
+            or prat_claws):
+
             if weight_divisor is None:
                 # TODO refactor pivoting to share across branches of this conditional,
                 # and with above processing of matt's CSVs
@@ -1961,7 +2576,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 del using_count
 
         # TODO also implement for fafb inputs?
-        if KC_TYPE in df.columns:
+        # TODO TODO fix for prat_claws?
+        if KC_TYPE in df.columns and not prat_claws:
             # TODO delete?
             kc_ids_and_types = wPNKC.index.to_frame(index=False).merge(
                 df[[kc_id_col, KC_TYPE]].drop_duplicates(), left_on=kc_id_col,
@@ -2011,6 +2627,9 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # a'b'    336
     # NaN      80
     wPNKC.index = kc_index
+    # TODO delete
+    #breakpoint()
+    #
 
     non_task_gloms = set(wPNKC.columns) - task_gloms
     if len(non_task_gloms) > 0:
@@ -2019,6 +2638,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         #
         # connectome='fafb-left'
         # ['M', 'MZ']
+        # TODO TODO TODO fix these prat_claws=True cases via renames (and may need to
+        # factor glomerulus rename code):
+        # Warning: dropping glomeruli in connectome='hemibrain' but NOT task: ['M',
+        # 'VC3l', 'VC3m']
         warn(f'dropping glomeruli in {connectome=} but NOT task: '
             f'{sorted(non_task_gloms)}'
         )
@@ -2045,10 +2668,33 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     assert not (wPNKC == 0).all().any(), 'had Task glomeruli providing no input to KCs'
 
     kcs_without_input, n_kcs_without_input = _get_kcs_without_input(wPNKC)
+
     if n_kcs_without_input > 0:
-        warn(f'{n_kcs_without_input}/{len(wPNKC)} KCs without input, after dropping '
-            f'non-Task glomeruli:\n{sorted(kcs_without_input[kcs_without_input].index)}'
+        # TODO TODO also update message to "claws" without input, when appropriate
+        # currently getting:
+        # "Warning: 875/12298 KCs without input, after dropping non-Task glomeruli"
+        # in prat_claws=True case
+        msg = (f'{n_kcs_without_input}/{len(wPNKC)} KCs without input, after dropping '
+            f'non-Task glomeruli'
         )
+
+        # TODO TODO change to new if not one-row-per-claw variable (or just improve
+        # print for these cases). also would print too much in tianpei one-row-per-claw
+        # (prat_claws=False) case (if not, why not?)?
+        if not prat_claws:
+            msg += f':\n{sorted(kcs_without_input[kcs_without_input].index)}'
+
+        warn(msg)
+
+        # TODO delete comment?
+        # TODO drop them (doing this, in line below), at least is there is a flag set
+        # (separate warning?  delete, if only needed as hack to fix prat_claws=True)
+        wPNKC = wPNKC[(wPNKC > 0).T.any()].copy()
+        n_kcs = len(wPNKC)
+        #
+    # TODO delete
+    #breakpoint()
+    #
 
     # see comment above in _use_matt_wPNKC=True section, about getting this branch
     # working there too (not sure i care to though)
@@ -2168,10 +2814,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 # TODO TODO TODO make sure this is only loading connections from calyx (might be
 # already? i assume lobe[/other? are there other?] connections not relevant for calyx /
 # soma activity?
-def connectome_APL_weights(connectome: str = 'hemibrain', *,
+def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     wPNKC: Optional[pd.DataFrame] = None, kc_types: Optional[pd.Series] = None,
-    kc_to_claws: Optional[List[List[int]]] = None,
-    plot_dir: Optional[Path] = None) -> Tuple[pd.Series, pd.Series]:
+    kc_to_claws: Optional[List[List[int]]] = None, plot_dir: Optional[Path] = None
+    ) -> Tuple[pd.Series, pd.Series]:
     # TODO add param to support imputing something non-zero (min_weight?) for KC IDs in
     # wPNKC but not APL-KC data
     # TODO actually want to support weight_divisor (prob not, especially if i'm
@@ -2201,6 +2847,38 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
             " for connectome='hemibrain'"
         )
 
+    if prat_claws:
+        apl_data_dir = from_prat / '2025-09-17'
+        # TODO TODO what are differences between KC-to-APL_wClaws_v1.csv and
+        # KC-to-APL.csv (and similar 2 CSVs for APL-to-KC)? looks like mostly
+        # duplicated, and can probably just use *_wClaws* versions?
+
+        # TODO need KC_assignments.csv? it has columns:
+        # anatomical_claw, color, connector_id, dist_to_root, node_id, type, x, y
+        # z, neuron
+        # (and at least connector_id seems to be fully missing)
+
+        # TODO TODO TODO update below to v3 (2025-09-24) versions
+
+        apl2kc_df = pd.read_csv(apl_data_dir / 'APL-to-KC_wClaws_v1.csv')
+
+        # TODO confirm it's just the same difference between the two versions of the
+        # KC-to-APL CSVs
+        #
+        # TODO delete
+        #d2 = pd.read_csv(from_prat / '2025-09-17' / 'APL-to-KC.csv')
+        # only cols in d2 but not d1 are ['x','y','z'], and not clear how that differs
+        # from *_pre versions (present in both) anyway. seems it may be same as *_pre,
+        # but NaN in some places (which? why?)?. seems likely we will not need these
+        # versions regardless. all shared columns match exactly.
+        # (same is true for the KC-to-APL CSVs)
+
+        kc2apl_df = pd.read_csv(apl_data_dir / 'KC-to-APL_wClaws_v1.csv')
+
+        # TODO TODO TODO implement
+        breakpoint()
+        raise NotImplementedError("need to load Prat's claw APL weights")
+
     apl_data_dir = from_prat / '2025-04-03'
 
     apl2kc_csv = apl_data_dir / 'APL2KC_Connectivity.csv'
@@ -2210,13 +2888,15 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     # ipdb> apl2kc_df.instance_pre.unique()
     # array(['APL_R', 'APL fragment?', 'APL or DPM', 'APL fragment_L'],
 
+    # TODO refactor to share assertion + subsetting w/ kc2apl_df processing below
+    #
     # unique roi values before filtering:
     # [gL(R), CA(R), b'L(R), a'L(R), aL(R), bL(R), PED(R), SLP(R), PLP(R), SCL(R),
     # b'L(L), NotPrimary, ICL(R), SIP(R), CRE(R)]
     assert {'CA(R)'} == set(
         apl2kc_df.roi[apl2kc_df.roi.str.contains('CA')].unique()
     )
-    # TODO TODO TODO what fraction of rows are 'CA(R)'? what are other big components,
+    # TODO TODO what fraction of rows are 'CA(R)'? what are other big components,
     # if any? (and same for kc2apl. put in comment if don't already have)
     apl2kc_df = apl2kc_df[apl2kc_df.roi == 'CA(R)'].copy()
 
@@ -2244,10 +2924,12 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
 
     apl2kc_df = add_kc_type_col(apl2kc_df, 'instance_post')
     assert not apl2kc_df[KC_TYPE].isna().any()
+    # TODO want any other assertions on type (gap/incomplete?)?
     # I guess inputs are missing what I would need to independently define type for
     # these (or that this is the reality / this data is not available)
     assert not (apl2kc_df[KC_TYPE] == 'unknown').any()
 
+    # TODO delete
     # ipdb> apl2kc_df.weight.value_counts().sort_index()
     # 1      60
     # 2      49
@@ -2312,6 +2994,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
     # these (or that this is the reality / this data is not available)
     assert not (kc2apl_df[KC_TYPE] == 'unknown').any()
 
+    # TODO delete
     # ipdb> kc2apl_df.weight.value_counts().sort_index()
     # 1      65
     # 2      69
@@ -2424,7 +3107,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
         wAPLKC = pd.Series(index=index, dtype=float)
         wKCAPL = pd.Series(index=index, dtype=float)
 
-        # TODO TODO use pandas vectorized filling instead of looping overr all kc_id
+        # TODO TODO use pandas vectorized filling instead of looping over all kc_id
         # values. replace this loop w/ more idiomatic code.
         # Iterate through each KC to distribute the weights to its claws
         for kc_id in index.get_level_values(KC_ID).unique():
@@ -2452,18 +3135,19 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
 
         n_kcs = len(index.get_level_values(KC_ID).unique())
 
+        # TODO move these below filling below (outside of this conditional) (/delete)
         assert wAPLKC.sum() > 0
         assert (wAPLKC >= 0).all()
-        # TODO TODO TODO this actually make sense?
+        # TODO why not doing in non-one-row-per-claw case?
         wAPLKC = wAPLKC * (n_kcs / wAPLKC.sum())
-        # TODO TODO is this actually a property we want to enforce tho?
+        # TODO is this actually a property we want to enforce tho?
         assert np.isclose(wAPLKC.sum() / n_kcs, 1)
 
         assert wKCAPL.sum() > 0
         assert (wKCAPL >= 0).all()
-        # TODO TODO TODO this actually make sense?
+        # TODO why not doing in non-one-row-per-claw case?
         wKCAPL = wKCAPL * (n_kcs / wKCAPL.sum())
-        # TODO TODO is this actually a property we want to enforce tho?
+        # TODO is this actually a property we want to enforce tho?
         assert np.isclose(wKCAPL.sum() / n_kcs, 1)
     else:
         wAPLKC = pd.Series(index=index, data=apl2kc_weights)
@@ -2549,7 +3233,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
 
         # TODO prob delete
         # TODO TODO at least would need to actually check unknown type here, rather
-        # than just checking if any type has 0 weight
+        # than just checking if any type has 0 weight (?)
         wAPLKC_0weight_types = wAPLKC_max_weight_by_type == 0
         wAPLKC_unknown_type_has_0weight  = False
         if wAPLKC_0weight_types.any():
@@ -2585,12 +3269,16 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *,
         #
 
         if plot_dir is not None:
-            # otherwise type='unknown' will show up in legend, without a correponding
-            # histogram element (b/c no rows have that type here, and they should also
-            # all be of weight 0 anyway, unless there was a bug w/ how I was getting the
-            # types from wPNKC...), which is confusing
+            # TODO also only show present types for the other plots (in
+            # connectome_wPNKC/fit_mb_model) that use kc_type_hue_order?
+            #
+            # otherwise type='unknown'/etc will show up in legend, without a
+            # correponding histogram element (b/c no rows have that type here, and they
+            # should also all be of weight 0 anyway, unless there was a bug w/ how I was
+            # getting the types from wPNKC...), which is confusing
             hue_order = [
-                type2type_with_count[x] for x in kc_type_hue_order if x != 'unknown'
+                type2type_with_count[x] for x in kc_type_hue_order
+                if x in type2type_with_count
             ]
 
             fig, ax = _plot_connectome_raw_weight_hist(wAPLKC_with_types, x='weight',
@@ -2852,8 +3540,12 @@ _seen_olfsysm_logs = set()
 def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     tune_on_hallem: bool = False, pn2kc_connections: str = 'hemibrain',
     use_connectome_APL_weights: bool = False, weight_divisor: Optional[float] = None,
-    _wPNKC: Optional[pd.DataFrame] = None, _wPNKC_one_row_per_claw: bool = False,
-    n_claws: Optional[int] = None, drop_multiglomerular_receptors: bool = True,
+    prat_claws: bool = False, dist_weight: Optional[str] = None,
+    _wPNKC: Optional[pd.DataFrame] = None,
+    # TODO rename _wPNKC_one_row_per_claw to something shorter (and remove "private" '_'
+    # prefix)
+    _wPNKC_one_row_per_claw: bool = False, n_claws: Optional[int] = None,
+    drop_multiglomerular_receptors: bool = True,
     drop_receptors_not_in_hallem: bool = False, seed: int = 12345,
     target_sparsity: Optional[float] = None,
     target_sparsity_factor_pre_APL: Optional[float] = None,
@@ -3465,6 +4157,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 f'{mp.kc.sp_lr_coeff=} (was {old_sp_lr_coeff})\n'
             )
 
+            # TODO move all this inside relevant branch of connectome_wPNKC
             synapse_data_dir = from_prat / '2025-04-24'
             assert synapse_data_dir.is_dir()
 
@@ -3472,12 +4165,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             synapse_loc_path = synapse_data_dir / 'PN2KC_Synapse_Locations.csv'
             assert synapse_con_path.exists()
             assert synapse_loc_path.exists()
+            #
 
             wPNKC = connectome_wPNKC(
                 connectome=connectome,
+                prat_claws=prat_claws,
+                dist_weight=dist_weight,
                 weight_divisor=weight_divisor,
+                # TODO move these both into the prat_claws=False + one-row-per-claw=True
+                # branch of connectome_wPNKC (-> remove from kwargs to this fn)
                 synapse_con_path=synapse_con_path,
                 synapse_loc_path=synapse_loc_path,
+                #
                 plot_dir=plot_dir if pn2kc_connections in connectome_options else None,
                 _use_matt_wPNKC=_use_matt_wPNKC,
                 _drop_glom_with_plus=_drop_glom_with_plus,
@@ -3533,7 +4232,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO refactor to share w/ defs elsewhere (move claw_coord_cols to
         # module level, etc)
-        to_drop = [x for x in ('claw_id','claw_x','claw_y','claw_z','compartment')
+        to_drop = [x for x in (CLAW_ID,'claw_x','claw_y','claw_z','compartment')
             if x in claw_index.names
         ]
         # TODO make conditional more explicit
@@ -3886,6 +4585,134 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                         receptors[receptors_not_in_hallem])
                 ])
                 msg += '\n'
+                warn(msg)
+
+            orn_deltas = orn_deltas[~receptors_not_in_hallem].copy()
+            sfr = sfr[~receptors_not_in_hallem].copy()
+
+            # TODO refactor to not use glomerulus index, and just always use
+            # wPNKC.columns, to not have to deal w/ the two separately? (here and
+            # elsewhere...)
+            assert glomerulus_index.equals(wPNKC.columns)
+            glomerulus_index = glomerulus_index[~receptors_not_in_hallem].copy()
+            wPNKC = wPNKC.loc[:, ~receptors_not_in_hallem].copy()
+
+    # TODO TODO probably still support just one .name == 'odor' tho...
+    # (esp for calls w/ just hallem input, either old ones here or model_test.py?)
+    # (could just check 'odor' in .names that works even if single level)
+    # TODO do i only want to allow [the possibility of] a single other 'panel' level, or
+    # allow arbitrary other levels?
+    # TODO move earlier?
+    assert orn_deltas.columns.name == 'odor' or (
+        orn_deltas.columns.names == ['panel', 'odor']
+    )
+
+    # TODO would we or would we not have removed it in that case? and what about
+    # pratyush wPNKC case?
+    # If using Matt's wPNKC, we may have removed this above:
+    if 'DA4m' in hallem_orn_deltas.index:
+        assert np.array_equal(hallem_orn_deltas, mp.orn.data.delta)
+
+        if hallem_input:
+            # TODO just do this before we would modify sfr (in that one branch above)?
+            assert np.array_equal(sfr, mp.orn.data.spont[:, 0])
+
+    # TODO TODO merge da4m/l hallem data (pretty sure they are both in my own wPNKC?)?
+    # TODO TODO do same w/ 33b (adding it into 47a and 85a Hallem data, for DM3 and DM5,
+    # respectively)?
+
+    # TODO TODO add comment explaining circumstances when we wouldn't have this.  it
+    # seems to be zero filled (presumably just b/c in wPNKC earlier, and i think that's
+    # the case whether _use_matt_wPNKC is True or False). maybe just in non-hemibrain
+    # stuff? can i assert it's always true and delete some of this code?
+    # TODO TODO only drop DA4m if it's not in wPNKC (which should only be if
+    # _use_matt_wPNKC=False?)?
+    #
+    # We may have already implicitly dropped this in the zero-filling code
+    # (if that code ran, and if wPNKC doesn't have DA4m in its columns)
+    have_DA4m = 'DA4m' in sfr.index or 'DA4m' in orn_deltas.index
+
+    # TODO replace by just checking one for have_DA4m def above, w/ an assertion the
+    # indices are (still) equal here?
+    if have_DA4m:
+        assert 'DA4m' in sfr.index and 'DA4m' in orn_deltas.index
+
+    # TODO delete
+    # currently getting tripped by model_test.py case that passes in hallem orn_deltas
+    #print(f'{have_DA4m=}')
+    #if not have_DA4m:
+    #    print()
+    #    print('did not have DA4m in sfr.index. add comment explaining current input')
+    #    import ipdb; ipdb.set_trace()
+    #
+
+    # TODO also only do if _use_matt_wPNKC=True (prat's seems to have DA4m...)?
+    #if (hallem_input or tune_on_hallem) and have_DA4m:
+    # TODO this aligned with what i want?
+    # TODO revert to using wPNKC.columns instead of glomerulus_index, for clarity?
+    if 'DA4m' not in glomerulus_index and have_DA4m:
+        # TODO why was he dropping it tho? was it really just b/c it wasn't in (his
+        # version of) hemibrain?
+        # DA4m should be the glomerulus associated with receptor Or2a that Matt was
+        # dropping.
+        # TODO TODO TODO why was i doing this? delete? put behind descriptive flag at
+        # least? if i didn't need to keep receptors in line w/ what's already in osm,
+        # then why do the skipping above? if i did, then is this not gonna cause a
+        # problem? is 2a (DA4m) actually something i wanted to remove? why?
+        # (was it just b/c it [for some unclear reason] wasn't in matt's wPNKC?)
+
+        # TODO maybe replace by just having wPNKC all 0 for DA4m in _use_matt_wPNKC
+        # case, where i would need to fill in those zeros in wPNKC (which doesn't
+        # already have DA4m (Or2a), i believe)? could be slightly less special-casey...?
+        sfr = sfr[sfr.index != 'DA4m'].copy()
+        orn_deltas = orn_deltas.loc[orn_deltas.index != 'DA4m'].copy()
+
+        # TODO TODO also remove DA4m from orn_deltas_pre_filling?
+        # (maybe just subset to what's in sfr/orn_deltas but not orn_deltas_pre_filling,
+        # but down by usage of orn_deltas_pre_filling?)
+
+    assert sfr.index.equals(orn_deltas.index)
+
+    # TODO delete
+    _wPNKC_shape_changed = False
+    if wPNKC.shape != wPNKC[sfr.index].shape:
+        print()
+        print(f'wPNKC shape BEFORE subsetting to sfr.index: {wPNKC.shape}')
+        _wPNKC_shape_changed = True
+    #
+
+    # TODO TODO also need to subset glomerulus_index here now? just always use
+    # wPNKC.columns and remove glomerulus_index?
+    # TODO just add assertion that wPNKC shape unchanged by this? i haven't seen the
+    # surrounding debug prints trigger in a while, and i'm not sure if we path we care
+    # about can reproduce them...
+
+    # TODO delete
+    # TODO TODO TODO is this what's breaking claw numbering checks below? (doesn't seem
+    # so)
+    '''
+    try:
+        # TODO TODO TODO why already broken?
+        _check_claws_sequential_per_kc(wPNKC)
+        print('claw numbering GOOD before subsetting wPNKC (to sfr.index)')
+    except AssertionError:
+        print('claw numbering BAD before subsetting wPNKC (to sfr.index)')
+    '''
+    #
+
+    wPNKC = wPNKC[sfr.index].copy()
+
+    # TODO delete
+    if _wPNKC_shape_changed:
+        # TODO TODO is this only triggered IFF have_DA4m? move all this wPNKC stuff into
+        # that conditional above?
+        print(f'wPNKC shape AFTER subsetting to sfr.index: {wPNKC.shape}')
+        print()
+        print('NEED TO SUBSET GLOMERULUS_INDEX HERE (/ refactor to just use wPNKC)?')
+        import ipdb; ipdb.set_trace()
+        print()
+    del _wPNKC_shape_changed
+    #
 
     # TODO try removing .copy()?
     mp.orn.data.spont = sfr.copy()
@@ -3912,41 +4739,43 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # NOTE: should be OK if some claws receive no input (should only be for KCs with
         # no claws with input, and thus should only be in a single claw for each such
         # KC, with claw_id=0)
-        if Btn_separate:
-            assert set(wPNKC.values.flat) == {1/Btn_num_per_glom, 0}
-        else:
-            assert set(wPNKC.values.flat) == {1, 0}
+        if not (prat_claws and dist_weight is not None):
+            if Btn_separate:
+                assert set(wPNKC.values.flat) == {1 / Btn_num_per_glom, 0}
+            else:
+                assert set(wPNKC.values.flat) == {1, 0}
 
-        # TODO also assert a consistent KC id ('kc_id'?) column name throughout?
-        # currently mostly have something like 'bodyId', but 'kc_id' is more clear
-        claw_id = 'claw_id'
-        assert claw_id in wPNKC.index.names
+        assert CLAW_ID in wPNKC.index.names
 
         # TODO assert coords all positive or have some other properties?
         claw_coord_levels = [f'claw_{coord}' for coord in ('x', 'y', 'z')]
         assert all(c in wPNKC.index.names for c in claw_coord_levels)
 
         assert KC_ID in wPNKC.index.names
-        # TODO just replace usage of kc_id below w/ KC_ID?
-        kc_id = KC_ID
-        assert not wPNKC.index.to_frame(index=False)[[kc_id, claw_id]].duplicated(
+        assert not wPNKC.index.to_frame(index=False)[[KC_ID, CLAW_ID]].duplicated(
             ).any()
 
+        # TODO TODO restore for at least everything but prat_claws + dist_weight != None
+        # cases?
+        '''
         checks = True
+        # TODO factor out these checks and share w/ end of connectome_wPNKC (in a
+        # new branch shared by all one-row-per-claw cases, which currently would need to
+        # be made a more complex conditional)
         if checks:
             claws_without_input = (wPNKC.T == 0).all()
             wPNKC_only_kcs_with_input = wPNKC.loc[~ claws_without_input]
 
             wPNKC_only_kcs_without_input = wPNKC.loc[claws_without_input]
-            assert (wPNKC_only_kcs_without_input.index.get_level_values(claw_id) == 0
+            assert (wPNKC_only_kcs_without_input.index.get_level_values(CLAW_ID) == 0
                 ).all()
 
             kcs_without_input = wPNKC_only_kcs_without_input.index.get_level_values(
-                kc_id
+                KC_ID
             )
             assert not kcs_without_input.duplicated().any()
             kcs_with_input = set(
-                wPNKC_only_kcs_with_input.index.get_level_values(kc_id).unique()
+                wPNKC_only_kcs_with_input.index.get_level_values(KC_ID).unique()
             )
             assert not any(x in kcs_with_input for x in kcs_without_input)
 
@@ -3956,23 +4785,22 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             else:
                 assert (wPNKC_only_kcs_with_input.T.max() == 1).all()
 
-            for kc, kc_df in wPNKC.groupby(kc_id, sort=False):
-                kc_claw_ids = kc_df.index.get_level_values(claw_id)
-                # checking that claw_id values count up from 0 within each KC
-                assert set(kc_claw_ids) == set(np.arange(len(kc_claw_ids)))
+            # TODO TODO TODO move this check between line above that subsets wPNKC based
+            # on glomeruli? some/all of other checks in this block too?
+            # TODO TODO TODO restore
+            #_check_claws_sequential_per_kc(wPNKC)
+        '''
 
         # TODO will i end up wanting to transpose this, to have it's shape in olfsysm
         # consistent w/ some other stuff in there? (see wAPLKC vs wKCAPL, for one
         # current case were olfsysm wants some things in either row or column vectors)
         # TODO try w/o .values after getting working with it?
-        kc_ids = kc_index.get_level_values(kc_id).values
-        kc_ids_per_claw = claw_index.get_level_values(kc_id).values
+        kc_ids = kc_index.get_level_values(KC_ID).values
+        kc_ids_per_claw = claw_index.get_level_values(KC_ID).values
+        # TODO delete (not used right? delete kc_ids too?)
         n_kcs = len(set(kc_ids))
-
-        # mp.kc.N = len(claw_index)
+        #
         mp.kc.N = len(kc_index)
-        # TODO TODO TODO implement in olfsysm (-> use for determining which claws to
-        # consider as part of one KC)
         mp.kc.kc_ids = kc_ids_per_claw
 
         # TODO TODO TODO implement in olfsysm (in such a way that related test
@@ -4083,6 +4911,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     rv = osm.RunVars(mp)
 
+    # TODO TODO TODO support prat_claws=True here too (may already work, just make sure
+    # it does)
     kc_to_claws = None
     if _wPNKC_one_row_per_claw:
         rv.kc.claw_compartments = claw_comp
@@ -4193,12 +5023,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # rv.kc.wAPLKC.shape=(1630, 1)
             # rv.kc.wAPLKC.max()=3.8899999999999992
             if _wPNKC_one_row_per_claw:
-                print("rv.kc.wAPLKC declared here")
-
-
                 rv.kc.wAPLKC = np.ones((compact.size, 1)) * wAPLKC
                 rv.kc.wKCAPL = np.ones((1, compact.size)) * wKCAPL
-                print("rv.kc.wAPLKC size: ", compact.size)
             else:
                 rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
                 rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
@@ -4241,7 +5067,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             for_kc_types = claw_index.get_level_values(KC_TYPE)
 
         wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
-            kc_types=for_kc_types, kc_to_claws=kc_to_claws, plot_dir=plot_dir
+            prat_claws=prat_claws, kc_types=for_kc_types, kc_to_claws=kc_to_claws,
+            plot_dir=plot_dir
         )
 
         if not _wPNKC_one_row_per_claw:
@@ -4408,7 +5235,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # name KC_ID anyway) (-> move earlier -> define kc_types from wPNKC index
         # -> define all other KC indices from that)
         wPNKC = pd.DataFrame(data=wPNKC, columns=glomerulus_index)
-        # TODO move KC ID col def to a central place (-> prob rename to 'kc_id' after)
         wPNKC.index.name = KC_ID
 
     # TODO skip this re-adding if i change above to not drop kc_type level from wPNKC
@@ -6978,6 +7804,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         '_plot_example_dynamics',
         'return_dynamics',
         '_multiresponder_mask',
+        '_wPNKC',
     )
 
     # TODO just use default values (from fit_mb_model def, via introspection? how else?)
@@ -7112,39 +7939,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         param_dir_name = f'{param_dir_prefix}{for_dirname}'
         param_dir = plot_dir / param_dir_name
 
-        # TODO delete after renaming all i want
-        #
-        # TODO TODO do i even want to do this? won't params.csv have wrong output_name?
-        # do i care? (renaming for now, and can deal with that later if i care)
-        #
-        # hack to rename dirs from old, overly-verbose format like:
-        # dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__weight-divisor_20__drop-plusgloms_False__target-sp_0.0915
-        # to new format like:
-        # pn2kc_hemibrain__weight-divisor_20__drop-plusgloms_False__target-sp_0.0915
-        if not param_dir.exists():
-            old_prefix = 'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__'
-
-            old_dir = plot_dir / f'{param_dir_prefix}{old_prefix}{for_dirname}'
-            if old_dir.exists():
-                warn(f'(under {param_dir.parent}) renaming\n{old_dir.name}'
-                    f'\n->\n{param_dir.name}'
-                )
-
-                # this does not change mtime of directory, consistent w/ what would
-                # happen using `mv` CLI tool (directory mtimes normally get updated when
-                # files are added/removed from dir automatically, and not sure it's
-                # actually stored separately from the mtimes of files within...)
-                os.rename(old_dir, param_dir)
-
-                assert param_dir.exists()
-                assert not old_dir.exists()
-        #
-
-        del for_dirname
-
-        # TODO delete
-        print()
-
+        # TODO delete (along w/ other related lines commented below), if i like
+        # replacement title from for_dirname
+        '''
         if tune_from != 'pebbled':
             title += f'KC thresh [/APL inh] from: {tune_from}\n'
 
@@ -7180,6 +7977,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 # TODO refactor sparsity formatting?
                 f'ab_prime_response_rate_target: {ab_prime_response_rate_target:.3g}\n'
             )
+        '''
 
         if fixed_thr is not None or wAPLKC is not None:
             assert fixed_thr is not None and wAPLKC is not None
@@ -7191,10 +7989,11 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # TODO need to support int type too? isinstance(<int>, float) is False
             if n_seeds == 1:
                 if isinstance(fixed_thr, float):
-                    title += f'fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}\n'
+                    #title += f'fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}\n'
+                    pass
                 else:
                     assert isinstance(fixed_thr, np.ndarray)
-                    title += f'mean_thr={fixed_thr.mean():.0f}, wAPLKC={wAPLKC:.2f}\n'
+                    #title += f'mean_thr={fixed_thr.mean():.0f}, wAPLKC={wAPLKC:.2f}\n'
         else:
             if 'target_sparsity' in model_kws:
                 assert model_kws['target_sparsity'] is not None
@@ -7209,9 +8008,16 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # TODO include something else for case where fixed_thr is vector (which
             # currently requires wAPLKC set, to a float as before)?
             assert fixed_thr is None and wAPLKC is None
+
             # .3g will show up to 3 sig figs (regardless of their position wrt decimal
             # point), but also strip any trailing 0s (0.0915 -> '0.0915', 0.1 -> '0.1')
-            title += f'target_sparsity: {target_sparsity:.3g}\n'
+            #title += f'target_sparsity: {target_sparsity:.3g}\n'
+
+        # TODO delete old title code above (commented lines) if i like this. or maybe
+        # combine strategies, if there are certain params i still want to special case
+        # for titles?
+        title += '\n'.join(for_dirname.split('__')).replace('_', ': ').replace('-', '_')
+        del for_dirname
 
         # NOTE: this is for analyses that either always include or always drop silent
         # cells, regardless of value of `drop_silent_cells_before_analyses`
@@ -7635,14 +8441,15 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 wKCAPL = param_dict.pop('wKCAPL')
 
                 # TODO will this always be true? added after other assertions here
-                assert use_connectome_APL_weights
-                #
-                assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
-
-                assert 'wAPLKC_scale' in param_dict
-                assert 'wKCAPL_scale' in param_dict
-
-                assert wKCAPL.shape == wAPLKC.shape
+                # TODO TODO TODO delete? had to comment for at least prat_claws=True
+                # (why not triggering for tianpei 1row-per-claw case?)
+                # TODO TODO TODO TODO or why are weights not all same in prat_claws=True
+                # case, if use_connectome_APL_weights=False?
+                # TODO TODO TODO TODO fix!!!
+                #assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
+                #assert 'wAPLKC_scale' in param_dict
+                #assert 'wKCAPL_scale' in param_dict
+                #assert wKCAPL.shape == wAPLKC.shape
 
                 to_pickle(wAPLKC, wAPLKC_cache)
                 to_pickle(wKCAPL, wKCAPL_cache)
@@ -8695,7 +9502,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         savefig(fig, param_dir, 'response_rate_by_type')
 
         # TODO need to do anything to get palette consistent w/ histograms?
-        # (seems so, if i care)
+        # (seems so, if i care [still?]). all types that should only be in one dataset
+        # or another ['unknown'/'incomplete'/'gap'] should all be at end of hue order
+        # now... still want to drop currently-missing types, like connectome APL fn
+        # does?
         kc_type_palette = sns.color_palette(n_colors=len(kc_type_hue_order))
 
         type2color = dict(zip(kc_type_hue_order, kc_type_palette))
@@ -13658,6 +14468,8 @@ def main():
     # TODO print names of plots we are saving (by default, and prob unconditionally),
     # as if -v/--verbose were passed to al_analysis.py
 
+    # TODO refactor to share loading of this megamat orn_deltas w/ tests that do the
+    # same (move to fn in this module)
     model_output_dir1 = Path('data/sent_to_remy/2025-03-18/'
         'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
         'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
@@ -13690,6 +14502,67 @@ def main():
 
     # currently only way to enable olfsysm log prints
     al_util.verbose = True
+
+    plot_root = Path('model_mb_example').resolve()
+
+    kws = dict()
+    # TODO delete this product thing, and just switch to a kws_list?
+    try_each_with_kws = [
+        # TODO TODO drop multiglomerular PNs are re-run all prat_claws=True variants
+        # (hardcode inside that branch of connectome_wPNKC. never want them)
+
+        # TODO TODO TODO add version(s) w/ prat_claws=True and APL compartments
+
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True),
+
+        # TODO TODO try these again after scaling wPNKC within each KC (to have same
+        # mean as before?)?
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='percentile'),
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='raw'),
+        #
+
+        # TODO TODO TODO will need to fix
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True,
+            use_connectome_APL_weights=True
+        ),
+        #
+
+        dict(_wPNKC_one_row_per_claw=True),
+        dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True),
+
+        # TODO delete?
+        dict(weight_divisor=20),
+        dict(weight_divisor=20, use_connectome_APL_weights=True),
+        #
+    ]
+
+    for extra_kws in try_each_with_kws:
+        # extra_kws will override kws without warning, if they have common keys
+        param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+            try_cache=False,
+            # TODO disable _plot_example_dynamics (resource intensive)?
+            #_plot_example_dynamics=True,
+            **{**kws, **extra_kws}
+        )
+        output_dir = (plot_root / param_dict['output_dir']).resolve()
+        assert output_dir.is_dir()
+        assert output_dir.parent == plot_root
+
+        #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
+        # kc_id         ...
+        # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
+        # 1             0.0       0.0      0.0  ...             0.0        0.0      0.0
+        # ...           ...       ...      ...  ...         ...        ...      ...
+        # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
+        # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
+        df = pd.read_csv(output_dir / 'spike_counts.csv', index_col=KC_ID)
+
+    # TODO TODO also include an example w/ kiwi/control data (as used by natmix_data)
+    # (either committing data in al_analysis too, or moving this whole example to
+    # another repo)
+    # TODO + add test i can reproduce those outputs (use outputs i already sent someone
+    # from my kiwi/control data? sent to ruoyi? or someone else?)
+    import ipdb; ipdb.set_trace()
 
     # TODO also include equalize_kc_type_sparsity=False for all below
     # TODO TODO pick from kwargs described in comments below
@@ -13830,78 +14703,6 @@ def main():
     # ab                0.087575            802
     # g                 0.059208            612
     # unknown           0.200000             80
-
-    kws = dict(
-        weight_divisor=20,
-        # TODO just make this default?
-        use_connectome_APL_weights=True,
-    )
-
-    # TODO TODO try dropping all kc_type == 'unknown' cells before running
-    # (in fit_mb_model)?
-
-    plot_root = Path('model_mb_example').resolve()
-    # updated to keep things clean;
-    #plot_root = Path("model_mb_example") / f"data_pebbled_target-sp_{target_sparsity:.4f}"
-
-    # TODO modify this fn so dirname includes all same params by default (rather than
-    # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
-    # by calls in model_mb_... (prob behaving diff b/c e.g.
-    # pn2kc_connections='hemibrain' is explicitly passed there)
-    # param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
-    #    try_cache=False, print_olfsysm_log = True, **kws
-    # )
-
-    # TODO delete this product thing, and just switch to a kws_list?
-    '''
-    try_each_with_kws = [
-        # TODO TODO (still relevant?) make sure output dirs have something in name
-        # for use_vector_thr=True case (i.e. case where fixed_thr vector here)
-        # (just pass via suffix? or extra params? might need to restore the code for
-        # that...) (param_dir_prefix? still also add something to extra params to
-        # include in plot titles hopefully (or those not used that way?)?)
-        # TODO maybe mean response rate per subtype? or thr for each?
-        # TODO TODO at least include thr multiplier for each as a parameter?
-        # (and maybe include in titles?)
-        #
-        # probably always want `kws` unmodified too. that's what this empty dict is for.
-        dict(),
-
-        dict(use_connectome_APL_weights=True),
-    ]
-    '''
-    # APL_coup_const = 0.8,
-    # APL_coup_const = [0.5, 0.5],
-    try_each_with_kws = [
-        #dict(_wPNKC_one_row_per_claw=False, Btn_separate=True)
-        dict(_wPNKC_one_row_per_claw=True, APL_coup_const=[0.2, 0.8])
-    ]
-
-    for extra_kws in try_each_with_kws:
-        # extra_kws will override kws without warning, if they have common keys
-        param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
-            # TODO disable _plot_example_dynamics (resource intensive)?
-            try_cache=False, _plot_example_dynamics=True, **{**kws, **extra_kws}
-        )
-        output_dir = (plot_root / param_dict['output_dir']).resolve()
-        assert output_dir.is_dir()
-        assert output_dir.parent == plot_root
-
-        #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
-        # kc_id         ...
-        # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
-        # 1             0.0       0.0      0.0  ...             0.0        0.0      0.0
-        # ...           ...       ...      ...  ...         ...        ...      ...
-        # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
-        # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
-        df = pd.read_csv(output_dir / 'spike_counts.csv', index_col=KC_ID)
-
-    # TODO TODO also include an example w/ kiwi/control data (as used by natmix_data)
-    # (either committing data in al_analysis too, or moving this whole example to
-    # another repo)
-    # TODO + add test i can reproduce those outputs (use outputs i already sent someone
-    # from my kiwi/control data? sent to ruoyi? or someone else?)
-    import ipdb; ipdb.set_trace()
 
 
 if __name__ == '__main__':
