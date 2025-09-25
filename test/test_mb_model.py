@@ -1346,3 +1346,46 @@ def test_step_around():
 
         # TODO similar cases w/ vector input? already covered well enough above?
 
+def test_btn_expansion(orn_deltas):
+    connectome = "hemibrain"
+    for kws in [dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True),
+                dict(_wPNKC_one_row_per_claw=True),
+                dict(use_connectome_APL_weights=True),
+                dict()]:
+        # with bouton separation
+        responses1, spike_counts1, wPNKC1, param_dict1 = _fit_mb_model(
+            orn_deltas=orn_deltas,
+            pn2kc_connections=connectome,
+            Btn_separate=True,
+            preset_Btn_coord=False,
+            Btn_divide_per_glom=True,
+            Btn_num_per_glom=10,
+            **kws
+        )
+
+        responses2, spike_counts2, wPNKC2, param_dict2 = _fit_mb_model(
+            orn_deltas=orn_deltas,
+            pn2kc_connections=connectome,
+            Btn_separate=False,
+            preset_Btn_coord=False,
+            Btn_divide_per_glom=True,
+            Btn_num_per_glom=10,
+            **kws
+        )
+
+        # the responses and spike_count matrices should be the same
+        assert responses1.equals(responses2)
+        assert spike_counts1.equals(spike_counts2)
+
+        # wPNKC is not the same, but row-wise sum should be the same. 
+        # test row wise sum is the same; 
+        # (use allclose since wPNKC1 have doubles and wPNKC2 have integers)
+        assert np.allclose(wPNKC1.sum(axis=1), wPNKC2.sum(axis=1))
+
+        summed_wPNKC1 = wPNKC1.groupby(level='glomerulus', axis=1).sum()
+        assert np.allclose(summed_wPNKC1, wPNKC2)
+        # is there a way to merge 
+
+
+
+    print("tests associated with bouton separation passed")
