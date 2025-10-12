@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
 from itertools import product
+from pathlib import Path
+import math
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import pytest
-import math
 
 from hong2p.util import pd_allclose
 
 import al_util
 from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC, KC_ID,
-    CLAW_ID, KC_TYPE, step_around, read_series_csv
+    CLAW_ID, KC_TYPE, step_around, read_series_csv, get_thr_and_APL_weights,
+    get_APL_weights
 )
 
 
@@ -36,6 +38,9 @@ model_output_dir1 = sent_to_remy / ('2025-03-18/'
     'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
     'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
 )
+
+# TODO refactor this handling of test data path? also used in test_al_analysis.py
+test_data_dir = Path(__file__).resolve().parent / 'test_data'
 
 # TODO add tests checking the key parts of example scripts for sam / ruoyi / george /
 # yang all still work (how to organize?)
@@ -182,6 +187,7 @@ def test_vector_thr(orn_deltas):
     # ipdb> hb_responses.mean().mean()
     # 0.09765348762455801
 
+    # TODO use get_thr_and_APL_weights here
     # 256.8058676548658
     hb_thr = hb_params['fixed_thr']
 
@@ -392,6 +398,8 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     olfsysm is modified and configured to interpret input rows as claws, but still
     having olfsysm ignore claw coordinate information.
     """
+    # TODO TODO also test cases where wAPLKC[_scale] is preset? (as in case where we
+    # tune on different odors than we ultimately run model on, like for kiwi+control)
     for kws in [dict(use_connectome_APL_weights=True), dict()]:
 
         connectome = 'hemibrain'
@@ -429,14 +437,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
 
         n_claws = wPNKC.sum().sum()
         assert sum((x > 0).any() for x in one_hot_claw_series_list) == n_claws
-
-        # TODO TODO TODO what changed to make it now == n_claws exactly, instead of - 2?
-        # (same issue as was causing failure in another test [multiresponder APL boost].
-        # fix!!!)
-        # since two KCs receive no input (in output of connectome_wPNKC call above, w/
-        # essentially default args)
-        assert len(one_hot_claw_series_list) - 2 == n_claws
-        #assert len(one_hot_claw_series_list) == n_claws
+        assert len(one_hot_claw_series_list) == n_claws
 
         # values will be True if there is a claw for the (kc,glom) pair, otherwise False
         wPNKC_one_row_per_claw = pd.concat(one_hot_claw_series_list, axis='columns',
@@ -493,6 +494,8 @@ def test_spatial_wPNKC_equiv(orn_deltas):
         assert wPNKC.equals(wPNKC2)
 
         # just establishing new path allowing us to hardcode _wPNKC works
+        # TODO move to separate test? and also add support for + test hardcoding of
+        # wAPLKC and wKCAPL there?
         _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas, **kws,
             _wPNKC=wPNKC
         )
@@ -526,6 +529,7 @@ def _read_spike_counts(output_dir: Path, *, index_col=[KC_ID, KC_TYPE]) -> pd.Da
 def test_fixed_inh_params_claw(orn_deltas):
     connectome = 'hemibrain'
     for kws in [
+            # TODO TODO TODO also test w/ prat_claws=True eventually
             dict(_wPNKC_one_row_per_claw=True),
             dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True)
         ]:
@@ -534,22 +538,24 @@ def test_fixed_inh_params_claw(orn_deltas):
         responses, spike_counts, wPNKC, params = _fit_mb_model(
             orn_deltas=orn_deltas, pn2kc_connections=connectome, **kws
         )
-        fixed_thr = params['fixed_thr']
-        assert isinstance(fixed_thr, float)
+        assert params['tuning_iters'] > 0
 
-        if kws.get('use_connectome_APL_weights', False):
-            # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model,
-            # and there is no current support for passing in vector wAPLKC, right?
-            wAPLKC = params['wAPLKC_scale']
-            wKCAPL = params['wKCAPL_scale']
-            assert isinstance(wAPLKC, float)
-        else:
-            wAPLKC = params['wAPLKC']
-            wKCAPL = params['wKCAPL']
+        # TODO where does wAPLKC_scale get set (in use_connectome_APL_weights=True
+        # case), if tianpei's one-row-per-claw path through olfsysm does not use
+        # preset_wAPLKC=true (which is only path in olfsysm that uses wAPLKC_scale,
+        # no?)? (i was probably missing/misunderstanding something)
+        thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
+        # TODO is it necessary for wKCAPL[_scale] to be set explicitly for
+        # tianpei's test to pass? (try without)
+        # if so, could code be modified to just require wAPLKC[_scale], as w/ my code?
+        # (if not, why not?)
 
+        # TODO TODO TODO also test output equivalent if using fit_and_plot_mb_model
+        # (that's probably what would fail w/ issue i encountered 2025-10-02 trying to
+        # re-run kiwi/control data, since it uses two fit_and_plot_mb_model calls, and
+        # fit_and_plot_... is what sometimes pops w[APLKC|KCAPL][_scale] from param dict
         responses2, spike_counts2, wPNKC2, params2 = _fit_mb_model(
-            orn_deltas=orn_deltas, fixed_thr=fixed_thr, wAPLKC=wAPLKC, wKCAPL=wKCAPL,
-            **kws
+            orn_deltas=orn_deltas, **{**thr_and_apl_kws, **kws}
         )
 
         # TODO factor all the checking below into a fn to share w/ other tests?
@@ -565,6 +571,8 @@ def test_fixed_inh_params_claw(orn_deltas):
         # to simplify logic in loop below, where we actually check values equal
         assert param_types == param_types2
 
+        # does 0 actually imply no tuning happened? yes, it's incremented to 1 on first
+        # iteration.
         assert params2['tuning_iters'] == 0
 
         # params that we'd expect to be different between the fixed thr/APL-weights call
@@ -589,10 +597,34 @@ def test_fixed_inh_params_claw(orn_deltas):
             else:
                 if isinstance(v, float):
                     assert math.isclose(v, v2, rel_tol=1e-14, abs_tol=0.0)
+                # TODO is np.floating a typo? (no, seems real, and may even be behaving
+                # as intended. why not just always use np.isclose tho? at least if it's
+                # either a float or np.floating)
                 elif isinstance(v, np.floating):
                     assert np.isclose(v, v2, rtol=1e-14, atol=0.0)
 
         print()
+
+
+# TODO move to mb_model? (+ get indices from some other output in params, rather than
+# having to pass spike_counts in for that?)
+def get_pks_and_thr(params: Dict[str, Any], spike_counts: pd.DataFrame
+    ) -> Tuple[Optional[pd.DataFrame], pd.Series]:
+    """
+    Returned pks will be None if model had fixed threshold pre-specified, rather than
+    tuning to find threshold.
+    """
+    pks = params['rv'].kc.pks
+    if len(pks) == 0:
+        pks = None
+    else:
+        pks = pd.DataFrame(data=pks, index=spike_counts.index,
+            columns=spike_counts.columns
+        )
+
+    thr = params['rv'].kc.thr
+    thr = pd.Series(thr.squeeze(), index=spike_counts.index, name='thr')
+    return pks, thr
 
 
 def test_fixed_inh_params(orn_deltas):
@@ -611,16 +643,32 @@ def test_fixed_inh_params(orn_deltas):
     # case that does (and probably another that terminates immediately, or after 1
     # iteration)
 
+    # TODO TODO also test pn2kc_connections='uniform' n_claws=7 case
+    # TODO TODO test all w/ _fit_and_plot_... as well
     # TODO one where fixed_thr is vector? do i even want to support that (yea, currently
     # using as part of equalize_kc*=True implementation, when tuned in prior step)?
     for kws in [dict(), dict(use_connectome_APL_weights=True)]:
+
+        return_olfsysm_vars = False
+        # TODO delete (or at least comment)
+        # (using to get pks & thr, to compare to after new code which might resolve
+        # possible bug in code that picks thresholds (wAPLKC/wKCAPL may not be 0 when
+        # they are supposed to be. for some reason APL activity [inh & Is] still seem to
+        # be 0 as desired during sim_KC_layer calls to pick thresholds...)
+        #if kws.get('use_connectome_APL_weights', False):
+        #    return_olfsysm_vars = True
+        #
+
         print(f'{kws=}')
         responses, spike_counts, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
-            **kws
+            return_olfsysm_vars=return_olfsysm_vars, **kws
         )
+        assert params['tuning_iters'] > 0
+
         fixed_thr = params['fixed_thr']
         assert isinstance(fixed_thr, float)
 
+        # TODO same check for wKCAPL?
         if kws.get('use_connectome_APL_weights', False):
             # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model,
             # and there is no current support for passing in vector wAPLKC, right?
@@ -629,9 +677,43 @@ def test_fixed_inh_params(orn_deltas):
             wAPLKC = params['wAPLKC']
         assert isinstance(wAPLKC, float)
 
+        if return_olfsysm_vars:
+            del params['mp']
+            pks, thr = get_pks_and_thr(params, spike_counts)
+            del params['rv']
+
         responses2, spike_counts2, wPNKC2, params2 = _fit_mb_model(
-            orn_deltas=orn_deltas, fixed_thr=fixed_thr, wAPLKC=wAPLKC, **kws
+            orn_deltas=orn_deltas, fixed_thr=fixed_thr, wAPLKC=wAPLKC,
+            return_olfsysm_vars=return_olfsysm_vars, **kws
         )
+
+        if return_olfsysm_vars:
+            del params2['mp']
+            pks2, thr2 = get_pks_and_thr(params2, spike_counts2)
+            del params2['rv']
+
+            # expected when using pre-specified fixed threshold
+            assert pks2 is None
+
+            assert thr.equals(thr2)
+
+            save_pks_and_thr = False
+            if save_pks_and_thr:
+                print('saving thr.csv and pks.csv for test_connectome_APL_repro!')
+                print('set save_pks_and_thr=False and return')
+
+                thr.to_csv('thr.csv')
+                pks.to_csv('pks.csv')
+                # TODO could handle this one by checking all outputs of fit_and_plot...
+                # dir against contents of an old dir. would need to add a test that does
+                # that though, and commit current outputs w/ such a call in this case
+                spike_counts.to_csv('spike_counts.csv')
+
+                thr3 = pd.read_csv('thr.csv', index_col=[KC_ID, KC_TYPE]).squeeze()
+                assert pd_allclose(thr, thr3)
+
+                pks3 = pd.read_csv('pks.csv', index_col=[KC_ID, KC_TYPE])
+                assert pd_allclose(pks, pks3)
 
         # TODO factor all the checking below into a fn to share w/ other tests?
 
@@ -699,12 +781,74 @@ def test_fixed_inh_params(orn_deltas):
         print()
 
 
-# TODO combine w/ above? /rename (to something w/ "equalize", at least?)?
-def test_fixed_inh_params2(tmp_path, orn_deltas):
+# TODO TODO also save output of a fit_and_plot* call for comparison to another call here
+# TODO add separate script for saving test outputs for calls w/ arbitrary arguments?
+# just use mb_model.main for that?
+def test_connectome_APL_repro(orn_deltas):
+    kws = dict(use_connectome_APL_weights=True)
+
+    responses, spike_counts, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, **kws
+    )
+    pks, thr = get_pks_and_thr(params, spike_counts)
+
+    # NOTE: these outputs were saved by part of test_fixed_inh_params above, by enabling
+    # some commented/hardcode-disabled code in there.
+    # unscaled_per-KC_w[APLKC|KCAPL].csv were saved outputs of a connectome_APL_weights
+    # call, w/ same arguments (before scaling mean to 1 or anything).
+    data_dir = test_data_dir / 'connectome_APL_repro'
+
+    pks2 = pd.read_csv(data_dir / 'pks.csv', index_col=[KC_ID, KC_TYPE])
+    assert pd_allclose(pks, pks2)
+
+    thr2 = pd.read_csv(data_dir / 'thr.csv', index_col=[KC_ID, KC_TYPE]).squeeze()
+    assert pd_allclose(thr, thr2)
+
+    # TODO replace check of this one by saving output of a fit_and_plot* call, and a
+    # check against that output
+    spike_counts2 = pd.read_csv(data_dir / 'spike_counts.csv',
+        index_col=[KC_ID, KC_TYPE]
+    )
+    assert pd_allclose(spike_counts, spike_counts2)
+
+
+    # these should have the same index, so technically we could just load one, since
+    # planning to replace all values with 0 anyway...
+    wAPLKC0 = pd.read_csv(data_dir / 'unscaled_per-KC_wAPLKC.csv', index_col=KC_ID)
+    wKCAPL0 = pd.read_csv(data_dir / 'unscaled_per-KC_wKCAPL.csv', index_col=KC_ID)
+
+    wAPLKC0 = pd.Series(data=0, index=wAPLKC0.index)
+    wKCAPL0 = pd.Series(data=0, index=wKCAPL0.index)
+
+    # TODO add separate test that we can use _wAPLKC/_wKCAPL to repro output, if we pass
+    # in (mean->1 scaled?) wAPLKC/wKCAPL ouput Series?
+    responses, spike_counts, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, _wAPLKC=wAPLKC0, _wKCAPL=wKCAPL0, **kws
+    )
+    assert params['wAPLKC_scale'] == 1
+    assert params['wKCAPL_scale'] == 1
+    pks, thr = get_pks_and_thr(params, spike_counts)
+    assert pd_allclose(pks, pks2)
+    assert pd_allclose(thr, thr2)
+    # should actually be able to check spike_counts, as apl tuning should have been
+    # disabled in fit_mb_model when _wAPLKC & _wKCAPL were hardcoded, and also the
+    # weights were actually different (all 0, instead of actual mean-1-scaled connectome
+    # APL weights)
+    # TODO assert response rate is still ~2x (or whatever factor) target?
+    assert not pd_allclose(spike_counts, spike_counts2)
+
+
+def test_equalize_kc_type_sparsity(tmp_path, orn_deltas):
     """
     Tests equalize_kc_type_sparsity=True output can be reproduced by setting
     fixed_thr to appropriate vector (with a threshold for each KC) and wAPLKC as before.
     """
+    # TODO TODO also test that per-kc_type sparsities are all within target now?
+    # (or just the pre-APL ones? so are there any real guarantees i can assert here?)
+    # (or else maybe rename this test to include '_fixed_inh_params' as suffix,
+    # indicating narrower scope of test [/combine w/ another, more general, test of
+    # fixed inh params])
+
     # TODO also test w/ below + use_connectome_APL_weights=True? (prob not super
     # critical. shouldn't interact much w/ this)
     kws = dict(
@@ -735,6 +879,8 @@ def test_fixed_inh_params2(tmp_path, orn_deltas):
     # (after tuning thr w/in each kc_type)
     #assert param_dict['fixed_thr'] is None
 
+    # TODO delete
+    #
     # this must be in param_dict if equalize_kc_type_sparsity=True
     type2thr = param_dict['type2thr']
 
@@ -744,22 +890,18 @@ def test_fixed_inh_params2(tmp_path, orn_deltas):
     assert set(kc_types) == set(type2thr.keys())
     cell_thrs = kc_types.map(type2thr)
     fixed_thr = cell_thrs.values.copy()
+    #
+
+    # TODO delete above code. seems this assertion is passing.
+    thr_and_apl_params = get_thr_and_APL_weights(param_dict, kws)
+    assert np.array_equal(thr_and_apl_params['fixed_thr'], fixed_thr)
 
     fixed_kws = {k: v for k, v in kws.items()
         if k not in ('equalize_kc_type_sparsity', 'ab_prime_response_rate_target')
     }
 
-    if kws.get('use_connectome_APL_weights', False):
-        assert 'wAPLKC' not in param_dict
-        # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model, and
-        # there is no current support for passing in vector wAPLKC, right?
-        wAPLKC = param_dict['wAPLKC_scale']
-    else:
-        assert 'wAPLKC_scale' not in param_dict
-        wAPLKC = param_dict['wAPLKC']
-
     param_dict2 = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
-        fixed_thr=fixed_thr, wAPLKC=wAPLKC, **fixed_kws
+        **{**thr_and_apl_params, **fixed_kws}
     )
     # TODO any assertions on contents of param_dict2 [vs param_dict?]? (e.g. on
     # fixed_thr)
@@ -773,9 +915,6 @@ def test_fixed_inh_params2(tmp_path, orn_deltas):
 
 
 def test_multiresponder_APL_boost(orn_deltas):
-    # TODO refactor this handling of test data path? also used in test_al_analysis.py
-    data_dir = Path(__file__).resolve().parent / 'test_data'
-
     # ipdb> mask
     # kc_id
     # 300968622     False
@@ -793,7 +932,7 @@ def test_multiresponder_APL_boost(orn_deltas):
     #
     # ipdb> mask.sum()
     # 139
-    mask = pd.read_csv(data_dir / 'kiwi-control-multiresponder-mask.csv'
+    mask = pd.read_csv(test_data_dir / 'kiwi-control-multiresponder-mask.csv'
         ).set_index(KC_ID).squeeze()
     mask.name = None
     # TODO also assert that we initially have some cells responding to multiple odors in
@@ -801,7 +940,7 @@ def test_multiresponder_APL_boost(orn_deltas):
     assert mask.sum() > 0
 
     # NOTE: first implementation only supports use_connectome_APL_weights=True case
-    kws = dict(use_connectome_APL_weights=True)
+    kws = dict(use_connectome_APL_weights=True, drop_kcs_with_no_input=False)
 
     _, sc1, _, params1 = _fit_mb_model(orn_deltas=orn_deltas, **kws)
     assert sc1.index.get_level_values(KC_ID).equals(mask.index)
@@ -912,7 +1051,8 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
         # I would not normally recommend you hardcode any of these except perhaps
         # weight_divisor=20. The defaults target_sparsity=0.1 and
         # _drop_glom_with_plus=True should be fine.
-        target_sparsity=0.0915, weight_divisor=20, _drop_glom_with_plus=False
+        target_sparsity=0.0915, weight_divisor=20, _drop_glom_with_plus=False,
+        drop_kcs_with_no_input=False
     )
 
     # TODO resolve actually needed?
@@ -1062,7 +1202,6 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     # data
     assert df1.index.equals(df2.index)
 
-    # TODO TODO TODO fix
     assert df1.equals(df2)
 
 
@@ -1077,7 +1216,10 @@ def test_one_row_per_claw(tmp_path, orn_deltas):
 
     plot_root = tmp_path / 'one_row_per_claw'
 
-    param_dict_defined = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, fixed_thr=232.34284608546403, wAPLKC=9.5578, **kws)
+    param_dict_defined = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+        # TODO TODO use values from one call for another, rather than hardcoding
+        fixed_thr=232.34284608546403, wAPLKC=9.5578, **kws
+    )
 
     # TODO modify this fn so dirname includes all same params by default (rather than
     # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
@@ -1146,6 +1288,7 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
 
     kws = dict(
         pn2kc_connections='uniform', n_claws=7, target_sparsity=0.0915,
+        drop_kcs_with_no_input=False
     )
 
     # TODO resolve actually needed?

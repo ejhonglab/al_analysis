@@ -66,11 +66,14 @@ csvinfo = "load_antennal_csv:csvinfo_cli"
 # override that? what happens if ipython (or however we got IPython.terminal.debugger)
 # use this?
 #
+# TODO are -q and -vv at odds? i want to see name of test being run, but otherwise
+# want less output
+#
 # NOTE: seems we must use :TerminalPdb instead of :Pdb, in order for tab complete to
 # work
 #
 # could add doctest here. see hong2p/pytest.ini
-addopts = "--no-header -q --tb=short --pdbcls=IPython.terminal.debugger:TerminalPdb -s"
+addopts = "--no-header -q --tb=short --pdbcls=IPython.terminal.debugger:TerminalPdb -s -vv"
 testpaths = [
     "test",
 ]

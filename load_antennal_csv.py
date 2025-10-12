@@ -32,6 +32,7 @@ required_index_levels = ['panel', 'is_pair', 'odor1', 'repeat']
 # glomeruli w/ all 0s or NaN)
 
 def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
+    # TODO doc
     # for dropping metadata intended for binary mixture experiments
     to_drop = []
 

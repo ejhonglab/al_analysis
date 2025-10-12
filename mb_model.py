@@ -1,4 +1,4 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Wrappers to facilitate running `olfsysm` MB models, mainly:
 - `model_mb_responses`: highest-level function. takes multiple-fly ORN dF/F data and
@@ -141,6 +141,100 @@ def read_series_csv(csv: Pathlike, **kwargs) -> pd.Series:
     ser.name = None
 
     return ser
+
+
+# TODO narrow output type? (can i change tianpei's one-row-per-claw code to also give us
+# a float here? would prob be involved)
+def get_APL_weights(param_dict: Dict[str, Any], kws: Dict[str, Any]) -> Dict[
+    str, Union[float, np.ndarray]]:
+    """Returns dict with kwargs necessary to fix APL weights to match prior call.
+
+    Will always contain 'wAPLKC' key, and will only currently contain 'wKCAPL' for
+    one-row-per-claw case, where code may currently require this passed separately.
+    """
+    apl_params = dict()
+
+    # TODO share defaults w/ fit_mb_model?
+    _wPNKC_one_row_per_claw = kws.get('_wPNKC_one_row_per_claw', False)
+
+    # TODO just test whether we have *_scale params or not, rather than requiring kws to
+    # be passed in?
+
+    # TODO share defaults w/ fit_mb_model?
+    if kws.get('use_connectome_APL_weights', False):
+        # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model, and
+        # there is no current support for passing in vector wAPLKC, right?
+        wAPLKC = param_dict['wAPLKC_scale']
+
+        # TODO TODO fix in tianpei's one-row-per-claw case (check it's not necessary ->
+        # delete from param_dict in fit_mb_model -> restore this assertion)
+        #assert 'wAPLKC' not in param_dict
+        # TODO delete (after resolving above)
+        if 'wAPLKC' in param_dict:
+            assert _wPNKC_one_row_per_claw
+            warn(f'had both wAPLKC and wAPLKC_scale={wAPLKC:.2f}! could be a mistake!')
+        #
+
+        apl_params['wAPLKC'] = wAPLKC
+
+        # TODO remove this bit if i can confirm tianpei's code only needs wAPLKC passed
+        # in, or if i can change it to work that way (then could just return single
+        # value for wAPLKC, rather than a dict)
+        if _wPNKC_one_row_per_claw:
+            wKCAPL = param_dict['wKCAPL_scale']
+            # TODO restore (similar issue to w/ wAPLKC above)
+            #assert 'wKCAPL' not in param_dict
+            # TODO delete (after resolving above)
+            if 'wKCAPL' in param_dict:
+                warn(f'had both wKCAPL and wKCAPL_scale={wKCAPL:.2f}! could be a '
+                    'mistake!'
+                )
+            #
+            apl_params['wKCAPL'] = wKCAPL
+    else:
+        assert 'wAPLKC_scale' not in param_dict
+        wAPLKC = param_dict['wAPLKC']
+        apl_params['wAPLKC'] = wAPLKC
+
+        if _wPNKC_one_row_per_claw:
+            assert 'wKCAPL_scale' not in param_dict
+            wKCAPL = param_dict['wKCAPL']
+            apl_params['wKCAPL'] = wKCAPL
+
+    if not _wPNKC_one_row_per_claw:
+        # TODO TODO also support List[float] currently used in variable_n_claw cases
+        # (each entry for one seed)?
+        assert isinstance(wAPLKC, float)
+
+    return apl_params
+
+
+# TODO what to type hint for output? does tianpei have np.ndarrays for both of his?
+# and both 1d, or (N, 1) vs (1, N) depending on wAPLKC vs wKCAPL? may want to change
+# his code to work w/ floats, or at least squeeze input
+# TODO narrow output type (want same one for 'fixed_thr' vs 'wAPLKC'/'wKCAPL'?)
+def get_thr_and_APL_weights(param_dict: Dict[str, Any], kws: Dict[str, Any]
+    ) -> Dict[str, Any]:
+    """Returns kwargs to fix thresholds and APL weights to match prior call.
+
+    Tuning should be skipped on future `fit_mb_model` or `fit_and_plot_mb_model` calls
+    using these keyword arguments.
+
+    Args:
+        kws: keyword arguments to prior call (which may be shared with future calls),
+            some of which determine which parts of `param_dict` should be used
+    """
+    fixed_thr = param_dict['fixed_thr']
+    # TODO TODO also need to support List[float] for variable_n_claws cases here? or
+    # that just APL for some reason?
+    # TODO just ndarray, or series too?
+    assert isinstance(fixed_thr, float) or isinstance(fixed_thr, np.ndarray)
+    params = {'fixed_thr': fixed_thr}
+
+    apl_params = get_APL_weights(param_dict, kws)
+    params.update(apl_params)
+
+    return params
 
 
 def handle_multiglomerular_receptors(df: pd.DataFrame, *, drop: bool = True,
@@ -450,7 +544,7 @@ _connectome2glomset = dict()
 def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     dist_weight: Optional[str] = None, weight_divisor: Optional[float] = None,
     plot_dir: Optional[Path] = None, _use_matt_wPNKC: bool = False,
-    _drop_glom_with_plus: bool = True,
+    drop_kcs_with_no_input: bool = True, _drop_glom_with_plus: bool = True,
     # TODO reconsider handling of synapse_*_path kwargs, and DBSCAN related param kws
     synapse_con_path: Optional[Path] = None, synapse_loc_path: Optional[Path] = None,
     cluster_eps: float = 1.9, cluster_min_samples: int = 3, Btn_separate: bool = False,
@@ -876,71 +970,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
         return df
 
-    # def expand_wPNKC_to_boutons(
-    #     wPNKC: pd.DataFrame,
-    #     boutons_per_glom: int = 10,
-    #     col_style: str = "multi",          # "multi" | "flat"
-    #     check_reconstruction: bool = True,
-    # ) -> pd.DataFrame:
-    #     """
-    #     Auto-detect glomerulus columns in `wPNKC` (numeric scalar binary {0,1}),
-    #     expand each glomerulus into `boutons_per_glom` bouton columns (each = original / B).
-    #     Index is preserved. Non-numeric/list-valued metadata cols are ignored.
-    #     """
-    #     if boutons_per_glom <= 0:
-    #         raise ValueError("boutons_per_glom must be a positive integer")
-    #     B = int(boutons_per_glom)
 
-    #     # ---- infer glomerulus columns: numeric, scalar, binary {0,1} ----
-    #     glomeruli = []
-    #     for c in wPNKC.columns:
-    #         s = wPNKC[c]
-    #         if not pd.api.types.is_numeric_dtype(s):
-    #             continue
-    #         non_na = s.dropna()
-    #         # must be scalar numbers (not lists/arrays/strings)
-    #         if len(non_na) and not non_na.map(lambda x: np.isscalar(x) and not isinstance(x, (str, bytes))).all():
-    #             continue
-    #         vals = pd.unique(non_na)
-    #         if set(np.asarray(vals)).issubset({0, 1}):   # treat {0,1} columns as glomeruli
-    #             glomeruli.append(c)
-
-    #     if not glomeruli:
-    #         raise ValueError("Could not infer any glomerulus columns (expected numeric {0,1}).")
-
-    #     # ---- numeric block to expand ----
-    #     W = wPNKC.loc[:, glomeruli].astype(float).to_numpy()   # (R, G)
-    #     R, G = W.shape
-    #     expanded = np.repeat(W / B, repeats=B, axis=1)          # (R, G*B)
-
-    #     # ---- bouton column labels ----
-    #     if col_style == "multi":
-    #         new_cols = pd.MultiIndex.from_product([glomeruli, range(1, B+1)],
-    #                                             names=["glomerulus", "bouton"])
-    #     elif col_style == "flat":
-    #         new_cols = [f"{g}#{k:02d}" for g in glomeruli for k in range(1, B+1)]
-    #     else:
-    #         raise ValueError("col_style must be 'multi' or 'flat'")
-
-    #     btn_only = pd.DataFrame(expanded, index=wPNKC.index, columns=new_cols)
-
-    #     # ---- optional invariant check BEFORE touching metadata ----
-    #     if check_reconstruction:
-    #         if col_style == "multi":
-    #             # sum across bouton level and compare to original 0/1 columns
-    #             recon_all = btn_only.groupby(level="glomerulus", axis=1).sum()
-    #             recon_all = recon_all.reindex(columns=glomeruli)
-    #             if not np.allclose(recon_all.to_numpy(), W, atol=1e-9):
-    #                 bad = [g for i, g in enumerate(glomeruli)
-    #                     if not np.allclose(recon_all.iloc[:, i].to_numpy(), W[:, i], atol=1e-9)]
-    #                 raise AssertionError(f"Reconstruction check failed for glomeruli: {bad[:5]}{'...' if len(bad)>5 else ''}")
-    #         else:
-    #             for i, g in enumerate(glomeruli):
-    #                 cols = [f"{g}#{k:02d}" for k in range(1, B+1)]
-    #                 if not np.allclose(btn_only[cols].sum(axis=1).to_numpy(), W[:, i], atol=1e-9):
-    #                     raise AssertionError(f"Reconstruction check failed for glomerulus {g}")
-
-    #     return btn_only
     def expand_wPNKC_to_boutons(
         wPNKC: pd.DataFrame,
         boutons_per_glom: int = 10,
@@ -2274,13 +2304,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # TODO why are pre_cell_ids still a column? are they only added to index
             # outside of connectome_wPNKC (no, only seem referenced in here...)? rectify
             # that, if so
-            #
-            # TODO delete
-            # TODO TODO TODO use to match prat_claws=True output to here
-            # (+ maybe refactor to share)
-            breakpoint()
-            #
-
             # TODO still need? redundant w/ wPNKC that will be saved later
             # automatically?
             if plot_dir is not None:
@@ -2306,8 +2329,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 kc_id_col, check_no_multi_underscores=True
             )
             df = add_kc_type_col(df, 'b.type')
-
-
     else:
         fafb_dir = from_prat / '2024-09-13'
 
@@ -2627,9 +2648,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # a'b'    336
     # NaN      80
     wPNKC.index = kc_index
-    # TODO delete
-    #breakpoint()
-    #
 
     non_task_gloms = set(wPNKC.columns) - task_gloms
     if len(non_task_gloms) > 0:
@@ -2684,17 +2702,16 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         if not prat_claws:
             msg += f':\n{sorted(kcs_without_input[kcs_without_input].index)}'
 
-        warn(msg)
+        if drop_kcs_with_no_input:
+            msg = f'dropping (b/c {drop_kcs_with_no_input=}) {msg}'
+        else:
+            msg = f'NOT dropping (b/c {drop_kcs_with_no_input=}) {msg}'
 
-        # TODO delete comment?
-        # TODO drop them (doing this, in line below), at least is there is a flag set
-        # (separate warning?  delete, if only needed as hack to fix prat_claws=True)
-        wPNKC = wPNKC[(wPNKC > 0).T.any()].copy()
+        warn(msg)
+        if drop_kcs_with_no_input:
+            wPNKC = wPNKC[(wPNKC > 0).T.any()].copy()
+
         n_kcs = len(wPNKC)
-        #
-    # TODO delete
-    #breakpoint()
-    #
 
     # see comment above in _use_matt_wPNKC=True section, about getting this branch
     # working there too (not sure i care to though)
@@ -3355,7 +3372,7 @@ def _single_unique_val(arr: Union[np.ndarray, pd.Series], *, exact: bool = True
     """
     unique_vals = set(np.unique(arr))
     if exact:
-        assert len(unique_vals) == 1
+        assert len(unique_vals) == 1, f'{unique_vals=}'
         return unique_vals.pop()
     else:
         # TODO support NaN in this branch? (prob not...)
@@ -3542,6 +3559,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     use_connectome_APL_weights: bool = False, weight_divisor: Optional[float] = None,
     prat_claws: bool = False, dist_weight: Optional[str] = None,
     _wPNKC: Optional[pd.DataFrame] = None,
+    _wAPLKC: Optional[pd.Series] = None, _wKCAPL: Optional[pd.Series] = None,
     # TODO rename _wPNKC_one_row_per_claw to something shorter (and remove "private" '_'
     # prefix)
     _wPNKC_one_row_per_claw: bool = False, n_claws: Optional[int] = None,
@@ -3552,7 +3570,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     APL_coup_const: Optional[float] = None,
     Btn_separate: bool = False, preset_Btn_coord: bool = False,
     Btn_divide_per_glom: bool = True, Btn_num_per_glom: Optional[int] = 10,
-    _use_matt_wPNKC=False, _drop_glom_with_plus=True,
+    _use_matt_wPNKC: bool = False, drop_kcs_with_no_input: bool = True,
+    _drop_glom_with_plus: bool = True,
     _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
     ab_prime_response_rate_target: Optional[float] = None,
     homeostatic_thrs: bool = False,
@@ -3561,7 +3580,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # them)
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
     #
-    APL_coup_const: Optional[np.ndarray] = None,
     print_olfsysm_log: Optional[bool] = None, return_dynamics: bool = False,
     plot_dir: Optional[Path] = None, make_plots: bool = True,
     _plot_example_dynamics: bool = False, title: str = '',
@@ -3645,7 +3663,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         weight_divisor: passed to `connectome_wPNKC` (only relevant for connectome
             `pn2kc_connections` options)
 
-        _drop_glom_with_plus: passed to `connectome_wPNKC`
+        drop_kcs_with_no_input|_drop_glom_with_plus|_use_matt_wPNKC: passed to
+            `connectome_wPNKC`
 
         seed: if using one of `pn2kc_connections` options that uses RNG to generate the
             PN->KC weight matrix (e.g. 'uniform', 'hemidraw', NOT 'hemibrain'), this
@@ -3712,6 +3731,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # just a hacky way to check pn2kc_connections is unset (== default 'hemibrain',
         # unless i move default out of kwarg def to be able to detect unset more easily)
         assert pn2kc_connections == 'hemibrain'
+
+    if _wAPLKC is not None:
+        assert _wKCAPL is not None, '_wKCAPL and _wAPLKC must be passed together'
+        assert use_connectome_APL_weights
+        assert pn2kc_connections == 'hemibrain'
+    else:
+        assert _wKCAPL is None, '_wKCAPL and _wAPLKC must be passed together'
 
     if pn2kc_connections not in pn2kc_connections_options:
         raise ValueError(f'{pn2kc_connections=} not in {pn2kc_connections_options}')
@@ -4167,6 +4193,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert synapse_loc_path.exists()
             #
 
+            # TODO TODO make sure the claw metadata is saved somewhere, if it isn't
+            # already (probably just in fit_and_plot..., just making sure we are
+            # returning it in something from this fn)
             wPNKC = connectome_wPNKC(
                 connectome=connectome,
                 prat_claws=prat_claws,
@@ -4179,6 +4208,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 #
                 plot_dir=plot_dir if pn2kc_connections in connectome_options else None,
                 _use_matt_wPNKC=_use_matt_wPNKC,
+                drop_kcs_with_no_input=drop_kcs_with_no_input,
                 _drop_glom_with_plus=_drop_glom_with_plus,
                 Btn_separate = Btn_separate,
                 preset_Btn_coord=preset_Btn_coord,
@@ -4210,6 +4240,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 # savefig assertion that we aren't writing to same path more than once)
                 plot_dir=None if variable_n_claws else plot_dir,
                 _use_matt_wPNKC=_use_matt_wPNKC,
+                drop_kcs_with_no_input=drop_kcs_with_no_input,
                 _drop_glom_with_plus=_drop_glom_with_plus,
                 Btn_separate = Btn_separate,
                 preset_Btn_coord=preset_Btn_coord,
@@ -4321,7 +4352,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if Btn_separate:
             cols = wPNKC.columns
             if isinstance(cols, pd.MultiIndex):
-                gloms_for_cols = (cols.get_level_values('glomerulus'
+                gloms_for_cols = (cols.get_level_values('glomerulus')
                     # TODO prob just assert on what level 0 is, or delete that else
                     # anyway...
                     if 'glomerulus' in cols.names else cols.get_level_values(0)
@@ -4885,10 +4916,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO add additional kwargs, to allow setting and/or scaling only one of these at
     # at time?
     if use_connectome_APL_weights:
+        # TODO consolidate w/ code actually setting the initial vectors into the
+        # corresponding variables (one conditional)?
         mp.kc.preset_wAPLKC = True
         mp.kc.preset_wKCAPL = True
 
-    if _plot_example_dynamics:
+    if return_dynamics or _plot_example_dynamics:
         if hallem_input:
             # will probably be killed by system OOM killer
             warn('plotting/returning model dynamics likely to crash with hallem input, '
@@ -4908,6 +4941,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # see related comments around use of nves_sims below.
         if mp.kc.ves_p != 0:
             mp.kc.save_nves_sims = True
+
+        # TODO TODO also save claw_sims, if i don't just recompute in here from
+        # wPNKC (# glomeruli x # claws) and pn_sims
 
     rv = osm.RunVars(mp)
 
@@ -4965,8 +5001,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # one glomerulus label per column (handles MultiIndex and flat "DM6#03" names)
         if isinstance(cols, pd.MultiIndex):
             gloms_all = (cols.get_level_values("glomerulus")
+                        # TODO update to not assign meaning for level 0
                         if "glomerulus" in cols.names else cols.get_level_values(0)).astype(str)
         else:
+            # TODO update to not depend on str[0], or at least clarify meaning here
             gloms_all = (cols.str.split("#", 1).str[0].astype(str)
                         if hasattr(cols, "str") and cols.str.contains("#").any()
                         else cols.astype(str))
@@ -5023,6 +5061,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # rv.kc.wAPLKC.shape=(1630, 1)
             # rv.kc.wAPLKC.max()=3.8899999999999992
             if _wPNKC_one_row_per_claw:
+                # TODO use diff var than `compact.size` (n_claws? is that what it is
+                # here?)
                 rv.kc.wAPLKC = np.ones((compact.size, 1)) * wAPLKC
                 rv.kc.wKCAPL = np.ones((1, compact.size)) * wKCAPL
             else:
@@ -5044,6 +5084,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     wAPLKC_scale = None
     wKCAPL_scale = None
     if use_connectome_APL_weights:
+        # TODO move `if` below to another branch of conditional above?
+        # (as `else` to `if not use_connectome_APL_weights` above, which is inside
+        # another `if wAPLKC is not None` conditional)
         if wAPLKC is not None:
             assert wKCAPL is not None
 
@@ -5066,14 +5109,32 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         else:
             for_kc_types = claw_index.get_level_values(KC_TYPE)
 
-        wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
-            prat_claws=prat_claws, kc_types=for_kc_types, kc_to_claws=kc_to_claws,
-            plot_dir=plot_dir
-        )
+        if _wAPLKC is None:
+            assert _wKCAPL is None
+            wAPLKC, wKCAPL = connectome_APL_weights(connectome=connectome, wPNKC=wPNKC,
+                prat_claws=prat_claws, kc_types=for_kc_types, kc_to_claws=kc_to_claws,
+                plot_dir=plot_dir
+            )
 
-        if not _wPNKC_one_row_per_claw:
-            wAPLKC = wAPLKC / wAPLKC.mean()
-            wKCAPL = wKCAPL / wKCAPL.mean()
+            # TODO TODO TODO and what's happening in one-row-per-claw case? is there any
+            # similar scaling? try to do in both cases?
+            # TODO TODO TODO spatial wPNKC equiv test also check
+            # use_connectome_APL_weights case? (include that case, if not)
+            # NOTE: not doing this in advance if _wAPLKC & _wKCAPL hardcoded (for
+            # tests), so we can test w/ 0 vector input there
+            if not _wPNKC_one_row_per_claw:
+                wAPLKC = wAPLKC / wAPLKC.mean()
+                wKCAPL = wKCAPL / wKCAPL.mean()
+
+        else:
+            wAPLKC = _wAPLKC.copy()
+            wKCAPL = _wKCAPL.copy()
+            # TODO make this some other kwarg for testing? like _tune_apl_weights?
+            # first test i want to use _wAPLKC/etc for is to check thr/pks are same from
+            # first step in fit_sparseness, whether or not wAPLKC/wKCAPL are the
+            # 0-vector or not
+            warn('hardcoding mp.kc.tune_apl_weights=False, b/c using _wAPLKC & _wKCAPL')
+            mp.kc.tune_apl_weights = False
 
         assert wAPLKC.index.equals(wKCAPL.index)
         if not _wPNKC_one_row_per_claw:
@@ -5091,10 +5152,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # ipdb> wKCAPL.max()
         # 27.0
 
+        # TODO don't warn in one-row-per-claw case, if we don't do that there...
         warn(f'scaling {connectome=} wAPLKC & wKCAPL, each to mean of 1')
 
         wAPLKC_arr = np.expand_dims(wAPLKC.values, 1)
         if _wPNKC_one_row_per_claw:
+            # TODO refactor len(kc_ids_per_claw) to some shared n_claws var
             assert wAPLKC_arr.shape == (len(kc_ids_per_claw), 1)
         else:
             assert wAPLKC_arr.shape == (mp.kc.N, 1)
@@ -5153,12 +5216,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     # This is the only place where build_wPNKC and fit_sparseness are called, and they
     # are only called if the 3rd parameter (regen=) is True.
-
-    # Something happened here.. possibly because of how wAPLKC size didn't match up?
-    # There should be some mechanism to translate use_connectome_APL weights into olfsysm.
-
-    # spatial_wPNKC = True ->wPNKC_one_claw_per_row
-    # we want the argument to be True to equal to the row set as KC;
     osm.run_KC_sims(mp, rv, True)
 
     tuning_time_s = time.time() - before_any_tuning
@@ -5568,6 +5625,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # have to modify olfsysm to run the APL tuning probably jointly on all types...
 
         if equalize_kc_type_sparsity:
+            # TODO assert no one-row-per-claw here (/test)
+
             # TODO need to support int type too (in both of the two isinstance calls
             # below)? isinstance(<int>, float) is False
             #
@@ -5824,6 +5883,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # somewhat limiting (can't actually tune overall response rate w/ these boosted
     # wAPLKC values).
     if multiresponder_APL_boost is not None:
+        # TODO assert no one-row-per-claw here (/test)
+
         if _multiresponder_mask is None:
             # NOTE: just assuming we want to union all the per-panel masks in this dir
             # (as long as this branch is only hit in the pre-tuning on control+kiwi
@@ -6016,12 +6077,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # inputs, or the values chosen by the tuning process. _single_unique_val will
         # raise AssertionError if the input arrays contain more than one unique value.
         # For wAPLKC (column vector, shape Nx1)
-        # Make an array where each index `kc` maps to its compartment
-
-        # just to try things out;
-        # delete afterwards
-        np.set_printoptions(precision=6, suppress=False)
-        # now slices will print with 6 decimal places
+        # TODO why not doing in one-row-per-claw case too?
+        # (b/c dividing by # of claws, inside the C++ code [which does not use the
+        # preset_w[APLKC|KCAPL]=true paths the connectome APL stuff does)
+        # TODO some easy change to implementation to not divide by # of claws (maybe
+        # move dividing into model), but still preserve behavior? if not, yea can't do
+        # these assertions in one-row-per-claw cases
         if not _wPNKC_one_row_per_claw:
             rv_scalar_wAPLKC = _single_unique_val(rv.kc.wAPLKC)
             rv_scalar_wKCAPL = _single_unique_val(rv.kc.wKCAPL)
@@ -6030,20 +6091,23 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # TODO delete? just checking what we set above hasn't changed
             assert mp.kc.tune_apl_weights == False
 
-                # assert rv_scalar_wAPLKC == wAPLKC
-
             # this should now be defined whenever wAPLKC is, whether passed in or not...
             assert wKCAPL is not None
+
             if not _wPNKC_one_row_per_claw:
-                assert rv_scalar_wKCAPL == wKCAPL
+                assert rv_scalar_wAPLKC == wAPLKC, f'{rv_scalar_wAPLKC=}\n{wAPLKC=}'
+                assert rv_scalar_wKCAPL == wKCAPL, f'{rv_scalar_wKCAPL=}\n{wKCAPL=}'
+                del rv_scalar_wAPLKC, rv_scalar_wKCAPL
         else:
             if not _wPNKC_one_row_per_claw:
                 # TODO delete prints? (at least put behind a verbose kwarg)
+                # TODO try to have similar prints in other cases, if keeping
                 print(f'wAPLKC: {rv_scalar_wAPLKC}')
                 print(f'wKCAPL: {rv_scalar_wKCAPL}')
                 #
                 wAPLKC = rv_scalar_wAPLKC
                 wKCAPL = rv_scalar_wKCAPL
+                del rv_scalar_wAPLKC, rv_scalar_wKCAPL
             else:
                 wAPLKC = rv.kc.wAPLKC
                 wKCAPL = rv.kc.wKCAPL
@@ -6356,7 +6420,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # presumably 0/1 recording which time bins have spikes in them?
         spike_recordings = _get_sim_var('spike_recordings')
-        # this assertion takes a sec (put behind a checks flag?)
         assert set(spike_recordings.flat) == {0, 1}
 
         # this has been 0 by default my whole time working with the model. presumably
@@ -6430,9 +6493,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             }
             if mp.kc.ves_p != 0:
                 dynamics_dict['nves_sims'] = nves_sims
+
             assert not any(k in param_dict for k in dynamics_dict.keys())
             param_dict.update(dynamics_dict)
-            # TODO TODO (delete? still relevant?) why is this not being run?
 
     if _plot_example_dynamics:
         # TODO remove make_plots part of this? (assuming i can't easily get those plots
@@ -7017,6 +7080,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # thought of as decoupled?
 
     # TODO delete this (/ make it "private" w/ underscore prefix)?
+    # (any code actually using it currently?)
     # TODO doc example of how to use these correctly?
     if return_olfsysm_vars:
         # NOTE: these objects not currently pickleable, and may (or may not) use a lot
@@ -7025,7 +7089,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             'references to too many of these objects. not supported by '
             'fit_and_plot_mb_model!'
         )
-        # TODO TODO work?
         param_dict['mp'] = mp
         param_dict['rv'] = rv
 
@@ -8116,10 +8179,14 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         if param_dict_cache.exists():
             param_dict = read_pickle(param_dict_cache)
 
+            # TODO try to use get_APL_weights
             if 'wAPLKC' in param_dict:
                 assert 'wAPLKC_scale' not in param_dict
                 cached_wAPLKC = param_dict['wAPLKC']
             else:
+                # neither of these assertions currently true on one-row-per-claw case.
+                # using get_APL_weights should relax that for now, and should be used
+                # moving forward in general.
                 assert use_connectome_APL_weights
                 assert 'wAPLKC' not in param_dict
                 cached_wAPLKC = param_dict['wAPLKC_scale']
@@ -8405,7 +8472,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                     pickle_path = param_dir / f'{k}.p'
                     # for just panel=control, the biggest of these files
                     # (spike_recordings.p / vm_sims.p) are just under a GB (768M)
-                    to_pickle(v, pickle_path)
+                    to_pickle(v, pickle_path, verbose=True)
 
                     # TODO switch to netcdf? would just need to reformat the index
                     # surrounding IO (prob don't wanna do both given the sizes, but
@@ -8419,6 +8486,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                         # param_dict
                         _warned = True
 
+                # TODO TODO only del from a copy of param_dict that will be used to
+                # write param CSV/pickle, but still return these as part of param_dict?
+                # TODO say we are popping here? if verbose?
                 del param_dict[k]
 
         # popping to have this make old outputs trip -c/-C checks, but also the param
@@ -8434,23 +8504,41 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # TODO need to support int type too (in all isinstance calls below)?
         # isinstance(<int>, float) is False
         if wAPLKC is not None and not isinstance(wAPLKC, float):
+            # TODO use get_APL_weights to replace some of below?
             if not variable_n_claws:
                 # only want to pop anything in this branch, cause other code depends on
                 # these values still being in param_dict
+                # TODO which other code?
                 wAPLKC = param_dict.pop('wAPLKC')
                 wKCAPL = param_dict.pop('wKCAPL')
 
+                # TODO TODO TODO also need to handle one-row-per-claw cases (where
+                # Tianpei currently has vector APL weights divided by # claws for each
+                # KC [in the C++ code], and he does not use the
+                # preset_w[APLKC|KCAPL]=true path for that
+                #
                 # TODO will this always be true? added after other assertions here
+                assert use_connectome_APL_weights
+                #
                 # TODO TODO TODO delete? had to comment for at least prat_claws=True
                 # (why not triggering for tianpei 1row-per-claw case?)
                 # TODO TODO TODO TODO or why are weights not all same in prat_claws=True
                 # case, if use_connectome_APL_weights=False?
                 # TODO TODO TODO TODO fix!!!
-                #assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
-                #assert 'wAPLKC_scale' in param_dict
-                #assert 'wKCAPL_scale' in param_dict
-                #assert wKCAPL.shape == wAPLKC.shape
+                # TODO move assertion like this into get_APL_weights?
+                assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
+                assert 'wAPLKC_scale' in param_dict
+                assert 'wKCAPL_scale' in param_dict
+                # TODO move assertion like this into get_APL_weights?
+                # TODO TODO or are they (n, 1) and (1, n) in tianpei's current outputs?
+                assert wKCAPL.shape == wAPLKC.shape
 
+                # TODO TODO add test that we can successfully load (matching input)
+                # wAPLKC/wKCAPL in all cases that don't pop + save to pickles below
+                # (those that should be keeping them in param CSV / pickle)
+
+                # TODO add verbose=True? (if keeping... and may want to also/only save
+                # as csv anyway?)
                 to_pickle(wAPLKC, wAPLKC_cache)
                 to_pickle(wKCAPL, wKCAPL_cache)
             else:
@@ -8467,6 +8555,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 assert 'wAPLKC_scale' not in param_dict
                 assert 'wKCAPL_scale' not in param_dict
 
+                # TODO TODO need to update get_APL_weights to support List[float] too,
+                # then?
                 assert type(wAPLKC) is list and all(
                     isinstance(x, float) for x in wAPLKC
                 )
@@ -11868,6 +11958,63 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
     # TODO accept this as optional input kwarg?
     input_model_kw_list = [
+        # TODO TODO TODO delete (neither of these 2 err-d on kiwi/control, at least
+        # w/ `-s model-sensitivity` in CLI args)
+        #dict(
+        #    weight_divisor=20,
+        #    use_connectome_APL_weights=True,
+        #
+        #    # TODO remove this? (at least for first element of this list,
+        #    # which is the one that will be run w/ -M)
+        #    # (or do i actually want this to be standard?)
+        #    equalize_kc_type_sparsity=True,
+        #),
+        #
+        #dict(
+        #    weight_divisor=20,
+        #    equalize_kc_type_sparsity=True,
+        #),
+        #
+
+        # TODO decide which of these one-row-per-claw variants i want to keep here
+
+        # TODO TODO TODO dict(_wPNKC_one_row_per_claw=True) have same wAPLKC KeyError as
+        # prat_claws=True case below? (yes!) fix this bug
+        # ...
+        # File "/home/tom/src/al_analysis/mb_model.py", line 12603, in model_mb_responses
+        #   wAPLKC = param_dict['wAPLKC']
+        # KeyError: 'wAPLKC'
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True),
+
+        # TODO TODO TODO will need to fix
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True,
+            use_connectome_APL_weights=True
+        ),
+        #
+
+        dict(_wPNKC_one_row_per_claw=True),
+        dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True),
+
+        dict(_wPNKC_one_row_per_claw=True, APL_coup_const=0),
+        # NOTE: APL_coup_const=0 should enable different activity in different APL
+        # compartments (but without any coupling between them)
+        # TODO give it a better name!
+        # TODO TODO check these outputs are actually diff from w/ default
+        # APL_coup_const=None, where there should only be one APL (no compartments)
+        # TODO TODO try multiple radii (need to expose as kwarg)
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, APL_coup_const=0),
+
+        # TODO TODO drop multiglomerular PNs are re-run all prat_claws=True variants
+        # (hardcode inside that branch of connectome_wPNKC. never want them)
+
+        # TODO TODO TODO add version(s) w/ prat_claws=True and APL compartments
+
+        # TODO TODO try these again after scaling wPNKC within each KC (to have same
+        # mean as before?)?
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='percentile'),
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='raw'),
+        #
+
         dict(
             weight_divisor=20,
             use_connectome_APL_weights=True,
@@ -11915,7 +12062,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     assert (
         len(set(frozenset(x.items()) for x in input_model_kw_list)) ==
         len(input_model_kw_list)
-    )
+    ), 'duplicate entries in input_model_kw_list definition!'
 
     paper_sens_analysis_kws = dict(
         n_steps=3,
@@ -12538,10 +12685,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 # if we were still popping the list-of-float wAPLKC/wKCAPL in the
                 # variable_n_claw=True cases (in fit_and_plot*), then would need to load
                 # wAPLKC/wKCAPL from separate pickles here
-                # TODO TODO TODO why haven't i encountered any other cases where i
-                # needed to load those? e.g. in a connectome APL weights=True case? or
-                # what else would i need to hit it? see other case that pops these in
-                # fit_and_plot*
+                # TODO use get_APL_weights
                 if model_kws.get('use_connectome_APL_weights', False):
                     assert 'wAPLKC' not in param_dict
                     wAPLKC = param_dict['wAPLKC_scale']
@@ -12670,11 +12814,20 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 tuning_prefix = f'tuned-on_{tuning_panels_str}{tuning_param_str}__'
                 param_dir_prefix = f'{tuning_prefix}{param_dir_prefix}'
 
+            # TODO delete (maybe add new kwarg save_dynamics to fit_and_plot... first,
+            # which sets return_dynamics and then saves them, but otherwise just returns
+            # dynamics w/o saving them if return_dynamics=True is set?)
+            #
             # TODO add comment about how large we should expect these outputs
             # to be + maybe switch back off by default (add CLI arg for this?
             # [default?] skip option?)
-            #save_dynamics = True
-            save_dynamics = False
+            # TODO TODO TODO restore False by default? actually need for anything, after
+            # checking we can recreate claw drive out here (pn_sims returned regardless?
+            # save only them if not, as needed for claw drive?)
+            save_dynamics = True
+            #save_dynamics = False
+            # TODO TODO TODO still disable for sensitivity analysis calls, at least
+            # (doing already?)?
             if save_dynamics:
                 model_kws['return_dynamics'] = True
 
@@ -14508,6 +14661,15 @@ def main():
     kws = dict()
     # TODO delete this product thing, and just switch to a kws_list?
     try_each_with_kws = [
+        dict(_wPNKC_one_row_per_claw=True, APL_coup_const=0),
+        # NOTE: APL_coup_const=0 should enable different activity in different APL
+        # compartments (but without any coupling between them)
+        # TODO give it a better name!
+        # TODO TODO check these outputs are actually diff from w/ default
+        # APL_coup_const=None, where there should only be one APL (no compartments)
+        # TODO TODO try multiple radii (need to expose as kwarg)
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, APL_coup_const=0),
+
         # TODO TODO drop multiglomerular PNs are re-run all prat_claws=True variants
         # (hardcode inside that branch of connectome_wPNKC. never want them)
 
