@@ -8,6 +8,9 @@ from typing import Any, Dict, Optional, Set, Tuple
 import numpy as np
 import pandas as pd
 import pytest
+import math
+from pathlib import Path
+
 
 from hong2p.util import pd_allclose
 
@@ -1527,39 +1530,69 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
         print()
 
 
+# def test_hemibrain_matt_repro():
+#     # TODO delete (may want to commit some other things from here first tho)
+#     #matt_data_dir = Path('../matt/matt-modeling/data')
+#     #
+#     matt_data_dir = Path('data/from_matt')
+
+#     # NOTE: was NOT also committed under data/from_matt (like
+#     # hemibrain/halfmat/responses.csv below was)
+#     # TODO either delete this or also commit this file?
+#     #
+#     # TODO fix code that generated hemimatrix.npy / delete
+#     # (to remove effect of hc_data.csv methanoic acid bug that persisted in many copies
+#     # of this csv) (won't be equal to `wide` until fixed)
+#     # (what was hemimatrix.npy exactly tho? and why would odor responses matter for it?
+#     # is it not just connectivity?)
+#     #
+#     # Still not sure which script of Matt's wrote this (couldn't find by grepping his
+#     # code on hal), but we can compare it to the same matrix reformatted from
+#     # responses.csv (which is written in hemimat-modeling.html)
+#     #hemi = np.load(matt_data_dir / 'reference/hemimatrix.npy')
+
+#     # I regenerated this, using Matt's account on hal, by manually running all the
+#     # relevant code from matt-modeling/docs/hemimat-modeling.html, because it seemed the
+#     # previous version was affected by the hc_data.csv methanoic acid error.
+#     # After regenerating it, my outputs computed in this script are now equal.
+#     df = pd.read_csv(matt_data_dir / 'hemibrain/halfmat/responses.csv')
+
+#     # The Categoricals are just to keep order of odors and KC body IDs the same as in
+#     # input. https://stackoverflow.com/questions/57177605/
+#     df['ordered_odors'] = pd.Categorical(df.odor, categories=df.odor.unique(),
+#         ordered=True
+#     )
+#     df['ordered_kcs'] = pd.Categorical(df.kc, categories=df.kc.unique(), ordered=True)
+#     wide = df.pivot(columns='ordered_odors', index='ordered_kcs', values='r')
+#     del df
+
+#     # TODO delete?
+#     #assert np.array_equal(hemi, wide.values)
+#     #del hemi
+
+#     # TODO rename to run_model? or have a separate fn for that? take `mp` (and `rv` too,
+#     # or are even fit thresholds in mp?) as input (and return from fit_model?)?
+#     # TODO modify so i don't need to return gkc_wide here (or at least be more clear
+#     # about what it is, both in docs and in name)?
+#     responses, _, gkc_wide, _ = _fit_mb_model(tune_on_hallem=True,
+#         pn2kc_connections='hemibrain', _use_matt_wPNKC=True
+#     )
+#     assert gkc_wide.index.name == KC_ID
+#     assert np.array_equal(wide.index, gkc_wide.index)
+#     assert np.array_equal(responses, wide)
+
+
 def test_hemibrain_matt_repro():
-    # TODO delete (may want to commit some other things from here first tho)
-    #matt_data_dir = Path('../matt/matt-modeling/data')
-    #
+    # Paths
     matt_data_dir = Path('data/from_matt')
 
-    # NOTE: was NOT also committed under data/from_matt (like
-    # hemibrain/halfmat/responses.csv below was)
-    # TODO either delete this or also commit this file?
-    #
-    # TODO fix code that generated hemimatrix.npy / delete
-    # (to remove effect of hc_data.csv methanoic acid bug that persisted in many copies
-    # of this csv) (won't be equal to `wide` until fixed)
-    # (what was hemimatrix.npy exactly tho? and why would odor responses matter for it?
-    # is it not just connectivity?)
-    #
-    # Still not sure which script of Matt's wrote this (couldn't find by grepping his
-    # code on hal), but we can compare it to the same matrix reformatted from
-    # responses.csv (which is written in hemimat-modeling.html)
-    #hemi = np.load(matt_data_dir / 'reference/hemimatrix.npy')
-
-    # I regenerated this, using Matt's account on hal, by manually running all the
-    # relevant code from matt-modeling/docs/hemimat-modeling.html, because it seemed the
-    # previous version was affected by the hc_data.csv methanoic acid error.
-    # After regenerating it, my outputs computed in this script are now equal.
+    # Load Matt’s reference (hemibrain/halfmat) responses as a wide table
     df = pd.read_csv(matt_data_dir / 'hemibrain/halfmat/responses.csv')
 
-    # The Categoricals are just to keep order of odors and KC body IDs the same as in
-    # input. https://stackoverflow.com/questions/57177605/
-    df['ordered_odors'] = pd.Categorical(df.odor, categories=df.odor.unique(),
-        ordered=True
-    )
-    df['ordered_kcs'] = pd.Categorical(df.kc, categories=df.kc.unique(), ordered=True)
+    # Keep odor/KC order identical to file order
+    df['ordered_odors'] = pd.Categorical(df.odor, categories=df.odor.unique(), ordered=True)
+    df['ordered_kcs']   = pd.Categorical(df.kc,   categories=df.kc.unique(),   ordered=True)
+
     wide = df.pivot(columns='ordered_odors', index='ordered_kcs', values='r')
     del df
 
@@ -1581,9 +1614,88 @@ def test_hemibrain_matt_repro():
     responses, _, gkc_wide, _ = _fit_mb_model(tune_on_hallem=True,
         pn2kc_connections='hemibrain', _use_matt_wPNKC=True
     )
+
+    # KC row order must match
     assert gkc_wide.index.name == KC_ID
     assert np.array_equal(wide.index, gkc_wide.index)
-    assert np.array_equal(responses, wide)
+
+    # -------- Normalize column labels to match Matt's names --------
+    resp = responses.copy()
+    import ipdb;ipdb.set_trace()
+    # Strip concentration suffix like " @ -2"
+    resp.columns = resp.columns.to_series().str.replace(r"\s*@\s*-2$", "", regex=True)
+
+    # Expand abbreviations / naming differences observed between our outputs and Matt's CSV
+    ABBREV = {
+        # Stereo / specific naming
+        "(-)-alpha-pinene": "a-pinene",
+        "(-)-beta-caryophyllene": "(-)-trans-caryophyllene",
+        "(1S)-(+)-carene": "(1S)-(+)-3-carene",
+
+        # Shorthands for alcohols/ketones/esters/etc.
+        "1-5ol": "1-pentanol",
+        "1-6ol": "1-hexanol",
+        "1-8ol": "1-octanol",
+        "1o3ol": "1-octen-3-ol",
+        "2,3-b": "2,3-butanedione",
+        "2-but": "2-butanone",
+        "2h": "2-heptanone",
+        "t2h": "E2-hexenal",  # trans-2-hexenal
+
+        # Common abbreviations
+        "EtOH": "ethanol",
+        "ace": "acetone",
+        "but": "butanal",
+        "ea": "ethyl acetate",
+        "eb": "ethyl butyrate",
+        "ep": "ethyl propionate",
+        "e3hb": "ethyl 3-hydroxybutyrate",
+        "fur": "furfural",
+        "ha": "hexyl acetate",
+        "IaA": "isopentyl acetate",
+        "Lin": "linalool",
+        "ma": "methyl acetate",
+        "ms": "methyl salicylate",
+        "pa": "pentanoic acid",
+        "va": "pentanoic acid",  # aka valeric acid
+
+        # Minor spacing / letter variants
+        "4-ethylguaiacol": "4-ethyl guaiacol",
+        "o-cresol": "2-methylphenol",
+        "alpha-terpineol": "a-terpineol",
+        "beta-myrcene": "b-myrcene",
+        "benz": "benzaldehyde",
+        "B-cit": "b-citronellol",
+        "6al": "hexanal",
+    }
+
+    resp.columns = resp.columns.to_series().replace(ABBREV).astype(str)
+    resp.columns.name = "ordered_odors"  # match wide’s column name
+
+    # Make Matt’s table float and remove CategoricalIndex wrapper for easy alignment
+    wide_f = wide.copy()
+    wide_f.columns = pd.Index(wide_f.columns.astype(str), name="ordered_odors")
+    wide_f = wide_f.astype(float)
+
+    # Align rows (KC ids) explicitly
+    resp = resp.reindex(index=wide_f.index)
+
+    # Check column sets now match
+    missing_in_wide = set(resp.columns) - set(wide_f.columns)
+    missing_in_resp = set(wide_f.columns) - set(resp.columns)
+    import ipdb;ipdb.set_trace()
+    if missing_in_wide or missing_in_resp:
+        # Print a readable diff to help extend ABBREV if needed
+        print("Only in responses:", sorted(missing_in_wide))
+        print("Only in wide:", sorted(missing_in_resp))
+        raise AssertionError("Column mismatch after normalization")
+
+    # Align exact column order
+    resp = resp.loc[:, wide_f.columns]
+
+    # Final equality check (float vs float)
+    assert np.array_equal(resp.to_numpy(), wide_f.to_numpy())
+
 
 
 def test_step_around():
