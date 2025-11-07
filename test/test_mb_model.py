@@ -775,6 +775,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
             **kws, _wPNKC=wPNKC_one_row_per_claw, _wPNKC_one_row_per_claw=True
         )
         if kws.get('allow_net_inh_per_claw', False):
+            import ipdb;ipdb.set_trace()
             assert spike_counts.equals(spike_counts2)
         else:
             # could be possible to still match under some circumstances, but that's not

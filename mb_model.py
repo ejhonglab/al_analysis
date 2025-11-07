@@ -15286,13 +15286,16 @@ def main():
     Btn_separate = True
     pn_claw_to_APL = True
     try_each_with_kws = [
-        dict(_wPNKC_one_row_per_claw = False, Btn_separate = False)
+        dict(_wPNKC_one_row_per_claw = True, pn_claw_to_APL = True, APL_coup_const = 0.00, Btn_separate = False)
     ]
 
     for i, kws in enumerate(try_each_with_kws):
-        if kws.get('_wPNKC_one_row_per_claw') and kws.get('pn_claw_to_APL'):
+        row_per_claw   = bool(kws.get('_wPNKC_one_row_per_claw'))
+        pn_claw_to_APL = bool(kws.get('pn_claw_to_APL'))
+
+        if pn_claw_to_APL and not row_per_claw:
             raise ValueError(
-                f"Config #{i}: _wPNKC_one_row_per_claw=True is incompatible with pn_claw_to_APL=True."
+                f"Config #{i}: pn_claw_to_APL=True requires _wPNKC_one_row_per_claw=True."
             )
 
     for extra_kws in try_each_with_kws:
