@@ -3783,6 +3783,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO union w/ Series now, unless i can change implementation of
     # one-row-per-claw=True + connectome_APL=False case?
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
+    # pn_claw_to_APL: if it's true, in sim_KC_layer, we take pn_t to calculate claw_to_apl
+    # drive instead of inheriting from KC_acitivity
+    pn_claw_to_APL: bool = False,
     #
     print_olfsysm_log: Optional[bool] = None, return_dynamics: bool = False,
     plot_dir: Optional[Path] = None, make_plots: bool = True,
@@ -4301,7 +4304,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         assert sfr_from_csv.shape[1] == 1
         sfr_from_csv = sfr_from_csv.iloc[:, 0].copy()
-
         assert sfr_for_csv.equals(sfr_from_csv)
         # changing abbreviations of some odors broke this previously
         # (hence why i replaced it w/ the two assertions below. now ignoring odor
@@ -4389,7 +4391,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # it seems he had at one point also tried 1.0, but i'm assuming 1.5 is the
             # latest value he intended to use
             #mp.kc.sp_lr_coeff = 1.0
-            mp.kc.sp_lr_coeff = 10
+            mp.kc.sp_lr_coeff = 10.0
 
             # TODO still need these? at least only print if olfsysm defaults are
             # actually different? (seems olfsysm defaults may be same now?)
@@ -4480,7 +4482,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             if x in claw_index.names
         ]
         # TODO make conditional more explicit
-        kc_index = (claw_index.droplevel(to_drop) if to_drop else claw_index).drop_duplicates()
+        kc_index = (
+            claw_index.droplevel(to_drop) if to_drop else claw_index
+        ).drop_duplicates()
+
+        if pn_claw_to_APL:
+            mp.kc.pn_claw_to_APL = True
+            mp.kc.zero_wAPLKC = True
 
         # TODO raise ValueError if this passed in non-one-row-per-claw case
         if APL_coup_const is not None:
@@ -4625,7 +4633,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             warn(f'imputing mean Hallem SFR ({mean_sfr:.2f}) for non-Hallem glomeruli:'
                 f' {non_hallem_gloms}'
             )
-
         sfr = pd.Series(index=glomerulus_index,
             data=[(sfr.loc[g] if g in sfr else mean_sfr) for g in glomerulus_index]
         )
@@ -5456,6 +5463,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     # for i, arr in enumerate(rv.orn.sims):
     #     print(f"Shape of array at index {i}: {arr.shape}")
+
     osm.run_ORN_LN_sims(mp, rv)
     osm.run_PN_sims(mp, rv)
     before_any_tuning = time.time()
@@ -8981,7 +8989,12 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             wKCAPL = param_dict['wKCAPL']
             # TODO need to support int type too (in both of the two isinstance calls
             # below)? isinstance(<int>, float) is False
-            assert wKCAPL is None or isinstance(wKCAPL, float)
+            # TODO TODO probably remove conditional before the check (reverting to old
+            # behavior), or only have conditional to narrow
+            # one-row-per-claw=True/whatever case this currently applies to)
+            wKCAPL_size_check_temp = np.asarray(wKCAPL)
+            if wKCAPL_size_check_temp.size == 1:
+                assert wKCAPL is None or isinstance(wKCAPL, float)
 
         # TODO update comment (/fix code). not always all scalars now, at least b/c
         # Series wAPLKC in some one-row-per-claw cases (unless i meant only in
@@ -15367,6 +15380,90 @@ def main():
     # ab                0.087575            802
     # g                 0.059208            612
     # unknown           0.200000             80
+
+    kws = dict(
+        weight_divisor=20,
+        # TODO just make this default?
+        use_connectome_APL_weights=True,
+    )
+
+    # TODO TODO try dropping all kc_type == 'unknown' cells before running
+    # (in fit_mb_model)?
+
+    plot_root = Path('model_mb_example').resolve()
+    # updated to keep things clean;
+    #plot_root = Path("model_mb_example") / f"data_pebbled_target-sp_{target_sparsity:.4f}"
+
+    # TODO modify this fn so dirname includes all same params by default (rather than
+    # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
+    # by calls in model_mb_... (prob behaving diff b/c e.g.
+    # pn2kc_connections='hemibrain' is explicitly passed there)
+    # param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+    #    try_cache=False, print_olfsysm_log = True, **kws
+    # )
+
+    # TODO delete this product thing, and just switch to a kws_list?
+    '''
+    try_each_with_kws = [
+        # TODO TODO (still relevant?) make sure output dirs have something in name
+        # for use_vector_thr=True case (i.e. case where fixed_thr vector here)
+        # (just pass via suffix? or extra params? might need to restore the code for
+        # that...) (param_dir_prefix? still also add something to extra params to
+        # include in plot titles hopefully (or those not used that way?)?)
+        # TODO maybe mean response rate per subtype? or thr for each?
+        # TODO TODO at least include thr multiplier for each as a parameter?
+        # (and maybe include in titles?)
+        #
+        # probably always want `kws` unmodified too. that's what this empty dict is for.
+        dict(),
+
+        dict(use_connectome_APL_weights=True),
+    ]
+    '''
+    #   APL_coup_const = 0.8,
+    # APL_coup_const = [0.5, 0.5],
+    # APL_coup_const = 0.8,
+    APL_coup_const = 0.00
+    Btn_separate = True
+    pn_claw_to_APL = True
+    try_each_with_kws = [
+        dict(_wPNKC_one_row_per_claw = True, pn_claw_to_APL = True, APL_coup_const = 0.00, Btn_separate = False)
+    ]
+
+    for i, kws in enumerate(try_each_with_kws):
+        row_per_claw   = bool(kws.get('_wPNKC_one_row_per_claw'))
+        pn_claw_to_APL = bool(kws.get('pn_claw_to_APL'))
+
+        if pn_claw_to_APL and not row_per_claw:
+            raise ValueError(
+                f"Config #{i}: pn_claw_to_APL=True requires _wPNKC_one_row_per_claw=True."
+            )
+
+    for extra_kws in try_each_with_kws:
+        # extra_kws will override kws without warning, if they have common keys
+        param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+            # TODO disable _plot_example_dynamics (resource intensive)?
+            try_cache=False, _plot_example_dynamics=True, **{**kws, **extra_kws}
+        )
+        output_dir = (plot_root / param_dict['output_dir']).resolve()
+        assert output_dir.is_dir()
+        assert output_dir.parent == plot_root
+
+        #           2h @ -3  IaA @ -3  pa @ -3  ...  1-6ol @ -3  benz @ -3  ms @ -3
+        # kc_id         ...
+        # 0             0.0       0.0      0.0  ...         0.0        0.0      0.0
+        # 1             0.0       0.0      0.0  ...             0.0        0.0      0.0
+        # ...           ...       ...      ...  ...         ...        ...      ...
+        # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
+        # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
+        df = pd.read_csv(output_dir / 'spike_counts.csv', index_col=KC_ID)
+
+    # TODO TODO also include an example w/ kiwi/control data (as used by natmix_data)
+    # (either committing data in al_analysis too, or moving this whole example to
+    # another repo)
+    # TODO + add test i can reproduce those outputs (use outputs i already sent someone
+    # from my kiwi/control data? sent to ruoyi? or someone else?)
+    import ipdb; ipdb.set_trace()
 
 
 if __name__ == '__main__':
