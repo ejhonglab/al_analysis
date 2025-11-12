@@ -98,7 +98,7 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
     megamat_odor_names, remy_data_dir, remy_binary_response_dir, remy_megamat_sparsity,
     remy_date_col, remy_fly_cols, remy_fly_id, remy_fly_binary_response_fname,
     load_remy_fly_binary_responses, load_remy_megamat_kc_binary_responses,
-    n_final_megamat_kc_flies, MultipleSavesPerRunException
+    n_final_megamat_kc_flies, MultipleSavesPerRunException, print_curr_mem_usage
 )
 import al_util
 
@@ -643,6 +643,24 @@ from_prat = repo_root / 'data/from_pratyush'
 # haven't yet found a good way to use those.
 prat_dir = from_prat / '2025-09-24'
 
+claw_coord_cols = [f'claw_{d}' for d in ('x', 'y', 'z')]
+
+def center_each_claw_coord(wPNKC: pd.DataFrame) -> pd.DataFrame:
+    """Returns dataframe like input, with each of `claw_coord_cols` separately centered.
+    """
+    for_index = wPNKC.index.to_frame(index=False)
+    for c in claw_coord_cols:
+        vals = for_index[c]
+        val_min = vals.min()
+        val_range = vals.max() - val_min
+        # centering range of values on 0
+        for_index[c] = vals - (val_min + val_range/2)
+
+    wPNKC2 = wPNKC.copy()
+    wPNKC2.index = pd.MultiIndex.from_frame(for_index)
+    return wPNKC2
+
+
 _connectome2glomset = dict()
 # TODO compare to what ann had been using (does she have her own fully formed connectome
 # based PN->KC matrix, or is it all random draws with certain connectome inspired
@@ -723,7 +741,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     def _first_underscore_part(ser):
         return _underscore_part(ser, i=0)
 
-    claw_coord_cols = ['claw_x', 'claw_y', 'claw_z']
     def add_compartment_index(wPNKC: pd.DataFrame, shape: int) -> pd.DataFrame:
         # TODO delete shape!=0 path? (currently unused) or will it be in some of his
         # other attempts at defining APL compartments? what are other values shape=
@@ -747,6 +764,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         if shape == 0:
             # shell over sphere
             center = coords.mean().to_numpy()
+            # TODO if verbose, print center
             distances = np.linalg.norm(coords.to_numpy() - center, axis=1)
             shell_r = distances.max()
             # TODO TODO allow overriding sphere_r w/ kwarg? or (also) define to equalize
@@ -754,9 +772,9 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             sphere_r = 0.5 * shell_r
             compartment_ids = np.where(distances <= sphere_r, 0, 1).astype(np.int32)
             # TODO delete (/ put behind verbose)
-            print("shell over sphere")
+            print(f'shell over sphere {center=}')
         else:
-            # TODO refactor to loop over claw_coord_cols?
+            # TODO refactor to loop over claw_coord_cols
             # 3×3×3 grid
             x_edges = np.linspace(coords['claw_x'].min(), coords['claw_x'].max(), 4)
             y_edges = np.linspace(coords['claw_y'].min(), coords['claw_y'].max(), 4)
@@ -868,8 +886,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # of instances where this alignment process is ambiguous
             if check_no_multi_underscores:
                 raise
-            # debug: show all type_pre values missing the underscore
-            no_us = df.loc[df['a.type'].str.count('_') == 0, 'a.type'].unique()
+
+            no_us = df.loc[df[pn_type_col].str.count('_') == 0, pn_type_col].unique()
             print("type_pre values with NO underscore:", no_us)
             assert (df[pn_type_col].str.count('_') >= 1).all()
 
@@ -1878,11 +1896,22 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # TODO TODO or at least summarize how many claws are in/out of this?
             wPNKC = add_compartment_index(wPNKC, shape=0)
 
-            # TODO still need? delete if not
-            # wPNKC = wPNKC.reorder_levels(
-            #     [c for c in wPNKC.index.names if c != KC_TYPE] +
-            #     ([KC_TYPE] if KC_TYPE in wPNKC.index.names else [])
-            # )
+            # TODO TODO also apply in prat_claws=False case (tianpei already have a
+            # separate version of these cols, centered or similar?)
+            wPNKC2 = center_each_claw_coord(wPNKC)
+
+            # add_compartment_index should drop this regardless. just repeating here for
+            # clarity about what we are testing.
+            wPNKC2 = wPNKC2.droplevel('compartment')
+
+            wPNKC2 = add_compartment_index(wPNKC2, shape=0)
+
+            # checking the comparments don't change if we pre-center coords
+            assert wPNKC.index.get_level_values('compartment').equals(
+                wPNKC2.index.get_level_values('compartment')
+            )
+            # want claw coords to have their ranges centered
+            wPNKC = wPNKC2
 
             # TODO TODO check against what pratyush had (was his not a bit lower?
             # differences in dropping account for it?)
@@ -2728,18 +2757,20 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # actually a problem. maybe input *should* always just be in a particular order, and
     # shouldn't necessarily matter that it's this one...
     wPNKC = wPNKC.sort_index(axis='columns')
-    # maybe split Btn here?
+
     if Btn_separate:
+        # TODO assert one-row-per-claw?
         if not preset_Btn_coord:
-            # if wPNKC_one_row_per_claw
             print("make our own bouton matrix")
-            wPNKC_btn = expand_wPNKC_to_boutons(
-                wPNKC=wPNKC,
+            wPNKC_btn = expand_wPNKC_to_boutons(wPNKC=wPNKC,
                 boutons_per_glom=Btn_num_per_glom,
-                #col_style="multi",             # or "flat" if you prefer single-level columns
             )
         else:
+            # TODO TODO so raise NotImplementedError here, or implement (or has tianpei
+            # already?)? and does olfsysm currently actually support truly preset
+            # PN->bouton mapping, where PNs can have diff # of boutons?
             print("so far we don't have Btn_coords")
+
         wPNKC = wPNKC_btn
 
     if plot_dir is not None and Btn_separate:
@@ -3900,6 +3931,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             interpreted to scale unit-mean connectome APL weight vectors. The other call
             should have `use_connectome_APL_weights=True` as well.
     """
+    # TODO delete
+    # TODO save to var and print down by other memory prints?
+    # TODO TODO why already 4433.25 MiB here??? (in kiwi/control case, after one
+    # pre-tuning call) matter of some stuff from prior olfsysm calls not getting
+    # cleared? care to add fns to release that memory, if so? and would it even affect
+    # total amount of memory by time we get to end of this call?
+    print_curr_mem_usage(end='')
+    print(', at start of fit_mb_model')
+    #
     if _wPNKC is not None:
         # just a hacky way to check pn2kc_connections is unset (== default 'hemibrain',
         # unless i move default out of kwarg def to be able to detect unset more easily)
@@ -4436,9 +4476,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             claw_comp = np.zeros(len(wPNKC), dtype=np.int64)
         #
 
-        # TODO refactor to share w/ defs elsewhere (move claw_coord_cols to
-        # module level, etc)
-        to_drop = [x for x in (CLAW_ID,'claw_x','claw_y','claw_z','compartment')
+        to_drop = [x for x in [CLAW_ID] + claw_coord_cols + ['compartment']
             if x in claw_index.names
         ]
         # TODO make conditional more explicit
@@ -4468,12 +4506,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO delete / restore similar, that also works in one-row-per-claw case
         #assert wPNKC.index.names == [kc_id_col]
+
     if Btn_separate:
+        # TODO TODO rename this in olfsysm (want one parameter specifying a fixed number
+        # of boutons per glomerulus [which we already have as p.pn.Btn_num_per_glom],
+        # which is mutually exclusive with a PN->bouton mapping being passed in [or a
+        # flag indicating we will be setting another variable with such a mapping])
         mp.pn.preset_Btn = True
         mp.pn.Btn_num_per_glom = Btn_num_per_glom
         glomerulus_index = wPNKC.columns.get_level_values("glomerulus")
     else:
         glomerulus_index = wPNKC.columns
+
     if not hallem_input:
         zero_filling = (~ glomerulus_index.isin(orn_deltas.index))
         if zero_filling.any():
@@ -4954,8 +4998,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert CLAW_ID in wPNKC.index.names
 
         # TODO assert coords all positive or have some other properties?
-        claw_coord_levels = [f'claw_{coord}' for coord in ('x', 'y', 'z')]
-        assert all(c in wPNKC.index.names for c in claw_coord_levels)
+        assert all(c in wPNKC.index.names for c in claw_coord_cols)
 
         assert KC_ID in wPNKC.index.names
         assert not wPNKC.index.to_frame(index=False)[[KC_ID, CLAW_ID]].duplicated(
@@ -5097,6 +5140,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         mp.kc.preset_wKCAPL = True
 
     if return_dynamics or _plot_example_dynamics:
+        # TODO also warn if input odor size is above some threshold? make a formula to
+        # roughly calculate memory usage we'd expect?
         if hallem_input:
             # will probably be killed by system OOM killer
             warn('plotting/returning model dynamics likely to crash with hallem input, '
@@ -5115,6 +5160,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # if `mp.kc.ves_p == 0`, the "vesicle depletion" part of olfsysm is disabled.
         # see related comments around use of nves_sims below.
         if mp.kc.ves_p != 0:
+            # TODO try setting this True even with `ves_p == 0`, to at least assert it's
+            # all 1s, ideally for a unit test
             mp.kc.save_nves_sims = True
 
         # should have no effect if not in one_row_per_claw mode anyway
@@ -6578,13 +6625,32 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     if return_dynamics or _plot_example_dynamics:
         # TODO rename (+ move rv to param) -> move out of fit_mb_model? just to
         # declutter this fn...
+        # TODO worth looking in to no-copy ways we might be able to access these
+        # variables via pybind11 + eigen? claw_sims especially takes up a lot of
+        # memory (~2.5GiB for 6 odors...). would probably require at least changing
+        # olfsysm pybind11 C++ binding code.
+        # see: https://pybind11.readthedocs.io/en/stable/advanced/cast/eigen.html
+        # (may need to change so these values aren't all std::vector<Matrix|Row>,
+        # but are instead an array with one more dimension for # odors. seems
+        # like we may have to roll much more of our own binding code to support objects
+        # that are not one simple Eigen object.
+        # see: https://stackoverflow.com/questions/63159807 seems complicated...)
+        # TODO may be easier to just have C++ write it, and make a python fn to read it
+        # into a numpy array (e.g. via fromfile)?
         def _get_sim_var(name) -> np.ndarray:
             # all appear as #-odor-length lists w/o np.array(...) applied
             arr = np.array(getattr(rv.kc, name))
 
+            # TODO add option to slice all to exclude time periods that will only
+            # contain 0/simliar? (to save on size of outputs, would just somewhat
+            # complicate loading [as we'd have to either invert the process, or save in
+            # a format that facilitates aligning all the different outputs])
+
             _debug = False
             if not _debug:
                 return arr
+
+            # TODO delete below?
 
             print(f'{name=}')
 
@@ -6602,7 +6668,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             after_start = arr[:, :, start_idx:]
             # TODO also print min/max/mean/[np.quantile 0.5] for each?
             # maybe only within non-zero part? and/or only within stim window?
-
             if all0.any():
                 first_non_all0_idx = np.argwhere(~all0)[0][0]
                 print(f'{first_non_all0_idx=}')
@@ -6618,6 +6683,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             print()
 
             return arr
+
+        # TODO why is rss 7861.55078125 MiB before? b/c we still have in olfsysm?
+        # TODO delete
+        print_curr_mem_usage(end='')
+        print(', before getting vm_sims')
+        #
 
         # TODO TODO only process and serialize these one at time (saving to plot_dir in
         # here, rather than returning), to try to avoid memory issues? i assume making a
@@ -6659,7 +6730,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # which i haven't tested, and not sure we care to
             #assert (nves_sims == 1).all()
         else:
-            # TODO TODO TODO assert that (nves_sims == 1).all() here. that variable does
+            # TODO TODO assert that (nves_sims == 1).all() here. that variable does
             # seem to be used in C++ tho... is it just that the math works out to leave
             # it all 1? or is it maybe not properly returned?
             warn('nves_sims are disabled, as has typically been the case for olfsysm')
@@ -6675,6 +6746,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # "KC->APL synapse current"
         # TODO so this must be the current across all KCs, right?
         Is_sims = _get_sim_var('Is_sims').squeeze()
+        #
+
+        # TODO delete
+        print_curr_mem_usage(end='')
+        print(', before converting most to dataarray')
         #
 
         # NOTE: just chose 'stim' for that dim name b/c xarray complained that
@@ -6707,6 +6783,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         inh_sims = xr.DataArray(data=inh_sims, dims=apl_dims, coords=apl_coords)
         Is_sims = xr.DataArray(data=Is_sims, dims=apl_dims, coords=apl_coords)
 
+        # TODO delete
+        print_curr_mem_usage(end='')
+        print(', before getting claw_sims', flush=True)
+        #
+
         if _wPNKC_one_row_per_claw:
             # TODO TODO test to see whether _get_sim_var('claw_sims') or defining
             # DataArray from it below are increasing memory usage (-> more motivation to
@@ -6716,10 +6797,22 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # include proper units?
             claw_sims = _get_sim_var('claw_sims')
 
+            # TODO delete
+            print_curr_mem_usage(end='')
+            print(', after getting claw_sims', flush=True)
+            #
+
             claw_dims = ['stim', 'claw', 'time_s']
             claw_coords = {**coords, 'claw': claw_index}
 
+            # NOTE: the creation of this DataArray does not (alone) seem to increase the
+            # memory usage (at least not the RSS)
             claw_sims = xr.DataArray(data=claw_sims, dims=claw_dims, coords=claw_coords)
+
+            # TODO delete
+            print_curr_mem_usage(end='')
+            print(', after converting claw_sims to dataarray', flush=True)
+            #
 
             # TODO maybe don't overwrite... (or do for all by default? maybe
             # starting from a bit before stim_start_idx and ending a bit after
@@ -6727,28 +6820,38 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # TODO TODO how different is sum within this slice (across time)?
             # vs some across time in full thing?
             # TODO TODO maybe i should add more of a return to baseline per claw?
-            # time constant like Vm?
+            # time constant like Vm calculation has?
             claw_sims = claw_sims.isel(time_s=slice(stim_start_idx, stim_end_idx))
+
+            # TODO delete
+            print_curr_mem_usage(end='')
+            print(', after slicing claw_sims dataarray to stim window', flush=True)
+            #
 
             # <xarray.DataArray (stim: 18, claw: 9472)>
             claw_sims_sums = claw_sims.sum(dim='time_s')
-            param_dict['claw_sims_sums'] = claw_sims_sums
+            param_dict['claw_sims_sums'] = claw_sims_sums.to_pandas()
 
             claw_sims_maxs = claw_sims.max(dim='time_s')
-            param_dict['claw_sims_maxs'] = claw_sims_maxs
+            param_dict['claw_sims_maxs'] = claw_sims_maxs.to_pandas()
+
+            # TODO TODO try to figure out to what extent spiking currently requires
+            # multiple claws (and is there a clear way to threshold claw_sims to get to
+            # determine spiking? within what kind of time window should i be evaluating
+            # stuff on claw_sims? refractory period?)
+            # (try using new plots of single KC + claw dynamics in
+            # natmix_data/analysis.py to get at this)
+            # TODO TODO TODO -> try to come up with rule to enforce a certain
+            # breadth-across-claws requirement, especially if we don't already
+            # effectively have this
+
             # TODO delete
             #breakpoint()
             #
 
-            # TODO TODO TODO plot a few example claw timeseries, for a few example KCs
-            # picked from looking at natmix data outputs
-        else:
-            claw_sims = None
-
-        # TODO TODO TODO restore! claw_sims causing too many memory issues rn though,
-        # and want claw_sims_sums i'm adding manually above
-        print('RESTORE RETURNING OF DYNAMICS')
-        '''
+        # TODO TODO save each one at a time in here (before getting the next var from
+        # olfsysm, which copies), rather than returning all, to help save on memory
+        # (otherwise total usage can easily get to low 20GiBs w/ even 6 odors)
         if return_dynamics:
             dynamics_dict = {
                 'orn_sims': orn_sims,
@@ -6759,18 +6862,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
                 'vm_sims': vm_sims,
                 'spike_recordings': spike_recordings,
-
-                'claw_sims': claw_sims,
             }
             if mp.kc.ves_p != 0:
                 dynamics_dict['nves_sims'] = nves_sims
 
-            if not _wPNKC_one_row_per_claw:
-                del dynamics_dict['claw_sims']
+            if _wPNKC_one_row_per_claw:
+                dynamics_dict['claw_sims'] = claw_sims
 
             assert not any(k in param_dict for k in dynamics_dict.keys())
             param_dict.update(dynamics_dict)
-        '''
 
     if _plot_example_dynamics:
         # TODO remove make_plots part of this? (assuming i can't easily get those plots
@@ -6780,23 +6880,24 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO always plot whichever glomerulus has the biggest response (and say so)?
         # would make this code useful for more input data...
-        # TODO work if DL5 not in input
+        # TODO change to work if DL5 not in input (it will be, but it may not respond
+        # meaningfully to panel odors)?
         glom = 'DL5'
         if Btn_separate:
-            dl5_idx = glomerulus_index.unique().get_loc(glom)
+            # TODO TODO define separate glomerulus_index and bouton_index in this case,
+            # to be more clear (glomerulus_index is currently of length equal to # of
+            # boutons here, but since all glomeruli should be consecutive b/c of
+            # construction [just repeating each a constant # of times, to test], current
+            # .unique().get_loc(glom) works)
+            example_glom_idx = glomerulus_index.unique().get_loc(glom)
         else:
-            dl5_idx = glomerulus_index.get_loc(glom)
+            example_glom_idx = glomerulus_index.get_loc(glom)
 
-        # TODO pick odor in a way that would work for all input data?
-        #
-        # will fail if input data doesn't have t2h (and probably also at this conc)
         odor_values = odor_index.get_level_values('odor')
-
         for odor in ('t2h @ -3', 'kmix0 @ 0'):
             if odor in odor_values:
                 break
-
-            # for if we don't find a match
+            # for if we don't find one of the preferred example odors
             odor = None
 
         if odor is None:
@@ -6805,22 +6906,20 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         example_odor_idx = odor_values.get_loc(odor)
 
-        # TODO TODO still keep one version of plot showing full timecourse, in case
+        # TODO still keep one version of plot showing full timecourse, in case
         # understanding the ramp up ~"start" time (< "stim_start") is important?
         # (just set xlim differently and re-save?)
 
         # TODO factor out this plotting (so someone could run on saved dynamics
-        # outputs)?
+        # outputs)? (may be hard to do that if i still want to only process one var at
+        # a time... unless i'm loading each file that we already saved, within the
+        # consolidated plotting fn)
 
         # seem to need constrained layout to get fig.legend() reliably outside bounds of
         # Axes (at least w/o manual positioning...)?
         fig, (ax, spike_raster_ax) = plt.subplots(nrows=2, layout='constrained',
             sharex=True, figsize=(10, 10)
         )
-        # TODO TODO finish (to refactor all the plotting which divides by max below)
-        #def _plot_normed()
-        #
-
         # TODO make fn (/find a library for) plotting a stimlus bar along some time axis
         # (-> use that here instead)?
         #
@@ -6829,12 +6928,27 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         ax.axvline(mp.time_stim_start, color='k')
         ax.axvline(mp.time_stim_end, color='k')
 
-        # TODO TODO is there some reason orn_sims.min() is not sfr.min()?
+        def _plot_normed(xs, **kwargs) -> None:
+            # xs should probably be Series, but could also be some xarray type with a
+            # .max() method
+            ax.plot(ts, xs / xs.max(), **kwargs)
+
+        # TODO is there some reason orn_sims.min() is not sfr.min()?
         # min seems to be 17, if i'm computing it right...
         # is it just that orn_sims is not in firing rate units?
+        # (was it the sign that concerned me? or that it's larger than sfr.min()? what
+        # is the ordering of them? delete comment?)
 
-        # TODO TODO refactor this normalized plotted
+        # TODO delete? after resolving glomerulus_index vs glomerulus_index_orn issue
+        # (potentially adding new var for bouton index, or renaming one to that), and
+        # testing it works in all multiple-boutons-per-PN cases (both when expanding to
+        # fixed number for each glomerulus/PN, as well as when that mapping is preset
+        # from connectome)
+        should_be_glom = orn_sims[example_odor_idx, example_glom_idx].glomerulus
+        assert should_be_glom.size == 1
+        assert should_be_glom.item(0) == glom
         #
+
         # TODO directly index odor/glom by name, now that we are using xarray?
         #
         # TODO add units for these (firing rate in Hz?) (via y-axis label?)
@@ -6842,34 +6956,43 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # units seems to be firing rates (absolute i think. actually, there are some
         # negative values, even in hallem_input=True [w/ matt config] case. that's not a
         # mistake though, is it?)
-        ax.plot(ts, orn_sims[example_odor_idx, dl5_idx] /
-            orn_sims[example_odor_idx, dl5_idx].max(), label=f'{glom} ORN'
-        )
-        if Btn_separate:
-            # 1. Get the slice object that represents ALL 'DL5' boutons
-            dl5_bouton_slice = glomerulus_index.get_loc(glom)
+        _plot_normed(orn_sims[example_odor_idx, example_glom_idx], label=f'{glom} ORN')
 
-            # 2. Select the data for all 'DL5' boutons for the chosen odor.
+        if Btn_separate:
+            # TODO update def for case where we are not just expanding glomerulus to
+            # consecutive boutons, but where we have PN->bouton map preset from
+            # connectome data
+            #
+            # 1. Get the slice object that represents ALL example-glom boutons
+            glom_bouton_slice = glomerulus_index.get_loc(glom)
+
+            # 2. Select the data for all example-glom boutons for the chosen odor.
             # The result is a 2D xarray object with shape (10, 5500)
             # and dimensions ('glomerulus', 'time_s').
-            dl5_bouton_data = pn_sims.isel(stim=example_odor_idx,
-                glomerulus=dl5_bouton_slice
+            glom_bouton_data = pn_sims.isel(stim=example_odor_idx,
+                glomerulus=glom_bouton_slice
             )
 
+            # TODO assert something about shape before/after, if "correct" axis really
+            # unclear? (or delete comment below)
+            #
             # 3. Get the raw NumPy array and sum along the correct axis.
             # We sum along axis=0 to combine the 10 bouton rows.
-            sum_activity = dl5_bouton_data.values.sum(axis=0)
-            # 4. Now plot the resulting 1D array (shape (5500,)).
-            ax.plot(ts, sum_activity / (sum_activity.max() + 1e-9),
-                    label=f'{glom} PN (sum of boutons)')
+            sum_activity = glom_bouton_data.values.sum(axis=0)
+
+            # TODO why was Tianpei adding 1e-9 here? don't use plot_normed here, so i
+            # can still do that here if needed? (or delete commented line)
+            #ax.plot(ts, sum_activity / (sum_activity.max() + 1e-9),
+            _plot_normed(sum_activity, label=f'{glom} PN (sum of boutons)')
         else:
-            ax.plot(ts, pn_sims[example_odor_idx, dl5_idx] /
-                pn_sims[example_odor_idx, dl5_idx].max(), label=f'{glom} PN'
+            _plot_normed(pn_sims[example_odor_idx, example_glom_idx],
+                label=f'{glom} PN'
             )
 
-        # TODO TODO TODO drop non-responding KCs before all plots using them
+        # TODO TODO drop non-responding KCs before all plots using them
         # (both dynamics plots and whichever spike raster things i ultimately use)
-        # TODO TODO also say in title (below) if we drop non-responders, if we do
+        # (only matter for mean Vm [+ by type] stuff? anything else?)
+        # TODO also say in title (below) if we drop non-responders, if we do
 
         # plotting these before the KC mean[+types] now, since that part of the plot
         # can vary (in terms of # of lines), so having this earlier fixes the colors for
@@ -6877,39 +7000,22 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO TODO adapt to work w/ multiple compartments, when available
         # (especially when it's a small #, want to plot all. otherwise want to pick some
         # compartments that are more different to plot, or maybe plot all as a matrix?)
-        ax.plot(ts, inh_sims[example_odor_idx] / inh_sims[example_odor_idx].max(),
-            label='APL Vm'
-        )
-        ax.plot(ts, Is_sims[example_odor_idx] / Is_sims[example_odor_idx].max(),
-            label='KC->APL current'
-        )
+        _plot_normed(inh_sims[example_odor_idx], label='APL Vm')
+        _plot_normed(Is_sims[example_odor_idx], label='KC->APL current')
 
         # TODO TODO or maybe i don't want to always drop non-responders from vm_sims
         # plots? at least have a version not dropping them? (would need to get indices
         # from determination on spike_recordings / example_odor_spikes anyway)
 
-        # TODO TODO label plot with how many responders there are out of how many total
+        # TODO label plot with how many responders there are out of how many total
         # cells
-        # TODO TODO per kc_type labels w/ how many silent in each? too noisy? separate
+        # TODO per kc_type labels w/ how many silent in each? too noisy? separate
         # plot/something for that instead?
         # ipdb> example_odor_spikes[example_odor_spikes.T.sum() > 0].shape
         # (214, 5500)
         # ipdb> example_odor_spikes.shape
         # (1830, 5500)
         example_odor_spikes = spike_recordings[example_odor_idx].to_pandas()
-
-        # TODO delete
-        # TODO to what extent is this just a thing for t2h specifically? evident in mean
-        # wPNKC connections from t2h responsive glomeruli?
-        # ipdb> nonsilent_frac_by_type
-        # kc_type
-        # a'b'       0.041667
-        # ab         0.049875
-        # g          0.254902
-        # unknown    0.050000
-        # (from when silent_frac_by_type was defined from example_odor_spikes)
-        #nonsilent_frac_by_type = 1 - silent_frac_by_type
-        #
 
         # TODO maybe plot clusters? per cell-type clusters?
         # TODO or random sample a few and plot on axis by itself (w/ original scale. not
@@ -6918,7 +7024,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # taking mean over KCs, giving us a series of length equal to #-timepoints
         mean_vm_sims = example_odor_vm_sims.mean('kc')
-        ax.plot(ts, mean_vm_sims / mean_vm_sims.max(), label='mean KC Vm')
+        _plot_normed(mean_vm_sims, label='mean KC Vm')
 
         # TODO TODO make a version of all these plots w/ each quantity on a separate
         # facet (or at least, only those w/ comparable units sharing a facet), so that
@@ -6954,16 +7060,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         vm_sims_by_type = vm_sims_by_type / vm_sims_by_type.max('time_s')
         kc_type_labels = [f'mean {x}-KC Vm' for x in vm_sims_by_type[KC_TYPE].values]
 
-        # TODO TODO TODO make this plot again after trying to rescale a'/b' to be
-        # relatively more effective at recruiting/etc APL (and also after dropping
-        # silent KCs first, for both existing and rescaled-within-type version of plot)
+        # normalized within each type above, so no need for _plot_normed
         ax.plot(ts, vm_sims_by_type.T, label=kc_type_labels)
 
-        # TODO TODO restore something like my spikes -> spike times -> sns.rugplot for
+        # TODO restore something like my spikes -> spike times -> sns.rugplot for
         # best responding cell (never committed, unfortunately), or just directly use
-        # imshow/similar (like rastermap does), -> use to show spiking against
-        # threshold/spont_in context for an example cell? or do that in separate plot(s)
-        # specifically for it?
+        # imshow/similar (like rastermap does)
+        # TODO TODO -> use to show spiking against threshold/spont_in context for an
+        # example cell? or do that in separate plot(s) specifically for it?
 
         # NOTE: plot_spike_rasters currently drops silent cells itself anyway
         # TODO but modify it to have it say somewhere how many it dropped?
@@ -6987,17 +7091,20 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # a bit to peak. what did matt do?
     # in (DL5, t2h) case, PN peak is ~0.047, and ORN plateaus after ~0.077
 
-    # TODO stim_end_idx + 1?
     glomerulus_index_orn = glomerulus_index
     if Btn_separate:
+        # TODO see comments above. this should probably be glomerulus_index (but would
+        # need to define separately, and change downstream code to not assume glomeruli
+        # are all consecutive, like .unique() usage probb does in some uses)
         glomerulus_index_orn = glomerulus_index.unique()
+
     orn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index_orn,
         data=orn_sims[:, :, stim_start_idx:stim_end_idx].mean(axis=-1)
     )
     glomerulus_index_pn = glomerulus_index
     if Btn_separate:
         coords = {'stim': odor_index, 'time_s': ts}
-        al_coords_orn = {**coords, 'glomerulus': glomerulus_index.unique()}
+        al_coords_orn = {**coords, 'glomerulus': glomerulus_index_orn}
         # Get the list of unique glomerulus names to pair with the indices
         unique_glom_names = al_coords_orn['glomerulus']
 
@@ -7014,6 +7121,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # This part remains the same
         unique_bouton_labels = [f'{glom}_{i}' for glom, i in bouton_definitions]
+        # TODO defined earlier as "bouton_index" or truly need this on top of
+        # glomerulus_index and glomerulus_index_orn?
         glomerulus_index_pn = pd.Index(unique_bouton_labels)
 
     # This part also remains the same
@@ -7090,13 +7199,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             orn_df = sort_odors(orn_df, panel=panel, warn=False)
             pn_df = sort_odors(pn_df, panel=panel, warn=False)
-    else:
-        # TODO delete if i modify below to also make plots for other panels
-        # (replacing w/ sorting -> dropping levels for all these, as above)
-        #
-        # the only place these should all be used is in the plotting code below, which
-        # currently only runs in `megamat == True` case
-        del orn_deltas, orn_df, pn_df
 
     # TODO still want?
     if 'panel' in responses.columns.names:
@@ -7104,9 +7206,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         responses = responses.droplevel('panel', axis='columns')
         spike_counts = spike_counts.droplevel('panel', axis='columns')
 
-    # TODO probably also do for other panels?
-    #if plot_dir is not None and make_plots:
-    if (plot_dir is not None and make_plots) and megamat:
+    if plot_dir is not None and make_plots:
         orn_df = orn_df.T
         pn_df = pn_df.T
 
@@ -8155,6 +8255,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     param_abbrevs = {
         'tune_on_hallem': 'hallem-tune',
         'pn2kc_connections': 'pn2kc',
+        # TODO TODO why is target_sp (for cases where it's default of 0.1) still in
+        # model output dir names? making kiwi/control modeling dir names too long (did i
+        # ever remove it? either way, do so now)
         'target_sparsity': 'target_sp',
         'target_sparsity_factor_pre_APL': 'sp_factor_pre_APL',
         '_drop_glom_with_plus': 'drop-plusgloms',
@@ -8502,8 +8605,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # TODO give better explanation as to why this is here.
     # to make sure we are accounting for all parameters we might vary in filename
     if param_dir in _fit_and_plot_seen_param_dirs:
-        # TODO TODO TODO why is this now failing w/ uniform for me? what prevented that
-        # before (when run from model_mb_responses)?
+        # TODO TODO TODO why is this now failing w/ uniform for me? how to repro? what
+        # prevented that before (when run from model_mb_responses)?
         print('FIX FOR UNIFORM CASE')
         #
         # otherwise, param_dir being in seen set would indicate an error
@@ -8738,14 +8841,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         to_pickle(spike_counts, model_spikecounts_cache)
         to_pickle(wPNKC, wPNKC_cache)
 
-        # TODO if i start using return_dynamics=True (w/ automatic xarray saving
-        # discussed in comment below), prob default to (/always) return_dynamics=False
-        # for sensitivity analysis subcalls? or is it not enough data that's really that
-        # much of an issue? what size we talking?
-        # TODO some nice interchange (so, not pickle) format for xarray? netcdf?
-        # [also] use that?
-        #
-        # TODO TODO automatically pop and save anything that's a
+        # TODO automatically pop and save anything that's a
         # np.ndarray/pd.[Series|DataFrame] [/xarray, if i end up using that for model
         # dynamics?], and save as a pickle under the name of the key? (maybe just
         # warning if it's not on a list of expected things, w/ message about which
@@ -8757,41 +8853,43 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # NOTE: might break some of new vector-fixed_thr code if i start popping that
         # (but might want to still save separately there, as not being saved correctly
         # in params.csv/similar there)
-        _warned = False
         for k in list(param_dict.keys()):
             v = param_dict[k]
             # TODO also do for np.ndarray / Series / DataFrame?
             if isinstance(v, xr.DataArray):
-                # TODO TODO TODO this not working?
                 if not _in_sens_analysis:
                     pickle_path = param_dir / f'{k}.p'
+
+                    # TODO TODO move saving of all/most of these into fit_mb_model, so
+                    # each can be removed from memory as soon as possible? (and each
+                    # before making a copy of other variables, only processing [and
+                    # plotting if needed] one at at time). many of these DataArray are
+                    # very large, especially claw_sims, which can be ~2.5GiB for just 6
+                    # odors
+                    #
                     # for just panel=control, the biggest of these files
                     # (spike_recordings.p / vm_sims.p) are just under a GB (768M)
+                    # (this was before claw_sims, which is probably bigger...)
                     to_pickle(v, pickle_path, verbose=True)
 
                     # TODO switch to netcdf? would just need to reformat the index
                     # surrounding IO (prob don't wanna do both given the sizes, but
                     # could. ig it's just a factor of 2...)
-                else:
-                    if not _warned:
-                        warn('not saving dynamics for sensitivity analysis sub-calls,'
-                            ' to save on storage space'
-                        )
-                        # not just `break`-ing, since i still want to pop all these from
-                        # param_dict
-                        _warned = True
+                    # (and may NOT want to save as both, considering the aggregate size)
 
-                # TODO TODO only del from a copy of param_dict that will be used to
-                # write param CSV/pickle, but still return these as part of param_dict?
-                # TODO say we are popping here? if verbose?
-                # TODO TODO try not doing this anymore, now that i have
-                # filter_params_for_csv
-                #del param_dict[k]
+                # TODO add flag to still enable saving here?
+                else:
+                    warn('not saving dynamics for sensitivity analysis sub-calls,'
+                        ' to save on storage space'
+                    )
+
+                del param_dict[k]
 
         # popping to have this make old outputs trip -c/-C checks, but also the param
         # CSVs/etc would almost certainly not handle array/series values, at least not
         # without extra work
-        # TODO try not popping now that i have filter_params_for_csv
+        # TODO try not popping now that i have filter_params_for_csv (seems OK. may
+        # still want to not save in two places? pick one?)
         #kc_spont_in = param_dict.pop('kc_spont_in')
         #
         # TODO or was there ever a change that this was not in param_dict? .get()
@@ -8816,10 +8914,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 # model_mb_responses also write CSV w/ output, tho i might want to have
                 # a separate fn to filter before saving CSV in both cases [so i'm less
                 # restricted on what i can return])?
-                #
-                # TODO delete (if not popping + filter_params_for_csv works)
-                #wAPLKC = param_dict.pop('wAPLKC')
-                #wKCAPL = param_dict.pop('wKCAPL')
                 wKCAPL = param_dict.get('wKCAPL')
 
                 # TODO delete
@@ -8843,9 +8937,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 if not _wPNKC_one_row_per_claw:
                     assert 'wAPLKC_scale' in param_dict
                     assert 'wKCAPL_scale' in param_dict
-                # TODO TODO TODO seems it *does* have wAPLKC_scale in
-                # use_connectome_APL_weights=True case. can i just discard here tho
-                # (scale already applied)?
+                # TODO TODO seems it *does* have wAPLKC_scale in
+                # use_connectome_APL_weights=True case (but also wAPLKC, for
+                # prat_claws=False at least, right? need that too?). can i just discard
+                # here tho (scale already applied)?
                 #else:
                 #    # NOTE: there will now be *neither* wAPLKC nor wAPLKC_scale in
                 #    # param_dict (and same for wKCAPL)
@@ -10163,7 +10258,13 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # calls)
         tuned_fixed_thr = param_dict['fixed_thr']
 
-        tuned_wAPLKC = get_APL_weights(param_dict, model_kws)
+        APL_weights = get_APL_weights(param_dict, model_kws)
+        assert isinstance(APL_weights, dict)
+        # TODO TODO need to test we don't actually need wKCAPL in the cases of tianpei's
+        # code that also separately defined this (which is prob also the only reason
+        # get_APL_weights is returning a dict with both?)
+        tuned_wAPLKC = APL_weights['wAPLKC']
+
         # TODO modify fit_mb_model+olfsysm code in this case to use
         # wAPLKC_scale+preset_wAPLKC (and to have connectome_APL_weights return
         # consistently scaled version of the vector, so we can use the wAPLKC_scale
@@ -10920,6 +11021,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     assert num_notnull(fly_mean_df[dff_col]) == n_notnull_before
     assert num_null(fly_mean_df[dff_col]) == n_null_before
 
+    # TODO what is this actually dropping? doc
     fly_mean_df = fly_mean_df.dropna(subset=[dff_col])
     if roi_depths is not None:
         # TODO and should i also check we aren't dropping stuff that's non-NaN in depth
@@ -10945,12 +11047,15 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
             return f'{method}_scaled_{dff_col}'
 
 
+    qs = [0, 0.01, 0.05, 0.5, 0.95, 0.99, 1]
     # quantile 0 = min, 1 = max. after unstacking, columns will be quantiles.
-    fly_quantiles = fly_mean_df.groupby('fly_id')[dff_col].quantile(
-        [0, 0.01, 0.05, 0.5, 0.95, 0.99, 1]).unstack()
+    fly_quantiles = fly_mean_df.groupby('fly_id')[dff_col].quantile(qs).unstack()
 
     avg_flymin = fly_quantiles[0].mean()
     avg_flymax = fly_quantiles[1].mean()
+    # TODO assert all flies have same panels? (or otherwise might need to compute
+    # per-panel?) shouldn't be an issue w/ kiwi+control tho, as all those flies should
+    # have had both panels (+ diags)
 
     # NOTE: seems to be more variation in upper end than in inhibitory values
     # maybe i should be scaling the two sides diff then? (didn't seem worth it)
@@ -11039,6 +11144,8 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
                 # should have larger positive dF/F, so that shouldn't happen
                 assert np.isclose(scaled.max(), 1)
                 scaled *= avg_flymax
+                # TODO TODO apply same scales to data that still has trials split out?
+                # (-> save that)
                 assert np.isclose(scaled.max(), avg_flymax)
 
         elif method in ('split-minmax', 'split-minmax-to-avg'):
@@ -11641,6 +11748,12 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
         return ser
 
+    # TODO also save + check response_calc_params match (currently module level variable
+    # in al_analysis.py) (and do same for all data being fed thru model.  response calc
+    # should match that for data used to compute dF/F -> est spike delta fn) (or
+    # sufficient that we are saving input? and could then figure out which response stat
+    # fn that input was using, if needed)
+
     if not use_saved_dff_to_spiking_model:
         to_csv(dff_to_spiking_model_choices, dff_to_spiking_model_choices_csv,
             header=False
@@ -11946,6 +12059,10 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
         # benefitting from different fits
 
 
+    # TODO TODO TODO also get per-fly scaled data that preserves trials (-> save that)
+    # TODO TODO TODO or save per-fly scales separately, so it could be multiplied by
+    # separate copies of the data w/ separate trials?
+    #breakpoint()
     # TODO TODO histogram of est spike deltas this spits out
     # (to what extent is that already done in loop over panels below?)
     # TODO are only NaNs in the dff_col in here coming from setting-wrong-odors-NaN
@@ -11995,6 +12112,8 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
     mean_est_df = sort_odors(mean_est_df)
 
+    # TODO TODO save something like this, but keeping flies + trials too?
+    #breakpoint()
     # TODO save w/ panel(s)/similar in name, or under panel dirs? at least as duplicate?
     # (then remove ignore_output_change_check=True, if so)
     # do we actually need anything at this path exactly (prob not)?
@@ -12065,8 +12184,8 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 # Remy-paper)
 def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     roi_depths=None, skip_sensitivity_analysis: bool = False,
-    skip_models_with_seeds: bool = False, skip_hallem_models: bool = False,
-    first_model_kws_only: bool = False) -> None:
+    skip_models_with_seeds: bool = False, skip_model_dynamics_saving: bool = False,
+    skip_hallem_models: bool = False, first_model_kws_only: bool = False) -> None:
     # TODO when is it ok for certain_df to have NaNs? does seem current input has
     # some NaNs, which are only for some odors [for which no odors is NaN for all
     # fly-glomeruli]. any restrictions (if none, why was sam having issues?)
@@ -12098,6 +12217,15 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         first_model_kws_only: only runs the model with the first set of parameters (in
             `model_kw_list` in this function), to more quickly test changes to model.
     """
+    # TODO TODO why `memory usage (MiB): rss=4136.91 vms=7756.15` already here???
+    # (seems [from memory_profiler] that it's likely all from stuff loaded in
+    # process_recording in al_analysis.main. can i reduce that at all? still need all
+    # the big things?)
+    # TODO delete
+    print_curr_mem_usage(end='')
+    print(', at start of model_mb_responses')
+    #
+
     # TODO (not using roi_depths really, so not a big deal) why do roi_depths seem to
     # have one row per panel, rather than per recording?  current input has column
     # levels ['date', 'fly_num', 'roi'] and row levels ['panel', 'is_pair'])
@@ -12108,8 +12236,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
     # TODO TODO refactor to whare w/ natmix_data/analysis.py (copied from there)
     def drop_unused_model_odors(df: pd.DataFrame) -> pd.DataFrame:
-        # TODO TODO also drop pfo? share fn w/ al_analysis code used to run the model
-        # (easiest to move to mb_model then ig?)
         odor_strs = df.index.get_level_values('odor1')
         to_drop = (
             # hack to remove stuff like 'cmix-1 @ 0'
@@ -12118,13 +12244,14 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # to remove 2 component mixtures (whether in-vial or air mixture)
             odor_strs.str.contains('+', regex=False) |
 
-            # TODO TODO replace w/ using parsing to get name or match solvent_str or
+            # TODO replace w/ using parsing to get name or match solvent_str or
             # something
             # TODO could delete this one. already dropped (just a few lines) below.
-            odor_strs.str.startswith('pfo') |
-
-            (df.index.get_level_values('odor2') != solvent_str)
+            odor_strs.str.startswith('pfo')
         )
+        if 'odor2' in df.index.names:
+            to_drop = to_drop | (df.index.get_level_values('odor2') != solvent_str)
+
         df = df.loc[~to_drop].copy()
 
         df = drop_mix_dilutions(df)
@@ -12287,6 +12414,9 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # 2024-04-03)
     remy_sparsity = 0.0915
 
+    # TODO only do this if trying to repro paper (or at least only if panel is megamat
+    # or something)? (calling fn below doesn't cause a meaningful change in memory
+    # currently used, but just to remove unnecessary prints and processing)
     checks = True
     if checks:
         # TODO compute + use separate remy sparsity from validation data (not sure i'm
@@ -12325,6 +12455,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         target_sparsity = remy_sparsity
         warn(f'since {repro_remy_paper=} using {target_sparsity=}')
 
+    # TODO move to module level (+ rename?) (could be hacky alternative to passing in,
+    # and could share w/ some tests then...)
     # TODO accept this as optional input kwarg?
     # TODO use dict_seq_product to define as much of this as i can
     input_model_kw_list = [
@@ -12336,29 +12468,38 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         dict(prat_claws=True, _wPNKC_one_row_per_claw=True,
             use_connectome_APL_weights=True
         ),
+        # TODO TODO fix sens analysis for this (-> run kiwi/control data thru it, just
+        # like for above)
         dict(prat_claws=True, _wPNKC_one_row_per_claw=True),
 
-        dict(_wPNKC_one_row_per_claw=True),
-        dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True),
+        # TODO restore + regen these w/ signed maxabs responses (and sensitivity
+        # analysis for connectome APL weights one at least, or both if i fix it for
+        # other case)
+        #dict(_wPNKC_one_row_per_claw=True),
+        #dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True),
 
-        dict(_wPNKC_one_row_per_claw=True, APL_coup_const=0),
+        # TODO restore after checking (+ fixing, if needed) implementation of APL
+        # compartments
+        #
+        #dict(_wPNKC_one_row_per_claw=True, APL_coup_const=0),
         # NOTE: APL_coup_const=0 should enable different activity in different APL
         # compartments (but without any coupling between them)
         # TODO give it a better name!
         # TODO TODO check these outputs are actually diff from w/ default
         # APL_coup_const=None, where there should only be one APL (no compartments)
         # TODO TODO try multiple radii (need to expose as kwarg)
-        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, APL_coup_const=0),
+        #dict(prat_claws=True, _wPNKC_one_row_per_claw=True, APL_coup_const=0),
+        #
 
-        # TODO TODO drop multiglomerular PNs are re-run all prat_claws=True variants
-        # (hardcode inside that branch of connectome_wPNKC. never want them)
+        # TODO TODO (still an issue?) drop multiglomerular PNs are re-run all
+        # prat_claws=True variants (hardcode inside that branch of connectome_wPNKC.
+        # never want them)
 
-        # TODO TODO TODO add version(s) w/ prat_claws=True and APL compartments
-
-        # TODO TODO try these again after scaling wPNKC within each KC (to have same
+        # TODO delete?
+        # TODO try these again after scaling wPNKC within each KC (to have same
         # mean as before?)?
-        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='percentile'),
-        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='raw'),
+        #dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='percentile'),
+        #dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='raw'),
         #
 
         # TODO remove these entries w/ equalize_kc_type_sparsity=True? (or do i actually
@@ -12407,6 +12548,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         else:
             warn(f'{model_kws=} duplicated in input_model_kw_list! only keeping first')
         seen_model_kws.add(curr_kws)
+
     input_model_kw_list = deduped_model_kw_list
 
     paper_sens_analysis_kws = dict(
@@ -12794,9 +12936,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             savefig(fig, panel_plot_dir, 'remy-kc_vs_orn-raw-dff_corrs')
             # (end part to refactor to share w/ copied code)
 
-        # TODO TODO TODO remove all non-used kiwi/control odors before tuning (e.g.
-        # binary mixes, solvent, etc)?
-
         model_kw_list = []
         for model_kws in input_model_kw_list:
             model_kws = dict(model_kws)
@@ -12810,8 +12949,36 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # TODO share 'hemibrain' default w/ two other places this defined
             pn2kc_connections = model_kws.get('pn2kc_connections', 'hemibrain')
 
+            one_row_per_claw = model_kws.get('_wPNKC_one_row_per_claw', False)
+            if one_row_per_claw:
+                # NOTE: hallem cases should be all added below (preprint repro stuff),
+                # so shouldn't have to worry about dynamics trying to be saved for them
+                # (would require way too much memory + space)
+                #
+                # if could be specified per-element in input_model_kw_list, would need
+                # to del here if skip flag set
+                assert 'return_dynamics' not in model_kws
+                # now defaulting to saving these dynamics (which do take a lot of
+                # storage space), unless `-s model-dynamics` are among skip option, when
+                # called via `al_analysis.py` CLI [which sets this flag True])
+                if not skip_model_dynamics_saving:
+                    model_kws['return_dynamics'] = True
+            else:
+                if not skip_model_dynamics_saving:
+                    # natmix_data/analysis.py is currently only thing that analyzing
+                    # these, and only really for the one-row-per-claw outputs.
+                    # takes up too much disk space to justify saving for everything,
+                    # until needed.
+                    warn('not saving model dynamics b/c _wPNKC_one_row_per_claw=True '
+                        'not in model_kws'
+                    )
+
             if 'sensitivity_analysis' not in model_kws:
+                # TODO variable_n_claw cases really not supported? fix that (-> update
+                # code here)?
                 if pn2kc_connections not in variable_n_claw_options:
+                    # TODO warn we are defaulting to this (+ say you can disable by
+                    # setting False explicitly?)?
                     model_kws['sensitivity_analysis'] = True
 
             if model_kws.get('sensitivity_analysis', False):
@@ -12961,23 +13128,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # control, kiwi}?) none of the duplicate-save-within-run detection
             # seemed to trip tho...
 
-            # TODO delete (maybe add new kwarg save_dynamics to fit_and_plot... first,
-            # which sets return_dynamics and then saves them, but otherwise just returns
-            # dynamics w/o saving them if return_dynamics=True is set?)
-            #
-            # TODO add comment about how large we should expect these outputs
-            # to be + maybe switch back off by default (add CLI arg for this?
-            # [default?] skip option?)
-            # TODO TODO TODO restore False by default? actually need for anything, after
-            # checking we can recreate claw drive out here (pn_sims returned regardless?
-            # save only them if not, as needed for claw drive?)
-            '''
-            save_dynamics = True
-            #save_dynamics = False
-            if save_dynamics:
-                model_kws['return_dynamics'] = True
-            '''
-
             fixed_thr = None
             wAPLKC = None
             _extra_params = dict(extra_params)
@@ -12986,7 +13136,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # pre-tuning for hallem data (where the ORN data isn't passed here, but
             # loaded inside fit_mb_model)
             if 'orn_deltas' in model_kws and panel in panel2tuning_panels:
-
                 tuning_panels = panel2tuning_panels[panel]
                 tuning_panels_str = tuning_panel_delim.join(tuning_panels)
 
@@ -13012,7 +13161,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                         # NOTE: would need to move these APL boost params out of
                         # here, if I were to move boosting to pre-tuning
                         'multiresponder_APL_boost', '_multiresponder_mask',
-                        'boost_wKCAPL',
+                        'boost_wKCAPL', 'return_dynamics'
                     )
                 }
 
@@ -13025,6 +13174,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 # to odor names, or otherwise ensure no dupes?)
                 tuning_model_kws['orn_deltas'] = tuning_df
 
+                # this call is to pre-tune model on specified panels, and then calls
+                # below will run the current panel(s) through this pre-tuned model
                 param_dict = fit_and_plot_mb_model(tuning_panels_plot_dir,
                     extra_params=extra_params,
 
@@ -13049,16 +13200,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 # wAPLKC/wKCAPL from separate pickles here
                 apl_params = get_APL_weights(param_dict, model_kws)
                 wAPLKC = apl_params['wAPLKC']
-                # TODO delete (should be replaced by above)
-                '''
-                # TODO use get_APL_weights
-                if model_kws.get('use_connectome_APL_weights', False):
-                    assert 'wAPLKC' not in param_dict
-                    wAPLKC = param_dict['wAPLKC_scale']
-                else:
-                    assert 'wAPLKC_scale' not in param_dict
-                    wAPLKC = param_dict['wAPLKC']
-                '''
 
                 equalize_kc_type_sparsity = model_kws.get(
                     'equalize_kc_type_sparsity', False
@@ -13171,13 +13312,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
                 del equalize_kc_type_sparsity
 
-                # TODO TODO TODO really need this?
-                # TODO TODO TODO killed without this???
-                '''
-                if 'return_dynamics' in model_kws:
-                    del model_kws['return_dynamics']
-                '''
-
                 # TODO TODO variable_n_claws cases actually supported here? should
                 # fixed_thr / wAPLKC (or means) not also be appending to model output
                 # dir names? (not currently for uniform n_claws=7 outputs generated
@@ -13190,12 +13324,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
 
             params_for_csv = fit_and_plot_mb_model(panel_plot_dir,
                 param_dir_prefix=param_dir_prefix, extra_params=_extra_params,
-                fixed_thr=fixed_thr, wAPLKC=wAPLKC,
-                # TODO TODO TODO delete
-                # TODO TODO TODO really not work here? why not?
-                return_dynamics=True,
-                #
-                **model_kws
+                fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
             )
             _write_inputs_for_reproducibility(panel_plot_dir, params_for_csv)
 
@@ -13205,6 +13334,14 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # fit_and_plot... in that case).
             if params_for_csv is None:
                 continue
+
+            if first_model_kws_only:
+                # TODO also say we aren't writing CSV here too? (or don't say in
+                # similar conditional below?)
+                warn('breaking after first model_kw_list entry, because '
+                    f'{first_model_kws_only=}!'
+                )
+                break
 
             if skip_models_with_seeds:
                 warn(f'not writing to {model_param_csv} (b/c '
@@ -13233,12 +13370,6 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # NOTE: can't use wrapper here b/c it asserts output wasn't already
             # saved this run.
             model_params.to_csv(model_param_csv, index=False)
-
-            if first_model_kws_only:
-                warn('breaking after first model_kw_list entry, because '
-                    f'{first_model_kws_only=}!'
-                )
-                break
 
         if skip_models_with_seeds:
             warn('not making across-model plots (S1C/2E) (b/c '
@@ -15024,6 +15155,7 @@ def main():
 
     kws = dict()
     # TODO delete this product thing, and just switch to a kws_list?
+    # TODO define some of this w/ dict_seq_product?
     try_each_with_kws = [
         dict(_wPNKC_one_row_per_claw=True, APL_coup_const=0),
         # NOTE: APL_coup_const=0 should enable different activity in different APL
@@ -15031,35 +15163,35 @@ def main():
         # TODO give it a better name!
         # TODO TODO check these outputs are actually diff from w/ default
         # APL_coup_const=None, where there should only be one APL (no compartments)
-        # TODO TODO try multiple radii (need to expose as kwarg)
+        # (add test for that? already exist? test we have activity timecourses for each
+        # compartment separately too?)
+        # TODO try multiple radii? (need to expose as kwarg) (may be bigger priority to
+        # try other compartmentalizations, whether that's a grid or something else)
         dict(prat_claws=True, _wPNKC_one_row_per_claw=True, APL_coup_const=0),
 
-        # TODO TODO drop multiglomerular PNs are re-run all prat_claws=True variants
-        # (hardcode inside that branch of connectome_wPNKC. never want them)
+        # TODO TODO (done?) drop multiglomerular PNs and re-run all prat_claws=True
+        # variants (hardcode inside that branch of connectome_wPNKC. never want them)
+        # TODO add test comparing glomeruli set wd20 vs tianpei vs prat_claws?
+        # (and explaining any differences in comments) (assert all in task? some
+        # exceptions?)
 
-        # TODO TODO TODO add version(s) w/ prat_claws=True and APL compartments
-
-        dict(prat_claws=True, _wPNKC_one_row_per_claw=True),
-
-        # TODO TODO try these again after scaling wPNKC within each KC (to have same
-        # mean as before?)?
-        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='percentile'),
-        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='raw'),
-        #
-
-        # TODO TODO TODO will need to fix
         dict(prat_claws=True, _wPNKC_one_row_per_claw=True,
             use_connectome_APL_weights=True
         ),
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True),
+
+        # TODO delete? both of these seemed to just make main issues w/ model worse
+        # TODO TODO try these again after scaling wPNKC within each KC (to have same
+        # mean as before?) (have i already? would this really matter?)?
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='percentile'),
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True, dist_weight='raw'),
         #
 
         dict(_wPNKC_one_row_per_claw=True),
         dict(_wPNKC_one_row_per_claw=True, use_connectome_APL_weights=True),
 
-        # TODO delete?
         dict(weight_divisor=20),
         dict(weight_divisor=20, use_connectome_APL_weights=True),
-        #
     ]
 
     for extra_kws in try_each_with_kws:
@@ -15081,14 +15213,20 @@ def main():
         # ...           ...       ...      ...  ...         ...        ...      ...
         # 1835          1.0       1.0      2.0  ...         1.0        0.0      0.0
         # 1836          0.0       0.0      0.0  ...         0.0        0.0      0.0
-        df = pd.read_csv(output_dir / 'spike_counts.csv', index_col=KC_ID)
+        #
+        # NOTE: would probably need to remove KC_TYPE level if using e.g.
+        # pn2kc_connections='uniform' (where we are not using hemibrain data, and thus
+        # do not have subtypes per cell)
+        df = pd.read_csv(output_dir / 'spike_counts.csv', index_col=[KC_ID, KC_TYPE])
 
     # TODO TODO also include an example w/ kiwi/control data (as used by natmix_data)
     # (either committing data in al_analysis too, or moving this whole example to
     # another repo)
     # TODO + add test i can reproduce those outputs (use outputs i already sent someone
     # from my kiwi/control data? sent to ruoyi? or someone else?)
-    import ipdb; ipdb.set_trace()
+    # TODO TODO add tests in test_al_analysis to test i can repro other outputs too (or
+    # at least characterize extent of current mismatch, with an explanation as to why
+    # each difference exists)
 
     # TODO also include equalize_kc_type_sparsity=False for all below
     # TODO TODO pick from kwargs described in comments below

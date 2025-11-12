@@ -73,7 +73,7 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
     diag_panel_str, warn, should_ignore_existing, ignore_existing_options, data_root,
     produces_output, to_csv, to_pickle, read_pickle, plot_fmt, makedirs, cmap,
     diverging_cmap, diverging_cmap_kwargs, bootstrap_seed, cluster_rois, plot_corr,
-    plot_responses, mean_of_fly_corrs
+    plot_responses, mean_of_fly_corrs, print_curr_mem_usage
 )
 # TODO check we can set global flags from main below (only reason this is imported)
 # (and in a way s.t. al_util fns actually use new values...)
@@ -295,7 +295,7 @@ do_analyze_response_volumes = False
 # TODO some quantitative check this is ~optimal?
 # Note this is w/ volumetric sampling of ~1Hz (actually almost all my stuff is closer to
 # ~0.6Hz, so may need to re-evaluate).
-# NOTE: currently need this =2 to recreate paper outputs (for pebbled at least.  may
+# NOTE: currently need this =2 to recreate paper outputs (for pebbled at least. may
 # change params i want to use for gh146, but had been using 2 as well [and all same
 # params] for GH146 too, at least until 2025-07-07). had also experimented w/ =3.
 # (using 2 to accomodate earlier recordings for Remy's project, where pulse was still
@@ -313,6 +313,8 @@ n_volumes_for_baseline = None
 # volumes). use False to preserve that behavior.
 median_for_baseline = False
 
+# TODO delete?
+#
 # Whether to exclude last frame before odor onset in calculating the baseline for each
 # trial. These baselines are used to define the dF/F for each trial. This can help hedge
 # against off-by-one bugs in the frame<-> assignment code, but might otherwise weaken
@@ -324,10 +326,30 @@ exclude_last_pre_odor_frame = False
 # if False, one baseline per trial. if True, baseline to first trial of each odor.
 one_baseline_per_odor = False
 
-response_stat_fn = np.mean
-# NOTE: __name__ of this ends up being "amax" instead of "max"
-# (but it's just "mean" if `response_stat_fn = np.mean`)
-#response_stat_fn = np.max
+# TODO test
+def sign_preserving_maxabs(x):
+    """Returns value with maximum absolute value.
+    """
+    idxmax = np.abs(x).idxmax(axis=0)
+    # TODO update w/ sam's version that should also work w/ >2D input?
+    # not sure it also works for 2D input though... here's the code he used to make
+    # dF/F images using [what should be an equivalent] calculation:
+    # newshape = dff_response.shape[1:]
+    # oldshape = [1] + [i for i in newshape]
+    # maxabs_idxs = np.abs(dff_response).argmax(axis=0).reshape(oldshape)
+    # maxabs_dff = np.take_along_axis(dff_response, maxabs_idxs, axis=0).reshape(newshape)
+    # (and i think I'm fine leaving those images as computed with mean, instead of this
+    # type of calculation)
+    df = pd.DataFrame([
+        x.loc[absmaxidx, idx] for idx, absmaxidx in zip(idxmax.index.values, idxmax)
+    ])
+    return df.values.flatten()
+
+
+response_stat_fn = sign_preserving_maxabs
+# mean was what I had used for a while (also with n_volumes_for_response=2, I believe),
+# including to generate Remy-paper outputs, and inputs to modelling for that.
+#response_stat_fn = np.mean
 
 # TODO TODO delete (output does not make that much sense. also already have per-panel
 # trace zscoring imlemented now, from cached raw traces. output there also doesn't make
@@ -339,20 +361,32 @@ response_stat_fn = np.mean
 zscore_traces_per_recording = False
 #
 
-# TODO TODO pickle these to each dir i save response stats in, and recompute if
-# there is a mismatch
-# TODO also include one_baseline_per_odor and other less-used params in here, at least
-# if they have values other than typical? (or include in dict always, but only include
-# in str in that case)
+# TODO add a flag to control whether recompute_responses_from_traces_per_panel is
+# called in main (+ args to it? not needed?), and include that in here too (not
+# currently called anywhere, but may want to use it in future. see where it's commented
+# in main.)
+# TODO anything else?
 response_calc_params = dict(
-    n_volumes_for_response=n_volumes_for_response,
     response_stat_fn=response_stat_fn,
+    n_volumes_for_response=n_volumes_for_response,
+    n_volumes_for_baseline=n_volumes_for_baseline,
     median_for_baseline=median_for_baseline,
     zscore_traces_per_recording=zscore_traces_per_recording,
+    exclude_last_pre_odor_frame=exclude_last_pre_odor_frame,
+    one_baseline_per_odor=one_baseline_per_odor,
 )
+exclude_if_value_matches = {
+    'n_volumes_for_baseline': None,
+    'median_for_baseline': False,
+    'zscore_traces_per_recording': False,
+    'exclude_last_pre_odor_frame': False,
+    'one_baseline_per_odor': False,
+}
+# TODO use to name different versions of pickled traces (-> switch between)
 response_calc_str = '__'.join(
     f"{k.replace('_', '-')}={getattr(v, '__name__', v)}".replace('=', '_')
     for k, v in response_calc_params.items()
+    if (k not in exclude_if_value_matches) or (v != exclude_if_value_matches[k])
 )
 
 # I seemed to end up imaging this side more anyway...
@@ -433,8 +467,12 @@ if response_stat_fn.__name__ == 'mean':
 
 # currently, np.max seems to have __name__ of amax, but checking both in case that isn't
 # always true.
-elif response_stat_fn.__name__.isin('max', 'amax'):
+elif response_stat_fn.__name__ in ('max', 'amax'):
     trial_stat_desc = 'peak'
+
+elif response_stat_fn.__name__ == 'sign_preserving_maxabs':
+    trial_stat_desc = '±peak'
+
 else:
     assert False, f'unrecognized {response_stat_fn.__name__=}'
 
@@ -1554,16 +1592,9 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
         date = fly_df.columns.unique('date')[0]
         fly_num = fly_df.columns.unique('fly_num')[0]
 
-        # TODO make less shitty? don't want to have to hard code indices like this...
-        # looping over index elements below just gives us tuples (of row index values)
-        # tho.
-        assert fly_df.index.names[0] == 'panel'
-        # TODO TODO fix how this failed on gh146 data (when re-analyzed 2025):
-        # ./al_analysis.py -d GH146 -n 6f -t 2023-06-22 -e 2023-07-28 -s intensity,corr -v -i ijroi
-        # (no odors actually in redone_odors below tho, so inconsequential in that case)
-
-        # TODO TODO would this also fail on pebbled data if i were to re-analyze it
-        # (probably)?
+        # TODO delete (but why weren't we getting here when re-analyzing megamat data?
+        # unlike re-analyzing validation2, which is only case that triggered it)
+        '''
         try:
             assert fly_df.index.names[2:4] == ['odor1', 'odor2']
         # TODO delete
@@ -1572,8 +1603,20 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
             print(f'{fly_df.index.names=}')
             print(f'{fly_df.index.names[2:4]=}')
             warn('ASSERTION FAILED. FIX.')
-            #import ipdb; ipdb.set_trace()
-        #
+            #breakpoint()
+        '''
+
+        names = fly_df.index.names
+        assert 'panel' in names, f'{names=}'
+        panel_idx = names.index('panel')
+
+        # NOTE: assumes all 'odor<n>' index levels (each indicating one component, when
+        # mixed in air) are consecutive, and all come immediately before the 'repeat'
+        # level. also does not include (mostly no longer used) 'is_pair' level.
+        assert 'odor1' in names and 'repeat' in names, f'{names=}'
+        odor_start_idx = names.index('odor1')
+        odor_end_idx = names.index('repeat')
+        assert odor_end_idx > odor_start_idx
 
         recordings = fly_df.columns.get_level_values('thorimage_id').unique()
 
@@ -1581,24 +1624,18 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
             recording_has_curr_odor = recording_has_odor.loc[panel_odor]
             final_recording = recording_has_curr_odor[::-1].idxmax()
 
-            # TODO TODO how to warn about which ones we are tossing this way tho???
+            # TODO how to warn about which ones we are tossing this way tho???
             nonfinal_recordings= (
                 fly_df.columns.get_level_values('thorimage_id') != final_recording
             )
 
-            panel = panel_odor[0]
-            # TODO TODO TODO update this line to not depend on specific indices (or at
-            # least compute them earlier based on position of odor1[[/odor2]/etc] levels
+            panel = panel_odor[panel_idx]
             # NOTE: ignoring 'repeat' (which might be different across recordings in
             # someone elses use, but isn't in any of my data)
-            odors = panel_odor[2:4]
-            # TODO delete
-            if 'odor2' not in fly_df.index.names:
-                print()
-                print(f'{panel_odor=}')
-                print(f'{odors=}')
-                import ipdb; ipdb.set_trace()
-            #
+            # TODO double check i don't want +1 on end (want to include 'repeat' or
+            # not? maybe we don't, but finding it's index acts as +1 to last odor
+            # component idx?)
+            odors = panel_odor[odor_start_idx:odor_end_idx]
 
             nonfinal_recording_set = (
                 set(recording_has_curr_odor[recording_has_curr_odor].index)
@@ -2984,13 +3021,17 @@ def compute_trial_stats(raw_traces, bounding_frames,
         try:
             curr_trial_stats = stat(for_response, axis=0)
 
+        # TODO say what this was for (/ delete)
         except TypeError as err:
             # TODO better way to get err msg?
             err_msg = str(err)
 
+            # TODO also support messages that look like: (-> restore)
+            # "sign_preserving_maxabs() got an unexpected keyword argument 'axis'"
+            #
             # only trying to catch errors like:
             # TypeError: 'axis' is an invalid keyword argument for max()
-            assert str(err).startswith("'axis' is an invalid keyword argument for ")
+            #assert str(err).startswith("'axis' is an invalid keyword argument for ")
 
             # if stat doesn't accept axis=0 kwarg, we'll try without that
             curr_trial_stats = stat(for_response)
@@ -3084,6 +3125,8 @@ def get_panel(thorimage_id: Pathlike) -> Optional[str]:
 
 
 def ij_last_analysis_time(analysis_dir: Path):
+    # TODO would this also work correctly if ij_trial_df_cache_basename was as symbolic
+    # link to another pickle in same dir (e.g. named w/ response_calc_str)?
     ij_trial_df_cache = analysis_dir / ij_trial_df_cache_basename
     if not ij_trial_df_cache.exists():
         return None
@@ -3954,6 +3997,8 @@ def thorimage2analysis_dir(thorimage_dir : Path) -> Path:
     return Path(str(thorimage_dir).replace(_thorimage_dir_part, _analysis_dir_part))
 
 
+# TODO is one of these dupe w/ ij_trial_df_cache? explain differences in comment
+# otherwise
 full_traces_cache_name = 'full_traces.p'
 best_plane_traces_cache_name = 'best_plane_traces.p'
 
@@ -4139,8 +4184,17 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False,
     full_traces.columns = pd.MultiIndex.from_arrays([full_traces.columns,
         pd.Series(full_rois.roi_z.values[fullrois_nonoutline_mask], name='z')
     ])
-    # TODO TODO try picking planes directly from concatenated full_traces.p contents?
-    # don't actually need ROIs themselves to later pick the best plane, no?
+
+    # TODO also invalidate these caches if cached response_calc_params don't match
+    # current (should be fine to just check outside [in process_recording], and use that
+    # to decide whether to call ij_trace_plots? still want to save multiple copies here
+    # [named as response_calc_str] here, and switch between them [instead of always
+    # recomputing]?)
+
+    # TODO (delete? this what i had already tried w/
+    # recompute_responses_from_traces_per_panel?) try picking planes directly from
+    # concatenated full_traces.p contents? don't actually need ROIs themselves to later
+    # pick the best plane, no?
     to_pickle(full_traces, analysis_dir / full_traces_cache_name)
 
     # TODO also return these, so i don't need to load them all from disk cache?
@@ -4373,6 +4427,10 @@ def ij_traces(analysis_dir: Path, movie, bounding_frames, roi_plots=False,
             warn(f'{shorten_path(analysis_dir)}: {err}')
             continue
 
+        # TODO seed colors if not already (is that why some calls w/ `-c` were failing?
+        # or did some of the ROIs actually change, which lead to color changes?)
+        # TODO (not preferable) if difference unavoidable and not important, exclude
+        # this from -c check?
         fig_path = savefig(fig, ij_plot_dir, f'all_rois_on_{bg_desc}')
 
         # TODO want to keep these symlinks / dirs?
@@ -5555,7 +5613,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     if not response_volume_cache_exists:
         do_nonroi_analysis = True
 
-    if response_volume_cache_exists and not do_nonroi_analysis:
+    if (do_analyze_response_volumes and response_volume_cache_exists and
+        not do_nonroi_analysis):
         # TODO rename from load_corr_dataarray. confusing here (since a correlation is
         # not what it's loading)
         response_volumes_list.append(load_corr_dataarray(response_volume_cache_fname))
@@ -5768,24 +5827,47 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         if have_ijrois:
             dirs_with_ijrois.append(analysis_dir)
 
+            response_calc_param_cache = analysis_dir / 'response_calc_params.p'
+
             ij_trial_df_cache = analysis_dir / ij_trial_df_cache_basename
 
             full_rois_cache = analysis_dir / 'full_rois.p'
             best_plane_rois_cache = analysis_dir / 'best_plane_rois.p'
 
-            # no longer always making plots in here (flags to disable some, and only
-            # generating others for diagnostic experiments), so just checking mtime of
-            # analysis_dir / ij_trial_df_cache_basename, rather than plots under ijroi
-            # plot subdir
-            ijroi_last_analysis = ij_last_analysis_time(analysis_dir)
+            # TODO TODO use response_calc_str to save (and switch between) multiple
+            # versions of response calcs (+ best_plane_rois.p? anything else that varies
+            # w/ response calc?) (symlink ij_trial_df_cache to one of several pickles?
+            # getmtime still work on symlink, getting mtime of target file?)
+            if response_calc_param_cache.exists():
+                prev_response_calc_params = read_pickle(response_calc_param_cache)
+                if prev_response_calc_params != response_calc_params:
+                    # TODO print difference too?
+                    warn('response calc params changed! will re-analyze ImageJ ROIs')
+                    response_calc_changed = True
+                else:
+                    response_calc_changed = False
+            else:
+                warn('did not have saved response calc params! will re-analyze ImageJ '
+                    'ROIs'
+                )
+                response_calc_changed = True
 
-            if ijroi_last_analysis is None:
+            if response_calc_changed:
                 ij_analysis_current = False
             else:
-                # We don't need to check LHS for None b/c have_ijrois check earlier.
-                ij_analysis_current = (
-                    ijroi_mtime(analysis_dir) < ijroi_last_analysis
-                )
+                # no longer always making plots in here (flags to disable some, and only
+                # generating others for diagnostic experiments), so just checking mtime
+                # of analysis_dir / ij_trial_df_cache_basename, rather than plots under
+                # ijroi plot subdir
+                ijroi_last_analysis = ij_last_analysis_time(analysis_dir)
+
+                if ijroi_last_analysis is None:
+                    ij_analysis_current = False
+                else:
+                    # we don't need to check LHS for None b/c have_ijrois check earlier
+                    ij_analysis_current = (
+                        ijroi_mtime(analysis_dir) < ijroi_last_analysis
+                    )
 
             ignore_existing_ijroi = should_ignore_existing('ijroi')
 
@@ -5795,7 +5877,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                     do_ij_analysis = False
 
                     print_if_not_skipped(
-                        'ImageJ ROIs unchanged since last analysis. reading cache.'
+                        'ImageJ ROIs (+ response calc params) unchanged since last '
+                        'analysis. reading cache.'
                     )
                     ij_trial_df = pd.read_pickle(ij_trial_df_cache)
                     ij_trial_dfs.append(ij_trial_df)
@@ -5817,13 +5900,17 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
                         raise NotImplementedError
                     #
 
+                    # TODO why not loading? was this just b/c not all had these files
+                    # saved?
                     roi2best_plane_depth = _compute_roi2best_plane_depth(full_rois,
                         best_plane_rois
                     )
                     roi2best_plane_depth_list.append(roi2best_plane_depth)
                 else:
                     print_inputs_once(yaml_path)
-                    print('ImageJ ROIs were modified. re-analyzing.')
+                    print('ImageJ ROIs (/response calc params) were modified. '
+                        're-analyzing.'
+                    )
             else:
                 print_inputs_once(yaml_path)
                 print('ignoring existing ImageJ ROI analysis. re-analyzing.')
@@ -5866,6 +5953,10 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     # (nothing below should currently use best_plane_rois at all)
 
     if do_ij_analysis:
+        # NOTE: this also will write full_traces_cache_name (='full_traces.p') and
+        # best_plane_traces_cache_name (='best_plane_traces.p') in analysis_dir, which
+        # will be used if recompute_responses_from_traces_per_panel is called later.
+        #
         # TODO just return additional stuff from this to use best_plane_rois in
         # plot_rois as like full_rois (some metadata dropped when converting latter to
         # former)?
@@ -5885,6 +5976,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         # TODO TODO compare best_plane_rois across recordings (+ probably refactor
         # their computation to always be across all recordings for a fly anyway, rather
         # than computing within each recording...)
+
+        to_pickle(response_calc_params, response_calc_param_cache)
 
         ij_trial_df = add_metadata(ij_trial_df)
         to_pickle(ij_trial_df, ij_trial_df_cache)
@@ -6339,7 +6432,11 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
     # TODO factor to hong2p.xarray
     arr = arr.assign_coords({n: np.arange(arr.sizes[n]) for n in spatial_dims})
 
-    response_volumes_list.append(arr)
+    # these can take up a lot of memory (could be ~100MiB per recording), so only
+    # appending if we want to analyze them later
+    if do_analyze_response_volumes:
+        response_volumes_list.append(arr)
+
     # TODO rename to remove 'corr'. not what we are writing here...
     write_corr_dataarray(arr, response_volume_cache_fname)
 
@@ -10360,9 +10457,9 @@ def process_sam_glomeruli_names(df: pd.DataFrame, glomerulus_col: str = 'roi', *
     """
     assert glomerulus_col in df.columns.names
 
-    glomeruli = get_levels(df.columns, glomerulus_col)
+    old_glomeruli = get_levels(df.columns, glomerulus_col)
 
-    parts = glomeruli.str.split('_')
+    parts = old_glomeruli.str.split('_')
     n_parts = parts.str.len()
     assert n_parts.isin((1, 2)).all()
 
@@ -10373,17 +10470,29 @@ def process_sam_glomeruli_names(df: pd.DataFrame, glomerulus_col: str = 'roi', *
 
     if verbose and has_suffix.any():
         warn("stripping Sam's uncertainty suffixes from (w/ # of columns for each):\n" +
-            glomeruli[has_suffix].value_counts().to_string()
+            old_glomeruli[has_suffix].value_counts().to_string()
         )
-
-    glomeruli = parts.map(lambda x: x[0])
 
     df = df.copy()
 
+    glomeruli = parts.map(lambda x: x[0])
+
     if not isinstance(df.columns, pd.MultiIndex):
+        # TODO this even work? levels actually of length equal to columns always (it's
+        # certainly not for case below, where there are also other levels)? use code for
+        # else branch below for both cases?
         df.columns = glomeruli
     else:
-        df.columns = df.columns.set_levels(glomeruli, level=glomerulus_col)
+        # NOTE: can not use `df.columns.set_levels(glomeruli, level=glomerulus_col)`, as
+        # if I run with all data (i.e. `-t 2023-04-22 -e 2024-10-01`), I get:
+        # ValueError: Level values must be unique: ['0', '1', ... ] on level 2
+        # (not an issue if just running on the kiwi/control data that actually used
+        # Sam's ROIs, but still). if just running on kiwi/control data, the columns as
+        # produced below are equal to what .set_levels based code would give us.
+        for_columns = df.columns.to_frame(index=False)
+        old2new = dict(zip(old_glomeruli, glomeruli))
+        for_columns[glomerulus_col] = for_columns[glomerulus_col].map(old2new)
+        df.columns = pd.MultiIndex.from_frame(for_columns)
 
     # TODO or maybe pick one instead of assigning same vector into each?
     # or just drop all these? just 'VA1d/VA1v'
@@ -10520,9 +10629,10 @@ def main():
     # TODO extend skip CLI arg to work on some of the steps referenced by -i flag?
     # (was nonroi one of the more time consuming ones?)
     skippable_steps = ('intensity', 'corr', 'model', 'model-sensitivity',
-        'model-seeds', 'model-hallem', 'ijroi'
+        'model-seeds', 'model-hallem', 'model-dynamics', 'ijroi'
     )
-    # NOTE: model-sensitivity can only run as part of model step
+    # NOTE: model-sensitivity (and others w/ 'model-' prefix) can only run as part of
+    # model step
     default_steps_to_skip = ('intensity', 'corr', 'model')
     # TODO add options for sensitivity_analysis + any MB model fitting w/ n_seeds>1?
     # + hallem fitting? or cache some of these (possibly adding to -i options)?
@@ -10642,9 +10752,7 @@ def main():
     force_across_fly = args.force_across_fly
 
     parallel = args.parallel
-    # TODO work?
     al_util.ignore_existing = args.ignore_existing
-    #
     steps_to_skip = args.skip
     first_model_kws_only = args.first_model_only
     retry_previously_failed = args.retry_failed
@@ -11231,7 +11339,14 @@ def main():
         total_s = time.time() - main_start_s
         print(f'Took {total_s:.0f}s\n')
 
-    # TODO TODO TODO also save + concat an average baseline fluorescence tiff, for more
+    # TODO delete
+    # (still at ~832MiB on kiwi/control data, but way down [from ~4GiB] after no longer
+    # always populating response_volumes_list)
+    #print('after process_recording calls: ', end='')
+    #print_curr_mem_usage()
+    #
+
+    # TODO TODO also save + concat an average baseline fluorescence tiff, for more
     # quickly making roi judgements on that basis
     #
     # TODO also have it regenerate if for some reason a concat tiff doesn't already
@@ -11372,7 +11487,7 @@ def main():
         # Crude way to ensure we don't overwrite if we only run on a subset of the data
         write_cache = len(matching_substrs) == 0
 
-        # TODO TODO TODO get this to not err in quick-test case (2023-04-03 data,
+        # TODO get this to not err in quick-test case (2023-04-03 data,
         # before panel stuff). should also work w/ diagnostic only input (or at least
         # not err)
         analyze_response_volumes(response_volumes_list, output_root,
@@ -12102,9 +12217,29 @@ def main():
             # might make some calculations on filled data easier if this were true
             # (and we'd never expected the dF/F to be *exactly* 0 for any real data)
             # TODO: n_per_odor_and_glom calculation might be modified to rely on this
-            assert not (fly_df == 0.0).any().any(), ('data already had values at '
-                'exactly 0.0 before 0-filling'
-            )
+            # TODO TODO TODO why is this triggering in (stat_fn=max,
+            # n_response_volumes=3) case? bug? would it also happen if i re-ran w/ prev
+            # values, but still w/ `-i ijroi` on kiwi/control data?
+            # TODO TODO convert to warning?
+            try:
+                assert not (fly_df == 0.0).any().any(), ('data already had values at '
+                    'exactly 0.0 before 0-filling'
+                )
+            # TODO delete
+            except AssertionError:
+                # ipdb> start_date, end_date, fly_id
+                # ('2024-09-03', '2024-10-01', 'B')
+                # ipdb> (fly_df == 0).replace(False, np.nan).stack()
+                # odor1       repeat  roi
+                # 2-but @ -6  2       VA6    True
+                # dtype: object
+                print('FIX ME!')
+                print(f'{(start_date, end_date, fly_id)=}')
+                print(f'{(fly_df == 0).sum().sum()=}')
+                print(f'{(fly_df == 0).replace(False, np.nan).stack()=}')
+                breakpoint()
+                print()
+            #
 
             # TODO TODO include that this is happening in a message (w/ which glomeruli)
             #
@@ -12451,10 +12586,14 @@ def main():
 
     # TODO fix hack in this case (failing b/c of 'aphe @ -4' and glomeruli measured now
     # only 1 time, i think. that set seems like 'DP1l', 'VL1', 'VL2p', 'VM3')
-    if not only_diags_from_megamat_flies:
+    if not only_diags_from_megamat_flies and do_drop_nonconsensus_odors:
+        # TODO make this conditional on do_drop_nonconsensus_odors (doing now. any
+        # reason not to?)? (or only check for odors w/ above a certain amount of
+        # sampling?)
+        #
         # (currently always dropping these odors for mean_df/etc, regardless of
         # do_drop_nonconsensus_odors value, so below comment irrelevant)
-        # TODO TODO fix (after removing odor consensus dropping [via setting
+        # TODO fix (after removing odor consensus dropping [via setting
         # do_drop_nonconsensus_odors=False], no longer true)
         # (why though, aren't both of these computed differently? still rely on same
         # odor consensus dropping? restore for these, indep of new flag?)
@@ -12854,12 +12993,14 @@ def main():
         # still need to hardcode / similar...
         # TODO round up/down to nearest multiple of 0.5/0.25 or something, when using
         # dmin/dmax?
-        # TODO just leave None?
-        #vmin = dmin
-        #vmax = dmax
+        # TODO just leave None? (was causing issues w/ some lines. see comment below)
+        vmin = dmin
+        vmax = dmax
+        # TODO delete? did i actually want these None for any cases below? None was
+        # causing issues for some lines below, that were replacing 0 w/ `vmin - 1e-5`.
         # (defaults)
-        vmin = None
-        vmax = None
+        #vmin = None
+        #vmax = None
         # the default
         cbar_kws = None
 
@@ -13370,7 +13511,7 @@ def main():
     # ipdb> ( (mean_df.isna() | (mean_df == 0) ).all() ).sum()
     # 14
 
-    # TODO TODO any way to get date_format to apply to stuff in MultiIndex?
+    # TODO any way to get date_format to apply to stuff in MultiIndex?
     # or is the issue that it's a pd.Timestamp and not datetime?
     # TODO link the github issue that might or might not still be open about this
     # date_format + index level issue (may need to update pandas if it has been
@@ -13494,6 +13635,9 @@ def main():
         assert 'model-seeds' in skippable_steps
         skip_models_with_seeds = 'model-seeds' in steps_to_skip
 
+        assert 'model-dynamics' in skippable_steps
+        skip_model_dynamics_saving = 'model-dynamics' in steps_to_skip
+
         assert 'model-hallem' in skippable_steps
         skip_hallem_models = 'model-hallem' in steps_to_skip
 
@@ -13532,6 +13676,7 @@ def main():
                 roi_depths=roi_best_plane_depths,
                 skip_sensitivity_analysis=skip_sensitivity_analysis,
                 skip_models_with_seeds=skip_models_with_seeds,
+                skip_model_dynamics_saving= skip_model_dynamics_saving,
                 skip_hallem_models=skip_hallem_models,
                 first_model_kws_only=first_model_kws_only,
             )

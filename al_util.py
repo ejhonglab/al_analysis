@@ -10,6 +10,7 @@ from os.path import getmtime
 from pathlib import Path
 import pickle
 from pprint import pformat
+import psutil
 import sys
 from tempfile import NamedTemporaryFile
 import time
@@ -1661,6 +1662,8 @@ cmap = 'magma'
 # shouldn't need any more generality (Grid was used above to include FacetGrid)
 def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap,
     return_linkages: bool = False, **kwargs) -> sns.axisgrid.Grid:
+    # TODO update doc on row_colors. what are other ways? if i add features to
+    # viz.clustermap, just reference that doc here?
     """
     Args:
         return_linkages: passed to `hong2p.viz.clustermap`
@@ -1670,9 +1673,6 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
     One way `row_colors` can be passed is as a `Series` with index matching
     `df.columns`, where values are color (RGB?) 3-tuples.
     """
-    # TODO TODO provide a simpler way of specifying row_colors? (maybe just a level [/
-    # palette / hue_order])?
-
     # TODO doc expectations on what rows / columns of input are
 
     # TODO why transposing? stop doing that (-> change all inputs). will just cause
@@ -1693,9 +1693,11 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
         # formatted str fn? isn't that what i do w/ hong2p.viz.matshow calls?
         df.columns = df.columns.get_level_values('odor1')
 
-    # TODO TODO add option to color rows by fly (-> generate row_colors Series in here)
+    # TODO add option to color rows by fly (-> generate row_colors Series in here)
     # (values of series should be colors)
     # (see natmix_data/analysis.py get_fly_color_series)
+    # (2025-11-05: planning to add some related code to viz.clustermap, for use in
+    # natmix_data/analysis.py)
 
     ret = viz.clustermap(df, col_cluster=False, cmap=cmap,
         return_linkages=return_linkages, **kwargs
@@ -1714,6 +1716,29 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
         #cg.fig.suptitle(title)
 
     return ret
+
+
+# TODO delete (/move to hong2p util?)
+def print_curr_mem_usage(end: str = '\n') -> None:
+    """Returns resident set size (RSS) memory usage of current process.
+    """
+    # https://stackoverflow.com/questions/938733
+    proc = psutil.Process()
+
+    # TODO change to printing both this and VMS, instead of returning?
+
+    byte2MiB = 1024**2
+
+    # NOTE: "resident set size" (rss) is probably what I want, but may also
+    # consider "virtual memory size" (vms), which would also include a few other
+    # (mostly not actively being used) things.
+    # see: https://stackoverflow.com/questions/7880784
+    #
+    # memory_info().rss should be current memory usage in bytes
+    rss = proc.memory_info().rss / byte2MiB
+    vms = proc.memory_info().vms / byte2MiB
+    print(f'memory usage (MiB): rss={rss:.2f} vms={vms:.2f}', end=end)
+#
 
 
 # TODO maybe some of below (stuff re: remy's kc data) should be moved into

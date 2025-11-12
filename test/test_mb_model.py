@@ -648,6 +648,12 @@ def test_homeostatic_thrs(orn_deltas):
     assert_fit_outputs_equal(ret, ret2)
 
 
+# TODO TODO add test that allow_net_inh_per_claw=True (the default) produces some
+# negative claw activities (and that there are none w/ =False), and also cover
+# APL_coup_const != -1 case, where i currently haven't implemented
+# allow_net_inh_per_claw=False (but xfail that here for now, and then get it to work
+# later, by refactoring olfsysm)
+
 def test_spatial_wPNKC_equiv(orn_deltas):
     """
     Tests that one-row-per-claw wPNKC can recreate one-row-per-KC hemibrain outputs,
@@ -892,7 +898,7 @@ def test_fixed_inh_params(orn_deltas):
         # tianpei's test to pass? (try without)
         # if so, could code be modified to just require wAPLKC[_scale], as w/ my code?
         # (if not, why not?)
-        # TODO TODO TODO try removing wAPLKC/wKCAPL for repro calls where we also have
+        # TODO TODO try removing wAPLKC/wKCAPL for repro calls where we also have
         # w[APLKC|KCAPL]_scale, and make sure still passes (should never need to
         # explicitly pass in) (just remove those keys currently added in
         # get_thr_and_APL_weights?)
@@ -953,6 +959,10 @@ def test_fixed_inh_params(orn_deltas):
 # are equiv, for same input? prob not too important
 # TODO TODO still want separate test that checks we can load output for all of these?
 # (at least all used by downstream in model_mb_responses or natmix_data/analysis.py)
+# TODO also test return_dynamics=True + make_plots=True + _plot_example_dynamics=True
+# paths, for all, and check that they also all work w/ input data not from megamat
+# (fit_mb_model had for a while only been running a large part of make_plots code if
+# panel was megamat...)
 def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas):
     """
     Like test_fixed_inh_params, but calling (+ checking outputs of)
