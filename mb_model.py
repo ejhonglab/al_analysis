@@ -636,7 +636,7 @@ pn2kc_connections_options.update(connectome_options)
 
 from_prat = repo_root / 'data/from_pratyush'
 
-# TODO rename
+# TODO TODO rename
 # hemibrain PN/KC/APL weights (PN->KC, APL<->KC, APL<->PN), split by claw (using Prat's
 # dendritic-tree based claw determination) but not currently by bouton. no MB-C1 yet.
 # includes distances to "root", also from Prat's dendritic-tree based analysis, but
@@ -3783,9 +3783,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO union w/ Series now, unless i can change implementation of
     # one-row-per-claw=True + connectome_APL=False case?
     wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
-    # pn_claw_to_APL: if it's true, in sim_KC_layer, we take pn_t to calculate claw_to_apl
-    # drive instead of inheriting from KC_acitivity
-    pn_claw_to_APL: bool = False,
+    # pn_claw_to_APL: if it's true, in sim_KC_layer, we take pn_t to calculate
+    # claw_to_apl drive instead of inheriting from KC_acitivity
+    pn_claw_to_APL: bool = False, n_claws_active_to_spike: Optional[int] = None,
     #
     print_olfsysm_log: Optional[bool] = None, return_dynamics: bool = False,
     plot_dir: Optional[Path] = None, make_plots: bool = True,
@@ -4493,6 +4493,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO raise ValueError if this passed in non-one-row-per-claw case
         if APL_coup_const is not None:
             mp.kc.apl_coup_const = APL_coup_const
+
+        if n_claws_active_to_spike is not None:
+            assert n_claws_active_to_spike > 0
+            assert type(n_claws_active_to_spike) is int
+            mp.kc.n_claws_active_to_spike = n_claws_active_to_spike
 
     # TODO check kc_index here instead of wPNKC.index?
     if KC_TYPE in wPNKC.index.names:
@@ -5611,6 +5616,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     elif not homeostatic_thrs:
         thr = rv.kc.thr
 
+        # TODO add assertion checking i can recalculate spont_in (or at least make sure
+        # i understand how it's computed in the process of trying...)
+
         unique_thrs_and_counts = pd.Series((thr - 2*spont_in).squeeze()).value_counts()
         unique_fixed_thrs = unique_thrs_and_counts.index
         # TODO try min/max instead of value w/ max count? any possibility of
@@ -5627,8 +5635,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # olfsysm.choose_KC_thresh_uniform (and can be set by passing as the fixed_thr
         # kwarg to this function, which will also set mp.kc.add_fixed_thr_to_spont=True)
         fixed_thr = unique_thrs_and_counts.sort_values().index[-1]
-        # TODO TODO TODO bypass probably rest of this conditional in
-        # homeostatic_thrs=True case (or above too...)
         assert np.allclose(fixed_thr, unique_fixed_thrs)
 
         # TODO put behind verbose kwarg (/delete)
@@ -6499,7 +6505,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         #make_plots = False
         '''
 
-    spont_in = pd.Series(index=kc_index, data=spont_in.squeeze())
+    if n_claws_active_to_spike is None:
+        spont_in = pd.Series(index=kc_index, data=spont_in.squeeze())
+    else:
+        assert _wPNKC_one_row_per_claw
+        spont_in = pd.Series(index=claw_index, data=spont_in.squeeze())
 
     param_dict = {
         'fixed_thr': fixed_thr,
@@ -6512,6 +6522,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         'wAPLKC': wAPLKC,
         'wKCAPL': wKCAPL,
 
+        # TODO rename to just 'spont_in' (mainly now that it can sometimes be of len #
+        # claws now, rather than just # KCs)
         'kc_spont_in': spont_in,
     }
 
@@ -7051,8 +7063,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # reason that ann/matt added to spontaneous firing rate)? ann explain in her
         # thesis / preprint?
 
-        # TODO TODO TODO hline for threshold (per-KC, ofc)? to sanity check at least?
-        # TODO TODO also for spont_in
+        # TODO hline for threshold (per-KC, ofc)? to sanity check at least?
+        # TODO also for spont_in
 
         # could also use `example_odor_vm_sims.coords['kc'].to_index()`, which was
         # defined from `kc_index`, and should be equiv. not sure if there's a more
@@ -10006,7 +10018,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         return params_for_csv
 
     row_colors = None
-    # TODO TODO another version separately clustering for each kc_type?
     if KC_TYPE in to_cluster.index.names:
         response_rate_by_type = to_cluster.groupby(KC_TYPE).apply(
             lambda x: x.mean().mean()
@@ -10037,10 +10048,20 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # call below)?
         handles = [Patch(facecolor=color) for type, color in type2color.items()]
 
+    if (~ silent_cells).sum() == 1:
+        # cluster_rois below would fail (in the sns.clustermap call) with:
+        # ValueError: The number of observations cannot be determined on an empty
+        # distance matrix.
+        # ...if we did not return here.
+        warn('only one model cell had any responses! returning before generating '
+            'further plots!'
+        )
+        return params_for_csv
+
     # ~30" height worked for ~1837 cells, but don't need all that when not plotting
     # silent cells
-    cg = cluster_rois(to_cluster[~ silent_cells].T, odor_sort=False, figsize=(7, 12),
-        row_colors=row_colors
+    cg = cluster_rois(to_cluster[~ silent_cells].T, odor_sort=False,
+        figsize=(7, 12), row_colors=row_colors
     )
 
     if KC_TYPE in to_cluster.index.names:
@@ -12472,12 +12493,44 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # and could share w/ some tests then...)
     # TODO accept this as optional input kwarg?
     # TODO use dict_seq_product to define as much of this as i can
+    # TODO modify al_analysis CLI -M arg to accept optional int (# of first entries
+    # to use)?
     input_model_kw_list = [
+        # TODO delete? this code reasonable at all (well vm_sims are
+        # NOTE: n_claws_active_to_spike code in olfsysm has not yet implemented
+        # threshold picking for that case, so I was initially manually hardcoding a
+        # threshold in olfsysm (and recompiling, iterating manually until sparsity
+        # withihn tolerance).
+        # TODO move manual thersholds out of olfsysm and in to here (+ check outputs
+        # same) (+ have olfsysm err if thr_type is not 'fixed')
+        # probably not, but that's probably ok. can just ignore them)?
+        #dict(n_claws_active_to_spike=3, prat_claws=True, _wPNKC_one_row_per_claw=True,
+        #    use_connectome_APL_weights=True
+        #),
+        #dict(n_claws_active_to_spike=2, prat_claws=True, _wPNKC_one_row_per_claw=True,
+        #    use_connectome_APL_weights=True
+        #),
+        #
+        ##dict(n_claws_active_to_spike=2, prat_claws=True, _wPNKC_one_row_per_claw=True,
+        ##    use_connectome_APL_weights=True, pn_claw_to_APL=True
+        ##),
+        #
+
         # TODO decide which of these one-row-per-claw variants i want to keep here
 
-        # TODO sens analysis really only failing on this 2nd one (yes, b/c that path
-        # doesn't use wAPLKC_scale, so doesn't support sensitivity analysis currently)?
-        # and really working on 1st? (yes)
+        # pn_claw_to_APL=true means APL activity depends directly on claw activity, and
+        # does not require KC spiking (which would then provide APL activation through
+        # all claws of that KC equally, regardless of whether that claw had any input
+        # before KC spiking)
+        dict(prat_claws=True, _wPNKC_one_row_per_claw=True,
+            use_connectome_APL_weights=True, pn_claw_to_APL=True
+        ),
+
+        # TODO sens analysis really only failing on this 2nd one (i.e. the one
+        # WITHOUT use_connectome_APL_weights=True) (yes, b/c that path doesn't use
+        # wAPLKC_scale, so doesn't support sensitivity analysis currently)?
+        #
+        # sensitivity analysis works for this
         dict(prat_claws=True, _wPNKC_one_row_per_claw=True,
             use_connectome_APL_weights=True
         ),
@@ -12682,12 +12735,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         if panel == diag_panel_str:
             continue
 
-        # TODO delete eventually
         assert panel_est_df.equals(sort_odors(panel_est_df))
-        #
-        # TODO delete (assertion above passing. seems we can rely on mean_est_df being
-        # sorted)
-        #panel_est_df = sort_odors(panel_est_df)
 
         panel_plot_dir = plot_dir / panel
         makedirs(panel_plot_dir)
