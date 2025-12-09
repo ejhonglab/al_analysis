@@ -327,6 +327,7 @@ exclude_last_pre_odor_frame = False
 one_baseline_per_odor = False
 
 # TODO test
+# TODO type hint
 def sign_preserving_maxabs(x):
     """Returns value with maximum absolute value.
     """
@@ -343,6 +344,9 @@ def sign_preserving_maxabs(x):
     df = pd.DataFrame([
         x.loc[absmaxidx, idx] for idx, absmaxidx in zip(idxmax.index.values, idxmax)
     ])
+    # TODO keep as pandas type (old stat=mean seemed to, as last bit of _checks=True
+    # code in trial_response_traces seemed to assume Series types)?
+    # TODO why .flatten? replace w/ .squeeze() at least, if that's the issue?
     return df.values.flatten()
 
 
@@ -2946,7 +2950,19 @@ def trial_response_traces(raw_traces, bounding_frames, *, odor_index=None,
 
         baseline_subtracted = trial_traces - baseline
 
-        if _checks and not keep_pre_odor:
+        # TODO delete this check? seems tautological, and mainly using diff stat
+        # (sign_preserving_maxabs) now anyway, for which this check is not true
+        # TODO TODO any implications of this check failing w/ assumptions i may have
+        # made elsewhere, that may no longer be true for new stat=sign_preserving_maxabs
+        # case? (prob not, unless similar assumption in delta_f_over_f is causing same
+        # issue [if there even is an issue at all], b/c this zscore=True code should not
+        # have been used w/ that new stat= (and prob won't be)?
+        #
+        # TODO delete (can uncomment to repro test_trial_response_traces failure in
+        # meantime)
+        #if _checks and not keep_pre_odor:
+        #
+        if _checks and not keep_pre_odor and response_stat_fn.__name__ == 'mean':
             stat = response_stat_fn
             if n_volumes_for_response is None:
                 for_r1 = trial_traces
@@ -2955,11 +2971,26 @@ def trial_response_traces(raw_traces, bounding_frames, *, odor_index=None,
                 for_r1 = trial_traces[:n_volumes_for_response]
                 for_r2 = baseline_subtracted[:n_volumes_for_response]
 
-            r1 = stat(for_r1, axis=0) - baseline
-            r2 = stat(for_r2, axis=0)
+            try:
+                r1 = stat(for_r1, axis=0) - baseline
+                r2 = stat(for_r2, axis=0)
+            # to handle cases where `stat` callable doesn't take axis argument (like w/
+            # current sign_preserving_maxabs)
+            # TODO refactor to share this handling w/ other place i'm doing similar
+            # try/except (wrap stat, including this handling in wrapper, if it doesn't
+            # take axis argument?)
+            except TypeError:
+                r1 = stat(for_r1) - baseline
+                r2 = stat(for_r2)
+                # TODO convert to np.ndarray if needed (or update pd_allclose to work w/
+                # one/more input being a ndarray?) (i.e. for sign_preserving_maxabs,
+                # but not doing this check in that case anyway...)
 
-            # TODO pd_allclose work w/ non-pandas input? need to support any of that in
-            # this fn?
+            # TODO pd_allclose work w/ non-pandas input? (no) need to support any of
+            # that in this fn? (seems i would need to modify to work w/ ndarray r2,
+            # which it seems i'm getting w/ stat=sign_preserving_maxabs, but also not
+            # doing this check in that case, since below only makes sense for stat=mean
+            # anyway)
             #
             # NOTE: this will likely NOT be true if this path ever uses a statistic
             # other than mean for computing baseline (e.g. median, which I had briefly
@@ -2967,6 +2998,8 @@ def trial_response_traces(raw_traces, bounding_frames, *, odor_index=None,
             #
             # so order of baseline subtracting and mean-in-response-window don't matter,
             # and we don't need to do the baseline subtracting in compute_response_stats
+            # TODO so do i now need to do baseline subtracting in
+            # compute_response_stats, now that stat=sign_preserving_maxabs?
             assert pd_allclose(r1, r2)
 
         yield baseline_subtracted
@@ -3021,7 +3054,6 @@ def compute_trial_stats(raw_traces, bounding_frames,
         try:
             curr_trial_stats = stat(for_response, axis=0)
 
-        # TODO say what this was for (/ delete)
         except TypeError as err:
             # TODO better way to get err msg?
             err_msg = str(err)

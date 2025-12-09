@@ -89,6 +89,10 @@ def test_trial_response_traces(trace_data):
     # which uses all frames)
     kws = dict(n_volumes_for_baseline=None)
 
+    # TODO force al_analysis.stat=np.mean, or also test all combinations w/ that?
+    # (trial_response_traces has some _checks=True code [in zscore=True path] that only
+    # worked for that, and is currently broken for new default of
+    # stat=sign_preserving_maxabs, but don't think it matters)
     for zscore, keep_pre_odor in product((False, True), (False, True)):
 
         trial_trace_iter = trial_response_traces(traces, bounding_frames, zscore=zscore,
