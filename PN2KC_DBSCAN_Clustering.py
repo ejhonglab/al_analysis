@@ -2,15 +2,16 @@ import pandas as pd
 from sklearn.cluster import DBSCAN
 
 # minimum confidence level
-c = 0.3 
+c = 0.3
 
 # Conversion factor: 1 “hemibrain‐pixel” = 8 nm = 0.008 µm
-PIXEL_TO_UM = 8 / 1000  
+PIXEL_TO_UM = 8 / 1000
 
 # 1) Load the merged synapse table
+# TODO TODO what was this generated from? where is it?
 merged = pd.read_csv('merged.csv')
 
-merged = merged[(merged['confidence_pre'] >= 0.3) & (merged['confidence_post'] >= 0.3)]    
+merged = merged[(merged['confidence_pre'] >= 0.3) & (merged['confidence_post'] >= 0.3)]
 
 # 2) Convert *all* pre- and post-synapse coords from pixels → µm
 for axis in ['x_pre', 'y_pre', 'z_pre', 'x_post', 'y_post', 'z_post']:
@@ -23,15 +24,15 @@ merged.to_csv('merged_converted.csv', index=False)
 # 4) Cluster PRE-synapses (“pre‐claws”)
 # ===============================
 clustered_pre = []
-eps_um      = 1.65  
+eps_um      = 1.65
 min_samples = 3
 
 for post_id, df_kc in merged.groupby('bodyId_post', sort=False):
     # prepare the pre‐synapse point cloud in µm
     X_pre = df_kc[['x_pre','y_pre','z_pre']].to_numpy()
-    
+
     db = DBSCAN(eps=eps_um, min_samples=min_samples).fit(X_pre)
-    
+
     df_kc = df_kc.copy()
     df_kc['pre_cluster'] = db.labels_
     clustered_pre.append(df_kc)
@@ -64,9 +65,9 @@ clustered_post = []
 for post_id, df_kc in merged.groupby('bodyId_post', sort=False):
     # prepare the post‐synapse point cloud in µm
     X_post = df_kc[['x_post','y_post','z_post']].to_numpy()
-    
+
     db = DBSCAN(eps=eps_um, min_samples=min_samples).fit(X_post)
-    
+
     df_kc = df_kc.copy()
     df_kc['post_cluster'] = db.labels_
     clustered_post.append(df_kc)

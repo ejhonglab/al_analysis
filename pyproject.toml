@@ -87,6 +87,7 @@ testpaths = [
 #
 # Setting this to prevent disk space issues caused by just a few runs of
 # test_mb_model.py (where system is not restarted in between, which would clear /tmp).
+# NOTE: override by adding `-o tmp_path_retention_policy=all` to pytest CLI args.
 tmp_path_retention_policy = "none"
 # TODO try adding pytest-checkipdb? (seems like it's basically a linter to remind you of
 # straggling breakpoints? just use a linter for that instead?)

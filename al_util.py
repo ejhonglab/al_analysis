@@ -114,7 +114,11 @@ def is_pytest_capturing_stderr() -> bool:
 
 
 # TODO maybe log all warnings?
-def warn(msg) -> None:
+def warn(msg, *, red: bool = False) -> None:
+    color = 'yellow'
+    if red:
+        color = 'red'
+
     # since i couldn't otherwise figure out how to get pytest to show warnings before
     # debugger breakpoint, especially if pytest is configured to ignore warnings, so now
     # we'll just also print it before pytest cleanup.
@@ -125,7 +129,7 @@ def warn(msg) -> None:
     # need these extra prints.
     # TODO once per run, warn we are changing warning behavior based on this?
     if in_pytest() and not is_pytest_capturing_stderr():
-        print(colored(str(msg), 'yellow'))
+        print(colored(str(msg), color))
 
     # TODO replace w/ logging.warning? (have init_logger just hook into warnings.warn?
     # some standard mechanism for that?)
