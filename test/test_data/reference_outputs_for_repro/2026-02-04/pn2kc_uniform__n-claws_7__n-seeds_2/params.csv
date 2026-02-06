@@ -1,0 +1,17 @@
+responses_to,pebbled
+tune_from,pebbled
+pn2kc_connections,uniform
+n_claws,7
+drop_silent_cells_before_analyses,True
+output_dir,pn2kc_uniform__n-claws_7__n-seeds_2
+used_model_cache,False
+fixed_thr,"[174.7258591209665, 172.12329035345402]"
+wAPLKC,"[3.8899999999999992, 3.8899999999999992]"
+wKCAPL,"[0.002128008752735229, 0.002128008752735229]"
+sp_acc,"[0.1, 0.1]"
+max_iters,"[10, 10]"
+sp_lr_coeff,"[10.0, 10.0]"
+apltune_subsample,"[1, 1]"
+tuning_iters,"[1, 1]"
+sparsity,0.09772815034109925
+megamat_sparsity,0.09772815034109925

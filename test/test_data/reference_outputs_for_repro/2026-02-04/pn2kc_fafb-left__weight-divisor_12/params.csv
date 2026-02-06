@@ -1,0 +1,17 @@
+responses_to,pebbled
+tune_from,pebbled
+pn2kc_connections,fafb-left
+weight_divisor,12
+drop_silent_cells_before_analyses,True
+output_dir,pn2kc_fafb-left__weight-divisor_12
+used_model_cache,False
+fixed_thr,290.50937680203197
+wAPLKC,5.395069167621372
+wKCAPL,0.0021807070200571435
+sp_acc,0.1
+max_iters,10
+sp_lr_coeff,10.0
+apltune_subsample,1
+tuning_iters,2
+sparsity,0.09696133910314328
+megamat_sparsity,0.09696133910314328

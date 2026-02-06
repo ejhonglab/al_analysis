@@ -1,0 +1,17 @@
+responses_to,pebbled
+tune_from,pebbled
+weight_divisor,20
+use_connectome_APL_weights,True
+drop_silent_cells_before_analyses,True
+output_dir,weight-divisor_20__connectome-APL_True
+used_model_cache,False
+fixed_thr,257.0100618509415
+wAPLKC_scale,3.8899999999999992
+wKCAPL_scale,0.002128008752735229
+sp_acc,0.1
+max_iters,10
+sp_lr_coeff,10.0
+apltune_subsample,1
+tuning_iters,1
+sparsity,0.1073497232591067
+megamat_sparsity,0.1073497232591067

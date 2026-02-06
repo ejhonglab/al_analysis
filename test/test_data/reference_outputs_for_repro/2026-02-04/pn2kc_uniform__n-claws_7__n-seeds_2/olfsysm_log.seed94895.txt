@@ -1,0 +1,40 @@
+generating new KC replicate
+build_wPNKC: g_randgen seed=94895
+building UNIFORM connectivity matrix
+get_ngloms: 54
+wPNKC.rows(): 1828
+wPNKC.cols(): 54
+fitting sparseness
+INITIAL rv.kc.wAPLKC.mean(): 1.08185e-317
+INITIAL rv.kc.wKCAPL.mean(): 1.44891e+303
+INITIAL rv.kc.wAPLKC_scale: 1
+INITIAL rv.kc.wKCAPL_scale: 1
+choosing thresholds from spontaneous input (thrtype=4)
+
+tuning APL<->KC weights; tuning begin (target=0.1 acc=0.1 thr=375.105)
+setConst initial rv.kc.wAPLKC sum: 10968
+setConst initial rv.kc.wAPLKC mean: 6
+setConst initial rv.kc.wKCAPL sum: 6
+setConst initial rv.kc.wKCAPL mean: 0.00328228
+rv.kc.wAPLKC mean: 3.89
+rv.kc.wKCAPL mean: 0.00212801
+* i=1, sp=0.0789, wAPLKC_delta=-2.11, lr=10
+** t2 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t10 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t8 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t3 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t9 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t0 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t5 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t4 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t6 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t1 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t7 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+** t11 @ before bottom cond [sp=0.0978247, i=2, tgt=0.1, acc=0.1, I=10]
+FINAL rv.kc.wAPLKC_scale: 1
+FINAL rv.kc.wKCAPL_scale: 1
+FINAL rv.kc.wAPLKC mean: 3.89
+FINAL rv.kc.wKCAPL mean: 0.00212801
+done fitting sparseness
+
+Post-sim global sparsity (C++): 0.0978247

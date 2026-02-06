@@ -1,0 +1,15 @@
+responses_to,pebbled
+tune_from,pebbled
+one_row_per_claw,True
+prat_claws,True
+drop_silent_cells_before_analyses,True
+output_dir,one-row-per-claw_True__prat-claws_True
+used_model_cache,False
+fixed_thr,207.42859388292763
+sp_acc,0.1
+max_iters,10
+sp_lr_coeff,10.0
+apltune_subsample,1
+tuning_iters,1
+sparsity,0.10188833038989266
+megamat_sparsity,0.10188833038989266

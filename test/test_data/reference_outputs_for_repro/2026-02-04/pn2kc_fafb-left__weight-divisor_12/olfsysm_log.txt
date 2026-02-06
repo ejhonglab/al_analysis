@@ -1,0 +1,50 @@
+generating new KC replicate
+fitting sparseness
+INITIAL rv.kc.wAPLKC.mean(): 9.87233e-318
+INITIAL rv.kc.wKCAPL.mean(): 27.2846
+INITIAL rv.kc.wAPLKC_scale: 1
+INITIAL rv.kc.wKCAPL_scale: 1
+choosing thresholds from spontaneous input (thrtype=4)
+
+tuning APL<->KC weights; tuning begin (target=0.1 acc=0.1 thr=511.652)
+setConst initial rv.kc.wAPLKC sum: 14844
+setConst initial rv.kc.wAPLKC mean: 6
+setConst initial rv.kc.wKCAPL sum: 6
+setConst initial rv.kc.wKCAPL mean: 0.00242522
+rv.kc.wAPLKC mean: 3.89
+rv.kc.wKCAPL mean: 0.00157235
+* i=1, sp=0.0789, wAPLKC_delta=-2.11, lr=10
+** t4 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t0 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t1 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t2 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t10 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t8 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t5 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t11 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t9 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t6 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t3 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+** t7 @ before bottom cond [sp=0.121285, i=2, tgt=0.1, acc=0.1, I=10]
+rv.kc.wAPLKC mean: 5.39507
+rv.kc.wKCAPL mean: 0.00218071
+* i=2, sp=0.121285, wAPLKC_delta=1.50507, lr=7.07107
+** t0 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t10 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t7 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t1 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t9 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t11 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t6 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t5 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t4 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t3 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t8 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+** t2 @ before bottom cond [sp=0.0969613, i=3, tgt=0.1, acc=0.1, I=10]
+FINAL rv.kc.wAPLKC_scale: 1
+FINAL rv.kc.wKCAPL_scale: 1
+FINAL rv.kc.wAPLKC mean: 5.39507
+FINAL rv.kc.wKCAPL mean: 0.00218071
+done fitting sparseness
+
+Post-sim global sparsity (C++): 0.0969613
