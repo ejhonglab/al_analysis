@@ -47,7 +47,7 @@ from hong2p.roi import (rois2best_planes_only, ijroi_filename, has_ijrois, ijroi
 )
 from hong2p.util import (shorten_path, shorten_stimfile_path, format_date, date_fmt_str,
     # TODO refactor current stuff to use these (num_[not]null)
-    num_notnull, add_fly_id, pd_allclose
+    num_notnull, add_fly_id, pd_allclose, reindex
 )
 from hong2p.olf import (format_mix_from_strs, format_odor_list, solvent_str,
     odor2abbrev, odor_lists_to_multiindex
@@ -11145,6 +11145,10 @@ def main():
         if flip_lr:
             # TODO TODO TODO test! (x or y?)
             # https://stackoverflow.com/questions/54677161
+            # TODO delete (or check reindex argument is unique, or that output is still
+            # as expected) (different issues w/ xarray stuff? i assume
+            # hong2p.util.reindex [which i added to bundle this uniqueness check] would
+            # not work here w/o heavy modifications)
             anat = anat.reindex(x=anat.x[::-1])
 
         # should be getting the green channel
@@ -12731,7 +12735,7 @@ def main():
             )
 
         # this will drop the values not in mdf0.index
-        mcdf0 = mcdf0.reindex(mdf0.index)
+        mcdf0 = reindex(mcdf0, mdf0.index)
 
     diff = (mdf0 != mcdf0)
     # ipdb> diff.sum().sum()

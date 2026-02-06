@@ -81,8 +81,10 @@ from drosolf import orns
 from hong2p import olf, util, viz
 from hong2p.olf import solvent_str
 from hong2p.viz import dff_latex, no_constrained_layout
-from hong2p.util import num_notnull, num_null, pd_allclose, format_date, date_fmt_str
-from hong2p.types import Pathlike
+from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
+    reindex
+)
+from hong2p.types import Pathlike, DataFrameOrSeries
 from natmix import drop_mix_dilutions
 import olfsysm as osm
 
@@ -136,6 +138,8 @@ CLAW_ID: str = 'claw_id'
 PN_ID: str = 'pn_id'
 BOUTON_ID: str = 'bouton_id'
 
+glomerulus_col: str = 'glomerulus'
+
 # in all Prat's "v5" outputs that deal with PN data
 bouton_col: str = 'anatomical_bouton'
 
@@ -172,6 +176,118 @@ def dict_seq_product(dict_seq1: Sequence[dict], dict_seq2: Sequence[dict], *,
             combined.update(d)
         output_seq.append(combined)
     return output_seq
+
+
+# TODO move to hong2p?
+# TODO type hint for class (if returning err raised)?
+def eval_and_check_err(v: str) -> Tuple[Any, bool]:
+    assert isinstance(v, str)
+    # TODO doc
+    err = None
+    try:
+        ev = literal_eval(v)
+        assert not isinstance(ev, str), f'{ev=}\n{type(ev)}'
+        raised_err = False
+
+    # to catch:
+    # ValueError: malformed node or string: <_ast.Name object at ...
+    # which (so far) I've only seen with string input (e.g. 'x', but not
+    # repr('x') = "'x'")
+    #
+    # but also SyntaxError's about unexpected EOF's, which might be unavoidable?
+    # maybe just without repr?
+    # TODO TODO how did i get this error? how to fix? (repr?)
+    #
+    # test/test_mb_model.py:1327: in test_fixed_inh_params_fitandplot
+    #     assert_param_csv_matches_returned(plot_root, params2,
+    # test/test_mb_model.py:1247: in assert_param_csv_matches_returned
+    #     p2 = read_param_csv(model_output_dir)
+    # mb_model.py:300: in read_param_csv
+    #     params = read_series_csv(model_output_dir / 'params.csv', convert_dtypes=True)
+    # mb_model.py:230: in read_series_csv
+    #     ev = literal_eval(v)
+    # one-row-per-claw_True__prat-claws_True__pn-claw-to-APL_True__connectome-APL_True__fixed-thr_207__wAPLKC_5.44
+    # SyntaxError: unexpected EOF while parsing
+    #
+    # TODO diff err code for SyntaxError? return int 0,1,2 instead? or
+    # None/err-type?
+    except (ValueError, SyntaxError) as err:
+        raised_err = True
+        # TODO can i just always include the repr call?
+        # expecting this not to raise? maybe it will sometimes though?
+        ev = literal_eval(repr(v))
+        # TODO any other cases besides str that raise (a similar) initial
+        # ValueError?
+        assert isinstance(ev, str), f'{ev=}\n{type(ev)}'
+
+    # TODO delete if this always works. checking whether we can always call
+    # repr first, and then maybe even avoid error handling above.
+    if not raised_err:
+        ev2 = literal_eval(repr(v))
+        # TODO need more general than == here?
+        # TODO will this only ever be true if ev is a str? or maybe just fails
+        # in list(/iterable) cases, for some reason? failed on:
+        # ev=[174.7258591209665, 172.12329035345402]
+        # ...!=...ev2='[174.7258591209665, 172.12329035345402]'
+        #assert ev == ev2, f'{ev=}\n...!=...{ev2=}'
+        if isinstance(ev2, str):
+            assert ev != ev2, f'{ev=}\n{ev2=}\n{type(ev)=}\n{type(ev2)=}'
+        else:
+            # TODO TODO include other cases besides str in above, if needed, or
+            # remove this `if not raised_err` check altogether
+            assert ev == ev2, f'{ev=}\n{ev2=}\n{type(ev)=}\n{type(ev2)=}'
+    #
+
+    # TODO prob return error type or None instead of raised_err
+    # TODO or figure out what i want to do in here (and if i need to ever test
+    # this outside, and just keep internal)
+    return ev, raised_err
+
+
+def eval_and_check_compatible(v: str, v2: str) -> Tuple[Any, Any]:
+    # TODO doc
+    ev, v_raised_err = eval_and_check_err(v)
+    ev2, v2_raised_err = eval_and_check_err(v2)
+
+    if v_raised_err:
+        assert v2_raised_err
+    else:
+        assert not v2_raised_err
+
+    # currently redundant w/ str checks in except blocks above (+ check that
+    # if one raises, both do), but may relax str assertions in those except
+    # blocks, if I find more types with issues w/ safe_eval
+    if isinstance(ev, str):
+        assert isinstance(ev2, str)
+    else:
+        assert not isinstance(ev2, str)
+
+    return ev, ev2
+
+
+# TODO move to hong2p?
+def eval_and_check_equal(v: str, v2: str) -> Any:
+    """Asserts `literal_eval` outputs of two strings are equal, returns value.
+    """
+    ev, ev2 = eval_and_check_compatible(v, v2)
+
+    # TODO use `equals` instead? or (probably) want to only be evaling simple python
+    # types
+    if not isinstance(ev, str):
+        # handles (at least) cases like lists-of-floats
+        assert ev2 == ev, f'{ev2=} != {ev}'
+    else:
+        # TODO delete? this work? just to justify not having to special case
+        # assignment (where this is used in read_pd_series). even need this
+        # (don't think so?)?
+        assert v == ev, f'{v=} != {ev=} (do not need this assertion)'
+        assert v2 == ev2, f'{v2=} != {ev2=} (do not need this assertion)'
+        #
+        assert v2 == v, f'{v2=} != {v}'
+
+    # TODO may need to return v instead sometimes, if unclear assertions in else branch
+    # above fail
+    return ev
 
 
 # TODO test convert_dtypes=True default doesn't break anything, and make it default
@@ -223,97 +339,25 @@ def read_series_csv(csv: Pathlike, convert_dtypes: bool = False, **kwargs) -> pd
 
         assert ser.keys().equals(ser2.keys())
 
-        # TODO type hint for class (if returning err raised)?
-        def eval_and_check_err(v: str) -> Tuple[Any, bool]:
-            err = None
-            try:
-                ev = literal_eval(v)
-                assert not isinstance(ev, str), f'{ev=}\n{type(ev)}'
-                raised_err = False
-
-            # to catch:
-            # ValueError: malformed node or string: <_ast.Name object at ...
-            # which (so far) I've only seen with string input (e.g. 'x', but not
-            # repr('x') = "'x'")
-            #
-            # but also SyntaxError's about unexpected EOF's, which might be unavoidable?
-            # maybe just without repr?
-            # TODO TODO how did i get this error? how to fix? (repr?)
-            #
-            # test/test_mb_model.py:1327: in test_fixed_inh_params_fitandplot
-            #     assert_param_csv_matches_returned(plot_root, params2,
-            # test/test_mb_model.py:1247: in assert_param_csv_matches_returned
-            #     p2 = read_param_csv(model_output_dir)
-            # mb_model.py:300: in read_param_csv
-            #     params = read_series_csv(model_output_dir / 'params.csv', convert_dtypes=True)
-            # mb_model.py:230: in read_series_csv
-            #     ev = literal_eval(v)
-            # one-row-per-claw_True__prat-claws_True__pn-claw-to-APL_True__connectome-APL_True__fixed-thr_207__wAPLKC_5.44
-            # SyntaxError: unexpected EOF while parsing
-            #
-            # TODO diff err code for SyntaxError? return int 0,1,2 instead? or
-            # None/err-type?
-            except (ValueError, SyntaxError) as err:
-                raised_err = True
-                # TODO can i just always include the repr call?
-                # expecting this not to raise? maybe it will sometimes though?
-                ev = literal_eval(repr(v))
-                # TODO any other cases besides str that raise (a similar) initial
-                # ValueError?
-                assert isinstance(ev, str), f'{ev=}\n{type(ev)}'
-
-            # TODO delete if this always works. checking whether we can always call
-            # repr first, and then maybe even avoid error handling above.
-            if not raised_err:
-                ev2 = literal_eval(repr(v))
-                # TODO need more general than == here?
-                # TODO will this only ever be true if ev is a str? or maybe just fails
-                # in list(/iterable) cases, for some reason? failed on:
-                # ev=[174.7258591209665, 172.12329035345402]
-                # ...!=...ev2='[174.7258591209665, 172.12329035345402]'
-                #assert ev == ev2, f'{ev=}\n...!=...{ev2=}'
-                if isinstance(ev2, str):
-                    assert ev != ev2, f'{ev=}\n{ev2=}\n{type(ev)=}\n{type(ev2)=}'
-                else:
-                    # TODO TODO include other cases besides str in above, if needed, or
-                    # remove this `if not raised_err` check altogether
-                    assert ev == ev2, f'{ev=}\n{ev2=}\n{type(ev)=}\n{type(ev2)=}'
-            #
-
-            # TODO prob return error type or None instead of raised_err
-            return ev, raised_err
-
         # mostly just have the list calls for paranoia surrounding changing something
         # I'm iterating over
         for k, v, v2 in zip(list(ser.keys()), list(ser.values), list(ser2.values)):
             # otherwise we will get repr('x') == "'x'" != 'x' below
             if isinstance(v2, str):
-                assert isinstance(v, str)
-                ev, v_raised_err = eval_and_check_err(v)
-                ev2, v2_raised_err = eval_and_check_err(v2)
+                ev = eval_and_check_equal(v, v2)
 
-                if v_raised_err:
-                    assert v2_raised_err
-                else:
-                    assert not v2_raised_err
-
-                # currently redundant w/ str checks in except blocks above (+ check that
-                # if one raises, both do), but may relax str assertions in those except
-                # blocks, if I find more types with issues w/ safe_eval
-                if isinstance(ev, str):
-                    assert isinstance(ev2, str)
-                else:
-                    assert not isinstance(ev2, str)
-
+                # TODO need to duplicate this isinstance check w/ eval_and_check_equal?
+                # could just unconditionally assign value in to series, assuming other
+                # assertions i added (that `v == ev` and `v2 == ev2`) pass (unclear)
                 if not isinstance(ev, str):
-                    # handles (at least) cases like lists-of-floats
-                    assert ev2 == ev, f'{ev2=} != {ev}'
                     ser2.at[k] = ev
-                else:
-                    assert v2 == v, f'{v2=} != {v}'
 
                 continue
 
+            # TODO also want something like this in eval_and_check_equal? separate fn
+            # wrapping more of the body of this loop (eval_and_check_equal factored out
+            # from here)?
+            #
             # anything more we'd want to check?
             assert repr(v2) == v, f'(converted) {repr(v2)=} != (initial str) {v=}'
 
@@ -447,11 +491,12 @@ def get_thr_and_APL_weights(param_dict: ParamDict, kws: ParamDict) -> ParamDict:
 
     # TODO refactor
     variable_n_claws = kws.get('pn2kc_connections') in variable_n_claw_options
+    # NOTE: get_APL_weights makes similar checks on wAPLKC
+    # TODO refactor to share w/ it
     if not variable_n_claws:
         # TODO just ndarray, or series too?
         assert isinstance(fixed_thr, float) or isinstance(fixed_thr, np.ndarray)
     else:
-        # TODO refactor
         # TODO only check first part if n_seeds=1, and only second otherwise?
         assert isinstance(fixed_thr, float) or (
             isinstance(fixed_thr, list) and all(isinstance(x, float) for x in fixed_thr)
@@ -475,7 +520,7 @@ def handle_multiglomerular_receptors(df: pd.DataFrame, *, drop: bool = True,
     if not drop:
         raise NotImplementedError
 
-    assert df.index.name == 'glomerulus'
+    assert df.index.name == glomerulus_col
     # glomeruli should only contain '+' delimiter (e.g. 'DM3+DM5') if the
     # measurement was originally from a receptor that is expressed in each
     # of the glomeruli in the string.
@@ -712,8 +757,8 @@ def agg_synapses_to_claws(syns: pd.DataFrame, claw_cols: List[str],
 # TODO delete (after checking i don't want to revert any of the changes tianpei made in
 # his version below) (or delete his version)
 # TODO rename to plot_n_synapse_hist?
-def _plot_connectome_raw_weight_hist(weights: Union[pd.Series, pd.DataFrame],
-    **kwargs) -> Tuple[Figure, Axes]:
+def _plot_connectome_raw_weight_hist(weights: DataFrameOrSeries, *,
+    discrete: bool = True, **kwargs) -> Tuple[Figure, Axes]:
 
     # weight_ser is just for check below. weights will always be a df (required for
     # sns.histplot now, it seems, which also preserves any input cols [as may be needed
@@ -730,15 +775,16 @@ def _plot_connectome_raw_weight_hist(weights: Union[pd.Series, pd.DataFrame],
         assert x is not None
         weights = weights.reset_index()
 
-    # discrete=True wouldn't make sense otherwise, right?
-    # TODO multiply back to int first (easy to compute here?) (currently doing that in
-    # connectome_APL_weights code that was having issues here)? assert input has int
-    # (synapse count) dtype? (or disable discrete if can't?)
-    assert (weight_ser.astype(int) == weight_ser.astype(float)).all()
-    del weight_ser
+    if discrete:
+        # discrete=True wouldn't make sense otherwise, right?
+        # TODO multiply back to int first (easy to compute here?) (currently doing that
+        # in connectome_APL_weights code that was having issues here)? assert input has
+        # int (synapse count) dtype? (or disable discrete if can't?)
+        assert (weight_ser.astype(int) == weight_ser.astype(float)).all()
+        del weight_ser
 
     fig, ax = plt.subplots()
-    sns.histplot(weights, x=x, discrete=True, ax=ax, **kwargs)
+    sns.histplot(weights, x=x, discrete=discrete, ax=ax, **kwargs)
     return fig, ax
 
 
@@ -870,8 +916,6 @@ def filter_synapses_to_roi(df: pd.DataFrame, roi: str, *,
 
     return df
 
-
-glomerulus_col = 'glomerulus'
 
 # TODO refactor to share w/ other places that redef these (now that module level)
 # TODO cache any of this (fn to instatiate on first call)? worth it?
@@ -1234,8 +1278,8 @@ def assert_one_glom_per_pn(df: pd.DataFrame, *, pn_id_col: str = PN_ID) -> None:
 # of claws, given threshold of >4 we are stuck w/ in hemibrain case. maybe Bock # of
 # claws is partially just b/c that brain is abnormal [i.e. many more KCs, etc]?)
 #
-# TODO TODO get his prat's code he used to produce outputs i'm loading (or at least
-# latest ones)
+# TODO TODO get prat's code he used to produce outputs i'm loading (or at least latest
+# ones)
 # TODO make prat_claws default to true later? (here and in other places)
 def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # TODO TODO TODO separate kwarg to enable prat PN->APL connections, w/o also
@@ -1252,6 +1296,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # unused Btn_divide_per_glom (bool) param
     # TODO still want something like that, or never really a case where there is a
     # choice to be made?
+    # TODO is this actually Optional? what happens if it's None
     Btn_num_per_glom: Optional[int] = 10) -> pd.DataFrame:
     # TODO doc possible contents of row/column index in returned wPNKC dataframe
     """
@@ -1416,29 +1461,35 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         if boutons_per_glom <= 0:
             raise ValueError('boutons_per_glom must be a positive integer')
 
-        B = int(boutons_per_glom)
+        B = boutons_per_glom
         # choose glomerulus columns: numeric dtype only (skip metadata like
         # 'pre_cell_ids')
+        # TODO TODO which columns is this actually pulling out? still working as
+        # expected?
         gloms = [c for c in wPNKC.columns if pd.api.types.is_numeric_dtype(wPNKC[c])]
         if not gloms:
-            # TODO why would it be numeric?
+            # numeric b/c all 0/1 values, unlike some other columns which were at one
+            # point here. should currently probably be no non glomerulus columns
+            # though...
             raise ValueError('No numeric glomerulus columns found in wPNKC.')
 
-        W = wPNKC.loc[:, gloms].astype(float).to_numpy()   # (R, G)
+        W = wPNKC.loc[:, gloms].astype(float).to_numpy()
         R, G = W.shape
 
-        expanded = np.repeat(W / B, repeats=B, axis=1)     # (R, G*B)
-        cols = pd.MultiIndex.from_product(
-            [gloms, range(1, B+1)],
-            # TODO refactor to use diff bouton ID def?
-            names=[glomerulus_col, 'bouton']
+        # of shape (R, G*B)
+        expanded = np.repeat(W / B, repeats=B, axis=1)
+        cols = pd.MultiIndex.from_product([gloms, range(1, B+1)],
+            names=[glomerulus_col, BOUTON_ID]
         )
         out = pd.DataFrame(expanded, index=wPNKC.index, columns=cols)
 
         # Safety: sum across bouton level recreates original
         if check_reconstruction:
-            recon = out.groupby(level=glomerulus_col, axis=1).sum().reindex(
-                columns=gloms
+            # TODO TODO this actually unique? i assume not? make so?
+            # (will trigger an assertion in reindex, if not)_
+            glom_index = pd.Index(gloms, name=glomerulus_col)
+            recon = reindex(out.groupby(level=glomerulus_col, axis='columns').sum(),
+                glom_index, axis='columns'
             )
             if not np.allclose(recon.to_numpy(), W, atol=1e-9):
                 bad = [g for i, g in enumerate(gloms)
@@ -2624,89 +2675,62 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             df = df[df.pre_claw != -1]   # drop noise
 
             column_order = (
-                [kc_id_col, claw_col, 'n_syn', glomerulus_col] + claw_coord_cols +
+                [kc_id_col, claw_col, KC_TYPE, 'n_syn', glomerulus_col] +
                 # TODO factor out pre_cell_ids to shared var
                 # TODO TODO where does this column actually come from?
-                ['pre_cell_ids']
+                claw_coord_cols + ['pre_cell_ids']
             )
 
-            # TODO delete? actually want to preserve old behavior for any reason?
-            # maybe in case some tests only pass that way, to understand why?
+            # TODO delete (and always do =True)? actually want to preserve old behavior
+            # for any reason?  maybe in case some tests only pass that way, to
+            # understand why?
             fix_tianpei_pn_to_glom_assignment = True
 
             if fix_tianpei_pn_to_glom_assignment:
-                # TODO delete if i don't end up using
-                #n_minor_pns_dropped = 0
-                #
-                kc2max_claw_id = df.groupby(kc_id_col, sort=False)['pre_claw'].max()
-
-                # TODO what is df['c.weight'] here? and why not all 1? are rows not
-                # synapses here? (ignoring for now. tianpei never seemed to use it.)
-
-                # TODO drop all roi values other than 'CA(R)'? not that it matters much
-                # ipdb> df.roi.value_counts()
-                # CA(R)         172321
-                # NotPrimary      5982
-                # SLP(R)          2131
-                # SCL(R)           489
-                # ipdb> df.roi_pre.value_counts()
-                # CA(R)     180674
-                # SLP(R)        93
-                # SCL(R)         8
-
-                # TODO filter synapses based on confidence_[pre|post]?
-
-                # NOTE only NaNs here are 3245 in b.type and 148 in roi_pre
-                # TODO care about either?
-
-                claw_cols = [kc_id_col, 'pre_claw', pn_id_col]
-                assert df[claw_cols].notna().all().all()
-
-                extra_cols_to_keep = [glomerulus_col, KC_TYPE, 'instance_post']
-
-                # NOTE: he's using presynapse side of things rather than post (which we
-                # are at least averaging in prat_claws=True, if not using)
-                cols_to_avg = ['x_pre', 'y_pre', 'z_pre']
-                claw_df = agg_synapses_to_claws(df, claw_cols, cols_to_avg,
-                    extra_cols_to_keep, check_unique_per_claw=check_unique_per_claw
+                warn('will drop glomeruli (and their synapses), other than that with'
+                    ' the most synapses, for each "claw" from clustering! hack to fix '
+                    'how synapses (and PN IDs) from all glomeruli were counted towards '
+                    'the max-synapses glomerulus. better fix would involve splitting '
+                    'initial clustering "claws" by PN ID.'
                 )
-
-                # TODO TODO TODO try to renumber pre_claw to avoid need for pn_id_col in
-                # claw_cols (if easier to agg df and redef to something reduced,
-                # skipping loop below, so be it)
-
-                # TODO TODO TODO or just go back to simpler strategy of dropping
-                # non-chosen glomeruli synapses for now? (just to get something working,
-                # even if it drops a lot)
-                breakpoint()
+                n_minor_pns_dropped = 0
+                n_minor_pn_syns_dropped = 0
 
             # For each (KC,claw), pick the single glomerulus with most synapses
             claws = []
             grouped = df.groupby([kc_id_col, 'pre_claw'], sort=False)
-            # TODO TODO TODO just preprocess by renumbering claw's, like i did w/ prat's
-            # at one point?
             for (kc, claw), grp in grouped:
+                # TODO also make this only run in !fix... case, if fix code will only
+                # deal w/ PN IDs, not gloms?
+                #
                 # count synapses per glomerulus
                 counts = grp[glomerulus_col].value_counts()
-                # TODO TODO TODO fix. he currently just assigns one glomerulus to all
-                # PNs (or maybe it's ok, depending on how else we are doing things.
-                # shouldn't be counting synapses from other PNs toward this glomerulus
-                # tho...)
                 chosen_gl = counts.idxmax()
-
-                # TODO delete
-                if len(counts) > 1:
-                    breakpoint()
                 #
 
                 # find the PNs in this cluster
-                # TODO TODO TODO just drop all PN IDs for glomeruli other than chosen
-                # one (and define n_syn below from that) (-> see if rest of tianpei's
-                # code works w/ mine. we don't currently use these synapse counts
-                # anyway, other than maybe filtering? don't think that filtering is
-                # downstream of this anyway)
-                # TODO + warn about total # synapses dropped b/c that? interact badly w/
-                # merging step below?
+                if fix_tianpei_pn_to_glom_assignment:
+                    counts = grp[pn_id_col].value_counts()
+                    chosen_pn = counts.idxmax()
+
+                    grp = grp.loc[grp[pn_id_col] == chosen_pn]
+
+                    gloms = grp[glomerulus_col].unique()
+                    assert len(gloms) == 1
+                    chosen_gl = gloms[0]
+
+                    # TODO delete
+                    #grp = grp.loc[grp[glomerulus_col] == chosen_gl]
+
+                    # TODO or keep track of for each? then report average at end?
+                    # same with synapses? report average # (/%) of synapses (+ total)
+                    # dropped per claw?
+                    n_minor_pns_dropped += (len(counts) - 1)
+                    n_minor_pn_syns_dropped += counts[counts.index != chosen_pn].sum()
+                    # TODO delete
+                    #n_minor_pn_syns_dropped += counts[counts.index != chosen_gl].sum()
+
+                # TODO assert len 1 in fix... case?
                 pre_cells = grp[pn_id_col].unique().tolist()
 
                 # compute centroid of the kept synapses
@@ -2717,11 +2741,14 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 centroid = centroid.rename(lambda x: f"claw_{x.split('_')[0]}")
                 assert list(centroid.index) == claw_coord_cols
 
+                types = grp[KC_TYPE].unique()
+                assert len(types) == 1
+                kc_type = types[0]
+
                 claw_dict = {
                     kc_id_col: kc,
                     claw_col: claw,
-                    # TODO TODO TODO fix. yes, we are counting synapses from PNs other
-                    # than the chosen glomerulus towards this claw
+                    KC_TYPE: kc_type,
                     'n_syn': len(grp),
                     glomerulus_col: chosen_gl,
                     'pre_cell_ids': pre_cells,
@@ -2734,57 +2761,38 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             assert set(claw_df.columns) == set(column_order)
             claw_df = claw_df[column_order]
 
-            # TODO TODO TODO check claw_df is unique w/in claw_cols here, whether
-            # fix_tianpei... or not (may need to slightly redef claw cols in one case,
-            # or maybe use glomerulus instead of pn_id_col / pre_cell_ids for both
-            # cases?)
-            breakpoint()
+            if fix_tianpei_pn_to_glom_assignment:
+                assert_one_glom_per_pn(claw_df.explode('pre_cell_ids'),
+                    pn_id_col='pre_cell_ids'
+                )
 
-            # TODO delete
-            pn_glom_pairs = claw_df.explode('pre_cell_ids').rename(columns={
-                'pre_cell_ids': pn_id_col
-            })[[pn_id_col, glomerulus_col]].drop_duplicates()
-            assert pn_glom_pairs[[pn_id_col, glomerulus_col]].notna().all().all()
-            if len(pn_glom_pairs) != df[pn_id_col].nunique():
-                # TODO TODO TODO fix
-                # ipdb> df[pn_id_col].nunique()
-                # 111
-                # ipdb> len(pn_glom_pairs)
-                # 751
-                #
-                # TODO TODO TODO if i need to postprocess to split claws by PN ID,
-                # that's OK, but i want to at least have this code (above/below)
-                # preserve glomerulus ID (or if that's too hard, just compute it later,
-                # from ID->glom map?)
-                breakpoint()
-            else:
-                print('NO MULTIPLE GLOMS PER PN HERE (3)!')
-            #
+                assert (len(claw_df) ==
+                    len(claw_df[[kc_id_col, claw_col]].drop_duplicates())
+                )
+                n_claws = len(claw_df)
+
+                assert len(df) == claw_df['n_syn'].sum() + n_minor_pn_syns_dropped
+                warn(f'dropped {n_minor_pn_syns_dropped}/{len(df)} synapses from '
+                    'glomeruli other than one with most synapses (per initial claw)'
+                )
+                n_total_claws = n_claws + n_minor_pns_dropped
+                warn(f'dropped {n_minor_pns_dropped}/{n_total_claws} (claw, glom) '
+                    'combos from glomeruli other than one with most synapses (per '
+                    'initial claw)'
+                )
 
             min_synapses = 3
             claw_df = claw_df[claw_df['n_syn'] >= min_synapses]
-
-            # build & save the UN-MERGED wPNKC
-            wPNKC_unmerged_counts = claw_df.pivot_table(
-                index=[kc_id_col, claw_col] + claw_coord_cols,
-                columns=glomerulus_col,
-                values='n_syn',
-                fill_value=0
-            ).astype(int)
-            wPNKC_unmerged = (wPNKC_unmerged_counts > 0).astype(int)
-
-            if plot_dir is not None:
-                # TODO need to handle multiple writes to same path? (wrapper will err by
-                # default, in that case)
-                to_csv(wPNKC_unmerged.reset_index(),
-                    plot_dir / 'wPNKC_clustered_unmerged.csv', index=True
-                )
 
             avg_claws = claw_df.groupby(kc_id_col)[claw_col].nunique().mean()
             print(f'Average claws per KC before merging: {avg_claws:.2f}')
 
             merge_thresh = 3  # µm
             merged_claws = []
+
+            if fix_tianpei_pn_to_glom_assignment:
+                n_minor_pns_dropped = 0
+                n_minor_pn_syns_dropped = 0
 
             # TODO doc what this loop is doing
             for kc, grp in claw_df.groupby(kc_id_col, sort=False):
@@ -2800,77 +2808,111 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
                 # now collapse each merge-cluster into one “super-claw”
                 for merge_id, sub in grp.groupby('merge_id', sort=False):
-                    total_n_syn = sub['n_syn'].sum()
 
+                    # TODO also make this only run in !fix... case, if fix code will
+                    # only deal w/ PN IDs, not gloms?
+                    #
                     # pick the glomerulus with the most synapses (sum over sub-claws)
                     gl_counts = sub.groupby(glomerulus_col)['n_syn'].sum()
                     chosen_gl = gl_counts.idxmax()
-
-                    # TODO TODO TODO once again, make sure we either drop non-chosen
-                    # glomeruli, or split by pn
-                    if len(gl_counts) > 0:
-                        print(f'{gl_counts=}')
-                        breakpoint()
                     #
 
-                    # union of all pre_cell_ids
-                    all_pre_ids = sorted(
-                        {pid for lst in sub['pre_cell_ids'] for pid in lst}
-                    )
+                    if fix_tianpei_pn_to_glom_assignment:
+                        # at one point i wasn't expecting this, but seems true...
+                        assert (sub['pre_cell_ids'].str.len() == 1).all()
+
+                        sub = sub.explode('pre_cell_ids')
+
+                        counts = sub['pre_cell_ids'].value_counts()
+                        chosen_pn = counts.idxmax()
+
+                        sub = sub.loc[sub['pre_cell_ids'] == chosen_pn]
+
+                        gloms = sub[glomerulus_col].unique()
+                        assert len(gloms) == 1
+                        chosen_gl = gloms[0]
+
+                        # TODO delete
+                        #sub = sub.loc[sub[glomerulus_col] == chosen_gl]
+
+                        n_minor_pns_dropped += (len(counts) - 1)
+                        n_minor_pn_syns_dropped += counts[counts.index != chosen_pn
+                            ].sum()
+
+                        # TODO or put back into list here, for .explode later? or just
+                        # delete .explode later (and keep as single int here)?
+                        all_pre_ids = [chosen_pn]
+                    else:
+                        # union of all pre_cell_ids
+                        all_pre_ids = sorted(
+                            {pid for lst in sub['pre_cell_ids'] for pid in lst}
+                        )
+
+                    total_n_syn = sub['n_syn'].sum()
 
                     # centroid weighted by n_syn
                     weighted = (sub[claw_coord_cols].multiply(sub['n_syn'], axis=0)
                                     .sum(axis=0) / total_n_syn)
 
+                    types = sub[KC_TYPE].unique()
+                    assert len(types) == 1
+                    kc_type = types[0]
+
                     claw_dict = {
                         kc_id_col: kc,
                         claw_col: merge_id,
+                        KC_TYPE: kc_type,
                         'n_syn': total_n_syn,
                         glomerulus_col: chosen_gl,
                         'pre_cell_ids': all_pre_ids,
                     }
                     assert set(weighted.keys()) == set(claw_coord_cols)
                     claw_dict.update(weighted)
-
                     merged_claws.append(claw_dict)
 
             # overwrite claw_df with the merged result
-            claw_df = pd.DataFrame(merged_claws)
+            claw_df_merged = pd.DataFrame(merged_claws)
+
+            if fix_tianpei_pn_to_glom_assignment:
+                assert_one_glom_per_pn(claw_df_merged.explode('pre_cell_ids'),
+                    pn_id_col='pre_cell_ids'
+                )
+
+                n_claws = len(claw_df_merged)
+                assert (n_claws ==
+                    len(claw_df_merged[[kc_id_col, claw_col]].drop_duplicates())
+                )
+
+                n_total_syn = claw_df['n_syn'].sum()
+                # TODO (delete) what accounts for this difference? not huge, at least...
+                # (it's the actual merging, i assume...)
+                # ipdb> claw_df['n_syn'].sum()
+                # 173077
+                # ipdb> claw_df_merged['n_syn'].sum()
+                # 173029
+                # ipdb> claw_df_merged['n_syn'].sum() + n_minor_pn_syns_dropped
+                # 173038
+                #assert (n_total_syn ==
+                #    claw_df_merged['n_syn'].sum() + n_minor_pn_syns_dropped
+                #)
+                warn(f'(while merging) dropped {n_minor_pn_syns_dropped}/{n_total_syn}'
+                    ' synapses from glomeruli other than one with most synapses (per '
+                    'initial claw)'
+                )
+                n_total_claws = n_claws + n_minor_pns_dropped
+                warn(f'(while merging) dropped {n_minor_pns_dropped}/{n_total_claws} '
+                    '(claw, glom) combos from glomeruli other than one with most '
+                    'synapses (per initial claw)'
+                )
+
+            claw_df = claw_df_merged
+
             assert set(claw_df.columns) == set(column_order)
             claw_df = claw_df[column_order]
 
             avg_claws = claw_df.groupby(kc_id_col)[claw_col].nunique().mean()
             print(f'Average claws per KC after merging: {avg_claws:.2f}')
 
-            # TODO delete
-            pn_glom_pairs = claw_df.explode('pre_cell_ids').rename(columns={
-                'pre_cell_ids': pn_id_col
-            })[[pn_id_col, glomerulus_col]].drop_duplicates()
-            assert pn_glom_pairs[[pn_id_col, glomerulus_col]].notna().all().all()
-            if len(pn_glom_pairs) != df[pn_id_col].nunique():
-                breakpoint()
-            else:
-                print('NO MULTIPLE GLOMS PER PN HERE (4)!')
-            #
-
-            claw_levels = [kc_id_col, claw_col] + claw_coord_cols
-
-            # NOTE: tianpei's code was (and still is as of 2026-01-23, unless I can gett
-            # explode call below to work) probably producing somewhat incorrect output,
-            # because claw_df frequently had multiple pre_cell_ids for a given row (and
-            # len(claw_df) == len(wPNKC)), but each row still just had 1 for a given
-            # glomerulus, and 0 for all other glomeruli. would probably have wanted a
-            # separate row for each pre_cell_id, increasing total number of claws.
-            #
-            # TODO TODO can pre-'exploding' claw_df pre_cell_ids fix that issue? create
-            # too many other issues to be worth it? maybe just drop all but (first? some
-            # other?) pre_cell_id?
-            # element in each iterable that was previously in the pre_cell_ids column.
-            # TODO TODO presumably we want a separate claw for each distinct PN? or is
-            # that not how we want to handle it? just drop the IDs otherwise?
-            # TODO what actually happens in prat_claws=True case? (surely must be having
-            # distinct claws per PN...)
-            #
             # after explode call, # rows should be expanded to include one for each
             # TODO rename to pre_cell_id or pn_col_id after this?
             claw_df = claw_df.explode('pre_cell_ids')
@@ -2878,11 +2920,67 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # what he printed above? assuming above prints are even correct, and match
             # final processing...
 
+            claw_cols = [kc_id_col, claw_col, 'pre_cell_ids']
+
+            # TODO only do behind fix_tianpei... flag? (including explode above?)
+            # TODO TODO renumber claws, splitting so that each PN ID (within a (KC,
+            # claw) combo) gets its own ID
+            # TODO +refactor fn for doing this, since i keep forgetting how
+            # TODO + refactor assumption that there is only one PN per claw, and have
+            # that trigger before whatever else was triggering first? or ig it was
+            # basically doing that anyway (be more explicit if it wasn't already
+            # referencing pn_id_col tho)
+            # NOTE: want to keep distinct claw IDs, if already have separate PN ID, but
+            # want to split claw IDs associated with multiple PN IDs
+            #
+            # TODO delete (shouldn't be hit now, since splitting by PNs above?)
+            # TODO TODO or am i not actually renumbering above, like i might need
+            # to be? (matter, if i'm dropping more?)
+            #
+            # TODO TODO compare this to after changing to use PN above (may
+            # actually end up just wanting to renumber here instead? as long as synapses
+            # counted per PN above, and not per glom?)?
+            # from when above was still using glomerulus_col instead of PN ID:
+            # Warning: will drop glomeruli (and their synapses), other than that with
+            # the most synapses, for each "claw" from clustering! hack to fix how
+            # synapses (and PN IDs) from all glomeruli were counted towards the
+            # max-synapses glomerulus. better fix would involve splitting initial
+            # clustering "claws" by PN ID.
+            # Warning: dropped 7298/180923 synapses from glomeruli other than one with
+            # most synapses (per initial claw)
+            # Warning: dropped 1172/12434 (claw, glom) combos from glomeruli other than
+            # one with most synapses (per initial claw)
+            # ...
+            # Average claws per KC before merging: 6.16
+            # Warning: (while merging) dropped 38/173605 synapses from glomeruli other
+            # than one with most synapses (per initial claw)
+            # Warning: (while merging) dropped 8/11051 (claw, glom) combos from
+            # glomeruli other than one with most synapses (per initial claw)
+            #
+            # TODO TODO replace w/ assertion first? (at least done in fix_...=True
+            # case)
+            # TODO delete
+            '''
+            claw_df = claw_df.sort_values(claw_cols).reset_index(drop=True)
+            for kc, kdf in claw_df.groupby(kc_id_col, sort=False):
+                if (len(kdf[claw_cols].drop_duplicates()) >
+                    len(kdf[claw_cols[:-1]].drop_duplicates()) ):
+                    print()
+                    print(f'{kc=}')
+                    print('kdf:')
+                    print(kdf[[x for x in kdf.columns if x not in claw_coord_cols]].to_string())
+                    breakpoint()
+                #
+            '''
+
+            claw_levels = [kc_id_col, claw_col, KC_TYPE] + claw_coord_cols
+
             # TODO share below w/ prat_claws=True? is pivot[_table] call below not used
             # in this case?
             # pivot to a (KC,claw,x,y,z)×glomerulus matrix, values = 1
             wPNKC_counts = claw_df.pivot_table(
-                # TODO TODO can i make this work? (wPNKC.T.sum() == 1).all() still?
+                # TODO (delete? assert if i care?) can i make this work? (wPNKC.T.sum()
+                # == 1).all() still?
                 index=claw_levels + ['pre_cell_ids'],
                 columns=glomerulus_col,
                 values='n_syn',
@@ -2895,46 +2993,21 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # synapses w/in each claw?)
             wPNKC = (wPNKC_counts > 0).astype(int)
 
-            cols_before = list(wPNKC.columns)
-            wPNKC = wPNKC.reset_index(level='pre_cell_ids')
-            # TODO TODO TODO well redefining df->claw_df fixed lack of CLAW_ID, but now
-            # we are missing 'a.bodyId'. how to resolve? (might be in
-            # claw_df.pre_cell_ids, but that's not all len 1. need to postprocess?)
-            # ipdb> claw_df.pre_cell_ids.str.len().value_counts()
-            # 1    9941
-            # 2     966
-            # 3     118
-            # 4      19
-            # 6       3
-            # 5       3
-            wPNKC = wPNKC.loc[:, cols_before + ['pre_cell_ids']]
+            pn_id_col = PN_ID
 
-            # TODO TODO where is 'pre_cell_ids' column removed from wPNKC later? is it
-            # in returned + run wPNKC? (should prob be in index level to avoid that, if
-            # so, or drop here. used outside this fn?)
+            wPNKC = wPNKC.rename_axis(index={'pre_cell_ids': pn_id_col})
 
-            # TODO delete (should be replaced by new code above that includes it in
-            # pivot, and then resets just that level)
-            #meta = claw_df.set_index(claw_levels)['pre_cell_ids']
-            #wPNKC['pre_cell_ids'] = meta
+            # TODO TODO where is (/was) 'pre_cell_ids' column removed from wPNKC later?
+            # is it in returned + run wPNKC? (should prob be in index level to avoid
+            # that, if so, or drop here. used outside this fn?)
 
             # TODO just change claw_col to CLAW_ID above, for both?
             df = claw_df.rename(columns={claw_col: CLAW_ID, 'pre_cell_ids': pn_id_col})
+            weight_col = 'n_syn'
+
             wPNKC = wPNKC.rename_axis(index={claw_col: CLAW_ID})
 
             wPNKC = add_compartment_index(wPNKC, shape=0)
-
-            # TODO why are pre_cell_ids still a column? are they only added to index
-            # outside of connectome_wPNKC (no, only seem referenced in here...)? rectify
-            # that, if so
-            # TODO still need? redundant w/ wPNKC that will be saved later
-            # automatically?
-            if plot_dir is not None:
-                # TODO need to handle multiple writes to same path? (wrapper will err by
-                # default, in that case)
-                to_csv(wPNKC.reset_index(),
-                    plot_dir / 'wPNKC_clustered_merged.csv', index=True
-                )
 
         else:
             data_path = repo_root / 'data/PNtoKC_connections_raw.xlsx'
@@ -3175,16 +3248,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     #
     # seems True for both hemibrain and fafb (at least as long as we are dropping
     # stuff w/ multiple '_' or '+' in PN types above...)
-    # TODO TODO actually, why would we expect this to be true? shouldn't there be
-    # multiple separate PN IDs for a given glomerulus (assuming it's the numerical
-    # ID, not a str type. which is it in prat_claws=True case?) now failing in
-    # tianpei case after i "fixed" the multiple PNs per "claw" flaw i thought i
-    # found in his code
-    # TODO TODO TODO or is actual issue that tianpei assigns some PNs to two
-    # different glomeruli? (looks like some of this is happening. how to resolve?
-    # just some hack to drop all but one, or xfail tests on his path for now?)
-    # TODO TODO fix in test_btn_expansion (or xfail that, if now just broken b/c
-    # upstream broken stuff in tianpei's code path in general?)
     assert_one_glom_per_pn(df, pn_id_col=pn_id_col)
 
     # TODO prob define this outside conditional (if defined separately in
@@ -3249,18 +3312,40 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             assert (wPNKC > using_count).any().any()
             del using_count
 
-    # TODO also implement for fafb inputs?
-    # TODO TODO fix for prat_claws (still actually broken? how so?)?
-    if KC_TYPE in df.columns and not prat_claws:
+    # TODO TODO check plot outputs (and others) same w/ or w/o this in prat_claws=True
+    # case, then go back to skipping this in prat_claws=True case (+ try to avoid need
+    # for it in other cases too, mainly tianpei path)
+    # TODO TODO and actually just maintain KC_TYPE earlier for prat_claws=False stuff
+    # (->delete this conditional?)
+    #
+    # TODO delete? or actually don't want in prat_claws=True case?
+    #if KC_TYPE in df.columns and not prat_claws:
+    # TODO test if we can also skip (or if even works + is used below, for
+    # one_row_per_claw=False cases)
+    if KC_TYPE in df.columns and not one_row_per_claw:
+        # need the df.reset_index() for at least prat_claws=True df here
+
         # TODO delete?
         kc_ids_and_types = wPNKC.index.to_frame(index=False).merge(
-            df[[kc_id_col, KC_TYPE]].drop_duplicates(), left_on=kc_id_col,
-            right_on=kc_id_col
+            df.reset_index()[[kc_id_col, KC_TYPE]].drop_duplicates(), on=kc_id_col
         )
         # TODO what is this checking? kinda seems like a merge above isn't getting
         # us anything...
+        # TODO replace w/ `if not prat_claws`?
         if synapse_loc_path is None and synapse_con_path is None:
-            assert np.array_equal(kc_ids_and_types[kc_id_col], wPNKC.index)
+            assert np.array_equal(
+                kc_ids_and_types[kc_id_col], wPNKC.index.get_level_values(kc_id_col)
+            )
+
+        # just to handle prat_claws=True case, which probably already has totally fine
+        # KC_TYPE, and thus doesn't need this outer conditional at all...
+        if KC_TYPE not in kc_ids_and_types.columns:
+            tx = f'{KC_TYPE}_x'
+            ty = f'{KC_TYPE}_y'
+            assert all(x in kc_ids_and_types.columns for x in (tx, ty))
+            assert kc_ids_and_types[tx].equals(kc_ids_and_types[ty])
+            kc_ids_and_types[KC_TYPE] = kc_ids_and_types[tx]
+            kc_ids_and_types = kc_ids_and_types.drop(columns=[tx, ty])
 
         kc_types = kc_ids_and_types[KC_TYPE]
     #
@@ -3306,16 +3391,19 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         assert n_claws == n_claws2, f'{n_claws=} (from df) != {n_claws2} (from wPNKC)'
         del n_claws2
 
-    # TODO check these limits all work on everything (including fafb / tianpeis stuff)
-    # sanity check
-    assert 1000 < n_kcs < 2800
+    assert 1000 < n_kcs < 2800, f'unexpected # of KCs: {n_kcs}'
     if one_row_per_claw:
-        assert 4000 < n_claws < 10000
+        # 11043 in Tianpei case, after adding my own fix_...=True code to split on PNs.
+        # I previously had the upper bound at 10000
+        assert 4000 < n_claws < 12000, f'unexpected # of claws: {n_claws}'
 
+    # TODO delete this conditional altogether? can i rewrite to avoid need?
+    # (just need to check the one_row_per_claw=False cases)
     if kc_types is not None:
-        # row-aligned kc_types (same length/order as current wPNKC rows)
-        assert len(kc_types) == len(wPNKC), "kc_types length mismatch"
+        # TODO assert indices are same, instead (stronger)?
+        assert len(kc_types) == len(wPNKC), f'{len(kc_types)} != {len(wPNKC)=}'
 
+        # TODO delete special casing?
         if 'compartment' in wPNKC.index.names:
             for_index = wPNKC.index.to_frame(index=False)
             for_index[KC_TYPE] = kc_types
@@ -3324,6 +3412,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             assert len(wPNKC.index.names) == 1, 'otherwise, also need from_frame here'
             kc_index = pd.MultiIndex.from_arrays([wPNKC.index, kc_types])
 
+        # TODO fix for one_row_per_claw=True cases (/assert kc_types only used for other
+        # ones, or delete `kc_types` code altogether)
         assert kc_index.to_frame(index=False).equals(kc_ids_and_types)
     else:
         kc_index = wPNKC.index.copy()
@@ -3383,7 +3473,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # TODO also run in tianpei case, assuming we can get a similar variable to
         # claws, consistently organized and defined in all one_row_per_claw=True cases
         if prat_claws:
-            # TODO TODO TODO delete these plots? redundant w/ below now that it's after
+            # TODO TODO delete these plots? redundant w/ below now that it's after
             # filtering?
             fig, ax = plt.subplots()
             sns.histplot(claws, ax=ax, x='n_synapses', discrete=True, hue=KC_TYPE,
@@ -3405,11 +3495,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             syns_per_claw = claws.groupby([KC_ID, CLAW_ID, KC_TYPE]
                 ).n_synapses.sum().reset_index()
 
-            # TODO delete (no longer accurate, now that this is after filtering)
-            # this is b/c claw_cols should also have PN ID col above
-            #assert len(syns_per_claw) < len(claws), \
-            #    f'{len(syns_per_claw)} >= {len(claws)}'
-            #
             assert len(syns_per_claw) == len(claws)
 
             sns.histplot(syns_per_claw, ax=ax, x='n_synapses', discrete=True,
@@ -3446,7 +3531,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         savefig(fig, plot_dir, f'wPNKC_hist_{connectome}', bbox_inches='tight')
 
         # temporarily comment out (come back to check later)
-        # TODO (delete) need some of tianpei's hacks for this x= to work?
         fig, ax = _plot_connectome_raw_weight_hist(df, x=weight_col, hue=KC_TYPE,
             hue_order=kc_type_hue_order
         )
@@ -3535,19 +3619,61 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     wPNKC = wPNKC.sort_index(axis='columns')
 
     if Btn_separate:
-        # TODO assert one-row-per-claw?
-        warn('expanding wPNKC to fixed # of boutons ({Btn_num_per_glom}) per PN')
+        warn(f'expanding wPNKC to fixed # of boutons ({Btn_num_per_glom=}) per PN')
         wPNKC_btn = expand_wPNKC_to_boutons(wPNKC=wPNKC,
-            boutons_per_glom=Btn_num_per_glom,
+            boutons_per_glom=Btn_num_per_glom
         )
+        # TODO delete
+        #
+        # ipdb> one_row_per_claw
+        # False
+        # ipdb> wPNKC_btn.iloc[:2, :2]
+        # glomerulus           D
+        # bouton_id            1    2
+        # kc_id     kc_type
+        # 300968622 ab       0.0  0.0
+        # 301309622 ab       0.0  0.0
+        # ipdb> wPNKC_btn.stack().stack().value_counts(dropna=False)
+        # 0.0    891310
+        # 0.1     92130
+        # 0.2      3540
+        # 0.3       140
+        # dtype: int64
+        # ipdb> wPNKC.stack().value_counts()
+        # 0    89131
+        # 1     9213
+        # 2      354
+        # 3       14
+        #
+        # ipdb> one_row_per_claw
+        # True
+        # ipdb> wPNKC_btn.iloc[:2, :2]
+        # glomerulus                                D
+        # bouton_id                                 1    2
+        # kc_id     claw_id kc_type ... pn_id
+        # 300968622 0       ab      ... 1851389175  0.0  0.0
+        #           1       ab      ... 635062078   0.0  0.0
+        # ipdb> wPNKC.stack().value_counts()
+        # 0    585279
+        # 1     11043
+        # dtype: int64
+        # ipdb> wPNKC_btn.stack().stack().value_counts(dropna=False)
+        # 0.0    5852790
+        # 0.1     110430
+        #
+        # TODO TODO TODO reformat (either his or mine), so boutons are in consistent
+        # spot for both prat_boutons=True (+ whatever other flag actually enables
+        # distinct ones, if i require one) and tianpei's Btn_separate=True
+        # TODO TODO TODO + also want to divide weight be # boutons in prat_claws=True
+        # case?  or should i be counting and storing weight separately from the very
+        # beginning? (and same question in PN<>APL context. what's currently happening
+        # there?)
+        #
+        # TODO delete
+        #breakpoint()
+        #
         wPNKC = wPNKC_btn
-
-    if plot_dir is not None and Btn_separate:
-        # TODO need to handle multiple writes to same path? (wrapper will err by
-        # default, in that case)
-        to_csv(wPNKC_btn.reset_index(),
-            plot_dir / 'wPNKC_btn_separate.csv', index=True
-        )
+    print('DECIDE ON FORMAT FOR FEEDING BOUTONS IN TO MODEL')
 
     # TODO option to also return a version of (long-form) df, so i can use for a test
     # comparing old + new hemibrain version, as i'm currently doing w/ sloppy code
@@ -3656,9 +3782,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
         plot_dir: same as for `connectome_wPNKC`
     """
-    # TODO delete
-    print('START OF CONNECTOME_APL_WEIGHTS')
-    #
     assert connectome in connectome_options
 
     if connectome != 'hemibrain':
@@ -3669,6 +3792,11 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
     # TODO work? (latter currently also non-None in prat_claws case, but not used. will
     # try to add a check that it makes sense in prat_claws=True case)
     one_row_per_claw = prat_claws or kc_to_claws is not None
+
+    # TODO also trying splitting out by apl unit (include in claw_cols for agg_* fn,
+    # rather than extra_cols_to_keep?)? (not unless we add an actual compartmented
+    # apl implementation in C++ code)
+    claw_cols = [KC_ID, CLAW_ID]
 
     wAPLPN = None
     wPNAPL = None
@@ -3886,10 +4014,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             'bodyId_post': 'apl_id',
             orig_claw_col: CLAW_ID,
         })
-        # TODO also trying splitting out by apl unit (include in claw_cols for agg_* fn,
-        # rather than extra_cols_to_keep?)? (not unless we add an actual compartmented
-        # apl implementation in C++ code)
-        claw_cols = [KC_ID, CLAW_ID]
 
         # TODO refactor
         assert all(KC_ID in x.columns for x in [apl2kc_df, kc2apl_df])
@@ -4328,6 +4452,10 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     f'#-claws:\n{n_boutons_per_claw_counts.to_string()}'
                 )
             #
+
+            # TODO TODO TODO just drop these, since Btn_to_pn is only vector<int> in
+            # model code currently (w/ pn_to_Btns a vector<vector<int>>?
+            # don't think i want to add complexity in C++ code if i can avoid it...
 
             multibouton_claw_counts = n_boutons_per_claw_counts[
                 n_boutons_per_claw_counts.index > 1
@@ -4884,12 +5012,15 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
     only_in_wPNKC_index = [x for x in index.names
         if x not in apl2kc_weights.index.names
     ]
+    # We only have claw IDs for APL weights in the outputs from Pratyush. With Tianpei's
+    # inputs, we just have KC IDs, and we assign claw IDs from the PN>KC data.
     if one_row_per_claw and not prat_claws:
         assert CLAW_ID in only_in_wPNKC_index
         only_in_wPNKC_index = [x for x in only_in_wPNKC_index if x != CLAW_ID]
 
     # TODO rename var, now that we are special casing above (so not actually always
     # "shared")?
+    # TODO TODO also remove CLAW_ID from this?
     index_sharedlevels = index.droplevel(only_in_wPNKC_index)
 
     # NOTE: reindex(index_nodupes) seems to work (in contrast to call where
@@ -4992,29 +5123,28 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         assert not weights.isna().any()
         assert not (weights <= 0).any()
 
-        # TODO delete. was old method (that probably was also producing garbage
-        # outputs when run w/ v3 per-claw data, or at least would if using claw_col
-        # rather than CLAW_ID above. renaming [apl2kc|kc2apl]_weights index level
-        # from claw_col to CLAW_ID above probably lead to another set of garbage
-        # outputs. certainly this method produces garbage outputs on v5 data (b/c of
-        # duplicates in index, when using claw_col instead of CLAW_ID)
-        #reindexed = weights.reindex(index)
-
         # TODO assert earlier that all of index_nodupes is subset of pairs in wPNKC
         # index? (would also be pretty tautological...)
         # TODO delete? should be tautological, at least so long as reindex calls
         # above have argument that is an index without dupes
-        # TODO TODO TODO fix how this is all NaN in `one_row_per_claw and not prat_claws`
-        # cases (or will i need to do some special casing after all? what path did that
-        # take through this fn, before my refactoring into reindex_to_wPNKC?)
-        # TODO TODO TODO add claws for each KC up here (in that case), and maybe remove
+        # TODO TODO add claws for each KC up here (in that case), and maybe remove
         # code below that might be doing that? (or check equiv?)
         # TODO prob need to adapt messages below to say we are dropping at least that
         # many claws in that case (or an unknown #, for the KCs not in wPNKC)
-        reindexed = weights.reindex(index_nodupes)
+        #
+        # TODO TODO fix how this is all NaN in `one_row_per_claw and not prat_claws`
+        # cases (or will i need to do some special casing after all? what path did that
+        # take through this fn, before my refactoring into reindex_to_wPNKC?)
+        # TODO TODO use level= arg to reindex, to "broadcast matching Index values on
+        # the passed MultiIndex level"? for `one_row_per_claw and not prat_claws` case?
+        reindexed = reindex(weights, index_nodupes)
+
+        assert not reindexed.isna().all(), ('reindexing failed. index levels mistmatch?'
+            f'\n{index_nodupes.names=}\n{weights.index.names=}'
+        )
 
         assert reindexed.index.equals(index_nodupes)
-        # TODO TODO TODO probably need to redef both index_sharedlevels and
+        # TODO TODO probably need to redef both index_sharedlevels and
         # weights.index, for `one_row_per_claw and not prat_claws` case
         input_and_wPNKC = set(index_sharedlevels.intersection(weights.index))
         # TODO (done?) check again after processing to restore metadata for dupes?
@@ -5024,6 +5154,13 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         msg = str(msg_prefix)
 
         # seems this is actually KCs, not claws, in one_row_per_claw=False case
+        # TODO TODO why now causing issue when weights.index.names == ['kc_id']
+        # and index_sharedlevels.names == claw_cols?? shouldn't names be same anyway?
+        # TODO TODO assert that here? (would fail in prat_claws=False
+        # one_row_per_claw=True case currently, but a bunch of other stuff above also
+        # currently doesn't make sense there)
+        #assert weights.index.names == index_sharedlevels.index.names, \
+        #    f'{weights.index.names=} != {index_sharedlevels.index.names=}'
         only_input = weights.index.difference(index_sharedlevels)
 
         have_claws = CLAW_ID in index_nodupes.names
@@ -5088,7 +5225,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             )
 
         sum_before = n_dropped_syns_per_kc.sum()
-        n_dropped_syns_per_kc = n_dropped_syns_per_kc.reindex(unique_kc_ids).fillna(0
+        n_dropped_syns_per_kc = reindex(n_dropped_syns_per_kc, unique_kc_ids).fillna(0
             ).astype(int)
 
         sum_after = n_dropped_syns_per_kc.sum()
@@ -5164,23 +5301,35 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
         return reindexed, n_dropped_syns_per_kc
 
-    wAPLKC, n_nonclaw_apl2kc_syns_per_kc2 = reindex_to_wPNKC('APL>KC', apl2kc_weights)
-    wKCAPL, n_nonclaw_kc2apl_syns_per_kc2 = reindex_to_wPNKC('KC>APL', kc2apl_weights)
+    # TODO TODO fix reindex_to_wPNKC to also work for this (tianpei) case?
+    wAPLKC = None
+    wKCAPL = None
+    if not (one_row_per_claw and not prat_claws):
+        wAPLKC, n_nonclaw_apl2kc_syns_per_kc2 = reindex_to_wPNKC('APL>KC',
+            apl2kc_weights
+        )
+        wKCAPL, n_nonclaw_kc2apl_syns_per_kc2 = reindex_to_wPNKC('KC>APL',\
+            kc2apl_weights
+        )
+        # so yea, basically negligible:
+        # ipdb> n_nonclaw_apl2kc_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
+        # 1.0
+        # ipdb> n_nonclaw_kc2apl_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
+        # 3.0
+        # ipdb> n_nonclaw_pn2apl_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
+        # 0.0
+        # ipdb> n_nonclaw_apl2pn_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
+        # 0.0
 
-    # so yea, basically negligible:
-    # ipdb> n_nonclaw_apl2kc_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
-    # 1.0
-    # ipdb> n_nonclaw_kc2apl_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
-    # 3.0
-    # ipdb> n_nonclaw_pn2apl_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
-    # 0.0
-    # ipdb> n_nonclaw_apl2pn_syns_per_kc.reindex(unique_kc_ids).fillna(0).sum()
-    # 0.0
+        # ipdb> n_nonclaw_apl2kc_syns_per_kc2.sum()
+        # 10049
+        # ipdb> n_nonclaw_kc2apl_syns_per_kc2.sum()
+        # 9104
 
-    # ipdb> n_nonclaw_apl2kc_syns_per_kc2.sum()
-    # 10049
-    # ipdb> n_nonclaw_kc2apl_syns_per_kc2.sum()
-    # 9104
+        # TODO delete (replace w/ appropriate summing, but really insignificant, so this
+        # is fine for now)
+        n_nonclaw_apl2kc_syns_per_kc = n_nonclaw_apl2kc_syns_per_kc2
+        n_nonclaw_kc2apl_syns_per_kc = n_nonclaw_kc2apl_syns_per_kc2
 
     if prat_boutons:
         # TODO TODO double check that each of these really has all their (kc, claw)
@@ -5225,12 +5374,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # [i think?] all cases?) (yea, see comment above comparing magnitudes)
         # TODO + make sure index stays same as *2 versions after adding, at least
 
-    # TODO delete (replace w/ appropriate summing, but really insignificant, so this is
-    # fine for now)
-    n_nonclaw_apl2kc_syns_per_kc = n_nonclaw_apl2kc_syns_per_kc2
-    n_nonclaw_kc2apl_syns_per_kc = n_nonclaw_kc2apl_syns_per_kc2
-    #
-
     # NOTE: wPNKC CLAW_ID (when present) is no longer some renumbered ID I came up with.
     # It is raw anatomical_claw[_corrected] values from Pratyush, so should be able to
     # use to align with the same values in here. The only remaining issue is regarding
@@ -5274,12 +5417,20 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     wAPLKC2.loc[kc_id] = distributed_apl_weight
                     wKCAPL2.loc[kc_id] = distributed_kca_weight
 
-            # TODO delete
-            # TODO TODO TODO assert wAPLKC/wKCAPL equal to wAPLKC2/wKCAPL2, from
-            # reindex_to_wPNKC code (maybe break the dividing by num_claws into separte
-            # step, and have assertion before that?)
-            breakpoint()
-            #
+            # None b/c still havnen't fixed reindex_to_wPNKC (above) to work in this
+            # case
+            if wAPLKC is None:
+                assert wKCAPL is None
+                wAPLKC = wAPLKC2
+                wKCAPL = wKCAPL2
+            else:
+                # TODO maybe break the dividing by num_claws into separate step, and
+                # have assertion before that?
+                # TODO get to work (after also implementing this case in
+                # reindex_to_wPNKC above)
+                breakpoint()
+                assert wAPLKC.equals(wAPLKC2)
+                assert wKCAPL.equals(wKCAPL2)
         else:
             # TODO TODO TODO implement check that kc_to_claws is consistent w/ metadata
             # in wPNKC (or fix outside if not)
@@ -5446,15 +5597,29 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         if wAPLKC_normalization_factor is not None:
             inverted_normed_wAPLKC = wAPLKC / wAPLKC_normalization_factor
             inverted_int_wAPLKC = inverted_normed_wAPLKC.round().astype(int)
-            assert pd_allclose(inverted_int_wAPLKC, inverted_normed_wAPLKC)
-            wAPLKC_for_plots = inverted_int_wAPLKC
+            if not (one_row_per_claw and not prat_claws):
+                assert pd_allclose(inverted_int_wAPLKC, inverted_normed_wAPLKC)
+                wAPLKC_for_plots = inverted_int_wAPLKC
+            else:
+                # because different KCs have different # of claws, and weights divided
+                # within each KC by that, we don't start with int weights above (when
+                # computing normalization factor), nor could we have a single one
+                # (computed same way)
+                assert not pd_allclose(inverted_int_wAPLKC, inverted_normed_wAPLKC)
+                # TODO TODO just plot raw wAPLKC instead?
+                # TODO TODO TODO or per KC int version (rather than per-claw)?
+                wAPLKC_for_plots = inverted_normed_wAPLKC
 
             assert wKCAPL_normalization_factor is not None
             # TODO refactor
             inverted_normed_wKCAPL = wKCAPL / wKCAPL_normalization_factor
             inverted_int_wKCAPL = inverted_normed_wKCAPL.round().astype(int)
-            assert pd_allclose(inverted_int_wKCAPL, inverted_normed_wKCAPL)
-            wKCAPL_for_plots = inverted_int_wKCAPL
+            if not (one_row_per_claw and not prat_claws):
+                assert pd_allclose(inverted_int_wKCAPL, inverted_normed_wKCAPL)
+                wKCAPL_for_plots = inverted_int_wKCAPL
+            else:
+                assert not pd_allclose(inverted_int_wKCAPL, inverted_normed_wKCAPL)
+                wKCAPL_for_plots = inverted_normed_wKCAPL
 
             if prat_boutons:
                 assert wAPLPN_normalization_factor is not None
@@ -5562,7 +5727,11 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 if x in type2type_with_count
             ]
 
-            if one_row_per_claw:
+            # TODO retore if i can fix reindex_to_wPNKC for `one_row_per_claw and not
+            # prat_claws` case (n_nonclaw_apl2kc_syns_per_kc currently only defined
+            # there, and in separate prat_claws=True branch above)
+            #if one_row_per_claw:
+            if prat_claws:
                 # TODO duped w/ something else?
                 # TODO use one w/ counts from earlier, to also be able to use hue_order,
                 # and have that in legend?
@@ -5617,21 +5786,49 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     assert unit_cols == claw_cols
                     unit_str += f'\n{n_claws=}\ncounts=claws'
 
-                # TODO TODO for per-KC plots, disable discrete=True on these? or kde?
-                # plots kinda rough looking
+                # TODO for per-KC plots, disable discrete=True on these? or kde?  plots
+                # kinda rough looking (for just some outputs? PN<>APL stuff or what?)
                 aplkc_by_unit = agg_per_unit(wAPLKC_with_types, unit_cols)
+
+                kws = dict()
+                if one_row_per_claw and not prat_claws:
+                    weight = aplkc_by_unit['weight']
+                    if unit_cols == [KC_ID]:
+                        int_weights = weight.round().astype(int)
+                        assert pd_allclose(int_weights, weight)
+                        # otherwise current assertion in plotting fn will trip
+                        aplkc_by_unit['weight'] = int_weights
+                    else:
+                        assert not pd_allclose(weight.round().astype(int), weight)
+                        # TODO warn?
+                        # TODO TODO just skip plot in this case (should basically be
+                        # redundant w/ per-KC anyway...)
+                        kws = dict(discrete=False)
+
                 fig, ax = _plot_connectome_raw_weight_hist(aplkc_by_unit, x='weight',
-                    hue=KC_TYPE, hue_order=hue_order
+                    hue=KC_TYPE, hue_order=hue_order, **kws
                 )
                 ax.set_title(f'APL->KC weights{unit_str}')
                 savefig(fig, plot_dir, f'wAPLKC_hist_{desc}_by-type',
                     bbox_inches='tight'
                 )
 
+
                 # TODO refactor
                 kcapl_by_unit = agg_per_unit(wKCAPL_with_types, unit_cols)
+
+                if one_row_per_claw and not prat_claws:
+                    weight = kcapl_by_unit['weight']
+                    if unit_cols == [KC_ID]:
+                        int_weights = weight.round().astype(int)
+                        assert pd_allclose(int_weights, weight)
+                        # otherwise current assertion in plotting fn will trip
+                        kcapl_by_unit['weight'] = int_weights
+                    else:
+                        assert not pd_allclose(weight.round().astype(int), weight)
+
                 fig, ax = _plot_connectome_raw_weight_hist(kcapl_by_unit, x='weight',
-                    hue=KC_TYPE, hue_order=hue_order
+                    hue=KC_TYPE, hue_order=hue_order, **kws
                 )
                 ax.set_title(f'KC->APL weights{unit_str}')
                 savefig(fig, plot_dir, f'wKCAPL_hist_{desc}_by-type',
@@ -5644,6 +5841,8 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 #    breakpoint()
 
                 if prat_boutons:
+                    assert len(kws) == 0
+
                     # TODO refactor
                     fig, ax = _plot_connectome_raw_weight_hist(
                         agg_per_unit(wAPLPN_with_types, unit_cols), x='weight',
@@ -5750,49 +5949,52 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 # of synapse data) earlier. currently just
                 # have KC -> total # non-claw synapses
 
-                nonclaw_apl2kc_df = nonclaw_apl2kc_df.reset_index()
-                nonclaw_kc2apl_df = nonclaw_kc2apl_df.reset_index()
+                # TODO make unconditional on prat_claws if i can fix defs above in
+                # prat_claws=False case
+                if prat_claws:
+                    nonclaw_apl2kc_df = nonclaw_apl2kc_df.reset_index()
+                    nonclaw_kc2apl_df = nonclaw_kc2apl_df.reset_index()
 
-                fig, ax = plt.subplots()
-                # TODO care about hue_order here? would need to process to something w/o
-                # the ' (<count>)' suffices current hue_order contains (or process these
-                # kc_type values to include them)
-                sns.histplot(nonclaw_apl2kc_df, ax=ax, x='weight', hue=KC_TYPE,
-                    discrete=True, alpha=0.3
-                )
-                ax.set_title('APL->KC\nnon-claw synapses, per KC')
-                savefig(fig, plot_dir, 'wAPLKC_nonclaw_syn_hist_by-type')
+                    fig, ax = plt.subplots()
+                    # TODO care about hue_order here? would need to process to something
+                    # w/o the ' (<count>)' suffices current hue_order contains (or
+                    # process these kc_type values to include them)
+                    sns.histplot(nonclaw_apl2kc_df, ax=ax, x='weight', hue=KC_TYPE,
+                        discrete=True, alpha=0.3
+                    )
+                    ax.set_title('APL->KC\nnon-claw synapses, per KC')
+                    savefig(fig, plot_dir, 'wAPLKC_nonclaw_syn_hist_by-type')
 
-                fig, ax = plt.subplots()
-                sns.histplot(nonclaw_kc2apl_df, ax=ax, x='weight', hue=KC_TYPE,
-                    discrete=True, alpha=0.3
-                )
-                ax.set_title('KC->APL\nnon-claw synapses, per KC')
-                savefig(fig, plot_dir, 'wKCAPL_nonclaw_syn_hist_by-type')
+                    fig, ax = plt.subplots()
+                    sns.histplot(nonclaw_kc2apl_df, ax=ax, x='weight', hue=KC_TYPE,
+                        discrete=True, alpha=0.3
+                    )
+                    ax.set_title('KC->APL\nnon-claw synapses, per KC')
+                    savefig(fig, plot_dir, 'wKCAPL_nonclaw_syn_hist_by-type')
 
 
-                fig, ax = plt.subplots()
-                # TODO care about hue_order here? would need to process to something w/o
-                # the ' (<count>)' suffices current hue_order contains (or process these
-                # kc_type values to include them)
-                # TODO TODO separate 2d hist (scatterplot) for each subtype?
-                # TODO or jitter and/or lower alpha further?
-                sns.scatterplot(nonclaw_apl2kc_df, ax=ax, x='claw_weight', y='weight',
-                    hue=KC_TYPE, alpha=0.3
-                )
-                ax.set_ylabel('# non-claw synapses')
-                ax.set_xlabel('# claw synapses')
-                ax.set_title('APL->KC\none row per KC')
-                savefig(fig, plot_dir, 'wAPLKC_claw_vs_nonclaw_weight')
+                    fig, ax = plt.subplots()
+                    # TODO care about hue_order here? would need to process to something
+                    # w/o the ' (<count>)' suffices current hue_order contains (or
+                    # process these kc_type values to include them)
+                    # TODO separate 2d hist (scatterplot) for each subtype?
+                    # TODO or jitter and/or lower alpha further?
+                    sns.scatterplot(nonclaw_apl2kc_df, ax=ax, x='claw_weight',
+                        y='weight', hue=KC_TYPE, alpha=0.3
+                    )
+                    ax.set_ylabel('# non-claw synapses')
+                    ax.set_xlabel('# claw synapses')
+                    ax.set_title('APL->KC\none row per KC')
+                    savefig(fig, plot_dir, 'wAPLKC_claw_vs_nonclaw_weight')
 
-                fig, ax = plt.subplots()
-                sns.scatterplot(nonclaw_kc2apl_df, ax=ax, x='claw_weight', y='weight',
-                    hue=KC_TYPE, alpha=0.3
-                )
-                ax.set_ylabel('# non-claw synapses')
-                ax.set_xlabel('# claw synapses')
-                ax.set_title('KC->APL\none row per KC')
-                savefig(fig, plot_dir, 'wKCAPL_claw_vs_nonclaw_weight')
+                    fig, ax = plt.subplots()
+                    sns.scatterplot(nonclaw_kc2apl_df, ax=ax, x='claw_weight',
+                        y='weight', hue=KC_TYPE, alpha=0.3
+                    )
+                    ax.set_ylabel('# non-claw synapses')
+                    ax.set_xlabel('# claw synapses')
+                    ax.set_title('KC->APL\none row per KC')
+                    savefig(fig, plot_dir, 'wKCAPL_claw_vs_nonclaw_weight')
 
                 if prat_boutons:
                     pn2glom = wPNKC.replace(0, np.nan).stack().index.to_frame(
@@ -6169,7 +6371,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     target_sparsity: Optional[float] = None,
     target_sparsity_factor_pre_APL: Optional[float] = None,
     APL_coup_const: Optional[float] = None,
-    Btn_separate: bool = False, Btn_num_per_glom: Optional[int] = 10,
+    Btn_separate: bool = False, Btn_num_per_glom: int = 10,
     _use_matt_wPNKC: bool = False, drop_kcs_with_no_input: bool = True,
     _drop_glom_with_plus: bool = True,
     _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
@@ -6395,9 +6597,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         orn_deltas = orn_deltas.copy()
         #
 
-        # TODO switch to requiring 'glomerulus' (and in the one test that passes hallem
+        # TODO switch to requiring glomerulus_col (and in the one test that passes hallem
         # as input explicitly, process to convert to glomeruli before calling this fn)?
-        valid_orn_index_names = ('receptor', 'glomerulus')
+        valid_orn_index_names = ('receptor', glomerulus_col)
         if orn_deltas.index.name not in valid_orn_index_names:
             raise ValueError(f"{orn_deltas.index.name=} not in {valid_orn_index_names}")
 
@@ -6415,7 +6617,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             glomeruli = ['+'.join(gs) for gs in glomeruli]
 
             orn_deltas.index = glomeruli
-            orn_deltas.index.name = 'glomerulus'
+            orn_deltas.index.name = glomerulus_col
 
             # should drop any input glomeruli w/ '+' in name (e.g. 'DM3+DM5')
             orn_deltas = handle_multiglomerular_receptors(orn_deltas,
@@ -6423,7 +6625,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             )
         #
 
-        # TODO if orn_deltas.index.name == 'glomerulus', assert all input are in
+        # TODO if orn_deltas.index.name == glomerulus_col, assert all input are in
         # task/connectome glomerulus names
         # TODO same check on hallem glomeruli names too (below)?
 
@@ -6565,7 +6767,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # just the 110 main-text odors + sfr_col.
     osm.load_hc_data(mp, str(hc_data_csv))
 
-    hallem_orn_deltas = orns.orns(add_sfr=False, drop_sfr=False, columns='glomerulus').T
+    hallem_orn_deltas = orns.orns(add_sfr=False, drop_sfr=False, columns=glomerulus_col).T
 
     checks = True
     if checks:
@@ -6574,7 +6776,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # [odor "class" (int: [0, 12]), odor name (w/ conc suffix for supplemental)]
         hc_data.index.names = ['class', 'odor']
         hc_data.index = hc_data.index.droplevel('class')
-        hc_data.columns.names = ['glomerulus', 'receptor']
+        hc_data.columns.names = [glomerulus_col, 'receptor']
         hc_data = hc_data.T
 
         coreceptor_idx = hc_data.index.get_level_values('receptor').get_loc('33b')
@@ -6584,7 +6786,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         hc_data_gloms = list(hc_data.index)
         # renaming from duplicate 'dm3'
         hc_data_gloms[coreceptor_idx] = 'dm3+dm5'
-        hc_data.index = pd.Index(data=hc_data_gloms, name='glomerulus')
+        hc_data.index = pd.Index(data=hc_data_gloms, name=glomerulus_col)
         assert not hc_data.index.duplicated().any()
 
         # hc_data.columns[110:-1] are all the supplemental odors, which are not in
@@ -6706,8 +6908,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # check against that otherwise? maybe save to ./data
 
         # TODO could just load first time we reach this (per run of script)...
-        deltas_from_csv = pd.read_csv(hallem_delta_csv, index_col='glomerulus')
-        sfr_from_csv = pd.read_csv(hallem_sfr_csv, index_col='glomerulus')
+        deltas_from_csv = pd.read_csv(hallem_delta_csv, index_col=glomerulus_col)
+        sfr_from_csv = pd.read_csv(hallem_sfr_csv, index_col=glomerulus_col)
 
         deltas_from_csv.columns.name = 'odor'
 
@@ -6863,11 +7065,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 )
             #
         else:
-            # if this doesn't fail after running all tests, should be able to delete
-            # this arg, and all related ones, for this one_row_per_claw=False
-            # case (and can delete this comment, but keep this assertion)
-            assert not Btn_separate, 'must also have one_row_per_claw=True'
-
             wPNKC = connectome_wPNKC(
                 weight_divisor=weight_divisor,
                 _use_matt_wPNKC=_use_matt_wPNKC,
@@ -6883,21 +7080,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 # savefig assertion that we aren't writing to same path more than once)
                 plot_dir=None if variable_n_claws else plot_dir,
 
-                # TODO delete. should not be needed in this case
-                # TODO test none of these are actually required in the
-                # one_row_per_claw=False case (this case) (run tests, also
-                # checking assertion added above, that Btn_separate=False passes)
-                # (-> delete)
-                #
-                # - Btn_separate is also used below, but prob should only be in
-                #   one-row-per-claw cases...
-                #
-                # - Btn_num_per_glom set below in Btn_separate=True case, and also used
-                #   in (currently) `not (prat_claws and dist_weight is not None)` case
-                #   (and will probably always only be a non-one-row-per-claw case).
-                #   only used in connectome_wPNKC in Btn_separte=True cases.
-                #Btn_separate=Btn_separate,
-                #Btn_num_per_glom=Btn_num_per_glom,
+                Btn_separate=Btn_separate,
+                Btn_num_per_glom=Btn_num_per_glom,
 
                 **shared_wPNKC_kws
             )
@@ -6990,11 +7174,22 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     if Btn_separate:
         # TODO TODO rename this in olfsysm (want one parameter specifying a fixed number
         # of boutons per glomerulus [which we already have as p.pn.Btn_num_per_glom],
-        # which is mutually exclusive with a PN->bouton mapping being passed in [or a
-        # flag indicating we will be setting another variable with such a mapping])
+        # which is mutually exclusive with a PN->bouton mapping being passed in (is it
+        # though? is it already passing in *and using* such mappings, or will i need to
+        # add my own?) [or a flag indicating we will be setting another variable with
+        # such a mapping])
         mp.pn.preset_Btn = True
+
+        # TODO TODO try to have tianpei's Btn_separate=True code not need to explicitly
+        # pass Btn_num_per_glom to model (-> eventually delete in model), so that
+        # handling can be consistent with what i will use for prat_boutons=True, then
+        # check outputs remain the same?  (assuming i think his current outputs are part
+        # of the way to what i want...)
         mp.pn.Btn_num_per_glom = Btn_num_per_glom
-        glomerulus_index = wPNKC.columns.get_level_values('glomerulus')
+
+        # TODO still want to de-duplicate? there will be (Btn_num_per_glom=10) adjacent
+        # copies of each glomerulus currently
+        glomerulus_index = wPNKC.columns.get_level_values(glomerulus_col)
     else:
         glomerulus_index = wPNKC.columns
 
@@ -7049,29 +7244,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # case? matter?
         # TODO reindex -> fillna?
         if Btn_separate:
+            # TODO use glomerulus_index instead of wPNKC.columns here? (unless we
+            # actualy do need to change glomerulus_index above, to remove the duplicate
+            # [adjacent, 1 per bouton] entries it currently has in this case)
             cols = wPNKC.columns
-            if isinstance(cols, pd.MultiIndex):
-                gloms_for_cols = (cols.get_level_values('glomerulus')
-                    # TODO TODO prob just assert on what level 0 is, or delete that else
-                    # anyway...
-                    if 'glomerulus' in cols.names else cols.get_level_values(0)
-                )
-            else:
-                # TODO TODO are there actually cases like this? why did he do it that
-                # way, if so? assert no such cases?
-                #
-                # if you flattened names like "DM6#03", strip "#.."
-                gloms_for_cols = (
-                    wPNKC.columns.str.split("#", 1).str[0]
-                    if (
-                        hasattr(wPNKC.columns, "str") and
-                        wPNKC.columns.str.contains("#").any()
-                    )
-                    else pd.Index(wPNKC.columns)
-                )
-
-            # length == number of wPNKC columns
-            gloms_for_cols = pd.Index(gloms_for_cols, name='glomerulus')
+            # TODO delete else below if this doesn't fail (may need to change if i end
+            # up moving boutons to rows though... try to keep working w/ them as column
+            # level?)
+            assert isinstance(cols, pd.MultiIndex)
+            assert glomerulus_col in cols.names
+            gloms_for_cols = cols.get_level_values(glomerulus_col)
 
             row_lookup = {g: orn_deltas.loc[g].to_numpy() for g in orn_deltas.index}
             zero_row = np.zeros(orn_deltas.shape[1], dtype=float)
@@ -7080,13 +7262,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 columns=orn_deltas.columns
             )
 
-            glom_unique = pd.Index(pd.unique(gloms_for_cols), name='glomerulus')
+            # TODO just use .unique() on gloms_for_cols instead?
+            glom_unique = pd.Index(pd.unique(gloms_for_cols), name=glomerulus_col)
 
             # dedupe orn_deltas to glomerulus level (G × odors), keep first (or .mean())
             if not orn_deltas.index.is_unique:
+                # TODO which level are we groupiong over here? reference by name at
+                # least?
                 orn_deltas = orn_deltas.groupby(level=0, sort=False).first()
-            # align to glomerulus universe; fill missing with 0
-            orn_deltas = orn_deltas.reindex(glom_unique).fillna(0.0)
+
+            orn_deltas = reindex(orn_deltas, glom_unique).fillna(0)
         else:
             orn_deltas = pd.DataFrame([
                     orn_deltas.loc[x].values if x in orn_deltas.index
@@ -7112,7 +7297,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         )
         # sfr: Series indexed by glomerulus with duplicates
         sfr = sfr[~sfr.index.duplicated(keep="first")]
-        sfr.index.name = "glomerulus"
+        sfr.index.name = glomerulus_col
         assert sfr.index.equals(orn_deltas.index)
     #
     odor_index = orn_deltas.columns
@@ -7404,7 +7589,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     assert sfr.index.equals(orn_deltas.index)
 
-    # TODO delete
+    # TODO just assert sfr.index is wPNKC.index (/.columns)? maybe after sorting 1/both?
+    # TODO delete (replace w/ assertion?)
     _wPNKC_shape_changed = False
     if wPNKC.shape != wPNKC[sfr.index].shape:
         print()
@@ -7420,7 +7606,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     wPNKC = wPNKC[sfr.index].copy()
 
-    # TODO delete
+    # TODO delete (replace w/ assertion?)
     if _wPNKC_shape_changed:
         # TODO TODO is this only triggered IFF have_DA4m? move all this wPNKC stuff into
         # that conditional above?
@@ -7457,16 +7643,19 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # NOTE: should be OK if some claws receive no input (should only be for KCs with
         # no claws with input, and thus should only be in a single claw for each such
         # KC, with claw_id=0)
-        # TODO shouldn't dist_weight be None if prat_claws!=True anyway? assert?
         if not (prat_claws and dist_weight is not None):
-            # TODO TODO handle prat_boutons=True case here (and downstream)
-            # TODO TODO should i assert prat_boutons only True if prat_claws=True,
-            # and also that Btn_separate only true if prat_claws=False? or want to
-            # conslidate and use one flag for both?
+            # TODO move this assertion to include one_row_per_claw=False too?
+            # (also dividing values in Btn_separate=True case there, which only used for
+            # test)
             if Btn_separate:
                 assert set(wPNKC.values.flat) == {1 / Btn_num_per_glom, 0}
             else:
+                # TODO if this assertion moved outside `one_row_per_claw` case, still
+                # assert non-negative int, as long as no dist_weights?
                 assert set(wPNKC.values.flat) == {1, 0}
+
+        # TODO still some assertions on values in an else case? min 0? all finite?
+        # (don't really care about `dist_weight is not None` case though...)
 
         assert CLAW_ID in wPNKC.index.names
 
@@ -7706,25 +7895,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     if Btn_separate:
         cols = wPNKC.columns
 
-        # one glomerulus label per column (handles MultiIndex and flat "DM6#03" names)
-        if isinstance(cols, pd.MultiIndex):
-            # TODO update to not assume meaning for level 0
-            gloms_all = (
-                cols.get_level_values('glomerulus') if 'glomerulus' in cols.names else
-                cols.get_level_values(0)
-            ).astype(str)
-        else:
-            # TODO update to not depend on str[0], or at least clarify meaning here
-            gloms_all = (
-                cols.str.split('#', 1).str[0].astype(str)
-                if hasattr(cols, 'str') and cols.str.contains('#').any()
-                else cols.astype(str)
-            )
+        assert isinstance(cols, pd.MultiIndex)
+        assert glomerulus_col in cols.names
+        gloms_all = cols.get_level_values(glomerulus_col)
+        assert all( (type(g) is str) and ('#' not in g) for g in gloms_all)
 
         # ordered unique glomeruli and mapping to indices
         glom_list   = list(pd.unique(gloms_all))
         glom_to_idx = {g: i for i, g in enumerate(glom_list)}
 
+        # TODO what is this doing?
         # (A) bouton -> glomerulus index vector
         btn_to_glom_idx = np.fromiter((glom_to_idx[g] for g in gloms_all),
                                     dtype=np.int32, count=len(gloms_all))
@@ -7735,6 +7915,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         for j, g in enumerate(gloms_all):
             glom_to_btn_cols[glom_to_idx[g]].append(j)
 
+        # TODO TODO TODO double check this part (same idea as his kc>claw map? also have
+        # in both direction in that case? need in both directions?)
         rv.pn.Btn_to_pn = btn_to_glom_idx
         rv.pn.pn_to_Btns = glom_to_btn_cols
 
@@ -9265,13 +9447,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # NOTE: just chose 'stim' for that dim name b/c xarray complained that
         # 'odor' overlapped with the odor_index level of the same name.
         #
-        # wasn't also an issue with 'glomerulus' being the .name of
+        # wasn't also an issue with glomerulus_col being the .name of
         # glomerulus_index, presumably b/c not multiple levels there.
         coords = {'stim': odor_index, 'time_s': ts}
 
-        al_dims = ['stim', 'glomerulus', 'time_s']
-        al_coords_orn = {**coords, 'glomerulus': glomerulus_index.unique()}
-        al_coords = {**coords, 'glomerulus': glomerulus_index}
+        al_dims = ['stim', glomerulus_col, 'time_s']
+        al_coords_orn = {**coords, glomerulus_col: glomerulus_index.unique()}
+        al_coords = {**coords, glomerulus_col: glomerulus_index}
 
         orn_sims = xr.DataArray(data=orn_sims, dims=al_dims, coords=al_coords_orn)
         pn_sims = xr.DataArray(data=pn_sims, dims=al_dims, coords=al_coords)
@@ -9380,10 +9562,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         glom = 'DL5'
         if Btn_separate:
             # TODO TODO define separate glomerulus_index and bouton_index in this case,
-            # to be more clear (glomerulus_index is currently of length equal to # of
+            # to be more clear? glomerulus_index is currently of length equal to # of
             # boutons here, but since all glomeruli should be consecutive b/c of
             # construction [just repeating each a constant # of times, to test], current
-            # .unique().get_loc(glom) works)
+            # .unique().get_loc(glom) works.
             example_glom_idx = glomerulus_index.unique().get_loc(glom)
         else:
             example_glom_idx = glomerulus_index.get_loc(glom)
@@ -9463,10 +9645,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             # 2. Select the data for all example-glom boutons for the chosen odor.
             # The result is a 2D xarray object with shape (10, 5500)
-            # and dimensions ('glomerulus', 'time_s').
+            # and dimensions (glomerulus_col, 'time_s').
             glom_bouton_data = pn_sims.isel(stim=example_odor_idx,
                 glomerulus=glom_bouton_slice
             )
+
+            # TODO TODO plot separate bouton activity, especially after truly adding
+            # PN<>APL dynamics
+            # TODO TODO + add test that establishes how scale of bouton activity in
+            # dynamics relates (for one bouton, or summed across them, vs in
+            # non-separte-bouton case)
 
             # TODO assert something about shape before/after, if "correct" axis really
             # unclear? (or delete comment below)
@@ -9596,12 +9784,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     orn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index_orn,
         data=orn_sims[:, :, stim_start_idx:stim_end_idx].mean(axis=-1)
     )
+
     glomerulus_index_pn = glomerulus_index
+    del glomerulus_index
     if Btn_separate:
         coords = {'stim': odor_index, 'time_s': ts}
-        al_coords_orn = {**coords, 'glomerulus': glomerulus_index_orn}
+        al_coords_orn = {**coords, glomerulus_col: glomerulus_index_orn}
         # Get the list of unique glomerulus names to pair with the indices
-        unique_glom_names = al_coords_orn['glomerulus']
+        unique_glom_names = al_coords_orn[glomerulus_col]
 
         bouton_definitions = []
         # Loop through each glomerulus by its index (0, 1, 2...)
@@ -9616,9 +9806,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # This part remains the same
         unique_bouton_labels = [f'{glom}_{i}' for glom, i in bouton_definitions]
-        # TODO defined earlier as "bouton_index" or truly need this on top of
+        # TODO define earlier as "bouton_index" or truly need this on top of
         # glomerulus_index and glomerulus_index_orn?
         glomerulus_index_pn = pd.Index(unique_bouton_labels)
+        # TODO TODO use MultiIndex instead (e.g. just glomerulus_index w/o any
+        # modifications?) what's the need for this?
 
     # This part also remains the same
     pn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index_pn,
@@ -10149,7 +10341,7 @@ def plot_n_odors_per_cell(responses, ax, *, ax_for_ylabel=None, title=None,
         # shouldn't really need .fillna(0), b/c either 0/NaN shouldn't show up in
         # (currently log scaled) plots.
         # TODO may want to keep anyway, in case i want to try switching off log scale?
-        n_odors_per_cell_counts = n_odors_per_cell_counts.reindex(n_odor_index
+        n_odors_per_cell_counts = reindex(n_odors_per_cell_counts, n_odor_index
             ).fillna(0)
 
         assert n_odors_per_cell_counts.sum() == len(n_odors_per_cell)
@@ -10625,6 +10817,7 @@ def filter_params_for_csv(params: ParamDict) -> ParamDict:
     return True) are not filtered.
     """
     def include_in_csv(x):
+        # (for test_fitandplot_repro[pn2kc_uniform__n-claws_7__n-seeds_2])
         if isinstance(x, list):
             x0 = x[0]
             assert not isinstance(x0, list)
@@ -10738,26 +10931,32 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
         for k, v in model_kws.items() if k not in exclude_params and
         (k not in exclude_if_value_matches or v != exclude_if_value_matches[k])
     ])
+
+    if n_seeds > 1:
+        param_str += f', n_seeds={n_seeds}'
+
     # TODO TODO define all these from model_kws (would rather not pass separately)
     # same w/ n_seeds, and others below
     if fixed_thr is not None or wAPLKC is not None:
         assert fixed_thr is not None and wAPLKC is not None
+
+        variable_n_claws = model_kws['pn2kc_connections'] in variable_n_claw_options
 
         # TODO maybe only do if _in_sens_analysis. don't think i actually want in
         # hemibrain case (other than within sens analysis subcalls)
         #
         # TODO need to support int type too (in both of the two isinstance calls below)?
         # isinstance(<int>, float) is False
-        #
-        # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be too
-        # cumbersome to format into this
         if n_seeds == 1:
             if isinstance(fixed_thr, float):
+                # TODO check that variable_n_claws case (w/ n_seeds=1) ends up here, and
+                # not with a list-of-float
                 fixed_thr_str = f'fixed_thr={fixed_thr:.0f}'
 
             # TODO or format type2thr if that is passed? (and if it is, should be
             # used to define vector fixed_thr. initial fixed_thr should be None if in
             # that case)
+            # TODO is it really an array sometimes and not Series? fix that?
             elif isinstance(fixed_thr, np.ndarray):
                 # TODO or just format type2thr dict? was just trying to still be useful
                 # for sensitivity analysis dir names, without making them too long
@@ -10769,14 +10968,33 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
                 raise ValueError('unexpected fixed_thr type: {type(fixed_thr)}')
 
             if not isinstance(wAPLKC, pd.Series):
-                assert isinstance(wAPLKC, float)
+                assert isinstance(wAPLKC, float), (f'unexpected {type(wAPLKC)=} '
+                    '(expected float or Series)'
+                )
+                # TODO check that variable_n_seeds case (w/ n_seeds=1) ends up here, and
+                # not with a list-of-float
                 param_str += f', {fixed_thr_str}, wAPLKC={wAPLKC:.2f}'
             else:
                 assert model_kws.get('one_row_per_claw')
                 param_str += f', {fixed_thr_str}, wAPLKC={wAPLKC.mean():.2f}'
 
-    if n_seeds > 1:
-        param_str += f', n_seeds={n_seeds}'
+        else:
+            assert variable_n_claws
+
+            # fixed_thr and APL weights should all be list-of-float here.
+            # I don't believe connectome APL weights are supported in any of these cases
+            # (in which case it would be list of Series).
+            #
+            # TODO refactor
+            assert isinstance(fixed_thr, list)
+            assert all(isinstance(x, float) for x in fixed_thr)
+
+            assert isinstance(wAPLKC, list)
+            assert all(isinstance(x, float) for x in wAPLKC)
+
+            # TODO refactor
+            fixed_thr_str = f'mean_thr={np.mean(fixed_thr):.0f}'
+            param_str += f', {fixed_thr_str}, wAPLKC={np.mean(wAPLKC):.2f}'
 
     # simplifies some things to always have a non-empty string output (creation of
     # directories, etc)
@@ -11191,10 +11409,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # TODO give better explanation as to why this is here.
     # to make sure we are accounting for all parameters we might vary in filename
     if param_dir in _fit_and_plot_seen_param_dirs:
-        # TODO TODO TODO why is this now failing w/ uniform for me? how to repro? what
-        # prevented that before (when run from model_mb_responses)?
-        print('FIX FOR UNIFORM CASE')
-        #
         # otherwise, param_dir being in seen set would indicate an error
         assert _only_return_params, f'{param_dir=} already seen!'
         use_cache = True
@@ -11263,9 +11477,15 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             param_dict_list = []
             first_param_dict = None
             wPNKC_list = []
+            kc_spont_in_list = []
 
             _fixed_thr = None
             _wAPLKC = None
+
+            # TODO do i really need these for tests? if so, can i define them from what
+            # i already have available here (or from files i can load from here)?
+            tuning_seeds = None
+            tuning_wPNKC = None
 
             if fixed_thr is not None:
                 # this branch should not run in any sensitivity analyis subcalls, as
@@ -11275,18 +11495,25 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
                 assert len(fixed_thr) == len(wAPLKC) == n_seeds
 
-                assert tuning_output_dir is not None
+                # TODO delete?
+                #assert tuning_output_dir is not None
+                if tuning_output_dir is not None:
+                    tuning_wPNKC_cache = tuning_output_dir / wPNKC_cache_name
+                    assert tuning_wPNKC_cache.exists()
 
-                tuning_wPNKC_cache = tuning_output_dir / wPNKC_cache_name
-                assert tuning_wPNKC_cache.exists()
+                    tuning_wPNKC = read_pickle(tuning_wPNKC_cache)
+                    # assuming all entries of a given seed are at adjacent indices in
+                    # the seed level values (should never be False given how i'm
+                    # implementing things)
+                    tuning_seeds = tuning_wPNKC.index.get_level_values('seed').unique()
+                else:
+                    # TODO or can i easily define from what i already have available
+                    # here? (-> remove this warning)
+                    warn('assuming tuning seeds and wPNKC are same as those for calls '
+                        'below (with fixed fixed_thr/wAPLKC)'
+                    )
+                #
 
-                tuning_wPNKC = read_pickle(tuning_wPNKC_cache)
-                # assuming all entries of a given seed are at adjacent indices in the
-                # seed level values (should never be False given how i'm implementing
-                # things)
-                tuning_seeds = tuning_wPNKC.index.get_level_values('seed').unique()
-
-            # TODO TODO include at least pn2kc_... in progress bar
             # TODO some way to have a nested progress bar, so that outer on (in
             # model_mb_... i'm imagining) increments for each model type, and this inner
             # one increments for each seed? or do something else to indicate outer
@@ -11299,8 +11526,13 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 if fixed_thr is not None:
                     _fixed_thr = fixed_thr[i]
                     _wAPLKC = wAPLKC[i]
+                    # TODO assume, at least for test_[fitandplot_]fixed_inh_params that
+                    # seed sequences will be the same? (that's what i'm hoping i can do
+                    # now)
+                    #
                     # would need to use same seed sequence if this ever failed
-                    assert seed == tuning_seeds[i]
+                    if tuning_seeds is not None:
+                        assert seed == tuning_seeds[i]
 
                 responses, spike_counts, wPNKC, param_dict = fit_mb_model(
                     # TODO or can i handle fixed_thr/wAPLKC thru model_kws (prob not)?
@@ -11314,10 +11546,18 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                     make_plots=(i == 0), **model_kws
                 )
 
+                # TODO return as separate variable then, if we can't handle certain
+                # types below w/o explicitly popping? or make handling of things like
+                # this automatic, based on variable name (saved to appropriate file,
+                # **with seed also handled correctly, for pandas stuff**, similar to
+                # DataArray handling [but also handling seeds])
+                kc_spont_in = param_dict.pop('kc_spont_in')
+
                 if fixed_thr is not None:
-                    # could prob delete. should be sufficienet to check the seeds equal,
-                    # as we are doing above
-                    assert tuning_wPNKC.loc[seed].equals(wPNKC)
+                    if tuning_wPNKC is not None:
+                        # could prob delete. should be sufficient to check the seeds
+                        # equal, as we are doing above
+                        assert tuning_wPNKC.loc[seed].equals(wPNKC)
 
                 if first_seed_only:
                     warn('stopping after model run with first seed '
@@ -11332,6 +11572,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 # TODO assert order of wPNKC columns same in each?
                 wPNKC = util.addlevel(wPNKC, 'seed', seed)
 
+                kc_spont_in = util.addlevel(kc_spont_in, 'seed', seed)
+
                 if first_param_dict is None:
                     first_param_dict = param_dict
                 else:
@@ -11339,13 +11581,14 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
                 responses_list.append(responses)
                 spikecounts_list.append(spike_counts)
-                param_dict_list.append(param_dict)
-
                 wPNKC_list.append(wPNKC)
+                kc_spont_in_list.append(kc_spont_in)
+                param_dict_list.append(param_dict)
 
             responses = pd.concat(responses_list, verify_integrity=True)
             spike_counts = pd.concat(spikecounts_list, verify_integrity=True)
             wPNKC = pd.concat(wPNKC_list, verify_integrity=True)
+            kc_spont_in = pd.concat(kc_spont_in_list, verify_integrity=True)
 
             param_dict = {
                 k: [x[k] for x in param_dict_list] for k in first_param_dict.keys()
@@ -11368,6 +11611,12 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             responses, spike_counts, wPNKC, param_dict = fit_mb_model(
                 sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
             )
+            # TODO return as separate variable then, if we can't handle certain types
+            # below w/o explicitly popping? or make handling of things like this
+            # automatic, based on variable name (saved to appropriate file, **with seed
+            # also handled correctly, for pandas stuff**, similar to DataArray handling
+            # [but also handling seeds])
+            kc_spont_in = param_dict.pop('kc_spont_in')
 
         print('done', flush=True)
 
@@ -11406,6 +11655,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # pass? assuming mtime is since the start of run?). or just shutil copy
         # ij_certain-roi_stats.[csv+p]?
         if orn_deltas is not None:
+            # TODO TODO use parquet instead (+ check can round trip w/o change)
+            #
             # just saving these for manual reference, or for use in -c check.
             # not loaded elsewhere in the code.
             to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
@@ -11423,9 +11674,11 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
         # NOTE: saving raw (unsorted, etc) responses to cache for now, so i can modify
         # that bit. CSV saving is currently after all sorting / post-processing.
+        # TODO TODO use parquet instead (+ check can round trip w/o change)
         to_pickle(responses, model_responses_cache)
         to_pickle(spike_counts, model_spikecounts_cache)
         to_pickle(wPNKC, wPNKC_cache)
+        to_pickle(kc_spont_in, kc_spont_in_cache)
 
         # TODO automatically pop and save anything that's a
         # np.ndarray/pd.[Series|DataFrame] [/xarray, if i end up using that for model
@@ -11478,21 +11731,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                     )
 
                 del param_dict[k]
-
-        # popping to have this make old outputs trip -c/-C checks, but also the param
-        # CSVs/etc would almost certainly not handle array/series values, at least not
-        # without extra work
-        # TODO try not popping now that i have filter_params_for_csv (seems OK. may
-        # still want to not save in two places? pick one?)
-        # TODO TODO why not always popping now? causing issues in uniform case? (and how
-        # do i end up w/ a list of 2? and ig filter then doesn't work b/c the list
-        # doesn't have shape...)
-        #kc_spont_in = param_dict.pop('kc_spont_in')
-        #
-        # TODO or was there ever a change that this was not in param_dict? .get()
-        # instead?
-        kc_spont_in = param_dict['kc_spont_in']
-        to_pickle(kc_spont_in, kc_spont_in_cache)
 
         # currently just assuming that both will be in same format
         # (both either np.arrays/pd.Series [depending on which i end up settling on
@@ -11548,6 +11786,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
                 # TODO add verbose=True? (if keeping... and may want to also/only save
                 # as csv anyway?)
+                # TODO TODO use parquet instead (+ check can round trip w/o change)
                 to_pickle(wAPLKC, wAPLKC_cache)
                 to_pickle(wKCAPL, wKCAPL_cache)
             else:
@@ -11603,6 +11842,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         #
         # in n_seeds > 1 case, should be same keys, but list values (of length equal to
         # n_seeds)
+        # TODO TODO some format other than pickle here? assert all simple types, and
+        # use json or something? maybe pickle portable enough, w/ all simple types?
         to_pickle(param_dict, param_dict_cache)
 
         # TODO don't save in sensitivity analysis subcalls? as this should not change
@@ -11614,6 +11855,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # written
         if extra_responses is not None:
             assert extra_spikecounts is not None
+            # TODO TODO use parquet instead (+ check can round trip w/o change)
             to_pickle(extra_responses, extra_responses_cache)
             to_pickle(extra_spikecounts, extra_spikecounts_cache)
         else:
@@ -12201,10 +12443,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             orn_label_part = f'ORN ({desc})'
 
         # TODO switch to checking if ['date', 'fly_num'] (or 'fly_id') in column levels,
-        # maybe adding an assertion columns.name == 'glomerulus' if not? might make it
+        # maybe adding an assertion columns.name == glomerulus_col if not? might make it
         # nicer to refactor into plot_corr (for deciding whether to call
         # mean_of_fly_corrs)
-        if comparison_orns.columns.name == 'glomerulus':
+        if comparison_orns.columns.name == glomerulus_col:
             mean_orn_corrs = corr_triangular(comparison_orns.T.corr())
         else:
             assert comparison_orns.columns.names == ['date', 'fly_num', 'roi']
@@ -13104,7 +13346,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 tried_wide = pd.DataFrame(data=float('nan'), columns=fixed_thr_steps,
                     index=wAPLKC_steps
                 )
-            # TODO delete try/except
+            # TODO delete try/except. what error was this to catch anyway?
             except ValueError:
                 breakpoint()
             #
@@ -13406,7 +13648,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # I think deltas make more sense to fit than absolute rates, as both can go negative
     # and then we could better filter out points from non-responsive (odor, glomerulus)
     # combinations, if we wanted to.
-    hallem_delta = orns.orns(columns='glomerulus', add_sfr=False)
+    hallem_delta = orns.orns(columns=glomerulus_col, add_sfr=False)
     hallem_delta = abbrev_hallem_odor_index(hallem_delta)
 
     #our_odors = {olf.parse_odor_name(x) for x in certain_df.index.unique('odor1')}
@@ -13450,7 +13692,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
     our_glomeruli = set(certain_df.columns.unique('roi'))
 
-    assert hallem_delta.columns.name == 'glomerulus'
+    assert hallem_delta.columns.name == glomerulus_col
     hallem_glomeruli = set(hallem_delta.columns)
 
     # TODO delete. (after actually checking...)
@@ -13462,7 +13704,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
     # TODO delete. (after actually checking...)
     # TODO TODO check pdf receptor names matches what i get from drosolf w/o passing
-    # columns='glomerulus', then use drosolf receptors to check these
+    # columns=glomerulus_col, then use drosolf receptors to check these
     # TODO TODO check receptors of all these are not in hallem
     # TODO TODO print this out and check again. not clear on why DM3 was ever here...
     # - VA2 (92a)
@@ -13542,17 +13784,17 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     fly_mean_df = fly_mean_df.set_index(['fly_id', 'roi']).drop(
         columns=['date', 'fly_num'], level=0).T
 
-    # TODO replace w/ call just renaming 'roi'->'glomerulus'
+    # TODO replace w/ call just renaming 'roi'->glomerulus_col
     assert 'fly_id' == fly_mean_df.columns.names[0]
     # TODO also assert len of names and/or names[1] is 'roi'?
-    fly_mean_df.columns.names = ['fly_id', 'glomerulus']
+    fly_mean_df.columns.names = ['fly_id', glomerulus_col]
 
     assert num_notnull(fly_mean_df) == n_before
     assert fly_mean_df.shape == shape_before
     assert set(fly_mean_df.dtypes) == {np.dtype('float64')}
 
     # TODO delete? here and elsewhere? (was before fly_mean_df code)
-    mean_df = fly_mean_df.groupby('glomerulus', axis='columns').mean()
+    mean_df = fly_mean_df.groupby(glomerulus_col, axis='columns').mean()
 
     # TODO factor out?
     def melt_odor_by_glom_responses(df, value_name):
@@ -13601,7 +13843,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     n_null_before = num_null(fly_mean_df)
 
     if roi_depths is not None:
-        assert fly_mean_df.columns.get_level_values('glomerulus').equals(
+        assert fly_mean_df.columns.get_level_values(glomerulus_col).equals(
             roi_depths.columns.get_level_values('roi')
         )
         # to also replace the ['date','fly_num'] levels w/ 'fly_id, as was done to
@@ -13621,7 +13863,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
             ).reset_index()
 
         fly_mean_df = fly_mean_df.reset_index().merge(roi_depths,
-            on=['panel', 'fly_id', 'glomerulus']
+            on=['panel', 'fly_id', glomerulus_col]
         )
 
         fly_mean_df = fly_mean_df.set_index(index_levels_before)
@@ -13847,7 +14089,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     #
 
     merged_dff_and_hallem = fly_mean_df.reset_index().merge(hallem_delta,
-        left_on=['odor', 'glomerulus'], right_on=['odor', 'glomerulus']
+        left_on=['odor', glomerulus_col], right_on=['odor', glomerulus_col]
     ).reset_index()
 
     assert not merged_dff_and_hallem[spike_delta_col].isna().any()
@@ -14378,7 +14620,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
         del saved
 
         # TODO also add depth col (when available) here?
-        cols_to_save = ['fly_id', 'odor', 'glomerulus', dff_col]
+        cols_to_save = ['fly_id', 'odor', glomerulus_col, dff_col]
 
         if col_to_fit != dff_col:
             cols_to_save.append(col_to_fit)
@@ -14401,7 +14643,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
         assert dff_to_spiking_data.shape == (shape_before[0], shape_before[1] + 2)
         assert num_null(dff_to_spiking_data) == 0
 
-        # NOTE: ['odor', 'fly_id', 'glomerulus'] would be unique if not for those few
+        # NOTE: ['odor', 'fly_id', glomerulus_col] would be unique if not for those few
         # odors that are in two panels in one fly (e.g. 'ms @ -3' in diag and megamat).
         # we don't currently have 'panel' info in this df, so may need to keep in mind
         # if using saved data.
@@ -14570,8 +14812,8 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
             assert group_tuple not in _seen_group_vals, f'{group_tuple=} already seen'
             _seen_group_vals.add(group_tuple)
 
-            assert group_col in ('glomerulus', 'depth_bin')
-            if group_col == 'glomerulus':
+            assert group_col in (glomerulus_col, 'depth_bin')
+            if group_col == glomerulus_col:
                 # TODO add receptors in parens after glom, for easy ref to hallem paper?
                 if roi_depths is not None:
                     avg_depth_col = f'avg_{roi_depth_col}'
@@ -14591,21 +14833,21 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
 
         if roi_depths is not None:
-            avg_depth_per_glomerulus = merged_dff_and_hallem.groupby('glomerulus')[
+            avg_depth_per_glomerulus = merged_dff_and_hallem.groupby(glomerulus_col)[
                 roi_depth_col].mean()
             avg_depth_per_glomerulus.name = f'avg_{roi_depth_col}'
             merged_dff_and_hallem = merged_dff_and_hallem.merge(
-                avg_depth_per_glomerulus, left_on='glomerulus', right_index=True
+                avg_depth_per_glomerulus, left_on=glomerulus_col, right_index=True
             )
 
             merged_dff_and_hallem = merged_dff_and_hallem.sort_values(
                 f'avg_{roi_depth_col}').reset_index(drop=True)
 
         else:
-            merged_dff_and_hallem = merged_dff_and_hallem.sort_values('glomerulus'
+            merged_dff_and_hallem = merged_dff_and_hallem.sort_values(glomerulus_col
                 ).reset_index(drop=True)
 
-        col = 'glomerulus'
+        col = glomerulus_col
         # TODO default behavior do this anyway? easier way?
         grid_len = int(np.ceil(np.sqrt(merged_dff_and_hallem[col].nunique())))
 
@@ -14716,7 +14958,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
     # TODO rename? it's a series here, not a df (tho that should change in next
     # re-assignment, the one where RHS is unstacked...)
-    mean_est_df = fly_mean_df.reset_index().groupby(['panel', 'odor', 'glomerulus'],
+    mean_est_df = fly_mean_df.reset_index().groupby(['panel', 'odor', glomerulus_col],
         sort=False)[est_spike_delta_col].mean()
     del fly_mean_df
 
@@ -14763,7 +15005,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
     # just to rename the second level from 'odor1'->'odor', to be consistent w/
     # above
-    tidy_hallem.index.names = ['glomerulus', 'odor']
+    tidy_hallem.index.names = [glomerulus_col, 'odor']
     tidy_hallem.name = spike_delta_col
     tidy_hallem = tidy_hallem.reset_index()
     fig, ax = plt.subplots()
@@ -15004,6 +15246,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         to_csv(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.csv',
             date_format=date_fmt_str
         )
+        # TODO TODO use parquet instead (+ check can round trip w/o change)
         to_pickle(unmodified_orn_dff_input_df, output_dir / 'full_orn_dff_input.p')
 
     # TODO explicitly compare fitting on hallem vs hallem-megamat vs remy's megamat data
@@ -15451,7 +15694,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # TODO does this change correlation (yes, moderately increased)?
             # TODO plot delta corr wrt above?
             # TODO print about what the reindex is dropping (if verbose?)?
-            zerofilled_hallem = hallem_megamat.reindex(panel_est_df.index,
+            zerofilled_hallem = reindex(hallem_megamat, panel_est_df.index,
                 axis='columns').fillna(0)
             plot_responses_and_corr(zerofilled_hallem.T, panel_plot_dir,
                 'hallem_spike_deltas_filled', xlabel='Hallem OR spike deltas\n'
@@ -17804,7 +18047,7 @@ def main():
     )
 
     assert orn_deltas.columns.names == ['panel', 'odor']
-    assert orn_deltas.index.names == ['glomerulus']
+    assert orn_deltas.index.names == [glomerulus_col]
 
     # currently only way to enable olfsysm log prints
     al_util.verbose = True

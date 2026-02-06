@@ -114,10 +114,8 @@ def is_pytest_capturing_stderr() -> bool:
 
 
 # TODO maybe log all warnings?
-def warn(msg, *, red: bool = False) -> None:
+def warn(msg) -> None:
     color = 'yellow'
-    if red:
-        color = 'red'
 
     # since i couldn't otherwise figure out how to get pytest to show warnings before
     # debugger breakpoint, especially if pytest is configured to ignore warnings, so now
@@ -133,6 +131,7 @@ def warn(msg, *, red: bool = False) -> None:
 
     # TODO replace w/ logging.warning? (have init_logger just hook into warnings.warn?
     # some standard mechanism for that?)
+    # TODO how to get color to work here too? possible?
     warnings.warn(str(msg))
 
 
@@ -231,7 +230,8 @@ def produces_output(_fn=None, *, verbose=True):
             if not multiple_saves_per_run_ok:
                 if normalized_path in seen_inputs:
                     raise MultipleSavesPerRunException('would have overwritten output '
-                        f'{path} (previously written elsewhere in this run)!'
+                        f'{path} (previously written elsewhere in this run)! add '
+                        'multiple_saves_per_run_ok=True to call to override'
                     )
 
             seen_inputs.add(normalized_path)
@@ -392,10 +392,144 @@ def to_csv(data, path: Path, **kwargs) -> None:
     data.to_csv(path, **kwargs)
 
 
+_SERIES_NAME_PLACEHOLDER: str = '__UNNAMED-SERIES'
+def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.Series]:
+    data = pd.read_parquet(path)
+
+    # TODO need an outer need len check? prob not practically, but maybe for some edge
+    # cases, if trying to support saving empty stuff?
+    # TODO refactor to share w/ similar code in to_parquet?
+    move_first_column_to_index = False
+    try:
+        len(data.iloc[0, 0])
+        move_first_column_to_index = True
+    except TypeError as err:
+        assert str(err).endswith('has no len()')
+    #
+
+    # TODO assert no sequence values in index already? (would not be possible here, b/c
+    # read_parquet above would fail. may want something like that in to_parquet)
+
+    if move_first_column_to_index:
+        assert len(data.columns) > 1, \
+            'still need some columns left after moving one to index'
+
+        c0 = data.columns[0]
+        # we need to make sequences hashable to move to index. tuple is the way i had
+        # done this with bouton_ids, and the most straightforward.
+        data[c0] = data[c0].map(tuple)
+        data = data.set_index(c0, append=True)
+
+
+    # TODO do for non-MultIndex indices as well? (only [currently] converting levels on
+    # save for MultiIndex)
+    if isinstance(data.columns, pd.MultiIndex):
+        index_arrays = []
+        for c in data.columns.names:
+            xs = data.columns.get_level_values(c)
+            # TODO try to support datetime/Timestamp here too? anything else?
+            try:
+                # seems to automatically convert to int if it can (haven't tested float,
+                # especially not with NaN, but assume that would remain float too)
+                xs = pd.to_numeric(xs)
+
+            # ValueError: Unable to parse string <x> at position <n>
+            except ValueError:
+                pass
+
+            # each will still have .name defined
+            index_arrays.append(xs)
+
+        data.columns = pd.MultiIndex.from_arrays(index_arrays)
+
+
+    # all Series written with to_parquet above (if they had None for .name), should have
+    # this as last column
+    if data.columns[-1] == _SERIES_NAME_PLACEHOLDER:
+        data = data.squeeze().rename(None)
+
+    # TODO remove kwarg? always squeeze? would then prob want to assert no DataFrame
+    # inputs with only one column (which there probably aren't...)
+    elif len(data.columns) == 1 and squeeze:
+        return data.squeeze()
+
+    return data
+
+
+@produces_output(verbose=False)
+def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path) -> None:
+    # TODO delete eventually
+    orig = data
+    #
+    if isinstance(data, pd.Series):
+        assert not hasattr(data, 'to_parquet')
+        # since DataFrame.to_parquet(...) requires str column names, but we often have
+        # Series with .name == None.
+        # Not planning to support non-str for column names other than just a single
+        # missing Series name.
+        if data.name is None:
+            data = data.to_frame(name=_SERIES_NAME_PLACEHOLDER)
+        else:
+            data = data.to_frame()
+
+    # TODO remove outer len check?
+    if len(data) > 0:
+        try:
+            len(data.iloc[0, 0])
+            raise ValueError('data already had sequence elements in first column. '
+                'would be inferred as a final tuple-of-int index level with current '
+                'scheme'
+            )
+        except TypeError as err:
+            assert str(err).endswith('has no len()')
+
+    # pd.MultiIndex objects have levels. non-MultiIndex pd.Index objects do NOT.
+    if hasattr(data.columns, 'levels'):
+        str_levels = [all(type(x) is str for x in xs) for xs in data.columns.levels]
+
+        # TODO some way to avoid the copy here? (without changing input)
+        data = data.copy()
+
+        # TODO assert all non-str are all int/float? (basically, some list of types we
+        # should be able to detect and convert back on read)
+        # TODO try to support datetime/Timestamp here too? anything else?
+        data.columns = data.columns.map(lambda xs:
+            tuple(x if was_str else str(x) for x, was_str in zip(xs, str_levels))
+        )
+        # TODO  assert no already-str levels would be detected convertible to int/float
+        # (/whatever other types we are converting in read) here?
+    else:
+        # NOTE: currently assuming any non-MultIndex input will already just have str
+        # columns (could implement without too much effort)
+        assert all(type(x) is str for x in data.columns)
+
+    # TODO how would this interact with MultiIndex columns? assert we don't have both?
+    # test some cases there?
+    #
+    # currently only planning on supporting automatic tuple-of-int (index) <->
+    # array-of-int (column, as supported by my current pd.read_parquet) conversion for a
+    # final index level (e.g. bouton_id, which I'm currently assuming will always be
+    # last level, when present).
+    #
+    # I assume that, for anything more complicated than one level at the end of index,
+    # the easiest thing to do will be to add an argument to allow caller to specify
+    # which columns to convert (and probably need another one for column order, at least
+    # so long as I'm doing automated round trip checks, since how else will we know what
+    # order to put columns back into index in?)
+    if type(data.index.get_level_values(-1)[0]) is tuple:
+        # moving last index level to first column
+        data = data.reset_index(level=-1)
+
+    data.to_parquet(path)
+
+    # TODO delete eventually
+    d2 = read_parquet(path)
+    assert d2.equals(orig)
+    #
+
+
 @produces_output(verbose=False)
 # input could be at least Series|DataFrame
-# TODO add flag (maybe via changes to wrapper?) that allow overwriting same thing
-# written already in current run
 def to_pickle(data, path: Path) -> None:
     """
     NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
@@ -407,6 +541,14 @@ def to_pickle(data, path: Path) -> None:
         # just specifying protocol b/c docs say it is (sometimes?) much faster
         path.write_bytes(pickle.dumps(data, protocol=-1))
         return
+
+    # TODO delete eventually (replace calls [that i can] of to_pickle w/ to_parquet
+    # first)
+    if isinstance(data, (pd.Series, pd.DataFrame)):
+        # replacing .p w/ .parquet
+        parquet_path = path.with_suffix('.parquet')
+        to_parquet(data, parquet_path)
+    #
 
     if hasattr(data, 'to_pickle'):
         # TODO maybe do this if instance DataFrame/Series, but otherwise fall back to

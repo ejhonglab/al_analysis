@@ -15,6 +15,7 @@ import shutil
 import traceback
 
 from tqdm import tqdm
+from termcolor import cprint
 
 from hong2p.util import format_date
 from al_util import warn
@@ -111,12 +112,14 @@ def main():
             #
 
             xfail = True
-            # TODO actualy check mark is xfail, and not something else?
+            # TODO actually check mark is xfail, and not something else?
             # (that is the only mark i'm actually using though...)
+        # TODO actually check type is as expected here?
 
         print(f'{model_kws=}')
 
-        if not xfail_only:
+        # TODO some way to simplify this conditional?
+        if not xfail_only and xfail:
             skipped_xfail_model_kws.append(model_kws)
             warn('skipping this test case because marked xfail (expected to fail)!')
             continue
@@ -128,8 +131,9 @@ def main():
         model_output_dir = reference_output_dir / expected_model_output_dir_name
         if write_into_last:
             if model_output_dir.exists():
-                warn(f'skipping {expected_model_output_dir_name} b/c already existed! '
-                    'delete it manually (and re-run), if you wish.', red=True
+                # TODO orange or something other than red here? back to yellow?
+                cprint(f'skipping {expected_model_output_dir_name} b/c already existed!'
+                    ' delete it manually (and re-run), if you wish.', 'red'
                 )
                 try:
                     # this will only be able to remove empty directories. will err, if
@@ -149,8 +153,10 @@ def main():
                 **model_kws
             )
         except Exception as err:
-            warn(f'{model_kws=} failed with:\n{traceback.format_exc()}', red=True)
+            cprint(f'{model_kws=} failed with:\n{traceback.format_exc()}', 'red')
 
+            # TODO some way to also do this after raise below (if whole this called from
+            # debugger)? atexit? not sure it's worth it...
             if delete_on_err:
                 warn(f'deleting directory {model_output_dir.name} after this error, '
                     'because -d/--delete-on-err'
@@ -172,10 +178,6 @@ def main():
 
         expected_missing_csv_keys = get_expected_missing_csv_keys(model_kws)
 
-        # TODO TODO fix: (fixed? or just haven't been testing uniform case lately?)
-        # fixed_thr: neither type t1=<class 'list'> t2=<class 'str'> is subclass of
-        # other for:
-        # model_kws={'pn2kc_connections': 'uniform', 'n_claws': 7, 'n_seeds': 2}
         assert_param_csv_matches_returned(reference_output_dir, param_dict,
             expected_missing_csv_keys=expected_missing_csv_keys
         )

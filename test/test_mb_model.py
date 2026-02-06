@@ -15,14 +15,18 @@ import pytest
 import math
 from pathlib import Path
 
-from hong2p.util import pd_allclose
-
+# TODO does importing this before hong2p.equals allow that warning (optional from within
+# `equals`) to be hooked in same way (from `al_util` module-level warning format
+# handling change)? import order matter?
 import al_util
+from hong2p.util import pd_allclose, equals
+
 from al_util import read_pickle, warn
 from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC, KC_ID,
-    CLAW_ID, KC_TYPE, step_around, read_series_csv, read_param_csv, read_param_cache,
-    get_thr_and_APL_weights, get_APL_weights, variable_n_claw_options, dict_seq_product,
-    get_connectome_wPNKC_params, format_model_params, ParamDict
+    CLAW_ID, BOUTON_ID, KC_TYPE, step_around, read_series_csv, read_param_csv,
+    read_param_cache, get_thr_and_APL_weights, get_APL_weights, variable_n_claw_options,
+    dict_seq_product, get_connectome_wPNKC_params, format_model_params,
+    eval_and_check_compatible, glomerulus_col, ParamDict
 )
 
 
@@ -31,13 +35,14 @@ from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC, KC_
 # that) (doing so for now)
 al_util.verbose = True
 
+# TODO any way to get pytest to output captured warnings inline? --capture=no doesn't do
+# it.
 # NOTE: may eventually want to revert to per-test-fn marks (via
 # `@pytest.mark.filterwarnings(...)` decorator), but many modelling wrapper calls will
 # emit many warnings, hence the current module-level ignore
 # TODO change to only ignore warnings generated from one of my files (or those in this
 # repo)? easily possible?
 pytestmark = pytest.mark.filterwarnings('ignore::UserWarning')
-
 
 # so can work w/ pytest called from repo root, but also w/ scripts like
 # generate_reference_outputs_for_repro.py, which I've been calling from this directory.
@@ -112,6 +117,12 @@ MODEL_KW_LIST = dict_seq_product(
 
         dict(one_row_per_claw=True, prat_claws=True, APL_coup_const=0),
 
+        # TODO keep? just want to check output not changing when starting to rework
+        # model bouton implementation (for one, to remove need to specify
+        # Btn_num_per_glom explicitly, so I can start to actually plug in arbitrary
+        # PN>bouton wPNKC and PN<>APL weights)
+        dict(one_row_per_claw=True, Btn_separate=True, Btn_num_per_glom=3),
+
         # TODO add entry where fixed_thr is vector? do i even want to support that?
         # (yea, currently using as part of equalize_kc*=True implementation, when tuned
         # in prior step)
@@ -134,18 +145,9 @@ MODEL_KW_LIST = dict_seq_product(
 
     # TODO add _use_matt_wPNKC=True? (or leave to it's own test?)
 ]
-
-# TODO support pytest.param objects in dict_seq_product, to skip this step?
-# TODO TODO fix connectome_wPNKC + connectome_APL_weights code in this path (-> delete
-# this code marking these cases as xfail)
-_marked_model_kw_list = []
-for kws in MODEL_KW_LIST:
-    if kws.get('one_row_per_claw') and not kws.get('prat_claws'):
-        warn(f'marking {kws=} as expected to fail (in MODEL_KW_LIST)!')
-        kws = pytest.param(kws, marks=pytest.mark.xfail)
-    _marked_model_kw_list.append(kws)
-MODEL_KW_LIST = _marked_model_kw_list
-#
+# TODO support pytest.param objects in dict_seq_product, xfail stuff as needed?
+# (had previously post-processed this list, when needed, to xfail prat_claws=False
+# one_row_per_claw=True cases)
 
 # TODO move to model_mb? (or hong2p.types?)
 FitMBModelOutputs = Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, ParamDict]
@@ -166,27 +168,6 @@ def get_fitandplot_model_kw_list() -> List[ParamDict]:
                 # NOTE: not setting this for test that calls fit_mb_model, since that
                 # call only ever returns output of one seed
                 kws['n_seeds'] = N_TEST_SEEDS
-
-                # TODO is this mark working? (yes) seems i can still manually select
-                # this case, w/ -k, at least... that expected? (yes) (oh, need to mark
-                # run=False?  does say XFAIL at end of test)
-                # how do i still get error output w/ xfail as-is? just seems to cut from
-                # output right to XFAIL (presumably output err-ed and got cut off
-                # earlier somewhere before there)
-                #
-                # TODO TODO try to resolve and remove this (which happens on second
-                # iteration [in fit_and_plot...] b/c param_dir was already seen,
-                # tripping assertion. why didn't this happen before, when called from
-                # model_mb_responses?)
-                # TODO and how is this an issue but not w/ paper_repro one? just b/c we
-                # are only hardcoding inh/apl weights in one? (idk, not seeing seed
-                # levels for either of the dirs this call was generating, whether the
-                # one with fixed thr+apl or not... seemed n_seeds might not have been
-                # set/maintained properly for some reason?)
-                warn(f'marking {kws=} as expected to fail '
-                    '(in FITANDPLOT_MODEL_KW_LIST)!'
-                )
-                kws = pytest.param(kws, marks=pytest.mark.xfail)
         else:
             # TODO assert it's already a pytest.param (ParameterSet)? still add mark if
             # not already marked for xfail?
@@ -262,11 +243,27 @@ def _fit_and_plot_mb_model(*args, **kwargs) -> ParamDict:
 # seem to not have seed as a level of either [spike_counts|responses|wPNKC].csv?
 # pickles also wrong?
 # TODO TODO and why n_seeds not in params.csv for that case?
-def _read_spike_counts(output_dir: Path, *, index_col=[KC_ID, KC_TYPE]) -> pd.DataFrame:
-    # TODO may need to special case reading ones with seeds (factor to mb_model at that
-    # point, if gonna add more complicated logic to read header and determine from
-    # there?)
-    return pd.read_csv(output_dir / 'spike_counts.csv', index_col=index_col)
+def _read_spike_counts(output_dir: Path, *, index_col=None) -> pd.DataFrame:
+
+    retry_index_col = False
+    if index_col is None:
+        index_col = [KC_ID, KC_TYPE]
+        retry_index_col = True
+
+    spike_counts_csv = output_dir / 'spike_counts.csv'
+
+    try:
+        return pd.read_csv(spike_counts_csv, index_col=index_col)
+
+    except ValueError as err:
+        msg = str(err)
+        if msg != 'Index kc_type invalid' or not retry_index_col:
+            raise err
+
+    # TODO factor this def out somewhere?
+    # default levels for variable_n_claw outputs
+    index_col = ['seed', KC_ID]
+    return pd.read_csv(spike_counts_csv, index_col=index_col)
 
 
 # TODO move to hong2p.util?
@@ -392,11 +389,9 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
             # TODO can i change how i load to cast at load-time when possible?
             if type(v) is str:
                 assert type(v2) is str, f'{k=}: type({v2=}) != str'
-                # TODO TODO if this fails, may need to eval/similar (for
-                # array/list-of-float), or would need to preprocess outside in those
-                # cases
-                v = float(v)
-                v2 = float(v2)
+                # doing this rather than just float(v) for each, since sometimes we have
+                # list-of-floats here
+                v, v2 = eval_and_check_compatible(v, v2)
 
             # otherwise, would have to specify equal_nan=True below (and expect no
             # inputs should have NaN anyway). these lines work for both float and
@@ -446,12 +441,18 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
                 )
                 assert np.allclose(v, v2), f'{k=}: np.allclose({v=}, {v2=}) failed!'
 
-        elif hasattr(v, 'equals'):
-            assert v.equals(v2), f'{k=}: {v=} not equals to {v2=}'
-        elif isinstance(v, np.ndarray):
-            assert np.array_equal(v, v2), f'{k=}: {v=} not np.array_equal to {v2=}'
-        else:
-            assert v == v2, f'{k=}: {v=} != {v2=}'
+            continue
+
+        # TODO how are we getting this err here:
+        # ValueError: The truth value of a Series is ambiguous. Use a.empty,
+        # a.bool(), a.item(), a.any()
+        # for test_fitandplot_repro[pn2kc_uniform__n-claws_7__n-seeds_2]
+        # (oh, it's a list-of-Series for kc_spont_in)
+        assert equals(v, v2), f'{k=}: {v=} not equals {v2=}'
+        # TODO delete
+        #assert equals(v, v2, allow_complex_type_seqs=True), \
+        #    f'{k=}: {v=} not equals {v2=}'
+        #
 
 
 def assert_fit_outputs_equal(ret: FitMBModelOutputs, ret2: FitMBModelOutputs, **kwargs
@@ -562,6 +563,10 @@ def assert_fit_and_plot_outputs_equal(params: ParamDict, params2: ParamDict,
     output_dir2_pickles = filenames_with_ext(output_dir2, 'p')
     assert output_dir_pickles == output_dir2_pickles
 
+    output_dir_parquets = filenames_with_ext(output_dir, 'p')
+    output_dir2_parquets = filenames_with_ext(output_dir2, 'p')
+    assert output_dir_parquets == output_dir2_parquets
+
     # TODO assert some minimum set of CSVs?
     output_dir_csvs = filenames_with_ext(output_dir, 'csv')
     output_dir2_csvs = filenames_with_ext(output_dir2, 'csv')
@@ -571,7 +576,7 @@ def assert_fit_and_plot_outputs_equal(params: ParamDict, params2: ParamDict,
     # params_for_csv.p is loaded and checked above (we need to ignore a subset and
     # may need to special case allclose checking on some there)
     exclude_pickles = ('params_for_csv.p',)
-    for name in output_dir_pickles:
+    for name in output_dir_pickles | output_dir_parquets:
         if name in exclude_pickles:
             continue
 
@@ -579,20 +584,25 @@ def assert_fit_and_plot_outputs_equal(params: ParamDict, params2: ParamDict,
         # xarray, but it does work w/ np.ndarray, which is only other thing i think i
         # currently have in pickles (except for dict in params_for_csv.p, which should
         # be excluded anyway)
-        p1 = pd.read_pickle(output_dir / name)
-        p2 = pd.read_pickle(output_dir2 / name)
+        if name.endswith('.p'):
+            p1 = pd.read_pickle(output_dir / name)
+            p2 = pd.read_pickle(output_dir2 / name)
+        else:
+            assert name.endswith('.parquet')
+            p1 = pd.read_parquet(output_dir / name)
+            p2 = pd.read_parquet(output_dir2 / name)
 
         # TODO delete
-        if isinstance(p1, np.ndarray):
-            breakpoint()
-        #
-        # TODO TODO use np.array_equal if type is ndarray?
-        # TODO refactor to share def w/ check_with_allclose, rather than hardcoding this
-        # one pickle to use allclose for
-        if name == 'wKCAPL.p':
+        assert not isinstance(p1, np.ndarray)
+
+        # TODO refactor for uniform handling w/ other lists of keys to check w/ allclose
+        if name.startswith('wKCAPL'):
             assert pd_allclose(p1, p2), f'{name=}'
         else:
-            assert p1.equals(p2), f'{name=}'
+            assert equals(p1, p2), f'{name=} {p1=} not equals {p2=}'
+            # TODO delete
+            #assert equals(p1, p2, allow_complex_type_seqs=True), \
+            #    f'{name=} {p1=} not equals {p2=}'
 
     # other than these and params.csv (dealt with above), seems only CSVs currently are:
     # {'responses.csv', 'wPNKC.csv', 'orn_deltas.csv'} (though this may change,
@@ -608,8 +618,13 @@ def assert_fit_and_plot_outputs_equal(params: ParamDict, params2: ParamDict,
 
         # TODO also check for CSVs if i also write to those in the future?
         # (+ check equiv to pickles, if so)
+        # TODO TODO replace check of these pickles w/ just the parquet versions, after
+        # checking i can replace w/ those
         assert 'wAPLKC.p' in output_dir_pickles
         assert 'wKCAPL.p' in output_dir_pickles
+
+        assert 'wAPLKC.parquet' in output_dir_parquets
+        assert 'wKCAPL.parquet' in output_dir_parquets
 
         # we don't need to read from both dirs, b/c we already checked pickles of same
         # name have same contents (across the two dirs) above
@@ -949,9 +964,6 @@ def test_homeostatic_thrs(orn_deltas):
 # allow_net_inh_per_claw=False (but xfail that here for now, and then get it to work
 # later, by refactoring olfsysm)
 
-@pytest.mark.xfail(
-    reason='`one_row_per_claw and not prat_claws` path currently broken', run=False
-)
 def test_spatial_wPNKC_equiv(orn_deltas):
     """
     Tests that one-row-per-claw wPNKC can recreate one-row-per-KC hemibrain outputs,
@@ -1268,7 +1280,9 @@ def get_expected_missing_csv_keys(model_kws: ParamDict) -> Tuple[str]:
     # through simply json or something? could help move towards a non-pickle format for
     # that, which might be last pickle holdout, if i convert all pandas stuff to
     # parquet)
-    expected_missing_csv_keys = ('kc_spont_in',)
+    expected_missing_csv_keys = tuple()
+    # TODO delete. this should now always be saved in a separate file.
+    #expected_missing_csv_keys = ('kc_spont_in',)
 
     if (model_kws.get('one_row_per_claw') or
         model_kws.get('use_connectome_APL_weights')):
@@ -1308,7 +1322,7 @@ def assert_param_csv_matches_returned(model_output_root: Path, param_dict: Param
         # and also check they matches? (can prob leave to fn checking more than just
         # params?)
         assert returned_keys - csv_keys == set(expected_missing_csv_keys), \
-            f'{returned_keys - csv_keys=}'
+            f'{returned_keys - csv_keys=} (!= {expected_missing_csv_keys=})'
 
         assert_param_dicts_equal(param_dict, p2, only_check_overlapping_keys=True)
 
@@ -1435,6 +1449,11 @@ def get_latest_reference_output_dir() -> Path:
     return reference_output_dir
 
 
+# TODO add some options to FITANDPLOT_MODEL_KW_LIST, just for repro check (def new
+# var), and use that both in generate script and here? want to add one case of
+# `Btn_separate=True + Btn_num_per_glom=5`, but don't necessarily want to test that in
+# other tests? or just test elsewhere too?
+#
 # TODO possible to make similar test for fit_mb_model, or too much work to implement
 # serialization, such that easiest is just to call fit_and_plot_mb_model?
 # TODO use something other than parametrize, to generate only tests for the data we have
@@ -1508,6 +1527,9 @@ def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
     )
 
 
+# TODO care to understand the difference between the output i had then and what i'm
+# getting now? meaningfully different?
+#
 # TODO maybe delete anyway, once i get generate_reference_outputs_for_repro.py +
 # corresponding repro test in here established?
 # TODO also delete any data i might have committed / added for this
@@ -1767,11 +1789,7 @@ def test_multiresponder_APL_boost(orn_deltas):
     for k in should_be_unchanged:
         v1 = params1[k]
         v2 = params2[k]
-        if hasattr(v1, 'equals'):
-            assert v1.equals(v2)
-        else:
-            # shouldn't need np.isclose b/c it should be the same unchanged value
-            assert v1 == v2
+        assert equals(v1, v2)
 
     # TODO also test including new boost_wKCAPL (w/ at least =False and =True values)
     assert params1['wAPLKC'][~mask.values].equals(params2['wAPLKC'][~mask.values])
@@ -2070,6 +2088,8 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
         params2 = read_series_csv(output_dir / 'params.csv')
 
         if not _drop_glom_with_plus:
+            # TODO replace w/ eval_and_check_[err|compatible|equal]? (or a wrapper that
+            # also works w/ non-str input?) (eval requires str input) (/delete)
             # TODO switch handling? does de-serialize as a string, which needs eval'd...
             # (to array, or what?)
             wAPLKC = eval(params['wAPLKC'])
@@ -2243,40 +2263,42 @@ def test_step_around():
         # TODO similar cases w/ vector input? already covered well enough above?
 
 
-@pytest.mark.xfail(
-    reason='`one_row_per_claw and not prat_claws` path currently broken', run=False
-)
 def test_btn_expansion(orn_deltas):
+    # TODO doc
+
+    # TODO delete this? should be default anyway
     connectome = 'hemibrain'
-    # TODO TODO possible to replace tianpei's path w/ prat_claws=True here?
-    # (may need to xfail, until fixing tianpei's path's thru connectome_wPNKC +
-    # connectome_APL_weights, if not)
+
+    # TODO possible to replace tianpei's path w/ prat_claws=True here? not sure i care.
+    # may want separate test boutons are placed in separate format (in wPNKC) across
+    # prat_boutons=True and Btn_separate=True cases tho?
     # TODO also use parametrize (on limited set?)
     for kws in [dict(one_row_per_claw=True, use_connectome_APL_weights=True),
                 dict(one_row_per_claw=True),
-                # TODO TODO what is point of these one_row_per_claw=False cases? delete?
-                # shouldn't output be same as if btn-expansion kws not passed (if not an
-                # error that we are trying to do incompatible things)?
                 dict(use_connectome_APL_weights=True),
                 dict()]:
 
-        # with bouton separation
+        # TODO test w/ a smaller number, just to go faster? presumably it affect speed?
+        # TODO delete
+        #Btn_num_per_glom = 10
+        Btn_num_per_glom = 3
+
+        # TODO refactor to share kws w/ call below
         responses1, spike_counts1, wPNKC1, param_dict1 = _fit_mb_model(
-            # TODO refactor to share kws w/ call below
-            orn_deltas=orn_deltas,
-            pn2kc_connections=connectome,
-            Btn_separate=True,
-            Btn_num_per_glom=10,
-            **kws
+            orn_deltas=orn_deltas, pn2kc_connections=connectome,
+            Btn_separate=True, Btn_num_per_glom=Btn_num_per_glom, **kws
         )
 
         responses2, spike_counts2, wPNKC2, param_dict2 = _fit_mb_model(
-            orn_deltas=orn_deltas,
-            pn2kc_connections=connectome,
-            Btn_separate=False,
-            Btn_num_per_glom=10,
-            **kws
+            orn_deltas=orn_deltas, pn2kc_connections=connectome, **kws
         )
+
+        # TODO TODO also save return (limited?) dynamics, and assert they are of correct
+        # shape? or did tianpei never actually have bouton dynamics saved (or even
+        # simmed) separately? (want to test there is actually something internal in
+        # model of this shape, other than wPNKC...)
+        # TODO add option to dynamics/saving stuff to only do so for first 1-2 cells /
+        # odors, to save on space?
 
         # the responses and spike_count matrices should be the same
         assert responses1.equals(responses2)
@@ -2285,10 +2307,27 @@ def test_btn_expansion(orn_deltas):
         # wPNKC is not the same, but row-wise sum should be the same.
         # test row wise sum is the same;
         # (use allclose since wPNKC1 have doubles and wPNKC2 have integers)
-        assert np.allclose(wPNKC1.sum(axis=1), wPNKC2.sum(axis=1))
+        assert np.allclose(wPNKC1.sum(axis='columns'), wPNKC2.sum(axis='columns'))
 
-        summed_wPNKC1 = wPNKC1.groupby(level='glomerulus', axis=1).sum()
+        summed_wPNKC1 = wPNKC1.groupby(level='glomerulus', axis='columns').sum()
         assert np.allclose(summed_wPNKC1, wPNKC2)
+
+        # TODO TODO may need to update this, if i end up moving his bouton IDs to
+        # another component of row index instead (if that ends up being easiest way to
+        # get useful output for prat_boutons=True outputs through model)
+        # TODO TODO probably at least change his name for this level to BOUTON_ID
+        # (something will change, when refactoring to make his path and
+        # prat_boutons=True paths consistent, and working to get olfsysm going with
+        # those outputs)
+        assert wPNKC1.columns.names == [glomerulus_col, BOUTON_ID]
+        assert wPNKC2.columns.names == [glomerulus_col]
+        assert wPNKC1.index.equals(wPNKC2.index)
+        assert len(wPNKC1.columns) == Btn_num_per_glom * len(wPNKC2.columns)
+
+        # TODO how are wAPLKC/wKCAPL handled in this case? are they also expanded?
+        # if not, how is that handled? ig they wouldn't be (since PN<>APL stuff wansn't
+        # really implemented at the time [well it was, but not in the way i wanted at
+        # least])?
 
 
 # TODO TODO add test that we can actually run sensitivity analysis path of fit_and_plot*
