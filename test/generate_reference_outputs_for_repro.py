@@ -33,11 +33,14 @@ from test_mb_model import (FITANDPLOT_MODEL_KW_LIST, reference_output_root, _orn
 # much duplicated work w/ serialization done already in fit_and_plot_mb_model?
 
 def main():
+    # TODO TODO add argument for substring to match against test ID (use -k, like
+    # pytest?)
     parser = argparse.ArgumentParser()
     parser.add_argument('-r', '--write-into-last', action='store_true', help='writes '
         'into most recent output directory, instead of generating a new one. will skip '
         'any existing model output directories'
     )
+    # TODO err/warn if no test cases marked xfail?
     parser.add_argument('-x', '--xfail-only', action='store_true', help='will *only* '
         'run model parameters pytest marked as expected to fail (xfail). without this,'
         ' xfail cases are *not* run'

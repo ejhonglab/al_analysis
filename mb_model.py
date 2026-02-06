@@ -3624,27 +3624,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             boutons_per_glom=Btn_num_per_glom
         )
         # TODO delete
-        #
-        # ipdb> one_row_per_claw
-        # False
-        # ipdb> wPNKC_btn.iloc[:2, :2]
-        # glomerulus           D
-        # bouton_id            1    2
-        # kc_id     kc_type
-        # 300968622 ab       0.0  0.0
-        # 301309622 ab       0.0  0.0
-        # ipdb> wPNKC_btn.stack().stack().value_counts(dropna=False)
-        # 0.0    891310
-        # 0.1     92130
-        # 0.2      3540
-        # 0.3       140
-        # dtype: int64
-        # ipdb> wPNKC.stack().value_counts()
-        # 0    89131
-        # 1     9213
-        # 2      354
-        # 3       14
-        #
         # ipdb> one_row_per_claw
         # True
         # ipdb> wPNKC_btn.iloc[:2, :2]
@@ -3660,20 +3639,28 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # ipdb> wPNKC_btn.stack().stack().value_counts(dropna=False)
         # 0.0    5852790
         # 0.1     110430
-        #
-        # TODO TODO TODO reformat (either his or mine), so boutons are in consistent
-        # spot for both prat_boutons=True (+ whatever other flag actually enables
-        # distinct ones, if i require one) and tianpei's Btn_separate=True
-        # TODO TODO TODO + also want to divide weight be # boutons in prat_claws=True
-        # case?  or should i be counting and storing weight separately from the very
-        # beginning? (and same question in PN<>APL context. what's currently happening
-        # there?)
-        #
-        # TODO delete
-        #breakpoint()
-        #
         wPNKC = wPNKC_btn
-    print('DECIDE ON FORMAT FOR FEEDING BOUTONS IN TO MODEL')
+
+    # TODO TODO TODO reformat (either his or mine), so boutons are in consistent
+    # spot for both prat_boutons=True (+ whatever other flag actually enables
+    # distinct ones, if i require one) and tianpei's Btn_separate=True
+    #
+    # TODO TODO + also want to divide weight be # boutons in this case?
+    # or should i be counting and storing weight separately from the very beginning?
+    # (and same question in PN<>APL context. what's currently happening there?)
+    #if prat_claws:
+    #    # TODO TODO update my repro outputs to work w/ data in this format
+    #    # TODO TODO TODO update everything downstream to work from this (maybe just
+    #    # invert in connectome_APL_weights? or easier to change how tianpei's code works
+    #    # (to use index level instead?)
+    #    #
+    #    # moving BOUTON_ID from last index level (which is a tuple-of-ints) to a second
+    #    # (int) column level (after glomerulus), which is has a separate column for each
+    #    # bouton
+    #    wPNKC = wPNKC.reset_index(level=BOUTON_ID).explode(BOUTON_ID).set_index(
+    #        BOUTON_ID, append=True).unstack().fillna(0)
+    #    # TODO maybe convert dtype back to int?
+    #    # TODO assert sum unchanged
 
     # TODO option to also return a version of (long-form) df, so i can use for a test
     # comparing old + new hemibrain version, as i'm currently doing w/ sloppy code
@@ -4453,10 +4440,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 )
             #
 
-            # TODO TODO TODO just drop these, since Btn_to_pn is only vector<int> in
-            # model code currently (w/ pn_to_Btns a vector<vector<int>>?
-            # don't think i want to add complexity in C++ code if i can avoid it...
-
             multibouton_claw_counts = n_boutons_per_claw_counts[
                 n_boutons_per_claw_counts.index > 1
             ]
@@ -4501,6 +4484,20 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             #)
             # TODO also assert all other columns same, for a given bouton ID? should be,
             # no?
+
+            # TODO TODO come up with some way to merge the duplicates instead?
+            #
+            # just dropping these (for now, at least), since Btn_to_pn is
+            # only vector<int> in model code currently (w/ pn_to_Btns
+            # vector<vector<int>>)? don't think i want to add complexity in C++ code if
+            # i can avoid it...
+            if len(multibouton) > 0:
+                warn('dropping all duplicate claws in claws2bouton! for each claw with'
+                    ' more than one bouton (in above warning) will drop all but the '
+                    'first bouton for each claw! ideally we would instead merge these '
+                    'duplicate boutons (which, for each claw, are all from the same PN)'
+                )
+                claw2bouton = claw2bouton.drop_duplicates(subset=claw_cols)
 
             # TODO TODO TODO do i only want to merge within a given claw? or OK to also
             # merge these bouton IDs in all contexts? what to check first? how many
@@ -6123,6 +6120,11 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
     # drop? (and prob do one by default) (at least it's just 80/1830 cells)
     # (what is latest fraction w/ v3 pratyush data?)
 
+    # TODO TODO TODO actually save wAPLPN/wPNAPL (in fit_and_plot... maybe actually loop
+    # over objects in param_dict, and pop all Series, and use that to replace existing
+    # hardcode code for wAPLKC/wKCAPL?)
+    # TODO add flags to control shape of wAPLPN/wPNAPL (length # claws make sense? #
+    # glomeruli? # boutons?)?
     return wAPLKC, wKCAPL, wAPLPN, wPNAPL
 
 
@@ -10940,8 +10942,6 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
     if fixed_thr is not None or wAPLKC is not None:
         assert fixed_thr is not None and wAPLKC is not None
 
-        variable_n_claws = model_kws['pn2kc_connections'] in variable_n_claw_options
-
         # TODO maybe only do if _in_sens_analysis. don't think i actually want in
         # hemibrain case (other than within sens analysis subcalls)
         #
@@ -10950,7 +10950,8 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
         if n_seeds == 1:
             if isinstance(fixed_thr, float):
                 # TODO check that variable_n_claws case (w/ n_seeds=1) ends up here, and
-                # not with a list-of-float
+                # not with a list-of-float (or change logic of conditional to handle
+                # n_seeds=1 case below too)
                 fixed_thr_str = f'fixed_thr={fixed_thr:.0f}'
 
             # TODO or format type2thr if that is passed? (and if it is, should be
@@ -10972,13 +10973,15 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
                     '(expected float or Series)'
                 )
                 # TODO check that variable_n_seeds case (w/ n_seeds=1) ends up here, and
-                # not with a list-of-float
+                # not with a list-of-float (or change logic of conditional to handle
+                # n_seeds=1 case below too)
                 param_str += f', {fixed_thr_str}, wAPLKC={wAPLKC:.2f}'
             else:
                 assert model_kws.get('one_row_per_claw')
                 param_str += f', {fixed_thr_str}, wAPLKC={wAPLKC.mean():.2f}'
 
         else:
+            variable_n_claws = model_kws['pn2kc_connections'] in variable_n_claw_options
             assert variable_n_claws
 
             # fixed_thr and APL weights should all be list-of-float here.
