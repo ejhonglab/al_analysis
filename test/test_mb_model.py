@@ -49,8 +49,7 @@ pytestmark = pytest.mark.filterwarnings('ignore::UserWarning')
 test_dir = Path(__file__).resolve().parent
 sent_to_remy = test_dir.parent / 'data/sent_to_remy'
 
-# TODO rename to indicate hemibrain / paper
-model_output_dir1 = sent_to_remy / ('2025-03-18/'
+paper_hemibrain_output_dir = sent_to_remy / ('2025-03-18/'
     'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
     'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
 )
@@ -76,6 +75,10 @@ N_TEST_SEEDS = 2
 #
 # TODO add separate marks for a few basic elements in this list? (or otherwise way to
 # run just a small, maximally informative, subset?)?
+#
+# TODO TODO default to _plot_example_dynamics=True on all (shouldn't effect test ID for
+# any)? may cause memory issues w/ current implementation, for some tests at least...
+# try?
 #
 # NOTE: IDs probably need to be unique, so if a parameter I'd otherwise want to include
 # in the *MODEL_KW_LIST is not in `format_model_params` output (e.g. b/c in
@@ -129,7 +132,20 @@ MODEL_KW_LIST = dict_seq_product(
     ],
     # will test the connectome APL version first
     [dict(use_connectome_APL_weights=True), dict()]
+
+) + dict_seq_product([
+        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+            use_connectome_APL_weights=True, replace_KCAPL_with_PNAPL=True
+        ),
+        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+            use_connectome_APL_weights=True, add_PNAPL_to_KCAPL=True
+        ),
+    ],
+    # TODO want both?
+    [dict(pn_claw_to_APL=True), dict()]
+
 ) + [
+
     dict(pn2kc_connections='uniform', n_claws=7),
 
     # TODO also test 'caron'? 'hemidraw'? (though neither currently used, and would want
@@ -193,7 +209,7 @@ def _orn_deltas() -> pd.DataFrame:
     # ...
     # VM7d        108.535394   ...   58.686294  20.230297
     # VM7v         59.896953   ...   13.250292   8.446418
-    orn_deltas = pd.read_csv(model_output_dir1 / 'orn_deltas.csv', header=[0,1],
+    orn_deltas = pd.read_csv(paper_hemibrain_output_dir / 'orn_deltas.csv', header=[0,1],
         index_col=0
     )
     assert orn_deltas.columns.names == ['panel', 'odor']
@@ -302,7 +318,7 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
     # particular tests? (check none w/ allclose by default) (or am i going to need to
     # specify wKCAPL enough that i shouldn't...?)
     check_with_allclose=('wKCAPL','wKCAPL_scale'),
-    only_check_overlapping_keys: bool = False,
+    only_check_overlapping_keys: bool = False, ignore_tuning_iters: bool = False,
     expected_missing_keys: Iterable[str] = tuple()) -> None:
     # TODO doc if can come from a serialized output, which (and how to load, and whether
     # that's equiv to checking output returned from a call directly)
@@ -317,10 +333,9 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
     """
     # params that we'd expect to be different between the fixed thr/APL-weights call
     # and the call that picked those values (tuning_iters), and other special cases
-    # TODO have this as kwarg tho, since we'd want to also check tuning_iters and
-    # output_dir when checking returned param dict vs serialized one (not that either
-    # matters too much, nor should differ...)?
-    exclude_params = ('tuning_iters', 'rv', 'mp', 'output_dir')
+    exclude_params = ('rv', 'mp', 'output_dir')
+    if ignore_tuning_iters:
+        exclude_params += ('tuning_iters',)
 
     if len(expected_missing_keys) > 0:
         missing_keys = set(params.keys()) - set(params2.keys())
@@ -348,7 +363,6 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
     #
     # to simplify logic in loop below, where we actually check values equal
     for k in params.keys():
-        # TODO adding type(...) here fix this section?
         t1 = type(params[k])
         t2 = type(params2[k])
         if t1 != t2:
@@ -368,7 +382,13 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
 
     # TODO factor to a util dict_equal fn? already have one (maybe in hong2p)?
     # TODO option to report all mismatches, rather than failing on first?
-    for k in params.keys():
+    #
+    # sorting fixed_thr/wAPLKC/wKCAPL[_scale] to end, so we detect changes in parameters
+    # that influence tuning first (before detecting changes in output of tuning i.e.
+    # these parameters)
+    for k in sorted(params.keys(), key=lambda x: (
+            x.startswith('wAPLKC') or x.startswith('wKCAPL') or x == ' fixed_thr', x)
+        ):
         if k in exclude_params:
             continue
 
@@ -468,7 +488,7 @@ def assert_fit_outputs_equal(ret: FitMBModelOutputs, ret2: FitMBModelOutputs, **
     # intentionally checking responses/spike_counts last, as differences in params/wPNKC
     # will often help explain why there are differences in these (and differences in
     # these are often harder to interpret)
-    assert_param_dicts_equal(params, params2)
+    assert_param_dicts_equal(params, params2, **kwargs)
     assert wPNKC.equals(wPNKC2)
     assert responses.equals(responses2)
     assert spike_counts.equals(spike_counts2)
@@ -522,9 +542,9 @@ def assert_fit_and_plot_outputs_equal(params: ParamDict, params2: ParamDict,
     # TODO replace w/ read_param_cache (/delete)
     a1 = pd.read_pickle(output_dir / 'params_for_csv.p')
     b1 = pd.read_pickle(output_dir2 / 'params_for_csv.p')
-    #check_with_allclose = ('fixed_thr',)
-    # TODO delete
-    assert_param_dicts_equal(a1, b1) #, check_with_allclose=check_with_allclose)
+    # TODO TODO ok to also pass kwargs here? (may need to separately expose just
+    # ignore_tuning_params, if not)
+    assert_param_dicts_equal(a1, b1, **kwargs)
 
     assert (a1.keys() - params.keys()) == set()
     assert (b1.keys() - params.keys()) == set()
@@ -546,14 +566,9 @@ def assert_fit_and_plot_outputs_equal(params: ParamDict, params2: ParamDict,
     # TODO check contents same for overlap too? could require type conversion in some
     # cases, and prob not worth...
 
-    assert_param_dicts_equal(a2, b2)
-    # TODO (delete) ever need only_check_overlapping_keys=True here? would prob need to
-    # thread thru all assert_param_dicts_equal calls in this fn if i do need here
-    # TODO delete?
-    #assert_param_dicts_equal(a2, b2, only_check_overlapping_keys=True) #,
-    #    check_with_allclose=check_with_allclose
-    #)
-    #
+    # TODO TODO ok to also pass kwargs here? (may need to separately expose just
+    # ignore_tuning_params, if not)
+    assert_param_dicts_equal(a2, b2, **kwargs)
 
     def filenames_with_ext(output_dir: Path, ext: str) -> Set[str]:
         return {x.name for x in output_dir.glob(f'*.{ext}')}
@@ -942,6 +957,11 @@ def test_homeostatic_thrs(orn_deltas):
 
     # TODO replace w/ get_thr_and_APL_weights?
     thrs = params['fixed_thr']
+
+    # TODO TODO update so it's a Series here too? is this currently the only case where
+    # thrs is returned as a numpy ndarray?
+    assert isinstance(thrs, np.ndarray)
+
     assert len(thrs) == len(spike_counts)
     # actual range of thresholds seems to be [-57, 574] in current test, so atol could
     # be as much as this difference (but keeping smaller in case i ever make thresholds
@@ -955,7 +975,7 @@ def test_homeostatic_thrs(orn_deltas):
     #
 
     ret2 =  _fit_mb_model(orn_deltas=orn_deltas, fixed_thr=thrs, wAPLKC=wAPLKC)
-    assert_fit_outputs_equal(ret, ret2)
+    assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
 
 
 # TODO add test that allow_net_inh_per_claw=True (the default) produces some
@@ -963,7 +983,10 @@ def test_homeostatic_thrs(orn_deltas):
 # APL_coup_const != -1 case, where i currently haven't implemented
 # allow_net_inh_per_claw=False (but xfail that here for now, and then get it to work
 # later, by refactoring olfsysm)
+# TODO + test that orn activities (after adding spont) can't be negative (but seems like
+# C++ code might allow them to be? fix that?
 
+# TODO TODO TODO fix (broken as of 2026-02-13)
 def test_spatial_wPNKC_equiv(orn_deltas):
     """
     Tests that one-row-per-claw wPNKC can recreate one-row-per-KC hemibrain outputs,
@@ -974,10 +997,6 @@ def test_spatial_wPNKC_equiv(orn_deltas):
     # TODO TODO also add checks that we can use either tianpei/prat one-row-per-claw
     # variants, and then get same output if we sum over the claws there (rather than
     # splitting apart an existing wPNKC matrix here)
-    # TODO TODO TODO may need to (at least temporarily) ONLY test w/ prat_claws=True for
-    # both, since tianpei code path in wPNKC currently in a somewhat broken state
-    # (2026-01-28) (not sure that's possible? what is weight_divisor=20 doing in
-    # wPNKC_kws below? can i delete it?)
     # TODO TODO may need to rewrite test to create wPNKC by summing over prat_claws
     # version, rather than splitting apart, if i still want a similar test in the
     # meantime
@@ -1102,6 +1121,9 @@ def test_spatial_wPNKC_equiv(orn_deltas):
             # match)
             assert not spike_counts.equals(spike_counts2)
 
+            # TODO TODO TODO fix (broken as of 2026-02-13)
+            # assert 0.19137422105608395 < 0.0175
+            #
             # the extent of the difference after changing C++ code to sum excitation and
             # inhibition within each claw, before then summing over claws within KC
             # (to support returning claw sims):
@@ -1230,7 +1252,7 @@ def test_fixed_inh_params(tmp_path, orn_deltas, kws):
     # iteration.
     assert params2['tuning_iters'] == 0
 
-    assert_fit_outputs_equal(ret, ret2)
+    assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
 
     # TODO delete? move to a script to generate test data (along w/ related code
     # above)?
@@ -1359,6 +1381,12 @@ def assert_param_csv_matches_returned(model_output_root: Path, param_dict: Param
 # paths, for all, and check that they also all work w/ input data not from megamat
 # (fit_mb_model had for a while only been running a large part of make_plots code if
 # panel was megamat...)
+#
+# TODO TODO TODO fix (and similar cases):
+# (same issue for `test_fixed_inh_params`)
+# one-row-per-claw_True__prat-claws_True__prat-boutons_True__pn-claw-to-APL_True__connectome-APL_True
+# ValueError: libolfsysm/src/olfsysm.cpp:1172 in `sparsity_nonconvergence_failure` check
+# `rv.kc.tuning_iters <= p.kc.max_iters` failed
 @pytest.mark.parametrize('kws', FITANDPLOT_MODEL_KW_LIST, ids=format_model_params)
 def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas, kws):
     """
@@ -1397,7 +1425,9 @@ def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas, kws):
         expected_missing_csv_keys=expected_missing_csv_keys
     )
 
-    assert_fit_and_plot_outputs_equal(params, params2, plot_root)
+    assert_fit_and_plot_outputs_equal(params, params2, plot_root,
+        ignore_tuning_iters=True
+    )
 
     # TODO also test we can load all the things that either downstream stuff in
     # mb_model (e.g. in model_mb_responses) or natmix_data/analysis.py uses (and
@@ -1608,6 +1638,13 @@ def test_connectome_wPNKC_repro():
 '''
 
 
+# TODO TODO TODO either pass hardcode_initial_sp=True (which should fix failure, or
+# regen output) (or just let *_fitandplot_repro tests replace this? any reason not to?)
+@pytest.mark.xfail(
+    reason='would need to regen outputs with hardcode_initial_sp=True at least. may '
+    'remove test (should be replaced by some of *_fitandplot_repro cases?)',
+    run=False
+)
 def test_connectome_APL_repro(orn_deltas):
     # TODO doc purpose of test
     # TODO doc how to generate test data for this (+ move to script, along w/ other test
@@ -1740,6 +1777,8 @@ def test_equalize_kc_type_sparsity(tmp_path, orn_deltas):
     assert df.equals(df2)
 
 
+# TODO TODO TODO fix (broken as of 2026-02-13)
+# assert (sc1[~mask.values] <= sc2[~mask.values]).all().all()
 def test_multiresponder_APL_boost(orn_deltas):
     # ipdb> mask
     # kc_id
@@ -1875,10 +1914,12 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
         # weight_divisor=20. The defaults target_sparsity=0.1 and
         # _drop_glom_with_plus=True should be fine.
         target_sparsity=0.0915, weight_divisor=20, _drop_glom_with_plus=False,
-        # TODO TODO TODO are drop_kcs_with_no_input and _drop_glom_with_plus still doing
-        # what they were before? currently getting 1828 (instead of paper 1837) cells in
-        # wPNKC)
-        drop_kcs_with_no_input=False
+        # TODO (delete? should be fixed now) are drop_kcs_with_no_input and
+        # _drop_glom_with_plus still doing what they were before? currently getting 1828
+        # (instead of paper 1837) cells in wPNKC)
+        drop_kcs_with_no_input=False,
+        # TODO check we actually need hardcode_intial_sp=True
+        hardcode_initial_sp=True
     )
 
     plot_root = tmp_path
@@ -1895,7 +1936,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
 
     # TODO convert to loading the CSVs instead (to future proof this test). should also
     # be committed.
-    paper_wPNKC = pd.read_pickle(model_output_dir1 / 'wPNKC.p')
+    paper_wPNKC = pd.read_pickle(paper_hemibrain_output_dir / 'wPNKC.p')
     wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
     #
 
@@ -1921,7 +1962,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     # {'fixed_thr': 268.0375322649455, 'wAPLKC': 4.622950819672131, 'wKCAPL':
     # 0.0025165763852325156, 'sp_acc': 0.1, 'max_iters': 10, 'sp_lr_coeff': 10.0,
     # 'apltune_subsample': 1, 'tuning_iters': 1}
-    a1 = pd.read_pickle(model_output_dir1 / 'params_for_csv.p')
+    a1 = pd.read_pickle(paper_hemibrain_output_dir / 'params_for_csv.p')
 
     # {'fixed_thr': 268.0375322649456, 'wAPLKC': 4.306010928961749, 'wKCAPL':
     # 0.002344045143691752, 'sp_acc': 0.1, 'max_iters': 10, 'sp_lr_coeff': 10.0,
@@ -1939,7 +1980,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
         only_check_overlapping_keys=True
     )
 
-    a2 = read_series_csv(model_output_dir1 / 'params.csv')
+    a2 = read_series_csv(paper_hemibrain_output_dir / 'params.csv')
     b2 = read_series_csv(output_dir / 'params.csv')
     # TODO TODO am i no longer including params for dff2spiking_*? is that a mistake?
     # as of 2025-10-12:
@@ -1959,7 +2000,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     #
 
     # NOTE: despite using read_pickle, this is a np.ndarray (shape (1837, 1))
-    spont1 = pd.read_pickle(model_output_dir1 / 'kc_spont_in.p')
+    spont1 = pd.read_pickle(paper_hemibrain_output_dir / 'kc_spont_in.p')
 
     # this one is now a pd.Series, w/ similar KC index to new wPNKC
     spont2 = pd.read_pickle(output_dir / 'kc_spont_in.p')
@@ -1977,13 +2018,12 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
 
     # TODO rename 'model_kc' -> KC_ID (='kc_id') in those committed outputs?
     # NOTE: older output still used 'model_kc' instead of KC_ID, for KC ID column
-    idf = pd.read_csv(model_output_dir1 / 'spike_counts.csv', index_col='model_kc')
+    idf = pd.read_csv(paper_hemibrain_output_dir / 'spike_counts.csv',
+        index_col='model_kc'
+    )
 
-    # TODO delete if i end up modifying model_output_dir1 contents to use current KC
-    # index conventions
-    #
-    # can't compare KC indices while model_output_dir1 contents still has [0, N-1]
-    # 'model_kc' index, instead of KC_ID(='kc_id') IDs from connectome
+    # can't compare KC indices while paper_hemibrain_output_dir contents still has [0,
+    # N-1] 'model_kc' index, instead of KC_ID(='kc_id') IDs from connectome
     # (so also can't just do one x.equals(y) check)
     assert len(idf) == len(df)
     assert not idf.index.duplicated().any()
@@ -2050,7 +2090,8 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
 
     kws = dict(
         pn2kc_connections='uniform', n_claws=7, target_sparsity=0.0915,
-        drop_kcs_with_no_input=False
+        # TODO check we actually need hardcode_intial_sp=True
+        drop_kcs_with_no_input=False, hardcode_initial_sp=True,
     )
 
     plot_root = tmp_path
@@ -2193,7 +2234,9 @@ def test_hemibrain_matt_repro():
     # TODO modify so i don't need to return gkc_wide here (or at least be more clear
     # about what it is, both in docs and in name)?
     responses, _, gkc_wide, _ = _fit_mb_model(tune_on_hallem=True,
-        pn2kc_connections='hemibrain', _use_matt_wPNKC=True
+        pn2kc_connections='hemibrain', _use_matt_wPNKC=True,
+        # TODO check we actually need hardcode_intial_sp=True
+        hardcode_initial_sp=True
     )
     assert gkc_wide.index.name == KC_ID
     assert np.array_equal(wide.index, gkc_wide.index)
@@ -2263,7 +2306,24 @@ def test_step_around():
         # TODO similar cases w/ vector input? already covered well enough above?
 
 
-def test_btn_expansion(orn_deltas):
+# TODO TODO add test (that hits claw_sims code in olfsysm, and checks those dynamic
+# outputs) that order of odors doesnt matter to claw_sims, for at least 2 odors
+# (to double check claw_sims re-use [i.e. lack of odor indexing] in fit_sparseness isn't
+# a problem)
+
+@pytest.mark.parametrize('kws', [
+    dict(),
+    dict(use_connectome_APL_weights=True),
+    dict(one_row_per_claw=True),
+    # at least this case is now actually failing b/c different values.
+    # TODO TODO can it (and others that will likely fail) be saved by either C++ code
+    # tweaks or hardcoding fixed_thr/wAPLKC from prev call?
+    dict(one_row_per_claw=True, use_connectome_APL_weights=True),
+], ids=format_model_params)
+# TODO TODO also hardcode fixed_thr/wAPLKC (from first call) to shortcut second call's
+# tuning? or would that degrade test? or do i actually need that for test to work
+# (hopefully not?)?
+def test_btn_expansion(tmp_path, orn_deltas, kws):
     # TODO doc
 
     # TODO delete this? should be default anyway
@@ -2272,73 +2332,83 @@ def test_btn_expansion(orn_deltas):
     # TODO possible to replace tianpei's path w/ prat_claws=True here? not sure i care.
     # may want separate test boutons are placed in separate format (in wPNKC) across
     # prat_boutons=True and Btn_separate=True cases tho?
-    # TODO also use parametrize (on limited set?)
-    for kws in [dict(one_row_per_claw=True, use_connectome_APL_weights=True),
-                dict(one_row_per_claw=True),
-                dict(use_connectome_APL_weights=True),
-                dict()]:
 
-        # TODO test w/ a smaller number, just to go faster? presumably it affect speed?
-        # TODO delete
-        #Btn_num_per_glom = 10
-        Btn_num_per_glom = 3
+    # TODO delete
+    print()
+    print(f'{kws=}')
+    #
 
-        # TODO refactor to share kws w/ call below
-        responses1, spike_counts1, wPNKC1, param_dict1 = _fit_mb_model(
-            orn_deltas=orn_deltas, pn2kc_connections=connectome,
-            Btn_separate=True, Btn_num_per_glom=Btn_num_per_glom, **kws
-        )
+    # TODO TODO set this to new default of sp_lr_coeff after settling? (then hardcode
+    # old default for select repro tests)
+    # 0.5 is far too low. 1.0 also too low. default was 10 actually. 2.0 still too low
+    # (I think? check again?). oscillating again at 5, and 3.0 (which didn't terminate
+    # after 15 iterations)
+    kws = dict(orn_deltas=orn_deltas, pn2kc_connections=connectome, sp_lr_coeff=2.5,
+        max_iters=20, **kws
+    )
 
-        responses2, spike_counts2, wPNKC2, param_dict2 = _fit_mb_model(
-            orn_deltas=orn_deltas, pn2kc_connections=connectome, **kws
-        )
+    Btn_num_per_glom = 3
 
-        # TODO TODO also save return (limited?) dynamics, and assert they are of correct
-        # shape? or did tianpei never actually have bouton dynamics saved (or even
-        # simmed) separately? (want to test there is actually something internal in
-        # model of this shape, other than wPNKC...)
-        # TODO add option to dynamics/saving stuff to only do so for first 1-2 cells /
-        # odors, to save on space?
+    # TODO run (a slow version of?) this test w/ this + _plot_example_dynamics=True?
+    # (currently getting killed saving claw_sims on 2nd call tho... maybe only after
+    # adapting to subset early, and/or only work off an olfsysm-created disk copy)
+    #plot_dir1 = tmp_path / 'Btn-separate_True'
+    #plot_dir1.mkdir()
+    plot_dir1 = None
+    responses1, spike_counts1, wPNKC1, param_dict1 = _fit_mb_model(
+        Btn_separate=True, Btn_num_per_glom=Btn_num_per_glom, plot_dir=plot_dir1, **kws
+    )
 
-        # the responses and spike_count matrices should be the same
-        assert responses1.equals(responses2)
-        assert spike_counts1.equals(spike_counts2)
+    #plot_dir2 = tmp_path / 'Btn-separate_False'
+    #plot_dir2.mkdir()
+    plot_dir2 = None
+    responses2, spike_counts2, wPNKC2, param_dict2 = _fit_mb_model(
+        plot_dir=plot_dir2, **kws
+    )
 
-        # wPNKC is not the same, but row-wise sum should be the same.
-        # test row wise sum is the same;
-        # (use allclose since wPNKC1 have doubles and wPNKC2 have integers)
-        assert np.allclose(wPNKC1.sum(axis='columns'), wPNKC2.sum(axis='columns'))
+    # TODO TODO also save return (limited?) dynamics, and assert they are of correct
+    # shape? or did tianpei never actually have bouton dynamics saved (or even
+    # simmed) separately? (want to test there is actually something internal in
+    # model of this shape, other than wPNKC...)
+    # TODO add option to dynamics/saving stuff to only do so for first 1-2 cells /
+    # odors, to save on space?
 
-        summed_wPNKC1 = wPNKC1.groupby(level='glomerulus', axis='columns').sum()
-        assert np.allclose(summed_wPNKC1, wPNKC2)
+    # the responses and spike_count matrices should be the same
+    assert responses1.equals(responses2)
+    assert spike_counts1.equals(spike_counts2)
 
-        # TODO TODO may need to update this, if i end up moving his bouton IDs to
-        # another component of row index instead (if that ends up being easiest way to
-        # get useful output for prat_boutons=True outputs through model)
-        # TODO TODO probably at least change his name for this level to BOUTON_ID
-        # (something will change, when refactoring to make his path and
-        # prat_boutons=True paths consistent, and working to get olfsysm going with
-        # those outputs)
-        assert wPNKC1.columns.names == [glomerulus_col, BOUTON_ID]
-        assert wPNKC2.columns.names == [glomerulus_col]
-        assert wPNKC1.index.equals(wPNKC2.index)
-        assert len(wPNKC1.columns) == Btn_num_per_glom * len(wPNKC2.columns)
+    # wPNKC is not the same, but row-wise sum should be the same.
+    # test row wise sum is the same;
+    # (use allclose since wPNKC1 have doubles and wPNKC2 have integers)
+    assert np.allclose(wPNKC1.sum(axis='columns'), wPNKC2.sum(axis='columns'))
 
-        # TODO how are wAPLKC/wKCAPL handled in this case? are they also expanded?
-        # if not, how is that handled? ig they wouldn't be (since PN<>APL stuff wansn't
-        # really implemented at the time [well it was, but not in the way i wanted at
-        # least])?
+    summed_wPNKC1 = wPNKC1.groupby(level='glomerulus', axis='columns').sum()
+    assert np.allclose(summed_wPNKC1, wPNKC2)
+
+    # TODO TODO may need to update this, if i end up moving his bouton IDs to
+    # another component of row index instead (if that ends up being easiest way to
+    # get useful output for prat_boutons=True outputs through model)
+    # TODO TODO probably at least change his name for this level to BOUTON_ID
+    # (something will change, when refactoring to make his path and
+    # prat_boutons=True paths consistent, and working to get olfsysm going with
+    # those outputs)
+    assert wPNKC1.columns.names == [glomerulus_col, BOUTON_ID]
+    assert wPNKC2.columns.names == [glomerulus_col]
+    assert wPNKC1.index.equals(wPNKC2.index)
+    assert len(wPNKC1.columns) == Btn_num_per_glom * len(wPNKC2.columns)
+
+    # TODO how are wAPLKC/wKCAPL handled in this case? are they also expanded?
+    # if not, how is that handled? ig they wouldn't be (since PN<>APL stuff wansn't
+    # really implemented at the time [well it was, but not in the way i wanted at
+    # least])?
 
 
-# TODO TODO add test that we can actually run sensitivity analysis path of fit_and_plot*
+# TODO TODO add test of new olfsysm dynamics saving code (check equiv to what i'm
+# currently getting [for single odors, at least] through pybind11) (-> then update to
+# save all odors into single files, if possible)
+
+# TODO add test that we can actually run sensitivity analysis path of fit_and_plot*
 # (for all MODEL_KW_LIST?)
-
-# TODO TODO add a test that loads saved model outputs, for all in MODEL_KW_LIST,
-# and checks we can repro those. replace some current tests w/ this?
-# TODO TODO and add a script that saves current outputs for all of those (or do that in
-# mb_model.main?)
-# TODO prioritize getting some one-row-per-claw outputs for that test (including w/
-# prat_claws=True/False)
 
 # TODO TODO add test that the panel2tuning_panel section of model_mb_responses
 # works for most param combos (including some i haven't gotten working yet there, like

@@ -1199,6 +1199,9 @@ def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
     # TODO (option to) also save traceback at each, for easier debugging?
 
     try:
+        # TODO TODO some way to patch avoid this for testing? (support plot_dir=None?
+        # have everything reset _savefig_seen_paths for each offending call? actually
+        # just save all figs into distinct plot dirs, even for testing...?)
         assert abs_fig_path not in _savefig_seen_paths
     except AssertionError:
         print(f'{abs_fig_path=}')
