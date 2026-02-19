@@ -23,6 +23,7 @@ import filecmp
 import itertools
 from io import StringIO
 import inspect
+import json
 import os
 from os.path import getmtime
 from pathlib import Path
@@ -71,9 +72,9 @@ from hong2p import olf, util, viz
 from hong2p.olf import solvent_str
 from hong2p.viz import dff_latex, no_constrained_layout
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
-    reindex
+    reindex, is_scalar, pd_index_equal
 )
-from hong2p.types import Pathlike, DataFrameOrSeries
+from hong2p.types import Pathlike, DataFrameOrSeries, CMap, KwargDict
 from natmix import drop_mix_dilutions
 import olfsysm as osm
 
@@ -390,82 +391,149 @@ def get_APL_weights(param_dict: ParamDict, kws: ParamDict) -> Dict[str,
     Will always contain 'wAPLKC' key, and will only currently contain 'wKCAPL' for
     one-row-per-claw case, where code may currently require this passed separately.
     """
-    apl_params = dict()
-
     # TODO share defaults w/ fit_mb_model?
     one_row_per_claw = kws.get('one_row_per_claw', False)
 
     # TODO refactor
     variable_n_claws = kws.get('pn2kc_connections') in variable_n_claw_options
 
+    # TODO share defaults w/ fit_mb_model?
+    use_connectome_APL_weights = kws.get('use_connectome_APL_weights', False)
+
     # TODO just test whether we have *_scale params or not, rather than requiring kws to
     # be passed in?
 
-    # TODO share defaults w/ fit_mb_model?
-    if kws.get('use_connectome_APL_weights', False):
+    apl_params = dict()
+    if use_connectome_APL_weights:
         # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model, and
         # there is no current support for passing in vector wAPLKC, right?
         wAPLKC = param_dict['wAPLKC_scale']
-
-        # TODO delete?
-        '''
-        # TODO TODO fix in tianpei's one-row-per-claw case (check it's not necessary ->
-        # delete from param_dict in fit_mb_model -> restore this assertion)
-        # (prob delete. not sure i ever want to assert this is not in param_dict. see
-        # below)
-        #assert 'wAPLKC' not in param_dict
-        # TODO delete (after resolving above)
-        if 'wAPLKC' in param_dict:
-            # TODO TODO TODO was it ever the case that i only also had wAPLKC in
-            # one_row_per_claw=True case? perhaps only b/c i was popping for other cases
-            # in fit_and_plot... (but that's not something that should be handled here,
-            # right?)? delete?
-            #assert one_row_per_claw
-            warn(f'had both wAPLKC and wAPLKC_scale={wAPLKC:.2f}! could be a mistake!')
-        '''
-        #
         apl_params['wAPLKC'] = wAPLKC
 
-        # TODO TODO remove this bit if i can confirm tianpei's code only needs wAPLKC
-        # passed in, or if i can change it to work that way (then could just return
-        # single value for wAPLKC, rather than a dict)
-        if one_row_per_claw:
-            wKCAPL = param_dict['wKCAPL_scale']
-            # TODO delete prob delete
-            '''
-            # TODO restore (similar issue to w/ wAPLKC above)
-            #assert 'wKCAPL' not in param_dict
-            # TODO delete (after resolving above)
-            if 'wKCAPL' in param_dict:
-                warn(f'had both wKCAPL and wKCAPL_scale={wKCAPL:.2f}! could be a '
-                    'mistake!'
-                )
-            #
-            '''
-            apl_params['wKCAPL'] = wKCAPL
+        # TODO assert we are in `one_row_per_claw and not prat_claws` case
+        # (tianpei=True, defined below currently) (for either of below) (if we have both
+        # "" and ""_scale)?
+        # TODO or will i always have wAPLKC/wKCAPL, for all calls of this fn? (remove
+        # conditionals?)
+        # TODO delete this assertion and let new code serializing param_dict outputs
+        # (which currently asserts no ndarray) handle it?
+        if 'wAPLKC' in param_dict:
+            assert isinstance(param_dict['wAPLKC'], pd.Series)
+        if 'wKCAPL' in param_dict:
+            assert isinstance(param_dict['wKCAPL'], pd.Series)
+        #
+        wKCAPL = param_dict['wKCAPL_scale']
+        #
     else:
-        # TODO assert type of wAPLKC/wKCAPL (currently probably only non-float
-        # here [=Series] for one-row-per-claw=True cases. cause problems in calls to
-        # fit_mb_model using these?
         assert 'wAPLKC_scale' not in param_dict
+        assert 'wKCAPL_scale' not in param_dict
+
+        # TODO how are both this and wAPLKC_scale (and both for wKCAPL)
+        # missing in one_row_per_claw=True and prat_claws=True case?
+        # (b/c popped in fit_and_plot... between fit_mb_model call and where wAPLKC
+        # cached shortly after) (added hack to not pop in that case, for now)
         wAPLKC = param_dict['wAPLKC']
         apl_params['wAPLKC'] = wAPLKC
 
-        if one_row_per_claw:
-            assert 'wKCAPL_scale' not in param_dict
-            wKCAPL = param_dict['wKCAPL']
-            apl_params['wKCAPL'] = wKCAPL
+        wKCAPL = param_dict['wKCAPL']
 
-    if not one_row_per_claw:
-        if not variable_n_claws:
-            assert isinstance(wAPLKC, float)
-        else:
-            # TODO refactor
-            # TODO only check first part if n_seeds=1, and only second otherwise?
-            assert isinstance(wAPLKC, float) or (
-                isinstance(wAPLKC, list) and all(isinstance(x, float) for x in wAPLKC)
-            )
+    # TODO factor out, to also use w/ fixed_thr? would need to apass variable_n_claws
+    # and maybe one other flag?
+    def check_weight_type(weights, _hack=True) -> None:
+        # added _hack flag b/c don't want to check that for wAPLPN/wPNAPL vectors,
+        # which will always have the *_scale factors, so shouldn't need this.
+        # also, unlikely that code will ever really be used w/o connectome APL anyway.
+
+        # TODO delete
+        if _hack and one_row_per_claw and not use_connectome_APL_weights:
+            # happens whether prat_claws=True/False, but still don't really care much
+            # about these cases
+            assert isinstance(weights, pd.Series)
+        #
+        # TODO restore
+        #if not variable_n_claws:
+        # TODO delete
+        elif not variable_n_claws:
             #
+            assert is_scalar(weights), f'{type(weights)=}'
+        else:
+            # TODO only check first part if n_seeds=1, and only second otherwise?
+            assert is_scalar(weights) or (
+                isinstance(weights, list) and all(is_scalar(x) for x in weights)
+            ), f'{type(weights)=}'
+
+
+    check_weight_type(wAPLKC, _hack=True)
+
+    # TODO only do this in restricted circumstances?
+    # TODO do i always have wKCAPL (will i need to default to None above, and only set
+    # when we have it?)
+    check_weight_type(wKCAPL, _hack=True)
+
+    # TODO remove this bit if i can confirm tianpei's code only needs wAPLKC
+    # passed in, or if i can change it to work that way (then could just return
+    # single value for wAPLKC, rather than a dict) (that was more for passing output
+    # to new calls, not [i think] checking output of calls [where wKCAPL included
+    # regardless of whether prat_claws=True/False])
+    # TODO and if only want this for tianpei path, also check prat_claws=False here?
+    # TODO update prat_claws defaults here if i do in fit_mb_model too
+    # (currently default = False)
+    # TODO delete. need more cases than this.
+    #tianpei = one_row_per_claw and not kws.get('prat_claws', False)
+
+    # TODO delete. fixed by dividing by kc.N in olfsysm def of wKCAPL_scale from
+    # wAPLKC_scale
+    # TODO also include tianpei here at least?
+    #if one_row_per_claw and use_connectome_APL_weights:
+    #    warn('need to pass wKCAPL (on top of wAPLKC), in order to reproduce this '
+    #        'output while skipping APL tuning! wKCAPL calc may be wrong in this path '
+    #        'in general!'
+    #    )
+    #    # TODO TODO does need for this mean my calc is wrong? currently assume i
+    #    # can just pass wAPLKC scalar to fit_mb_model, and derive other by dividing by
+    #    # # KCs
+    #    apl_params['wKCAPL'] = wKCAPL
+    #
+
+    if kws.get('prat_boutons', False) and not kws.get('per_claw_pn_apl_weights', False):
+        # wAPLPN/wPNAPL will be of length # boutons (which should be # cols of wPNKC)
+        # TODO will these sometimes be popped? just assert type if they are present, but
+        # don't require?
+        if 'wAPLPN' in param_dict:
+            assert 'wPNAPL' in param_dict
+            wAPLPN = param_dict['wAPLPN']
+            assert isinstance(wAPLPN, pd.Series)
+            wPNAPL = param_dict['wPNAPL']
+            assert isinstance(wPNAPL, pd.Series)
+        #
+        assert 'wAPLPN_scale' in param_dict
+        assert 'wPNAPL_scale' in param_dict
+
+        wAPLPN = param_dict['wAPLPN_scale']
+        wPNAPL = param_dict['wPNAPL_scale']
+
+        check_weight_type(wAPLPN)
+        check_weight_type(wPNAPL)
+
+        apl_params['wAPLPN'] = wAPLPN
+        # TODO can i get away with just setting wAPLPN (where wPNAPL will be
+        # defined from it in fit_mb_model, by dividing i think by # boutons), or do i
+        # need to (sometimes?) also set wPNAPL into apl_params? could get away with it
+        # (as currently set up) w/ wAPLKC w/o wKCAPL
+        #apl_params['wPNAPL'] = wPNAPL
+    else:
+        # NOTE: per_claw_pn_apl_weights=True case currently only returns wAPLKC/wKCAPL
+        # (and *_scale parameters), which were either:
+        # - the per-claw addition of PN<>APL and KC<>APL weights (in add_...=True case)
+        # - replaced by the PN<>APL weights (in the replace...=True case)
+        #
+        # code would get more complex if I wanted to still return PN<>APL weights from
+        # fit_mb_model in those cases.
+        assert 'wAPLPN' not in param_dict
+        assert 'wPNAPL' not in param_dict
+        assert 'wAPLPN_scale' not in param_dict
+        assert 'wPNAPL_scale' not in param_dict
+    #
 
     return apl_params
 
@@ -486,17 +554,16 @@ def get_thr_and_APL_weights(param_dict: ParamDict, kws: ParamDict) -> ParamDict:
     """
     fixed_thr = param_dict['fixed_thr']
 
-    # TODO refactor
     variable_n_claws = kws.get('pn2kc_connections') in variable_n_claw_options
     # NOTE: get_APL_weights makes similar checks on wAPLKC
     # TODO refactor to share w/ it
     if not variable_n_claws:
-        # TODO just ndarray, or series too?
-        assert isinstance(fixed_thr, float) or isinstance(fixed_thr, np.ndarray)
+        # TODO just ndarray, or series too (/only?)?
+        assert is_scalar(fixed_thr) or isinstance(fixed_thr, np.ndarray)
     else:
         # TODO only check first part if n_seeds=1, and only second otherwise?
-        assert isinstance(fixed_thr, float) or (
-            isinstance(fixed_thr, list) and all(isinstance(x, float) for x in fixed_thr)
+        assert is_scalar(fixed_thr) or (
+            isinstance(fixed_thr, list) and all(is_scalar(x) for x in fixed_thr)
         )
         #
 
@@ -708,47 +775,43 @@ def agg_synapses_to_claws(syns: pd.DataFrame, claw_cols: List[str],
 
     # TODO sort=False? (would probably change some of current outputs...)
     by_claw = syns.groupby(claw_cols)
-    claws = by_claw.agg({
+
+    agg_dict = {
         **{c: 'mean' for c in cols_to_avg},
         # TODO this includes NaN by default, right? would have to handle if not
         **{c: 'unique' for c in extra_cols_to_keep}
-    })
-    assert (
-        cols_to_avg + extra_cols_to_keep == list(claws.columns)
-    )
-    assert claws.index.names == claw_cols
+    }
+    if len(agg_dict) > 0:
+        claws = by_claw.agg(agg_dict)
+        assert (
+            cols_to_avg + extra_cols_to_keep == list(claws.columns)
+        )
 
-    # TODO add option to not force this, and return iterable for each? (probably len 1
-    # iterables by default if that option enabled, for consistency) (-> use for things
-    # like BOUTON_ID?)
-    unique_per_claw = claws[extra_cols_to_keep].apply(
-        lambda x: (x.str.len() == 1).all()
-    )
-    cols_unique_per_claw = list(unique_per_claw[unique_per_claw].index)
+        unique_per_claw = claws[extra_cols_to_keep].apply(
+            lambda x: (x.str.len() == 1).all()
+        )
+        cols_unique_per_claw = list(unique_per_claw[unique_per_claw].index)
 
-    assert set(cols_unique_per_claw) >= set(check_unique_per_claw), (
-        'expected the following columns to be unique per claw '
-        '(pass explicit check_unique_per_claw excluding them, if otherwise):\n'
-        f'{set(check_unique_per_claw) - set(cols_unique_per_claw)=}'
-    )
+        assert set(cols_unique_per_claw) >= set(check_unique_per_claw), (
+            'expected the following columns to be unique per claw '
+            '(pass explicit check_unique_per_claw excluding them, if otherwise):\n'
+            f'{set(check_unique_per_claw) - set(cols_unique_per_claw)=}'
+        )
 
-    claws[cols_unique_per_claw] = claws[cols_unique_per_claw].applymap(
-        lambda x: x[0]
-    )
+        claws[cols_unique_per_claw] = claws[cols_unique_per_claw].applymap(
+            lambda x: x[0]
+        )
 
-    # TODO explicitly count unique combos of either [pre+post]synapse_cols? prob
-    # unlikely to be able to use this fn incorrectly just leaving current .size()
-    # method...
     n_synapses_per_claw = by_claw.size()
-    assert n_synapses_per_claw.index.equals(claws.index)
     assert n_synapses_per_claw.sum() == len(syns)
-    claws['n_synapses'] = n_synapses_per_claw
+    assert n_synapses_per_claw.index.names == claw_cols
 
-    # should be irrelevant since we are checking indices match above...
-    assert not claws['n_synapses'].isna().any()
-    assert (claws['n_synapses'] > 0).all()
-
-    return claws
+    if len(agg_dict) > 0:
+        assert n_synapses_per_claw.index.equals(claws.index)
+        claws['n_synapses'] = n_synapses_per_claw
+        return claws
+    else:
+        return n_synapses_per_claw.to_frame(name='n_synapses')
 
 
 # TODO delete (after checking i don't want to revert any of the changes tianpei made in
@@ -1393,7 +1456,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             sphere_r = 0.5 * shell_r
             compartment_ids = np.where(distances <= sphere_r, 0, 1).astype(np.int32)
             # TODO delete (/ put behind verbose)
-            print(f'shell over sphere {center=}')
+            #print(f'shell over sphere {center=}')
         else:
             # TODO refactor to loop over claw_coord_cols
             # 3×3×3 grid
@@ -1742,13 +1805,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # KCg-s1(super)_R          17
             #
 
-            # TODO TODO TODO also apply to APL/etc outputs, if new v5 ones weren't
-            # pre-filtered like [APL outputs *only*] were for v3
-            # should be true for both v3 and v5
-            # TODO delete
-            print('also call filter_synapse_to_roi to filter APL<>KC outputs to "CA(R)"'
-                ', if needed & not already doing')
-            #
             # NOTE: this filtering was NOT applied to v3 (prior to updating this code
             # to load v5), but it probably should have been
             syns = filter_synapses_to_roi(syns, 'CA(R)', assert_some_dropped=True)
@@ -2077,8 +2133,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
             # TODO de-dedupe w/ code that does this below (id_cols_to_check)?
             id_cols = list(claw_cols)
-            # TODO TODO TODO (delete) implement bouton handling downstream (+ fix
-            # olfsysm to work w/ arbitrary bouton input, adding a test for that case)
             if prat_boutons:
                 assert BOUTON_ID not in claw_cols
                 assert BOUTON_ID in claws.columns
@@ -2093,9 +2147,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 # (and order shouldn't matter otherwise)
                 ids_only = claws[id_cols].explode(BOUTON_ID).drop_duplicates()
 
-                # TODO try computing this both w/ .str.len() (no explode) and also w/
-                # existing method [post-explode] (check equiv)
-                #
                 # using ids_only, this is equiv to:
                 # ids_only.groupby(claw_cols).apply(lambda x:
                 #   len(x[[PN_ID, 'bouton_id']].drop_duplicates())
@@ -2107,6 +2158,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 # 1    11386
                 # 2      342
                 # 3        8
+                # TODO this is currently redefined below. delete one or the other?
                 n_boutons_per_claw = ids_only.groupby(claw_cols).size()
 
                 # TODO delete (/put behind checks=True path)
@@ -2116,39 +2168,30 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 del n_boutons_per_claw2
                 #
 
-                # TODO TODO warn about claws w/ multiple boutons (as currently doing in
-                # connectome_APL_weights, but move that code)
-
-                # TODO TODO plot distribution of these (esp # claws per bouton?)
+                # TODO plot distribution of these (esp # claws per bouton?)
+                # (already have somewhere?)
                 # TODO and also worth trying:
                 # .apply(lambda x: len(x[[KC_ID, CLAW_ID]].drop_duplicates()))
                 # ...instead of just claws that include PN in def? prob not here...
                 n_claws_per_bouton = ids_only.groupby(bouton_cols).size()
 
-                # TODO TODO TODO look into cases where this is >1? and do check again
+                # TODO TODO look into cases where this is >1? and do check again
                 # below, after filtering/dropping PNs? maybe *only* do this check
                 # there?
-                # TODO TODO TODO probably still need to process claws here, so as not to
-                # have duplicate claw_cols tho...
 
-                # TODO TODO TODO check no n-boutons:1-claw (but check we do have
+                # TODO TODO check no n-boutons:1-claw (but check we do have
                 # 1-bouton:n-claws)
-                # TODO TODO need to do any of these checks after dropping the existing
+                # TODO need to do any of these checks after dropping the existing
                 # (small # of) cases where there are already multiple PNs per claw?
                 # (dropped below)? (hopefully can still check here if including PN in
                 # claw_cols?)
 
-                # TODO delete
-                print('figure out how i want to preserve (+ plot?) PN + bouton info '
-                    'here (+ below)!!! (wPNKC column level? add later?)'
-                )
-
-                # TODO TODO TODO even want BOUTON_ID to be included in duplicate check?
+                # TODO TODO even want BOUTON_ID to be included in duplicate check?
                 # (don't think so) what's nature of duplicates? what do duplicates this
                 # adds mean?
-                # TODO TODO TODO or is this a matter of not having filtered bouton_ids
+                # TODO TODO or is this a matter of not having filtered bouton_ids
                 # sufficiently yet?
-                # TODO TODO are duplicates (w/ boutons) all claw_id -1? just drop those
+                # TODO are duplicates (w/ boutons) all claw_id -1? just drop those
                 # before this check?
                 # TODO bouton weights?
                 # TODO delete. would fail, and don't think i want this (comments above
@@ -3647,6 +3690,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # need to redef here, b/c currently also has PN_ID at end above
         claw_cols = [KC_ID, CLAW_ID]
 
+        # TODO TODO refactor to also have this available outside? compute outside,
+        # before running sims (to hopefully not get killed...) (or optionally return?)
+        # TODO can i already compute something close enough from wPNKC at output or nah?
+        #
         # stack() is to get a glomerulus index level from columns (which gives us a
         # Series with all 1 for values, that we don't need, so just use the index
         # from there)
@@ -3677,15 +3724,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         assert len(claw2bouton) == len(claw2bouton2)
         del claw2bouton2
 
-        # TODO TODO TODO check that this # of unique combos is preserved after
-        # agg_synapses_to_claws, and check whether and how diff `how=` options
-        # change synapse counts (-> use to help pick what i want)
-        # TODO delete
-        print('check n_claw_bouton_combos (maybe after accounting for NaN / dupes)'
-            ' is preserved after agg_synapses_to_claws!'
-        )
-        #
-        # currently 10216
+        # currently 10216 (update. prob no longer true after dropping multibouton)
         n_claw_bouton_combos = len(claw2bouton)
 
         # 9867
@@ -3693,8 +3732,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # NOTE: if claws that were associated with multiple boutons (either 2 or 3)
         # had been dropped / split by this  point, would have to change this
         # assertion to equality (dropped after this line though)
-        assert n_claws < n_claw_bouton_combos, \
-            f'{n_claws=} >= {n_claw_bouton_combos=}'
+        assert n_claws < n_claw_bouton_combos, f'{n_claws=} >= {n_claw_bouton_combos=}'
         # TODO delete  this is now before the de-duping tho... (restore, after
         # de-duping?)
         #assert n_claws == n_claw_bouton_combos, ('assuming we have dropped or '
@@ -3706,15 +3744,18 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # non-olfactory glomeruli, dropping claws without sufficient synapses [which
         # may end up dropping boutons, if they are only paired with those claws],
         # etc). n_boutons=392
+        # TODO delete one def? (or assert equal to redef below?)
         n_boutons = len(claw2bouton[bouton_cols].drop_duplicates())
 
+        # TODO this is currently redefined above. delete one or the other?
         # already sorted on claw_cols in claw2bouton anyway
         n_boutons_per_claw = claw2bouton.groupby(claw_cols, sort=False).size()
         n_boutons_per_claw_counts = n_boutons_per_claw.value_counts()
         if (n_boutons_per_claw_counts.index > 1).any():
-            # TODO TODO TODO how to deal w/ these?
+            # TODO TODO how to deal w/ these?
             # TODO TODO TODO to what extent is it explained by adjacent "boutons" of
-            # same PN, which are perhaps split too aggressively? merge those?
+            # same PN (seems like they are *all* the same PN, when there are
+            # duplicates), which are perhaps split too aggressively? merge those?
             # 1    9526
             # 2     333
             # 3       8
@@ -3774,38 +3815,28 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # only vector<int> in model code currently (w/ pn_to_Btns
         # vector<vector<int>>)? don't think i want to add complexity in C++ code if
         # i can avoid it...
+        # TODO skip this if per_claw_pn_apl_weights=True (prob not. currently will give
+        # counts > 1 in wPNKC, which might also not matter, but was unexecpected)?
+        # matter?
         if len(multibouton) > 0:
-            warn('dropping all duplicate claws in claws2bouton! for each claw with'
-                ' more than one bouton (in above warning) will drop all but the '
-                'first bouton for each claw! ideally we would instead merge these '
-                'duplicate boutons (which, for each claw, are all from the same PN)'
+            # TODO remove the 'in claws2bouton' part of message?
+            warn('for each claw with more than one bouton (in above warning) will '
+                'drop all but the first bouton for each claw! ideally we would instead '
+                'merge these duplicate boutons (which, for each claw, are all from the '
+                'same PN)'
             )
             claw2bouton = claw2bouton.drop_duplicates(subset=claw_cols)
 
-            # TODO TODO TODO  just need to explode in wPNKC before here, to fix issue of
-            # duplicates being added later?
-            # TODO delete
-            print('exploding bouton_id in wPNKC here (before other steps) fix '
-                'duplicate issue?'
-            )
-            #
-            index_names = list(wPNKC.index.names)
-            wPNKC = wPNKC.reset_index().set_index(claw_cols)
-            wPNKC = wPNKC.loc[claw2bouton.set_index(claw_cols).index]
-            wPNKC = wPNKC.reset_index().set_index(index_names)
-            # TODO delete eventually
-            assert not wPNKC.index.to_frame(index=False)[claw_cols].duplicated().any()
-
-        # TODO TODO TODO do i only want to merge within a given claw? or OK to also
+        # TODO TODO do i only want to merge within a given claw? or OK to also
         # merge these bouton IDs in all contexts? what to check first? how many
         # other claws also connected to these multibouton things?
-        # TODO TODO TODO need to make sure i merge in a way that is consisent
+        # TODO TODO need to make sure i merge in a way that is consisent
         # across claws. e.g. if claw 1 has pn ID 1 w/ boutons [2,3] and claw 2 has
         # pn ID 1 w/ boutons [1,2], would currently get a diff min ID for each claw.
         # need to compute across claws, it seems. how??? possible? merge and split?
         # NOTE: bouton_cols value pairs in multibouton subset are also very much
         # present in the non-multibouton subset of claw2bouton
-        # TODO TODO TODO does one bouton ever go to two diff claws, where answer to
+        # TODO TODO does one bouton ever go to two diff claws, where answer to
         # min ID would be different across any of the claws? yes, fuck:
         # ipdb> claw2bouton.groupby(bouton_cols).merged_bouton_id.unique()
         # pn_id       bouton_id
@@ -3820,18 +3851,18 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         #             2                  [2]
         #             3                  [3]
         #             5               [5, 2]
-        # TODO TODO ...and i can't just take the min of above right? cause still
+        # TODO ...and i can't just take the min of above right? cause still
         # wouldn't guarntee we actually merge when we are supposed to having two
         # (pn, bouton) combos actually pointing to same (consistent) new ID, right?
         #
-        # TODO TODO TODO maybe i should get the set of (pn, bouton) IDs in
+        # TODO TODO maybe i should get the set of (pn, bouton) IDs in
         # multibouton, and then find min bouton ID across all (pn, claw) combos
         # (in full claw2bouton) with any boutons in that set? work?
         # don't think i can just:
         # claw2bouton.groupby([PN_ID] + claw_cols)
         # ...though, b/c adding [PN_ID] there doesn't even change # of groups, so
         # wouldn't change output of below
-        # TODO TODO TODO TODO can i just ignore all this stuff? even matter after
+        # TODO TODO TODO can i just ignore all this stuff? even matter after
         # agg-ing down to claw<>APL weights? (or will they be glom<>APL weights?
         # need to be claw, no [unless i want to change glomerulus dynamics, without
         # actually having separate PNs / boutons, which i'm not sure i really have
@@ -3854,12 +3885,11 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         #claw2bouton[f'merged_{BOUTON_ID}'] = claw2bouton.index.map(
         #    claw2merged_bouton
         #)
-        # TODO TODO TODO also need a separate (pn, bouton) -> merged-bouton-id map
+        # TODO TODO also need a separate (pn, bouton) -> merged-bouton-id map
         # for the PN<>APL data? (and prob need to compute before merging
         # claw2bouton below)
 
-        # TODO TODO TODO is it expected that the # of duplicates only barely changes
-        # below?
+        # TODO TODO is it expected that the # of duplicates only barely changes below?
         #
         # ipdb> claw2bouton.reset_index().set_index(bouton_cols
         #   ).merged_bouton_id.reset_index()[bouton_cols].drop_duplicates().shape
@@ -3877,96 +3907,80 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             sns.histplot(n_claws_per_bouton, ax=ax, discrete=True)
             ax.set_title('# claws per bouton')
             savefig(fig, plot_dir, 'n_claws_per_bouton_hist')
-            # TODO also hists of # boutons / # claws per glom? (and latter would
-            # just be a scaling factor on top of # boutons, essentially, right?
-            # check?)
+
+            # TODO TODO also plot bar graph of # boutons per glom, with gloms
+            # labelled (and sorted). (change anything if i start w/ output that is just
+            # length # boutons, rather than length # claws [as here]? should just be
+            # careful with calculation, to drop dupes w/in claw
+            n_boutons_per_glom = claw2bouton.groupby(glomerulus_col).apply(
+                lambda x: len(x[bouton_cols].drop_duplicates())
+            )
+            # TODO check 54 matches # unique gloms later (i think it does?)
+            assert len(n_boutons_per_glom) == 54
+
+            # TODO matshow this instead? (as some of the plots in
+            # connectome_APL_weights)
+            n_gloms = len(n_boutons_per_glom)
+            n_boutons_per_glom.name = 'n_boutons_per_glom'
+            fig, ax = plt.subplots()
+            # TODO TODO make sure xlabels are shown (make smaller, or plot larger, and
+            # rotate 90 degrees)
+            sns.barplot(n_boutons_per_glom, ax=ax)
+
+            labels = ax.get_xticklabels()
+            ax.set_xticklabels(labels, rotation=90, fontsize=6)
+
+            ax.set_title(f'# boutons per glomerulus\n({n_gloms} glomeruli)')
+            savefig(fig, plot_dir, 'n_boutons_per_glom')
+
+            # TODO TODO # claws per glom too? the point any different than # boutons per
+            # glom? (and latter would just be a scaling factor on top of # boutons,
+            # essentially, right? check?)
             # (or happy with plots i currently have? move those here b/c they
             # don't actually need the PN<>APL weights, right?)
-            #
 
-        # TODO TODO need to update claws-per-bouton hist (or any other) after this
-        # merging? move this code back above that plot?
+            # TODO TODO summarize (in connectome_APL_weights) any gloms w/ 0 weight in
+            # either PN<>APL direction?
 
-
-        # TODO TODO update my repro outputs to work w/ data in this format
-        # TODO TODO TODO update everything downstream to work from this (maybe just
-        # invert in connectome_APL_weights? or easier to change how tianpei's code works
-        # (to use index level instead?)
-        #
-        # moving BOUTON_ID from last index level (which is a tuple-of-ints) to a second
-        # (int) column level (after glomerulus), which is has a separate column for each
-        # bouton
-        row_per_claw_and_bouton = wPNKC.reset_index(level=BOUTON_ID).explode(BOUTON_ID
-            ).set_index(BOUTON_ID, append=True)
-        # TODO TODO TODO do i need to also move PN_ID to another level (or renumber
-        # boutons to be unique w/in each PN first?) or does it not matter, given how i'm
-        # reformatting it? test somehow
-        # TODO delete
-        print('test i do not need to renumber bouton ids before moving to column level'
-            ' (nor also move PN_ID to another column level)'
-        )
-        # TODO TODO some kind of dropna (multiple?) before fillna? (nope, there are some
-        # 0's there preventing how='all' from dropping on any axis. maybe if i replaced
-        # 0's with NaNs first, but w/e)
-        # ipdb> (wPNKC2 == 0).all().sum()
-        # 709
-        # ipdb> (wPNKC2 == 0).T.all().sum()
-        # 0
-        # ipdb> (wPNKC2 == 0).all()
-        # glomerulus  bouton_id
-        # D           0            False
-        #             1            False
-        #             2             True
-        #             3            False
-        #             4             True
-        #                          ...
-        # VP4         13            True
-        #             15            True
-        #             16            True
-        #             17            True
-        #             18            True
-        # Length: 972, dtype: bool
-        #
-        # TODO TODO TODO why only 263 boutons left after this filtering? need to
-        # subtract from n_boutons, to remove any rows that only correspond to all 0 rows
-        # first? (no, doesn't seem so) or what is happening?
-        # TODO TODO see if i get same outcome w/ PN IDs also in column level (or w/
-        # renumbering?)
-        # ipdb> wPNKC2.loc[:, ~ (wPNKC2 == 0).all()].shape[1]
-        # 263
-        #
-        # ipdb> (wPNKC == 0).all().any()
-        # False
-        # ipdb> (wPNKC == 0).T.all().any()
-        # False
-        #
-        # TODO delete (and all wPNKC2, which just had [glom, bouton] for columns, w/o PN
-        # ID, and which didn't have correct # of columns [=n_boutons] after dropping all
-        # 0 columns). replace w/ wPNKC3 (and can then rename that to wPNKC2 after
-        # removing all prior refs to old bad wPNKC2)
-        #
-        # this one just unstacks bouton_id, but leaves pn_id in index
-        # dropna(how='all', ...) didn't change shape w/ either axis
-        # (before fillna(0))
-        #wPNKC2 = row_per_claw_and_bouton.unstack().fillna(0)
-        # if i didn't drop the duplicate boutons above, might not be true?
-        #assert not wPNKC2.index.duplicated().any()
-        #assert wPNKC.index.droplevel(BOUTON_ID).equals(wPNKC2.index)
-        #assert not wPNKC2.columns.duplicated().any()
-
-        # dropna(how='all', ...) didn't change shape w/ either axis
-        # (before fillna(0))
-        # TODO TODO TODO assert we can actually restore after inverting this, and check
+        # TODO assert we can actually restore after inverting this, and check
         # that we understand the nature of any dupes added
         # (might just need to explode bouton_id in wPNKC in a step above, before
         # dropping dupes from it?)
-        print('check we understand dupes added by unstack, and that we can invert')
+        #
+        # moving PN_ID (int) and BOUTON_ID (a tuple-of-ints) from last index levels to
+        # column levels to new int (for BOUTON_ID too) column (after glomerulus), which
+        # is has a separate column for each bouton
+        row_per_claw_and_bouton = wPNKC.reset_index(level=BOUTON_ID).explode(BOUTON_ID
+            ).set_index(BOUTON_ID, append=True)
+
+        if len(multibouton) > 0:
+            index_names = list(row_per_claw_and_bouton.index.names)
+            row_per_claw_and_bouton = row_per_claw_and_bouton.reset_index().set_index(
+                claw_cols
+            )
+            assert row_per_claw_and_bouton.index.duplicated().any()
+            assert len(row_per_claw_and_bouton) > len(wPNKC)
+
+            claw2bouton = claw2bouton.set_index(claw_cols)
+            assert set(row_per_claw_and_bouton.index) == set(claw2bouton.index)
+            assert not claw2bouton.index.duplicated().any()
+
+            row_per_claw_and_bouton = row_per_claw_and_bouton.loc[
+                # keeps first row for each set of duplicated values
+                ~row_per_claw_and_bouton.index.duplicated()
+            ]
+            assert not row_per_claw_and_bouton.index.duplicated().any()
+            assert len(row_per_claw_and_bouton) == len(wPNKC)
+            row_per_claw_and_bouton = row_per_claw_and_bouton.reset_index().set_index(
+                index_names
+            )
+
         wPNKC3 = row_per_claw_and_bouton.unstack(bouton_cols).fillna(0)
         # TODO delete eventually
+        # (no all NaN rows/cols before fillna(0), nor any pre-existing 0)
         #inverted = wPNKC3.replace(0, np.nan).stack(bouton_cols).fillna(0)
+        # passes
         #assert row_per_claw_and_bouton.index.equals(inverted.index)
-        # TODO delete
-        #breakpoint()
         #
 
         assert not (wPNKC3 == 0).T.all().any()
@@ -3977,21 +3991,15 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         )
         assert len(wPNKC3.columns) == n_boutons
 
+        # currently 392
+        assert 350 < n_boutons < 600, f'{n_boutons=} seems inconsistent w/ # boutons'
+
         # if i didn't drop the duplicate boutons above, might not be true?
         assert not wPNKC3.index.duplicated().any()
 
         assert wPNKC.index.droplevel(bouton_cols).equals(wPNKC3.index)
         assert not wPNKC3.columns.duplicated().any()
-
-        # TODO delete
-        # ipdb> (wPNKC3 == 0).T.all().sum()
-        # 0
-        # ipdb> (wPNKC3 == 0).all().sum()
-        # 20776
-        # ipdb> wPNKC3.shape[1] - 20776
-        # 392
-        # ipdb> n_boutons
-        # 392
+        # TODO assert # columns in correct range for # boutons? >300 and < 600?
 
         # TODO renumber boutons so they are unique per glomerulus (instead of
         # unique per PN), consistent w/ tianpei's case? or just keep the PN_ID level?
@@ -3999,13 +4007,11 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # the APL<>PN stuff impossible)
 
         # TODO maybe convert dtype back to int?
-        # TODO assert sum unchanged (within some groups?)
 
-        # TODO TODO TODO check how sums (/ presence of any column dupes?) change if i
-        # do/don't include PN ID in column levels (or renumber boutons within glomerulus
-        # first)?
+        # TODO move this assertion to all cases?
+        assert set(wPNKC3.T.sum().values) == {1.0}
+
         wPNKC = wPNKC3
-
 
     # TODO add assertion (for both tianpei case and mine) that no bouton
     # (columns) have all 0 values? (currently doing in prat_boutons=True case above)
@@ -4079,6 +4085,9 @@ def fmt_frac(x: int, y: int, *, den: bool = True, dec: bool = True) -> str:
 def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # TODO TODO TODO implement per_claw_pn_apl_weights=False
     prat_boutons: bool = False, per_claw_pn_apl_weights: bool = False,
+    # TODO delete
+    #pn_apl_scale_factor: float = 1.0,
+    #
     wPNKC: Optional[pd.DataFrame] = None, kc_types: Optional[pd.Series] = None,
     kc_to_claws: Optional[List[List[int]]] = None, _drop_glom_with_plus: bool = True,
     plot_dir: Optional[Path] = None) -> Tuple[pd.Series, pd.Series, Optional[pd.Series],
@@ -4155,7 +4164,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
     wAPLPN = None
     wPNAPL = None
-
     if prat_boutons:
         assert prat_claws
         assert wPNKC is not None, ('need this to merge to get (kc, claw) IDs for '
@@ -4265,11 +4273,13 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # TODO add assertion about how pn<>apl and kc<>apl columns differ?
 
         # v3 outputs seemed prefiltered on these (roi_[pre|post]), but v5 not
-        apl2kc_df = filter_synapses_to_roi(apl2kc_df, 'CA(R)')
-        kc2apl_df = filter_synapses_to_roi(kc2apl_df, 'CA(R)')
+        # TODO assert assert_some_dropped=True to all calls then? (or delete if causes
+        # issue)
+        apl2kc_df = filter_synapses_to_roi(apl2kc_df, 'CA(R)', assert_some_dropped=True)
+        kc2apl_df = filter_synapses_to_roi(kc2apl_df, 'CA(R)', assert_some_dropped=True)
 
-        apl2pn_df = filter_synapses_to_roi(apl2pn_df, 'CA(R)')
-        pn2apl_df = filter_synapses_to_roi(pn2apl_df, 'CA(R)')
+        apl2pn_df = filter_synapses_to_roi(apl2pn_df, 'CA(R)', assert_some_dropped=True)
+        pn2apl_df = filter_synapses_to_roi(pn2apl_df, 'CA(R)', assert_some_dropped=True)
 
         assert (apl2kc_df.instance_pre == 'APL_R').all()
         assert (kc2apl_df.instance_post == 'APL_R').all()
@@ -4464,475 +4474,486 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             'kc2apl', [KC_ID]
         )
 
+        # TODO check that tianpei's path thru here currently does something sensible in
+        # Btn_separate=True (prat_claws=False) case too (matters less)
         if prat_boutons:
-            # TODO TODO check that tianpei's path thru here currently does something
-            # sensible in Btn_separate=True (prat_claws=False) case too (matters less)
-
-            # TODO delete path we are not planning to suppor eventually (-> just make
-            # this one assertion)
-            if all(x in wPNKC.columns.names for x in bouton_cols):
-                assert not any(x in wPNKC.index.names for x in bouton_cols)
-                # TODO assert index not duplicated on claw_cols before next line
-                # (to just clarify it's that operation that is adding them [back? i
-                # suppose not clear it's same dupes as before? or is it?])
-                # TODO delete
-                orig = wPNKC.copy()
-                #
-
-                # replacing 0 w/ NaN seems to make stack significantly faster (very slow
-                # w/ bouton_cols otherwise, and many rows in output), and gives us far
-                # fewer rows in initial output. output does not have any all NaN
-                # row/columns
-                # TODO not sure we actually get anything out of the fillna(0), in terms
-                # of use of wPNKC in the remainder of this fn...
-                wPNKC = wPNKC.replace(0, np.nan).stack(bouton_cols).fillna(0)
-
-                # TODO delete
-                # TODO wish i could figure out how to make this not happen, or at least
-                # to explain why it is unavoidable
-                assert len(wPNKC.index) > len(orig.index)
-                #
-
-                assert not (wPNKC == 0).all().any()
-                assert not (wPNKC == 0).T.all().any()
-
-                index_names = wPNKC.index.names
-                # TODO TODO TODO need to check this is same as at similar step in
-                # connectome_wPNKC? any way to avoid re-introducing these dupes in the
-                # first place?
-                wPNKC = wPNKC.reset_index().drop_duplicates(subset=claw_cols
-                    ).set_index(index_names)
-
-            # stack() is to get a glomerulus index level from columns (which gives us a
-            # Series with all 1 for values, that we don't need, so just use the index
-            # from there)
-            claw2bouton = wPNKC.replace(0, np.nan).stack().index.to_frame(index=False
-                ).set_index(claw_cols).explode(BOUTON_ID).reset_index()
-
-            # TODO TODO remove as much of claw2bouton stuff below as i can. no longer
-            # need most (now that it's all duped to, and may only be needed in
-            # connectome_wPNKC)
-
-            # TODO maybe drop -1 (+ NaN, if any) BOUTON_ID first (from apl<>pn stuff!),
-            # before merge?  and then also merge in a way that doesn't add NaNs (if that
-            # doesn't make things harder)? just if it helps clarify overall # of
-            # synapses before vs after
-            # (should be asserting all id_cols *in wPNKC.index*, which include
-            # BOUTON_ID, are not NaN here, if not already established)
-
-            id_cols = [KC_ID, CLAW_ID, PN_ID, BOUTON_ID]
-            assert not claw2bouton[id_cols].duplicated().any()
-
-            assert claw2bouton[BOUTON_ID].min() == 0, \
-                'wPNKC index should already have had invalid (-1) bouton IDs dropped'
-
-            # checking that our glomerulus column->index transformation (as part of
-            # claw2bouton def above) didn't screw anything up
-            assert_one_glom_per_pn(claw2bouton)
-            claw2bouton2 = wPNKC.index.to_frame(index=False).explode(BOUTON_ID)
-            # TODO also assert not duplicated on claw_cols either now?
-            # (would fail if i wasn't dropping cases of n-boutons:1-claw earlier now
-            # [in connectome_wPNKC], unless i also added handling to dedupe them)
-            assert not claw2bouton[id_cols].duplicated().any()
-            assert len(claw2bouton) == len(claw2bouton2)
-            del claw2bouton2
-
-            # TODO TODO TODO check that this # of unique combos is preserved after
-            # agg_synapses_to_claws, and check whether and how diff `how=` options
-            # change synapse counts (-> use to help pick what i want)
-            # TODO delete
-            print('check n_claw_bouton_combos (maybe after accounting for NaN / dupes)'
-                ' is preserved after agg_synapses_to_claws!'
-            )
-            #
-            # currently 10216
-            n_claw_bouton_combos = len(claw2bouton)
-
-            # 9867
-            n_claws = len(wPNKC)
-            # NOTE: if claws that were associated with multiple boutons (either 2 or 3)
-            # had been dropped / split by this  point, would have to change this
-            # assertion to equality
-            #assert n_claws < n_claw_bouton_combos, \
-            #    f'{n_claws=} >= {n_claw_bouton_combos=}'
-            assert n_claws == n_claw_bouton_combos, ('assuming we have dropped or '
-                'de-duped (merged/split) any boutons, to eliminate claws connecting '
-                'to multiple boutons'
-            )
-
-            # number after all the filtering in connectome_wPNKC (i.e. dropping
-            # non-olfactory glomeruli, dropping claws without sufficient synapses [which
-            # may end up dropping boutons, if they are only paired with those claws],
-            # etc). n_boutons=392
-            n_boutons = len(claw2bouton[bouton_cols].drop_duplicates())
-
-            # TODO assert merging w/ this same as merging pn2apl_df (below, and
-            # potentially needing to dropna after merge)? not worth?
-            only_assigned_bouton_pn2apl = pn2apl_df[pn2apl_df[BOUTON_ID] != -1]
-            only_assigned_bouton_apl2pn = apl2pn_df[apl2pn_df[BOUTON_ID] != -1]
-
-            if plot_dir is not None:
-
-                # TODO plot this (in connectome_wPNKC, if not already plotted there)
-                #
-                # NOTE: prior filtering is mostly done on a claw basis (requiring min #
-                # of synapses for each), but should also end up dropping some boutons
-                wPNKC_boutons_per_glom = claw2bouton.groupby(glomerulus_col).apply(
-                    lambda x: len(x[bouton_cols].drop_duplicates())
-                ).rename('# (filtered) PN>KC boutons')
-
-                # NOTE: these are also dropped in connectome_wPNKC, so would also be
-                # filtered at step where we intersect with bouton_cols values in there
-                unassigned_bouton_pn2apl = pn2apl_df[pn2apl_df[BOUTON_ID] == -1]
-                unassigned_bouton_apl2pn = apl2pn_df[apl2pn_df[BOUTON_ID] == -1]
-
-                for pn2apl, apl2pn, title_suffix, fname_suffix in (
-                        # TODO want to keep all 3 of these? (at least filtered and one
-                        # other...)
-                        (pn2apl_df, apl2pn_df, '', ''),
-                        (
-                            unassigned_bouton_pn2apl,
-                            unassigned_bouton_apl2pn,
-                            ('\nunassigned boutons IDs (-1) only (dropped later)\n'
-                             f'{len(unassigned_bouton_apl2pn)}/{len(apl2pn_df)} APL>PN '
-                             'synapses\n'
-                             f'{len(unassigned_bouton_pn2apl)}/{len(pn2apl_df)} PN>APL '
-                             'synapses'
-                            ),
-                            '_only-invalid-bouton-ids'
-                        ),
-
-                        # since we assert above that claw2bouton has no -1 bouton IDs,
-                        # all of these will be absent from wPNKC index (and thus from
-                        # claw2bouton), although there are probably also other boutons
-                        # missing for other reasons
-                        (
-                            only_assigned_bouton_pn2apl,
-                            only_assigned_bouton_apl2pn,
-                            ('\nunassigned boutons IDs (-1) dropped\n'
-                            # TODO be more clear '...remaining'?
-                             f'{len(only_assigned_bouton_apl2pn)}/{len(apl2pn_df)} '
-                             'APL>PN synapses\n'
-                             f'{len(only_assigned_bouton_pn2apl)}/{len(pn2apl_df)} '
-                             'PN>APL synapses'
-                            ),
-                            '_dropped-invalid-bouton-ids'
-                        ),
-                    ):
-
-                    cbar_shrink = 0.2
-
-                    # TODO refactor this method of getting # boutons? (also used above,
-                    # and prob below)
-                    pnapl_boutons_per_glom = pn2apl.groupby(glomerulus_col).apply(
-                        lambda x: len(x[bouton_cols].drop_duplicates())
-                    ).rename('# PN>APL boutons')
-                    aplpn_boutons_per_glom = apl2pn.groupby(glomerulus_col).apply(
-                        lambda x: len(x[bouton_cols].drop_duplicates())
-                    ).rename('# APL>PN boutons')
-                    apl_and_pn_boutons_per_glom = pd.concat(
-                        [pnapl_boutons_per_glom, aplpn_boutons_per_glom], axis='columns'
-                    )
-
-                    # TODO also move this plotting after loop (along w/ plots in similar
-                    # conditional below?)?
-                    if fname_suffix == '_dropped-invalid-bouton-ids':
-                        apl_and_pn_boutons_per_glom = pd.concat(
-                            [apl_and_pn_boutons_per_glom, wPNKC_boutons_per_glom],
-                            axis='columns'
-                        )
-
-                    fig, ax = plt.subplots()
-                    viz.matshow(apl_and_pn_boutons_per_glom.T, ax=ax,
-                        cbar_label='# boutons', cbar_shrink=cbar_shrink
-                    )
-                    # TODO TODO also include # total boutons in title (for each
-                    # connection type?)
-                    if fname_suffix != '_dropped-invalid-bouton-ids':
-                        ax.set_title('total raw PN<>APL boutons per glomerulus'
-                            f'\ntop: PN>APL, bottom: APL>PN{title_suffix}'
-                        )
-                    else:
-                        ax.set_title('total raw PN<>APL boutons per glomerulus'
-                            '\ntop: PN>APL, middle: APL>PN\n'
-                            f'bottom: (filtered) PN>KC{title_suffix}'
-                        )
-                        # TODO also change fname here?
-
-                    # TODO replace version below (similar name) w/ this?
-                    # then remove '_raw' here?
-                    savefig(fig, plot_dir,
-                        f'pn_and_apl_boutons_per_glom_raw{fname_suffix}',
-                        bbox_inches='tight'
-                    )
-
-                    pnapl_syns_per_glom = pn2apl.groupby(glomerulus_col).size(
-                        ).rename('# PN>APL synapses')
-                    aplpn_syns_per_glom = apl2pn.groupby(glomerulus_col).size(
-                        ).rename('# APL>PN synapses')
-                    apl_and_pn_syns_per_glom = pd.concat(
-                        [pnapl_syns_per_glom, aplpn_syns_per_glom], axis='columns'
-                    )
-
-                    fig, ax = plt.subplots()
-                    # TODO TODO add row for (filtered) wPNKC stuff? (could only do #
-                    # synapses here, if wPNKC had n_synapses for values [or another
-                    # column/row index level, which i also processed]). currently wPNKC
-                    # just contains 0/1 in values, and # synapse info is lost
-                    # (though we do know each claw has at least 5 synapses from PN)
-                    viz.matshow(apl_and_pn_syns_per_glom.T, ax=ax,
-                        cbar_label='# synapses', cbar_shrink=cbar_shrink
-                    )
-                    ax.set_title('total raw PN<>APL synapses per glomerulus'
-                        f'\ntop: PN>APL, bottom: APL>PN{title_suffix}'
-                    )
-                    # TODO replace version (far) below (similar name) w/ this?
-                    # then remove '_raw' here?
-                    savefig(fig, plot_dir,
-                        f'pn_and_apl_syns_per_glom_raw{fname_suffix}',
-                        bbox_inches='tight'
-                    )
-
-                    # TODO move all this after loop? (just using
-                    # only_assigned_bouton_apl2pn)
-                    if fname_suffix == '_dropped-invalid-bouton-ids':
-                        # TODO (minor) combine these two into one call, w/ column for
-                        # two facets? (so title_suffix referring to weights in both
-                        # directions actually makes sense)
-                        fig, ax = plt.subplots()
-                        aplpn_synapses_per_bouton = apl2pn.groupby(bouton_cols).size()
-                        assert aplpn_synapses_per_bouton.sum() == len(apl2pn)
-                        sns.histplot(aplpn_synapses_per_bouton, ax=ax, discrete=True)
-                        ax.set_title('# APL>PN synapses per bouton\n'
-                            f'(across all glomeruli){title_suffix}'
-                        )
-                        savefig(fig, plot_dir,
-                            f'wAPLPN_syns_per_bouton_hist{fname_suffix}'
-                        )
-
-                        fig, ax = plt.subplots()
-                        pnapl_synapses_per_bouton = pn2apl.groupby(bouton_cols).size()
-                        assert pnapl_synapses_per_bouton.sum() == len(pn2apl)
-                        sns.histplot(pnapl_synapses_per_bouton, ax=ax, discrete=True)
-                        ax.set_title('# PN>APL synapses per bouton\n'
-                            f'(across all glomeruli){title_suffix}'
-                        )
-                        savefig(fig, plot_dir,
-                            f'wPNAPL_syns_per_bouton_hist{fname_suffix}'
-                        )
-
-                        aplpn_synapses_per_bouton_and_glom = apl2pn.groupby(
-                            bouton_cols + [glomerulus_col]).size(
-                            ).rename('n_synapses').reset_index()
-                        assert (len(apl2pn) ==
-                            aplpn_synapses_per_bouton_and_glom.n_synapses.sum()
-                        )
-                        # NOTE: by default displot will share x and y (and seem to need
-                        # to use facet_kws to disable. not super easy.)
-                        g = sns.displot(aplpn_synapses_per_bouton_and_glom,
-                            discrete=True, x='n_synapses', col=glomerulus_col,
-                            col_wrap=7
-                        )
-                        # 15 min that could be OK for this font size
-                        g.set_titles('{col_name}', size=17)
-                        # y=1.05 a bit more than needed (at least, w/ default fontsize,
-                        # which should be increased tbh. also a bit of space w/ size=15)
-                        g.fig.suptitle('# APL>PN synapses per bouton\n'
-                            f'(within each glomerulus){title_suffix}', y=1.05, size=17
-                        )
-                        savefig(g, plot_dir,
-                            f'wAPLPN_syns_per_bouton_by-glom_hists{fname_suffix}'
-                        )
-
-                        pnapl_synapses_per_bouton_and_glom = pn2apl.groupby(
-                            bouton_cols + [glomerulus_col]).size(
-                            ).rename('n_synapses').reset_index()
-                        assert (len(pn2apl) ==
-                            pnapl_synapses_per_bouton_and_glom.n_synapses.sum()
-                        )
-                        g = sns.displot(pnapl_synapses_per_bouton_and_glom,
-                            discrete=True, x='n_synapses', col=glomerulus_col,
-                            col_wrap=7
-                        )
-                        # TODO also increase font size of xlabel
-                        g.set_titles('{col_name}', size=17)
-                        g.fig.suptitle('# PN>APL synapses per bouton\n'
-                            f'(within each glomerulus){title_suffix}', y=1.05, size=17
-                        )
-                        savefig(g, plot_dir,
-                            f'wPNAPL_syns_per_bouton_by-glom_hists{fname_suffix}'
-                        )
-
-                    # TODO delete
-                    # TODO matshow where there is one row per bouton (value # of
-                    # synapses, maybe using clustermap, or similar wrapper code to what
-                    # i do to plot claw activities in natmix_data/analysis.py?)? (prob
-                    # fine to not, if i can show fraction / count of zero entries)
-                    # TODO maybe also show a row/col color (to side, like clustermap
-                    # can) for those w/ invalid claw ID / bouton ID / missing (PN,
-                    # bouton) from wPNKC?
-                    #
-
-            assert all(x[BOUTON_ID].notna().all() for x in [apl2pn_df, pn2apl_df])
-            # TODO keep track of these -1's, so that we see them dropped when
-            # reindexing later? (prob gonna be dropped as NaN in step right after merge
-            # actually...) (should end up being counted same as a non-claw synapse, no?)
-            # how to do that?
-            #
-            # (these are both preserved thru current how='left' merge)
-            # ipdb> (apl2pn_df[BOUTON_ID] == -1).sum()
-            # 358
-            # ipdb> (pn2apl_df[BOUTON_ID] == -1).sum()
-            # 203
-
-            # TODO TODO have we already asserted n:1 / 1:n only in direction we expect
-            # (between claws and boutons?) do so here, if not. or again, to check
-            # (would fail, as-is, b/c of cases w/ 2 or 3 boutons for one claw. still
-            # need to figure out how to handle those, and their nature)
-            # TODO could postprocess to remove those dupes (splitting or dropping), and
-            # then assert?
-
-            # TODO delete. just to sanity check merging.
-            premerge_apl2pn = apl2pn_df.copy()
-            premerge_pn2apl = pn2apl_df.copy()
-            print()
-            print(f'{premerge_apl2pn.shape=}')
-            print(f'{premerge_pn2apl.shape=}')
-            print(f'{claw2bouton.shape=}')
-            print()
-            #
-            # ipdb> len(claw2bouton)
-            # 10216
-            # ipdb> len(wPNKC)
-            #
-            # ipdb> claw2bouton[[KC_ID, CLAW_ID]].duplicated().sum()
-            # 349
-            # ipdb> 333 + 8
-            # 341
-            # ipdb> len(claw2bouton)
-            # 10216
-            # ipdb> len(wPNKC)
-            # 9867
-            # ipdb> len(claw2bouton) - len(wPNKC)
-            # 349
-            # 9867
-            #
-            # 349 is explained by the (somewhat rare) n-boutons:1-claw cases warned
-            # about below in this fn (333 w/ count 2 [1 dupe], 8 w/ count 3 [2 dupes].
-            # 333 + 8*2 = 349
-
-
-
-            # TODO TODO count # synapses before merge (compare w/ # synapses after)?
-            # TODO TODO and check against result dividing by claws per KC?
-            # (should only be off by maybe the dupes?)
-            #
-            # TODO TODO TODO and also just manually inspect a few boutons/claws that
-            # cover all the cases (n:1, 1:n, and that should be it, right? missing in
-            # left? right?)
-            # TODO TODO + reason about how many there should be (+compute that in
-            # advance separately), and assert we have that many rows/whatever after
-
-            # TODO if each claw only had one bouton, would that simplify merge?
-            # how= only matter for the small number of duplicate cases?
-
             # so any NaNs added by merging
             assert all(x.notna().all().all() for x in [apl2pn_df, pn2apl_df])
 
-            # TODO maybe i should try merging after agg_synapses_to_claws (w/in
-            # bouton_cols, for PN<>APL data)? (check equiv to current output, if so)
-            # not sure it should matter when, and would be easier to think about and
-            # prob faster
-            #
-            # TODO (delete?) want how='right' or (default) how='inner'? inner prob fine
-            #
-            # need how='left' actually? or how else will i drop (+ count non-claw
-            # synapses, more importantly) stuff not in wPNKC later? handle that here,
-            # for these two? well, won't have KC ID, so could only count synapses
-            # missing claws per PN (/bouton) or total per APL (or per APL unit, if we
-            # cared about that) (at least drop_missing_claws should report that then?)
-            apl2pn_df = apl2pn_df.merge(claw2bouton, on=bouton_cols, how='left')
-            pn2apl_df = pn2apl_df.merge(claw2bouton, on=bouton_cols, how='left')
-            # NOTE: merge adds 206 NaN (kc_id, claw_id) in pn2apl data, and 366 in
-            # apl2pn data (w/ how='left').
-            # TODO want diff how=? matter? should be dropped in step below anyway...
+            if per_claw_pn_apl_weights:
+                # TODO delete path we are not planning to support eventually (-> just
+                # make this one assertion)
+                if all(x in wPNKC.columns.names for x in bouton_cols):
+                    assert not any(x in wPNKC.index.names for x in bouton_cols)
+                    # TODO assert index not duplicated on claw_cols before next line
+                    # (to just clarify it's that operation that is adding them [back? i
+                    # suppose not clear it's same dupes as before? or is it?])
+                    # TODO delete
+                    #orig = wPNKC.copy()
+                    #
 
-            for df in [apl2pn_df, pn2apl_df]:
-                # NOTE: should be no other columns that were in both inputs (and thus no
-                # others w/ '_x' / '_y' suffices here) (except 'claw_x', 'claw_y' which
-                # were already in input, that is currently true)
-                g1 = df[df.glomerulus_y.notna()].glomerulus_x
-                g2 = df[df.glomerulus_y.notna()].glomerulus_y
-                assert g1.equals(g2)
+                    # replacing 0 w/ NaN seems to make stack significantly faster (very
+                    # slow w/ bouton_cols otherwise, and many rows in output), and gives
+                    # us far fewer rows in initial output. output does not have any all
+                    # NaN row/columns
+                    # TODO not sure we actually get anything out of the fillna(0), in
+                    # terms of use of wPNKC in the remainder of this fn...
+                    wPNKC = wPNKC.replace(0, np.nan).stack(bouton_cols).fillna(0)
 
-            apl2pn_df = apl2pn_df.drop(columns='glomerulus_y').rename(columns={
-                'glomerulus_x': glomerulus_col
-            })
-            pn2apl_df = pn2apl_df.drop(columns='glomerulus_y').rename(columns={
-                'glomerulus_x': glomerulus_col
-            })
+                    # TODO delete
+                    # TODO (no longer true) wish i could figure out how to make this not
+                    # happen, or at least to explain why it is unavoidable
+                    #assert len(wPNKC.index) > len(orig.index)
+                    #
 
-            # TODO delete? no reason to think should fail here really
-            assert_one_glom_per_pn(apl2pn_df)
-            assert_one_glom_per_pn(pn2apl_df)
-            #
+                    assert not (wPNKC == 0).all().any()
+                    assert not (wPNKC == 0).T.all().any()
 
-            # TODO delete
-            print(f'{pn2apl_df.shape=}')
-            print(f'{apl2pn_df.shape=}')
-            print()
-            #print(f'{pn2apl_df.isna().sum()=}')
-            #print(f'{apl2pn_df.isna().sum()=}')
-            #
+                    index_names = wPNKC.index.names
+                    # TODO TODO TODO need to check this is same as at similar step in
+                    # connectome_wPNKC? any way to avoid re-introducing these dupes in
+                    # the first place?
+                    wPNKC = wPNKC.reset_index().drop_duplicates(subset=claw_cols
+                        ).set_index(index_names)
 
-            # TODO TODO check that size after merging is at least as much larger as
-            # we expect (at least # boutons * # claws before [at least for overlapping
-            # set of claw_cols]. could be slightly higher from the current existance of
-            # a few claws associated w/ multiple boutons.
-            # TODO check no other how= options are more what i want
-            # TODO TODO want how='cross'? (prob not?)
-            # TODO double check that (after this merging), we have more rows
-            # (one for each claw) (should be fine)
-            # TODO delete
-            print('double check PN<>APL merging w/ claw index')
-            #breakpoint()
-            #
+                # stack() is to get a glomerulus index level from columns (which gives
+                # us a Series with all 1 for values, that we don't need, so just use the
+                # index from there)
+                claw2bouton = wPNKC.replace(0, np.nan).stack().index.to_frame(
+                    index=False).set_index(claw_cols).explode(BOUTON_ID).reset_index()
 
-            # TODO try a how= option that doesn't add NaNs, if that can not affect
-            # outputs, in order to preserve int dtypes (for claw_cols)? or just restore
-            # them later? prob doesn't matter anyway
+                # TODO TODO remove as much of claw2bouton stuff below as i can. no
+                # longer need most (now that it's all duped to, and may only be needed
+                # in connectome_wPNKC)
 
-            # TODO want count_dropped_syns_within (3rd arg) == [KC_ID] here too? if so,
-            # just hardcode above, and delete that arg? change output or just reporting?
-            # TODO TODO also report how many boutons are getting dropped here?
-            #
-            # if we were maybe merging w/ a less filtered version of wPNKC, could maybe
-            # report some amount of claws getting filtered, before subsetting down to
-            # filtered wPNKC? not doing that though. and in general, may not always be
-            # able to meaningfully report # of "claws" that should be in the data
-            # dropped here, since we only get those IDs by merging.
-            apl2pn_df, n_nonclaw_apl2pn_syns_per_kc = drop_missing_claws(apl2pn_df,
-                'APL>PN', [KC_ID]
-            )
-            pn2apl_df, n_nonclaw_pn2apl_syns_per_kc = drop_missing_claws(pn2apl_df,
-                'PN>APL', [KC_ID]
-            )
-            # TODO TODO move below assertions on n_nonclaw_* values to here
+                # TODO maybe drop -1 (+ NaN, if any) BOUTON_ID first (from apl<>pn
+                # stuff!), before merge?  and then also merge in a way that doesn't add
+                # NaNs (if that doesn't make things harder)? just if it helps clarify
+                # overall # of synapses before vs after
+                # (should be asserting all id_cols *in wPNKC.index*, which include
+                # BOUTON_ID, are not NaN here, if not already established)
 
-            # TODO assert reindex_to_wPNKC wouldn't change numerator/denominator at
-            # all for these plots below [that i'm now not really planning on making, but
-            # still might want the assertion] (all it should be doing is adding claws w/
-            # 0 PN>APL or APL>PN weight, which is what i've been seeing in warn output)
-            #
-            # TODO delete
-            if plot_dir is not None:
-                # TODO use wPNKC_boutons_per_glom as denominator for plot showing
-                # fraction of boutons w/ 0 PN<>APL weight
-                # (actually care, now that i have PN>KC # boutons in plot above?)
-                # TODO matshow fraction of boutons that have non-zero weight, for
-                # each glomerulus?
-                pass
-            #
+                id_cols = [KC_ID, CLAW_ID, PN_ID, BOUTON_ID]
+                assert not claw2bouton[id_cols].duplicated().any()
+
+                assert claw2bouton[BOUTON_ID].min() == 0, ('wPNKC index should already '
+                    'have had invalid (-1) bouton IDs dropped'
+                )
+
+                # checking that our glomerulus column->index transformation (as part of
+                # claw2bouton def above) didn't screw anything up
+                assert_one_glom_per_pn(claw2bouton)
+                claw2bouton2 = wPNKC.index.to_frame(index=False).explode(BOUTON_ID)
+                # TODO also assert not duplicated on claw_cols either now?
+                # (would fail if i wasn't dropping cases of n-boutons:1-claw earlier now
+                # [in connectome_wPNKC], unless i also added handling to dedupe them)
+                assert not claw2bouton[id_cols].duplicated().any()
+                assert len(claw2bouton) == len(claw2bouton2)
+                del claw2bouton2
+
+                # currently 10216 (update. prob no longer true after dropping
+                # multibouton)
+                n_claw_bouton_combos = len(claw2bouton)
+
+                # 9867
+                n_claws = len(wPNKC)
+                # NOTE: if claws that were associated with multiple boutons (either 2 or
+                # 3) had been dropped / split by this  point, would have to change this
+                # assertion to equality
+                #assert n_claws < n_claw_bouton_combos, \
+                #    f'{n_claws=} >= {n_claw_bouton_combos=}'
+                assert n_claws == n_claw_bouton_combos, ('assuming we have dropped or '
+                    'de-duped (merged/split) any boutons, to eliminate claws connecting'
+                    ' to multiple boutons'
+                )
+
+                # number after all the filtering in connectome_wPNKC (i.e. dropping
+                # non-olfactory glomeruli, dropping claws without sufficient synapses
+                # [which may end up dropping boutons, if they are only paired with those
+                # claws], etc). n_boutons=392
+                n_boutons = len(claw2bouton[bouton_cols].drop_duplicates())
+
+                # TODO assert merging w/ this same as merging pn2apl_df (below, and
+                # potentially needing to dropna after merge)? not worth?
+                only_assigned_bouton_pn2apl = pn2apl_df[pn2apl_df[BOUTON_ID] != -1]
+                only_assigned_bouton_apl2pn = apl2pn_df[apl2pn_df[BOUTON_ID] != -1]
+
+                if plot_dir is not None:
+
+                    # TODO plot this (in connectome_wPNKC, if not already plotted there)
+                    #
+                    # NOTE: prior filtering is mostly done on a claw basis (requiring
+                    # min # of synapses for each), but should also end up dropping some
+                    # boutons
+                    wPNKC_boutons_per_glom = claw2bouton.groupby(glomerulus_col).apply(
+                        lambda x: len(x[bouton_cols].drop_duplicates())
+                    ).rename('# (filtered) PN>KC boutons')
+
+                    # NOTE: these are also dropped in connectome_wPNKC, so would also be
+                    # filtered at step where we intersect with bouton_cols values in
+                    # there
+                    unassigned_bouton_pn2apl = pn2apl_df[pn2apl_df[BOUTON_ID] == -1]
+                    unassigned_bouton_apl2pn = apl2pn_df[apl2pn_df[BOUTON_ID] == -1]
+
+                    for pn2apl, apl2pn, title_suffix, fname_suffix in (
+                            # TODO want to keep all 3 of these? (at least filtered and
+                            # one other...)
+                            (pn2apl_df, apl2pn_df, '', ''),
+                            (
+                                unassigned_bouton_pn2apl,
+                                unassigned_bouton_apl2pn,
+                                ('\nunassigned boutons IDs (-1) only (dropped later)\n'
+                                 f'{len(unassigned_bouton_apl2pn)}/{len(apl2pn_df)} '
+                                 'APL>PN synapses\n'
+                                 f'{len(unassigned_bouton_pn2apl)}/{len(pn2apl_df)} '
+                                 'PN>APL synapses'
+                                ),
+                                '_only-invalid-bouton-ids'
+                            ),
+
+                            # since we assert above that claw2bouton has no -1 bouton
+                            # IDs, all of these will be absent from wPNKC index (and
+                            # thus from claw2bouton), although there are probably also
+                            # other boutons missing for other reasons
+                            (
+                                only_assigned_bouton_pn2apl,
+                                only_assigned_bouton_apl2pn,
+                                ('\nunassigned boutons IDs (-1) dropped\n'
+                                # TODO be more clear '...remaining'?
+                                 f'{len(only_assigned_bouton_apl2pn)}/{len(apl2pn_df)} '
+                                 'APL>PN synapses\n'
+                                 f'{len(only_assigned_bouton_pn2apl)}/{len(pn2apl_df)} '
+                                 'PN>APL synapses'
+                                ),
+                                '_dropped-invalid-bouton-ids'
+                            ),
+                        ):
+
+                        cbar_shrink = 0.2
+
+                        # TODO refactor this method of getting # boutons? (also used
+                        # above, and prob below)
+                        pnapl_boutons_per_glom = pn2apl.groupby(glomerulus_col).apply(
+                            lambda x: len(x[bouton_cols].drop_duplicates())
+                        ).rename('# PN>APL boutons')
+                        aplpn_boutons_per_glom = apl2pn.groupby(glomerulus_col).apply(
+                            lambda x: len(x[bouton_cols].drop_duplicates())
+                        ).rename('# APL>PN boutons')
+                        apl_and_pn_boutons_per_glom = pd.concat(
+                            [pnapl_boutons_per_glom, aplpn_boutons_per_glom],
+                            axis='columns'
+                        )
+
+                        # TODO also move this plotting after loop (along w/ plots in
+                        # similar conditional below?)?
+                        if fname_suffix == '_dropped-invalid-bouton-ids':
+                            apl_and_pn_boutons_per_glom = pd.concat(
+                                [apl_and_pn_boutons_per_glom, wPNKC_boutons_per_glom],
+                                axis='columns'
+                            )
+
+                        fig, ax = plt.subplots()
+                        viz.matshow(apl_and_pn_boutons_per_glom.T, ax=ax,
+                            cbar_label='# boutons', cbar_shrink=cbar_shrink
+                        )
+                        # TODO TODO also include # total boutons in title (for each
+                        # connection type?)
+                        if fname_suffix != '_dropped-invalid-bouton-ids':
+                            ax.set_title('total raw PN<>APL boutons per glomerulus'
+                                f'\ntop: PN>APL, bottom: APL>PN{title_suffix}'
+                            )
+                        else:
+                            ax.set_title('total raw PN<>APL boutons per glomerulus'
+                                '\ntop: PN>APL, middle: APL>PN\n'
+                                f'bottom: (filtered) PN>KC{title_suffix}'
+                            )
+                            # TODO also change fname here?
+
+                        # TODO replace version below (similar name) w/ this?
+                        # then remove '_raw' here?
+                        savefig(fig, plot_dir,
+                            f'pn_and_apl_boutons_per_glom_raw{fname_suffix}',
+                            bbox_inches='tight'
+                        )
+
+                        pnapl_syns_per_glom = pn2apl.groupby(glomerulus_col).size(
+                            ).rename('# PN>APL synapses')
+                        aplpn_syns_per_glom = apl2pn.groupby(glomerulus_col).size(
+                            ).rename('# APL>PN synapses')
+                        apl_and_pn_syns_per_glom = pd.concat(
+                            [pnapl_syns_per_glom, aplpn_syns_per_glom], axis='columns'
+                        )
+
+                        fig, ax = plt.subplots()
+                        # TODO TODO add row for (filtered) wPNKC stuff? (could only do #
+                        # synapses here, if wPNKC had n_synapses for values [or another
+                        # column/row index level, which i also processed]). currently
+                        # wPNKC just contains 0/1 in values, and # synapse info is lost
+                        # (though we do know each claw has at least 5 synapses from PN)
+                        viz.matshow(apl_and_pn_syns_per_glom.T, ax=ax,
+                            cbar_label='# synapses', cbar_shrink=cbar_shrink
+                        )
+                        ax.set_title('total raw PN<>APL synapses per glomerulus'
+                            f'\ntop: PN>APL, bottom: APL>PN{title_suffix}'
+                        )
+                        # TODO replace version (far) below (similar name) w/ this?
+                        # then remove '_raw' here?
+                        savefig(fig, plot_dir,
+                            f'pn_and_apl_syns_per_glom_raw{fname_suffix}',
+                            bbox_inches='tight'
+                        )
+
+                        # TODO move all this after loop? (just using
+                        # only_assigned_bouton_apl2pn)
+                        if fname_suffix == '_dropped-invalid-bouton-ids':
+                            # TODO (minor) combine these two into one call, w/ column
+                            # for two facets? (so title_suffix referring to weights in
+                            # both directions actually makes sense)
+                            fig, ax = plt.subplots()
+                            aplpn_synapses_per_bouton = apl2pn.groupby(bouton_cols
+                                ).size()
+                            assert aplpn_synapses_per_bouton.sum() == len(apl2pn)
+                            sns.histplot(aplpn_synapses_per_bouton, ax=ax,
+                                discrete=True
+                            )
+                            ax.set_title('# APL>PN synapses per bouton\n'
+                                f'(across all glomeruli){title_suffix}'
+                            )
+                            savefig(fig, plot_dir,
+                                f'wAPLPN_syns_per_bouton_hist{fname_suffix}'
+                            )
+
+                            fig, ax = plt.subplots()
+                            pnapl_synapses_per_bouton = pn2apl.groupby(bouton_cols
+                                ).size()
+                            assert pnapl_synapses_per_bouton.sum() == len(pn2apl)
+                            sns.histplot(pnapl_synapses_per_bouton, ax=ax,
+                                discrete=True
+                            )
+                            ax.set_title('# PN>APL synapses per bouton\n'
+                                f'(across all glomeruli){title_suffix}'
+                            )
+                            savefig(fig, plot_dir,
+                                f'wPNAPL_syns_per_bouton_hist{fname_suffix}'
+                            )
+
+                            aplpn_synapses_per_bouton_and_glom = apl2pn.groupby(
+                                bouton_cols + [glomerulus_col]).size(
+                                ).rename('n_synapses').reset_index()
+                            assert (len(apl2pn) ==
+                                aplpn_synapses_per_bouton_and_glom.n_synapses.sum()
+                            )
+                            # NOTE: by default displot will share x and y (and seem to
+                            # need to use facet_kws to disable. not super easy.)
+                            g = sns.displot(aplpn_synapses_per_bouton_and_glom,
+                                discrete=True, x='n_synapses', col=glomerulus_col,
+                                col_wrap=7
+                            )
+                            # 15 min that could be OK for this font size
+                            g.set_titles('{col_name}', size=17)
+                            # y=1.05 a bit more than needed (at least, w/ default
+                            # fontsize, which should be increased tbh. also a bit of
+                            # space w/ size=15)
+                            g.fig.suptitle('# APL>PN synapses per bouton\n'
+                                f'(within each glomerulus){title_suffix}', y=1.05,
+                                size=17
+                            )
+                            savefig(g, plot_dir,
+                                f'wAPLPN_syns_per_bouton_by-glom_hists{fname_suffix}'
+                            )
+
+                            pnapl_synapses_per_bouton_and_glom = pn2apl.groupby(
+                                bouton_cols + [glomerulus_col]).size(
+                                ).rename('n_synapses').reset_index()
+                            assert (len(pn2apl) ==
+                                pnapl_synapses_per_bouton_and_glom.n_synapses.sum()
+                            )
+                            g = sns.displot(pnapl_synapses_per_bouton_and_glom,
+                                discrete=True, x='n_synapses', col=glomerulus_col,
+                                col_wrap=7
+                            )
+                            # TODO also increase font size of xlabel
+                            g.set_titles('{col_name}', size=17)
+                            g.fig.suptitle('# PN>APL synapses per bouton\n'
+                                f'(within each glomerulus){title_suffix}', y=1.05,
+                                size=17
+                            )
+                            savefig(g, plot_dir,
+                                f'wPNAPL_syns_per_bouton_by-glom_hists{fname_suffix}'
+                            )
+
+                        # TODO delete
+                        # TODO matshow where there is one row per bouton (value # of
+                        # synapses, maybe using clustermap, or similar wrapper code to
+                        # what i do to plot claw activities in
+                        # natmix_data/analysis.py?)? (prob fine to not, if i can show
+                        # fraction / count of zero entries)
+                        # TODO maybe also show a row/col color (to side, like clustermap
+                        # can) for those w/ invalid claw ID / bouton ID / missing (PN,
+                        # bouton) from wPNKC?
+                        #
+
+                # TODO keep track of these -1's, so that we see them dropped when
+                # reindexing later? (prob gonna be dropped as NaN in step right after
+                # merge actually...) (should end up being counted same as a non-claw
+                # synapse, no?) how to do that?
+                #
+                # (these are both preserved thru current how='left' merge)
+                # ipdb> (apl2pn_df[BOUTON_ID] == -1).sum()
+                # 358
+                # ipdb> (pn2apl_df[BOUTON_ID] == -1).sum()
+                # 203
+
+                # TODO TODO have we already asserted n:1 / 1:n only in direction we
+                # expect (between claws and boutons?) do so here, if not. or again, to
+                # check (would fail, as-is, b/c of cases w/ 2 or 3 boutons for one claw.
+                # still need to figure out how to handle those, and their nature)
+                # TODO could postprocess to remove those dupes (splitting or dropping),
+                # and then assert?
+
+                # TODO delete. just to sanity check merging.
+                premerge_apl2pn = apl2pn_df.copy()
+                premerge_pn2apl = pn2apl_df.copy()
+                print()
+                print(f'{premerge_apl2pn.shape=}')
+                print(f'{premerge_pn2apl.shape=}')
+                print(f'{claw2bouton.shape=}')
+                print()
+                #
+                # ipdb> len(claw2bouton)
+                # 10216
+                # ipdb> len(wPNKC)
+                #
+                # ipdb> claw2bouton[[KC_ID, CLAW_ID]].duplicated().sum()
+                # 349
+                # ipdb> 333 + 8
+                # 341
+                # ipdb> len(claw2bouton)
+                # 10216
+                # ipdb> len(wPNKC)
+                # 9867
+                # ipdb> len(claw2bouton) - len(wPNKC)
+                # 349
+                # 9867
+                #
+                # 349 is explained by the (somewhat rare) n-boutons:1-claw cases warned
+                # about below in this fn (333 w/ count 2 [1 dupe], 8 w/ count 3 [2
+                # dupes].  333 + 8*2 = 349
+
+                # TODO TODO count # synapses before merge (compare w/ # synapses after)?
+                # TODO TODO and check against result dividing by claws per KC?
+                # (should only be off by maybe the dupes?)
+                #
+                # TODO TODO TODO and also just manually inspect a few boutons/claws that
+                # cover all the cases (n:1, 1:n, and that should be it, right? missing
+                # in left? right?)
+                # TODO TODO + reason about how many there should be (+compute that in
+                # advance separately), and assert we have that many rows/whatever after
+
+                # TODO if each claw only had one bouton, would that simplify merge?
+                # how= only matter for the small number of duplicate cases?
+
+                # TODO maybe i should try merging after agg_synapses_to_claws (w/in
+                # bouton_cols, for PN<>APL data)? (check equiv to current output, if so)
+                # not sure it should matter when, and would be easier to think about and
+                # prob faster
+                #
+                # TODO (delete?) want how='right' or (default) how='inner'? inner prob
+                # fine
+                #
+                # need how='left' actually? or how else will i drop (+ count non-claw
+                # synapses, more importantly) stuff not in wPNKC later? handle that
+                # here, for these two? well, won't have KC ID, so could only count
+                # synapses missing claws per PN (/bouton) or total per APL (or per APL
+                # unit, if we cared about that) (at least drop_missing_claws should
+                # report that then?)
+                # TODO skip this step (done), and related dropping of claws w/ multiple
+                # boutons (not done, and not sure i want), if
+                # per_claw_pn_apl_weights=False?
+                apl2pn_df = apl2pn_df.merge(claw2bouton, on=bouton_cols, how='left')
+                pn2apl_df = pn2apl_df.merge(claw2bouton, on=bouton_cols, how='left')
+                # NOTE: merge adds 206 NaN (kc_id, claw_id) in pn2apl data, and 366 in
+                # apl2pn data (w/ how='left').
+                # TODO want diff how=? matter? should be dropped in step below anyway...
+
+                for df in [apl2pn_df, pn2apl_df]:
+                    # NOTE: should be no other columns that were in both inputs (and
+                    # thus no others w/ '_x' / '_y' suffices here) (except 'claw_x',
+                    # 'claw_y' which were already in input, that is currently true)
+                    g1 = df[df.glomerulus_y.notna()].glomerulus_x
+                    g2 = df[df.glomerulus_y.notna()].glomerulus_y
+                    assert g1.equals(g2)
+
+                apl2pn_df = apl2pn_df.drop(columns='glomerulus_y').rename(columns={
+                    'glomerulus_x': glomerulus_col
+                })
+                pn2apl_df = pn2apl_df.drop(columns='glomerulus_y').rename(columns={
+                    'glomerulus_x': glomerulus_col
+                })
+
+                # TODO delete? no reason to think should fail here really
+                assert_one_glom_per_pn(apl2pn_df)
+                assert_one_glom_per_pn(pn2apl_df)
+                #
+
+                # TODO delete
+                print(f'{pn2apl_df.shape=}')
+                print(f'{apl2pn_df.shape=}')
+                print()
+                #print(f'{pn2apl_df.isna().sum()=}')
+                #print(f'{apl2pn_df.isna().sum()=}')
+                #
+
+                # TODO TODO check that size after merging is at least as much larger as
+                # we expect (at least # boutons * # claws before [at least for
+                # overlapping set of claw_cols]. could be slightly higher from the
+                # current existance of a few claws associated w/ multiple boutons.
+                #
+                # TODO want how='cross'? (prob not?)
+                # TODO double check that (after this merging), we have more rows
+                # (one for each claw) (should be fine)
+                # TODO delete
+                print('double check PN<>APL merging w/ claw index')
+                #breakpoint()
+                #
+
+                # TODO try a how= option that doesn't add NaNs, if that can not affect
+                # outputs, in order to preserve int dtypes (for claw_cols)? or just
+                # restore them later? prob doesn't matter anyway
+
+                # TODO want count_dropped_syns_within (3rd arg) == [KC_ID] here too? if
+                # so, just hardcode above, and delete that arg? change output or just
+                # reporting?
+                # TODO TODO also report how many boutons are getting dropped here?
+                #
+                # if we were maybe merging w/ a less filtered version of wPNKC, could
+                # maybe report some amount of claws getting filtered, before subsetting
+                # down to filtered wPNKC? not doing that though. and in general, may not
+                # always be able to meaningfully report # of "claws" that should be in
+                # the data dropped here, since we only get those IDs by merging.
+                apl2pn_df, n_nonclaw_apl2pn_syns_per_kc = drop_missing_claws(apl2pn_df,
+                    'APL>PN', [KC_ID]
+                )
+                pn2apl_df, n_nonclaw_pn2apl_syns_per_kc = drop_missing_claws(pn2apl_df,
+                    'PN>APL', [KC_ID]
+                )
+                # TODO TODO move below assertions on n_nonclaw_* values to here
+
+                # TODO assert reindex_to_wPNKC wouldn't change numerator/denominator at
+                # all for these plots below [that i'm now not really planning on making,
+                # but still might want the assertion] (all it should be doing is adding
+                # claws w/ 0 PN>APL or APL>PN weight, which is what i've been seeing in
+                # warn output)
+                #
+                # TODO delete
+                if plot_dir is not None:
+                    # TODO use wPNKC_boutons_per_glom as denominator for plot showing
+                    # fraction of boutons w/ 0 PN<>APL weight
+                    # (actually care, now that i have PN>KC # boutons in plot above?)
+                    # TODO matshow fraction of boutons that have non-zero weight, for
+                    # each glomerulus?
+                    pass
+                #
 
 
         # NOTE: on v5, -1 is no longer a "missing" claw! (only NaN missing there, at
@@ -4994,36 +5015,56 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         #
 
         if prat_boutons:
-            # TODO TODO where was i getting KC_TYPE here before? why not have it now?
-            # (i assume b/c merge isn't pulling it in now, for some reason?)
+            if per_claw_pn_apl_weights:
+                # TODO (fixed? delete?) where was i getting KC_TYPE here before? why not
+                # have it now?  (i assume b/c merge isn't pulling it in now, for some
+                # reason?)
 
-            # TODO TODO TODO if we add a flag to enable true dynamic boutons in model,
-            # claws_cols here should probably be replaced by bouton_cols (along with
-            # other changes)
+                # TODO refactor
+                apl2pn_df = agg_synapses_to_claws(apl2pn_df, claw_cols, cols_to_avg,
+                    extra_cols_to_keep, check_unique_per_claw=check_unique_per_claw
+                )
 
-            # TODO refactor
-            apl2pn_df = agg_synapses_to_claws(apl2pn_df, claw_cols, cols_to_avg,
-                extra_cols_to_keep, check_unique_per_claw=check_unique_per_claw
-            )
+                # TODO refactor
+                pn2apl_df = agg_synapses_to_claws(pn2apl_df, claw_cols, cols_to_avg,
+                    extra_cols_to_keep, check_unique_per_claw=check_unique_per_claw
+                )
+                # TODO TODO also check n_claw_bouton_combos in this branch?
+                # TODO just remove from extra_cols_to_keep then? should be same as what
+                # we currently get after dropping, right?
+                apl2pn_df = apl2pn_df.drop(columns=[apl_unit_col])
+                pn2apl_df = pn2apl_df.drop(columns=[apl_unit_col])
+
+                # n_claw_bouton_combos is not defined or relevant in
+                # per_claw_pn_apl_weights=False case
+                # TODO TODO TODO check that this # of unique combos is preserved after
+                # agg_synapses_to_claws
+                # TODO delete
+                print('check n_claw_bouton_combos (maybe after accounting for NaN / '
+                    'dupes) is preserved after agg_synapses_to_claws!'
+                )
+                #
+                breakpoint()
+                #
+
+            else:
+                bouton_levels = list(wPNKC.columns.names)
+                apl2pn_df = agg_synapses_to_claws(apl2pn_df, bouton_levels, [], [])
+                pn2apl_df = agg_synapses_to_claws(pn2apl_df, bouton_levels, [], [])
+
             apl2pn_df = apl2pn_df.reset_index()
             apl2pn_df = apl2pn_df.rename(columns={
                 'n_synapses': 'weight',
             })
-            apl2pn_df = apl2pn_df.drop(columns=[apl_unit_col])
 
-            # TODO refactor
-            pn2apl_df = agg_synapses_to_claws(pn2apl_df, claw_cols, cols_to_avg,
-                extra_cols_to_keep, check_unique_per_claw=check_unique_per_claw
-            )
             pn2apl_df = pn2apl_df.reset_index()
             pn2apl_df = pn2apl_df.rename(columns={
                 'n_synapses': 'weight',
             })
-            pn2apl_df = pn2apl_df.drop(columns=[apl_unit_col])
 
-        # TODO TODO if prat_claws=False (or one-row-per-claw=False), return version
-        # of this summed across claws per KC too (prob don't want any path returning old
-        # data. everything should be derived from this new data)
+        # TODO if prat_claws=False (or one-row-per-claw=False), return version
+        # of per-claw KC<>APL weights summed across claws per KC too (prob don't want
+        # any path returning old data. everything should be derived from this new data)
 
     # TODO TODO delete this old data loading (replacing all w/ some processing of
     # prat v3 data above), once that's working
@@ -5203,6 +5244,13 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # where we add CLAW_ID after next few statements
         index_cols.append(CLAW_ID)
 
+    if prat_boutons:
+        if per_claw_pn_apl_weights:
+            bouton_index_cols = list(index_cols)
+        else:
+            # TODO refactor to share w/ above agg calls??
+            bouton_index_cols = list(wPNKC.columns.names)
+
     assert not apl2kc_df[index_cols].duplicated().any()
     apl2kc_weights = apl2kc_df[index_cols + ['weight']].set_index(index_cols,
         verify_integrity=True).squeeze()
@@ -5216,16 +5264,16 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
     if prat_boutons:
         # TODO refactor
-        assert not apl2pn_df[index_cols].duplicated().any()
-        apl2pn_weights = apl2pn_df[index_cols + ['weight']].set_index(index_cols,
-            verify_integrity=True).squeeze()
-        assert apl2pn_weights.index.names == index_cols
+        assert not apl2pn_df[bouton_index_cols].duplicated().any()
+        apl2pn_weights = apl2pn_df[bouton_index_cols + ['weight']].set_index(
+            bouton_index_cols, verify_integrity=True).squeeze()
+        assert apl2pn_weights.index.names == bouton_index_cols
 
         # TODO refactor
-        assert not pn2apl_df[index_cols].duplicated().any()
-        pn2apl_weights = pn2apl_df[index_cols + ['weight']].set_index(index_cols,
-            verify_integrity=True).squeeze()
-        assert pn2apl_weights.index.names == index_cols
+        assert not pn2apl_df[bouton_index_cols].duplicated().any()
+        pn2apl_weights = pn2apl_df[bouton_index_cols + ['weight']].set_index(
+            bouton_index_cols, verify_integrity=True).squeeze()
+        assert pn2apl_weights.index.names == bouton_index_cols
 
     if one_row_per_claw and not prat_claws:
         # NOTE: this needs to happen after use of index_cols above
@@ -5244,8 +5292,13 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
     assert apl2kc_weights.index.names == kc2apl_weights.index.names
 
     if prat_boutons:
-        assert apl2kc_weights.index.names == apl2pn_weights.index.names
-        assert pn2apl_weights.index.names == apl2pn_weights.index.names
+        if per_claw_pn_apl_weights:
+            assert apl2kc_weights.index.names == apl2pn_weights.index.names
+            assert pn2apl_weights.index.names == apl2pn_weights.index.names
+        else:
+            # TODO this what i want? anything else?
+            assert apl2pn_weights.index.names == bouton_index_cols
+            assert pn2apl_weights.index.names == bouton_index_cols
 
     only_in_wPNKC_index = [x for x in index.names
         if x not in apl2kc_weights.index.names
@@ -5316,7 +5369,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
     # `one_row_per_claw and not prat_claws` cases for now, until after PN<>APL basics
     '''
     if one_row_per_claw and not prat_claws:
-        # TODO TODO TODO define index / function / something to use below to expand
+        # TODO TODO define index / function / something to use below to expand
         # index on each weights argument to reindex_to_wPNKC
         #
         # TODO something like this useful?
@@ -5570,7 +5623,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         n_nonclaw_kc2apl_syns_per_kc = n_nonclaw_kc2apl_syns_per_kc2
 
     if prat_boutons:
-        if not per_claw_pn_apl_weights:
+        if per_claw_pn_apl_weights:
             # TODO TODO double check that each of these really has all their (kc, claw)
             # combos present in the wPNKC data
             wAPLPN, n_nonclaw_apl2pn_syns_per_kc2 = reindex_to_wPNKC('APL>PN',
@@ -5580,38 +5633,92 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 pn2apl_weights
             )
 
-        # TODO TODO TODO maybe it's just a consequence of how i'm doing the merges
-        # above? look back into that?
-        # TODO TODO any boutons not paired w/ claws? summarize?
-        #
-        # so if these calculations are correct, don't need to worry about or try to
-        # analyze any of these. can just focus on non-claw KC<>APL stuff.
-        #
-        # TODO TODO move these top assertions above (and/or change to [/ supplement
-        # with] assertions on NaN right after merging?)
-        assert n_nonclaw_apl2pn_syns_per_kc.sum() == 0
-        assert n_nonclaw_pn2apl_syns_per_kc.sum() == 0
-        #
-        assert n_nonclaw_apl2pn_syns_per_kc2.sum() == 0
-        assert n_nonclaw_pn2apl_syns_per_kc2.sum() == 0
+            # TODO maybe it's just a consequence of how i'm doing the merges
+            # above? look back into that?
+            # TODO TODO any boutons not paired w/ claws? summarize?
+            #
+            # so if these calculations are correct, don't need to worry about or try to
+            # analyze any of these. can just focus on non-claw KC<>APL stuff.
+            #
+            # TODO TODO move these top assertions above (and/or change to [/ supplement
+            # with] assertions on NaN right after merging?)
+            assert n_nonclaw_apl2pn_syns_per_kc.sum() == 0
+            assert n_nonclaw_pn2apl_syns_per_kc.sum() == 0
+            #
+            assert n_nonclaw_apl2pn_syns_per_kc2.sum() == 0
+            assert n_nonclaw_pn2apl_syns_per_kc2.sum() == 0
 
-        # TODO TODO ok, am i doing something wrong? surely either this or the non
-        # *2 version should have something?
-        # TODO TODO don't i actually need to count on a (kc, claw) basis, not just
-        # a KC basis? (was doing that actually tho, i think?)
-        # ipdb> n_nonclaw_apl2pn_syns_per_kc2.sum()
-        # 0.0
-        # ipdb> n_nonclaw_pn2apl_syns_per_kc2.sum()
-        # 0.0
+            # TODO TODO ok, am i doing something wrong? surely either this or the non
+            # *2 version should have something?
+            # TODO TODO don't i actually need to count on a (kc, claw) basis, not just
+            # a KC basis? (was doing that actually tho, i think?)
+            # ipdb> n_nonclaw_apl2pn_syns_per_kc2.sum()
+            # 0.0
+            # ipdb> n_nonclaw_pn2apl_syns_per_kc2.sum()
+            # 0.0
 
-        # TODO TODO make sure i was computing each the right way (should be a lot of
-        # ovoerlapping KC IDs between two, right? or at least, a lot of overlap between
-        # the KC IDs in the *2 versions and the wAPLKC/etc KC IDs, no?)
+            # TODO TODO make sure i was computing each the right way (should be a lot of
+            # ovoerlapping KC IDs between two, right? or at least, a lot of overlap
+            # between the KC IDs in the *2 versions and the wAPLKC/etc KC IDs, no?)
 
-        # TODO add above # dropped per KC to others?
-        # (could probably mostly ignore above contribution. second seems much bigger in
-        # [i think?] all cases?) (yea, see comment above comparing magnitudes)
-        # TODO + make sure index stays same as *2 versions after adding, at least
+            # TODO add above # dropped per KC to others?
+            # (could probably mostly ignore above contribution. second seems much bigger
+            # in [i think?] all cases?) (yea, see comment above comparing magnitudes)
+            # TODO + make sure index stays same as *2 versions after adding, at least
+        else:
+            # TODO convert dtype of bouton_id to int earlier (or prevent from becoming
+            # float in first place) (there are no NaNs here, and should be asserted
+            # above anyway)
+            wAPLPN = apl2pn_df.astype({BOUTON_ID: int}).set_index(bouton_index_cols
+                ).squeeze()
+            wPNAPL = pn2apl_df.astype({BOUTON_ID: int}).set_index(bouton_index_cols
+                ).squeeze()
+
+            # TODO delete
+            # ipdb> wAPLPN
+            # glomerulus  pn_id       bouton_id
+            # D           1536947502   0           2.730784
+            #                          1           6.826961
+            #             5813038889   0           5.461569
+            #                          1           4.778873
+            #             5813055184   3           4.778873
+            #                                        ...
+            # VP2         1975878958  -1           0.682696
+            #                          1           0.682696
+            #                          5           1.365392
+            #                          6           1.365392
+            #                          9           0.682696
+            # Name: weight, Length: 439, dtype: float64
+            # ipdb> wPNAPL
+            # glomerulus  pn_id       bouton_id
+            # D           1536947502  -1            0.676827
+            #                          0            2.030481
+            #                          1            3.384134
+            #             5813038889   0            2.030481
+            #                          1            4.737788
+            #                                        ...
+            # VP1m        5813056072   0           12.182884
+            # VP2         1975878958   1            0.676827
+            #                          5            1.353654
+            #                          6            4.737788
+            #                          9            2.707308
+            # Name: weight, Length: 420, dtype: float64
+            # ipdb> wPNKC.columns.duplicated().any()
+            # False
+
+            assert not wPNKC.columns.duplicated().any()
+
+            wAPLPN = wAPLPN.reindex(wPNKC.columns)
+            assert wAPLPN.index.equals(wPNKC.columns)
+
+            wPNAPL = wPNAPL.reindex(wPNKC.columns)
+            assert wPNAPL.index.equals(wPNKC.columns)
+    # TODO delete
+    print()
+    print(f'{wAPLKC.shape=}')
+    print(f'{wAPLPN.shape=}')
+    print()
+    #
 
     # NOTE: wPNKC CLAW_ID (when present) is no longer some renumbered ID I came up with.
     # It is raw anatomical_claw[_corrected] values from Pratyush, so should be able to
@@ -5672,6 +5779,9 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 assert wKCAPL.equals(wKCAPL2)
 
     if one_row_per_claw:
+        # TODO TODO scale all to sum of one instead (help make things more comparable
+        # between KC and bouton cases?), and then rework all downstream code from there?
+
         # TODO refactor
         wAPLKC = wAPLKC.fillna(0)
         assert wAPLKC.sum() > 0
@@ -5692,6 +5802,10 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # TODO why not doing in non-one-row-per-claw case?
         # (b/c it's down outside of this fn i think? move all handling in to one place
         # or the other?)
+        # TODO TODO should this be # claws on top instead?
+        # TODO TODO TODO or if not, maybe scale boutons within each glomerulus (in
+        # python, below), similar to how we are scaling claws within KCs here?
+        # TODO or don't scale claws w/in KCs?
         wKCAPL_normalization_factor = n_kcs / wKCAPL.sum()
         # TODO TODO use to invert for plotting (if i can't figure out how to do it
         # automatically, without saving these factors)
@@ -5706,29 +5820,114 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # TODO replace some of the assertions above w/ these?
         assert np.isclose(wKCAPL.groupby('kc_id').sum().mean(), 1)
 
-        # TODO TODO or should we be returning something thats of shape glomerulus,
-        # for simplest case (rather than what we currently have, which are like-indexed
-        # to wAPLKC/wKCAPL)
-        # TODO maybe PN>APL should be glomerulus-length, and APL>KC should
-        # have a version of APL>PN added to it? make sense? or just have both
-        # glomerulus-length?
+        # TODO delete
+        print()
+        print('connectome_APL_weights:')
+        print(f'{wAPLKC.mean()=}')
+        print(f'{wKCAPL.mean()=}')
+        #
+
+        # TODO even need this in any prat_boutons case? don't think there is still
+        # any NaN? do probably need the normalization though, or at least some kind
+        # TODO TODO and also to vary APL>PN vs PN>APL
         if prat_boutons:
+            # TODO TODO better to normalize sum to same thing (could just normalize
+            # sum of PN<>APL stuff to sum of whatever the mean-normalized KC<>APL stuff
+            # is), to keep PN<>APL and KC<>APL weight scales comparable (so i can
+            # hopefully use one, or sweep around the KC<>APL scale factor)?
+
+            # TODO TODO TODO scale boutons w/in glomeruli (like claws w/in KCs above)?
+            # TODO or don't scale claws w/in KCs above?
+
+            n_boutons = len(wAPLPN)
+            assert len(wPNAPL) == n_boutons
+
             # TODO even necessary?
             wAPLPN = wAPLPN.fillna(0)
             assert wAPLPN.sum() > 0
             assert (wAPLPN >= 0).all()
-            wAPLPN_normalization_factor = n_kcs / wAPLPN.sum()
-            wAPLPN = wAPLPN * wAPLPN_normalization_factor
-            assert np.isclose(wAPLPN.sum() / n_kcs, 1)
-            assert np.isclose(wAPLPN.groupby('kc_id').sum().mean(), 1)
+            # TODO just always divide length of vector by sum() (no, for some
+            # reason, i think i might need to use n_kcs here for some tests to pass?
+            # (and why not the other way around??)
+            # TODO TODO or was this initial scales the reason olfsysm tests were
+            # only passing with a certain init? try moving all this weight vector
+            # scaling to olfsysm, to avoid doing it wrong outside?
+            if not per_claw_pn_apl_weights:
+                assert len(wAPLPN) == n_boutons
+                wAPLPN_normalization_factor = n_boutons / wAPLPN.sum()
+            else:
+                # TODO TODO try reverting to n_claws while also changing init of this
+                # (and wKCAPL, in olfsysm, to use length of vector rather than # KCs
+                # there)
+                #assert len(wAPLPN) == n_claws
+                #wAPLPN_normalization_factor = n_claws / wAPLPN.sum()
+                wAPLPN_normalization_factor = n_kcs / wAPLPN.sum()
 
             wPNAPL = wPNAPL.fillna(0)
             assert wPNAPL.sum() > 0
             assert (wPNAPL >= 0).all()
-            wPNAPL_normalization_factor = n_kcs / wPNAPL.sum()
+            if not per_claw_pn_apl_weights:
+                assert len(wPNAPL) == n_boutons
+                wPNAPL_normalization_factor = n_boutons / wPNAPL.sum()
+            else:
+                # TODO TODO try reverting to n_claws while also changing init of this
+                # (and wKCAPL, in olfsysm, to use length of vector rather than # KCs
+                # there)
+                #assert len(wPNAPL) == n_claws
+                #wPNAPL_normalization_factor = n_claws / wPNAPL.sum()
+                wPNAPL_normalization_factor = n_kcs / wPNAPL.sum()
+
+            # TODO delete
+            print()
+            print('before')
+            print(f'{wAPLPN.mean()=}')
+            print(f'{wAPLPN.sum()=}')
+            print(f'{wAPLPN_normalization_factor=}')
+            print(f'{wPNAPL.mean()=}')
+            print(f'{wPNAPL.sum()=}')
+            print(f'{wPNAPL_normalization_factor=}')
+            #
+
+            # TODO delete
+            #wAPLPN_normalization_factor = (n_kcs / wAPLPN.sum()) / pn_apl_scale_factor
+            wAPLPN = wAPLPN * wAPLPN_normalization_factor
+            # TODO delete
+            #wPNAPL_normalization_factor = (n_kcs / wPNAPL.sum()) / pn_apl_scale_factor
             wPNAPL = wPNAPL * wPNAPL_normalization_factor
-            assert np.isclose(wPNAPL.sum() / n_kcs, 1)
-            assert np.isclose(wPNAPL.groupby('kc_id').sum().mean(), 1)
+
+            # TODO delete
+            print()
+            print('after')
+            print(f'{wAPLPN.mean()=}')
+            print(f'{wAPLPN.sum()=}')
+            print(f'{wPNAPL.mean()=}')
+            print(f'{wPNAPL.sum()=}')
+            print()
+            #
+
+            # TODO delete
+            '''
+            if pn_apl_scale_factor != 1:
+                # TODO TODO redef above, so scale factor isn't so arbitrary here (to
+                # remove n_kcs from numerator, or at least also ref # boutons). then
+                # update what any hardcoded scale factors (e.g. in pn_claw_to_APL=False
+                # branch in test code, currently =200) to what new values should be
+                warn(f'dividing PN<>APL weights all by {pn_apl_scale_factor=} (to '
+                    'scale relative to KC<>APL weights)'
+                )
+            '''
+
+            # TODO same assertions, but grouping by glomeruli for the
+            # `not per_claw_pn_apl_weights` case?
+            if per_claw_pn_apl_weights:
+                # NOTE: not true if we use n_claws in scale factors above (which might
+                # want to try along with an olfsysm change, if trying to move weight
+                # normalization in there)
+                assert np.isclose(wAPLPN.sum() / n_kcs, 1)
+                assert np.isclose(wAPLPN.groupby('kc_id').sum().mean(), 1)
+
+                assert np.isclose(wPNAPL.sum() / n_kcs, 1)
+                assert np.isclose(wPNAPL.groupby('kc_id').sum().mean(), 1)
 
         # TODO (delete? not sure tianpeis stuff that useable...) compare distribution of
         # weights from prat_claws=True/False paths in here (# dists of # claws per KC,
@@ -5739,12 +5938,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # int synapse counts here.
         wAPLKC_normalization_factor = None
         wKCAPL_normalization_factor = None
-
-        # TODO delete. seems i can recreate w/ new, modified, reindex_to_wPNKC
-        # (seems i can though, so delete instead)
-        #wAPLKC = pd.Series(index=index, data=apl2kc_weights)
-        #wKCAPL = pd.Series(index=index, data=kc2apl_weights)
-        #
 
         # TODO delete this comparison eventually? (just use the non-2-suffixed version
         # of each, and remove this else conditional)
@@ -5782,10 +5975,17 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
     assert not wAPLKC.isna().any()
     assert not wKCAPL.isna().any()
 
+    # TODO TODO TODO is there actually still any NaN here? and at least for
+    # non-per-claw case, already name 'weight' as name here. this all duplicated?
     if prat_boutons:
         # TODO refactor all this into reindex_to_wPNKC?
-        assert wAPLPN.index.equals(index)
-        assert wPNAPL.index.equals(index)
+
+        # TODO isn't this already guaranteed above? delete?
+        if per_claw_pn_apl_weights:
+            assert wAPLPN.index.equals(index)
+            assert wPNAPL.index.equals(index)
+
+        # TODO isn't this already true?
         wAPLPN.name = 'weight'
         wPNAPL.name = 'weight'
         wAPLPN = wAPLPN.fillna(fill_weight)
@@ -5891,7 +6091,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             wAPLKC_with_types = wAPLKC_with_types.droplevel(KC_TYPE)
             wKCAPL_with_types = wKCAPL_with_types.droplevel(KC_TYPE)
 
-            if prat_boutons:
+            if prat_boutons and per_claw_pn_apl_weights:
                 wAPLPN_with_types = wAPLPN_with_types.droplevel(KC_TYPE)
                 wPNAPL_with_types = wPNAPL_with_types.droplevel(KC_TYPE)
         #
@@ -5902,7 +6102,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # TODO rename kc_types -> kc_types_and_count_strs?
         wAPLKC_with_types[KC_TYPE] = kc_types
         wKCAPL_with_types[KC_TYPE] = kc_types
-        if prat_boutons:
+        if prat_boutons and per_claw_pn_apl_weights:
             wAPLPN_with_types[KC_TYPE] = kc_types
             wPNAPL_with_types[KC_TYPE] = kc_types
 
@@ -6070,7 +6270,9 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 #if one_row_per_claw and unit_cols == ['KC_ID']:
                 #    breakpoint()
 
-                if prat_boutons:
+                # TODO TODO want to plot anything in non-per-claw case?
+                # (can prob leave those plots to connectome_wPNKC?)
+                if prat_boutons and per_claw_pn_apl_weights:
                     assert len(kws) == 0
 
                     # TODO refactor
@@ -6226,7 +6428,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     ax.set_title('KC->APL\none row per KC')
                     savefig(fig, plot_dir, 'wKCAPL_claw_vs_nonclaw_weight')
 
-                if prat_boutons:
+                if prat_boutons and per_claw_pn_apl_weights:
                     pn2glom = wPNKC.replace(0, np.nan).stack().index.to_frame(
                         index=False)[[PN_ID, glomerulus_col]].drop_duplicates(
                         ).set_index(PN_ID).squeeze()
@@ -6423,44 +6625,29 @@ def _single_unique_val(arr: Union[np.ndarray, pd.Series], *, exact: bool = True
         return v0
 
 
-def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 100, n_clusters: int = 5,
-    ax: Optional[Axes] = None, verbose: bool = False, **kwargs) -> Optional[Figure]:
-    # TODO also silence warnings about not finding enough clusters, at least when
-    # verbose=False?
+# TODO TODO increase n_PCs/n_clusters here (and just set lower in wrapper specifically
+# for model 0/1 spiking data)?
+def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 8,
+    verbose: bool = False, **kwargs) -> Optional[pd.DataFrame]:
     """
     Args:
-        spks: of shape (#-neurons, #-timepoints), with values all 0 or 1
-
-        **kwargs: passed to `Rastermap(...)` initialization (not the `Rastermap.fit`
-            call)
+        **kwargs: passed to `Rastermap` constructor
     """
-    xlim = None
+    # TODO check again if this is actually an issue? spike plotting fn does currently
+    # drop all rows like this though, and unlikely to get in any other input (unless as
+    # a result of filling in missing data w/ 0)
+    assert not (df == 0).all(axis=1).any()
 
-    time_index = spks.columns
-    if time_index.dtype == float:
-        assert time_index.is_monotonic_increasing
-        assert not time_index.isna().any()
-        xlim = (time_index.min(), time_index.max())
-
-    # ipdb> spks.shape
-    # (1830, 5500)
-    # ipdb> set(spks.flat)
-    # {0.0, 1.0}
-    # rastermap call below gets unhappy if we omit .values (leaving spks a DataFrame)
-    spks = spks.values.astype('float32')
+    # rastermap call below gets unhappy if we omit .values (leaving df a DataFrame)
+    arr = df.values.astype('float32')
     # TODO maybe try converting to spike times in seconds, and using
     # `rastermap.io.load_spike_times(<spike-time-npy>, <spike-cluster-npy>,
     # st_bin=100)` (or whatever it does)?
     # TODO TODO or just try re-binning my spike time matrix into one with a bin of
     # 100ms (from st_bin above)? do we ever have two spikes within one of those
     # bins? how does rastermap fn handle that? add? is output binary or not?
-    assert not np.isnan(spks).any()
-
-    # getting responders only. leaves 214 of the initial 1830 cells.
-    # seems to help avoid some rastermap errors.
-    spks = spks[(spks == 1).any(axis=1)]
-    if len(spks) == 0:
-        raise ValueError('no responders in input!')
+    assert not np.isnan(arr).any(), 'rastermap will err if input has NaN'
+    assert np.isfinite(arr).all(), 'rastermap will err if input is not all finite'
 
     # TODO does time lag actually matter? not clearly better w/ it set vs default, when
     # using n_clusters=5, n_PCs=100 (and locality default/0, which i think are same)
@@ -6480,62 +6667,98 @@ def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 100, n_clusters: int 
     # works after dropping non-responders (see scripts/test_rastermap.py for some
     # discussion on choice of parameters, including kwarg defaults in plot_spike_rasters
     # def)
-    try:
-        # TODO need to seed this? can i?
-        model = Rastermap(n_PCs=n_PCs, n_clusters=n_clusters, verbose=verbose, **kwargs
-            ).fit(spks)
-
-    # TODO fix (just find new n_PCs / n_cluster?). getting again in hemibrain test.
-    # may or may not be related to upgrading rastermap to 1.0 we did recently.
-    # having trouble reproducing now though... not deterministic?
-    #
-    # before dropping non-responders and also changing some other rastermap config
-    # (decrease n_PCs and n_clusters, tho maybe both not needed?) was getting this
-    # error:
-    #   File "./mb_model.py", line 3296, in fit_mb_model
-    #     model = Rastermap(n_PCs=200, n_clusters=100, locality=0.75,
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/rastermap/rastermap.py", line 327, in fit
-    #     Usv_valid = SVD(X[igood][:, itrain] if itrain is not None else X[igood],
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/rastermap/svd.py", line 33, in SVD
-    #     U = TruncatedSVD(n_components=nmin,
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/utils/_set_output.py", line 140, in wrapped
-    #     data_to_wrap = f(self, X, *args, **kwargs)
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/base.py", line 1151, in wrapper
-    #     return fit_method(estimator, *args, **kwargs)
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/decomposition/_truncated_svd.py", line 246, in fit_transform
-    #     U, Sigma, VT = randomized_svd(
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/utils/extmath.py", line 450, in randomized_svd
-    #     Q = randomized_range_finder(
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/sklearn/utils/extmath.py", line 279, in randomized_range_finder
-    #     Q, _ = linalg.lu(safe_sparse_dot(A.T, Q), permute_l=True)
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/scipy/linalg/_decomp_lu.py", line 213, in lu
-    #     a1 = asarray_chkfinite(a)
-    #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/numpy/lib/function_base.py", line 628, in asarray_chkfinite
-    #     raise ValueError(
-    # ValueError: array must not contain infs or NaNs
-    except ValueError as err:
-        msg = str(err)
-        if msg != 'array must not contain infs or NaNs':
-            raise
-
-        warn(f'Rastermap() failed with: ValueError: {msg}\n'
-            '...try decreasing n_PCs or n_clusters?'
+    with warnings.catch_warnings():
+        # this warning also corresponds to nothing being plotted
+        warnings.filterwarnings('error', category=UserWarning,
+            message='Singular matrix'
         )
-        return None
+        try:
+            # TODO need to seed this? can i?
+            model = Rastermap(n_PCs=n_PCs, n_clusters=n_clusters, verbose=verbose,
+                **kwargs
+            ).fit(arr)
 
-    # TODO fix! under what circumstances is this triggered? how to fix? input just empty
-    # or something trivial?
-    except np.linalg.LinAlgError as err:
-        # TODO warn with more error context
-        warn(str(err))
-        #
-        return None
+        # TODO can i still repro ValueError & LinAlgError? w/ 1.0?
+        # TODO TODO this warning filter work to catch singular matrix?
+        except (ValueError, np.linalg.LinAlgError, UserWarning) as err:
+            msg = str(err)
 
-    y = model.embedding # neurons x 1
+            # TODO delete? possible to get this just based on data, if data doesn't have
+            # NaN/inf (asserted above we don't have either)?
+            if isinstance(err, ValueError):
+                if msg != 'array must not contain infs or NaNs':
+                    raise
+            #
+
+            # TODO reword? one/both can sometimes need increasing, if already ~1-2.
+            # maybe in other regimes too, but that's only case i've seen on lower end so
+            # far.
+            # TODO print traceback too?
+            warn(f'Rastermap() failed with: {type(err).__name__}: {err}\n'
+                '...try decreasing n_PCs or n_clusters?'
+            )
+            return None
+
+    # TODO what is this? delete?
+    # neurons x 1
+    # min/max seem to range on [0, <=n_clusters] (but continuous, not sure if can equal
+    # n_clusters)?
+    #
+    # "array, shape (n_samples, 1) embedding of each neuron / voxel"
+    #
+    # TODO TODO return as extra index level? or plot that way (i.e. w/ row_colors, after
+    # rounding)?
+    #y = model.embedding
+
+    # TODO TODO round to nearest value [why was remy saying she rounded? just to
+    # get discrete clusters out?] (values ranging from [0, n_clusters], if i understand
+    # remy), and use that to order? or just order based on this? assert already ordered?
+    # TODO TODO what does remy mean she does her own clustering?
+
+    # TODO worth plotting this? does it capture the overall gestalt any better?
+    # TODO TODO and if i don't plot this, would i want to do my own downsampling across
+    # time at least? i assume this includes some of that?
+    # TODO keep_norm_X=True useful for just getting the downsampling?
+    # (no, docs say it still has first dim of len n_samples)
+    #
+    # "array, shape (n_samples//bin_size, n_features) normalized data binned across
+    # samples (if compute_X_embedding is True)"
+    #X_embedding = model.X_embedding
+
+    # "array, shape (n_samples,) sorting along first dimension of input matrix - use
+    # this to get neuron / voxel sorting"
     isort = model.isort
 
-    # visualize binning over neurons
-    X_embedding = model.X_embedding
+    isort_set = set(isort)
+    assert isort_set == set(range(len(df)))
+    assert len(isort_set) == len(isort)
+    # TODO return model instead/too?
+    return df.iloc[isort]
+
+
+# TODO want diff default cmap here?
+def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
+    cmap: Optional[CMap] = 'gray_r', imshow_kws: Optional[KwargDict] = None,
+    vmin: Optional[float] = None, vmax: Optional[float] = None, verbose: bool = False,
+    **kwargs) -> Optional[Figure]:
+    """
+    Args:
+        **kwargs: passed to `cluster_timeseries`
+    """
+    xlim = None
+    # TODO use calculated dt to scale / set time lag params (if any) in rastermap
+    # appropriately? (or any other timescale related params, if important)
+    time_index = df.columns
+    if time_index.dtype == float:
+        assert time_index.is_monotonic_increasing
+        assert not time_index.isna().any()
+        xlim = (time_index.min(), time_index.max())
+
+    clustered = cluster_timeseries(df)
+    # errors/warnings will be handled inside cluster_timeseries, returning None in all
+    # those cases
+    if clustered is None:
+        return None
 
     if ax is None:
         fig = plt.figure(figsize=(12,5))
@@ -6546,10 +6769,12 @@ def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 100, n_clusters: int 
         # object [whether we created it or not]
         fig = ax.figure
 
+    # TODO what is purpose of this? doc. necessary to have imshow xlim labelled in other
+    # coordinates (than default [0, n])?
     extent = None
     if xlim is not None:
         # TODO need to swap top and bottom? (seems fine as is)
-        top = len(spks) + 0.5
+        top = len(df) + 0.5
         bottom = -0.5
 
         # TODO what to add/subtract, (if anything and) if not -0.5 (half of dt?)?
@@ -6560,12 +6785,88 @@ def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 100, n_clusters: int 
         # TODO use a colormap w/o white=0 to test this?
         extent = (left, right, bottom, top)
 
-    # TODO why vmax=1.5? are values not 0/1?
-    ax.imshow(X_embedding, vmin=0, vmax=1.5, cmap='gray_r', aspect='auto',
-        extent=extent
+    if imshow_kws is None:
+        imshow_kws = dict()
+
+    # TODO TODO (/option to?) clustermap (instead of imshow) (for row colors at least.
+    # no dendrograms)
+
+    # TODO TODO want to downsample, if not plotting X_embedding (from model)?
+
+    ax.imshow(clustered, vmin=vmin, vmax=vmax, cmap=cmap, aspect='auto',
+        extent=extent, **imshow_kws
+    )
+    return fig
+
+
+# for some more recent data (and maybe old too), lower n_PCs seems to make it less
+# likely we get the "Singular matrix" warning (which seems to line up with nothing being
+# plotted). can also get it again if we decrease n_clusters below 3. not sure if too
+# many clusters alone can also produce it. still getting some of that warning down to
+# n_PCs=6 (and may encounter below that). also got it w/ n_PCs=4, n_clusters=3...
+# TODO TODO TODO is my output the same each time w/ current:
+# one-row-per-claw_True__prat-claws_True__prat-boutons_True__connectome-APL_True__pn-apl-scale-factor_1000
+# code? cause it feels like it might not be, if i need to keep tweaking this...
+def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 4, n_clusters: int = 3,
+    **kwargs) -> Optional[Figure]:
+    # TODO also silence warnings about not finding enough clusters, at least when
+    # verbose=False?
+    """
+    Args:
+        spks: of shape (#-neurons, #-timepoints), with values all 0 or 1
+
+        **kwargs: passed to `cluster_timeseries_and_plot`
+    """
+    # ipdb> spks.shape
+    # (1830, 5500)
+    # ipdb> set(spks.flat)
+    # {0.0, 1.0}
+
+    # seems to help avoid some rastermap errors (w/ spiking inputs)
+    # TODO when refactoring, leave this in wrapper to handle spiking data, but still
+    # assert (in called timeseries clustering fn) that data has no rows w/ all 0
+    spks = spks[(spks != 0).any(axis=1)]
+    if len(spks) == 0:
+        raise ValueError('no responders in input!')
+
+    return cluster_timeseries_and_plot(spks, n_PCs=n_PCs, n_clusters=n_clusters,
+        # TODO (delete) actually need +.5 on vmax for spiking data to plot well? just
+        # let inner fn (or mpl) pick vmin/vmax if not (prob not anymore now that
+        # plotting actual data instead of X_embedded? or want to plot the embedding
+        # instead?)
+        #vmin=0.0, vmax=1.5,
+        **kwargs
     )
 
-    return fig
+
+# TODO use in other places too (sens analysis dir naming / similar?)
+def weight_debug_suffix(param_dict: Dict[str, Any]) -> str:
+    # TODO TODO want to support non-vector weights for any of this?
+    wAPLKC = param_dict['wAPLKC'].mean()
+    wKCAPL = param_dict['wKCAPL'].mean()
+    # TODO refactor to share .2g format in a var
+    # TODO use scientific notation instead?
+    suffix = f'\nmean weights: wAPLKC={wAPLKC:.2g} wKCAPL={wKCAPL:.2g}'
+    if 'wAPLPN' in param_dict:
+        assert 'wPNAPL' in param_dict
+        wAPLPN = param_dict['wAPLPN'].mean()
+        wPNAPL = param_dict['wPNAPL'].mean()
+        suffix += f' wAPLPN={wAPLPN:.2g} wPNAPL={wPNAPL:.2g} '
+
+    # TODO put behind flag?
+    if 'odor_stats' in param_dict:
+        odor_stats = param_dict['odor_stats']
+        # rows = odors, columns = different variables tracked and set in olfsysm
+        # sim_KC_layer. to add new ones, have to manually define in C++ + thread thru
+        # binding code.
+        assert isinstance(odor_stats, pd.DataFrame)
+        for x in odor_stats.columns:
+            # TODO too many lines? condense?
+            #
+            # averaging over odors, for each stat
+            suffix += '\n{x}={odor_stats[x].mean():.2g}'
+
+    return suffix
 
 
 # TODO delete all these? or re-organize? want to minimize how much mb_model stuff
@@ -6576,6 +6877,16 @@ data_outputs_root = Path('data')
 hallem_csv_root = data_outputs_root / 'preprocessed_hallem'
 hallem_delta_csv = hallem_csv_root / 'hallem_orn_deltas.csv'
 hallem_sfr_csv = hallem_csv_root / 'hallem_sfr.csv'
+#
+
+# TODO delete? the series is just a hack to support one case i believe (one-row +
+# no-connectome-apl)
+#
+# Either a pd.Series (KC/claw/bouton length, as appropriate), with matching index levels
+# to what `connectome_wPNKC` and/or `connectome_APL_weights` would spit out for
+# corresponding variable, or a float to scale the same outputs of those functions.
+# If None, will be chosen inside `fit_mb_model`.
+Weights = Optional[Union[float, pd.Series]]
 #
 
 # TODO delete
@@ -6598,6 +6909,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     tune_on_hallem: bool = False, pn2kc_connections: str = 'hemibrain',
     use_connectome_APL_weights: bool = False, weight_divisor: Optional[float] = None,
     prat_claws: bool = False, prat_boutons: bool = False,
+    # TODO change default to this to True? or have this be default behavior w/
+    # prat_boutons but nothing else? shouldn't need 4 flags for only 3 distinct possible
+    # behaviors... prat_boutons currently needs one of these other flags to be True
+    per_claw_pn_apl_weights: bool = False,
+    #
     add_PNAPL_to_KCAPL: bool = False, replace_KCAPL_with_PNAPL: bool = False,
     dist_weight: Optional[str] = None, _wPNKC: Optional[pd.DataFrame] = None,
     _wAPLKC: Optional[pd.Series] = None, _wKCAPL: Optional[pd.Series] = None,
@@ -6610,18 +6926,19 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO TODO change default sp_lr_coeff here (or in olfsysm?)? will need to restore
     # old value (=1) for some repro tests to continue passing
     sp_lr_coeff: Optional[float] = None, hardcode_initial_sp: bool = False,
+    # TODO delete
+    #pn_apl_scale_factor: float = 1.0,
+    #
     APL_coup_const: Optional[float] = None,
     Btn_separate: bool = False, Btn_num_per_glom: int = 10,
     _use_matt_wPNKC: bool = False,
-    drop_kcs_with_no_input: bool = True,
-    _drop_glom_with_plus: bool = True,
+    drop_kcs_with_no_input: bool = True, _drop_glom_with_plus: bool = True,
     _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
     ab_prime_response_rate_target: Optional[float] = None,
     homeostatic_thrs: bool = False,
     fixed_thr: Optional[Union[float, np.ndarray]] = None,
-    # TODO union w/ Series now, unless i can change implementation of
-    # one-row-per-claw=True + connectome_APL=False case?
-    wAPLKC: Optional[float] = None, wKCAPL: Optional[float] = None,
+    wAPLKC: Weights = None, wKCAPL: Weights = None,
+    wAPLPN: Optional[float] = None, wPNAPL: Optional[float] = None,
     # pn_claw_to_APL: if it's true, in sim_KC_layer, we take pn_t to calculate
     # claw_to_apl drive instead of inheriting from KC_acitivity
     pn_claw_to_APL: bool = False, n_claws_active_to_spike: Optional[int] = None,
@@ -6631,7 +6948,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # python in here
     print_olfsysm_log: Optional[bool] = None, return_dynamics: bool = False,
     plot_dir: Optional[Path] = None, make_plots: bool = True,
-    _plot_example_dynamics: bool = False, title: str = '',
+    plot_example_dynamics: bool = False, title: str = '',
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     repro_preprint_s1d: bool = False, return_olfsysm_vars: bool = False,
     # TODO TODO implement
@@ -6697,6 +7014,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wKCAPL: used in same manner of `wAPLKC`. If this is passed, `wAPLKC` must
             also be non-None. If only `wAPLKC` is passed, this is defined from it (as
             `wAPLKC` / <#-of-KCs>).
+
+        wAPLPN, wPNAPL: similar to corresponding KC weights, but can also be of length #
+            boutons if `per_claw_pn_apl_weights=False` (othewise length claws). requires
+            `prat_boutons=True`
 
         use_connectome_APL_weights: if True, `connectome_APL_weights` called (with
             `connectome=pn2kc_connections`) to set `rv.kc.w[APLKC|KCAPL]`.
@@ -6831,6 +7152,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 'one_row_per_claw=True'
             )
 
+    if prat_boutons and not per_claw_pn_apl_weights:
+        # bouton length wPNAPL and wAPLPN. currently only tested in this case, and some
+        # code below would need to be changed otherwise.
+        assert use_connectome_APL_weights, 'not supported. code below may not work.'
+        # probably will need this too, but asserting now for simplicity (should also
+        # imply one_row_per_claw)
+        assert prat_claws
+        assert one_row_per_claw
+    else:
+        assert wPNAPL is None
+        assert wAPLPN is None
+
     # TODO rename hallem_input to only_run_on_hallem (or something better)?
     hallem_input = False
     if orn_deltas is None:
@@ -6883,12 +7216,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # Doesn't seem to affect any of the comparisons to Matt's outputs, whether this is
     # True or not (though I'm not clear on why it wouldn't do something, looking at the
     # code...)
-    # TODO TODO TODO try using (some variant of?) this for wAPLPN/wPNAPL (prob not)?
-    # doesn't seem tianpei's implementation will work. adapt matt's old ffapl code?
-    # (seems that can't easily be adapted to handle feedback onto boutons, so would need
-    # to keep bouton activations in run_KC_sims. if i want that to influence PN input to
-    # ffapl, would then need to move all of it into run_KC_sims, no? matt seemed to just
-    # precompute w/ a run_FAPL_sims call before the run_KC_sims call)
     mp.kc.ignore_ffapl = True
 
     # see comment in olfsysm.cpp for meaning of this. may need true to reproduce certain
@@ -6899,8 +7226,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
-    if wAPLKC is None and wKCAPL is not None:
-        raise NotImplementedError('wKCAPL can only be specified if wAPLKC is too')
+    # TODO TODO ever want to allow at least PN<>APL weights to be set by themselves?
+    # and maybe even arbtirary subsets of the 4, so long as remaining can still be
+    # tuned? or interpret as scale factors to apply to initial values before tuning or
+    # something (may need diff param for this to avoid ambiguity...)?
+    if wAPLKC is None and any(x is not None for x in (wKCAPL, wAPLPN, wPNAPL)):
+        raise NotImplementedError('other weights can currently only be specified if '
+            'wAPLKC is too'
+        )
 
     if fixed_thr is not None:
         # TODO TODO (still an issue?) probably still allow non-None target_sparsity if
@@ -6910,6 +7243,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert target_sparsity_factor_pre_APL is None
         #
         assert wAPLKC is not None, 'for now, assuming both passed if either is'
+
+        if prat_boutons:
+            # currently will also assume we have both of these in this case
+            # TODO de
+            #assert wAPLPN is not None and wPNAPL is not None
+            assert wAPLPN is not None
 
         # TODO still support varying apl activity here? (for a limited sens analysis)
         assert not homeostatic_thrs
@@ -6922,6 +7261,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # NOTE: will set rv.kc.thr below in this case, and mp.kc.fixed_thr should
             # not be used
             # TODO check olfsysm actually not using fixed_thr in this case
+            # TODO TODO replace w/ Series (indexed same as other things w/ KCs)
+            # (currently only used in limited test vector thr code, and maybe for some
+            # attempts at changing multiresponder responses in kiwi/control data)
             assert isinstance(fixed_thr, np.ndarray)
             # TODO assert length matches other relevant dimensions (and if i change
             # type to Series from ndarray, also check metadata matches?)
@@ -6950,11 +7292,39 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     if target_sparsity is not None:
         assert wAPLKC is None and wKCAPL is None
+        # TODO TODO let these be set anyway?
+        assert wAPLPN is None and wPNAPL is None
+        #
         mp.kc.sp_target = target_sparsity
 
     if sp_acc is not None:
         mp.kc.sp_acc = sp_acc
 
+    # TODO TODO TODO delete hack (fix in general [in terms of step size
+    # calculation?] or change [default?] learning rate? change initial scales?
+    # ratio of PN and KC APL scales?
+    # TODO only do if tuning APL weights / thrs (would cause some minor issues if trying
+    # to repro outputs w/ fixed thr / APL weights, which i'm not currently)
+    if prat_boutons and not per_claw_pn_apl_weights:
+        # down from 10
+        #sp_lr_coeff = 2.0
+        # this converge faster in
+        # one-row-per-claw_True__prat-claws_True__prat-boutons_True__connectome-APL_True
+        # ??? getting 48 iterations w/ 2.0 (including iterations just to decrease step)
+        # 27 iterations w/ 1.5
+        #sp_lr_coeff = 1.5
+        # 21 iters w/ 1.3
+        sp_lr_coeff = 1.3
+        print(f'HARDCODING {sp_lr_coeff=} (for prat_boutons case)!')
+        # this one we could set more broadly w/o changing output, but it would trip
+        # some test_fitandplot_repro tests, at least unless i add this param to an
+        # exclude list (which i could, as long as max not reached?)
+        max_iters = 200
+        print(f'HARDCODING {max_iters=} (for prat_boutons case) (matters less than '
+            'learning rate, unless it is reached)!'
+        )
+        #
+    #
     if sp_lr_coeff is not None:
         mp.kc.sp_lr_coeff = sp_lr_coeff
 
@@ -7097,20 +7467,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     assert n_hallem_odors == 110
     # TODO refactor
     hallem_orn_deltas = abbrev_hallem_odor_index(hallem_orn_deltas, axis='columns')
-
-    # TODO delete
-    # TODO any code i'm still using break if hallem_input=True and sim_odors is not
-    # passed in? not currently passing in sim_odors anymore...
-    # (only 1 call in model_test.py explicitly passes in, and only to check against
-    # calls that don't) (also used in all preprint_repro_model_kw_list items below...
-    # remove it from them [+ check output unchanged])?
-    '''
-    if hallem_input:
-        assert sim_odors is None
-        #print('see comment above')
-        #import ipdb; ipdb.set_trace()
-    '''
-    #
 
     # TODO delete? still want to support?
     # TODO add comment explaining purpose of this block
@@ -7284,7 +7640,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # it seems he had at one point also tried 1.0, but i'm assuming 1.5 is the
             # latest value he intended to use (why?)
             if sp_lr_coeff is None:
-                # TODO TODO TODO revert to 10 (esp since i'm already passing in in
+                # TODO TODO TODO did 10 ever really make sense w/o the
+                # hardcode_initial_sp code (or what is not confined to the =true path of
+                # that flag)? it
+                # would probably force a smaller delta on first step
+                # TODO TODO TODO revert to 10? (esp since i'm already passing in in
                 # test_btn_expansion test that i'm first noticeing new-code issues with)
                 mp.kc.sp_lr_coeff = 10.0
                 default_change_msg += f'{mp.kc.sp_lr_coeff=} (was {old_sp_lr_coeff})\n'
@@ -7315,7 +7675,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             wPNKC = connectome_wPNKC(
                 # TODO what am i actually ruling out here and why?
-                plot_dir=plot_dir if pn2kc_connections in connectome_options else None,
+                # TODO move the pn2kc_connections check into connectome_wPNKC itself?
+                plot_dir=(
+                    plot_dir
+                    if (make_plots and pn2kc_connections in connectome_options)
+                    else None
+                ),
 
                 prat_claws=prat_claws,
                 prat_boutons=prat_boutons,
@@ -7331,6 +7696,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
                 **shared_wPNKC_kws
             )
+            # TODO delete
+            # TODO TODO try to recompute claw2bouton, for use in model dynamics plotting
+            # below (does take a long time [and probably memory]. return instead?
+            # compute some other way ad-hoc for plotting [will try this first]?)
+            #breakpoint()
+            #
             if 'compartment' in wPNKC.index.names:
                 claw_comp = wPNKC.index.get_level_values('compartment').to_numpy(
                     np.int32, copy=True
@@ -7400,15 +7771,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         if pn_claw_to_APL:
             mp.kc.pn_claw_to_APL = True
-            # TODO delete. trying to do this unconditionally now. (actually, can't
-            # replace high initial threshold w/ this, b/c that was to prevent KCs
-            # resetting, not just to prevent APL input)
-            # TODO test that change doesn't (on it's own) change any outputs? may
-            # have changed too many other olfsysm things in the meantime... (would at
-            # least need to use hardcode_initial_sp=True to compare to current repro
-            # outputs)
-            mp.kc.zero_wAPLKC = True
-            #
 
         if APL_coup_const is not None:
             # 0 = distinct comparments, but uncoupled
@@ -7497,18 +7859,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert not glomerulus_index.duplicated().any()
         glomerulus_index_unique = glomerulus_index
         #
-
-    # TODO consolidate w/ above?
-    '''
-    if bouton_dynamics:
-        # TODO TODO rename (/ delete) this in olfsysm (want one parameter specifying a fixed number
-        # of boutons per glomerulus [which we already have as p.pn.Btn_num_per_glom],
-        # which is mutually exclusive with a PN->bouton mapping being passed in (is it
-        # though? is it already passing in *and using* such mappings, or will i need to
-        # add my own?) [or a flag indicating we will be setting another variable with
-        # such a mapping])
-        mp.pn.preset_Btn = True
-    '''
 
     if not hallem_input:
         zero_filling = (~ glomerulus_index_unique.isin(orn_deltas.index))
@@ -8136,7 +8486,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         mp.kc.preset_wAPLKC = True
         mp.kc.preset_wKCAPL = True
 
-    if return_dynamics or _plot_example_dynamics:
+    if return_dynamics or plot_example_dynamics:
         # TODO also warn if input odor size is above some threshold? make a formula to
         # roughly calculate memory usage we'd expect?
         if hallem_input:
@@ -8341,22 +8691,51 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         rv.kc.thr = thr
         del thr
 
+    wAPLKC_scale = None
+    wKCAPL_scale = None
+    wAPLPN_scale = None
+    wPNAPL_scale = None
     if wAPLKC is not None:
         assert target_sparsity_factor_pre_APL is None
         assert fixed_thr is not None, 'for now, assuming both passed if either is'
 
         mp.kc.tune_apl_weights = False
 
-        # TODO test this isn't broken for the use_connectome_APL_weights=True case
-        # (doesn't seem to be...) (and even need it there? also test w/o it, after
-        # getting working)
-        # TODO also check for one-row-per-claw, where we would prob want to divide by
-        # claws?
         if wKCAPL is None:
+            # TODO assert this on save? b/c seems some cases violated this at some
+            # point, maybe just when there were olfsysm bugs (the ones that
+            # get_APL_weights needed to explicitly set this for)
+            # TODO TODO try dividing by #-claws instead (along w/ change to olfsysm
+            # init), and check we can then pass fixed_inh_params test for #-claw length
+            # outputs there (might help move weight normalization to olfsysm, and
+            # simplify by always using length of vectors in factor, instead of a
+            # collection of random other constants)
             wKCAPL = wAPLKC / mp.kc.N
-        #
 
-        if not use_connectome_APL_weights:
+        if use_connectome_APL_weights or not one_row_per_claw:
+            # NOTE: expected a single float passed in here, interpret as in same manner
+            # as w[APLKC|KCAPL]_scale floats output by prior calls
+            # TODO use is_scalar instead?
+            assert isinstance(wAPLKC, float)
+            assert isinstance(wKCAPL, float)
+        else:
+            # currently seems one-row-per-claw=True cases always have non-float
+            # input here (in contrast to how i might originally have implemented
+            # it)
+            assert isinstance(wAPLKC, pd.Series)
+            assert isinstance(wKCAPL, pd.Series)
+
+        if use_connectome_APL_weights:
+            # TODO TODO add additional kwargs, to allow setting and/or scaling only one
+            # of these at at time (would also want to change block above setting
+            # mp.kc.preset_w[APLKC|KCAPL] above)?
+            # TODO TODO TODO just change init values by some scale factor? or/also allow
+            # hardcoding some, and letting tuning vary the others?
+            wAPLKC_scale = wAPLKC
+            wKCAPL_scale = wKCAPL
+            rv.kc.wAPLKC_scale = wAPLKC_scale
+            rv.kc.wKCAPL_scale = wKCAPL_scale
+        else:
             # NOTE: min/max for these should all be the same. they are essentially
             # scalars, at least as tuned before
             # rv.kc.wKCAPL.shape=(1, 1630)
@@ -8364,11 +8743,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # rv.kc.wAPLKC.shape=(1630, 1)
             # rv.kc.wAPLKC.max()=3.8899999999999992
             if one_row_per_claw:
-                # currently seems one-row-per-claw=True cases always have non-float
-                # input here (in contrast to how i might originally have implemented
-                # it)
-                assert not isinstance(wAPLKC, float)
-                assert not isinstance(wKCAPL, float)
+                # TODO also assert match wPNKC length/index? (or reindex in here? doing
+                # that already?) (would need to only check overlapping levels)
+                # TODO factor out fn to check overlapping index levels, if don't already
+                # have
+                # TODO delete (if pd_index_equal replaces)
+                #assert len(wAPLKC) == len(wPNKC)
+                assert pd_index_equal(wAPLKC, wPNKC, only_check_shared_levels=True)
+                assert pd_index_equal(wKCAPL, wPNKC, only_check_shared_levels=True)
+                # TODO delete
+                breakpoint()
+                #
 
                 # TODO use diff var than `claw_to_kc.size` (n_claws [no, that's used as
                 # kwarg for variable_n_claws cases])?
@@ -8376,12 +8761,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 # expand_dims will strip off index info w/o having to specify .values
                 assert len(wAPLKC) == claw_to_kc.size
                 assert len(wKCAPL) == claw_to_kc.size
+                # TODO delete? should only need for wKCAPL?
                 rv.kc.wAPLKC = np.expand_dims(wAPLKC, 1)
+                #
                 rv.kc.wKCAPL = np.expand_dims(wKCAPL, 0)
             else:
                 assert isinstance(wAPLKC, float)
                 assert isinstance(wKCAPL, float)
-
                 rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
                 rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
 
@@ -8390,84 +8776,77 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # between the two, as mentioned in another comment)
             # (or probably vice versa, where wKCAPL = 1 / mp.kc.N, and wAPLKC varies)
 
-        # TODO save/print APL activity (timecourse?) to check it's reasonable?
-        # (but it's non-spiking... what is reasonable?)
-
-    if pn2kc_connections in connectome_options or _wPNKC is not None:
-
-        wPNKC_for_model = wPNKC
-        if add_PNAPL_to_KCAPL or replace_KCAPL_with_PNAPL:
-            # TODO TODO TODO .mean() instead? which best preserves output w/o
-            # prat_boutons?
+    if wAPLPN is not None:
+        assert isinstance(wAPLPN, float)
+        if wPNAPL is not None:
+            assert isinstance(wPNAPL, float)
+        # TODO TODO can this also be set from wAPLPN, in same manner as above?
+        # make sense? or get to what i want more easily by setting separately?
+        else:
+            # TODO delete
+            # compare to wAPLKC/wKCAPL situation
+            warn(f'setting wPNAPL from {wAPLPN=} / #-boutons. may not make sense?')
             #
-            # will no longer have bouton_cols in columns after
-            # TODO want to do anything to move them back to index first? should be ok
-            # w/o them, right?
-            # TODO refactor to avoid need for this separate variable?
-            wPNKC_for_model = wPNKC.groupby(glomerulus_col, axis='columns').sum()
+            assert mp.pn.n_total_boutons > 1
+            wPNAPL = wAPLPN / mp.pn.n_total_boutons
 
-            # since still expecting {0, 1} for values below
-            # (could probably also replace .sum() above w/ .any()?)
-            wPNKC_for_model = (wPNKC_for_model > 0).astype(int).copy()
+        wAPLPN_scale = wAPLPN
+        wPNAPL_scale = wPNAPL
+        rv.pn.wAPLPN_scale = wAPLPN_scale
+        rv.pn.wPNAPL_scale = wPNAPL_scale
 
-        # TODO TODO check that any add_PNAPL_to_KCAPL or replace_KCAPL_with_PNAPL
-        # results are unchanged if wPNKC actually only has # columns for glomeruli
-        # (seems i currently probably need to reduce wPNKC down to that shape anyway,
-        # and not sure that will change...)
-        # if `_wPNKC is not None`, its contents were already copied into wPNKC above
-        rv.kc.wPNKC = wPNKC_for_model
+    # TODO delete
+    '''
+    if not (prat_boutons and not per_claw_pn_apl_weights):
+        # only relevant in this case. don't  want it polluting param_dict otherwise
+        if pn_apl_scale_factor != 1:
+            # TODO TODO TODO working correctly?
+            # TODO fix + remove need for hack
+            warn('setting pn_apl_scale_factor=1 because of other params')
+            #
+            pn_apl_scale_factor = 1
+    '''
 
-    wAPLKC_scale = None
-    wKCAPL_scale = None
     if use_connectome_APL_weights:
-        # TODO move `if` below to another branch of conditional above?
-        # (as `else` to `if not use_connectome_APL_weights` above, which is inside
-        # another `if wAPLKC is not None` conditional)
-        if wAPLKC is not None:
-            assert wKCAPL is not None
-
-            # NOTE: expected a single float passed in here, interpret as in same manner
-            # as w[APLKC|KCAPL]_scale floats output by prior calls
-            assert isinstance(wAPLKC, float)
-            assert isinstance(wKCAPL, float)
-
-            # TODO add additional kwargs, to allow setting and/or scaling only one of
-            # these at at time (would also want to change block above setting
-            # mp.kc.preset_w[APLKC|KCAPL] above)?
-            wAPLKC_scale = wAPLKC
-            wKCAPL_scale = wKCAPL
-
-            rv.kc.wAPLKC_scale = wAPLKC_scale
-            rv.kc.wKCAPL_scale = wKCAPL_scale
-
+        # TODO can i delete this (and from connectome_APL_weights)? don't i already have
+        # this info in wPNKC still?
         if not one_row_per_claw:
             for_kc_types = kc_types
         else:
             for_kc_types = claw_index.get_level_values(KC_TYPE)
+        #
 
+        # TODO assert none of the APL<>PN args set if `_wAPLKC is not None`?
+        # (+ other args only used in below?)
         if _wAPLKC is None:
             assert _wKCAPL is None
-            # TODO TODO even need kc_to_claws? can i not use wPNKC to associate the two
+            # TODO even need kc_to_claws? can i not use wPNKC to associate the two
             # (and maybe still create + set this for olfsysm [both of which are done
             # above], if needed)
-            # TODO TODO TODO make sure wAPLPN/wPNAPL are written to separate caches,
-            # ideally sharing code that does so for wAPLKC/wKCAPL (in fit_and_plot...)
             wAPLKC, wKCAPL, wAPLPN, wPNAPL = connectome_APL_weights(
                 connectome=connectome, wPNKC=wPNKC, prat_claws=prat_claws,
-                prat_boutons=prat_boutons, kc_types=for_kc_types,
-                kc_to_claws=kc_to_claws, _drop_glom_with_plus=_drop_glom_with_plus,
-                plot_dir=plot_dir
+                prat_boutons=prat_boutons,
+                per_claw_pn_apl_weights=per_claw_pn_apl_weights,
+                # TODO delete
+                #pn_apl_scale_factor=pn_apl_scale_factor,
+                #
+                kc_types=for_kc_types, kc_to_claws=kc_to_claws,
+                _drop_glom_with_plus=_drop_glom_with_plus,
+                plot_dir=plot_dir if make_plots else None
             )
 
             # TODO assert anything about _wAPLKC/_wKCAPL if either of these flags is
             # True?
             if add_PNAPL_to_KCAPL or replace_KCAPL_with_PNAPL:
+                assert prat_boutons
+                assert per_claw_pn_apl_weights
+
                 assert wAPLPN is not None and wPNAPL is not None
                 # should be established elsewhere that wKCAPL and wAPLKC have same index
                 assert wAPLPN.index.equals(wKCAPL.index)
                 assert wPNAPL.index.equals(wKCAPL.index)
 
-            # TODO TODO still return (in params?) and save both KC<>APL weights as well
+            # TODO still return (in params?) and save both KC<>APL weights as well
             # as new PN<>APL weights, in all cases
             if add_PNAPL_to_KCAPL:
                 assert not replace_KCAPL_with_PNAPL
@@ -8488,17 +8867,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 wAPLKC = wAPLKC / wAPLKC.mean()
                 wKCAPL = wKCAPL / wKCAPL.mean()
                 assert wAPLPN is None and wPNAPL is None
-
-            # TODO TODO TODO just add (some scaled version of PN<>APL weights to KC<>APL
-            # weights, for simplest handling of it? that work?)
-            # w/ just one parameter to control ratio of scales? need to renormalize
-            # after? move this process into connectome_APL_weights, before existing
-            # scaling?
-
-            # TODO delete
-            #breakpoint()
-            #
         else:
+            assert isinstance(_wAPLKC, pd.Series)
+            assert isinstance(_wKCAPL, pd.Series)
             wAPLKC = _wAPLKC.copy()
             wKCAPL = _wKCAPL.copy()
             # TODO make this some other kwarg for testing? like _tune_apl_weights?
@@ -8512,19 +8883,20 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if not one_row_per_claw:
             assert wPNKC.index.equals(wAPLKC.index)
         else:
-            # TODO check wAPLKC index against claw_index? (maybe after dropping some
-            # levels from one or the other?)
+            assert pd_index_equal(wPNKC, wAPLKC, only_check_shared_levels=True)
+            # TODO delete
+            #assert len(wPNKC) == len(wAPLKC)
 
-            # TODO delete?
-            assert len(wPNKC) == len(wAPLKC)
-
+        # TODO delete (this was all before scaling, presumably)
         # (min is 1 for both of these)
         # ipdb> wAPLKC.max()
         # 38.0
         # ipdb> wKCAPL.max()
         # 27.0
 
+        # TODO delete
         # TODO don't warn in one-row-per-claw case, if we don't do that there...
+        # (move warning to where scaling happens, at least, to keep more accurate)
         warn(f'scaling {connectome=} wAPLKC & wKCAPL, each to mean of 1')
 
         wAPLKC_arr = np.expand_dims(wAPLKC, 1)
@@ -8541,13 +8913,39 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         else:
             assert wKCAPL_arr.shape == (1, mp.kc.N)
         rv.kc.wKCAPL = wKCAPL_arr.copy()
+        # TODO TODO TODO also set wAPLPN and wPNAPL like this? or already handled
+        # elsewhere?
 
         n_zero_input_wAPLKC = (wAPLKC == 0).sum()
         n_zero_input_wKCAPL = (wKCAPL == 0).sum()
+
+        if prat_boutons and not per_claw_pn_apl_weights:
+            n_zero_input_wAPLPN = (wAPLPN == 0).sum()
+            n_zero_input_wPNAPL = (wPNAPL == 0).sum()
+
         # TODO also define these for tianpei's one-row-per-claw cases now too?
         # (or probably rather change so they aren't passed as Series...)
         input_wAPLKC = wAPLKC.copy()
         input_wKCAPL = wKCAPL.copy()
+
+        input_wAPLPN = wAPLPN.copy()
+        input_wPNAPL = wPNAPL.copy()
+
+        if prat_boutons and not per_claw_pn_apl_weights:
+            # will set wAPLPN/wPNAPL into rv.pn.wAPLPN/wPNAPL below
+            mp.pn.preset_wAPLPN = True
+            mp.pn.preset_wPNAPL = True
+
+            wAPLPN_arr = np.expand_dims(wAPLPN, 1)
+            assert wAPLPN_arr.shape == (mp.pn.n_total_boutons, 1)
+            rv.pn.wAPLPN = wAPLPN_arr.copy()
+
+            wPNAPL_arr = np.expand_dims(wPNAPL, 0)
+            assert wPNAPL_arr.shape == (1, mp.pn.n_total_boutons)
+            rv.pn.wPNAPL = wPNAPL_arr.copy()
+        else:
+            assert not mp.pn.preset_wAPLPN
+            assert not mp.pn.preset_wPNAPL
 
     # TODO implement (+ delete similar comment above if so)
     # TODO TODO restore this assertion? still relevant for multiresponder_APL_boost
@@ -8559,10 +8957,43 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert multiresponder_APL_boost is None, 'not supported'
     """
 
+    if pn2kc_connections in connectome_options or _wPNKC is not None:
+        wPNKC_for_model = wPNKC
+        if add_PNAPL_to_KCAPL or replace_KCAPL_with_PNAPL:
+            warn('summing wPNKC across bouton columns, within glomeruli, before '
+                'plugging in to model, since C++ boutons not currently supported in '
+                'per_claw_pn_apl_weights=True case'
+            )
+
+            # will no longer have bouton_cols in columns after
+            # TODO want to do anything to move them back to index first? should be ok
+            # w/o them, right?
+            # TODO refactor to avoid need for this separate variable?
+            # TODO .mean() instead?
+            wPNKC_for_model = wPNKC.groupby(glomerulus_col, axis='columns').sum()
+
+            # since still expecting {0, 1} for values below
+            # (could probably also replace .sum() above w/ .any()?)
+            wPNKC_for_model = (wPNKC_for_model > 0).astype(int).copy()
+
+        # TODO TODO check that any add_PNAPL_to_KCAPL or replace_KCAPL_with_PNAPL
+        # results are unchanged if wPNKC actually only has # columns for glomeruli
+        # (seems i currently probably need to reduce wPNKC down to that shape anyway,
+        # and not sure that will change...)
+        # if `_wPNKC is not None`, its contents were already copied into wPNKC above
+        rv.kc.wPNKC = wPNKC_for_model
+
     # TODO need delete=False?
+    # TODO need to set delete_on_close=False too?
+    # TODO don't delete this by default? or add arg to not delete it?
+    # ig it's only deleted when copied to a model output dir anyway? but still...
     temp_log_file = NamedTemporaryFile(suffix='.olfsysm.log', delete=False)
 
     # also includes directory (e.g. '/tmp/tmp5lhlb2n0.olfsysm.log')
+    # a tempfile is nice here, in case the program runs away and generates a huge log.
+    # at least on a reboot, if not sooner, the temp file should be cleared. may not be
+    # cleared before that if you had to kill the process by sending SIGSEGV, like i
+    # often do.
     temp_log_path: str = temp_log_file.name
     try:
         # it seems to just append to this file, if it already exists (should no longer
@@ -8576,7 +9007,21 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     except AttributeError:
         pass
 
-    if print_olfsysm_log is None:
+    # TODO only do this if verbose? if some other flag?
+    tee_olfsysm = False
+    # TODO put behind al_util.verbose?
+    try:
+        # will write to stdout as well as the file in the redirect(...) call above.
+        # this must be called after redirect.
+        rv.log.tee()
+        tee_olfsysm = True
+    except AttributeError:
+        pass
+
+    # TODO delete? can use tee now, which also gets output in real time. only minor
+    # disadvantage is it's not in a diff color (but could hardcode that in C++?).
+    # duplicate output is annoying.
+    if not tee_olfsysm and print_olfsysm_log is None:
         # TODO add new verbose kwarg in here (put all unconditional prints inside there
         # too)
         print_olfsysm_log = al_util.verbose
@@ -8592,7 +9037,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     latest_log_link.symlink_to(temp_log_path)
     assert latest_log_link.is_symlink()
 
-    if print_olfsysm_log:
+    # TODO delete?
+    if tee_olfsysm or print_olfsysm_log:
         # TODO maybe print this regardless though? logging regardless...
         print(f'writing olfsysm log to {temp_log_path} '
             f'(and linking {latest_log_link} to it)'
@@ -9415,8 +9861,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         )
     #
 
-    # want this to be after last olfsysm call
+    # want this to be after last olfsysm call. this is also currently deleting it b/c of
+    # default delete_on_close=True (may want to change)
     temp_log_file.close()
+
     # TODO TODO replace w/ wrappers for each osm call, that prints right after each
     # call? (or some combined approach?) (seeing these outputs interleaved w/ python
     # debug prints would prob make some debugging easier)
@@ -9426,6 +9874,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         print('olfsysm log:')
         log_txt = Path(temp_log_path).read_text()
         cprint(log_txt, 'light_yellow')
+
+    # TODO assert 0 tuning iters otherwise?
+    if mp.kc.tune_apl_weights:
+        print()
+        print('tuning time: {tuning_time_s:.1f}s')
+        # TODO also print # of iterations? (move print of tuning params below to
+        # incorporate here?)
+        print()
 
     # TODO warn that we aren't copying log, if plot_dir is None?
     if plot_dir is not None:
@@ -9478,10 +9934,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO maybe these should be asserting against kc_index instead of
         # kc_ids? (or at least w[APLKC|KCAPL].index.get_level_values(KC_ID)?)
         if use_connectome_APL_weights:
+            # TODO TODO is it even possible for wAPLKC to be None here? mean to check
+            # *_scale instead or something? just delete?
+            assert wAPLKC is not None
+            #
             if wAPLKC is not None:
                 assert kc_ids.equals(wAPLKC.index)
                 assert kc_ids.equals(input_wAPLKC.index)
 
+            # TODO TODO is it even possible for wKCAPL to be None here? mean to check
+            # *_scale instead or something? just delete?
+            assert wKCAPL is not None
+            #
             if wKCAPL is not None:
                 assert kc_ids.equals(wKCAPL.index)
                 assert kc_ids.equals(input_wKCAPL.index)
@@ -9544,10 +10008,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO share below w/ one-row-per-claw=True & connectome_APL_weights=False case
         # above?
 
+        # TODO TODO care to do any of same for PN<>APL weights here? delete this?
         n_zero_tuned_wAPLKC = (wAPLKC == 0).sum()
         n_zero_tuned_wKCAPL = (wKCAPL == 0).sum()
-        # might need to update olfsysm tuning to avoid adding extra zeros in these
-        # vectors, if it ever does
+        # olfsysm should not be adding any new 0s to any of these vectors
         # TODO warn if either scale is 0 (should only encounter w/ sensitivity analysis
         # sweep, and only as steps are currently configured, where 0 is the lower
         # bound)?
@@ -9563,10 +10027,28 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wAPLKC_scale = rv.kc.wAPLKC_scale
         wKCAPL_scale = rv.kc.wKCAPL_scale
 
-        # TODO TODO TODO just move the APL boosting after this conditional?
-        # TODO TODO TODO fix + restore
-        print('fix me')
-        '''
+        # TODO move outside containing conditional?
+        if prat_boutons and not per_claw_pn_apl_weights:
+            # TODO refactor (to ideally one fn per weight vector. above and below)
+            wAPLPN = pd.Series(index=bouton_index, data=rv.pn.wAPLPN.squeeze())
+            wPNAPL = pd.Series(index=bouton_index, data=rv.pn.wPNAPL.squeeze())
+
+            n_zero_tuned_wAPLPN = (wAPLPN == 0).sum()
+            n_zero_tuned_wPNAPL = (wPNAPL == 0).sum()
+            if wAPLPN_scale is not None and wAPLPN_scale > 0:
+                assert n_zero_input_wAPLPN == n_zero_tuned_wAPLPN
+            if wPNAPL_scale is not None and wPNAPL_scale > 0:
+                assert n_zero_input_wPNAPL == n_zero_tuned_wPNAPL
+
+            wAPLPN_scale = rv.pn.wAPLPN_scale
+            wPNAPL_scale = rv.pn.wPNAPL_scale
+        #
+
+        # TODO how to repro again? any cases i currently care about?
+        # TODO TODO just move the APL boosting after this conditional?
+        # TODO TODO fix + restore (at least enable if not in the case that was the
+        # issue?)
+        #'''
         # do need exact=False on both of these calls (first call doesn't always trip w/o
         # it, but there still are cases where it does)
         wAPLKC_scale_recomputed = _single_unique_val(
@@ -9574,7 +10056,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         )
         try:
             assert np.isclose(wAPLKC_scale, wAPLKC_scale_recomputed)
-        # TODO TODO TODO fix
+        # TODO fix
         # TODO or just relax this assertion? (but under what circumstances? seems
         # use_connectome_APL_weights=True & retune_apl_post_equalized_thrs=False)
         except AssertionError:
@@ -9588,7 +10070,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             wKCAPL[input_wKCAPL > 0] / input_wKCAPL[input_wKCAPL > 0], exact=False
         )
         assert np.isclose(wKCAPL_scale, wKCAPL_scale_recomputed)
-        '''
+
+        # TODO also care to do for PN<>APL weights? or delete?
+        if prat_boutons and not per_claw_pn_apl_weights:
+            wAPLPN_scale_recomputed = _single_unique_val(
+                wAPLPN[input_wAPLPN > 0] / input_wAPLPN[input_wAPLPN > 0], exact=False
+            )
+            assert np.isclose(wAPLPN_scale, wAPLPN_scale_recomputed)
+            wPNAPL_scale_recomputed = _single_unique_val(
+                wPNAPL[input_wPNAPL > 0] / input_wPNAPL[input_wPNAPL > 0], exact=False
+            )
+            assert np.isclose(wPNAPL_scale, wPNAPL_scale_recomputed)
+        #'''
 
     assert responses.shape[1] == (n_input_odors + n_extra_odors)
     responses = pd.DataFrame(responses, index=kc_index, columns=odor_index)
@@ -9624,6 +10117,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         spike_counts = spike_counts.iloc[:, :eb_idx].copy()
 
         # TODO delete? am i not removing 'eb' now anyway?
+        # (would need to test extra_orn_deltas code to be sure...)
         '''
         if make_plots:
             # causes errors re: duplicate ticklabels in some of the orn_deltas plots
@@ -9634,7 +10128,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 'in extra_orn_deltas case'
             )
         # TODO restore? needed to keep this true to test some code below
-        # (in _plot_example_dynamics, but also interaction w/ this case)
+        # (in plot_example_dynamics, but also interaction w/ this case)
         #make_plots = False
         '''
 
@@ -9659,6 +10153,41 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # claws now, rather than just # KCs)
         'kc_spont_in': spont_in,
     }
+    # TODO care to change how these (+ KC<>APL weights) are handled in
+    # per_claw_pn_apl_weights=True case?
+    if prat_boutons and not per_claw_pn_apl_weights:
+        assert wAPLPN is not None and wPNAPL is not None
+        param_dict['wAPLPN'] = wAPLPN
+        param_dict['wPNAPL'] = wPNAPL
+
+        assert wAPLPN_scale is not None and wPNAPL_scale is not None
+        param_dict.update({'wAPLPN_scale': wAPLPN_scale, 'wPNAPL_scale': wPNAPL_scale})
+
+        try:
+            odor_stats = rv.kc.odor_stats
+
+            # should be odor length list of 4-element vectors,
+            # with the elements being these column values (in order)
+            odor_stats = pd.DataFrame(odor_stats, index=orn_deltas.columns, columns=[
+                'max_kc_apl_drive', 'avg_kc_apl_drive', 'max_bouton_apl_drive',
+                'avg_bouton_apl_drive'
+            ])
+
+            param_dict['odor_stats'] = odor_stats
+        except AttributeError:
+            pass
+
+        # called again to modify title in fit_and_plot..., after this fn returns
+        title += weight_debug_suffix(param_dict)
+
+    # TODO delete
+    '''
+    if pn_apl_scale_factor != 1:
+        # TODO TODO TODO replace w/ one factor for each (of 4 instead of of 2) weight,
+        # rather than one ratio between two of them?
+        param_dict['pn_apl_scale_factor'] = pn_apl_scale_factor
+    '''
+    #
 
     # NOTE: currently will probably not be able to achieve these after APL tuning
     # (until olfsysm is modified to tune within subtypes), but (if not None) per-type
@@ -9697,12 +10226,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         'tuning_iters': rv.kc.tuning_iters,
 
         # removed tuning_time_s from this, because it would cause -c checks to fail
+        # TODO fix -c/whatever to not check this in the first place? kinda nice to
+        # have...
     }
-    # TODO still do in some cases where fixed_thr is a vector?
-    if fixed_thr is None:
+
+    if mp.kc.tune_apl_weights:
         print('tuning parameters:')
         pprint(tuning_dict)
-        print('tuning time: {tuning_time_s:.1f}s')
         print()
 
     param_dict = {**param_dict, **tuning_dict}
@@ -9754,9 +10284,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         pn_sims = pn_sims[n_hallem_odors:]
         bouton_sims = bouton_sims[n_hallem_odors:]
 
-        if _plot_example_dynamics:
+        if plot_example_dynamics:
             # TODO also subset other dynamics vars, at least if we are gonna return them
-            # (or use them for _plot_example_dynamics)?
+            # (or use them for plot_example_dynamics)?
             raise NotImplementedError('prob need to subset those vars below')
 
     # from default parameters:
@@ -9843,7 +10373,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         return arr
 
-    if return_dynamics or _plot_example_dynamics:
+    if return_dynamics or plot_example_dynamics:
         # TODO why is rss 7861.55078125 MiB before? b/c we still have in olfsysm?
         # TODO delete
         print_curr_mem_usage(end='')
@@ -9988,6 +10518,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # vs some across time in full thing?
             # TODO TODO maybe i should add more of a return to baseline per claw?
             # time constant like Vm calculation has?
+            # TODO TODO why doesn't this change used memory at all? need to force gc or
+            # something?
             claw_sims = claw_sims.isel(time_s=slice(stim_start_idx, stim_end_idx))
 
             # TODO delete
@@ -10028,7 +10560,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert not any(k in param_dict for k in dynamics_dict.keys())
             param_dict.update(dynamics_dict)
 
-    if _plot_example_dynamics:
+    if plot_example_dynamics:
         # TODO remove make_plots part of this? (assuming i can't easily get those plots
         # to work w/ extra_orn_deltas, but i can easily get those to work w/ this)
         # TODO relax assertion to test some of this code?
@@ -10060,9 +10592,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # seem to need constrained layout to get fig.legend() reliably outside bounds of
         # Axes (at least w/o manual positioning...)?
-        fig, (ax, spike_raster_ax) = plt.subplots(nrows=2, layout='constrained',
-            sharex=True, figsize=(10, 10)
-        )
+        # TODO TODO TODO separate ax for claws too? (refactor natmix_data/analysis.py
+        # dynamics plotting code to start from?)
+        if prat_boutons and not per_claw_pn_apl_weights:
+            fig, (ax, bouton_ax, spike_raster_ax) = plt.subplots(nrows=3, layout='constrained',
+                sharex=True, figsize=(10, 15)
+            )
+        else:
+            fig, (ax, spike_raster_ax) = plt.subplots(nrows=2, layout='constrained',
+                sharex=True, figsize=(10, 10)
+            )
+
         # TODO make fn (/find a library for) plotting a stimlus bar along some time axis
         # (-> use that here instead)?
         #
@@ -10110,6 +10650,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         _plot_normed(orn_sims[example_odor_idx, example_glom_idx], label=f'{glom} ORN')
         _plot_normed(pn_sims[example_odor_idx, example_glom_idx], label=f'{glom} PN')
 
+        # TODO TODO leave a copy of [glomerulus, pn_id, bouton_id] levels in wPNKC rows
+        # too (or precompute claw->glom mapping, for plotting)? trying to stack() all
+        # wPNKC.columns.names to index triggers OOM killer (at least, while already near
+        # limit in this code, b/c claw_sims)
+
+        # TODO limit all data to this in advance (to not need to only use in bouton
+        # plotting below)?
+        xlim = [-0.05, 0.7]
+        xmin, xmax = xlim
+
         if bouton_dynamics:
             # TODO try to replace other (int based) indexing of DataArrays w/ calls like
             # this. seems this might throw away the selected metadata, if i ever care
@@ -10129,15 +10679,56 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             n_glom_boutons = glom_boutons.sizes['bouton']
 
-            bouton_sum = glom_boutons.sum('bouton')
-            assert bouton_sum.dims == ('time_s',)
+            if prat_boutons and not per_claw_pn_apl_weights:
+                # TODO pretty up?
+                for x in sorted(glom_boutons.bouton_id.values):
+                    # TODO TODO offset/whatever needed to make clear where the
+                    # overlapping lines are (share code w/ claw handling in
+                    # natmix_data/analysis.py? not sure i have a good solution there yet
+                    # though)
+                    bs = glom_boutons.sel(bouton_id=x).squeeze()
 
-            # TODO why was Tianpei adding 1e-9 here? don't use plot_normed here, so i
-            # can still do that here if needed? (or delete commented line)
-            #ax.plot(ts, sum_activity / (sum_activity.max() + 1e-9),
-            _plot_normed(bouton_sum,
-                label=f'{glom} PN (sum of {n_glom_boutons} boutons)'
-            )
+                    # otherwise the .max() for boutons that are fully 0 within odor
+                    # window seems to occur before odor onset (from spont input,
+                    # presumably)
+                    bs = bs[(bs.time_s >= xmin) & (bs.time_s <= xmax)]
+
+                    # TODO also say which glomerulus in legend (for comparison to
+                    # glomerulus / claw axes) (it's all the same in this case. would
+                    # only matter if we were also using the plotting code somewhere
+                    # else, where we are actually looking at input w/ multiple boutons
+                    # from diff glomeruli)
+                    # TODO want PN ID in legend?
+                    # TODO make separate axes legend (rather than one fig-level one also
+                    # shared w/ above `ax`)
+                    bouton_ax.plot(bs.time_s, bs,
+                        # TODO TODO include weight (unscaled?) too (apl at least)
+                        # TODO delete max from legend if i have good enough alternative
+                        # way to see where the overlapping lines are
+                        # TODO TODO TODO why is max apparently not in window plotted?
+                        # take make just within that (seeing 16 for all that appear
+                        # completely 0 in plot)
+                        label=f'{x} (max={bs.max().item(0):.0f})'
+                    )
+
+                # TODO TODO TODO need to make the APL>PN inhibition more like LN>PN
+                # inhibition in any way (but still dynamic? is LN>PN?), since it's
+                # operating on different units? how are scales of the two values (KC
+                # claw Vm vs bouton "firing rates") actually different?
+                bouton_ax.set_ylabel('bouton "firing rate"')
+
+                # TODO happy with?
+                bouton_ax.legend(loc='upper right', title='bouton ID (max in odor):')
+            else:
+                bouton_sum = glom_boutons.sum('bouton')
+                assert bouton_sum.dims == ('time_s',)
+
+                # TODO why was Tianpei adding 1e-9 here? don't use plot_normed here, so
+                # i can still do that here if needed? (or delete commented line)
+                #ax.plot(ts, sum_activity / (sum_activity.max() + 1e-9),
+                _plot_normed(bouton_sum,
+                    label=f'{glom} PN (sum of {n_glom_boutons} boutons)'
+                )
 
             # TODO maybe just label if boutons are all the same? (and only plot one
             # curve? shouldnt matter)
@@ -10165,7 +10756,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # (especially when it's a small #, want to plot all. otherwise want to pick some
         # compartments that are more different to plot, or maybe plot all as a matrix?)
         _plot_normed(inh_sims[example_odor_idx], label='APL Vm')
-        _plot_normed(Is_sims[example_odor_idx], label='KC->APL current')
+        _plot_normed(Is_sims[example_odor_idx], label='APL current')
 
         # TODO TODO or maybe i don't want to always drop non-responders from vm_sims
         # plots? at least have a version not dropping them? (would need to get indices
@@ -10236,26 +10827,46 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # NOTE: plot_spike_rasters currently drops silent cells itself anyway
         # TODO but modify it to have it say somewhere how many it dropped?
         # or like a kwarg flag to enabled putting that info in y-label or something?
+        # TODO natmix_data/analysis.py already have method to deal with this?
+        # (not sure it does...)
+        # TODO at least remove this axes if singular?
         plot_spike_rasters(example_odor_spikes, ax=spike_raster_ax)
 
         # applies to both ax and spike_raster_ax, b/c sharex=True above
-        ax.set_xlim([-0.05, 0.7])
+        ax.set_xlim(xlim)
         ax.set_xlabel('time (s)')
 
         ax.set_ylabel('normalized response (max=1)')
 
         ax.set_title(f'{title}\nmodel {glom} (& downstream pop.) response to {odor}')
-        fig.legend(loc='outside right center')
+        # TODO happy with?
+        ax.legend(loc='upper right')
+        # TODO delete? trying to replace w/ per axis ones
+        #fig.legend(loc='outside right center')
 
         # TODO move under model_internals stuff saved below?
         # TODO get ' @ ' from hong2p.olf?
         savefig(fig, plot_dir, f'model_dynamics_{odor.replace(" @ ", "_")}')
 
+        # TODO TODO matshow clustered timeseries responses of all these?
+        # (that even work on raw timeseries, without taking too long / too much memory?
+        # what library to use?)
+        # TODO row color for which PN? / which KC / whatever?
+        # TODO move above, and use to plot claws on sep axes
+        glom_claws = wPNKC.loc[:, wPNKC.columns.get_level_values(glomerulus_col) == glom
+            ].replace(0, np.nan).dropna(how='all').stack(wPNKC.columns.names)
+        # TODO TODO TODO plot w/ cluster_timeseries_and_plot
+
+        # TODO delete
+        print('finish some kind of per-claw plot')
+        #breakpoint()
+        #
+
     # TODO so should i average starting a bit after stim start? seems it still take
     # a bit to peak. what did matt do?
     # in (DL5, t2h) case, PN peak is ~0.047, and ORN plateaus after ~0.077
 
-    # _plot_example_dynaimcs=True code above does analyze the DataArrays that include
+    # plot_example_dynamics=True code above does analyze the DataArrays that include
     # time, without averaging over it
     orn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index_unique,
         data=orn_sims[:, :, stim_start_idx:stim_end_idx].mean(axis=-1)
@@ -10498,7 +11109,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # plotting this fn does (and thus, the only time this flag is relevant here).
         # still returning silent cells regardless, so stuff can make this decision
         # downstream of response caching.
-        # TODO can i share silent cell handling w/ _plot_example_dynamics stuff that
+        # TODO can i share silent cell handling w/ plot_example_dynamics stuff that
         # also wants to drop silent KCs (might be tricky...)?
         if drop_silent_cells_before_analyses:
             title += _get_silent_cell_suffix(responses)
@@ -11325,7 +11936,8 @@ exclude_params = (
     'orn_deltas',
     'title',
     'repro_preprint_s1d',
-    '_plot_example_dynamics',
+    'make_plots',
+    'plot_example_dynamics',
     'return_dynamics',
     '_multiresponder_mask',
     '_wPNKC',
@@ -11336,6 +11948,9 @@ exclude_params = (
     # dir/plots w/ just wAPLKC anyway.
     'wKCAPL',
 )
+# TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
+# specify it for one test later, still matches old repro outputs, at least assuming
+# defaults didn't change...)?
 def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
     """Returns str unique within most important model parameters.
 
@@ -11491,13 +12106,14 @@ model_spikecounts_cache_name = 'spike_counts.p'
 # model_mb_responses `tuned` var/outputs to not), since this is all (true?) tuned, and
 # latter is a mix (stuff from this, but also stuff hardcoded from above / output
 # statistics)
+# TODO TODO rename to be less confusing. the variable called params_for_csv is not saved
+# to this. param_dict is saved to this.
 param_cache_name = 'params_for_csv.p'
+# TODO delete these, and just save to name of the variable?
 wPNKC_cache_name = 'wPNKC.p'
-wAPLKC_cache_name = 'wAPLKC.p'
-wKCAPL_cache_name = 'wKCAPL.p'
-kc_spont_in_cache_name = 'kc_spont_in.p'
 extra_responses_cache_name = 'extra_responses.p'
 extra_spikecounts_cache_name = 'extra_spikecounts.p'
+#
 
 # TODO also rename to include "fit"/"tuned" in name?
 def read_param_cache(model_output_dir: Path) -> ParamDict:
@@ -11505,6 +12121,8 @@ def read_param_cache(model_output_dir: Path) -> ParamDict:
     # (across code paths)
     """Returns contents of `param_cache_name` from input directory.
     """
+    # TODO if update to json, will still need to fallback to pickle for hemibrain paper
+    # repro (+ uniform paper repro test), and maybe some others
     return read_pickle(model_output_dir / param_cache_name)
 
 
@@ -11642,8 +12260,11 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     params_for_csv.update(
         {k: v for k, v in model_kws.items() if k not in exclude_params}
     )
+
     # prefix defaults to empty str
     title = title_prefix
+    del title_prefix
+
     if _in_sens_analysis:
         # TODO also assert wAPLKC is a (scalar) float (and not a vector float array from
         # use_connectome_APL_weight=True code)?
@@ -11667,6 +12288,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             assert isinstance(fixed_thr, np.ndarray)
             title += f'mean_thr={fixed_thr.mean():.2f}, wAPLKC={wAPLKC:.2f}'
 
+        # TODO TODO replace w/ title defined after fit_mb_model call (so we can add
+        # information based on those outputs to title, like mean weights)?
         title_including_silent_cells = title
     else:
         # TODO one hardcode flag to control whether these are dropped or not?
@@ -11748,6 +12371,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # cells, regardless of value of `drop_silent_cells_before_analyses`
         # (e.g. should be used for analyses using `responses_including_silent_cells`)
         # TODO move this below too? (to where title is updated w/ silent cells suffix)
+        # TODO TODO replace w/ title defined after fit_mb_model call (so we can add
+        # information based on those outputs to title, like mean weights)?
         title_including_silent_cells = title
 
         # to save plots of internal ORN / PN matrices (and their correlations, etc),
@@ -11758,27 +12383,13 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
     params_for_csv['output_dir'] = param_dir.name
 
-    model_responses_cache = param_dir / model_responses_cache_name
-    model_spikecounts_cache = param_dir / model_spikecounts_cache_name
     # TODO also rename to include "fit"/"tuned" in name?
     param_dict_cache = param_dir / param_cache_name
-    wPNKC_cache = param_dir / wPNKC_cache_name
 
-    # TODO TODO also save kc_spont_in / vector wAPLKC/wKCAPL as CSVs? wPNKC (don't
-    # already have?)?
-    kc_spont_in_cache = param_dir / kc_spont_in_cache_name
-
-    # NOTE: these two only used for vector values (specifically, just the
-    # use_connectome_APL_weights=True case, which should always produce such values,
-    # unlike any other current path). If they are a scalar (including a whole vector
-    # with just one value repeated), these two params will be saved as elements of usual
-    # param pickle+CSV outputs.
-    # TODO doc what happens in variable_n_claws cases (prob going to also pop + pickle
-    # like in connectome APL weights case)
-    # TODO also save these as CSVs too (so i have a better chance of actually loading in
-    # future if needed)?
-    wAPLKC_cache = param_dir / wAPLKC_cache_name
-    wKCAPL_cache = param_dir / wKCAPL_cache_name
+    # TODO replace all these cache names (where possible) w/ just saving to name of
+    # variable (+ '.p' / '.parquet' whatever)
+    model_responses_cache = param_dir / model_responses_cache_name
+    model_spikecounts_cache = param_dir / model_spikecounts_cache_name
 
     extra_responses_cache = param_dir / extra_responses_cache_name
     extra_responses = None
@@ -11837,24 +12448,6 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             #param_dict = read_param_cache(param_dir)
             param_dict = read_pickle(param_dict_cache)
 
-            # TODO delete
-            '''
-            # TODO try to use get_APL_weights
-            if 'wAPLKC' in param_dict:
-                # TODO why was this triggering w/ call from model_mb_responses (once i
-                # started trying doing sensitivity analysis for prat_claws=True/False
-                # one-row-per-claw cases (on kiwi/control data), but not from
-                # test_fixed_inh_params_fitandplot?
-                assert 'wAPLKC_scale' not in param_dict
-                cached_wAPLKC = param_dict['wAPLKC']
-            else:
-                # neither of these assertions currently true on one-row-per-claw case.
-                # using get_APL_weights should relax that for now, and should be used
-                # moving forward in general.
-                assert use_connectome_APL_weights
-                assert 'wAPLKC' not in param_dict
-                cached_wAPLKC = param_dict['wAPLKC_scale']
-            '''
             cached_APL_weights = get_APL_weights(param_dict, model_kws)
             cached_wAPLKC = cached_APL_weights['wAPLKC']
 
@@ -11889,6 +12482,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # TODO TODO want to fix that (i.e. remove this from that output, but still keep long
     # enough to use for what i wanted? possible?)?
     params_for_csv['used_model_cache'] = use_cache
+
+    make_plots = model_kws.pop('make_plots', True)
 
     print()
     # TODO TODO default to also skipping any plots made before returning? maybe add
@@ -12012,8 +12607,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                     sim_odors=sim_odors, fixed_thr=_fixed_thr, wAPLKC=_wAPLKC,
                     seed=seed,
                     # ORN/PN plots would be redundant, and overwrite each other.
-                    # currently those are the only plots I'm making in here.
-                    make_plots=(i == 0), **model_kws
+                    # currently those are the only plots I'm making in here (no longer
+                    # true, but still probably don't want for each seed).
+                    make_plots=make_plots if (i == 0) else False,
+                    **model_kws
                 )
 
                 # TODO return as separate variable then, if we can't handle certain
@@ -12063,6 +12660,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             param_dict = {
                 k: [x[k] for x in param_dict_list] for k in first_param_dict.keys()
             }
+            param_dict['kc_spont_in'] = kc_spont_in
         else:
             # TODO need to support int type too? (in both of the two isinstance calls
             # below) isinstance(<int>, float) is False
@@ -12079,14 +12677,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
             # TODO rename param_dict everywhere -> tuned_params?
             responses, spike_counts, wPNKC, param_dict = fit_mb_model(
-                sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
+                sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC,
+                make_plots=make_plots, **model_kws
             )
-            # TODO return as separate variable then, if we can't handle certain types
-            # below w/o explicitly popping? or make handling of things like this
-            # automatic, based on variable name (saved to appropriate file, **with seed
-            # also handled correctly, for pandas stuff**, similar to DataArray handling
-            # [but also handling seeds])
-            kc_spont_in = param_dict.pop('kc_spont_in')
 
         print('done', flush=True)
 
@@ -12147,18 +12740,96 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # TODO TODO use parquet instead (+ check can round trip w/o change)
         to_pickle(responses, model_responses_cache)
         to_pickle(spike_counts, model_spikecounts_cache)
-        to_pickle(wPNKC, wPNKC_cache)
-        to_pickle(kc_spont_in, kc_spont_in_cache)
 
-        # TODO automatically pop and save anything that's a
-        # np.ndarray/pd.[Series|DataFrame] [/xarray, if i end up using that for model
-        # dynamics?], and save as a pickle under the name of the key? (maybe just
-        # warning if it's not on a list of expected things, w/ message about which
-        # variable to add the name to?
-        # (-> use for this [+ wAPLKC/wKCAPL, in use_connectome_APL_weights=True case,
-        # where they are vector]?)
-        # (would then also be useful if i sometimes return model dynamics, like vm_sims,
-        # using the same dict)
+        wPNKC_cache = param_dir / wPNKC_cache_name
+        to_pickle(wPNKC, wPNKC_cache)
+
+        # currently just assuming that both will be in same format
+        # (both either np.arrays/pd.Series [depending on which i end up settling on
+        # for implementation] in only use_connectome_APL_weights=True case)
+        wAPLKC = param_dict.get('wAPLKC', None)
+        # TODO need to support int type too (in all isinstance calls below)?
+        # isinstance(<int>, float) is False
+        # TODO use get_APL_weights to replace some of below? (at least also call it, to
+        # check it doesn't fail anywhere?)
+        get_APL_weights(param_dict, model_kws)
+        #
+        if wAPLKC is not None and not is_scalar(wAPLKC):
+            if not variable_n_claws:
+                # TODO delete?
+                # Tianpei currently has vector APL weights divided by # claws for each
+                # KC [in the C++ code], and he does not (seem to) use the
+                # preset_w[APLKC|KCAPL]=true path for that (at least, not for the
+                # use_connectome_APL_weights=False case, where he still needs diff
+                # weights for diff KCs, b/c they have diff # of claws)
+
+                wKCAPL = param_dict['wKCAPL']
+                assert isinstance(wAPLKC, pd.Series)
+                assert isinstance(wKCAPL, pd.Series)
+
+                # TODO move some/all assertions into get_APL_weights? (/delete)
+                assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
+                assert wKCAPL.shape == wAPLKC.shape
+                if not one_row_per_claw:
+                    assert 'wAPLKC_scale' in param_dict
+                    assert 'wKCAPL_scale' in param_dict
+                # TODO (delete? test this case, and whether i can discard?) seems it
+                # *does* have wAPLKC_scale in use_connectome_APL_weights=True case (but
+                # also wAPLKC, for prat_claws=False at least, right? need that too?).
+                # can i just discard here tho (scale already applied)?
+                #else:
+                #    # NOTE: there will now be *neither* wAPLKC nor wAPLKC_scale in
+                #    # param_dict (and same for wKCAPL)
+                #    # TODO TODO should i not pop instead? (in general, but maybe
+                #    # specifically b/c of this?)
+                #    assert not 'wAPLKC_scale' in param_dict
+                #    assert not 'wKCAPL_scale' in param_dict
+
+                # NOTE: these two only used for vector values (specifically, just the
+                # use_connectome_APL_weights=True case, which should always produce such
+                # values, unlike any other current path). If they are a scalar
+                # (including a whole vector with just one value repeated), these two
+                # params will be saved as elements of usual param pickle+CSV outputs.
+                #
+                # TODO doc what happens in variable_n_claws cases (prob going to also
+                # pop + pickle like in connectome APL weights case)
+            else:
+                assert not use_connectome_APL_weights
+
+                assert 'wAPLKC_scale' not in param_dict
+                assert 'wKCAPL_scale' not in param_dict
+
+                # TODO or go back to handling list-of-floats same as array of floats
+                # (like in `not variable_n_claws` case above) regardless of fact that
+                # (at least in some circumstances), keeping lists of floats seemed to
+                # allow serialization to CSV? prob not w/o some reason...
+                # TODO (delete?) switch handling? does de-serialize as a string, which
+                # needs eval'd...
+                assert type(wAPLKC) is list and all(is_scalar(x) for x in wAPLKC)
+                wKCAPL = param_dict['wKCAPL']
+                assert type(wKCAPL) is list and all(is_scalar(x) for x in wKCAPL)
+        else:
+            # in this branch, wAPLKC/wKCAPL should be in a format (e.g. single
+            # scalar floats) where they don't cause issues if saved as part of
+            # param_dict, so we don't need to separately save to w[APLKC|KCAPL]_cache
+
+            wKCAPL = param_dict['wKCAPL']
+            # TODO need to support int type too (in both of the two isinstance calls
+            # below)? isinstance(<int>, float) is False
+            # TODO TODO probably remove conditional before the check (reverting to old
+            # behavior), or only have conditional to narrow
+            # one-row-per-claw=True/whatever case this currently applies to)
+            wKCAPL_size_check_temp = np.asarray(wKCAPL)
+            if wKCAPL_size_check_temp.size == 1:
+                assert wKCAPL is None or isinstance(wKCAPL, float)
+
+        if model_kws.get('prat_boutons'):
+            # TODO work? need to support any non-vector cases?
+            title += weight_debug_suffix(param_dict)
+            # TODO return processed title suffix too (from fit_mb_model), and just pop +
+            # use that, rather than recomputing out here?
+
+        # TODO TODO factor out this loop, just for better organization
         # NOTE: might break some of new vector-fixed_thr code if i start popping that
         # (but might want to still save separately there, as not being saved correctly
         # in params.csv/similar there)
@@ -12173,10 +12844,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # w/ pickle (to improve chances for portability / etc) (or json/similar for
             # params currently in pickle, but still that probably can't do
             # numpy/pandas/etc)
+            pickle_path = param_dir / f'{k}.p'
             if isinstance(v, xr.DataArray):
                 if not _in_sens_analysis:
-                    pickle_path = param_dir / f'{k}.p'
-
                     # TODO TODO move saving of all/most of these into fit_mb_model, so
                     # each can be removed from memory as soon as possible? (and each
                     # before making a copy of other variables, only processing [and
@@ -12202,97 +12872,76 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
                 del param_dict[k]
 
-        # currently just assuming that both will be in same format
-        # (both either np.arrays/pd.Series [depending on which i end up settling on
-        # for implementation] in only use_connectome_APL_weights=True case)
-        wAPLKC = param_dict.get('wAPLKC', None)
-        # TODO need to support int type too (in all isinstance calls below)?
-        # isinstance(<int>, float) is False
-        if wAPLKC is not None and not isinstance(wAPLKC, float):
-            # TODO use get_APL_weights to replace some of below?
-            if not variable_n_claws:
-                # only want to pop anything in this branch, cause other code depends on
-                # these values still being in param_dict
-                # TODO which other code? still true?
-                # TODO and which code will have issues if these are still there? just
-                # saving CSV(s)? anything else inside this fn? (some calls in
-                # model_mb_responses also write CSV w/ output, tho i might want to have
-                # a separate fn to filter before saving CSV in both cases [so i'm less
-                # restricted on what i can return])?
-                wKCAPL = param_dict.get('wKCAPL')
-
-                # TODO delete
-                # Tianpei currently has vector APL weights divided by # claws for each
-                # KC [in the C++ code], and he does not (seem to) use the
-                # preset_w[APLKC|KCAPL]=true path for that (at least, not for the
-                # use_connectome_APL_weights=False case, where he still needs diff
-                # weights for diff KCs, b/c they have diff # of claws)
+            elif isinstance(v, (pd.DataFrame, pd.Series)):
+                # TODO TODO TODO replace w/ to_parquet (after verifying current internal
+                # check in to_pickle, which is calling to_parquet, passes in all tests?)
+                # TODO + CSV (alongside parquet) just for posterity, and a backup option
+                # for people who may not want to use parquet?
                 #
-                # TODO TODO make sure any scales have already been applied, for
-                # one-row-per-claw=True cases (add test we can repro w/o passing thru
-                # *_scale kws, if we have them?)
+                # expecting thr and/or kc_spont_in may be an issue here, in some cases?
+                to_pickle(v, pickle_path, verbose=True)
+
+                # TODO delete this hack eventually
+                #  (might also make it hard to factor out this loop to a fn...)
+                if (one_row_per_claw and not use_connectome_APL_weights and
+                    k in ('wAPLKC', 'wKCAPL')):
+
+                    # these two should get filtered from CSV, but still returned
+                    # TODO also want to filter from saving to param pickle?
+                    # why even not del-ing them here then? can't we just load from disk
+                    # if we really need them? or was it b/c get_APL_weights downstream
+                    # of this then didn't have any of the APL weights it needed (i think
+                    # so?)? (was easier to get test code working again this way...)
+                    # TODO manually store and pass thru to get_APL_weights (or wrap call
+                    # below, handling this case?)? not sure if that works w/ all the
+                    # other places i use it though...
+                    warn(f'not removing non-json serializable value for {k=} from '
+                        'param_dict! (hack to preserve way to get APL weights in '
+                        'fit_and_plot_mb_model output, in this specific case)'
+                    )
+                    continue
                 #
 
-                assert isinstance(wAPLKC, pd.Series)
-                assert isinstance(wKCAPL, pd.Series)
+                del param_dict[k]
 
-                # TODO move some/all assertions into get_APL_weights? (/delete)
-                assert hasattr(wAPLKC, 'shape') and len(wAPLKC.shape) == 1
-                assert wKCAPL.shape == wAPLKC.shape
-                if not one_row_per_claw:
-                    assert 'wAPLKC_scale' in param_dict
-                    assert 'wKCAPL_scale' in param_dict
-                # TODO TODO seems it *does* have wAPLKC_scale in
-                # use_connectome_APL_weights=True case (but also wAPLKC, for
-                # prat_claws=False at least, right? need that too?). can i just discard
-                # here tho (scale already applied)?
-                #else:
-                #    # NOTE: there will now be *neither* wAPLKC nor wAPLKC_scale in
-                #    # param_dict (and same for wKCAPL)
-                #    # TODO TODO should i not pop instead? (in general, but maybe
-                #    # specifically b/c of this?)
-                #    assert not 'wAPLKC_scale' in param_dict
-                #    assert not 'wKCAPL_scale' in param_dict
+            # TODO delete
+            elif isinstance(v, np.ndarray):
+                print()
+                print(f'{k=}')
+                print(f'{type(k)=}')
+                print(f'{v=}')
+                print('was a numpy array! pop + save separately?')
+                breakpoint()
+                # TODO raise ValueError or something?
+            #
 
-                # TODO add verbose=True? (if keeping... and may want to also/only save
-                # as csv anyway?)
-                # TODO TODO use parquet instead (+ check can round trip w/o change)
-                to_pickle(wAPLKC, wAPLKC_cache)
-                to_pickle(wKCAPL, wKCAPL_cache)
             else:
-                assert not use_connectome_APL_weights
+                # try dumping json for each object, because presumably a dict of those
+                # will also be json serializable (so we can write them all in one call
+                # later, if we aren't popping + handling separately above, rather than
+                # needing pickle or something less portable).
+                # presumably these will just be nested groups of simple python objects?
+                # this is probably the easiest way to check that too?
+                # https://stackoverflow.com/questions/42033142
+                try:
+                    # TODO TODO now actually save rest of param_dict to one pickle later
+                    # (+ replace pickle w/ what)
+                    json.dumps(v)
+                except (TypeError, OverflowError) as err:
+                    # TODO delete
+                    print(f'{k=}')
+                    print(f'{type(v)=}')
+                    print(f'{v=}')
+                    print(f'{err=}')
+                    print('was not json serializable!')
+                    breakpoint()
+                    #
 
-                assert 'wAPLKC_scale' not in param_dict
-                assert 'wKCAPL_scale' not in param_dict
+                    # TODO raise diff err?
+                    raise
 
-                # TODO or go back to handling list-of-floats same as array of floats
-                # (like in `not variable_n_claws` case above) regardless of fact that
-                # (at least in some circumstances), keeping lists of floats seemed to
-                # allow serialization to CSV? prob not w/o some reason...
-                # TODO TODO switch handling? does de-serialize as a string, which needs
-                # eval'd...
-                # TODO TODO need to update get_APL_weights to support List[float] too,
-                # then?
-                assert type(wAPLKC) is list and all(
-                    isinstance(x, float) for x in wAPLKC
-                )
-                assert type(param_dict['wKCAPL']) is list and all(
-                    isinstance(x, float) for x in param_dict['wKCAPL']
-                )
-        else:
-            # in this branch, wAPLKC/wKCAPL should be in a format (e.g. single
-            # scalar floats) where they don't cause issues if saved as part of
-            # param_dict, so we don't need to separately save to w[APLKC|KCAPL]_cache
-
-            wKCAPL = param_dict['wKCAPL']
-            # TODO need to support int type too (in both of the two isinstance calls
-            # below)? isinstance(<int>, float) is False
-            # TODO TODO probably remove conditional before the check (reverting to old
-            # behavior), or only have conditional to narrow
-            # one-row-per-claw=True/whatever case this currently applies to)
-            wKCAPL_size_check_temp = np.asarray(wKCAPL)
-            if wKCAPL_size_check_temp.size == 1:
-                assert wKCAPL is None or isinstance(wKCAPL, float)
+            # TODO TODO assert no numpy arrays? kc_spont_in and/or thr are in at least
+            # some cases, right? maybe just thr? already dealt with somewhere?
 
         # TODO update comment (/fix code). not always all scalars now, at least b/c
         # Series wAPLKC in some one-row-per-claw cases (unless i meant only in
@@ -12312,12 +12961,20 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         #
         # in n_seeds > 1 case, should be same keys, but list values (of length equal to
         # n_seeds)
-        # TODO TODO some format other than pickle here? assert all simple types, and
-        # use json or something? maybe pickle portable enough, w/ all simple types?
+        # TODO TODO also save as json, and eventually replace this w/ that
+        # (should be guaranteed that all types saveable as json now, unless some other
+        # test cases [vector thr? will prob stay unused...] hits currently unhandled
+        # ndarray case in param_dict saving+popping. could just convert it to Series to
+        # have it handled there.)
+        # TODO test that values read back from json match this (may need isclose for
+        # some floats?)
         to_pickle(param_dict, param_dict_cache)
 
         # TODO don't save in sensitivity analysis subcalls? as this should not change
-        # across those
+        # across those (+ make a list of files to exclude and pass to automated saving
+        # above, based on dtypes in param_dict, and exclude based on list)
+        # TODO TODO make CSVs for all (or a list of) outputs saved in loop above?
+        # (then delete here?)
         to_csv(wPNKC, param_dir / 'wPNKC.csv', verbose=(not _in_sens_analysis))
 
         # saving after all the other things, so that (if script run w/ -c) checks
@@ -12362,6 +13019,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # TODO factor out this subsetting to (internal?) fn? or just use megamat_responses
     # directly below?
     # TODO .get_level_values if i restore panel level preservation thru fit_mb_model
+    # TODO check no duplicates, so that it's not just one of the megamat odors repeated
+    # 17 times?
     megamat_mask = responses.columns.map(odor_is_megamat)
 
     # should be true in both hallem (which has ~110 odors, including all the 17
@@ -12378,9 +13037,31 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         assert not any(k in params_for_csv for k in extra_params.keys())
         params_for_csv.update(extra_params)
 
-    # TODO does param_series have anything useful for repro that we dont have in
-    # params_for_csv.p (param_dict_cache, saved earlier)?
-    param_series = pd.Series(filter_params_for_csv(params_for_csv))
+    # TODO do we not want to also filter what we are returning?
+    # TODO delete filter_params_for_csv if we no longer have anything to remove?
+    # (by virtue of more consistently popping stuff in param_dict. currently only one
+    # exception in there, to not pop Series wAPLKC/wKCAPL for one particular case)
+    filtered_params = filter_params_for_csv(params_for_csv)
+    s1 = set(params_for_csv.keys())
+    s2 = set(param_dict.keys())
+    assert s2 - s1 == set()
+    # so the CSV actually has as lot more stuff:
+    # - responses_to
+    # - tune_from
+    # - model_kws (except keys in exclude_params)
+    # - output_dir name
+    # - used_model_cache
+    # - sparsity
+    # - megamat_sparsity (if we have all 17 megamat odors)
+    #
+    # ipdb> s1 - s2
+    # {'responses_to', 'weight_divisor', 'tune_from', 'sparsity', 'hardcode_initial_sp',
+    # 'used_model_cache', 'megamat_sparsity', 'drop_silent_cells_before_analyses',
+    # 'output_dir'}
+    #
+    # NOTE: 'pearson' is also added to params_for_csv below, and i think that's the last
+    # thing.
+    param_series = pd.Series(filtered_params)
     try:
         # just to manually inspect all relevant parameters for outputs in a given
         # param_dir
@@ -12400,8 +13081,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # (should only happen on second call used for getting inh params on a panel set, to
     # then run a model with a single panel and those inh params later)
     except MultipleSavesPerRunException:
+        # TODO delete? not sure i want to support this case anyway
         if _only_return_params:
             return params_for_csv
+        #
         else:
             raise
 
@@ -12452,7 +13135,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         verbose=(not _in_sens_analysis)
     )
 
-    if _only_return_params:
+    # NOTE: 'pearson' is added after this
+    # TODO if i want it, will need to return later (and if i want in CSV in this
+    # directory, will need to save that [currently above] after as well)
+    if _only_return_params or not make_plots:
         return params_for_csv
 
     # TODO delete? should be handled by _only_return_params (cases they are triggered
@@ -13571,7 +14257,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # is what I want
             'repro_preprint_s1d',
 
-            # TODO add return_dynamics/_plot_example_dynamics? (to make default to
+            # TODO add return_dynamics/plot_example_dynamics? (to make default to
             # False)?
         )}
 
@@ -13582,8 +14268,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         tuned_fixed_thr = param_dict['fixed_thr']
 
         APL_weights = get_APL_weights(param_dict, model_kws)
+        del param_dict
         assert isinstance(APL_weights, dict)
-        # TODO TODO need to test we don't actually need wKCAPL in the cases of tianpei's
+        # TODO need to test we don't actually need wKCAPL in the cases of tianpei's
         # code that also separately defined this (which is prob also the only reason
         # get_APL_weights is returning a dict with both?)
         tuned_wAPLKC = APL_weights['wAPLKC']
@@ -18569,8 +19256,8 @@ def main():
         # extra_kws will override kws without warning, if they have common keys
         param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
             try_cache=False,
-            # TODO disable _plot_example_dynamics (resource intensive)?
-            #_plot_example_dynamics=True,
+            # TODO disable plot_example_dynamics (resource intensive)?
+            #plot_example_dynamics=True,
             **{**kws, **extra_kws}
         )
         output_dir = (plot_root / param_dict['output_dir']).resolve()
@@ -18800,8 +19487,8 @@ def main():
     for extra_kws in try_each_with_kws:
         # extra_kws will override kws without warning, if they have common keys
         param_dict = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
-            # TODO disable _plot_example_dynamics (resource intensive)?
-            try_cache=False, _plot_example_dynamics=True, **{**kws, **extra_kws}
+            # TODO disable plot_example_dynamics (resource intensive)?
+            try_cache=False, plot_example_dynamics=True, **{**kws, **extra_kws}
         )
         output_dir = (plot_root / param_dict['output_dir']).resolve()
         assert output_dir.is_dir()

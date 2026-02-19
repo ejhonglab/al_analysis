@@ -49,6 +49,7 @@ import seaborn as sns
 from termcolor import cprint, colored
 
 from hong2p import olf, util, viz
+from hong2p.util import pd_allclose
 from hong2p.types import Pathlike
 import natmix
 
@@ -524,7 +525,18 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path) -> None:
 
     # TODO delete eventually
     d2 = read_parquet(path)
-    assert d2.equals(orig)
+    try:
+        assert d2.equals(orig)
+
+    except AssertionError:
+        assert d2.index.equals(orig.index)
+        assert np.array_equal(d2.values, orig.values)
+
+        c1 = orig.columns.to_frame(index=False)
+        c2 = d2.columns.to_frame(index=False)
+        # TODO is it just float levels that are allclose that are causing failure
+        # for claws_sims_[sums|maxs]? (seems so, yes)
+        assert pd_allclose(c2, c1)
     #
 
 

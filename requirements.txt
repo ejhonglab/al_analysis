@@ -1,15 +1,4 @@
 # See README for steps necessary before installing these dependencies.
 # (to get suite2p set up well, via conda)
-
 -r common-requirements.txt
-
-git+https://github.com/tom-f-oconnell/drosolf
-git+https://github.com/ejhonglab/hong2p
-git+https://github.com/tom-f-oconnell/suite2p
-git+https://github.com/ejhonglab/natmix
-
-# TODO uncomment! just testing if this is only thing preventing:
-# `pip install -r requirements.txt` from working w/ pip 23.2.1
-#
-# May want to move this one to common-requirements.txt. See note in dev-requirements.txt
-#git+https://github.com/ejhonglab/olfsysm
+-r https-hong-requirements.txt

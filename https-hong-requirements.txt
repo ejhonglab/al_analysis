@@ -1,0 +1,13 @@
+# TODO also want to install al_analysis itself? at end?
+git+https://github.com/tom-f-oconnell/drosolf
+git+https://github.com/ejhonglab/hong2p
+git+https://github.com/tom-f-oconnell/suite2p
+git+https://github.com/ejhonglab/natmix
+
+# TODO uncomment! just testing if this is only thing preventing:
+# `pip install -r requirements.txt` from working w/ pip 23.2.1
+#
+# May want to move this one to common-requirements.txt. See note in dev-requirements.txt
+# TODO especially if i finish + want the cnpy support, will prob need to clone locally
+# for that...
+git+https://github.com/ejhonglab/olfsysm
