@@ -31,18 +31,19 @@ from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC, KC_
 )
 
 
+# You can set these either 0/1 in prefix before pytest command.
+#
 # Can be slightly faster, and can avoid some of the main potential memory issues by
 # skipping plotting code, since main issue is loading claw_sims into fit_mb_model, for
 # plot_example_dynamics=True path.  If this is not set, will plot if QUICK=False (and
 # not otherwise).
-PLOT: bool = bool(os.environ.get('PLOT', True))
-
+PLOT: bool = bool(int(os.environ.get('PLOT', True)))
 # TODO do allow certain caches being used if another flag (or this?) is set? would
 # need centrally somewhere though... want to skip some of the longer tuning cases
 #
 # currently this replaces [FITANDPLOT_]MODEL_KW_LIST w/ the QUICK* versions below,
 # and disables some plotting, if True.
-QUICK: bool = bool(os.environ.get('QUICK', False))
+QUICK: bool = bool(int(os.environ.get('QUICK', False)))
 
 if not QUICK and PLOT:
     PLOT_KWS = dict(make_plots=True, plot_example_dynamics=True)
@@ -470,10 +471,27 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
         v2 = params2[k]
 
         # TODO is it a problem that we didn't need to check wKCAPL w/ allclose
-        # before, and we do now?
+        # before, and we do now? (that list is growing now...)
         # NOTE: despite needing to check wKCAPL this way, didn't seem to need the
         # same for wAPLKC
 
+        # TODO check for issues now that this is not just in check_with_allclose branch
+        if type(v) is str:
+            assert type(v2) is str, f'{k=}: type({v2=}) != str'
+            # doing this rather than just float(v) for each, since sometimes we have
+            # list-of-floats here
+            # TODO TODO does this just raise AssertionError (if anything), or need to
+            # handle other errors in check_key_values handling now?
+            v, v2 = eval_and_check_compatible(v, v2)
+        #
+
+        # TODO delete check_with_allclose if i'm happy w/ this as a replacement
+        assert equals(v, v2, check_float_with_allclose=True, equal_nan=True), \
+            f'{k=}: {v=} not equals {v2=}'
+
+        # TODO move initial else branch checks into pd_allclose if they have any value?
+        # (/delete)
+        '''
         if k not in check_with_allclose:
             # TODO (delete? can i still repro?) how are we getting this err here:
             # ValueError: The truth value of a Series is ambiguous. Use a.empty,
@@ -481,8 +499,9 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
             # for test_fitandplot_repro[pn2kc_uniform__n-claws_7__n-seeds_2]
             # (oh, it's a list-of-Series for kc_spont_in)
             assert equals(v, v2), f'{k=}: {v=} not equals {v2=}'
+
         else:
-            # TODO TODO keep this, not that i have convert_dtypes=True path of
+            # TODO keep this, not that i have convert_dtypes=True path of
             # read_series_csv (and read_param_csv that wraps that)?
             # to handle input loaded from CSV into series, where many values still float
             # TODO can i change how i load to cast at load-time when possible?
@@ -498,6 +517,7 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
             # also work for Series input.
             assert not np.isnan(v).any(), f'{k=}: {v=} had NaN'
             assert not np.isnan(v2).any(), f'{k=}: {v2=} had NaN'
+            #
 
             # TODO is this Series case still hit? are they filtered out before saving to
             # params.csv? (if not, is serialization round trip param checking equipped
@@ -539,6 +559,7 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
                     'list-of-[float|int]'
                 )
                 assert np.allclose(v, v2), f'{k=}: np.allclose({v=}, {v2=}) failed!'
+        '''
 
     # TODO factor above value checking to (new, already existing) hong2p.util.equal (or
     # use that?)?
@@ -651,6 +672,8 @@ def assert_fit_and_plot_outputs_equal(params: ParamDict, params2: ParamDict,
         # parquet files should all be one of these two pandas types
         assert isinstance(p1, (pd.DataFrame, pd.Series))
 
+        # TODO TODO TODO this working?
+        # TODO use check_float_with_allclose elsewhere too
         assert equals(p1, p2, check_float_with_allclose=True), \
             f'{name=}\n{p1=}\nnot equals\n{p2=}'
 

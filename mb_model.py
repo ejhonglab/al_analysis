@@ -3637,7 +3637,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
         # TODO also plot sums within glomeruli?
         # TODO delete
-        print('also plot hists per glomerulus / PN?')
+        #print('also plot hists per glomerulus / PN?')
 
         # TODO also plot (hierarchichally clustered) wPNKC (w/ plot+colorscale as in
         # natmix_data/analysis.py?)?
@@ -5037,16 +5037,34 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
                 # n_claw_bouton_combos is not defined or relevant in
                 # per_claw_pn_apl_weights=False case
-                # TODO TODO TODO check that this # of unique combos is preserved after
-                # agg_synapses_to_claws
-                # TODO delete
-                print('check n_claw_bouton_combos (maybe after accounting for NaN / '
-                    'dupes) is preserved after agg_synapses_to_claws!'
-                )
+                # TODO TODO (delete? not sure what i can do) check that this # of unique
+                # combos is preserved after agg_synapses_to_claws (would it be? or just
+                # check all key combos are still there? may be a subset now?)
                 #
-                breakpoint()
+                # ipdb> pn2apl_df.n_synapses.sum()
+                #81567
+                #ipdb> apl2pn_df.n_synapses.sum()
+                #81748
                 #
-
+                #ipdb> len(apl2pn_df)
+                #9365
+                #ipdb> len(pn2apl_df)
+                #9413
+                #ipdb> n_claw_bouton_combos
+                #9867
+                s1 = {tuple(x) for x in claw2bouton[claw_cols].itertuples(index=False)}
+                assert not apl2pn_df.reset_index()[claw_cols].duplicated().any()
+                s2 = {
+                    tuple(x) for x in
+                    apl2pn_df.reset_index()[claw_cols].itertuples(index=False)
+                }
+                assert s2 - s1 == set()
+                assert not pn2apl_df.reset_index()[claw_cols].duplicated().any()
+                s3 = {
+                    tuple(x) for x in
+                    pn2apl_df.reset_index()[claw_cols].itertuples(index=False)
+                }
+                assert s3 - s1 == set()
             else:
                 bouton_levels = list(wPNKC.columns.names)
                 apl2pn_df = agg_synapses_to_claws(apl2pn_df, bouton_levels, [], [])
@@ -7104,8 +7122,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # pre-tuning call) matter of some stuff from prior olfsysm calls not getting
     # cleared? care to add fns to release that memory, if so? and would it even affect
     # total amount of memory by time we get to end of this call?
-    print_curr_mem_usage(end='')
-    print(', at start of fit_mb_model')
+    if return_dynamics or plot_example_dynamics:
+        print_curr_mem_usage(end='')
+        print(', at start of fit_mb_model')
     #
     if _wPNKC is not None:
         # just a hacky way to check pn2kc_connections is unset (== default 'hemibrain',
@@ -7245,10 +7264,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert wAPLKC is not None, 'for now, assuming both passed if either is'
 
         if prat_boutons:
-            # currently will also assume we have both of these in this case
-            # TODO de
-            #assert wAPLPN is not None and wPNAPL is not None
-            assert wAPLPN is not None
+            if not per_claw_pn_apl_weights:
+                # currently will also assume we have both of these in this case
+                assert wAPLPN is not None
+
+            # TODO do i even want to support skipping tuning in
+            # per_claw_pn_apl_weights=True cases? (accept on wAPLKC probably? need to do
+            # anything special for that below? don't think so?)
+            else:
+                assert wAPLKC is not None
 
         # TODO still support varying apl activity here? (for a limited sens analysis)
         assert not homeostatic_thrs
@@ -8743,17 +8767,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # rv.kc.wAPLKC.shape=(1630, 1)
             # rv.kc.wAPLKC.max()=3.8899999999999992
             if one_row_per_claw:
-                # TODO also assert match wPNKC length/index? (or reindex in here? doing
-                # that already?) (would need to only check overlapping levels)
-                # TODO factor out fn to check overlapping index levels, if don't already
-                # have
-                # TODO delete (if pd_index_equal replaces)
-                #assert len(wAPLKC) == len(wPNKC)
                 assert pd_index_equal(wAPLKC, wPNKC, only_check_shared_levels=True)
                 assert pd_index_equal(wKCAPL, wPNKC, only_check_shared_levels=True)
-                # TODO delete
-                breakpoint()
-                #
 
                 # TODO use diff var than `claw_to_kc.size` (n_claws [no, that's used as
                 # kwarg for variable_n_claws cases])?
@@ -9878,10 +9893,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO assert 0 tuning iters otherwise?
     if mp.kc.tune_apl_weights:
         print()
-        print('tuning time: {tuning_time_s:.1f}s')
+        print(f'tuning time: {tuning_time_s:.1f}s')
         # TODO also print # of iterations? (move print of tuning params below to
         # incorporate here?)
-        print()
 
     # TODO warn that we aren't copying log, if plot_dir is None?
     if plot_dir is not None:
@@ -10520,6 +10534,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # time constant like Vm calculation has?
             # TODO TODO why doesn't this change used memory at all? need to force gc or
             # something?
+            # TODO TODO TODO try.copy() after slicing? maybe on underlying numpy array
+            # and redefing DataArray from there?
+            # https://stackoverflow.com/questions/50009978
             claw_sims = claw_sims.isel(time_s=slice(stim_start_idx, stim_end_idx))
 
             # TODO delete
