@@ -252,13 +252,11 @@ def eval_and_check_compatible(v: str, v2: str) -> Tuple[Any, Any]:
     else:
         assert not v2_raised_err
 
-    # currently redundant w/ str checks in except blocks above (+ check that
-    # if one raises, both do), but may relax str assertions in those except
-    # blocks, if I find more types with issues w/ safe_eval
     if isinstance(ev, str):
         assert isinstance(ev2, str)
     else:
         assert not isinstance(ev2, str)
+        # TODO also check same type at output? or one a subclass of other?
 
     return ev, ev2
 
@@ -5731,12 +5729,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
             wPNAPL = wPNAPL.reindex(wPNKC.columns)
             assert wPNAPL.index.equals(wPNKC.columns)
-    # TODO delete
-    print()
-    print(f'{wAPLKC.shape=}')
-    print(f'{wAPLPN.shape=}')
-    print()
-    #
 
     # NOTE: wPNKC CLAW_ID (when present) is no longer some renumbered ID I came up with.
     # It is raw anatomical_claw[_corrected] values from Pratyush, so should be able to
@@ -8928,25 +8920,21 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         else:
             assert wKCAPL_arr.shape == (1, mp.kc.N)
         rv.kc.wKCAPL = wKCAPL_arr.copy()
-        # TODO TODO TODO also set wAPLPN and wPNAPL like this? or already handled
-        # elsewhere?
 
         n_zero_input_wAPLKC = (wAPLKC == 0).sum()
         n_zero_input_wKCAPL = (wKCAPL == 0).sum()
-
-        if prat_boutons and not per_claw_pn_apl_weights:
-            n_zero_input_wAPLPN = (wAPLPN == 0).sum()
-            n_zero_input_wPNAPL = (wPNAPL == 0).sum()
 
         # TODO also define these for tianpei's one-row-per-claw cases now too?
         # (or probably rather change so they aren't passed as Series...)
         input_wAPLKC = wAPLKC.copy()
         input_wKCAPL = wKCAPL.copy()
 
-        input_wAPLPN = wAPLPN.copy()
-        input_wPNAPL = wPNAPL.copy()
-
         if prat_boutons and not per_claw_pn_apl_weights:
+            n_zero_input_wAPLPN = (wAPLPN == 0).sum()
+            n_zero_input_wPNAPL = (wPNAPL == 0).sum()
+            input_wAPLPN = wAPLPN.copy()
+            input_wPNAPL = wPNAPL.copy()
+
             # will set wAPLPN/wPNAPL into rv.pn.wAPLPN/wPNAPL below
             mp.pn.preset_wAPLPN = True
             mp.pn.preset_wPNAPL = True

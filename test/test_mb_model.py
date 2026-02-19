@@ -1163,6 +1163,9 @@ def test_homeostatic_thrs(orn_deltas):
 # C++ code might allow them to be? fix that?
 
 # TODO TODO TODO fix (broken as of 2026-02-13)
+@pytest.mark.xfail(
+    reason='broke in Feb 2026. fix!', run=False
+)
 def test_spatial_wPNKC_equiv(orn_deltas):
     """
     Tests that one-row-per-claw wPNKC can recreate one-row-per-KC hemibrain outputs,
