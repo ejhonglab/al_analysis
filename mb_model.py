@@ -12174,7 +12174,7 @@ def read_param_cache(model_output_dir: Path) -> ParamDict:
     return read_pickle(model_output_dir / param_cache_name)
 
 
-def save_and_remove_from_param_dict(param_dict: ParamDict, *,
+def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
     save_dynamics: bool = True, keys_not_to_remove: Iterable[str] = tuple()) -> None:
     """Removes keys from param_dict, saving most corresponding values to single files.
 
@@ -13028,8 +13028,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
         # modifies param_dict, removing keys (and saving most of their values to single
         # files)
-        save_and_remove_from_param_dict(param_dict, save_dynamics=save_dynamics,
-            keys_not_to_remove=keys_not_to_remove
+        save_and_remove_from_param_dict(param_dict, param_dir,
+            save_dynamics=save_dynamics, keys_not_to_remove=keys_not_to_remove
         )
 
         # TODO update comment (/fix code). not always all scalars now, at least b/c

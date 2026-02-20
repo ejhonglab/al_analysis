@@ -1754,11 +1754,11 @@ def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
 
     ref_model_output_dir = reference_output_dir / test_id
     if not ref_model_output_dir.is_dir():
-        pytest.skip(f'{ref_model_output_dir=} did not exist\n'
+        pytest.xfail(f'{ref_model_output_dir=} did not exist\n'
             'maybe this case failed (or was not included) when generate script run?'
         )
 
-    # TODO delete? like the pytest.skip above better? (i assume so)
+    # TODO delete? like the pytest.xfail above better? (i assume so)
     #assert ref_model_output_dir.is_dir(), (f'{ref_model_output_dir=} did not exist\n'
     #    'maybe this case failed (or was not included) when generate script run?'
     #)
