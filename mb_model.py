@@ -7108,16 +7108,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             interpreted to scale unit-mean connectome APL weight vectors. The other call
             should have `use_connectome_APL_weights=True` as well.
     """
-    # TODO delete
-    # TODO save to var and print down by other memory prints?
-    # TODO TODO why already 4433.25 MiB here??? (in kiwi/control case, after one
-    # pre-tuning call) matter of some stuff from prior olfsysm calls not getting
-    # cleared? care to add fns to release that memory, if so? and would it even affect
-    # total amount of memory by time we get to end of this call?
-    if return_dynamics or plot_example_dynamics:
-        print_curr_mem_usage(end='')
-        print(', at start of fit_mb_model')
-    #
     if _wPNKC is not None:
         # just a hacky way to check pn2kc_connections is unset (== default 'hemibrain',
         # unless i move default out of kwarg def to be able to detect unset more easily)
@@ -10272,16 +10262,66 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # paper?)
         # TODO TODO should i test that i can actually use non-int wPNKC now?
 
+    assert (mp.time_pre_start < mp.time_start < mp.time_stim_start < mp.time_stim_end <
+        mp.time_end
+    )
+    # from default parameters:
+    # p.time.pre_start  = -2.0;
+    # p.time.start      = -0.5;
+    # p.time.end        = 0.75;
+    # p.time.stim.start = 0.0;
+    # p.time.stim.end   = 0.5;
+    # p.time.dt         = 0.5e-3;
+    delete_pretime = True
+    # pre_start and start are both before odor onset (mp.time_stim_start)
+    if not delete_pretime:
+        t0 = mp.time_pre_start
+        t1 = mp.time_end
+    else:
+        t0 = mp.time_start
+        t1 = mp.time_end
+
+        # TODO delete
+        #print_curr_mem_usage(end='')
+        #print(', before osm.remove_all_pretime()')
+        #
+
+        # TODO change this to also remove even more at start/end? don't need after
+        # stim_end, right?
+        #
+        # huge memory savings from this
+        osm.remove_all_pretime(mp, rv)
+
+        # TODO delete
+        # TODO need to time.sleep() first to get an accurate reading?
+        # (not sure, but definitely did see it drop with this)
+        #time.sleep(0.2)
+        #print_curr_mem_usage(end='')
+        #print(', after osm.remove_all_pretime()')
+        #
+
+    # So that i can use linspace instead of arange. arange takes step, but last point
+    # seems numerically slightly off the even last point I get with linspace.
+    n_samples = int(round((t1 - t0) / mp.time_dt))
+    ts = pd.Series(name='seconds', data=np.linspace(t0, t1, num=n_samples))
+
+    # time_start = "start of KC stimulation" [from spont PN activity]
+    # (it's before stimulus comes on at time_stim_start)
+    start_idx = np.searchsorted(ts, mp.time_start)
+    stim_start_idx = np.searchsorted(ts, mp.time_stim_start)
+    stim_end_idx = np.searchsorted(ts, mp.time_stim_end)
+
     # TODO why is this seemingly a list of arrays, while the equiv kc variable seems to
     # be an array immediately? binding code seems similar...
     orn_sims = np.array(rv.orn.sims)
+    assert orn_sims.shape[-1] == n_samples
+
     # orn_sims.shape=(110, 22, 5500)
     # also a list out of the box
     # pn_sims.shape=(110, 22, 5500)
     pn_sims = np.array(rv.pn.pn_sims)
 
     # orn_sims is of shape (n_odors, n_glomeruli, n_timepoints)
-    n_samples = orn_sims.shape[-1]
     assert pn_sims.shape[-1] == n_samples
 
     if bouton_dynamics:
@@ -10297,28 +10337,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # TODO also subset other dynamics vars, at least if we are gonna return them
             # (or use them for plot_example_dynamics)?
             raise NotImplementedError('prob need to subset those vars below')
-
-    # from default parameters:
-    # p.time.pre_start  = -2.0;
-    # p.time.start      = -0.5;
-    # p.time.end        = 0.75;
-    # p.time.stim.start = 0.0;
-    # p.time.stim.end   = 0.5;
-    # p.time.dt         = 0.5e-3;
-    assert (n_samples * mp.time_dt) == (mp.time_end - mp.time_pre_start)
-    assert (mp.time_pre_start < mp.time_start < mp.time_stim_start < mp.time_stim_end <
-        mp.time_end
-    )
-
-    ts = pd.Series(name='seconds',
-        data=np.linspace(mp.time_pre_start, mp.time_end, num=n_samples)
-    )
-
-    # time_start = "start of KC stimulation" [from spont PN activity]
-    # (it's before stimulus comes on at time_stim_start)
-    start_idx = np.searchsorted(ts, mp.time_start)
-    stim_start_idx = np.searchsorted(ts, mp.time_stim_start)
-    stim_end_idx = np.searchsorted(ts, mp.time_stim_end)
 
     # TODO rename (+ move rv to param) -> move out of fit_mb_model? just to
     # declutter this fn...
@@ -10383,12 +10401,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         return arr
 
     if return_dynamics or plot_example_dynamics:
-        # TODO why is rss 7861.55078125 MiB before? b/c we still have in olfsysm?
-        # TODO delete
-        print_curr_mem_usage(end='')
-        print(', before getting vm_sims')
-        #
-
         # TODO TODO only process and serialize these one at time (saving to plot_dir in
         # here, rather than returning), to try to avoid memory issues? i assume making a
         # dataarray object (or even returning as a numpy array?) will create a copy
@@ -10449,11 +10461,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         Is_sims = _get_sim_var('Is_sims').squeeze()
         #
 
-        # TODO delete
-        print_curr_mem_usage(end='')
-        print(', before converting most to dataarray')
-        #
-
         # NOTE: just chose 'stim' for that dim name b/c xarray complained that
         # 'odor' overlapped with the odor_index level of the same name.
         #
@@ -10489,11 +10496,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         inh_sims = xr.DataArray(data=inh_sims, dims=apl_dims, coords=apl_coords)
         Is_sims = xr.DataArray(data=Is_sims, dims=apl_dims, coords=apl_coords)
 
-        # TODO delete
-        print_curr_mem_usage(end='')
-        print(', before getting claw_sims', flush=True)
-        #
-
         if one_row_per_claw:
             # TODO TODO test to see whether _get_sim_var('claw_sims') or defining
             # DataArray from it below are increasing memory usage (-> more motivation to
@@ -10503,22 +10505,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # include proper units?
             claw_sims = _get_sim_var('claw_sims')
 
-            # TODO delete
-            print_curr_mem_usage(end='')
-            print(', after getting claw_sims', flush=True)
-            #
-
             claw_dims = ['stim', 'claw', 'time_s']
             claw_coords = {**coords, 'claw': claw_index}
 
             # NOTE: the creation of this DataArray does not (alone) seem to increase the
             # memory usage (at least not the RSS)
             claw_sims = xr.DataArray(data=claw_sims, dims=claw_dims, coords=claw_coords)
-
-            # TODO delete
-            print_curr_mem_usage(end='')
-            print(', after converting claw_sims to dataarray', flush=True)
-            #
 
             # TODO maybe don't overwrite... (or do for all by default? maybe
             # starting from a bit before stim_start_idx and ending a bit after
@@ -10527,17 +10519,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # vs some across time in full thing?
             # TODO TODO maybe i should add more of a return to baseline per claw?
             # time constant like Vm calculation has?
-            # TODO TODO why doesn't this change used memory at all? need to force gc or
-            # something?
-            # TODO TODO TODO try.copy() after slicing? maybe on underlying numpy array
-            # and redefing DataArray from there?
-            # https://stackoverflow.com/questions/50009978
-            claw_sims = claw_sims.isel(time_s=slice(stim_start_idx, stim_end_idx))
-
-            # TODO delete
-            print_curr_mem_usage(end='')
-            print(', after slicing claw_sims dataarray to stim window', flush=True)
             #
+            # https://stackoverflow.com/questions/50009978
+            # NOTE: .copy() needed to actually free memory from region other than slice.
+            # might consume more memory while it's happening? not sure.
+            claw_sims = claw_sims.isel(
+                time_s=slice(stim_start_idx, stim_end_idx)
+            ).copy()
 
             # <xarray.DataArray (stim: 18, claw: 9472)>
             claw_sims_sums = claw_sims.sum(dim='time_s')
@@ -12246,6 +12234,9 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
         # TODO TODO kc_spont_in and/or thr are in at least some cases, right? maybe
         # just thr (and maybe only currently in unused vector thr test code?)?
         # already dealt with somewhere?
+        # TODO TODO yup, test_equalize_kc_type_sparsity can trigger this (anything else?
+        # try vector_thr again?) still just fix so both deal w/ series instead of
+        # arrays?
         elif isinstance(v, np.ndarray):
             print()
             print(f'{k=}')
@@ -16323,13 +16314,13 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         first_model_kws_only: only runs the model with the first set of parameters (in
             `model_kw_list` in this function), to more quickly test changes to model.
     """
-    # TODO TODO why `memory usage (MiB): rss=4136.91 vms=7756.15` already here???
+    # TODO delete
+    # TODO why `memory usage (MiB): rss=4136.91 vms=7756.15` already here???
     # (seems [from memory_profiler] that it's likely all from stuff loaded in
     # process_recording in al_analysis.main. can i reduce that at all? still need all
     # the big things?)
-    # TODO delete
-    print_curr_mem_usage(end='')
-    print(', at start of model_mb_responses')
+    #print_curr_mem_usage(end='')
+    #print(', at start of model_mb_responses')
     #
 
     # TODO (not using roi_depths really, so not a big deal) why do roi_depths seem to

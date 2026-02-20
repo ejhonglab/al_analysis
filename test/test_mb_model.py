@@ -125,6 +125,7 @@ MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
             per_claw_pn_apl_weights=True
         ),
         #
+        # TODO TODO TODO add some thresholding the per-claw weights, like betty wanted
     ],
     # TODO delete
     # NOTE: pn_apl_scale_factor will get set back to 1 for all cases other than
@@ -179,6 +180,14 @@ def get_fitandplot_model_kw_list(model_kw_list: List[ParamDict]) -> List[ParamDi
                 # NOTE: not setting this for test that calls fit_mb_model, since that
                 # call only ever returns output of one seed
                 kws['n_seeds'] = N_TEST_SEEDS
+
+            # if i delete this, at least leave an example comment of how to mark
+            # parameters here
+            if 'APL_coup_const' in kws:
+                assert kws['APL_coup_const'] == 0
+                kws = pytest.param(kws, marks=pytest.mark.xfail(
+                    reason='APL_coup_const C++ code broken', run=False
+                ))
         else:
             # TODO assert it's already a pytest.param (ParameterSet)? still add mark if
             # not already marked for xfail?
@@ -189,34 +198,14 @@ def get_fitandplot_model_kw_list(model_kw_list: List[ParamDict]) -> List[ParamDi
 
 FITANDPLOT_MODEL_KW_LIST: List[ParamDict] = get_fitandplot_model_kw_list(MODEL_KW_LIST)
 
+# TODO add assertion that test IDs for all these are subset of above
 QUICK_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
     [dict(one_row_per_claw=True, prat_claws=True), dict(weight_divisor=20),],
     # will test the connectome APL version first
     [dict(use_connectome_APL_weights=True), dict()]
 )[::-1] + [
-    # TODO delete?
-    #dict(one_row_per_claw=True),
-    #
     dict(pn2kc_connections='uniform', n_claws=7),
-    # this one is quite slow actually, w/ current learning rate params...
-    # TODO TODO TODO also, why currently failing fixed_inh_params_fitandplot with:
-    # following keys had mismatched values:
-    # k='megamat_sparsity': v=0.09068061404700448 not equals v2=0.009985056378209482
-    # assert False
-    #  +  where False = equals(0.09068061404700448, 0.009985056378209482)
-    # k='sparsity': v=0.09068061404700448 not equals v2=0.009985056378209482
-    # assert False
-    #  +  where False = equals(0.09068061404700448, 0.009985056378209482)
-    # FAILED
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> traceback
-    # test/test_mb_model.py:1602: in test_fixed_inh_params_fitandplot
-    #     ???
-    # test/test_mb_model.py:685: in assert_fit_and_plot_outputs_equal
-    #     assert_param_dicts_equal(params, params2, **kwargs)
-    # test/test_mb_model.py:547: in assert_param_dicts_equal
-    #     assert False
-    # E   assert False
-    # TODO TODO TODO is it just that i'm not setting the PN<>APL stuff in python?
+    # this one is quite slow actually, w/o hardcoded learning rate, at least
     dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
         use_connectome_APL_weights=True
     ),
@@ -262,6 +251,9 @@ al_util.verbose = True
 # TODO move to model_mb? (or hong2p.types?)
 FitMBModelOutputs = Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, ParamDict]
 
+# TODO TODO factor to mb_model, and then call that (to use in scripts without having to
+# try importing test code). same for another fn loading some reference kiwi/control
+# data.
 def _orn_deltas() -> pd.DataFrame:
     """Gives same output as the `orn_deltas` fixture, but can be called directly
     (in `generate_reference_outputs_for_repro.py`), unlike the fixture-wrapper version,
@@ -308,6 +300,15 @@ def orn_deltas() -> pd.DataFrame:
 # like orn_deltas? or can i assume orn_deltas will not change, and then exclude certain
 # things?)
 def _fit_mb_model(*args, **kwargs) -> FitMBModelOutputs:
+    # can i pytest.xfail APL-coup-const stuff from in here, or does it have to
+    # be from within one of the test fns? yup, this works.
+    #
+    # stuff calling _fit_and_plot_mb_model should be handled by the xfail marks added by
+    # get_fitandplot_model_kw_list
+    if 'APL_coup_const' in kwargs:
+        pytest.xfail('APL_coup_const C++ code broken')
+    #
+
     # TODO move this prints into fit_mb_model, under a verbose flag?
     print('running fit_mb_model...', flush=True)
     # TODO TODO still include **PLOT_KWS if we have plot_dir (non-None)

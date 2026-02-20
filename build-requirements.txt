@@ -1,0 +1,11 @@
+pip==22.3.1
+# not sure why this does not show up in `pip freeze` output (like I had used to generate
+# exact-requirements.txt), but it does show up in `pip list` output. is this the only
+# real difference between them?
+# TODO check for other differences
+# default 70.3.0 in new 2026 install on hal (in olfsysm conda env) gave all sorts of
+# errors on pytest start.
+# TODO delete
+#setuptools==56.0.0
+# this also seems to work on hal
+setuptools==61.0.0
