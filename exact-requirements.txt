@@ -219,6 +219,8 @@ zipp==3.16.0
 # editable? (still wouldn't by pypi installable...)
 # maybe i'm really not using my own at the moment? i suppose even al_analysis.py might
 # not really have active code that uses any of it? still replace w/ my own?
-ijroi==0.4.1.dev0
+#
+# yea this does cause issues trying to install on a system that doesn't already have it.
+#ijroi==0.4.1.dev0
 
 -r https-hong-requirements.txt
