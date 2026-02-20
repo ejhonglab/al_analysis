@@ -35,7 +35,7 @@ from tempfile import NamedTemporaryFile
 import time
 import traceback
 from typing import (Any, Dict, Callable, Hashable, List, Literal, Optional, Set,
-    Sequence, Tuple, Union
+    Sequence, Tuple, Union, Iterable
 )
 import warnings
 
@@ -7330,7 +7330,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # 27 iterations w/ 1.5
         #sp_lr_coeff = 1.5
         # 21 iters w/ 1.3
-        sp_lr_coeff = 1.3
+        #sp_lr_coeff = 1.3
+        #sp_lr_coeff = .087
+        #
+        # gets to sp=0.00998506 in one iteration in test:
+        # params_fitandplot[one-row-per-claw_True__prat-claws_True__prat-boutons_True__connectome-APL_True]
+        sp_lr_coeff = 6.577712
         print(f'HARDCODING {sp_lr_coeff=} (for prat_boutons case)!')
         # this one we could set more broadly w/o changing output, but it would trip
         # some test_fitandplot_repro tests, at least unless i add this param to an
@@ -10160,6 +10165,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     if prat_boutons and not per_claw_pn_apl_weights:
         assert wAPLPN is not None and wPNAPL is not None
         param_dict['wAPLPN'] = wAPLPN
+        # TODO TODO this causing problems? why do i have in some outputs (w/ fixed inh
+        # params) w/ scales, but not others (call before fixed inh one, that was tuned)?
         param_dict['wPNAPL'] = wPNAPL
 
         assert wAPLPN_scale is not None and wPNAPL_scale is not None
@@ -11889,6 +11896,51 @@ def step_around(center: Union[float, np.ndarray], param_lim_factor: float,
     return param_steps
 
 
+# TODO factor to share this type w/ somewhere else?
+# TODO and maybe share the float | list-of-float part w/ fit_and_plot... kwargs, then
+# union further w/ series if keeping that here?
+def format_weights(weights: Optional[Union[float, pd.Series, List[float]]], name: str
+    ) -> str:
+    # TODO exclude the ', ' prefix from output?
+
+    if weights is None:
+        return ''
+
+    # TODO share this w/ format_model_params + elsewhere?
+    float_fmt = '.2f'
+
+    # TODO share some code w/ fn to put some weight info in titles ("debug suffix")?
+
+    if isinstance(weights, float):
+        weight = weights
+
+    elif isinstance(weights, pd.Series):
+        # TODO delete (only had access to this when defined inside
+        # format_model_params)
+        # TODO could i have also asserted
+        # `one_row_per_claw and use_connectome_APL_weights==False`?
+        # (i might have also not preserved logic exactly when reorganizing conditionaal
+        # into what is now that commented assert...)
+        #assert model_kws.get('one_row_per_claw')
+        #
+        weight = weights.mean()
+    else:
+        # TODO delete (only had access to this when defined inside
+        # format_model_params)
+        #assert n_seeds > 1
+        #
+        assert isinstance(weights, list)
+        assert all(isinstance(x, float) for x in weights)
+        weight = np.mean(weights)
+
+    # TODO delete (only had access to this when defined inside format_model_params)
+    #if isinstance(weights, (float, pd.Series)):
+    #    assert n_seeds == 1
+    #
+    param_str = f', {name}={weight:{float_fmt}}'
+    return param_str
+
+
 def filter_params_for_csv(params: ParamDict) -> ParamDict:
     # TODO update doc pickle->parquet where appropriate, when making that change for
     # caching pandas objects
@@ -11952,6 +12004,8 @@ exclude_params = (
     # to remove need for it, and should have enough info to distinguish output
     # dir/plots w/ just wAPLKC anyway.
     'wKCAPL',
+    # TODO i assume i'll want to remove this one too?
+    'wPNAPL',
 )
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
@@ -11981,12 +12035,13 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
         human: if False, `normalize_param_str` will be called on output before return.
             If True, will be more suitable for human readable titles/labels/etc.
     """
-    # TODO TODO or was i actually in some cases relying on the .pop() calls below
-    # modifying dict?
     model_kws = dict(model_kws)
 
     fixed_thr = model_kws.pop('fixed_thr', None)
     wAPLKC = model_kws.pop('wAPLKC', None)
+    wAPLPN = model_kws.pop('wAPLPN', None)
+    # TODO TODO also support wPNAPL and wKCAPL (or *_scale) if present? (may end up
+    # using to control each separately? or may use new param for that)
     n_seeds = model_kws.pop('n_seeds', 1)
 
     # responses_to handled below, circa def of param_dir
@@ -12015,6 +12070,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
     # TODO sort params first? (so changing order in code doesn't cause
     # cache miss...)
     # TODO why adding [''] again? why not just prepend ', ' to output if i want?
+    # TODO TODO limit precision of all floats by default?
     param_str = ', '.join([''] + [
         f'{param_abbrevs[k] if k in param_abbrevs else k}={v}'
         for k, v in model_kws.items() if k not in exclude_params and
@@ -12024,8 +12080,6 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
     if n_seeds > 1:
         param_str += f', n_seeds={n_seeds}'
 
-    # TODO TODO define all these from model_kws (would rather not pass separately)
-    # same w/ n_seeds, and others below
     if fixed_thr is not None or wAPLKC is not None:
         assert fixed_thr is not None and wAPLKC is not None
 
@@ -12055,18 +12109,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
             else:
                 raise ValueError('unexpected fixed_thr type: {type(fixed_thr)}')
 
-            if not isinstance(wAPLKC, pd.Series):
-                assert isinstance(wAPLKC, float), (f'unexpected {type(wAPLKC)=} '
-                    '(expected float or Series)'
-                )
-                # TODO check that variable_n_seeds case (w/ n_seeds=1) ends up here, and
-                # not with a list-of-float (or change logic of conditional to handle
-                # n_seeds=1 case below too)
-                param_str += f', {fixed_thr_str}, wAPLKC={wAPLKC:.2f}'
-            else:
-                assert model_kws.get('one_row_per_claw')
-                param_str += f', {fixed_thr_str}, wAPLKC={wAPLKC.mean():.2f}'
-
+            param_str += f', {fixed_thr_str}'
         else:
             variable_n_claws = model_kws['pn2kc_connections'] in variable_n_claw_options
             assert variable_n_claws
@@ -12079,12 +12122,12 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
             assert isinstance(fixed_thr, list)
             assert all(isinstance(x, float) for x in fixed_thr)
 
-            assert isinstance(wAPLKC, list)
-            assert all(isinstance(x, float) for x in wAPLKC)
-
             # TODO refactor
             fixed_thr_str = f'mean_thr={np.mean(fixed_thr):.0f}'
-            param_str += f', {fixed_thr_str}, wAPLKC={np.mean(wAPLKC):.2f}'
+            param_str += f', {fixed_thr_str}'
+
+    param_str += format_weights(wAPLKC, 'wAPLKC')
+    param_str += format_weights(wAPLPN, 'wAPLPN')
 
     # simplifies some things to always have a non-empty string output (creation of
     # directories, etc)
@@ -12131,6 +12174,114 @@ def read_param_cache(model_output_dir: Path) -> ParamDict:
     return read_pickle(model_output_dir / param_cache_name)
 
 
+def save_and_remove_from_param_dict(param_dict: ParamDict, *,
+    save_dynamics: bool = True, keys_not_to_remove: Iterable[str] = tuple()) -> None:
+    """Removes keys from param_dict, saving most corresponding values to single files.
+
+    Modifies input inplace.
+    """
+    # NOTE: might break some of new vector-fixed_thr code if i start popping that
+    # (but might want to still save separately there, as not being saved correctly
+    # in params.csv/similar there)
+    for k in list(param_dict.keys()):
+        v = param_dict[k]
+        # TODO also do for np.ndarray / Series / DataFrame?
+        # TODO TODO especially if trying to get all serialized formats somewhat more
+        # portable (and/or backwards compatible). may want all pandas objects as
+        # parquet, all xarray either netcdf (or OK being not portable), and
+        # everything else [mainly, parameter outputs, including the pickle, to the
+        # extent that the CSV isn't enough] either using as simple types as possible
+        # w/ pickle (to improve chances for portability / etc) (or json/similar for
+        # params currently in pickle, but still that probably can't do
+        # numpy/pandas/etc)
+        pickle_path = param_dir / f'{k}.p'
+        if isinstance(v, xr.DataArray):
+            if save_dynamics:
+                # TODO TODO move saving of all/most of these into fit_mb_model, so
+                # each can be removed from memory as soon as possible? (and each
+                # before making a copy of other variables, only processing [and
+                # plotting if needed] one at at time). many of these DataArray are
+                # very large, especially claw_sims, which can be ~2.5GiB for just 6
+                # odors
+                #
+                # for just panel=control, the biggest of these files
+                # (spike_recordings.p / vm_sims.p) are just under a GB (768M)
+                # (this was before claw_sims, which is probably bigger...)
+                to_pickle(v, pickle_path, verbose=True)
+
+                # TODO switch to netcdf? would just need to reformat the index
+                # surrounding IO (prob don't wanna do both given the sizes, but
+                # could. ig it's just a factor of 2...)
+                # (and may NOT want to save as both, considering the aggregate size)
+
+            # TODO add flag to still enable saving here?
+            else:
+                warn('not saving dynamics for sensitivity analysis sub-calls,'
+                    ' to save on storage space'
+                )
+
+            del param_dict[k]
+
+        elif isinstance(v, (pd.DataFrame, pd.Series)):
+            # TODO TODO TODO replace w/ to_parquet (after verifying current internal
+            # check in to_pickle, which is calling to_parquet, passes in all tests?)
+            # TODO + CSV (alongside parquet) just for posterity, and a backup option
+            # for people who may not want to use parquet?
+            #
+            # expecting thr and/or kc_spont_in may be an issue here, in some cases?
+            to_pickle(v, pickle_path, verbose=True)
+
+            # TODO delete hack eventually
+            if k in keys_not_to_remove:
+                warn(f'not removing non-json serializable value for {k=} from '
+                    'param_dict! (hack to preserve way to get APL weights in '
+                    'fit_and_plot_mb_model output, in this specific case)'
+                )
+                continue
+            #
+
+            del param_dict[k]
+
+        # TODO delete
+        # TODO TODO kc_spont_in and/or thr are in at least some cases, right? maybe
+        # just thr (and maybe only currently in unused vector thr test code?)?
+        # already dealt with somewhere?
+        elif isinstance(v, np.ndarray):
+            print()
+            print(f'{k=}')
+            print(f'{type(k)=}')
+            print(f'{v=}')
+            print('was a numpy array! pop + save separately?')
+            breakpoint()
+            # TODO raise ValueError or something?
+        #
+
+        else:
+            # try dumping json for each object, because presumably a dict of those
+            # will also be json serializable (so we can write them all in one call
+            # later, if we aren't popping + handling separately above, rather than
+            # needing pickle or something less portable).
+            # presumably these will just be nested groups of simple python objects?
+            # this is probably the easiest way to check that too?
+            # https://stackoverflow.com/questions/42033142
+            try:
+                # TODO TODO now actually save rest of param_dict to one pickle later
+                # (+ replace pickle w/ what)
+                json.dumps(v)
+            except (TypeError, OverflowError) as err:
+                # TODO delete
+                print(f'{k=}')
+                print(f'{type(v)=}')
+                print(f'{v=}')
+                print(f'{err=}')
+                print('was not json serializable!')
+                breakpoint()
+                #
+
+                # TODO raise diff err?
+                raise
+
+
 _fit_and_plot_seen_param_dirs = set()
 # TODO why is sim_odors an explicit kwarg? just to not have included in strs describing
 # model params? i already special case orn_deltas to exclude it. why not do something
@@ -12154,7 +12305,12 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     # (may now make sense, if i'm gonna add a flag to indicate whether we are in a
     # sensitivity analysis subcall)
     fixed_thr: Optional[Union[float, np.ndarray]] = None,
-    wAPLKC: Optional[float] = None,
+    # TODO TODO would also have to pop any wKCAPL/wPNAPL floats/lists  we happen to get,
+    # if any. test those cases? having them in exclude_params sufficient for that?
+    # TODO check we can actually input list of floats (presumably to repro
+    # variable_n_claws cases w/ multiple seeds)
+    wAPLKC: Optional[Union[float, List[float]]] = None,
+    wAPLPN: Optional[Union[float, List[float]]] = None,
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     _add_combined_plot_legend=False, sim_odors=None, comparison_orns=None,
     comparison_kc_corrs=None, _strip_concs_comparison_kc_corrs=False,
@@ -12236,10 +12392,10 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
     use_connectome_APL_weights = model_kws.get('use_connectome_APL_weights', False)
     one_row_per_claw = model_kws.get('one_row_per_claw', False)
 
-    param_str = format_model_params({
-            **model_kws,
-            **{'fixed_thr': fixed_thr, 'wAPLKC': wAPLKC, 'n_seeds': n_seeds}
-        }, human=True
+    param_str = format_model_params({**model_kws, **{
+            'fixed_thr': fixed_thr, 'wAPLKC': wAPLKC, 'wAPLPN': wAPLPN,
+            'n_seeds': n_seeds
+        }}, human=True
     )
 
     # TODO clean up / refactor. hack to make filename not atrocious when these are
@@ -12275,6 +12431,9 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # use_connectome_APL_weight=True code)?
         assert fixed_thr is not None and wAPLKC is not None
 
+        # TODO if `prat_boutons and not per_claw_pn_apl_weights`, assert wAPLPN is not
+        # None?
+
         # TODO what plot_dir_prefix? update comment below
         #
         # assumed to be passed in (but not created by) sensitivity analysis calls
@@ -12284,14 +12443,21 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # the need to also include here.
         param_dir = plot_dir
 
+        # TODO refactor to share more of this w/ format_model_params (/delete)
+        #
         # TODO delete? should always be redefed below...
         # (if so, then why is this code even here?)
         # TODO refactor this thr str handling?
         if isinstance(fixed_thr, float):
-            title += f'thr={fixed_thr:.2f}, wAPLKC={wAPLKC:.2f}'
+            title += f'thr={fixed_thr:.2f}'
         else:
             assert isinstance(fixed_thr, np.ndarray)
             title += f'mean_thr={fixed_thr.mean():.2f}, wAPLKC={wAPLKC:.2f}'
+
+        title += format_weights(wAPLKC, 'wAPLKC')
+        if wAPLPN is not None:
+            title += format_weights(wAPLPN, 'wAPLPN')
+        #
 
         # TODO TODO replace w/ title defined after fit_mb_model call (so we can add
         # information based on those outputs to title, like mean weights)?
@@ -12360,7 +12526,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
 
             # TODO include something else for case where fixed_thr is vector (which
             # currently requires wAPLKC set, to a float as before)?
-            assert fixed_thr is None and wAPLKC is None
+            assert fixed_thr is None and wAPLKC is None and wAPLPN is None
 
             # .3g will show up to 3 sig figs (regardless of their position wrt decimal
             # point), but also strip any trailing 0s (0.0915 -> '0.0915', 0.1 -> '0.1')
@@ -12456,6 +12622,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             cached_APL_weights = get_APL_weights(param_dict, model_kws)
             cached_wAPLKC = cached_APL_weights['wAPLKC']
 
+            # TODO TODO also handle wAPLPN?
+
             # np.array_equal works with both float and list-of-float inputs
             if (not np.array_equal(fixed_thr, param_dict['fixed_thr']) or
                 not np.array_equal(wAPLKC, cached_wAPLKC)
@@ -12522,6 +12690,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         if n_seeds > 1:
             assert fixed_thr is None or type(fixed_thr) is list
             assert wAPLKC is None or type(wAPLKC) is list
+            assert wAPLPN is None or type(wAPLPN) is list
 
             # only to regenerate model internal plots (which only ever are saved on the
             # first seed, in cases where there would be multiple runs w/ diff seeds)
@@ -12564,6 +12733,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 assert not _in_sens_analysis
 
                 assert len(fixed_thr) == len(wAPLKC) == n_seeds
+                if wAPLPN is not None:
+                    assert len(wAPLPN) == n_seeds
 
                 # TODO delete?
                 #assert tuning_output_dir is not None
@@ -12610,7 +12781,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                     # usage with a flag to indicate whether we are in a sensitivity
                     # analysis subcall...)
                     sim_odors=sim_odors, fixed_thr=_fixed_thr, wAPLKC=_wAPLKC,
-                    seed=seed,
+                    wAPLPN=wAPLPN, seed=seed,
                     # ORN/PN plots would be redundant, and overwrite each other.
                     # currently those are the only plots I'm making in here (no longer
                     # true, but still probably don't want for each seed).
@@ -12679,10 +12850,14 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 # NOTE: currently one-row-per-claw case has wAPLKC as a Series
                 isinstance(wAPLKC, float) or isinstance(wAPLKC, pd.Series)
             )
+            assert wAPLPN is None or (
+                # NOTE: currently one-row-per-claw case has wAPLPN as a Series
+                isinstance(wAPLPN, float) or isinstance(wAPLPN, pd.Series)
+            )
 
             # TODO rename param_dict everywhere -> tuned_params?
             responses, spike_counts, wPNKC, param_dict = fit_mb_model(
-                sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC,
+                sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, wAPLPN=wAPLPN,
                 make_plots=make_plots, **model_kws
             )
 
@@ -12758,7 +12933,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # TODO use get_APL_weights to replace some of below? (at least also call it, to
         # check it doesn't fail anywhere?)
         get_APL_weights(param_dict, model_kws)
-        #
+
         if wAPLKC is not None and not is_scalar(wAPLKC):
             if not variable_n_claws:
                 # TODO delete?
@@ -12834,119 +13009,28 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             # TODO return processed title suffix too (from fit_mb_model), and just pop +
             # use that, rather than recomputing out here?
 
-        # TODO TODO factor out this loop, just for better organization
-        # NOTE: might break some of new vector-fixed_thr code if i start popping that
-        # (but might want to still save separately there, as not being saved correctly
-        # in params.csv/similar there)
-        for k in list(param_dict.keys()):
-            v = param_dict[k]
-            # TODO also do for np.ndarray / Series / DataFrame?
-            # TODO TODO especially if trying to get all serialized formats somewhat more
-            # portable (and/or backwards compatible). may want all pandas objects as
-            # parquet, all xarray either netcdf (or OK being not portable), and
-            # everything else [mainly, parameter outputs, including the pickle, to the
-            # extent that the CSV isn't enough] either using as simple types as possible
-            # w/ pickle (to improve chances for portability / etc) (or json/similar for
-            # params currently in pickle, but still that probably can't do
-            # numpy/pandas/etc)
-            pickle_path = param_dir / f'{k}.p'
-            if isinstance(v, xr.DataArray):
-                if not _in_sens_analysis:
-                    # TODO TODO move saving of all/most of these into fit_mb_model, so
-                    # each can be removed from memory as soon as possible? (and each
-                    # before making a copy of other variables, only processing [and
-                    # plotting if needed] one at at time). many of these DataArray are
-                    # very large, especially claw_sims, which can be ~2.5GiB for just 6
-                    # odors
-                    #
-                    # for just panel=control, the biggest of these files
-                    # (spike_recordings.p / vm_sims.p) are just under a GB (768M)
-                    # (this was before claw_sims, which is probably bigger...)
-                    to_pickle(v, pickle_path, verbose=True)
+        # TODO delete this hack eventually
+        #
+        # these two should get filtered from CSV, but still returned
+        # TODO also want to filter from saving to param pickle?
+        # why even not del-ing them here then? can't we just load from disk
+        # if we really need them? or was it b/c get_APL_weights downstream
+        # of this then didn't have any of the APL weights it needed (i think
+        # so?)? (was easier to get test code working again this way...)
+        # TODO manually store and pass thru to get_APL_weights (or wrap call
+        # below, handling this case?)? not sure if that works w/ all the
+        # other places i use it though...
+        keys_not_to_remove = tuple()
+        if one_row_per_claw and not use_connectome_APL_weights:
+            keys_not_to_remove = ('wAPLKC', 'wKCAPL')
+        #
+        save_dynamics = not _in_sens_analysis
 
-                    # TODO switch to netcdf? would just need to reformat the index
-                    # surrounding IO (prob don't wanna do both given the sizes, but
-                    # could. ig it's just a factor of 2...)
-                    # (and may NOT want to save as both, considering the aggregate size)
-
-                # TODO add flag to still enable saving here?
-                else:
-                    warn('not saving dynamics for sensitivity analysis sub-calls,'
-                        ' to save on storage space'
-                    )
-
-                del param_dict[k]
-
-            elif isinstance(v, (pd.DataFrame, pd.Series)):
-                # TODO TODO TODO replace w/ to_parquet (after verifying current internal
-                # check in to_pickle, which is calling to_parquet, passes in all tests?)
-                # TODO + CSV (alongside parquet) just for posterity, and a backup option
-                # for people who may not want to use parquet?
-                #
-                # expecting thr and/or kc_spont_in may be an issue here, in some cases?
-                to_pickle(v, pickle_path, verbose=True)
-
-                # TODO delete this hack eventually
-                #  (might also make it hard to factor out this loop to a fn...)
-                if (one_row_per_claw and not use_connectome_APL_weights and
-                    k in ('wAPLKC', 'wKCAPL')):
-
-                    # these two should get filtered from CSV, but still returned
-                    # TODO also want to filter from saving to param pickle?
-                    # why even not del-ing them here then? can't we just load from disk
-                    # if we really need them? or was it b/c get_APL_weights downstream
-                    # of this then didn't have any of the APL weights it needed (i think
-                    # so?)? (was easier to get test code working again this way...)
-                    # TODO manually store and pass thru to get_APL_weights (or wrap call
-                    # below, handling this case?)? not sure if that works w/ all the
-                    # other places i use it though...
-                    warn(f'not removing non-json serializable value for {k=} from '
-                        'param_dict! (hack to preserve way to get APL weights in '
-                        'fit_and_plot_mb_model output, in this specific case)'
-                    )
-                    continue
-                #
-
-                del param_dict[k]
-
-            # TODO delete
-            elif isinstance(v, np.ndarray):
-                print()
-                print(f'{k=}')
-                print(f'{type(k)=}')
-                print(f'{v=}')
-                print('was a numpy array! pop + save separately?')
-                breakpoint()
-                # TODO raise ValueError or something?
-            #
-
-            else:
-                # try dumping json for each object, because presumably a dict of those
-                # will also be json serializable (so we can write them all in one call
-                # later, if we aren't popping + handling separately above, rather than
-                # needing pickle or something less portable).
-                # presumably these will just be nested groups of simple python objects?
-                # this is probably the easiest way to check that too?
-                # https://stackoverflow.com/questions/42033142
-                try:
-                    # TODO TODO now actually save rest of param_dict to one pickle later
-                    # (+ replace pickle w/ what)
-                    json.dumps(v)
-                except (TypeError, OverflowError) as err:
-                    # TODO delete
-                    print(f'{k=}')
-                    print(f'{type(v)=}')
-                    print(f'{v=}')
-                    print(f'{err=}')
-                    print('was not json serializable!')
-                    breakpoint()
-                    #
-
-                    # TODO raise diff err?
-                    raise
-
-            # TODO TODO assert no numpy arrays? kc_spont_in and/or thr are in at least
-            # some cases, right? maybe just thr? already dealt with somewhere?
+        # modifies param_dict, removing keys (and saving most of their values to single
+        # files)
+        save_and_remove_from_param_dict(param_dict, save_dynamics=save_dynamics,
+            keys_not_to_remove=keys_not_to_remove
+        )
 
         # TODO update comment (/fix code). not always all scalars now, at least b/c
         # Series wAPLKC in some one-row-per-claw cases (unless i meant only in
@@ -13543,6 +13627,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
             wKCAPL = params_for_csv['wKCAPL_scale']
             assert wKCAPL is not None
 
+        # TODO TODO do anything w/ PN<>APL weights here, in relevant cases?
+
         if ((min_sparsity is not None and sparsity < min_sparsity) or
             (max_sparsity is not None and sparsity > max_sparsity)):
 
@@ -13573,7 +13659,7 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
                 thr_str = f'mean_thr={fixed_thr.mean():.2f}'
 
             title = (
-                f'{thr_str}, wAPLKC={wAPLKC:.2f} (sparsity={sparsity:.3g})'
+                f'{thr_str}{format_weight(wAPLKC, "wAPLKC")} (sparsity={sparsity:.3g})'
             )
         else:
             title = f'sparsity={sparsity:.3g}'
@@ -14296,6 +14382,8 @@ def fit_and_plot_mb_model(plot_dir: Path, sensitivity_analysis: bool = False,
         # (or otherwise handle case where we also have that separately?)
 
         assert tuned_fixed_thr is not None and tuned_wAPLKC is not None
+        # TODO TODO also add support for wAPLPN, at least to still repro sweep of other
+        # two parameters for those cases?
 
         checks = True
         # TODO want to keep after i finish test_mb_model.test_fixed_inh_params?
