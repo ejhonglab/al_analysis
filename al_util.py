@@ -45,7 +45,16 @@ from matplotlib.figure import Figure
 #
 from matplotlib.testing.exceptions import ImageComparisonFailure
 #
-import seaborn as sns
+# TODO replace w/ conditional import of seaborn / scipy as needed?
+# if trying to run tests w/ valgrind, this import currently seems to raise:
+# SystemError: initialization of beta_ufunc raised unreported exception
+# from a from scipy.stats._boost.beta_ufunc import
+if os.getenv('PYTHONMALLOC') != 'malloc':
+    import seaborn as sns
+else:
+    warnings.warn('could not import scipy (and dependent packages), because '
+        'PYTHONMALLOC=malloc'
+    )
 from termcolor import cprint, colored
 
 from hong2p import olf, util, viz
@@ -1121,7 +1130,11 @@ _savefig_seen_paths = set()
 # (for using this fn in other scripts, would rather have kwarg, but also don't want to
 # have to pass verbose=verbose everywhere in here, nor use global as default kwarg,
 # which wouldn't be update by CLI arg correctly...)
-def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
+# TODO try to restore type hint w/ seaborn type. commenting for now to try to be able to
+# not import sns, to use some extra C++ debugging tools that it (and scipy) are
+# incompatible with
+#def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
+def savefig(fig_or_seaborngrid,
     fig_dir: Pathlike, desc: str, *, close: bool = True, normalize_fname: bool = True,
     debug: bool = False, **kwargs) -> Path:
 
@@ -1822,7 +1835,8 @@ cmap = 'magma'
 # TODO find where sns.ClusterGrid is actually defined and use that as return type?
 # shouldn't need any more generality (Grid was used above to include FacetGrid)
 def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap,
-    return_linkages: bool = False, **kwargs) -> sns.axisgrid.Grid:
+    #return_linkages: bool = False, **kwargs) -> sns.axisgrid.Grid:
+    return_linkages: bool = False, **kwargs):
     # TODO update doc on row_colors. what are other ways? if i add features to
     # viz.clustermap, just reference that doc here?
     """

@@ -28,9 +28,19 @@ from matplotlib import patches
 from matplotlib.figure import Figure
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.optimize import curve_fit
-from scipy.stats import zscore as scipy_zscore
+# TODO replace w/ conditional import of seaborn / scipy as needed?
+# if trying to run tests w/ valgrind, these imports currently seems to raise:
+# SystemError: initialization of beta_ufunc raised unreported exception
+# from a from scipy.stats._boost.beta_ufunc import
+if os.getenv('PYTHONMALLOC') != 'malloc':
+    import seaborn as sns
+    from scipy.optimize import curve_fit
+    from scipy.stats import zscore as scipy_zscore
+else:
+    warnings.warn('could not import scipy (and dependent packages), because '
+        'PYTHONMALLOC=malloc'
+    )
+
 import colorama
 from termcolor import cprint, colored
 from tqdm import tqdm
@@ -2127,122 +2137,15 @@ links_created = []
 # use basename of file in new dir by default?
 # TODO complain early on if filesystem HONG2P_DATA / HONG2P_FAST_DATA point to do not
 # support symlinks (probably at init, not in this fn)
-def symlink(target, link, relative=True, checks=True, replace=False):
-    """Create symlink link pointing to target, doing nothing if link exists.
-
-    Also registers `link` for deletion at end if what it points to no
+# TODO work (after refactoring to hong2p)?
+def symlink(target, link, **kwargs):
     """
-    # TODO err if link exists and was created *in this same run* (indicating trying to
-    # point to multiple different outputs from the same link; a bug)
-    target = Path(target)
+    `hong2p.util.symlink` wrapper that also registers `link` for deletion at end if
+    target no longer exists.
+    """
+    util.symlink(target, link, **kwargs)
     link = Path(link)
-
-    # Will slightly simplify cleanup logic by mostly ensuring broken links only come
-    # from deleted directories.
-    if not target.exists():
-        raise FileNotFoundError
-
-    # TODO delete
-    verbose = False
-    if verbose:
-        print('input:')
-        print(f'target={target}')
-        print(f'link={link}')
-        print(f'{target.is_dir()=}')
-        print(f'{link.is_dir()=}')
-    #
-    if relative:
-        # TODO delete if the old link_dir code was actually useful...
-        # (if i run all parts of my analysis that make symlinks fresh and this doesn't
-        # trigger, can delete)
-        assert not (link.is_dir() and not link.is_symlink())
-
-        # seemed to work for some(/all? unclear...) uses, but would cause my
-        # link-already-exists checks to fail...
-        link_dir = link.parent
-
-        # TODO delete
-        if verbose:
-            print(f'{link_dir=}')
-            print(f'{os.path.relpath(target, link_dir)=}')
-        #
-
-        # From pathlib docs: "PurePath.relative_to() requires self to be the subpath of
-        # the argument, but os.path.relpath() does not."
-        # ...so probably can't use it as a direct replacement here.
-        # TODO test this behaves correctly. depend on whether target is a dir/not?
-        target = Path(os.path.relpath(target, link_dir))
-    else:
-        # Because relative paths are resolved wrt current working directory, not wrt
-        # directory of target (or link) (same w/ os.path.abspath)
-        assert target.is_absolute()
-
-        # TODO do i even want to do this? isn't it just modifying relative components
-        # inside of an absolute path OR paths containing symlinks at this point? i don't
-        # think i have the former and i don't know if i would want symlinks resolved...
-        #
-        # From pathlib docs: "os.path.abspath() does not resolve symbolic links while
-        # Path.resolve() does."
-        # Not sure if relevant to any of my use cases.
-        target = target.resolve()
-
-    # TODO delete
-    if verbose:
-        print('final:')
-        print(f'target={target}')
-        print(f'link={link}')
-    #
-
-    def check_written_link():
-        resolved_link = link.resolve()
-
-        if target.is_absolute():
-            resolved_target = target.resolve()
-        else:
-            resolved_target = (link.parent / target).resolve()
-
-        # TODO delete try/except
-        try:
-            assert resolved_link == resolved_target, (f'link: {link}\n'
-                f'target: {target}\n{resolved_link} != {resolved_target}'
-            )
-        except AssertionError as err:
-            print()
-            print(str(err))
-            import ipdb; ipdb.set_trace()
-
-    # TODO delete?
-    # TODO maybe this should just be the default? why not? maybe warn if replacing?
-    #replace = True
-
-    # NOTE: link.exists() will return False for broken symlinks, but link.is_symlink()
-    # will return True.
-    if link.is_symlink():
-        if replace or not link.exists():
-            link.unlink()
-        else:
-            if checks:
-                check_written_link()
-
-            return
-
-    link.symlink_to(target)
-    if checks:
-        # This should fail if the link is broken right after creation
-        assert link.is_symlink()
-        assert link.resolve().exists(), f'link broken! ({link} -> {target})'
-
-    # TODO delete?
-    if checks:
-        check_written_link()
-    #
-
     links_created.append(link)
-
-    # TODO delete
-    if verbose:
-        print()
-    #
 
 
 def delete_link_if_target_missing(link):
