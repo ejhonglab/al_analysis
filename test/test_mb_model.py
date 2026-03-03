@@ -78,7 +78,6 @@ APL_WEIGHT_TEST_KWS: List[ParamDict] = dict_seq_product([
     [dict(pn_claw_to_APL=True), dict()]
 )
 # TODO TODO add test that none of options in MODEL_KW_LIST give same outputs?
-# (could then use that to also test APL_coup_const=0 vs -1 case)
 # TODO test that relevant subset of these all have diff wPNKC (those w/ diff
 # connectome_wPNKC args. could use the fn that collects those args to tell which subset
 # to test?)
@@ -124,8 +123,6 @@ MODEL_KW_LIST: List[ParamDict] = APL_WEIGHT_TEST_KWS + dict_seq_product([
         dict(weight_divisor=20),
         # TODO move to top of this list, after debugging prat_claws=True case?
         dict(),
-
-        dict(one_row_per_claw=True, prat_claws=True, APL_coup_const=0),
 
         # TODO keep? just want to check output not changing when starting to rework
         # model bouton implementation (for one, to remove need to specify
@@ -178,13 +175,13 @@ def get_fitandplot_model_kw_list(model_kw_list: List[ParamDict]) -> List[ParamDi
                 # call only ever returns output of one seed
                 kws['n_seeds'] = N_TEST_SEEDS
 
-            # if i delete this, at least leave an example comment of how to mark
-            # parameters here
-            if 'APL_coup_const' in kws:
-                assert kws['APL_coup_const'] == 0
-                kws = pytest.param(kws, marks=pytest.mark.xfail(
-                    reason='APL_coup_const C++ code broken', run=False
-                ))
+            # 'APL_coup_const' doesn't exist anymore. just leaving this as an example of
+            # how to xfail something here based on parameters.
+            #if 'APL_coup_const' in kws:
+            #    assert kws['APL_coup_const'] == 0
+            #    kws = pytest.param(kws, marks=pytest.mark.xfail(
+            #        reason='APL_coup_const C++ code broken', run=False
+            #    ))
         else:
             # TODO assert it's already a pytest.param (ParameterSet)? still add mark if
             # not already marked for xfail?
@@ -272,9 +269,10 @@ def _fit_mb_model(*args, **kwargs) -> FitMBModelOutputs:
     # be from within one of the test fns? yup, this works.
     #
     # stuff calling _fit_and_plot_mb_model should be handled by the xfail marks added by
-    # get_fitandplot_model_kw_list
-    if 'APL_coup_const' in kwargs:
-        pytest.xfail('APL_coup_const C++ code broken')
+    # get_fitandplot_model_kw_list. just leaving this as an example of how to xfail
+    # within test.
+    #if 'APL_coup_const' in kwargs:
+    #    pytest.xfail('APL_coup_const C++ code broken')
     #
 
     # TODO move this prints into fit_mb_model, under a verbose flag?
@@ -667,8 +665,22 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     # TODO assert pickles has at least some minimum set of pickles?
     output_dir_pickles = filenames_with_ext(output_dir, 'p')
     output_dir2_pickles = filenames_with_ext(output_dir2, 'p')
-    # TODO TODO is kc_spont_in.p still getting saved? still want it to be?
-    # (failed for uniform case)
+
+    # TODO factor out?
+    def filter_dynamics(fnames: Set[str]) -> Set[str]:
+        # filters e.g. {'pn_sims.p', 'spike_recordings.p', 'Is_sims.p', 'vm_sims.p',
+        # 'orn_sims.p', 'inh_sims.p'}
+        return {n for n in fnames
+            if not (n.endswith('_sims.p') or n in ('spike_recordings.p',
+                'Is_from_kcs.p', 'Is_from_pns.p'
+            ))
+        }
+
+    # TODO option to also compare these? (default to False tho)
+    output_dir_pickles = filter_dynamics(output_dir_pickles)
+    output_dir2_pickles = filter_dynamics(output_dir2_pickles)
+
+    # TODO is kc_spont_in.p still getting saved? still want it to be?
     assert output_dir_pickles == output_dir2_pickles, \
         f'diff_sets(output_dir_pickles, output_dir2_pickles)'
 
@@ -1139,10 +1151,7 @@ def test_homeostatic_thrs(orn_deltas):
 
 
 # TODO add test that allow_net_inh_per_claw=True (the default) produces some
-# negative claw activities (and that there are none w/ =False), and also cover
-# APL_coup_const != -1 case, where i currently haven't implemented
-# allow_net_inh_per_claw=False (but xfail that here for now, and then get it to work
-# later, by refactoring olfsysm)
+# negative claw activities (and that there are none w/ =False)
 # TODO + test that orn activities (after adding spont) can't be negative (but seems like
 # C++ code might allow them to be? fix that?
 
@@ -1751,11 +1760,10 @@ def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
     assert format_model_params(kws) == test_id
 
     ref_model_output_dir = reference_output_dir / test_id
-    # TODO TODO work w/ symlinks too
-    print(f'{ref_model_output_dir=}')
-    print(f'{ref_model_output_dir.is_symlink()=}')
-    print(f'{ref_model_output_dir.is_dir()=}')
-    breakpoint()
+
+    # this works for symlink ref_model_output_dir too, where is_dir() will only return
+    # True if the target exists and is a directory then (no .resolve() needed for that).
+    # all below currently also works when this is a symlink.
     if not ref_model_output_dir.is_dir():
         pytest.xfail(f'{ref_model_output_dir=} did not exist\n'
             'maybe this case failed (or was not included) when generate script run?'
@@ -2727,14 +2735,6 @@ def test_btn_expansion(tmp_path, orn_deltas, kws):
 # TODO add tests checking the key parts of example scripts for sam / ruoyi / george /
 # yang all still work (how to organize?)
 
-# TODO (delete. not sure i care to revisit this code) add test that APL_coup_const=0
-# (which should have 2 separate *uncoupled* APL's, according to default center/surround
-# compartmentalization) has different activity than w/o it (should be covered if i add a
-# test that checks all elements in list below have distinct responses)
-# (and test that it's in some way as expected? which compartment has more APL
-# inhibition, if either? or more total input? either inhibited more? [not so sure it's
-# easy to reason about balance of excitation and inhibition...])
-
 # TODO test we can start tuning at arbitrary tuning iters (w/ weights + scale params
 # set appropriately), and still get to same final output
 
@@ -2968,11 +2968,14 @@ def test_apl_weights_osm(apl_weights):
     if regen:
         mp.kc.tune_apl_weights = False
 
-    # TODO refactor to share w/ fit_mb_model usage (have fn get_time_index now)
+    # TODO TODO refactor to share w/ fit_mb_model usage (have fn get_time_index now. use
+    # that.)
     t0 = mp.time_pre_start
     t1 = mp.time_end
     n_samples = int(round((t1 - t0) / mp.time_dt))
     ts = pd.Series(name='seconds', data=np.linspace(t0, t1, num=n_samples))
+    # TODO delete use of these int indices (use new label based slicing like in
+    # mb_model)
     stim_start_idx = np.searchsorted(ts, mp.time_stim_start)
     stim_end_idx = np.searchsorted(ts, mp.time_stim_end)
     #
@@ -3350,6 +3353,15 @@ def test_dynamics_indexing(orn_deltas):
     # random PNs w/ all diff firing rates / spont (or just use megamat?), and check
     # bouton_sims elements match pn_sims elements, as expected. make sure APL>PN is
     # disabled so bouton dynamics should just be PN dynamics
+
+    # TODO TODO also check that we can recalculate Is_sims / inh_sims from claw_sims (or
+    # pn_sims, if wPNKC_one_row_per_claw=False)? or at least Is_from_[kcs|pns]?
+    # TODO TODO TODO should need separate test to check Is_from_kcs, at least if KC>APL
+    # input requires spiking (currently threshold set above to disable spiking)
+
+    # TODO worth also shuffling things by int index, to make sure we are actually
+    # relying on DataArray/pandas indexing, and not existing order of entries?
+    # prob not (b/c would need to re-order indices then anyway, to compare, no?)?
 
 
 @pytest.mark.parametrize('apl_weights', APL_WEIGHT_TEST_KWS, ids=format_model_params,
