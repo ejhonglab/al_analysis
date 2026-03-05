@@ -35,6 +35,10 @@ from test_mb_model import (FITANDPLOT_MODEL_KW_LIST, QUICK_FITANDPLOT_MODEL_KW_L
 # TODO any easy way to generate (+ serialize) outputs for fit_mb_model alone, or too
 # much duplicated work w/ serialization done already in fit_and_plot_mb_model?
 
+# TODO TODO TODO log / plot fixed_thr and wAPLKC for all of tuned outputs here (one plot
+# showing values for all parameter choices, across model instantiations)
+# (more appropriate place to do that? prob not? could refactor and also do in
+# model_mb_responses)
 def main():
     # TODO TODO add argument for substring to match against test ID (use -k, like
     # pytest?)

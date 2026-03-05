@@ -2530,6 +2530,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # (10112,)
 
             if dist_weight is None:
+                # TODO TODO define from something w/ synapse counts as values instead?
+                # (at least, if dist_weight is None)
                 wPNKC = dist_weights.fillna(0).astype(bool).astype(int)
             else:
                 # TODO need to scale so mean is similar to above? see comments above.
@@ -3934,48 +3936,138 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             ax.set_title('# claws per bouton')
             savefig(fig, plot_dir, 'n_claws_per_bouton_hist')
 
-            # TODO (delete. should be fine) change anything if i start w/ output that is
-            # just length # boutons, rather than length # claws [as here]? should just
-            # be careful with calculation, to drop dupes w/in claw)
-            n_boutons_per_glom = claw2bouton.groupby(glomerulus_col).apply(
-                lambda x: len(x[bouton_cols].drop_duplicates())
+            assert claw2bouton.index.equals(df['n_synapses'].index)
+            # TODO TODO maybe also include synapse counts multibouton dropped stuff?
+            # should be easier than actually merging IDs? i assume df n_synapses  has
+            # excluded those?
+            n_synapses = df['n_synapses']
+            assert not n_synapses.isna().any() and n_synapses.min() > 0
+            assert 'n_synapses' not in claw2bouton.columns
+            claw2bouton['n_synapses'] = n_synapses
+
+            # just to move ['kc_id', 'claw_id'] back to regular columns, from index
+            claw2bouton = claw2bouton.reset_index()
+
+            by_glom = claw2bouton.groupby(glomerulus_col)
+
+            # TODO TODO TODO then just also plot avg/total for each unit below?
+
+            n_claws_per_glom = n_claws_per_glom = by_glom.apply(
+                lambda x: len(x[claw_cols].drop_duplicates())
             )
+            total_syn_per_glom = by_glom.n_synapses.sum()
+            mean_claw_syn_per_glom = total_syn_per_glom / n_claws_per_glom
+            mean_claw_syn_per_glom2 = by_glom.n_synapses.mean()
+            # seems i could also assert .equals (at least in one case i tested)
+            assert pd_allclose(mean_claw_syn_per_glom, mean_claw_syn_per_glom2)
+            # TODO delete
+            # (sum w/in claw_cols shouldn't do anything, since grouping by claw_cols
+            # produces a group for each row in claw2bouton, given that we've already
+            # dropped the "multibouton" stuff)
+            # this is a scalar, not same as others
+            #mean_claw_syn_per_glom4 = claw2bouton.groupby(claw_cols).n_synapses.sum().mean()
+            # this output is of length # claws, and doesn't have glomerulus_col.
+            # probably just reproduces input exactly.
+            #mean_claw_syn_per_glom5 = claw2bouton.groupby(claw_cols).n_synapses.mean()
+            #
+
             # TODO check 54 matches # unique gloms later (i think it does?)
-            assert len(n_boutons_per_glom) == 54
+            n_gloms = len(total_syn_per_glom)
+            assert n_gloms == 54
 
-            # TODO TODO similar plot, but for # claws per glom (or just leave at the
-            # matshow plots i already have from connectome_APL_weights?)
+            total_syn_glom_order = total_syn_per_glom.sort_values(ascending=False).index
+            total_syn_suffix_and_order = ('_order-n-syn', total_syn_glom_order)
 
-            # TODO matshow this instead? (as some of the plots in
-            # connectome_APL_weights)
-            n_gloms = len(n_boutons_per_glom)
-            n_boutons_per_glom.name = 'n_boutons_per_glom'
+            suffix, sort_order = total_syn_suffix_and_order
+
+            # TODO refactor plotting to share w/ loop below? just move into loop below
+            # (maybe only if unit=='claw'?)
+            # TODO TODO check this one isn't already multiplying #-synapses per
+            # claw (compare to calculation + plot made above, before assigning boutons
+            # to claws? or am i just thinking about APL<>PN merging? was there any
+            # possibility for duplication in here?)
+            # TODO TODO also compare to calculation+plot from before multibouton
+            # dropping? that also satisfy above?
             fig, ax = plt.subplots()
-            sns.barplot(n_boutons_per_glom, ax=ax)
-
+            sns.barplot(total_syn_per_glom[sort_order], ax=ax)
             labels = ax.get_xticklabels()
-            # can not pass to ax.set_xticklabels, or will get warning about
-            # FixedFormatter. can use plt.setp instead.
-            # https://github.com/mwaskom/seaborn/issues/2717.
             plt.setp(labels, rotation=90, fontsize=6)
+            ax.set_title('total # PN>KC synapses per glomerulus'
+                f'\n({n_gloms} glomeruli)'
+            )
+            ax.set_ylabel('total # PN>KC synapses')
+            savefig(fig, plot_dir, f'total_syn_per_glom{suffix}')
 
-            ax.set_title(f'# boutons per glomerulus\n({n_gloms} glomeruli)')
-            savefig(fig, plot_dir, 'n_boutons_per_glom')
+            # TODO TODO sort this one by itself too
+            fig, ax = plt.subplots()
+            sns.barplot(mean_claw_syn_per_glom[sort_order], ax=ax)
+            labels = ax.get_xticklabels()
+            plt.setp(labels, rotation=90, fontsize=6)
+            ax.set_title('mean per-claw # PN>KC synapses, per glomerulus'
+                f'\n({n_gloms} glomeruli)'
+            )
+            ax.set_ylabel('mean per-claw # PN>KC synapses')
+            savefig(fig, plot_dir, f'mean_claw_syn_per_glom{suffix}')
 
-            # TODO TODO # claws per glom too? the point any different than # boutons per
-            # glom? (and latter would just be a scaling factor on top of # boutons,
-            # essentially, right? check?)
-            # (or happy with plots i currently have? move those here b/c they
-            # don't actually need the PN<>APL weights, right?)
-            # (just make again, if only to have a barplot version)
-            # TODO TODO similar plot, but for # of KCs with any claws from glom
+            for (unit, unit_cols) in [
+                    ('pn', [PN_ID]),
 
-            # TODO TODO TODO one version of each of the #-bouton/claw/KC plot, but
-            # sorted into a consistent order (w/ other version of each, independently
-            # sorted)
-            # TODO TODO TODO also plot total and mean (per claw? or what?) synapse count
-            # per glom
-            #breakpoint()
+                    ('bouton', bouton_cols),
+
+                    # TODO the point for this any different than # boutons per glom?
+                    # (and latter would just be a scaling factor on top of # boutons,
+                    # essentially, right? check?)
+                    ('claw', claw_cols),
+
+                    # should be # KCs w/ any claws from a given glom
+                    ('kc', [KC_ID]),
+                ]:
+                # TODO (delete. should be fine) change anything if i start w/ output
+                # that is just length # boutons, rather than length # claws [as here]?
+                # should just be careful with calculation, to drop dupes w/in claw)
+                #
+                # TODO TODO also try defining some/all of below before dropping
+                # multibouton, and see to what extent anything is different. especially
+                # for glomeruli B cares about for grant: DA1, VA6, VA1d, VA1v, V, VL1
+                n_units_per_glom = by_glom.apply(
+                    lambda x: len(x[unit_cols].drop_duplicates())
+                )
+                n_units_per_glom.name = f'n_{unit}s_per_glom'
+                assert len(n_units_per_glom) == n_gloms
+
+                # TODO delete?
+                if unit == 'claw':
+                    # TODO this make sense for unit other than 'claw'? sanity check
+                    # TODO would adding glomerulus_col screw stuff up in unit ==
+                    # [KC_ID] case? prob don't want to make this for that case anyway?
+                    mean_syn_per_unit = claw2bouton.groupby([glomerulus_col] + unit_cols
+                        ).n_synapses.mean()
+
+                    mean_syn_per_glom = mean_syn_per_unit.groupby(glomerulus_col).mean()
+
+                    mean_claw_syn_per_glom3 = mean_syn_per_glom
+                    # true for unit == 'claw', but not sure if calculation makes sense
+                    # for all/any others
+                    assert pd_allclose(mean_claw_syn_per_glom3, mean_claw_syn_per_glom)
+                #
+
+                suffix_and_sort_order = [
+                    ('_sorted', n_units_per_glom.sort_values(ascending=False).index),
+                    total_syn_suffix_and_order,
+                ]
+                for suffix, sort_order in suffix_and_sort_order:
+                    fig, ax = plt.subplots()
+                    sns.barplot(n_units_per_glom[sort_order], ax=ax)
+
+                    labels = ax.get_xticklabels()
+                    # can not pass to ax.set_xticklabels, or will get warning about
+                    # FixedFormatter. can use plt.setp instead.
+                    # https://github.com/mwaskom/seaborn/issues/2717.
+                    plt.setp(labels, rotation=90, fontsize=6)
+
+                    ax.set_title(f'# {unit}s per glomerulus\n({n_gloms} glomeruli)')
+                    ax.set_ylabel(f'# {unit}s')
+                    savefig(fig, plot_dir, f'n_{unit}s_per_glom{suffix}')
 
             # TODO (delete. shouldn't be any w/ 0 weight, given how it's calculated, at
             # least not before reindexing?) summarize (in connectome_APL_weights) any
