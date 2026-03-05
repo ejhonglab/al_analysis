@@ -27,7 +27,7 @@ import olfsysm as osm
 from al_util import warn
 from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
     connectome_APL_weights, KC_ID, CLAW_ID, BOUTON_ID, KC_TYPE, step_around,
-    read_series_csv, read_param_csv, read_param_cache, get_thr_and_APL_weights,
+    read_param_csv, read_params, read_tuned_params, get_thr_and_APL_weights,
     variable_n_claw_options, dict_seq_product, get_connectome_wPNKC_params,
     format_model_params, eval_and_check_compatible, glomerulus_col, ParamDict,
     format_weights, megamat_orn_deltas, paper_hemibrain_output_dir, get_dynamics,
@@ -75,7 +75,7 @@ APL_WEIGHT_TEST_KWS: List[ParamDict] = dict_seq_product([
         )
     ],
     # TODO switch order (maybe not until figuring out latest issues?)?
-    [dict(pn_claw_to_APL=True), dict()]
+    [dict(pn_claw_to_apl=True), dict()]
 )
 # TODO TODO add test that none of options in MODEL_KW_LIST give same outputs?
 # TODO test that relevant subset of these all have diff wPNKC (those w/ diff
@@ -103,12 +103,12 @@ MODEL_KW_LIST: List[ParamDict] = APL_WEIGHT_TEST_KWS + dict_seq_product([
         # TODO TODO TODO add some thresholding the per-claw weights, like betty wanted
     ],
     # TODO want both?
-    [dict(pn_claw_to_APL=True), dict()]
+    [dict(pn_claw_to_apl=True), dict()]
 
 ) + dict_seq_product(
     [
         # pn_claw_to_apl=True: no-spiking required; direct claw>APL input
-        dict(one_row_per_claw=True, prat_claws=True, pn_claw_to_APL=True),
+        dict(one_row_per_claw=True, prat_claws=True, pn_claw_to_apl=True),
 
         # TODO test n_claws_active_to_spike=2/3? (betty didn't care much about that
         # code)
@@ -277,7 +277,7 @@ def _fit_mb_model(*args, **kwargs) -> FitMBModelOutputs:
 
     # TODO move this prints into fit_mb_model, under a verbose flag?
     print('running fit_mb_model...', flush=True)
-    # TODO TODO still include **PLOT_KWS if we have plot_dir (non-None)
+    # TODO still include **PLOT_KWS if we have plot_dir (non-None)?
     #ret = fit_mb_model(*args, **kwargs, **PLOT_KWS)
     ret = fit_mb_model(*args, **kwargs)
     print('done', flush=True)
@@ -473,7 +473,7 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
             assert equals(v, v2), f'{k=}: {v=} not equals {v2=}'
 
         else:
-            # TODO keep this, not that i have convert_dtypes=True path of
+            # TODO delete this, now that i have convert_dtypes=True path of
             # read_series_csv (and read_param_csv that wraps that)?
             # to handle input loaded from CSV into series, where many values still float
             # TODO can i change how i load to cast at load-time when possible?
@@ -602,14 +602,17 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
 
         plot_root2: if NOT passed, assumes 'output_dir' value in both input dicts is a
             name of a directory under `plot_root`. If passed, `params2['output_dir']`
-            will be under `plot_root2`
+            (or `params['output_dir']`, if `params2=None`) will be under `plot_root2`
 
         **kwargs: passed thru to first `assert_param_dicts_equal` call, that directly
             compares `params` and `params2` inputs.
     """
     assert plot_root.is_dir(), f'{plot_root=} not a directory'
 
-    output_dir = (plot_root / params['output_dir']).resolve()
+    dirname = params['output_dir']
+    output_dir = (plot_root / dirname).resolve()
+    # TODO TODO TODO fix how generate_... is triggering this now, in
+    # check_against_last=True case
     assert output_dir.is_dir(), f'{output_dir=} not a directory'
 
     if params2 is None:
@@ -620,17 +623,30 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     else:
         assert plot_root2.is_dir(), f'{plot_root2=} not a directory'
 
-    output_dir2 = (plot_root2 / params2['output_dir']).resolve()
+    if params2 is not None:
+        dirname2 = params2['output_dir']
+    else:
+        dirname2 = dirname
+    output_dir2 = (plot_root2 / dirname2).resolve()
     assert output_dir2.is_dir(), f'{output_dir2=} not a directory'
 
     assert output_dir != output_dir2
 
+    # TODO TODO replace all read_tuned_params w/ read_params (done?), and then fix any
+    # issues (/add exclusions) as needed (need to test)
     if params2 is None:
-        # TODO any point to read csv too? that ever have keys this doesn't?
-        # also load it and assert it doesn't?
-        params2 = read_param_cache(plot_root2)
+        # TODO TODO any point to read csv too? that ever have keys this doesn't? YES!!!
+        # use that instead/too!!! tuned_params only has tuned params set in
+        # fit_mb_model/olfsysm, but missing many in CSV. only stuff filtered before
+        # saving CSV [if any] is in this but not CSV, and now we also should have either
+        # json/pickle param_cache_name?  also load it and assert it doesn't?
+        params2 = read_params(output_dir2)
+        # TODO delete
+        #params2 = read_tuned_params(output_dir2)
 
     def check_pickle_and_parquet_outputs(name):
+        # TODO this even possible? shouldn't be if we define set of filenames to check
+        # from intersection instead of union. any reason to not change def like that?
         if name in exclude_pickles:
             return
 
@@ -680,20 +696,41 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     output_dir_pickles = filter_dynamics(output_dir_pickles)
     output_dir2_pickles = filter_dynamics(output_dir2_pickles)
 
-    # TODO is kc_spont_in.p still getting saved? still want it to be?
-    assert output_dir_pickles == output_dir2_pickles, \
-        f'diff_sets(output_dir_pickles, output_dir2_pickles)'
+    # TODO expose as kwarg (+ default to False)
+    allow_old_cache_name = True
+    old_tuned_param_name = 'params_for_csv.p'
+    # NOTE: old name can only ever be in 1st output, and must not be in 2nd output
+    assert old_tuned_param_name not in output_dir2_pickles
+    if allow_old_cache_name and old_tuned_param_name in output_dir_pickles:
+        warn(f'{output_dir=} used old tuned param cache name (={old_tuned_param_name})')
+        # new name for same thing (new 'params.p' is "all" params, not just the "tuned"
+        # params)
+        new_tuned_param_name = 'tuned_params.p'
+        assert new_tuned_param_name not in output_dir_pickles
+
+        assert output_dir_pickles - output_dir2_pickles <= {old_tuned_param_name}
+        # params.p ("all" params, which should be more than "tuned" params) should now
+        # also exist, in addition to params.csv (which still has the same name as it did
+        # before)
+        assert output_dir2_pickles - output_dir_pickles <= {
+            new_tuned_param_name, 'params.p'
+        }
+    else:
+        # TODO is kc_spont_in.p still getting saved? still want it to be?
+        assert output_dir_pickles == output_dir2_pickles, \
+            f'{diff_sets(output_dir_pickles, output_dir2_pickles)}'
 
     output_dir_parquets = filenames_with_ext(output_dir, 'parquet')
     output_dir2_parquets = filenames_with_ext(output_dir2, 'parquet')
     assert output_dir_parquets == output_dir2_parquets, \
-        f'diff_sets(output_dir_parquets, output_dir2_parquets)'
+        f'{diff_sets(output_dir_parquets, output_dir2_parquets)}'
 
     # TODO delete eventually
     parquet_names = {x[:-len('.parquet')] for x in output_dir_parquets}
     pickle_names = {x[:-len('.p')] for x in output_dir_pickles}
-    # TODO anything else?
-    assert pickle_names - parquet_names == {'params_for_csv'}
+    # TODO update to remove params_for_csv, after updating/renaming all old outputs to
+    # have that one as 'tuned_params.p' instead
+    assert pickle_names - parquet_names <= {'params_for_csv', 'params', 'tuned_params'}
     #
 
     # TODO assert some minimum set of CSVs?
@@ -709,8 +746,10 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     #
     # params_for_csv.p is loaded and checked above (we need to ignore a subset and
     # may need to special case allclose checking on some there)
-    # TODO just define from what is only in pickle (not parquet)
-    exclude_pickles = ('params_for_csv.p',)
+    # TODO TODO just define from what is only in pickle (not parquet)
+    # (or update to remove params_for_csv, after updating/renaming all old outputs to
+    # have that one as 'tuned_params.p' instead, as above)
+    exclude_pickles = ('params_for_csv.p', 'params.p', 'tuned_params.p')
 
     output_file_names_to_check = output_dir_pickles | output_dir_parquets
 
@@ -724,17 +763,47 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
             check_pickle_and_parquet_outputs(path)
             output_file_names_to_check.remove(path)
 
+    # TODO ok that we are doing this before first two assert_param_dicts_equal calls
+    # now? (delete commented below, if so)
+    # TODO maybe don't add to expected_missing_keys, and just replace it?
+    expected_missing_keys = set(kwargs.pop('expected_missing_keys', tuple()))
+    # should no longer be serializing any of these in pickle, so as long as the 2nd arg
+    # is the older output, should be ok here
+    expected_missing_keys |= set(k for k, v in params.items()
+        if isinstance(v, pd.DataFrame) or isinstance(v, pd.Series)
+    )
+    #
+
+    wAPLKC2 = None
+    # TODO assert neither of these would be Series in output_dir2 / params2? (tho
+    # separate files containing just the Series should match)
+    if 'wAPLKC' in params:
+        # in these cases, should be excluded via expected_missing_keys defined above,
+        # for all assert_param_dicts_equal calls
+        # TODO also want to pop from dicts?
+        if isinstance(params['wAPLKC'], pd.Series):
+            wAPLKC2 = params['wAPLKC']
+
+    wKCAPL2 = None
+    if 'wKCAPL' in params:
+        if isinstance(params['wKCAPL'], pd.Series):
+            wKCAPL2 = params['wKCAPL']
+
+    # TODO TODO if wAPLKC/wKCAPL exist and are series, check that they match
+    # wAPLKC/wKCAPL.p files in same dir, then exclude from param dict checking call
+    # below (probably only applies to limited `one_row_per_claw and not
+    # use_connectome_APL` cases)
     # TODO don't just thread kwargs thru all these kwargs? only manually pass
     # expected_missing_keys and ignore others for now? (esp since only doing on this
     # first call)
-    assert_param_dicts_equal(params, params2, **kwargs)
+    assert_param_dicts_equal(params, params2,
+        expected_missing_keys=expected_missing_keys, **kwargs
+    )
 
     # comparing two CSVs, we should not have to worry about expected_missing_csv_keys.
     # assuming passed in expected_missing_keys (in kwargs) are still relevant.
-    a2 = read_series_csv(output_dir / 'params.csv')
-    b2 = read_series_csv(output_dir2 / 'params.csv')
-    a2 = a2.to_dict()
-    b2 = b2.to_dict()
+    a2 = read_params(output_dir)
+    b2 = read_params(output_dir2)
 
     # TODO update to some new assertion?
     # (no longer true, now that we are saving stuff to params_for_csv.p that get
@@ -748,25 +817,36 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
 
     # TODO ok to also pass kwargs here? (may need to separately expose just
     # ignore_tuning_params, if not)
-    assert_param_dicts_equal(a2, b2, **kwargs)
+    assert_param_dicts_equal(a2, b2, expected_missing_keys=expected_missing_keys,
+        **kwargs
+    )
 
     # if loading the params again, why passing in? can these differ at all from input?
     # (yes, the passed in params will contain the most, with the CSVs often containing
     # almost all of those [only missing likely some minor ones, like 'pearson', or
     # 'wAPLKC'/'wKCAPL' in a special subset of the cases where they are Series cached to
     # their own files]).
-    a1 = read_param_cache(output_dir)
-    b1 = read_param_cache(output_dir2)
+    # TODO delete
+    # TODO TODO delete? should all be in read_params output above now, certainly if
+    # using output loaded from pickle/json and not CSV (should be using that in
+    # read_params() now, though CSV should also be loaded and checked against that)
+    a1 = read_tuned_params(output_dir)
+    b1 = read_tuned_params(output_dir2)
     #
+    # TODO delete (/restore) (moved above)
     # TODO maybe don't add to expected_missing_keys, and just replace it?
-    expected_missing_keys = set(kwargs.pop('expected_missing_keys', tuple()))
-    # should no longer be serializing any of these in pickle, so as long as the 2nd arg
-    # is the older output, should be ok here
-    expected_missing_keys |= set(k for k, v in b1.items()
-        if isinstance(v, pd.DataFrame) or isinstance(v, pd.Series)
-    )
+    #expected_missing_keys = set(kwargs.pop('expected_missing_keys', tuple()))
+    ## should no longer be serializing any of these in pickle, so as long as the 2nd arg
+    ## is the older output, should be ok here
+    ## TODO TODO TODO was this an error, tha it was b1 and not a1? dict checking fn says
+    ## 1 but not 2 should have it, no?
+    #expected_missing_keys |= set(k for k, v in b1.items()
+    #    if isinstance(v, pd.DataFrame) or isinstance(v, pd.Series)
+    #)
+    #
     # TODO ok to also pass kwargs here? (may need to separately expose just
     # ignore_tuning_params, if not)
+    # TODO can i delete only_check_overlapping_keys=True now?
     assert_param_dicts_equal(a1, b1, expected_missing_keys=expected_missing_keys,
         only_check_overlapping_keys=True, **kwargs
     )
@@ -809,6 +889,14 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
         # name have same contents (across the two dirs) above
         wAPLKC = pd.read_pickle(output_dir / 'wAPLKC.p')
         wKCAPL = pd.read_pickle(output_dir / 'wKCAPL.p')
+
+        # TODO should i assert these are not None? or only have in some cases?
+        if wAPLKC2 is not None:
+            assert wAPLKC.equals(wAPLKC2)
+
+        if wKCAPL2 is not None:
+            assert wKCAPL.equals(wKCAPL2)
+
         assert isinstance(wAPLKC, pd.Series)
         assert isinstance(wKCAPL, pd.Series)
         # TODO TODO may need to fix some one-row-per-claw=True cases (which currently
@@ -825,10 +913,13 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
             # TODO double check values still make sense here. are weights averaged
             # wAPLKC.index longer and has claw levels. df.index only KCs.
             assert len(df.index) < len(wAPLKC.index)
+    # TODO delete this path now? (always popping above, before assert_param_dicts_equal
+    # calls? or should i only be doing that in certain cases?)
     else:
         assert 'wKCAPL' in params
         assert params['wAPLKC'] is not None
         assert params['wKCAPL'] is not None
+    #
 
     # TODO warn about any files (that are not plots) that we are not checking?
     # (excluding *.pdf, model_internals/ (which should only have *.pdf), and
@@ -1539,7 +1630,7 @@ def assert_param_csv_matches_returned(model_output_root: Path, param_dict: Param
 
     model_output_dir = model_output_root / param_dict['output_dir']
     assert model_output_dir.is_dir()
-    p2 = read_param_csv(model_output_dir)
+    p2 = read_params(model_output_dir)
 
     returned_keys = set(param_dict.keys())
 
@@ -1585,41 +1676,26 @@ def assert_param_csv_matches_returned(model_output_root: Path, param_dict: Param
     # the only things that seem to be in here, but not in CSV, are things that should be
     # saved in separate files anyway ('kc_spont_in', and when they are Series 'wKCAPL'+
     # 'wAPLKC). shouldn't need to check this.
-    from_pickle = read_param_cache(model_output_dir)
-    pickle_keys = set(from_pickle.keys())
-
+    from_tuned = read_tuned_params(model_output_dir)
+    tuned_keys = set(from_tuned.keys())
     # this could only happen in the single current special case in param_dict
     # non-serializable output saving loop (that pops + saves DataArray/DataFrames/etc),
     # where wAPLKC/wKCAPL are not popped for one particular set of parameters
     # (`one_row_per_claw and not use_connectome_APL_weights`)
-    assert pickle_keys - csv_keys <= set(expected_missing_csv_keys)
-    # CSV will always have many more entries than the pickle. model_kws/etc
-    assert len(csv_keys - pickle_keys) > 0
+    assert tuned_keys - csv_keys <= set(expected_missing_csv_keys)
+    # "all" params in CSV will always have many more entries than the "tuned" params.
+    # model_kws/etc.
+    assert len(csv_keys - tuned_keys) > 0, f'{csv_keys - tuned_keys=}'
 
 
 # TODO also want a test checking output of fit_mb_model and fit_and_plot_mb_model calls
 # are equiv, for same input? prob not too important
-# TODO TODO still want separate test that checks we can load output for all of these?
+# TODO still want separate test that checks we can load output for all of these?
 # (at least all used by downstream in model_mb_responses or natmix_data/analysis.py)
 # (or prob just incorporate into test below that we can load and also check those
 # equiv? could prob only check params, or whatever else was included in there? other
 # outputs are just in terms of serialized data files, so nothing to check against,
 # right?)
-# TODO also test return_dynamics=True + make_plots=True + plot_example_dynamics=True
-# paths, for all, and check that they also all work w/ input data not from megamat
-# (fit_mb_model had for a while only been running a large part of make_plots code if
-# panel was megamat...)
-#
-# TODO TODO TODO fix:
-# (same issue for `test_fixed_inh_params`. no other cases currently failing to converge)
-# one-row-per-claw_True__prat-claws_True__prat-boutons_True__pn-claw-to-APL_True__connectome-APL_True
-# TODO TODO TODO wait, why is this converging now? i wouldn't have thought anything
-# changed?
-# TODO TODO TODO is total_n_boutons set in this code currently? is it actually doing
-# anything (should err or something, if not add- / replace- / bouton dynamics flags
-# set?)?
-# ValueError: libolfsysm/src/olfsysm.cpp:1172 in `sparsity_nonconvergence_failure` check
-# `rv.kc.tuning_iters <= p.kc.max_iters` failed
 @pytest.mark.parametrize('kws', FITANDPLOT_MODEL_KW_LIST, ids=format_model_params)
 def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas, kws):
     """
@@ -1644,6 +1720,29 @@ def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas, kws):
     # still passes (should never need to explicitly pass in) (just remove those keys
     # currently added in get_thr_and_APL_weights?)
     thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
+
+    # get_thr_and_APL_weights should rename any *_scale parameters to just their prefix,
+    # overwriting any existing keys w/ that name (e.g. 'wAPLKC_scale' -> 'wAPLKC')
+    assert 'wAPLKC_scale' not in thr_and_apl_kws
+    assert 'wAPLKC' in thr_and_apl_kws
+    wAPLKC = thr_and_apl_kws['wAPLKC']
+
+    # TODO TODO true? maybe only in one of the branches below?
+    assert 'wKCAPL' not in thr_and_apl_kws
+    #
+    if (kws.get('one_row_per_claw', False) and
+        not kws.get('use_connectome_APL_weights', False)):
+        # TODO should there also have been some scalar *_scale parameter too?
+        # another mistake? (doesn't seem so. test passing.)
+        # (no scalar values, nor *_scale scalars here. just a single series wAPLKC
+        # currently, though maybe it should also have been a series wKCAPL, and mabye at
+        # some point the *_scale params too?)
+        assert isinstance(wAPLKC, pd.Series)
+    else:
+        # TODO refactor to share w/ existing mb_model code
+        assert isinstance(wAPLKC, float) or (
+            isinstance(wAPLKC, list) and all(isinstance(x, float) for x in wAPLKC)
+        )
 
     params2 = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
         **thr_and_apl_kws, **kws
@@ -1806,7 +1905,7 @@ def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
         expected_missing_csv_keys=expected_missing_csv_keys
     )
 
-    params2 = read_param_csv(ref_model_output_dir)
+    params2 = read_params(ref_model_output_dir)
 
     assert_fit_and_plot_outputs_equal(plot_root, params, params2,
         plot_root2=reference_output_dir,
@@ -1839,7 +1938,7 @@ def test_connectome_wPNKC_repro():
     )
     # TODO use w/ other assertion fns that check param dicts? (maybe only if enough in
     # these to be worth checking [i.e. also not too much missing...]?)
-    params = read_param_csv(wPNKC_dir)
+    params = read_params(wPNKC_dir)
 
     # TODO delete? still need after get_connectome_wPNKC_params?
     if params.get('one_row_per_claw'):
@@ -2242,17 +2341,15 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
 
     assert wPNKC2.equals(paper_wPNKC)
 
-    # TODO which to use?
-    #
     # {'fixed_thr': 268.0375322649455, 'wAPLKC': 4.622950819672131, 'wKCAPL':
     # 0.0025165763852325156, 'sp_acc': 0.1, 'max_iters': 10, 'sp_lr_coeff': 10.0,
     # 'apltune_subsample': 1, 'tuning_iters': 1}
-    a1 = read_param_cache(paper_hemibrain_output_dir)
+    a1 = read_tuned_params(paper_hemibrain_output_dir)
 
     # {'fixed_thr': 268.0375322649456, 'wAPLKC': 4.306010928961749, 'wKCAPL':
     # 0.002344045143691752, 'sp_acc': 0.1, 'max_iters': 10, 'sp_lr_coeff': 10.0,
     # 'apltune_subsample': 1, 'tuning_iters': 1}
-    b1 = read_param_cache(output_dir)
+    b1 = read_tuned_params(output_dir)
 
     # NOTE: does not seem to matter that we are not using allclose to check wKCAPL here
     # (since check_with_allclose currently overwrites default, rather than adding to it)
@@ -2265,8 +2362,10 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
         only_check_overlapping_keys=True
     )
 
-    a2 = read_series_csv(paper_hemibrain_output_dir / 'params.csv')
-    b2 = read_series_csv(output_dir / 'params.csv')
+    # TODO TODO replace all read_param_csv w/ read_params? (here and elsewhere)
+    # (just need to make sure it can load old CSV, when that's all there is)
+    a2 = read_param_csv(paper_hemibrain_output_dir)
+    b2 = read_params(output_dir)
     # TODO TODO am i no longer including params for dff2spiking_*? is that a mistake?
     # as of 2025-10-12:
     # ipdb> a2.index.difference(b2.index)
@@ -2368,7 +2467,7 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
     # TODO share w/ n_megamat_odors elsewhere?
     assert len(pdf.columns) == 17
 
-    params = read_series_csv(may29_dir / 'megamat_uniform_model_params.csv')
+    params = read_param_csv(may29_dir / 'megamat_uniform_model_params.csv')
 
     kws = dict(
         pn2kc_connections='uniform', n_claws=7, target_sparsity=0.0915,
@@ -2406,7 +2505,7 @@ def test_uniform_paper_repro(tmp_path, orn_deltas):
         # cases), will need to compare wAPLKC/wKCAPL to paper params from loading them
         # separately. currently trying to keep these list-of-floats in CSV, as seemed to
         # work for committed paper outputs.
-        params2 = read_series_csv(output_dir / 'params.csv')
+        params2 = read_params(output_dir)
 
         if not _drop_glom_with_plus:
             # TODO replace w/ eval_and_check_[err|compatible|equal]? (or a wrapper that
@@ -2716,7 +2815,7 @@ def test_btn_expansion(tmp_path, orn_deltas, kws):
 # as well as maybe 1-2 other reasonable values (two calls, one w/
 # `mp.kc.tune_apl_weights = False`? might be easiest way unless i end up implementing
 # sparsity calculation + saving both before and after APL)
-# (see some other comments circa sp_factor_pre_APL code in mb_model.fit_mb_model)
+# (see some other comments circa sp_factor_pre_apl code in mb_model.fit_mb_model)
 
 # TODO TODO add test we can recreate connectome_APL_weights=False output w/
 # connectome_APL_weights=True path (really, the preset_wAPLKC/similar paths in olfsysm)
@@ -2857,8 +2956,8 @@ def test_apl_weights_osm(apl_weights):
     #
     # TODO TODO also include this factor (what values / which direction to step?) in a
     # sweep?
-    # default sp_factor_pre_APL=2.0
-    sp_max = mp.kc.sp_factor_pre_APL * mp.kc.sp_target
+    # default sp_factor_pre_apl=2.0
+    sp_max = mp.kc.sp_factor_pre_apl * mp.kc.sp_target
     # TODO delete
     print()
     print(f'{wAPLKC.mean()=}')
@@ -2989,7 +3088,7 @@ def test_apl_weights_osm(apl_weights):
     # TODO delete. replaced by code that was moved to test_apl_weights_fitmbmodel (which
     # should be broken off into a script anyway. scripts/step_model_pn_apl.py)
     '''
-    # starts at 1.937 in pn_claw_to_APL=True case
+    # starts at 1.937 in pn_claw_to_apl=True case
     print()
     print('stepping wAPLPN around tuned value:')
     for ap in [0.1, 20, 0.5, 10]:
@@ -3022,7 +3121,7 @@ def test_apl_weights_osm(apl_weights):
     #
 
     # TODO TODO TODO test that w/ high enough scale factor, we can indeed change
-    # response rate with this one (in both pn_claw_to_APL=True/False)
+    # response rate with this one (in both pn_claw_to_apl=True/False)
     # TODO TODO TODO ...we can, just not in the direction i expected. why??? explain.
     warn('setting wAPLPN to 0')
     rv.pn.wAPLPN = np.zeros(rv.pn.wAPLPN.shape)
@@ -3113,7 +3212,7 @@ def test_apl_weights_osm(apl_weights):
     print(f'{sp_no_APLKC=}')
     print()
     # TODO TODO TODO assert this one is less than sp_no_APL though (currently it's not,
-    # it's equal, at least for pn_claw_to_APL=True case)
+    # it's equal, at least for pn_claw_to_apl=True case)
     # TODO delete
     if sp_no_APL == sp_no_APLKC:
         print('APL>KC=0 HAD SAME EFFECT AS DISABLING APL ENTIRELY (so APL>PN '
@@ -3163,7 +3262,7 @@ def test_apl_weights_osm(apl_weights):
 
 
 def test_dynamics_indexing(orn_deltas):
-    # shouldn't matter which of the two (pn_claw_to_APL=True/False) we use
+    # shouldn't matter which of the two (pn_claw_to_apl=True/False) we use
     kws = APL_WEIGHT_TEST_KWS[0]
 
     responses, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
@@ -3386,7 +3485,7 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # TODO should i move this to fixture? what happens if a test fixture fails? do all
     # selected tests using it also fail?
     #
-    # working for both pn_claw_to_APL=True/False cases
+    # working for both pn_claw_to_apl=True/False cases
     ret2 = _fit_mb_model(orn_deltas=orn_deltas, **{**thr_and_apl_kws, **kws})
     assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
 
@@ -3416,7 +3515,7 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
         ret_no_APLPN
 
     # with no weights hardcoded, as calls above...
-    # with pn_claw_to_APL=True:
+    # with pn_claw_to_apl=True:
     # average (across odor) values in odor_stats:
     # max_kc_apl_drive: 68.547
     # avg_kc_apl_drive: 32.4625
@@ -3427,7 +3526,7 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # avg_kc_inh: 197132
     # avg_bouton_inh: 44275.1
     #
-    # with pn_claw_to_APL=False (default):
+    # with pn_claw_to_apl=False (default):
     # average (across odor) values in odor_stats:
     # max_kc_apl_drive: 0.0205206
     # avg_kc_apl_drive: 0.0005523
@@ -3438,7 +3537,7 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # avg_kc_inh: 122444
     # avg_bouton_inh: 27500.4
 
-    # with pn_claw_to_APL=True:
+    # with pn_claw_to_apl=True:
     # average (across odor) values in odor_stats:
     # max_kc_apl_drive: 54.1662
     # avg_kc_apl_drive: 21.1573
@@ -3449,7 +3548,7 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # avg_kc_inh: 412409
     # avg_bouton_inh: 0
     #
-    # with pn_claw_to_APL=False (default):
+    # with pn_claw_to_apl=False (default):
     # average (across odor) values in odor_stats:
     # max_kc_apl_drive: 0.0092385
     # avg_kc_apl_drive: 0.000203146
@@ -3461,15 +3560,15 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # avg_bouton_inh: 0
     #
     # TODO TODO TODO this also misbehaving like in other test? (yes) why???
-    # responses_no_APLPN.mean().mean()=0.06802744192365166 (pn_claw_to_APL=True)
-    # responses_no_APLPN.mean().mean()=0.05077435131096319 (pn_claw_to_APL=False)
+    # responses_no_APLPN.mean().mean()=0.06802744192365166 (pn_claw_to_apl=True)
+    # responses_no_APLPN.mean().mean()=0.05077435131096319 (pn_claw_to_apl=False)
     print(f'{responses_no_APLPN.mean().mean()=}')
     # TODO TODO add similar sparsity assertions to in other test (that would pass here,
     # for reason i'm not clear on...)
     # TODO delete
     #
 
-    # pn_claw_to_APL=True:
+    # pn_claw_to_apl=True:
     # average (across odor) values in odor_stats:
     # max_kc_apl_drive: 71.7594
     # avg_kc_apl_drive: 34.177
@@ -3480,7 +3579,7 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # avg_kc_inh: 177800
     # avg_bouton_inh: 39933.2
     #
-    # pn_claw_to_APL=False:
+    # pn_claw_to_apl=False:
     # average (across odor) values in odor_stats:
     # max_kc_apl_drive: 0.02932
     # avg_kc_apl_drive: 0.000796943

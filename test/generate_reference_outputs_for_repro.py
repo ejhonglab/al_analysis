@@ -19,14 +19,16 @@ from termcolor import cprint
 
 from hong2p.util import format_date, symlink
 from al_util import warn
-from mb_model import read_param_csv, format_model_params
+from mb_model import (read_param_csv, format_model_params, fitandplot_finished_writing,
+    megamat_orn_deltas, fit_and_plot_mb_model
+)
 
 # how to import this? (couldn't quickly figure it out when this script was originally in
 # a test/scripts subdir, but don't see huge issues w/ having directly under test/ dir)
-from test_mb_model import (FITANDPLOT_MODEL_KW_LIST, reference_output_root,
-    megamat_orn_deltas, _fit_and_plot_mb_model, assert_param_dicts_equal,
-    assert_param_csv_matches_returned, assert_fit_and_plot_outputs_equal,
-    get_expected_missing_csv_keys, get_latest_reference_output_dir
+from test_mb_model import (FITANDPLOT_MODEL_KW_LIST, QUICK_FITANDPLOT_MODEL_KW_LIST,
+    reference_output_root, assert_param_csv_matches_returned,
+    assert_fit_and_plot_outputs_equal, get_expected_missing_csv_keys,
+    get_latest_reference_output_dir
 )
 
 
@@ -117,15 +119,17 @@ def main():
                 date_part = curr_name
                 n = 0
 
-            # Seems I can let the  _fit_and_plot... calls below make all these
+            # seems I can let the fit_and_plot... calls below make all these
             # directories (and subdirectories).
             reference_output_dir = reference_output_dir.parent / f'{date_part}{sep}{n}'
 
-            if check_against_last:
-                last_reference_output_dir = get_latest_reference_output_dir()
+        if check_against_last:
+            last_reference_output_dir = get_latest_reference_output_dir()
+            assert last_reference_output_dir is not None
     else:
         reference_output_dir = get_latest_reference_output_dir()
         last_reference_output_dir = reference_output_dir
+        assert last_reference_output_dir is not None
 
     # TODO copy code involved (at least mb_model.py, and maybe olfsysm.cpp?)? git
     # commit(s) (+ diff?) (eh, nah)
@@ -144,16 +148,12 @@ def main():
     orn_df = megamat_orn_deltas()
 
     if not quick:
-        # TODO TODO delete
-        model_kw_list = FITANDPLOT_MODEL_KW_LIST[::-1]
-        # TODO TODO TODO restore
-        #model_kw_list = FITANDPLOT_MODEL_KW_LIST
+        model_kw_list = FITANDPLOT_MODEL_KW_LIST
     else:
         model_kw_list = QUICK_FITANDPLOT_MODEL_KW_LIST
 
     skipped_xfail_model_kws = []
     skipped_because_existing = []
-    not_present_in_last = []
     nonskipped_kws_and_dirs = []
     for model_kws in model_kw_list:
         xfail = False
@@ -196,18 +196,58 @@ def main():
 
         model_output_dir = reference_output_dir / expected_model_output_dir_name
         if write_into_last:
-            if model_output_dir.exists():
-                try:
-                    # this will only be able to remove empty directories. will err, if
-                    # non-empty.
-                    model_output_dir.rmdir()
+            # TODO TODO want to also do some/all of this for check_against_last (mainly,
+            # the deleting empty / broken dirs? unless i want to handle those below for
+            # that case)
+            if model_output_dir.is_dir():
+                # TODO TODO TODO also set this false if fitandplot_finished_writing
+                # returns False?
+                directory_existed = False
+                if not model_output_dir.is_symlink():
+                    try:
+                        # this will only be able to remove empty directories. will err,
+                        # if non-empty. don't care to prompt to remove empty
+                        # directories.
+                        model_output_dir.rmdir()
+                        warn(f'deleted empty {model_output_dir}')
 
-                except IOError as err:
-                    assert 'directory not empty' in str(err).lower(), f'{err=}'
+                    except IOError as err:
+                        assert 'directory not empty' in str(err).lower(), f'{err=}'
+                        directory_existed = True
+                else:
+                    # assuming we don't care to check if symlinks targets (if
+                    # model_output_dir is a symlink to a directory, rather than a
+                    # directory itself) are empty (i.e. to try rmdir() on the targets)
+                    directory_existed = True
+
+                # TODO TODO TODO also want to only do this in `not
+                # model_output_dir.is_symlink()` branch above?
+                # TODO need to explicitly get target of symlink to pass to
+                # fitandplot_finished_writing? hopefully (/probably?) not?
+                print(f'{model_output_dir=}')
+                print(f'{model_output_dir.is_symlink()=}')
+                print(f'{fitandplot_finished_writing(model_output_dir)=}')
+                #
+                if not fitandplot_finished_writing(model_output_dir):
+                    warn(f'deleting unfinished {model_output_dir}')
+                    # TODO delete
+                    breakpoint()
+                    #
+                    shutil.rmtree(model_output_dir)
+                    # TODO delete (/ implement, if not happy to warn and always delete)?
+                    #
+                    # TODO factor prompt + shutil.rmtree into hong2p.util fn?
+                    # TODO how to handle if not deleted?
+                    # TODO prompt before deleting non-finished-writing directories?
+                    #prompt_and_rm_dir(model_output_dir)
+                    #
+                    directory_existed = False
+
+                if directory_existed:
                     warn(f'skipping {expected_model_output_dir_name} b/c already '
                         'existed! delete it manually (and re-run), if you wish.'
                     )
-                    skipped_because_existing.append(model_kws)
+                    skipped_because_existing.append(model_output_dir.name)
                     continue
         else:
             # since we should have been writing into a fresh directory in that case, and
@@ -220,16 +260,26 @@ def main():
     if substring is not None and nonskipped_kws_and_dirs:
         raise RuntimeError(f'{substring=} did not match any model parameters!')
 
-    curr_dirnames = None
+    # TODO better name than curr_dirnames (+ do i really need two diff defs across these
+    # two cases? why?)
+    curr_dirnames = {d.name for _, d in nonskipped_kws_and_dirs}
     if write_into_last:
-        curr_dirnames = set(skipped_because_existing)
+        curr_dirnames.update(skipped_because_existing)
 
     elif check_against_last:
+        # only skipping stuff in write_into_last=True case (which is mutually exclusive
+        # with this case)
+        assert len(skipped_because_existing) == 0
         curr_dirnames = {d.name for _, d in nonskipped_kws_and_dirs}
 
     failed_model_kws = []
     failed_test_ids = []
     failed_tracebacks = []
+
+    # also test ID strs (dir names), for both of these
+    matched_last = []
+    did_not_match_last = []
+
     for model_kws, model_output_dir in tqdm(nonskipped_kws_and_dirs, unit='test-cases'):
         print(f'{model_kws=}')
         expected_model_output_dir_name = model_output_dir.name
@@ -237,19 +287,6 @@ def main():
         last_output_dir = None
         if last_reference_output_dir is not None:
             last_output_dir = last_reference_output_dir / expected_model_output_dir_name
-            if (not last_output_dir.exists() or
-                    # this is last CSV saved in fit_and_plot... so if it doesn't exist,
-                    # things terminated before it finished
-                    not (last_output_dir / 'spike_counts.csv').exists()
-                ):
-
-                # still going to generate anew (if check_against_last=True), just won't
-                # have anything to compare to
-                not_present_in_last.append(model_kws)
-                # so we don't try to call assert_fit_and_plot_outputs_equal with this
-                # output below, which currently does not reliably fail for directories
-                # missing files
-                last_output_dir = None
 
         curr_tb = None
         try:
@@ -263,11 +300,14 @@ def main():
             # load+resave? or ig i'd otherwise have to thread some hack thru?) (like 1-3
             # cells/ 1-2 odors or something?)
             # TODO TODO make sure repro test ignores all the dynamics, one way or
-            # another. don't want to *have* to save+check those (at least, w/o some
+            # another? don't want to *have* to save+check those (at least, w/o some
             # separate test or flag)
-            params = _fit_and_plot_mb_model(reference_output_dir, orn_deltas=orn_df,
-                return_dynamics=save_dynamics, **model_kws
+            params = fit_and_plot_mb_model(reference_output_dir, orn_deltas=orn_df,
+                try_cache=False, return_dynamics=save_dynamics, make_plots=True,
+                plot_example_dynamics=True, connectome_weight_plots=True, **model_kws
             )
+            assert fitandplot_finished_writing(model_output_dir)
+
         except Exception as err:
             curr_tb = traceback.format_exc()
             cprint(f'{model_kws=} failed with:\n{curr_tb}', 'red')
@@ -291,29 +331,8 @@ def main():
             failed_tracebacks.append(curr_tb)
             continue
 
-        if check_against_last and last_output_dir is not None:
-            assert model_output_dir.is_dir()
-            try:
-                # TODO want to pass any kwargs here?
-                # TODO TODO TODO fix how this seems isn't failing when input dir is
-                # basically empty (just some irrelevant plots)
-                # TODO or at least only proceed to this check if we have some file
-                # created at end of successful model run
-                assert_fit_and_plot_outputs_equal(reference_output_root, params,
-                    plot_root2=last_reference_output_dir
-                )
-            except AssertionError as err:
-                print(f'deleting new output:\n{model_output_dir}\n...because it matched'
-                    f' old output:\n{last_output_dir}'
-                )
-                shutil.rmtree(model_output_dir)
-                # TODO test case where target is already a symlink? that fine, or
-                # need to reference original file?
-                print('creating symlink to matching old output')
-                symlink(last_output_dir, model_output_dir, relative=True)
-
         # would mean we couldn't reliably check existance of directory before
-        # _fit_and_plot... call above, which we need for write_into_last=True
+        # fit_and_plot... call above, which we need for write_into_last=True
         assert params['output_dir'] == expected_model_output_dir_name, \
             f'{params["output_dir"]=} != {expected_model_output_dir_name=}'
 
@@ -327,13 +346,53 @@ def main():
         # (would be more annoying to repro in future)
         # should prob update defaults soon though...
 
+        if check_against_last:
+            # TODO delete eventually?
+            assert last_output_dir is not None
+
+            if not last_output_dir.is_dir():
+                warn(f'skipping comparison to last output, since {last_output_dir} did '
+                    'not exist'
+                )
+                continue
+
+            assert model_output_dir.is_dir()
+            try:
+                # this should be only part of this try block that might raise
+                # AssertionError
+                # TODO move rest of block to end up loop, and continue in except block?
+                assert_fit_and_plot_outputs_equal(last_reference_output_dir, params,
+                    plot_root2=reference_output_dir
+                )
+
+                print(f'deleting new output:\n{model_output_dir}\n...because it matched'
+                    f' old output:\n{last_output_dir}'
+                )
+                # TODO if we end up deleting all new outputs this way, delete empty root
+                # dir at end? (+ allow both write_into_last and check_against_last?)
+                shutil.rmtree(model_output_dir)
+                # TODO test case where target is already a symlink? that fine, or
+                # need to reference original file?
+                print('creating symlink to matching old output')
+                symlink(last_output_dir, model_output_dir, relative=True)
+                matched_last.append(model_output_dir.name)
+
+            except AssertionError as err:
+                # TODO want to append to all the same things [or similar duplicates
+                # of all those vars] (+ report in all the same ways) as for failed_*
+                # cases above?
+                curr_tb = traceback.format_exc()
+                cprint(f'{model_kws=} failed with:\n{curr_tb}', 'red')
+                did_not_match_last.append(model_output_dir.name)
+
+                if debug:
+                    raise
+
 
     def format_kw_list(kw_seq) -> str:
         id_seq = map(format_model_params, kw_seq)
         return '\n'.join(id_seq)
-        # TODO delete?
-        # TODO print each element individually, rather than showing as tuples
-        #return pformat(list(zip(kw_seq, id_seq)))
+
 
     # NOTE: test-id-suffix will be component in brackets at end of pytest parametrized
     # tests
@@ -342,7 +401,9 @@ def main():
             f'{format_kw_list(skipped_xfail_model_kws)}'
         )
 
-    if curr_dirnames is not None:
+    if write_into_last or check_against_last:
+        # TODO move this assertion before loop above (but checking it in same
+        # condition)?
         assert last_reference_output_dir is not None
         last_dirnames = {
             x.name for x in last_reference_output_dir.glob('*/') if x.is_dir()
@@ -352,11 +413,23 @@ def main():
             cprint(f'only present in last:\n{pformat(only_present_in_last)}',
                 'red'
             )
+        not_present_in_last = curr_dirnames - last_dirnames
+        if len(not_present_in_last) > 0:
+            cprint(f'not present in last (last_reference_output_dir):\n'
+                f'{pformat(not_present_in_last)}', 'red'
+            )
 
-    if len(not_present_in_last) > 0:
-        cprint(f'not present in last (last_reference_output_dir):\n'
-            f'{format_kw_list(not_present_in_last)}', 'red'
-        )
+    if check_against_last:
+        # TODO print each, instead of pprinting a set (like format_kw_list above)
+        # TODO color green?
+        if len(matched_last) > 0:
+            print(f'matched last ({len(matched_last)}):\n{pformat(matched_last)}')
+
+        if len(did_not_match_last) > 0:
+            cprint(f'did NOT match last:\n{pformat(did_not_match_last)}', 'red')
+        else:
+            # TODO color green?
+            print('all current model outputs matched those in last output root!')
 
     assert len(failed_model_kws) == len(failed_test_ids) == len(failed_tracebacks)
     if len(failed_model_kws) > 0:
