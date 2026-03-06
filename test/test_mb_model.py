@@ -264,6 +264,9 @@ def orn_deltas() -> pd.DataFrame:
 # prob more trouble than worth... (frozendict [3rd party] even work w/ DataFrame values,
 # like orn_deltas? or can i assume orn_deltas will not change, and then exclude certain
 # things?)
+# TODO use format_model_params as key for caching these fns (w/in run, to share
+# across tests, at least in many circumstances. may want to exclude certain tests from
+# using the caches)?
 def _fit_mb_model(*args, **kwargs) -> FitMBModelOutputs:
     # can i pytest.xfail APL-coup-const stuff from in here, or does it have to
     # be from within one of the test fns? yup, this works.

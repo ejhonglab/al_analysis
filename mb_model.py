@@ -202,7 +202,15 @@ paper_hemibrain_output_dir = sent_to_remy / ('2025-03-18/'
 
 # TODO TODO add one for loading some ref kiwi/control outputs too. + validation
 # TODO + fns to load raw dF/F data for each, too
+# TODO TODO + option to load diags for all
+# TODO TODO TODO update to use maxabs responses (+ commit those outputs). should have
+# been generated sometime after 2025-11-25 (still have? need to regen?)
+# (should be same outputs I sent to remy 2025-09-30 on slack, using signed maxabs
+# response calculation)
+# TODO TODO make available (+ install) via same importlib_resources machinery drosolf
+# now uses, to make available without having to clone + install editable
 def megamat_orn_deltas() -> pd.DataFrame:
+    # TODO doc
     # panel          megamat   ...
     # odor           2h @ -3   ...   benz @ -3    ms @ -3
     # glomerulus               ...
@@ -8475,11 +8483,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 ], index=glomerulus_index, columns=orn_deltas.columns
             )
         #
+
+        orn_delta_gloms = set(orn_deltas.index)
+        wPNKC_gloms = set(glomerulus_index.get_level_values(glomerulus_col))
+        # TODO true? in all cases scripts/model_private_odors_for_kai_grant.py hits?
+        # (seems so, yea)
+        assert orn_delta_gloms - wPNKC_gloms == set(), \
+            f'{orn_delta_gloms - wPNKC_gloms=}'
+
         orn_deltas_pre_filling = orn_deltas.copy()
         # adding glomeruli (rows) missing in input orn_deltas
-        orn_deltas = reindex(orn_deltas_pre_filling, glomerulus_index,
-            fill_value=0
-        )
+        orn_deltas = reindex(orn_deltas, glomerulus_index, fill_value=0)
         assert orn_deltas.columns.equals(orn_deltas_pre_filling.columns)
         # TODO delete after enough tests pass
         if not sep_boutons:
@@ -10856,14 +10870,27 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # which could happen with some minor changes, if there aren't already such
         # cases
         index_before = wPNKC.index.copy()
+
         # should have removed enough memory pressure that this should be fine now
         claw_index = wPNKC.replace(0, np.nan).stack(glomerulus_col).index
         assert claw_index.names == index_before.names + [glomerulus_col]
         assert not claw_index.get_level_values(glomerulus_col).isna().any()
-        assert index_before.equals(claw_index.droplevel(glomerulus_col))
+        # TODO fix in test_spatial_wPNKC_equiv (-> delete try/except hack)
+        # (an issue in prat_claws=True case, or just the tianpei path that test uses?)
+        try:
+            assert index_before.equals(claw_index.droplevel(glomerulus_col))
+        except AssertionError:
+            # claw_index is len 729648 here (muuuch longer than index_before len of
+            # 13512)
+            assert one_row_per_claw and not prat_claws
+            # TODO TODO ok to just not add glomerulus level in that case? is that
+            # needed for anything downstream? (just dynamics plotting maybe?)
+            assert not plot_example_dynamics, 'glomerulus needed for this'
+            claw_index = index_before
 
-    # TODO TODO TODO always unconditionally delete this? pretime ever even set?
-    # delete in C++ code (seems like it might not be?)?
+    # TODO TODO always unconditionally delete this? pretime ever even set?
+    # delete in C++ code (seems like it might not be?)? (or better yet, change C++ code
+    # to never allocate it in first place)
     if return_olfsysm_vars:
         if delete_pretime is None:
             # would cause issues to remove pretime if this were True, b/c then tests
@@ -12877,7 +12904,9 @@ def read_param_csv(path: Pathlike) -> ParamDict:
 
 # TODO delete verbose kwarg? or thread thru to other things too?
 def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
-    csv: bool = False, verbose: bool = False) -> None:
+    csv: bool = False, verbose: bool = False,
+    # TODO delete keys_not_to_remove hack (/need to add to write_params in meantime?)
+    keys_not_to_remove: Iterable[str] = tuple()) -> None:
 
     # .with_suffix(<x>) works whether name has existing suffix or not
     param_cache = (model_output_dir / name).with_suffix('.p')
@@ -12907,8 +12936,22 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
             'their own separate files! will not be in pickle either!'
         )
     to_json(json_dict, json_cache)
-    # NOTE: also filtering non-JSON serializable keys from this
-    to_pickle(json_dict, param_cache)
+
+    # TODO delete hack
+    if any(x in keys_not_to_remove and x not in json_dict for x in param_dict.keys()):
+        warn(f'not removing non-json serializable values for {keys_not_to_remove=} '
+            'when saving params to piclke! (hack to preserve way to get APL weights in '
+            'fit_and_plot_mb_model output, in this specific case)'
+        )
+        pickle_dict = {k: v for k,v in param_dict.items()
+            if k in json_dict or k in keys_not_to_remove
+        }
+        to_pickle(pickle_dict, param_cache)
+    else:
+    #
+        # TODO make this unconditional after deleting hack above
+        # NOTE: also filtering non-JSON serializable keys from this
+        to_pickle(json_dict, param_cache)
 
     # TODO delete eventually
     from_json = read_json(json_cache)
@@ -12958,8 +13001,13 @@ def write_params(param_dict: ParamDict, model_output_dir: Path, **kwargs) -> Non
     _write_params(param_dict, model_output_dir, param_cache_name, csv=True, **kwargs)
 
 
-def write_tuned_params(param_dict: ParamDict, model_output_dir: Path) -> None:
-    _write_params(param_dict, model_output_dir, tuned_param_cache_name)
+def write_tuned_params(param_dict: ParamDict, model_output_dir: Path,
+    # TODO delete keys_not_to_remove hack (/need to add to write_params in meantime?)
+    keys_not_to_remove: Iterable[str] = tuple()) -> None:
+
+    _write_params(param_dict, model_output_dir, tuned_param_cache_name,
+        keys_not_to_remove=keys_not_to_remove
+    )
 
 
 def _read_params(model_output_dir: Path, name: str) -> ParamDict:
@@ -13038,7 +13086,7 @@ def read_tuned_params(model_output_dir: Path) -> ParamDict:
         else:
             assert from_pickle == from_json
         #
-        return from_json
+        return from_pickle
     else:
         # this was the old name (pre 2026-03-04), and only a pickle was saved then, for
         # this variable
@@ -13157,7 +13205,7 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
     #
     # in n_seeds > 1 case, should be same keys, but list values (of length equal to
     # n_seeds)
-    write_tuned_params(param_dict, param_dir)
+    write_tuned_params(param_dict, param_dir, keys_not_to_remove=keys_not_to_remove)
 
 
 def fitandplot_finished_writing(model_output_dir: Path) -> bool:
@@ -13211,6 +13259,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     _add_combined_plot_legend=False, sim_odors=None, comparison_orns=None,
     comparison_kc_corrs=None, _strip_concs_comparison_kc_corrs=False,
     param_dir_prefix: str = '', title_prefix: str= '',
+    response_rate_plot_max: Optional[float] = None,
     extra_params: Optional[dict] = None, _only_return_params: bool = False, **model_kws
     ) -> Optional[ParamDict]:
     # TODO doc which extra plots made by each of comparison* inputs (or which plots are
@@ -13584,7 +13633,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         responses = pd.read_pickle(model_responses_cache)
         spike_counts = pd.read_pickle(model_spikecounts_cache)
         #
-        param_dict = read_tuned_params(param_dict)
+        # TODO go back to just loading tuned params? (but via
+        # read_tuned_params(param_dir)) (does seem i might need to)
+        #param_dict = read_params(param_dir)
+        param_dict = read_tuned_params(param_dir)
 
         # TODO also load wPNKC? (but, not in params actually right? why am i
         # even loading responses/spike_counts here? used below, to define something in
@@ -14154,7 +14206,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # just gonna return early w/ params, skipping this stuff, fow now.
             panel = None
 
-    if panel is not None:
+    # TODO warn if `panel is not None`, but `panel not in panel2name_order`?
+    if panel is not None and panel in panel2name_order:
         responses = sort_odors(responses, panel=panel, warn=False)
         spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
 
@@ -14222,7 +14275,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     def plot_sparsity_per_odor(sparsity_per_odor, comparison_sparsity_per_odor, suffix,
         *, ylim=None) -> Tuple[Figure, Axes]:
 
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(layout='constrained')
         # TODO rename sparsity -> response_fraction in all variables / col names too
         # (or 'response rate'/response_rate, now in col def for s1d?)
         ylabel = 'response fraction'
@@ -14484,9 +14537,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         pearson.index.name = 'odor'
         pearson.columns.name = 'odor'
 
-    pearson = _resort_corr(pearson, panel,
-        warn=False if responses_to == 'hallem' else True
-    )
+    if panel is not None and panel in panel2name_order:
+        pearson = _resort_corr(pearson, panel,
+            warn=False if responses_to == 'hallem' else True
+        )
 
     # TODO TODO try deleting this and checking i can remake all the same
     # megamat/validation plots? feel like i might not need this anymore (or maybe i want
@@ -15155,24 +15209,30 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             '_megamat'
         )
 
-    panel2sparsity_ylims = {
-        # TODO add one for megamat? (only sensitivity analysis currently has these figs
-        # in paper for megamat, but maybe betty will end up wanting these plots alone
-        # anyway? in both cases, just need to find a range that works).
-        #
-        # 0.21 not enough for some.
-        'validation2': [0, 0.22],
-        # could prob do [0, 2], but might as well keep same as validation2. could just
-        # hardcode this in general (or at least as long as the data is within limit?)?
-        # TODO TODO fix (+ update validation?) actually some stuff is past this
-        # apparently... (oh, it was actually on hallem data that it was failing, in the
-        # uniform model)
-        # TODO TODO fix so we fall back to no scale set (w/ warning), or so hallem isn't
-        # considered megamat here (almost certainly former)?
-        #'megamat': [0, 0.22],
-    }
-    # ylim=None will let plot_sparsity_per_odor set it
-    ylim = panel2sparsity_ylims.get(panel)
+    if response_rate_plot_max is None:
+        panel2sparsity_ylims = {
+            # TODO add one for megamat? (only sensitivity analysis currently has these
+            # figs in paper for megamat, but maybe betty will end up wanting these plots
+            # alone anyway? in both cases, just need to find a range that works).
+            #
+            # 0.21 not enough for some.
+            'validation2': [0, 0.22],
+            # could prob do [0, 2], but might as well keep same as validation2. could
+            # just hardcode this in general (or at least as long as the data is within
+            # limit?)?
+            # TODO TODO fix (+ update validation?) actually some stuff is past this
+            # apparently... (oh, it was actually on hallem data that it was failing, in
+            # the uniform model)
+            # TODO TODO fix so we fall back to no scale set (w/ warning), or so hallem
+            # isn't considered megamat here (almost certainly former)?
+            #'megamat': [0, 0.22],
+        }
+        # ylim=None will let plot_sparsity_per_odor set it
+        ylim = panel2sparsity_ylims.get(panel)
+    else:
+        assert 0 < response_rate_plot_max <= 1
+        ylim = [0, response_rate_plot_max]
+
     combined_fig, sparsity_ax = plot_sparsity_per_odor(sparsity_per_odor,
         comparison_sparsity_per_odor, '', ylim=ylim
     )
