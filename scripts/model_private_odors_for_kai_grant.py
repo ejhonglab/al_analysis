@@ -13,8 +13,10 @@ from hong2p.olf import parse_odor_name
 import al_util
 from al_util import warn, savefig
 from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
-    get_thr_and_APL_weights, format_model_params
+    get_thr_and_APL_weights, format_model_params,
+    scale_dff_to_est_spike_deltas_using_hallem
 )
+from load_antennal_csv import read_csv
 
 
 model_tune_kws = [
@@ -51,9 +53,48 @@ def read_orn_deltas(path: Path) -> pd.DataFrame:
 
 
 def main():
+    plot_root = Path('kai_grant_model_outputs').resolve()
+    plot_root.mkdir(exist_ok=True)
+
+    # TODO TODO avoid need to set this to see plots being saved
+    al_util.verbose = True
+
     # TODO delete (or update to use this, after changing fn to load CSV from new
     # response calc)
     #orn_df = megamat_orn_deltas()
+
+    repo_root = Path('~/src/al_analysis').expanduser().resolve()
+    # contains 3 subdirs, for megamat/validation2/kiwi-control
+    dff_dir = repo_root / 'data/sent_to_remy/2025-09-30_tom_orn_data_signed-max'
+    # committed to repo
+    assert dff_dir.is_dir()
+
+    megamat_dff_dir = dff_dir / 'megamat_signed-max'
+
+    megamat_dff = read_csv(megamat_dff_dir / 'ij_certain-roi_stats.csv')
+
+    # TODO also test we can recreate the ij_certain-roi_stats.csv file from the more raw
+    # one, so i could decide to include e.g. CO2
+    # TODO delete?
+    dff1 = megamat_dff
+    dff2 = read_csv(megamat_dff_dir / 'ij_roi_stats.csv')
+    #
+    # TODO may need to recalc and store consensus dfs (instead of "certain"
+    # dfs), unless i can refactor and recompute "concensus" dfs from one of the
+    # ij_[certain-]roi_stats.csv files i have now (in the signed-max data directory)
+    # (nvm, consensus_df is what is being saved to ij_certain-roi_stats.csv. so what
+    # else is changed between where it is saved and when it is passed to scale_dff...?
+    # seems like it's just odor/pfo dropping at start of model_mb_responses)
+
+    # TODO also generate + commit a set of dF/F -> spike delta model files (after
+    # improving serialization portability, ideally) -> pass that dir to load them here
+    # (+ pass separate plot_root)
+    df2 = scale_dff_to_est_spike_deltas_using_hallem(plot_root, megamat_dff,
+        model_dir=
+    )
+
+    # TODO TODO run validation2 data thru dF/F -> spiking model (after scaling each
+    # fly), to run 'geraniol @ -2' data thru model too?
 
     # TODO put this behind flag (or only check if these exist). just checking current
     # CSV matches megamat subset of data used to fit latest model (to check it was using
@@ -63,8 +104,11 @@ def main():
     # too) still need to commit these new ORN deltas (+ switch mb_model CSV loading
     # fn(s) to use these), ideally for all panels
     # TODO TODO switch check to checking against commited outputs, once i commit them
-    pebbled_dir = Path('~/src/al_analysis/pebbled_6f/pdf/ijroi/mb_modeling').expanduser(
-        ).resolve()
+    # TODO TODO TODO or at least commit the outputs i'm currently using, and then
+    # (later) check i can recreate them (while also recreating the dF/F -> spike delta
+    # fit, or using a saved fit [ideally without using non-portable formats like pickle
+    # for model, and committing model too])
+    pebbled_dir = repo_root / 'pebbled_6f/pdf/ijroi/mb_modeling'
     megamat_dir = (pebbled_dir / 'megamat' /
         'prat-claws_True__one-row-per-claw_True__connectome-APL_True__pn-claw-to-APL_'
         'True__prat-boutons_True__target-sp_0.1/'
@@ -86,19 +130,16 @@ def main():
     breakpoint()
     #
 
-    # TODO also add this to test_df, just to check outputs are the same (should be, tho)
+    # TODO also add this to test_df, just to check outputs are the same (should be,
+    # tho)?
     # TODO TODO define from one of committed outputs instead
     tune_df = mdf
 
-    # TODO also add 2-but / t2h to compare? any other diags? geosmin? just all of
-    # them? mhex @ -7 / ea @ -8?
     # TODO CO2? (would need to regen output not dropping that, if i wanted, i think)
     # (oh, no. the signed maxabs stuff has it, BUT V dropped, so might as well not have
     # it. would still need to regen [actually, could work from existing
     # ij_roi_stats.[p|csv], which still has V for that one megamat fly i have CO2 data
     # for)
-    # TODO delete
-    #ga = df.loc[:, ('glomeruli_diagnostics', 'ga @ -4')]
 
     gloms = ['VA6', 'DA1', 'VA1d', 'VA1v', 'V', 'VM7d', 'DL5', 'DM1', 'DM2', 'DM4',
         'DM5'
@@ -179,16 +220,7 @@ def main():
     test_df = pd.concat([syn_df, diags], axis='columns', verify_integrity=True)
     test_df = test_df.fillna(0.0).sort_index()
 
-    # TODO TODO run validation2 data thru dF/F -> spiking model (after scaling each
-    # fly), to run 'geraniol @ -2' data thru model too?
-
-    plot_root = Path('kai_grant_model_outputs').resolve()
-    plot_root.mkdir(exist_ok=True)
-
     panels = list(test_df.columns.get_level_values('panel').unique())
-
-    # TODO TODO avoid need to set this to see plots being saved
-    al_util.verbose = True
 
     # TODO need any lower, for all things not to fail? (would fail if any odor response
     # rates were higher than this) (nope, seems fine. delete comment)

@@ -34,16 +34,14 @@ import shutil
 from tempfile import NamedTemporaryFile
 import time
 import traceback
-from typing import (Any, Dict, Callable, Hashable, List, Literal, Optional, Set,
-    Sequence, Tuple, Union, Iterable
+from typing import (Any, Dict, Callable, List, Literal, Optional, Set, Sequence, Tuple,
+    Union, Iterable
 )
 import warnings
 
 import numpy as np
 import pandas as pd
-from pandas import IndexSlice as idx
 import xarray as xr
-import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.figure import Figure
@@ -80,7 +78,7 @@ else:
 
 import colorcet as cc
 from tqdm import tqdm
-from termcolor import cprint, colored, COLORS
+from termcolor import cprint, COLORS
 
 from drosolf import orns
 from hong2p import olf, util, viz
@@ -98,8 +96,6 @@ import faulthandler, sys
 faulthandler.enable(file=sys.stderr, all_threads=True)
 #
 
-# NOTE: can't import from al_analysis w/o causing circular import issues, so need to
-# factor shared stuff to al_util
 from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_order,
     diag_panel_str, warn, should_ignore_existing, to_csv, to_pickle, read_pickle,
     produces_output, makedirs, corr_triangular, invert_corr_triangular, n_choose_2,
@@ -109,27 +105,29 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
     remy_date_col, remy_fly_cols, remy_fly_id, remy_fly_binary_response_fname,
     load_remy_fly_binary_responses, load_remy_megamat_kc_binary_responses,
     n_final_megamat_kc_flies, MultipleSavesPerRunException, print_curr_mem_usage,
-    data_root
+    data_root, fly_cols, flyroi_cols, read_parquet, to_json, read_json, ParamDict
 )
 import al_util
+from load_antennal_csv import read_csv
 
-
-# TODO move to hong2p.types? already have something like that there?
-ParamDict = Dict[str, Any]
 
 warnings.filterwarnings('error', category=pd.errors.SettingWithCopyWarning)
+
+warnings.filterwarnings('error', message='FixedFormatter should only be used together '
+    'with FixedLocator'
+)
+
 # TODO does this not actually trigger in pytest? if not, why not (and is there a
 # workaround?)?
 warnings.filterwarnings('error', category=FutureWarning)
+
+# TODO which specific warning? repro/delete
 # (doesn't work to catch numpy percentile interpolation= warning anyway,
 # at least from pytest w/ or w/o pytest ignoring warnings...)
 # TODO restore
 #warnings.filterwarnings('error', category=DeprecationWarning)
 # also doesn't seem to work
 # warnings.filterwarnings('error', message='the `interpolation=` argument.*')
-warnings.filterwarnings('error', message='FixedFormatter should only be used together '
-    'with FixedLocator'
-)
 
 # TODO add fn to load megamat fixed_thr / wAPLKC params used for model in paper?
 # (-> try using in some other contexts, like for yang's diagnostic mixture model)
@@ -12748,7 +12746,7 @@ extra_spikecounts_cache_name = 'extra_spikecounts.p'
 #
 
 def is_json_serializable(v: Any) -> bool:
-    # TODO TODO TODO also check for the same types save_and_remove_from_param_dict does,
+    # TODO TODO also check for the same types save_and_remove_from_param_dict does,
     # before checking if json serializable below?
 
     # try dumping json for each object, because presumably a dict of those will also be
@@ -12786,18 +12784,6 @@ def is_json_serializable(v: Any) -> bool:
         )
         #
         return False
-
-
-@produces_output
-def to_json(param_dict: ParamDict, path: Path) -> None:
-    with open(path, 'w') as f:
-        # TODO want any other args? indent=4?
-        json.dump(param_dict, f)
-
-
-def read_json(path: Path) -> ParamDict:
-    with open(path, 'r') as f:
-        return json.load(f)
 
 
 # TODO test convert_dtypes=True default doesn't break anything, and make it default
@@ -12839,6 +12825,8 @@ def read_series_csv(csv: Pathlike, convert_dtypes: bool = False, **kwargs) -> pd
         # set we should pass through. could add separate optional dict for kwargs here,
         # if really needed
         ser2 = pd.read_csv(StringIO(ser.to_frame().T.to_csv(index=False)),
+            # TODO also use this float_precision in load_antennal_csv.read_csv? matter?
+            #
             # default None (='high') (and presumably also 'legacy' low precision)
             # converter would cause repr checks below to fail (just in very last of many
             # digits in floats. not really a meaningful difference.)
@@ -14653,7 +14641,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 thr_str = f'mean_thr={fixed_thr.mean():.2f}'
 
             title = (
-                f'{thr_str}{format_weight(wAPLKC, "wAPLKC")} (sparsity={sparsity:.3g})'
+                f'{thr_str}{format_weights(wAPLKC, "wAPLKC")} (sparsity={sparsity:.3g})'
             )
         else:
             title = f'sparsity={sparsity:.3g}'
@@ -14683,14 +14671,15 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             orn_fname_part = f'orn-{desc}'
             orn_label_part = f'ORN ({desc})'
 
-        # TODO switch to checking if ['date', 'fly_num'] (or 'fly_id') in column levels,
+        # TODO switch to checking if fly_cols (or 'fly_id') in column levels,
         # maybe adding an assertion columns.name == glomerulus_col if not? might make it
         # nicer to refactor into plot_corr (for deciding whether to call
         # mean_of_fly_corrs)
         if comparison_orns.columns.name == glomerulus_col:
             mean_orn_corrs = corr_triangular(comparison_orns.T.corr())
         else:
-            assert comparison_orns.columns.names == ['date', 'fly_num', 'roi']
+            # TODO refactor def of these cols
+            assert comparison_orns.columns.names == flyroi_cols
             # will exclude NaN (e.g. va/aa in first 2 megamat flies)
             mean_orn_corrs = mean_of_fly_corrs(comparison_orns, square=False)
 
@@ -15705,7 +15694,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 **shared_model_kws
             )
             # shouldn't need to call _write_inputs_for_reproducibility here, as should
-            # also be in parent dir
+            # also be in parent dir (only if called from model_mb_responses...)
 
             # should only be None in first_seed_only=True case, but not doing any
             # multi-seed runs w/ sensitivity analysis. only doing sensitivity analysis
@@ -15866,31 +15855,666 @@ def minmax_scale(data: pd.Series) -> pd.Series:
 
 
 def maxabs_scale(data: pd.Series) -> pd.Series:
+    # TODO doc
     # sklearn.preprocessing.maxabs_scale does not preserve Series input
     # (returns a numpy array)
     return pd.Series(index=data.index, name=data.name, data=sk_maxabs_scale(data))
 
 
-@produces_output(verbose=False)
-# TODO correct type hint for model?
-# (statsmodels.regression.linear_model.RegressionResultsWrapper, but maybe something
-# more general / not the wrapper?)
-def save_model(model, path: Path) -> None:
-    model.save(path)
-
-
 spike_delta_col: str = 'delta_spike_rate'
 est_spike_delta_col: str = f'est_{spike_delta_col}'
+# used internally in scale_dff_to_est_spike_deltas_using_hallem, as well as related
+# functions (like scaling_method_to_col)
+dff_col: str = 'delta_f_over_f'
+
+# TODO share w/ plots from model fitting below?
+# TODO use one of newer strs in al_analysis.py for this (-> move to al_util?)?
+# might this ever be 'Z-scored F' instead of dF/F?
+dff_desc: str = f'mean glomerulus {dff_latex}'
+# TODO refactor to preprend dff_desc inside loop (rather than manually for each
+# of these)
+scaling_method2desc: Dict[Optional[str], str] = {
+    # TODO explicitly say unscaled?
+    None: dff_desc,
+
+    # TODO delete this one? should be unused now
+    # (if i uncomment this, assertion about scaling_method2desc.keys() will fail, since
+    # this method isn't actually used to add a column. all other keys should be in list
+    # of methods currently tried)
+    #'minmax': f'{dff_desc}\n[0,1] scaled within fly',
+
+    'zscore': f'{dff_desc}\nZ-scored within fly',
+
+    'maxabs': dff_desc + '\n$fly_{max} \\rightarrow 1$, 0-preserved',
+
+    # TODO check adding escaped '\\' in front of 'overline' (still? did it ever
+    # w/o escaping the '\'?) produces what i want
+    'to-avg-max':
+        dff_desc + '\n$fly_{max} \\rightarrow \\overline{fly_{max}}$, 0-preserved',
+
+    'split-minmax':
+        # TODO latex working yet?
+        f'{dff_desc}\n$+ \\rightarrow [0, 1]$\n$- \\rightarrow [-1, 0]$',
+
+    'split-minmax-to-avg': (dff_desc +
+        # TODO latex working yet?
+        '\n$+ \\rightarrow [0, \\overline{fly_{max}}]$\n'
+        '$- \\rightarrow [\\overline{fly_{min}}, 0]$'
+    ),
+}
+
+def scaling_method_to_col(method: Optional[str]) -> str:
+    """Returns column name to be used for a given scaling method.
+
+    See keys of `scaling_method2desc` for scaling method options.
+    """
+    # TODO doc
+    if method is None:
+        return dff_col
+    else:
+        return f'{method}_scaled_{dff_col}'
+
+
+def scale_one_fly(gdf: pd.DataFrame, avg_flymax: float, method: str = 'to-avg-max',
+    *, avg_flymin: Optional[float] = None) -> pd.DataFrame:
+    """Adds <method>_scaled_<dff_col> column with scaled <dff_col> values.
+
+    Modifies input DataFrame in place, and returns another reference to it.
+
+    Column named added is `scaling_method_to_col(method)`. If column corresponding to
+    scaling method already exists in input columns, will raise assertion error.
+    """
+    assert not gdf.fly_id.isna().any() and gdf.fly_id.nunique() == 1
+    col_to_scale = dff_col
+    to_scale = gdf[col_to_scale]
+    n_nan_before = to_scale.isna().sum()
+
+    new_dff_col = scaling_method_to_col(method)
+    assert new_dff_col not in gdf.columns
+
+    # TODO delete?
+    if method == 'minmax':
+        scaled = minmax_scale(to_scale)
+    #
+
+    elif method == 'zscore':
+        scaled = (to_scale - to_scale.mean()) / to_scale.std()
+
+    # TODO maybe try a variant of 'zscore' where we dont subtract mean first? (b/c
+    # want to preserve 0) (std() doesn't seem that related to fly maxes... not
+    # encouraging for this strategy)
+
+    # also preserves 0, like split-minmax* methods below, but just one scalar
+    # applied to all data
+    # (new min will be > -1 (and < 0), assuming abs(min) < abs(max) (and neg min))
+    elif method in ('maxabs', 'to-avg-max'):
+        scaled = maxabs_scale(to_scale)
+
+        if method == 'to-avg-max':
+            # in theory, max(abs) could come from negative values, but the data
+            # should have larger positive dF/F, so that shouldn't happen
+            assert np.isclose(scaled.max(), 1)
+            scaled *= avg_flymax
+            # TODO TODO apply same scales to data that still has trials split out?
+            # (-> save that)
+            assert np.isclose(scaled.max(), avg_flymax)
+
+    elif method in ('split-minmax', 'split-minmax-to-avg'):
+        # TODO warn if no negative values in input (tho there should always be as
+        # i'm currently using it) (prob fine to keep as assertion for now)
+        assert (to_scale < 0).any()
+
+        # NOTE: to_scale.index.duplicated().any() == True, so probably can't use
+        # index as-is to split/re-combine data
+        # TODO delete if not needed
+        index = to_scale.index
+        to_scale = to_scale.reset_index(drop=True)
+        #
+
+        neg = to_scale < 0
+        nonneg = to_scale >= 0
+        n_neg = neg.sum()
+        assert len(to_scale) == (n_neg + nonneg.sum() + to_scale.isna().sum())
+
+        scaled = to_scale.copy()
+        scaled[nonneg] = minmax_scale(scaled[nonneg])
+
+        # after minmax_scale, just scaled * (max - min) + min, to go to new range
+        scaled[neg] = minmax_scale(scaled[neg]) - 1
+        assert np.isclose(scaled.min(), -1)
+        assert np.isclose(scaled[neg].max(), 0)
+
+        if method == 'split-minmax-to-avg':
+            assert avg_flymin is not None
+            scaled[nonneg] *= avg_flymax
+            scaled[neg] *= abs(avg_flymin)
+
+        # not true b/c some max of to_scale[neg] gets mapped to 0, presumably
+        #assert n_neg == (scaled < 0).sum()
+        # rhs here can also include 0 from min of to_scale[nonneg]
+        assert n_neg <= (scaled <= 0).sum()
+        assert (scaled < 0).any()
+
+        # so it's not really re-ordering anything. that's good.
+        assert np.array_equal(
+            np.argsort(scaled[scaled != 0]),
+            np.argsort(gdf.reset_index()[scaled != 0][col_to_scale])
+        )
+
+        # TODO delete if i remove related code changing index above
+        scaled.index = index
+
+    # TODO try pinning particular odor(s)? how?
+    # TODO maybe use diags for the pinning, to share w/ validation panel flies more
+    # easily?
+    # TODO TODO maybe in particular when people (i.e. sam/yang) are trying to scale
+    # their own data w/ a dF/F -> spiking model fit on my data?
+
+    else:
+        raise NotImplementedError(f'scaling {method=} not supported')
+
+    assert scaled.isna().sum() == n_nan_before, 'scaling changed number of NaN'
+    gdf[new_dff_col] = scaled
+    return gdf
+
+
+# TODO define model_equal fn to check equality of two statsmodels (-> use to test model
+# saving/loading, including new functions that refit data on load)
+
+# TODO refactor to move type of model to one place above?
+# NOTE: RegressionResults does not seem to be a subclass of
+# RegressionResultsWrapper. sad. (and statsmodels doesn't doc the wrapper at all, as
+# far as I can tell...)
+# TODO test
+# TODO delete all separate_inh_model=True code? adds complexity to everything. is there
+# some builtin statsmodel peicewise linear model that could replace it? probably not w/
+# exact same behavior?
+def fit_dff2spiking_model(to_fit: pd.DataFrame, col_to_fit: str, *,
+    add_constant: bool = False, separate_inh_model: bool = False) -> Tuple[
+        RegressionResultsWrapper, Optional[RegressionResultsWrapper]
+    ]:
+    """Takes data with columns `spike_delta_col` and `col_to_fit` and returns model(s)
+
+    Args:
+        add_constant: if True, linear model will also have a constant offset term,
+            otherwise it will just be a scaling factor (and 0 input will be 0 output)
+
+        separate_inh_model: if False, 2nd returned element is None, and 1st is the
+            single `statsmodel` `OLS` results. If True, the 2nd element is another
+            model, only fit on and only to be applied to negative input values.
+    """
+    # TODO doc
+
+    # would need to dropna otherwise
+    assert not to_fit.isna().any().any()
+    to_fit = to_fit.copy()
+    y_train = to_fit[spike_delta_col]
+
+    if add_constant:
+        X_train = sm.add_constant(to_fit[col_to_fit])
+    else:
+        X_train = to_fit[col_to_fit].to_frame()
+
+    if not separate_inh_model:
+        # TODO why does this model produce a different result from the seaborn call
+        # above (can tell by zooming in on upper right region of plot)??
+        # TODO rename to "results"? technically the .fit() returns a results wrapper
+        # or something (and do i only want to serialize the model part? can that
+        # even store the parameters separately) (online info seems to say it should
+        # return RegressionResults, so not sure why i'm getting
+        # RegressionResultsWrapper...)
+        model = sm.OLS(y_train, X_train).fit()
+        inh_model = None
+    else:
+        nonneg = X_train[col_to_fit] >= 0
+        neg = X_train[col_to_fit] < 0
+
+        model = sm.OLS(y_train[nonneg], X_train[nonneg]).fit()
+        inh_model = sm.OLS(y_train[neg], X_train[neg]).fit()
+
+    return model, inh_model
+
+
+dff_to_spiking_data_csv_name: str = 'dff2spiking_model_input.csv'
+dff_to_spiking_model_choices_csv_name: str = 'dff2spiking_model_choices.csv'
+
+def read_dff_to_spiking_model_choices(model_dir: Path) -> pd.Series:
+    # TODO doc
+    dff_to_spiking_model_choices_csv = model_dir / dff_to_spiking_model_choices_csv_name
+    bool_params = ('add_constant', 'separate_inh_model')
+
+    ser = read_series_csv(dff_to_spiking_model_choices_csv,
+        # TODO try new convert_dtypes=True flag? use a format other than CSV?
+        # TODO some way to infer add_constant dtype correctly (as bool)
+        # (this didn't work)
+        #dtype={'add_constant': bool}
+    )
+
+    for x in bool_params:
+        if not type(ser[x]) is bool:
+            x_lower = ser[x].lower()
+            assert x_lower in ('true', 'false')
+            ser[x] = x_lower == 'true'
+
+    return ser
+
+
+def load_data_and_refit_dff2spiking_model(model_dir: Path, *, verbose: bool = True
+    ) -> Tuple[RegressionResultsWrapper, Optional[RegressionResultsWrapper]]:
+    # TODO doc
+
+    if verbose:
+        warn('refitting dF/F -> spiking (Hallem) model from data '
+            f'({dff_to_spiking_data_csv_name}) and parameters '
+            f'({dff_to_spiking_model_choices_csv_name}) within {model_dir}'
+        )
+
+    # TODO read csv instead?
+    dff_to_spiking_data_csv = model_dir / dff_to_spiking_data_csv_name
+    # NOTE: this is currently saved inside the to_pickle call that saves dff to spiking
+    # data
+    dff_to_spiking_parquet = dff_to_spiking_data_csv.with_suffix('.parquet')
+    merged_dff_and_hallem = read_parquet(dff_to_spiking_parquet)
+
+    dff_to_spiking_model_choices = read_dff_to_spiking_model_choices(model_dir)
+
+    kwargs = dff_to_spiking_model_choices.to_dict()
+    scaling_method_to_use = kwargs.pop('scaling_method_to_use')
+    col_to_fit = scaling_method_to_col(scaling_method_to_use)
+
+    model, inh_model = fit_dff2spiking_model(merged_dff_and_hallem, col_to_fit,
+        **kwargs
+    )
+    return model, inh_model
+
 
 # for histograms of dF/F, transformed versions, or estimated spike deltas derived from
 # one of the former
 n_bins: int = 50
 
+def predict_spiking_from_dff(df: pd.DataFrame, model: RegressionResultsWrapper,
+    inh_model: Optional[RegressionResultsWrapper] = None, *, alpha=0.05
+    ) -> pd.DataFrame:
+    # TODO doc what alpha does (and does it actually affect output? if there are CI
+    # columns in output, i guess it would? are those used for anything?)
+    """
+    Returns dataframe with 3 additional columns: [est_spike_delta_col,
+    <est_spike_delta_col>_ci_[lower|upper] ]
+    """
+    # TODO doc input requirements
+
+    # assuming that inh_model, if passed, would take the same form
+    # TODO refactor this to share w/ plot_dff2spiking_fit below?
+    if len(model.params) == 1:
+        add_constant = False
+        col_to_fit = model.params.keys()[0]
+    else:
+        assert len(model.params) == 2
+        assert 'const' in model.params
+        add_constant = True
+        col_to_fit == [x for x in model.params.keys() if x != 'const'][0]
+
+    separate_inh_model = False
+    if inh_model is not None:
+        separate_inh_model = True
+
+    # TODO assert alpha is between 0 and 1?
+
+    # TODO delete unless add_constant line below w/ series input might mutate df
+    # (unlikely)
+    df = df.copy()
+
+    # would otherwise need to dropna
+    assert not df.isna().any().any()
+
+    # TODO assert saved model only has const term if add_constant?
+    # do above where we load model + choices?
+
+    # TODO see if this can be replaced w/ below (and do in other place if so)
+    if add_constant:
+        # returns a DataFrame w/ an extra 'const' col (=1.0 everywhere)
+        X = sm.add_constant(df[col_to_fit])
+    else:
+        X = df[col_to_fit].to_frame()
+
+    if not separate_inh_model:
+        y_pred = model.get_prediction(X)
+
+        # TODO what are obs_ci_[lower|upper] cols? i assume i'm right to use
+        # mean_ci_[upper|lower] instead (seems so)?
+        # https://stackoverflow.com/questions/60963178
+        #
+        # alpha=0.05 by default (in statsmodels, if not passed)
+        pred_df = y_pred.summary_frame(alpha=alpha)
+
+        predicted = y_pred.predicted
+    else:
+        # fly_mean_df input (call where important estimates get added) currently has
+        # an index that would fail the verify_integrity=True checks below, so saving
+        # this index to restore later.
+        # TODO do i actually need to restore index tho?
+        # TODO delete?
+        #index = X.index
+        X = X.reset_index(drop=True)
+
+        nonneg = X[col_to_fit] >= 0
+        neg = X[col_to_fit] < 0
+
+        y_pred_nonneg = model.get_prediction(X[nonneg])
+        y_pred_neg = inh_model.get_prediction(X[neg])
+
+        pred_df_nonneg = y_pred_nonneg.summary_frame(alpha=alpha)
+        pred_df_neg = y_pred_neg.summary_frame(alpha=alpha)
+
+        predicted_nonneg = pd.Series(
+            data=y_pred_nonneg.predicted, index=X[nonneg].index
+        )
+        predicted_neg = pd.Series(data=y_pred_neg.predicted, index=X[neg].index)
+
+        pred_df = pd.concat([pred_df_nonneg, pred_df_neg], verify_integrity=True)
+
+        # just on the RangeIndex of input (should have all consecutive indices from
+        # start to end after concatenating)
+        pred_df = pred_df.sort_index()
+        assert pred_df.index.equals(X.index)
+
+        predicted = pd.concat([predicted_nonneg, predicted_neg],
+            verify_integrity=True
+        )
+        predicted = predicted.sort_index()
+        assert predicted.index.equals(X.index)
+
+        # TODO restore (w/ above)? will this make predict_spiking_from_dff fn
+        # return val make more sense? what was issue again?
+        # TODO delete?
+        #X.index = index
+
+    # NOTE: .get_prediction(...) seems to return an object where more information is
+    # available about the fit (e.g. confidence intervals, etc). .predict(...) will
+    # just return simple output of model (same as <PredictionResult>.predicted).
+    # (also seems to be same as pred_df['mean'])
+    assert np.array_equal(predicted, pred_df['mean'])
+    if not separate_inh_model:
+        assert np.array_equal(predicted, model.predict(X))
+
+    # TODO was this broken in separate inh case? (still think that case was
+    # probably a dead end, so not necessarily worth fixing...)
+    # (but megamat/est_orn_spike_deltas[_corr].pdf plots were all NaN it seems?)
+    # (not sure i can repro)
+    df[est_spike_delta_col] = predicted
+
+    # TODO how are these CI's actually computed? how does that differ from how
+    # seaborn computes them? why are they different?
+    # TODO what are obs_ci_[lower|upper]? seems newer versions of statsmodels might
+    # not have them anyway? or at least they aren't documented...
+    for c in ('mean_ci_lower', 'mean_ci_upper'):
+        df[f'{est_spike_delta_col}{c.replace("mean", "")}'] = pred_df[c]
+
+    # TODO sort df by est_spike_delta_col before returning? would that make
+    # plotting fn avoid need to do that? or prob just do in plotting fn...
+    return df
+
+
+# TODO move default scaling_method_to_use to some module level var (-> share w/
+# other fns that set a default for this, like
+# scale_dff_to_est_spike_deltas_using_hallem)
+def plot_dff2spiking_fit(df: pd.DataFrame, model: RegressionResultsWrapper,
+    inh_model: Optional[RegressionResultsWrapper] = None, *,
+    scaling_method_to_use: Optional[str] = 'to-avg-max', scatter: bool = True,
+    fly_palette: Optional = None, title_prefix=''):
+    """
+    Args:
+        scatter: if True, scatterplot merged data w/ a hue for each fly. otherwise,
+            plot a 2d histogram of data.
+    """
+    # TODO also define scaling_method_to_use (or at least col_to_fit) from model.params?
+    # (whichever key is != 'const', or the only key if add_constant=False)
+    # e.g. 'to-avg-max_scaled_delta_f_over_f' -> 'to-avg-max'
+    # (i do that in predict_... above)
+    if len(model.params) == 1:
+        add_constant = False
+    else:
+        assert len(model.params) == 2
+        assert 'const' in model.params
+        add_constant = True
+
+    col_to_fit = scaling_method_to_col(scaling_method_to_use)
+    assert col_to_fit in df.columns
+    assert spike_delta_col in df.columns
+
+    ci_lower_col = f'{est_spike_delta_col}_ci_lower'
+    ci_upper_col = f'{est_spike_delta_col}_ci_upper'
+    est_cols = (est_spike_delta_col, ci_lower_col, ci_upper_col)
+    assert all(x not in df.columns for x in est_cols)
+
+    separate_inh_model = False
+    if inh_model is not None:
+        separate_inh_model = True
+
+    # functions passed to FacetGrid.map[_dataframe] must plot to current Axes
+    ax = plt.gca()
+
+    # TODO was seaborn results suggesting i wanted alpha 0.025 for 95% CI here?
+    # (honestly, seaborn CI [which is supposedly 95%, tho bootstrapped] looks wider
+    # in all cases)
+    #
+    # from looking at statsmodels code, I'm pretty sure their "95% CI" is centered
+    # on estimate, w/ alpha/2 on either side (so 0.05 correct for 95%, not 0.025)
+    alpha_for_ci = 0.05
+
+    # TODO include what alpha is in name of cols returned from predict (-> delete
+    # explicit pass-in here)?
+    df = predict_spiking_from_dff(df, model, inh_model, alpha=alpha_for_ci)
+
+    assert all(x in df.columns for x in est_cols)
+
+    plot_kws = dict(ax=ax, data=df, y=spike_delta_col, x=col_to_fit)
+    if scatter:
+        sns.scatterplot(hue='fly_id', palette=fly_palette, legend='full',
+            edgecolors='none', **plot_kws
+        )
+    else:
+        # TODO set bins= (seems OK w/o)?
+        #
+        # default blue 2d hist color would probably not work well w/ current blue
+        # fit line
+        sns.histplot(color='red', cbar=True, **plot_kws)
+
+    # TODO can i replace all est_df below w/ just df?
+
+    xs = df[col_to_fit]
+    if not separate_inh_model:
+        est_df = df
+    else:
+        neg = df[col_to_fit] < 0
+        nonneg = df[col_to_fit] >= 0
+
+        est_df = df[nonneg]
+        xs = xs[nonneg]
+
+    # sorting was necessary for fill_between below to work correctly
+    sorted_indices = np.argsort(xs).values
+    xs = xs.iloc[sorted_indices]
+    est_df = est_df.iloc[sorted_indices]
+
+    color = 'blue'
+    fill_between_kws = dict(alpha=0.2,
+        # TODO each of these needed? try to recreate seaborn (set color_palette the
+        # same / use that seaborn blue?)
+        linestyle='None', linewidth=0, edgecolor='white'
+    )
+    ax.plot(xs, est_df[est_spike_delta_col], color=color)
+    ax.fill_between(xs, est_df[ci_lower_col], est_df[ci_upper_col], color=color,
+        **fill_between_kws
+    )
+    if separate_inh_model:
+        inh_color = 'red'
+        # pylint: disable=possibly-used-before-assignment
+        xs = df[col_to_fit][neg]
+        est_df = df[neg]
+
+        # TODO refactor to share w/ above?
+        sorted_indices = np.argsort(xs).values
+        xs = xs.iloc[sorted_indices]
+        est_df = est_df.iloc[sorted_indices]
+
+        ax.plot(xs, est_df[est_spike_delta_col], color=inh_color)
+        ax.fill_between(xs, est_df[ci_lower_col], est_df[ci_upper_col],
+            color=inh_color, **fill_between_kws
+        )
+
+    if add_constant:
+        assert len(model.params) == 2
+        # TODO refactor
+        model_eq = (f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x + '
+            f'{model.params["const"]:.1f}$'
+        )
+        # TODO assert no other parameters besides col_to_fit and const?
+    else:
+        assert 'const' not in model.params
+        assert len(model.params) == 1
+        model_eq = f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x$'
+        # TODO assert no other parameters besides col_to_fit?
+
+    if separate_inh_model:
+        assert not add_constant, 'not yet implemented'
+        model_eq = (f'{model_eq}\n$\\Delta$ '
+            f'$spike$ $rate_{{inh}} = {inh_model.params[col_to_fit]:.1f} x$'
+        )
+
+    y_train = df[spike_delta_col]
+
+    # https://en.wikipedia.org/wiki/Coefficient_of_determination
+    ss_res = ((y_train - df[est_spike_delta_col])**2).sum()
+
+    ss_tot = ((y_train - y_train.mean())**2).sum()
+
+    # TODO make sense that this can be negative??? (for some of the glomerulus
+    # specific fits. see by-glom_dff_vs_hallem__dff_scale-to-avg-max.pdf)
+    # think so: https://stats.stackexchange.com/questions/12900
+    # just means fit is worse than a horizontal line?
+    #
+    # using this R**2 just temporarily to be more comparable to values
+    # reported for add_constant=True cases
+    r_squared = 1 - ss_res / ss_tot
+
+    if add_constant:
+        assert np.isclose(r_squared, model.rsquared)
+
+    # for why R**2 (as reported by model.rsquared) higher w/o intercept:
+    # https://stats.stackexchange.com/questions/267325
+    # https://stats.stackexchange.com/questions/26176
+
+    # ...and some discussion about whether it makes sense to fit w/o intercept:
+    # https://stats.stackexchange.com/questions/7948
+    # https://stats.stackexchange.com/questions/102709
+
+    # now only including this in title if we are able to recalculate R**2
+    # (may be possible from model alone, but not sure how to access y_train from
+    # model, if possible)
+    #
+    # TODO rsquared_adj useful in comparing these two models w/ diff # of
+    # parameters?
+    # TODO want anything else in here? don't really think p-val would be useful
+
+    goodness_of_fit_str = (f'$R^2 = {r_squared:.4f}$'
+        # TODO delete (or recalc for add_constant=False case, as w/ R**2
+        # above)
+        # TODO only include this if we have more than 1 param (i.e. if
+        # add_constant=True). otherwise, R**2 should be equal to R**2_adj
+        #f', $R^2_{{adj}} = {model.rsquared_adj:.4f}$'
+    )
+    ci_str = f'{((1 - alpha_for_ci) * 100):.3g}% CI on fit'
+    title = f'{title_prefix}{model_eq}\n{goodness_of_fit_str}\n{ci_str}'
+    ax.set_title(title)
+
+    assert ax.get_xlabel() == col_to_fit
+    desc = scaling_method2desc[scaling_method_to_use]
+    ax.set_xlabel(f'{col_to_fit}\n{desc}')
+
+
+# TODO TODO test
+# TODO TODO test what happens if only 0-3 odors overlap w/ hallem (+ doc behavior)
+# TODO + add param for cutoff before erring/warning (if not enough overlap w/ hallem)?
+# (or just let statsmodels/whatever fail?)
+# TODO test interaction between use_cache=True/False and cache already existing/not
+# (all combinations)
+#
+# TODO TODO + commit one complete set of model_dir contents (+ load that by default?
+# with warning?)
+# TODO commit + add fn to load all the data i've historically used to fit this fn, then
+# re-run that by default? (for new installs)
+#
+# TODO allow hardcoding model params? and default to that if we don't have one
+# available?
+#
+# TODO have use_cache Optional and compute reasonable default in here?
 # TODO add some kwargs to explicitly control whether we fit dF/F->est-spiking fn?
-def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.DataFrame,
-    roi_depths: Optional[pd.DataFrame] = None, *, dff_col: str = 'delta_f_over_f'
-    ) -> Tuple[pd.DataFrame, ParamDict, str, pd.DataFrame, List[Path]]:
-    # TODO doc
+# (delete? happy w/ current use_cache behavior?)
+# TODO rename use_cache->try_cache?
+#
+# TODO delete roi_depths? or at least expose a param to try depths specific fits?
+# currently there will still be some plots generated, showing relationship in different
+# depth bins, right? doc!
+# TODO rename fly_df? i typically use that elsewhere to indicate it's data from one fly
+def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFrame,
+    roi_depths: Optional[pd.DataFrame] = None, *, model_dir: Optional[Path] = None,
+    use_cache: bool = True) -> Tuple[pd.DataFrame, ParamDict, str, pd.DataFrame,
+        List[Path]
+    ]:
+    # TODO TODO doc what is returned
+    # TODO doc roi_depths + use_cache
+    """
+    Args:
+        plot_dir: where to save plots and `mean_est_spike_deltas.csv`. If
+            `model_dir=None`, this is also used to define `model_dir`.
+
+        fly_df: dF/F ORN calcium imaging data from multiple flies, with enough odors
+            overlapping Hallem dataset (`drosolf.orns.orns()`) to fit a dF/F -> est.
+            spike delta function. This function is currently just a single scaling
+            constant, without even an offset term. An offset term seemed to increase
+            baseline odor-odor model correlations in at least some circumstances
+            previously tested.
+
+            Example:
+            ```
+            date                                     2023-04-22 ... 2024-01-05
+            fly_num                                           2 ...          1
+            roi                                               D ...       VM7d      VM7v
+            panel                 odor1       repeat            ...
+            glomeruli_diagnostics 3mtp @ -5   0        0.109170 ...   0.254810  0.411980
+                                              1        0.182627 ...   0.216468  0.290583
+                                              2        0.051494 ...   0.290520  0.414899
+            ...                                             ... ...        ...       ...
+            validation2           2-mba @ -3  1             NaN ...   1.230833  0.834017
+            ```
+
+            Glomeruli should all be named, and should not include addtional suffixes
+            (e.g. '_t0' / '?'), and should not be named indicating it could be one of
+            multiple glomeruli (e.g. 'VA1v|VA1d' / 'VA1v/VA1d').
+
+        roi_depths:
+
+        model_dir: if not None, will save/load model (+ choices & input data) to/from
+            files in here.
+
+        use_cache: 
+    """
+    # TODO (delete) assert no NaN in here? (NO, there *can* be NaN here. there just
+    # should not be by the time we are done reducing across flies, to a single mean est
+    # spike delta matrix [or in the future, would need to drop NaN in individual flies,
+    # if i also provide a way to run single fly data through model) or just leave that
+    # to fit_mb_model / fit_and_plot...? (should make sure i have that assertion in at
+    # least one of those) (or would raise ValueError in that case, if NaN on any input
+    # really, including stuff like APL weights)
+
+    if model_dir is None:
+        model_dir = plot_dir
+
+    # TODO TODO factor out the per-fly scaling into its own fn, and add kwarg to this fn
+    # exposing scaling method (w/ option to not scale per-fly)
+
+    # TODO TODO separate fn to get the hallem data overlapping w/ current data?
 
     # TODO w/ a verbose flag, say which odors / glomeruli overlapped w/ hallem
 
@@ -15900,7 +16524,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     hallem_delta = orns.orns(columns=glomerulus_col, add_sfr=False)
     hallem_delta = abbrev_hallem_odor_index(hallem_delta)
 
-    #our_odors = {olf.parse_odor_name(x) for x in certain_df.index.unique('odor1')}
+    #our_odors = {olf.parse_odor_name(x) for x in fly_df.index.unique('odor1')}
 
     # TODO delete?
     # TODO or print intersection of these w/ stuff here (or at least stuff
@@ -15939,7 +16563,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     #
     # (each has -2, -4, -6, -8)
 
-    our_glomeruli = set(certain_df.columns.unique('roi'))
+    our_glomeruli = set(fly_df.columns.unique('roi'))
 
     assert hallem_delta.columns.name == glomerulus_col
     hallem_glomeruli = set(hallem_delta.columns)
@@ -16006,32 +16630,44 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # TODO maybe ['panel', 'odor1']? or just drop diagnostic panel 'ms @ -3'?
     # TODO sort=False? (since i didn't have that pre-panel support, may need to sort to
     # compare to that output, regardless...)
-    fly_mean_df = certain_df.groupby(['panel', 'odor1'], sort=False).mean()
+    fly_mean_df = fly_df.groupby(['panel', 'odor1'], sort=False).mean()
+
+    # TODO assert no NaN here? or still present?
+
     # TODO delete? restore and change code to expect 'odor' instead of 'odor1'?
+    # TODO explicitly rename 'odor1'->'odor' instead? (but also to work w/ 'odor'?)
     # this is just to rename 'odor1' -> 'odor'
     fly_mean_df.index.names = ['panel', 'odor']
 
     n_before = num_notnull(fly_mean_df)
     shape_before = fly_mean_df.shape
 
-    # TODO actually helpful to drop ['date', 'fly_num'] cols? keeping could make
+    # TODO actually helpful to drop fly_cols cols? keeping could make
     # summarizing model input easier later... (storing alongside in fly_ids for now)
-    fly_mean_df = util.add_group_id(fly_mean_df.T.reset_index(), ['date', 'fly_num'],
+    fly_mean_df = util.add_group_id(fly_mean_df.T.reset_index(), fly_cols,
         name='fly_id'
     )
 
-    fly_ids = fly_mean_df[['fly_id','date','fly_num']].drop_duplicates()
+    # TODO delete separate fly_ids? just use fly_mean_df?
+    fly_ids = fly_mean_df[['fly_id'] + fly_cols].drop_duplicates()
     # column level names kinda non-sensical at this intermediate ['panel', 'odor'], but
     # I think it's all fine again by end of reshaping (shape, #-not-null, and set of
     # dtypes don't change)
     fly_ids = fly_ids.droplevel('odor', axis='columns')
     # nulling out nonsensical 'panel' name
     fly_ids.columns.name = None
-
     fly_ids = fly_ids.set_index('fly_id')
+    #
 
-    fly_mean_df = fly_mean_df.set_index(['fly_id', 'roi']).drop(
-        columns=['date', 'fly_num'], level=0).T
+    # TODO keep fly_cols, to avoid having to merge them back in later? (as additional
+    # index levels?)
+    # TODO why level=0? any more explicit way? (would probably need to drop earlier to
+    # do so)
+    # level=0 because the first two columns have multiindex values ('date', ''),
+    # ('fly_num', ''), where all columns after properly use the ['panel', 'odor'] levels
+    # of the column MultiIndex.
+    fly_mean_df = fly_mean_df.set_index(['fly_id', 'roi']).drop(columns=fly_cols,
+        level=0).T
 
     # TODO replace w/ call just renaming 'roi'->glomerulus_col
     assert 'fly_id' == fly_mean_df.columns.names[0]
@@ -16045,7 +16681,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # TODO delete? here and elsewhere? (was before fly_mean_df code)
     mean_df = fly_mean_df.groupby(glomerulus_col, axis='columns').mean()
 
-    # TODO factor out?
+    # TODO factor out? rename?
     def melt_odor_by_glom_responses(df, value_name):
         n_before = num_notnull(df)
         df = df.melt(value_name=value_name, ignore_index=False)
@@ -16063,7 +16699,8 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # TODO make adjustments for everything else then?
     # TODO TODO guess-and-check scalar adjustment factor to decrease all hallem spike
     # deltas to make more like our -3? or not matter / scalar not helpful?
-    hope_hallem_minus2_is_our_minus3 = True
+    # TODO expose as kwarg?
+    hope_hallem_minus2_is_our_minus3: bool = True
     if hope_hallem_minus2_is_our_minus3:
         warn('treating all Hallem data as if -2 on their olfactometer is comparable to'
             ' -3 on ours (for estimating dF/F -> spike rate fn)'
@@ -16079,6 +16716,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
     # TODO TODO allow slop of +/- 1 order of magnitude in general for merging w/
     # hallem (for validation stuff in particular)?
+    # TODO TODO TODO try merge_asof w/ tolerance=<float> for this?
 
     # TODO TODO delete all mean_df stuff if i get fly_mean_df version working
     # (which i think i have?)?
@@ -16095,8 +16733,8 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
         assert fly_mean_df.columns.get_level_values(glomerulus_col).equals(
             roi_depths.columns.get_level_values('roi')
         )
-        # to also replace the ['date','fly_num'] levels w/ 'fly_id, as was done to
-        # fly_mean_df above
+        # to also replace the fly_cols levels w/ 'fly_id, as was done to fly_mean_df
+        # above
         roi_depths.columns = fly_mean_df.columns.copy()
 
     fly_mean_df = melt_odor_by_glom_responses(fly_mean_df, dff_col)
@@ -16142,13 +16780,8 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     hallem_delta = melt_odor_by_glom_responses(hallem_delta, spike_delta_col)
 
 
-    def scaling_method_to_col(method: Optional[str]) -> str:
-        if method is None:
-            return dff_col
-        else:
-            return f'{method}_scaled_{dff_col}'
-
-
+    # TODO delete? not used other than to define mean min/max (except for comment with
+    # some old values, but not routinely printing quantiles anymore)
     qs = [0, 0.01, 0.05, 0.5, 0.95, 0.99, 1]
     # quantile 0 = min, 1 = max. after unstacking, columns will be quantiles.
     fly_quantiles = fly_mean_df.groupby('fly_id')[dff_col].quantile(qs).unstack()
@@ -16179,149 +16812,23 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # 13     -0.373534 -0.193339 -0.057145  0.141604  1.019016  1.895920  3.960306
     # 14     -0.351293 -0.218182 -0.056444  0.093895  0.878827  1.745915  2.475087
 
-    # TODO share w/ plots from model fitting below?
-    # TODO use one of newer strs in al_analysis.py for this (-> move to al_util?)?
-    # might this ever be 'Z-scored F' instead of dF/F?
-    dff_desc = f'mean glomerulus {dff_latex}'
-    # TODO refactor to preprend dff_desc inside loop (rather than manually for each
-    # of these)
-    scaling_method2desc = {
-        None: dff_desc,
-
-        #'minmax': f'{dff_desc}\n[0,1] scaled within fly',
-
-        'zscore': f'{dff_desc}\nZ-scored within fly',
-
-        'maxabs': dff_desc + '\n$fly_{max} \\rightarrow 1$, 0-preserved',
-
-        # TODO check adding escaped '\\' in front of 'overline' (still? did it ever
-        # w/o escaping the '\'?) produces what i want
-        'to-avg-max':
-            dff_desc + '\n$fly_{max} \\rightarrow \\overline{fly_{max}}$, 0-preserved',
-
-        'split-minmax':
-            # TODO latex working yet?
-            f'{dff_desc}\n$+ \\rightarrow [0, 1]$\n$- \\rightarrow [-1, 0]$',
-
-        'split-minmax-to-avg': (dff_desc +
-            # TODO latex working yet?
-            '\n$+ \\rightarrow [0, \\overline{fly_{max}}]$\n'
-            '$- \\rightarrow [\\overline{fly_{min}}, 0]$'
-        ),
-    }
-
-    # TODO factor out?
-    # TODO rename to "add_scaled_dff_col" or something?
-    def scale_one_fly(gdf: pd.DataFrame, method: str = 'to-avg-max'):
-        """Adds <method>_scaled_<dff_col> column with scaled <dff_col> values.
-
-        Does not change any existing columns of input.
-        """
-        assert not gdf.fly_id.isna().any() and gdf.fly_id.nunique() == 1
-        col_to_scale = dff_col
-        to_scale = gdf[col_to_scale]
-        n_nan_before = to_scale.isna().sum()
-
-        new_dff_col = scaling_method_to_col(method)
-        assert new_dff_col not in gdf.columns
-
-        if method == 'minmax':
-            scaled = minmax_scale(to_scale)
-
-        elif method == 'zscore':
-            scaled = (to_scale - to_scale.mean()) / to_scale.std()
-
-        # TODO maybe try a variant of 'zscore' where we dont subtract mean first? (b/c
-        # want to preserve 0) (std() doesn't seem that related to fly maxes... not
-        # encouraging for this strategy)
-
-        # also preserves 0, like split-minmax* methods below, but just one scalar
-        # applied to all data
-        # (new min will be > -1 (and < 0), assuming abs(min) < abs(max) (and neg min))
-        elif method in ('maxabs', 'to-avg-max'):
-            scaled = maxabs_scale(to_scale)
-
-            if method == 'to-avg-max':
-                # in theory, max(abs) could come from negative values, but the data
-                # should have larger positive dF/F, so that shouldn't happen
-                assert np.isclose(scaled.max(), 1)
-                scaled *= avg_flymax
-                # TODO TODO apply same scales to data that still has trials split out?
-                # (-> save that)
-                assert np.isclose(scaled.max(), avg_flymax)
-
-        elif method in ('split-minmax', 'split-minmax-to-avg'):
-            # TODO warn if no negative values in input (tho there should always be as
-            # i'm currently using it) (prob fine to keep as assertion for now)
-            assert (to_scale < 0).any()
-
-            # NOTE: to_scale.index.duplicated().any() == True, so probably can't use
-            # index as-is to split/re-combine data
-            # TODO delete if not needed
-            index = to_scale.index
-            to_scale = to_scale.reset_index(drop=True)
-            #
-
-            neg = to_scale < 0
-            nonneg = to_scale >= 0
-            n_neg = neg.sum()
-            assert len(to_scale) == (n_neg + nonneg.sum() + to_scale.isna().sum())
-
-            scaled = to_scale.copy()
-            scaled[nonneg] = minmax_scale(scaled[nonneg])
-
-            # after minmax_scale, just scaled * (max - min) + min, to go to new range
-            scaled[neg] = minmax_scale(scaled[neg]) - 1
-            assert np.isclose(scaled.min(), -1)
-            assert np.isclose(scaled[neg].max(), 0)
-
-            if method == 'split-minmax-to-avg':
-                scaled[nonneg] *= avg_flymax
-                scaled[neg] *= abs(avg_flymin)
-
-            # not true b/c some max of to_scale[neg] gets mapped to 0, presumably
-            #assert n_neg == (scaled < 0).sum()
-            # rhs here can also include 0 from min of to_scale[nonneg]
-            assert n_neg <= (scaled <= 0).sum()
-            assert (scaled < 0).any()
-
-            # so it's not really re-ordering anything. that's good.
-            assert np.array_equal(
-                np.argsort(scaled[scaled != 0]),
-                np.argsort(gdf.reset_index()[scaled != 0][col_to_scale])
-            )
-
-            # TODO delete if i remove related code changing index above
-            scaled.index = index
-
-        # TODO try pinning particular odor(s)? how?
-        # TODO maybe use diags for the pinning, to share w/ validation panel flies more
-        # easily?
-
-        else:
-            raise NotImplementedError(f'scaling {method=} not supported')
-
-        assert scaled.isna().sum() == n_nan_before, 'scaling changed number of NaN'
-        gdf[new_dff_col] = scaled
-        return gdf
-
-    columns_before = fly_mean_df.columns
-
+    # TODO delete/comment most of these?
     methods = [
-        # TODO delete
-        #'minmax',
-
         'zscore',
         'maxabs',
         'to-avg-max',
         'split-minmax',
         'split-minmax-to-avg',
     ]
+    columns_before = fly_mean_df.columns
     for method in methods:
         # each of these calls adds a new column, with a scaled version of dff_col.
         fly_mean_df = fly_mean_df.groupby('fly_id', sort=False, group_keys=False).apply(
-            lambda x: scale_one_fly(x, method=method)
+            lambda x: scale_one_fly(x, avg_flymax, method=method, avg_flymin=avg_flymin)
         )
+
+    # TODO assert no NaN in fly_mean_df? or at which step to we lose / drop them, if
+    # it's earlier?
 
     # TODO recompute and compare quartiles?
     # TODO replace w/ refactoring loop over scaling_method2desc.items() to loop over
@@ -16330,6 +16837,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # (or just `continue` if column not in df...)
     # (OR now could prob use `methods` list above)
     scaled_cols = [c for c in fly_mean_df.columns if c not in columns_before]
+    del columns_before
     # to ensure we are making plots for each scaled column added
     assert (
         {scaling_method_to_col(x) for x in scaling_method2desc.keys()} ==
@@ -16337,10 +16845,15 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     )
     #
 
+    # reset_index() to move ['panel', 'odor'] index levels to columns
     merged_dff_and_hallem = fly_mean_df.reset_index().merge(hallem_delta,
-        left_on=['odor', glomerulus_col], right_on=['odor', glomerulus_col]
-    ).reset_index()
+        on=['odor', glomerulus_col]
+    )
+    # (so we know there's no point in .reset_index(drop=True) here)
+    assert np.issubdtype(merged_dff_and_hallem.index.dtype, int)
+    assert set(np.diff(merged_dff_and_hallem.index)) == {1}
 
+    # TODO do same for col_to_fit? move both assertions into model fit / predict fn(s)?
     assert not merged_dff_and_hallem[spike_delta_col].isna().any()
 
     # TODO print odors left after merging. something like
@@ -16353,7 +16866,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # TODO fit from full matrix input rather than just each glomerulus as attempt at
     # ephaptic stuff?
 
-    # TODO also print / save fly_id -> (date, fly_num) legend
+    # TODO also print / save fly_id -> fly_cols legend
     assert not merged_dff_and_hallem.fly_id.isna().any(), 'nunique does not count NaN'
     fly_palette = dict(zip(
         sorted(merged_dff_and_hallem.fly_id.unique()),
@@ -16367,59 +16880,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # existing values in fly_palette are 3-tuples (color w/o alpha)
     fly_palette = {f: c + (scatterplot_alpha,) for f, c in fly_palette.items()}
 
-    _cprint_color = 'blue'
-    # hack to tell whether we should fit model (if input is megamat panel [which
-    # overlaps well enough w/ hallem], and has at least 7 flies there, we should).
-    # otherwise, we should try to load a saved model, and use that.
-    try:
-        # TODO TODO require both this and other condition?
-        # TODO delete
-        '''
-        if len(certain_df.loc['megamat'].dropna(axis='columns', how='all'
-            ).columns.to_frame(index=False)[['date','fly_num']].drop_duplicates()
-            ) >= 7:
-        '''
-
-        # TODO TODO cleaner solution for this hack (probably involving preserving
-        # panel throughout, and splitting each panel out before passing thru model, then
-        # just always recompute model and do all in one run? now doing a prior run just
-        # to save model, then later runs to pass each particular panel thru model)
-        #
-        # hack to only fit model if we are passing all panel (including validation)
-        # data, on all flies (shape is 198x517 there)
-        if (certain_df.shape[1] > 500 and len(certain_df) > 150 and
-
-                set(certain_df.index.get_level_values('panel')) == {
-                    'megamat', 'validation2', 'glomeruli_diagnostics'
-                } and len(
-                    certain_df.columns.to_frame(index=False)[['date','fly_num']
-                        ].drop_duplicates()
-                # NOTE: 9 final megamat flies and 5 final validation2 flies (after
-                # dropping the 1 Betty wanted). see reproducing.md or
-                # CSVs under data/sent_to_anoop/v1 for the specific flies.
-                ) == (9 + 5)
-            ):
-
-            use_saved_dff_to_spiking_model = False
-        else:
-            use_saved_dff_to_spiking_model = True
-
-    # TODO what exacty triggers this? doc in comment
-    except KeyError:
-        use_saved_dff_to_spiking_model = True
-
-    # this option currently can't actually trigger recomputation that wouldn't happen
-    # anyway... (always recomputed if input data is large enough, never otherwise)
-    # TODO delete this option then?
-    if use_saved_dff_to_spiking_model and should_ignore_existing('dff2spiking'):
-        warn('would NOT have saved dff->spiking model, but requested regeneration of '
-            'it!\n\nchange args to run on all data (so that model would get saved. see '
-            'reproducing.md), OR remove `-i dff2spiking` option.'
-            '\n\nexiting!'
-        )
-        sys.exit()
-
-    if not use_saved_dff_to_spiking_model:
+    if not use_cache:
         # just for histogram in loop below
         tidy_merged = merged_dff_and_hallem.reset_index()
         tidy_pebbled = fly_mean_df.reset_index()
@@ -16434,6 +16895,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
             # TODO put all these hists into a subdir? cluttering folder...
 
+            # TODO TODO also matshow for this subset of data?
             fig, ax = plt.subplots()
             sns.histplot(data=tidy_merged, x=curr_dff_col, bins=n_bins, ax=ax)
             ax.set_title('pebbled (only odors & receptors also in Hallem)')
@@ -16454,6 +16916,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
             # itself?
             # TODO or just loop over panels? easier below?
 
+    # TODO expose any of these (scaling_method_to_use/add_constant/etc) as kwargs?
 
     # TODO iterate over options (just None and 'to-avg-max'? others worse) and verify
     # that what i'm using is actually the best (or not far off)?
@@ -16461,9 +16924,13 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # 'to-avg-max'/'split-minmax-to-avg'/None all produce extremely visually similar
     # megamat/est_orn_spike_deltas*.pdf plots (including the correlation plots)
     # (as expected, since they keep 0)
-    scaling_method_to_use = 'to-avg-max'
+    scaling_method_to_use: Optional[str] = 'to-avg-max'
 
-    add_constant = False
+    # If this is False, then 0 dF/F will translate to 0 est-delta-spike-rate,
+    # otherwise there will be a constant offset which is fit to the data. The constant
+    # offset seemed to inflate correlations back when I tested the two against each
+    # other.
+    add_constant: bool = False
 
     # tested w/ None, 'split-minmax', and 'split-minmax-to-avg'. in all cases, the fit
     # on the negative dF/F data (and aligned subset of Hallem data) looked very bad (fit
@@ -16474,7 +16941,9 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     #
     # TODO maybe also plot just negative dF/F data (w/ aligned hallem data), to sanity
     # check the fact i was getting negative slopes?
-    separate_inh_model = False
+    # TODO delete this code, and always behave as =False? would prob simplify my own
+    # custom [de]serialization code...
+    separate_inh_model: bool = False
 
     col_to_fit = scaling_method_to_col(scaling_method_to_use)
 
@@ -16483,349 +16952,39 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # into hong2p.viz (-> share w/ use in
     # natural_odors/scripts/kristina/lit_total_conc_est.py)
 
-    # TODO refactor to move type of model to one place above?
-    # NOTE: RegressionResults does not seem to be a subclass of
-    # RegressionResultsWrapper. sad.
-    # TODO move outside this fn
-    def fit_dff2spiking_model(to_fit: pd.DataFrame) -> Tuple[RegressionResultsWrapper,
-        Optional[RegressionResultsWrapper]]:
-
-        # would need to dropna otherwise
-        assert not to_fit.isna().any().any()
-        to_fit = to_fit.copy()
-        y_train = to_fit[spike_delta_col]
-
-        # TODO try adding (0, 0) as as point, even if still using Ax+b as a model? is
-        # that actually a valid practice? probably not, right?
-
-        if add_constant:
-            X_train = sm.add_constant(to_fit[col_to_fit])
-        else:
-            X_train = to_fit[col_to_fit].to_frame()
-
-        if not separate_inh_model:
-            # TODO why does this model produce a different result from the seaborn call
-            # above (can tell by zooming in on upper right region of plot)??
-            # TODO rename to "results"? technically the .fit() returns a results wrapper
-            # or something (and do i only want to serialize the model part? can that
-            # even store the parameters separately) (online info seems to say it should
-            # return RegressionResults, so not sure why i'm getting
-            # RegressionResultsWrapper...)
-            model = sm.OLS(y_train, X_train).fit()
-            inh_model = None
-        else:
-            nonneg = X_train[col_to_fit] >= 0
-            neg = X_train[col_to_fit] < 0
-
-            model = sm.OLS(y_train[nonneg], X_train[nonneg]).fit()
-            inh_model = sm.OLS(y_train[neg], X_train[neg]).fit()
-
-        return model, inh_model
-
-
-    # TODO move outside this fn
-    def predict_spiking_from_dff(df: pd.DataFrame, model: RegressionResultsWrapper,
-        inh_model: Optional[RegressionResultsWrapper] = None, *, alpha=0.05,
-        ) -> pd.DataFrame:
-        """
-        Returns dataframe with 3 additional columns: [est_spike_delta_col,
-        <est_spike_delta_col>_ci_[lower|upper] ]
-        """
-        # TODO doc input requirements
-
-        # TODO delete unless add_constant line below w/ series input might mutate df
-        # (unlikely)
-        df = df.copy()
-
-        # would otherwise need to dropna
-        assert not df.isna().any().any()
-
-        # TODO assert saved model only has const term if add_constant?
-        # do above where we load model + choices?
-
-        # TODO see if this can be replaced w/ below (and do in other place if so)
-        if add_constant:
-            # returns a DataFrame w/ an extra 'const' col (=1.0 everywhere)
-            X = sm.add_constant(df[col_to_fit])
-        else:
-            X = df[col_to_fit].to_frame()
-
-        if not separate_inh_model:
-            y_pred = model.get_prediction(X)
-
-            # TODO what are obs_ci_[lower|upper] cols? i assume i'm right to use
-            # mean_ci_[upper|lower] instead (seems so)?
-            # https://stackoverflow.com/questions/60963178
-            #
-            # alpha=0.05 by default (in statsmodels, if not passed)
-            pred_df = y_pred.summary_frame(alpha=alpha)
-
-            predicted = y_pred.predicted
-        else:
-            # fly_mean_df input (call where important estimates get added) currently has
-            # an index that would fail the verify_integrity=True checks below, so saving
-            # this index to restore later.
-            # TODO do i actually need to restore index tho?
-            # TODO delete?
-            #index = X.index
-            X = X.reset_index(drop=True)
-
-            nonneg = X[col_to_fit] >= 0
-            neg = X[col_to_fit] < 0
-
-            y_pred_nonneg = model.get_prediction(X[nonneg])
-            y_pred_neg = inh_model.get_prediction(X[neg])
-
-            pred_df_nonneg = y_pred_nonneg.summary_frame(alpha=alpha)
-            pred_df_neg = y_pred_neg.summary_frame(alpha=alpha)
-
-            predicted_nonneg = pd.Series(
-                data=y_pred_nonneg.predicted, index=X[nonneg].index
-            )
-            predicted_neg = pd.Series(data=y_pred_neg.predicted, index=X[neg].index)
-
-            pred_df = pd.concat([pred_df_nonneg, pred_df_neg], verify_integrity=True)
-
-            # just on the RangeIndex of input (should have all consecutive indices from
-            # start to end after concatenating)
-            pred_df = pred_df.sort_index()
-            assert pred_df.index.equals(X.index)
-
-            predicted = pd.concat([predicted_nonneg, predicted_neg],
-                verify_integrity=True
-            )
-            predicted = predicted.sort_index()
-            assert predicted.index.equals(X.index)
-
-            # TODO TODO restore (w/ above)? will this make predict_spiking_from_dff fn
-            # return val make more sense? what was issue again?
-            # TODO delete?
-            #X.index = index
-
-        # NOTE: .get_prediction(...) seems to return an object where more information is
-        # available about the fit (e.g. confidence intervals, etc). .predict(...) will
-        # just return simple output of model (same as <PredictionResult>.predicted).
-        # (also seems to be same as pred_df['mean'])
-        assert np.array_equal(predicted, pred_df['mean'])
-        if not separate_inh_model:
-            assert np.array_equal(predicted, model.predict(X))
-
-        # TODO was this broken in separate inh case? (still think that case was
-        # probably a dead end, so not necessarily worth fixing...)
-        # (but megamat/est_orn_spike_deltas[_corr].pdf plots were all NaN it seems?)
-        # (not sure i can repro)
-        df[est_spike_delta_col] = predicted
-
-        # TODO how are these CI's actually computed? how does that differ from how
-        # seaborn computes them? why are they different?
-        # TODO what are obs_ci_[lower|upper]? seems newer versions of statsmodels might
-        # not have them anyway? or at least they aren't documented...
-        for c in ('mean_ci_lower', 'mean_ci_upper'):
-            df[f'{est_spike_delta_col}{c.replace("mean", "")}'] = pred_df[c]
-
-        # TODO sort df by est_spike_delta_col before returning? would that make
-        # plotting fn avoid need to do that? or prob just do in plotting fn...
-        return df
-
-
-    # TODO (reword to make accurate again) delete _model kwarg.
-    # just using to test serialization of OLS model, since i can't figure out why this
-    # equality check fails (no .equals avail):
-    # > model.save('test_model.p')
-    # > deserialized_model = sm.load('test_model.p')
-    # > deserialized_model == model
-    # False
-    # > deserialized_model.remove_data()
-    # > model.remove_data()
-    # > deserialized_model == model
-    # False
-    def plot_dff2spiking_fit(df: pd.DataFrame, model: RegressionResultsWrapper,
-        inh_model: Optional[RegressionResultsWrapper] = None, *, scatter=True,
-        title_prefix=''):
-        """
-        Args:
-            scatter: if True, scatterplot merged data w/ a hue for each fly. otherwise,
-                plot a 2d histogram of data.
-        """
-        assert col_to_fit in df.columns
-        assert spike_delta_col in df.columns
-
-        ci_lower_col = f'{est_spike_delta_col}_ci_lower'
-        ci_upper_col = f'{est_spike_delta_col}_ci_upper'
-        est_cols = (est_spike_delta_col, ci_lower_col, ci_upper_col)
-        assert all(x not in df.columns for x in est_cols)
-
-        if separate_inh_model:
-            assert inh_model is not None
-        else:
-            assert inh_model is None
-
-        # functions passed to FacetGrid.map[_dataframe] must plot to current Axes
-        ax = plt.gca()
-
-        # TODO was seaborn results suggesting i wanted alpha 0.025 for 95% CI here?
-        # (honestly, seaborn CI [which is supposedly 95%, tho bootstrapped] looks wider
-        # in all cases)
-        #
-        # from looking at statsmodels code, I'm pretty sure their "95% CI" is centered
-        # on estimate, w/ alpha/2 on either side (so 0.05 correct for 95%, not 0.025)
-        alpha_for_ci = 0.05
-
-        # TODO include what alpha is in name of cols returned from predict (-> delete
-        # explicit pass-in here)?
-        df = predict_spiking_from_dff(df, model, inh_model, alpha=alpha_for_ci)
-
-        assert all(x in df.columns for x in est_cols)
-
-        plot_kws = dict(ax=ax, data=df, y=spike_delta_col, x=col_to_fit)
-        if scatter:
-            sns.scatterplot(hue='fly_id', palette=fly_palette, legend='full',
-                edgecolors='none', **plot_kws
-            )
-        else:
-            # TODO set bins= (seems OK w/o)?
-            #
-            # default blue 2d hist color would probably not work well w/ current blue
-            # fit line
-            sns.histplot(color='red', cbar=True, **plot_kws)
-
-        # TODO can i replace all est_df below w/ just df?
-
-        xs = df[col_to_fit]
-        if not separate_inh_model:
-            est_df = df
-        else:
-            neg = df[col_to_fit] < 0
-            nonneg = df[col_to_fit] >= 0
-
-            est_df = df[nonneg]
-            xs = xs[nonneg]
-
-        # sorting was necessary for fill_between below to work correctly
-        sorted_indices = np.argsort(xs).values
-        xs = xs.iloc[sorted_indices]
-        est_df = est_df.iloc[sorted_indices]
-
-        color = 'blue'
-        fill_between_kws = dict(alpha=0.2,
-            # TODO each of these needed? try to recreate seaborn (set color_palette the
-            # same / use that seaborn blue?)
-            linestyle='None', linewidth=0, edgecolor='white'
-        )
-        ax.plot(xs, est_df[est_spike_delta_col], color=color)
-        ax.fill_between(xs, est_df[ci_lower_col], est_df[ci_upper_col], color=color,
-            **fill_between_kws
-        )
-        if separate_inh_model:
-            inh_color = 'red'
-            # pylint: disable=possibly-used-before-assignment
-            xs = df[col_to_fit][neg]
-            est_df = df[neg]
-
-            # TODO refactor to share w/ above?
-            sorted_indices = np.argsort(xs).values
-            xs = xs.iloc[sorted_indices]
-            est_df = est_df.iloc[sorted_indices]
-
-            ax.plot(xs, est_df[est_spike_delta_col], color=inh_color)
-            ax.fill_between(xs, est_df[ci_lower_col], est_df[ci_upper_col],
-                color=inh_color, **fill_between_kws
-            )
-
-        if add_constant:
-            # TODO refactor
-            model_eq = (f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x + '
-                f'{model.params["const"]:.1f}$'
-            )
-            # TODO assert no other parameters besides col_to_fit and const?
-        else:
-            model_eq = f'$\\Delta$ $spike$ $rate = {model.params[col_to_fit]:.1f} x$'
-            # TODO assert no other parameters besides col_to_fit?
-
-        if separate_inh_model:
-            assert not add_constant, 'not yet implemented'
-            model_eq = (f'{model_eq}\n$\\Delta$ '
-                f'$spike$ $rate_{{inh}} = {inh_model.params[col_to_fit]:.1f} x$'
-            )
-
-        y_train = df[spike_delta_col]
-
-        # https://en.wikipedia.org/wiki/Coefficient_of_determination
-        ss_res = ((y_train - df[est_spike_delta_col])**2).sum()
-
-        ss_tot = ((y_train - y_train.mean())**2).sum()
-
-        # TODO make sense that this can be negative??? (for some of the glomerulus
-        # specific fits. see by-glom_dff_vs_hallem__dff_scale-to-avg-max.pdf)
-        # think so: https://stats.stackexchange.com/questions/12900
-        # just means fit is worse than a horizontal line?
-        #
-        # using this R**2 just temporarily to be more comparable to values
-        # reported for add_constant=True cases
-        r_squared = 1 - ss_res / ss_tot
-
-        if add_constant:
-            assert np.isclose(r_squared, model.rsquared)
-
-        # for why R**2 (as reported by model.rsquared) higher w/o intercept:
-        # https://stats.stackexchange.com/questions/267325
-        # https://stats.stackexchange.com/questions/26176
-
-        # ...and some discussion about whether it makes sense to fit w/o intercept:
-        # https://stats.stackexchange.com/questions/7948
-        # https://stats.stackexchange.com/questions/102709
-
-        # now only including this in title if we are able to recalculate R**2
-        # (may be possible from model alone, but not sure how to access y_train from
-        # model, if possible)
-        #
-        # TODO rsquared_adj useful in comparing these two models w/ diff # of
-        # parameters?
-        # TODO want anything else in here? don't really think p-val would be useful
-
-        goodness_of_fit_str = (f'$R^2 = {r_squared:.4f}$'
-            # TODO delete (or recalc for add_constant=False case, as w/ R**2
-            # above)
-            # TODO only include this if we have more than 1 param (i.e. if
-            # add_constant=True). otherwise, R**2 should be equal to R**2_adj
-            #f', $R^2_{{adj}} = {model.rsquared_adj:.4f}$'
-        )
-        ci_str = f'{((1 - alpha_for_ci) * 100):.3g}% CI on fit'
-        title = f'{title_prefix}{model_eq}\n{goodness_of_fit_str}\n{ci_str}'
-        ax.set_title(title)
-
-        assert ax.get_xlabel() == col_to_fit
-        desc = scaling_method2desc[scaling_method_to_use]
-        ax.set_xlabel(f'{col_to_fit}\n{desc}')
-
-
     # TODO move def of these to module level? (maybe prepending plot_dir inside usage?)
     copy_to_model_dirs = []
 
-    dff_to_spiking_model_path = plot_dir / 'dff2spiking_fit.p'
+    # TODO assert all these exist? (by end of function, at least?)
+    dff_to_spiking_model_path = model_dir / 'dff2spiking_fit.p'
     copy_to_model_dirs.append(dff_to_spiking_model_path)
 
     if separate_inh_model:
-        dff_to_spiking_inh_model_path = plot_dir / 'dff2spiking_inh_fit.p'
+        dff_to_spiking_inh_model_path = model_dir / 'dff2spiking_inh_fit.p'
         copy_to_model_dirs.append(dff_to_spiking_inh_model_path)
 
-    # TODO TODO TODO make a (matrix, probably) plot with just this data too (and at
-    # least say in text which fraction of odors we are using, and N [+fly IDs?] for
-    # each?)
-    dff_to_spiking_data_csv = plot_dir / 'dff2spiking_model_input.csv'
+    # TODO TODO (delete? already have?) make a (matrix, probably) plot with just this
+    # data too (and at least say in text which fraction of odors we are using, and N
+    # [+fly IDs?] for each?)
+    dff_to_spiking_data_csv = model_dir / dff_to_spiking_data_csv_name
     copy_to_model_dirs.append(dff_to_spiking_data_csv)
 
     # TODO move all fitting + plotting up above (~where current seaborn plotting
     # is), so i can do for all scaling choices, like w/ current seaborn plots (still
     # just doing modelling w/ one scaling choice)
 
+    # TODO if loading cached model, check that current values for these match the cached
+    # values?
+    #
     # so we have a record of which scaling choice we made (modelling plots already show
     # many parameters and this one isn't going to vary across modelling outputs from a
     # given run)
     # TODO save this and other non-plot outputs we need to load saved dF/F->spiking
     # fit outside of plot dirs, so i can swap between png and pdf w/o issue...
-    dff_to_spiking_model_choices_csv = plot_dir / 'dff2spiking_model_choices.csv'
-    copy_to_model_dirs.append(dff_to_spiking_data_csv)
+    dff_to_spiking_model_choices_csv = model_dir / dff_to_spiking_model_choices_csv_name
+    # NOTE: this one was accidentally not appended to copy_to_model_dirs for a while
+    # (dff_to_spiking_data_csv was appended twice. fixed 2026-03-09)
+    copy_to_model_dirs.append(dff_to_spiking_model_choices_csv)
     #
 
     # TODO anything else i need to include in this?
@@ -16836,125 +16995,90 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
         'separate_inh_model': separate_inh_model,
     })
 
-    def read_dff_to_spiking_model_choices():
-        bool_params = ('add_constant', 'separate_inh_model')
-
-        ser = read_series_csv(dff_to_spiking_model_choices_csv,
-            # TODO some way to infer add_constant dtype correctly (as bool)
-            # (this didn't work)
-            #dtype={'add_constant': bool}
-        )
-
-        for x in bool_params:
-            if not type(ser[x]) is bool:
-                x_lower = ser[x].lower()
-                assert x_lower in ('true', 'false')
-                ser[x] = x_lower == 'true'
-
-        return ser
-
     # TODO also save + check response_calc_params match (currently module level variable
     # in al_analysis.py) (and do same for all data being fed thru model.  response calc
     # should match that for data used to compute dF/F -> est spike delta fn) (or
     # sufficient that we are saving input? and could then figure out which response stat
     # fn that input was using, if needed)
 
-    if not use_saved_dff_to_spiking_model:
+    # TODO adding fly_cols to this doesn't cause any issues below, right? was previously
+    # only added to copy for CSV saving, not this
+    shape_before = merged_dff_and_hallem.shape
+    cols_before = list(merged_dff_and_hallem.columns)
+    before_merge = merged_dff_and_hallem.copy()
+    # why is this not seemingly preserving order of left keys (or at least, the
+    # RangeIndex index is not in order after). matter? well, doesn't matter now that i'm
+    # calling sort_index().reset_index(drop=True) below
+    merged_dff_and_hallem = merged_dff_and_hallem.merge(fly_ids, left_on='fly_id',
+        right_index=True
+    )
+    cols_after = set(merged_dff_and_hallem.columns)
+    assert cols_after - set(cols_before) == set(fly_cols)
+    assert set(cols_before) - cols_after == set()
+    assert merged_dff_and_hallem.shape == (shape_before[0], shape_before[1] + 2)
+    assert num_null(merged_dff_and_hallem) == 0
+    assert merged_dff_and_hallem[cols_before].sort_index().equals(before_merge)
+    merged_dff_and_hallem = merged_dff_and_hallem.sort_index().reset_index(drop=True)
+
+    if not use_cache:
+        # TODO move to new save_model fn? (if i have it take these choices too. well
+        # model loading/refitting is loading + using those)
         to_csv(dff_to_spiking_model_choices, dff_to_spiking_model_choices_csv,
             header=False
         )
         # to check no more dtype issues (and just that we saved correctly)
-        saved = read_dff_to_spiking_model_choices()
+        saved = read_dff_to_spiking_model_choices(model_dir)
         assert saved.equals(dff_to_spiking_model_choices)
         del saved
 
-        # TODO also add depth col (when available) here?
-        cols_to_save = ['fly_id', 'odor', glomerulus_col, dff_col]
+        # TODO also save hallem receptor in a col here? (if i do, just add to
+        # merged_dff_and_hallem, don't only add before saving)
 
-        if col_to_fit != dff_col:
-            cols_to_save.append(col_to_fit)
+        # TODO also save to_pickle (which will currently include to_parquet, but which i
+        # might eventually want to replace w/ to_parquet explicitly)
+        dff_to_spiking_pickle = dff_to_spiking_data_csv.with_suffix('.p')
+        to_pickle(merged_dff_and_hallem, dff_to_spiking_pickle)
 
-        cols_to_save.append(spike_delta_col)
-
-        assert all(c in merged_dff_and_hallem.columns for c in cols_to_save)
-        dff_to_spiking_data = merged_dff_and_hallem[cols_to_save].copy()
-
-        dff_to_spiking_data = dff_to_spiking_data.rename({
-                col_to_fit: f'{col_to_fit} (X_train)',
-                spike_delta_col: f'hallem_{spike_delta_col} (y_train)',
-            }, axis='columns'
-        )
-        shape_before = dff_to_spiking_data.shape
-
-        dff_to_spiking_data = dff_to_spiking_data.merge(fly_ids, left_on='fly_id',
-            right_index=True
-        )
-        assert dff_to_spiking_data.shape == (shape_before[0], shape_before[1] + 2)
-        assert num_null(dff_to_spiking_data) == 0
-
-        # NOTE: ['odor', 'fly_id', glomerulus_col] would be unique if not for those few
-        # odors that are in two panels in one fly (e.g. 'ms @ -3' in diag and megamat).
-        # we don't currently have 'panel' info in this df, so may need to keep in mind
-        # if using saved data.
-        # TODO include panel? (would need to merge in a way that preserves that. don't
-        # think i currently do... shouldn't really matter)
-
-        # TODO also save hallem receptor in a col here?
-        to_csv(dff_to_spiking_data, dff_to_spiking_data_csv, index=False,
+        to_csv(merged_dff_and_hallem, dff_to_spiking_data_csv, index=False,
             date_format=date_fmt_str
         )
 
-        model, inh_model = fit_dff2spiking_model(merged_dff_and_hallem)
-
+        model, inh_model = fit_dff2spiking_model(merged_dff_and_hallem, col_to_fit,
+            add_constant=add_constant, separate_inh_model=separate_inh_model
+        )
         # TODO also save model.summary() to text file?
-        cprint(f'saving dF/F -> spike delta model to {dff_to_spiking_model_path}',
-            _cprint_color
+
+        # TODO put behind checks=True path?
+        fm1 = predict_spiking_from_dff(fly_mean_df, model, inh_model)
+        model2, inh_model2 = load_data_and_refit_dff2spiking_model(model_dir,
+            verbose=False
         )
-        save_model(model, dff_to_spiking_model_path)
+        fm2 = predict_spiking_from_dff(fly_mean_df, model2, inh_model2)
+        # TODO may need to use pd_allclose if this ever fails. seems fine for now
+        assert fm1.equals(fm2), f'replace w/ {pd_allclose(fm1, fm2)=}, if it is True'
 
-        if separate_inh_model:
-            cprint(
-                f'saving separate inhibition model to {dff_to_spiking_inh_model_path}',
-                _cprint_color
-            )
-            save_model(model, dff_to_spiking_inh_model_path)
+        # TODO could also replace these w/ pd_allclose checks
+        assert model.params.equals(model2.params)
+        if inh_model is not None:
+            assert inh_model.params.equals(inh_model2.params)
 
-        # TODO delete / put behind checks flag
-        #deserialized_model = sm.load(dff_to_spiking_model_path)
-        # TODO other comparison that would work after model.remove_data()?
-        # care to remove_data? probably not
+        # TODO also get 2nd to last part of object repr ('.' separated), and assert
+        # those are the same? e.g.
+        # '<statsmodels.regression.linear_model.RegressionResultsWrapper object at
+        # 0x7f9f584c3820>' -> 'linear_model'. or is similar info available in some other
+        # attribute (maybe just in summary()/summary2()?)
         #
-        # ok, this is true at least...
-        # TODO why is this failing now (seems to only be a line containing Time, and
-        # only in the time part of that line. doesn't matter.)
-        # from diffing these:
-        # Path('model_summary.txt').write_text(str(model.summary()))
-        # Path('deser_model_summary.txt').write_text(str(deserialized_model.summary()))
-        # tom@atlas:~/src/al_analysis$ diff model_summary.txt deser_model_summary.txt
-        # 7c7
-        # < Time:                        15:46:35   Log-Likelihood:                         -17078.
-        # ---
-        # > Time:                        15:46:46   Log-Likelihood:                         -17078.
-        #
-        # TODO find a replacement check?
-        #assert str(deserialized_model.summary()) == str(model.summary())
-        #
-
-        # TODO (reword to update / delete) use _model kwarg in predict to check
-        # serialized->deser model is behaving same (below, where predict is called)
     else:
-        # TODO TODO print some short summary of this data (panels, numbers of flies,
-        # etc)
-        cprint(f'using saved dF/F -> spiking model {dff_to_spiking_model_path}',
-            _cprint_color
-        )
-        if separate_inh_model:
-            cprint(
-                f'using separate inhibition model from {dff_to_spiking_inh_model_path}',
-                _cprint_color
-            )
+        # TODO TODO also pass in and check al_analysis's response_calc_params
+        # (if current ones don't match those for saved dF/F->spike delta fn, also need
+        # to recalculate it)
 
-        cached_model_choices = read_dff_to_spiking_model_choices()
+        # TODO TODO move this check + sys.exit() outside of this fn? (should be last
+        # hack i have not yet moved out)
+        # TODO or just replace w/ an assertion that model choices match cached ones?
+        # or automatically regening if they don't (assuming we don't really intend to
+        # force use of cache. have use_cache be Optional to allow that distinction?)
+        cached_model_choices = read_dff_to_spiking_model_choices(model_dir)
         if not cached_model_choices.equals(dff_to_spiking_model_choices):
             # TODO reword. -i dff2spiking w/ input data < all of it will not actually do
             # anything (cause model only ever saved if all data passed in)
@@ -16964,22 +17088,15 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
             )
             sys.exit()
 
-        # TODO TODO save this and other non-plot outputs we need to load saved
-        # dF/F->spiking fit outside of plot dirs, so i can swap between png and pdf w/o
-        # issue...
-        #
-        # possible this alone has the input data, but save/loading that in parallel,
-        # since i couldn't figure out how to access from here
-        model = sm.load(dff_to_spiking_model_path)
-        if separate_inh_model:
-            inh_model = sm.load(dff_to_spiking_inh_model_path)
-        else:
-            inh_model = None
+        model, inh_model = load_data_and_refit_dff2spiking_model(model_dir)
 
-        # TODO load + summarize model input data
-        # TODO +also load+summarize model choices
+        # TODO load + summarize model input data (panels, numbers of flies, overlapping
+        # odors w/ hallem, etc) (in load_data_and_refit...?)
+        # TODO +also load+summarize model choices (in load_data_and_refit...?)
 
-    # TODO still show if verbose=True or something?
+    # TODO still show if verbose=True or something? (excluding misleading date/time
+    # field, ideally. maybe factor out a format_model fn that is also used in a
+    # model_equals fn [which uses summary as_csv and removes those fields]?)
     #print('dF/F -> spike delta model summary:')
     #print(model.summary())
 
@@ -17019,12 +17136,13 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     ])
     del params_for_suffix
 
-    if not use_saved_dff_to_spiking_model:
+    if not use_cache:
         plot_fname = f'dff_vs_hallem__{dff2spiking_choices_str}'
 
         fig, _ = plt.subplots()
-        # TODO factor into same fn that fits model?
-        plot_dff2spiking_fit(merged_dff_and_hallem, model)
+        plot_dff2spiking_fit(merged_dff_and_hallem, model,
+            scaling_method_to_use=scaling_method_to_use, fly_palette=fly_palette
+        )
         # normalize_fname=False to prevent '__' from getting replaced w/ '_'
         # TODO TODO (still an issue?) fix -c/-C failure here!
         # TODO add a to_csv(merged_dff_and_hallem, <some-path>) call first, to
@@ -17040,10 +17158,14 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 
         fig, _ = plt.subplots()
         # this one should plot fit over a 2d hist of data
-        plot_dff2spiking_fit(merged_dff_and_hallem, model, scatter=False)
+        plot_dff2spiking_fit(merged_dff_and_hallem, model,
+            scaling_method_to_use=scaling_method_to_use, scatter=False,
+            fly_palette=fly_palette
+        )
         savefig(fig, plot_dir, f'{plot_fname}_hist2d', normalize_fname=False)
 
         _seen_group_vals = set()
+        # TODO factor  this out too?
         def fit_and_plot_dff2spiking_model(*args, group_col=None, **kwargs):
             assert len(args) == 0
             assert 'label' not in kwargs
@@ -17052,7 +17174,10 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
             assert set(kwargs.keys()) == {'data', 'color'}
 
             df = kwargs['data']
-            model, inh_model = fit_dff2spiking_model(df)
+            # TODO why is this called both here and outside? refactor?
+            model, inh_model = fit_dff2spiking_model(df, col_to_fit,
+                add_constant=add_constant, separate_inh_model=separate_inh_model
+            )
 
             group_vals = set(df[group_col].unique())
             assert len(group_vals) == 1
@@ -17078,7 +17203,10 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
                 title_prefix = f'{group_val} $\\mu$m\n'
 
             # pylint: disable-next=possibly-used-before-assignment
-            plot_dff2spiking_fit(df, model, inh_model, title_prefix=title_prefix)
+            plot_dff2spiking_fit(df, model, inh_model,
+                scaling_method_to_use=scaling_method_to_use, title_prefix=title_prefix,
+                fly_palette=fly_palette
+            )
 
 
         if roi_depths is not None:
@@ -17163,7 +17291,6 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
         # TODO possible to have automated detection of outlier glomeruli? i.e. those
         # benefitting from different fits
 
-
     # TODO TODO TODO also get per-fly scaled data that preserves trials (-> save that)
     # TODO TODO TODO or save per-fly scales separately, so it could be multiplied by
     # separate copies of the data w/ separate trials?
@@ -17185,21 +17312,9 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # whatever) (maybe refactor above to share + use panel_prefix from below?)
     # TODO + do same under each panel dir, for each panels data?
 
-    # TODO test whether downstream code works fine w/o stopping here (at least
-    # check equiv in megamat case. may want to hardcode a skip of the validation2 panel
-    # by default anyway [w/ a flag])
-    # TODO would checking megamat subset of fly_mean_df is same between two runs (w/ all
-    # data vs just megamat flies) get us most/all of the way there?
-    #
-    # TODO delete hack (see corresponding hack above where this flag is defined)
-    # (plus now rest of modeling code loops over panels anyway, no?)
-    if not use_saved_dff_to_spiking_model:
-        print('EXITING EARLY AFTER HAVING SAVED MODEL ON ALL DATA (analyze specific '
-            'panels with additional al_analysis runs, restricting date range to only '
-            'one panel)!'
-        )
-        sys.exit()
-    #
+    # TODO once again skip all below if use_cache=False? (and actually used cache) would
+    # prevously sys.exit() here, before saving mean_est_spike_deltas.csv or remaining
+    # plots
 
     # TODO plot histogram of fly_mean_df[est_spike_delta_col] (maybe resting on the x
     # axis in the same kind of scatter plot of (x=dF/F, y=delta spike rate,
@@ -17215,6 +17330,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # orns.orns().T
     mean_est_df = mean_est_df.unstack(['panel', 'odor'])
 
+    # TODO only do if panel(s) is/are in panel2name_order keys?
     mean_est_df = sort_odors(mean_est_df)
 
     # TODO TODO save something like this, but keeping flies + trials too?
@@ -17230,6 +17346,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
     # <driver>_<indicator>/<plot_fmt>/ijroi/mb_modeling (instead of any panel-specific
     # subdirectory of `mb_modeling`), so multiple runs with different panels (typically
     # defined by start/end date args to `al_analysis.py`) will have different data here.
+    # TODO rename plot_dir->output_dir, so this makes a bit more sense?
     to_csv(mean_est_df, plot_dir / 'mean_est_spike_deltas.csv',
         ignore_output_change_check=True
     )
@@ -17283,14 +17400,21 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, certain_df: pd.Da
 # basic versions of the model runnable for other people)? either way, want to commit
 # some example AL data to use.
 # TODO rename certain_df to just df (or something less loaded)
-# TODO TODO add kwarg to hardcode a dF/F -> spike delta scaling factor (or a
+# TODO add kwarg to hardcode a dF/F -> spike delta scaling factor (or a
 # general fn), and have it bypass the computation of this fn / related plotting/cache.
 # (-> use for simple example uses of this fn, hardcoding scale factor = 127 from
 # Remy-paper)
+# TODO have change in response_calc_params (currently passed via copy_to_model_dirs)
+# invalidate saved dF/F -> spiking data/fn? should a change in any of those files? check
+# all? (even tho thats the only one for now...)
+# TODO rename remypaper_and_kiwicontrol_modelling (/similar)? still want something with
+# a name like this?
 def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     roi_depths=None, skip_sensitivity_analysis: bool = False,
     skip_models_with_seeds: bool = False, skip_model_dynamics_saving: bool = False,
-    skip_hallem_models: bool = False, first_model_kws_only: bool = False) -> None:
+    skip_hallem_models: bool = False, first_model_kws_only: bool = False,
+    copy_to_model_dirs: Optional[List[Path]] = None) -> None:
+    # TODO doc type of roi_depths
     # TODO when is it ok for certain_df to have NaNs? does seem current input has
     # some NaNs, which are only for some odors [for which no odors is NaN for all
     # fly-glomeruli]. any restrictions (if none, why was sam having issues?)
@@ -17308,8 +17432,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         certain_df: dataframe of shape (# odors [including repeats], # fly-glomeruli),
             with dF/F values from [potentially multiple] flies.
 
-            Column index names should be ['date', 'fly_num', 'roi' (i.e. glomerulus
-            name)].
+            Column index names should be `flyroi_cols` ['date', 'fly_num', 'roi' (i.e.
+                glomerulus name)].
 
             Row index names should be ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
             (possible that not all are required, but 'panel' and 'odor1' should be)
@@ -17346,8 +17470,12 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             # hack to remove stuff like 'cmix-1 @ 0'
             odor_strs.str.contains('x-', regex=False) |
 
-            # to remove 2 component mixtures (whether in-vial or air mixture)
-            odor_strs.str.contains('+', regex=False) |
+            # to remove 2 component mixtures (whether in-vial or air mixture).
+            #
+            # stripping '+' first (which only removes any start/end characters in passed
+            # set), to exclude stuff like 'validation2' panel's '+pul @ -2', which is
+            # neither a mixture nor a mix dilution.
+            odor_strs.str.strip('+').str.contains('+', regex=False) |
 
             # TODO replace w/ using parsing to get name or match solvent_str or
             # something
@@ -17357,15 +17485,26 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         if 'odor2' in df.index.names:
             to_drop = to_drop | (df.index.get_level_values('odor2') != solvent_str)
 
+        index_before = df.index.copy()
+
         df = df.loc[~to_drop].copy()
 
         df = drop_mix_dilutions(df)
+
+        dropped = index_before.difference(df.index)
+        if len(dropped) > 0:
+            dropped = dropped.droplevel('repeat').drop_duplicates()
+            warn('dropped the following odors, which should be mixtures or mix '
+                f'dilutions:\n{dropped.to_frame().to_string(index=False)}'
+            )
+
         return df
 
     # TODO TODO delete (/make conditional) hack to remove odors we don't want to
     # analyze, before running kiwi/control data thru model (prob won't affect
     # megamat/validation anyway?)
-    print('TOSSING ODORS WE WILL NOT ANALYZE IN NATMIX_DATA')
+    # TODO TODO + factor this [+ similar tom-specific hacks] out of this fn, and into
+    # one just to analyze paper and/or kiwi-control data
     certain_df = drop_unused_model_odors(certain_df)
 
     # TODO make and use a subdir in plot_dir (for everything in here, including
@@ -17416,6 +17555,7 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
             odor1_names + '+' +
             index_df.odor2.apply(olf.parse_odor_name) + ' (air mix) @ 0'
         )
+        # TODO TODO warn about this?
         # TODO work as-is (seems to...)? need to subset RHS to be same shape?
         # (could add assertions that other part, i.e. `index_df.odor2 == solvent_str`
         # doesn't change)
@@ -17446,11 +17586,91 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
     # of 5-component mix (with more dilute mixtures further towards the end)
     certain_df = sort_odors(certain_df)
 
-    ret = scale_dff_to_est_spike_deltas_using_hallem(plot_dir, certain_df, roi_depths)
 
+    # hack to tell whether we should fit model (if input is megamat panel [which
+    # overlaps well enough w/ hallem], and has at least 7 flies there, we should).
+    # otherwise, we should try to load a saved model, and use that.
+    try:
+        # TODO TODO move this to calling code, and only pass in flag to use cache here?
+        # TODO cleaner solution than this hack (probably involving preserving
+        # panel throughout, and splitting each panel out before passing thru model, then
+        # just always recompute model and do all in one run? now doing a prior run just
+        # to save model, then later runs to pass each particular panel thru model)
+        #
+        # hack to only fit model if we are passing all panel (including validation)
+        # data, on all flies (shape is 198x517 there)
+        if (certain_df.shape[1] > 500 and len(certain_df) > 150 and
+
+                set(certain_df.index.get_level_values('panel')) == {
+                    'megamat', 'validation2', 'glomeruli_diagnostics'
+                } and len(
+                    certain_df.columns.to_frame(index=False)[fly_cols
+                        ].drop_duplicates()
+                # NOTE: 9 final megamat flies and 5 final validation2 flies (after
+                # dropping the 1 Betty wanted). see reproducing.md or
+                # CSVs under data/sent_to_anoop/v1 for the specific flies.
+                ) == (9 + 5)
+            ):
+
+            use_saved_dff_to_spiking_model = False
+        else:
+            use_saved_dff_to_spiking_model = True
+
+    # TODO what exacty triggers this? doc in comment
+    except KeyError:
+        use_saved_dff_to_spiking_model = True
+
+    # this option currently can't actually trigger recomputation that wouldn't happen
+    # anyway... (always recomputed if input data is large enough, never otherwise)
+    # TODO delete this option then?
+    if use_saved_dff_to_spiking_model and should_ignore_existing('dff2spiking'):
+        warn('would NOT have saved dff->spiking model, but requested regeneration of '
+            'it!\n\nchange args to run on all data (so that model would get saved. see '
+            'reproducing.md), OR remove `-i dff2spiking` option.'
+            '\n\nexiting!'
+        )
+        sys.exit()
+
+    ret = scale_dff_to_est_spike_deltas_using_hallem(plot_dir, certain_df, roi_depths,
+        use_cache=use_saved_dff_to_spiking_model
+    )
+
+    # TODO test whether downstream code works fine w/o stopping here (at least
+    # check equiv in megamat case. may want to hardcode a skip of the validation2 panel
+    # by default anyway [w/ a flag])
+    # TODO (delete?) would checking megamat subset of fly_mean_df is same between two
+    # runs (w/ all data vs just megamat flies) get us most/all of the way there?
+    #
+    # TODO delete hack (see corresponding hack above where this flag is defined)
+    # (plus now rest of modeling code loops over panels anyway, no?)
+    #
+    # TODO TODO / move this hack to calling code (script / fn that just runs on paper
+    # al_analysis.py outputs, or when called from al_analysis)
+    if not use_saved_dff_to_spiking_model:
+        print('EXITING EARLY AFTER HAVING SAVED MODEL ON ALL DATA (analyze specific '
+            'panels with additional al_analysis runs, restricting date range to only '
+            'one panel)!'
+        )
+        sys.exit()
+    #
+
+    if copy_to_model_dirs is None:
+        copy_to_model_dirs = []
+    else:
+        copy_to_model_dirs = list(copy_to_model_dirs)
+
+    # TODO return callback (from scale_dff_to...) that saves/copies the correct files,
+    # instead of copy_to_model_dirs list (which i then have to handle myself out here)?
     (mean_est_df, dff_to_spiking_model_choices, dff2spiking_choices_str,
-        hallem_delta_wide, copy_to_model_dirs
+        hallem_delta_wide, for_copy_to_model_dirs
     ) = ret
+
+    # TODO also copy any existing ones to parent_plot_dir? (in addition to just copying
+    # to model dirs?)
+    copy_to_model_dirs.extend(for_copy_to_model_dirs)
+    # before we actually have to call _write_inputs_... later
+    for x in copy_to_model_dirs:
+        assert x.is_file(), f'{x=} was not a file! would fail to copy later'
 
     def _write_inputs_for_reproducibility(plot_root: Path, param_dict: ParamDict
         ) -> None:
@@ -17560,6 +17780,12 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
         # repro_remy_paper=True conditional)?
         target_sparsity = remy_sparsity
         warn(f'since {repro_remy_paper=} using {target_sparsity=}')
+
+    # TODO TODO factor out a fn that is a thin wrapper around fit_and_plot... but also
+    # takes raw dF/F input and handles scaling and writing inputs for reproducibility
+    # (-> then call that on input_model_kw_list in [what is currently]
+    # model_mb_responses, and move any hacky/specific preprocessing / post-analysis to
+    # there)
 
     # TODO move to module level (+ rename?) (could be hacky alternative to passing in,
     # and could share w/ some tests then...)
@@ -18404,6 +18630,8 @@ def model_mb_responses(certain_df: pd.DataFrame, parent_plot_dir: Path, *,
                 _extra_params['tuning_panels'] = tuning_panels_str
                 _extra_params['tuning_output_dir'] = param_dict['output_dir']
 
+                # TODO TODO move all this into fit_and_plot...?? probably only handle
+                # specifying which (if any) other panel(s) we are tuning on here?
                 tuning_param_str = ''
 
                 target_sp = model_kws.get('target_sparsity')

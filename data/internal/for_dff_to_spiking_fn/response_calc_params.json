@@ -1,0 +1,1 @@
+{"response_stat_fn_name": "sign_preserving_maxabs", "n_volumes_for_response": 2, "n_volumes_for_baseline": null, "median_for_baseline": false, "zscore_traces_per_recording": false, "exclude_last_pre_odor_frame": false, "one_baseline_per_odor": false}

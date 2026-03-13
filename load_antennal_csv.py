@@ -7,20 +7,17 @@ from pprint import pformat, pprint
 from typing import Dict, Any
 
 import pandas as pd
-import numpy as np
 
 from hong2p.olf import add_mix_str_index_level, solvent_str, mix_col
 from hong2p.roi import certain_roi_indices
 from hong2p.types import Pathlike
+from hong2p.util import pd_allclose
 
-from al_util import format_mtime, warn, sort_odors
-from al_analysis import (roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
+from al_util import (format_mtime, warn, sort_odors, fly_cols, flyroi_cols,
+    roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
     plot_n_per_odor_and_glom, get_gsheet_metadata
 )
 
-
-fly_cols = ['date', 'fly_num']
-col_levels = fly_cols + ['roi']
 
 # TODO maybe don't require is_pair? panel?
 #
@@ -59,6 +56,7 @@ def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
 def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
     check_vs_pickle: bool = True, verbose: bool = True) -> pd.DataFrame:
     # TODO doc output format (w/ example str repr)
+    # TODO does this work on both ij_certain-roi_stats.csv and ij_roi_stats.csv outputs?
 
     csv = Path(csv)
     assert csv.exists(), f'CSV {csv} did not exist!'
@@ -95,12 +93,12 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
 
         # doesn't take list of str, and names= seems to only set column level names,
         # rather than finding them by name.
-        header=list(range(len(col_levels)))
+        header=list(range(len(flyroi_cols)))
     )
     # this is assumed in section above that determines how many index levels there are
     assert df.index.names[-1] == 'repeat'
 
-    assert df.columns.names == col_levels
+    assert df.columns.names == flyroi_cols
     assert set(required_index_levels) - set(df.index.names) == set()
 
     # the only row index levels not in required_index_levels should be extra air-mix
@@ -136,19 +134,7 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
         pickle_path = csv.with_suffix('.p')
         if pickle_path.exists():
             pdf = pd.read_pickle(pickle_path)
-
-            assert df.index.equals(pdf.index)
-            assert df.columns.equals(pdf.columns)
-
-            # TODO factor this isna + isclose checking to hong2p.util fn?
-            # (maybe w/ col/index check above too?)
-
-            isna = df.isna()
-            assert isna.equals(pdf.isna())
-
-            isclose = np.isclose(df, pdf)
-            assert np.logical_xor(isna, isclose).all().all()
-
+            assert pd_allclose(df, pdf, equal_nan=True)
             if verbose:
                 print(f'CSV data matches pickle {pickle_path}\n')
         else:
@@ -267,8 +253,10 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
             print(f'{panel=}')
             print_flies(pdf.dropna(how='all', axis='columns'))
 
-    # TODO cache gsheet at module level? change in al_analysis so it does that by
-    # default (w/ a module-level cache there)?
+    # TODO cache gsheet at module level? change in al_util so it does that by
+    # default (w/ a module-level cache there)? (+ use that module level cache in
+    # al_analysis, in place of separate module-level cache implemented there
+    # [i.e. gsheet_df])
     gsheet = get_gsheet_metadata()
 
     not_in_gsheet = []
@@ -400,11 +388,13 @@ def csvinfo_cli():
             # NOTE: mix_col index level added by add_mix_str_index_level
             trialmean_df = df.groupby(level=['panel', mix_col], sort=False).mean()
 
-            # TODO also work back in al_analysis? why the diff?
-            roi_plot_kws['vgroup_label_offset'] = 0.03
-            roi_plot_kws['hgroup_label_offset'] = 0.12
+            # TODO also work back in al_analysis (prob not, at least not
+            # hgroup_label_offset)? why the diff?
+            kws = dict(roi_plot_kws)
+            kws['vgroup_label_offset'] = 0.03
+            kws['hgroup_label_offset'] = 0.12
 
-            fig, _ = plot_all_roi_mean_responses(trialmean_df, **roi_plot_kws)
+            fig, _ = plot_all_roi_mean_responses(trialmean_df, **kws)
             savefig(fig)
 
             mean_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
@@ -413,21 +403,42 @@ def csvinfo_cli():
             vmin = cli_plot_kws.pop('vmin', mean_df.min().min())
             vmax = cli_plot_kws.pop('vmax', mean_df.max().max())
 
-            roimean_plot_kws.update(cli_plot_kws)
+            mean_plot_kws = dict(roimean_plot_kws)
+            mean_plot_kws.update(cli_plot_kws)
 
             # TODO add args to calls below s.t. warnings get triggered if (many) values
             # are above/below vmin/vmax limits (should already have such a param
             # exposed [/nearly]?)
 
             fig, _ = plot_all_roi_mean_responses(mean_df, vmin=vmin, vmax=vmax,
-                **roimean_plot_kws
+                **mean_plot_kws
             )
             savefig(fig,  '_mean')
 
+            # without numeric_only=True to std call below:
+            # FutureWarning: The default value of numeric_only in DataFrameGroupBy.std
+            # is deprecated. In a future version, numeric_only will default to False.
+            # Either specify numeric_only or select only columns which should be valid
+            # for the function
+            # (and get a related error if we pass numeric_only=False)
+            # FutureWarning: Dropping invalid columns in DataFrameGroupBy.std is
+            # deprecated. In a future version, a TypeError will be raised. Before
+            # calling .std, select only columns which should be valid for the function.
+            #
+            # why was I even getting this? trialmean_df has all float64 columns
+            # (and trialmean_df.T.unique() is also only float64, and no rows/cols are
+            # all Nan), and we didn't need to specify for .mean() above
+            # TODO maybe some columns/rows have only 1-3 non-nan? still, i assume this
+            # doesn't actually drop them w/ numeric_only=True...
             stddev_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
-                ).std()
+                ).std(numeric_only=True)
+
+            # since i (for some reason) needed numeric_only=True only for the std() call
+            assert stddev_df.index.equals(mean_df.index)
+            assert stddev_df.columns.equals(mean_df.columns)
+
             fig, _ = plot_all_roi_mean_responses(stddev_df, vmin=0, vmax=vmax,
-                **roimean_plot_kws
+                **mean_plot_kws
             )
             savefig(fig,  '_stddev')
 
@@ -435,7 +446,9 @@ def csvinfo_cli():
             # overrepresent the true counts (none of final data I'm working with now
             # should be affected, just older outputs, like
             # data/sent_to_remy/v1/2023-01-06)
-            fig, _ = plot_n_per_odor_and_glom(trialmean_df, title=False)
+            fig, _ = plot_n_per_odor_and_glom(trialmean_df, title=False,
+                **mean_plot_kws
+            )
             savefig(fig, '_n-per-odor-and-glom') #, bbox_inches='tight')
 
             # TODO TODO version of all of the above, but filling to hemibrain glomeruli?

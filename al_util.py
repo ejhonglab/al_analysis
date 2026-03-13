@@ -4,6 +4,7 @@ import difflib
 from functools import wraps
 import filecmp
 import itertools
+import json
 from math import factorial
 import os
 from os.path import getmtime
@@ -15,13 +16,14 @@ import sys
 from tempfile import NamedTemporaryFile
 import time
 import traceback
-from typing import Type, Union, Optional, Callable, List, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import warnings
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
+from matplotlib import patches
 from matplotlib.figure import Figure
 # TODO need to install something else for this, in a new env?
 # (might have manually installed before in current one...)
@@ -58,14 +60,331 @@ else:
 from termcolor import cprint, colored
 
 from hong2p import olf, util, viz
+from hong2p.olf import format_mix_from_strs, solvent_str
+from hong2p.roi import is_ijroi_named
 from hong2p.util import pd_allclose
+from hong2p.viz import dff_latex
 from hong2p.types import Pathlike
 import natmix
 
 
-bootstrap_seed = 1337
+# TODO move to hong2p.types? already have something like that there?
+ParamDict = Dict[str, Any]
 
-verbose = False
+bootstrap_seed: int = 1337
+
+verbose: bool = False
+
+fly_cols: List[str] = ['date', 'fly_num']
+# typically, ROI = 'glomerlus' (glomerulus_col)
+flyroi_cols: List[str] = fly_cols + ['roi']
+
+# TODO test
+# TODO type hint
+def sign_preserving_maxabs(x):
+    """Returns value with maximum absolute value.
+    """
+    idxmax = np.abs(x).idxmax(axis=0)
+    # TODO update w/ sam's version that should also work w/ >2D input?
+    # not sure it also works for 2D input though... here's the code he used to make
+    # dF/F images using [what should be an equivalent] calculation:
+    # newshape = dff_response.shape[1:]
+    # oldshape = [1] + [i for i in newshape]
+    # maxabs_idxs = np.abs(dff_response).argmax(axis=0).reshape(oldshape)
+    # maxabs_dff = np.take_along_axis(dff_response, maxabs_idxs, axis=0).reshape(newshape)
+    # (and i think I'm fine leaving those images as computed with mean, instead of this
+    # type of calculation)
+    df = pd.DataFrame([
+        x.loc[absmaxidx, idx] for idx, absmaxidx in zip(idxmax.index.values, idxmax)
+    ])
+    # TODO keep as pandas type (old stat=mean seemed to, as last bit of _checks=True
+    # code in trial_response_traces seemed to assume Series types)?
+    # TODO why .flatten? replace w/ .squeeze() at least, if that's the issue?
+    return df.values.flatten()
+
+response_stat_fn = sign_preserving_maxabs
+# mean was what I had used for a while (also with n_volumes_for_response=2, I believe),
+# including to generate Remy-paper outputs, and inputs to modelling for that.
+#response_stat_fn = np.mean
+
+if response_stat_fn.__name__ == 'mean':
+    # TODO want to avoid just 'mean', to avoid confusion w/ 'mean ' prefixes that might
+    # get prepended, once we start dealing with means over either trials or flies?
+    # would get pretty verbose...
+    # (currently, this just refers to mean over timepoints in a response window, used to
+    # get one number for a given unit [e.g. glomerulus, pixel, etc] and trial)
+    trial_stat_desc = 'mean'
+
+# currently, np.max seems to have __name__ of amax, but checking both in case that isn't
+# always true.
+elif response_stat_fn.__name__ in ('max', 'amax'):
+    trial_stat_desc = 'peak'
+
+elif response_stat_fn.__name__ == 'sign_preserving_maxabs':
+    trial_stat_desc = '±peak'
+
+else:
+    assert False, f'unrecognized {response_stat_fn.__name__=}'
+
+# TODO TODO delete (output does not make that much sense. also already have per-panel
+# trace zscoring imlemented now, from cached raw traces. output there also doesn't make
+# much sense)
+#
+# NOTE: currently will warn + exit before running model, if this is True. assuming for
+# now I probably don't want to run model with these inputs. (but can't currently tell if
+# cached responses were computed that way...)
+zscore_traces_per_recording: bool = False
+#
+
+if not zscore_traces_per_recording:
+    response_desc = f'{trial_stat_desc} {dff_latex}'
+else:
+    # TODO TODO also mention the additional baseline subtraction step? add delta symbol?
+    response_desc = f'{trial_stat_desc} Z-scored F'
+
+# never saying "mean mean <x>", just specifying outer mean separately when
+# trial_stat_desc == 'max'
+if trial_stat_desc != 'mean':
+    # going to make no effort to clarify whether it's a mean over trials or flies.
+    # should be clear from plot, and will get too verbose + create too many variables
+    mean_response_desc = f'mean {response_desc}'
+else:
+    mean_response_desc = response_desc
+
+
+# TODO adapt -> share w/ (at least) drop_redone_odors?
+def format_panel(x):
+    panel = x.get('panel')
+    # TODO maybe return None if it'd make more consistent vline_level_fn usage
+    # possible (across single/multi panel cases)? would prob need to handle in viz
+    # regardless
+    if not panel:
+        return ''
+
+    if panel == diag_panel_str:
+        # Less jarring than 'glomeruli_diagnostics'
+        return 'diagnostics'
+
+    assert type(panel) is str
+    return panel
+
+
+def roi_label(index_dict):
+    roi = index_dict['roi']
+    if is_ijroi_named(roi):
+        return roi
+    # Don't want numbered ROIs to be grouped together in plots, as the numbers
+    # aren't meanginful across flies.
+    return ''
+
+
+# TODO rename now that i'm also allowing input w/o date/fly_num attributes?
+def fly_roi_id(row: pd.Series, *, fly_only: bool = False) -> str:
+    """
+    Args:
+        fly_only: if False, will include date, fly, and ROI information.
+            If True, will exclude ROI information, so long as the ROI was given a name
+            (and not autonamed/numbered).
+    """
+    # NOTE: assuming no need to use row.thorimage_id (or a panel / something like
+    # that), as assumed this will only be used within a context where that is
+    # context (e.g. a plot w/ kiwi data, but no control data)
+    try:
+        parts = []
+
+        if hasattr(row, 'fly_id') and pd.notnull(row.fly_id):
+            fly_id = row.fly_id
+            assert type(fly_id) is str
+            parts.append(fly_id)
+
+        # TODO option to have these (or fly_id) parenthetical, and still show all 3
+        # vars?
+        else:
+            if hasattr(row, 'date') and pd.notnull(row.date):
+                date_str = f'{row.date:%-m-%d}'
+                parts.append(date_str)
+
+            if hasattr(row, 'fly_num') and pd.notnull(row.fly_num):
+                fly_num_str = f'{row.fly_num:0.0f}'
+                parts.append(fly_num_str)
+
+        # TODO also support a 'fly'/'fly_id' key in place of (date, fly[_num])?
+        # (for lettered/sequential simplified IDs, for nicer plots)
+
+        roi = row.roi
+        if not is_ijroi_named(roi):
+            fly_only = False
+
+        if not fly_only:
+            parts.append(str(roi))
+
+        # fly_only=True for when [h|v]line_[level_fn+group_text] code is drawing ROI
+        # labels
+        return '/'.join(parts)
+
+    except AttributeError:
+        assert not fly_only, "no fly ID vars ('fly_id' or ['date', 'fly_num'])"
+        return f'{row.roi}'
+
+
+# TODO refactor inches_per_cell (+extra_figsize) to share w/ plot_roi_util?
+# just move into plot_all_... default? (would need extra_figsize[1] == 1.0 to work here)
+# TODO rename to clarify these aren't for plot_rois calls...
+roi_plot_kws = dict(
+    inches_per_cell=0.08,
+    # TODO adjust based on whether we have extra text labels / title / etc?
+    # 1.7 better for the single panel plots, 2.0 needed for ijrois_certain.png, etc
+    extra_figsize=(2.0, 0.0),
+
+    fontsize=4.5,
+
+    linewidth=0.5,
+    # TODO just set this in rcParams (or patching them at module level up top?)?
+    dpi=300,
+
+    # controls spacing from glomerulus names and <date>/<fly_num> IDs in yticklabels
+    # (only relevant for plots w/ data from multiple flies).
+    # default 0.12 was also OK here, just a bit much.
+    #
+    # was using this before trying to find a value for kiwi/control matrices
+    #hgroup_label_offset=0.095,
+    #
+    # TODO TODO can one value work for both megamat/validation/etc (w/ many odors), and
+    # just kiwi/control (when shown w/o diags)? or define dynamically based on number of
+    # odors? layout method that is agnostic?
+    # TODO this even doing anything? .15 was not clearly diff from .095
+    hgroup_label_offset=0.5,
+
+    # controls spacing between odor xticklabels and panel strings above them (for matrix
+    # plots where we have data from multiple panels)
+    #
+    # though 0.08 works for roimean_plot_kws below (where flies are averaged over, and
+    # thus less rows), since figure is so tall when there is a row per fly X glomerulus,
+    # i think both axes and data coordinates have the problem of scaling with the height
+    # of the figure, so this spacing would lead to a silly gap
+    #
+    # good for ijroi/certain.pdf, but didn't check much else
+    # TODO also check ijroi/by_panel/megamat/with-diags_certain.pdf (may need to use
+    # something like figure, rather than axes, coords; or special case the value for
+    # diff plots w/ diff heights)
+    vgroup_label_offset=0.0145,
+
+    # TODO can the following values (from load_antennal_csv.py) also work here?
+    # i assume not, at least not for hgroup_label_offset.
+    #hgroup_label_offset=0.12,
+    #vgroup_label_offset=0.03,
+
+    # TODO define separate ones for colorbar + title/ylabel (+ check colorbar one is
+    # working)
+    bigtext_fontsize_scaler=1.5,
+
+    cbar_label=mean_response_desc,
+
+    odor_sort=False,
+    # TODO need to prevent hline_level_fn from triggering in case where we already
+    # only have one row per roi?
+    #  'roi' should always be a level
+    hline_level_fn=roi_label,
+    vline_level_fn=format_panel,
+    # TODO try to delete levels_from_labels (switching to only == False case),
+    # (inside viz)
+    levels_from_labels=False,
+)
+
+roimean_plot_kws = dict(roi_plot_kws)
+roimean_plot_kws['inches_per_cell'] = 0.15
+roimean_plot_kws['extra_figsize'] = (1.0, 0.0)
+roimean_plot_kws['vgroup_label_offset'] = 0.1
+
+
+# TODO delete? sort_odors below not do what i wanted in some pair data stuff?
+def sort_concs(df: pd.DataFrame) -> pd.DataFrame:
+    return olf.sort_odors(df, sort_names=False)
+
+
+# TODO flag to select whether ROI or (date, fly) take priority?
+# TODO move to hong2p + test
+def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on=None
+    ) -> pd.DataFrame:
+    # TODO delete key if i can do w/o it (by always just sorting a second time when i
+    # want some outer level)
+    # TODO is doc for sort_first_on right (or is it maybe just describing one use case
+    # for it?)?
+    """Sorts column MultiIndex with `flyroi_cols` levels.
+
+    Args:
+        df: data to sort by fly/ROI column values
+
+        flies_first: if True, sorts on `fly_cols` columns primarily, followed by 'roi'
+            ROI names.
+
+        sort_first_on: sequence of same length as df.columns, used to order ROIs.
+            Within each level of this key, will sort on the default date/fly_num ->
+            with higher priority than roi, but will then group all "named" ROIs before
+            all numbered/autonamed ROIs.
+    """
+    index_names = df.columns.names
+    # TODO replace w/ def from flyroi_cols? or just also assert it's in flyroi_cols?
+    assert 'roi' in index_names or 'roi' == df.columns.name
+
+    levels = ['not_named', 'roi']
+    # TODO replace date/fly_num usage w/ all fly_cols
+    if 'date' in index_names and 'fly_num' in index_names:
+        if not flies_first:
+            levels = levels + fly_cols
+        else:
+            levels = fly_cols + levels
+
+    levels_to_drop = []
+    to_concat = [df.columns.to_frame(index=False)]
+
+    assert 'not_named' not in df.columns.names
+    # TODO option to do certain instead of named?
+    not_named = df.columns.get_level_values('roi').map(
+        lambda x: not is_ijroi_named(x)).to_frame(index=False, name='not_named')
+
+    levels_to_drop.append('not_named')
+    to_concat.append(not_named)
+
+    if sort_first_on is not None:
+        # NOTE: for now, just gonna support this being of-same-length as df.columns
+
+        # TODO delete try/except
+        # triggered when trying to adapt each_fly diag resp matrix code to across fly
+        # case
+        try:
+            assert len(sort_first_on) == len(df.columns)
+        except AssertionError:
+            print(f'{sort_first_on=}')
+            print(f'{df.columns=}')
+            print(f'{len(sort_first_on)=}')
+            print(f'{len(df.columns)=}')
+            import ipdb; ipdb.set_trace()
+
+        # Seems to also work when input is a list of tuples (so you can list(zip(...))
+        # multiple iterables of keys, in the order you want them to take priority).
+        sort_first_on = pd.Series(list(sort_first_on), name='_sort_first_on').to_frame()
+
+        levels = ['_sort_first_on'] + levels
+        levels_to_drop.append('_sort_first_on')
+        to_concat.append(sort_first_on)
+
+    df.columns = pd.MultiIndex.from_frame(pd.concat(to_concat, axis='columns'))
+
+    # TODO get numbers to actually sort like numbers, for any numbered ROIs
+    # (or maybe just set name to NaN there, just for the sort, and rely on them already
+    # being in order?) (would probably have to sort the numbered section separately from
+    # the named one, casting the numbered ROI names to ints)
+
+    # the order of level here determines the sort-priority of each level.
+    sorted_df = df.sort_index(level=levels, sort_remaining=False, kind='stable',
+        axis='columns').droplevel(levels_to_drop, axis='columns')
+
+    # index_names were column names at input
+    assert sorted_df.columns.names == index_names
+
+    return sorted_df
+
 
 # TODO replace this + use of warnings.warn w/ logging.warning (w/ logger probably
 # currently just configured to output to stdout/stderr)
@@ -185,9 +504,8 @@ def produces_output(_fn=None, *, verbose=True):
 
     # TODO what would be a good name for this?
     def wrapper_helper(fn):
-
         assert fn.__name__ not in _fn2seen_inputs, (
-            'seen set would have been overwritten'
+            f'{fn.__name__=} seen set would have been overwritten'
         )
         # TODO some reason to use lists like i was in savefig? was that just for easier
         # use in multiprocessing access (no set equiv of IPC data type?)?
@@ -404,17 +722,23 @@ def to_csv(data, path: Path, **kwargs) -> None:
 
 _SERIES_NAME_PLACEHOLDER: str = '__UNNAMED-SERIES'
 def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.Series]:
+    # TODO try changing default engine (='fastparquet'? or ='pyarrow'? latter should be
+    # default, if both installed [at least in pandas 3.0...])? that fix any of column
+    # level type handling i add below?
     data = pd.read_parquet(path)
 
     # TODO need an outer need len check? prob not practically, but maybe for some edge
     # cases, if trying to support saving empty stuff?
     # TODO refactor to share w/ similar code in to_parquet?
     move_first_column_to_index = False
-    try:
-        len(data.iloc[0, 0])
-        move_first_column_to_index = True
-    except TypeError as err:
-        assert str(err).endswith('has no len()')
+    i00 = data.iloc[0, 0]
+    # TODO also exclude anything that isn't explicitly a sequence of float/int?
+    if not isinstance(i00, str):
+        try:
+            len(i00)
+            move_first_column_to_index = True
+        except TypeError as err:
+            assert str(err).endswith('has no len()')
     #
 
     # TODO assert no sequence values in index already? (would not be possible here, b/c
@@ -430,14 +754,13 @@ def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.
         data[c0] = data[c0].map(tuple)
         data = data.set_index(c0, append=True)
 
-
     # TODO do for non-MultIndex indices as well? (only [currently] converting levels on
     # save for MultiIndex)
     if isinstance(data.columns, pd.MultiIndex):
         index_arrays = []
         for c in data.columns.names:
             xs = data.columns.get_level_values(c)
-            # TODO try to support datetime/Timestamp here too? anything else?
+            # TODO anything other types besides numeric/datetime?
             try:
                 # seems to automatically convert to int if it can (haven't tested float,
                 # especially not with NaN, but assume that would remain float too)
@@ -445,7 +768,10 @@ def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.
 
             # ValueError: Unable to parse string <x> at position <n>
             except ValueError:
-                pass
+                try:
+                    xs = pd.to_datetime(xs)
+                except ValueError:
+                    pass
 
             # each will still have .name defined
             index_arrays.append(xs)
@@ -484,14 +810,17 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path) -> None:
 
     # TODO remove outer len check?
     if len(data) > 0:
-        try:
-            len(data.iloc[0, 0])
-            raise ValueError('data already had sequence elements in first column. '
-                'would be inferred as a final tuple-of-int index level with current '
-                'scheme'
-            )
-        except TypeError as err:
-            assert str(err).endswith('has no len()')
+        i00 = data.iloc[0, 0]
+        # TODO also exclude anything that isn't explicitly a sequence of float/int?
+        if not isinstance(i00, str):
+            try:
+                len(i00)
+                raise ValueError('data already had sequence elements in first column. '
+                    'would be inferred as a final tuple-of-int index level with current'
+                    ' scheme'
+                )
+            except TypeError as err:
+                assert str(err).endswith('has no len()')
 
     # pd.MultiIndex objects have levels. non-MultiIndex pd.Index objects do NOT.
     if hasattr(data.columns, 'levels'):
@@ -537,15 +866,32 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path) -> None:
     try:
         assert d2.equals(orig)
 
+    # TODO TODO was i doing this was just b/c of need for isclose in index? why can we
+    # assert values are equal and not just close then?
     except AssertionError:
+        # TODO also convert indices to frames and check those w/ allclose (like
+        # columns)? or is parquet MultiIndex reading not broken for those? i had to add
+        # manual type conversions for MultiIndex column level values in my read_parquet
+        # fn.
         assert d2.index.equals(orig.index)
-        assert np.array_equal(d2.values, orig.values)
 
         c1 = orig.columns.to_frame(index=False)
         c2 = d2.columns.to_frame(index=False)
+        # TODO handle case where date is datetime64[ns] in one, and object in the
+        # other. (now that i added datetime column level handling in read_parquet,
+        # should be fine. delete)
         # TODO is it just float levels that are allclose that are causing failure
         # for claws_sims_[sums|maxs]? (seems so, yes)
         assert pd_allclose(c2, c1)
+
+        # TODO TODO TODO fix. failing w/ consensus_df saving w/:
+        # ./al_analysis.py -d pebbled -n 6f -t 2023-04-22 -e 2024-01-05 -s corr,intensity,ijroi,model-seeds,model-sensitivity -v -i model -M
+        # (equal_nan=True here seems to fix it, but pd_allclose(d2, orig,
+        # equal_nan=True) does *not* work? how come?)
+        try:
+            assert np.array_equal(d2.values, orig.values, equal_nan=True)
+        except AssertionError:
+            breakpoint()
     #
 
 
@@ -583,6 +929,18 @@ def to_pickle(data, path: Path) -> None:
 def read_pickle(path: Pathlike):
     path = Path(path)
     return pickle.loads(path.read_bytes())
+
+
+@produces_output
+def to_json(param_dict: ParamDict, path: Path) -> None:
+    with open(path, 'w') as f:
+        # TODO want any other args? indent=4?
+        json.dump(param_dict, f)
+
+
+def read_json(path: Path) -> ParamDict:
+    with open(path, 'r') as f:
+        return json.load(f)
 
 
 @produces_output(verbose=False)
@@ -911,7 +1269,7 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
 panel2name_order = deepcopy(natmix.panel2name_order)
 panel_order = list(natmix.panel_order)
 
-diag_panel_str = 'glomeruli_diagnostics'
+diag_panel_str: str = 'glomeruli_diagnostics'
 
 # TODO any reason for this order (i think it might be same as order in yaml [which more
 # or less goes from odors activating glomeruli in higher planes to lower planes], so
@@ -1022,10 +1380,13 @@ panel2name_order['validation2'] = [
 # that is effectively like an argsort, and use that to index some other type of object
 # (where we convert it to a DataFrame just for sorting)
 # TODO olf.sort_odors allow specifying axis?
-# TODO TODO TODO how to get this to not sort control panel '2h @ -5 + oct @ -3' (air
+# TODO TODO how to get this to not sort control panel '2h @ -5 + oct @ -3' (air
 # mix, using odor2 level) right after '2h @ -5'? (and same for kiwi)
 def sort_odors(df: pd.DataFrame, add_panel: Optional[str] = None, **kwargs
     ) -> pd.DataFrame:
+
+    # TODO TODO check in here whether panel(s) are in panel2name_order (rather than
+    # requiring that check many other places)
 
     # TODO add to whichever axis has odor info automatically? or too complicated.
     # currently doesn't work if odors are in columns.
@@ -1578,9 +1939,7 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
 
     # TODO also allow selecting 'fly_id' as default, if there?
     if id_cols is None:
-        # TODO use some module-level fly_cols def? move here to al_util if not already
-        # here
-        id_cols = ['date', 'fly_num']
+        id_cols = fly_cols
 
     # TODO TODO also work w/ 'odor' level (have in loaded model responses)
     # (or just expose as kwarg?)
@@ -1914,6 +2273,504 @@ def print_curr_mem_usage(end: str = '\n') -> None:
     vms = proc.memory_info().vms / byte2MiB
     print(f'memory usage (MiB): rss={rss:.2f} vms={vms:.2f}', end=end)
 #
+
+
+def get_gsheet_metadata() -> pd.DataFrame:
+    """Downloads and formats Google Sheet experiment/fly metadata.
+
+    Loads 'metadata_gsheet_link.txt' from directory containing this script, which should
+    contain the full URL to your metadata Google Sheet.
+
+    Most important columns in this sheet are:
+    - 'Date': YYYY-MM-DD format dates for when experiments were conducted
+
+    - 'Fly': integers counting up from 1, numbering flies within each date
+
+    - 'Driver': the driver being used to drive indicator expression in this fly
+       (e.g. 'pebbled' for pebbled-Gal4, our standard all-ORN driver)
+
+    - 'Indicator': abbrevation for indicator the fly is expressing
+       (e.g. '6f' for UAS-GCaMP6f)
+
+    - 'Exclude': a checkbox-column where a check indicates the analysis should not be
+       run on this experiment
+
+    - 'Side': values should all be either 'right'|'left'|empty (I use a dropdown to
+       enforce this). My recordings have all been imaging only one hemisphere of the
+       brain at a time (either the left or the right), but we want to flip them all into
+       a standard orientation to make the spatial patterns more easily comparable across
+       experiments. All recordings will be flipped to `standard_side_orientation`, if
+       not already in that orientation.
+
+    My sheet is called 'tom_antennal_lobe_data' in the Hong lab Google Drive. Sam has
+    his own. New users of the pipeline should probably start by copying one of ours, to
+    get the right column names, data validation, etc.
+    """
+    script_dir = Path(__file__).resolve().parent
+
+    # TODO set bool_fillna_false=False (kwarg to gsheet_to_frame) and manually fix any
+    # unintentional NaN in these columns if I need to use the missing data for early
+    # diagnostic panels (w/o some of the odors only in newest set) for anything
+    #
+    # This file is intentionally not tracked in git, so you will need to create it and
+    # paste in the link to this Google Sheet as the sole contents of that file. The
+    # sheet is located on our drive at:
+    # 'Hong Lab documents/Tom - odor mixture experiments/tom_antennal_lobe_data'
+    #
+    # Sam has his own sheet following a similar format, as should any extra user of this
+    # pipeline.
+    df = util.gsheet_to_frame('metadata_gsheet_link.txt', normalize_col_names=True,
+        # so that the .txt file can be found no matter where we run this code from
+        # (hong2p defaults to checking current working dir and a hong2p root)
+        extra_search_dirs=[script_dir]
+    )
+    df.set_index(['date', 'fly'], verify_integrity=True, inplace=True)
+
+    # Currently has some explicitly labelled 'pebbled' (for new megamat experiments
+    # where I also have some some 'GH146' data), but all other data should come from
+    # pebbled flies.
+    df.driver = df.driver.fillna('pebbled')
+
+    # TODO if i don't switch off 8m for the PN experiments, first fillna w/ '8m' for
+    # GH146 flies
+    df.indicator = df.indicator.fillna('6f')
+
+    return df
+
+
+# TODO delete odor_min_max_scale if i don't end up using
+# TODO TODO rename this, and similar w/ 'roi_' (any others?), to exclude that?
+# what else would i be plotting responses of? this is the main type of response i'd want
+# to plot...
+# TODO TODO always(/option to) break each of these into a number of plots such that we
+# can always see the xticklabels (at the top), without having to scroll up?
+# TODO add option to chop off odor concentrations in odor matshow xticklabels IF it's
+# all the same on the input data? maybe default to that?
+def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=True,
+    sort_rois_first_on=None, odor_sort=True, keep_panels_separate=True,
+    roi_min_max_scale=False, odor_min_max_scale=False,
+
+    use_diverging_cmap: bool = True,
+
+    # TODO delete hack!
+    yticklabels=None,
+
+    # TODO keep?
+    avg_repeats: bool = True,
+
+    single_fly: bool = False,
+    odor_glomerulus_combos_to_highlight: Optional[List[Dict]] = None, **kwargs):
+    # TODO rename odor_sort -> conc_sort (or delete altogether)
+    """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
+
+    Args:
+        trial_df: ['odor1', 'odor2', 'repeat'] index names and a column for each ROI.
+            ['odor2', 'repeat'] are optional, and 'odor' may be used in place of
+            'odor1'.
+
+        roi_sort: whether to sort columns
+
+        sort_rois_first_on: passed to sort_fly_roi_cols's sort_first_on kwarg
+
+        keep_panels_separate: if 'panel' is among trial_df index level names, and there
+            are any odors shared by multiple panels, this will prevent data from
+            different panels from being averaged together
+
+        roi_min_max_scale: if True, scales data within each ROI to [0, 1].
+            if `cbar_label` is in `kwargs`, will append '[0,1] scaled per ROI'.
+
+        odor_min_max_scale: if True, scales data within each odor to [0, 1].
+            if `cbar_label` is in `kwargs`, will append '[0,1] scaled per odor'.
+
+        odor_glomerulus_combos_to_highlight: list of dicts with 'odor' and 'glomerulus'
+            keys. cells where `odor1` matches 'odor' (with no odor in `odor2`) and `roi`
+            matches 'glomerulus' will have a red box drawn around them.
+
+        **kwargs: passed thru to hong2p.viz.matshow
+    """
+    # TODO factor out this odor-index checking to hong2p.olf?
+    # may also have 'panel', 'repeat', 'odor2', and arbitrary other metadata levels.
+    if 'odor' in trial_df.index.names:
+        assert 'odor1' not in trial_df.index.names
+        odor_var = 'odor'
+    else:
+        assert 'odor1' in trial_df.index.names
+        odor_var = 'odor1'
+
+    # TODO also check ROI index (and also factor that to hong2p)
+    # TODO maybe also support just 'fly' on the column index (where plot title might be
+    # the glomerulus name, and we are showing all fly data for a particular glomerulus)
+
+    avg_levels = [odor_var]
+    # TODO handle in a way agnostic to # of components? e.g. supporting also 'odor3',
+    # etc, if present
+    if 'odor2' in trial_df.index.names:
+        avg_levels.append('odor2')
+
+    # TODO unsupport keep_panels_separate=False?
+    if keep_panels_separate and 'panel' in trial_df.index.names:
+        # TODO TODO TODO warn/err if any null panel values. will silently be dropped as
+        # is.
+        # TODO or change fn to handle them gracefully (sorting alphabetically w/in?)
+        avg_levels = ['panel'] + avg_levels
+
+    if trial_df.index.name == odor_var:
+        # assuming input is mean already columns probably are still just 'roi', as I
+        # assume is also true in most cases below (as we are only ever computing
+        # groupby->mean across row groups in this fn)
+        mean_df = trial_df.copy()
+    else:
+        avg_levels = [x for x in avg_levels if x in trial_df.index.names]
+
+        if not avg_repeats:
+            assert 'repeat' in trial_df.index.names
+            assert 'repeat' not in avg_levels
+            avg_levels.append('repeat')
+
+        # This will throw away any metadata in multiindex levels other than these
+        # (so can't just add metadata once at beginning and have it propate through
+        # here, without extra work at least)
+        mean_df = trial_df.groupby(avg_levels, sort=False).mean()
+
+    # TODO might wanna drop 'panel' level after mean in keep_panels_separate case, so
+    # that we don't get the format_mix_from_strs warning about other levels (or just
+    # delete that warning...) (still relevant?)
+
+    if roi_min_max_scale:
+        assert not odor_min_max_scale
+
+        # TODO may need to check vmin/vmax aren't in kwargs and change if so
+
+        # The .min()/.max() functions should return Series where index elements are ROI
+        # labels (or at least it won't be the odor axis based on above assertions...).
+        # equivalent to mean_df.[min|max](axis='rows')
+        mean_df -= mean_df.min()
+        mean_df /= mean_df.max()
+
+        assert np.isclose(mean_df.min().min(), 0)
+        assert np.isclose(mean_df.max().max(), 1)
+
+        # TODO set this as full title if not in kwargs?
+        if 'cbar_label' in kwargs:
+            # (won't modify input)
+            kwargs['cbar_label'] += '\n[0,1] scaled per ROI'
+
+    if odor_min_max_scale:
+        mean_df = mean_df.T.copy()
+        # I tried passing axis='columns' (without transposing first), but then the
+        # subtracting didn't seem able to align (nor would other ops, probably)
+        mean_df -= mean_df.min()
+        mean_df /= mean_df.max()
+
+        mean_df = mean_df.T.copy()
+
+        assert np.isclose(mean_df.min().min(), 0)
+        assert np.isclose(mean_df.max().max(), 1)
+
+        if 'cbar_label' in kwargs:
+            kwargs['cbar_label'] += '\n[0,1] scaled per odor'
+
+    if odor_sort:
+        mean_df = sort_concs(mean_df)
+
+    # TODO TODO also add option to fillna, adding rows until the rows match (or at least
+    # include) all the hemibrain glomeruli? maybe sort those not in ANY of my data down
+    # below (though would be more complicated...)?
+    if roi_sort:
+        mean_df = sort_fly_roi_cols(mean_df, sort_first_on=sort_rois_first_on)
+
+    # TODO deal w/ warning this is currently producing (not totally sure it's this call
+    # tho)
+    xticklabels = format_mix_from_strs
+
+    # TODO TODO numbered ROIs should be shown as before, and not have number shown
+    # as an ROI group label (via hline_* stuff) (ideally in same plot w/ some named ROIs
+    # grouped, but maybe just disable if not all certain/named)
+    # (which plots currently affected by this? still relevant?)
+    # (did *uncertain.<plot_fmt> roi matrix plots used to group non-numbered ROIs
+    # together? don't think it's doing that now...)
+
+    # TODO try to move some of this logic into viz.matshow?
+    # (the automatic enabling of hline_group_text if we have levels_from_labels?)
+    # (also, just to not have to redefine the default value of levels_from_labels...)
+    hline_group_text = False
+
+    # TODO delete hack?
+    if yticklabels is None:
+        if not single_fly:
+            # (assuming it's a valid callable if so)
+            if 'hline_level_fn' in kwargs and not kwargs.get('levels_from_labels', True):
+                if all([x in trial_df.columns.names for x in fly_cols]):
+                    # TODO maybe still check if there is >1 fly too (esp if this path
+                    # produces bad looking figures in that case)
+
+                    # will show the ROI label only once for each group of rows where the
+                    hline_group_text = True
+
+            # TODO allow overriding w/ kwarg for case where i wanna call this w/ single
+            # fly data? (to make diag examples, but calling as part of
+            # acrossfly_response_matrix_plots)
+            yticklabels = lambda x: fly_roi_id(x, fly_only=hline_group_text)
+        else:
+            # TODO factor out to a is_single_fly check or something?
+            if all(x in trial_df.columns for x in fly_cols):
+                n_flies = len(
+                    trial_df.columns.to_frame(index=False)[fly_cols].drop_duplicates()
+                )
+                assert n_flies == 1
+            else:
+                assert not any(x in trial_df.columns for x in fly_cols)
+            #
+            yticklabels = lambda x: x.roi
+
+    vline_group_text = kwargs.pop('vline_group_text', 'panel' in trial_df.index.names)
+
+    mean_df = mean_df.T
+
+    # TODO maybe put lines between levels of sortkey if int (e.g. 'iplane')
+    # (and also show on plot as second label above/below roi labels?)
+
+    if roi_min_max_scale or odor_min_max_scale:
+        # TODO TODO TODO change [h|vline]s to black in this case
+        use_diverging_cmap = False
+        # TODO assert no norm / diverging cmap in kwargs?
+        if cmap not in kwargs:
+            kwargs['cmap'] = cmap
+
+    # TODO detect (using viz.is_diverging_cmap?)?
+    if use_diverging_cmap:
+        kwargs = {**diverging_cmap_kwargs, **kwargs}
+        # center of diverging cmap should be white, so we'll use black lines here
+        kwargs['linecolor'] = 'k'
+
+    fig, _ = viz.matshow(mean_df, title=title, xticklabels=xticklabels,
+        yticklabels=yticklabels, hline_group_text=hline_group_text,
+        vline_group_text=vline_group_text, **kwargs
+    )
+
+    if odor_glomerulus_combos_to_highlight is not None:
+        # colorbar should be fig.axes[1] if it's there at all
+        ax = fig.axes[0]
+
+        # this seems to be default colorbar label. for other ax (one i want), default
+        # label seems to be '' here.
+        assert '<colorbar>' != ax.get_label()
+
+        # TODO factor this box drawing into some hong2p.viz fn?
+        # (use for some plots of sensitivity analysis, to highlight the tuned param
+        # combo stepped around? like the one in here, or the one in
+        # natmix_data/analysis.py?)
+        for combo in odor_glomerulus_combos_to_highlight:
+            # TODO also check odor_glomerulus_combos_to_highlight for 'odor' vs 'odor1'?
+            # assuming for now it will always be the former
+            odor = combo['odor']
+            roi = combo['glomerulus']
+
+            matching_roi = mean_df.index.get_level_values('roi') == roi
+
+            matching_odor = mean_df.columns.get_level_values(odor_var) == odor
+            if 'odor2' in mean_df.columns.names:
+                matching_odor &= (
+                    mean_df.columns.get_level_values('odor2') == solvent_str
+                )
+
+            if matching_roi.sum() == 0 or matching_odor.sum() == 0:
+                continue
+
+            # TODO TODO if there are a few adjacent, find outer edge and just draw one
+            # rect?
+            # (for highlighting same on plots that have multiple fly data)
+            #
+            # other cases not currently supported (would have to think about handling)
+
+            # should be fine to ignore / delete, or significantly weaken
+            # TODO TODO not true actually, as i'm currently only drawing box around
+            # FIRST matching index pair
+            #'''
+            assert matching_odor.sum() == 1
+            # TODO delete try/except
+            try:
+                assert matching_roi.sum() == 1
+            except AssertionError:
+                # TODO be more descriptive (say which plot(s) affected) in warning
+                warn(f'{matching_roi.sum()=} > 1. disabling box drawing!')
+                continue
+                #import ipdb; ipdb.set_trace()
+            #'''
+
+            # these will get index of first True value
+            odor_index = np.argmax(matching_odor)
+            roi_index = np.argmax(matching_roi)
+
+            # TODO possible to compute good value for this tho (for flush w/ edge of
+            # cell)?
+            # since the rect (+ path effect) extend a bit beyond each cell, and it looks
+            # kinda bad. 0.05 seems to produce good results (w/ linewidth=1, or
+            # linewith=0.5 + patheffects w/ lw=1.0).
+            # TODO decrease shrink slightly? some (but--for some reason--not all) boxes
+            # seem to show a tiny bit of underlying color on right edge. seemed to
+            # happen more on the bright yellow ones. not sure it's consistent...
+            # (may only be an issue w/ png too?)
+            shrink = 0.05
+
+            # https://stackoverflow.com/questions/37435369
+            # -0.5 seems needed for both in order to center box on each matshow cell
+            anchor = (odor_index - 0.5 + shrink, roi_index - 0.5 + shrink)
+            box_size = 1 - 2 * shrink
+            # linewidth: 0.75 bit too much
+            rect = patches.Rectangle(anchor, box_size, box_size, facecolor='none',
+
+                # TODO try something other than white/red (that doesn't need PathEffect
+                # black outline maybe?) (red pretty bad on magma cmap i'm using).
+                # dotted (first try was pretty bad)?
+                #
+                # don't like w/ edgecolor='r', lw=0.4, PathEffect lw=1.0
+                # OK (w/ edgecolor='w', lw=0.5, PathEffect lw=1.0). lw=0.3 prob too low.
+                #edgecolor='w', linewidth=0.4,
+                #path_effects=[
+                #    # w/ linewidth=1 above: 0.75 too little, 2.0 a bit too much
+                #    # w/ linewidth=0.75 above: 1.5 OK, but maybe highlights that either
+                #    # rect or path effect is offset very slightly (~1px)?
+                #    PathEffects.withStroke(linewidth=1.0, foreground='black')
+                #],
+
+                # OK (try a brighter green? might need path effect then...)
+                #edgecolor='g', linewidth=1.0,
+
+                # OK. maybe my fav so far?
+                #edgecolor='k', linewidth=1.0,
+
+                # OK. bit too close to yellow (too light) maybe?.
+                # gray ('1.0' = white, '0.0' = black)
+                #edgecolor='0.6', linewidth=1.0,
+
+                # among my favorites.
+                #edgecolor='0.4', linewidth=1.0,
+
+                # TODO restore
+                # think i'll stick with this one for now
+                edgecolor='0.5', linewidth=1.0,
+
+                # bad. at least with the linewidth=1.0 (too much) and not densely dotted
+                #edgecolor='k', linewidth=1.0, linestyle='dotted',
+                # cyan?
+            )
+            ax.add_patch(rect)
+
+    # TODO just mean across trials right? do i actually use this anywhere?
+    # would probably make more sense to just recompute, considering how often i find
+    # myself writing `fig, _ = plot...`
+    return fig, mean_df
+
+
+def count_n_per_odor_and_glom(df: pd.DataFrame, *, count_zero: bool = True
+    ) -> pd.DataFrame:
+    # TODO doc
+
+    if not count_zero:
+        # TODO need to do anything special to keep rows for things that would then be
+        # fully NaN?
+        #
+        # since one call of this happens downstream of some 0-filling betty wanted, that
+        # i don't think should count for this
+        # TODO assert there are actually some 0.0 vals? or warn if not?
+        df = df.replace(0.0, np.nan)
+    else:
+        if (df == 0.0).any().any():
+            warn('count_n_per_odor_and_glom: have exact 0.0 data values. also counting '
+                'them, though they may just be fill values. pass count_zero=False to '
+                'exclude'
+            )
+
+    # TODO might need level= here, for sort=False to work as expected?
+    # (didn't have it where i copied it from)
+    n_per_odor_and_glom = df.notna().groupby(level='roi', sort=False,
+        axis='columns').sum()
+
+    return n_per_odor_and_glom
+
+
+# TODO rename (either this or others) to be consistent about "plot_*" fns either saving
+# outputs or not? use decorator to add save (option?) to plot fns that dont save
+# (having all either just return fig, or at least having fig as first var returned?)?
+def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = False,
+    count_zero: bool = True, cmap: str = 'cividis', zero_color='white',
+    title: bool = True, title_prefix='', **kwargs) -> Tuple[Figure, pd.DataFrame]:
+
+    if not input_already_counts:
+        n_per_odor_and_glom = count_n_per_odor_and_glom(df, count_zero=count_zero)
+    else:
+        n_per_odor_and_glom = df
+
+    # TODO at least for panels below, show min N for each glomerulus?
+    # (maybe as a separate single-column matshow w/ it's own colorbar?)
+    # (only relevant in plots that take mean across flies)
+
+    # TODO hong2p.viz tricks to set cmap max dynamically according to data?
+    # possible? clean enough to be worth? would also want to intercept vmin/vmax, and
+    # set the ticks in cbar_kws as i'm doing below...
+    max_n = n_per_odor_and_glom.max().max()
+    # discrete colormap: https://stackoverflow.com/questions/14777066
+    cmap = plt.get_cmap(cmap, max_n)
+    # want to display 0 as distinct (white rather than dark blue)
+    cmap.set_under(zero_color)
+
+    n_roi_plot_kws = dict(roimean_plot_kws)
+    n_roi_plot_kws['cbar_label'] = 'number of flies (n)'
+
+    if title:
+        if len(title_prefix) > 0:
+            title_prefix = f'{title_prefix}\n'
+
+        # TODO de-dupe w/ cbar_label? just title_prefix?
+        n_roi_plot_kws['title'] = \
+            f'{title_prefix}sample size (n) per (glomerulus X odor)'
+    else:
+        assert len(title_prefix) == 0
+
+    n_roi_plot_kws.update(kwargs)
+
+    fig, _ = plot_all_roi_mean_responses(n_per_odor_and_glom, cmap=cmap,
+
+        # TODO more elegant solution -> delete (detect whether cmap diverging inside
+        # plot_all*?)
+        use_diverging_cmap=False,
+
+        # TODO why isn't 0 in the bar tho? if the data had 0, would there be?
+        #
+        # vmin has to be > 0, so that zero_color set correctly via cmap's set_under
+        vmin=0.5, vmax=(max_n + 0.5),
+        cbar_kws=dict(ticks=np.arange(1, max_n + 1)), **n_roi_plot_kws
+    )
+
+    # TODO delete
+    # unuseable as is. font too big and may not be transposed and/or aligned correctly.
+    #
+    # TODO was it constrained layout that was causing (most of?) the issues?
+    # can i do without it?
+    # TODO would probably have to move this into plot_all_roi_mean...
+    # (or otherwise ensure plotted order matches order of n_per_odor_and_glom
+    # (as averaged / sorted here) for purposes of drawing N on each cell)
+    # n_per_odor_and_glom.groupby([x for x in df.index.names if x != 'repeat'],
+    #     sort=False).mean()
+    # .max(axis='rows') above, and save to csv (for now)?
+    '''
+    # TODO implement in such a way that we don't just assume the first axes is the
+    # non-colorbar one? it probably always will be tho...
+    # not sure i could trust plt.gca() any more either...
+    assert len(fig.axes) == 2
+    ax = fig.axes[0]
+
+    # TODO need to transpose n_per_odor_and_glom?
+    #
+    # https://stackoverflow.com/questions/20998083
+    for (i, j), n in np.ndenumerate(n_per_odor_and_glom):
+        # TODO color visible enough? way to put white behind?
+        # or just use some color distinguishable from whole colormap?
+        ax.text(j, i, n, ha='center', va='center')
+    '''
+
+    return fig, n_per_odor_and_glom
 
 
 # TODO maybe some of below (stuff re: remy's kc data) should be moved into
