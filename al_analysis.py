@@ -85,77 +85,18 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
     plot_all_roi_mean_responses, plot_n_per_odor_and_glom, get_gsheet_metadata,
     zscore_traces_per_recording, sort_concs, sort_fly_roi_cols, fly_roi_id,
     response_stat_fn, roimean_plot_kws, roi_plot_kws, count_n_per_odor_and_glom,
-    format_panel, roi_label, mean_response_desc, to_json, read_json
+    format_panel, roi_label, mean_response_desc, to_json, read_json, to_parquet,
+    response_calc_params_json_name
 )
-# TODO delete (should be done regening), after regenerating pickles that had this
-# attribute. currently getting:
-# AttributeError: Can't get attribute 'sign_preserving_maxabs' on <module '__main__' from './al_analysis.py'>
-# ...in `prev_response_calc_params = read_pickle(response_calc_param_cache)`
-# (still need to implement a fix, which would probably be saving fn name instead of fn
-# itself)
-# TODO move to conditional import, in `try/except AttributeError` surrounding pickle
-# loading? (does not work as a conditional import inside an `except AttributeError`
-# block)
-#from al_util import sign_preserving_maxabs
-#
 import al_util
-#
 from mb_model import model_mb_responses
 
 
 # TODO just do invalid='raise'? (divide/over/under are options besides invalid)
 # this does catch what warnings.filterwarnings('error', 'invalid value') was supposed to
-# (and why didn't that work?)
-# ok this does seem to work (but maybe this error is still not deterministic or
-# something)? first hit in running `-d GH146 -n 6f` (no date restriction):
-# (and was able to get this at least twice in a row. nvm, it was actually on the
-# diagnostics3 for the same fly, on the 2nd call! and getting in 2023-06-22 diagnostics1
-# on 3rd call)
-# ...
-# thorimage_dir: 2023-06-23/1/megamat2
-# thorsync_dir: 2023-06-23/1/SyncData005
-# yaml_path: 20230623_152951_stimuli/20230623_152951_stimuli_1.yaml
-# Warning: could not parse power from '>>11mW'
-# Warning: did not have saved response calc params! will re-analyze ImageJ ROIs
-# ignoring existing ImageJ ROI analysis. re-analyzing.
-# Warning: dropping 7 ROIs with '+' suffix
-# Uncaught exception
-# Traceback (most recent call last):
-#   File "./al_analysis.py", line 12676, in <module>
-#     main()
-#   File "./al_analysis.py", line 10259, in main
-#     was_processed = list(starmap(process_recording, keys_and_paired_dirs))
-#   File "./al_analysis.py", line 4971, in process_recording
-#     ij_trial_df, best_plane_rois, full_rois = ij_trace_plots(analysis_dir,
-#   File "./al_analysis.py", line 3855, in ij_trace_plots
-#     traces, best_plane_rois, z_indices, full_rois = ij_traces(analysis_dir, movie,
-#   File "./al_analysis.py", line 3087, in ij_traces
-#     traces = pd.DataFrame(extract_traces_bool_masks(movie, full_rois))
-#   File "/home/tom/src/hong2p/hong2p/roi.py", line 902, in extract_traces_bool_masks
-#     traces = np.empty((n_frames, n_footprints)) * np.nan
-# FloatingPointError: invalid value encountered in multiply
-# TODO can i change how i initialize the matrix of all nan above, to
-# deterministically not produce the invalid value error? am i just sometimes getting it
-# b/c use of np.empty? (i switched all from `x = empty(...) * np.nan` to
-# `x = empty(...); x.fill(np.nan)`, and hopefully that fixed it)
+# NOTE: filterwarnings (at least filtering message) did not seem able to catch these
+# numpy warnings, but this works
 np.seterr(all='raise')
-# TODO restore (triggered in dF/F calc for test no-fly dry-run data. how to repro?)
-# (was this even successfully trapping this error though? test?)
-# RuntimeWarning: invalid value encountered in scalar multiply
-#
-# TODO find some way to actually trap this. try category=RuntimeWarning (doubt it
-# would work...)? (np.seterr works. delete)
-# does NOT seem to successfully trap error, but does silence it? actually, can not repro
-# after one call that did...
-# [thought i could] repro when analyzing GH146_6f/pdf/2023-06-22_2_diagnostics1, as part
-# of process_recording (probably in ijroi part?). when warning appeared (but can't
-# repro on subsequent repeat calls I tried):
-# ...
-# ImageJ ROIs (/response calc params) were modified. re-analyzing.
-# RuntimeWarning: invalid value encountered in multiply
-# merging ROI DL1
-# ...
-#warnings.filterwarnings('error', 'invalid value encountered in')
 
 # NOTE: currently silencing this error around the two particular savefig calls (of
 # plot_rois output) that were triggering this.
@@ -4852,29 +4793,6 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
             # getmtime still work on symlink, getting mtime of target file?)
             if response_calc_param_cache.exists():
                 prev_response_calc_params = read_pickle(response_calc_param_cache)
-
-                # TODO delete after regenerating (should be done)
-                assert 'response_stat_fn_name' in response_calc_params
-                assert 'response_stat_fn' not in response_calc_params
-                #if 'response_stat_fn' in prev_response_calc_params:
-                #    assert 'response_stat_fn_name' not in prev_response_calc_params
-                #    response_stat_fn_name = prev_response_calc_params[
-                #        'response_stat_fn'].__name__
-                #    print(f'{response_stat_fn_name=}')
-                #    #breakpoint()
-                #    del prev_response_calc_params['response_stat_fn']
-                #    prev_response_calc_params['response_stat_fn_name'] = \
-                #        response_stat_fn_name
-
-                #    if prev_response_calc_params == response_calc_params:
-                #        print(f'updating {response_calc_param_cache}')
-                #        to_pickle(prev_response_calc_params, response_calc_param_cache)
-                #    else:
-                #        print('still not equal!')
-                assert 'response_stat_fn_name' in prev_response_calc_params
-                assert 'response_stat_fn' not in prev_response_calc_params
-                #
-
                 if prev_response_calc_params != response_calc_params:
                     # TODO print difference too?
                     warn('response calc params changed! will re-analyze ImageJ ROIs')
@@ -9969,10 +9887,7 @@ def main():
 
     # TODO try to get autocomplete to work for panels / indicators (+ dates?)
 
-    # TODO set this in get_gsheet_metadata instead? (want to move that fn to al_util
-    # though, to avoid circular imports, if trying to import load_antennal_csv.read_csv
-    # from mb_model) (do any fns used in there require this global gsheet_df though? or
-    # fine to use its own copy of this fns output? i assume the latter...)
+    # TODO set this in al_util.get_gsheet_metadata instead?
     gsheet_df = get_gsheet_metadata()
 
     not_in_gsheet = [(k,d) for k, d in keys_and_paired_dirs if k not in gsheet_df.index]
@@ -11280,12 +11195,12 @@ def main():
         # running on e.g. validation2 data only vs validation2 + megamat data, BUT the
         # columns (letters from fly_id_legend) currently DO differ based on this, so we
         # can't compare these outputs if we aren't running on all data
-        consensus_csv = output_root / f'{panel}_consensus.csv'
+        panel_consensus_csv = output_root / f'{panel}_consensus.csv'
 
         if not only_report_missing_glomeruli:
             # TODO also say filled/similar in name?
             # TODO date_format even doing anything?
-            to_csv(filled_df, consensus_csv, date_format=date_fmt_str)
+            to_csv(filled_df, panel_consensus_csv, date_format=date_fmt_str)
 
         del filled_fly_dfs
 
@@ -11508,6 +11423,12 @@ def main():
     consensus_df = consensus_df.droplevel('fly_id', axis='columns')
     #
 
+    # list of files to copy to each model output subdirectory, to be able to trace what
+    # input data went into model, and to use for reproducing (if needed) in the future.
+    # passed to model_mb_responses, and copied after each successful
+    # fit_and_plot_mb_model call in there.
+    copy_to_model_dirs = []
+
     if roi_best_plane_depths is not None:
         # TODO want to also allow a version of this using certain_df instead of
         # consensus_df?
@@ -11518,34 +11439,38 @@ def main():
         # shouldn't need to add to copy_to_model_dirs, so long as we are not actually
         # using depth there as part of spike delta prediction (didn't seem to improve
         # things enough to justify it, from eyeballing. not enough data as-is)
-        to_pickle(roi_best_plane_depths, output_root / 'roi_best_plane_depths.p')
+        roi_depths_parquet = output_root / 'roi_best_plane_depths.parquet'
+        to_parquet(roi_best_plane_depths, roi_depths_parquet)
+        copy_to_model_dirs.append(roi_depths_parquet)
 
-    # TODO also add ij_certain-roi_stats.[csv|p] to this as well (and replace the
-    # separate code saving full_orn_dff_input.p? or does that still capture some
-    # preprocessing i'm not clear on, like subsetting odors?)
-    copy_to_model_dirs = []
-    response_calc_params_json = output_root / 'response_calc_params.json'
+        to_pickle(roi_best_plane_depths, roi_depths_parquet.with_suffix('.p'),
+            write_parquet=False
+        )
+
+    response_calc_params_json = output_root / response_calc_params_json_name
+    # this will check round trip (that loaded contents match what we saved) by default,
+    # raising AssertionError on faliure. can disable via check=False.
     to_json(response_calc_params, response_calc_params_json)
     copy_to_model_dirs.append(response_calc_params_json)
-
-    # TODO move to checking behind a flag in to_json?
-    round_trip = read_json(response_calc_params_json)
-    assert response_calc_params == round_trip, \
-        f'{response_calc_params=}\n...!=...\n{round_trip=}'
-    #
 
     # TODO only save these two if being run on all data?
     # (or just move saving to per panel directory [/name w/ panel] if not?)
     # (less of an issue now that -C is an option to not overwrite these when running on
     # diff subsets of data)
     # TODO also save certain_df still?
-    # TODO TODO rename these to "consensus", either way
+    # TODO TODO rename these filenames (from "certain") to "consensus", either way
     # (but be careful to not cause confusion w/ other people who already have some of
     # these files...)
-    to_csv(consensus_df, output_root / 'ij_certain-roi_stats.csv',
-        date_format=date_fmt_str
-    )
-    to_pickle(consensus_df, output_root / 'ij_certain-roi_stats.p')
+    consensus_csv = output_root / 'ij_certain-roi_stats.csv'
+    to_csv(consensus_df, consensus_csv, date_format=date_fmt_str)
+    copy_to_model_dirs.append(consensus_csv)
+
+    consensus_pickle = consensus_csv.with_suffix('.p')
+    to_pickle(consensus_df, consensus_pickle, write_parquet=False)
+
+    consensus_parquet = consensus_csv.with_suffix('.parquet')
+    to_parquet(consensus_df, consensus_parquet)
+    copy_to_model_dirs.append(consensus_parquet)
 
     mean_df = pd.concat(mean_df_list, verify_integrity=True)
     stddev_df = pd.concat(stddev_df_list, verify_integrity=True)
@@ -12540,19 +12465,24 @@ def main():
     # TODO link the github issue that might or might not still be open about this
     # date_format + index level issue (may need to update pandas if it has been
     # resolved)
-    to_csv(trial_df, output_root / 'ij_roi_stats.csv', date_format=date_fmt_str)
+    raw_ijroi_csv = output_root / 'ij_roi_stats.csv'
+    to_csv(trial_df, raw_ijroi_csv, date_format=date_fmt_str)
 
-    # TODO TODO still have one global cache with all data (for use in plot_roi.py /
+    raw_ijroi_parquet = raw_ijroi_csv.with_suffix('.parquet')
+    to_parquet(trial_df, raw_ijroi_parquet)
+    copy_to_model_dirs.append(raw_ijroi_parquet)
+
+    # TODO (delete?) still have one global cache with all data (for use in plot_roi.py /
     # related) (or just use current ij_roi_stats.p files, where they are?)
-    # TODO TODO -> use in new realtime analysis feature like hallem-correlating one, but
+    # TODO -> use in new realtime analysis feature like hallem-correlating one, but
     # using my data, specifically certain ROIs for other flies from same driver?
     # (or maybe even pebbled by default? warn if using diff driver?)
     #
-    # TODO at least don't overwrite these if we have subset str defined (same w/ csv
-    # prob) (maybe also not start / end date?)
+    # TODO at least don't overwrite these (including csv/parquet above) if we have
+    # subset str defined (same w/ csv prob) (maybe also not start / end date?)
     # (would want to warn if i wasn't gonna over write this for either of these
     # reasons...)
-    to_pickle(trial_df, output_root / ij_roi_responses_cache)
+    to_pickle(trial_df, output_root / ij_roi_responses_cache, write_parquet=False)
 
     # TODO delete? probably
     # TODO still want to keep this?
@@ -12686,6 +12616,7 @@ def main():
             # kwarg to scale_dff_*, threaded thru model_mb_responses) whether dF/F ->
             # est spike delta fn gets recomputed?
 
+            # TODO delete? this handled above now?
             # TODO move inside model_mb_responses? (would then have to move this fn to
             # al_util).
             # currently done once above, but would like to replace that w/ more limited
@@ -12693,10 +12624,13 @@ def main():
             # the ijroi plots and ij_certain-roi_stats.[csv|p]
             #consensus_df = process_sam_glomeruli_names(consensus_df)
 
+            # wil be created by model_mb_responses
+            modeling_root = across_fly_ijroi_dir / 'mb_modeling'
+
             # NOTE: use_consensus_for_all_acrossfly must be False if I want to try using
             # certain_df again here (if True, certain_df is redefined to consensus_df
             # above)
-            model_mb_responses(consensus_df, across_fly_ijroi_dir,
+            model_mb_responses(consensus_df, modeling_root,
                 roi_depths=roi_best_plane_depths,
                 skip_sensitivity_analysis=skip_sensitivity_analysis,
                 skip_models_with_seeds=skip_models_with_seeds,
@@ -12704,6 +12638,7 @@ def main():
                 skip_hallem_models=skip_hallem_models,
                 first_model_kws_only=first_model_kws_only,
                 copy_to_model_dirs=copy_to_model_dirs,
+                response_calc_params=response_calc_params,
             )
         else:
             print(f'not running MB model(s), as driver not in {orn_drivers=}')

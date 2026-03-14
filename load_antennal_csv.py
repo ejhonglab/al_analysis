@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
+# TODO rename this script csv_cli.py or something? (now that read_csv is in al_util,
+# which used to be main purpose of this script)
+
 import argparse
 from os.path import getmtime
 from pathlib import Path
 from pprint import pformat, pprint
-from typing import Dict, Any
+from typing import Any, Dict
 
 import pandas as pd
 
@@ -14,137 +17,9 @@ from hong2p.types import Pathlike
 from hong2p.util import pd_allclose
 
 from al_util import (format_mtime, warn, sort_odors, fly_cols, flyroi_cols,
-    roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
+    read_csv, roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
     plot_n_per_odor_and_glom, get_gsheet_metadata
 )
-
-
-# TODO maybe don't require is_pair? panel?
-#
-# can have more 'odor<x>' row index levels if there are multiple odors presented at once
-# (via air mixing). will have a number of levels equal to maximum presented at once.
-required_index_levels = ['panel', 'is_pair', 'odor1', 'repeat']
-
-# TODO provide fn to invert zero filling i had done for some new outputs (dropping
-# glomeruli w/ all 0s or NaN)
-
-def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
-    # TODO doc
-    # for dropping metadata intended for binary mixture experiments
-    to_drop = []
-
-    if 'is_pair' in df.index.names:
-        if set(df.index.get_level_values('is_pair')) == {False}:
-            to_drop.append('is_pair')
-        else:
-            warn('index had some is_pair=True entries! not dropping is_pair level!')
-
-    if 'odor2' in df.index.names:
-        if set(df.index.get_level_values('odor2')) == {solvent_str}:
-            to_drop.append('odor2')
-        else:
-            warn(f'index had some odor2 != {solvent_str} entries! not dropping odor2 '
-                'level!'
-            )
-
-    if len(to_drop) > 0:
-        df.index = df.index.droplevel(to_drop)
-
-    return df
-
-
-def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
-    check_vs_pickle: bool = True, verbose: bool = True) -> pd.DataFrame:
-    # TODO doc output format (w/ example str repr)
-    # TODO does this work on both ij_certain-roi_stats.csv and ij_roi_stats.csv outputs?
-
-    csv = Path(csv)
-    assert csv.exists(), f'CSV {csv} did not exist!'
-
-    if verbose:
-        print(f'loading {csv}')
-        print(f'modified {format_mtime(getmtime(csv), year=True)}')
-        print()
-
-    # this line will start with the level names for the row index, e.g.
-    # ['panel', 'is_pair', 'odor1', 'repeat', nan, ...]
-    # (for data with a maximum of one odor component mixed-in-air)
-    #
-    # if there are additional components, there will be additional 'odor<N>' index
-    # levels, up to the maximum # of components presented at once (via air mixing. odors
-    # mixed in vial are represented by their own unique name, not via separate levels).
-    # most I've ever used (via air mixing) is 2.
-    #
-    # not sure if there might be data after these level names, or if it will always be
-    # NaN for everything else in that row (but doesn't matter for this).
-    index_row = pd.read_csv(csv, skiprows=3, nrows=1, header=None).squeeze()
-    # 'repeat' should always be the last level, so if we find that, we know we only have
-    # to read index_col up to there (in next read_csv call)
-    eq_repeat = index_row == 'repeat'
-    assert eq_repeat.sum() == 1
-    # index starts at 0, so we will need to read 1 more index_col level past this
-    repeat_idx = eq_repeat.idxmax()
-    n_index_col_levels = repeat_idx + 1
-
-    df = pd.read_csv(csv,
-        # can't pass list of names here when specifying column MultiIndex via header.
-        # trying raises ValueError to that effect.
-        index_col=list(range(n_index_col_levels)),
-
-        # doesn't take list of str, and names= seems to only set column level names,
-        # rather than finding them by name.
-        header=list(range(len(flyroi_cols)))
-    )
-    # this is assumed in section above that determines how many index levels there are
-    assert df.index.names[-1] == 'repeat'
-
-    assert df.columns.names == flyroi_cols
-    assert set(required_index_levels) - set(df.index.names) == set()
-
-    # the only row index levels not in required_index_levels should be extra air-mix
-    # components (with names in 'odor<N>' form)
-    prefix = 'odor'
-    for x in set(df.index.names) - set(required_index_levels):
-        assert x.startswith(prefix)
-        try:
-            component_num = int(x[len(prefix):])
-        # only intending to catch int parsing failure like:
-        # ValueError: invalid literal for int() with base 10: ...
-        except ValueError:
-            # TODO include better message about malformed index level name
-            raise
-
-        # TODO assert all contiguous?
-        assert component_num >= 1
-
-    # TODO refactor?
-    assert df.columns.names[0] == fly_cols[0]
-    df.columns = df.columns.set_levels(pd.to_datetime(df.columns.levels[0]),
-        level=0, verify_integrity=True
-    )
-
-    assert df.columns.names[1] == fly_cols[1]
-    df.columns = df.columns.set_levels(df.columns.levels[1].astype(int), level=1,
-        verify_integrity=True
-    )
-
-    if check_vs_pickle:
-        # just some checking i was doing against a parallel pickle version i had, mainly
-        # to make sure i was loading CSV correctly (with same dtype info)
-        pickle_path = csv.with_suffix('.p')
-        if pickle_path.exists():
-            pdf = pd.read_pickle(pickle_path)
-            assert pd_allclose(df, pdf, equal_nan=True)
-            if verbose:
-                print(f'CSV data matches pickle {pickle_path}\n')
-        else:
-            if verbose:
-                print(f'no pickle at {pickle_path}. could not check against CSV.\n')
-
-    if drop_old_odor_levels:
-        df = drop_old_odor_index_levels(df)
-
-    return df
 
 
 def get_unique_flies(df: pd.DataFrame) -> pd.DataFrame:

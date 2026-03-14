@@ -5,7 +5,8 @@ from pathlib import Path
 import pandas as pd
 
 from hong2p.olf import parse_odor_name
-from load_antennal_csv import read_csv
+
+from al_util import read_csv
 
 
 def main():

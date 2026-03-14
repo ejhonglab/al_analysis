@@ -79,6 +79,8 @@ fly_cols: List[str] = ['date', 'fly_num']
 # typically, ROI = 'glomerlus' (glomerulus_col)
 flyroi_cols: List[str] = fly_cols + ['roi']
 
+diag_panel_str: str = 'glomeruli_diagnostics'
+
 # TODO test
 # TODO type hint
 def sign_preserving_maxabs(x):
@@ -150,6 +152,8 @@ if trial_stat_desc != 'mean':
     mean_response_desc = f'mean {response_desc}'
 else:
     mean_response_desc = response_desc
+
+response_calc_params_json_name: str = 'response_calc_params.json'
 
 
 # TODO adapt -> share w/ (at least) drop_redone_odors?
@@ -487,6 +491,7 @@ def format_mtime(mtime_or_path: Union[float, Pathlike], *, year: bool = False,
 check_outputs_unchanged = False
 # hack so al_analysis can edit this to add functions i currently have defined under main
 # (e.g. save_method_csvs)
+# TODO just for -c/-C right? explain better the need for this
 _consider_as_main = []
 
 # TODO TODO move to hong2p.util
@@ -496,7 +501,8 @@ _consider_as_main = []
 # (or True otherwise?)
 # (still need to test behavior when wrapped fn has existing verbose kwarg)
 # TODO make this an attribute of this/one of inner fns (rather than module level)?
-_fn2seen_inputs = dict()
+_fn2seen_inputs: Dict[str, Path] = dict()
+_all_seen_inputs: Set[Path] = set()
 # TODO what is _fn for again? keep?
 def produces_output(_fn=None, *, verbose=True):
     # for how to make a decorator with optional  arg:
@@ -555,14 +561,20 @@ def produces_output(_fn=None, *, verbose=True):
             # one global?
             seen_inputs = _fn2seen_inputs[fn.__name__]
 
-            if not multiple_saves_per_run_ok:
-                if normalized_path in seen_inputs:
-                    raise MultipleSavesPerRunException('would have overwritten output '
-                        f'{path} (previously written elsewhere in this run)! add '
-                        'multiple_saves_per_run_ok=True to call to override'
-                    )
+            if not multiple_saves_per_run_ok and (
+                (normalized_path in seen_inputs or normalized_path in _all_seen_inputs)
+                ):
+                raise MultipleSavesPerRunException('would have overwritten output '
+                    f'{path} (previously written elsewhere in this run)! add '
+                    'multiple_saves_per_run_ok=True to call to override'
+                )
 
             seen_inputs.add(normalized_path)
+            # TODO why did i need a fn specific cache anyway? paths should be unique
+            # across all fns anyway, right? i don't want two fns overwriting each others
+            # outputs within a run... simplify by replacing all fn specific sets w/ this
+            # one global one?
+            _all_seen_inputs.add(normalized_path)
 
             write_output = True
             if check_outputs_unchanged and path.exists():
@@ -793,10 +805,14 @@ def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.
 
 
 @produces_output(verbose=False)
-def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path) -> None:
-    # TODO delete eventually
-    orig = data
-    #
+def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path, *, check: bool = True
+    ) -> None:
+    """Write `data` to parquet at `path`, with default check loaded value matches input.
+    """
+    # TODO make check=False the default eventually?
+    if check:
+        orig = data
+
     if isinstance(data, pd.Series):
         assert not hasattr(data, 'to_parquet')
         # since DataFrame.to_parquet(...) requires str column names, but we often have
@@ -859,46 +875,53 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path) -> None:
         # moving last index level to first column
         data = data.reset_index(level=-1)
 
+    # TODO accept engine argument here? changing engine actually avoid any of my current
+    # need for custom conversions in to_parquet/read_parquet?
     data.to_parquet(path)
 
-    # TODO delete eventually
-    d2 = read_parquet(path)
-    try:
-        assert d2.equals(orig)
-
-    # TODO TODO was i doing this was just b/c of need for isclose in index? why can we
-    # assert values are equal and not just close then?
-    except AssertionError:
-        # TODO also convert indices to frames and check those w/ allclose (like
-        # columns)? or is parquet MultiIndex reading not broken for those? i had to add
-        # manual type conversions for MultiIndex column level values in my read_parquet
-        # fn.
-        assert d2.index.equals(orig.index)
-
-        c1 = orig.columns.to_frame(index=False)
-        c2 = d2.columns.to_frame(index=False)
-        # TODO handle case where date is datetime64[ns] in one, and object in the
-        # other. (now that i added datetime column level handling in read_parquet,
-        # should be fine. delete)
-        # TODO is it just float levels that are allclose that are causing failure
-        # for claws_sims_[sums|maxs]? (seems so, yes)
-        assert pd_allclose(c2, c1)
-
-        # TODO TODO TODO fix. failing w/ consensus_df saving w/:
-        # ./al_analysis.py -d pebbled -n 6f -t 2023-04-22 -e 2024-01-05 -s corr,intensity,ijroi,model-seeds,model-sensitivity -v -i model -M
-        # (equal_nan=True here seems to fix it, but pd_allclose(d2, orig,
-        # equal_nan=True) does *not* work? how come?)
+    if check:
+        d2 = read_parquet(path)
         try:
-            assert np.array_equal(d2.values, orig.values, equal_nan=True)
+            assert d2.equals(orig)
+        # TODO TODO was i doing this was just b/c of need for isclose in index? why can
+        # we assert values are equal and not just close then?
         except AssertionError:
-            breakpoint()
-    #
+            # TODO also convert indices to frames and check those w/ allclose (like
+            # columns)? or is parquet MultiIndex reading not broken for those? i had to
+            # add manual type conversions for MultiIndex column level values in my
+            # read_parquet fn.
+            assert d2.index.equals(orig.index)
+
+            c1 = orig.columns.to_frame(index=False)
+            c2 = d2.columns.to_frame(index=False)
+            # TODO handle case where date is datetime64[ns] in one, and object in the
+            # other. (now that i added datetime column level handling in read_parquet,
+            # should be fine. delete)
+            # TODO is it just float levels that are allclose that are causing failure
+            # for claws_sims_[sums|maxs]? (seems so, yes)
+            assert pd_allclose(c2, c1)
+
+            # TODO TODO fix. failing w/ consensus_df saving w/:
+            # ./al_analysis.py -d pebbled -n 6f -t 2023-04-22 -e 2024-01-05 -s corr,intensity,ijroi,model-seeds,model-sensitivity -v -i model -M
+            # (equal_nan=True here seems to fix it, but pd_allclose(d2, orig,
+            # equal_nan=True) does *not* work? how come?)
+            try:
+                assert np.array_equal(d2.values, orig.values, equal_nan=True)
+            except AssertionError:
+                breakpoint()
 
 
 @produces_output(verbose=False)
 # input could be at least Series|DataFrame
-def to_pickle(data, path: Path) -> None:
-    """
+# TODO delete write_parquet kwarg eventually? after adding explicit calls where i want
+def to_pickle(data, path: Path, *, write_parquet: bool = True) -> None:
+    """Writes input to pickle at `path`.
+
+    Args:
+        write_parquet: if True, will also write any `pd.Series|DataFrame` data to
+            `path.with_suffix('.parquet')` (i.e. '<x>/<y>.parquet', for input
+            '<x>/<y>.p').
+
     NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
     """
     if isinstance(data, xr.DataArray):
@@ -911,9 +934,15 @@ def to_pickle(data, path: Path) -> None:
 
     # TODO delete eventually (replace calls [that i can] of to_pickle w/ to_parquet
     # first)
-    if isinstance(data, (pd.Series, pd.DataFrame)):
+    if write_parquet and isinstance(data, (pd.Series, pd.DataFrame)):
         # replacing .p w/ .parquet
         parquet_path = path.with_suffix('.parquet')
+
+        # TODO also include line of calling code? easily possible?
+        warn(f'also saving to {parquet_path} via to_parquet call inside to_pickle. '
+            'replace with explicit to_parquet call in the future!'
+        )
+
         to_parquet(data, parquet_path)
     #
 
@@ -931,16 +960,23 @@ def read_pickle(path: Pathlike):
     return pickle.loads(path.read_bytes())
 
 
-@produces_output
-def to_json(param_dict: ParamDict, path: Path) -> None:
-    with open(path, 'w') as f:
-        # TODO want any other args? indent=4?
-        json.dump(param_dict, f)
-
-
 def read_json(path: Path) -> ParamDict:
+    """Returns dict contained within JSON at `path`
+    """
     with open(path, 'r') as f:
         return json.load(f)
+
+
+@produces_output
+def to_json(param_dict: ParamDict, path: Path, *, check: bool = True) -> None:
+    """Write `param_dict` to JSON at `path`, with default round trip check.
+    """
+    with open(path, 'w') as f:
+        json.dump(param_dict, f, indent=4)
+
+    if check:
+        round_trip = read_json(path)
+        assert param_dict == round_trip, f'{param_dict=}\n...!=...\n{round_trip=}'
 
 
 @produces_output(verbose=False)
@@ -950,6 +986,138 @@ def np_save(data: np.ndarray, path: Path, **kwargs) -> None:
     necessary to work w/ my `produces_output` wrapper.
     """
     np.save(path, data, **kwargs)
+
+
+# TODO maybe don't require is_pair? panel?
+# TODO rename?
+#
+# can have more 'odor<x>' row index levels if there are multiple odors presented at once
+# (via air mixing). will have a number of levels equal to maximum presented at once.
+required_index_levels: List[str] = ['panel', 'is_pair', 'odor1', 'repeat']
+
+# TODO provide fn to invert zero filling i had done for some new outputs (dropping
+# glomeruli w/ all 0s or NaN)
+
+def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
+    # TODO doc
+    # for dropping metadata intended for binary mixture experiments
+    to_drop = []
+
+    if 'is_pair' in df.index.names:
+        if set(df.index.get_level_values('is_pair')) == {False}:
+            to_drop.append('is_pair')
+        else:
+            warn('index had some is_pair=True entries! not dropping is_pair level!')
+
+    if 'odor2' in df.index.names:
+        if set(df.index.get_level_values('odor2')) == {solvent_str}:
+            to_drop.append('odor2')
+        else:
+            warn(f'index had some odor2 != {solvent_str} entries! not dropping odor2 '
+                'level!'
+            )
+
+    if len(to_drop) > 0:
+        df.index = df.index.droplevel(to_drop)
+
+    return df
+
+
+# TODO rename to include dff in name?
+def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
+    check_vs_pickle: bool = True, verbose: bool = True) -> pd.DataFrame:
+    # TODO doc output format (w/ example str repr)
+    # TODO does this work on both ij_certain-roi_stats.csv and ij_roi_stats.csv outputs?
+
+    csv = Path(csv)
+    assert csv.exists(), f'CSV {csv} did not exist!'
+
+    if verbose:
+        print(f'loading {csv}')
+        print(f'modified {format_mtime(getmtime(csv), year=True)}')
+        print()
+
+    # this line will start with the level names for the row index, e.g.
+    # ['panel', 'is_pair', 'odor1', 'repeat', nan, ...]
+    # (for data with a maximum of one odor component mixed-in-air)
+    #
+    # if there are additional components, there will be additional 'odor<N>' index
+    # levels, up to the maximum # of components presented at once (via air mixing. odors
+    # mixed in vial are represented by their own unique name, not via separate levels).
+    # most I've ever used (via air mixing) is 2.
+    #
+    # not sure if there might be data after these level names, or if it will always be
+    # NaN for everything else in that row (but doesn't matter for this).
+    index_row = pd.read_csv(csv, skiprows=3, nrows=1, header=None).squeeze()
+    # 'repeat' should always be the last level, so if we find that, we know we only have
+    # to read index_col up to there (in next read_csv call)
+    eq_repeat = index_row == 'repeat'
+    assert eq_repeat.sum() == 1
+    # index starts at 0, so we will need to read 1 more index_col level past this
+    repeat_idx = eq_repeat.idxmax()
+    n_index_col_levels = repeat_idx + 1
+
+    df = pd.read_csv(csv,
+        # can't pass list of names here when specifying column MultiIndex via header.
+        # trying raises ValueError to that effect.
+        index_col=list(range(n_index_col_levels)),
+
+        # doesn't take list of str, and names= seems to only set column level names,
+        # rather than finding them by name.
+        header=list(range(len(flyroi_cols)))
+    )
+    # this is assumed in section above that determines how many index levels there are
+    assert df.index.names[-1] == 'repeat'
+
+    assert df.columns.names == flyroi_cols
+    assert set(required_index_levels) - set(df.index.names) == set()
+
+    # the only row index levels not in required_index_levels should be extra air-mix
+    # components (with names in 'odor<N>' form)
+    prefix = 'odor'
+    for x in set(df.index.names) - set(required_index_levels):
+        assert x.startswith(prefix)
+        try:
+            component_num = int(x[len(prefix):])
+        # only intending to catch int parsing failure like:
+        # ValueError: invalid literal for int() with base 10: ...
+        except ValueError:
+            # TODO include better message about malformed index level name
+            raise
+
+        # TODO assert all contiguous?
+        assert component_num >= 1
+
+    # TODO refactor?
+    assert df.columns.names[0] == fly_cols[0]
+    df.columns = df.columns.set_levels(pd.to_datetime(df.columns.levels[0]),
+        level=0, verify_integrity=True
+    )
+
+    assert df.columns.names[1] == fly_cols[1]
+    df.columns = df.columns.set_levels(df.columns.levels[1].astype(int), level=1,
+        verify_integrity=True
+    )
+
+    if check_vs_pickle:
+        # just some checking i was doing against a parallel pickle version i had, mainly
+        # to make sure i was loading CSV correctly (with same dtype info)
+        pickle_path = csv.with_suffix('.p')
+        if pickle_path.exists():
+            pdf = pd.read_pickle(pickle_path)
+            assert pd_allclose(df, pdf, equal_nan=True)
+            if verbose:
+                print(f'CSV data matches pickle {pickle_path}\n')
+        else:
+            if verbose:
+                print(f'no pickle at {pickle_path}. could not check against CSV.\n')
+
+    if drop_old_odor_levels:
+        df = drop_old_odor_index_levels(df)
+
+    return df
+
+
 
 
 def text_diff(f1: Path, f2: Path) -> str:
@@ -1268,8 +1436,6 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
 # TODO clarify how these behave if something is missing (in comment)
 panel2name_order = deepcopy(natmix.panel2name_order)
 panel_order = list(natmix.panel_order)
-
-diag_panel_str: str = 'glomeruli_diagnostics'
 
 # TODO any reason for this order (i think it might be same as order in yaml [which more
 # or less goes from odors activating glomeruli in higher planes to lower planes], so
@@ -2252,17 +2418,42 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
     return ret
 
 
+# TODO move to hong2p?
+# TODO TODO use in fn to check whether outputs werer created since proc start
+def curr_proc_start_time() -> float:
+    """Returns float start time of current process, comparable to `time.time()`
+    """
+    # seems like this should be in same format/offset as time.time(). creator of package
+    # uses it as time.strftime(..., time.localtime(p.create_time())) in an example:
+    # https://stackoverflow.com/questions/2598145
+    proc = psutil.Process()
+    # TODO module-level cache?
+    create_time = proc.create_time()
+    assert 0 < create_time < time.time()
+    return create_time
+
+
+def written_since_proc_start(path: Pathlike) -> bool:
+    """Returns whether path was written since start of current process.
+
+    Also returns False if path does not exist.
+    """
+    if not Path(path).exists():
+        return False
+
+    # getmtime output should also be comparable to time.time()
+    return getmtime(path) > curr_proc_start_time()
+
+
 # TODO delete (/move to hong2p util?)
 def print_curr_mem_usage(end: str = '\n') -> None:
-    """Returns resident set size (RSS) memory usage of current process.
+    """Prints memory usage (MiB) of current process.
+
+    Prints both resident set size (RSS) and virtual memory size (VMS).
     """
     # https://stackoverflow.com/questions/938733
     proc = psutil.Process()
-
-    # TODO change to printing both this and VMS, instead of returning?
-
     byte2MiB = 1024**2
-
     # NOTE: "resident set size" (rss) is probably what I want, but may also
     # consider "virtual memory size" (vms), which would also include a few other
     # (mostly not actively being used) things.
@@ -2499,7 +2690,7 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
     if yticklabels is None:
         if not single_fly:
             # (assuming it's a valid callable if so)
-            if 'hline_level_fn' in kwargs and not kwargs.get('levels_from_labels', True):
+            if 'hline_level_fn' in kwargs and not kwargs.get('levels_from_labels',True):
                 if all([x in trial_df.columns.names for x in fly_cols]):
                     # TODO maybe still check if there is >1 fly too (esp if this path
                     # produces bad looking figures in that case)
@@ -2777,12 +2968,74 @@ def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = F
 # mb_model, rather than here in al_util? (al_analysis can import from mb_model, mb_model
 # just can't import from al_analysis)
 
-data_root = Path(__file__).resolve().parent / 'data'
+data_root: Path = Path(__file__).resolve().parent / 'data'
+
+sent_to_remy: Path = data_root / 'sent_to_remy'
+
+# TODO TODO regenerate these (and recommit in new dir, leaving old data), so we also
+# have newer parquet / response_calc_json / etc outputs?
+# TODO TODO add tests we can re-run al_analysis (w/ appropriate response calcs) and
+# regenerate this as well as similar paper outputs (w/ older response calc)
+#
+# Contains subdirs [kiwi_control|megamat|validation2]_signed-max, each with dF/F
+# CSV/pickle outputs and plots committed.
+signedmax_orn_dff_dir: Path = sent_to_remy / '2025-09-30_tom_orn_data_signed-max'
+
+# TODO add similar fns for megamat/control (and both for paper response calc and newer
+# signedmax one)
+# TODO use in tests to check we can repro mean_est_spike_deltas for all, and everything
+# downstream
+def load_natmix_dff(**kwargs) -> pd.DataFrame:
+    data_dir = signedmax_orn_dff_dir / 'kiwi_control_signed-max'
+
+    # TODO also load parquet (and prefer that, if we have it). need to regen and commit
+    # new outputs first
+    # TODO factor out this name to share w/ mb_model/al_analysis
+    csv_path = data_dir / 'ij_certain-roi_stats.csv'
+    df = read_csv(csv_path, **kwargs)
+
+    assert set(df.index.get_level_values('panel').unique()) == {
+        diag_panel_str, 'kiwi', 'control'
+    }
+    return df
+
+
+# TODO assert matches subset of
+# data/internal/for_dff_to_spiking_fn/ij_certain-roi_stats.parquet?
+# TODO use in tests
+def load_megamat_dff(**kwargs) -> pd.DataFrame:
+    data_dir = signedmax_orn_dff_dir / 'megamat_signed-max'
+    csv_path = data_dir / 'ij_certain-roi_stats.csv'
+    df = read_csv(csv_path, **kwargs)
+    assert set(df.index.get_level_values('panel').unique()) == {
+        diag_panel_str, 'megamat'
+    }
+    return df
+
+
+# TODO assert matches subset of
+# data/internal/for_dff_to_spiking_fn/ij_certain-roi_stats.parquet?
+# TODO use in tests
+def load_validation2_dff(**kwargs) -> pd.DataFrame:
+    data_dir = signedmax_orn_dff_dir / 'validation2_signed-max'
+    csv_path = data_dir / 'ij_certain-roi_stats.csv'
+    df = read_csv(csv_path, **kwargs)
+    assert set(df.index.get_level_values('panel').unique()) == {
+        diag_panel_str, 'validation2'
+    }
+    return df
+
+
+# TODO implement this one too (may need to recalc and commit? or instead have flags for
+# validation / megamat load fns?
+#def load_remypaper_dff(**kwargs) -> pd.DataFrame:
+
+
 # TODO also anchor path to script dir? would only be to support running from elsewhere,
 # which i prob don't care about
-remy_data_dir = data_root / 'from_remy'
+remy_data_dir: Path = data_root / 'from_remy'
 
-n_final_megamat_kc_flies = 4
+n_final_megamat_kc_flies: int = 4
 
 # NOTE: contains sparsities in top level CSVs, as well as individual fly binarized
 # responses in subdirectories

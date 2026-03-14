@@ -100,6 +100,6 @@ running this command to output one dF/F -> spiking model.
 newer kiwi/control data:
 to get model outputs for `natmix_data/analysis.py`
 ```
-./al_analysis.py -d pebbled -n 6f -t 2024-09-03 -e 2024-10-01 -s model-seeds
+./al_analysis.py -d pebbled -n 6f -t 2024-09-03 -e 2024-10-01
 ```
 

@@ -11,12 +11,11 @@ from hong2p.util import pd_allclose, addlevel
 from hong2p.olf import parse_odor_name
 
 import al_util
-from al_util import warn, savefig
+from al_util import warn, savefig, read_csv
 from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
-    get_thr_and_APL_weights, format_model_params,
+    get_thr_and_APL_weights, format_model_params, read_orn_deltas,
     scale_dff_to_est_spike_deltas_using_hallem
 )
-from load_antennal_csv import read_csv
 
 
 model_tune_kws = [
@@ -32,32 +31,15 @@ model_tune_kws = [
 ]
 
 
-# TODO TODO TODO check the CSVs i was using matched 2025-09-30_tom_orn_data_signed-max
-# contents too
-# TODO factor to mb_model? (+ use in mb_model.megamat_orn_deltas)
-def read_orn_deltas(path: Path) -> pd.DataFrame:
-    # TODO doc
-
-    # example:
-    # panel          megamat   ...
-    # odor           2h @ -3   ...   benz @ -3    ms @ -3
-    # glomerulus               ...
-    # D            40.363954   ...   42.445274  41.550370
-    # DA2          15.144943   ...   12.363544   3.856004
-    # ...
-    # VM7d        108.535394   ...   58.686294  20.230297
-    # VM7v         59.896953   ...   13.250292   8.446418
-    # TODO possible to specify names for all these? or assert names, if not
-    df = pd.read_csv(path, header=[0,1], index_col=0)
-    return df
-
-
 def main():
     plot_root = Path('kai_grant_model_outputs').resolve()
     plot_root.mkdir(exist_ok=True)
 
     # TODO TODO avoid need to set this to see plots being saved
     al_util.verbose = True
+
+    # TODO TODO TODO check the CSVs i was using matched 2025-09-30_tom_orn_data_signed-max
+    # contents too
 
     # TODO delete (or update to use this, after changing fn to load CSV from new
     # response calc)

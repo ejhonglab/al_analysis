@@ -24,16 +24,24 @@ import al_util
 from hong2p.util import pd_allclose, equals
 import olfsysm as osm
 
-from al_util import warn
+from al_util import warn, diag_panel_str, fly_cols, load_natmix_dff, data_root
 from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
     connectome_APL_weights, KC_ID, CLAW_ID, BOUTON_ID, KC_TYPE, step_around,
     read_param_csv, read_params, read_tuned_params, get_thr_and_APL_weights,
     variable_n_claw_options, dict_seq_product, get_connectome_wPNKC_params,
     format_model_params, eval_and_check_compatible, glomerulus_col, ParamDict,
     format_weights, megamat_orn_deltas, paper_hemibrain_output_dir, get_dynamics,
-    get_time_index
+    get_time_index, fit_dff2spiking_from_remypaper_flies_and_hallem,
+    scale_dff_to_est_spike_deltas_using_hallem, remypaper_dff2spiking_data_dir,
+    written_since_proc_start, dff_to_spiking_model_choices_csv_name,
+    dff_to_spiking_data_csv_name, read_parquet, MODEL_KW_LIST, QUICK_MODEL_KW_LIST,
+    BOUTON_MODEL_KW_LIST, get_fitandplot_model_kw_list, model_mb_responses
 )
 
+
+# TODO test i can recreate committed megamat_orn_deltas() contents. prob need to recalc
+# dF/F w/ old mean (n_volumes=2) response calc? or use old outputs, but check that
+# was the response calc for them too?
 
 # You can set these either 0/1 in prefix before pytest command.
 #
@@ -68,113 +76,40 @@ else:
 # repo)? easily possible?
 pytestmark = pytest.mark.filterwarnings('ignore::UserWarning')
 
-# TODO rename?
-APL_WEIGHT_TEST_KWS: List[ParamDict] = dict_seq_product([
-        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
-            use_connectome_APL_weights=True
-        )
-    ],
-    # TODO switch order (maybe not until figuring out latest issues?)?
-    [dict(pn_claw_to_apl=True), dict()]
-)
 # TODO TODO add test that none of options in MODEL_KW_LIST give same outputs?
 # TODO test that relevant subset of these all have diff wPNKC (those w/ diff
 # connectome_wPNKC args. could use the fn that collects those args to tell which subset
 # to test?)
+
+# TODO some mechanism in conftest.py to add CLI arg that can swap this in for all
+# tests that use MODEL_KW_LIST (and same for corresponding two FITANDPLOT vars)?
+# (-> delete this hack) (maybe i'm fine just using an env var for this? any issues?)
+if QUICK:
+    print()
+    print('USING QUICK[_FITANDPLOT]_MODEL_KW_LIST (because QUICK=True)!!!')
+    print()
+    MODEL_KW_LIST = QUICK_MODEL_KW_LIST
+
+if not PLOT:
+    print()
+    print('NOT TESTING PLOTTING CODE (because PLOT=False)!')
+    print()
 #
-# NOTE: IDs need to be unique, so if a parameter I'd otherwise want to include in the
-# *MODEL_KW_LIST is not in `format_model_params` output (e.g. b/c in
-# `mb_model.exclude_params`), would currently have to make a separate test for that (or
-# manually assign ID to that case, maybe)
-#
-# should cover all the main paths in olfsysm, but also in fit_mb_model/etc
-MODEL_KW_LIST: List[ParamDict] = APL_WEIGHT_TEST_KWS + dict_seq_product([
-        # TODO delete these two eventually. don't do anything really (moves things in
-        # direction of uniform [i.e. non-connectome-APL] model, but no real change)
-        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
-            use_connectome_APL_weights=True, replace_KCAPL_with_PNAPL=True,
-            per_claw_pn_apl_weights=True
-        ),
-        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
-            use_connectome_APL_weights=True, add_PNAPL_to_KCAPL=True,
-            per_claw_pn_apl_weights=True
-        ),
-        #
-        # TODO TODO TODO add some thresholding the per-claw weights, like betty wanted
-    ],
-    # TODO want both?
-    [dict(pn_claw_to_apl=True), dict()]
 
-) + dict_seq_product(
-    [
-        # pn_claw_to_apl=True: no-spiking required; direct claw>APL input
-        dict(one_row_per_claw=True, prat_claws=True, pn_claw_to_apl=True),
-
-        # TODO test n_claws_active_to_spike=2/3? (betty didn't care much about that
-        # code)
-
-        dict(one_row_per_claw=True, prat_claws=True),
-        # TODO keep? (tianpei's version. may eventually need to specify
-        # prat_claws=False)
-        dict(one_row_per_claw=True),
-
-        # TODO maybe pick only either this or dict() to do w/ both
-        # use_connectome_APL_weights=True/False. prob don't need both for each?
-        dict(weight_divisor=20),
-        # TODO move to top of this list, after debugging prat_claws=True case?
-        dict(),
-
-        # TODO keep? just want to check output not changing when starting to rework
-        # model bouton implementation (for one, to remove need to specify
-        # Btn_num_per_glom explicitly, so I can start to actually plug in arbitrary
-        # PN>bouton wPNKC and PN<>APL weights)
-        dict(one_row_per_claw=True, Btn_separate=True, Btn_num_per_glom=3),
-
-        # TODO add entry where fixed_thr is vector? do i even want to support that?
-        # (yea, currently using as part of equalize_kc*=True implementation, when tuned
-        # in prior step)
-    ],
-    # will test the connectome APL version first
-    [dict(use_connectome_APL_weights=True), dict()]
-
-) + [
-    dict(pn2kc_connections='uniform', n_claws=7),
-
-    # TODO also test 'caron'? 'hemidraw'? (though neither currently used, and would want
-    # to re-implement hemidraw to fix some issues anyway...)
-
-    # TODO delete one?
-    dict(pn2kc_connections='fafb-left', weight_divisor=12),
-    dict(pn2kc_connections='fafb-right', weight_divisor=12),
-
-    # TODO also test some version(s) w/ compartmented APL? the only version of that code
-    # that so far (2026-01-19) ever made sense, was the path where the different APL
-    # comparments had no coupling between them
-
-    # TODO add _use_matt_wPNKC=True? (or leave to it's own test?)
-]
-# TODO support pytest.param objects in dict_seq_product, xfail stuff as needed?
-# (had previously post-processed this list, when needed, to xfail prat_claws=False
-# one_row_per_claw=True cases)
-
+# TODO predefine both this and QUICK* version of it in mb_model? or just always call
+# get_fitandplot_model_kw_list on one of [QUICK_]MODEL_KW_LIST?
 N_TEST_SEEDS: int = 2
-# TODO change type hint of output, now that we sometimes have pytest.param wrappers
-# (if keeping...) (ParameterSet, but not sure best way to get that type. type(...)
-# returns _pytest.mark.structures.ParameterSet currently)
-def get_fitandplot_model_kw_list(model_kw_list: List[ParamDict]) -> List[ParamDict]:
-    """Processes `MODEL_KW_LIST` into arg list suitable to test `fit_and_plot_mb_model`
+FITANDPLOT_MODEL_KW_LIST: List[ParamDict] = get_fitandplot_model_kw_list(MODEL_KW_LIST,
+    N_TEST_SEEDS
+)
+
+def mark_kw_list_entries_xfail(model_kw_list: List[ParamDict]) -> List[ParamDict]:
+    """Wraps appropriate entries in model_kw_list w/ pytest xfail wrapper
     """
     fitandplot_model_kw_list = []
     for kws in model_kw_list:
         if isinstance(kws, dict):
-            pn2kc_connections = kws.get('pn2kc_connections')
-            assert 'n_seeds' not in kws
-            if pn2kc_connections in variable_n_claw_options:
-                kws = dict(kws)
-                # NOTE: not setting this for test that calls fit_mb_model, since that
-                # call only ever returns output of one seed
-                kws['n_seeds'] = N_TEST_SEEDS
-
+            pass
             # 'APL_coup_const' doesn't exist anymore. just leaving this as an example of
             # how to xfail something here based on parameters.
             #if 'APL_coup_const' in kws:
@@ -186,44 +121,10 @@ def get_fitandplot_model_kw_list(model_kw_list: List[ParamDict]) -> List[ParamDi
             # TODO assert it's already a pytest.param (ParameterSet)? still add mark if
             # not already marked for xfail?
             pass
-
         fitandplot_model_kw_list.append(kws)
     return fitandplot_model_kw_list
 
-FITANDPLOT_MODEL_KW_LIST: List[ParamDict] = get_fitandplot_model_kw_list(MODEL_KW_LIST)
-
-# 2 elements currently in APL_WEIGHT_TEST_KWS are quite slow actually, w/o hardcoded
-# learning rate, at least...
-QUICK_MODEL_KW_LIST: List[ParamDict] = APL_WEIGHT_TEST_KWS + dict_seq_product(
-    [dict(one_row_per_claw=True, prat_claws=True), dict(weight_divisor=20),],
-    # will test the connectome APL version first
-    [dict(use_connectome_APL_weights=True), dict()]
-)[::-1] + [
-    dict(pn2kc_connections='uniform', n_claws=7),
-]
-sf = set(format_model_params(x) for x in MODEL_KW_LIST)
-sq = set(format_model_params(x) for x in QUICK_MODEL_KW_LIST)
-assert sq - sf == set(), f'following tests IDs were only in QUICK*: {sq - sf}'
-
-QUICK_FITANDPLOT_MODEL_KW_LIST: List[ParamDict] = get_fitandplot_model_kw_list(
-    QUICK_MODEL_KW_LIST
-)
-
-# TODO some mechanism in conftest.py to add CLI arg that can swap this in for all
-# tests that use MODEL_KW_LIST (and same for corresponding two FITANDPLOT vars)?
-# (-> delete this hack) (maybe i'm fine just using an env var for this? any issues?)
-if QUICK:
-    print()
-    print('USING QUICK[_FITANDPLOT]_MODEL_KW_LIST (because QUICK=True)!!!')
-    print()
-    MODEL_KW_LIST = QUICK_MODEL_KW_LIST
-    FITANDPLOT_MODEL_KW_LIST = QUICK_FITANDPLOT_MODEL_KW_LIST
-
-if not PLOT:
-    print()
-    print('NOT TESTING PLOTTING CODE (because PLOT=False)!')
-    print()
-#
+FITANDPLOT_MODEL_KW_LIST = mark_kw_list_entries_xfail(FITANDPLOT_MODEL_KW_LIST)
 
 # so can work w/ pytest called from repo root, but also w/ scripts like
 # generate_reference_outputs_for_repro.py, which I've been calling from this directory.
@@ -662,6 +563,7 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
             p2 = pd.read_pickle(output_dir2 / name)
         else:
             assert name.endswith('.parquet')
+            # TODO use my own read_parquet wrapper instead
             p1 = pd.read_parquet(output_dir / name)
             p2 = pd.read_parquet(output_dir2 / name)
 
@@ -2372,7 +2274,7 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     # TODO TODO am i no longer including params for dff2spiking_*? is that a mistake?
     # as of 2025-10-12:
     # ipdb> a2.index.difference(b2.index)
-    # Index(['dff2spiking_add_constant', 'dff2spiking_scaling_method_to_use',
+    # Index(['dff2spiking_add_constant', 'dff2spiking_scaling_method',
     #        'dff2spiking_separate_inh_model', 'pn2kc_connections',
     #        'tune_on_hallem'],
     #       dtype='object')
@@ -2925,7 +2827,7 @@ def apl_weights(orn_deltas, request):
 # to 0 after should increase response rate) (not all in direction i thought...  not sure
 # if bug or not yet)
 #
-@pytest.mark.parametrize('apl_weights', APL_WEIGHT_TEST_KWS, ids=format_model_params,
+@pytest.mark.parametrize('apl_weights', BOUTON_MODEL_KW_LIST, ids=format_model_params,
     indirect=['apl_weights']
 )
 def test_apl_weights_osm(apl_weights):
@@ -3266,7 +3168,7 @@ def test_apl_weights_osm(apl_weights):
 
 def test_dynamics_indexing(orn_deltas):
     # shouldn't matter which of the two (pn_claw_to_apl=True/False) we use
-    kws = APL_WEIGHT_TEST_KWS[0]
+    kws = BOUTON_MODEL_KW_LIST[0]
 
     responses, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
         # TODO delete
@@ -3466,14 +3368,14 @@ def test_dynamics_indexing(orn_deltas):
     # prob not (b/c would need to re-order indices then anyway, to compare, no?)?
 
 
-@pytest.mark.parametrize('apl_weights', APL_WEIGHT_TEST_KWS, ids=format_model_params,
+@pytest.mark.parametrize('apl_weights', BOUTON_MODEL_KW_LIST, ids=format_model_params,
     indirect=['apl_weights']
 )
 def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # NOTE: apl_weights fixture currently also returns kws, for the convenience of this
     # test
-    # TODO otherwise, pass APL_WEIGHT_TEST_KWS twice in parametrize, for apl_weights and
-    # kws? or better way to have a param be both direct and indirect?
+    # TODO otherwise, pass BOUTON_MODEL_KW_LIST twice in parametrize, for apl_weights
+    # and kws? or better way to have a param be both direct and indirect?
     ret, kws = apl_weights
     params = ret[-1]
 
@@ -3622,3 +3524,209 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # TODO delete
     breakpoint()
     #
+
+
+# TODO TODO test orn deltas can't actually ever go negative (+ fix if so), since scaling
+# fn is just a factor w/ no offset, must be relying on spontaneous firing rate to be
+# higher than scaled negative dF/F (-> negative est spike rate delta)
+# TODO + add assertion for this on average values in fit_mb_model? does that imply
+# dynamic orn firing rates never goes below 0 too (prob not?)?
+
+@pytest.mark.parametrize('scaling_method', ['to-avg-max', None])
+def test_scale_dff2spiking(tmp_path, scaling_method):
+    # TODO also (/only) test under tmp_path? currently will write to dir of committed
+    # outputs (prob don't want, especially in a test)
+    # TODO actually check anything on output?
+    dir1 = tmp_path / 'dff_to_spiking_scale'
+    dir1.mkdir()
+
+    # TODO TODO commit outputs from this, and use in model_mb_responses test
+    # TODO TODO + also make example script / fn using this (and/or hardcoding
+    # scale, and not loading this data at all)
+    ret = fit_dff2spiking_from_remypaper_flies_and_hallem(dir1,
+        scaling_method=scaling_method
+    )
+    ret1, response_calc_params, roi_depths = ret
+    del ret
+
+    dff_to_spiking_choices_csv = dir1 / dff_to_spiking_model_choices_csv_name
+    assert written_since_proc_start(dff_to_spiking_choices_csv)
+
+    dff_to_spiking_data_csv = dir1 / dff_to_spiking_data_csv_name
+    assert written_since_proc_start(dff_to_spiking_data_csv)
+
+    # NOTE: currently imporotant this is different from plot_dir in call above, or else
+    # plots + mean_est_spike_deltas.csv will raise errors when call below tries to write
+    # them to same paths as call above. In real usage, if call generating cache occurred
+    # on a previous run of whatever script, this would not be an issue (but the outputs
+    # would be [at least partially] overwritten by subsequent runs).
+    dir2 = tmp_path / 'using_cached_scale'
+    dir2.mkdir()
+
+    data_dir = remypaper_dff2spiking_data_dir
+    df = read_parquet(data_dir / 'ij_certain-roi_stats.parquet')
+
+    # TODO need to only pass one panel's data thru at a time? (scaling fn actually errs
+    # if we do that, if we index in a way that drops panel level) any code still have
+    # that restriction, even if not this fn?
+
+    response_calc_params2 = dict(response_calc_params)
+    # TODO restore? test both. shouldn't matter
+    #response_calc_params2 = None
+
+    # TODO loop over both? shouldn't matter
+    #roi_depths2 = None
+    roi_depths2 = roi_depths
+
+    # TODO test both w/ and w/o doing this? shouldn't really matter
+    # TODO parametrize test w/ this?
+    subset_to_megamat = True
+    #subset_to_megamat = False
+
+    if subset_to_megamat:
+        # TODO (delete? check again i really do need diags to get same output [since
+        # scaling within each fly]?) care to fix df.loc['megamat'] (so that scale_dff...
+        # doesn't require panel level)? currently fails if we index in a way that drops
+        # panel level
+        # TODO delete (think i need diags too, or else min/max per fly is different)
+        #df = df.loc[df.index.get_level_values('panel') == 'megamat']
+        panels = (diag_panel_str, 'megamat')
+        df = df.loc[df.index.get_level_values('panel').isin(panels)]
+
+        # if one ROI in a fly has NaN value for one odor (in megamat panel), all ROIs
+        # will have NaN for that fly. first .all() is whether all odors (in a given
+        # panel) are NaN, across all fly_cols + ['roi'] columns.
+        all_rois_nan = df.loc['megamat'].isna().all().groupby(fly_cols).all()
+        any_rois_nan = df.loc['megamat'].isna().all().groupby(fly_cols).any()
+        assert all_rois_nan.equals(any_rois_nan)
+        megamat_flies = any_rois_nan[~ any_rois_nan].index
+
+        # TODO skip this subsetting, now that i'm having to .loc['megamat'] in
+        # pd_allclose call below anyway?
+
+        # dropping flies that only had validation+diagnostics, and not
+        # megamat+diagnostics. no flies should just have diagnostics.
+        megamat_fly_col_mask = df.columns.droplevel('roi').isin(megamat_flies)
+
+        if roi_depths2 is not None:
+            assert roi_depths2.columns.equals(df.columns)
+
+        df = df.loc[:, megamat_fly_col_mask]
+
+        if roi_depths2 is not None:
+            roi_depths2 = roi_depths2.loc[:, megamat_fly_col_mask]
+            assert roi_depths2.columns.equals(df.columns)
+
+    ret2 = scale_dff_to_est_spike_deltas_using_hallem(dir2, df, roi_depths2,
+        model_dir=dir1, use_cache=True, response_calc_params=response_calc_params2,
+        scaling_method=scaling_method
+    )
+    (mean_est_df1, _, _, hallem_delta_wide1, _) = ret1
+    # hallem_delta_wide would be None from this cached call (not true anymore, since
+    # model_mb_responses needed it unconditionally)
+    (mean_est_df2, _, _, _, _) = ret2
+
+    # TODO TODO also test w/ load_data_and_refit_dff2spiking_model? in same test?
+
+    # TODO delete
+    # doesn't seem like the panel specific issue is because where the min/maxs are:
+    # ipdb> fly_mean_df.groupby('fly_id')[col_to_fit].idxmin()
+    # fly_id
+    # 1     (glomeruli_diagnostics, p-cre @ -3)
+    # 2                      (megamat, pa @ -3)
+    # 3      (glomeruli_diagnostics, aphe @ -5)
+    # 4                      (megamat, pa @ -3)
+    # 5                      (megamat, va @ -3)
+    # 6                     (megamat, Lin @ -3)
+    # 7                   (megamat, 2-but @ -3)
+    # 8                     (megamat, Lin @ -3)
+    # 9      (glomeruli_diagnostics, e3hb @ -6)
+    # 10    (glomeruli_diagnostics, p-cre @ -3)
+    # 11     (glomeruli_diagnostics, elac @ -7)
+    # 12     (glomeruli_diagnostics, 3mtp @ -5)
+    # 13    (glomeruli_diagnostics, p-cre @ -3)
+    # 14      (glomeruli_diagnostics, HCl @ -1)
+    # Name: to-avg-max_scaled_delta_f_over_f, dtype: object
+    # ipdb> fly_mean_df.groupby('fly_id')[col_to_fit].idxmax()
+    # fly_id
+    # 1                   (megamat, 1-6ol @ -3)
+    # 2       (glomeruli_diagnostics, t2h @ -6)
+    # 3       (glomeruli_diagnostics, HCl @ -1)
+    # 4                      (megamat, pa @ -3)
+    # 5       (glomeruli_diagnostics, HCl @ -1)
+    # 6     (glomeruli_diagnostics, p-cre @ -3)
+    # 7       (glomeruli_diagnostics, HCl @ -1)
+    # 8                      (megamat, eb @ -3)
+    # 9      (glomeruli_diagnostics, e3hb @ -6)
+    # 10       (glomeruli_diagnostics, 2h @ -6)
+    # 11     (glomeruli_diagnostics, elac @ -7)
+    # 12       (glomeruli_diagnostics, 2h @ -6)
+    # 13       (glomeruli_diagnostics, ms @ -3)
+    # 14       (glomeruli_diagnostics, 2h @ -3
+
+    if subset_to_megamat:
+        # TODO delete (think i need diags too, or else min/max per fly is different)
+        #mean_est_df1 = mean_est_df1.loc[
+        #    mean_est_df1.index.get_level_values('panel') == 'megamat'
+        #]
+        #mean_est_df2 = mean_est_df2.loc[
+        #    mean_est_df2.index.get_level_values('panel') == 'megamat'
+        #]
+        mean_est_df1 = mean_est_df1.loc[
+            # NOTE: transposed wrt input dataframe
+            :, mean_est_df1.columns.get_level_values('panel').isin(panels)
+        ]
+        mdf1 = mean_est_df1
+
+        mean_est_df2 = mean_est_df2.loc[
+            :, mean_est_df2.columns.get_level_values('panel').isin(panels)
+        ]
+        mdf2 = mean_est_df2
+        assert not mdf2.isna().any().any()
+
+        assert len(mdf2.index.difference(mdf1.index)) == 0
+        assert len(mdf2.columns.difference(mdf1.columns)) == 0
+
+        mdf1 = mdf1.loc[mdf2.index, mdf2.columns]
+        # there would be NaN before subsetting to mdf2 index/columns above
+        assert not mdf1.isna().any().any()
+
+        # NOTE: there is no way to get the diagnostics panel to match up, if we are also
+        # averaging over the diagnostics for the validation2 flies in the first call (as
+        # we are)
+        assert pd_allclose(mdf1.loc[:, 'megamat'], mdf2.loc[:, 'megamat'])
+    else:
+        assert pd_allclose(mean_est_df1, mean_est_df2, equal_nan=True)
+
+    # TODO just call model_mb_responses here? ideally would want in separate
+    # test, but would like to share setup of fit_dff2spiking_from... dir w/ this test
+    # (do have separate test below, which currently does not share any setup)
+    # TODO if i add a test for model_mb_responses, also commit+load+test w/ kiwi-control
+    # data (have under differen't committed dir, 2025-09-30_tom_orn_data_signed-max)
+    # TODO can fixtures use tmp_path? or how to do that?
+
+
+# TODO mark slow
+def test_model_mb_responses(tmp_path):
+    # TODO delete here (but use in some other test. this one needs dF/F, not spike
+    # delta input tho)
+    #orn_deltas = natmix_orn_deltas()
+
+    # TODO also run megamat/validation2 data thru w/ whatever repro_paper flag set
+    # (-> check against saved outputs?)
+
+    # kiwi/control signed absmax response calc data, using Sam's ROIs
+    df = load_natmix_dff()
+
+    # contains committed files:
+    # - dff2spiking_model_choices.csv
+    # - dff2spiking_model_input.parquet
+    # - dff2spiking_model_input.csv (probably not used, in favor of parquet)
+    # which together should be sufficient to recreate dF/F -> spiking model I would
+    # typically use
+    model_dir = data_root / 'internal'
+
+    # TODO TODO either skip sensitivity analysis, or force it to do dramatically fewer
+    # steps
+    model_mb_responses(df, tmp_path, dff2spiking_cache_dir=model_dir)
+
