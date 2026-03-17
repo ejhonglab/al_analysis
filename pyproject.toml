@@ -13,7 +13,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 # editable installs seem to work fine so far
-py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antennal_csv"]
+py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antennal_csv",
+    # TODO TODO change name of scripts dir so this isn't installing a global "scripts"
+    # package. move everything under an al_analysis package dir, including scripts? any
+    # other way to change name of package this is under, or directly provide the module
+    # w/o a containing package?
+    # TODO could consolidate all scripts / CLI entrypoints in one dir?
+    "scripts.step_model_pn_apl"
+]
 
 [project]
 name = "al_analysis"
@@ -28,7 +35,17 @@ version = "0.0.0"
 # TODO repackage backup_rois.py under here?
 [project.scripts]
 csvinfo = "load_antennal_csv:csvinfo_cli"
+# TODO delete?
 #csvdiff = "load_antennal_csv:csvdiff_cli"
+#
+# doesn't seem we need an __init__.py in scripts/ or anything
+# ah, but just b/c pip completed the install, doesn't mean this will run. script it
+# generated seems to be garbage. now that i've added scripts.step_model_pn_apl to
+# modules list above, should work, although don't love the global 'scripts' package
+# name.
+# DO need the "scripts." prefix, despite "scripts.step_model_pn_apl" being listed in
+# py-modules above
+step_model_pn_apl = "scripts.step_model_pn_apl:main"
 
 [tool.pytest.ini_options]
 # TODO `minversion = "6.0"` (or whichever version. using 8.3.5, but prob doesn't

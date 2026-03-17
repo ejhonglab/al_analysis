@@ -4,7 +4,6 @@ from itertools import product
 import os
 from pathlib import Path
 from pprint import pformat
-import math
 # TODO delete?
 import traceback
 #
@@ -13,8 +12,7 @@ from typing import Hashable, Iterable, List, Mapping, Optional, Set, Tuple
 import numpy as np
 import pandas as pd
 import pytest
-import math
-from pathlib import Path
+import xarray as xr
 
 # TODO does importing this before hong2p.equals allow that warning (optional from within
 # `equals`) to be hooked in same way (from `al_util` module-level warning format
@@ -3166,200 +3164,636 @@ def test_apl_weights_osm(apl_weights):
     #
 
 
+# TODO TODO move to hong2p.util (+ test)
+def coords_equal(x: xr.DataArray, y: xr.DataArray) -> bool:
+    """Checks set of dims and all variables under coordinates are equal.
+
+    For older versions of xarray without `Coordinates.equals()/.identical()`
+    """
+    # TODO when was Coordinates.equals()/identical() added? how to implementent in
+    # meantime, if i can't upgrade xarray? seems not in 0.19 (what i've been using) or
+    # 0.21 (last version before many vYYYY.MM.N versions, starting in 2022)
+    x = x.coords
+    y = y.coords
+
+    # NOTE: there can be elments of dims that are not in things checked below
+    # e.g. orns.reset_index('stim') still has a 'stim' dim, but no associated index
+    # levels ('odor' / 'panel' still exist as non-scalar metadata)
+    #
+    # TODO want to require order to be the same?
+    if set(x.dims) != set(y.dims):
+        return False
+
+    # if this fails, would need to decide which of keys/items/variables.
+    # i don't see any other attributes under dir(coords) (in 0.19) that seem useful.
+    # only other thinsg are dims/indexes/values()/xindexes/_data/_names
+    def _check_options_equiv(coords):
+        k0 = set(x for x in coords)
+        keys = set(coords.keys())
+        item_keys = set(k for k, v in coords.items())
+        var_keys = set(coords.variables.keys())
+        assert keys == k0
+        assert keys == item_keys
+        assert keys == var_keys
+
+    _check_options_equiv(x)
+    _check_options_equiv(y)
+
+    # TODO possible to have non-index elements still associated with one dimension
+    # (don't think so? can have non-scalar not in indices, but not sure any of those can
+    # be associated w/ a dimension?)? what does that look like? still wouldn't show up
+    # in .keys() / .variables i assume, since those only contain outer indices?
+    xk = set(x.keys())
+    yk = set(y.keys())
+    if xk != yk:
+        return False
+
+    # TODO also sort on names to allow this to not depend on order?
+    # (would prob be easiest to convert to frame and sort columns)
+    # NOTE: to_index() output has int index for stuff in dims but not in index
+    # associated names
+    #
+    # there should be a level for each variable in each dimension-specific multiindex
+    # here, and no longer any name for dimensions (at least not those [only?] containing
+    # MultiIndex values) (because index level names can't seem to be equal to dimension
+    # name)
+    x_index = x.to_index()
+    y_index = y.to_index()
+    if not x_index.equals(y_index):
+        return False
+
+    # we already checked above both of these same in x/y
+    dims = x.dims
+    index_names = x_index.names
+    for k in xk:
+        if k in index_names:
+            continue
+
+        # was name of dimension with a MultiIndex, and thus can not be a name of a
+        # variable to check (i.e. one of the index levels, or something not associated
+        # with a dimension)
+        if k in dims:
+            continue
+
+        vx = x[k]
+        vy = y[k]
+        if vx.shape == tuple():
+            assert vy.shape == tuple()
+            if vx.item() != vy.item():
+                return False
+
+        eq0 = vx.equals(vy)
+        # just checking we don't need to use anything other than .equals()
+        # could delete eventually
+        assert eq0 == np.array_equal(vx.values, vy.values)
+        if not eq0:
+            return False
+
+    return True
+
+
+# TODO TODO parametrize on at least two cases, one w/o boutons?
+# TODO also one w/o claws, ideally
+# (can probabably always test w/ connectome APL weights)
 def test_dynamics_indexing(orn_deltas):
     # shouldn't matter which of the two (pn_claw_to_apl=True/False) we use
+    # NOTE: 1st currently has pn_claw_to_apl=True, and 2nd is same but with it False
+    # (2nd omits it, and False is default)
     kws = BOUTON_MODEL_KW_LIST[0]
 
     responses, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
-        # TODO delete
-        #return_olfsysm_vars=True,
-        #
-        return_dynamics=True,
+        return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
+        # TODO TODO TODO set weights TO APL to nonzero. should still work, and then
+        # could test (some of?) inh / Is / Is_from_kcs calcs, right? would then just
+        # need to figure out how to test alignment of weights FROM APL (just enable weak
+        # amount? or just check first timepoint or two? necessary?)?
+        # TODO TODO TODO separate call after most checks below, where we just try to
+        # check alignment of weights FROM APL?
         # setting threshold high enough that no KCs should spike
         # (so that claw_sims should sum, within each KC, to an entry KC vm_sims)
-        fixed_thr=1e6, wAPLKC=0.0, wAPLPN=0.0, **kws
+        fixed_thr=1e6, wAPLKC=0.0, wAPLPN=0.0, wKCAPL=1.0, wPNAPL=1.0, **kws
     )
+    # TODO TODO check i can recreate dot product to get [inh diff?] at least, prob also
+    # accounting for dt & appropriate tau there)
+    # TODO TODO check i can recreate Is_from_kcs diff w/ wKCAPL weights and either
+    # spiking or inh?
+    # TODO TODO TODO more important to check in pn_claw_to_apl=True case (and also if i
+    # add anything where inh can be shape #-KCs/claws instead of scalar)
 
-    # TODO delete
-    #rv = params['rv']
-    #mp = params['mp']
+    assert params['wAPLKC'].sum() == 0
 
-    # TODO TODO also make sure boutons are set to pns at each timepoint, rather
-    # than lagging? matter? do any of equations reference bouton sims on t-1?
-    # (or does initializing to NaN vs 0 change any of other values?)
-    #
+    # shouldn't be able to re-run model, since I set delete_pretime=True above (to save
+    # memory), but should still be able to get parameters from these without issue
+    # TODO also assert wAPLKC in this is all 0?
+    rv = params['rv']
+    mp = params['mp']
+
+    # TODO get dt from diffing time index instead (/check against that?)?
+    dt = mp.time_dt
+    kc_tau = mp.kc.taum
+
     # first timepoint (after dropping pretime which is all NaN) is still NaN, as
     # sim_KC_layer loop starts at index 3001 (and time start index is 3000).
     # vm_sims is also 0 for first entry (and only first), so these all probably are.
     boutons = params['bouton_sims']
-    n_samples0 = boutons.sizes['time_s']
-    boutons = boutons.dropna('time_s')
-    assert boutons.sizes['time_s'] == n_samples0 - 1
 
-    # pns is the only 1 of these 4 not 0 for first timepoint.
-    pns = params['pn_sims'].sel(time_s=boutons.time_s)
+    n_samples0 = boutons.sizes['time_s']
+    # TODO need the .to_index() calls?
+    time_s_before = boutons.time_s.to_index()
+    # default how='any'. should be no NaN left.
+    boutons = boutons.dropna('time_s')
+
+    time_s_after = boutons.time_s.to_index()
+    dropped_timepoints = time_s_before.difference(time_s_after)
+    assert len(dropped_timepoints) == 1, \
+        'dropped more than one NaN bouton timepoint (pretime deleted?)'
+    t0 = dropped_timepoints[0]
+    assert t0 == time_s_before.min(), \
+        'dropped timepoint was not first (pretime deleted?)'
+    warn(f'dropped first timepoint (={t0}) after pretime '
+        '(= start time < odor onset = 0)'
+    )
+    assert boutons.sizes['time_s'] == n_samples0 - 1
 
     claws = params['claw_sims'].sel(time_s=boutons.time_s)
     kcs = params['vm_sims'].sel(time_s=boutons.time_s)
+    Is = params['Is_sims'].sel(time_s=boutons.time_s)
+    Is_from_kcs = params['Is_from_kcs'].sel(time_s=boutons.time_s)
+    Is_from_pns = params['Is_from_pns'].sel(time_s=boutons.time_s)
+    inh = params['inh_sims'].sel(time_s=boutons.time_s)
+    # orns/pns are the only ones not 0 for first timepoint (the one dropped from
+    # boutons b/c it was/is initialied to NaN instead of 0)
+    pns = params['pn_sims'].sel(time_s=boutons.time_s)
+    orns = params['orn_sims'].sel(time_s=boutons.time_s)
+
+    # TODO delete (move to unit test for coords_equal)
+    assert coords_equal(
+        orns.reset_index('stim').assign_coords({'x': 1}),
+        orns.reset_index('stim').assign_coords({'x': 1})
+    )
+    assert coords_equal(orns.reset_index('stim'), orns.reset_index('stim'))
+    assert not coords_equal(orns.reset_index('stim'), orns)
+    assert not coords_equal(
+        orns.reset_index('stim').assign_coords({'x': 1}),
+        orns.reset_index('stim').assign_coords({'x': 1, 'y': 0})
+    )
+    assert not coords_equal(orns, orns.reset_index('stim').assign_coords({'x': 1}))
+    #
+
+    # TODO also some kind of check against orn_deltas / wPNKC indices?
+    # TODO and kc/claw indices vs those of APL<>KC weights?
+    # TODO and bouton indices vs those of APL<>PN weights?
+    assert coords_equal(orns, pns)
+
+    # TODO check i can recalc orns from orn_deltas? or some ordering at least?
+    # index at least?
+    # TODO get orn_sims and check no negative?
+    # TODO check orns and pns have the same ordering?
+    # TODO or recalc pns from orns and ln stuff? (need to add the LN dynamics
+    # getting in fit_mb_model i assume?)
+
+    # TODO summarize stuff in orns glomeruli but not orn_deltas index (/columns?)?
+    # (and reverse, if either)
+
+    # TODO provide these in normal model outputs, as Series w/ appropriate index? (in
+    # params, from fit_mb_model, and also pop + save in fit_and_plot...)
+    orn_spont = mp.orn.data.spont.squeeze()
+    filled_deltas = np.array(mp.orn.data.delta)
+    assert len(orn_spont.shape) == 1
+    assert len(filled_deltas.shape) == 2
+    assert len(orn_spont) == len(filled_deltas)
+    assert filled_deltas.shape[1] == orns.sizes['stim']
+
+    # TODO also check we can recreate kc spont (in one-row-per-claw + bouton case)
+    # w/ this + wPNKC?
+
+    glom_index = orns[glomerulus_col].to_index()
+    # should also be checked in coords_equal(orns, pns) above
+    assert glom_index.equals(pns[glomerulus_col].to_index())
+
+    orn_spont = pd.Series(index=glom_index, data=orn_spont)
+    filled_deltas = pd.DataFrame(index=glom_index, columns=orns.stim.to_index(),
+        data=filled_deltas
+    )
+
+    # TODO (?) as well as filled (/processed, if any) orn_deltas, in case any glomeruli
+    # are dropped/renamed (+ doc whether either/both are possibilities)
+
+    # this should be the filled spont value:
+    # ipdb> orn_spont.value_counts()
+    # 13.26087    31
+    # 8.00000      2
+    # ...
+
+    # NOTE: `pns` has a 'glomerulus' component of sizes, but not anything of # PNs
+    # (since all PNs with input from one glomerulus can probably reasonably be thought
+    # of as the same, until we get to the boutons, where then things can be moduled
+    # separately if that code is enabled). This means we will need to group `claws` by
+    # glomerulus, not PN ID, to compare to `pns`.
+    n_gloms = pns.sizes['glomerulus']
+    for i in range(n_gloms):
+        for j in range(n_gloms):
+            gi = pns.isel(glomerulus=i)
+            gj = pns.isel(glomerulus=j)
+            ni = gi.glomerulus.item()
+            nj = gj.glomerulus.item()
+
+            values_allclose = np.allclose(gi.values, gj.values)
+            if i == j:
+                assert values_allclose, 'did not match itself'
+            else:
+                if orn_spont[ni] == orn_spont[nj] and (
+                        (filled_deltas.loc[ni] == 0).all() and
+                        (filled_deltas.loc[nj] == 0).all()
+                    ):
+                    # TODO + summarize glomeruli w/ 0 response below? also the
+                    # equivalence classes that also have same spont (prob don't care)?
+                    continue
+
+                assert not values_allclose, f'gloms {ni} and {nj} had same responses!'
+
+    bouton_glom_mins = boutons.groupby('glomerulus').min()
+    assert bouton_glom_mins.identical(boutons.groupby('glomerulus').max())
+    assert bouton_glom_mins.identical(pns)
+
+    claw_glom_mins = claws.groupby('glomerulus').min()
+    assert claw_glom_mins.identical(claws.groupby('glomerulus').max())
+    # TODO TODO is it surprising that this is true, without having to do anything with
+    # wPNKC? i mean, it has already been applied, and should have all only been 1 for a
+    # single glom for each claw, so maybe it's not?
+    assert claw_glom_mins.identical(pns)
 
     # TODO also assert that at least some things across glomeruli are diff? or that all
     # pn entries for diff glomeruli are diff from all others (maybe 1/2 dupes from some
     # special handling?)?
 
+    # TODO some way to not drop other metadata? want to preserve what we have in `kcs`,
+    # but prob nbd. just kc_type missing it seems (may actually want to drop some
+    # metadata, if [as i assume] we have more claw metadata than kc metadata)
     claw_sums = claws.groupby('kc_id').sum()
     assert np.array_equal(claw_sums.kc_id, kcs.kc_id)
-    # TODO TODO need to make KC_ID the only index on KC dim in order for this (and other
-    # stuff?) to work?
+    # TODO assert coords are only diff by kc_type (b/c kcs has it but claw_sums
+    # doesn't), or also resolve that and assert coords equal?
+    #
+    # TODO (delete?) need to make KC_ID the only index on KC dim in order for this to
+    # work?
     # ipdb> claw_sums.sizes
     # Frozen({'stim': 17, 'kc_id': 1732, 'time_s': 2499})
     # ipdb> kcs.sizes
     # Frozen({'stim': 17, 'kc': 1732, 'time_s': 2499})
     # ipdb> claw_sums.sizes == kcs.sizes
     # False
-    # TODO TODO TODO bug? or why not matching?
-    # TODO TODO TODO is my recollection of this math wrong? vm will also decay, but
-    # claw_sims won't, right?
-    # TODO TODO is there still something i can check between claw_sims and kcs?
-    # (maybe except for some scale factor it's the same? or delta of vm_sims matches
-    # [well, there is still the time constant by which it is decaying at each time
-    # step, so no]?)
-    # TODO check that Vm delta is proportional to claw_sims_sums?
-    # TODO TODO TODO or maybe between claw_sims and bouton_sims?
-    # ipdb> np.array_equal(claw_sums, kcs)
-    # False
-    # ipdb> np.allclose(claw_sums, kcs)
-    # False
 
-    # TODO TODO TODO finish
-    # TODO make odor the outer loop, to also share w/ claws/kcs?
-    for odor in pns.odor:
-        odor = odor.item()
+    # TODO TODO TODO check something w/ wPNKC (check w/ claw_sums vs boutons[/pns] not
+    # already doing that?) (that we can recalc claws from boutons and wPNKC, ideally)
 
-        # .item() necessary for "indexer" to also work for boutons, but would work for
-        # pns regardless
-        odor_pns = pns.sel(odor=odor).squeeze()
-        odor_boutons = boutons.sel(odor=odor).squeeze()
+    # TODO delete (after replacing w/ comparisons not restricted to just one KC and
+    # odor, as test code below was doing before i got details worked out)?
+    # TODO rename to indicate it's only first odor (or also take that idx)
+    def get_kc_reconstruction_from_claw_sums_err(i: int, j: Optional[int] = None
+        ) -> float:
+        """i, j are int KC indices to be used for isel on claw_sums/kcs
+        """
+        if j is None:
+            j = i
 
-        # TODO TODO why DataArray.equals not working as expected, but array_equal work?
-        # ipdb> np.array_equal(opn, bs)
-        # True
-        # ipdb> opn
+        # TODO fix so these have same KC coords before subtracting?
+        # ipdb> kcs.isel(stim=0, kc=0)
         # <xarray.DataArray (time_s: 2499)>
-        # array([14.41, 14.41, 14.41, ...,  9.25,  9.26,  9.26])
+        # array([ 3.51,  6.84, 10.01, ..., 44.12, 44.14, 44.15])
         # Coordinates:
-        #     panel       <U7 'megamat'
-        #   * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-        #     glomerulus  <U1 'D'
-        # ipdb> bs
-        # <xarray.DataArray (time_s: 2499)>
-        # array([14.41, 14.41, 14.41, ...,  9.25,  9.26,  9.26])
-        # Coordinates:
-        #     panel    <U7 'megamat'
+        #     stim     object ('megamat', '2h @ -3')
         #   * time_s   (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-        #     bouton   object (1536947502, 1)
-        # ipdb> bs.time_s.equals(obs.time_s)
-        # False
-        # ipdb> bs.equals(opn)
-        # False
-        # ipdb> np.array_equal(bs.time_s, opn.time_s)
-        # True
-        # ipdb> bs.time_s.equals(opn.time_s)
-        # False
+        #     kc       object (300968622, 'ab')
+        # ipdb> claw_sums.isel(stim=0, kc_id=0)
+        # <xarray.DataArray (time_s: 2499)>
+        # array([70.18, 70.18, 70.18, ..., 44.4 , 44.42, 44.43])
+        # Coordinates:
+        #     stim     object ('megamat', '2h @ -3')
+        #   * time_s   (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
+        #     kc_id    int64 300968622
+        # maybe there is an off-by-one 1 this? (maybe just either claw_sums or kcs
+        # part?) really doesn't look like it. neither is sufficiently small:
+        # ```
+        # fc.values=array([3.51, 3.51, 3.51, ..., 2.22, 2.22, 2.22])
+        # fc.values[0]=3.5088591241801677
+        # fc.values[1]=3.508825509897477
+        # fk.values=array([-0.18, -0.34, -0.5 , ..., -2.21, -2.21, -2.21])
+        # fk.values[0]=-0.17544295620900838
+        # fk.values[1]=-0.3421120838934318
+        #
+        # arr1.values=array([3.33, 3.17, 3.01, ..., 0.01, 0.01, 0.01])
+        # arr1.values[0]=3.3334161679711594
+        # arr1.values[1]=3.1667134260040455
+        # arr2.values=array([3.33, 3.17, 3.01, ..., 0.01, 0.01, 0.01])
+        # arr2.values[0]=3.3333825536884683
+        # arr2.values[1]=3.1666798548860093
+        # ```
+        # TODO any (/ how much?) of numerical issue from way i compute factor at
+        # end? change?
+        # TODO recalc by first multiplying whole tensor by dt, then dividing by
+        # kc_tau, and checking diff vs this calculation? also try multiplying by
+        # 1/kc_tau?
+        fc = claw_sums.isel(stim=0, kc_id=i) * (dt/kc_tau)
+        fk = kcs.isel(stim=0, kc=i) * (-dt/kc_tau)
 
-        # TODO compare all timepoints for a given (odor, glom) in one line? possible?
-        for glom in pns.glomerulus:
-            glom = glom.item()
+        # TODO fix coords of above so they are the same, so i can use the same code for
+        # each here?
+        # need a KC ID, since I can't use isel to get KC in claws, since it has kc_id
+        # within claw dimension MultiIndex
+        k1 = fk.kc.item()[0]
+        k2 = fc.kc_id.item()
+        # comparison of kc_id across claw_sums and kcs (before this fn) should guarantee
+        # this
+        assert k1 == k2
 
-            ps = odor_pns.sel(glomerulus=glom).squeeze()
-            assert ps.dims == ('time_s',)
-
-            gbs = odor_boutons.sel(glomerulus=glom).squeeze()
-            bouton_ids = gbs.bouton
-            if bouton_ids.shape == tuple():
-                # to fix `TypeError: iteration over a 0-d array` when only one bouton ID
-                bouton_ids = [bouton_ids]
-
-            # TODO TODO how to fix:
-            # KeyError: 'no index found for coordinate bouton'
-            # TODO TODO TODO is this occurring in the 1-bouton-per-glom cases?
-            for b in bouton_ids:
-                bs = gbs.sel(bouton=b)
-                assert np.array_equal(bs, ps)
-
-        odor_kcs = kcs.sel(odor=odor).squeeze()
-        # TODO TODO TODO what to actually compare? (see comments above loop)
-        odor_claws = claws.sel(odor=odor).squeeze()
-        odor_claw_sums = claw_sums.sel(odor=odor).squeeze()
-
+        # TODO TODO TODO print individual elements of claws (that went into this element
+        # of claw_sums) -> compare against stuff printed from olfsysm for test case
+        # TODO TODO TODO can probably just print a few elements around start time
+        # (and/or maybe odor onset time?)
+        # ipdb> claws.isel(stim=0).sel(kc_id=k1)
+        # <xarray.DataArray (claw: 5, time_s: 2499)>
+        # array([[14.41, 14.41, 14.41, ...,  9.25,  9.26,  9.26],
+        #        [ 9.84,  9.84,  9.84, ...,  4.69,  4.69,  4.69],
+        #        [22.17, 22.17, 22.17, ..., 17.02, 17.02, 17.02],
+        #        [ 9.35,  9.35,  9.35, ...,  4.19,  4.2 ,  4.2 ],
+        #        [14.41, 14.41, 14.41, ...,  9.25,  9.26,  9.26]])
+        # Coordinates:
+        #     stim         object ('megamat', '2h @ -3')
+        #   * time_s       (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
+        #   * claw         (claw) MultiIndex
+        #   - claw_id      (claw) int64 0 1 2 3 4
+        #   - kc_type      (claw) object 'ab' 'ab' 'ab' 'ab' 'ab'
+        #   - claw_x       (claw) float64 6.534 21.29 20.5 21.3 7.157
+        #   - claw_y       (claw) float64 3.453 -9.521 -5.224 -3.089 -11.3
+        #   - claw_z       (claw) float64 19.1 1.67 -10.46 15.17 20.12
+        #   - compartment  (claw) int64 1 1 1 1 1
+        #   - glomerulus   (claw) object 'DP1l' 'DM2' 'DC1' 'VM3' 'DP1m'
+        #
+        # TODO look at one w/ largest delta in here instead? this pretty small for DP1l
+        # claw...
+        # ipdb> filled_deltas.loc['DP1l', ('megamat', '2h @ -3')]
+        # 35.68846202979493
+        # ipdb> orn_spont['DP1l']
+        # 13.26086956521739
+        # or just skip to a fixed offset where the response is larger? (yea)
+        # (t=0.05 seems OK)
+        #
+        # surrounding odor onset:
         # TODO delete
-        breakpoint()
+        '''
+        if i == j:
+            print()
+            print('claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)):')
+            print(claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)))
+            print('claw_sums.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)):')
+            print(claw_sums.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)))
+            print()
+            print('kcs.isel(stim=0, kc=i).sel(time_s=slice(0.05, None)):')
+            print(kcs.isel(stim=0, kc=i).sel(time_s=slice(0.05, None)))
+            # NOTE: shift of -1 gives us one NaN on end, but leaves coords and shape
+            # same
+            # TODO TODO TODO try kcs.shift(time_s=-1), for calc below? +1?
+            # seems +1 is actually probably what i want
+        '''
+        #
+        # ipdb> claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(-0.0006, None))
+        # <xarray.DataArray (claw: 5, time_s: 1501)>
+        # array([[14.33, 14.33, 14.34, ...,  9.25,  9.26,  9.26],
+        #        [ 9.77,  9.77,  9.8 , ...,  4.69,  4.69,  4.69],
+        #        [22.1 , 22.1 , 22.1 , ..., 17.02, 17.02, 17.02],
+        #        [ 9.27,  9.27,  9.29, ...,  4.19,  4.2 ,  4.2 ],
+        #        [14.33, 14.33, 14.35, ...,  9.25,  9.26,  9.26]])
+        # Coordinates:
+        #     stim         object ('megamat', '2h @ -3')
+        #   * time_s       (time_s) float64 -0.0003001 0.0002001 0.0007003 ... 0.7495 0.75
+        #   * claw         (claw) MultiIndex
+        #   - claw_id      (claw) int64 0 1 2 3 4
+        #   - kc_type      (claw) object 'ab' 'ab' 'ab' 'ab' 'ab'
+        #   - claw_x       (claw) float64 6.534 21.29 20.5 21.3 7.157
+        #   - claw_y       (claw) float64 3.453 -9.521 -5.224 -3.089 -11.3
+        #   - claw_z       (claw) float64 19.1 1.67 -10.46 15.17 20.12
+        #   - compartment  (claw) int64 1 1 1 1 1
+        #   - glomerulus   (claw) object 'DP1l' 'DM2' 'DC1' 'VM3' 'DP1m'
+        #
+        # ipdb> claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(-0.0006, None)).values[0]
+        # array([14.33, 14.33, 14.34, ...,  9.25,  9.26,  9.26])
+        #
+        # ipdb> [x for x in claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(-0.0006,
+        #   None)).values[0]][:10]
+        # [14.332595768913288, 14.33255792105218, 14.344038320874967,
+        # 14.376838362368156, 14.439209520073389, 14.538006358778322,
+        # 14.678826373283856, 14.866137496478656, 15.10339416603226, 15.393142842187165]
+        #breakpoint()
+
+        # TODO plot to get offset? need to check even before stuff i already subset to
+        # (for KCs, maybe? should all be 0/NaN before for all these, so i don't think
+        # so... maybe we do want 0 tho?)
+        # TODO delete
+        '''
+        if i == j:
+            print()
+            print(f'{fk.values=}')
+            print(f'{fk.values[0]=}')
+            print(f'{fk.values[1]=}')
+            print()
+            print(f'{fc.values=}')
+            print(f'{fc.values[0]=}')
+            print(f'{fc.values[1]=}')
+        '''
+        #
+        # TODO delete. seems i needed to shift kcs (so we are actually using Vm(t-1)
+        # with claws sum at time t).
+        #arr1 = (claw_sums.isel(stim=0, kc_id=i) - kcs.isel(stim=0, kc=i)) * (dt/kc_tau)
+        # this adds a NaN dropped below, when shifting
+        arr1 = (claw_sums.isel(stim=0, kc_id=i) - kcs.isel(stim=0, kc=i).shift(time_s=1)
+            ) * (dt/kc_tau)
+
+        # TODO delete?
+        #arr1a = arr1.isel(time_s=slice(None, -1))
+        #
+        # produces time_s matching kcs.diff('time_s', label='upper') (the default label)
+        #arr1b = arr1.isel(time_s=slice(1, None))
+
+        # TODO try removing this now that i'm shifting kcs above?
+        arr1 = arr1.isel(time_s=slice(None, -1))
+
+        # TODO what does .differentiate do? "second order accurate central differences"
+        # (and when would you want to use it vs diff?)
+
+        kcs0 = kcs.isel(stim=0, kc=j)
+        # label='upper' is the default
+        #arr2u = kcs0.diff('time_s', label='upper')
+        # TODO delete? seems label='upper' works  w/ `arr1.sel(time_s(slice1, None))`
+        arr2l = kcs0.diff('time_s', label='lower')
+        #assert np.array_equal(arr2u.values, arr2l.values)
+        # TODO delete? replace w/ lower? (doesn't matter as far as .values is concerned,
+        # at least)
+        arr2 = arr2l
+        #arr2 = arr2u
+
+        # TODO fix / delete
+        '''
+        uts = arr2u.time_s.to_index()
+        #lts = arr2l.time_s.to_index()
+        # label='upper' gives us the last timepoint, but loses us the first, and vice
+        # versa for label='lower'
+        # ipdb> uts.difference(lts)
+        # Float64Index([0.75], dtype='float64', name='time_s')
+        # ipdb> lts.difference(uts)
+        # Float64Index([-0.499499799919968], dtype='float64', name='time_s')
         #
 
-    # TODO delete
-    breakpoint()
-    #
+        ts = arr1.time_s.to_index()
+        # ipdb> ts.difference(uts)
+        # Float64Index([-0.499499799919968], dtype='float64', name='time_s')
+        # ipdb> ts.difference(lts)
+        # Float64Index([0.75], dtype='float64', name='time_s')
+        # ipdb> uts.difference(ts)
+        # Float64Index([], dtype='float64', name='time_s')
+        # ipdb> lts.difference(ts)
+        # Float64Index([], dtype='float64', name='time_s')
+        '''
+
+        # TODO why is this True but arr1.time_s.equals(arr2.time_s) isn't?
+        # (would it be if not for this difference in coords?)
+        # ipdb> arr1.coords
+        # Coordinates:
+        #     stim     object ('megamat', '2h @ -3')
+        #   * time_s   (time_s) float64 -0.499 -0.4985 -0.498 ... 0.749 0.7495 0.75
+        #     kc_id    int64 300968622
+        #     kc       object (300968622, 'ab')
+        # ipdb> arr2.coords
+        # Coordinates:
+        #     stim     object ('megamat', '2h @ -3')
+        #   * time_s   (time_s) float64 -0.499 -0.4985 -0.498 ... 0.749 0.7495 0.75
+        #     kc       object (300968622, 'ab')
+        # TODO will this even still be true after replacing ='lower' w/
+        # ='upper' above? (nope!)
+        assert np.array_equal(arr1.time_s, arr2.time_s)
+        # TODO delete
+        #print(f'{np.array_equal(arr1.time_s, arr2.time_s)=}')
+        #
+
+        # TODO TODO TODO maybe shift of +1 isn't right? seems i have values offset by 1
+        # again now... some other fix?
+        # TODO TODO TODO or just try comparing values, after slicing appropriately?
+        # maybe calc is still right?
+        # should just be dropping NaN added at start of arr1, from shift by 1
+        arr1 = arr1.dropna('time_s')
+        arr2 = arr2.sel(time_s=arr1.time_s)
+
+        # TODO TODO fix xarray indexing above to not need this? maybe go back to
+        # label='upper'? (would at least require other changes)
+        # TODO TODO use another shift call to fix this?
+        assert np.allclose(arr1.values[1:], arr2.values[:-1])
+
+        # TODO delete
+        '''
+        if i == j:
+            print()
+            print(f'{arr1.values=}')
+            print(f'{arr1.values[0]=}')
+            print(f'{arr1.values[1]=}')
+            print(f'{arr2.values=}')
+            print(f'{arr2.values[0]=}')
+            print(f'{arr2.values[1]=}')
+        '''
+
+        #v1 = arr1.values[:-1]
+        # as long as we are using arr1 def above includes
+        # `.isel(time_s=slice(None, -1))`, shouldn't need to slice here
+        v1 = arr1.values
+        v2 = arr2.values
+        # TODO TODO where is this difference coming from? some numerical issue?
+        # first few elements are closer than this
+        # ipdb> np.abs(v1 - v2).max()
+        # 0.41638147896429434
+        # ipdb> v1
+        # array([3.33, 3.17, 3.01, ..., 0.01, 0.01, 0.01])
+        # ipdb> v2
+        # array([3.33, 3.17, 3.01, ..., 0.01, 0.01, 0.01])
+        # ipdb> np.abs(v1 - v2).mean()
+        # 0.014154136570981331
+        # TODO TODO TODO check there is no shuffling of any odor/glom/whatever indices
+        # that would produce better match than this? (or figure out where difference
+        # comes from)
+        # TODO TODO or maybe just check across KCs? less reasonable there is a mixup
+        # across odors
+        # TODO may need to skip stuff where there is no response (b/c then many rows
+        # would match equally)
+        absdiff = np.abs(v1 - v2)
+        # TODO delete
+        '''
+        if i == j:
+            print(f'{v1.mean()=}')
+            print(f'{v2.mean()=}')
+            print(f'{absdiff.mean()=}')
+            print(f'{absdiff.max()=}')
+        '''
+        #
+        # TODO TODO try max instead? or w/in odor window? those make any more sense?
+        return absdiff.mean(), absdiff.max()
+
+
+    n_kcs = kcs.sizes['kc']
+    for i in range(n_kcs):
+        di, max_di = get_kc_reconstruction_from_claw_sums_err(i)
+
+        # TODO delete (assuming assertion between arr1 and arr2 passes in all above now)
+        # (which it is now, yay)
+        # (still check no other rows, at least not w/ actual responses on input, have
+        # equal arr1/arr2?)
+        '''
+        dijs = []
+        max_dijs = []
+        for j in range(n_kcs):
+            if i == j:
+                continue
+
+            dij, max_dij = get_kc_reconstruction_from_claw_sums_err(i, j)
+            dijs.append(dij)
+            max_dijs.append(max_dij)
+
+        dijs = np.array(dijs)
+        max_dijs = np.array(max_dijs)
+
+        # TODO TODO assert di is smaller than min dijs, or figure out if indices
+        # swapped (it's not, at least for first test!!! fuck)
+        #
+        # TODO delete
+        print()
+        print(f'{di=}')
+        print(f'{dijs.min()=}')
+        print()
+        # TODO TODO this make any more sense?
+        print(f'{max_di=}')
+        print(f'{max_dijs.min()=}')
+        breakpoint()
+        #
+        '''
+
+    wKCAPL = params['wKCAPL']
+    wPNAPL = params['wPNAPL']
+
+
+    # TODO TODO TODO prob need separate call w/o APL output disabled to actually check
+    # these?
+    wAPLKC = params['wAPLKC']
+    wAPLPN = params['wAPLPN']
 
     # TODO TODO TODO also test alignment of APL<>KC and PN<>APL weights
-    # (at least when claw length)
-
-    # TODO delete? already have dynamics in output
-    # TODO delete (after fixing why there is NaN in first place, or setting that part
-    # to 0 if needed)
-    '''
-    barr = boutons.values
-    #barr = np.array(rv.pn.bouton_sims)
-    b0 = barr[0]
-    b0_allnan = np.isnan(b0).all(axis=0)
-    assert np.array_equal(b0_allnan, np.isnan(b0).any(axis=0))
-    assert all(
-        np.array_equal(np.isnan(bs).all(axis=0), b0_allnan)
-        for bs in barr[1:]
-    )
-
-    ts = get_time_index(mp, rv)
-    stim_start_idx = np.searchsorted(ts, mp.time_stim_start)
-
-    first_nonnan = np.where(~b0_allnan)[0][0]
-    assert b0_allnan[:first_nonnan].all()
-    assert not b0_allnan[first_nonnan:].any()
-    assert (
-        len(b0_allnan[:first_nonnan]) +len(b0_allnan[first_nonnan:]) == len(b0_allnan)
-    )
-    #ipdb> start_idx = np.searchsorted(ts, mp.time_start)
-    #ipdb> start_idx
-    #3000
-    # ipdb> first_nonnan
-    # 3001
-    '''
-
-    # TODO delete. already have dynamics from params...
-    # TODO factor this out? need to drop panel from odor_index first? what does
-    # return_dynamics=True code do (or what did it do when it was working?)
-    #odor_index = responses.columns
-    #kc_index = responses.index
-    #bouton_index = wPNKC.columns
-    #glomerulus_index = wPNKC.columns.get_level_values(glomerulus_col)
-    #assert glomerulus_index.sort_values().equals(glomerulus_index)
-    #glomerulus_index = glomerulus_index.unique()
-    #claw_index = wPNKC.index
-    #dynamics = get_dynamics(mp, rv, odor_index, glomerulus_index, kc_index,
-    #    claw_index=claw_index, bouton_index=bouton_index, delete_pretime=False
-    #)
+    # (at least when claw & bouton lengths, respectively)
+    # TODO TODO TODO need some model run(s) w/ APL>KC and APL>PN not disabled, to test
+    # indexing of those? how to set up?
 
     # TODO delete
     breakpoint()
     #
 
-    # TODO TODO TODO also do same for claw>KC (need to disable thresh and apl, i
-    # assume?) (then check claw_sims vs vm_sims)
-
-    # TODO TODO TODO test that glom>bouton indexing is correct, by generating some
-    # random PNs w/ all diff firing rates / spont (or just use megamat?), and check
-    # bouton_sims elements match pn_sims elements, as expected. make sure APL>PN is
-    # disabled so bouton dynamics should just be PN dynamics
-
-    # TODO TODO also check that we can recalculate Is_sims / inh_sims from claw_sims (or
-    # pn_sims, if wPNKC_one_row_per_claw=False)? or at least Is_from_[kcs|pns]?
+    # TODO TODO TODO also check that we can recalculate Is_sims / inh_sims from
+    # claw_sims (or pn_sims, if wPNKC_one_row_per_claw=False)? or at least
+    # Is_from_[kcs|pns]?
     # TODO TODO TODO should need separate test to check Is_from_kcs, at least if KC>APL
     # input requires spiking (currently threshold set above to disable spiking)
 

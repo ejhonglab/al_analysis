@@ -618,7 +618,8 @@ def read_orn_deltas(path: Path) -> pd.DataFrame:
     return orn_deltas
 
 
-# TODO TODO + fns to load raw dF/F data for each, too (in al_util?)
+# TODO + fns to load raw dF/F data for each, too (in al_util?) (delete. have most of
+# those now, but still need to test, and using in some other tests)
 # TODO + option to load diags for all (already in this one or no? add assertion on
 # panels)
 # TODO TODO TODO update to use maxabs responses (+ commit those outputs). should have
@@ -7765,6 +7766,9 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
     if mp.kc.save_spike_recordings:
         # presumably 0/1 recording which time bins have spikes in them?
         spike_recordings = get_sim_var(rv.kc, 'spike_recordings')
+        # TODO TODO warn if minimum time between spikes is below the ~3ms refractory
+        # period ann set. might need to actually add one myself, especially if
+        # consistently getting intervals lower
 
         # only == {0} if no responders, which should only happen if manually setting
         # threshold higher than will let any KC spike, or maybe certain cases where
@@ -8629,55 +8633,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         )
 
         if one_row_per_claw:
-            # TODO delete? or still need? (do still seem to need, at least for
-            # tests_btn_expansion. maybe also prat_claws=True stuff typically?)
-            #'''
-            # initially, Tianpei had hardcoded these mp.kc.* values in his olfsysm
-            # compilation, but want to keep old values
-            old_max_iters = mp.kc.max_iters
-            old_sp_lr_coeff = mp.kc.sp_lr_coeff
-            # TODO assert old values actually were both 10 (depends on me reverting
-            # olfsysm correctly and recompiling)
-
-            default_change_msg = (
-                'hardcoding new defaults for one_row_per_claw=True case:\n'
-            )
-            defaults_changed = False
-            # was default of 10 before
-            if max_iters is None:
-                mp.kc.max_iters = 10
-                default_change_msg += f'{mp.kc.max_iters=} (was {old_max_iters})\n'
-                defaults_changed = True
-
-            # TODO TODO fix underlying issue? still seems this test was recently
-            # passing with sp_lr_coeff=10 (somewhere in the 20bd55c73 - 66eff37e0 range,
-            # or at least at one point [without changing these] uncommitted nearby end
-            # of that range). but after adding `bouton_dynamics` code, and trying to
-            # homogenize bouton handling across Tianpei/Prat cases, have now
-            # (2026-02-12) felt the temptation to decrease this again (b/c not
-            # converging within max iterations, often b/c oscillating and wasting
-            # iterations to decrease step size).
-            # compare steps to before? or was it also reliant on hardcoding intial
-            # sparsity?
-            #
-            # was default of 10.0 before
-            # it seems he had at one point also tried 1.0, but i'm assuming 1.5 is the
-            # latest value he intended to use (why?)
-            if sp_lr_coeff is None:
-                # TODO TODO TODO did 10 ever really make sense w/o the
-                # hardcode_initial_sp code (or what is not confined to the =true path of
-                # that flag)? it
-                # would probably force a smaller delta on first step
-                # TODO TODO TODO revert to 10? (esp since i'm already passing in in
-                # test_btn_expansion test that i'm first noticeing new-code issues with)
-                mp.kc.sp_lr_coeff = 10.0
-                default_change_msg += f'{mp.kc.sp_lr_coeff=} (was {old_sp_lr_coeff})\n'
-                defaults_changed = True
-
-            # TODO also want these for prat_claws=True?
-            if defaults_changed:
-                warn(default_change_msg)
-
             # these are only used for Tianpei's outputs that had grouped synapses into
             # KC claws. not used for (more typical) case, where we are loading Prat's
             # outputs where he did the same.
@@ -10971,6 +10926,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         apl_weight_index = kc_index
     else:
+        # TODO rename, since this isn't used for APL<>PN weights, just APL<>KC weights
         apl_weight_index = claw_index
 
     if not use_connectome_APL_weights:
@@ -11020,9 +10976,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO (outside this fn?) make histograms of these scaled values somewhere,
         # similar histograms of connectome weights?
-        # TODO any point copying here?
-        wAPLKC = pd.Series(index=apl_weight_index, data=rv.kc.wAPLKC.squeeze())
-        wKCAPL = pd.Series(index=apl_weight_index, data=rv.kc.wKCAPL.squeeze())
+        wAPLKC2 = pd.Series(index=apl_weight_index, data=rv.kc.wAPLKC.squeeze())
+        wKCAPL2 = pd.Series(index=apl_weight_index, data=rv.kc.wKCAPL.squeeze())
+        # TODO TODO double check this is just a rescaled version of input
+        # (or just equal to input) before overwriting (want to make sure we
+        # preserving indexing)
+        # TODO delete
+        #breakpoint()
+        #
+        wAPLKC = wAPLKC2
+        wKCAPL = wKCAPL2
 
         # TODO share below w/ one-row-per-claw=True & connectome_APL_weights=False case
         # above?
@@ -11049,8 +11012,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO move outside containing conditional?
         if prat_boutons and not per_claw_pn_apl_weights:
             # TODO refactor (to ideally one fn per weight vector. above and below)
-            wAPLPN = pd.Series(index=bouton_index, data=rv.pn.wAPLPN.squeeze())
-            wPNAPL = pd.Series(index=bouton_index, data=rv.pn.wPNAPL.squeeze())
+            wAPLPN2 = pd.Series(index=bouton_index, data=rv.pn.wAPLPN.squeeze())
+            wPNAPL2 = pd.Series(index=bouton_index, data=rv.pn.wPNAPL.squeeze())
+            # TODO TODO double check this is just a rescaled version of input
+            # (or just equal to input) before overwriting (want to make sure we
+            # preserving indexing)
+            #breakpoint()
+            wAPLPN = wAPLPN2
+            wPNAPL = wPNAPL2
 
             n_zero_tuned_wAPLPN = (wAPLPN == 0).sum()
             n_zero_tuned_wPNAPL = (wPNAPL == 0).sum()
@@ -11368,6 +11337,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert not any(k in param_dict for k in dynamics_dict.keys())
             param_dict.update(dynamics_dict)
 
+        # TODO TODO assert no NaN in any dynamics (excluding pre-time), except
+        # (currently, and may want to change this to be 0 too) the first timepoint for
+        # bouton_sims
+        # TODO + warn about that one NaN timepoint, and add flag to drop for all
+        # dynamics? (currently doing that dropna -> reindexing all others to match in
+        # test_dynamics_indexing)
+
+    # TODO TODO factor out all plotting, so i can recalculate from saved dynamics,
+    # without having to rerun models
     if plot_example_dynamics:
         # TODO remove make_plots part of this? (assuming i can't easily get those plots
         # to work w/ extra_orn_deltas, but i can easily get those to work w/ this)
@@ -11423,7 +11401,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 _plot(ax, ts, xs / xs.max(), **kwargs)
 
 
-        # TODO TODO TODO plot mean across all odors, instead of example odor, by default
+        # TODO TODO plot mean across all odors, instead of example odor, by default
         # TODO TODO + how to factor so we can use same code to either plot all for one
         # odor or mean across odors?
 
@@ -11469,9 +11447,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # seem to need constrained layout to get fig.legend() reliably outside bounds of
         # Axes (at least w/o manual positioning...)?
         claw_ax = None
-        # TODO TODO add separate axes for ORN/PN/LN stuff (and then put APL stuff or
-        # APL+KC stuff on separate axes)?
-        # TODO TODO re-order so layers are in-order, either top to bottom or reverse
+        # TODO add separate axes for ORN/PN/LN stuff (and then put APL stuff or
+        # APL+KC stuff on separate axes)? (do have a separate fig for APL stuff now...)
+        # TODO re-order so layers are in-order, either top to bottom or reverse
         if prat_boutons and not per_claw_pn_apl_weights:
             fig, axs = plt.subplots(nrows=4,
                 layout='constrained', sharex=True, figsize=(10, 5 * 4)
@@ -11494,8 +11472,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # like white)
         mark_odor_pulse(ax, mp)
 
-        # TODO directly index odor/glom by name, now that we are using xarray?
-        #
         # TODO add units for these (firing rate in Hz?) (via y-axis label?)
         #
         # units seems to be firing rates (absolute i think. actually, there are some
@@ -11593,7 +11569,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 )
 
             bouton_pos = bouton_df.loc[~bouton_all0]
-            # TODO TODO just get order from above, and apply to this one, rather than
+            # TODO just get order from above, and apply to this one, rather than
             # re-clustering? or want to re-cluster?
             bnormed = ((bouton_pos.T - bouton_pos.T.min()) / bouton_pos.max(axis=1)).T
 
@@ -11697,6 +11673,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             Is_from_pns = dynamics_dict['Is_from_pns']
             # TODO TODO TODO do these units actually make sense for these quantities?
             # maybe this indicates i should change olfsysm math?
+            # TODO TODO TODO reword all now that i've updated olfsysm to only have dI/dt
+            # in KC spiking input + pn_claw_to_apl=false case
             _plot_normed(ax, Is_from_kcs.sel(odor=odor), label='APL dI/dt (from KCs)')
             #
             _plot_normed(ax, Is_from_pns.sel(odor=odor), label='APL dI/dt (from PNs)')
@@ -11722,17 +11700,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         vm_sims = dynamics_dict['vm_sims']
         example_odor_vm_sims = vm_sims.sel(odor=odor).squeeze()
 
-        # TODO TODO need to explicitly del dynamics_dict (and vars we got from it?),
-        # even if not returning? why getting killed on second call now?
-        # return_dynamics=False, right?
-
         # taking mean over KCs, giving us a series of length equal to #-timepoints
         mean_vm_sims = example_odor_vm_sims.mean('kc')
         _plot_normed(ax, mean_vm_sims, label='mean KC Vm')
-
-        # TODO TODO make a version of all these plots w/ each quantity on a separate
-        # facet (or at least, only those w/ comparable units sharing a facet), so that
-        # axes can all have the right units
 
         # TODO TODO (done?) modify fit_mb_model to accept arbitrary wAPLKC/wKCAPL, like
         # i had for _wPNKC (-> use to play around w/ per-subtype scales from here)
@@ -11772,7 +11742,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             kc_type_labels = [
                 f'mean {x}-KC Vm' for x in vm_sims_by_type[KC_TYPE].values
             ]
-
             # normalized within each type above, so no need for _plot_normed
             _plot(ax, vm_sims_by_type.T, label=kc_type_labels)
 
@@ -11822,6 +11791,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         savefig(fig, plot_dir, f'model_dynamics{ostr}')
 
         fig, ax = plt.subplots(layout='constrained')
+        # TODO would need a way to store these (what we use from mp here) if wanted to
+        # plot with saved dynamics
+        # TODO TODO provide fn to serialize all model params to json?
         mark_odor_pulse(ax, mp)
 
         if Is_from_kcs is None:
@@ -11830,38 +11802,44 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             diff_ts = Is_from_kcs.get_index('time_s')
             # TODO remove all these explicit diff_ts args, esp if i can assert all of
             # them are the same for all of these inputs
-            # TODO TODO TODO change label depending on olfsysm flag [not yet added. may
-            # call mp.kc.apl_current_is_integral] to fix I vs dIdt issue in olfsysm
-            # (what i think was probably a bug even in ann's code.  current should
-            # directly reflect instantaneous input, not be the integral of input with
-            # its own decay)
+            # TODO (delete? not sure i want to implement this flag) change label
+            # depending on olfsysm flag [not yet added. may call
+            # mp.kc.apl_current_is_integral] to fix I vs dIdt issue in olfsysm (what i
+            # think was probably a bug even in ann's code. current should directly
+            # reflect instantaneous input, not be the integral of input with its own
+            # decay)
             _plot(ax, diff_ts, Is_from_kcs.sel(odor=odor), label='APL dI/dt (from KCs)')
             _plot(ax, diff_ts, Is_from_pns.sel(odor=odor), label='APL dI/dt (from PNs)')
 
             # TODO TODO also check that APL "Vm" can be recalculated from adding up
             # Is_sims in here? or not true?
 
-            # TODO TODO TODO TODO why is dIsdt 0 towards the end? should it not be
-            # decaying?  is this a mistake in Ann's [and thus Matt's] code? seems like
+            # TODO TODO TODO why is dIsdt 0 towards the end? should it not be
+            # decaying? is this a mistake in Ann's [and thus Matt's] code? seems like
             # her code may not reflect APL dynamics in her preprint... same as her
-            # thesis? recheck?
+            # thesis? recheck? (well, Is should be decaying, but why would we expect
+            # dIsdt to be?)
             # TODO TODO TODO and anyway, neither Is_from_[kcs|pns] is 0 there (both
-            # positive)!*
+            # positive)!* (still true? only KC spiking, and only in pn_claw_to_apl=false
+            # case, no works through Is)
             # TODO fix so time index is same as above two, after diff call.
             # (arg to diff for that?) (nvm, seems same? just assert, then delete this
             # comment)
             dIsdt = Is_sims.diff('time_s')
 
-            # TODO TODO TODO TODO branch code (both plotting and assertions) depending
-            # on [not yet implemented] mp.kc.apl_current_is_integral flag
-            # TODO TODO TODO why is this still so much smaller than either of the
+            # TODO TODO (delete? actually want to implement apl_current_is_integral?)
+            # branch code (both plotting and assertions) depending on [not yet
+            # implemented] mp.kc.apl_current_is_integral flag
+            # TODO (delete?) why is this still so much smaller than either of the
             # quantities that should be adding to produce this? just b/c decay [doubt
             # it?]?
+            # TODO TODO update label to be accurate
             _plot(ax, diff_ts, dIsdt.sel(odor=odor), label='APL dI/dt (total)')
 
             # TODO TODO want Is on same scale (as what are currently dI/dt quantities)
             # or not? separate axes (or move Vm to separate axes, and use twinx for
             # that?)?
+            # TODO TODO update label to be accurate
             _plot(ax, Is_sims.sel(odor=odor), label='APL current (I)')
 
             # twinx shares x-axis (so we can have a different Y-axis on right)
@@ -11881,7 +11859,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             fig.legend(loc='upper right')
 
             # TODO only have this suffix if we don't have flag enabling non-integral
-            # current
+            # current (delete? not sure i want to implement that flag. may implement
+            # some others tho, and pn_claw_to_apl is now relevant)
+            # TODO TODO update text as needed, depending on pn_claw_to_apl and which
+            # variable plotted, to be accurate
             ax.set_ylabel('APL current (I) (or dI/dt)')
 
             # TODO move to _plot?
@@ -11889,7 +11870,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             ax.set_title(f'{title}\nAPL response to {odor}')
 
-            # TODO TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
+            # TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
             # and "PN input to KCs" (4.8d) from Ann's thesis
             # TODO TODO also, do i also get the same response fraction to the lower conc
             # hallem odors, like she does in 4.8a/b? essentially 0 KCs responding at -8,
@@ -11903,12 +11884,17 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # preprint? olsen/wilson explain why in their paper?
             savefig(fig, plot_dir, f'apl_dynamics{ostr}')
 
+            # TODO TODO re-evaluate below, now that i've changed olfsysm (in 2e1508377)
+            # to only have KC spiking APL input (and only in pn_claw_to_apl=false case)
+            # filter through Is dynamics + time constant. everything else is now current
+            # directly into dinhdt
             # TODO TODO TODO assert that Is_from_kcs + Is_from_pns is close to Is_sims
             # (maybe if mp.kc.apl_current_is_integral=False)
             # TODO TODO TODO oh, i guess that isn't true. do i want it to be? currently
             # these should just add to dIsdt
-
-            # TODO TODO TODO figure out if Is_from_[kcs|pns] makes sense
+            # TODO TODO figure out if Is_from_[kcs|pns] makes sense
+            # (test_dynamics_indexing should soon start to get at this, to make sure
+            # calculation is correct at least)
 
         # TODO delete
         #breakpoint()
@@ -12893,6 +12879,9 @@ def step_around(center: Union[float, np.ndarray], param_lim_factor: float,
 
 def include_in_csv(x: Any) -> bool:
     # TODO doc
+
+    if isinstance(x, osm.ModelParams) or isinstance(x, osm.RunVars):
+        return False
 
     # for test_fitandplot_repro[pn2kc_uniform__n-claws_7__n-seeds_2], and other
     # variable_n_claw cases

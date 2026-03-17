@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""
+After `pip install`-ing `al_analysis`, you should be able to invoke this script via:
+`step_model_pn_apl`, and it will save outputs in current directory (can be quite large,
+if saving dynamics via `-d/--save-dynamics` flag).
+
+Does not depend on any input data. Loads precomputed megamat ORN spike delta estimates,
+and runs those through models with parameters in `MODEL_TUNE_KWS` (one instantiation per
+entry in that list).
+"""
 
 import argparse
 from itertools import product
@@ -13,23 +22,23 @@ from tqdm import tqdm
 from hong2p.viz import matshow
 from hong2p.util import symlink
 import al_util
-from al_util import savefig
+from al_util import savefig, ParamDict
 from mb_model import (fit_and_plot_mb_model, megamat_orn_deltas, dict_seq_product,
     format_weights, format_model_params, get_thr_and_APL_weights,
     save_and_remove_from_param_dict, drop_silent_model_cells, glomerulus_col
 )
 
 
-model_tune_kws = dict_seq_product(
+MODEL_TUNE_KWS = dict_seq_product(
     [
         dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
             use_connectome_APL_weights=True
         )
     ],
-    # TODO switch order (maybe not until figuring out latest issues?)?
-    [dict(pn_claw_to_APL=True), dict()]
+    [dict(pn_claw_to_apl=True), dict()]
 )
 
+OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
 
 def analyze_outputs(plot_dir: Path) -> None:
     # TODO doc
@@ -112,29 +121,61 @@ def analyze_outputs(plot_dir: Path) -> None:
         savefig(fig, plot_root, f'{kstr}__{c}', bbox_inches='tight')
 
 
-def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool = False
-    ) -> None:
+def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *,
+    ignore_existing: bool = False, save_dynamics: bool = False) -> None:
     # TODO doc
+    """Runs `orn_deltas`
+    Args:
+        orn_deltas: glomerulus (rows) X odors (columns) estimated spike delta DataFrame
 
-    # TODO move this path creation to script root?
-    plot_root = Path('.').resolve() / 'PNAPL_stepping'
+        kws: passed to all `fit_and_plot_mb_model` calls, and passed thru
+            `format_model_params` to create output subdirectory names
+
+        ignore_existing: if False, will attempt to load cached model outputs (already in
+            directories that would be created), rather than re-running models. If True,
+            will always re-run models.
+
+        save_dynamics: if True, will save DataArray pickles of all model internal
+            dynamic quantities (e.g. membrane potential of KCs over time, to each odor)
+    """
+
+    # outputs can be big and want to be able to save in arbitrary paths. just run script
+    # from the folder you want the outputs in.
+    plot_root = Path('.').resolve() / OUTPUT_ROOT_NAME
 
     # TODO TODO other params in here? just format all params?
-    # (won't be able to use my own dir name here, unless i add support for hardcoding
-    # dir name [or list of params to use for formatting] in fit_and_plot..., now that
-    # i'm using  that instead of fit_mb_model. i did add plot_dirname for that.)
+    # TODO change format_model_params to exclude 'one-row-per-claw_True', when
+    # 'prat-claw_True'? might be more happy w/ including all params then
     # TODO TODO all except exclude list of expected (+add format_model_params kwarg for
     # that)? just hardcode in the expected kws here, rather than even having them passed
     # in?
+    # TODO include all parts of the string (splitting on '__'?) that differ across any
+    # model variations run here?
     plot_dir = plot_root / format_model_params({
-        'pn_claw_to_APL': kws.get('pn_claw_to_APL', 'False')
+        'pn_claw_to_apl': kws.get('pn_claw_to_apl', 'False')
     })
+    # TODO delete
+    '''
+    n1 = format_model_params({'pn_claw_to_apl': kws.get('pn_claw_to_apl', 'False')})
+    n2 = format_model_params(kws)
+    # TODO delete
+    print()
+    print(f'{n1=}')
+    print()
+    print(f'{n2=}')
+    print()
+    #breakpoint()
+    # TODO TODO TODO delete
+    return
+    '''
+    #
 
     output_kws = dict(
-        # TODO delete (or restore + actually use these. ran out of space on device b/c i
-        # was saving them)
-        #return_dynamics=True,
-        #
+        # if return_dynamics is True, fit_and_plot_mb_model will write DataArrays
+        # containing dynamics as pickles, before popping them from returned param dict.
+        # plot_example_dynamics will make some internal plots using the same data, but
+        # then will not return them from fit_mb_model (so they will not be saved).
+        return_dynamics=save_dynamics,
         # TODO delete make_plots=True? just make sure plot_example_dynamics sets
         # that? or do i really want (/have) a flag controlling plots other than
         # plot_example_dynamics (i.e. internal corrs)? rename, if that's what
@@ -142,10 +183,13 @@ def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool =
         plot_example_dynamics=True, make_plots=True, connectome_weight_plots=False
     )
 
+    # TODO delete? this should not really be a meaningful amount of total time now
     # TODO set fixed_thr/wAPLKC/etc instead? (would be faster)
     plot_dirname2sp_lr_coeff = {
-        # TODO TODO TODO add one for *_False
-        'pn-claw-to-APL_True': 5.96433,
+        # TODO add one for *_False
+        # TODO update now that all PN inputs (and KC claw inputs not filtered
+        # through spiking) are not getted filtered by Is and corresponding timeconstant
+        #'pn-claw-to-apl_True': 5.96433,
     }
     dirname = plot_dir.name
     # TODO change handling in there so it doesn't matter (and so we can set any of these
@@ -155,7 +199,7 @@ def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool =
     # setting it None like we might otherwise do for default
     sp_lr_coeff = None
     if dirname in plot_dirname2sp_lr_coeff:
-        # TODO TODO warn if we are using this? (/delete?)
+        # TODO TODO warn if we are using this (/delete?)
         sp_lr_coeff = plot_dirname2sp_lr_coeff[dirname]
 
     # TODO add fit_mb_model option to assert output is still within target sparsity,
@@ -164,65 +208,37 @@ def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool =
     # TODO or otherwise assert in here that if we re-run calls from scratch, we get
     # whatever hardcoding parameters we might sometimes use to skip tuning (within
     # tolerance)
-    # TODO delete (were same parameters from one tuning output, hardcoded for speed)
-    '''
-    thr_and_apl_kws = {'fixed_thr': 207.42859388292763, 'wAPLKC': 1.93701}
-    wAPLPN_scale = 1.93701
-    wPNAPL_scale = 0.00497946
-    wAPLKC_scale = 1.93701
-    wKCAPL_scale = 0.00111837
-    '''
     # TODO TODO refactor to share test precalc_weights=True code w/ this (if i get that
     # working). would skip a lot of time spent in calls below
 
-    # TODO try to get this False after getting code recalculating below working
-    # (should be fine now)
-    # TODO restore
-    #return_olfsysm_vars = False
-    # TODO delete eventually
+    # TODO try to get this False after getting code recalculating (what?) below working
+    # (should be fine now (?))
+    # TODO delete eventually?
     return_olfsysm_vars = True
     #
     delete_pretime = True
 
-    # TODO delete
-    #if ignore_existing or not plot_dir.exists():
-    #    plot_dir.mkdir(exist_ok=True, parents=True)
-    #    ret = fit_mb_model(orn_deltas=orn_deltas, **kws, **output_kws,
-    #        # TODO TODO try to get this False after getting code recalculating below
-    #        # working (so delete_pretime is not set =False inside fit_mb_model)
-    #        plot_dir=plot_dir, return_olfsysm_vars=return_olfsysm_vars,
-    #        delete_pretime=delete_pretime, verbose=True, sp_lr_coeff=sp_lr_coeff
-    #    )
-    #    # TODO why remove=False? going to analyze here? delete?
-    #    # TODO just call fit_and_plot... instead? (want to be able to load
-    #    # parameters and wPNKC...)
-    #    save_and_remove_from_param_dict(params, plot_dir, remove=False)
-    #    params = ret[-1]
-    #    wPNKC = ret[-2]
-    #else:
-    #    #wPNAPL_scale =
-    #    breakpoint()
-    #    assert 'rv' not in params
-    #
+    # TODO make CLI arg for this?
+    # didn't work (2026-03-15): 50 (but it was still oscillating a lot. try lower
+    # initial sp_lr_coeff?)
+    max_iters = 100
 
+    # TODO TODO also step around fixed_thr/wAPLKC from previous tuning, e.g. a
+    # similar model w/o the PN<>APL weights?
+    # TODO try a hypergrid stepping thr and APL independently too? (w/ same steps
+    # for PN>APL and APL>PN weights)
     params = fit_and_plot_mb_model(plot_root, plot_dirname=plot_dir.name,
         orn_deltas=orn_deltas, verbose=True, try_cache=not ignore_existing,
         **kws, **output_kws, sp_lr_coeff=sp_lr_coeff,
-        return_olfsysm_vars=return_olfsysm_vars, delete_pretime=delete_pretime
+        return_olfsysm_vars=return_olfsysm_vars, delete_pretime=delete_pretime,
+        max_iters=max_iters
     )
+    # TODO add option just to reanalyze any saved dynamics, if i factor out that
+    # plotting code from fit_mb_model?
     thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
     print(f'tuned thr and APL weights: {pformat(thr_and_apl_kws)}')
     wAPLPN_scale = thr_and_apl_kws['wAPLPN']
-    # TODO use / delete
     wAPLKC_scale = thr_and_apl_kws['wAPLKC']
-    #
-    # TODO delete
-    #breakpoint()
-    #
-
-    # TODO TODO why are we still getting killed below? thought i wasn't saving
-    # claw_sims? is it something else? just low free memory now?
-    # (maybe issue is solved now?)
 
     # TODO use parquet instead?
     wPNKC = pd.read_pickle(plot_dir / 'wPNKC.p')
@@ -245,18 +261,15 @@ def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool =
 
         # these will not currently be in thr_and_apl_kws (assumed each can be
         # calculated from the from-APL weights), so need to get separately
-        # TODO delete
-        #responses = ret[0]
         responses = pd.read_pickle(plot_dir / 'responses.p')
         n_kcs = mp.kc.N
         assert n_kcs == len(responses)
-        # TODO use (/delete)
+
         wKCAPL_scale = rv.kc.wKCAPL_scale
-        #
         # NOTE: this one may change to have n_claws as denominator, if I change all
         # handling to be consistent eventually
         assert np.isclose(wAPLKC_scale / n_kcs, wKCAPL_scale)
-        #
+
         wPNAPL_scale = rv.pn.wPNAPL_scale
         assert np.isclose(wAPLPN_scale / n_boutons, wPNAPL_scale)
 
@@ -271,14 +284,17 @@ def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool =
     print('stepping wAPLPN & wPNAPL around tuned value:')
     # TODO TODO also try at a few diff wKCAPL/wAPLKC scales? (paper hemibrain was
     # wAPLKC=4.63/wKCAPL=0.00252, for ref)
-    # TODO TODO TODO worth trying w/ change in how thr is calculated, so it's not
+    # TODO TODO worth trying w/ change in how thr is calculated, so it's not
     # relative to spont in? (how to even do? what's that look like w/ other things
     # same?)
-    # TODO TODO TODO worth trying w/ a couple diff sp_factor_pre_APL? (1.5 / 3.0?)
+    # TODO worth trying w/ a couple diff sp_factor_pre_APL? (1.5 / 3.0?)
+    # TODO TODO these are ultimately sorted before plots, right?
     steps = [100, 20, 1.0, 0.5, 10, .1]
+    # TODO provide warning / fail early if we can estimate we won't have enough disk
+    # space (if return_dynamics / plot_example_dynamics)?
     for ap, pa in tqdm(list(product(steps, steps)), unit='param-combo'):
-        # TODO or just include, to make some plotting that includes this easier?
-        # TODO TODO save plots/dynamics from previous call, and link to that dir?
+        # TODO save plots/dynamics from previous call, and link to that dir?
+        # (do definitely want to include it, one way or another)
         #if ap == 1 and pa == 1:
         #    continue
 
@@ -290,48 +306,22 @@ def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool =
         # TODO remove part about wAPLKC?
         #param_dir = plot_dir / format_model_params(step)
 
-        # TODO TODO TODO TODO actually try per bouton inh dynamics (prob both for KC
-        # and PN)
+        # TODO TODO TODO actually try per bouton/claw[/KC?] inh dynamics (prob both for
+        # KC claws and PN boutons)
+        # TODO TODO only matter if i also have a per-bouton/claw synaptic depression (or
+        # some other kind of saturation?) add that too?
 
         param_dir = plot_dir / (
-            # TODO factor ', ' stripping into option for format_weights (/
-            # another fn?)
+            # TODO factor ', ' stripping into option for format_weights (/ another fn?)
             # with orig values scaled, could get duplicate plot dir names, b/c some
             # values too small for .3f float format
             # TODO change float formatting in format_weights to fix that
+            # TODO delete?
             #format_weights(step['wAPLPN'], 'wAPLPN').strip(', ') + '_' +
             #format_weights(step['wPNAPL'], 'wPNAPL').strip(', ')
             format_weights(ap, 'wAPLPN').strip(', ') + '_' +
             format_weights(pa, 'wPNAPL').strip(', ')
         ).replace('=', '-')
-
-        # TODO TODO how were these dirs (as originally created, w/ commented
-        # fit_mb_model code) writing responses.p / spike_counts.p?
-        # were those outputs in param dict returned (or internally, at points
-        # save_and_remove... was called)? they shouldn't have been, right?
-        #
-        # TODO delete
-        #if ignore_existing or not param_dir.exists():
-        #    param_dir.mkdir(exist_ok=True, parents=True)
-        #    # TODO delete?
-        #    print()
-        #    print()
-        #    print(f'{ap=}')
-        #    print(f'{pa=}')
-        #    print()
-        #    #
-        #    # TODO delete
-        #    #curr_ret = fit_mb_model(orn_deltas=orn_deltas,
-        #    #    # TODO use same (simpler) syntax as above for multiple kwarg dicts?
-        #    #    **{**step, **kws, **output_kws}, plot_dir=param_dir
-        #    #)
-        #    #rs, ss, _, ps = curr_ret
-        #    ## TODO why remove=False? going to analyze here? delete?
-        #    ## TODO just call fit_and_plot... instead? (now also needing to save
-        #    ## responses / spike_counts separately...)
-        #    #save_and_remove_from_param_dict(ps, param_dir, remove=False)
-        #    #
-        #
 
         print(f'{param_dir.name}')
 
@@ -347,31 +337,48 @@ def step_pn_apl_weights_around_tuned(orn_deltas, kws, *, ignore_existing: bool =
         # TODO (delete?) breadth across KCs (vs max) (make sense?) (something else that
         # might be diff across KCs to account for sparsity diff?)?
 
-        # TODO delete
-        #print()
-
     analyze_outputs(plot_dir)
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    # TODO TODO add (+implement) -c flag to check outputs match existing ones
-    parser.add_argument('-i', '--ignore-existing', action='store_true',
-        help='re-runs model (and at each parameter step), rather than using existing '
-        'saved  outputs'
+    parser = argparse.ArgumentParser('will run models with the following '
+        f'parameters:\n{pformat(MODEL_TUNE_KWS)}\n...on precomputed megamat est spike '
+        'deltas, varying scales of PN>APL and APL>PN weights in a grid around tuned '
+        'values. Initial "tuned" values are chosen at somewhat arbitrary initial offset'
+        f' from APL<>KC weight scales.\n\nA directory {repr(OUTPUT_ROOT_NAME)} will be '
+        'created in the current path, and model outputs will be stored in '
+        'sub-directories within.'
     )
+    # TODO add (+implement) -c flag to check outputs match existing ones
+    parser.add_argument('-i', '--ignore-existing', action='store_true',
+        help='re-runs model (and at each parameter step), rather than just doing '
+        'downstream analysis on existing saved outputs'
+    )
+    # TODO provide disk space usage estimate as we proceed through this one?
+    parser.add_argument('-d', '--save-dynamics', action='store_true',
+        help='saves DataArray pickles of internal model dynamics (in '
+        'fit_and_plot_mb_model, via setting fit_mb_model return_dynamics=True)'
+    )
+    # TODO add flag to reanalyze / plot dynamics (if i factor out the
+    # plot_example_dynamics code from fit_mb_model)?
     args = parser.parse_args()
     ignore_existing = args.ignore_existing
+    save_dynamics = args.save_dynamics
 
     # TODO is this required to see when we are saving figs (think so)? change so that's
     # not the case (and for saving other things, if necessary)?
     al_util.verbose = True
 
+    # TODO TODO TODO load the new signed absmax version. i assume this is still the
+    # older paper version w/ mean (n_volumes=2?) response calc
+    # TODO TODO do i already have ORN deltas committed for that (add, if not)?
+    # (don't think so, but may already have generated on disk? check w/ -c/-C?)
     orn_deltas = megamat_orn_deltas()
-    for kws in model_tune_kws:
+
+    for kws in MODEL_TUNE_KWS:
         print(f'{kws=}')
         step_pn_apl_weights_around_tuned(orn_deltas, kws,
-            ignore_existing=ignore_existing
+            ignore_existing=ignore_existing, save_dynamics=save_dynamics
         )
 
 
