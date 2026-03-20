@@ -1,6 +1,8 @@
-# Python 3.8.12
-# pip 22.3.1
-# See custom requirements at end (referencing https-hong-requirements.txt, mainly)
+# requires-python = "3.8.12"
+# build-system.requires:
+# pip==22.3.1
+# setuptools==61.0.0
+# wheel==0.40.0
 annotated-types==0.5.0
 anyio==4.4.0
 argon2-cffi==23.1.0
@@ -214,13 +216,10 @@ websocket-client==1.8.0
 widgetsnbextension==4.0.11
 xarray==0.19.0
 zipp==3.16.0
-
-# TODO why this not showing up like others? it is my ijroi isn't it? just not installed
-# editable? (still wouldn't by pypi installable...)
-# maybe i'm really not using my own at the moment? i suppose even al_analysis.py might
-# not really have active code that uses any of it? still replace w/ my own?
-#
-# yea this does cause issues trying to install on a system that doesn't already have it.
-#ijroi==0.4.1.dev0
-
--r https-hong-requirements.txt
+ijroi @ git+https://github.com/tom-f-oconnell/ijroi@65f249bacc5283b085899ad3b0bf7d4a9b43476f
+# olfsysm @ file:///home/tom/src/olfsysm
+git+https://github.com/ejhonglab/al_analysis@c1adab3f65fff7317359b225b4fdec67b169c03c#egg=al_analysis
+git+https://github.com/tom-f-oconnell/drosolf@2ff359109ed9d4c05e2f4c296111ca186cb0e892#egg=drosolf
+git+https://github.com/ejhonglab/hong2p@915ac13ac3e06fa484242e391f6e473303f9db4e#egg=hong2p
+git+https://github.com/ejhonglab/natmix@e3820bae480e45507dac5e7868359bd648b95fd3#egg=natmix
+git+https://github.com/tom-f-oconnell/suite2p@07eb912778401a1b94db132e0be5ab602491adcb#egg=suite2p

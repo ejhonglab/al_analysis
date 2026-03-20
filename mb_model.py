@@ -82,6 +82,7 @@ from termcolor import cprint, COLORS
 
 from drosolf import orns
 from hong2p import olf, util, viz
+from hong2p.xarray import save_dataarray as _save_dataarray
 from hong2p.olf import solvent_str, drop_solvent_odors
 from hong2p.viz import dff_latex, no_constrained_layout
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
@@ -107,7 +108,7 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
     n_final_megamat_kc_flies, MultipleSavesPerRunException, print_curr_mem_usage,
     data_root, fly_cols, flyroi_cols, read_parquet, to_parquet, to_json, read_json,
     ParamDict, written_since_proc_start, format_mtime, response_calc_params_json_name,
-    sent_to_remy
+    sent_to_remy, produces_output
 )
 import al_util
 
@@ -221,6 +222,11 @@ def dict_seq_product(dict_seq1: Sequence[dict], dict_seq2: Sequence[dict], *,
     return output_seq
 
 
+@produces_output
+def save_dataarray(*args, **kwargs) -> None:
+    _save_dataarray(*args, **kwargs)
+
+
 # TODO factor to share this type w/ somewhere else?
 # TODO and maybe share the float | list-of-float part w/ fit_and_plot... kwargs, then
 # union further w/ series if keeping that here?
@@ -263,7 +269,7 @@ def normalize_param_str(param_str: str) -> str:
 # pass to fit_mb_model, to add to excluded params (and then use that for sp_lr_coeff,
 # when hardcoing to skip tuning in step_model_pn_apl.py) (may not need anymore, not that
 # i'm allowing plot_dirname to be passed in to fit_and_plot...)
-exclude_params = (
+exclude_params = {
     'orn_deltas',
     'title',
     'repro_preprint_s1d',
@@ -279,6 +285,9 @@ exclude_params = (
     '_wAPLKC',
     '_wKCAPL',
 
+    'max_iters',
+    'sp_lr_coeff',
+
     # TODO TODO remove wKCAPL/wPNAPL (and just handle by filtering DataFrame/Series
     # inputs if needed, before saving tuned_param_cache. should have separate exclude
     # for titles and for saving)
@@ -289,11 +298,12 @@ exclude_params = (
     'wKCAPL',
     # TODO i assume i'll want to remove this one too?
     'wPNAPL',
-)
+}
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
-def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
+def format_model_params(model_kws: ParamDict, *, human: bool = False,
+    exclude: Optional[Sequence[str]] = None) -> str:
     """Returns str unique within most important model parameters.
 
     By default `exclude_params` and (internal) `exclude_if_value_matches` are used to
@@ -317,6 +327,9 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
 
         human: if False, `normalize_param_str` will be called on output before return.
             If True, will be more suitable for human readable titles/labels/etc.
+
+        exclude: if passed, will exclude these keys (on top of default excludes from
+            `exclude_params`)
     """
     model_kws = dict(model_kws)
 
@@ -350,13 +363,18 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False) -> str:
         'tune_on_hallem': False,
     }
 
+    if exclude is None:
+        exclude = exclude_params
+    else:
+        exclude = exclude_params | set(exclude)
+
     # TODO sort params first? (so changing order in code doesn't cause
     # cache miss...)
     # TODO why adding [''] again? why not just prepend ', ' to output if i want?
     # TODO TODO limit precision of all floats by default?
     param_str = ', '.join([''] + [
         f'{param_abbrevs[k] if k in param_abbrevs else k}={v}'
-        for k, v in model_kws.items() if k not in exclude_params and
+        for k, v in model_kws.items() if k not in exclude and
         (k not in exclude_if_value_matches or v != exclude_if_value_matches[k])
     ])
 
@@ -620,17 +638,48 @@ def read_orn_deltas(path: Path) -> pd.DataFrame:
 
 # TODO + fns to load raw dF/F data for each, too (in al_util?) (delete. have most of
 # those now, but still need to test, and using in some other tests)
-# TODO + option to load diags for all (already in this one or no? add assertion on
-# panels)
-# TODO TODO TODO update to use maxabs responses (+ commit those outputs). should have
-# been generated sometime after 2025-11-25 (still have? need to regen?)
-# (should be same outputs I sent to remy 2025-09-30 on slack, using signed maxabs
-# response calculation)
-# TODO TODO + add flag to load old paper ones (with mean n_volumes=2 response calc,
-# right?), for repro tests
-# TODO TODO make available (+ install) via same importlib_resources machinery drosolf
+# TODO add tests we can recreate these (and that they all use signed absmax response
+# calc)
+# TODO available (+ install) via same importlib_resources machinery drosolf
 # now uses, to make available without having to clone + install editable
-def megamat_orn_deltas() -> pd.DataFrame:
+def megamat_orn_deltas(drop_diags: bool = True) -> pd.DataFrame:
+    data_dir = data_root / 'internal'
+    orn_deltas = read_orn_deltas(data_dir / 'megamat_mean_est_spike_deltas.csv')
+
+    if drop_diags:
+        orn_deltas = orn_deltas.loc[:,
+            orn_deltas.columns.get_level_values('panel') == 'megamat'
+        ].copy()
+        expected_panels = {'megamat'}
+    else:
+        expected_panels = {'megamat', diag_panel_str}
+
+    unique_panels = set(orn_deltas.columns.get_level_values('panel').unique())
+    assert unique_panels == expected_panels, f'{unique_panels=} != {expected_panels}'
+    return orn_deltas
+
+
+def validation2_orn_deltas(drop_diags: bool = True) -> pd.DataFrame:
+    data_dir = data_root / 'internal'
+    orn_deltas = read_orn_deltas(data_dir / 'validation2_mean_est_spike_deltas.csv')
+
+    if drop_diags:
+        orn_deltas = orn_deltas.loc[:,
+            orn_deltas.columns.get_level_values('panel') == 'validation2'
+        ].copy()
+        expected_panels = {'validation2'}
+    else:
+        expected_panels = {'validation2', diag_panel_str}
+
+    unique_panels = set(orn_deltas.columns.get_level_values('panel').unique())
+    assert unique_panels == expected_panels, f'{unique_panels=} != {expected_panels}'
+    return orn_deltas
+
+
+# TODO add test we can recalc these
+# these should have been computed using mean n_volumes=2 response calc. for paper repro
+# tests.
+def paper_megamat_orn_deltas() -> pd.DataFrame:
     orn_deltas = read_orn_deltas(paper_hemibrain_output_dir / 'orn_deltas.csv')
     # TODO subset down any other outputs (that might also have diags), for consistency?
     # (if loading a diff response calc)
@@ -639,7 +688,7 @@ def megamat_orn_deltas() -> pd.DataFrame:
 
 
 # TODO add test we can recreate this from some committed ORN deltas
-def validation2_orn_deltas() -> pd.DataFrame:
+def paper_validation2_orn_deltas() -> pd.DataFrame:
     orn_deltas = read_orn_deltas(paper_validation2_hemibrain_output_dir /
         'orn_deltas.csv'
     )
@@ -7140,8 +7189,13 @@ def _single_unique_val(arr: Union[np.ndarray, pd.Series], *, exact: bool = True
 # test model claw_sims data
 #def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 8,
 def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5,
-    verbose: bool = False, **kwargs) -> Optional[pd.DataFrame]:
-    """
+    fallback_to_sorting: bool = True, verbose: bool = False, **kwargs
+    ) -> Tuple[Optional[pd.DataFrame], str]:
+    """Clusters ROI timeseries (falling back to sorting on max, if it fails)
+
+    Returns ordered (clustered or sorted) data, and a string indicating whether it was
+    clustered or sorted.
+
     Args:
         **kwargs: passed to `Rastermap` constructor
     """
@@ -7175,6 +7229,7 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
     #time_lag_window_seconds = 0.1
     #time_lag_window = int(time_lag_window_seconds / dt)
 
+    order = 'rastermap clustered'
     # TODO try smoothing parameters / diff binning?
     #
     # works after dropping non-responders (see scripts/test_rastermap.py for some
@@ -7195,7 +7250,13 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
         # TODO TODO this warning filter work to catch singular matrix?
         # TODO TODO fix their code that produces index error (also dependent on data +
         # n_clusters, and prob n_PCs/etc) (off-by-1?)
-        except (ValueError, np.linalg.LinAlgError, UserWarning, IndexError) as err:
+        #
+        # ...
+        #     w = np.exp(-dists / dists[e_neighbor])
+        # RuntimeWarning: invalid value encountered in divide
+        except (ValueError, np.linalg.LinAlgError, UserWarning, IndexError,
+            RuntimeWarning) as err:
+
             msg = str(err)
 
             # TODO delete? possible to get this just based on data, if data doesn't have
@@ -7212,7 +7273,21 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
             warn(f'Rastermap() failed with: {type(err).__name__}: {err}\n'
                 '...try decreasing n_PCs or n_clusters?'
             )
-            return None
+            if not fallback_to_sorting:
+                return None, order
+
+            # TODO try this?
+            # https://tslearn.readthedocs.io/en/stable/user_guide/clustering.html
+
+            # TODO TODO indicate in plot that we fell back to this? how? add return
+            # flag? or check outside if in order sorted by max?
+            warn('falling back to sorting timeseries by their max value')
+            order = 'max sorted'
+            # TODO maybe some plots i just always want in this order?
+            return (
+                df.loc[df.max(axis='columns').sort_values(ascending=False).index],
+                order
+            )
 
     # TODO what is this? delete?
     # neurons x 1
@@ -7248,14 +7323,14 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
     assert isort_set == set(range(len(df)))
     assert len(isort_set) == len(isort)
     # TODO return model instead/too?
-    return df.iloc[isort]
+    return df.iloc[isort], order
 
 
 # TODO want diff default cmap here?
 def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
     cmap: Optional[CMap] = 'gray_r', imshow_kws: Optional[KwargDict] = None,
     vmin: Optional[float] = None, vmax: Optional[float] = None, verbose: bool = False,
-    _extent: bool = True, **kwargs) -> Optional[AxesImage]:
+    _extent: bool = True, ylabel_fontsize=10, **kwargs) -> Optional[AxesImage]:
     """
     Args:
         **kwargs: passed to `cluster_timeseries`
@@ -7298,9 +7373,9 @@ def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
         assert not time_index.isna().any()
         xlim = (time_index.min(), time_index.max())
 
-    clustered = cluster_timeseries(df)
+    clustered, order = cluster_timeseries(df)
     # errors/warnings will be handled inside cluster_timeseries, returning None in all
-    # those cases
+    # those cases (now that we are falling back to sorting by max, this won't happen)
     if clustered is None:
         return None
 
@@ -7337,15 +7412,21 @@ def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
     if imshow_kws is None:
         imshow_kws = dict()
 
-    # TODO TODO (/option to?) clustermap (instead of imshow) (for row colors at least.
+    # TODO (/option to?) clustermap (instead of imshow) (for row colors at least.
     # no dendrograms)
 
-    # TODO TODO want to downsample, if not plotting X_embedding (from model)?
+    # TODO want to downsample, if not plotting X_embedding (from model)?
 
     im = ax.imshow(clustered, vmin=vmin, vmax=vmax, cmap=cmap,
         # TODO TODO want to gate aspect on extent like this? or _extent? neither?
         aspect='auto' if _extent else None, extent=extent, **imshow_kws
     )
+
+    for_2nd_ylabel = ax.twinx()
+    for_2nd_ylabel.set_yticklabels([])
+    # TODO refactor to share fontsize
+    for_2nd_ylabel.set_ylabel(order, fontsize=ylabel_fontsize)
+
     return im
 
 
@@ -7354,7 +7435,8 @@ def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
 # plotted). can also get it again if we decrease n_clusters below 3. not sure if too
 # many clusters alone can also produce it. still getting some of that warning down to
 # n_PCs=6 (and may encounter below that). also got it w/ n_PCs=4, n_clusters=3...
-# TODO TODO TODO is my output the same each time w/ current:
+# TODO TODO (delete? test w/ a repro test. should be fine) is my output the same each
+# time w/ current:
 # one-row-per-claw_True__prat-claws_True__prat-boutons_True__connectome-APL_True__pn-apl-scale-factor_1000
 # code? cause it feels like it might not be, if i need to keep tweaking this...
 def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 4, n_clusters: int = 3,
@@ -11519,7 +11601,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # mb_model.py:10842: in fit_mb_model
             #     im = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
             # mb_model.py:6781: in cluster_timeseries_and_plot
-            #     clustered = cluster_timeseries(df)
+            #     clustered, method = cluster_timeseries(df)
             # mb_model.py:6701: in cluster_timeseries
             #     model = Rastermap(n_PCs=n_PCs, n_clusters=n_clusters, verbose=verbose,
             # venv/lib/python3.8/site-packages/rastermap/rastermap.py:385: in fit
@@ -11573,22 +11655,24 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # re-clustering? or want to re-cluster?
             bnormed = ((bouton_pos.T - bouton_pos.T.min()) / bouton_pos.max(axis=1)).T
 
-            bfig.suptitle(title)
+            bfig.suptitle(f'{title}\nbouton {odor} responses', fontsize=10)
 
             # TODO fix so plot is cropped correctly (seems data only occupies bottom
             # left?) (i think it's fine actually?)
             im = cluster_timeseries_and_plot(bouton_pos, ax=bax,
-                cmap='magma'#, _extent=False
+                cmap='magma', ylabel_fontsize=8, #, _extent=False
                 # TODO was _extent=True causing issues? (i think main issue is just the
                 # data...)
                 # TODO TODO filter based on some minimum change upon odor onset?
                 # TODO TODO or subtract spont or something?
                 # TODO TODO and maybe model should also be subtracting spont in then?
             )
-            bax.set_ylabel('raw bouton activities')
+            bax.set_ylabel('raw', fontsize=10)
             # TODO add cbar for this one too?
-            im2 = cluster_timeseries_and_plot(bnormed, ax=bax2, cmap='viridis')
-            bax2.set_ylabel('[0,1]-scaled per bouton')
+            im2 = cluster_timeseries_and_plot(bnormed, ax=bax2, cmap='viridis',
+                ylabel_fontsize=8
+            )
+            bax2.set_ylabel('[0,1]-scaled\n(per bouton)', fontsize=8)
             bfig.colorbar(im, ax=bax, orientation='vertical', label='bouton activities')
             savefig(bfig, plot_dir, f'bouton_{odor.replace(" @ ", "_")}_dynamics')
 
@@ -11834,12 +11918,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # quantities that should be adding to produce this? just b/c decay [doubt
             # it?]?
             # TODO TODO update label to be accurate
+            # TODO TODO TODO why does this line seem empty? is it beneath something
+            # else?
             _plot(ax, diff_ts, dIsdt.sel(odor=odor), label='APL dI/dt (total)')
 
             # TODO TODO want Is on same scale (as what are currently dI/dt quantities)
             # or not? separate axes (or move Vm to separate axes, and use twinx for
             # that?)?
             # TODO TODO update label to be accurate
+            # TODO TODO TODO why does this look like all 0? need a diff scale?
             _plot(ax, Is_sims.sel(odor=odor), label='APL current (I)')
 
             # twinx shares x-axis (so we can have a different Y-axis on right)
@@ -11895,10 +11982,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # TODO TODO figure out if Is_from_[kcs|pns] makes sense
             # (test_dynamics_indexing should soon start to get at this, to make sure
             # calculation is correct at least)
-
-        # TODO delete
-        #breakpoint()
-        #
 
     # TODO should i average starting a bit after stim start? seems it still take
     # a bit to peak. what did matt do?
@@ -13327,6 +13410,8 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
         pickle_path = param_dir / f'{k}.p'
         if isinstance(v, xr.DataArray):
             if save_dynamics:
+                # TODO delete (or does pickle have less memory / whatever issue than
+                # this does? even if i disable check=True?)
                 # TODO TODO move saving of all/most of these into fit_mb_model, so
                 # each can be removed from memory as soon as possible? (and each
                 # before making a copy of other variables, only processing [and
@@ -13337,7 +13422,12 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
                 # for just panel=control, the biggest of these files
                 # (spike_recordings.p / vm_sims.p) are just under a GB (768M)
                 # (this was before claw_sims, which is probably bigger...)
-                to_pickle(v, pickle_path, verbose=True)
+                #to_pickle(v, pickle_path, verbose=True)
+                #
+                # TODO TODO modify all other code that currently loads dynamics to work
+                # from these instead (just natmix_data/analysis.py?)
+                netcdf_path = param_dir / f'{k}.nc'
+                save_dataarray(v, netcdf_path, check=True)
 
                 # TODO switch to netcdf? would just need to reformat the index
                 # surrounding IO (prob don't wanna do both given the sizes, but
@@ -13438,6 +13528,8 @@ _fit_and_plot_seen_param_dirs = set()
 # mix for new kiwi/control data (at least for responses and correlation matrices)
 # (could just check for '+' character, to handle all cases)
 # TODO add flag to toggle showing all KC subtype mean response rates in all titles?
+# TODO TODO add option to also load saved dynamics into params (and replot, skipping
+# fit_mb_model)
 def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     sens_analysis_kws: Optional[ParamDict] = None, _in_sens_analysis: bool = False,
     try_cache: bool = True, plot_dirname: Optional[str] = None,
@@ -14535,6 +14627,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         if ylim is not None:
             ymin, ymax = ylim
+            # TODO TODO fix when running on new validation2 response calcs
+            # AssertionError: response_rates.max()=0.3117782909930716
             assert (response_rates <= ymax).all(), f'{response_rates.max()=}'
         else:
             ymin = 0
@@ -18543,9 +18637,15 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         )
     del new_panels, existing_panels
 
+    nondiag_panels = (
+        set(mean_est_df.columns.get_level_values('panel').unique()) - {diag_panel_str}
+    )
+    n_nondiag_panels = len(nondiag_panels)
     # TODO want to drop the panel column level? or want to use it inside calls to
     # fit_and_plot...? groupby kwarg for dropping, if i want former?
-    for panel, panel_est_df in mean_est_df.groupby('panel', axis='columns', sort=False):
+    for pi, (panel, panel_est_df) in enumerate(
+            mean_est_df.groupby('panel', axis='columns', sort=False)
+        ):
 
         if panel == diag_panel_str:
             continue
@@ -18833,8 +18933,8 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 # so shouldn't have to worry about dynamics trying to be saved for them
                 # (would require way too much memory + space)
                 #
-                # if could be specified per-element in fitandplot_model_kw_list, would need
-                # to del here if skip flag set
+                # if could be specified per-element in fitandplot_model_kw_list, would
+                # need to del here if skip flag set
                 assert 'return_dynamics' not in model_kws
                 # now defaulting to saving these dynamics (which do take a lot of
                 # storage space), unless `-s model-dynamics` are among skip option, when
@@ -18956,7 +19056,11 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             )
 
 
-        for model_kws in model_kw_list:
+        # TODO have denominator accurate when -M restricts # of models run? (currently
+        # to always just 1)
+        for model_kws in tqdm(model_kw_list, unit='model',
+                desc=f'panel {pi}/{n_nondiag_panels}'
+            ):
 
             model_kws = dict(model_kws)
 
@@ -20177,6 +20281,7 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool
         responses = responses[olddata_response_calc_to_use]
 
         # odors X cells
+        # TODO TODO fix/address underflow FloatingPointError here
         mean_responses = responses.groupby('stim').mean(dim='trials')
 
         # the reset_index(drop=True) is to remove cell numbers (which currently have

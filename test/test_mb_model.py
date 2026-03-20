@@ -20,6 +20,7 @@ import xarray as xr
 import al_util
 #
 from hong2p.util import pd_allclose, equals
+from hong2p.xarray import coords_equal
 import olfsysm as osm
 
 from al_util import warn, diag_panel_str, fly_cols, load_natmix_dff, data_root
@@ -28,8 +29,9 @@ from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
     read_param_csv, read_params, read_tuned_params, get_thr_and_APL_weights,
     variable_n_claw_options, dict_seq_product, get_connectome_wPNKC_params,
     format_model_params, eval_and_check_compatible, glomerulus_col, ParamDict,
-    format_weights, megamat_orn_deltas, paper_hemibrain_output_dir, get_dynamics,
-    get_time_index, fit_dff2spiking_from_remypaper_flies_and_hallem,
+    format_weights, megamat_orn_deltas, paper_megamat_orn_deltas,
+    paper_hemibrain_output_dir, get_dynamics, get_time_index,
+    fit_dff2spiking_from_remypaper_flies_and_hallem,
     scale_dff_to_est_spike_deltas_using_hallem, remypaper_dff2spiking_data_dir,
     written_since_proc_start, dff_to_spiking_model_choices_csv_name,
     dff_to_spiking_data_csv_name, read_parquet, MODEL_KW_LIST, QUICK_MODEL_KW_LIST,
@@ -2183,7 +2185,7 @@ def test_multiresponder_APL_boost(orn_deltas):
 # TODO also check we can repro 2025-03-19 validation2 (hemibrain) outputs?
 # 2025-02-19/validation2_hemibrain_model*.csv(s)? what are the CSVs i should check
 # against?
-def test_hemibrain_paper_repro(tmp_path, orn_deltas):
+def test_hemibrain_paper_repro(tmp_path):
     """
     Tests that, starting from committed estimated-ORN-spike-deltas, we can reproduce
     paper hemibrain model outputs (at least in terms of spike counts, which are among
@@ -2196,6 +2198,8 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
     test finishes (as contents can be quite large in total; enough to cause disk space
     issues).
     """
+    orn_deltas = paper_megamat_orn_deltas()
+
     kws = dict(
         # I would not normally recommend you hardcode any of these except perhaps
         # weight_divisor=20. The defaults target_sparsity=0.1 and
@@ -2336,9 +2340,11 @@ def test_hemibrain_paper_repro(tmp_path, orn_deltas):
 
 # TODO also check against 2025-02-19/validation2_uniform_model*.csv(s)? (no megamat data
 # under 2025-02-19)
-def test_uniform_paper_repro(tmp_path, orn_deltas):
+def test_uniform_paper_repro(tmp_path):
     """Similar purpose to `test_hemibrain_paper_repro`, but for uniform wPNKC outputs.
     """
+    orn_deltas = paper_megamat_orn_deltas()
+
     # TODO need .resolve() call? pytest only ever going to be called from repo root?
     sent_to_anoop = Path('data/sent_to_anoop').resolve()
 
@@ -3164,94 +3170,6 @@ def test_apl_weights_osm(apl_weights):
     #
 
 
-# TODO TODO move to hong2p.util (+ test)
-def coords_equal(x: xr.DataArray, y: xr.DataArray) -> bool:
-    """Checks set of dims and all variables under coordinates are equal.
-
-    For older versions of xarray without `Coordinates.equals()/.identical()`
-    """
-    # TODO when was Coordinates.equals()/identical() added? how to implementent in
-    # meantime, if i can't upgrade xarray? seems not in 0.19 (what i've been using) or
-    # 0.21 (last version before many vYYYY.MM.N versions, starting in 2022)
-    x = x.coords
-    y = y.coords
-
-    # NOTE: there can be elments of dims that are not in things checked below
-    # e.g. orns.reset_index('stim') still has a 'stim' dim, but no associated index
-    # levels ('odor' / 'panel' still exist as non-scalar metadata)
-    #
-    # TODO want to require order to be the same?
-    if set(x.dims) != set(y.dims):
-        return False
-
-    # if this fails, would need to decide which of keys/items/variables.
-    # i don't see any other attributes under dir(coords) (in 0.19) that seem useful.
-    # only other thinsg are dims/indexes/values()/xindexes/_data/_names
-    def _check_options_equiv(coords):
-        k0 = set(x for x in coords)
-        keys = set(coords.keys())
-        item_keys = set(k for k, v in coords.items())
-        var_keys = set(coords.variables.keys())
-        assert keys == k0
-        assert keys == item_keys
-        assert keys == var_keys
-
-    _check_options_equiv(x)
-    _check_options_equiv(y)
-
-    # TODO possible to have non-index elements still associated with one dimension
-    # (don't think so? can have non-scalar not in indices, but not sure any of those can
-    # be associated w/ a dimension?)? what does that look like? still wouldn't show up
-    # in .keys() / .variables i assume, since those only contain outer indices?
-    xk = set(x.keys())
-    yk = set(y.keys())
-    if xk != yk:
-        return False
-
-    # TODO also sort on names to allow this to not depend on order?
-    # (would prob be easiest to convert to frame and sort columns)
-    # NOTE: to_index() output has int index for stuff in dims but not in index
-    # associated names
-    #
-    # there should be a level for each variable in each dimension-specific multiindex
-    # here, and no longer any name for dimensions (at least not those [only?] containing
-    # MultiIndex values) (because index level names can't seem to be equal to dimension
-    # name)
-    x_index = x.to_index()
-    y_index = y.to_index()
-    if not x_index.equals(y_index):
-        return False
-
-    # we already checked above both of these same in x/y
-    dims = x.dims
-    index_names = x_index.names
-    for k in xk:
-        if k in index_names:
-            continue
-
-        # was name of dimension with a MultiIndex, and thus can not be a name of a
-        # variable to check (i.e. one of the index levels, or something not associated
-        # with a dimension)
-        if k in dims:
-            continue
-
-        vx = x[k]
-        vy = y[k]
-        if vx.shape == tuple():
-            assert vy.shape == tuple()
-            if vx.item() != vy.item():
-                return False
-
-        eq0 = vx.equals(vy)
-        # just checking we don't need to use anything other than .equals()
-        # could delete eventually
-        assert eq0 == np.array_equal(vx.values, vy.values)
-        if not eq0:
-            return False
-
-    return True
-
-
 # TODO TODO parametrize on at least two cases, one w/o boutons?
 # TODO also one w/o claws, ideally
 # (can probabably always test w/ connectome APL weights)
@@ -3327,17 +3245,6 @@ def test_dynamics_indexing(orn_deltas):
     orns = params['orn_sims'].sel(time_s=boutons.time_s)
 
     # TODO delete (move to unit test for coords_equal)
-    assert coords_equal(
-        orns.reset_index('stim').assign_coords({'x': 1}),
-        orns.reset_index('stim').assign_coords({'x': 1})
-    )
-    assert coords_equal(orns.reset_index('stim'), orns.reset_index('stim'))
-    assert not coords_equal(orns.reset_index('stim'), orns)
-    assert not coords_equal(
-        orns.reset_index('stim').assign_coords({'x': 1}),
-        orns.reset_index('stim').assign_coords({'x': 1, 'y': 0})
-    )
-    assert not coords_equal(orns, orns.reset_index('stim').assign_coords({'x': 1}))
     #
 
     # TODO also some kind of check against orn_deltas / wPNKC indices?

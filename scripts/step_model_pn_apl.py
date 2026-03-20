@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from hong2p.viz import matshow
-from hong2p.util import symlink
+from hong2p.util import symlink, subset_same_in_all_dicts
 import al_util
 from al_util import savefig, ParamDict
 from mb_model import (fit_and_plot_mb_model, megamat_orn_deltas, dict_seq_product,
@@ -35,7 +35,10 @@ MODEL_TUNE_KWS = dict_seq_product(
             use_connectome_APL_weights=True
         )
     ],
-    [dict(pn_claw_to_apl=True), dict()]
+    # pn_claw_to_apl=False is the default, and could normally be omitted, but doing it
+    # this way produces nicer directory names when using subset_same_in_all_dicts to
+    # exclude params
+    [dict(pn_claw_to_apl=True), dict(pn_claw_to_apl=False)]
 )
 
 OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
@@ -138,37 +141,15 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
         save_dynamics: if True, will save DataArray pickles of all model internal
             dynamic quantities (e.g. membrane potential of KCs over time, to each odor)
     """
-
     # outputs can be big and want to be able to save in arbitrary paths. just run script
     # from the folder you want the outputs in.
     plot_root = Path('.').resolve() / OUTPUT_ROOT_NAME
 
-    # TODO TODO other params in here? just format all params?
-    # TODO change format_model_params to exclude 'one-row-per-claw_True', when
-    # 'prat-claw_True'? might be more happy w/ including all params then
-    # TODO TODO all except exclude list of expected (+add format_model_params kwarg for
-    # that)? just hardcode in the expected kws here, rather than even having them passed
-    # in?
-    # TODO include all parts of the string (splitting on '__'?) that differ across any
-    # model variations run here?
-    plot_dir = plot_root / format_model_params({
-        'pn_claw_to_apl': kws.get('pn_claw_to_apl', 'False')
-    })
-    # TODO delete
-    '''
-    n1 = format_model_params({'pn_claw_to_apl': kws.get('pn_claw_to_apl', 'False')})
-    n2 = format_model_params(kws)
-    # TODO delete
-    print()
-    print(f'{n1=}')
-    print()
-    print(f'{n2=}')
-    print()
-    #breakpoint()
-    # TODO TODO TODO delete
-    return
-    '''
-    #
+    # TODO or just exclude hardcoded list, so directory names won't change if i add more
+    # params to the list (which would change subset that is same across all)?
+    same_in_all = set(subset_same_in_all_dicts(MODEL_TUNE_KWS).keys())
+    plot_dirname = format_model_params(kws, exclude=same_in_all)
+    plot_dir = plot_root / plot_dirname
 
     output_kws = dict(
         # if return_dynamics is True, fit_and_plot_mb_model will write DataArrays
@@ -186,10 +167,8 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
     # TODO delete? this should not really be a meaningful amount of total time now
     # TODO set fixed_thr/wAPLKC/etc instead? (would be faster)
     plot_dirname2sp_lr_coeff = {
-        # TODO add one for *_False
-        # TODO update now that all PN inputs (and KC claw inputs not filtered
-        # through spiking) are not getted filtered by Is and corresponding timeconstant
-        #'pn-claw-to-apl_True': 5.96433,
+        'pn-claw-to-apl_True': 5.90222,
+        # TODO TODO add one for *_False
     }
     dirname = plot_dir.name
     # TODO change handling in there so it doesn't matter (and so we can set any of these
@@ -350,6 +329,8 @@ def main():
         'sub-directories within.'
     )
     # TODO add (+implement) -c flag to check outputs match existing ones
+    # (can i use existing fns / code for that? want subset of behavior al_analysis.py
+    # supports with -c/-C)
     parser.add_argument('-i', '--ignore-existing', action='store_true',
         help='re-runs model (and at each parameter step), rather than just doing '
         'downstream analysis on existing saved outputs'
@@ -369,10 +350,7 @@ def main():
     # not the case (and for saving other things, if necessary)?
     al_util.verbose = True
 
-    # TODO TODO TODO load the new signed absmax version. i assume this is still the
-    # older paper version w/ mean (n_volumes=2?) response calc
-    # TODO TODO do i already have ORN deltas committed for that (add, if not)?
-    # (don't think so, but may already have generated on disk? check w/ -c/-C?)
+    # should now be loading the new signed absmax response calc version
     orn_deltas = megamat_orn_deltas()
 
     for kws in MODEL_TUNE_KWS:

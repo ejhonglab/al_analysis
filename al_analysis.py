@@ -96,7 +96,9 @@ from mb_model import model_mb_responses
 # this does catch what warnings.filterwarnings('error', 'invalid value') was supposed to
 # NOTE: filterwarnings (at least filtering message) did not seem able to catch these
 # numpy warnings, but this works
-np.seterr(all='raise')
+# TODO TODO restore (after fixing some underflow/etc errors. see mb_model remy kc stuff)
+#np.seterr(all='raise')
+np.seterr(invalid='raise')
 
 # NOTE: currently silencing this error around the two particular savefig calls (of
 # plot_rois output) that were triggering this.

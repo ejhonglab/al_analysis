@@ -11,6 +11,18 @@
 requires = ["setuptools >= 56.0"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "al_analysis"
+# required, and not sure if i can set up dynamically from git
+version = "0.0.0"
+# make this exactly 3.8 (i've been using 3.8.12)?
+requires-python = ">= 3.8"
+dynamic = ["dependencies"]
+# TODO TODO include dependencies here? dynamic, based on requirements.txt file?
+# (can not use -r / -e in lines in those files, which might be a problem w/ some of
+# current approaches)
+readme = "README.md"
+
 [tool.setuptools]
 # editable installs seem to work fine so far
 py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antennal_csv",
@@ -22,12 +34,8 @@ py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antenn
     "scripts.step_model_pn_apl"
 ]
 
-[project]
-name = "al_analysis"
-# required, and not sure if i can set up dynamically from git
-version = "0.0.0"
-# make this exactly 3.8 (i've been using 3.8.12)?
-#requires-python = ">= 3.8"
+[tools.setuptools.dynamic]
+dependencies = {file = "exact-requirements.txt"}
 
 # TODO reference requirements.txt? how to consolidate? seems that might not let me
 # install editable?
@@ -50,6 +58,7 @@ step_model_pn_apl = "scripts.step_model_pn_apl:main"
 [tool.pytest.ini_options]
 # TODO `minversion = "6.0"` (or whichever version. using 8.3.5, but prob doesn't
 # matter much)? (for what? delete?)
+minversion = "8.3.5"
 #
 # TODO -q already imply --no-header (not clear from -h output)?
 # may want some of other opts to reduce output (no summary?)
