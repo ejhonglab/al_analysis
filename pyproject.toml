@@ -1,20 +1,26 @@
 
 [build-system]
 # https://packaging.python.org/en/latest/guides/writing-pyproject-toml/
-# example had 61.0, but I had 56.0 installe, so replaced w/ that
 #
 # TODO maybe i should upgrade to 62 (or 64?)? this post seems to say one of those
 # required for editable installs to work correctly (seemed ok so far though... not sure
 # what is missing...)
 # https://stackoverflow.com/questions/69711606
 # my current pip version seems to be 22.3.1, so maybe thats why it's working (somewhat)?
-requires = ["setuptools >= 56.0"]
+# TODO try to get working w/ newer versions.
+# w/ current xarray==0.19.0 and pytest==8.3.5, get many warnings on test collection,
+# complaining about setuptools was also using 56.0 for a while. 61.0 also seems to work
+# in many ways (and may not have even produced those warnings on hal?) but did produce
+# those pytest test collection warnings in atlas setup.
+requires = ["setuptools == 58.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "al_analysis"
 # required, and not sure if i can set up dynamically from git
 version = "0.0.0"
+# TODO try to get working w/ newer pythons (or test some dependencies w/ them first,
+# probably starting w/ just build of olfsysm)
 # make this exactly 3.8 (i've been using 3.8.12)?
 requires-python = ">= 3.8"
 dynamic = ["dependencies"]
@@ -45,12 +51,14 @@ dependencies = {file = "exact-requirements.txt"}
 csvinfo = "load_antennal_csv:csvinfo_cli"
 # TODO delete?
 #csvdiff = "load_antennal_csv:csvdiff_cli"
-#
+
+plot-dynamics = "mb_model:load_and_plot_dynamics_cli"
+
 # doesn't seem we need an __init__.py in scripts/ or anything
-# ah, but just b/c pip completed the install, doesn't mean this will run. script it
-# generated seems to be garbage. now that i've added scripts.step_model_pn_apl to
-# modules list above, should work, although don't love the global 'scripts' package
-# name.
+# ah, but just b/c pip completed the install (w/o 'scripts.' prefix here), doesn't mean
+# this will run. script it generated seems to be garbage (though i didn't try running
+# it...). now that i've added scripts.step_model_pn_apl to modules list above, should
+# work, although don't love the global 'scripts' package name.
 # DO need the "scripts." prefix, despite "scripts.step_model_pn_apl" being listed in
 # py-modules above
 step_model_pn_apl = "scripts.step_model_pn_apl:main"

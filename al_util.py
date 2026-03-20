@@ -1616,19 +1616,22 @@ def should_ignore_existing(name: str, explicit_only: bool = False) -> bool:
 
 # TODO test still works when used from al_analysis (al_analysis fns still using this
 # _dirs_to_delete_if_empty, referring to it w/ `al_util.` prefix now)
-_dirs_to_delete_if_empty = []
-# TODO work w/ pathlib input?
-def makedirs(d):
+_dirs_to_delete_if_empty: List[Path] = []
+# TODO add test confirming it also makes parents (i think that was the whole point of
+# using os.makedirs)
+def makedirs(path: Pathlike) -> Path:
     """Make directory if it does not exist, and register for deletion if empty.
     """
+    path = Path(path)
     # TODO make sure if we make a directory as well as some of its parent directories,
     # that if (all) the leaf dirs are empty, the whole empty tree gets deleted
     # TODO shortcircuit to returning if we already made it this run, to avoid the checks
     # on subsequent calls? they probably aren't a big deal though...
-    os.makedirs(d, exist_ok=True)
+    os.makedirs(path, exist_ok=True)
     # TODO only do this if we actually made the directory in the above call?
     # not sure we really care for empty dirs in any circumstances tho...
-    _dirs_to_delete_if_empty.append(d)
+    _dirs_to_delete_if_empty.append(path)
+    return path
 
 
 save_figs = True

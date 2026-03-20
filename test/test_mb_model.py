@@ -45,11 +45,6 @@ from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
 
 # You can set these either 0/1 in prefix before pytest command.
 #
-# Can be slightly faster, and can avoid some of the main potential memory issues by
-# skipping plotting code, since main issue is loading claw_sims into fit_mb_model, for
-# plot_example_dynamics=True path.  If this is not set, will plot if QUICK=False (and
-# not otherwise).
-PLOT: bool = bool(int(os.environ.get('PLOT', True)))
 # TODO do allow certain caches being used if another flag (or this?) is set? would
 # need centrally somewhere though... want to skip some of the longer tuning cases
 #
@@ -57,7 +52,20 @@ PLOT: bool = bool(int(os.environ.get('PLOT', True)))
 # and disables some plotting, if True.
 QUICK: bool = bool(int(os.environ.get('QUICK', False)))
 
-if not QUICK and PLOT:
+# Can be slightly faster, and can avoid some of the main potential memory issues by
+# skipping plotting code, since main issue is loading claw_sims into fit_mb_model, for
+# plot_example_dynamics=True path.  If this is not set, will plot if QUICK=False (and
+# not otherwise).
+_plot = os.environ.get('PLOT')
+if _plot is None:
+    if QUICK:
+        PLOT: bool = False
+    else:
+        PLOT: bool = True
+else:
+    PLOT: bool = bool(int(_plot))
+
+if PLOT:
     # TODO keep return_dynamics=True here? (will also lead to them being saved, at least
     # temporarily)
     PLOT_KWS = dict(make_plots=True, plot_example_dynamics=True, return_dynamics=True)
@@ -1610,6 +1618,11 @@ def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas, kws):
     plot_root = tmp_path
 
     params = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, **kws)
+    # are dynamics in params here, when return_dynamics=True is in PLOT_KWS? no, doesn't
+    # seem so.
+    # TODO so anything i can do about current memory issue killing one test in second
+    # call here, in prat_boutons case? (ok, well doesn't seem to be a big enough deal
+    # that it is always getting killed, with ~21GB available)
 
     # TODO need to define this separately for fixed-inh vs not case? likely...
     # (but may only need to check once b/c we are already checking params from the two

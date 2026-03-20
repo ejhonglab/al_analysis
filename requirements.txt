@@ -1,4 +1,0 @@
-# See README for steps necessary before installing these dependencies.
-# (to get suite2p set up well, via conda)
--r common-requirements.txt
--r https-hong-requirements.txt
