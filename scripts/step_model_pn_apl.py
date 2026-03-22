@@ -22,7 +22,7 @@ from tqdm import tqdm
 from hong2p.viz import matshow
 from hong2p.util import symlink, subset_same_in_all_dicts
 import al_util
-from al_util import savefig, ParamDict
+from al_util import savefig, ParamDict, warn
 from mb_model import (fit_and_plot_mb_model, megamat_orn_deltas, dict_seq_product,
     format_weights, format_model_params, get_thr_and_APL_weights,
     save_and_remove_from_param_dict, drop_silent_model_cells, glomerulus_col
@@ -125,7 +125,8 @@ def analyze_outputs(plot_dir: Path) -> None:
 
 
 def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *,
-    ignore_existing: bool = False, save_dynamics: bool = False) -> None:
+    ignore_existing: bool = False, save_dynamics: bool = False,
+    tuned_only: bool = False) -> None:
     # TODO doc
     """Runs `orn_deltas`
     Args:
@@ -164,23 +165,6 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
         plot_example_dynamics=True, make_plots=True, connectome_weight_plots=False
     )
 
-    # TODO delete? this should not really be a meaningful amount of total time now
-    # TODO set fixed_thr/wAPLKC/etc instead? (would be faster)
-    plot_dirname2sp_lr_coeff = {
-        'pn-claw-to-apl_True': 5.90222,
-        # TODO TODO add one for *_False
-    }
-    dirname = plot_dir.name
-    # TODO change handling in there so it doesn't matter (and so we can set any of these
-    # None to same effect)?
-    # NOTE: with how tuned (output) and input params are checked for equality currently
-    # in fit_and_plot_mb_model, we need to actually not pass `sp_lr_coeff`, rather than
-    # setting it None like we might otherwise do for default
-    sp_lr_coeff = None
-    if dirname in plot_dirname2sp_lr_coeff:
-        # TODO TODO warn if we are using this (/delete?)
-        sp_lr_coeff = plot_dirname2sp_lr_coeff[dirname]
-
     # TODO add fit_mb_model option to assert output is still within target sparsity,
     # when passing in fixed_thr and wAPLKC (to check we are still within what would
     # converge tuning, even if skipping it)? (-> use here, if not tuning)
@@ -208,12 +192,15 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
     # for PN>APL and APL>PN weights)
     params = fit_and_plot_mb_model(plot_root, plot_dirname=plot_dir.name,
         orn_deltas=orn_deltas, verbose=True, try_cache=not ignore_existing,
-        **kws, **output_kws, sp_lr_coeff=sp_lr_coeff,
-        return_olfsysm_vars=return_olfsysm_vars, delete_pretime=delete_pretime,
-        max_iters=max_iters
+        **kws, **output_kws, return_olfsysm_vars=return_olfsysm_vars,
+        delete_pretime=delete_pretime, max_iters=max_iters
     )
+    if tuned_only:
+        warn('skipping all PN<>APL weight sweeping, because tuned_only=True')
+        return
+
     # TODO add option just to reanalyze any saved dynamics, if i factor out that
-    # plotting code from fit_mb_model?
+    # plotting code from fit_mb_model? (do have plot-dynamics CLI for that now)
     thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
     print(f'tuned thr and APL weights: {pformat(thr_and_apl_kws)}')
     wAPLPN_scale = thr_and_apl_kws['wAPLPN']
@@ -320,7 +307,7 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
 
 
 def main():
-    parser = argparse.ArgumentParser('will run models with the following '
+    parser = argparse.ArgumentParser(description='will run models with the following '
         f'parameters:\n{pformat(MODEL_TUNE_KWS)}\n...on precomputed megamat est spike '
         'deltas, varying scales of PN>APL and APL>PN weights in a grid around tuned '
         'values. Initial "tuned" values are chosen at somewhat arbitrary initial offset'
@@ -340,11 +327,16 @@ def main():
         help='saves DataArray pickles of internal model dynamics (in '
         'fit_and_plot_mb_model, via setting fit_mb_model return_dynamics=True)'
     )
+    parser.add_argument('-t', '--tuned-only', action='store_true',
+        help='only runs the initial tuned version of each model parameters, skipping '
+        'all of the stepping of PN>APL and APL>PN weight scales. mainly for testing.'
+    )
     # TODO add flag to reanalyze / plot dynamics (if i factor out the
     # plot_example_dynamics code from fit_mb_model)?
     args = parser.parse_args()
     ignore_existing = args.ignore_existing
     save_dynamics = args.save_dynamics
+    tuned_only = args.tuned_only
 
     # TODO is this required to see when we are saving figs (think so)? change so that's
     # not the case (and for saving other things, if necessary)?
@@ -356,7 +348,8 @@ def main():
     for kws in MODEL_TUNE_KWS:
         print(f'{kws=}')
         step_pn_apl_weights_around_tuned(orn_deltas, kws,
-            ignore_existing=ignore_existing, save_dynamics=save_dynamics
+            ignore_existing=ignore_existing, save_dynamics=save_dynamics,
+            tuned_only=tuned_only
         )
 
 

@@ -2296,12 +2296,9 @@ def test_hemibrain_paper_repro(tmp_path):
     # ipdb> b2.index.difference(a2.index)
     # Index(['drop_kcs_with_no_input'], dtype='object')
 
-    a2 = a2.to_dict()
-    b2 = b2.to_dict()
     assert_param_dicts_equal(a2, b2, only_check_overlapping_keys=True,
         check_with_allclose=check_with_allclose
     )
-    #
 
     # NOTE: despite using read_pickle, this is a np.ndarray (shape (1837, 1))
     spont1 = pd.read_pickle(paper_hemibrain_output_dir / 'kc_spont_in.p')
@@ -2434,12 +2431,12 @@ def test_uniform_paper_repro(tmp_path):
             # also works w/ non-str input?) (eval requires str input) (/delete)
             # TODO switch handling? does de-serialize as a string, which needs eval'd...
             # (to array, or what?)
-            wAPLKC = eval(params['wAPLKC'])
-            wAPLKC2 = eval(params2['wAPLKC'])
+            wAPLKC = params['wAPLKC']
+            wAPLKC2 = params2['wAPLKC']
             assert wAPLKC[:len(wAPLKC2)] == wAPLKC2
 
-            wKCAPL = eval(params['wKCAPL'])
-            wKCAPL2 = eval(params2['wKCAPL'])
+            wKCAPL = params['wKCAPL']
+            wKCAPL2 = params2['wKCAPL']
             assert wKCAPL[:len(wKCAPL2)] == wKCAPL2
 
             # TODO TODO check other parts of params (vs params2) as well
@@ -2448,7 +2445,7 @@ def test_uniform_paper_repro(tmp_path):
             #breakpoint()
             #
 
-            # TODO TODO TODO move this check before check of APL<>KC weights, as might
+            # TODO TODO move this check before check of APL<>KC weights, as might
             # catch root cause earlier
             #
             # TODO actually check this against 2024-05-16 dir contents? that seems like

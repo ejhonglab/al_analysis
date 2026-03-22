@@ -20,6 +20,7 @@ See also docstring for `connectome_wPNKC` below.repo_root
 
 from argparse import ArgumentParser
 from ast import literal_eval
+from collections import Counter
 import filecmp
 import itertools
 from io import StringIO
@@ -84,7 +85,7 @@ from termcolor import cprint, COLORS
 from drosolf import orns
 from hong2p import olf, util, viz
 from hong2p.xarray import save_dataarray as _save_dataarray, load_dataarray
-from hong2p.olf import solvent_str, drop_solvent_odors
+from hong2p.olf import solvent_str, drop_solvent_odors, odor_level_values
 from hong2p.viz import dff_latex, no_constrained_layout
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
     reindex, is_scalar, pd_index_equal
@@ -197,6 +198,9 @@ paper_validation2_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-19/'
     'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
 )
 
+onestep_lr_cache_path: Path = Path('~/.mb_model_onestep_lr_cache.json').expanduser()
+onestep_lr_key: str = 'sp_lr_coeff_to_tune_in_one_iter'
+
 # TODO support arbitrary # of inputs? (how to type hint all elements of e.g. *args are
 # of same type?)
 # TODO move to hong2p.util?
@@ -231,14 +235,15 @@ def save_dataarray(*args, **kwargs) -> None:
 # TODO factor to share this type w/ somewhere else?
 # TODO and maybe share the float | list-of-float part w/ fit_and_plot... kwargs, then
 # union further w/ series if keeping that here?
-def format_weights(weights: Optional[Union[float, pd.Series, List[float]]], name: str
-    ) -> str:
+def format_weights(weights: Optional[Union[float, pd.Series, List[float]]], name: str,
+    *, sep: str = ', ') -> str:
     # TODO exclude the ', ' prefix from output?
 
     if weights is None:
         return ''
 
     # TODO share this w/ format_model_params + elsewhere?
+    # TODO or .2g? .3g?
     float_fmt = '.2f'
 
     # TODO share some code w/ fn to put some weight info in titles ("debug suffix")?
@@ -253,15 +258,15 @@ def format_weights(weights: Optional[Union[float, pd.Series, List[float]]], name
         assert all(is_scalar(x) for x in weights)
         weight = np.mean(weights)
 
-    param_str = f', {name}={weight:{float_fmt}}'
+    param_str = f'{sep}{name}={weight:{float_fmt}}'
     return param_str
 
 
 # TODO replace (/combine w/) util.format_params?
-def normalize_param_str(param_str: str) -> str:
+def normalize_param_str(param_str: str, *, sep: str = ', ') -> str:
     """Processes `format_model_params` output to make more friendly for code + filenames
     """
-    return param_str.strip(', ').replace('_','-').replace(', ','__').replace('=','_')
+    return param_str.replace('_', '-').replace(sep, '__').replace('=', '_')
 
 
 # in fit_and_plot_mb_model, excluded from param_str and params_for_csv.
@@ -286,6 +291,24 @@ exclude_params = {
     '_wAPLKC',
     '_wKCAPL',
 
+    'responses_to',
+    'tune_from',
+    'drop_silent_cells_before_analyses',
+    'output_dir',
+    'used_model_cache',
+    'tuning_iters',
+    'sparsity',
+    'apltune_subsample',
+    'sp_acc',
+    'megamat_sparsity',
+
+    # TODO keep these here?
+    'wAPLKC_scale',
+    'wKCAPL_scale',
+    'wAPLPN_scale',
+    'wPNAPL_scale',
+    #
+
     'max_iters',
     'sp_lr_coeff',
 
@@ -303,8 +326,9 @@ exclude_params = {
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
-def format_model_params(model_kws: ParamDict, *, human: bool = False,
-    exclude: Optional[Sequence[str]] = None) -> str:
+def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str = ', ',
+    inh_sep: Optional[str] = None, exclude: Optional[Union[Sequence[str], bool]] = None
+    ) -> str:
     """Returns str unique within most important model parameters.
 
     By default `exclude_params` and (internal) `exclude_if_value_matches` are used to
@@ -330,9 +354,18 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False,
             If True, will be more suitable for human readable titles/labels/etc.
 
         exclude: if passed, will exclude these keys (on top of default excludes from
-            `exclude_params`)
+            `exclude_params`). can also be set False, to ignore the default module-level
+            `exclude_params`.
+
+        sep: separator to use between parameter key>value pairs
+
+        inh_sep: separator to use between fixed_thr and all APL weight parameters, which
+            should all be at end. defaults to `sep`
     """
     model_kws = dict(model_kws)
+
+    if inh_sep is None:
+        inh_sep = sep
 
     fixed_thr = model_kws.pop('fixed_thr', None)
     wAPLKC = model_kws.pop('wAPLKC', None)
@@ -365,33 +398,36 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False,
     }
 
     if exclude is None:
-        exclude = exclude_params
+        exclude = set(exclude_params)
+    elif exclude == False:
+        exclude = set()
     else:
         exclude = exclude_params | set(exclude)
 
+    if model_kws.get('prat_claws', False):
+        exclude.add('one_row_per_claw')
+
+    # TODO add option to wrap (along logical boundaries) at certain line length?
+    # (to group params into as few lines as possible)
+
     # TODO sort params first? (so changing order in code doesn't cause
     # cache miss...)
-    # TODO why adding [''] again? why not just prepend ', ' to output if i want?
-    # TODO TODO limit precision of all floats by default?
-    param_str = ', '.join([''] + [
-        f'{param_abbrevs[k] if k in param_abbrevs else k}={v}'
-        for k, v in model_kws.items() if k not in exclude and
+    # TODO share this (or some) float format specifier w/ other places?
+    param_str = sep.join([(f'{param_abbrevs[k] if k in param_abbrevs else k}=' +
+            (f'{v:.2f}' if isinstance(v, float) else f'{v}')
+        ) for k, v in model_kws.items() if k not in exclude and
         (k not in exclude_if_value_matches or v != exclude_if_value_matches[k])
     ])
-
     if n_seeds > 1:
-        param_str += f', n_seeds={n_seeds}'
+        param_str += f'{sep}n_seeds={n_seeds}'
 
     if fixed_thr is not None or wAPLKC is not None:
         assert fixed_thr is not None and wAPLKC is not None
 
         # TODO maybe only do if _in_sens_analysis. don't think i actually want in
         # hemibrain case (other than within sens analysis subcalls)
-        #
-        # TODO need to support int type too (in both of the two isinstance calls below)?
-        # isinstance(<int>, float) is False
         if n_seeds == 1:
-            if isinstance(fixed_thr, float):
+            if is_scalar(fixed_thr):
                 # TODO check that variable_n_claws case (w/ n_seeds=1) ends up here, and
                 # not with a list-of-float (or change logic of conditional to handle
                 # n_seeds=1 case below too)
@@ -410,8 +446,6 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False,
             # to need/support both)? this only used for dir names, right?
             else:
                 raise ValueError('unexpected fixed_thr type: {type(fixed_thr)}')
-
-            param_str += f', {fixed_thr_str}'
         else:
             variable_n_claws = model_kws['pn2kc_connections'] in variable_n_claw_options
             assert variable_n_claws
@@ -422,14 +456,15 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False,
             #
             # TODO refactor
             assert isinstance(fixed_thr, list)
-            assert all(isinstance(x, float) for x in fixed_thr)
+            assert all(is_scalar(x) for x in fixed_thr)
 
             # TODO refactor
             fixed_thr_str = f'mean_thr={np.mean(fixed_thr):.0f}'
-            param_str += f', {fixed_thr_str}'
 
-    param_str += format_weights(wAPLKC, 'wAPLKC')
-    param_str += format_weights(wAPLPN, 'wAPLPN')
+        param_str += f'{sep}{fixed_thr_str}'
+
+    param_str += format_weights(wAPLKC, 'wAPLKC', sep=inh_sep)
+    param_str += format_weights(wAPLPN, 'wAPLPN', sep=inh_sep)
 
     # simplifies some things to always have a non-empty string output (creation of
     # directories, etc)
@@ -437,9 +472,14 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False,
         param_str = 'default'
 
     if not human:
-        param_str = normalize_param_str(param_str)
+        param_str = normalize_param_str(param_str, sep=sep)
 
     return param_str
+
+
+def model_id2title(model_id: str) -> str:
+    parts = model_id.split('__')
+    return '\n'.join(parts).replace('_', ': ').replace('-', '_')
 
 
 def check_model_kws_unique(model_kw_list: List[ParamDict]) -> None:
@@ -451,7 +491,9 @@ def check_model_kws_unique(model_kw_list: List[ParamDict]) -> None:
     # not in `format_model_params` output (e.g. b/c in `mb_model.exclude_params`), would
     # currently have to make a separate test for that (or manually assign ID to that
     # case, maybe)
-    assert len(set(format_model_params(x) for x in model_kw_list)) == len(model_kw_list)
+    counts = Counter(format_model_params(x) for x in model_kw_list)
+    assert len(counts) == len(model_kw_list), \
+        f'duplicate model IDs: {[k for k,v in counts.items() if v > 1]}'
 
 
 BOUTON_MODEL_KW_LIST: List[ParamDict] = dict_seq_product([
@@ -835,20 +877,24 @@ def get_APL_weights(param_dict: ParamDict, kws: ParamDict) -> Dict[str,
     Will always contain 'wAPLKC' key, and will only currently contain 'wKCAPL' for
     one-row-per-claw case, where code may currently require this passed separately.
     """
-    # TODO share defaults w/ fit_mb_model?
-    one_row_per_claw = kws.get('one_row_per_claw', False)
-
-    # TODO refactor
-    variable_n_claws = kws.get('pn2kc_connections') in variable_n_claw_options
-
-    # TODO share defaults w/ fit_mb_model?
-    use_connectome_APL_weights = kws.get('use_connectome_APL_weights', False)
+    # TODO try to get this fn (or one like it) to work w/o kws inputs
+    # (care? what is diff between param_dict and kws actually?)
+    if kws is not None:
+        one_row_per_claw = kws.get('one_row_per_claw', False)
+        # TODO share defaults w/ fit_mb_model?
+        variable_n_claws = kws.get('pn2kc_connections') in variable_n_claw_options
+        use_connectome_APL_weights = kws.get('use_connectome_APL_weights', False)
 
     # TODO just test whether we have *_scale params or not, rather than requiring kws to
     # be passed in?
 
     apl_params = dict()
-    if use_connectome_APL_weights:
+    if 'wAPLKC_scale' in param_dict:
+        if kws is not None:
+            assert use_connectome_APL_weights
+        else:
+            use_connectome_APL_weights = True
+
         # TODO so this assumes that wAPLKC is from connectome inside fit_mb_model, and
         # there is no current support for passing in vector wAPLKC, right?
         wAPLKC = param_dict['wAPLKC_scale']
@@ -869,6 +915,11 @@ def get_APL_weights(param_dict: ParamDict, kws: ParamDict) -> Dict[str,
         wKCAPL = param_dict['wKCAPL_scale']
         #
     else:
+        if kws is not None:
+            assert not use_connectome_APL_weights
+        else:
+            use_connectome_APL_weights = False
+
         assert 'wAPLKC_scale' not in param_dict
         assert 'wKCAPL_scale' not in param_dict
 
@@ -889,6 +940,7 @@ def get_APL_weights(param_dict: ParamDict, kws: ParamDict) -> Dict[str,
         # also, unlikely that code will ever really be used w/o connectome APL anyway.
 
         # TODO delete
+        # TODO TODO update to not require kws
         if _hack and one_row_per_claw and not use_connectome_APL_weights:
             # happens whether prat_claws=True/False, but still don't really care much
             # about these cases
@@ -913,31 +965,6 @@ def get_APL_weights(param_dict: ParamDict, kws: ParamDict) -> Dict[str,
     # TODO do i always have wKCAPL (will i need to default to None above, and only set
     # when we have it?)
     check_weight_type(wKCAPL, _hack=True)
-
-    # TODO remove this bit if i can confirm tianpei's code only needs wAPLKC
-    # passed in, or if i can change it to work that way (then could just return
-    # single value for wAPLKC, rather than a dict) (that was more for passing output
-    # to new calls, not [i think] checking output of calls [where wKCAPL included
-    # regardless of whether prat_claws=True/False])
-    # TODO and if only want this for tianpei path, also check prat_claws=False here?
-    # TODO update prat_claws defaults here if i do in fit_mb_model too
-    # (currently default = False)
-    # TODO delete. need more cases than this.
-    #tianpei = one_row_per_claw and not kws.get('prat_claws', False)
-
-    # TODO delete. fixed by dividing by kc.N in olfsysm def of wKCAPL_scale from
-    # wAPLKC_scale
-    # TODO also include tianpei here at least?
-    #if one_row_per_claw and use_connectome_APL_weights:
-    #    warn('need to pass wKCAPL (on top of wAPLKC), in order to reproduce this '
-    #        'output while skipping APL tuning! wKCAPL calc may be wrong in this path '
-    #        'in general!'
-    #    )
-    #    # TODO TODO does need for this mean my calc is wrong? currently assume i
-    #    # can just pass wAPLKC scalar to fit_mb_model, and derive other by dividing by
-    #    # # KCs
-    #    apl_params['wKCAPL'] = wKCAPL
-    #
 
     if kws.get('prat_boutons', False) and not kws.get('per_claw_pn_apl_weights', False):
         # wAPLPN/wPNAPL will be of length # boutons (which should be # cols of wPNKC)
@@ -998,6 +1025,7 @@ def get_thr_and_APL_weights(param_dict: ParamDict, kws: ParamDict) -> ParamDict:
     """
     fixed_thr = param_dict['fixed_thr']
 
+    # TODO TODO allow this all to work w/ kws None (optional)
     variable_n_claws = kws.get('pn2kc_connections') in variable_n_claw_options
     # NOTE: get_APL_weights makes similar checks on wAPLKC
     # TODO refactor to share w/ it
@@ -4627,18 +4655,15 @@ def fmt_frac(x: int, y: int, *, den: bool = True, dec: bool = True) -> str:
     return msg
 
 
-# TODO TODO TODO add option to actually return outputs of length # of boutons (probably
-# w/ index same as wPNKC.columns there), as one option in prat_boutons=True case
 def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
-    # TODO TODO TODO implement per_claw_pn_apl_weights=False
     prat_boutons: bool = False, per_claw_pn_apl_weights: bool = False,
     # TODO delete
     #pn_apl_scale_factor: float = 1.0,
     #
     wPNKC: Optional[pd.DataFrame] = None, kc_types: Optional[pd.Series] = None,
     kc_to_claws: Optional[List[List[int]]] = None, _drop_glom_with_plus: bool = True,
-    plot_dir: Optional[Path] = None) -> Tuple[pd.Series, pd.Series, Optional[pd.Series],
-    Optional[pd.Series]]:
+    plot_dir: Optional[Path] = None, verbose: bool = True
+    ) -> Tuple[pd.Series, pd.Series, Optional[pd.Series], Optional[pd.Series]]:
     # TODO add param to support imputing something non-zero (min_weight?) for KC IDs in
     # wPNKC but not APL-KC data
     # TODO actually want to support weight_divisor (prob not, especially if i'm
@@ -5361,11 +5386,12 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 # TODO delete. just to sanity check merging.
                 premerge_apl2pn = apl2pn_df.copy()
                 premerge_pn2apl = pn2apl_df.copy()
-                print()
-                print(f'{premerge_apl2pn.shape=}')
-                print(f'{premerge_pn2apl.shape=}')
-                print(f'{claw2bouton.shape=}')
-                print()
+                if verbose:
+                    print()
+                    print(f'{premerge_apl2pn.shape=}')
+                    print(f'{premerge_pn2apl.shape=}')
+                    print(f'{claw2bouton.shape=}')
+                    print()
                 #
                 # ipdb> len(claw2bouton)
                 # 10216
@@ -5444,9 +5470,10 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 #
 
                 # TODO delete
-                print(f'{pn2apl_df.shape=}')
-                print(f'{apl2pn_df.shape=}')
-                print()
+                if verbose:
+                    print(f'{pn2apl_df.shape=}')
+                    print(f'{apl2pn_df.shape=}')
+                    print()
                 #print(f'{pn2apl_df.isna().sum()=}')
                 #print(f'{apl2pn_df.isna().sum()=}')
                 #
@@ -5460,7 +5487,8 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 # TODO double check that (after this merging), we have more rows
                 # (one for each claw) (should be fine)
                 # TODO delete
-                print('double check PN<>APL merging w/ claw index')
+                if verbose:
+                    print('double check PN<>APL merging w/ claw index')
                 #breakpoint()
                 #
 
@@ -6380,10 +6408,11 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         assert np.isclose(wKCAPL.groupby('kc_id').sum().mean(), 1)
 
         # TODO delete
-        print()
-        print('connectome_APL_weights:')
-        print(f'{wAPLKC.mean()=}')
-        print(f'{wKCAPL.mean()=}')
+        if verbose:
+            print()
+            print('connectome_APL_weights:')
+            print(f'{wAPLKC.mean()=}')
+            print(f'{wKCAPL.mean()=}')
         #
 
         # TODO even need this in any prat_boutons case? don't think there is still
@@ -6437,14 +6466,15 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 wPNAPL_normalization_factor = n_kcs / wPNAPL.sum()
 
             # TODO delete
-            print()
-            print('before')
-            print(f'{wAPLPN.mean()=}')
-            print(f'{wAPLPN.sum()=}')
-            print(f'{wAPLPN_normalization_factor=}')
-            print(f'{wPNAPL.mean()=}')
-            print(f'{wPNAPL.sum()=}')
-            print(f'{wPNAPL_normalization_factor=}')
+            if verbose:
+                print()
+                print('before')
+                print(f'{wAPLPN.mean()=}')
+                print(f'{wAPLPN.sum()=}')
+                print(f'{wAPLPN_normalization_factor=}')
+                print(f'{wPNAPL.mean()=}')
+                print(f'{wPNAPL.sum()=}')
+                print(f'{wPNAPL_normalization_factor=}')
             #
 
             # TODO delete
@@ -6455,13 +6485,14 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             wPNAPL = wPNAPL * wPNAPL_normalization_factor
 
             # TODO delete
-            print()
-            print('after')
-            print(f'{wAPLPN.mean()=}')
-            print(f'{wAPLPN.sum()=}')
-            print(f'{wPNAPL.mean()=}')
-            print(f'{wPNAPL.sum()=}')
-            print()
+            if verbose:
+                print()
+                print('after')
+                print(f'{wAPLPN.mean()=}')
+                print(f'{wAPLPN.sum()=}')
+                print(f'{wPNAPL.mean()=}')
+                print(f'{wPNAPL.sum()=}')
+                print()
             #
 
             # TODO delete
@@ -7006,9 +7037,10 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     # TODO TODO TODO look more into earlier thing where not dropping
                     # claws / syns in pn<>apl data
                     # TODO delete
-                    print('double check my + prat filtering of PN<>APL data (+ my '
-                        'merging above)'
-                    )
+                    if verbose:
+                        print('double check my + prat filtering of PN<>APL data (+ my '
+                            'merging above)'
+                        )
                     #
                     # TODO is it weird that this is true? or just have 0's for some?
                     assert pnapl_syns_per_glom.index.equals(aplpn_syns_per_glom.index)
@@ -7255,8 +7287,11 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
         # ...
         #     w = np.exp(-dists / dists[e_neighbor])
         # RuntimeWarning: invalid value encountered in divide
+        # ...
+        #     w = np.exp(-dists / dists[e_neighbor])
+        # FloatingPointError: invalid value encountered in divide
         except (ValueError, np.linalg.LinAlgError, UserWarning, IndexError,
-            RuntimeWarning) as err:
+            RuntimeWarning, FloatingPointError) as err:
 
             msg = str(err)
 
@@ -7283,7 +7318,7 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
             # values to each odor?
 
             warn('falling back to sorting timeseries by their max value')
-            order = 'max sorted'
+            order = 'max sorted\n(clustering failed)'
             # TODO maybe some plots i just always want in this order? (/both?)
             return (
                 df.loc[df.max(axis='columns').sort_values(ascending=False).index],
@@ -7328,10 +7363,12 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
 
 
 # TODO want diff default cmap here?
-def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
+def cluster_timeseries_and_plot(df: pd.DataFrame,
+    fixed_order: Optional[pd.Index] = None, *, ax: Optional[Axes] = None,
     cmap: Optional[CMap] = 'gray_r', imshow_kws: Optional[KwargDict] = None,
     vmin: Optional[float] = None, vmax: Optional[float] = None, verbose: bool = False,
-    _extent: bool = True, ylabel_fontsize=10, **kwargs) -> Optional[AxesImage]:
+    _extent: bool = True, ylabel_fontsize=10, **kwargs
+    ) -> Tuple[Optional[AxesImage], pd.Index]:
     """
     Args:
         **kwargs: passed to `cluster_timeseries`
@@ -7374,11 +7411,22 @@ def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
         assert not time_index.isna().any()
         xlim = (time_index.min(), time_index.max())
 
-    clustered, order = cluster_timeseries(df)
-    # errors/warnings will be handled inside cluster_timeseries, returning None in all
-    # those cases (now that we are falling back to sorting by max, this won't happen)
-    if clustered is None:
-        return None
+    if fixed_order is None:
+        # TODO rename order -> order_method or something?
+        clustered, order = cluster_timeseries(df)
+
+        # errors/warnings will be handled inside cluster_timeseries, returning None in
+        # all those cases (now that we are falling back to sorting by max, this won't
+        # happen)
+        if clustered is None:
+            return None
+    else:
+        assert df.index.sort_values().equals(fixed_order.sort_values()), (
+            'fixed_order must have the same elements as df.index, just in different '
+            'order'
+        )
+        clustered = df.loc[fixed_order]
+        order = 'fixed'
 
     if ax is None:
         fig = plt.figure(figsize=(12,5))
@@ -7425,10 +7473,9 @@ def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
 
     for_2nd_ylabel = ax.twinx()
     for_2nd_ylabel.set_yticklabels([])
-    # TODO refactor to share fontsize
     for_2nd_ylabel.set_ylabel(order, fontsize=ylabel_fontsize)
 
-    return im
+    return im, clustered.index.copy()
 
 
 # for some more recent data (and maybe old too), lower n_PCs seems to make it less
@@ -7441,7 +7488,7 @@ def cluster_timeseries_and_plot(df: pd.DataFrame, *, ax: Optional[Axes] = None,
 # one-row-per-claw_True__prat-claws_True__prat-boutons_True__connectome-APL_True__pn-apl-scale-factor_1000
 # code? cause it feels like it might not be, if i need to keep tweaking this...
 def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 4, n_clusters: int = 3,
-    **kwargs) -> Optional[AxesImage]:
+    **kwargs) -> Tuple[Optional[AxesImage], pd.Index]:
     # TODO also silence warnings about not finding enough clusters, at least when
     # verbose=False?
     """
@@ -7918,6 +7965,25 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
         Is_sims = xr.DataArray(data=Is_sims, dims=apl_dims, coords=apl_coords)
         dynamics_dict['Is_sims'] = Is_sims
 
+        # TODO automatically (in C++?) disable save_Is_sims if this is true? or just
+        # don't save to Is_sims itself (if that flag is also used for other
+        # Is_from_[kcs|pns] vars)
+        Is_sims_all0 = (Is_sims == 0).all().item()
+        if mp.kc.pn_claw_to_apl:
+            assert Is_sims_all0, ('Is_sims should be all 0 when pn_claw_to_apl=True, '
+                'because it represents to dynamics of inhibition from KCs, which '
+                'filters their spiking activity. pn_claw_to_apl=True means that KC>APL '
+                'input is from claws directly, without requiring KC spiking, and thus '
+                'we do not need to filter through this separate set of dynamics'
+            )
+        else:
+            if Is_sims_all0:
+                # TODO remove similar warning elsewhere, if duped
+                warn('when pn_claw_to_apl=False, Is_sims should only be all 0 if APL '
+                    'was intentionally disabled somehow (e.g. by setting weights to APL'
+                    ' to 0)'
+                )
+
         # currently, in all other cases, Is_from_kcs should just match Is_sims, and
         # Is_from_pns should still be initial 0 values
         if mp.kc.wPNKC_one_row_per_claw and mp.pn.preset_wPNAPL:
@@ -8015,6 +8081,51 @@ def mark_odor_pulse(ax: Axes,
     return stim_start, stim_end
 
 
+# TODO factor to hong2p? would just have to remove the orn_sims part...
+# (just require xs_or_ts=ts [i.e. that `xs is not None`] then, if we don't have
+# time_s index?
+def _plot(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
+    if xs is None:
+        xs = xs_or_ts
+
+        # TODO should we assert that (esp if input has more than one dimension)
+        # time dimension is in position we expect? might matter if we are trying
+        # to plot multiple lines in one call (can we even, if ts is always 1d?
+        # any code currently doing that with this fn?)
+        assert isinstance(xs, xr.DataArray)
+        ts = xs.get_index('time_s')
+    else:
+        ts = xs_or_ts
+
+    # TODO do numpy arrays and DataFrame both have squeeze method too? if so,
+    # call on them as well? or use other fn if necessary?
+    if isinstance(xs, xr.DataArray):
+        xs = xs.squeeze()
+
+    # xs should probably be Series, but could also be some xarray type with a
+    # .max() method
+    ax.plot(ts, xs, **kwargs)
+
+
+def _plot_normed(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
+    # TODO TODO change formula so min is 0? (otherwise, at least assert no
+    # negative values? or none w/ abs greater than max? could potentially get
+    # way out of range... but probably aren't)
+    #
+    # xs could be pd.Series/xr.DataArray (or anything w/ a .max() method)
+    #
+    # TODO move ts to optional arg after xs (both here and for _plot(...)), to
+    # not have to duplicate this logic from _plot(...)?
+    # TODO doesn't matter that we are not squeeze()ing before .max() now, does
+    # it?
+    if xs is None:
+        xs = xs_or_ts
+        _plot(ax, xs / xs.max(), **kwargs)
+    else:
+        ts = xs_or_ts
+        _plot(ax, ts, xs / xs.max(), **kwargs)
+
+
 def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # TODO share these w/ mark_odor_pulse somehow? (still wang **kwargs for
     # anything else?)
@@ -8043,51 +8154,6 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     del orn_odor_index
     #
 
-    # TODO factor to hong2p? would just have to remove the orn_sims part...
-    # (just require xs_or_ts=ts [i.e. that `xs is not None`] then, if we don't have
-    # time_s index?
-    def _plot(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
-        if xs is None:
-            xs = xs_or_ts
-
-            # TODO should we assert that (esp if input has more than one dimension)
-            # time dimension is in position we expect? might matter if we are trying
-            # to plot multiple lines in one call (can we even, if ts is always 1d?
-            # any code currently doing that with this fn?)
-            if isinstance(xs, xr.DataArray):
-                ts = xs.get_index('time_s')
-            else:
-                # will then expect that input xs has same # of timepoints as ts
-                ts = orn_sims.get_index('time_s')
-        else:
-            ts = xs_or_ts
-
-        # TODO do numpy arrays and DataFrame both have squeeze method too? if so,
-        # call on them as well? or use other fn if necessary?
-        if isinstance(xs, xr.DataArray):
-            xs = xs.squeeze()
-
-        # xs should probably be Series, but could also be some xarray type with a
-        # .max() method
-        ax.plot(ts, xs, **kwargs)
-
-    def _plot_normed(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
-        # TODO TODO change formula so min is 0? (otherwise, at least assert no
-        # negative values? or none w/ abs greater than max? could potentially get
-        # way out of range... but probably aren't)
-        #
-        # xs could be pd.Series/xr.DataArray (or anything w/ a .max() method)
-        #
-        # TODO move ts to optional arg after xs (both here and for _plot(...)), to
-        # not have to duplicate this logic from _plot(...)?
-        # TODO doesn't matter that we are not squeeze()ing before .max() now, does
-        # it?
-        if xs is None:
-            xs = xs_or_ts
-            _plot(ax, xs / xs.max(), **kwargs)
-        else:
-            ts = xs_or_ts
-            _plot(ax, ts, xs / xs.max(), **kwargs)
 
     # TODO TODO plot mean across all odors, instead of example odor, by default
     # TODO TODO + how to factor so we can use same code to either plot all for one
@@ -8126,22 +8192,16 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # understanding the ramp up ~"start" time (< "stim_start") is important?
     # (just set xlim differently and re-save?)
 
-    # TODO factor out this plotting (so someone could run on saved dynamics
-    # outputs)? (may be hard to do that if i still want to only process one var at
-    # a time... unless i'm loading each file that we already saved, within the
-    # consolidated plotting fn)
-
     # seem to need constrained layout to get fig.legend() reliably outside bounds of
     # Axes (at least w/o manual positioning...)?
     claw_ax = None
     # TODO add separate axes for ORN/PN/LN stuff (and then put APL stuff or
     # APL+KC stuff on separate axes)? (do have a separate fig for APL stuff now...)
-    # TODO re-order so layers are in-order, either top to bottom or reverse
     if 'bouton_sims' in dynamics_dict:
         fig, axs = plt.subplots(nrows=4,
             layout='constrained', sharex=True, figsize=(10, 5 * 4)
         )
-        (ax, claw_ax, bouton_ax, spike_raster_ax) = axs
+        (ax, bouton_ax, claw_ax, spike_raster_ax) = axs
 
     elif 'claw_sims' in dynamics_dict:
         fig, axs = plt.subplots(nrows=3, layout='constrained',
@@ -8174,8 +8234,13 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
 
     # TODO limit all data to this in advance (to not need to only use in bouton
     # plotting below)?
+    # TODO TODO flag to start from all available data, same as other plots
+    # TODO TODO or just use same xlim for all plots... (still want a flag to switch
+    # between them)
     xlim = [-0.05, 0.7]
     xmin, xmax = xlim
+
+    label_fontsize = 10
 
     # TODO plot timeseries of off diagonal odor correlation over time?
     # (for claws, maybe boutons?)
@@ -8209,7 +8274,7 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
         # test/test_mb_model.py:318: in _fit_mb_model
         #     ret = fit_mb_model(*args, **kwargs)
         # mb_model.py:10842: in fit_mb_model
-        #     im = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
+        #     im, _ = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
         # mb_model.py:6781: in cluster_timeseries_and_plot
         #     clustered, method = cluster_timeseries(df)
         # mb_model.py:6701: in cluster_timeseries
@@ -8223,16 +8288,15 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
         # E   IndexError: index 118 is out of bounds for axis 0 with size 118
         # TODO TODO plot unclustered if this fails (inside this fn, or one of the
         # ones called inside)? (+ for spike raster too)
-        im = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
+        im, _ = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
             cmap='magma'
         )
         fig.colorbar(im, ax=claw_ax, orientation='vertical', shrink=0.5,
             label='claw->KC Vm contribs'
         )
-        # TODO refactor to share fontsize
         claw_ax.set_ylabel('claw activity'
             f'\nonly the {len(claw_df)} claws downstream of {glom}',
-            fontsize=10
+            fontsize=label_fontsize
         )
 
     # TODO TODO TODO similar plot, but for all PNs and all claws too
@@ -8265,24 +8329,31 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
         # re-clustering? or want to re-cluster?
         bnormed = ((bouton_pos.T - bouton_pos.T.min()) / bouton_pos.max(axis=1)).T
 
-        bfig.suptitle(f'{title_prefix}bouton {odor} responses', fontsize=10)
+        bax_label_size = 10
+        # NOTE: want different fontsize here than for model_dynamics_<odor>.pdf plots.
+        # 10 is OK here, but too small there.
+        bfig.suptitle(f'{title_prefix}bouton {repr(odor)} responses',
+            fontsize=bax_label_size
+        )
 
         # TODO fix so plot is cropped correctly (seems data only occupies bottom
         # left?) (i think it's fine actually?)
-        im = cluster_timeseries_and_plot(bouton_pos, ax=bax,
-            cmap='magma', ylabel_fontsize=8, #, _extent=False
+        im, order = cluster_timeseries_and_plot(bouton_pos, ax=bax,
+            cmap='magma', ylabel_fontsize=9, #, _extent=False
             # TODO was _extent=True causing issues? (i think main issue is just the
             # data...)
             # TODO TODO filter based on some minimum change upon odor onset?
             # TODO TODO or subtract spont or something?
             # TODO TODO and maybe model should also be subtracting spont in then?
         )
-        bax.set_ylabel('raw', fontsize=10)
+        bax.set_ylabel('PN firing rate (Hz)', fontsize=bax_label_size)
+        # TODO TODO TODO same order between this and above. modify this fn to accept
+        # fixed order passed in
         # TODO add cbar for this one too?
-        im2 = cluster_timeseries_and_plot(bnormed, ax=bax2, cmap='viridis',
-            ylabel_fontsize=8
+        im2, _ = cluster_timeseries_and_plot(bnormed, fixed_order=order, ax=bax2,
+            cmap='viridis', ylabel_fontsize=9
         )
-        bax2.set_ylabel('[0,1]-scaled\n(per bouton)', fontsize=8)
+        bax2.set_ylabel('[0,1]-scaled\n(per bouton)', fontsize=bax_label_size)
         bfig.colorbar(im, ax=bax, orientation='vertical', label='bouton activities')
         savefig(bfig, plot_dir, f'bouton_{odor.replace(" @ ", "_")}_dynamics')
 
@@ -8299,52 +8370,54 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
         ).squeeze()
         n_glom_boutons = glom_boutons.sizes['bouton']
 
-        if 'bouton_sims' in dynamics_dict:
-            # TODO pretty up?
-            for x in sorted(glom_boutons.bouton_id.values):
-                # TODO TODO offset/whatever needed to make clear where the
-                # overlapping lines are (share code w/ claw handling in
-                # natmix_data/analysis.py? not sure i have a good solution there yet
-                # though)
-                bs = glom_boutons.sel(bouton_id=x).squeeze()
+        # TODO pretty up?
+        for x in sorted(glom_boutons.bouton_id.values):
+            # TODO TODO offset/whatever needed to make clear where the
+            # overlapping lines are (share code w/ claw handling in
+            # natmix_data/analysis.py? not sure i have a good solution there yet
+            # though)
+            bs = glom_boutons.sel(bouton_id=x).squeeze()
 
-                # otherwise the .max() for boutons that are fully 0 within odor
-                # window seems to occur before odor onset (from spont input,
-                # presumably)
-                bs = bs[(bs.time_s >= xmin) & (bs.time_s <= xmax)]
+            # otherwise the .max() for boutons that are fully 0 within odor
+            # window seems to occur before odor onset (from spont input,
+            # presumably)
+            bs = bs[(bs.time_s >= xmin) & (bs.time_s <= xmax)]
 
-                # TODO are colors cycling here (legend only have 8?)?  assert they
-                # aren't? add test for case where there's more than however many colors
-                # i expect to cycle at?
-                # TODO assert they are not? doesn't seem like it was an issue in case so
-                # far tho (and do they cycle at 8 or 10? how to avoid?)
-                _plot(bouton_ax, bs,
-                    # TODO include weight (unscaled?) too (apl at least)
-                    # (plot in matshow alongside like in natmix_data/analysis.py?
-                    # for various per-bouton/claw metadata, along each of those
-                    # axes)
-                    # TODO delete max from legend if i have good enough alternative
-                    # way to see where the overlapping lines are
-                    label=f'{x} (max={bs.max().item(0):.0f})'
-                )
-
-            # TODO refactor to share fontsize
-            bouton_ax.set_ylabel('bouton "firing rate"', fontsize=10)
-
-            # TODO happy with?
-            bouton_ax.legend(loc='upper right',
-                title=f'{n_glom_boutons} boutons\nID (max in odor):', fontsize=8
+            # TODO are colors cycling here (legend only have 8?)?  assert they
+            # aren't? add test for case where there's more than however many colors
+            # i expect to cycle at?
+            # TODO assert they are not? doesn't seem like it was an issue in case so
+            # far tho (and do they cycle at 8 or 10? how to avoid?)
+            _plot(bouton_ax, bs,
+                # TODO include weight (unscaled?) too (apl at least)
+                # (plot in matshow alongside like in natmix_data/analysis.py?
+                # for various per-bouton/claw metadata, along each of those
+                # axes)
+                # TODO delete max from legend if i have good enough alternative
+                # way to see where the overlapping lines are
+                label=f'{x} (max={bs.max().item(0):.0f})'
             )
 
-            # TODO this is fine to call after plotting too, right?
-            mark_odor_pulse(bouton_ax, **stim_timing_kws)
-        else:
-            bouton_sum = glom_boutons.sum('bouton')
-            assert bouton_sum.dims == ('time_s',)
+        bouton_ax.set_ylabel('bouton "firing rate"', fontsize=label_fontsize)
 
-            _plot_normed(ax, bouton_sum,
-                label=f'{glom} PN (sum of {n_glom_boutons} boutons)'
-            )
+        # TODO how to change size of legend title and elements separately? want both
+        # maybe slightly larger (than 8)?
+        bouton_ax.legend(loc='upper right',
+            title=f'{n_glom_boutons} boutons\nID (max in odor):', fontsize=9
+        )
+
+        # TODO this is fine to call after plotting too, right?
+        mark_odor_pulse(bouton_ax, **stim_timing_kws)
+
+        # TODO or delete?
+        # TODO TODO still handle case where per_claw_pn_apl_weights=False?
+        # could check whether all boutons have same value, and plot using this old
+        # code, if so
+        #bouton_sum = glom_boutons.sum('bouton')
+        #assert bouton_sum.dims == ('time_s',)
+        #_plot_normed(ax, bouton_sum,
+        #    label=f'{glom} PN (sum of {n_glom_boutons} boutons)'
+        #)
 
         # TODO + add test that establishes how scale of bouton activity in
         # dynamics relates (for one bouton, or summed across them, vs in
@@ -8354,41 +8427,60 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # (spike raster plot does automatically. compute how many responders
     # separately, so i can label that axes with how many cells are shown?)
 
-    inh_sims = dynamics_dict['inh_sims']
-    Is_sims = dynamics_dict['Is_sims']
+    # TODO TODO refactor to call same code that makes separate APL dynamics plot? or
+    # maybe even exclude APL dynamics altogether? want to add anything on top of what
+    # that plot makes here, or leave as-is (if so, would want to move other lines, like
+    # ORN/PN, to another axes)
 
+    inh_sims = dynamics_dict['inh_sims']
+    if (inh_sims == 0).all().item():
+        # TODO maybe i should be skipping this plot altogether if this is hit?
+        warn('APL Vm (inh_sims) was 0 everywhere! only makes sense if APL was '
+            'intentionally disabled somehow'
+        )
+    _plot_normed(ax, inh_sims.sel(odor=odor), label='APL Vm')
+
+    Is_sims = dynamics_dict['Is_sims']
     # plotting these before the KC mean[+types] now, since that part of the plot
     # can vary (in terms of # of lines), so having this earlier fixes the colors for
     # these
-    _plot_normed(ax, inh_sims.sel(odor=odor), label='APL Vm')
-    _plot_normed(ax, Is_sims.sel(odor=odor), label='APL current')
+    Is_all0 = (Is_sims == 0).all().item()
+    if not Is_all0:
+        # TODO delete. no point in plotting this now, since it's either all 0 in
+        # pn_claw_to_apl=True case, or just shifted by one dt (=0.0005s) (relative to
+        # Is_from_kcs) in pn_claw_to_apl=False case (so we can just plot Is_from_kcs
+        # there)
+        #_plot_normed(ax, Is_sims.sel(odor=odor),
+        #    label='KC>APL current (filters spiking)'
+        #)
+        if mp is not None:
+            assert mp.kc.pn_claw_to_apl == False
+    else:
+        if mp is not None:
+            assert mp.kc.pn_claw_to_apl
 
     Is_from_kcs = None
+    assert 'Is_from_kcs' in dynamics_dict
     if 'Is_from_kcs' in dynamics_dict:
         Is_from_kcs = dynamics_dict['Is_from_kcs']
-        Is_from_pns = dynamics_dict['Is_from_pns']
-        # TODO TODO TODO do these units actually make sense for these quantities?
-        # maybe this indicates i should change olfsysm math?
-        # TODO TODO TODO reword all now that i've updated olfsysm to only have dI/dt
-        # in KC spiking input + pn_claw_to_apl=false case
-        _plot_normed(ax, Is_from_kcs.sel(odor=odor), label='APL dI/dt (from KCs)')
-        #
-        _plot_normed(ax, Is_from_pns.sel(odor=odor), label='APL dI/dt (from PNs)')
 
-    # TODO TODO or maybe i don't want to always drop non-responders from vm_sims
+        # `not Is_all0` should imply `pn_claw_to_apl=False`
+        if not Is_all0:
+            Is_shifted = Is_sims.shift(time_s=1).dropna('time_s')
+            assert Is_shifted.identical(Is_from_kcs.sel(time_s=Is_shifted.time_s))
+            del Is_shifted
+
+        Is_from_pns = dynamics_dict['Is_from_pns']
+        _plot_normed(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current')
+        _plot_normed(ax, Is_from_pns.sel(odor=odor), label='PN>APL current')
+
+    # TODO if Is_from_kcs is now just the same as Is_sims (in pn_claw_to_apl=False
+    # case, shifted by 1), do i want to add back some dynamic variable in olfsysm, for
+    # tracking the intantaneous changes to Is from KC spiking?
+
+    # TODO or maybe i don't want to always drop non-responders from vm_sims
     # plots? at least have a version not dropping them? (would need to get indices
     # from determination on spike_recordings / example_odor_spikes anyway)
-
-    # TODO label plot with how many responders there are out of how many total
-    # cells
-    # TODO per kc_type labels w/ how many silent in each? too noisy? separate
-    # plot/something for that instead?
-    # ipdb> example_odor_spikes[example_odor_spikes.T.sum() > 0].shape
-    # (214, 5500)
-    # ipdb> example_odor_spikes.shape
-    # (1830, 5500)
-    spike_recordings = dynamics_dict['spike_recordings']
-    example_odor_spikes = spike_recordings.sel(odor=odor).squeeze().to_pandas()
 
     # TODO maybe plot clusters? per cell-type clusters?
     # TODO or random sample a few and plot on axis by itself (w/ original scale. not
@@ -8447,6 +8539,16 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # TODO TODO -> use to show spiking against threshold/spont_in context for an
     # example cell? or do that in separate plot(s) specifically for it?
 
+    # TODO label plot with how many responders there are out of how many total
+    # cells
+    # TODO per kc_type labels w/ how many silent in each? too noisy? separate
+    # plot/something for that instead?
+    # ipdb> example_odor_spikes[example_odor_spikes.T.sum() > 0].shape
+    # (214, 5500)
+    # ipdb> example_odor_spikes.shape
+    # (1830, 5500)
+    spike_recordings = dynamics_dict['spike_recordings']
+    example_odor_spikes = spike_recordings.sel(odor=odor).squeeze().to_pandas()
     # NOTE: plot_spike_rasters currently drops silent cells itself anyway
     # TODO but modify it to have it say somewhere how many it dropped?
     # or like a kwarg flag to enabled putting that info in y-label or something?
@@ -8457,19 +8559,16 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # this fn, or cluster_timeseries_and_plot)
     plot_spike_rasters(example_odor_spikes, ax=spike_raster_ax)
 
-    # TODO refactor to share fontsize
     # TODO TODO say it's for KCs that responded to this odor, and how many
-    spike_raster_ax.set_ylabel('KC spikes', fontsize=10)
+    spike_raster_ax.set_ylabel('KC spikes', fontsize=label_fontsize)
 
-    # TODO refactor to share fontsize?
-    spike_raster_ax.set_xlabel('time (seconds)', fontsize=10)
+    # TODO just do on whichever axes is last (should be spike_raster_ax above now, but
+    # that may change? define axes to use here strictly on order in array? would require
+    # changing how it's defined above)
+    spike_raster_ax.set_xlabel('time (seconds)', fontsize=label_fontsize)
 
     # applies to both ax and spike_raster_ax, b/c sharex=True above
     ax.set_xlim(xlim)
-    # TODO just do on whichever axes is last (should be spike_raster_ax above,
-    # unless i change to sometimes delete that, i.e. if rastermap clustering fails)?
-    # (delete?)
-    #ax.set_xlabel('time (s)', fontsize=10)
 
     ax.set_ylabel('normalized response (max=1)')
 
@@ -8486,134 +8585,165 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # the figsize setup?
     savefig(fig, plot_dir, f'model_dynamics{ostr}')
 
+    # TODO delete? should always have this now
+    if Is_from_kcs is None:
+        warn('not making APL dynamics plot!')
+        return
+    #
+
+    # TODO TODO refactor to de-dupe w/ above
     fig, ax = plt.subplots(layout='constrained')
     # TODO would need a way to store these (what we use from mp here) if wanted to
     # plot with saved dynamics (currently assuming same as a new ModelParams object
     # created at load+plotting time)
     # TODO provide fn to serialize all model params to json?
-    # TODO TODO or xarray attrs / scalar vars, in all dynamics saved? do either/both
-    # work w/ my current xarray saving/loading strategy? at least stim start/end time?
-    # TODO also store a title describing model params in an attr/scalar coord, for use
-    # in plotting?
+    # TODO or xarray attrs / scalar vars, in all dynamics saved? do either/both work
+    # w/ my current xarray saving/loading strategy? at least stim start/end time?
+    # TODO also store a title describing model params in an attr/scalar coord, for
+    # use in plotting?
     mark_odor_pulse(ax, **stim_timing_kws)
 
-    if Is_from_kcs is None:
-        warn('not making APL dynamics plot!')
-    else:
-        diff_ts = Is_from_kcs.get_index('time_s')
-        # TODO remove all these explicit diff_ts args, esp if i can assert all of
-        # them are the same for all of these inputs
-        # TODO (delete? not sure i want to implement this flag) change label
-        # depending on olfsysm flag [not yet added. may call
-        # mp.kc.apl_current_is_integral] to fix I vs dIdt issue in olfsysm (what i
-        # think was probably a bug even in ann's code. current should directly
-        # reflect instantaneous input, not be the integral of input with its own
-        # decay)
-        _plot(ax, diff_ts, Is_from_kcs.sel(odor=odor), label='APL dI/dt (from KCs)')
-        _plot(ax, diff_ts, Is_from_pns.sel(odor=odor), label='APL dI/dt (from PNs)')
+    alpha = 0.4
 
-        # TODO TODO also check that APL "Vm" can be recalculated from adding up
-        # Is_sims in here? or not true?
+    assert Is_from_kcs.get_index('time_s').equals(Is_from_pns.get_index('time_s'))
+    _plot(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current', alpha=alpha)
+    _plot(ax, Is_from_pns.sel(odor=odor), label='PN>APL current', alpha=alpha)
 
-        # TODO TODO TODO why is dIsdt 0 towards the end? should it not be
-        # decaying? is this a mistake in Ann's [and thus Matt's] code? seems like
-        # her code may not reflect APL dynamics in her preprint... same as her
-        # thesis? recheck? (well, Is should be decaying, but why would we expect
-        # dIsdt to be?)
-        # TODO TODO TODO and anyway, neither Is_from_[kcs|pns] is 0 there (both
-        # positive)!* (still true? only KC spiking, and only in pn_claw_to_apl=false
-        # case, no works through Is)
-        # TODO fix so time index is same as above two, after diff call.
-        # (arg to diff for that?) (nvm, seems same? just assert, then delete this
-        # comment)
-        dIsdt = Is_sims.diff('time_s')
+    # TODO TODO also check that APL "Vm" can be recalculated from adding up
+    # Is_sims in here? or not true?
 
-        # TODO TODO (delete? actually want to implement apl_current_is_integral?)
-        # branch code (both plotting and assertions) depending on [not yet
-        # implemented] mp.kc.apl_current_is_integral flag
-        # TODO (delete?) why is this still so much smaller than either of the
-        # quantities that should be adding to produce this? just b/c decay [doubt
-        # it?]?
-        # TODO TODO update label to be accurate
-        # TODO TODO TODO why does this line seem empty? is it beneath something
-        # else?
-        _plot(ax, diff_ts, dIsdt.sel(odor=odor), label='APL dI/dt (total)')
+    # TODO TODO want Is on same scale (as what are currently dI/dt quantities)
+    # or not? separate axes (or move Vm to separate axes, and use twinx for
+    # that?)?
+    # TODO TODO update label to be accurate
+    # TODO TODO TODO why does this look like all 0? need a diff scale?
+    # TODO TODO TODO warn/err if it's all 0? (and w/ others that currently seem like
+    # they might be)
+    # TODO TODO TODO update. (add Is_from_kcs and Is_from_pns? don't already have some
+    # variable that accounts for that right? maybe could calculate something equal from
+    # diff inh?)
+    # TODO delete. should be replaced by Is_from_kcs above
+    #_plot(ax, Is_sims.sel(odor=odor), label='APL current (I)', alpha=alpha)
 
-        # TODO TODO want Is on same scale (as what are currently dI/dt quantities)
-        # or not? separate axes (or move Vm to separate axes, and use twinx for
-        # that?)?
-        # TODO TODO update label to be accurate
-        # TODO TODO TODO why does this look like all 0? need a diff scale?
-        _plot(ax, Is_sims.sel(odor=odor), label='APL current (I)')
+    # TODO TODO how to get these to match up? what am i doing wrong?
+    # ipdb> (Is_from_kcs + Is_from_pns) * (mp.time_dt / mp.kc.apl_taum)
+    # <xarray.DataArray (stim: 17, time_s: 2499)>
+    # array([[0.45, 0.43, 0.41, ..., 0.1 , 0.1 , 0.1 ],
+    #        [0.45, 0.43, 0.41, ..., 0.1 , 0.1 , 0.1 ],
+    #        [0.45, 0.43, 0.41, ..., 0.09, 0.09, 0.09],
+    #        ...,
+    #        [0.45, 0.43, 0.41, ..., 0.09, 0.09, 0.09],
+    #        [0.45, 0.43, 0.41, ..., 0.1 , 0.1 , 0.1 ],
+    #        [0.45, 0.43, 0.41, ..., 0.12, 0.12, 0.12]])
+    # Coordinates:
+    #   * stim     (stim) MultiIndex
+    #   - panel    (stim) object 'megamat' 'megamat' 'megamat' ... 'megamat' 'megamat'
+    #   - odor     (stim) object '2h @ -3' 'IaA @ -3' ... 'benz @ -3' 'ms @ -3'
+    #   * time_s   (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
+    # ipdb> inh_sims
+    # <xarray.DataArray (stim: 17, time_s: 2500)>
+    # array([[ 0.  ,  0.45,  0.87, ...,  9.32,  9.32,  9.32],
+    #        [ 0.  ,  0.45,  0.87, ...,  9.59,  9.6 ,  9.6 ],
+    #        [ 0.  ,  0.45,  0.87, ...,  9.25,  9.25,  9.26],
+    #        ...,
+    #        [ 0.  ,  0.45,  0.87, ...,  9.18,  9.18,  9.18],
+    #        [ 0.  ,  0.45,  0.87, ..., 10.03, 10.03, 10.03],
+    #        [ 0.  ,  0.45,  0.87, ..., 11.68, 11.68, 11.68]])
 
-        # twinx shares x-axis (so we can have a different Y-axis on right)
-        apl_vm_ax = ax.twinx()
-        # TODO somehow share color cycling w/ parent axes, instead of hardcoding
-        # color?
-        # m=magenta. just needs to be distinct from default colors chosen for ax,
-        # since sharing one axes+legend
-        # TODO TODO color right axes ticks/etc 'm' too, to be clear about which line
-        # corresonds to it
-        _plot(apl_vm_ax, inh_sims.sel(odor=odor), label='APL Vm', color='m')
-        apl_vm_ax.set_ylabel('APL Vm')
+    # twinx shares x-axis (so we can have a different Y-axis on right)
+    apl_vm_ax = ax.twinx()
+    # m=magenta. just needs to be distinct from default colors chosen for ax,
+    # since sharing one axes+legend
+    apl_vm_color = 'm'
+    _plot(apl_vm_ax, inh_sims.sel(odor=odor), label='APL Vm', color=apl_vm_color)
+    apl_vm_ax.set_ylabel('APL Vm', color=apl_vm_color)
+    apl_vm_ax.tick_params(axis='y', color=apl_vm_color)
+    for text in apl_vm_ax.yaxis.get_ticklabels():
+        text.set_color(apl_vm_color)
 
-        # TODO move to outside upper right? or try to use ax instead of fig again
-        # (as long as apl_vm_ax lines are also included, which i doubt will happen
-        # by default...)
-        fig.legend(loc='upper right')
+    # TODO move to outside upper right? or try to use ax instead of fig again
+    # (as long as apl_vm_ax lines are also included, which i doubt will happen
+    # by default...)
+    fig.legend(loc='upper right', fontsize=8)
 
-        # TODO only have this suffix if we don't have flag enabling non-integral
-        # current (delete? not sure i want to implement that flag. may implement
-        # some others tho, and pn_claw_to_apl is now relevant)
-        # TODO TODO update text as needed, depending on pn_claw_to_apl and which
-        # variable plotted, to be accurate
-        ax.set_ylabel('APL current (I) (or dI/dt)')
+    # TODO only have this suffix if we don't have flag enabling non-integral
+    # current (delete? not sure i want to implement that flag. may implement
+    # some others tho, and pn_claw_to_apl is now relevant)
+    # TODO TODO update text as needed, depending on pn_claw_to_apl and which
+    # variable plotted, to be accurate
+    # TODO what fontsize?
+    ax.set_ylabel('APL current (I) (or dI/dt)')
 
-        # TODO move to _plot?
-        ax.set_xlabel('time (seconds)', fontsize=10)
+    # TODO move to _plot?
+    # TODO what fontsize?
+    ax.set_xlabel('time (seconds)')
 
-        ax.set_title(f'{title_prefix}APL response to {odor}')
+    ax.set_title(f'{title_prefix}APL response to {repr(odor)}', fontsize=9)
 
-        # TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
-        # and "PN input to KCs" (4.8d) from Ann's thesis
-        # TODO TODO also, do i also get the same response fraction to the lower conc
-        # hallem odors, like she does in 4.8a/b? essentially 0 KCs responding at -8,
-        # and for many odors at -6. ig it's just a small number for -8 / -6, judging
-        # by 4.8b/c?
-        # TODO TODO TODO does APL>PN vs APL>KC really behave as the "divisive"
-        # (presynaptic) vs "subtractive" (postsynaptic) Ann talks about in her text?
-        # should i change some of the math to make it so, if not (i.e. does this
-        # indicate an issue w/ my implementation?)? what is basis for her claim?
-        # TODO TODO does she have a citation for that claim, either in thesis or in
-        # preprint? olsen/wilson explain why in their paper?
-        savefig(fig, plot_dir, f'apl_dynamics{ostr}')
+    # TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
+    # and "PN input to KCs" (4.8d) from Ann's thesis
+    # TODO TODO also, do i also get the same response fraction to the lower conc
+    # hallem odors, like she does in 4.8a/b? essentially 0 KCs responding at -8,
+    # and for many odors at -6. ig it's just a small number for -8 / -6, judging
+    # by 4.8b/c?
+    # TODO TODO TODO does APL>PN vs APL>KC really behave as the "divisive"
+    # (presynaptic) vs "subtractive" (postsynaptic) Ann talks about in her text?
+    # should i change some of the math to make it so, if not (i.e. does this
+    # indicate an issue w/ my implementation?)? what is basis for her claim?
+    # TODO TODO does she have a citation for that claim, either in thesis or in
+    # preprint? olsen/wilson explain why in their paper?
+    savefig(fig, plot_dir, f'apl_dynamics{ostr}')
 
-        # TODO TODO re-evaluate below, now that i've changed olfsysm (in 2e1508377)
-        # to only have KC spiking APL input (and only in pn_claw_to_apl=false case)
-        # filter through Is dynamics + time constant. everything else is now current
-        # directly into dinhdt
-        # TODO TODO TODO assert that Is_from_kcs + Is_from_pns is close to Is_sims
-        # (maybe if mp.kc.apl_current_is_integral=False)
-        # TODO TODO TODO oh, i guess that isn't true. do i want it to be? currently
-        # these should just add to dIsdt
-        # TODO TODO figure out if Is_from_[kcs|pns] makes sense
-        # (test_dynamics_indexing should soon start to get at this, to make sure
-        # calculation is correct at least)
+    # TODO TODO re-evaluate below, now that i've changed olfsysm (in 2e1508377)
+    # to only have KC spiking APL input (and only in pn_claw_to_apl=false case)
+    # filter through Is dynamics + time constant. everything else is now current
+    # directly into dinhdt
+    # TODO TODO TODO assert that Is_from_kcs + Is_from_pns is can reproduce inh_sims
+    # (maybe if mp.kc.apl_current_is_integral=False)
+    # TODO TODO TODO and is Is == Is_from_kcs in pn_claw_to_apl=True case now?
+    # TODO TODO figure out if Is_from_[kcs|pns] makes sense
+    # (test_dynamics_indexing should soon start to get at this, to make sure
+    # calculation is correct at least)
 
 
-def load_dynamics(model_dir: Path, **kwargs) -> ParamDict:
+def load_dynamics(model_dir: Path, *, mtime_tolerance_s: float = 300.0, **kwargs
+    ) -> ParamDict:
     """Loads all NetCDF (.nc) files into dynamics dict, with one key per file.
     """
+    # initially I had mtime_tolerance_s at 45.0, but if encoding=dict(zlib=True,
+    # complevel=9) is passed to save_dataarray (the maximum compression available with
+    # current engine), it can take ~130s to save claw_sims (with pretime) (to an SSD),
+    # so increased to 300s to be safer
     assert model_dir.is_dir(), f'{model_dir=} was not a directory!'
     netcdf_files = list(model_dir.glob('*.nc'))
     if len(netcdf_files) == 0:
         raise IOError('no netcdf files in current directory, so no dynamics to load')
 
     dynamics_dict = dict()
+    min_mtime = None
+    max_mtime = None
     for f in netcdf_files:
         var_name = f.with_suffix('').name
+
+        mtime = getmtime(f)
+        if min_mtime is None:
+            min_mtime = mtime
+            max_mtime = mtime
+        else:
+            if mtime < min_mtime:
+                min_mtime = mtime
+            if mtime > max_mtime:
+                max_mtime= mtime
+
         arr = load_dataarray(f)
         dynamics_dict[var_name] = arr
+
+    mtime_diff = max_mtime - min_mtime
+    if mtime_diff > mtime_tolerance_s:
+        raise RuntimeError('age of oldest and newest .nc file differed by '
+            f'{mtime_diff:.0f} seconds (> {mtime_tolerance_s=:.0f}). delete any old '
+            'files from previous runs, or the whole model output directory.'
+        )
 
     return dynamics_dict
 
@@ -8627,8 +8757,6 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
     Args:
         **kwargs: passed to `plot_example_dynamics`
     """
-    # TODO use directory name as title at least, until i also save params needed for
-    # title alongside? or just load what i should already have alongside?
     dynamics_dict = load_dynamics(model_dir)
 
     # assuming model was run w/ same stim start/end as current defaults. could also not
@@ -8646,10 +8774,15 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
     # TODO + refactor some of that natmix_data/analysis.py code into fns in here,
     # probably
 
-    # TODO load params/etc and recompute title? (to match what it would be in plots
-    # made in fit_mb_model)?
-    title = model_dir.name
-    breakpoint()
+    params = read_params(model_dir)
+    tuned_params = read_tuned_params(model_dir)
+    thrs_and_apl_weights = get_thr_and_APL_weights(tuned_params, params)
+
+    title = format_model_params({**params, **thrs_and_apl_weights}, sep='\n',
+        inh_sep=', ', human=True
+    )
+    dirname = model_dir.resolve().name
+    title += f'\n{dirname}\n'
 
     # TODO refactor to share dir name w/ that created in fit_mb_model (currently the
     # same)
@@ -8663,6 +8796,10 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
 def load_and_plot_dynamics_cli() -> None:
     """Calls `load_and_plot_dynamics` on current directory or CLI-passed directory.
     """
+    # TODO TODO TODO allow passing in relevant vmax / ymax, to have fixed values across
+    # plots, to make point re: PN<>APL sensitivity analysis
+    # TODO TODO also allow passing in start time (or flag switching between start and
+    # stim_start - eps)
     msg = load_and_plot_dynamics_cli.__doc__
     fn_msg = load_and_plot_dynamics.__doc__.split('Args:\n')[0].strip()
     fn_msg = '\n'.join(x.strip() for x in fn_msg.splitlines())
@@ -8780,7 +8917,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     multiresponder_APL_boost: Optional[float] = None,
     _multiresponder_mask: Optional[pd.Series] = None,
     boost_wKCAPL: Literal[False, True, 'only'] = False, verbose: Optional[bool] = None,
+    silent: bool = False
     # TODO this return signature still accurate?
+    # TODO TODO move all things into ParamDict? would make handling of saving simpler in
+    # fit_and_plot... could let the loop handle things, rather than having to manually
+    # save responses/spike_counts/wPNKC
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], ParamDict]:
     # TODO doc point of sim_odors. do we need to pass them in (not typically, no)?
     # (even when neither tuning nor running on any hallem data?)
@@ -8960,6 +9101,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 f'{variable_n_claw_options}'
             )
 
+    if silent:
+        assert verbose in (None, False), f'{silent=} incompatible with {verbose=}'
+        assert print_olfsysm_log in (None, False), \
+            f'{silent=} incompatible with {print_olfsysm_log=}'
+        verbose = False
+        print_olfsysm_log = False
+
     if verbose is None:
         verbose = al_util.verbose
 
@@ -9085,7 +9233,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO need to support int type too (in both of the two isinstance calls below)?
         # isinstance(<int>, float) is False
-        if isinstance(fixed_thr, float):
+        if is_scalar(fixed_thr):
+            # TODO need to cast RHS if it's int?
             mp.kc.fixed_thr = fixed_thr
         else:
             # NOTE: will set rv.kc.thr below in this case, and mp.kc.fixed_thr should
@@ -10370,9 +10519,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         rv.pn.Btn_to_pn = btn_to_glom_idx
         rv.pn.pn_to_Btns = glom_to_btn
 
-    # TODO need to support int type too (and in all similar isinstance calls)?
-    # isinstance(<int>, float) is False
-    if fixed_thr is not None and not isinstance(fixed_thr, float):
+    if fixed_thr is not None and not is_scalar(fixed_thr):
         mp.kc.use_vector_thr = True
 
         assert len(fixed_thr.shape) == 1
@@ -10408,9 +10555,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if use_connectome_APL_weights or not one_row_per_claw:
             # NOTE: expected a single float passed in here, interpret as in same manner
             # as w[APLKC|KCAPL]_scale floats output by prior calls
-            # TODO use is_scalar instead?
-            assert isinstance(wAPLKC, float)
-            assert isinstance(wKCAPL, float)
+            assert is_scalar(wAPLKC)
+            assert is_scalar(wKCAPL)
         else:
             # currently seems one-row-per-claw=True cases always have non-float
             # input here (in contrast to how i might originally have implemented
@@ -10450,8 +10596,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 #
                 rv.kc.wKCAPL = np.expand_dims(wKCAPL, 0)
             else:
-                assert isinstance(wAPLKC, float)
-                assert isinstance(wKCAPL, float)
+                assert is_scalar(wAPLKC)
+                assert is_scalar(wKCAPL)
                 rv.kc.wAPLKC = np.ones((mp.kc.N, 1)) * wAPLKC
                 rv.kc.wKCAPL = np.ones((1, mp.kc.N)) * wKCAPL
 
@@ -10461,9 +10607,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # (or probably vice versa, where wKCAPL = 1 / mp.kc.N, and wAPLKC varies)
 
     if wAPLPN is not None:
-        assert isinstance(wAPLPN, float)
+        assert is_scalar(wAPLPN)
         if wPNAPL is not None:
-            assert isinstance(wPNAPL, float)
+            assert is_scalar(wPNAPL)
         # TODO TODO can this also be set from wAPLPN, in same manner as above?
         # make sense? or get to what i want more easily by setting separately?
         else:
@@ -10516,7 +10662,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 #
                 kc_types=for_kc_types, kc_to_claws=kc_to_claws,
                 _drop_glom_with_plus=_drop_glom_with_plus,
-                plot_dir=(plot_dir if make_plots and connectome_weight_plots else None)
+                plot_dir=(plot_dir if make_plots and connectome_weight_plots else None),
+                verbose=verbose,
             )
 
             # TODO assert anything about _wAPLKC/_wKCAPL if either of these flags is
@@ -10741,16 +10888,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     except AttributeError:
         pass
 
-    # TODO only do this if verbose? if some other flag?
     tee_olfsysm = False
-    # TODO put behind verbose?
-    try:
-        # will write to stdout as well as the file in the redirect(...) call above.
-        # this must be called after redirect.
-        rv.log.tee()
-        tee_olfsysm = True
-    except AttributeError:
-        pass
+    if not silent:
+        try:
+            # will write to stdout as well as the file in the redirect(...) call above.
+            # this must be called after redirect.
+            rv.log.tee()
+            tee_olfsysm = True
+        except AttributeError:
+            pass
 
     # TODO delete? can use tee now, which also gets output in real time. only minor
     # disadvantage is it's not in a diff color (but could hardcode that in C++?).
@@ -10915,11 +11061,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # kind of prespecified thresholds
         assert not equalize_kc_type_sparsity
 
-        # TODO need to support int type too (in both of the two isinstance calls below)?
-        # isinstance(<int>, float) is False
-        #
         # just checking what we set above hasn't changed
-        if isinstance(fixed_thr, float):
+        if is_scalar(fixed_thr):
             assert mp.kc.fixed_thr == fixed_thr
 
         assert mp.kc.add_fixed_thr_to_spont == True
@@ -10955,7 +11098,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert np.allclose(fixed_thr, unique_fixed_thrs)
 
         # TODO put behind verbose kwarg (/delete)
-        print(f'fixed_thr: {fixed_thr}')
+        if not silent:
+            print(f'fixed_thr: {fixed_thr}')
 
         # TODO move below into a unit test (that also hardcodes
         # tune_apl_weights=False)? can i use it to figure out if there's a strategy than
@@ -11204,13 +11348,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if equalize_kc_type_sparsity:
             # TODO assert no one-row-per-claw here (/test)
 
-            # TODO need to support int type too (in both of the two isinstance calls
-            # below)? isinstance(<int>, float) is False
-            #
             # if we already had vector thresholds, then they won't be particularly
             # meaningful after we overwrite those outputs with those using cell_thrs
             # below.
-            assert fixed_thr is None or isinstance(fixed_thr, float)
+            assert fixed_thr is None or is_scalar(fixed_thr)
             assert not mp.kc.use_vector_thr
 
             # probably don't care to implement this, but would need to rethink current
@@ -11229,9 +11370,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 # (and as a result values seem not even properly initialized here)
                 pre_responses = pre_responses.drop(columns=extra_orn_deltas.columns)
 
-            _print_response_rates(pre_responses)
-
-            print()
+            if verbose:
+                _print_response_rates(pre_responses)
+                print()
 
             kc_type_set = set(kc_types)
             type2target_response_rate = {
@@ -11266,9 +11407,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             # TODO also include thr_by_type in param_dict?
 
-            # TODO keep this print (/warn) for a verbose branch?
-            print('thr_by_type:')
-            print(thr_by_type.to_string())
+            if verbose:
+                print('thr_by_type:')
+                print(thr_by_type.to_string())
 
             # TODO check that these thresholds (if APL is skipped) produce
             # sp-factor * type-target in each type?
@@ -11734,10 +11875,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 del rv_scalar_wAPLKC, rv_scalar_wKCAPL
         else:
             if not one_row_per_claw:
-                # TODO delete prints? (at least put behind a verbose kwarg)
                 # TODO try to have similar prints in other cases, if keeping
-                print(f'wAPLKC: {rv_scalar_wAPLKC}')
-                print(f'wKCAPL: {rv_scalar_wKCAPL}')
+                if not silent:
+                    print(f'wAPLKC: {rv_scalar_wAPLKC}')
+                    print(f'wKCAPL: {rv_scalar_wKCAPL}')
                 #
                 wAPLKC = rv_scalar_wAPLKC
                 wKCAPL = rv_scalar_wKCAPL
@@ -11975,47 +12116,42 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         param_dict['type2thr'] = thr_by_type.to_dict()
         param_dict['retune_apl_post_equalized_thrs'] = retune_apl_post_equalized_thrs
 
-    tuning_dict = {
-        # TODO expose at least these first two (sp_acc, max_iters) as kwargs.
-        # prob also sp_lr_coeff.
-        # TODO TODO + maybe default to smaller tolerance (+ more iterations if
-        # needed). what currently happens if tolerance not reached in max_iters?
-        # add my own assertion (in this script) that we are w/in sp_acc?
-        #
-        # parameters relevant to model threshold + APL tuning process
-        # default=0.1 (fraction +/- sp_target)
-        'sp_acc': mp.kc.sp_acc,
-
-        # default=10
-        'max_iters': mp.kc.max_iters,
-
-        # TODO TODO automatically cache these (w/ hidden file cache, added to .gitignore
-        # or outside repo), and only don't use them if explicitly requested w/ a kwarg?
-        # to skip multiple tuning iterations, as much as possible (want to cache the
-        # values of this required to tune in one step. that's currently printed in
-        # olfsysm output, but is it also set in some accessible variable? do that too?)
-        'sp_lr_coeff': mp.kc.sp_lr_coeff,
-        'apltune_subsample': mp.kc.apltune_subsample,
-
-        # should be how many iterations it took to tune,
-        'tuning_iters': rv.kc.tuning_iters,
-
-        # removed tuning_time_s from this, because it would cause -c checks to fail
-        # TODO fix -c/whatever to not check this in the first place? kinda nice to
-        # have...
-    }
-
     if mp.kc.tune_apl_weights:
-        print('tuning parameters:')
-        pprint(tuning_dict)
-        print()
+        tuning_dict = {
+            # TODO + maybe default to smaller tolerance (+ more iterations if
+            # needed). what currently happens if tolerance not reached in max_iters?
+            # add my own assertion (in this script) that we are w/in sp_acc?
+            #
+            # parameters relevant to model threshold + APL tuning process
+            # default=0.1 (fraction +/- sp_target)
+            'sp_acc': mp.kc.sp_acc,
 
-    param_dict = {**param_dict, **tuning_dict}
+            # default=10
+            'max_iters': mp.kc.max_iters,
+
+            'sp_lr_coeff': mp.kc.sp_lr_coeff,
+            'apltune_subsample': mp.kc.apltune_subsample,
+
+            # should be how many iterations it took to tune,
+            'tuning_iters': rv.kc.tuning_iters,
+        }
+        try:
+            onestep_lr = rv.kc.sp_lr_coeff_to_tune_in_one_iter
+            tuning_dict[onestep_lr_key] = onestep_lr
+        except AttributeError:
+            warn(f'current olfsysm version does not have rv.kc.{onestep_lr_key}')
+
+        if not silent:
+            print('tuning parameters:')
+            pprint(tuning_dict)
+            print()
+
+        param_dict = {**param_dict, **tuning_dict}
 
     # TODO expose (+rename?) extra_verbose?
     extra_verbose = False
-    # TODO put prints below behind a verbose flag? (this whole conditional basically)
-    _print_response_rates(responses, verbose=extra_verbose)
+    if verbose:
+        _print_response_rates(responses, verbose=extra_verbose)
 
     # TODO can i not just assert `KC_TYPE in responses.index.names` now?
     if extra_verbose and KC_TYPE in responses.index.names:
@@ -12024,10 +12160,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         silent_kcs = (responses == 0).T.all()
         silent_frac_by_type = silent_kcs.groupby(KC_TYPE).sum() / n_kcs_by_type
         # TODO still (at least if verbose) print this (one number) if no type
-        print()
-        print('silent_frac_by_type:')
-        print(silent_frac_by_type.to_string())
-        print()
+        # (do i not already have that somewhere?)
+        if verbose:
+            print()
+            print('silent_frac_by_type:')
+            print(silent_frac_by_type.to_string())
+            print()
 
         # TODO check that if i use uniform/whatever instead of hemibrain wPNKC, this
         # bias favoring heavily responsive gamma KCs goes down?
@@ -12150,6 +12288,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     pn_df = pd.DataFrame(index=odor_index, columns=glomerulus_index,
         data=slice_to_odor_pulse(orn_sims, mp).mean(axis=-1)
     )
+    # TODO add test that hits extra_orn_deltas path?
+    # TODO add test w/ hallem_input?
     if extra_orn_deltas is not None:
         orn_df = orn_df.drop(index=extra_orn_deltas.columns)
         pn_df = pn_df.drop(index=extra_orn_deltas.columns)
@@ -12158,6 +12298,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # they get returned? maybe just drop for purpose of assertion or within whatever
         # plotting, if important)
 
+    # TODO delete from here to end of `if megamat` block?
     if sim_odors is not None:
         # TODO have parse_odor_name return input (rather than current ValueError), if
         # input doesn't have '@' in it (or add in model_test.py r1 call that currently
@@ -12170,7 +12311,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         input_odor_names = {
             olf.parse_odor_name(x) for x in odor_index.get_level_values('odor')
         }
-
     # TODO may want to discard some for some plots (e.g. in cases when input is not
     # hallem, but also has diagnostics / fake odors added in addition to megamat odors)?
     # (kinda like plots as is there actually, but may want to add lines to separate
@@ -12199,6 +12339,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             )
 
         if not hallem_input:
+            # TODO how would these calls even behave if panel was None (as it seems it
+            # could be from above)? change above to assertion it's not? and why fixing
+            # panel to 'megamat', instead of leaving whatever panels there are in each
+            # of these? could be 'megamat' + diag_panel_str input, for example
+            # TODO add test that runs megamat + diag through model?
+
             # TODO is it a problem that i'm now also only are only doing all below if
             # `not hallem_input`? (change any outputs in my main al_analysis.py
             # remy-paper analyses?) changed to fix impact of sorting on check in
@@ -12213,12 +12359,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
             orn_df = sort_odors(orn_df, panel=panel, warn=False)
             pn_df = sort_odors(pn_df, panel=panel, warn=False)
+    #
 
-    # TODO still want?
-    if 'panel' in responses.columns.names:
-        assert 'panel' in spike_counts.columns.names
-        responses = responses.droplevel('panel', axis='columns')
-        spike_counts = spike_counts.droplevel('panel', axis='columns')
+    # TODO try to fix below (assuming anything breaks w/o this) -> delete
+    # TODO still want to drop? would cause issues if there was any one odor in multiple
+    # panels
+    #if 'panel' in responses.columns.names:
+    #    assert 'panel' in spike_counts.columns.names
+    #    responses = responses.droplevel('panel', axis='columns')
+    #    spike_counts = spike_counts.droplevel('panel', axis='columns')
 
     if plot_dir is not None and make_plots:
         orn_df = orn_df.T
@@ -12330,7 +12479,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 # it never is in hallem_input case (only place this is used)
                 return df.loc[:, odor_index]
 
-            # TODO TODO are these not being generated in latest hallem_input call
+            # TODO are these not being generated in latest hallem_input call
             # (restoring hemibrain path)?
             orn_delta_prefill_corr, orn_delta_corr, orn_corr = \
                 _plot_internal_responses_and_corrs(suffix='_all-hallem',
@@ -13108,8 +13257,10 @@ def step_around(center: Union[float, np.ndarray], param_lim_factor: float,
 
 
 def include_in_csv(x: Any) -> bool:
-    # TODO doc
+    """Returns whether a value should be included in CSV
 
+    Should return False for values that would cause CSV saving/loading to fail.
+    """
     if isinstance(x, osm.ModelParams) or isinstance(x, osm.RunVars):
         return False
 
@@ -13152,7 +13303,6 @@ def filter_params_for_csv(params: ParamDict) -> ParamDict:
     Python lists of simple types (those that themselves would have `include_in_csv`
     return True) are not filtered.
     """
-
     return {k: v for k, v in params.items() if include_in_csv(v)}
 
 
@@ -13444,10 +13594,11 @@ def write_tuned_params(param_dict: ParamDict, model_output_dir: Path,
     )
 
 
+# TODO delete?
 def _read_params(model_output_dir: Path, name: str) -> ParamDict:
     """Reads json and pickle parameter caches, and checks against each other
     """
-    # TODO TODO finish
+    # TODO finish?
 
 
 # TODO when loading CSV, check against other formats if available (and either assert or
@@ -13557,29 +13708,16 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
         pickle_path = param_dir / f'{k}.p'
         if isinstance(v, xr.DataArray):
             if save_dynamics:
-                # TODO delete (or does pickle have less memory / whatever issue than
-                # this does? even if i disable check=True?)
-                # TODO TODO move saving of all/most of these into fit_mb_model, so
+                # TODO move saving of all/most of these into fit_mb_model, so
                 # each can be removed from memory as soon as possible? (and each
                 # before making a copy of other variables, only processing [and
                 # plotting if needed] one at at time). many of these DataArray are
                 # very large, especially claw_sims, which can be ~2.5GiB for just 6
                 # odors
-                #
-                # for just panel=control, the biggest of these files
-                # (spike_recordings.p / vm_sims.p) are just under a GB (768M)
-                # (this was before claw_sims, which is probably bigger...)
-                #to_pickle(v, pickle_path, verbose=True)
-                #
                 # TODO TODO modify all other code that currently loads dynamics to work
                 # from these instead (just natmix_data/analysis.py?)
                 netcdf_path = param_dir / f'{k}.nc'
                 save_dataarray(v, netcdf_path, check=True)
-
-                # TODO switch to netcdf? would just need to reformat the index
-                # surrounding IO (prob don't wanna do both given the sizes, but
-                # could. ig it's just a factor of 2...)
-                # (and may NOT want to save as both, considering the aggregate size)
 
             # TODO add flag to still enable saving here?
             else:
@@ -13591,13 +13729,13 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
                 del param_dict[k]
 
         elif isinstance(v, (pd.DataFrame, pd.Series)):
-            # TODO TODO replace w/ to_parquet (after verifying current internal
-            # check in to_pickle, which is calling to_parquet, passes in all tests?)
             # TODO + CSV (alongside parquet) just for posterity, and a backup option
             # for people who may not want to use parquet?
-            #
-            # expecting thr and/or kc_spont_in may be an issue here, in some cases?
-            to_pickle(v, pickle_path, verbose=True)
+            parquet_path = pickle_path.with_suffix('.parquet')
+            to_parquet(v, parquet_path)
+
+            # TODO delete?
+            to_pickle(v, pickle_path, verbose=True, write_parquet=False)
 
             # TODO delete hack eventually
             if k in keys_not_to_remove:
@@ -13703,8 +13841,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     comparison_kc_corrs=None, _strip_concs_comparison_kc_corrs=False,
     param_dir_prefix: str = '', title_prefix: str= '',
     response_rate_plot_max: Optional[float] = None,
-    extra_params: Optional[dict] = None, _only_return_params: bool = False, **model_kws
-    ) -> Optional[ParamDict]:
+    extra_params: Optional[dict] = None, _only_return_params: bool = False,
+    use_lr_cache: bool = True, **model_kws) -> Optional[ParamDict]:
     # TODO doc which extra plots made by each of comparison* inputs (or which plots are
     # changed, if no new ones)
     """
@@ -13742,7 +13880,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     should reflect the `model_kws['orn_deltas']` input to this function.
     """
     # TODO delete
-    # TODO TODO are dynamics not getting freed across calls? need to explicitly del,
+    # TODO are dynamics not getting freed across calls? need to explicitly del,
     # even if not saving?
     #print_curr_mem_usage(end='')
     #print(', at start of fit_mb_model')
@@ -13843,7 +13981,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO delete? should always be redefed below...
         # (if so, then why is this code even here?)
         # TODO refactor this thr str handling?
-        if isinstance(fixed_thr, float):
+        if is_scalar(fixed_thr):
             title += f'thr={fixed_thr:.2f}'
         else:
             assert isinstance(fixed_thr, np.ndarray)
@@ -13885,13 +14023,16 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
             for_dirname += normalize_param_str(param_str)
 
+        # also used as key for some caches that give value per model instantiation
+        model_id = f'{param_dir_prefix}{for_dirname}'
+
         # TODO rename plot_dir + this to be more clear?
         # plot_dir contains all modelling (mb_modeling)
         # param_dir contains outputs from model run w/ specific choice of params
         # (and only contains stuff downstream of dF/F -> spiking model
         # creation/application)
         if plot_dirname is None:
-            plot_dirname = f'{param_dir_prefix}{for_dirname}'
+            plot_dirname = model_id
 
         # TODO need to mkdir here ever? are we relying on savefig to make it?
         # test in case where plotting is disabled?
@@ -13903,10 +14044,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
             # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be
             # too cumbersome to format into this
-            #
-            # TODO need to support int type too? isinstance(<int>, float) is False
             if n_seeds == 1:
-                if isinstance(fixed_thr, float):
+                if is_scalar(fixed_thr):
                     # TODO delete?
                     #title += f'fixed_thr={fixed_thr:.0f}, wAPLKC={wAPLKC:.2f}\n'
                     pass
@@ -13929,6 +14068,26 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # currently requires wAPLKC set, to a float as before)?
             assert fixed_thr is None and wAPLKC is None and wAPLPN is None
 
+            if model_kws.get('sp_lr_coeff') is not None:
+                use_lr_cache = False
+
+            # TODO set fixed_thr/wAPLKC/etc instead? would be faster
+            if use_lr_cache and onestep_lr_cache_path.exists():
+                onestep_lr_cache = read_json(onestep_lr_cache_path)
+                if model_id in onestep_lr_cache:
+                    sp_lr_coeff = onestep_lr_cache[model_id]
+
+                    if not variable_n_claws:
+                        cached_coeff_str = f'{sp_lr_coeff=:.3f}'
+                    else:
+                        cached_coeff_str = 'sp_lr_coeff list (one per seed)'
+
+                    warn(f'using {cached_coeff_str} from onestep_lr_cache '
+                        f'({onestep_lr_cache_path}), to tune in one iteration. '
+                        'set use_lr_cache=False to disable.'
+                    )
+                    model_kws['sp_lr_coeff'] = sp_lr_coeff
+
             # .3g will show up to 3 sig figs (regardless of their position wrt decimal
             # point), but also strip any trailing 0s (0.0915 -> '0.0915', 0.1 -> '0.1')
             #title += f'target_sparsity: {target_sparsity:.3g}\n'
@@ -13939,7 +14098,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO also redef for_dirname in case plot_dirname passed in? also pass in
         # _extra_exclude_params there (and use for sp_lr_coeff, from
         # step_model_pn_apl.py)
-        title += '\n'.join(for_dirname.split('__')).replace('_', ': ').replace('-', '_')
+        title += model_id2title(for_dirname)
         del for_dirname
 
         # NOTE: this is for analyses that either always include or always drop silent
@@ -14102,7 +14261,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         made_param_dir = True
         makedirs(param_dir)
 
-        print(f'fitting model ({responses_to=}{param_str})...', flush=True)
+        print(f'fitting model ({responses_to=}, {param_str})...', flush=True)
 
         # TODO check i can replace model_test.py portion like this w/ this
         # implementation?
@@ -14175,6 +14334,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     )
                 #
 
+            sp_lr_coeff = model_kws.pop('sp_lr_coeff', None)
+            if isinstance(sp_lr_coeff, list):
+                assert len(sp_lr_coeff) == n_seeds
+
             # TODO some way to have a nested progress bar, so that outer on (in
             # model_mb_... i'm imagining) increments for each model type, and this inner
             # one increments for each seed? or do something else to indicate outer
@@ -14183,6 +14346,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 seed = initial_seed + i
                 seeds.append(seed)
                 assert 'seed' not in model_kws
+
+                if isinstance(sp_lr_coeff, list):
+                    _sp_lr_coeff = sp_lr_coeff[i]
+                else:
+                    _sp_lr_coeff = sp_lr_coeff
 
                 if fixed_thr is not None:
                     _fixed_thr = fixed_thr[i]
@@ -14204,7 +14372,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     # usage with a flag to indicate whether we are in a sensitivity
                     # analysis subcall...)
                     sim_odors=sim_odors, fixed_thr=_fixed_thr, wAPLKC=_wAPLKC,
-                    wAPLPN=wAPLPN, seed=seed,
+                    wAPLPN=wAPLPN, seed=seed, sp_lr_coeff=_sp_lr_coeff,
                     # ORN/PN plots would be redundant, and overwrite each other.
                     # currently those are the only plots I'm making in here (no longer
                     # true, but still probably don't want for each seed).
@@ -14276,21 +14444,19 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             }
             param_dict['kc_spont_in'] = kc_spont_in
         else:
-            # TODO need to support int type too? (in both of the two isinstance calls
-            # below) isinstance(<int>, float) is False
-            # isinstance works w/ both float and scalar np.float64 (but not int)
+            # TODO delete?
             # TODO update fixed_thr check to include ndarray
-            #assert fixed_thr is None or isinstance(fixed_thr, float)
+            #assert fixed_thr is None or is_scalar(fixed_thr)
 
             # NOTE: wKCAPL is set from wAPLKC, if only wAPLKC is passed. The reverse is
             # not true though, so if only one is passed, it must be wAPLKC.
             assert wAPLKC is None or (
                 # NOTE: currently one-row-per-claw case has wAPLKC as a Series
-                isinstance(wAPLKC, float) or isinstance(wAPLKC, pd.Series)
+                is_scalar(wAPLKC) or isinstance(wAPLKC, pd.Series)
             )
             assert wAPLPN is None or (
                 # NOTE: currently one-row-per-claw case has wAPLPN as a Series
-                isinstance(wAPLPN, float) or isinstance(wAPLPN, pd.Series)
+                is_scalar(wAPLPN) or isinstance(wAPLPN, pd.Series)
             )
 
             # TODO rename param_dict everywhere -> tuned_params?
@@ -14331,16 +14497,18 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         del input_odors
 
-        # TODO TODO also pass in + save a copy of full input ORN data (same as in
+        # TODO also pass in + save a copy of full input ORN data (same as in
         # ij_certain-roi_stats.[csv|p], maybe just load that in here, to not need to
         # pass? assuming mtime is since the start of run?). or just shutil copy
         # ij_certain-roi_stats.[csv+p]?
+        # (already copy2-ing it in model_mb_responses, but may want to do in here too?
+        # or move all the copying model_mb_responses does to a slimmer wrapper, and
+        # generally use that instead of this? prob easier to move to this fn?)
         if orn_deltas is not None:
-            # TODO TODO use parquet instead (+ check can round trip w/o change)
-            #
             # just saving these for manual reference, or for use in -c check.
             # not loaded elsewhere in the code.
-            to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
+            to_parquet(orn_deltas, param_dir / 'orn_deltas.parquet')
+            to_pickle(orn_deltas, param_dir / 'orn_deltas.p', write_parquet=False)
 
             # TODO also save a hemibrain-filled version of this?
             #
@@ -14355,12 +14523,17 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         # NOTE: saving raw (unsorted, etc) responses to cache for now, so i can modify
         # that bit. CSV saving is currently after all sorting / post-processing.
-        # TODO TODO use parquet instead (+ check can round trip w/o change)
-        to_pickle(responses, model_responses_cache)
-        to_pickle(spike_counts, model_spikecounts_cache)
+        to_parquet(responses, model_responses_cache.with_suffix('.parquet'))
+        to_parquet(spike_counts, model_spikecounts_cache.with_suffix('.parquet'))
+
+        # TODO delete pickle versions eventually (-> change model_responses_cache[_name]
+        # to use '.parquet' instead of '.p')
+        to_pickle(responses, model_responses_cache, write_parquet=False)
+        to_pickle(spike_counts, model_spikecounts_cache, write_parquet=False)
 
         wPNKC_cache = param_dir / wPNKC_cache_name
-        to_pickle(wPNKC, wPNKC_cache)
+        to_parquet(wPNKC, wPNKC_cache.with_suffix('.parquet'))
+        to_pickle(wPNKC, wPNKC_cache, write_parquet=False)
 
         # currently just assuming that both will be in same format
         # (both either np.arrays/pd.Series [depending on which i end up settling on
@@ -14372,7 +14545,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # check it doesn't fail anywhere?)
         get_APL_weights(param_dict, model_kws)
 
-        # TODO TODO TODO figure out where w[APLKC|KCAPL]_scale params are disappearing
+        # TODO TODO (fixed?) figure out where w[APLKC|KCAPL]_scale params are disappearing
         # to (by weight_debug_suffix, unlike the PN<>APL counterparts)
 
         if wAPLKC is not None and not is_scalar(wAPLKC):
@@ -14442,7 +14615,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # one-row-per-claw=True/whatever case this currently applies to)
             wKCAPL_size_check_temp = np.asarray(wKCAPL)
             if wKCAPL_size_check_temp.size == 1:
-                assert wKCAPL is None or isinstance(wKCAPL, float)
+                assert wKCAPL is None or is_scalar(wKCAPL)
 
         if model_kws.get('prat_boutons'):
             # TODO work? need to support any non-vector cases?
@@ -14476,6 +14649,22 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             save_dynamics=save_dynamics, keys_not_to_remove=keys_not_to_remove
         )
 
+        if onestep_lr_key in param_dict:
+            onestep_sp_lr_coeff = param_dict[onestep_lr_key]
+            # would be hit, if we didn't avoid adding onestep_lr_key to param_dict
+            # (in fit_mb_model) when tune_apl_weights=False
+            assert onestep_sp_lr_coeff != 0
+
+            if onestep_lr_cache_path.exists():
+                onestep_lr_cache = read_json(onestep_lr_cache_path)
+            else:
+                onestep_lr_cache = dict()
+
+            onestep_lr_cache[model_id] = onestep_sp_lr_coeff
+            to_json(onestep_lr_cache, onestep_lr_cache_path,
+                multiple_saves_per_run_ok=True
+            )
+
         # TODO don't save in sensitivity analysis subcalls? as this should not change
         # across those (+ make a list of files to exclude and pass to automated saving
         # above, based on dtypes in param_dict, and exclude based on list)
@@ -14489,9 +14678,13 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # written
         if extra_responses is not None:
             assert extra_spikecounts is not None
-            # TODO TODO use parquet instead (+ check can round trip w/o change)
-            to_pickle(extra_responses, extra_responses_cache)
-            to_pickle(extra_spikecounts, extra_spikecounts_cache)
+            to_parquet(extra_responses, extra_responses_cache.with_suffix('.parquet'))
+            to_parquet(extra_spikecounts,
+                extra_spikecounts_cache.with_suffix('.parquet')
+            )
+            # TODO delete eventually
+            to_pickle(extra_responses, extra_responses_cache, write_parquet=False)
+            to_pickle(extra_spikecounts, extra_spikecounts_cache, write_parquet=False)
         else:
             assert extra_spikecounts is None
 
@@ -14543,15 +14736,12 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
     # TODO factor out this subsetting to (internal?) fn? or just use megamat_responses
     # directly below?
-    # TODO .get_level_values if i restore panel level preservation thru fit_mb_model
     # TODO check no duplicates, so that it's not just one of the megamat odors repeated
     # 17 times?
-    megamat_mask = responses.columns.map(odor_is_megamat)
-
+    megamat_mask = odor_level_values(responses.columns).map(odor_is_megamat)
     # should be true in both hallem (which has ~110 odors, including all the 17
     # megamat) and pebbled-megamat input cases
     have_megamat = megamat_mask.values.sum() >= 17
-
     if have_megamat:
         megamat_responses = responses.loc[:, megamat_mask]
         megamat_sparsity = (megamat_responses > 0).mean().mean()
@@ -15089,7 +15279,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         if n_seeds == 1:
             # TODO refactor all this thr str handling? duplicated a fair bit now...
-            if isinstance(fixed_thr, float):
+            if is_scalar(fixed_thr):
                 thr_str = f'thr={fixed_thr:.2f}'
             else:
                 assert isinstance(fixed_thr, np.ndarray)
@@ -15883,7 +16073,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # that code was a lot simpler... and some interpretability benefits too (w/
             # tradeoffs)
             #tried = pd.DataFrame(columns=['rel_fixed_thr', 'wAPLKC', 'sparsity'])
-            if isinstance(tuned_fixed_thr, float):
+            if is_scalar(tuned_fixed_thr):
                 tried = pd.DataFrame(columns=['fixed_thr', 'wAPLKC', 'sparsity'])
             else:
                 assert isinstance(tuned_fixed_thr, np.ndarray)
@@ -15974,7 +16164,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         print()
         print('parameter steps around sparsity-tuned values (above):')
 
-        if isinstance(tuned_fixed_thr, float):
+        if is_scalar(tuned_fixed_thr):
             print(f'{fixed_thr_steps=}')
         else:
             assert isinstance(tuned_fixed_thr, np.ndarray)
@@ -16004,7 +16194,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             'drop_nonpositive_fixed_thr': drop_nonpositive_fixed_thr,
         }
 
-        if isinstance(tuned_fixed_thr, float):
+        if is_scalar(tuned_fixed_thr):
             step_choice_param_dict['fixed_thr_steps'] = fixed_thr_steps
         else:
             assert isinstance(tuned_fixed_thr, np.ndarray)
@@ -16026,7 +16216,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         #    index=wAPLKC_steps
         #)
         #tried_wide.columns.name = 'rel_fixed_thr'
-        if isinstance(tuned_fixed_thr, float):
+        if is_scalar(tuned_fixed_thr):
             try:
                 # TODO TODO add unit test covering this failing case
                 # TODO TODO fix:
@@ -16061,7 +16251,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         #row_index = pd.MultiIndex.from_product([rel_fixed_thr_steps, wAPLKC_steps],
         #    names=['rel_fixed_thr', 'wAPLKC']
         #)
-        if isinstance(tuned_fixed_thr, float):
+        if is_scalar(tuned_fixed_thr):
             row_index = pd.MultiIndex.from_product([fixed_thr_steps, wAPLKC_steps],
                 names=['fixed_thr', 'wAPLKC']
             )
@@ -16100,7 +16290,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # TODO delete
             #dirname = f'thr{rel_fixed_thr:.2f}_wAPLKC{wAPLKC:.2f}'
             mean_fixed_thr = None
-            if isinstance(fixed_thr, float):
+            if is_scalar(fixed_thr):
                 dirname = f'thr{fixed_thr:.2f}_wAPLKC{wAPLKC:.2f}'
             else:
                 mean_fixed_thr = fixed_thr.mean()
@@ -16223,7 +16413,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # (this, but not columns.name, makes it into CSV. it will be top left element.)
         # TODO delete
         #tried_wide.index.name = 'rows=rel_fixed_thr, cols=wAPLKC'
-        if isinstance(tuned_fixed_thr, float):
+        if is_scalar(tuned_fixed_thr):
             tried_wide.index.name = 'rows=fixed_thr, cols=wAPLKC'
         else:
             assert isinstance(tuned_fixed_thr, np.ndarray)
@@ -16254,7 +16444,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         group_text = True
 
-        if isinstance(tuned_fixed_thr, float):
+        if is_scalar(tuned_fixed_thr):
             level_fn = lambda d: d['fixed_thr']
         else:
             assert isinstance(tuned_fixed_thr, np.ndarray)

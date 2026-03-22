@@ -7,3 +7,6 @@ diag_est-spike-deltas_for_yang/
 
 # outputs from model_private_odors_for_kai_grant.py
 kai_grant_model_outputs/
+
+# benchmark_xarray_io.py output
+xarray_netcdf_io_bench.csv

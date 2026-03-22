@@ -729,6 +729,7 @@ def to_csv(data, path: Path, **kwargs) -> None:
     """
     NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
     """
+    assert path.suffix == '.csv', f"{path.suffix} should be '.csv'"
     data.to_csv(path, **kwargs)
 
 
@@ -809,6 +810,7 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path, *, check: bool 
     ) -> None:
     """Write `data` to parquet at `path`, with default check loaded value matches input.
     """
+    assert path.suffix == '.parquet', f"{path.suffix} should be '.parquet'"
     # TODO make check=False the default eventually?
     if check:
         orig = data
@@ -924,6 +926,10 @@ def to_pickle(data, path: Path, *, write_parquet: bool = True) -> None:
 
     NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
     """
+    # just checking we aren't accidentally calling to_pickle with a path we intend for
+    # one of the other calls
+    assert path.suffix not in ('.csv', '.parquet', '.nc', '.json')
+
     if isinstance(data, xr.DataArray):
         path = Path(path)
         # read via: pickle.loads(path.read_bytes())
@@ -934,16 +940,22 @@ def to_pickle(data, path: Path, *, write_parquet: bool = True) -> None:
 
     # TODO delete eventually (replace calls [that i can] of to_pickle w/ to_parquet
     # first)
-    if write_parquet and isinstance(data, (pd.Series, pd.DataFrame)):
-        # replacing .p w/ .parquet
-        parquet_path = path.with_suffix('.parquet')
-
-        # TODO also include line of calling code? easily possible?
-        warn(f'also saving to {parquet_path} via to_parquet call inside to_pickle. '
-            'replace with explicit to_parquet call in the future!'
+    if isinstance(data, (pd.Series, pd.DataFrame)):
+        if write_parquet:
+            # replacing .p w/ .parquet
+            parquet_path = path.with_suffix('.parquet')
+            # TODO also include line of calling code? easily possible?
+            warn(f'also saving to {parquet_path} via to_parquet call inside to_pickle. '
+                'replace with explicit to_parquet call in the future!'
+            )
+            to_parquet(data, parquet_path)
+    else:
+        # write_parquet=False must have been manually specified, which indicates i
+        # thought that input was a DataFrame/Series that would have been written as a
+        # parquet file otherwise, which is incorrect if we are in this `else`
+        assert write_parquet, (f'{type(data)=} was not the DataFrame/Series you '
+            'seemed to expect, by setting explicit write_parquet=False'
         )
-
-        to_parquet(data, parquet_path)
     #
 
     if hasattr(data, 'to_pickle'):
@@ -971,6 +983,7 @@ def read_json(path: Path) -> ParamDict:
 def to_json(param_dict: ParamDict, path: Path, *, check: bool = True) -> None:
     """Write `param_dict` to JSON at `path`, with default round trip check.
     """
+    assert path.suffix == '.json', f"{path.suffix} should be '.json'"
     with open(path, 'w') as f:
         json.dump(param_dict, f, indent=4)
 
