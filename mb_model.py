@@ -85,7 +85,9 @@ from termcolor import cprint, COLORS
 from drosolf import orns
 from hong2p import olf, util, viz
 from hong2p.xarray import save_dataarray as _save_dataarray, load_dataarray
-from hong2p.olf import solvent_str, drop_solvent_odors, odor_level_values
+from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
+    first_odor_level
+)
 from hong2p.viz import dff_latex, no_constrained_layout
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
     reindex, is_scalar, pd_index_equal
@@ -12362,12 +12364,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     #
 
     # TODO try to fix below (assuming anything breaks w/o this) -> delete
+    # NOTE: there is still code in fit_and_plot_mb_model that doesn't support 'panel'
+    # level. first reached will probably be corr_triangular. must continue dropping
+    # this level for now.
     # TODO still want to drop? would cause issues if there was any one odor in multiple
     # panels
-    #if 'panel' in responses.columns.names:
-    #    assert 'panel' in spike_counts.columns.names
-    #    responses = responses.droplevel('panel', axis='columns')
-    #    spike_counts = spike_counts.droplevel('panel', axis='columns')
+    if 'panel' in responses.columns.names:
+        assert 'panel' in spike_counts.columns.names
+        responses = responses.droplevel('panel', axis='columns')
+        spike_counts = spike_counts.droplevel('panel', axis='columns')
+    #
 
     if plot_dir is not None and make_plots:
         orn_df = orn_df.T
@@ -14802,19 +14808,19 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         else:
             raise
 
+    # TODO delete?
     # TODO even need to rename at this point? anything downstream actually not work with
     # 'odor' instead of 'odor1'?
+    #
     # TODO just fix natmix.plot_corr to also work w/ level named 'odor'?
     # (or maybe odor_corr_frame_to_dataarray?)
+    # TODO fix (when called from model_banana_iaa_concs.py). need a panel level?
     #
     # even if input to fit_mb_model has a 'panel' level on odor index, the output will
     # not
-    assert len(responses.columns.shape) == 1 and responses.columns.name == 'odor'
-    responses.columns.name = 'odor1'
-
-    # TODO fix (when called from model_banana_iaa_concs.py). need a panel level?
-    assert len(spike_counts.columns.shape) == 1 and spike_counts.columns.name == 'odor'
-    spike_counts.columns.name = 'odor1'
+    #responses = responses.rename_axis(columns={'odor': 'odor1'})
+    #spike_counts = spike_counts.rename_axis(columns={'odor': 'odor1'})
+    #
 
     panel = None
     if responses_to == 'hallem':
@@ -14865,8 +14871,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         return params_for_csv
     #
 
-    # TODO use one/both of these col defs outside of just for s1d?
-    odor_col = 'odor1'
+    odor_col = first_odor_level(responses.columns)
     sparsity_col = 'response rate'
 
     def _per_odor_tidy_model_response_rates(responses: pd.DataFrame) -> pd.DataFrame:
@@ -15108,7 +15113,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # each element of list is a Series now, w/ a 2-level multiindex for odor
             # combinations
             # NOTE: odor levels currently ('odor1', 'odor1') (SAME NAME, which might
-            # cause problems...)
+            # cause problems...) (now probably ('odor', 'odor'))
             corr_list.append(corr_triangular(seed_df.corr()))
 
         seed_corrs = pd.concat(corr_list, axis=1, keys=seeds, names='seed',
@@ -15136,6 +15141,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO rename to 'odor_a', 'odor_b'? (here and in *corr_triangular?)? assuming
         # 'odor2' here isn't the for-mixtures 'odor2' i often have in odor
         # multiindices...
+        # TODO need to fix? (now that i'm once again trying to not drop panels
+        # above) test! (have given up on that for now, because of other errors
+        # downstream)
         odor_levels = ['odor1', 'odor2']
         mean_pearson_ser = seed_corr_ser.groupby(level=odor_levels, sort=False).mean()
 
@@ -15596,6 +15604,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         kc_corrs = corr_triangular(comparison_kc_corrs)
         kc_corrs.name = 'observed_kc_corr'
 
+        # TODO this need to use odor_col instead of odor1? or is odor1 set from
+        # something else? test!
         df = model_corr_df.merge(kc_corrs, on=['odor1', 'odor2'])
 
         # converting to correlation distance, like in matt's
@@ -15618,6 +15628,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # don't show error for each point in this plot (i.e. error across seeds). we
         # only show a CI for the regression line shown (handled in regplot call below)
         if 'seed' in df.columns:
+            # TODO this need to use odor_col instead of odor1? or is odor1 set from
+            # something else? test!
             df = df.groupby(['odor1','odor2']).mean().reset_index()
 
         # TODO assert len(df) always n_choose_2(n_odors) at this point?
@@ -15810,13 +15822,15 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         )
         # TODO also sort correlation odors by same order?
         # TODO assert set of odors are the same first
-        sparsity_per_odor = sparsity_per_odor.loc[comparison_sparsity_per_odor.odor1]
+        sparsity_per_odor = sparsity_per_odor.loc[
+            comparison_sparsity_per_odor[odor_col]
+        ]
     else:
         comparison_sparsity_per_odor = None
 
     sparsity_per_odor = sparsity_per_odor.reset_index()
 
-    sparsity_per_odor.odor1 = sparsity_per_odor.odor1.map(lambda x: x.split(' @ ')[0])
+    sparsity_per_odor[odor_col] = sparsity_per_odor[odor_col].map(olf.parse_odor_name)
 
     if comparison_responses is not None:
         # TODO need (just to remove diff numbering in index, wrt sparsity_per_odor, in
@@ -15826,15 +15840,17 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             drop=True
         )
         # TODO refactor (duped above)?
-        comparison_sparsity_per_odor.odor1 = comparison_sparsity_per_odor.odor1.map(
-            lambda x: x.split(' @ ')[0]
+        comparison_sparsity_per_odor[odor_col] = comparison_sparsity_per_odor[odor_col
+            ].map(olf.parse_odor_name)
+
+        assert comparison_sparsity_per_odor[odor_col].equals(
+            sparsity_per_odor[odor_col]
         )
-        assert comparison_sparsity_per_odor.odor1.equals(sparsity_per_odor.odor1)
 
     if responses_to == 'hallem':
         # assuming megamat for now (otherwise this would be empty)
         megamat_sparsity_per_odor = sparsity_per_odor.loc[
-            sparsity_per_odor.odor1.isin(panel2name_order['megamat'])
+            sparsity_per_odor[odor_col].isin(panel2name_order['megamat'])
         ]
         # this is only used in sensitivity analysis now anyway. would need to also
         # subset this if not.

@@ -805,7 +805,7 @@ def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.
     return data
 
 
-@produces_output(verbose=False)
+@produces_output(verbose=True)
 def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path, *, check: bool = True
     ) -> None:
     """Write `data` to parquet at `path`, with default check loaded value matches input.
@@ -1983,6 +1983,10 @@ def n_multichoose_k(n: int, k: int) -> int:
 def corr_triangular(corr_df, *, ordered_pairs=None):
     assert corr_df.index.equals(corr_df.columns)
 
+    # TODO TODO support panel level being in this index (or at least drop, and make sure
+    # that handling is correct. may at least need to also assert same odor doesn't show
+    # up in >1 panel then)
+
     # TODO this causing difficulties later? alternatives?
     # (w/ needing to sort again)
     #
@@ -1995,6 +1999,7 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
 
     corr_ser = corr_df.stack(dropna=False)
 
+    # TODO delete this branch? make sure it also supports panel level in index?
     if ordered_pairs is not None:
         # does fail in call from end of load_remy_2e...
         # (only happened to be true for my first use case. don't think it actually
