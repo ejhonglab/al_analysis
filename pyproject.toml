@@ -12,11 +12,21 @@
 # complaining about setuptools was also using 56.0 for a while. 61.0 also seems to work
 # in many ways (and may not have even produced those warnings on hal?) but did produce
 # those pytest test collection warnings in atlas setup.
-requires = ["setuptools == 58.0"]
+#
+# apparently i need setuptools >= 64 to actually install editable using current setup.
+# is it just b/c i'm using tools.setuptools.dynamic w/ exact-requirements.txt now? why
+# was it seeming to work on atlas and not hal? just cause some pre-existing state from
+# past installs on atlas?  https://stackoverflow.com/questions/69711606 (well, currently
+# getting same issue on atlas) (not actually seeing any issues w/ 64 so far? including
+# when running pytest, and when installing olfsysm/natmix. kinda confused)
+requires = ["setuptools >= 64.0"]
 build-backend = "setuptools.build_meta"
+# TODO should i also be specifying pip / wheel here? (the other things in that section
+# of my `savedeps` output. see exact-requirements.txt after ~2026-03-20)
 
 [project]
 name = "al_analysis"
+# TODO dynamic version too? what does that do?
 # required, and not sure if i can set up dynamically from git
 version = "0.0.0"
 # TODO try to get working w/ newer pythons (or test some dependencies w/ them first,
@@ -24,9 +34,6 @@ version = "0.0.0"
 # make this exactly 3.8 (i've been using 3.8.12)?
 requires-python = ">= 3.8"
 dynamic = ["dependencies"]
-# TODO TODO include dependencies here? dynamic, based on requirements.txt file?
-# (can not use -r / -e in lines in those files, which might be a problem w/ some of
-# current approaches)
 readme = "README.md"
 
 [tool.setuptools]
@@ -41,6 +48,9 @@ py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antenn
 ]
 
 [tools.setuptools.dynamic]
+# NOTE: this can not use -r / -e in lines in those files, which would prevent some of
+# the old approaches I took (but could just have separate parallel files to install
+# certain sets of custom things, if I really want)
 dependencies = {file = "exact-requirements.txt"}
 
 # TODO reference requirements.txt? how to consolidate? seems that might not let me

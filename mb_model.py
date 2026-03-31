@@ -8708,20 +8708,38 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # calculation is correct at least)
 
 
-def load_dynamics(model_dir: Path, *, mtime_tolerance_s: float = 300.0, **kwargs
-    ) -> ParamDict:
-    """Loads all NetCDF (.nc) files into dynamics dict, with one key per file.
+def dynamics_var_paths(model_dir: Path, *, mtime_tolerance_s: float = 300.0
+    ) -> Dict[str, Path]:
+    """Returns dict of var_name -> path to .nc file with contents of that var.
+
+    Args:
+        model_dir: directory to search for .nc dynamics files from
+
+        mtime_tolerance_s: if any of the collected .nc files differ in age (mtime) by
+            more than this many seconds, a `RuntimeError` is raised, because likely a
+            run was interrupted or failed before saving outputs, or there might be some
+            old outdated outputps
+
+    Returns dict of <var_name> -> <path_to_nc_file_containing_data_for_this_var>, for
+    each name of an output containing model dynamics. E.g. `model_dir / 'claw_sims.nc'`
+    will be inserted with key 'claw_sims', and value `model_dir / 'claw_sims.nc'`
+
+    Raises `IOError` if `model_dir` is not a directory or there are no .nc files within
+    it. See `mtime_tolerance_s` doc above for when `RuntimeError` is raised.
     """
     # initially I had mtime_tolerance_s at 45.0, but if encoding=dict(zlib=True,
-    # complevel=9) is passed to save_dataarray (the maximum compression available with
-    # current engine), it can take ~130s to save claw_sims (with pretime) (to an SSD),
-    # so increased to 300s to be safer
-    assert model_dir.is_dir(), f'{model_dir=} was not a directory!'
+    # complevel=9) is passed to save_dataarray (which i'm not sure i'll ever use... even
+    # lowest complevel adds more time than i want) (the maximum compression available
+    # with current engine), it can take ~130s to save claw_sims (with pretime) (to an
+    # SSD), so increased to 300s to be safer
+    if not model_dir.is_dir():
+        raise IOError(f'{model_dir=} was not a directory!')
+
     netcdf_files = list(model_dir.glob('*.nc'))
     if len(netcdf_files) == 0:
         raise IOError('no netcdf files in current directory, so no dynamics to load')
 
-    dynamics_dict = dict()
+    varname2netcdf_path = dict()
     min_mtime = None
     max_mtime = None
     for f in netcdf_files:
@@ -8737,8 +8755,8 @@ def load_dynamics(model_dir: Path, *, mtime_tolerance_s: float = 300.0, **kwargs
             if mtime > max_mtime:
                 max_mtime= mtime
 
-        arr = load_dataarray(f)
-        dynamics_dict[var_name] = arr
+        assert var_name not in varname2netcdf_path, f'{var_name=}'
+        varname2netcdf_path[var_name] = f
 
     mtime_diff = max_mtime - min_mtime
     if mtime_diff > mtime_tolerance_s:
@@ -8746,6 +8764,107 @@ def load_dynamics(model_dir: Path, *, mtime_tolerance_s: float = 300.0, **kwargs
             f'{mtime_diff:.0f} seconds (> {mtime_tolerance_s=:.0f}). delete any old '
             'files from previous runs, or the whole model output directory.'
         )
+
+    return varname2netcdf_path
+
+
+REQUIRED_DYNAMICS_VARS: Set[str] = {'orn_sims', 'pn_sims', 'vm_sims',
+    'spike_recordings', 'Is_sims', 'inh_sims'
+}
+# TODO or make claw_sims/bouton_sims required if model params indicate we should have
+# them?
+# TODO also add options for LN inhA/B vars, if i decide to start saving those?
+ALL_DYNAMICS_VARS: Set[str] = REQUIRED_DYNAMICS_VARS | {
+    'Is_from_kcs', 'Is_from_pns', 'claw_sims', 'bouton_sims'
+}
+# TODO more granularity than bool require_all? may want to switch Is_from_kcs separately
+# from whether or not we have claw_sims / bouton_sims (latter of which we might want to
+# require based on saved model params instead)
+def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
+    warn_: bool = True, **kwargs) -> bool:
+    """
+    Args:
+        model_dir: directory to search for .nc dynamics files from
+
+        require_all: if False, only requires all from `REQUIRED_DYNAMICS_VARS`,
+            otherwise requires all of `ALL_DYNAMICS_VARS`
+
+        warn_: if True, warns about .nc files with prefixes not in expected set
+            of dynamics vars (`ALL_DYNAMICS_VARS`), and about missing vars (for
+            directories that have any var .nc files present)
+
+        **kwargs: passed to `dynamics_var_paths`. only currently for
+            `mtime_tolerance_s`.
+
+    Raises `RuntimeError` when `dynamics_var_paths` does, but returns False when that
+    function raises `IOError`.
+    """
+    try:
+        varname2netcdf_path = dynamics_var_paths(model_dir, **kwargs)
+    except IOError:
+        return False
+
+    have_vars = set(varname2netcdf_path.keys())
+
+    have_dynamic_vars = have_vars & ALL_DYNAMICS_VARS
+    if len(have_dynamic_vars) == 0:
+        # returning before any warnings, if directory contains NONE of the expected
+        # dynamics outputs
+        return False
+
+    if warn_:
+        unexpected = have_vars - ALL_DYNAMICS_VARS
+        if len(unexpected) > 0:
+            warn(f'{model_dir}: have the following .nc files not in known dynamics '
+                f'variables:\n{pformat(unexpected)}\n\nall expected dynamics variable '
+                f'names:\n{pformat(ALL_DYNAMICS_VARS)}'
+            )
+
+    if not require_all:
+        missing = REQUIRED_DYNAMICS_VARS - have_vars
+    else:
+        missing = ALL_DYNAMICS_VARS - have_vars
+
+    if warn_ and len(missing) > 0:
+        warn(f'{model_dir}: missing .nc files for the following dynamics variables:\n'
+            f'{pformat(missing)}'
+        )
+
+    return len(missing) == 0
+
+
+def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
+    ) -> Dict[str, xr.DataArray]:
+    """Loads all NetCDF (.nc) files into dynamics dict, with one key per file.
+
+    Args:
+        model_dir: directory to load .nc dynamics from
+
+        skip_unrecognized: if True, will warn about (and not load) .nc files whose
+            prefix are not in `ALL_DYNAMICS_VARS`
+
+        **kwargs: passed to `dynamics_var_paths`. only currently for
+            `mtime_tolerance_s`.
+
+    Returns dict of name -> data, for each name of an output containing model
+    dynamics. E.g. `model_dir / 'claw_sims.nc'` will be inserted with key 'claw_sims',
+    pointing to the `DataArray` from calling `hong2p.xarray.load_datarray` on that file.
+
+    Raises `IOError` or `RuntimeError` when `dynamics_var_paths` does.
+    """
+    varname2netcdf_path = dynamics_var_paths(model_dir, **kwargs)
+
+    dynamics_dict = dict()
+    for var_name, f in varname2netcdf_path.items():
+        if skip_unrecognized and var_name not in ALL_DYNAMICS_VARS:
+            warn(f'{model_dir}: not loading {f.name}, as not in recognized dynamics '
+                f'var names ({ALL_DYNAMICS_VARS=})'
+            )
+            continue
+
+        # TODO can load_datarray fail? how?
+        arr = load_dataarray(f)
+        dynamics_dict[var_name] = arr
 
     return dynamics_dict
 
@@ -8795,13 +8914,25 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
     )
 
 
+# TODO use elsewhere (+ factor to hong2p.util)
+def print_paths(paths: Sequence[Path]) -> None:
+    """Prints paths, one per line.
+
+    Since `pprint(paths)` would not format each element to a string, leaving each with
+    annoying prefix/suffix like PosixPath('...').
+    """
+    for p in paths:
+        print(p)
+
+
 def load_and_plot_dynamics_cli() -> None:
     """Calls `load_and_plot_dynamics` on current directory or CLI-passed directory.
     """
-    # TODO TODO TODO allow passing in relevant vmax / ymax, to have fixed values across
+    # TODO TODO allow passing in relevant vmax / ymax, to have fixed values across
     # plots, to make point re: PN<>APL sensitivity analysis
-    # TODO TODO also allow passing in start time (or flag switching between start and
-    # stim_start - eps)
+    # TODO also allow passing in start time (or flag switching between start and
+    # stim_start - eps)? (PN spont shutting off when PN>APL inhibition is enabled is
+    # meanginful tho...)
     msg = load_and_plot_dynamics_cli.__doc__
     fn_msg = load_and_plot_dynamics.__doc__.split('Args:\n')[0].strip()
     fn_msg = '\n'.join(x.strip() for x in fn_msg.splitlines())
@@ -8813,13 +8944,54 @@ def load_and_plot_dynamics_cli() -> None:
         'model dynamics saved within as NetCDF (.nc) files within (via '
         'save_dynamics=True flag to `fit_and_plot_mb_model`)'
     )
+    parser.add_argument('-r', '--recursive', action='store_true', help='assumes '
+        'subdirectories are model output directories, and calls '
+        '`load_and_plot_dynamics` on each valid subdirectory, saving plots within each '
+        'subdirectory'
+    )
+    parser.add_argument('-v', '--verbose', action='store_true', help='if -r/--recursive'
+        ", then will print separate lists of directories that do/don't have the "
+        'required dynamics .nc files. does nothing if not -r/--recursive.'
+    )
     args = parser.parse_args()
     model_dir = args.model_dir
+    recursive = args.recursive
+    verbose = args.verbose
 
     # so we see prints telling us when and where plots are being saved
     al_util.verbose = True
 
-    load_and_plot_dynamics(model_dir)
+    if not recursive:
+        load_and_plot_dynamics(model_dir)
+    else:
+        model_output_root = model_dir
+        model_output_dirs = []
+        other_dirs = []
+        for d in model_output_root.rglob('*'):
+            if not d.is_dir():
+                continue
+
+            # TODO CLI args to thread thru to any of the args here? require_all?
+            # TODO also pass verbose to warn_ here? or catch and summarize similar
+            # warnings at end?
+            if have_all_saved_dynamics(d):
+                model_output_dirs.append(d)
+            else:
+                other_dirs.append(d)
+
+        if verbose:
+            print(f'{len(other_dirs)} non-model_output_dirs (will not have dynamics '
+                'plots made):'
+            )
+            print_paths(other_dirs)
+            print()
+            print(f'{len(model_output_dirs)} model_output_dirs (will have dynamics '
+                'plots made):'
+            )
+            print_paths(model_output_dirs)
+
+        for d in tqdm(model_output_dirs, unit='model-output-dir'):
+            load_and_plot_dynamics(d)
 
 
 # TODO delete all these? or re-organize? want to minimize how much mb_model stuff

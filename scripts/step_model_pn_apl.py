@@ -9,10 +9,11 @@ and runs those through models with parameters in `MODEL_TUNE_KWS` (one instantia
 entry in that list).
 """
 
-import argparse
+from argparse import ArgumentParser, RawTextHelpFormatter
 from itertools import product
 from pathlib import Path
 from pprint import pformat
+from typing import Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -50,24 +51,89 @@ def analyze_outputs(plot_dir: Path) -> None:
     cols = ['wAPLPN', 'wPNAPL', 'sparsity', 'n_silent_cells', 'hept_pent_corr',
         'avg_lts', 'n_avg_odors_responded_to'
     ]
+    cols_computed_over_nonresponders = ['avg_lts', 'n_avg_odors_responded_to',
+        'hept_pent_corr'
+    ]
+    col2range = {
+        # yes, it could technically be negative, but don't care about that,
+        # and unlikely (except maybe noise. could maybe set lower bound to -0.05 or so?)
+        # TODO check what actual min is, and at least warn if it's too far below?
+        # TODO use const > 0 min (e.g. .2)?
+        'hept_pent_corr': (0, 1),
+
+        # TODO assert 1732 matches shape component of all rs below (it should)
+        'n_silent_cells': (0, 1732),
+
+        # TODO mechanism for fixing min to 0, but letting max float w/ data?
+        # TODO or what kind of max i want for n_avg_odors_responded to?
+
+        # TODO TODO TODO have diverging cmap around 0.1
+        # TODO TODO have diverging cmap around tuned value for all of these?
+        #'sparsity': (0, 1),
+        'sparsity': (0, .15),
+
+        # TODO assert no data exceeds max here
+        'n_avg_odors_responded_to': (0, 5),
+
+        # TODO is this correct? verify
+        'avg_lts': (0, 1),
+    }
     vals = []
+    plot_suffix: str = '.pdf'
+    d0_dynamics_plotnames: Optional[Set[str]] = None
+    d0_dynamics_plot_dirnames: Set[str] = set()
     for d in list(plot_dir.glob('*/')):
         if not d.is_dir():
             continue
 
         # all other directories should be named like: 'wAPLPN-0.10_wPNAPL-20.00'
-        if d.name in {'model_internals'}:
+        if d.name in {'model_internals', 'dynamics'} | d0_dynamics_plot_dirnames:
             continue
 
+        if d0_dynamics_plotnames is None:
+            # assuming this should be same for all subdirs
+            d0_dynamics_plotnames = set(
+                x.name for x in (d / 'dynamics').glob(f'*{plot_suffix}')
+            )
+            for p in d0_dynamics_plotnames:
+                curr_plot_dir = (plot_dir / p).with_suffix('')
+                curr_plot_dir.mkdir(exist_ok=True)
+                d0_dynamics_plot_dirnames.add(curr_plot_dir.name)
+
+        for p in d0_dynamics_plotnames:
+            dynamics_plot_dir = d / 'dynamics'
+            assert dynamics_plot_dir.is_dir(), f'{dynamics_plot_dir=}'
+            src = dynamics_plot_dir / p
+            assert src.is_file() and not src.is_symlink()
+
+            curr_plot_dir = (plot_dir / p).with_suffix('')
+            assert curr_plot_dir.is_dir()
+
+            # can't use with_suffix on something w/ d.name as name, or it will strip the
+            # last bit of the rightmost float parameter from name (after decimal)
+            link = curr_plot_dir / f'{d.name}{plot_suffix}'
+            if link.exists():
+                assert link.is_symlink()
+                link.unlink()
+
+            # TODO verbose=True (wouldn't currently do what i want)? print something?
+            symlink(src, link)
+
+        # TODO pad all numbers for symlinking (or in general?), so sorting is
+        # consistent? (actually, happens to be fine as-is, for current steps at least)
         a2p, p2a = d.name.split('_')
         a2p = float(a2p.split('-')[-1])
         p2a = float(p2a.split('-')[-1])
         # TODO use parquet instead?
         rs = pd.read_pickle(d / 'responses.p')
         sp = rs.mean().mean()
+
+        # NOTE: all quantities computed using rs_nosilent (as opposed to responses that
+        # still have non-responding cells) should have their column name manually added
+        # to cols_computed_over_nonresponders above
         rs_nosilent = drop_silent_model_cells(rs)
         n_silent = len(rs) - len(rs_nosilent)
-        # TODO TODO average over corr w/ 1-6ol too? also eb/ep vs 1-5ol/1-6ol block?
+        # TODO average over corr w/ 1-6ol too? also eb/ep vs 1-5ol/1-6ol block?
         # TODO + maybe ratio/diff w/ corrs in rest of off diag, if needed (but prob not)
         hept_pent_corr = rs_nosilent.corr().loc['1-5ol @ -3', '2h @ -3']
 
@@ -75,7 +141,8 @@ def analyze_outputs(plot_dir: Path) -> None:
         n_odors = (xs > 0).T.sum()
         avg_n_odors = n_odors.mean()
 
-        # TODO add some assertions verifying this
+        # TODO add some assertions verifying this (what exactly? bounds? which cases
+        # produce min/max values?)
         xs = xs.T
         L = pow(xs.sum(), 2.0)/(xs*xs).sum()
         L =  (1.0 - L/len(xs))/(1.0 - 1.0/len(xs))
@@ -107,25 +174,37 @@ def analyze_outputs(plot_dir: Path) -> None:
         mat.columns = mat.columns.astype(str)
         mat.index = mat.index.astype(str)
 
+        assert c in col2range
+        vmin, vmax = col2range[c]
+        assert mat.min().min() >= vmin, f'{c=} {mat.min().min()=} {vmin}'
+        assert mat.max().max() <= vmax, f'{c=} {mat.max().max()=} {vmax}'
+
         # TODO fail earlier (w/ better err message) in viz.matshow, if mat is empty.
         # currently get: `ZeroDivisionError: float division by zero`
         #   File "/home/tom/src/hong2p/hong2p/viz.py", line 1741, in matshow
         # fontsize = min(10.0, 240.0 / max(df.shape[0], df.shape[1]))
-        matshow(mat, ax=ax, xticklabels=True, yticklabels=True, cbar_label=c)
+        matshow(mat, ax=ax, xticklabels=True, yticklabels=True, cbar_label=c,
+            vmin=vmin, vmax=vmax
+        )
 
         # wPNAPL
         ax.set_ylabel(mat.index.name, fontsize=10)
         # wAPLPN
         ax.set_xlabel(mat.columns.name, fontsize=10)
 
+        title = f'{kstr}\n{c}'
+        if c in cols_computed_over_nonresponders:
+            title += '\nsilent cells dropped'
+        else:
+            title += '\nall cells, including silent'
         # TODO include other model params?
-        ax.set_title(f'{kstr}\n{c}')
+        ax.set_title(title)
 
         savefig(fig, plot_root, f'{kstr}__{c}', bbox_inches='tight')
 
 
-def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *,
-    ignore_existing: bool = False, save_dynamics: bool = False,
+def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
+    kws: ParamDict, *, ignore_existing: bool = False, save_dynamics: bool = False,
     tuned_only: bool = False) -> None:
     # TODO doc
     """Runs `orn_deltas`
@@ -142,16 +221,6 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
         save_dynamics: if True, will save DataArray pickles of all model internal
             dynamic quantities (e.g. membrane potential of KCs over time, to each odor)
     """
-    # outputs can be big and want to be able to save in arbitrary paths. just run script
-    # from the folder you want the outputs in.
-    plot_root = Path('.').resolve() / OUTPUT_ROOT_NAME
-
-    # TODO or just exclude hardcoded list, so directory names won't change if i add more
-    # params to the list (which would change subset that is same across all)?
-    same_in_all = set(subset_same_in_all_dicts(MODEL_TUNE_KWS).keys())
-    plot_dirname = format_model_params(kws, exclude=same_in_all)
-    plot_dir = plot_root / plot_dirname
-
     output_kws = dict(
         # if return_dynamics is True, fit_and_plot_mb_model will write DataArrays
         # containing dynamics as pickles, before popping them from returned param dict.
@@ -186,6 +255,7 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
     # initial sp_lr_coeff?)
     max_iters = 100
 
+    plot_root = plot_dir.parent
     # TODO TODO also step around fixed_thr/wAPLKC from previous tuning, e.g. a
     # similar model w/o the PN<>APL weights?
     # TODO try a hypergrid stepping thr and APL independently too? (w/ same steps
@@ -256,6 +326,7 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
     # TODO worth trying w/ a couple diff sp_factor_pre_APL? (1.5 / 3.0?)
     # TODO TODO these are ultimately sorted before plots, right?
     steps = [100, 20, 1.0, 0.5, 10, .1]
+    #steps = [100, 1.0, .1]
     # TODO provide warning / fail early if we can estimate we won't have enough disk
     # space (if return_dynamics / plot_example_dynamics)?
     for ap, pa in tqdm(list(product(steps, steps)), unit='param-combo'):
@@ -303,17 +374,16 @@ def step_pn_apl_weights_around_tuned(orn_deltas: pd.DataFrame, kws: ParamDict, *
         # TODO (delete?) breadth across KCs (vs max) (make sense?) (something else that
         # might be diff across KCs to account for sparsity diff?)?
 
-    analyze_outputs(plot_dir)
-
 
 def main():
-    parser = argparse.ArgumentParser(description='will run models with the following '
+    # TODO how to preserve newlines in this description again?
+    parser = ArgumentParser(description='will run models with the following '
         f'parameters:\n{pformat(MODEL_TUNE_KWS)}\n...on precomputed megamat est spike '
         'deltas, varying scales of PN>APL and APL>PN weights in a grid around tuned '
         'values. Initial "tuned" values are chosen at somewhat arbitrary initial offset'
         f' from APL<>KC weight scales.\n\nA directory {repr(OUTPUT_ROOT_NAME)} will be '
         'created in the current path, and model outputs will be stored in '
-        'sub-directories within.'
+        'sub-directories within.', formatter_class=RawTextHelpFormatter
     )
     # TODO add (+implement) -c flag to check outputs match existing ones
     # (can i use existing fns / code for that? want subset of behavior al_analysis.py
@@ -331,12 +401,22 @@ def main():
         help='only runs the initial tuned version of each model parameters, skipping '
         'all of the stepping of PN>APL and APL>PN weight scales. mainly for testing.'
     )
+    parser.add_argument('-o', '--only-analyze-outputs', action='store_true',
+        help='skip even checking that all model directories are created. only run '
+        'analyze_outputs on model outputu directories that are immediate '
+        f'children of {repr(OUTPUT_ROOT_NAME)}'
+    )
     # TODO add flag to reanalyze / plot dynamics (if i factor out the
     # plot_example_dynamics code from fit_mb_model)?
     args = parser.parse_args()
     ignore_existing = args.ignore_existing
     save_dynamics = args.save_dynamics
     tuned_only = args.tuned_only
+    only_analyze_outputs = args.only_analyze_outputs
+
+    if only_analyze_outputs:
+        assert not (save_dynamics or tuned_only or ignore_existing), \
+            'all of these incompatible with -o/--only-analyze-outputs'
 
     # TODO is this required to see when we are saving figs (think so)? change so that's
     # not the case (and for saving other things, if necessary)?
@@ -345,12 +425,28 @@ def main():
     # should now be loading the new signed absmax response calc version
     orn_deltas = megamat_orn_deltas()
 
+    # TODO pass in? or define module level?
+    # outputs can be big and want to be able to save in arbitrary paths. just run script
+    # from the folder you want the outputs in.
+    plot_root = Path('.').resolve() / OUTPUT_ROOT_NAME
+
+    # TODO or just exclude hardcoded list, so directory names won't change if i add
+    # more params to the list (which would change subset that is same across all)?
+    same_in_all = set(subset_same_in_all_dicts(MODEL_TUNE_KWS).keys())
+
     for kws in MODEL_TUNE_KWS:
         print(f'{kws=}')
-        step_pn_apl_weights_around_tuned(orn_deltas, kws,
-            ignore_existing=ignore_existing, save_dynamics=save_dynamics,
-            tuned_only=tuned_only
-        )
+
+        plot_dirname = format_model_params(kws, exclude=same_in_all)
+        plot_dir = plot_root / plot_dirname
+
+        if not only_analyze_outputs:
+            step_pn_apl_weights_around_tuned(plot_dir, orn_deltas, kws,
+                ignore_existing=ignore_existing, save_dynamics=save_dynamics,
+                tuned_only=tuned_only
+            )
+
+        analyze_outputs(plot_dir)
 
 
 if __name__ == '__main__':
