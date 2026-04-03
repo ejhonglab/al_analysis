@@ -288,7 +288,7 @@ def csvinfo_cli():
             fig, _ = plot_all_roi_mean_responses(mean_df, vmin=vmin, vmax=vmax,
                 **mean_plot_kws
             )
-            savefig(fig,  '_mean')
+            savefig(fig, '_mean')
 
             # without numeric_only=True to std call below:
             # FutureWarning: The default value of numeric_only in DataFrameGroupBy.std
@@ -315,7 +315,7 @@ def csvinfo_cli():
             fig, _ = plot_all_roi_mean_responses(stddev_df, vmin=0, vmax=vmax,
                 **mean_plot_kws
             )
-            savefig(fig,  '_stddev')
+            savefig(fig, '_stddev')
 
             # NOTE: if input has some uncertain glomeruli, this plot will currently
             # overrepresent the true counts (none of final data I'm working with now

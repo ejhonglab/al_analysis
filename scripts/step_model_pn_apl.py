@@ -136,6 +136,7 @@ def analyze_outputs(plot_dir: Path) -> None:
         # TODO average over corr w/ 1-6ol too? also eb/ep vs 1-5ol/1-6ol block?
         # TODO + maybe ratio/diff w/ corrs in rest of off diag, if needed (but prob not)
         hept_pent_corr = rs_nosilent.corr().loc['1-5ol @ -3', '2h @ -3']
+        # TODO TODO say what remy's value (computed on real KCs) is here, for reference?
 
         xs = rs_nosilent
         n_odors = (xs > 0).T.sum()
@@ -406,8 +407,6 @@ def main():
         'analyze_outputs on model outputu directories that are immediate '
         f'children of {repr(OUTPUT_ROOT_NAME)}'
     )
-    # TODO add flag to reanalyze / plot dynamics (if i factor out the
-    # plot_example_dynamics code from fit_mb_model)?
     args = parser.parse_args()
     ignore_existing = args.ignore_existing
     save_dynamics = args.save_dynamics

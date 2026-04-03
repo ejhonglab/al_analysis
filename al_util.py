@@ -1,8 +1,10 @@
 
 from copy import deepcopy
+from collections import namedtuple
 import difflib
 from functools import wraps
 import filecmp
+import inspect
 import itertools
 import json
 from math import factorial
@@ -25,32 +27,14 @@ import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib import patches
 from matplotlib.figure import Figure
-# TODO need to install something else for this, in a new env?
-# (might have manually installed before in current one...)
-# TODO TODO why is this import causing hanging sometimes?
-#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 252, in <module>
-#    _update_converter()
-#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 240, in _update_converter
-#    mpl._get_executable_info("inkscape")
-#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/__init__.py", line 406, in _get_executable_info
-#    return impl(["inkscape", "--without-gui", "-V"],
-#  File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/__init__.py", line 363, in impl
-#    output = subprocess.check_output(
-#  File "/usr/lib/python3.8/subprocess.py", line 415, in check_output
-#    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
-#  File "/usr/lib/python3.8/subprocess.py", line 495, in run
-#    stdout, stderr = process.communicate(input, timeout=timeout)
-#  File "/usr/lib/python3.8/subprocess.py", line 1015, in communicate
-#    stdout = self.stdout.read()
-#KeyboardInterrupt
-#from matplotlib.testing import compare as mpl_compare
-#
 from matplotlib.testing.exceptions import ImageComparisonFailure
-#
 # TODO replace w/ conditional import of seaborn / scipy as needed?
 # if trying to run tests w/ valgrind, this import currently seems to raise:
 # SystemError: initialization of beta_ufunc raised unreported exception
 # from a from scipy.stats._boost.beta_ufunc import
+# TODO can i assert we are not TYPE_CHECKING here, and then put the imports that would
+# fail (for typing hinting commented below) behind that flag? and maybe define the
+# types for type hinting conditional on PYTHONMALLOC and/or TYPE_CHECKING?
 if os.getenv('PYTHONMALLOC') != 'malloc':
     import seaborn as sns
 else:
@@ -76,7 +60,8 @@ bootstrap_seed: int = 1337
 verbose: bool = False
 
 fly_cols: List[str] = ['date', 'fly_num']
-# typically, ROI = 'glomerlus' (glomerulus_col)
+# typically, ROI = 'glomerulus' (mb_model.glomerulus_col)
+# TODO move glomerulus_col here. could prob use in both al_analysis and mb_model
 flyroi_cols: List[str] = fly_cols + ['roi']
 
 diag_panel_str: str = 'glomeruli_diagnostics'
@@ -139,25 +124,26 @@ zscore_traces_per_recording: bool = False
 #
 
 if not zscore_traces_per_recording:
-    response_desc = f'{trial_stat_desc} {dff_latex}'
+    response_desc: str = f'{trial_stat_desc} {dff_latex}'
 else:
     # TODO TODO also mention the additional baseline subtraction step? add delta symbol?
-    response_desc = f'{trial_stat_desc} Z-scored F'
+    response_desc: str = f'{trial_stat_desc} Z-scored F'
 
 # never saying "mean mean <x>", just specifying outer mean separately when
 # trial_stat_desc == 'max'
 if trial_stat_desc != 'mean':
     # going to make no effort to clarify whether it's a mean over trials or flies.
     # should be clear from plot, and will get too verbose + create too many variables
-    mean_response_desc = f'mean {response_desc}'
+    mean_response_desc: str = f'mean {response_desc}'
 else:
-    mean_response_desc = response_desc
+    mean_response_desc: str = response_desc
 
 response_calc_params_json_name: str = 'response_calc_params.json'
 
 
 # TODO adapt -> share w/ (at least) drop_redone_odors?
-def format_panel(x):
+# TODO type hint Mapping? can it be Series or Dict?
+def format_panel(x) -> str:
     panel = x.get('panel')
     # TODO maybe return None if it'd make more consistent vline_level_fn usage
     # possible (across single/multi panel cases)? would prob need to handle in viz
@@ -173,7 +159,7 @@ def format_panel(x):
     return panel
 
 
-def roi_label(index_dict):
+def roi_label(index_dict) -> str:
     roi = index_dict['roi']
     if is_ijroi_named(roi):
         return roi
@@ -487,6 +473,8 @@ def format_mtime(mtime_or_path: Union[float, Pathlike], *, year: bool = False,
     return time.strftime(fstr, time.localtime(mtime))
 
 
+# TODO doc what this does in a comment (are any outputs actually written, or all just
+# written to temp paths and compared to any existing current outputs at same paths?)
 # True|False|'nonmain'
 check_outputs_unchanged = False
 # hack so al_analysis can edit this to add functions i currently have defined under main
@@ -500,9 +488,13 @@ _consider_as_main = []
 # TODO default verbose=None and try to use default of wrapped fn then
 # (or True otherwise?)
 # (still need to test behavior when wrapped fn has existing verbose kwarg)
-# TODO make this an attribute of this/one of inner fns (rather than module level)?
-_fn2seen_inputs: Dict[str, Path] = dict()
+_fn_name2seen_inputs: Dict[str, Path] = dict()
+_fn_name2wrapped_fn: Dict[str, Callable] = dict()
+# TODO also include savefig plots in these (partially to make replacing custom logic in
+# there w/ wrapping it w/ @produces_output easier later)
 _all_seen_inputs: Set[Path] = set()
+CodeContext = namedtuple('CodeContext', 'filename lineno fn_name')
+_saved_path2last_save_code_context: Dict[Path, CodeContext] = dict()
 # TODO what is _fn for again? keep?
 def produces_output(_fn=None, *, verbose=True):
     # for how to make a decorator with optional  arg:
@@ -510,13 +502,13 @@ def produces_output(_fn=None, *, verbose=True):
 
     # TODO what would be a good name for this?
     def wrapper_helper(fn):
-        assert fn.__name__ not in _fn2seen_inputs, (
+        assert fn.__name__ not in _fn_name2seen_inputs, (
             f'{fn.__name__=} seen set would have been overwritten'
         )
         # TODO some reason to use lists like i was in savefig? was that just for easier
         # use in multiprocessing access (no set equiv of IPC data type?)?
         # that matter anymore?
-        _fn2seen_inputs[fn.__name__] = set()
+        _fn_name2seen_inputs[fn.__name__] = set()
 
         @wraps(fn)
         # TODO delete *args (if assertion it's unused passes for a wihle)
@@ -555,18 +547,21 @@ def produces_output(_fn=None, *, verbose=True):
             # (currently have this via global `check_outputs_unchanged`. do i actually
             # want it to specifically be a kwarg added by the wrapper instead?)
 
-            assert fn.__name__ in _fn2seen_inputs
+            assert fn.__name__ in _fn_name2seen_inputs
             # TODO probably don't want different fns to be able to save to same path
             # either tho... (not that they currently would). maybe seen_inputs should be
             # one global?
-            seen_inputs = _fn2seen_inputs[fn.__name__]
+            seen_inputs = _fn_name2seen_inputs[fn.__name__]
 
             if not multiple_saves_per_run_ok and (
                 (normalized_path in seen_inputs or normalized_path in _all_seen_inputs)
                 ):
+                context = _saved_path2last_save_code_context[normalized_path]
                 raise MultipleSavesPerRunException('would have overwritten output '
-                    f'{path} (previously written elsewhere in this run)! add '
-                    'multiple_saves_per_run_ok=True to call to override'
+                    f'{path}\npreviously written elsewhere in this run, at:\n'
+                    f'{context.filename}, line {context.lineno} (in {context.fn_name})'
+                    '\nadd multiple_saves_per_run_ok=True to call to override, but this'
+                    ' is likely a mistake'
                 )
 
             seen_inputs.add(normalized_path)
@@ -575,6 +570,15 @@ def produces_output(_fn=None, *, verbose=True):
             # outputs within a run... simplify by replacing all fn specific sets w/ this
             # one global one?
             _all_seen_inputs.add(normalized_path)
+
+            last_frame = inspect.currentframe().f_back
+            # "index" (last argument) is "the index of the current line being executed
+            # in the code_context list", but not sure what that means, and don't seem to
+            # need it for what i want
+            filename, lineno, fn_name, _, _ = inspect.getframeinfo(last_frame)
+            _saved_path2last_save_code_context[normalized_path] = CodeContext(
+                filename=filename, lineno=lineno, fn_name=fn_name
+            )
 
             write_output = True
             if check_outputs_unchanged and path.exists():
@@ -633,6 +637,7 @@ def produces_output(_fn=None, *, verbose=True):
 
                 fn(data, path, **kwargs)
 
+        _fn_name2wrapped_fn[fn.__name__] = wrapped_fn
         return wrapped_fn
 
     # TODO what is this for again?
@@ -888,6 +893,8 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path, *, check: bool 
         # TODO TODO was i doing this was just b/c of need for isclose in index? why can
         # we assert values are equal and not just close then?
         except AssertionError:
+            # TODO warn here?
+
             # TODO also convert indices to frames and check those w/ allclose (like
             # columns)? or is parquet MultiIndex reading not broken for those? i had to
             # add manual type conversions for MultiIndex column level values in my
@@ -994,6 +1001,7 @@ def to_json(param_dict: ParamDict, path: Path, *, check: bool = True) -> None:
 
 @produces_output(verbose=False)
 def np_save(data: np.ndarray, path: Path, **kwargs) -> None:
+    # TODO add check=True option to round trip test load the data?
     """
     NOTE: opposite order of args to `np.save`, which has path first and data second.
     necessary to work w/ my `produces_output` wrapper.
@@ -1011,7 +1019,8 @@ required_index_levels: List[str] = ['panel', 'is_pair', 'odor1', 'repeat']
 # TODO provide fn to invert zero filling i had done for some new outputs (dropping
 # glomeruli w/ all 0s or NaN)
 
-def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
+def drop_old_odor_index_levels(df: pd.DataFrame, *, warn_: bool = True
+    ) -> pd.DataFrame:
     # TODO doc
     # for dropping metadata intended for binary mixture experiments
     to_drop = []
@@ -1020,15 +1029,17 @@ def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
         if set(df.index.get_level_values('is_pair')) == {False}:
             to_drop.append('is_pair')
         else:
-            warn('index had some is_pair=True entries! not dropping is_pair level!')
+            if warn_:
+                warn('index had some is_pair=True entries! not dropping is_pair level!')
 
     if 'odor2' in df.index.names:
         if set(df.index.get_level_values('odor2')) == {solvent_str}:
             to_drop.append('odor2')
         else:
-            warn(f'index had some odor2 != {solvent_str} entries! not dropping odor2 '
-                'level!'
-            )
+            if warn_:
+                warn(f'index had some odor2 != {solvent_str} entries! not dropping '
+                    'odor2 level!'
+                )
 
     if len(to_drop) > 0:
         df.index = df.index.droplevel(to_drop)
@@ -1036,9 +1047,17 @@ def drop_old_odor_index_levels(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# TODO rename to include dff in name?
+# TODO rename to include dff in name? or antennal? it's not just the counterpart to my
+# wrapped to_csv fn, which is intended to writing general CSVs, not just this specific
+# format of them
+# TODO TODO tho should i test this fn can read CSVs written by my to_csv fn?
 def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
-    check_vs_pickle: bool = True, verbose: bool = True) -> pd.DataFrame:
+    check_vs_pickle: bool = True, warn_: bool = True, verbose: bool = True
+    ) -> pd.DataFrame:
+    """
+    Args:
+        warn_: passed to `drop_old_odor_index_levels`, if called
+    """
     # TODO doc output format (w/ example str repr)
     # TODO does this work on both ij_certain-roi_stats.csv and ij_roi_stats.csv outputs?
 
@@ -1126,13 +1145,12 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
                 print(f'no pickle at {pickle_path}. could not check against CSV.\n')
 
     if drop_old_odor_levels:
-        df = drop_old_odor_index_levels(df)
+        df = drop_old_odor_index_levels(df, warn_=warn_)
 
     return df
 
 
-
-
+# TODO unit test this?
 def text_diff(f1: Path, f2: Path) -> str:
     lines1 = f1.read_text().strip().splitlines(keepends=True)
     lines2 = f2.read_text().strip().splitlines(keepends=True)
@@ -1181,15 +1199,20 @@ _save_fn_name2diff_fn = {
 # TODO also support objects w/ .save(path) method? (e.g. statsmodels models)
 # TODO option to touch files-that-would-be-unchanged to have mtime as if they were just
 # written?
-def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **kwargs
-    ) -> None:
+def _check_output_would_not_change(path: Path, save_fn: Callable,
+    data: Optional[Any] = None, **kwargs) -> None:
     """Raises RuntimeError if output would change.
 
     Args:
         path: must already exist (raises IOError if not)
-        *args, **kwargs: passed to `save_fn`
-    """
 
+        data: if passed, will be 1st `save_fn` argument, otherwise file path is 1st
+            argument, and it's assumed that the data to save is in `kwargs`
+
+        **kwargs: passed to `save_fn`
+    """
+    # TODO also raise if not file? don't think anything below is equipped to handle e.g.
+    # a directory
     if not path.exists():
         raise IOError(f'{path} did not exist!')
 
@@ -1275,6 +1298,7 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
             old = read_pickle(path)
             new = read_pickle(temp_file_path)
 
+            # TODO TODO refactor to use my hong2p.util.equals now?
             # TODO what about if new has 'equals' and old doesn't (could still get
             # ValueError about truth value ambiguous, if new is series?)
             if hasattr(old, 'equals'):
@@ -1314,9 +1338,15 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
                     # if msg matches [some parts of] expected err msg?
                     unchanged = np.all(unchanged)
     else:
-        # TODO TODO when factoring out file comparison fn, def use_mpl_comparison from
+        # TODO need to install something else for this, in a new env?
+        # (might have manually installed before in current one...)
+        # (and not sure i've tested this path in a fresh install, since import is
+        # conditional)
+        # TODO TODO add unit test that hits this path
+        # TODO when factoring out file comparison fn, def use_mpl_comparison from
         # conditional import for this b/c it can hang sometimes (for unclear reasons).
-        # see comment by original import up top.
+        # see comment by original import up top (was there up to f1b56dc4). not sure if
+        # the hanging will ever come up again, or how to repro.
         from matplotlib.testing import compare as mpl_compare
 
         # whether extension is in `mpl_compare.comparable_formats()`?
@@ -1381,7 +1411,8 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
         # (so i can factor this whole conditional, w/ some of earlier stuff, into fn for
         # just comparing files, not doing any of the temp file creation / cleanup)
 
-        # bit more flexible than Path.with_suffix
+        # bit more flexible than Path.with_suffix (how so? just extra '.' chars?
+        # delete?)
         def with_suffix(filepath, suffix):
             return filepath.parent / f'{filepath.stem}{suffix}'
 
@@ -1444,8 +1475,7 @@ def _check_output_would_not_change(path: Path, save_fn: Callable, data=None, **k
     raise RuntimeError(err_msg)
 
 
-
-
+# TODO move up top?
 # TODO clarify how these behave if something is missing (in comment)
 panel2name_order = deepcopy(natmix.panel2name_order)
 panel_order = list(natmix.panel_order)
@@ -1652,7 +1682,7 @@ save_figs = True
 # TODO support multiple (don't know if i want this to be default though, cause extra
 # time)
 # TODO add CLI arg to override this?
-plot_fmt = os.environ.get('plot_fmt', 'pdf')
+plot_fmt: str = os.environ.get('plot_fmt', 'pdf')
 
 exit_after_saving_fig_containing = None
 # TODO CLI flag to (or just always?) warn if there are old figs in any/some of the dirs
@@ -1679,15 +1709,16 @@ _savefig_seen_paths = set()
 #def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
 def savefig(fig_or_seaborngrid,
     fig_dir: Pathlike, desc: str, *, close: bool = True, normalize_fname: bool = True,
-    debug: bool = False, **kwargs) -> Path:
+    debug: bool = False, multiple_saves_per_run_ok: bool = False, **kwargs) -> Path:
 
+    # TODO doc what this is set by (al_analysis CLI args i assume?)
     global exit_after_saving_fig_containing
 
     # TODO delete (after checking i never actually added code that actually used the
     # plot_fmt kwarg i had on this fn for a little bit late 2024, removed in december)
     assert 'plot_fmt' not in kwargs
 
-    # TODO delete
+    # TODO delete?
     if plot_fmt == 'pdf':
         # even needed in current mpl? not referenced in current docs, and not obviously
         # in settings current mpl testing code enforces for tests
@@ -1716,65 +1747,21 @@ def savefig(fig_or_seaborngrid,
     # produces_output? or no? already doing that?)
     abs_fig_path = fig_path.resolve()
 
-    # TODO delete try/except (can i repro failure?)
-    # 2023-12-04:
-    # $ ./al_analysis.py -t 2022-02-03 -e 2022-04-03 -v -s model
-    #thorimage_dir: 2022-02-22/1/kiwi_ea_eb_only
-    #thorsync_dir: 2022-02-22/1/SyncData003
-    #yaml_path: 20220222_184517_stimuli/20220222_184517_stimuli_0.yaml
-    #TIFF (/ motion correction) changed. updating non-ROI outputs.
-    #ImageJ ROIs were modified. re-analyzing.
-    #...
-    #merging ROI VM7d?
-    #selecting input ROI 10 as best plane
-    #dropping other input ROIs [9]
-    #           roi_quality
-    #roi_index
-    #9             0.049183
-    #10            0.054798
-    #
-    #Uncaught exception
-    #Traceback (most recent call last):
-    #  File "./al_analysis.py", line 10766, in <module>
-    #    main()
-    #  File "./al_analysis.py", line 9580, in main
-    #    was_processed = list(starmap(process_recording, keys_and_paired_dirs))
-    #  File "./al_analysis.py", line 3949, in process_recording
-    #    ij_trial_df, best_plane_rois, full_rois = ij_trace_plots(analysis_dir,
-    #  File "./al_analysis.py", line 3096, in ij_trace_plots
-    #    trial_df = trace_plots(traces, z_indices, bounding_frames, odor_lists, roi_plot_dir,
-    #  File "./al_analysis.py", line 3044, in trace_plots
-    #    savefig(fig, roi_plot_dir, str(roi))
-    #  File "./al_analysis.py", line 1406, in savefig
-    #    assert abs_fig_path not in _savefig_seen_paths
-    #AssertionError
-    # TODO delete
-    # TODO TODO why is it trying to save this twice?
-    if '/'.join(abs_fig_path.parts[-3:]) in (
-        '2022-02-22_1_kiwi_ea_eb_only/ijroi/DL1.png',
-        # TODO TODO fix this too. can repro by same command as above
-        # (w/o need for `-i ijroi`)
-        # other stuff also affected here, also (prob not exclusively):
-        # corr_certain_only/kiwi/2022-03-31_1.png
-        'corr_certain_only/kiwi/2022-03-30_1.png'
-        ):
-
-        print('SAVING ONE OF WHAT WILL BE A DUPLICATE FIGURE NAME')
-        traceback.print_stack(file=sys.stdout)
-        #import ipdb; ipdb.set_trace()
+    # duped from produces_output
+    last_frame = inspect.currentframe().f_back
+    filename, lineno, fn_name, _, _ = inspect.getframeinfo(last_frame)
+    _saved_path2last_save_code_context[abs_fig_path] = CodeContext(
+        filename=filename, lineno=lineno, fn_name=fn_name
+    )
+    _all_seen_inputs.add(abs_fig_path)
     #
 
     # TODO (option to) also save traceback at each, for easier debugging?
-
-    try:
-        # TODO TODO some way to patch avoid this for testing? (support plot_dir=None?
-        # have everything reset _savefig_seen_paths for each offending call? actually
-        # just save all figs into distinct plot dirs, even for testing...?)
-        assert abs_fig_path not in _savefig_seen_paths
-    except AssertionError:
-        print(f'{abs_fig_path=}')
-        print(f'{desc=}')
-        # TODO TODO TODO fix:
+    # TODO some way to patch avoid this for testing? (support plot_dir=None?
+    # have everything reset _savefig_seen_paths for each offending call? actually
+    # just save all figs into distinct plot dirs, even for testing...?)
+    if not multiple_saves_per_run_ok and abs_fig_path in _savefig_seen_paths:
+        # TODO (delete?) fix:
         # no uncertain ROIs. not generating uncertain_by_max_resp fig
         # done
         # Warning: correlation shapes unequal (in plot_corrs input)! shapes->counts: {(33, 33): 10, (72, 72): 5}
@@ -1792,9 +1779,16 @@ def savefig(fig_or_seaborngrid,
         # ipdb> u
         # > /home/tom/src/al_analysis/al_analysis.py(8313)plot_corrs()
         # -> 8313         fig_path = savefig(fig, panel_dir, fly_plot_prefix)
-        import ipdb; ipdb.set_trace()
+        context = _saved_path2last_save_code_context[abs_fig_path]
+        # TODO maybe i do need more context (previous stack frames).
+        # current issue is same line in two calls to the same fn.
+        raise MultipleSavesPerRunException('would have overwritten output '
+            f'{fig_path}\npreviously written elsewhere in this run, at:\n'
+            f'{context.filename}, line {context.lineno} (in {context.fn_name})'
+            '\nadd multiple_saves_per_run_ok=True to call to override, but this'
+            ' is likely a mistake'
+        )
     #
-
     _savefig_seen_paths.add(abs_fig_path)
 
     _skip_saving = False
@@ -1819,36 +1813,18 @@ def savefig(fig_or_seaborngrid,
     if save_figs and not _skip_saving:
         fig_or_seaborngrid.savefig(fig_path, **kwargs)
 
-        # TODO delete
-        # TODO TODO why this call always seem to fail (w/ below exception)?
-        # TODO TODO fix:
-        # ...
-        #     diff_dict = mpl_compare.compare_images(fig_path, fig_path, tolerance,
-        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 445, in compare_images
-        #     actual = convert(actual, cache=True)
-        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 310, in convert
-        #     convert(path, newpath)
-        #   File "/home/tom/src/al_analysis/venv/lib/python3.8/site-packages/matplotlib/testing/compare.py", line 135, in __call__
-        #     raise ImageComparisonFailure(
-        # matplotlib.testing.exceptions.ImageComparisonFailure: Processing pages 1 through 1.
-        # Page 1
-        # GS>
-        #tolerance = 0
-        #diff_dict = mpl_compare.compare_images(fig_path, fig_path, tolerance,
-        #    in_decorator=True
-        #)
-        #assert diff_dict is None, f'{fig_path} NOT equal to itself (compare_images)'
-        #print(f'{fig_path} was equal to itself (according to compare_images)')
-        #
-
     fig = None
     if isinstance(fig_or_seaborngrid, Figure):
         fig = fig_or_seaborngrid
 
+    # TODO any other types of seaborn objects we might want to support? don't think i've
+    # encounterd any so far...
     elif isinstance(fig_or_seaborngrid, sns.axisgrid.Grid):
         fig = fig_or_seaborngrid.fig
 
-    assert fig is not None
+    assert fig is not None, (f'{type(fig)=} may not have been an instance of '
+        'Figure or sns.axisgrid.Grid (above) (or somehow otherwise fig was None)'
+    )
 
     # al_util.verbose flag set True/False by CLI in al_analysis.main
     if (verbose and not _skip_saving) or debug:
@@ -1857,6 +1833,8 @@ def savefig(fig_or_seaborngrid,
         color = 'light_blue'
         cprint(fig_path, color)
 
+    # TODO move this into produces_output, and work on all filetypes saved w/ that
+    # wrapper?
     if (exit_after_saving_fig_containing and
         exit_after_saving_fig_containing in str(fig_path)):
 
@@ -1997,7 +1975,9 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     # TODO .loc still work w/ list(...)?
     pairs = list(itertools.combinations(corr_df.index.sort_values(), 2))
 
-    corr_ser = corr_df.stack(dropna=False)
+    # need to stack all levels, in case we also have 'panel' in index names
+    # TODO why dropna=False? matter?
+    corr_ser = corr_df.stack(level=corr_df.columns.names, dropna=False)
 
     # TODO delete this branch? make sure it also supports panel level in index?
     if ordered_pairs is not None:
@@ -2012,24 +1992,46 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     # itself. in other words, we won't be keeping the identity correlations.
     assert not any(a == b for a, b in pairs)
 
+    if 'panel' in corr_df.index.names:
+        flat_tuples = []
+        # e.g. (('control', '1o3ol @ -3'), ('control', '1o3ol+2h @ 0'))
+        for p in pairs:
+            assert type(p) is tuple and len(p) == 2
+            assert all(type(x) is tuple and len(x) == 2 for x in p)
+            # makes one 4-element tuple, which should be able to index corr_ser below
+            # e.g. ('control', '1o3ol @ -3', 'control', '1o3ol+2h @ 0')
+            flat_tuples.append(p[0] + p[1])
+        pairs = flat_tuples
+    else:
+        for p in pairs:
+            assert type(p) is tuple and len(p) == 2
+            assert all(type(x) is str for x in p)
+
     # itertools.combinations essentially selects one triangular, excluding diagonal
     corr_ser = corr_ser.loc[pairs]
 
-    # TODO switch to assertion(s) on input index/column names?
-    # (just to fail sooner / be more clear)
-    #
-    # TODO make more general than assuming 'odor' prefix?
-    assert len(corr_ser.index.names) == 2
+    if 'panel' not in corr_df.index.names:
+        # TODO switch to assertion(s) on input index/column names?
+        # (just to fail sooner / be more clear)
+        #
+        # TODO make more general than assuming 'odor' prefix?
+        assert len(corr_ser.index.names) == 2
 
-    # TODO delete?
-    assert all(x.startswith('odor') for x in corr_ser.index.names), \
-        f'{corr_ser.index.names=}'
+        # TODO delete?
+        assert all(x.startswith('odor') for x in corr_ser.index.names), \
+            f'{corr_ser.index.names=}'
 
-    # TODO do 'a','b' instead? other suffix ('_row','_col')? (to not confused w/
-    # 'odor1'/'odor2' used in many other MultiIndex levels in here, where 'odor2' is a
-    # almost-never-used-anymore optional 2nd odor, where 2 delivered at same time
-    # (most recently in kiwi/control 2-component ramp experiments).
-    corr_ser.index.names = ['odor1', 'odor2']
+        # TODO do 'a','b' instead? other suffix ('_row','_col')? (to not confused w/
+        # 'odor1'/'odor2' used in many other MultiIndex levels in here, where 'odor2' is
+        # a almost-never-used-anymore optional 2nd odor, where 2 delivered at same time
+        # (most recently in kiwi/control 2-component ramp experiments).
+        corr_ser.index.names = ['odor1', 'odor2']
+    else:
+        assert len(corr_ser.index.names) == 4
+        odor_var = olf.first_odor_level(corr_df.index)
+        assert corr_ser.index.names == ['panel', odor_var, 'panel', odor_var]
+        # TODO again, would prefer to use _a/_b suffixes
+        corr_ser.index.names = ['panel1', 'odor1', 'panel2', 'odor2']
 
     # TODO sort output so odors appear in same order as in input (within each component
     # of pair, at least)?
@@ -2045,58 +2047,103 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None, name='odor'):
     else:
         for_odor_index = _index
 
-    # TODO make more general than assuming 'odor' prefix?
-    # TODO + factor to share w/ what corr_triangual sets by default (at least), in case
-    # i change suffix added there
-    #assert for_odor_index.names == ['odor1', 'odor2']
-    # TODO rename all "odor" stuff to be more general (now that i'm not requiring
-    # 'odor1'/'odor2')
-    assert len(for_odor_index.names) == 2
+    have_panels = False
+    if any(x.startswith('panel') for x in for_odor_index.names):
+        have_panels = True
+        # TODO relax these assertions?
 
-    # unique values for odor1 and odor2 will not be same (each should have one value not
-    # in other). could just sort, for purposes of generating one combined order.
-    # for now, assuming (correctly, it seems) that first value in odor1 and last value
-    # in odor2 are the only non shared, and that otherwise we want to keep the order
-    #
-    # pandas <Series>.unique() keeps order of input (assuming all are adjacent, at
-    # least)
-    odor1 = for_odor_index.get_level_values(0).unique()
-    odor2 = for_odor_index.get_level_values(1).unique()
+    if not have_panels:
+        # TODO make more general than assuming 'odor' prefix?
+        # TODO + factor to share w/ what corr_triangual sets by default (at least), in
+        # case i change suffix added there
+        #assert for_odor_index.names == ['odor1', 'odor2']
+        # TODO rename all "odor" stuff to be more general (now that i'm not requiring
+        # 'odor1'/'odor2')
+        assert len(for_odor_index.names) == 2
 
-    # TODO TODO try to make work without these assertions (would need to change how
-    # odor_indx is defined below). these seem to work if index is sorted, but not for
-    # (at least some) indices before sort_index call.
-    assert all(odor2[:-1] == odor1[1:])
-    assert odor1[0] not in set(odor2)
-    assert odor2[-1] not in set(odor1)
+        # unique values for odor1 and odor2 will not be same (each should have one value
+        # not in other). could just sort, for purposes of generating one combined order.
+        # for now, assuming (correctly, it seems) that first value in odor1 and last
+        # value in odor2 are the only non shared, and that otherwise we want to keep the
+        # order
+        #
+        # pandas <Series>.unique() keeps order of input (assuming all are adjacent, at
+        # least)
+        assert for_odor_index.names[0].startswith('odor')
+        assert for_odor_index.names[1].startswith('odor')
+        odor1 = for_odor_index.get_level_values(0).unique()
+        odor2 = for_odor_index.get_level_values(1).unique()
+
+        # TODO try to make work without these assertions (would need to change how
+        # odor_index is defined below). these seem to work if index is sorted, but not
+        # for (at least some) indices before sort_index call.
+        index_vals1 = odor1
+        index_vals2 = odor2
+    else:
+        assert for_odor_index.names[0].startswith('panel')
+        assert for_odor_index.names[1].startswith('odor')
+
+        index_vals1 = [tuple(x) for x in
+            for_odor_index.to_frame(index=False).iloc[:, 0:2].drop_duplicates(
+            ).itertuples(index=False)
+        ]
+
+        assert for_odor_index.names[2].startswith('panel')
+        assert for_odor_index.names[3].startswith('odor')
+
+        index_vals2 = [tuple(x) for x in
+            for_odor_index.to_frame(index=False).iloc[:, 2:].drop_duplicates(
+            ).itertuples(index=False)
+        ]
+
+    assert np.array_equal(index_vals2[:-1], index_vals1[1:])
+    assert index_vals1[0] not in set(index_vals2)
+    assert index_vals2[-1] not in set(index_vals1)
+
+    if not have_panels:
+        # single element list does NOT work here
+        odor_index = pd.Index(list(index_vals1) + [index_vals2[-1]], name=name)
+    else:
+        names = ['panel', name]
+        odor_index = pd.MultiIndex.from_tuples(list(index_vals1) + [index_vals2[-1]],
+            names=names
+        )
 
     # TODO maybe columns and index should have diff names? keep odor1/odor2?
-    # TODO get shared prefix of cols for name=? accept as kwarg?
-    odor_index = pd.Index(list(odor1) + [odor2[-1]], name=name)
+
 
     square_corr = pd.DataFrame(index=odor_index, columns=odor_index, data=float('nan'))
     for a in odor_index:
         for b in odor_index:
+            if not have_panels:
+                pair = (a, b)
+                reverse_pair = (b, a)
+            else:
+                pair = tuple(a) + tuple(b)
+                reverse_pair = tuple(b) + tuple(a)
+
             if a == b:
-                assert (a, b) not in corr_ser
+                assert pair not in corr_ser
                 square_corr.at[a, b] = diag_value
                 continue
 
             # TODO clean up
             try:
-                if (a, b) in corr_ser:
-                    assert (b, a) not in corr_ser
-                    c = corr_ser.at[a, b]
+                if pair in corr_ser:
+                    assert reverse_pair not in corr_ser
+                    c = corr_ser.at[pair]
                 else:
-                    assert (b, a) in corr_ser
-                    c = corr_ser.at[b, a]
+                    assert reverse_pair in corr_ser
+                    c = corr_ser.at[reverse_pair]
+            # TODO delete this try/except if i can't trigger this case in any tests.
+            # probably indicates a bug anyway
             except AssertionError:
+                raise
                 #print(f'{a=}')
                 #print(f'{b=}')
                 #import ipdb; ipdb.set_trace()
                 c = float('nan')
             #
-
             square_corr.at[a, b] = c
 
     return square_corr
@@ -2110,7 +2157,8 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None, name='odor'):
 # corr_triangular pairs (as the 2 level MultiIndex it returns) on opposite (column) axis
 # index (-> use that to calc mean -> invert_corr_triangular in here)
 def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
-    square: bool = True) -> Union[pd.Series, pd.DataFrame]:
+    # TODO after testing, try to have keep_panel default to True?
+    square: bool = True, keep_panel: bool = False) -> Union[pd.Series, pd.DataFrame]:
     """
     Args:
         df: DataFrame with odor level on row index, and levels from id_cols
@@ -2135,7 +2183,14 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     # assumes 'odor2' level, if present, doesn't vary.
     # TODO TODO assert assumption about possible 'odor2' level?
     # TODO TODO assert no variation in any level other than odor1 and repeat?
-    trialmean_df = df.groupby(level='odor1', sort=False).mean()
+    # TODO TODO add some option to group by panel too, if available?
+    odor_var = olf.first_odor_level(df.index)
+    if not keep_panel or 'panel' not in df.index.names:
+        by = odor_var
+    else:
+        by = ['panel', odor_var]
+
+    trialmean_df = df.groupby(level=by, sort=False).mean()
     n_odors = len(trialmean_df)
 
     first_row_index = None
@@ -2216,6 +2271,7 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
 
     assert set(odor_order) == set(mean_corr.index) == set(mean_corr.columns)
 
+    # TODO TODO need to do something different here if panel level is included above?
     # re-ordering odors to keep same order as input
     mean_corr = mean_corr.loc[odor_order, odor_order].copy()
     return mean_corr
@@ -2269,7 +2325,6 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
     ) -> pd.DataFrame:
     """Saves odor-odor correlation plot under <plot_dir>/<prefix>.<plot_fmt>
     """
-
     # otherwise, we assume input is already a correlation (/ difference of correlations)
     if not df.columns.equals(df.index):
         # TODO delete?
@@ -3002,6 +3057,10 @@ sent_to_remy: Path = data_root / 'sent_to_remy'
 # CSV/pickle outputs and plots committed.
 signedmax_orn_dff_dir: Path = sent_to_remy / '2025-09-30_tom_orn_data_signed-max'
 
+# TODO TODO add tests that we can successfully load data with all these fns (both dff
+# and est spike deltas). will be mainly important when trying to move data handling from
+# stuff in an editable repo on disk to files provided by importlib_resources.
+#
 # TODO add similar fns for megamat/control (and both for paper response calc and newer
 # signedmax one)
 # TODO use in tests to check we can repro mean_est_spike_deltas for all, and everything

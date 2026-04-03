@@ -12,7 +12,7 @@ from hong2p.olf import parse_odor_name
 
 import al_util
 from al_util import warn, savefig, read_csv
-from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
+from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model, megamat_orn_deltas,
     get_thr_and_APL_weights, format_model_params, read_orn_deltas,
     scale_dff_to_est_spike_deltas_using_hallem
 )
@@ -35,86 +35,77 @@ def main():
     plot_root = Path('kai_grant_model_outputs').resolve()
     plot_root.mkdir(exist_ok=True)
 
-    # TODO TODO avoid need to set this to see plots being saved
+    # TODO avoid need to set this to see plots being saved
     al_util.verbose = True
 
-    # TODO TODO TODO check the CSVs i was using matched 2025-09-30_tom_orn_data_signed-max
-    # contents too
+    df = megamat_orn_deltas(drop_diags=False)
 
-    # TODO delete (or update to use this, after changing fn to load CSV from new
-    # response calc)
-    #orn_df = megamat_orn_deltas()
+    # no other panels in output of fn above
+    #
+    # indexing differently for `mdf`, since some of code using it below expects 'panel'
+    # column level to be there still, but `df.loc[:, 'megamat']` would drop that level
+    mdf = df.loc[:, df.columns.get_level_values('panel') == 'megamat']
+    diags = df.loc[:, 'glomeruli_diagnostics']
+
+    # run validation2 data thru dF/F -> spiking model (after scaling each fly), to run
+    # 'geraniol @ -2' data thru model too? (do now have that available behind
+    # mb_model.validation2_orn_deltas())
 
     repo_root = Path('~/src/al_analysis').expanduser().resolve()
-    # contains 3 subdirs, for megamat/validation2/kiwi-control
-    dff_dir = repo_root / 'data/sent_to_remy/2025-09-30_tom_orn_data_signed-max'
-    # committed to repo
-    assert dff_dir.is_dir()
-
-    megamat_dff_dir = dff_dir / 'megamat_signed-max'
-
-    megamat_dff = read_csv(megamat_dff_dir / 'ij_certain-roi_stats.csv')
-
-    # TODO also test we can recreate the ij_certain-roi_stats.csv file from the more raw
-    # one, so i could decide to include e.g. CO2
-    # TODO delete?
-    dff1 = megamat_dff
-    dff2 = read_csv(megamat_dff_dir / 'ij_roi_stats.csv')
-    #
-    # TODO may need to recalc and store consensus dfs (instead of "certain"
-    # dfs), unless i can refactor and recompute "concensus" dfs from one of the
-    # ij_[certain-]roi_stats.csv files i have now (in the signed-max data directory)
-    # (nvm, consensus_df is what is being saved to ij_certain-roi_stats.csv. so what
-    # else is changed between where it is saved and when it is passed to scale_dff...?
-    # seems like it's just odor/pfo dropping at start of model_mb_responses)
-
-    # TODO also generate + commit a set of dF/F -> spike delta model files (after
-    # improving serialization portability, ideally) -> pass that dir to load them here
-    # (+ pass separate plot_root)
-    df2 = scale_dff_to_est_spike_deltas_using_hallem(plot_root, megamat_dff,
-        model_dir=
-    )
-
-    # TODO TODO run validation2 data thru dF/F -> spiking model (after scaling each
-    # fly), to run 'geraniol @ -2' data thru model too?
-
-    # TODO put this behind flag (or only check if these exist). just checking current
-    # CSV matches megamat subset of data used to fit latest model (to check it was using
-    # latest signed maxabs response calculation)
-    # TODO TODO (committed now, just need to use [actually no, i've only just committed
-    # the raw inputs. still need to pass through dF/F->spiking model and commit those
-    # too) still need to commit these new ORN deltas (+ switch mb_model CSV loading
-    # fn(s) to use these), ideally for all panels
-    # TODO TODO switch check to checking against commited outputs, once i commit them
-    # TODO TODO TODO or at least commit the outputs i'm currently using, and then
-    # (later) check i can recreate them (while also recreating the dF/F -> spike delta
-    # fit, or using a saved fit [ideally without using non-portable formats like pickle
-    # for model, and committing model too])
     pebbled_dir = repo_root / 'pebbled_6f/pdf/ijroi/mb_modeling'
     megamat_dir = (pebbled_dir / 'megamat' /
         'prat-claws_True__one-row-per-claw_True__connectome-APL_True__pn-claw-to-APL_'
         'True__prat-boutons_True__target-sp_0.1/'
     )
-    # ipdb> df.columns.get_level_values('panel').value_counts()
-    # glomeruli_diagnostics    26
-    # megamat                  17
-    df = read_orn_deltas(pebbled_dir / 'mean_est_spike_deltas.csv')
+    if megamat_dir.exists():
+        print('also checking megamat_orn_deltas(drop_diags=False) output against local'
+            f' analysis outputs under {pebbled_dir}'
+        )
+        # ipdb> df.columns.get_level_values('panel').value_counts()
+        # glomeruli_diagnostics    26
+        # megamat                  17
+        most_recent_arbitrary_panels_deltas_csv = (
+            pebbled_dir / 'mean_est_spike_deltas.csv'
+        )
+        df2 = read_orn_deltas(most_recent_arbitrary_panels_deltas_csv)
 
-    mdf = read_orn_deltas(megamat_dir / 'orn_deltas.csv')
+        # NOTE: my current (2026-04-03) copy of this, which presumably was also used to
+        # generate plots I sent to Betty, does slightly differ from latest committed
+        # est spike deltas (loaded above via megamat_orn_deltas).
+        #
+        # should be same data but using a slightly different response calculation. was
+        # previously mean of 2 volumes, now it should be the sign-preserving max over
+        # the same 2 volumes. my 3s odor pulses generally last about 2 volumes, at most
+        # 3, sometimes slightly less than 2 volumes, at my volumetric framerates
+        # downstairs.
+        #
+        # the main effect of the change should be that some positive values get larger,
+        # and that inhibition is better preserved
+        #
+        # ipdb> (df.loc[:, 'megamat'] - mdf2).abs().mean().mean()
+        # 5.5496534563418605
+        megamat_specific_deltas_csv = megamat_dir / 'orn_deltas.csv'
+        mdf2 = read_orn_deltas(megamat_specific_deltas_csv)
 
-    # TODO also assert model choices / something indicate signed maxabs response calc?
-    # where do i have that? (+ that that output was saved around the time that the
-    # mean_est_spike_deltas.csv was)
+        # TODO also assert model choices / something indicate signed maxabs response
+        # calc?  where do i have that? (+ that that output was saved around the time
+        # that the mean_est_spike_deltas.csv was)
 
-    # TODO also generate (have committed now [that's not the spike deltas tho, just raw
-    # data]. still check?) + add check for validation outputs
-    assert pd_allclose(df.loc[:, 'megamat'], mdf.loc[:, 'megamat'])
-    breakpoint()
+        # TODO also generate (have committed now [that's not the spike deltas tho, just
+        # raw data. nvm, should have est spike deltas now too]. still check?) + add
+        # check for validation outputs? (delete?)
+        try:
+            assert pd_allclose(df2.loc[:, 'megamat'], mdf2.loc[:, 'megamat'])
+        except KeyError:
+            warn(f'could not check {most_recent_arbitrary_panels_deltas_csv} against '
+                f'megamat specific deltas in {megamat_specific_deltas_csv}, probably '
+                'because most recent al_analysis.py run (that produced model outputs, '
+                'or fit dF/F -> spiking) did not include megamat data'
+            )
     #
 
     # TODO also add this to test_df, just to check outputs are the same (should be,
     # tho)?
-    # TODO TODO define from one of committed outputs instead
     tune_df = mdf
 
     # TODO CO2? (would need to regen output not dropping that, if i wanted, i think)
@@ -141,9 +132,9 @@ def main():
         if x not in df.index:
             warn(f'glomerulus {x} not in existing ORN deltas!')
         else:
-            # TODO TODO append glomerulus to end if not (loc already should)? need to
-            # check columns handled correctly when concatenating then (check rest same
-            # as if we skipped those extra glomeruli?)
+            # TODO (delete?) append glomerulus to end if not (loc already should)? need
+            # to check columns handled correctly when concatenating then (check rest
+            # same as if we skipped those extra glomeruli?)
             # TODO delete after checking
             gser2 = gser.copy()
             assert gser2.index.equals(df.index)
@@ -183,7 +174,6 @@ def main():
     assert syn_df.droplevel('panel', axis='columns').loc[o2.index, o2.columns].equals(o2)
     #
 
-    diags = df.loc[:, 'glomeruli_diagnostics']
     # TODO factor above into fn to generate test data, to make main more concise
     del df
 
@@ -319,12 +309,14 @@ def main():
     model_str2abbrev = {
         'weight-divisor_20': 'wd20',
         'pn2kc_uniform__n-claws_7': 'uniform',
-        'one-row-per-claw_True__prat-claws_True': 'prat-claws',
-        'one-row-per-claw_True__prat-claws_True__prat-boutons_True__connectome-APL_True':
+        'prat-claws_True': 'prat-claws',
+        'prat-claws_True__prat-boutons_True__connectome-APL_True':
             'prat-claws-boutons-APL'
         ,
     }
-    assert df.model.isin(model_str2abbrev).all()
+    assert df.model.isin(model_str2abbrev).all(), \
+        f'{df.model[~df.model.isin(model_str2abbrev)].unique()=}'
+
     df.model = df.model.map(model_str2abbrev)
 
     # TODO sort odors, by glomerulus name for synthetic odors named like 'VA6-300'? and
@@ -416,7 +408,7 @@ def main():
 
 
     exclude_models = []
-    # TODO delete
+    # TODO delete. was just to generate different plot options for betty.
     #exclude_models = ['prat-claws-boutons-APL']
     #exclude_models = ['prat-claws-boutons-APL', 'prat-claws']
     #exclude_models = ['prat-claws-boutons-APL', 'wd20']

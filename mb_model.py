@@ -50,7 +50,7 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from matplotlib.image import AxesImage
 from matplotlib.ticker import MaxNLocator
-from matplotlib.colors import to_rgba
+from matplotlib.colors import to_rgba, LogNorm
 # TODO delete
 #from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib as mpl
@@ -165,6 +165,8 @@ bouton_col: str = 'anatomical_bouton'
 
 # bouton_id are only unique within each pn_id
 bouton_cols: List[str] = [PN_ID, BOUTON_ID]
+
+DynamicsDict = Dict[str, xr.DataArray]
 
 # TODO rename to hemibrain or something? presumably this is specfic to that?
 # TODO move into the one place that uses it (tianpei's part of connectome_wPNKC)
@@ -313,6 +315,7 @@ exclude_params = {
 
     'max_iters',
     'sp_lr_coeff',
+    onestep_lr_key,
 
     # TODO TODO remove wKCAPL/wPNAPL (and just handle by filtering DataFrame/Series
     # inputs if needed, before saving tuned_param_cache. should have separate exclude
@@ -4383,6 +4386,9 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         row_per_claw_and_bouton = wPNKC.reset_index(level=BOUTON_ID).explode(BOUTON_ID
             ).set_index(BOUTON_ID, append=True)
 
+        # TODO TODO TODO add flag to not drop these (would cause issues for model code
+        # probably, but may be useful for some analyses of connectivity e.g. yang
+        # checking # KCs w/ input from her pairs of glomeruli)
         if len(multibouton) > 0:
             index_names = list(row_per_claw_and_bouton.index.names)
             row_per_claw_and_bouton = row_per_claw_and_bouton.reset_index().set_index(
@@ -7234,6 +7240,9 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
     Args:
         **kwargs: passed to `Rastermap` constructor
     """
+    # TODO modify rastermap so it errs if it gets unexpected kwargs? i forgot to use
+    # imshow_kws and passed norm=LogNorm. is that really something Rastermap uses, or is
+    # it just silently ignoring kwargs to constructor?
     # TODO check again if this is actually an issue? spike plotting fn does currently
     # drop all rows like this though, and unlikely to get in any other input (unless as
     # a result of filling in missing data w/ 0)
@@ -7292,6 +7301,26 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
         # ...
         #     w = np.exp(-dists / dists[e_neighbor])
         # FloatingPointError: invalid value encountered in divide
+        #
+        # TODO (delete? not sure i can repro, or at least i think it was a bug inside
+        # suite2p?) what was causing index error? need reset_index(drop=True)?
+        # test/test_mb_model.py:3265: in test_apl_weights_fitmbmodel
+        #     curr_ret = _fit_mb_model(orn_deltas=orn_deltas, **{**step, **kws},
+        # test/test_mb_model.py:318: in _fit_mb_model
+        #     ret = fit_mb_model(*args, **kwargs)
+        # mb_model.py:10842: in fit_mb_model
+        #     im, _ = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
+        # mb_model.py:6781: in cluster_timeseries_and_plot
+        #     clustered, method = cluster_timeseries(df)
+        # mb_model.py:6701: in cluster_timeseries
+        #     model = Rastermap(n_PCs=n_PCs, n_clusters=n_clusters, verbose=verbose,
+        # venv/lib/python3.8/site-packages/rastermap/rastermap.py:385: in fit
+        #     U_nodes = kmeans_func(self.Usv[igood], n_clusters=self.n_clusters,
+        # venv/lib/python3.8/site-packages/rastermap/cluster.py:120: in scaled_kmeans
+        #     X_nodes = _scaled_kmeans_init(X, n_clusters=n_clusters,
+        # .../python3.8/site-packages/rastermap/cluster.py:65: in _scaled_kmeans_init
+        #     X_candidates = X[candidate_ids]
+        # E   IndexError: index 118 is out of bounds for axis 0 with size 118
         except (ValueError, np.linalg.LinAlgError, UserWarning, IndexError,
             RuntimeWarning, FloatingPointError) as err:
 
@@ -7445,10 +7474,11 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
         # TODO what is purpose of this? doc. necessary to have imshow xlim labelled in
         # other coordinates (than default [0, n])?
         if xlim is not None:
-            # TODO TODO this causing issues in bouton plot now?
+            # TODO (delete? not sure i can repro? or maybe i'm just not setting these
+            # now, and i might want to?) this causing issues in bouton plot now?
             # TODO need to swap top and bottom? (seems fine as is)
-            # TODO TODO need to set ylim to something other than default to get this to
-            # work correctly? (for bax, not the claw one)
+            # TODO need to set ylim to something other than default to get this to
+            # work correctly? (for bouton plot, not the claw one)
             top = len(df) + 0.5
             bottom = -0.5
 
@@ -7581,6 +7611,37 @@ def weight_debug_suffix(param_dict: Dict[str, Any], *, odor_stats: bool = False)
     suffix += '\n'
 
     return suffix
+
+
+# TODO factor both of these to hong2p.viz?
+def axes_at_index(axs: Union[np.ndarray, Axes], index: int) -> Axes:
+    if isinstance(axs, Axes):
+        assert index == 0 or index == -1, ('can only request first or last index when '
+            'axs is just a single Axes object'
+        )
+    else:
+        assert isinstance(axs, np.ndarray)
+        # TODO want to assert shape of array (after squeeze?) only has one element, if
+        # ndarray? ever want to use for 2d grid of axes? (would probably want to operate
+        # on first column, if so)
+        assert len(axs.shape) == 1, ('would need to figure out how to support '
+            f'{axs.shape=} (currently only used for single Axes or single column)'
+        )
+
+    try:
+        ax_i = axs[index]
+    # b/c default squeeze=True in subplots call, will only be an Axes here, not an array
+    # of them. to catch:
+    # TypeError: 'Axes' object is not subscriptable
+    except TypeError:
+        ax_i = axs
+
+    return ax_i
+
+
+def last_axes(axs: Union[np.ndarray, Axes]) -> Axes:
+    return axes_at_index(axs, -1)
+#
 
 
 # TODO rename 'time_s'->'t' everywhere?
@@ -7739,7 +7800,7 @@ def get_sim_var(cpp_obj, name: str) -> np.ndarray:
 def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
     glomerulus_index: pd.Index, kc_index: pd.Index,
     claw_index: Optional[pd.Index] = None, bouton_index: Optional[pd.Index] = None, *,
-    delete_pretime: bool = True) -> Dict[str, xr.DataArray]:
+    delete_pretime: bool = True) -> DynamicsDict:
 
     # TODO assert anything about odor index? that at least one level startswith odor or
     # is either 'odor' or 'odor1'?
@@ -7791,17 +7852,16 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
     # wasn't also an issue with glomerulus_col being the .name of
     # glomerulus_index, presumably b/c not multiple levels there.
     coords = {
-        # TODO refactor this handling to share w/ kc_coords below
-        # TODO TODO rename all to odor instead of stim?
-        # TODO TODO what was working before? what really changed?
+        # TODO refactor this handling to share w/ kc_coords below (delete?)
+        # TODO rename all to odor instead of stim? (can't have name of dim ['stim',
+        # here] be same as name of one level of a MultiIndex coordinate on that
+        # dimension [which 'odor' would be]. gets tricky if dropping down to single
+        # level, where then we might end up with single 'odor' level named stim?
+        #
+        # tried some "fixes" which changed 'stim' here to odor, if only one level in
+        # odor index (commented code for that deleted after f1b56dc49), but don't think
+        # i ever got it to work in all cases
         'stim': odor_index,
-        #'stim': odor_index if odor_index.nlevels > 1 else odor_index.rename('stim'),
-        # TODO TODO or do i need to stick w/ old 'stim', to handle both cases?
-        # TODO or need to switch off 'odor' if multiindex has 'odor' and something else?
-        #'odor': odor_index if odor_index.nlevels > 1 else odor_index.rename('odor'),
-        # don't think this works (at least when DO have panel)
-        # 'odor' (odor), (odor)
-        #'odor': odor_index if odor_index.nlevels > 1 else odor_index.rename('odor'),
         'time_s': ts
     }
 
@@ -7817,8 +7877,11 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
         # name conflicts seem to emerge both if we rename kc_index globally (issues
         # below) or if we use KC_ID as name for dim/coord in case of MultiIndex
         # (where one of the levels is KC_ID)
-        # TODO TODO why was this really needed exactly? is it that name *needs* to match
-        # when only one dim, but *can not* match otherwise?
+        # TODO why was this really needed exactly? is it that name *needs* to match
+        # when only one dim, but *can not* match otherwise (latter true at least)?
+        # TODO why did this type of approach seem to cause issues when i tried it w/
+        # 'odor' vs 'stim' above? just never test same cases w/ this one? test to repro
+        # some issue in either case?
         'kc': kc_index if kc_index.nlevels > 1 else kc_index.rename('kc')
     }
 
@@ -8041,6 +8104,10 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
 
         dynamics_dict['claw_sims'] = claw_sims
 
+    for var_name, arr in dynamics_dict.items():
+        assert arr.name is None, f'{arr.name=} was not None'
+        arr.name = var_name
+
     return dynamics_dict
 
 
@@ -8069,6 +8136,10 @@ def mark_odor_pulse(ax: Axes,
             assert stim_start is not None
             assert stim_end is not None
     else:
+        # TODO or check values match? nah
+        assert stim_start is None, 'only either mp or stim_[start|end] should be passed'
+        assert stim_end is None, 'only either mp or stim_[start|end] should be passed'
+        #
         stim_start = mp.time_stim_start
         stim_end = mp.time_stim_end
 
@@ -8083,6 +8154,19 @@ def mark_odor_pulse(ax: Axes,
     return stim_start, stim_end
 
 
+def mean_over_nontime_dims(arr: xr.DataArray, *, time_dim: str = 'time_s'
+    ) -> xr.DataArray:
+    """For DataArray with `time_dim` and other dims, averages over all but `time_dim`
+    """
+    # TODO assert more than just time_dim?
+    assert time_dim in arr.dims, f'{time_dim=} not in {arr.dims=}'
+    # NOTE: this works even if mean([]) gets called with an empty list
+    # (just gives us back arr)
+    mean = arr.mean([x for x in arr.dims if x != time_dim])
+    assert mean.dims == (time_dim,)
+    return mean
+
+
 # TODO factor to hong2p? would just have to remove the orn_sims part...
 # (just require xs_or_ts=ts [i.e. that `xs is not None`] then, if we don't have
 # time_s index?
@@ -8094,8 +8178,19 @@ def _plot(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
         # time dimension is in position we expect? might matter if we are trying
         # to plot multiple lines in one call (can we even, if ts is always 1d?
         # any code currently doing that with this fn?)
-        assert isinstance(xs, xr.DataArray)
+        assert isinstance(xs, xr.DataArray), ('xs_or_ts and xs must both be passed if '
+            "xs_or_ts is not a DataArray with a 'time_s' index. xs_or_ts will be "
+            'assumed to be ts'
+        )
         ts = xs.get_index('time_s')
+
+        dims = xs.squeeze().dims
+        assert 'time_s' in dims
+        # this should not trip if we already called mean_over_nontime_dims in outer
+        # _plot_normed call
+        if len(dims) > 1:
+            xs = mean_over_nontime_dims(xs)
+            assert xs.sizes == {'time_s': len(ts)}
     else:
         ts = xs_or_ts
 
@@ -8110,6 +8205,8 @@ def _plot(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
 
 
 def _plot_normed(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
+    """Line plot of input divided by it's max, so max will be 1, but min not constrained
+    """
     # TODO TODO change formula so min is 0? (otherwise, at least assert no
     # negative values? or none w/ abs greater than max? could potentially get
     # way out of range... but probably aren't)
@@ -8122,117 +8219,447 @@ def _plot_normed(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
     # it?
     if xs is None:
         xs = xs_or_ts
-        _plot(ax, xs / xs.max(), **kwargs)
+        ts = None
+        # TODO assert here xs is a DataArray w/ 'time_s' index?
+        # (already do assert in _plot...)
     else:
         ts = xs_or_ts
+
+    if isinstance(xs, xr.DataArray):
+        dims = xs.squeeze().dims
+        if len(dims) > 1:
+            # pretty sure i want to take mean before normalizing, when input does have
+            # more than just a time dimension
+            xs = mean_over_nontime_dims(xs)
+
+        assert 'time_s' in dims, f"'time_s' was not in squeezed {xs.dims=}"
+        # TODO squeeze first? prob wouldn't hurt (prob just gets undone when dividing xs
+        # by this, and _plot currently squeezing xs anyway)
+        xmax = xs.squeeze().max('time_s')
+    else:
+        assert ts is not None
+        # should work w/ plain numpy arrays
+        assert xs.squeeze().shape == ts.shape
+        assert len(ts.shape) == 1, ('multidimensional inputs only supported if they are'
+            ' DataArray'
+        )
+        xmax = xs.max()
+        assert xmax.shape == tuple()
+
+    if ts is not None:
         _plot(ax, ts, xs / xs.max(), **kwargs)
+    else:
+        _plot(ax, xs / xs.max(), **kwargs)
 
 
-def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
-    # TODO share these w/ mark_odor_pulse somehow? (still wang **kwargs for
-    # anything else?)
-    mp: Optional[osm.ModelParams] = None, *, stim_start: Optional[float] = None,
-    stim_end: Optional[float] = None, title: Optional[str] = None,
-    odor_index: Optional[pd.Index] = None) -> None:
-    """Saves several figures in `plot_dir`
+def get_odor_fname_suffix(odor: str) -> str:
+    return f'_{odor.replace(" @ ", "_")}'
+
+
+def get_glom_strs(glom: Union[str, slice]) -> Tuple[str, str]:
+    """Returns human-readable and filename suffix strs for glomerulus
+
+    `slice(None)` is used to indicate all glomeruli should be selected, and otherwise
+    input should be str
     """
-    assert plot_dir.exists(), f'{plot_dir=} did not exist'
-
-    if title is None:
-        title_prefix = ''
+    if not isinstance(glom, slice):
+        assert isinstance(glom, str)
+        glom_str = str(glom)
+        glom_fname_suffix = f'_{glom}'
     else:
-        title_prefix = f'{title}\n'
+        glom_str = 'all'
+        glom_fname_suffix = '_all-gloms'
+        # duplicated in plot_dynamics, but i'd prefer to keep both
+        assert glom == slice(None), 'only slice(None) accepted for non-str glom'
 
-    stim_timing_kws = dict(mp=mp, stim_start=stim_start, stim_end=stim_end)
+    return glom_str, glom_fname_suffix
 
-    orn_sims = dynamics_dict['orn_sims']
-    # TODO delete eventually (including odor_index kwarg)? shouldn't be needed since
-    # this will probably always pass
-    orn_odor_index = orn_sims.get_index('stim')
-    if odor_index is not None:
-        assert odor_index.equals(orn_odor_index)
+
+def get_odor_strs(odor: Union[str, slice], dynamics_dict: Optional[DynamicsDict] = None,
+    *, odor_index: Optional[pd.Index] = None) -> Tuple[str, str]:
+    """Returns human-readable and filename suffix strs for odor
+
+    Args:
+        odor: str odor name (e.g. 't2h @ -3') or `slice(None)` to indicate all odors
+            should be selected
+
+        dynamics_dict: if passed, will concatenate all panels into strs. only does this
+            in the `odor=slice(None)` case.
+
+    `slice(None)` is used to indicate all odors should be selected, and otherwise input
+    should be str
+    """
+    if not isinstance(odor, slice):
+        odor_fname_suffix = get_odor_fname_suffix(odor)
+        # repr so we get additional quotes around odor name in titles
+        odor_str = repr(odor)
     else:
-        odor_index = orn_odor_index
-    del orn_odor_index
+        assert odor == slice(None), 'only slice(None) accepted for non-str odor'
+        panel_str = ' '
+
+        if dynamics_dict is not None:
+            assert odor_index is None, 'only pass either dynamics_dict or odor_index'
+            odor_index = dynamics_dict['orn_sims'].get_index('stim')
+
+        if odor_index is not None:
+            if 'panel' in odor_index.names:
+                # TODO assert panel names all just have normal characters? whatever
+                panel_str += '-'.join(
+                    sorted(odor_index.get_level_values('panel').unique())
+                )
+                panel_str += ' '
+
+        odor_str = f'all{panel_str}odors'
+        odor_fname_suffix = f"_{odor_str.replace(' ', '-')}"
+
+    return odor_str, odor_fname_suffix
+
+
+# TODO TODO TODO similar plot, but for all units from gloms->boutons->claws->kc
+# VM->spikes (and maybe apl below one thing? or probably better to leave that to its own
+# plot, for now at least)
+# align everything, and have everything in a consistent order (expand as needed),
+# cluster on KCs (-> sort claws within KC?), or maybe on claw responses, then expand KC
+# data and bouton data so there is one line (in bouton axes on left, and KC axis on
+# right, for each line in the claw axes).
+# TODO draw hline between claws from diff KCs
+# TODO TODO TODO this might make it so boutons from same PN are not grouped. maybe i
+# could try another plot in that order?
+# TODO if i make this version, draw hline between boutons from diff PNs
+#
+# TODO take stim_timing_kws, and use to mark odor onset/offset on plots? (like other fns
+# do) make optional for other plots (pretty obvious when odor comes on...)?
+#
+# TODO TODO replace plot_all_bouton_dynamics w/ this? or share code?
+def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str, *,
+    order_by_kcs: Optional[bool] = None, group_pns: bool = False,
+    title_prefix: str = '') -> None:
+    # TODO doc
+
+    if order_by_kcs is None and not group_pns:
+        order_by_kcs = True
+
+    assert not (order_by_kcs and group_pns), ('only set one of these True. by default, '
+        'order_by_kcs will be set True, if neither specified'
+    )
+
+    if group_pns:
+        raise NotImplementedError('implementing order_by_kcs=True first')
+
+    assert isinstance(odor, str), (f'{type(odor)=} not supported. slice(None) not '
+        'supported for this fn, which currently only plots for one odor'
+    )
+    odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
+
+    # TODO handle spike_recordings separately, since it might need separate plot
+    # handling?  (and no point having a log / normed version there. may just want top
+    # row (raw) to start anyway)
+    # TODO at least would want to del the last two axes (the bottom two for the
+    # spike_recordings column
+    to_plot_left_to_right = ['pn_sims', 'bouton_sims', 'claw_sims', 'vm_sims',
+        'spike_recordings'
+    ]
+    # TODO factor to module level? other code that could use this?
+    dynamics_var2unit_name = {
+        'pn_sims': 'PN',
+        'bouton_sims': 'bouton',
+        'claw_sims': 'claw',
+        # need to indicate the units (Vm vs spikes) somewhere else, as want to be able
+        # to make all these plural by adding an 's' to end, as i'm currently doing below
+        'vm_sims': 'KC',
+        'spike_recordings': 'KC'
+    }
+    dynamics_var2units = {
+        'pn_sims': 'firing rate (Hz)',
+        'bouton_sims': '~"firing rate" (Hz)',
+        'claw_sims': '~"firing rate" (Hz)',
+        # need to indicate the units (Vm vs spikes) somewhere else, as want to be able
+        # to make all these plural by adding an 's' to end, as i'm currently doing below
+        'vm_sims': 'Vm',
+        'spike_recordings': 'spikes',
+    }
+    dynamics_var2logscale_vmin = {
+        # 5Hz (to the extent that units are meaningful...) seems like a reasonable min?
+        # TODO compare to something like 0.5?
+        'pn_sims': 5,
+        'bouton_sims': 5,
+        'claw_sims': 5,
+    }
+    # maybe default to vmin that is non-zero on each data?
+    # ok, some of these are clearly ridiculous numerical values, e.g. for kcs:
+    # ipdb> df.mask(df == 0).min().min()
+    # 9.936210371253575e-56
+    # TODO so maybe default to 1e-3 or -4 or something?
+    default_logscale_vmin = 1e-3
+
+    # TODO TODO TODO PN, bouton, claw, KC vm, KC spiking (does plot_spike_rasters also
+    # take fixed_order kwarg? make so, if not)
+
+    # TODO maybe visually compare expanded versions to non-expanded (but in same sort
+    # order) plots, to sanity check
+
+    n_vars = len(to_plot_left_to_right)
+    fig, all_axs = plt.subplots(nrows=3, ncols=n_vars, layout='constrained',
+        figsize=(6 * n_vars, 12)
+    )
+
+    label_size = 10
+    cmap = plt.get_cmap('magma')
+    cmap.set_bad('gray')
+
+    suptitle = f'{title_prefix}{odor_str} responses'
+
+    def get_odor_df(var_name: str) -> pd.DataFrame:
+        df = dynamics_dict[var_name].sel(odor=odor).squeeze(drop=True).to_pandas()
+        assert df.columns.name == 'time_s'
+        return df
+
+    def plot_raw_unit_dynamics(var_name: str, raw_ax: Axes, *,
+        fixed_order: Optional[pd.Index] = None) -> Tuple[pd.DataFrame, str, pd.Index]:
+
+        # TODO TODO should this be getting expanded df instead?
+        df = get_odor_df(var_name)
+        # TODO just make sure all this happens in get_dynamics instead (except for
+        # orn_sims which might, for better or worse, currently be allowed to go
+        # negative?)? and after changing bouton initialization to use 0 instead of NaN
+        # (or dropping everything consistently before here)
+        assert not (df < 0).any().any(), f'{var_name}: had some negative values'
+        assert not df.isna().any().any(), f'{var_name}: had some NaN values'
+
+        assert df.columns.name == 'time_s'
+
+        # NOTE: if i ever do any all0 based dropping (if i need to b/c some assertion
+        # tripping), may want to indicate # of all0 dropped units separately in
+        # title/label
+        n_units = len(df)
+
+        unit = dynamics_var2unit_name[var_name]
+        title = f'all {n_units} {unit}s'
+        # TODO put these in labels instead (/ too?)
+        if var_name == 'vm_sims':
+            title += ' (Vm)'
+        # TODO will i even be able to handle spike_recordings here? maybe if i just do
+        # at top of loop and then break before non-shared stuff?
+        elif var_name == 'spike_recordings':
+            title += ' (spikes)'
+
+        raw_ax.set_title(title, fontsize=label_size)
+
+        unit_desc = dynamics_var2unit_name[var_name]
+        raw_ylabel = f'{unit} {unit_desc}'
+        raw_ax.set_ylabel(raw_ylabel, fontsize=label_size)
+
+        # TODO assert no rows all 0 too (are there any? shouldn't be, right?
+        # same for claws? or 0 there make sense?)
+        all0 = (df == 0).all(axis='columns')
+        # just to be super clear that the "all" is being evaluated over time, for each
+        # unit
+        assert len(all0) == len(df)
+        # NOTE: if this ever fails, will want to change how i'm listing # of units in
+        # title/labels below
+        assert not all0.any(), f'{var_name}: {all0.sum()=} {all0.shape=} {df.shape=}'
+        # TODO any that actually might be all 0? (other than spike recordings, which i
+        # will need to handle separately anyway) just wait for assertion above to trip
+        # before handling that
+
+        # TODO may want to use diverging cmap (w/ TwoSlopeNorm) if i ever do plot stuff
+        # that can go negative (like maybe claw activities, if i ever care to re-enable
+        # path where individual claws can go below 0)?
+
+        im, order = cluster_timeseries_and_plot(df, fixed_order=fixed_order, ax=raw_ax,
+            cmap=cmap, ylabel_fontsize=9
+        )
+        # TODO do i want to bring labels back here? all info i would want already in
+        # ylabel. could dupe that here, but not sure i want to make this any more busy
+        # than it needs to be
+        fig.colorbar(im, ax=raw_ax, orientation='vertical')
+
+        return df, raw_ylabel, order
+
+    # TODO TODO TODO expand up to maximum # of units across all variables before
+    # even determining order, if i actually want to use that KC plot, rather than
+    # remaking down here
+
+    kc_df = None
+    kc_raw_ylabel = None
+    if order_by_kcs:
+        kcs = get_odor_df('vm_sims')
+
+        axs = all_axs[:, to_plot_left_to_right.index('vm_sims')]
+        raw_ax, _, _ = axs
+
+        kc_df, kc_raw_ylabel, kc_order = plot_raw_unit_dynamics('vm_sims', raw_ax)
+
+        # TODO TODO or define in a way that also has an inner sort on some claw thing?
+        order = kc_order
+        # TODO TODO TODO finish
+        #reindex()
+
+        claws = get_odor_df('claw_sims')
+        # TODO delete
+        breakpoint()
+
+        # TODO + say we are sorting by claws within KC, if so?
+        suptitle += '\nordered by KC Vm clustering'
+
+
+    for var_name in to_plot_left_to_right:
+        axs = all_axs[:, to_plot_left_to_right.index(var_name)]
+        raw_ax, log_ax, normed_ax = axs
+        # TODO TODO will i also end up needing to plot claw_sims above, to order up
+        # there? or maybe reorder and place in a new dict?
+        if order_by_kcs:
+            # TODO TODO TODO make sure order is always defined in a way that makes sense
+            # for everything
+            # TODO TODO i assume i'll need to do some kind of pairwise merge/reindex
+            # between adjacent variables? even possible all the way?
+            if var_name != 'vm_sims':
+                df, raw_ylabel, _ =  plot_raw_unit_dynamics(var_name, raw_ax,
+                    fixed_order=order
+                )
+            else:
+                df = kc_df
+                raw_ylabel = kc_raw_ylabel
+                assert df is not None
+                assert raw_ylabel is not None
+
+        unit = dynamics_var2unit_name[var_name]
+
+        # NOTE: (presumably since vmin=0) can't explicitly set vmin=vmin on LogNorm
+        # below, but works w/o specifying, and also w/ manual >0 value I hardcode below
+        vmin = df.min().min()
+        assert vmin >= 0
+        vmax = df.max().max()
+
+        im2, _ = cluster_timeseries_and_plot(df, fixed_order=order, ax=log_ax,
+            cmap=cmap, ylabel_fontsize=9,
+            imshow_kws=dict(norm=LogNorm(vmin=5, vmax=vmax), interpolation='nearest')
+        )
+        log10_str = r'$\log_{10}$'
+        log_ax.set_ylabel(f'{log10_str} {raw_ylabel}', fontsize=label_size)
+        # TODO (for boutons/PNs[/claws?]) put a marker for 50Hz? others? linear ticks on
+        # cbar for lognorm easily possible? marker for hardcoded vmin?
+        fig.colorbar(im2, ax=log_ax, orientation='vertical', extend='min')
+
+        normed = ((df.T - df.T.min()) / df.max(axis=1)).T
+        _, _ = cluster_timeseries_and_plot(normed, fixed_order=order, ax=normed_ax,
+            cmap='viridis', ylabel_fontsize=9
+        )
+        normed_ax.set_ylabel(f'[0,1]-scaled\n(per {unit})', fontsize=label_size)
+
+        last_ax = last_axes(axs)
+        last_ax.set_xlabel('time (seconds)', fontsize=label_size)
+
+    fig.suptitle(suptitle)
+    savefig(fig, plot_dir, f'aligned_dynamics{odor_fname_suffix}')
+
+
+def plot_all_bouton_dynamics(plot_dir: Path, bouton_sims: xr.DataArray, odor: str, *,
+    title_prefix: str = '') -> None:
+    # TODO doc
+
+    assert isinstance(odor, str), (f'{type(odor)=} not supported. slice(None) not '
+        'supported for this fn, which currently only plots for one odor'
+    )
+    # we assert, right before the plot_all_bouton_dynamics call (in plot_dynamics), that
+    # this is equal to the odor_index we typically get from orn_sims (all should be
+    # same, no matter which variable we get it from)
+    odor_index = bouton_sims.get_index('stim')
+    odor_str, odor_fname_suffix = get_odor_strs(odor, odor_index=odor_index)
+
+    bfig, axs = plt.subplots(nrows=3, layout='constrained', figsize=(6, 12))
+    raw_ax, log_ax, normed_ax = axs
+    bouton_df = bouton_sims.sel(odor=odor).squeeze().to_pandas()
+    # TODO assert non-negative too? necessary? do in get_dynamics?
+    # TODO assert no rows all 0 too (are there any? shouldn't be, right?
+    # same for claws? or 0 there make sense?)
+    bouton_all0 = (bouton_df == 0).all(axis=1)
+
+    # NOTE: if this ever fails, will want to change how i'm listing # of boutons in
+    # title below
+    assert not bouton_all0.any(), \
+        f'{bouton_all0.sum()=} {bouton_all0.shape=} {bouton_df.shape=}'
+
+    # TODO delete? if assertion above passes in all test cases and running
+    # `plot-dynamics -r PNAPL_stepping`
+    if bouton_all0.any():
+        warn(f'{bouton_all0.sum()}/{len(bouton_df)} boutons with all-0 '
+            'activity!'
+        )
     #
 
+    # TODO why _pos suffix? rename probably. positive? also assert all non-negative (or
+    # in get_dynamics, for probably everything)
+    bouton_pos = bouton_df.loc[~bouton_all0]
+    bnormed = ((bouton_pos.T - bouton_pos.T.min()) / bouton_pos.max(axis=1)).T
 
-    # TODO TODO plot mean across all odors, instead of example odor, by default
-    # TODO TODO + how to factor so we can use same code to either plot all for one
-    # odor or mean across odors?
+    label_size = 10
+    n_boutons = bouton_sims.sizes['bouton']
+    bfig.suptitle(f'{title_prefix}all {n_boutons} bouton {odor_str} responses',
+        fontsize=label_size
+    )
 
-    # TODO TODO use new natmix plotting code to plot dynamics here? maybe alongside
-    # existing plots? have i already refactored that code?
+    im, order = cluster_timeseries_and_plot(bouton_pos, ax=raw_ax,
+        cmap='magma', ylabel_fontsize=9
+    )
+    raw_ax.set_ylabel('PN firing rate (Hz)', fontsize=label_size)
+    bfig.colorbar(im, ax=raw_ax, orientation='vertical', label='bouton activities')
 
-    # TODO is there some reason orn_sims.min() is not sfr.min()?
-    # min seems to be 17, if i'm computing it right...
-    # is it just that orn_sims is not in firing rate units?
-    # (was it the sign that concerned me? or that it's larger than sfr.min()? what
-    # is the ordering of them? delete comment?)
+    # NOTE: (presumably since vmin=0) can't explicitly set vmin=vmin on LogNorm below,
+    # but works w/o specifying, and also w/ manual >0 value I hardcode below now
+    vmin = bouton_pos.min().min()
+    assert vmin >= 0
+    vmax = bouton_pos.max().max()
 
-    # TODO always plot whichever glomerulus has the biggest response (and say so)?
-    # would make this code useful for more input data...
-    # TODO change to work if DL5 not in input (it will be, but it may not respond
-    # meaningfully to panel odors)?
-    # TODO TODO expose as kwarg? just plot all?
-    glom = 'DL5'
+    cmap = plt.get_cmap('magma')
 
-    odor_values = odor_index.get_level_values('odor')
-    # TODO TODO expose as kwarg? just plot all?
-    for odor in ('t2h @ -3', 'kmix0 @ 0'):
-        if odor in odor_values:
-            break
-        # for if we don't find one of the preferred example odors
-        odor = None
+    # even with LogNorm(vmin=5, vmax=vmax), and set_bad but no set_under, still get
+    # a mix of gray[=bad]/black[default under], without interpolation='nearest'
+    #
+    # TODO why is there a mix of both of these (bad&under)? what actual values do both
+    # take? is one just essentially at vmin (or only off by a rounding error?)?
+    # (with interpolation='nearest', all appears as the set_bad color, with none of the
+    # set_under color visible, at least. is that just because there were so big blocks
+    # of one or the other? still an underlying issue?)
+    cmap.set_bad('gray')
+    # TODO delete. prefer the default behavior of "under" values getting the minimum
+    # colormap value (black, with magma)
+    #cmap.set_under('white')
 
-    if odor is None:
-        odor = odor_values[-1]
-        warn(f'picking last odor {odor} for example dynamics plots')
-    del odor_values
+    im2, _ = cluster_timeseries_and_plot(bouton_pos, fixed_order=order, ax=log_ax,
+        cmap=cmap, ylabel_fontsize=9,
+        # 5Hz (to the extent that units are meaningful...) seems like a reasonable min?
+        # TODO compare to something like 0.5?
+        imshow_kws=dict(norm=LogNorm(vmin=5, vmax=vmax), interpolation='nearest')
+    )
+    log10_str = r'$\log_{10}$'
+    log_ax.set_ylabel(f'{log10_str} PN firing rate (Hz)', fontsize=label_size)
+    # TODO put a marker for 50Hz? others? linear ticks on cbar for lognorm easily
+    # possible?
+    bfig.colorbar(im2, ax=log_ax, orientation='vertical', extend='min',
+        label=f'{log10_str} bouton activities'
+    )
+
+    _, _ = cluster_timeseries_and_plot(bnormed, fixed_order=order, ax=normed_ax,
+        cmap='viridis', ylabel_fontsize=9
+    )
+    normed_ax.set_ylabel('[0,1]-scaled\n(per bouton)', fontsize=label_size)
+
+    last_ax = last_axes(axs)
+    last_ax.set_xlabel('time (seconds)', fontsize=label_size)
+
+    savefig(bfig, plot_dir, f'bouton_dynamics{odor_fname_suffix}')
+
+
+def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
+    stim_timing_kws: Optional[dict], *, odor: Union[str, slice] = slice(None),
+    glom: Union[str, slice] = 'DL5', title_prefix: str = '') -> None:
+    # TODO doc
 
     # TODO still keep one version of plot showing full timecourse, in case
     # understanding the ramp up ~"start" time (< "stim_start") is important?
     # (just set xlim differently and re-save?)
-
-    # seem to need constrained layout to get fig.legend() reliably outside bounds of
-    # Axes (at least w/o manual positioning...)?
-    claw_ax = None
-    # TODO add separate axes for ORN/PN/LN stuff (and then put APL stuff or
-    # APL+KC stuff on separate axes)? (do have a separate fig for APL stuff now...)
-    if 'bouton_sims' in dynamics_dict:
-        fig, axs = plt.subplots(nrows=4,
-            layout='constrained', sharex=True, figsize=(10, 5 * 4)
-        )
-        (ax, bouton_ax, claw_ax, spike_raster_ax) = axs
-
-    elif 'claw_sims' in dynamics_dict:
-        fig, axs = plt.subplots(nrows=3, layout='constrained',
-            sharex=True, figsize=(10, 5 * 3)
-        )
-        (ax, claw_ax, spike_raster_ax) = axs
-
-    else:
-        fig, axs = plt.subplots(nrows=2, layout='constrained',
-            sharex=True, figsize=(10, 5 * 2)
-        )
-        (ax, spike_raster_ax) = axs
-
-    # TODO loop over all axes and do this (for imshow ones, may need diff colors?
-    # like white)
-    stim_start, stim_end = mark_odor_pulse(ax, **stim_timing_kws)
-    ts = orn_sims.get_index('time_s')
-    assert ts.min() < stim_start < stim_end < ts.max()
-    del stim_start, stim_end, ts
-
-    # TODO add units for these (firing rate in Hz?) (via y-axis label?)
-    #
-    # units seems to be firing rates (absolute i think. actually, there are some
-    # negative values, even in hallem_input=True [w/ matt config] case. that's not a
-    # mistake though, is it?)
-    _plot_normed(ax, orn_sims.sel(odor=odor, glomerulus=glom), label=f'{glom} orn')
-
-    pn_sims = dynamics_dict['pn_sims']
-    _plot_normed(ax, pn_sims.sel(odor=odor, glomerulus=glom), label=f'{glom} pn')
+    # (it is important to see how APL>PN can reduce or eliminate PN spont)
 
     # TODO limit all data to this in advance (to not need to only use in bouton
     # plotting below)?
@@ -8241,6 +8668,73 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # between them)
     xlim = [-0.05, 0.7]
     xmin, xmax = xlim
+
+    glom_str, glom_fname_suffix = get_glom_strs(glom)
+
+    odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
+
+    # seem to need constrained layout to get fig.legend() reliably outside bounds of
+    # Axes (at least w/o manual positioning...)?
+    claw_ax = None
+    spike_raster_ax = None
+    # TODO add separate axes for ORN/PN/LN stuff (and then put APL stuff or
+    # APL+KC stuff on separate axes)? (do have a separate fig for APL stuff now...)
+    # TODO delete support for this case? or show multiple odors and also have the other
+    # axes? seems like i'd want a 2d grid of axes then... maybe even recursively calling
+    # this fn, w/ a different odor each time?
+    if odor == slice(None):
+        # TODO warn about the plots we'll be skippin in this case?
+        nrows = 1
+    elif 'bouton_sims' in dynamics_dict:
+        nrows = 4
+    elif 'claw_sims' in dynamics_dict:
+        nrows = 3
+    else:
+        nrows = 2
+
+    fig, axs = plt.subplots(nrows=nrows, layout='constrained', sharex=True,
+        figsize=(10, 5 * nrows)
+    )
+
+    if odor == slice(None):
+        # axs will not be an array w/ nrows=1, w/ default squeeze=True
+        ax = axs
+    elif 'bouton_sims' in dynamics_dict:
+        (ax, bouton_ax, claw_ax, spike_raster_ax) = axs
+    elif 'claw_sims' in dynamics_dict:
+        (ax, claw_ax, spike_raster_ax) = axs
+    else:
+        (ax, spike_raster_ax) = axs
+
+    orn_sims = dynamics_dict['orn_sims']
+    # TODO loop over all axes and do this (for imshow ones, may need diff colors?
+    # like white)
+    if stim_timing_kws is not None:
+        stim_start, stim_end = mark_odor_pulse(ax, **stim_timing_kws)
+        # TODO some way to make sure we always do this assertion, whether this plot (or
+        # any other particular plot) is made or not?
+        ts = orn_sims.get_index('time_s')
+        assert ts.min() < stim_start < stim_end < ts.max()
+        del stim_start, stim_end, ts
+    else:
+        warn('pass stim_timing_kws for odor onset/offset to be marked')
+
+    # TODO add units for these (firing rate in Hz?) (via y-axis label?)
+    #
+    # units seems to be firing rates (absolute i think. actually, there are some
+    # negative values, even in hallem_input=True [w/ matt config] case. that's not a
+    # mistake though, is it?)
+    if glom != slice(None):
+        orn_label = f'{glom_str} ORN'
+        pn_label = f'{glom_str} PN'
+    else:
+        orn_label = 'ORN, mean across gloms'
+        pn_label = 'PN, mean across gloms'
+
+    _plot_normed(ax, orn_sims.sel(odor=odor, glomerulus=glom), label=orn_label)
+
+    pn_sims = dynamics_dict['pn_sims']
+    _plot_normed(ax, pn_sims.sel(odor=odor, glomerulus=glom), label=pn_label)
 
     label_fontsize = 10
 
@@ -8251,114 +8745,53 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     if claw_ax is not None:
         claw_sims = dynamics_dict['claw_sims']
 
-        # TODO TODO do same thing for all claws for each odor? maybe even cluster
-        # across all odors?
-        # TODO TODO also plot bouton dynamics like this
+        # TODO TODO do i even want to average across odors? maybe either only plot
+        # if odor=<one-single-odor> or instead concatenate across odors? how to
+        # re-organize xarray dims like that?
         # TODO row color for which PN? / which KC / whatever?
         # TODO try diff clustering params (n_PCs/n_clusters? time params?)
         #
         # TODO use diverging cmap (by default) if ever goes negative. assert it
         # doesn't? do both in cluster_timeseries_and_plot
+        # TODO TODO TODO maybe don't implement by slice(None) after all? sel (at least,
+        # on multiindex levels, and not the dim names) drops those levels from output,
+        # so i couldn't loop over odor names after .sel(odor=slice(None)).
+        # sel(stim=slice(None)) doesn't remove stim dimension or any of its levels tho.
+        # drop=False is already default on .sel, supposedly
+        # TODO TODO TODO stack()/unstack() useful here? or want to just subset /
+        # restrict this plot / mean / loop over odors?
         claw_df = claw_sims.sel(odor=odor, glomerulus=glom).squeeze().to_pandas()
         claw_all0 = (claw_df == 0).all(axis=1)
-        # TODO TODO put in title / label too?
+        # TODO TODO put in title / label too? (if i can't assert there are none...)
         # TODO TODO /assert none of these? can i?
+        assert not claw_all0.any(), \
+            'whoops, maybe i should put # of these in title/label'
         if claw_all0.any():
             warn(f'{claw_all0.sum()}/{len(claw_df)} claws with all-0 activity!')
 
-        # TODO TODO TODO are claw activities 0 before odor comes on? if so, why not
-        # just inheriting PN spont? problems w/ inheriting pn spont?
-        # TODO TODO add test to check
-
-        # TODO TODO TODO what was causing index error? need reset_index(drop=True?)
-        # test/test_mb_model.py:3265: in test_apl_weights_fitmbmodel
-        #     curr_ret = _fit_mb_model(orn_deltas=orn_deltas, **{**step, **kws},
-        # test/test_mb_model.py:318: in _fit_mb_model
-        #     ret = fit_mb_model(*args, **kwargs)
-        # mb_model.py:10842: in fit_mb_model
-        #     im, _ = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
-        # mb_model.py:6781: in cluster_timeseries_and_plot
-        #     clustered, method = cluster_timeseries(df)
-        # mb_model.py:6701: in cluster_timeseries
-        #     model = Rastermap(n_PCs=n_PCs, n_clusters=n_clusters, verbose=verbose,
-        # venv/lib/python3.8/site-packages/rastermap/rastermap.py:385: in fit
-        #     U_nodes = kmeans_func(self.Usv[igood], n_clusters=self.n_clusters,
-        # venv/lib/python3.8/site-packages/rastermap/cluster.py:120: in scaled_kmeans
-        #     X_nodes = _scaled_kmeans_init(X, n_clusters=n_clusters,
-        # venv/lib/python3.8/site-packages/rastermap/cluster.py:65: in _scaled_kmeans_init
-        #     X_candidates = X[candidate_ids]
-        # E   IndexError: index 118 is out of bounds for axis 0 with size 118
-        # TODO TODO plot unclustered if this fails (inside this fn, or one of the
-        # ones called inside)? (+ for spike raster too)
         im, _ = cluster_timeseries_and_plot(claw_df.loc[~claw_all0], ax=claw_ax,
             cmap='magma'
         )
         fig.colorbar(im, ax=claw_ax, orientation='vertical', shrink=0.5,
             label='claw->KC Vm contribs'
         )
-        claw_ax.set_ylabel('claw activity'
-            f'\nonly the {len(claw_df)} claws downstream of {glom}',
-            fontsize=label_fontsize
-        )
 
-    # TODO TODO TODO similar plot, but for all PNs and all claws too
-    # TODO TODO TODO maybe also all KC Vm?
-    # TODO TODO + line or two for APL dynamics still?
-    # TODO TODO TODO separate matrix plot for APL dynamics (if i implement variable
-    # storing dynamics per bouton)
-
-    # TODO TODO TODO plots that have all odors and a timeseries for each unit, with
-    # timeseries clustered (prob rastermap, but maybe something less finicky?)
-    # (odors in same sort order? just leave?) left to right (either on separate
-    # facets, or concatenated [as if it were data from one continuous recording)
-
-    if 'bouton_sims' in dynamics_dict:
-        bouton_sims = dynamics_dict['bouton_sims']
-
-        bfig, (bax, bax2) = plt.subplots(nrows=2, layout='constrained')
-        bouton_df = bouton_sims.sel(odor=odor).squeeze().to_pandas()
-        # TODO assert non-negative
-        # TODO TODO assert no rows all 0 too (are there any? shouldn't be, right?
-        # same for claws? or 0 there make sense?)
-        bouton_all0 = (bouton_df == 0).all(axis=1)
-        if bouton_all0.any():
-            warn(f'{bouton_all0.sum()}/{len(bouton_df)} boutons with all-0 '
-                'activity!'
+        n_claws = claw_sims.sizes['claw']
+        if glom == slice(None):
+            assert len(claw_df) == n_claws
+            which_claws = f'all {n_claws} claws'
+        else:
+            which_claws = (f'only the {len(claw_df)}/{n_claws} claws downstream of '
+                f'{glom_str}'
             )
 
-        bouton_pos = bouton_df.loc[~bouton_all0]
-        # TODO just get order from above, and apply to this one, rather than
-        # re-clustering? or want to re-cluster?
-        bnormed = ((bouton_pos.T - bouton_pos.T.min()) / bouton_pos.max(axis=1)).T
+        claw_ax.set_ylabel(f'claw activity\n{which_claws}', fontsize=label_fontsize)
 
-        bax_label_size = 10
-        # NOTE: want different fontsize here than for model_dynamics_<odor>.pdf plots.
-        # 10 is OK here, but too small there.
-        bfig.suptitle(f'{title_prefix}bouton {repr(odor)} responses',
-            fontsize=bax_label_size
-        )
-
-        # TODO fix so plot is cropped correctly (seems data only occupies bottom
-        # left?) (i think it's fine actually?)
-        im, order = cluster_timeseries_and_plot(bouton_pos, ax=bax,
-            cmap='magma', ylabel_fontsize=9, #, _extent=False
-            # TODO was _extent=True causing issues? (i think main issue is just the
-            # data...)
-            # TODO TODO filter based on some minimum change upon odor onset?
-            # TODO TODO or subtract spont or something?
-            # TODO TODO and maybe model should also be subtracting spont in then?
-        )
-        bax.set_ylabel('PN firing rate (Hz)', fontsize=bax_label_size)
-        # TODO TODO TODO same order between this and above. modify this fn to accept
-        # fixed order passed in
-        # TODO add cbar for this one too?
-        im2, _ = cluster_timeseries_and_plot(bnormed, fixed_order=order, ax=bax2,
-            cmap='viridis', ylabel_fontsize=9
-        )
-        bax2.set_ylabel('[0,1]-scaled\n(per bouton)', fontsize=bax_label_size)
-        bfig.colorbar(im, ax=bax, orientation='vertical', label='bouton activities')
-        savefig(bfig, plot_dir, f'bouton_{odor.replace(" @ ", "_")}_dynamics')
-
+    # TODO TODO TODO why is bouton_ax just blank for t2h + all-gloms version. want
+    # either no axes there at all, or cluster all boutons, same as i'm doing for claws
+    # (probably latter)
+    if odor != slice(None) and glom != slice(None) and 'bouton_sims' in dynamics_dict:
+        bouton_sims = dynamics_dict['bouton_sims']
         # squeeze() here to remove length 1 odor dimension (would we have that if we
         # didn't have 'panel' level in index? squeeze still keeps that metadata, but
         # removes from index and .sizes)
@@ -8368,13 +8801,14 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
         # name (so we can always do sizes['bouton'], no matter whether the bouton
         # index has PN_ID in the levels or not).
         glom_boutons = bouton_sims.sel(odor=odor,
+            # TODO TODO TODO make this also work w/ glom=slice(None)
             bouton=(bouton_sims.glomerulus == glom)
         ).squeeze()
         n_glom_boutons = glom_boutons.sizes['bouton']
 
         # TODO pretty up?
         for x in sorted(glom_boutons.bouton_id.values):
-            # TODO TODO offset/whatever needed to make clear where the
+            # TODO offset/whatever needed to make clear where the
             # overlapping lines are (share code w/ claw handling in
             # natmix_data/analysis.py? not sure i have a good solution there yet
             # though)
@@ -8404,26 +8838,18 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
 
         # TODO how to change size of legend title and elements separately? want both
         # maybe slightly larger (than 8)?
+        if odor == slice(None):
+            odor_bit = ''
+        else:
+            odor_bit = ' in odor'
+
         bouton_ax.legend(loc='upper right',
-            title=f'{n_glom_boutons} boutons\nID (max in odor):', fontsize=9
+            title=f'{n_glom_boutons} boutons\nID (max{odor_bit}):', fontsize=9
         )
+        del odor_bit
 
         # TODO this is fine to call after plotting too, right?
         mark_odor_pulse(bouton_ax, **stim_timing_kws)
-
-        # TODO or delete?
-        # TODO TODO still handle case where per_claw_pn_apl_weights=False?
-        # could check whether all boutons have same value, and plot using this old
-        # code, if so
-        #bouton_sum = glom_boutons.sum('bouton')
-        #assert bouton_sum.dims == ('time_s',)
-        #_plot_normed(ax, bouton_sum,
-        #    label=f'{glom} PN (sum of {n_glom_boutons} boutons)'
-        #)
-
-        # TODO + add test that establishes how scale of bouton activity in
-        # dynamics relates (for one bouton, or summed across them, vs in
-        # non-separate-bouton case) (delete?)
 
     # TODO also say in title (below) if we drop non-responders, if we do
     # (spike raster plot does automatically. compute how many responders
@@ -8435,43 +8861,16 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # ORN/PN, to another axes)
 
     inh_sims = dynamics_dict['inh_sims']
-    if (inh_sims == 0).all().item():
-        # TODO maybe i should be skipping this plot altogether if this is hit?
-        warn('APL Vm (inh_sims) was 0 everywhere! only makes sense if APL was '
-            'intentionally disabled somehow'
-        )
     _plot_normed(ax, inh_sims.sel(odor=odor), label='APL Vm')
 
     Is_sims = dynamics_dict['Is_sims']
     # plotting these before the KC mean[+types] now, since that part of the plot
     # can vary (in terms of # of lines), so having this earlier fixes the colors for
     # these
-    Is_all0 = (Is_sims == 0).all().item()
-    if not Is_all0:
-        # TODO delete. no point in plotting this now, since it's either all 0 in
-        # pn_claw_to_apl=True case, or just shifted by one dt (=0.0005s) (relative to
-        # Is_from_kcs) in pn_claw_to_apl=False case (so we can just plot Is_from_kcs
-        # there)
-        #_plot_normed(ax, Is_sims.sel(odor=odor),
-        #    label='KC>APL current (filters spiking)'
-        #)
-        if mp is not None:
-            assert mp.kc.pn_claw_to_apl == False
-    else:
-        if mp is not None:
-            assert mp.kc.pn_claw_to_apl
-
     Is_from_kcs = None
     assert 'Is_from_kcs' in dynamics_dict
     if 'Is_from_kcs' in dynamics_dict:
         Is_from_kcs = dynamics_dict['Is_from_kcs']
-
-        # `not Is_all0` should imply `pn_claw_to_apl=False`
-        if not Is_all0:
-            Is_shifted = Is_sims.shift(time_s=1).dropna('time_s')
-            assert Is_shifted.identical(Is_from_kcs.sel(time_s=Is_shifted.time_s))
-            del Is_shifted
-
         Is_from_pns = dynamics_dict['Is_from_pns']
         _plot_normed(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current')
         _plot_normed(ax, Is_from_pns.sel(odor=odor), label='PN>APL current')
@@ -8535,77 +8934,149 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
         # normalized within each type above, so no need for _plot_normed
         _plot(ax, vm_sims_by_type.T, label=kc_type_labels)
 
-    # TODO restore something like my spikes -> spike times -> sns.rugplot for
-    # best responding cell (never committed, unfortunately), or just directly use
-    # imshow/similar (like rastermap does)
-    # TODO TODO -> use to show spiking against threshold/spont_in context for an
-    # example cell? or do that in separate plot(s) specifically for it?
+    if spike_raster_ax is not None:
+        # TODO restore something like my spikes -> spike times -> sns.rugplot for
+        # best responding cell (never committed, unfortunately), or just directly use
+        # imshow/similar (like rastermap does)
+        # TODO TODO -> use to show spiking against threshold/spont_in context for an
+        # example cell? or do that in separate plot(s) specifically for it?
 
-    # TODO label plot with how many responders there are out of how many total
-    # cells
-    # TODO per kc_type labels w/ how many silent in each? too noisy? separate
-    # plot/something for that instead?
-    # ipdb> example_odor_spikes[example_odor_spikes.T.sum() > 0].shape
-    # (214, 5500)
-    # ipdb> example_odor_spikes.shape
-    # (1830, 5500)
-    spike_recordings = dynamics_dict['spike_recordings']
-    example_odor_spikes = spike_recordings.sel(odor=odor).squeeze().to_pandas()
-    # NOTE: plot_spike_rasters currently drops silent cells itself anyway
-    # TODO but modify it to have it say somewhere how many it dropped?
-    # or like a kwarg flag to enabled putting that info in y-label or something?
-    # TODO natmix_data/analysis.py already have method to deal with this?
-    # (not sure it does...)
-    # TODO at least remove this axes if singular? (or otherwise if call fails)
-    # TODO TODO fall back to default (/sorted) order, if clustering fails (inside
-    # this fn, or cluster_timeseries_and_plot)
-    plot_spike_rasters(example_odor_spikes, ax=spike_raster_ax)
+        # TODO label plot with how many responders there are out of how many total
+        # cells
+        # TODO per kc_type labels w/ how many silent in each? too noisy? separate
+        # plot/something for that instead?
+        # ipdb> example_odor_spikes[example_odor_spikes.T.sum() > 0].shape
+        # (214, 5500)
+        # ipdb> example_odor_spikes.shape
+        # (1830, 5500)
+        spike_recordings = dynamics_dict['spike_recordings']
+        example_odor_spikes = spike_recordings.sel(odor=odor).squeeze().to_pandas()
+        # NOTE: plot_spike_rasters currently drops silent cells itself anyway
+        # TODO but modify it to have it say somewhere how many it dropped?
+        # or like a kwarg flag to enabled putting that info in y-label or something?
+        plot_spike_rasters(example_odor_spikes, ax=spike_raster_ax)
 
-    # TODO TODO say it's for KCs that responded to this odor, and how many
-    spike_raster_ax.set_ylabel('KC spikes', fontsize=label_fontsize)
+        assert KC_ID in example_odor_spikes.index.names, ('expected index to be for KCs'
+            ' but names={example_odor_spikes.index.names} did not include {KC_ID}'
+        )
+        assert example_odor_spikes.columns.name == 'time_s'
+        n_ts_before = len(example_odor_spikes.columns)
+        n_kcs_before = len(example_odor_spikes)
+        # don't need to actually pass nosilent as input to plot_spike_rasters, as it
+        # will drop them itself anyway
+        nosilent = drop_silent_model_cells(example_odor_spikes)
 
-    # TODO just do on whichever axes is last (should be spike_raster_ax above now, but
-    # that may change? define axes to use here strictly on order in array? would require
-    # changing how it's defined above)
-    spike_raster_ax.set_xlabel('time (seconds)', fontsize=label_fontsize)
+        assert len(nosilent.columns) == n_ts_before, ('drop_silent_model_cells '
+            'should not be changing number of timepoints, if used correctly'
+        )
+        n_kcs_after = len(nosilent)
+        if n_kcs_after == n_kcs_before:
+            warn('drop_silent_model_cells did not detect any silent cells in current '
+                'spiking data! this is very likely a bug, as model almost always has '
+                'some silent cells (unless configured in a very unusual / extreme way)'
+            )
 
-    # applies to both ax and spike_raster_ax, b/c sharex=True above
+        kc_str = f'{n_kcs_after}/{n_kcs_before} responded to '
+        if odor == slice(None):
+            odor_part = 'any odor'
+        else:
+            odor_part = odor_str
+
+        spike_raster_ax.set_ylabel(f'responding KC spikes\n{kc_str}{odor_part}',
+            fontsize=label_fontsize
+        )
+
+    # applies to both ax/spike_raster_ax and all others, b/c sharex=True above
     ax.set_xlim(xlim)
 
     ax.set_ylabel('normalized response (max=1)')
 
-    ax.set_title(f'{title_prefix}model {glom} (& downstream pop.) response to {odor}')
-    # TODO happy with?
-    ax.legend(loc='upper right')
-    # TODO delete? trying to replace w/ per axis ones
-    #fig.legend(loc='outside right center')
+    last_ax = last_axes(axs)
+    last_ax.set_xlabel('time (seconds)', fontsize=label_fontsize)
 
-    # TODO move under model_internals stuff saved below?
-    # TODO get ' @ ' from hong2p.olf?
-    ostr = f'_{odor.replace(" @ ", "_")}'
+    if glom != slice(None):
+        glom_bit =  f' {glom_str} (& downstream pop.)'
+    else:
+        glom_bit = ''
+
+    ax.set_title(f'{title_prefix}model{glom_bit} response to {odor_str}')
+    del glom_bit
+
+    ax.legend(loc='upper right')
+
     # TODO why did we seem to need bbox_inches='tight' for below but not this? just
     # the figsize setup?
-    savefig(fig, plot_dir, f'model_dynamics{ostr}')
+    # TODO or skip altogether in glom=slice(None) case, and then remove
+    # glom_fname_suffix?
+    savefig(fig, plot_dir, f'model_dynamics{odor_fname_suffix}{glom_fname_suffix}')
 
-    # TODO delete? should always have this now
-    if Is_from_kcs is None:
-        warn('not making APL dynamics plot!')
-        return
-    #
 
-    # TODO TODO refactor to de-dupe w/ above
+def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
+    stim_timing_kws: Optional[dict] = None, *, odor: Union[slice, str] = slice(None),
+    title_prefix: str = '') -> None:
+    # TODO doc
+
+    # TODO TODO TODO also figure out how to plot currents FROM APL to everything (and do
+    # i need to change olfsysm for that? maybe if i want to check some recalculation in
+    # here is correct?) (prob already have a comment elsewhere to similar effect)
+    # (would probably need another Axes, with different units. potentially different
+    # units for both mean inhibition onto KCs as well as mean inhibition onto boutons)
+
+    odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
+
+    # TODO TODO refactor to de-dupe w/ APL stuff in plot_example_model_dynamics
     fig, ax = plt.subplots(layout='constrained')
-    # TODO would need a way to store these (what we use from mp here) if wanted to
-    # plot with saved dynamics (currently assuming same as a new ModelParams object
-    # created at load+plotting time)
-    # TODO provide fn to serialize all model params to json?
-    # TODO or xarray attrs / scalar vars, in all dynamics saved? do either/both work
-    # w/ my current xarray saving/loading strategy? at least stim start/end time?
-    # TODO also store a title describing model params in an attr/scalar coord, for
-    # use in plotting?
-    mark_odor_pulse(ax, **stim_timing_kws)
+
+    mp = None
+    if stim_timing_kws is not None:
+        # TODO would need a way to store these (what we use from mp here) if wanted to
+        # plot with saved dynamics (currently assuming same as a new ModelParams object
+        # created at load+plotting time)
+        # TODO provide fn to serialize all model params to json?
+        # TODO or xarray attrs / scalar vars, in all dynamics saved? do either/both work
+        # w/ my current xarray saving/loading strategy? at least stim start/end time?
+        # TODO also store a title describing model params in an attr/scalar coord, for
+        # use in plotting?
+        mark_odor_pulse(ax, **stim_timing_kws)
+        mp = stim_timing_kws.get('mp', None)
+    else:
+        warn('pass stim_timing_kws for odor onset/offset to be marked')
 
     alpha = 0.4
+
+    Is_sims = dynamics_dict['Is_sims']
+    # plotting these before the KC mean[+types] now, since that part of the plot
+    # can vary (in terms of # of lines), so having this earlier fixes the colors for
+    # these
+    Is_all0 = (Is_sims == 0).all().item()
+    # TODO do we need to make sure mp was not passed in then, since this part won't be
+    # initialized correctly when loading dynamics, right? should be using
+    # stim_[start|end] there?
+    if not Is_all0:
+        # TODO delete. no point in plotting this now, since it's either all 0 in
+        # pn_claw_to_apl=True case, or just shifted by one dt (=0.0005s) (relative to
+        # Is_from_kcs) in pn_claw_to_apl=False case (so we can just plot Is_from_kcs
+        # there)
+        # TODO TODO first add assertion in here that above is true? (should currently
+        # have in test_dynamics_indexing, but still)
+        #_plot_normed(ax, Is_sims.sel(odor=odor),
+        #    label='KC>APL current (filters spiking)'
+        #)
+        if mp is not None:
+            assert mp.kc.pn_claw_to_apl == False
+    else:
+        if mp is not None:
+            assert mp.kc.pn_claw_to_apl
+
+    assert 'Is_from_kcs' in dynamics_dict, 'would fail on older versions of model'
+    Is_from_kcs = dynamics_dict['Is_from_kcs']
+    Is_from_pns = dynamics_dict['Is_from_pns']
+
+    # `not Is_all0` should imply `pn_claw_to_apl=False`
+    if not Is_all0:
+        Is_shifted = Is_sims.shift(time_s=1).dropna('time_s')
+        assert Is_shifted.identical(Is_from_kcs.sel(time_s=Is_shifted.time_s))
+        del Is_shifted
 
     assert Is_from_kcs.get_index('time_s').equals(Is_from_pns.get_index('time_s'))
     _plot(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current', alpha=alpha)
@@ -8652,6 +9123,15 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     #        [ 0.  ,  0.45,  0.87, ..., 10.03, 10.03, 10.03],
     #        [ 0.  ,  0.45,  0.87, ..., 11.68, 11.68, 11.68]])
 
+
+    inh_sims = dynamics_dict['inh_sims']
+    # TODO move this warning to get_dynamics instead? refactor to do in both places?
+    if (inh_sims == 0).all().item():
+        # TODO maybe i should be skipping this plot altogether if this is hit?
+        warn('APL Vm (inh_sims) was 0 everywhere! only makes sense if APL was '
+            'intentionally disabled somehow'
+        )
+
     # twinx shares x-axis (so we can have a different Y-axis on right)
     apl_vm_ax = ax.twinx()
     # m=magenta. just needs to be distinct from default colors chosen for ax,
@@ -8674,13 +9154,17 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # TODO TODO update text as needed, depending on pn_claw_to_apl and which
     # variable plotted, to be accurate
     # TODO what fontsize?
-    ax.set_ylabel('APL current (I) (or dI/dt)')
+    ax.set_ylabel('APL current (I)')
+
+    # TODO TODO TODO also plot currents from APL to PNs/KCs (have that? can i recalc? if
+    # recalcing, add test [maybe needing to modify model code] that my recalc is
+    # correct?)
 
     # TODO move to _plot?
     # TODO what fontsize?
     ax.set_xlabel('time (seconds)')
 
-    ax.set_title(f'{title_prefix}APL response to {repr(odor)}', fontsize=9)
+    ax.set_title(f'{title_prefix}APL response to {odor_str}', fontsize=9)
 
     # TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
     # and "PN input to KCs" (4.8d) from Ann's thesis
@@ -8694,7 +9178,7 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # indicate an issue w/ my implementation?)? what is basis for her claim?
     # TODO TODO does she have a citation for that claim, either in thesis or in
     # preprint? olsen/wilson explain why in their paper?
-    savefig(fig, plot_dir, f'apl_dynamics{ostr}')
+    savefig(fig, plot_dir, f'apl_dynamics{odor_fname_suffix}')
 
     # TODO TODO re-evaluate below, now that i've changed olfsysm (in 2e1508377)
     # to only have KC spiking APL input (and only in pn_claw_to_apl=false case)
@@ -8706,6 +9190,172 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: ParamDict,
     # TODO TODO figure out if Is_from_[kcs|pns] makes sense
     # (test_dynamics_indexing should soon start to get at this, to make sure
     # calculation is correct at least)
+
+
+def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
+    odor: Optional[Union[str, slice]] = None, glom: Union[str, slice] = 'DL5',
+    all_bouton_dynamics: bool = True, apl_dynamics: bool = True,
+    aligned_dynamics: bool = True, mp: Optional[osm.ModelParams] = None, stim_start:
+    Optional[float] = None, stim_end: Optional[float] = None,
+    title: Optional[str] = None, _odor_index: Optional[pd.Index] = None) -> None:
+    # TODO say which plots are saved
+    """Saves several figures in `plot_dir`
+
+    Args:
+        plot_dir: where to save plots
+
+        dynamics_dict: dict with keys the names of dynamic model vars and DataArray
+            values (either as returned by `fit_mb_model`, or as loaded by
+            `load_dynamics`)
+
+        odor: if passed, must be either a str odor name (e.g. 't2h @ -3') or (to select
+            all odors) `slice(None)`. Will otherwise default to one of a few odors
+            ('t2h @ -3', 'kmix @ 0'; in that order), if present, or else the last odor.
+
+        glom: str glomerulus name or `slice(None)` to select all
+
+        mp: `olfsysm.ModelParams` object, as used to run the model (or else some checks
+            may fail if it is not initialized the same as the `mp` object used to run
+            the model). Used to get odor onset/offset time, and mark them in plots. May
+            also specify `stim_[start|end]` instead, for the same purpose. If neither is
+            specified, the (previous, and hopefully still current) default odor
+            onset/offset time will be used, and warnings will be emitted. This, as well
+            as `stim_[start|end]`, will be passed to `mark_odor_pulse` calls.
+
+        stim_start: see `mp`. Used to mark odor onset on plots.
+
+        stim_end: see `mp`. Used to mark odor offset on plots.
+
+        title: used as a prefix to all plot titles, with some plots potentially adding
+            additional information on subsequent lines
+
+        _odor_index: if passed, checks that `orn_sims` odor index matches this.
+            Otherwise `orn_sims` odor index is used everywhere.
+    """
+    assert plot_dir.exists(), f'{plot_dir=} did not exist'
+
+    if title is None:
+        title_prefix = ''
+    else:
+        title_prefix = f'{title}\n'
+
+    stim_timing_kws = dict(mp=mp, stim_start=stim_start, stim_end=stim_end)
+
+    orn_sims = dynamics_dict['orn_sims']
+    # TODO delete eventually (including odor_index kwarg)? shouldn't be needed since
+    # this will probably always pass
+    orn_odor_index = orn_sims.get_index('stim')
+    if _odor_index is not None:
+        assert _odor_index.equals(orn_odor_index)
+        odor_index = _odor_index
+        del _odor_index
+    else:
+        odor_index = orn_odor_index
+    del orn_odor_index
+    # TODO assert all other dynamics vars that have odor index have it match?
+    #
+
+    # TODO TODO plot mean across all odors, instead of example odor, by default
+    # (finish supporting odor=slice(None) below to do this)
+    # TODO TODO + how to factor so we can use same code to either plot all for one
+    # odor or mean across odors?
+
+    # TODO TODO use new natmix plotting code to plot dynamics here? maybe alongside
+    # existing plots? have i already refactored that code?
+
+    # TODO is there some reason orn_sims.min() is not sfr.min()?
+    # min seems to be 17, if i'm computing it right...
+    # is it just that orn_sims is not in firing rate units?
+    # (was it the sign that concerned me? or that it's larger than sfr.min()? what
+    # is the ordering of them? delete comment?)
+
+    # TODO default to whichever glomerulus has the biggest response (and say so)? (meh)
+    if not isinstance(glom, slice):
+        glomerulus_index = orn_sims.get_index(glomerulus_col)
+        assert glomerulus_index.names == [glomerulus_col], ('glomerulus index had more '
+            f'levels than the expected [{repr(glomerulus_col)}]: '
+            f'{glomerulus_index.names=}'
+        )
+        if glom not in glomerulus_index:
+            raise ValueError(f'{glom=} not in {glomerulus_index.unique()=} (from '
+                'orn_sims)'
+            )
+    else:
+        # only slice that would select all glomeruli is accepted, when not passing in a
+        # single str glom value
+        assert glom == slice(None), 'only slice(None) accepted for non-str glom'
+
+    # TODO support 'odor1' too? use new hong2p.olf fn to get appropriate level values?
+    odor_values = odor_index.get_level_values('odor')
+    if odor is not None:
+        if isinstance(odor, str):
+            assert odor in odor_values, f'{odor=} not in {odor_values.unique()}'
+        else:
+            assert isinstance(odor, slice)
+            assert odor == slice(None), ('odor must either be str in odor index, or '
+                'slice(None) to select all odors'
+            )
+    else:
+        for odor in ('t2h @ -3', 'kmix0 @ 0'):
+            if odor in odor_values:
+                break
+            # for if we don't find one of the preferred example odors
+            odor = None
+
+        if odor is None:
+            odor = odor_values[-1]
+            warn(f'picking last odor {odor} for example dynamics plots')
+        del odor_values
+
+    if aligned_dynamics:
+        # TODO TODO TODO implement + make two options, w/ different sort orders? (one
+        # clusterig on KCs [then sorting claws?], and another grouping boutons+claws by
+        # PN?)
+        plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,
+            title_prefix=title_prefix
+        )
+
+    plot_example_model_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
+        glom=glom, title_prefix=title_prefix
+    )
+
+    # TODO delete all this warning conditional stuff, and rename
+    # plot_all_bouton_dynamics to plot_unit_dynamics or something
+    # (plot_aligned_dynamics?), and then just plot what we have no matter what
+    # TODO TODO or just start by making a separate fn for that? also want raw/log/normed
+    # rows there?
+    if all_bouton_dynamics:
+        do_bouton_dynamics = True
+        if 'bouton_sims' not in dynamics_dict:
+            warn("all_bouton_dynamics=True, but 'bouton_sims' not in dynamics_dict. "
+                'can not call plot_all_bouton_dynamics. set all_bouton_dynamics=False '
+                'to silence.'
+            )
+            do_bouton_dynamics = False
+
+        if odor == slice(None):
+            warn('all_bouton_dynamics=True, but odor=slice(None). '
+                'plot_all_bouton_dynamics currently only supports a single str odor. '
+                'set all_bouton_dynamics=False to silence.'
+            )
+            do_bouton_dynamics = False
+
+        if do_bouton_dynamics:
+            bouton_sims = dynamics_dict['bouton_sims']
+            assert bouton_sims.get_index('stim').equals(odor_index), ('may have issues '
+                'getting consistent odor strs in plot_all_bouton_dynamics'
+            )
+            # TODO still generate this one by default if we have glom=<str>? (as long as
+            # we haven't already saved it? or add flag to explicitly disable it in my
+            # one call w/ glom=<str>?)
+            plot_all_bouton_dynamics(plot_dir, bouton_sims, odor,
+                title_prefix=title_prefix
+            )
+
+    if apl_dynamics:
+        plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
+            title_prefix=title_prefix
+        )
 
 
 def dynamics_var_paths(model_dir: Path, *, mtime_tolerance_s: float = 300.0
@@ -8737,7 +9387,7 @@ def dynamics_var_paths(model_dir: Path, *, mtime_tolerance_s: float = 300.0
 
     netcdf_files = list(model_dir.glob('*.nc'))
     if len(netcdf_files) == 0:
-        raise IOError('no netcdf files in current directory, so no dynamics to load')
+        raise IOError(f'no netcdf files in {model_dir}, so no dynamics to load')
 
     varname2netcdf_path = dict()
     min_mtime = None
@@ -8781,7 +9431,7 @@ ALL_DYNAMICS_VARS: Set[str] = REQUIRED_DYNAMICS_VARS | {
 # from whether or not we have claw_sims / bouton_sims (latter of which we might want to
 # require based on saved model params instead)
 def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
-    warn_: bool = True, **kwargs) -> bool:
+    warn_: bool = True, verbose: bool = False, **kwargs) -> bool:
     """
     Args:
         model_dir: directory to search for .nc dynamics files from
@@ -8793,6 +9443,10 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
             of dynamics vars (`ALL_DYNAMICS_VARS`), and about missing vars (for
             directories that have any var .nc files present)
 
+        verbose: will always warn before returning False (otherwise would skip warning
+            in cases where dirs don't exist, or have no .nc files, or none with matching
+            names)
+
         **kwargs: passed to `dynamics_var_paths`. only currently for
             `mtime_tolerance_s`.
 
@@ -8801,13 +9455,19 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
     """
     try:
         varname2netcdf_path = dynamics_var_paths(model_dir, **kwargs)
-    except IOError:
+    except IOError as err:
+        if verbose and warn_:
+            # TODO more info? full traceback?
+            warn(err)
+
         return False
 
     have_vars = set(varname2netcdf_path.keys())
 
     have_dynamic_vars = have_vars & ALL_DYNAMICS_VARS
     if len(have_dynamic_vars) == 0:
+        if verbose and warn_:
+            warn(f'had no .nc files with names in {ALL_DYNAMICS_VARS=}')
         # returning before any warnings, if directory contains NONE of the expected
         # dynamics outputs
         return False
@@ -8825,6 +9485,12 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
     else:
         missing = ALL_DYNAMICS_VARS - have_vars
 
+    # TODO delete
+    print()
+    print(f'{warn_=}')
+    print(f'{missing=}')
+    print(f'{len(missing)=}')
+    #
     if warn_ and len(missing) > 0:
         warn(f'{model_dir}: missing .nc files for the following dynamics variables:\n'
             f'{pformat(missing)}'
@@ -8834,7 +9500,7 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
 
 
 def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
-    ) -> Dict[str, xr.DataArray]:
+    ) -> DynamicsDict:
     """Loads all NetCDF (.nc) files into dynamics dict, with one key per file.
 
     Args:
@@ -8870,6 +9536,8 @@ def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
 
 
 def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
+    # TODO say what we typically use kwargs for (currently nothing. delete? or use for
+    # CLI vmin/vmax for certain plots?)
     """Loads all NetCDF (.nc) dynamics to a dict, and passes to `plot_dynamics`.
 
     Saves all plots under a `model_dir / 'dynamics'` directory, which will be created if
@@ -8883,6 +9551,8 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
     # assuming model was run w/ same stim start/end as current defaults. could also not
     # pass these, but then there would be several warnings in plot_dynamics
     # (saying essentially the same thing: that it is assuming current defaults)
+    # (and passing mp could cause some checks to fail, since it is not necessarily
+    # initialized the same as the mp actually used to run the model)
     mp = osm.ModelParams()
     stim_start = mp.time_stim_start
     stim_end = mp.time_stim_end
@@ -8903,15 +9573,60 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
         inh_sep=', ', human=True
     )
     dirname = model_dir.resolve().name
-    title += f'\n{dirname}\n'
+
+    # seems i want this anyway, used to have '\n\n' before dirname, only when adding
+    # that, but w/ everything else as it is, want the extra separator before any other
+    # title stuff plots below add
+    title += '\n'
+    # so that we don't append directory name if it's already plainly in params above,
+    # e.g. dirname='pn-claw-to-apl_False' where title contains 'pn_claw_to_apl=False'
+    if not dirname.replace('_', '=').replace('-', '_') in title.splitlines():
+        title += f'\n{dirname}\n'
 
     # TODO refactor to share dir name w/ that created in fit_mb_model (currently the
-    # same)
+    # same) (delete? still true?)
     plot_dir = model_dir / 'dynamics'
     makedirs(plot_dir)
+
+    # all glomeruli, but still the default single odor
+    #
+    # currently makes:
+    # - model_dynamics_<odor>_all-gloms.pdf
+    # - bouton_dynamics_<odor>.pdf
+    # - apl_dynamics_<odor>.pdf
     plot_dynamics(plot_dir, dynamics_dict, stim_start=stim_start,
-        stim_end=stim_end, title=title, **kwargs
+        stim_end=stim_end, title=title, glom=slice(None), **kwargs
     )
+
+    # TODO move this back to first plot_dynamics call? this was the og
+    # TODO why only all_bouton_dynamics=False one one call, not all? just cause it's
+    # skipped automatically w/ more than one odor? doc in comment here, if that's the
+    # reason
+
+    # currently makes:
+    # - model_dynamics_<odor>_<glom>.pdf
+    plot_dynamics(plot_dir, dynamics_dict, stim_start=stim_start, stim_end=stim_end,
+        title=title, all_bouton_dynamics=False, apl_dynamics=False,
+        aligned_dynamics=False, **kwargs
+    )
+
+    # TODO delete? unless i implement something that aligns units across odors?
+    # currently this will only make a single-axis version of dynamics summary plot (no
+    # boutons/claws/spikes), and a mean APL behavior plot (with mean PN and KC currents
+    # into APL)
+    #
+    # should be saving version of plots for all odors, not just the default odor
+    # selected when odor=None (as for above call), and not just the default glomerulus
+    # (='DL5', where applicable)
+    #
+    # currently makes:
+    # - model_dynamics_all-<panels>-odors_all-gloms.pdf
+    # - apl_dynamics_all-<panels>-odors.pdf
+    plot_dynamics(plot_dir, dynamics_dict, stim_start=stim_start, stim_end=stim_end,
+        title=title, odor=slice(None), glom=slice(None), all_bouton_dynamics=False,
+        aligned_dynamics=False, **kwargs
+    )
+    #
 
 
 # TODO use elsewhere (+ factor to hong2p.util)
@@ -9070,6 +9785,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     fixed_thr: Optional[Union[float, np.ndarray]] = None,
     wAPLKC: Weights = None, wKCAPL: Weights = None,
     wAPLPN: Optional[float] = None, wPNAPL: Optional[float] = None,
+    # TODO TODO rename pn_claw_to_apl, and then in all outputs too (want it to be
+    # spiking_required_for_kc_apl_input [with inverted logic]). just regen all?
     pn_claw_to_apl: bool = False, n_claws_active_to_spike: Optional[int] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
@@ -12441,8 +13158,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # control just the other plots below?
         assert plot_dir is not None and make_plots
         dynamics_plot_dir = makedirs(plot_dir / 'dynamics')
-        plot_dynamics(dynamics_plot_dir, dynamics_dict, mp, title=title,
-            odor_index=odor_index
+        plot_dynamics(dynamics_plot_dir, dynamics_dict, mp=mp, title=title,
+            _odor_index=odor_index
         )
 
     orn_sims = dynamics_dict['orn_sims']
@@ -13964,6 +14681,10 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
     # n_seeds)
     write_tuned_params(param_dict, param_dir, keys_not_to_remove=keys_not_to_remove)
 
+    # TODO put behind a checks=True flag?
+    if save_dynamics:
+        assert have_all_saved_dynamics(param_dir, warn_=True, verbose=True)
+
 
 def fitandplot_finished_writing(model_output_dir: Path) -> bool:
     """Returns whether the last output `fit_and_plot_mb_model`
@@ -13978,7 +14699,7 @@ def fitandplot_finished_writing(model_output_dir: Path) -> bool:
     #
     # this is last CSV saved in fit_and_plot_mb_model so if it doesn't exist, things
     # terminated before it finished. excluding plots, because those may not always be
-    # saved, depending on arguments/config, and they are not loaded for further analysis.
+    # saved, depending on arguments/config, and they are not loaded for further analysis
     last_nonplot_output = model_output_dir / 'spike_counts.csv'
     return last_nonplot_output.exists()
 
@@ -14401,6 +15122,13 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     params_for_csv['used_model_cache'] = use_cache
 
     make_plots = model_kws.pop('make_plots', True)
+    # TODO or just change fit_mb_model default to False, to avoid having to do all this
+    # extra work out here to have fit_and_plot_mb_model's behavior be to default to
+    # False?
+    return_dynamics = model_kws.pop('return_dynamics', False)
+    if _in_sens_analysis and return_dynamics:
+        warn('disabling returning/saving of dynamics, since in sensitivity analysis')
+        return_dynamics = False
 
     print()
     # TODO TODO default to also skipping any plots made before returning? maybe add
@@ -14541,7 +15269,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     if tuning_seeds is not None:
                         assert seed == tuning_seeds[i]
 
-                return_dynamics = model_kws.pop('return_dynamics', False)
                 plot_example_dynamics = model_kws.pop('plot_example_dynamics', False)
 
                 responses, spike_counts, wPNKC, param_dict = fit_mb_model(
@@ -14640,7 +15367,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # TODO rename param_dict everywhere -> tuned_params?
             responses, spike_counts, wPNKC, param_dict = fit_mb_model(
                 sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, wAPLPN=wAPLPN,
-                make_plots=make_plots, **model_kws
+                make_plots=make_plots, return_dynamics=return_dynamics, **model_kws
             )
 
         print('done', flush=True)
@@ -14815,16 +15542,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         keys_not_to_remove = tuple()
         if one_row_per_claw and not use_connectome_APL_weights:
             keys_not_to_remove = ('wAPLKC', 'wKCAPL')
-        #
-        # TODO expose as kwarg, to force off in step_model_pn_apl.py? only if we
-        # actually end up wanting them returned, but probably don't [and would prob want
-        # to save some of them if so, or at least things computed from them]
-        save_dynamics = not _in_sens_analysis
 
         # modifies param_dict, removing keys (and saving most of their values to single
         # files). also writes param_dict to cache.
         save_and_remove_from_param_dict(param_dict, param_dir,
-            save_dynamics=save_dynamics, keys_not_to_remove=keys_not_to_remove
+            save_dynamics=return_dynamics, keys_not_to_remove=keys_not_to_remove
         )
 
         if onestep_lr_key in param_dict:
@@ -21622,6 +22344,11 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
 
 
 def main():
+    # TODO delete
+    load_and_plot_dynamics_cli()
+    return
+    #
+
     # TODO print names of plots we are saving (by default, and prob unconditionally),
     # as if -v/--verbose were passed to al_analysis.py
 

@@ -9,19 +9,19 @@ import pytest
 
 from al_analysis import trial_response_traces, delta_f_over_f, compute_trial_stats
 
+# TODO better way?
+from conftest import test_data_dir
 
-# TODO better way to store (+ reference paths to) test_data for pytest?
-# TODO refactor (put where?)? also used in test_mb_model.test_multiresponder_APL_boost
-# now
-data_dir = Path(__file__).resolve().parent / 'test_data'
 
 @pytest.fixture(scope='session')
 def odor_and_frame_metadata():
     """Returns odor_lists, bounding_frames. Metadata from one recording.
     """
-    odor_lists = json.loads(Path(data_dir / 'odor_lists.json').read_text())
+    odor_lists = json.loads(Path(test_data_dir / 'odor_lists.json').read_text())
 
-    bounding_frames = json.loads(Path(data_dir / 'bounding_frames.json').read_text())
+    bounding_frames = json.loads(
+        Path(test_data_dir / 'bounding_frames.json').read_text()
+    )
 
     last_end_frame = None
     # TODO clarify if first_odor_frame is first frame after onset, or that contains
@@ -54,7 +54,7 @@ def trace_data(odor_and_frame_metadata):
     #
     # index.name should be 'frame', and columns.name should be 'roi' (both int
     # RangeIndices here. yes, no glomerulus names at this point).
-    traces = pd.read_csv(data_dir / 'traces.csv', index_col=0)
+    traces = pd.read_csv(test_data_dir / 'traces.csv', index_col=0)
     traces.columns.name = 'roi'
     assert traces.index.name == 'frame'
     assert not traces.isna().any().any()

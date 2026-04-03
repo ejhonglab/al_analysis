@@ -38,6 +38,9 @@ from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
     BOUTON_MODEL_KW_LIST, get_fitandplot_model_kw_list, model_mb_responses
 )
 
+# TODO better way?
+from conftest import test_data_dir
+
 
 # TODO test i can recreate committed megamat_orn_deltas() contents. prob need to recalc
 # dF/F w/ old mean (n_volumes=2) response calc? or use old outputs, but check that
@@ -133,13 +136,6 @@ def mark_kw_list_entries_xfail(model_kw_list: List[ParamDict]) -> List[ParamDict
     return fitandplot_model_kw_list
 
 FITANDPLOT_MODEL_KW_LIST = mark_kw_list_entries_xfail(FITANDPLOT_MODEL_KW_LIST)
-
-# so can work w/ pytest called from repo root, but also w/ scripts like
-# generate_reference_outputs_for_repro.py, which I've been calling from this directory.
-test_dir = Path(__file__).resolve().parent
-
-# TODO refactor this handling of test data path? also used in test_al_analysis.py
-test_data_dir = test_dir / 'test_data'
 
 # TODO set `al_util.verbose = True` for all these (at least, so long as that's only
 # way to get olfsysm log output printed?) (or add a new way to configure that, and use
@@ -3245,10 +3241,6 @@ def test_dynamics_indexing(orn_deltas):
 
     claws = params['claw_sims'].sel(time_s=boutons.time_s)
     kcs = params['vm_sims'].sel(time_s=boutons.time_s)
-    Is = params['Is_sims'].sel(time_s=boutons.time_s)
-    Is_from_kcs = params['Is_from_kcs'].sel(time_s=boutons.time_s)
-    Is_from_pns = params['Is_from_pns'].sel(time_s=boutons.time_s)
-    inh = params['inh_sims'].sel(time_s=boutons.time_s)
     # orns/pns are the only ones not 0 for first timepoint (the one dropped from
     # boutons b/c it was/is initialied to NaN instead of 0)
     pns = params['pn_sims'].sel(time_s=boutons.time_s)
@@ -3335,14 +3327,13 @@ def test_dynamics_indexing(orn_deltas):
 
     claw_glom_mins = claws.groupby('glomerulus').min()
     assert claw_glom_mins.identical(claws.groupby('glomerulus').max())
-    # TODO TODO is it surprising that this is true, without having to do anything with
-    # wPNKC? i mean, it has already been applied, and should have all only been 1 for a
-    # single glom for each claw, so maybe it's not?
+    # TODO worth a test that if we have non-0/1 wPNKC we can get the expected divergence
+    # between claw_sims and bouton_sims?
+    #
+    # one implication of this is that claw_sims are not 0 in the [start, stim_start]
+    # period, b/c they are just as influenced by the PN spontaneous activity as
+    # bouton_sims are
     assert claw_glom_mins.identical(pns)
-
-    # TODO also assert that at least some things across glomeruli are diff? or that all
-    # pn entries for diff glomeruli are diff from all others (maybe 1/2 dupes from some
-    # special handling?)?
 
     # TODO some way to not drop other metadata? want to preserve what we have in `kcs`,
     # but prob nbd. just kc_type missing it seems (may actually want to drop some
@@ -3364,10 +3355,8 @@ def test_dynamics_indexing(orn_deltas):
     # TODO TODO TODO check something w/ wPNKC (check w/ claw_sums vs boutons[/pns] not
     # already doing that?) (that we can recalc claws from boutons and wPNKC, ideally)
 
-    # TODO delete (after replacing w/ comparisons not restricted to just one KC and
-    # odor, as test code below was doing before i got details worked out)?
-    # TODO rename to indicate it's only first odor (or also take that idx)
-    def get_kc_reconstruction_from_claw_sums_err(i: int, j: Optional[int] = None
+    # TODO also check other odors? currently hardcoding isel(stim=0)
+    def check_we_can_recreate_kc_vm_from_claw_sums(i: int, j: Optional[int] = None
         ) -> float:
         """i, j are int KC indices to be used for isel on claw_sums/kcs
         """
@@ -3424,9 +3413,9 @@ def test_dynamics_indexing(orn_deltas):
         # this
         assert k1 == k2
 
-        # TODO TODO TODO print individual elements of claws (that went into this element
+        # TODO TODO print individual elements of claws (that went into this element
         # of claw_sums) -> compare against stuff printed from olfsysm for test case
-        # TODO TODO TODO can probably just print a few elements around start time
+        # TODO TODO can probably just print a few elements around start time
         # (and/or maybe odor onset time?)
         # ipdb> claws.isel(stim=0).sel(kc_id=k1)
         # <xarray.DataArray (claw: 5, time_s: 2499)>
@@ -3602,93 +3591,24 @@ def test_dynamics_indexing(orn_deltas):
 
         # TODO TODO fix xarray indexing above to not need this? maybe go back to
         # label='upper'? (would at least require other changes)
-        # TODO TODO use another shift call to fix this?
+        # TODO TODO use another shift call (or two?) to fix this?
         assert np.allclose(arr1.values[1:], arr2.values[:-1])
-
-        # TODO delete
-        '''
-        if i == j:
-            print()
-            print(f'{arr1.values=}')
-            print(f'{arr1.values[0]=}')
-            print(f'{arr1.values[1]=}')
-            print(f'{arr2.values=}')
-            print(f'{arr2.values[0]=}')
-            print(f'{arr2.values[1]=}')
-        '''
-
-        #v1 = arr1.values[:-1]
-        # as long as we are using arr1 def above includes
-        # `.isel(time_s=slice(None, -1))`, shouldn't need to slice here
-        v1 = arr1.values
-        v2 = arr2.values
-        # TODO TODO where is this difference coming from? some numerical issue?
-        # first few elements are closer than this
-        # ipdb> np.abs(v1 - v2).max()
-        # 0.41638147896429434
-        # ipdb> v1
-        # array([3.33, 3.17, 3.01, ..., 0.01, 0.01, 0.01])
-        # ipdb> v2
-        # array([3.33, 3.17, 3.01, ..., 0.01, 0.01, 0.01])
-        # ipdb> np.abs(v1 - v2).mean()
-        # 0.014154136570981331
-        # TODO TODO TODO check there is no shuffling of any odor/glom/whatever indices
-        # that would produce better match than this? (or figure out where difference
-        # comes from)
-        # TODO TODO or maybe just check across KCs? less reasonable there is a mixup
-        # across odors
-        # TODO may need to skip stuff where there is no response (b/c then many rows
-        # would match equally)
-        absdiff = np.abs(v1 - v2)
-        # TODO delete
-        '''
-        if i == j:
-            print(f'{v1.mean()=}')
-            print(f'{v2.mean()=}')
-            print(f'{absdiff.mean()=}')
-            print(f'{absdiff.max()=}')
-        '''
-        #
-        # TODO TODO try max instead? or w/in odor window? those make any more sense?
-        return absdiff.mean(), absdiff.max()
-
 
     n_kcs = kcs.sizes['kc']
     for i in range(n_kcs):
-        di, max_di = get_kc_reconstruction_from_claw_sums_err(i)
+        check_we_can_recreate_kc_vm_from_claw_sums(i)
+        # TODO still check no other rows, at least not w/ actual responses on input,
+        # have equal arr1/arr2? (+ tqdm at that point?) (maybe there would be some rows
+        # equal though?)
 
-        # TODO delete (assuming assertion between arr1 and arr2 passes in all above now)
-        # (which it is now, yay)
-        # (still check no other rows, at least not w/ actual responses on input, have
-        # equal arr1/arr2?)
-        '''
-        dijs = []
-        max_dijs = []
-        for j in range(n_kcs):
-            if i == j:
-                continue
-
-            dij, max_dij = get_kc_reconstruction_from_claw_sums_err(i, j)
-            dijs.append(dij)
-            max_dijs.append(max_dij)
-
-        dijs = np.array(dijs)
-        max_dijs = np.array(max_dijs)
-
-        # TODO TODO assert di is smaller than min dijs, or figure out if indices
-        # swapped (it's not, at least for first test!!! fuck)
-        #
-        # TODO delete
-        print()
-        print(f'{di=}')
-        print(f'{dijs.min()=}')
-        print()
-        # TODO TODO this make any more sense?
-        print(f'{max_di=}')
-        print(f'{max_dijs.min()=}')
-        breakpoint()
-        #
-        '''
+    # TODO TODO TODO use (/ delete)
+    # TODO i assert something about Is shifted relative to Is_from_kcs in
+    # mb_model.plot_dynamics, right? move that here (too?)?
+    Is = params['Is_sims'].sel(time_s=boutons.time_s)
+    Is_from_kcs = params['Is_from_kcs'].sel(time_s=boutons.time_s)
+    Is_from_pns = params['Is_from_pns'].sel(time_s=boutons.time_s)
+    inh = params['inh_sims'].sel(time_s=boutons.time_s)
+    #
 
     wKCAPL = params['wKCAPL']
     wPNAPL = params['wPNAPL']
@@ -4080,4 +4000,9 @@ def test_model_mb_responses(tmp_path):
     # TODO TODO either skip sensitivity analysis, or force it to do dramatically fewer
     # steps
     model_mb_responses(df, tmp_path, dff2spiking_cache_dir=model_dir)
+
+
+# TODO commit some (dramatically subset, perhaps also compressed) example model
+# dynamics, and use to test all dynamics plotting fns (so might want test data with and
+# without boutons and/or claws)
 
