@@ -14,9 +14,10 @@ from hong2p.util import pd_allclose, addlevel
 from hong2p.olf import parse_odor_name
 
 import al_util
-from al_util import savefig, plot_responses
+from al_util import savefig, plot_responses, read_parquet, to_csv, to_parquet
 from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model, megamat_orn_deltas,
-    get_thr_and_APL_weights, format_model_params, get_odor_fname_suffix
+    natmix_orn_deltas, get_thr_and_APL_weights, format_model_params,
+    get_odor_fname_suffix, KC_ID
 )
 
 
@@ -31,7 +32,6 @@ model_tune_kws = [
         use_connectome_APL_weights=True
     ),
 ]
-
 
 def main():
     parser = ArgumentParser()
@@ -55,6 +55,8 @@ def main():
     mdf = df.loc[:, df.columns.get_level_values('panel') == 'megamat']
     diags = df.loc[:, df.columns.get_level_values('panel') == 'glomeruli_diagnostics']
 
+    natmix_df = natmix_orn_deltas()
+
     tune_df = mdf
 
     series_list = []
@@ -67,7 +69,8 @@ def main():
         ser.name = ('syn-diag-binaries', ser.name)
         series_list.append(ser)
 
-    for x, y in combinations(gloms_to_mix, 2):
+    glom_combos = list(combinations(gloms_to_mix, 2))
+    for x, y in glom_combos:
         mser = pd.Series(index=df.index.copy(), name=f'{x}-150/{y}-150 @ 0', data=0.0)
         mser.loc[x] = 150.0
         mser.loc[y] = 150.0
@@ -135,17 +138,26 @@ def main():
         max_zerod_ser.name = ('diag-binaries_max-rest0', mix_name)
         series_list.append(max_zerod_ser)
 
+
     test_df = pd.concat(series_list, axis='columns', verify_integrity=True)
     test_df.columns.names = ['panel', 'odor']
     assert not test_df.isna().any().any()
+
+    # TODO want to do anything about his other than fillna(0)? prob not
+    # ipdb> natmix_df.index.difference(test_df.index)
+    # Index(['DA1', 'DA4l', 'DA4m', 'V', 'VA1d', 'VA1v'], ...
+    # ipdb> test_df.index.difference(natmix_df.index)
+    # Index(['VA4'], dtype='object', name='glomerulus')
+    test_df = pd.concat([test_df, natmix_df], axis='columns', verify_integrity=True)
+    test_df = test_df.fillna(0.0)
+
     test_df = test_df.sort_index().sort_index(axis='columns')
     del df
 
     panels = list(test_df.columns.get_level_values('panel').unique())
 
-    # TODO need any lower, for all things not to fail? (would fail if any odor response
-    # rates were higher than this) (nope, seems fine. delete comment)
-    response_rate_plot_max = 0.2
+    # saw 0.212 on some kiwi/control stuff (tuned on megamat)
+    response_rate_plot_max = 0.22
 
     dfs = []
     tuned_dfs = []
@@ -161,8 +173,52 @@ def main():
         model_str = format_model_params(kws)
 
         tuned_model_output_dir = plot_root / tuned_params['output_dir']
-        trs = pd.read_pickle(tuned_model_output_dir / 'responses.p')
-        tss = pd.read_pickle(tuned_model_output_dir / 'spike_counts.p')
+        trs = read_parquet(tuned_model_output_dir / 'responses.parquet')
+        tss = read_parquet(tuned_model_output_dir / 'spike_counts.parquet')
+
+        wPNKC = read_parquet(tuned_model_output_dir / 'wPNKC.parquet')
+        raw_wPNKC = wPNKC.copy()
+        if kws.get('one_row_per_claw', False):
+            wPNKC = wPNKC.groupby(KC_ID).sum()
+
+            if kws.get('prat_boutons', False):
+                wPNKC = wPNKC.droplevel(
+                    [x for x in wPNKC.columns.names if x != 'glomerulus'],
+                    axis='columns'
+                )
+                wPNKC = wPNKC.groupby('glomerulus', axis='columns').sum()
+
+        kc_glom_combo_counts = wPNKC[gloms_to_mix].value_counts().sort_index()
+        kc_glom_combo_counts.name = 'n_kcs'
+        to_csv(kc_glom_combo_counts,
+            plot_root / f'kc-glom-combo-counts_{model_str}.csv'
+        )
+        to_parquet(kc_glom_combo_counts,
+            plot_root / f'kc-glom-combo-counts_{model_str}.parquet'
+        )
+        # TODO TODO plot binarized version, just counting # KCs getting any amount of
+        # input from each combo? or some kind of dist of total amount of input per
+        # combo? (separate line for those that only get input from one?)
+        # TODO best way to plot this? for uniform model, can get value_counts like:
+        # ipdb> wPNKC[gloms_to_mix].value_counts().sort_index()
+        # DM4  VM5d  DC3
+        # 0.0  0.0   0.0    1223
+        #            1.0     178
+        #            2.0       9
+        #            3.0       1
+        #      1.0   0.0     153
+        #            1.0      15
+        #            2.0       3
+        #      2.0   0.0       7
+        # 1.0  0.0   0.0     186
+        #            1.0      17
+        #      1.0   0.0      17
+        #            1.0       1
+        #      2.0   0.0       2
+        # 2.0  0.0   0.0      14
+        #            1.0       1
+        #      1.0   0.0       1
+        # dtype: int64
 
         mean_num_spikes = addlevel(tss.mean(), 'model', model_str)
         mean_num_spikes.name = 'mean_num_spikes'
@@ -184,8 +240,11 @@ def main():
                 **kws, **thr_and_apl_kws
             )
             model_output_dir = panel_dir / params['output_dir']
-            rs = pd.read_pickle(model_output_dir / 'responses.p')
-            ss = pd.read_pickle(model_output_dir / 'spike_counts.p')
+            rs = read_parquet(model_output_dir / 'responses.parquet')
+            ss = read_parquet(model_output_dir / 'spike_counts.parquet')
+
+            wPNKC2 = read_parquet(model_output_dir / 'wPNKC.parquet')
+            assert raw_wPNKC.equals(wPNKC2), 'wPNKC should not change across tuned/not'
 
             def add_metadata(series):
                 series = addlevel(series, 'model', model_str)
@@ -245,9 +304,13 @@ def main():
     assert len(set(stat_names)) == len(stat_names)
 
     def odor_sort_fn(x):
-        return (x.str.contains('+', regex=False)) | (x.str.contains('/', regex=False))
+        v1 = 1 * (x.str.contains('+', regex=False)) | (x.str.contains('/', regex=False))
+        # to put the cmix0/kmix 0 at end
+        v2 = 2 * x.str.contains('mix0', regex=False)
+        return v1 + v2
 
-    # TODO want to sort anything else?
+    df = df[~(df.odor.str.contains('mix-') | df.odor.str.contains('(air mix)'))].copy()
+
     df = df.sort_values(by='odor', kind='stable', key=odor_sort_fn)
 
     def plot_panel_stats_across_models(df: pd.DataFrame, panel: str, suffix: str = ''
@@ -288,9 +351,16 @@ def main():
     suffix = ''
     plot_panel_stats_across_models(tdf, 'megamat', suffix)
 
+    comps_to_drop = [
+        'fur', 'ms', 'va', 'EtOH', 'IAol', 'IaA'
+    ]
     for panel in panels:
         pdf = df[df.panel == panel]
         plot_panel_stats_across_models(pdf, panel, suffix)
+
+        if panel in ('kiwi', 'control'):
+            pdf_nocomps = pdf[~pdf.odor.isin(comps_to_drop)]
+            plot_panel_stats_across_models(pdf_nocomps, panel, f'{suffix}_nocomps')
 
 
 if __name__ == '__main__':

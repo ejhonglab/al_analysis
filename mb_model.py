@@ -694,13 +694,12 @@ def megamat_orn_deltas(drop_diags: bool = True) -> pd.DataFrame:
     data_dir = data_root / 'internal'
     orn_deltas = read_orn_deltas(data_dir / 'megamat_mean_est_spike_deltas.csv')
 
+    expected_panels = {'megamat', diag_panel_str}
     if drop_diags:
-        orn_deltas = orn_deltas.loc[:,
-            orn_deltas.columns.get_level_values('panel') == 'megamat'
-        ].copy()
-        expected_panels = {'megamat'}
-    else:
-        expected_panels = {'megamat', diag_panel_str}
+        orn_deltas = orn_deltas.drop(level='panel', axis='columns',
+            labels=diag_panel_str
+        )
+        expected_panels.remove(diag_panel_str)
 
     unique_panels = set(orn_deltas.columns.get_level_values('panel').unique())
     assert unique_panels == expected_panels, f'{unique_panels=} != {expected_panels}'
@@ -711,13 +710,12 @@ def validation2_orn_deltas(drop_diags: bool = True) -> pd.DataFrame:
     data_dir = data_root / 'internal'
     orn_deltas = read_orn_deltas(data_dir / 'validation2_mean_est_spike_deltas.csv')
 
+    expected_panels = {'validation2', diag_panel_str}
     if drop_diags:
-        orn_deltas = orn_deltas.loc[:,
-            orn_deltas.columns.get_level_values('panel') == 'validation2'
-        ].copy()
-        expected_panels = {'validation2'}
-    else:
-        expected_panels = {'validation2', diag_panel_str}
+        orn_deltas = orn_deltas.drop(level='panel', axis='columns',
+            labels=diag_panel_str
+        )
+        expected_panels.remove(diag_panel_str)
 
     unique_panels = set(orn_deltas.columns.get_level_values('panel').unique())
     assert unique_panels == expected_panels, f'{unique_panels=} != {expected_panels}'
@@ -750,13 +748,50 @@ def paper_validation2_orn_deltas() -> pd.DataFrame:
 
 # TODO TODO add test we can recreate this from committed dF/F CSVs
 # TODO use in some tests
-def natmix_orn_deltas() -> pd.DataFrame:
+def natmix_orn_deltas(drop_diags: bool = True) -> pd.DataFrame:
     data_dir = data_root / 'internal'
+    # I regenerated these with scaling done on all odors (including binary mixtures, air
+    # mixtures, mix dilutions, and pfo), and it does slightly differ when per-fly
+    # scaling is done without these odors, but not to a huge extent. Old values are in
+    # kiwi-control_mean_est_spike_deltas__binaries-mixdilutions-pfo-dropped.csv
+    # Both of these should be using Sam's ROIs on my data, with sign_preserving_maxabs
+    # response calc (over 2 volumes)
     orn_deltas = read_orn_deltas(data_dir / 'kiwi-control_mean_est_spike_deltas.csv')
+
     # TODO delete
-    # TODO TODO assert which panels we have
-    breakpoint()
+    #o2 = read_orn_deltas(
+    #    Path('~/src/al_analysis/pebbled_6f/pdf/ijroi/mb_modeling/'
+    #        'mean_est_spike_deltas.csv'
+    #    ).expanduser()
+    #)
+    #o1 = orn_deltas.copy()
+    #o2r = reindex(o2, o1.columns, axis='columns')
+    # TODO fuck, what's wrong?
+    # TODO TODO i guess the per-fly scaling could be a bit different without these
+    # odors? test that w/ scaling=None, it's the same w/ or w/o them?
+    # TODO worth generating a version scaled on the same fixed set of odors (prob not)?
+    # eh whatever, close enough:
+    # ipdb> (o1 - o2r).abs().max().max()
+    # 3.887224299759424
+    # ipdb> (o1 - o2r).abs().mean().mean()
+    # 0.45634868426403713
+    # ipdb> o1.mean().mean()
+    # 18.81487146330427
+    # ipdb> o2r.mean().mean()
+    # 18.394535491211016
+    #print(f'{pd_allclose(o2r, o1)=}')
+    # False
+    #breakpoint()
     #
+    expected_panels = {'kiwi', 'control', diag_panel_str}
+    if drop_diags:
+        orn_deltas = orn_deltas.drop(level='panel', axis='columns',
+            labels=diag_panel_str
+        )
+        expected_panels.remove(diag_panel_str)
+
+    unique_panels = set(orn_deltas.columns.get_level_values('panel').unique())
+    assert unique_panels == expected_panels, f'{unique_panels=} != {expected_panels}'
     return orn_deltas
 
 
@@ -15861,12 +15896,14 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         if ylim is not None:
             ymin, ymax = ylim
-            # TODO TODO fix when running on new validation2 response calcs
-            # AssertionError: response_rates.max()=0.3117782909930716
-            assert (response_rates <= ymax).all(), f'{response_rates.max()=}'
+            if response_rates.max() > ymax:
+                warn(f'{response_rates.max()=} > {ymax=}. can not used fixed scale for '
+                    'sparsity plot! set higher ymax if you want'
+                )
+                ymax = response_rates.max() * 1.1
         else:
             ymin = 0
-            ymax = response_rates.max()
+            ymax = response_rates.max() * 1.1
 
         assert (response_rates >= ymin).all(), f'{response_rates.min()=}'
 
@@ -19041,7 +19078,6 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     # whatever) (maybe refactor above to share + use panel_prefix from below?)
     # TODO + do same under each panel dir, for each panels data?
     # TODO TODO save something like this, but keeping flies + trials too?
-    #breakpoint()
     # TODO save w/ panel(s)/similar in name, or under panel dirs? at least as duplicate?
     # (then remove ignore_output_change_check=True, if so)
     # do we actually need anything at this path exactly (prob not)?
@@ -19055,6 +19091,9 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     # defined by start/end date args to `al_analysis.py`) will have different data here.
     # TODO rename plot_dir->output_dir, so this makes a bit more sense?
     to_csv(mean_est_df, plot_dir / 'mean_est_spike_deltas.csv',
+        ignore_output_change_check=True
+    )
+    to_parquet(mean_est_df, plot_dir / 'mean_est_spike_deltas.parquet',
         ignore_output_change_check=True
     )
 
@@ -19208,7 +19247,8 @@ def scale_dff_then_fitandplot_mb_model(plot_root: Path, dff_df: pd.DataFrame,
 
 
 # TODO refactor to share w/ natmix_data/analysis.py (copied from there)
-def drop_unused_model_odors(df: pd.DataFrame) -> pd.DataFrame:
+def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = True
+    ) -> pd.DataFrame:
     """Drops odors not typically analyzed from kiwi/control data.
 
     Odors dropped are:
@@ -19236,13 +19276,16 @@ def drop_unused_model_odors(df: pd.DataFrame) -> pd.DataFrame:
         # stripping '+' first (which only removes any start/end characters in passed
         # set), to exclude stuff like 'validation2' panel's '+pul @ -2', which is
         # neither a mixture nor a mix dilution.
-        odor_strs.str.strip('+').str.contains('+', regex=False) |
+        odor_strs.str.strip('+').str.contains('+', regex=False)
+    )
 
+    # TODO delete?
+    if drop_pfo:
         # TODO replace w/ using parsing to get name or match solvent_str or
         # something
         # TODO could delete this one. already dropped (just a few lines) below.
-        odor_strs.str.startswith('pfo')
-    )
+        to_drop = to_drop | odor_strs.str.startswith('pfo')
+
     if 'odor2' in df.index.names:
         to_drop = to_drop | (df.index.get_level_values('odor2') != solvent_str)
 
@@ -19351,7 +19394,8 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
     skip_hallem_models: bool = False, first_model_kws_only: bool = False,
     copy_to_model_dirs: Optional[List[Path]] = None,
     dff2spiking_cache_dir: Optional[Path] = None,
-    response_calc_params: Optional[ParamDict] = None) -> None:
+    response_calc_params: Optional[ParamDict] = None,
+    drop_binaries_and_mixdilutions: bool = False) -> None:
     # TODO doc type of roi_depths
     # TODO when is it ok for certain_df to have NaNs? does seem current input has
     # some NaNs, which are only for some odors [for which no odors is NaN for all
@@ -19419,8 +19463,8 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         assert (certain_df.index.get_level_values('is_pair') == False).all()
         certain_df = certain_df.droplevel('is_pair', axis='index')
 
-    # dropping pfo before drop_unused_model_odors, so the warning that would generate
-    # doesn't also include pfo (which that fn also currently would drop)
+    # dropping pfo before drop_binaries_mixdilutions_and_pfo, so the warning that would
+    # generate doesn't also include pfo (which that fn also currently would drop)
     drop_solvent: bool = True
     # shouldn't be in megamat/validation/diagnostic data. added for new kiwi/control
     # data.
@@ -19436,15 +19480,13 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
     #
     # TODO + factor this [+ similar tom-specific hacks] out of this fn, and into
     # one just to analyze paper and/or kiwi-control data
-    certain_df = drop_unused_model_odors(certain_df)
+    if drop_binaries_and_mixdilutions:
+        certain_df = drop_binaries_mixdilutions_and_pfo(certain_df)
 
-    # NOTE: shouldn't do anything if drop_unused_model_odors called first (all odors it
-    # would process should be dropped). leaving in case we ever want to not drop some
-    # odors it would process.
-    # TODO TODO add flag to prevent running drop_unused_model_odors above?
-    # (mainly if i also want natmix_data/analysis.py to also analyze these other odors,
-    # probably mainly the mix dilutions. maybe *only* don't drop the mix dilutions [but
-    # continue dropping pfo and air mix?)
+    # NOTE: shouldn't do anything if drop_binaries_mixdilutions_and_pfo called first
+    # (all odors it would process should be dropped). leaving in case we ever want to
+    # not drop some odors it would process.
+    # TODO and what would happen then? doc
     certain_df = process_mix_odor_names_hack(certain_df)
 
     # after above two hacks, for kiwi/control data, sort_odors should order odors as:
