@@ -199,8 +199,6 @@ def main():
     response_rate_plot_max = 0.2
 
     dfs = []
-    # TODO delete one of these, if i don't end up using both
-    tuned_stat_means = []
     tuned_dfs = []
     for kws in model_tune_kws:
         print(f'{kws=}')
@@ -235,13 +233,6 @@ def main():
         trs = pd.read_pickle(tuned_model_output_dir / 'responses.p')
         tss = pd.read_pickle(tuned_model_output_dir / 'spike_counts.p')
 
-        # TODO delete one of these? (tuned_stat_means vs tuned_dfs)
-        tuned_stat_means.append({
-            'model': model_str,
-            'mean_response_rate': trs.mean().mean(),
-            'mean_num_spikes': tss.mean().mean(),
-        })
-        #
         mean_num_spikes = addlevel(tss.mean(), 'model', model_str)
         mean_num_spikes.name = 'mean_num_spikes'
 
@@ -328,11 +319,6 @@ def main():
     # TODO TODO are per-odor response rates / mean # spikes as variable for megamat
     # (tuned) as they are for private/etc? (store per-odor above, rather than just
     # getting a mean across all odors?)
-    # TODO print this (/ use to set ylim for mean_num_spikes axes)
-    # TODO delete one of these?
-    mtdf = pd.DataFrame.from_dict(tuned_stat_means)
-    mtdf.model = mtdf.model.map(model_str2abbrev)
-
     tdf = pd.concat(tuned_dfs, verify_integrity=True)
     tdf = tdf.reset_index()
     # TODO print tdf (/ use to set / check ylim below)
