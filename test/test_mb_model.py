@@ -3413,185 +3413,28 @@ def test_dynamics_indexing(orn_deltas):
         # this
         assert k1 == k2
 
-        # TODO TODO print individual elements of claws (that went into this element
-        # of claw_sums) -> compare against stuff printed from olfsysm for test case
-        # TODO TODO can probably just print a few elements around start time
-        # (and/or maybe odor onset time?)
-        # ipdb> claws.isel(stim=0).sel(kc_id=k1)
-        # <xarray.DataArray (claw: 5, time_s: 2499)>
-        # array([[14.41, 14.41, 14.41, ...,  9.25,  9.26,  9.26],
-        #        [ 9.84,  9.84,  9.84, ...,  4.69,  4.69,  4.69],
-        #        [22.17, 22.17, 22.17, ..., 17.02, 17.02, 17.02],
-        #        [ 9.35,  9.35,  9.35, ...,  4.19,  4.2 ,  4.2 ],
-        #        [14.41, 14.41, 14.41, ...,  9.25,  9.26,  9.26]])
-        # Coordinates:
-        #     stim         object ('megamat', '2h @ -3')
-        #   * time_s       (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-        #   * claw         (claw) MultiIndex
-        #   - claw_id      (claw) int64 0 1 2 3 4
-        #   - kc_type      (claw) object 'ab' 'ab' 'ab' 'ab' 'ab'
-        #   - claw_x       (claw) float64 6.534 21.29 20.5 21.3 7.157
-        #   - claw_y       (claw) float64 3.453 -9.521 -5.224 -3.089 -11.3
-        #   - claw_z       (claw) float64 19.1 1.67 -10.46 15.17 20.12
-        #   - compartment  (claw) int64 1 1 1 1 1
-        #   - glomerulus   (claw) object 'DP1l' 'DM2' 'DC1' 'VM3' 'DP1m'
-        #
-        # TODO look at one w/ largest delta in here instead? this pretty small for DP1l
-        # claw...
-        # ipdb> filled_deltas.loc['DP1l', ('megamat', '2h @ -3')]
-        # 35.68846202979493
-        # ipdb> orn_spont['DP1l']
-        # 13.26086956521739
-        # or just skip to a fixed offset where the response is larger? (yea)
-        # (t=0.05 seems OK)
-        #
-        # surrounding odor onset:
-        # TODO delete
-        '''
-        if i == j:
-            print()
-            print('claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)):')
-            print(claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)))
-            print('claw_sums.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)):')
-            print(claw_sums.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(0.05, None)))
-            print()
-            print('kcs.isel(stim=0, kc=i).sel(time_s=slice(0.05, None)):')
-            print(kcs.isel(stim=0, kc=i).sel(time_s=slice(0.05, None)))
-            # NOTE: shift of -1 gives us one NaN on end, but leaves coords and shape
-            # same
-            # TODO TODO TODO try kcs.shift(time_s=-1), for calc below? +1?
-            # seems +1 is actually probably what i want
-        '''
-        #
-        # ipdb> claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(-0.0006, None))
-        # <xarray.DataArray (claw: 5, time_s: 1501)>
-        # array([[14.33, 14.33, 14.34, ...,  9.25,  9.26,  9.26],
-        #        [ 9.77,  9.77,  9.8 , ...,  4.69,  4.69,  4.69],
-        #        [22.1 , 22.1 , 22.1 , ..., 17.02, 17.02, 17.02],
-        #        [ 9.27,  9.27,  9.29, ...,  4.19,  4.2 ,  4.2 ],
-        #        [14.33, 14.33, 14.35, ...,  9.25,  9.26,  9.26]])
-        # Coordinates:
-        #     stim         object ('megamat', '2h @ -3')
-        #   * time_s       (time_s) float64 -0.0003001 0.0002001 0.0007003 ... 0.7495 0.75
-        #   * claw         (claw) MultiIndex
-        #   - claw_id      (claw) int64 0 1 2 3 4
-        #   - kc_type      (claw) object 'ab' 'ab' 'ab' 'ab' 'ab'
-        #   - claw_x       (claw) float64 6.534 21.29 20.5 21.3 7.157
-        #   - claw_y       (claw) float64 3.453 -9.521 -5.224 -3.089 -11.3
-        #   - claw_z       (claw) float64 19.1 1.67 -10.46 15.17 20.12
-        #   - compartment  (claw) int64 1 1 1 1 1
-        #   - glomerulus   (claw) object 'DP1l' 'DM2' 'DC1' 'VM3' 'DP1m'
-        #
-        # ipdb> claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(-0.0006, None)).values[0]
-        # array([14.33, 14.33, 14.34, ...,  9.25,  9.26,  9.26])
-        #
-        # ipdb> [x for x in claws.isel(stim=0).sel(kc_id=k1).sel(time_s=slice(-0.0006,
-        #   None)).values[0]][:10]
-        # [14.332595768913288, 14.33255792105218, 14.344038320874967,
-        # 14.376838362368156, 14.439209520073389, 14.538006358778322,
-        # 14.678826373283856, 14.866137496478656, 15.10339416603226, 15.393142842187165]
-        #breakpoint()
-
-        # TODO plot to get offset? need to check even before stuff i already subset to
-        # (for KCs, maybe? should all be 0/NaN before for all these, so i don't think
-        # so... maybe we do want 0 tho?)
-        # TODO delete
-        '''
-        if i == j:
-            print()
-            print(f'{fk.values=}')
-            print(f'{fk.values[0]=}')
-            print(f'{fk.values[1]=}')
-            print()
-            print(f'{fc.values=}')
-            print(f'{fc.values[0]=}')
-            print(f'{fc.values[1]=}')
-        '''
-        #
-        # TODO delete. seems i needed to shift kcs (so we are actually using Vm(t-1)
-        # with claws sum at time t).
-        #arr1 = (claw_sums.isel(stim=0, kc_id=i) - kcs.isel(stim=0, kc=i)) * (dt/kc_tau)
         # this adds a NaN dropped below, when shifting
         arr1 = (claw_sums.isel(stim=0, kc_id=i) - kcs.isel(stim=0, kc=i).shift(time_s=1)
             ) * (dt/kc_tau)
 
-        # TODO delete?
-        #arr1a = arr1.isel(time_s=slice(None, -1))
-        #
-        # produces time_s matching kcs.diff('time_s', label='upper') (the default label)
-        #arr1b = arr1.isel(time_s=slice(1, None))
-
         # TODO try removing this now that i'm shifting kcs above?
         arr1 = arr1.isel(time_s=slice(None, -1))
 
-        # TODO what does .differentiate do? "second order accurate central differences"
-        # (and when would you want to use it vs diff?)
-
         kcs0 = kcs.isel(stim=0, kc=j)
         # label='upper' is the default
-        #arr2u = kcs0.diff('time_s', label='upper')
-        # TODO delete? seems label='upper' works  w/ `arr1.sel(time_s(slice1, None))`
-        arr2l = kcs0.diff('time_s', label='lower')
-        #assert np.array_equal(arr2u.values, arr2l.values)
-        # TODO delete? replace w/ lower? (doesn't matter as far as .values is concerned,
-        # at least)
-        arr2 = arr2l
-        #arr2 = arr2u
+        arr2 = kcs0.diff('time_s', label='lower')
 
-        # TODO fix / delete
-        '''
-        uts = arr2u.time_s.to_index()
-        #lts = arr2l.time_s.to_index()
-        # label='upper' gives us the last timepoint, but loses us the first, and vice
-        # versa for label='lower'
-        # ipdb> uts.difference(lts)
-        # Float64Index([0.75], dtype='float64', name='time_s')
-        # ipdb> lts.difference(uts)
-        # Float64Index([-0.499499799919968], dtype='float64', name='time_s')
-        #
-
-        ts = arr1.time_s.to_index()
-        # ipdb> ts.difference(uts)
-        # Float64Index([-0.499499799919968], dtype='float64', name='time_s')
-        # ipdb> ts.difference(lts)
-        # Float64Index([0.75], dtype='float64', name='time_s')
-        # ipdb> uts.difference(ts)
-        # Float64Index([], dtype='float64', name='time_s')
-        # ipdb> lts.difference(ts)
-        # Float64Index([], dtype='float64', name='time_s')
-        '''
-
-        # TODO why is this True but arr1.time_s.equals(arr2.time_s) isn't?
-        # (would it be if not for this difference in coords?)
-        # ipdb> arr1.coords
-        # Coordinates:
-        #     stim     object ('megamat', '2h @ -3')
-        #   * time_s   (time_s) float64 -0.499 -0.4985 -0.498 ... 0.749 0.7495 0.75
-        #     kc_id    int64 300968622
-        #     kc       object (300968622, 'ab')
-        # ipdb> arr2.coords
-        # Coordinates:
-        #     stim     object ('megamat', '2h @ -3')
-        #   * time_s   (time_s) float64 -0.499 -0.4985 -0.498 ... 0.749 0.7495 0.75
-        #     kc       object (300968622, 'ab')
-        # TODO will this even still be true after replacing ='lower' w/
-        # ='upper' above? (nope!)
         assert np.array_equal(arr1.time_s, arr2.time_s)
-        # TODO delete
-        #print(f'{np.array_equal(arr1.time_s, arr2.time_s)=}')
-        #
 
-        # TODO TODO TODO maybe shift of +1 isn't right? seems i have values offset by 1
-        # again now... some other fix?
-        # TODO TODO TODO or just try comparing values, after slicing appropriately?
-        # maybe calc is still right?
+        # TODO maybe shift of +1 isn't right? seems i have values offset by 1 again
+        # now... some other fix? (am i actually checking all the values i could be?)
         # should just be dropping NaN added at start of arr1, from shift by 1
         arr1 = arr1.dropna('time_s')
         arr2 = arr2.sel(time_s=arr1.time_s)
 
-        # TODO TODO fix xarray indexing above to not need this? maybe go back to
+        # TODO fix xarray indexing above to not need this? maybe go back to
         # label='upper'? (would at least require other changes)
-        # TODO TODO use another shift call (or two?) to fix this?
+        # TODO use another shift call (or two?) to fix this?
         assert np.allclose(arr1.values[1:], arr2.values[:-1])
 
     n_kcs = kcs.sizes['kc']
@@ -3631,6 +3474,9 @@ def test_dynamics_indexing(orn_deltas):
     # TODO TODO TODO also check that we can recalculate Is_sims / inh_sims from
     # claw_sims (or pn_sims, if wPNKC_one_row_per_claw=False)? or at least
     # Is_from_[kcs|pns]?
+    # TODO TODO TODO TODO need to add separate variable to olfsysm, to be able to tell
+    # for sure we are recreating these values? otherwise would probably have to recreate
+    # claw/bouton activities, by applying this recalculated inhibition
     # TODO TODO TODO should need separate test to check Is_from_kcs, at least if KC>APL
     # input requires spiking (currently threshold set above to disable spiking)
 

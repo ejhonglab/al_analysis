@@ -1844,6 +1844,8 @@ def assert_one_glom_per_pn(df: pd.DataFrame, *, pn_id_col: str = PN_ID) -> None:
 # TODO TODO get prat's code he used to produce outputs i'm loading (or at least latest
 # ones)
 # TODO make prat_claws default to true later? (here and in other places)
+# TODO TODO compare prat claw/bouton stuff to data from:
+# fiala et al 2021 https://datadryad.org/dataset/doi:10.5061/dryad.bk3j9kdd1 ?
 def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # TODO TODO TODO separate kwarg to enable prat PN->APL connections, w/o also
     # splitting PNs into boutons? olfsysm currently support that? (and/or for
@@ -7384,12 +7386,19 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
             # values to each odor?
 
             warn('falling back to sorting timeseries by their max value')
-            order = 'max sorted\n(clustering failed)'
+
+            # so that we can still sort by max if not dealing with spiking data, but so
+            # that we sort spiking data by the sum, which makes more sense there
+            if df.max().max() != 1:
+                order = 'max sorted\n(clustering failed)'
+                index = df.max(axis='columns').sort_values(ascending=False).index
+            else:
+                # assuming spiking 0/1 data here
+                order = 'sum sorted\n(clustering failed)'
+                index = df.sum(axis='columns').sort_values(ascending=False).index
+
             # TODO maybe some plots i just always want in this order? (/both?)
-            return (
-                df.loc[df.max(axis='columns').sort_values(ascending=False).index],
-                order
-            )
+            return df.loc[index], order
 
     # TODO what is this? delete?
     # neurons x 1
@@ -7430,7 +7439,7 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
 
 # TODO want diff default cmap here?
 def cluster_timeseries_and_plot(df: pd.DataFrame,
-    fixed_order: Optional[pd.Index] = None, *, ax: Optional[Axes] = None,
+    fixed_order: Optional[Union[pd.Index, bool]] = None, *, ax: Optional[Axes] = None,
     cmap: Optional[CMap] = 'gray_r', imshow_kws: Optional[KwargDict] = None,
     vmin: Optional[float] = None, vmax: Optional[float] = None, verbose: bool = False,
     _extent: bool = True, ylabel_fontsize=10, **kwargs
@@ -7439,6 +7448,10 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
     Args:
         **kwargs: passed to `cluster_timeseries`
     """
+    if type(fixed_order) is bool:
+        assert fixed_order, 'fixed_order=True supported, but =False is not'
+        fixed_order = df.index
+
     # TODO delete?
     if df.isna().any().any():
         # TODO delete
@@ -7468,7 +7481,7 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
     #
 
     xlim = None
-    # TODO TODO TODO dropna before this? (+warn, if so)
+    # TODO TODO dropna before this? (+warn, if so)
     # TODO use calculated dt to scale / set time lag params (if any) in rastermap
     # appropriately? (or any other timescale related params, if important)
     time_index = df.columns
@@ -7554,16 +7567,20 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
 # time w/ current:
 # one-row-per-claw_True__prat-claws_True__prat-boutons_True__connectome-APL_True__pn-apl-scale-factor_1000
 # code? cause it feels like it might not be, if i need to keep tweaking this...
-def plot_spike_rasters(spks: pd.DataFrame, *, n_PCs: int = 4, n_clusters: int = 3,
-    **kwargs) -> Tuple[Optional[AxesImage], pd.Index]:
+def plot_spike_rasters(spks: Union[pd.DataFrame, xr.DataArray], *, n_PCs: int = 4,
+    n_clusters: int = 3, **kwargs) -> Tuple[Optional[AxesImage], pd.Index]:
     # TODO also silence warnings about not finding enough clusters, at least when
     # verbose=False?
     """
     Args:
-        spks: of shape (#-neurons, #-timepoints), with values all 0 or 1
+        spks: of shape (#-neurons, #-timepoints), with values all 0 or 1. if DataArray,
+            will try converting via `.to_pandas()`
 
         **kwargs: passed to `cluster_timeseries_and_plot`
     """
+    if isinstance(spks, xr.DataArray):
+        spks = spks.to_pandas()
+
     # ipdb> spks.shape
     # (1830, 5500)
     # ipdb> set(spks.flat)
@@ -8146,6 +8163,149 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
     return dynamics_dict
 
 
+# 3ms. not actually implemented in olfsysm currently, but some of the ISI summarizing
+# functions below report # ISIs less than this. may implement in future.
+REFRACTORY_PERIOD: float = 0.003
+
+_calc_dt_warned: bool = False
+def calc_dt(arr: xr.DataArray, _warn: Optional[bool] = None, expected: float = 0.0005
+    ) -> float:
+    global _calc_dt_warned
+
+    if _calc_dt_warned:
+        if _warn is None:
+            _warn = False
+        else:
+            _warn = True
+            _calc_dt_warned = True
+
+    dt = np.diff(arr.get_index('time_s')[:2])[0]
+    if _warn and not np.isclose(dt, 0.0005):
+        warn(f'{dt=} was not np.isclose to expected dt={expected}! fix time index def?')
+    return dt
+
+
+# TODO (delete) why is jit not speeding this up at all? is compilation happening on
+# first call? and ig the python code isn't that slow? lol takes even longer w/
+# parallel=True
+#@jit(nopython=True)
+def min_indices_between_spikes(spikes) -> Optional[int]:
+    assert len(spikes.shape) == 1
+    # assuming spikes is a 1D vector of True/False
+    last_idx = None
+    # jit can't compile this
+    #min_dist = float('inf')
+    min_dist = -1
+    for i, x in enumerate(spikes):
+        if x:
+            if last_idx is None:
+                last_idx = i
+            else:
+                index_dist = i - last_idx
+                if index_dist < min_dist or min_dist == -1:
+                    min_dist = index_dist
+
+    if min_dist == -1:
+        # TODO TODO return NaN instead? will def need this for use on KC data
+        return None
+
+    return min_dist
+
+
+def mean_indices_between_spikes(spikes) -> Optional[float]:
+    assert len(spikes.shape) == 1
+    # assuming spikes is a 1D vector of True/False
+    last_idx = None
+    isi_list = []
+    for i, x in enumerate(spikes):
+        if x:
+            if last_idx is None:
+                last_idx = i
+            else:
+                index_dist = i - last_idx
+                isi_list.append(index_dist)
+
+    if len(isi_list) == 0:
+        # TODO TODO return NaN instead? will def need this for use on KC data
+        # (will xarray / numpy convert automatically?)
+        return None
+
+    return np.mean(isi_list)
+
+
+def n_isi_less_than_n_indices(spikes, min_n_indices_between: int) -> int:
+    assert len(spikes.shape) == 1
+    # assuming spikes is a 1D vector of True/False
+    last_idx = None
+    count = 0
+    for i, x in enumerate(spikes):
+        if x:
+            if last_idx is None:
+                last_idx = i
+            else:
+                index_dist = i - last_idx
+                if index_dist < min_n_indices_between:
+                    count += 1
+
+    return count
+
+
+def apply_over_time(spikes: xr.DataArray, fn: Callable, **kwargs) -> Any:
+    # i guess i still need vectorize=True, since my implementation above only works on
+    # 1D input. otherwise, no combination of [[input|output]_core|exclude]_dims seemed
+    # to change the dims of objects passed to fn called
+    ret = xr.apply_ufunc(fn, spikes, input_core_dims=[['time_s']], vectorize=True,
+        kwargs=kwargs
+    )
+    return ret
+
+
+def min_seconds_between_spikes(spikes: xr.DataArray) -> float:
+    min_index_dists = apply_over_time(spikes, min_indices_between_spikes)
+    min_index_dist = min_index_dists.min().item()
+    dt = calc_dt(spikes)
+    min_isi_seconds = min_index_dist * dt
+    return min_isi_seconds
+
+
+def mean_seconds_between_spikes(spikes: xr.DataArray) -> float:
+    mean_index_dists = apply_over_time(spikes, mean_indices_between_spikes)
+    mean_index_dist = mean_index_dists.mean().item()
+    dt = calc_dt(spikes)
+    mean_isi_seconds = mean_index_dist * dt
+    return mean_isi_seconds
+
+
+def n_isi_less_than_time_seconds(spikes: xr.DataArray, min_time_s: float) -> int:
+    dt = calc_dt(spikes)
+    min_index_separation = int(round(min_time_s / dt))
+
+    n_isi_lt_time = apply_over_time(spikes, n_isi_less_than_n_indices,
+        min_n_indices_between=min_index_separation
+    )
+    # TODO also report by cell or something? maybe if verbose?
+    return n_isi_lt_time.sum().item()
+
+
+def summarize_isi(spikes: xr.DataArray) -> None:
+    """Prints min/mean ISI, and # of ISI's less than `REFRACTORY_PERIOD`
+    """
+    # TODO delete. jit didn't seem to help, at least on one call
+    #t0 = time.time()
+    min_isi = min_seconds_between_spikes(spikes)
+    print(f'{min_isi=:.3g}')
+    #took = time.time() - t0
+    #print(f'{took=}')
+
+    mean_isi = mean_seconds_between_spikes(spikes)
+    print(f'{mean_isi=:.3g}')
+
+    n_total_spikes = spikes.sum().item()
+    n_isi_lt_refractory = n_isi_less_than_time_seconds(spikes, REFRACTORY_PERIOD)
+    print(f'{n_isi_lt_refractory=} ({n_total_spikes=})')
+    print()
+
+
 # TODO use for other plots (+ axes within first example dynamics plot) that make sense
 def mark_odor_pulse(ax: Axes,
     mp: Optional[osm.ModelParams] = None, *,
@@ -8449,11 +8609,9 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         assert df.columns.name == 'time_s'
         return df
 
-    def plot_raw_unit_dynamics(var_name: str, raw_ax: Axes, *,
+    def plot_raw_unit_dynamics(var_name: str, df: pd.DataFrame, raw_ax: Axes, *,
         fixed_order: Optional[pd.Index] = None) -> Tuple[pd.DataFrame, str, pd.Index]:
 
-        # TODO TODO should this be getting expanded df instead?
-        df = get_odor_df(var_name)
         # TODO just make sure all this happens in get_dynamics instead (except for
         # orn_sims which might, for better or worse, currently be allowed to go
         # negative?)? and after changing bouton initialization to use 0 instead of NaN
@@ -8480,7 +8638,7 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
 
         raw_ax.set_title(title, fontsize=label_size)
 
-        unit_desc = dynamics_var2unit_name[var_name]
+        unit_desc = dynamics_var2units[var_name]
         raw_ylabel = f'{unit} {unit_desc}'
         raw_ax.set_ylabel(raw_ylabel, fontsize=label_size)
 
@@ -8509,30 +8667,94 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         # than it needs to be
         fig.colorbar(im, ax=raw_ax, orientation='vertical')
 
+        assert df.index.sort_values().equals(order.sort_values())
+
+        df = reindex(df, order)
+        assert df.index.equals(order)
+
         return df, raw_ylabel, order
+
 
     # TODO TODO TODO expand up to maximum # of units across all variables before
     # even determining order, if i actually want to use that KC plot, rather than
-    # remaking down here
+    # remaking down here (just to by merging KCs w/ claws? could prob even be after
+    # sorting KCs)
+
+    var2ordered_df = dict()
 
     kc_df = None
     kc_raw_ylabel = None
     if order_by_kcs:
-        kcs = get_odor_df('vm_sims')
-
         axs = all_axs[:, to_plot_left_to_right.index('vm_sims')]
         raw_ax, _, _ = axs
 
-        kc_df, kc_raw_ylabel, kc_order = plot_raw_unit_dynamics('vm_sims', raw_ax)
+        kcs = get_odor_df('vm_sims')
+        # kcs should have row index equal to kc_order, which is clustered on this KC Vm
+        # data, since we didn't specify fixed_order=<some-fixed-order-index>
+        # TODO TODO TODO replace this plot with one using expanded KCs below.
+        # just want the clustering from this. directly call clustering fn
+        # TODO TODO TODO prob just store order and do all plotting in loop below
+        # TODO TODO TODO have fixed_order=True leave in sorted order
+        # TODO TODO do something w/ label 2nd return arg (in case sorted)?
+        kcs, _ = cluster_timeseries(kcs)
+        order = kcs.index
 
         # TODO TODO or define in a way that also has an inner sort on some claw thing?
-        order = kc_order
-        # TODO TODO TODO finish
-        #reindex()
-
+        # (for claws. no claws in kcs/kc_df)
+        # TODO TODO if i pre-sort claws on whatever, i assume .loc will keep order
+        # within KC
         claws = get_odor_df('claw_sims')
-        # TODO delete
-        breakpoint()
+
+        kc_id_order = order.get_level_values(KC_ID)
+        assert claws.index.names[0] == KC_ID, '.loc below will not work otherwise'
+        claws2 = claws.loc[kc_id_order]
+        # TODO also assert all repeats consecutive? do i have some fn for that already?
+        # some idiomatic pandas way? (should essentially be doing that w/ assertion w/
+        # kcs.index.repeat below... delete)
+        assert claws2.index.get_level_values(KC_ID).unique().equals(kc_id_order)
+
+        assert kcs.index.names[0] == KC_ID, ('indexing of kc2nclaws below will not make'
+            ' sense without this'
+        )
+        kcs2 = kcs.loc[claws2.index.get_level_values(KC_ID)]
+
+        # NOTE: without specifying level=KC_ID (i.e. if i just did
+        # `groupby(KC_ID, sort=False)`), the index actually would be sorted despite my
+        # request, at least w/ pandas==1.5.0
+        kc2nclaws = claws2.groupby(level=KC_ID, sort=False).size()
+        # from Index.repeat docs: "returns a new Index where each element of the current
+        # Index is repeated *consecutively* a given number of times" (emphasis mine)
+        assert kcs.index.repeat(kc2nclaws).equals(kcs2.index)
+
+        assert kcs2.index.get_level_values(KC_ID).equals(
+            claws2.index.get_level_values(KC_ID)
+        )
+        kcs2_index_df = kcs2.index.to_frame(index=False)
+        kcs2_index_df[CLAW_ID] = claws2.index.get_level_values(CLAW_ID)
+        other_levels = [x for x in kcs2_index_df.columns if x not in (KC_ID, CLAW_ID)]
+        level_order = [KC_ID, CLAW_ID] + other_levels
+        kc_index = pd.MultiIndex.from_frame(kcs2_index_df).reorder_levels(level_order)
+        kcs2.index = kc_index
+
+        assert claws2.index.to_frame(index=False).iloc[:, :2].equals(
+            kcs2.index.to_frame(index=False).iloc[:, :2]
+        )
+
+        claws = claws2
+        kcs = kcs2
+
+        var2ordered_df['vm_sims'] = kcs
+        var2ordered_df['claw_sims'] = claws
+
+        pns = get_odor_df('pn_sims')
+        # TODO TODO TODO need to redefine these such that they still have claw info? or
+        # do claws such that they have more bouton info? do they? how to merge?
+        # TODO TODO TODO yea, need to keep [pn_id, bouton_id] in claw index (currently
+        # just have glomerulus)
+        boutons = get_odor_df('bouton_sims')
+
+        # TODO TODO TODO what to do now? how to align everything else?
+        #breakpoint()
 
         # TODO + say we are sorting by claws within KC, if so?
         suptitle += '\nordered by KC Vm clustering'
@@ -8543,13 +8765,14 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         raw_ax, log_ax, normed_ax = axs
         # TODO TODO will i also end up needing to plot claw_sims above, to order up
         # there? or maybe reorder and place in a new dict?
+        '''
         if order_by_kcs:
             # TODO TODO TODO make sure order is always defined in a way that makes sense
             # for everything
             # TODO TODO i assume i'll need to do some kind of pairwise merge/reindex
             # between adjacent variables? even possible all the way?
             if var_name != 'vm_sims':
-                df, raw_ylabel, _ =  plot_raw_unit_dynamics(var_name, raw_ax,
+                df, raw_ylabel, _ =  plot_raw_unit_dynamics(var_name, df, raw_ax,
                     fixed_order=order
                 )
             else:
@@ -8557,6 +8780,16 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
                 raw_ylabel = kc_raw_ylabel
                 assert df is not None
                 assert raw_ylabel is not None
+        '''
+        if var_name not in var2ordered_df:
+            warn(f'FIX! {var_name} not in var2ordered_df!!!')
+            continue
+
+        df = var2ordered_df[var_name]
+
+        df, raw_ylabel, _ =  plot_raw_unit_dynamics(var_name, df, raw_ax,
+            fixed_order=True
+        )
 
         unit = dynamics_var2unit_name[var_name]
 
@@ -8566,7 +8799,7 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         assert vmin >= 0
         vmax = df.max().max()
 
-        im2, _ = cluster_timeseries_and_plot(df, fixed_order=order, ax=log_ax,
+        im2, _ = cluster_timeseries_and_plot(df, fixed_order=True, ax=log_ax,
             cmap=cmap, ylabel_fontsize=9,
             imshow_kws=dict(norm=LogNorm(vmin=5, vmax=vmax), interpolation='nearest')
         )
@@ -8577,7 +8810,7 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         fig.colorbar(im2, ax=log_ax, orientation='vertical', extend='min')
 
         normed = ((df.T - df.T.min()) / df.max(axis=1)).T
-        _, _ = cluster_timeseries_and_plot(normed, fixed_order=order, ax=normed_ax,
+        _, _ = cluster_timeseries_and_plot(normed, fixed_order=True, ax=normed_ax,
             cmap='viridis', ylabel_fontsize=9
         )
         normed_ax.set_ylabel(f'[0,1]-scaled\n(per {unit})', fontsize=label_size)
@@ -8825,7 +9058,12 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # TODO TODO TODO why is bouton_ax just blank for t2h + all-gloms version. want
     # either no axes there at all, or cluster all boutons, same as i'm doing for claws
     # (probably latter)
-    if odor != slice(None) and glom != slice(None) and 'bouton_sims' in dynamics_dict:
+    # TODO TODO delete? or need/want to restrict to only `glom != slice(None)` case (if
+    # so, either remove this axes entirely, or don't even make this plot in that case)?
+    #if odor != slice(None) and glom != slice(None) and 'bouton_sims' in dynamics_dict:
+    # TODO TODO even want to keep making this in `glom == slice(None)` case? restore
+    # above?
+    if odor != slice(None) and 'bouton_sims' in dynamics_dict:
         bouton_sims = dynamics_dict['bouton_sims']
         # squeeze() here to remove length 1 odor dimension (would we have that if we
         # didn't have 'panel' level in index? squeeze still keeps that metadata, but
@@ -9051,16 +9289,12 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     title_prefix: str = '') -> None:
     # TODO doc
 
-    # TODO TODO TODO also figure out how to plot currents FROM APL to everything (and do
-    # i need to change olfsysm for that? maybe if i want to check some recalculation in
-    # here is correct?) (prob already have a comment elsewhere to similar effect)
-    # (would probably need another Axes, with different units. potentially different
-    # units for both mean inhibition onto KCs as well as mean inhibition onto boutons)
-
     odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
 
     # TODO TODO refactor to de-dupe w/ APL stuff in plot_example_model_dynamics
-    fig, ax = plt.subplots(layout='constrained')
+    # (or delete from there. just make sure there's nothing i'm doing there that i want
+    # here)
+    fig, (ax, apl2kc_ax, apl2pn_ax) = plt.subplots(ncols=3, layout='constrained')
 
     mp = None
     if stim_timing_kws is not None:
@@ -9080,6 +9314,8 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     alpha = 0.4
 
     Is_sims = dynamics_dict['Is_sims']
+    # TODO TODO move (/duplicate) this checking to test_dynamics_indexing
+    #
     # plotting these before the KC mean[+types] now, since that part of the plot
     # can vary (in terms of # of lines), so having this earlier fixes the colors for
     # these
@@ -9102,23 +9338,30 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     else:
         if mp is not None:
             assert mp.kc.pn_claw_to_apl
+    #
+
+    # TODO TODO also assert Is_from_pns is all 0 unless certain flag set
+    # TODO and don't plot Is_from_pns if so
 
     assert 'Is_from_kcs' in dynamics_dict, 'would fail on older versions of model'
     Is_from_kcs = dynamics_dict['Is_from_kcs']
     Is_from_pns = dynamics_dict['Is_from_pns']
 
+    # TODO TODO move (/duplicate) this checking to test_dynamics_indexing
     # `not Is_all0` should imply `pn_claw_to_apl=False`
     if not Is_all0:
         Is_shifted = Is_sims.shift(time_s=1).dropna('time_s')
         assert Is_shifted.identical(Is_from_kcs.sel(time_s=Is_shifted.time_s))
         del Is_shifted
+    #
 
     assert Is_from_kcs.get_index('time_s').equals(Is_from_pns.get_index('time_s'))
     _plot(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current', alpha=alpha)
     _plot(ax, Is_from_pns.sel(odor=odor), label='PN>APL current', alpha=alpha)
 
     # TODO TODO also check that APL "Vm" can be recalculated from adding up
-    # Is_sims in here? or not true?
+    # Is_sims in here? or not true? (delete? do i have this in test_dynamics_indexing
+    # now?)
 
     # TODO TODO want Is on same scale (as what are currently dI/dt quantities)
     # or not? separate axes (or move Vm to separate axes, and use twinx for
@@ -9132,32 +9375,6 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # diff inh?)
     # TODO delete. should be replaced by Is_from_kcs above
     #_plot(ax, Is_sims.sel(odor=odor), label='APL current (I)', alpha=alpha)
-
-    # TODO TODO how to get these to match up? what am i doing wrong?
-    # ipdb> (Is_from_kcs + Is_from_pns) * (mp.time_dt / mp.kc.apl_taum)
-    # <xarray.DataArray (stim: 17, time_s: 2499)>
-    # array([[0.45, 0.43, 0.41, ..., 0.1 , 0.1 , 0.1 ],
-    #        [0.45, 0.43, 0.41, ..., 0.1 , 0.1 , 0.1 ],
-    #        [0.45, 0.43, 0.41, ..., 0.09, 0.09, 0.09],
-    #        ...,
-    #        [0.45, 0.43, 0.41, ..., 0.09, 0.09, 0.09],
-    #        [0.45, 0.43, 0.41, ..., 0.1 , 0.1 , 0.1 ],
-    #        [0.45, 0.43, 0.41, ..., 0.12, 0.12, 0.12]])
-    # Coordinates:
-    #   * stim     (stim) MultiIndex
-    #   - panel    (stim) object 'megamat' 'megamat' 'megamat' ... 'megamat' 'megamat'
-    #   - odor     (stim) object '2h @ -3' 'IaA @ -3' ... 'benz @ -3' 'ms @ -3'
-    #   * time_s   (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-    # ipdb> inh_sims
-    # <xarray.DataArray (stim: 17, time_s: 2500)>
-    # array([[ 0.  ,  0.45,  0.87, ...,  9.32,  9.32,  9.32],
-    #        [ 0.  ,  0.45,  0.87, ...,  9.59,  9.6 ,  9.6 ],
-    #        [ 0.  ,  0.45,  0.87, ...,  9.25,  9.25,  9.26],
-    #        ...,
-    #        [ 0.  ,  0.45,  0.87, ...,  9.18,  9.18,  9.18],
-    #        [ 0.  ,  0.45,  0.87, ..., 10.03, 10.03, 10.03],
-    #        [ 0.  ,  0.45,  0.87, ..., 11.68, 11.68, 11.68]])
-
 
     inh_sims = dynamics_dict['inh_sims']
     # TODO move this warning to get_dynamics instead? refactor to do in both places?
@@ -9178,28 +9395,45 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     for text in apl_vm_ax.yaxis.get_ticklabels():
         text.set_color(apl_vm_color)
 
-    # TODO move to outside upper right? or try to use ax instead of fig again
-    # (as long as apl_vm_ax lines are also included, which i doubt will happen
-    # by default...)
+    title_fontsize = 9
+
+    # TODO fix hack (pass in dir w/ these, or loaded vals directly?)
+    # plot_dir should be `model_output_dir / 'dynamics'`
+    model_output_dir = plot_dir.resolve().parent
+    wAPLKC = read_parquet(model_output_dir / 'wAPLKC.parquet')
+    wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
+
+    odor_inh_sims = inh_sims.sel(odor=odor).squeeze(drop=True)
+    ts = odor_inh_sims.get_index('time_s')
+
+    # TODO TODO TODO add code to olfsysm to compute same means / sums, and check
+    # against values here
+    # TODO TODO TODO TODO figure out why mean to each isn't same. am i dividing by the
+    # right number of units when scaling PN weights??? revisit that, and maybe try to
+    # move all unit normalization to olfsysm again
+    # of shape (# claws, # timepoints)
+    inh2kcs = odor_inh_sims.values * wAPLKC.to_frame().values
+    mean_inh2kcs = inh2kcs.mean(axis=0)
+    _plot(apl2kc_ax, ts, mean_inh2kcs, label='mean APL>claw inh')
+    apl2kc_ax.set_title('APL>claw inhibition', fontsize=title_fontsize)
+
+    inh2pns = odor_inh_sims.values * wAPLPN.to_frame().values
+    mean_inh2pns = inh2pns.mean(axis=0)
+    _plot(apl2pn_ax, ts, mean_inh2pns, label='mean APL>PN inh')
+    apl2pn_ax.set_title('APL>bouton inhibition', fontsize=title_fontsize)
+    #
+
     fig.legend(loc='upper right', fontsize=8)
 
-    # TODO only have this suffix if we don't have flag enabling non-integral
-    # current (delete? not sure i want to implement that flag. may implement
-    # some others tho, and pn_claw_to_apl is now relevant)
-    # TODO TODO update text as needed, depending on pn_claw_to_apl and which
-    # variable plotted, to be accurate
-    # TODO what fontsize?
-    ax.set_ylabel('APL current (I)')
-
-    # TODO TODO TODO also plot currents from APL to PNs/KCs (have that? can i recalc? if
-    # recalcing, add test [maybe needing to modify model code] that my recalc is
-    # correct?)
+    ax.set_ylabel('current to APL')
 
     # TODO move to _plot?
     # TODO what fontsize?
     ax.set_xlabel('time (seconds)')
 
-    ax.set_title(f'{title_prefix}APL response to {odor_str}', fontsize=9)
+    ax.set_title('APL response to {odor_str}', fontsize=title_fontsize)
+
+    fig.suptitle(title_prefix)
 
     # TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
     # and "PN input to KCs" (4.8d) from Ann's thesis
@@ -9342,6 +9576,11 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
             warn(f'picking last odor {odor} for example dynamics plots')
         del odor_values
 
+    if apl_dynamics:
+        plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
+            title_prefix=title_prefix
+        )
+
     if aligned_dynamics:
         # TODO TODO TODO implement + make two options, w/ different sort orders? (one
         # clusterig on KCs [then sorting claws?], and another grouping boutons+claws by
@@ -9386,11 +9625,6 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
             plot_all_bouton_dynamics(plot_dir, bouton_sims, odor,
                 title_prefix=title_prefix
             )
-
-    if apl_dynamics:
-        plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
-            title_prefix=title_prefix
-        )
 
 
 def dynamics_var_paths(model_dir: Path, *, mtime_tolerance_s: float = 300.0
