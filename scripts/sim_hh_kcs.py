@@ -92,6 +92,8 @@ def main():
     n_spikes_down = spikes_down.sum().item()
     print(f'# spikes (first downsampled to dt={REFRACTORY_PERIOD=}): {n_spikes_down}')
     summarize_isi(spikes_down)
+    # TODO also assert mean spike rates from these are same as mean rate at input
+    # (within tolerance)
 
     # in initial test, only failed on rtol=0.0005 (didn't test anything between 0.001
     # and that)

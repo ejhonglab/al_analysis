@@ -88,7 +88,7 @@ from hong2p.xarray import save_dataarray as _save_dataarray, load_dataarray
 from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
     first_odor_level
 )
-from hong2p.viz import dff_latex, no_constrained_layout
+from hong2p.viz import dff_latex, no_constrained_layout, add_group_labels_and_lines
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
     reindex, is_scalar, pd_index_equal
 )
@@ -1828,6 +1828,40 @@ def assert_one_glom_per_pn(df: pd.DataFrame, *, pn_id_col: str = PN_ID) -> None:
         len(df[[pn_id_col, glomerulus_col]].drop_duplicates()) ==
         df[pn_id_col].nunique()
     ), f'duplicate combinations of {pn_id_col=} and {glomerulus_col=}!'
+
+
+# TODO refactor to use other places (many other places only stack one level though,
+# and perhaps often incorrectly so... that might mostly be old/unused code. basically,
+# don't want to assume BOUTON_ID are unique w/o also grouping w/in PN_ID anywhere)
+def claw2bouton_from_wPNKC(wPNKC: pd.DataFrame) -> pd.DataFrame:
+    assert CLAW_ID in wPNKC.index.names, 'not sure i want to support other inputs'
+
+    col_names = wPNKC.columns.names
+    assert (
+        col_names == [glomerulus_col] or col_names == [glomerulus_col] + bouton_cols
+    ), f'unexpected {col_names=}'
+
+    old_index_names = list(wPNKC.index.names)
+
+    # NOTE: this can be quite slow, and can use a lot of memory
+    df = wPNKC.replace(0, np.nan).stack(col_names).index.to_frame(index=False)
+
+    try:
+        # should be restoring claw / KC index, with columns left just what were in
+        # col_names before (none of original wPNKC.values in output, just the metadata)
+        df = df.set_index(old_index_names, verify_integrity=True)
+        assert len(df) == len(wPNKC)
+    except ValueError:
+        warn('claw2bouton_from_wPNKC: duplicates in claw2bouton index! there are '
+            'likely still claws that are labelled as having input from multiple PNs '
+            "(probably an artifact of Pratyush's analysis. seemed to all be from same "
+            'PN_ID, for duplicates I saw)'
+        )
+        df = df.set_index(old_index_names)
+
+    assert sorted(df.columns) == sorted(col_names), f'{df.columns=} != {col_names=}'
+
+    return df
 
 
 # TODO compare to what ann had been using (does she have her own fully formed connectome
@@ -7441,16 +7475,19 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
 def cluster_timeseries_and_plot(df: pd.DataFrame,
     fixed_order: Optional[Union[pd.Index, bool]] = None, *, ax: Optional[Axes] = None,
     cmap: Optional[CMap] = 'gray_r', imshow_kws: Optional[KwargDict] = None,
-    vmin: Optional[float] = None, vmax: Optional[float] = None, verbose: bool = False,
-    _extent: bool = True, ylabel_fontsize=10, **kwargs
-    ) -> Tuple[Optional[AxesImage], pd.Index]:
+    vmin: Optional[float] = None, vmax: Optional[float] = None,
+    label_order: bool = True, verbose: bool = False, checks: bool = True,
+    ylabel_fontsize=10, **kwargs) -> Tuple[Optional[AxesImage], pd.Index]:
     """
     Args:
         **kwargs: passed to `cluster_timeseries`
     """
     if type(fixed_order) is bool:
         assert fixed_order, 'fixed_order=True supported, but =False is not'
-        fixed_order = df.index
+        # TODO delete. something downstream of this, but before imshow call, was causing
+        # us to run out of memory (getting OOM killed) when plotting pn data for aligned
+        # timeseries plot
+        #fixed_order = df.index
 
     # TODO delete?
     if df.isna().any().any():
@@ -7499,11 +7536,20 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
         # happen)
         if clustered is None:
             return None
+
+    # need the type check so we don't get ValueError's for arraylike fixed_order
+    elif type(fixed_order) is bool and fixed_order == True:
+        clustered = df
+        order = 'fixed'
     else:
-        assert df.index.sort_values().equals(fixed_order.sort_values()), (
-            'fixed_order must have the same elements as df.index, just in different '
-            'order'
-        )
+        # something in here might have been what was causing us to run out of memory,
+        # when fixed_order=True was handled by defining order from df.index up top
+        if checks:
+            assert df.index.sort_values().equals(fixed_order.sort_values()), (
+                'fixed_order must have the same elements as df.index, just in different'
+                ' order'
+            )
+
         clustered = df.loc[fixed_order]
         order = 'fixed'
 
@@ -7517,26 +7563,25 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
         fig = ax.figure
 
     extent = None
-    # TODO delete this hack flag?
-    if _extent:
-        # TODO what is purpose of this? doc. necessary to have imshow xlim labelled in
-        # other coordinates (than default [0, n])?
-        if xlim is not None:
-            # TODO (delete? not sure i can repro? or maybe i'm just not setting these
-            # now, and i might want to?) this causing issues in bouton plot now?
-            # TODO need to swap top and bottom? (seems fine as is)
-            # TODO need to set ylim to something other than default to get this to
-            # work correctly? (for bouton plot, not the claw one)
-            top = len(df) + 0.5
-            bottom = -0.5
+    # necessary to have imshow xlim labelled in other coordinates (e.g. seconds from
+    # -0.5 to 0.75 instead of default [0, n] indices)
+    if xlim is not None:
+        # TODO (delete? not sure i can repro? or maybe i'm just not setting these
+        # now, and i might want to?) this causing issues in bouton plot now?
+        # TODO need to swap top and bottom? (seems fine as is)
+        # TODO need to set ylim to something other than default to get this to
+        # work correctly? (for bouton plot, not the claw one)
+        top = len(df) + 0.5
+        bottom = -0.5
 
-            # TODO what to add/subtract, (if anything and) if not -0.5 (half of dt?)?
-            left, right = xlim
+        left, right = xlim
 
-            # https://matplotlib.org/stable/users/explain/artists/imshow_extent.html
-            # exent: (left, right, bottom, top)
-            # TODO use a colormap w/o white=0 to test this?
-            extent = (left, right, bottom, top)
+        # flipping top and bottom makes this consistent w/ matshow output (w/
+        # origin='upper'), so my hong2p.viz.add_group_labels_and_lines also works on
+        # these outputs
+        # TODO have that viz fn detect if plot is not set up right, and correct/err?
+        # possible?
+        extent = (left, right, top, bottom)
 
     if imshow_kws is None:
         imshow_kws = dict()
@@ -7547,13 +7592,13 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
     # TODO want to downsample, if not plotting X_embedding (from model)?
 
     im = ax.imshow(clustered, vmin=vmin, vmax=vmax, cmap=cmap,
-        # TODO TODO want to gate aspect on extent like this? or _extent? neither?
-        aspect='auto' if _extent else None, extent=extent, **imshow_kws
+        aspect='auto', extent=extent, **imshow_kws
     )
 
-    for_2nd_ylabel = ax.twinx()
-    for_2nd_ylabel.set_yticklabels([])
-    for_2nd_ylabel.set_ylabel(order, fontsize=ylabel_fontsize)
+    if label_order:
+        for_2nd_ylabel = ax.twinx()
+        for_2nd_ylabel.set_yticklabels([])
+        for_2nd_ylabel.set_ylabel(order, fontsize=ylabel_fontsize)
 
     return im, clustered.index.copy()
 
@@ -8528,8 +8573,52 @@ def get_odor_strs(odor: Union[str, slice], dynamics_dict: Optional[DynamicsDict]
 # TODO TODO replace plot_all_bouton_dynamics w/ this? or share code?
 def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str, *,
     order_by_kcs: Optional[bool] = None, group_pns: bool = False,
-    title_prefix: str = '') -> None:
+    wPNKC: Optional[pd.DataFrame] = None, drop_nonresponders: bool = False,
+    title_prefix: str = '', xlim: Optional[Tuple[float, float]] = (-0.025, 0.4)
+    ) -> None:
     # TODO doc
+
+    xmin = None
+    xmax = None
+    # TODO warn about any spikes outside of this? (should just be > xmax)
+    if xlim is not None:
+        xmin, xmax = xlim
+
+    # TODO delete hack? either explicitly pass in wPNKC, or regenerate claw outputs so
+    # that bouton_cols (=[PN_ID, BOUTON_ID]) are also in index levels (needed to align
+    # with bouton outputs below)
+    model_output_dir = plot_dir.resolve().parent
+    wPNKC_path = model_output_dir / 'wPNKC.parquet'
+    if not wPNKC_path.exists() and wPNKC is None:
+        raise IOError(f'expected {wPNKC_path} to exist, to load wPNKC from. you may '
+            'also manually pass wPNKC via kwarg'
+        )
+
+    if wPNKC is None:
+        wPNKC = read_parquet(wPNKC_path)
+
+    responder_kc_ids = None
+    if drop_nonresponders:
+        spikes = dynamics_dict['spike_recordings'].sel(odor=odor).squeeze(drop=True)
+        responder_mask = spikes.any('time_s').squeeze(drop=True)
+        responders = responder_mask[responder_mask].get_index('kc')
+        assert KC_ID in responders.names, f'{KC_ID=} not in {responders.names=}'
+        # mainly to drop kc_type, which will complicate indexing with this
+        responder_kc_ids = responders.droplevel(
+            [x for x in responders.names if x != KC_ID]
+        )
+        assert not responder_kc_ids.duplicated().any()
+        assert wPNKC.index.names[0] == KC_ID, '.loc below requires this'
+        wPNKC = wPNKC.loc[responder_kc_ids]
+        # claw2bouton work w/ drop_nonresponders? yes.
+        # need to also drop any columns that are all 0 first? no.
+
+    # NOTE: this function currently only supports cases where CLAW_ID is in
+    # wPNKC.index.names (although that could probably be relaxed by just removing that
+    # assertion, if i wanted)
+    # TODO or better yet, maintain these bouton_cols in claw index? to begin with?
+    claw2bouton = claw2bouton_from_wPNKC(wPNKC)
+    assert claw2bouton.index.equals(wPNKC.index)
 
     if order_by_kcs is None and not group_pns:
         order_by_kcs = True
@@ -8545,6 +8634,9 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         'supported for this fn, which currently only plots for one odor'
     )
     odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
+    fname_suffix = odor_fname_suffix
+    if drop_nonresponders:
+        fname_suffix += '_responders-only'
 
     # TODO handle spike_recordings separately, since it might need separate plot
     # handling?  (and no point having a log / normed version there. may just want top
@@ -8552,7 +8644,9 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     # TODO at least would want to del the last two axes (the bottom two for the
     # spike_recordings column
     to_plot_left_to_right = ['pn_sims', 'bouton_sims', 'claw_sims', 'vm_sims',
-        'spike_recordings'
+        # TODO delete? we don't actually need, since we can see the dips in vm_sims when
+        # there are spikes
+        #'spike_recordings'
     ]
     # TODO factor to module level? other code that could use this?
     dynamics_var2unit_name = {
@@ -8593,120 +8687,89 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     # TODO maybe visually compare expanded versions to non-expanded (but in same sort
     # order) plots, to sanity check
 
-    n_vars = len(to_plot_left_to_right)
-    fig, all_axs = plt.subplots(nrows=3, ncols=n_vars, layout='constrained',
-        figsize=(6 * n_vars, 12)
-    )
-
-    label_size = 10
+    # for the very tall plots i'm making, 10 not enough
+    label_size = 20
     cmap = plt.get_cmap('magma')
     cmap.set_bad('gray')
 
+    # my current matplotlib has default 'figure.titlesize'='large' in rcParams,
+    # and that equals 12.0 if you make a text object with that size and call
+    # `get_fontsize()`. that matches value for 'large' reported in this post:
+    # https://stackoverflow.com/questions/62288898
+    suptitle_fontsize = 'large'
+    # if label_size is larger than title would be, make title same size as
+    # labels
+    if label_size > 12.0:
+        suptitle_fontsize = label_size
+
     suptitle = f'{title_prefix}{odor_str} responses'
 
+    # TODO delete var2nunits, now that i'm only expanding within the loop?
+    # since we will be expanding each into var2ordered_df
+    var2nunits: Dict[str, int] = dict()
+    #
+    var2df: Dict[str, pd.DataFrame] = dict()
     def get_odor_df(var_name: str) -> pd.DataFrame:
-        df = dynamics_dict[var_name].sel(odor=odor).squeeze(drop=True).to_pandas()
+        arr = dynamics_dict[var_name]
+        df = arr.sel(odor=odor).squeeze(drop=True).to_pandas()
         assert df.columns.name == 'time_s'
+
+        if xmin is not None:
+            assert df.columns.min() <= xmin
+            df = df.loc[:, df.columns >= xmin].copy()
+
+        if xmax is not None:
+            assert xmax <= df.columns.max()
+            df = df.loc[:, df.columns <= xmax].copy()
+
+        var2nunits[var_name] = len(df)
+        # TODO or just recall this fn?
+        var2df[var_name] = df
         return df
 
-    def plot_raw_unit_dynamics(var_name: str, df: pd.DataFrame, raw_ax: Axes, *,
-        fixed_order: Optional[pd.Index] = None) -> Tuple[pd.DataFrame, str, pd.Index]:
+    # storing full expanded dfs here was causing too much memory usage (actually, it was
+    # some bug in another fn. could probably restore this if i wanted), but hopefully i
+    # can store the indices necessary to recreate the expanded dataframes, one at a time
+    # TODO delete
+    #var2ordered_df = dict()
+    var2order = dict()
 
-        # TODO just make sure all this happens in get_dynamics instead (except for
-        # orn_sims which might, for better or worse, currently be allowed to go
-        # negative?)? and after changing bouton initialization to use 0 instead of NaN
-        # (or dropping everything consistently before here)
-        assert not (df < 0).any().any(), f'{var_name}: had some negative values'
-        assert not df.isna().any().any(), f'{var_name}: had some NaN values'
+    pns = get_odor_df('pn_sims')
+    boutons = get_odor_df('bouton_sims')
+    claws = get_odor_df('claw_sims')
 
-        assert df.columns.name == 'time_s'
+    # may drop non-responders later
+    max_n_claws = len(claws)
 
-        # NOTE: if i ever do any all0 based dropping (if i need to b/c some assertion
-        # tripping), may want to indicate # of all0 dropped units separately in
-        # title/label
-        n_units = len(df)
-
-        unit = dynamics_var2unit_name[var_name]
-        title = f'all {n_units} {unit}s'
-        # TODO put these in labels instead (/ too?)
-        if var_name == 'vm_sims':
-            title += ' (Vm)'
-        # TODO will i even be able to handle spike_recordings here? maybe if i just do
-        # at top of loop and then break before non-shared stuff?
-        elif var_name == 'spike_recordings':
-            title += ' (spikes)'
-
-        raw_ax.set_title(title, fontsize=label_size)
-
-        unit_desc = dynamics_var2units[var_name]
-        raw_ylabel = f'{unit} {unit_desc}'
-        raw_ax.set_ylabel(raw_ylabel, fontsize=label_size)
-
-        # TODO assert no rows all 0 too (are there any? shouldn't be, right?
-        # same for claws? or 0 there make sense?)
-        all0 = (df == 0).all(axis='columns')
-        # just to be super clear that the "all" is being evaluated over time, for each
-        # unit
-        assert len(all0) == len(df)
-        # NOTE: if this ever fails, will want to change how i'm listing # of units in
-        # title/labels below
-        assert not all0.any(), f'{var_name}: {all0.sum()=} {all0.shape=} {df.shape=}'
-        # TODO any that actually might be all 0? (other than spike recordings, which i
-        # will need to handle separately anyway) just wait for assertion above to trip
-        # before handling that
-
-        # TODO may want to use diverging cmap (w/ TwoSlopeNorm) if i ever do plot stuff
-        # that can go negative (like maybe claw activities, if i ever care to re-enable
-        # path where individual claws can go below 0)?
-
-        im, order = cluster_timeseries_and_plot(df, fixed_order=fixed_order, ax=raw_ax,
-            cmap=cmap, ylabel_fontsize=9
-        )
-        # TODO do i want to bring labels back here? all info i would want already in
-        # ylabel. could dupe that here, but not sure i want to make this any more busy
-        # than it needs to be
-        fig.colorbar(im, ax=raw_ax, orientation='vertical')
-
-        assert df.index.sort_values().equals(order.sort_values())
-
-        df = reindex(df, order)
-        assert df.index.equals(order)
-
-        return df, raw_ylabel, order
-
-
-    # TODO TODO TODO expand up to maximum # of units across all variables before
-    # even determining order, if i actually want to use that KC plot, rather than
-    # remaking down here (just to by merging KCs w/ claws? could prob even be after
-    # sorting KCs)
-
-    var2ordered_df = dict()
-
-    kc_df = None
-    kc_raw_ylabel = None
+    n_total_kcs = None
     if order_by_kcs:
-        axs = all_axs[:, to_plot_left_to_right.index('vm_sims')]
-        raw_ax, _, _ = axs
-
         kcs = get_odor_df('vm_sims')
+        if drop_nonresponders:
+            n_total_kcs = len(kcs)
+            kcs = kcs.loc[responder_kc_ids]
+            n_responder_kcs = len(kcs)
+            # should follow from assertion above that responder_kc_ids has no duplicates
+            # (and assuming they are all in kcs, which they should be)
+            assert n_responder_kcs == len(responder_kc_ids)
+
         # kcs should have row index equal to kc_order, which is clustered on this KC Vm
         # data, since we didn't specify fixed_order=<some-fixed-order-index>
-        # TODO TODO TODO replace this plot with one using expanded KCs below.
-        # just want the clustering from this. directly call clustering fn
-        # TODO TODO TODO prob just store order and do all plotting in loop below
-        # TODO TODO TODO have fixed_order=True leave in sorted order
-        # TODO TODO do something w/ label 2nd return arg (in case sorted)?
-        kcs, _ = cluster_timeseries(kcs)
+        kcs, order_str = cluster_timeseries(kcs)
         order = kcs.index
 
-        # TODO TODO or define in a way that also has an inner sort on some claw thing?
-        # (for claws. no claws in kcs/kc_df)
-        # TODO TODO if i pre-sort claws on whatever, i assume .loc will keep order
-        # within KC
-        claws = get_odor_df('claw_sims')
+        assert claws.index.names[0] == KC_ID, '.loc(s) below will not work otherwise'
+
+        # sorting w/ highest max responding claws at top
+        # TODO check this is preserved through rest of operations on claws[2]
+        if drop_nonresponders:
+            # just subsetting before max so it's faster. will .loc again with actual KC
+            # order.
+            claws = claws.loc[responder_kc_ids]
+            claws = claws.loc[
+                claws.max(axis='columns').sort_values(ascending=False).index
+            ]
 
         kc_id_order = order.get_level_values(KC_ID)
-        assert claws.index.names[0] == KC_ID, '.loc below will not work otherwise'
         claws2 = claws.loc[kc_id_order]
         # TODO also assert all repeats consecutive? do i have some fn for that already?
         # some idiomatic pandas way? (should essentially be doing that w/ assertion w/
@@ -8716,7 +8779,10 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         assert kcs.index.names[0] == KC_ID, ('indexing of kc2nclaws below will not make'
             ' sense without this'
         )
-        kcs2 = kcs.loc[claws2.index.get_level_values(KC_ID)]
+        assert len(kcs) < len(claws2) == len(claws)
+        kc_order = claws2.index.get_level_values(KC_ID)
+        kcs2 = kcs.loc[kc_order]
+        assert len(kcs2) == len(claws2)
 
         # NOTE: without specifying level=KC_ID (i.e. if i just did
         # `groupby(KC_ID, sort=False)`), the index actually would be sorted despite my
@@ -8739,87 +8805,353 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         assert claws2.index.to_frame(index=False).iloc[:, :2].equals(
             kcs2.index.to_frame(index=False).iloc[:, :2]
         )
-
         claws = claws2
-        kcs = kcs2
+        del kcs, kcs2, claws2
 
-        var2ordered_df['vm_sims'] = kcs
-        var2ordered_df['claw_sims'] = claws
+        # TODO delete
+        #var2ordered_df['vm_sims'] = kcs
+        #var2ordered_df['claw_sims'] = claws
+        var2order['vm_sims'] = kc_order
+        var2order['claw_sims'] = claws.index.copy()
 
-        pns = get_odor_df('pn_sims')
-        # TODO TODO TODO need to redefine these such that they still have claw info? or
-        # do claws such that they have more bouton info? do they? how to merge?
-        # TODO TODO TODO yea, need to keep [pn_id, bouton_id] in claw index (currently
-        # just have glomerulus)
-        boutons = get_odor_df('bouton_sims')
+        bouton_order = pd.MultiIndex.from_frame(
+            claw2bouton.loc[claws.index].reset_index(drop=True)
+        )
+        assert bouton_order.names == boutons.index.names
+        assert len(boutons) < len(claws)
+        boutons = boutons.loc[bouton_order]
+        assert len(boutons) == len(claws)
+        # TODO delete
+        #var2ordered_df['bouton_sims'] = boutons
+        var2order['bouton_sims'] = bouton_order
+        del boutons
 
-        # TODO TODO TODO what to do now? how to align everything else?
-        #breakpoint()
+        assert pns.index.names == [glomerulus_col]
+        pn_order = bouton_order.droplevel(
+            [x for x in bouton_order.names if x != glomerulus_col]
+        )
+        assert len(pns) < len(claws)
+        # NOTE: glomeruli will now be repeated many times and be out of order
+        # TODO maybe i should have a another plot to the side giving each glomerulus a
+        # color, and then add another part of PN Axes (or adjacent one) showing color
+        # for each?
+        pns = pns.loc[pn_order]
+        assert len(pns) == len(claws)
+        # TODO delete
+        #var2ordered_df['pn_sims'] = pns
+        var2order['pn_sims'] = pn_order
+        del pns
 
-        # TODO + say we are sorting by claws within KC, if so?
-        suptitle += '\nordered by KC Vm clustering'
+        # (for cases like 'max sorted\n(clustering failed)')
+        order_str = order_str.replace('\n', ' ')
 
-
-    for var_name in to_plot_left_to_right:
-        axs = all_axs[:, to_plot_left_to_right.index(var_name)]
-        raw_ax, log_ax, normed_ax = axs
-        # TODO TODO will i also end up needing to plot claw_sims above, to order up
-        # there? or maybe reorder and place in a new dict?
-        '''
-        if order_by_kcs:
-            # TODO TODO TODO make sure order is always defined in a way that makes sense
-            # for everything
-            # TODO TODO i assume i'll need to do some kind of pairwise merge/reindex
-            # between adjacent variables? even possible all the way?
-            if var_name != 'vm_sims':
-                df, raw_ylabel, _ =  plot_raw_unit_dynamics(var_name, df, raw_ax,
-                    fixed_order=order
-                )
-            else:
-                df = kc_df
-                raw_ylabel = kc_raw_ylabel
-                assert df is not None
-                assert raw_ylabel is not None
-        '''
-        if var_name not in var2ordered_df:
-            warn(f'FIX! {var_name} not in var2ordered_df!!!')
-            continue
-
-        df = var2ordered_df[var_name]
-
-        df, raw_ylabel, _ =  plot_raw_unit_dynamics(var_name, df, raw_ax,
-            fixed_order=True
+        suptitle += (f'\nordered by KC activity: {order_str}'
+            '\ninner sort on max claw activity'
         )
 
+        fixed_vmax = 595
+
+    # TODO TODO delete? do i even want this? would have to repeat KCs for each glom they
+    # are part of... (or only plot up to claws here?)
+    # TODO TODO TODO actually probably want to skip plotting KCs altogether
+    # TODO should i still support drop_nonresponders in this case? prob not. are there
+    # even any? i think it's a negligible fraction of boutons, if so.
+    else:
+        assert group_pns
+
+        assert not drop_nonresponders, 'not supported in group_pns=True case'
+
+        suptitle += '\nordered by glomeruli'
+        # TODO TODO diff fixed_vmax here
+        breakpoint()
+
+        fixed_vmax = 160
+
+    # important this is after subsetting to claws from responding KCs, in
+    # drop_nonresponders=True case
+    n_claws = len(claws)
+
+    n_vars = len(to_plot_left_to_right)
+    # otherwise, would have 3 rows of Axes with top being raw, middle log-scaled, and
+    # bottom [0, 1] scaled per unit. takes up too much space and can't see all the units
+    # easily though.
+    only_plot_logscaled = True
+    if only_plot_logscaled:
+        nrows = 1
+    else:
+        nrows = 3
+
+    # originally i thought i might be memory constrained having them all in one fig, but
+    # it was a separate issue. could delete the =False path
+    all_units_in_one_fig = True
+
+    def get_fig_and_axs() -> Tuple[Figure, np.ndarray]:
+        if all_units_in_one_fig:
+            ncols = n_vars
+        else:
+            ncols = 1
+
+        max_fig_height = 650
+        assert n_claws <= max_n_claws, f'{n_claws=} > {max_n_claws=}'
+        fig_height = round((n_claws/max_n_claws) * max_fig_height)
+        assert 0 < fig_height <= max_fig_height, f'{fig_height=}'
+
+        fig, all_axs = plt.subplots(nrows=nrows, ncols=ncols, layout='compressed',
+            # dpi=9000 leads to this being killed. still not happy w/ how outputs look
+            # at 900 (other fixes?). trying interpolation='none' now, and will also try
+            # svg viewer(s) (and maybe other pdf viewers?)
+            # NOTE: 300 is too tall at dpi=300 (but since i'm using
+            # interpolation='none', maybe i can reduce that? or will that also limit
+            # things?) (seems to just be a function of matplotlib fig dpi).
+            # at default dpi, 700 is also too tall.
+            figsize=(6 * ncols, fig_height), squeeze=False
+        )
+        # TODO how to reduce space between cbar and stuff below (when
+        # location='top'), if hspace/_pad=0 not doing it?
+        fig.get_layout_engine().set(w_pad=0, wspace=0, hspace=0, h_pad=0)
+        return fig, all_axs
+
+    if all_units_in_one_fig:
+        fig, all_axs = get_fig_and_axs()
+
+    # TODO add flag to control whether fixed_vmax is used? and same for fixed_vmin (or
+    # at least allow fixed_vmin to be passed in?)?
+    #
+    # currently only support shared_colorbar=True when only plotting logscale
+    shared_colorbar: bool = True
+    if shared_colorbar:
+        #mins = []
+        maxs = []
+        for var_name in to_plot_left_to_right:
+            df = var2df[var_name]
+            vmin = df.min().min()
+            #mins.append(vmin)
+            assert vmin >= 0
+            vmax = df.max().max()
+            maxs.append(vmax)
+
+        # TODO separate one for KCs? everything else could use 160
+        # TODO different (also fixed) scale for KCs? they are way above everything else
+        # maxs=[160.62833736491046, 160.62833736491046, 160.62833736491046,
+        # 595.3349805575511]
+        # vmax=595.3349805575511
+
+        # TODO delete? not actually used. vmin hardcoded below
+        #vmin = min(mins)
+        vmax = max(maxs)
+        # TODO TODO try fixed_vmin other than 5 for sake of KC vm?
+        fixed_vmin = 2.5
+
+    for var_name in to_plot_left_to_right:
+        if not all_units_in_one_fig:
+            fig, all_axs = get_fig_and_axs()
+            assert len(all_axs.shape) == 2
+            assert all_axs.shape[-1] == 1
+            axs = all_axs[:, 0]
+        else:
+            axs = all_axs[:, to_plot_left_to_right.index(var_name)]
+
+        if only_plot_logscaled:
+            assert len(axs) == 1, f'{axs.shape=}'
+            log_ax = axs[0]
+        else:
+            raw_ax, log_ax, normed_ax = axs
+
+        # TODO or re-call get_odor_df?
+        df = var2df[var_name]
+        # TODO just make sure all this happens in get_dynamics instead (except for
+        # orn_sims which might, for better or worse, currently be allowed to go
+        # negative?)? and after changing bouton initialization to use 0 instead of NaN
+        # (or dropping everything consistently before here)
+        assert not (df < 0).any().any(), f'{var_name}: had some negative values'
+
+        if var_name == 'bouton_sims':
+            # TODO drop earlier?
+            if df.iloc[:, 0].isna().all():
+                df = df.iloc[:, 1:]
+            # TODO warn? (like in other place i do this)
+
+        assert not df.isna().any().any(), f'{var_name}: had some NaN values'
+
+        assert df.columns.name == 'time_s'
+
+        # TODO assert no rows all 0 too (are there any? shouldn't be, right?
+        # same for claws? or 0 there make sense?)
+        all0 = (df == 0).all(axis='columns')
+        # just to be super clear that the "all" is being evaluated over time, for each
+        # unit
+        assert len(all0) == len(df)
+        # NOTE: if this ever fails, will want to change how i'm listing # of units in
+        # title/labels below
+        if all0.any():
+            warn(f'{var_name}: {all0.sum()}/{len(df)} 0 at all time points')
+        # TODO delete?
+        #assert not all0.any(), f'{var_name}: {all0.sum()=} {all0.shape=} {df.shape=}'
+        # TODO any that actually might be all 0? (other than spike recordings, which i
+        # will need to handle separately anyway) just wait for assertion above to trip
+        # before handling that
+
+        # TODO may want to use diverging cmap (w/ TwoSlopeNorm) if i ever do plot stuff
+        # that can go negative (like maybe claw activities, if i ever care to re-enable
+        # path where individual claws can go below 0)?
+
+        # only used if we drop stuff in drop_nonresponders=True case
+        n_total_units = len(df)
+
+        assert var_name in var2order, f'{var_name=} not in var2order'
+        order = var2order[var_name]
+        # this will expand the df, massively increasing memory usage (except for claws,
+        # which will not change size)
+        df = df.loc[order]
+        del order
+
+        # NOTE: if i ever do any all0 based dropping (if i need to b/c some assertion
+        # tripping), may want to indicate # of all0 dropped units separately in
+        # title/label
+        # we have not yet expanded df, which will happen when we df.loc[order] below
+        n_units = len(df)
         unit = dynamics_var2unit_name[var_name]
+
+        n_unit_str = f'all {n_units} {unit}s'
+        if drop_nonresponders:
+            n_unique_units = len(df.index.drop_duplicates())
+
+            if var_name in ('vm_sims', 'spike_recordings'):
+                suffix = f'\nresponding to {odor}'
+            else:
+                suffix = '\nupstream of responding KCs'
+
+            n_unit_str = f'{n_unique_units}/{n_total_units} {unit}s{suffix}'
+
+        # TODO try baseline subtracting kc data before plotting on same scale?
+        # add flag for that?
+
+        title = n_unit_str
+        # TODO well i should probably put these somewhere right? and i'm wanting to
+        # delete ylabel? simplify and then put in title(s) / suptitle / cbar label?
+        unit_desc = dynamics_var2units[var_name]
+        # TODO remove this unit_desc suffix? (yea)
+        # TODO or at least say a.u. or '~Vm' in KC one. nothing is in real units, as
+        # model currently run.
+        #title = f'{n_unit_str}\n{unit_desc}'
+
+        # TODO delete?
+        # TODO put these in labels instead (/ too?)
+        #if var_name == 'vm_sims':
+        #    title += ' (Vm)'
+        ## TODO will i even be able to handle spike_recordings here? maybe if i just do
+        ## at top of loop and then break before non-shared stuff?
+        #elif var_name == 'spike_recordings':
+        #    title += ' (spikes)'
+
+        # TODO delete?
+        #ylabel = f'{unit} {unit_desc}'
+
 
         # NOTE: (presumably since vmin=0) can't explicitly set vmin=vmin on LogNorm
         # below, but works w/o specifying, and also w/ manual >0 value I hardcode below
-        vmin = df.min().min()
-        assert vmin >= 0
-        vmax = df.max().max()
+        if not shared_colorbar:
+            vmin = df.min().min()
+            assert vmin >= 0
+            vmax = df.max().max()
+        # TODO TODO warn if much is outside fixed_v[min|max]
 
-        im2, _ = cluster_timeseries_and_plot(df, fixed_order=True, ax=log_ax,
-            cmap=cmap, ylabel_fontsize=9,
-            imshow_kws=dict(norm=LogNorm(vmin=5, vmax=vmax), interpolation='nearest')
+        im2, _ = cluster_timeseries_and_plot(df, fixed_order=True, ax=log_ax, cmap=cmap,
+            label_order=False, imshow_kws=dict(interpolation='none',
+                # TODO add flag to still allow using vmax from data?
+                norm=LogNorm(vmin=fixed_vmin, vmax=fixed_vmax)
+            )
         )
         log10_str = r'$\log_{10}$'
-        log_ax.set_ylabel(f'{log10_str} {raw_ylabel}', fontsize=label_size)
-        # TODO (for boutons/PNs[/claws?]) put a marker for 50Hz? others? linear ticks on
-        # cbar for lognorm easily possible? marker for hardcoded vmin?
-        fig.colorbar(im2, ax=log_ax, orientation='vertical', extend='min')
+        # TODO delete
+        #log_ax.set_ylabel(f'{log10_str} {ylabel}', fontsize=label_size)
 
-        normed = ((df.T - df.T.min()) / df.max(axis=1)).T
-        _, _ = cluster_timeseries_and_plot(normed, fixed_order=True, ax=normed_ax,
-            cmap='viridis', ylabel_fontsize=9
-        )
-        normed_ax.set_ylabel(f'[0,1]-scaled\n(per {unit})', fontsize=label_size)
+        if only_plot_logscaled:
+            log_ax.set_title(title, fontsize=label_size)
+
+        if not shared_colorbar:
+            # TODO (for boutons/PNs[/claws?]) put a marker for 50Hz? others? linear
+            # ticks on cbar for lognorm easily possible? marker for hardcoded vmin?
+            fig.colorbar(im2, ax=log_ax, orientation='vertical', extend='both')
+
+        if not only_plot_logscaled:
+            assert not shared_colorbar, 'not implemented for this case yet'
+            im, _ = cluster_timeseries_and_plot(df, fixed_order=True, ax=raw_ax,
+                cmap=cmap, label_order=False, imshow_kws=dict(interpolation='none')
+            )
+            # TODO do i want to bring labels back here? all info i would want already in
+            # ylabel. could dupe that here, but not sure i want to make this any more
+            # busy than it needs to be
+            fig.colorbar(im, ax=raw_ax, orientation='vertical', label_order=False)
+
+            raw_ax.set_title(title, fontsize=label_size)
+            # TODO delete
+            #raw_ax.set_ylabel(ylabel, fontsize=label_size)
+
+            normed = ((df.T - df.T.min()) / df.max(axis=1)).T
+            _, _ = cluster_timeseries_and_plot(normed, fixed_order=True, ax=normed_ax,
+                cmap='viridis', imshow_kws=dict(interpolation='none')
+            )
+            # TODO delete
+            #normed_ax.set_ylabel(f'[0,1]-scaled\n(per {unit})', fontsize=label_size)
+
+        # TODO if group_pns, use labels?
+        if order_by_kcs:
+            # TODO need to convert to list or something? this is currently just a
+            # single-level index of KC_ID
+            levels = var2order['vm_sims']
+            for ax in axs:
+                # 0.5 is default linewidth
+                add_group_labels_and_lines(ax=ax, y=levels, labels=False, lines=True,
+                    # TODO even at .005 it's all white... anything to do? make fig
+                    # much taller? even tried linewidth=0.00005. when the fig is 300
+                    # inches tall, this linewidth is ok...
+                    linecolor='w', linewidth=0.1
+                )
+
+        del df
 
         last_ax = last_axes(axs)
         last_ax.set_xlabel('time (seconds)', fontsize=label_size)
 
-    fig.suptitle(suptitle)
-    savefig(fig, plot_dir, f'aligned_dynamics{odor_fname_suffix}')
+        if shared_colorbar and var_name == to_plot_left_to_right[-1]:
+            orientation = 'horizontal'
+            # TODO (for boutons/PNs[/claws?]) put a marker for 50Hz? others? linear
+            # ticks on cbar for lognorm easily possible? marker for hardcoded vmin?
+            cbar = fig.colorbar(im2, ax=log_ax, orientation=orientation, extend='both',
+                location='top'
+            )
+            # TODO also label some/all in shared_colorbar=False case? even want that
+            # case?
+            label = f'{log10_str} activity\n(A.U., all transformed from PN spike rate)'
+            cbar.ax.tick_params(labelsize=label_size)
+            if orientation == 'vertical':
+                label_fn = cbar.ax.set_ylabel
+            else:
+                assert orientation == 'horizontal'
+                label_fn = cbar.ax.set_xlabel
+
+            label_fn(label, fontsize=label_size)
+
+        for ax in axs:
+            ax.yaxis.set_visible(False)
+            ax.yaxis.set_ticks([])
+            # for xticks
+            ax.tick_params(labelsize=label_size)
+
+        if not all_units_in_one_fig:
+            fig.suptitle(suptitle, fontsize=suptitle_fontsize)
+            unit_suffix = f'_{unit.lower()}'
+            savefig(fig, plot_dir, f'aligned_dynamics{fname_suffix}{unit_suffix}')
+            savefig(fig, plot_dir, f'aligned_dynamics{fname_suffix}{unit_suffix}',
+                fmt='svg'
+            )
+            del fig, axs
+
+    if all_units_in_one_fig:
+        fig.suptitle(suptitle, fontsize=suptitle_fontsize)
+        savefig(fig, plot_dir, f'aligned_dynamics{fname_suffix}')
+        savefig(fig, plot_dir, f'aligned_dynamics{fname_suffix}', fmt='svg')
 
 
 def plot_all_bouton_dynamics(plot_dir: Path, bouton_sims: xr.DataArray, odor: str, *,
@@ -8890,9 +9222,8 @@ def plot_all_bouton_dynamics(plot_dir: Path, bouton_sims: xr.DataArray, odor: st
     # set_under color visible, at least. is that just because there were so big blocks
     # of one or the other? still an underlying issue?)
     cmap.set_bad('gray')
-    # TODO delete. prefer the default behavior of "under" values getting the minimum
-    # colormap value (black, with magma)
-    #cmap.set_under('white')
+    # not specifying set_under, as I prefer the default behavior of "under" values
+    # getting the minimum colormap value (black, with magma)
 
     im2, _ = cluster_timeseries_and_plot(bouton_pos, fixed_order=order, ax=log_ax,
         cmap=cmap, ylabel_fontsize=9,
@@ -9403,6 +9734,8 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     wAPLKC = read_parquet(model_output_dir / 'wAPLKC.parquet')
     wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
 
+    # TODO TODO also take mean over odors in case odor=slice(None)? or after some of the
+    # arithmetic below? or convert both to DataArray before multiplication below?
     odor_inh_sims = inh_sims.sel(odor=odor).squeeze(drop=True)
     ts = odor_inh_sims.get_index('time_s')
 
@@ -9411,6 +9744,18 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # TODO TODO TODO TODO figure out why mean to each isn't same. am i dividing by the
     # right number of units when scaling PN weights??? revisit that, and maybe try to
     # move all unit normalization to olfsysm again
+    # TODO TODO TODO need to clip values to 0 before mean? if mp indicates so?
+    # TODO TODO TODO TODO get kc/pn activities, subtract these from those, and then see
+    # if we need to clip things (as we probably should, at least in default
+    # mp.kc.allow_net_inh_per_claw=false case)
+    # TODO TODO TODO TODO but what we have here (claw_sims) should already have had
+    # these subtracted and clipped, no? so do i need to save a new variable in olfsysm
+    # or not?
+    # TODO TODO TODO plot mean activity of each to be clear (and can i recreate
+    # pre-inhibition from that? if i subtract inh as calculated below, do i then get
+    # some negative values? or can i recreate values without inh from pns (for boutons)
+    # or boutons (for claws) and then this inh?
+    # TODO TODO TODO put # units in title, if not already there
     # of shape (# claws, # timepoints)
     inh2kcs = odor_inh_sims.values * wAPLKC.to_frame().values
     mean_inh2kcs = inh2kcs.mean(axis=0)
@@ -9421,6 +9766,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     mean_inh2pns = inh2pns.mean(axis=0)
     _plot(apl2pn_ax, ts, mean_inh2pns, label='mean APL>PN inh')
     apl2pn_ax.set_title('APL>bouton inhibition', fontsize=title_fontsize)
+    breakpoint()
     #
 
     fig.legend(loc='upper right', fontsize=8)
@@ -9580,11 +9926,15 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
         plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
             title_prefix=title_prefix
         )
+    # TODO delete
+    print('EXITING AFTER PLOT APL DYNAMICS')
+    import sys; sys.exit()
+    #
 
     if aligned_dynamics:
-        # TODO TODO TODO implement + make two options, w/ different sort orders? (one
-        # clusterig on KCs [then sorting claws?], and another grouping boutons+claws by
-        # PN?)
+        plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,
+            title_prefix=title_prefix, drop_nonresponders=True
+        )
         plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,
             title_prefix=title_prefix
         )
@@ -9625,6 +9975,7 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
             plot_all_bouton_dynamics(plot_dir, bouton_sims, odor,
                 title_prefix=title_prefix
             )
+            del bouton_sims
 
 
 def dynamics_var_paths(model_dir: Path, *, mtime_tolerance_s: float = 300.0
