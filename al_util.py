@@ -1709,20 +1709,44 @@ _savefig_seen_paths = set()
 #def savefig(fig_or_seaborngrid: Union[Figure, Type[sns.axisgrid.Grid]],
 def savefig(fig_or_seaborngrid,
     fig_dir: Pathlike, desc: str, *, close: bool = True, normalize_fname: bool = True,
-    debug: bool = False, multiple_saves_per_run_ok: bool = False, **kwargs) -> Path:
-
+    debug: bool = False, multiple_saves_per_run_ok: bool = False,
+    fmt: Optional[str] = None, **kwargs) -> Path:
+    """
+    Args:
+        fmt: if None, defaults to `al_util.plot_fmt` (typically 'pdf')
+    """
     # TODO doc what this is set by (al_analysis CLI args i assume?)
     global exit_after_saving_fig_containing
 
-    # TODO delete (after checking i never actually added code that actually used the
-    # plot_fmt kwarg i had on this fn for a little bit late 2024, removed in december)
-    assert 'plot_fmt' not in kwargs
+    if fmt is None:
+        fmt = plot_fmt
 
-    # TODO delete?
-    if plot_fmt == 'pdf':
-        # even needed in current mpl? not referenced in current docs, and not obviously
-        # in settings current mpl testing code enforces for tests
-        kwargs['metadata'] = {'creationDate': None}
+    if fmt == 'pdf':
+        kwargs['metadata'] = {
+            # TODO delete? test whether this actually improves reproducibility of output
+            # files? other blockers on that?
+            # TODO anything similar i want for svg, now that i'm also trying that?
+            # even needed in current mpl? not referenced in current docs, and not
+            # obviously in settings current mpl testing code enforces for tests
+            'creationDate': None,
+
+            # TODO some other way to specify (doesn't seem so)? delete
+            # matplotlib doesn't seem to set this by default (grepping an example PDF
+            # does contain CreationDate, but nothing case-insensitive matching "interp".
+            # hopefully this makes the viewers I typically use behave better when
+            # rending imshow/matshow plots with many small cells (so I don't need to
+            # make huge figures to even have a chance, e.g. 650 inches tall in current
+            # plot_aligned_dynamics plot. for that particular plot, this alone didn't
+            # seem to help me reduce size. or maybe my reader is ignoring this flag, as
+            # apparently they are free to do)
+            # https://stackoverflow.com/questions/27512326
+            # if trying to specify this way, get
+            # Warning: Unknown infodict keyword: 'interpolate'. Must be one of {'Title',
+            # 'ModDate', 'Keywords', 'Trapped', 'CreationDate', 'Author', 'Producer',
+            # 'Creator', 'Subject'}.
+            # and there is no interpolate=<bool> kwarg
+            #'interpolate': False
+        }
     #
 
     if normalize_fname:
@@ -1731,16 +1755,9 @@ def savefig(fig_or_seaborngrid,
         # util.to_filename in branch above adds a '.' suffix by default
         prefix = f'{desc}.'
 
-    # TODO also allow input to have extension (use that if passed)?
-    # (meh, already exposed plot_fmt kwarg)
-    # TODO actually modify to_filename to not throw out '.', and manually remove that in
-    # any remaining cases where i didn't want it? for concentrations like '-3.5', this
-    # makes them more confusing to read... (-> '-35')
-    basename = prefix + plot_fmt
+    basename = prefix + fmt
 
-    # TODO delete / fix
     makedirs(fig_dir)
-    #
     fig_path = Path(fig_dir) / basename
 
     # TODO share logic w/ to_csv above (meaning also want to resolve() in
@@ -1829,7 +1846,7 @@ def savefig(fig_or_seaborngrid,
     # al_util.verbose flag set True/False by CLI in al_analysis.main
     if (verbose and not _skip_saving) or debug:
         # TODO may shorten to remove first two components of path by default
-        # (<driver>_<indicator>/<plot_fmt> in most/all cases)?
+        # (<driver>_<indicator>/<fmt> in most/all cases)?
         color = 'light_blue'
         cprint(fig_path, color)
 
