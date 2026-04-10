@@ -6,6 +6,7 @@ from pprint import pformat, pprint
 from itertools import combinations
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import pandas as pd
 import seaborn as sns
 from tqdm import tqdm
@@ -17,21 +18,43 @@ import al_util
 from al_util import savefig, plot_responses, read_parquet, to_csv, to_parquet
 from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model, megamat_orn_deltas,
     natmix_orn_deltas, get_thr_and_APL_weights, format_model_params,
-    get_odor_fname_suffix, KC_ID
+    get_odor_fname_suffix, KC_ID, dict_seq_product
 )
 
 
+test_with_connectome_vs_uniform_apl = [
+    dict(weight_divisor=20),
+    dict(one_row_per_claw=True, prat_claws=True),
+]
 model_tune_kws = [
     # comparison for all other model cases, to see to what extent changes to PN>KC
     # weight matrix (and potentially other changes) matter
     dict(pn2kc_connections='uniform', n_claws=7),
+] + dict_seq_product(test_with_connectome_vs_uniform_apl,
+    [dict(), dict(use_connectome_APL_weights=True)]
+)
+# TODO delete? try again after finding more reasonable APL<>PN scales (that do more)
+#+ [
+#    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+#        use_connectome_APL_weights=True
+#    ),
+#]
 
-    dict(weight_divisor=20),
-    dict(one_row_per_claw=True, prat_claws=True),
-    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
-        use_connectome_APL_weights=True
-    ),
-]
+# TODO factor to mb_model?
+def abbrev_model_id(x: str) -> str:
+    replace_dict = {
+        'pn2kc_uniform__n-claws_7': 'uniform',
+        'weight-divisor_': 'wd',
+        'prat-claws_True__prat-boutons_True': 'prat-claws-boutons',
+        'prat-claws_True': 'prat-claws',
+        # TODO something shorter?
+        'connectome-APL_True': 'connectome-APL',
+        '__': '_',
+    }
+    for k, v in replace_dict.items():
+        x = x.replace(k, v)
+    return x
+
 
 def main():
     parser = ArgumentParser()
@@ -45,6 +68,12 @@ def main():
     plot_root.mkdir(exist_ok=True)
 
     al_util.verbose = True
+
+    model_strs = [format_model_params(x) for x in model_tune_kws]
+    model_str2abbrev = {m: abbrev_model_id(m) for m in model_strs}
+    print('model ID -> abbrev:')
+    pprint(model_str2abbrev)
+    print()
 
     df = megamat_orn_deltas(drop_diags=False)
 
@@ -168,13 +197,18 @@ def main():
     for kws in tqdm(model_tune_kws, unit='model (on all panels)'):
         print(f'{kws=}')
 
-        # TODO TODO why is this seemingly not using LR cache in home? it's still tuning
-        # on megamat, so it should be the same, no?
+        # TODO why is this seemingly not using LR cache in home? it's still tuning
+        # on megamat, so it should be the same, no? (true?)
         tuned_params = fit_and_plot_mb_model(plot_root, orn_deltas=tune_df,
             try_cache=use_cache, response_rate_plot_max=response_rate_plot_max,
             max_iters=100, **kws
         )
         thr_and_apl_kws = get_thr_and_APL_weights(tuned_params, kws)
+        # TODO only print if verbose? or say more, like that we tuned on megamat and
+        # where those outputs are?
+        # TODO TODO is it a mistake that i'm getting a vector for wAPLKC for some
+        # of these? i.e. prat-claws_True. model at least working properly?
+        # just a formatting mistake?
         print(f'tuned thr and APL weights: {pformat(thr_and_apl_kws)}')
 
         model_str = format_model_params(kws)
@@ -242,6 +276,8 @@ def main():
             panel_dir = plot_root / panel
             panel_dir.mkdir(exist_ok=True)
             panel_df = test_df.loc[:,test_df.columns.get_level_values('panel') == panel]
+            # TODO TODO try to disable all the downstream csv writing / plotting before
+            # cached model contents are returned. that should only be enabled w/ a flag
             params = fit_and_plot_mb_model(panel_dir, orn_deltas=panel_df,
                 try_cache=use_cache, response_rate_plot_max=response_rate_plot_max,
                 **kws, **thr_and_apl_kws
@@ -275,18 +311,7 @@ def main():
     stat_names = list(df.columns)
     df = df.reset_index()
 
-    model_str2abbrev = {
-        'weight-divisor_20': 'wd20',
-        'pn2kc_uniform__n-claws_7': 'uniform',
-        'prat-claws_True': 'prat-claws',
-        'prat-claws_True__prat-boutons_True__connectome-APL_True':
-            'prat-claws-boutons-APL'
-        ,
-    }
-    assert df.model.isin(model_str2abbrev).all(), \
-        f'{df.model[~df.model.isin(model_str2abbrev)].unique()=}'
-
-    df.model = df.model.map(model_str2abbrev)
+    df.model = df.model.apply(abbrev_model_id)
     df.odor = df.odor.map(parse_odor_name)
     assert not df.isna().any().any()
     tidy = pd.melt(df, id_vars=['panel', 'model', 'odor'], value_vars=stat_names,
@@ -299,8 +324,12 @@ def main():
     # assuming only one panel ('megamat'), so it's ok this doesn't have a panel column
     tdf = pd.concat(tuned_dfs, verify_integrity=True)
     tdf = tdf.reset_index()
-    # TODO print tdf (/ use to set / check ylim below)
+
+    # TODO keep this, or remove def of dict above, and just use abbrev_model_id fn
+    # here directly?
     tdf.model = tdf.model.map(model_str2abbrev)
+
+    # TODO (delete?) print tdf (/ use to set / check ylim below)
     tdf.odor = tdf.odor.map(parse_odor_name)
     tdf = pd.melt(tdf, id_vars=['model', 'odor'], value_vars=stat_names,
         var_name='stat'
@@ -316,18 +345,67 @@ def main():
         v2 = 2 * x.str.contains('mix0', regex=False)
         return v1 + v2
 
-    df = df[~(df.odor.str.contains('mix-') | df.odor.str.contains('(air mix)'))].copy()
+    df = df[~(
+        df.odor.str.contains('mix-') |
+        df.odor.str.contains('(air mix)', regex=False
+    ))].copy()
 
     df = df.sort_values(by='odor', kind='stable', key=odor_sort_fn)
 
     def plot_panel_stats_across_models(df: pd.DataFrame, panel: str, suffix: str = ''
         ) -> None:
-        g = sns.catplot(data=df, col='stat', col_order=col_order, sharey=False,
-            hue='model', x='odor', y='value', kind='point', linestyle='none', alpha=0.3
+
+        df = df.copy()
+        df['connectome_apl'] = df.model.str.contains('_connectome-APL')
+        df['model'] = df.model.str.replace('_connectome-APL', '')
+
+        unique_model_ids = df.model.unique()
+        palette = dict(zip(
+            unique_model_ids, sns.color_palette(n_colors=len(unique_model_ids))
+        ))
+        # this is only taken a param of pointplot (which catplot should pass it to),
+        # but pointplot only defines it per hue level, so would prob need to either
+        # duplicate colors (and have same len list of colors and markers) or two calls?
+        #
+        uniform_apl_marker = '.'
+        connectome_apl_marker = '+'
+
+        marker_fill_kws = dict(
+            # default markeredgewidth seems ~2
+            linestyle='none', fillstyle='none', markeredgewidth=1.0,
+            markersize=8.0
         )
-        # could probably just get col order from col_names, and not enforce with
-        # col_order, once i've established well enough they match order of axes in
-        # axes.flat
+
+        def plot_fn(data, *cols, **kwargs):
+            for connectome_apl in (True, False):
+                # doing it this way, rather than initial groupby, so that point markers
+                # get plotted last, so all i have to do is add a separate colorless '+'
+                # marker to legend to handle that (was mix of '.' and '+' in legend,
+                # since uniform doesn't have connectome APL case.
+                gdf = data[data.connectome_apl == connectome_apl]
+                marker = (
+                    uniform_apl_marker if not connectome_apl else connectome_apl_marker
+                )
+                sns.pointplot(gdf, *cols, hue='model', palette=palette, dodge=True,
+                    marker=marker, alpha=0.5, **marker_fill_kws, **kwargs
+                )
+
+        g = sns.FacetGrid(data=df, col='stat', col_order=col_order, sharey=False)
+        g.map_dataframe(plot_fn, x='odor', y='value')
+
+        legend_data = dict(g._legend_data)
+        artist_kws = dict(color='k', alpha=0.5, **marker_fill_kws)
+        # TODO get marker size of this one to match above
+        legend_data['uniform-APL'] = Line2D([0],[0], marker=uniform_apl_marker,
+            **artist_kws
+        )
+        legend_data['connectome-APL'] = Line2D([0],[0], marker=connectome_apl_marker,
+            **artist_kws
+        )
+        label_order = list(unique_model_ids) + ['uniform-APL', 'connectome-APL']
+        g.add_legend(legend_data=legend_data, label_order=label_order,
+            title='model variant'
+        )
         assert g.col_names == col_order, f'{g.col_names=} != {col_order=}'
         for ax, n in zip(g.axes.flat, g.col_names):
             ymin = 0

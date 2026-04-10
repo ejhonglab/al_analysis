@@ -5,13 +5,14 @@ model_banana_iaa_concs/
 # model outputs for model_diags_and_synthetic_mixes.py
 diag_est-spike-deltas_for_yang/
 
-# outputs from model_private_odors_for_kai_grant.py
-kai_grant_model_outputs/
-
-# outputs from model_yang_mixtures.py
-yang_mix_outputs/
+# covers outputs from:
+# - model_prive_odors_for_kai_grant.py
+# - model_yang_mixtures.py
+# - model_george_valence_panel.py
+*_outputs/
 
 # benchmark_xarray_io.py output
 xarray_netcdf_io_bench.csv
 
-hh_output/
+# covers output from (so far) sim_hh_kcs.py
+*_output/

@@ -4673,15 +4673,15 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # both indices are sorted
         # TODO TODO TODO oh, need to reset_index or something here? why not in other
         # calls tho?
-        #c2 = claw2bouton_from_wPNKC(wPNKC)
+        c2 = claw2bouton_from_wPNKC(wPNKC)
         # TODO TODO TODO why getting KeyError when called from model_yang_mixtures.py
         # now??? and seemingly not from other contexts, like pnapl stepping or
         # test_dynamics_indexing??? had just saved this plot:
-        ## prat-claws_True__prat-boutons_True__connectome-APL_True/n_kcs_per_glom_order-n-syn.pdf
-        #c2 = c2.reset_index().set_index(claw_cols)[claw2bouton.columns]
-        ## ok it was just some weird dtype thing. claw2bouton had them as type object for
-        ## some reason (vs int64 in c2)
-        #assert c2.convert_dtypes().equals(claw2bouton.convert_dtypes())
+        # prat-claws_True__prat-boutons_True__connectome-APL_True/n_kcs_per_glom_order-n-syn.pdf
+        c2 = c2.reset_index().set_index(claw_cols)[claw2bouton.columns]
+        # ok it was just some weird dtype thing. claw2bouton had them as type object for
+        # some reason (vs int64 in c2)
+        assert c2.convert_dtypes().equals(claw2bouton.convert_dtypes())
         #
         # NOTE: columns are NOT equal to themselves sorted here (if it matters, which it
         # might?). rows are though (and presumably also were in other cases)
@@ -7302,7 +7302,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
     # true, in prat_boutons=True case tested (and presumably all others)
     for x in [wAPLKC, wKCAPL, wAPLPN, wPNAPL]:
-        assert x.index.equals(x.index.sort_values())
+        assert x is None or x.index.equals(x.index.sort_values())
 
     return wAPLKC, wKCAPL, wAPLPN, wPNAPL
 
@@ -15905,7 +15905,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     comparison_kc_corrs=None, _strip_concs_comparison_kc_corrs=False,
     param_dir_prefix: str = '', title_prefix: str= '',
     response_rate_plot_max: Optional[float] = None,
-    extra_params: Optional[dict] = None, _only_return_params: bool = False,
+    # TODO just make only_return_params=True the default, and remove optional?
+    # currently it's set True if use_cache below. rename to do_analysis or something?
+    extra_params: Optional[dict] = None, only_return_params: Optional[bool] = None,
     use_lr_cache: bool = True, **model_kws) -> Optional[ParamDict]:
     # TODO doc which extra plots made by each of comparison* inputs (or which plots are
     # changed, if no new ones)
@@ -16281,12 +16283,25 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # doesn't have those extra params
     #
 
+    # TODO delete this anyway? was from before i was setting default only_return_params
+    # based on use_cache (had to split into two conditionals, this one and the below)
     # TODO give better explanation as to why this is here.
     # to make sure we are accounting for all parameters we might vary in filename
     if param_dir in _fit_and_plot_seen_param_dirs:
-        # otherwise, param_dir being in seen set would indicate an error
-        assert _only_return_params, f'{param_dir=} already seen!'
         use_cache = True
+    #
+
+    if use_cache and only_return_params is None:
+        only_return_params = True
+    else:
+        only_return_params = False
+
+    # TODO delete this anyway? was from before i was setting default only_return_params
+    # based on use_cache (had to split into two conditionals, this one and the above)
+    if param_dir in _fit_and_plot_seen_param_dirs:
+        # otherwise, param_dir being in seen set would indicate an error
+        assert only_return_params, f'{param_dir=} already seen!'
+    #
 
     _fit_and_plot_seen_param_dirs.add(param_dir)
 
@@ -16304,21 +16319,31 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         warn('disabling returning/saving of dynamics, since in sensitivity analysis')
         return_dynamics = False
 
-    print()
-    # TODO TODO default to also skipping any plots made before returning? maybe add
-    # another ignore-existing option ('model-plots'?) if i really want to be able to
-    # remake plots w/o changing model outputs? takes a lot of time to make plots on all
-    # the model outputs...
     if use_cache:
-        print(f'loading model responses (+params) from cache {model_responses_cache}')
+        param_dict = read_tuned_params(param_dir)
+        if only_return_params:
+            # TODO delete?
+            # TODO always load this one instead of tuned now? (would need to test code
+            # below using it, rather than just this only_return_params path)
+            # TODO actually, just always use tuned above, just just update
+            # params_for_csv here?
+            #param_dict = read_params(param_dir)
+
+            params_for_csv.update(param_dict)
+            # TODO shorten dir?
+            print(f'loading model params from cache: {param_dir}')
+            # TODO this really matter that it skips some other code below it used to
+            # run (in only_return_params=True case)? delete all that code below if not
+            return params_for_csv
+        else:
+            print(f'loading model responses (+params) from cache: {param_dir}')
+
         # TODO why using my read_pickle wrapper for only some of these?
+        # TODO TODO are these actually returned? delete? (esp for
+        # only_return_params=True case i want to be more the default now)
         responses = pd.read_pickle(model_responses_cache)
         spike_counts = pd.read_pickle(model_spikecounts_cache)
         #
-        # TODO go back to just loading tuned params? (but via
-        # read_tuned_params(param_dir)) (does seem i might need to)
-        #param_dict = read_params(param_dir)
-        param_dict = read_tuned_params(param_dir)
 
         # TODO also load wPNKC? (but, not in params actually right? why am i
         # even loading responses/spike_counts here? used below, to define something in
@@ -16870,7 +16895,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     # then run a model with a single panel and those inh params later)
     except MultipleSavesPerRunException:
         # TODO delete? not sure i want to support this case anyway
-        if _only_return_params:
+        if only_return_params:
             return params_for_csv
         #
         else:
@@ -16925,10 +16950,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     # NOTE: 'pearson' is added after this
     # TODO if i want it, will need to return later (and if i want in CSV in this
     # directory, will need to save that [currently above] after as well)
-    if _only_return_params or not make_plots:
+    if only_return_params or not make_plots:
         return params_for_csv
 
-    # TODO delete? should be handled by _only_return_params (cases they are triggered
+    # TODO delete? should be handled by only_return_params (cases they are triggered
     # should be the same)
     if panel is None:
         # TODO is there any code below that actually doesn't work w/ multiple panels?
@@ -21592,7 +21617,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     # panels, to get a sense of overlap in multi-responders across
                     # the two (if we want to tune APL within them, which would then
                     # affect both panels, if we were to do it here)
-                    _only_return_params=True,
+                    only_return_params=True,
 
                     **tuning_model_kws
                 )
