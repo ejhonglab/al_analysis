@@ -654,7 +654,7 @@ class MultipleSavesPerRunException(IOError):
 
 
 # set True by al_analysis if -P passed as CLI arg
-prompt_if_changed = False
+prompt_if_changed: bool = False
 
 def _output_change_prompt_or_err(err: RuntimeError, path: Path, *,
     _warn_only: bool = False) -> bool:
@@ -739,6 +739,10 @@ def to_csv(data, path: Path, **kwargs) -> None:
 
 
 _SERIES_NAME_PLACEHOLDER: str = '__UNNAMED-SERIES'
+# TODO TODO move this to hong2p.io (and prob many similar fns too, or at least the
+# non-wrapped-by-@produces_output core, and then redef wrapped here?)
+# TODO some nice way to make a list of all these fns and then redef all of them w/
+# wrapper? or too meta-programmy (don't want to eval...)?
 def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.Series]:
     # TODO try changing default engine (='fastparquet'? or ='pyarrow'? latter should be
     # default, if both installed [at least in pandas 3.0...])? that fix any of column
@@ -795,7 +799,6 @@ def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.
             index_arrays.append(xs)
 
         data.columns = pd.MultiIndex.from_arrays(index_arrays)
-
 
     # all Series written with to_parquet above (if they had None for .name), should have
     # this as last column
@@ -923,6 +926,8 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path, *, check: bool 
 @produces_output(verbose=False)
 # input could be at least Series|DataFrame
 # TODO delete write_parquet kwarg eventually? after adding explicit calls where i want
+# (may have done that everywhere i care now? in mb_model, most likely, and maybe
+# al_analysis too? anywhere else i want to add an explicit to_parquet call?)
 def to_pickle(data, path: Path, *, write_parquet: bool = True) -> None:
     """Writes input to pickle at `path`.
 
@@ -979,7 +984,7 @@ def read_pickle(path: Pathlike):
     return pickle.loads(path.read_bytes())
 
 
-def read_json(path: Path) -> ParamDict:
+def read_json(path: Path) -> Dict[str, Any]:
     """Returns dict contained within JSON at `path`
     """
     with open(path, 'r') as f:
@@ -987,16 +992,16 @@ def read_json(path: Path) -> ParamDict:
 
 
 @produces_output
-def to_json(param_dict: ParamDict, path: Path, *, check: bool = True) -> None:
-    """Write `param_dict` to JSON at `path`, with default round trip check.
+def to_json(data: Dict[str, Any], path: Path, *, check: bool = True) -> None:
+    """Write `data` to JSON at `path`, with default round trip check.
     """
     assert path.suffix == '.json', f"{path.suffix} should be '.json'"
     with open(path, 'w') as f:
-        json.dump(param_dict, f, indent=4)
+        json.dump(data, f, indent=4)
 
     if check:
         round_trip = read_json(path)
-        assert param_dict == round_trip, f'{param_dict=}\n...!=...\n{round_trip=}'
+        assert data == round_trip, f'{data=}\n...!=...\n{round_trip=}'
 
 
 @produces_output(verbose=False)

@@ -12,8 +12,8 @@ entry in that list).
 from argparse import ArgumentParser, RawTextHelpFormatter
 from itertools import product
 from pathlib import Path
-from pprint import pformat
-from typing import Optional, Set
+from pprint import pformat, pprint
+from typing import Dict, List, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -21,16 +21,17 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from hong2p.viz import matshow
-from hong2p.util import symlink, subset_same_in_all_dicts
+from hong2p.util import symlink, subset_same_in_all_dicts, shorten_path
 import al_util
-from al_util import savefig, ParamDict, warn
+from al_util import savefig, ParamDict, warn, read_parquet, to_json, read_json
 from mb_model import (fit_and_plot_mb_model, megamat_orn_deltas, dict_seq_product,
-    format_weights, format_model_params, get_thr_and_APL_weights,
-    save_and_remove_from_param_dict, drop_silent_model_cells, glomerulus_col
+    format_weights, format_model_params, get_thr_and_APL_weights, glomerulus_col,
+    save_and_remove_from_param_dict, drop_silent_model_cells, load_and_plot_dynamics,
+    update_var2range, MinMaxDict
 )
 
 
-MODEL_TUNE_KWS = dict_seq_product(
+MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(
     [
         dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
             use_connectome_APL_weights=True
@@ -44,7 +45,11 @@ MODEL_TUNE_KWS = dict_seq_product(
 
 OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
 
-def analyze_outputs(plot_dir: Path) -> None:
+# TODO tuple, to make sure this doesn't get mutated?
+STEPS = [100, 20, 1.0, 0.5, 10, .1]
+
+def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
+    corners_only: bool = False) -> None:
     # TODO doc
 
     kstr = plot_dir.name
@@ -82,7 +87,28 @@ def analyze_outputs(plot_dir: Path) -> None:
     plot_suffix: str = '.pdf'
     d0_dynamics_plotnames: Optional[Set[str]] = None
     d0_dynamics_plot_dirnames: Set[str] = set()
-    for d in list(plot_dir.glob('*/')):
+    n_corners_seen = 0
+    var2range: MinMaxDict = dict()
+
+    dir_iter = list(plot_dir.glob('*/'))
+    existing_var2range = None
+    if plot_dynamics:
+        dir_iter = tqdm(dir_iter, unit='model-dir', total=4)
+
+        var2range_json = plot_dir / 'var2range.json'
+        if var2range_json.exists():
+            # TODO refactor to share tuple conversion w/ check below? or change type to
+            # always have list (instead of tuple) pairs as values
+            existing_var2range = {
+                k: tuple(v) for k, v in read_json(var2range_json).items()
+            }
+        else:
+            warn(f'{var2range_json} did not exist yet, so can not set consistent scale '
+                'for plot_dynamics across directories. should generate one if this run '
+                'finishes.'
+            )
+
+    for d in dir_iter:
         if not d.is_dir():
             continue
 
@@ -90,28 +116,60 @@ def analyze_outputs(plot_dir: Path) -> None:
         if d.name in {'model_internals', 'dynamics'} | d0_dynamics_plot_dirnames:
             continue
 
+        # TODO pad all numbers for symlinking (or in general?), so sorting is
+        # consistent? (actually, happens to be fine as-is, for current steps at least)
+        try:
+            a2p, p2a = d.name.split('_')
+        # ValueError: too many values to unpack (expected 2)
+        # probably would be b/c an old plot has a link dir setup, but
+        # d0_dynamics_plot_dirnames doesn't currently include that plot
+        except ValueError:
+            warn(f'delete old plot link dir: {shorten_path(d, n=2)}\nnot among current '
+                f'plot names in first directory{pformat(d0_dynamics_plot_dirnames)}'
+            )
+            # TODO assert all contents are symlinks? (or provide diff warning / err?)
+            continue
+
+        a2p = float(a2p.split('-')[-1])
+        p2a = float(p2a.split('-')[-1])
+        if corners_only:
+            limits = (min(STEPS), max(STEPS))
+            if not (a2p in limits and p2a in limits):
+                warn(f'skipping {d.name} because not among corners (and '
+                    'corners_only=True)'
+                )
+                continue
+            n_corners_seen += 1
+
+        # this step is slow, so want to be after corners_only check
+        if plot_dynamics:
+            curr_var2range = load_and_plot_dynamics(d, var2range=existing_var2range)
+            update_var2range(var2range, curr_var2range)
+
         if d0_dynamics_plotnames is None:
             # assuming this should be same for all subdirs
             d0_dynamics_plotnames = set(
                 x.name for x in (d / 'dynamics').glob(f'*{plot_suffix}')
             )
             for p in d0_dynamics_plotnames:
-                curr_plot_dir = (plot_dir / p).with_suffix('')
-                curr_plot_dir.mkdir(exist_ok=True)
-                d0_dynamics_plot_dirnames.add(curr_plot_dir.name)
+                curr_plot_link_dir = (plot_dir / p).with_suffix('')
+                curr_plot_link_dir.mkdir(exist_ok=True)
+                d0_dynamics_plot_dirnames.add(curr_plot_link_dir.name)
 
         for p in d0_dynamics_plotnames:
             dynamics_plot_dir = d / 'dynamics'
             assert dynamics_plot_dir.is_dir(), f'{dynamics_plot_dir=}'
             src = dynamics_plot_dir / p
+            # TODO convert to warning? or fine as long as this happens after
+            # plot_dynamics (as it does now)?
             assert src.is_file() and not src.is_symlink()
 
-            curr_plot_dir = (plot_dir / p).with_suffix('')
-            assert curr_plot_dir.is_dir()
+            curr_plot_link_dir = (plot_dir / p).with_suffix('')
+            assert curr_plot_link_dir.is_dir()
 
             # can't use with_suffix on something w/ d.name as name, or it will strip the
             # last bit of the rightmost float parameter from name (after decimal)
-            link = curr_plot_dir / f'{d.name}{plot_suffix}'
+            link = curr_plot_link_dir / f'{d.name}{plot_suffix}'
             if link.exists():
                 assert link.is_symlink()
                 link.unlink()
@@ -119,13 +177,11 @@ def analyze_outputs(plot_dir: Path) -> None:
             # TODO verbose=True (wouldn't currently do what i want)? print something?
             symlink(src, link)
 
-        # TODO pad all numbers for symlinking (or in general?), so sorting is
-        # consistent? (actually, happens to be fine as-is, for current steps at least)
-        a2p, p2a = d.name.split('_')
-        a2p = float(a2p.split('-')[-1])
-        p2a = float(p2a.split('-')[-1])
-        # TODO use parquet instead?
-        rs = pd.read_pickle(d / 'responses.p')
+        # TODO also compute + save/load (to json) + use min/max limits for all vars
+        # below (should only relevant if doing a higher dimensional sweep, where i'll be
+        # plotting a grid of those grids)
+
+        rs = read_parquet(d / 'responses.parquet')
         sp = rs.mean().mean()
 
         # NOTE: all quantities computed using rs_nosilent (as opposed to responses that
@@ -152,8 +208,31 @@ def analyze_outputs(plot_dir: Path) -> None:
 
         vals.append((a2p, p2a, sp, n_silent, hept_pent_corr, L.mean(), avg_n_odors))
 
+    if corners_only:
+        # TODO change if needed, if i sweep over more than 2 dims (i.e. adding wAPLKC
+        # and wKCAPL)
+        assert n_corners_seen == 4, f'{n_corners_seen=} != 4'
+
     df = pd.DataFrame.from_records(vals, columns=cols)
     df = df.set_index(['wAPLPN', 'wPNAPL'], verify_integrity=True)
+    if len(df) == 0:
+        raise IOError(f'found no stepped model output subdirectories under {plot_dir}')
+
+    print()
+    # {'Is_from_kcs': (1.5808925149559592, 77.70825644115786),
+    # 'Is_from_pns': (0.028954122482549444, 2248.2127184891215),
+    # 'Is_sims': (0.0, 0.0),
+    # 'bouton_sims': (0.0, 177.49935256444556),
+    # 'claw_sims': (0.0, 177.49935256444556),
+    # 'inh_sims': (0.24619630866805273, 844.2746926926052),
+    # 'vm_sims': (0.0, 595.8084413722237)}
+    print('var2range:')
+    pprint(var2range)
+    # TODO change type of this to use lists instead of tuples for the ranges?
+    # that's why check=True path is failing, b/c they are converted to lists on reading
+    to_json(var2range, var2range_json, check=False)
+    v2r2 = {k: tuple(v) for k, v in read_json(var2range_json).items()}
+    assert v2r2 == var2range
 
     # TODO rotate xticks to horizontal (+ put on bottom, or put xlabel in title
     # instead?)
@@ -206,7 +285,7 @@ def analyze_outputs(plot_dir: Path) -> None:
 
 def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     kws: ParamDict, *, ignore_existing: bool = False, save_dynamics: bool = False,
-    tuned_only: bool = False) -> None:
+    tuned_only: bool = False, corners_only: bool = False) -> None:
     # TODO doc
     """Runs `orn_deltas`
     Args:
@@ -221,6 +300,9 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
 
         save_dynamics: if True, will save DataArray pickles of all model internal
             dynamic quantities (e.g. membrane potential of KCs over time, to each odor)
+
+        corners_only: if True, only analyzes combinations of min/max step for each
+            paramerter
     """
     output_kws = dict(
         # if return_dynamics is True, fit_and_plot_mb_model will write DataArrays
@@ -277,8 +359,7 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     wAPLPN_scale = thr_and_apl_kws['wAPLPN']
     wAPLKC_scale = thr_and_apl_kws['wAPLKC']
 
-    # TODO use parquet instead?
-    wPNKC = pd.read_pickle(plot_dir / 'wPNKC.p')
+    wPNKC = read_parquet(plot_dir / 'wPNKC.parquet')
 
     # currently 389
     n_boutons = len(wPNKC.columns)
@@ -298,7 +379,7 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
 
         # these will not currently be in thr_and_apl_kws (assumed each can be
         # calculated from the from-APL weights), so need to get separately
-        responses = pd.read_pickle(plot_dir / 'responses.p')
+        responses = read_parquet(plot_dir / 'responses.parquet')
         n_kcs = mp.kc.N
         assert n_kcs == len(responses)
 
@@ -326,8 +407,11 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # same?)
     # TODO worth trying w/ a couple diff sp_factor_pre_APL? (1.5 / 3.0?)
     # TODO TODO these are ultimately sorted before plots, right?
-    steps = [100, 20, 1.0, 0.5, 10, .1]
-    #steps = [100, 1.0, .1]
+    if not corners_only:
+        steps = STEPS
+    else:
+        steps = [min(STEPS), max(STEPS)]
+
     # TODO provide warning / fail early if we can estimate we won't have enough disk
     # space (if return_dynamics / plot_example_dynamics)?
     for ap, pa in tqdm(list(product(steps, steps)), unit='param-combo'):
@@ -404,14 +488,24 @@ def main():
     )
     parser.add_argument('-o', '--only-analyze-outputs', action='store_true',
         help='skip even checking that all model directories are created. only run '
-        'analyze_outputs on model outputu directories that are immediate '
-        f'children of {repr(OUTPUT_ROOT_NAME)}'
+        'analyze_outputs on model output directories that are immediate children '
+        f'of {repr(OUTPUT_ROOT_NAME)}'
+    )
+    parser.add_argument('-c', '--corners-only', action='store_true',
+        help='only analyzes the corners of the sweep, also excluding the tuned values. '
+        'for quick tests of extreme behavior.'
+    )
+    parser.add_argument('-p', '--plot-dynamics', action='store_true',
+        help='loads and plots saved dynamics (in the analyze_outputs call, so '
+        'works with -o/--only-analyze-outputs)'
     )
     args = parser.parse_args()
     ignore_existing = args.ignore_existing
     save_dynamics = args.save_dynamics
     tuned_only = args.tuned_only
     only_analyze_outputs = args.only_analyze_outputs
+    corners_only = args.corners_only
+    plot_dynamics = args.plot_dynamics
 
     if only_analyze_outputs:
         assert not (save_dynamics or tuned_only or ignore_existing), \
@@ -424,28 +518,50 @@ def main():
     # should now be loading the new signed absmax response calc version
     orn_deltas = megamat_orn_deltas()
 
+    curr_dir = Path('.').resolve()
+    if curr_dir.name == OUTPUT_ROOT_NAME:
+        raise IOError('you probably made a mistake by calling from within '
+            f'{OUTPUT_ROOT_NAME}. call from one level above (the directory containing '
+            'that directory).'
+        )
+
     # TODO pass in? or define module level?
     # outputs can be big and want to be able to save in arbitrary paths. just run script
     # from the folder you want the outputs in.
-    plot_root = Path('.').resolve() / OUTPUT_ROOT_NAME
+    plot_root = curr_dir / OUTPUT_ROOT_NAME
 
     # TODO or just exclude hardcoded list, so directory names won't change if i add
     # more params to the list (which would change subset that is same across all)?
     same_in_all = set(subset_same_in_all_dicts(MODEL_TUNE_KWS).keys())
 
+    plot_dir2kws: Dict[Path, ParamDict] = dict()
     for kws in MODEL_TUNE_KWS:
         print(f'{kws=}')
 
         plot_dirname = format_model_params(kws, exclude=same_in_all)
         plot_dir = plot_root / plot_dirname
+        assert plot_dir not in plot_dir2kws, f'duplicate {plot_dir=}'
+        plot_dir2kws[plot_dir] = kws
 
         if not only_analyze_outputs:
             step_pn_apl_weights_around_tuned(plot_dir, orn_deltas, kws,
                 ignore_existing=ignore_existing, save_dynamics=save_dynamics,
-                tuned_only=tuned_only
+                tuned_only=tuned_only, corners_only=corners_only
             )
 
-        analyze_outputs(plot_dir)
+    if tuned_only:
+        warn('not calling analyze_outputs on any output directory, because '
+            '-t/--tuned-only. stepped (subdirectory) outputs may be older than tuned '
+            'outputs (out of date).'
+        )
+        return
+
+    for plot_dir, kws in plot_dir2kws.items():
+        # kws not actually used by analyze_outputs, so could just keep a list of
+        # plot_dirs...
+        analyze_outputs(plot_dir, plot_dynamics=plot_dynamics,
+            corners_only=corners_only
+        )
 
 
 if __name__ == '__main__':

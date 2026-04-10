@@ -84,7 +84,9 @@ from termcolor import cprint, COLORS
 
 from drosolf import orns
 from hong2p import olf, util, viz
-from hong2p.xarray import save_dataarray as _save_dataarray, load_dataarray
+from hong2p.xarray import (save_dataarray as _save_dataarray, load_dataarray,
+    series2xarray_like, outer_product, coords_equal, move_all_coords_to_index
+)
 from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
     first_odor_level
 )
@@ -163,10 +165,14 @@ glomerulus_col: str = 'glomerulus'
 # in all Prat's "v5" outputs that deal with PN data
 bouton_col: str = 'anatomical_bouton'
 
+# TODO use other places. this def doesn't interfere w/ any other defs, does it?
+claw_cols: List[str] = [KC_ID, CLAW_ID]
+
 # bouton_id are only unique within each pn_id
 bouton_cols: List[str] = [PN_ID, BOUTON_ID]
 
 DynamicsDict = Dict[str, xr.DataArray]
+MinMaxDict = Dict[str, Tuple[float, float]]
 
 # TODO rename to hemibrain or something? presumably this is specfic to that?
 # TODO move into the one place that uses it (tianpei's part of connectome_wPNKC)
@@ -8201,9 +8207,12 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
 
         dynamics_dict['claw_sims'] = claw_sims
 
-    for var_name, arr in dynamics_dict.items():
-        assert arr.name is None, f'{arr.name=} was not None'
-        arr.name = var_name
+    # TODO TODO maybe revert this, to simplify multplying weight matrices by some
+    # variable (they need to share name to multiply it seems, and that also works if
+    # both have name None). see also load_dynamics code also setting these.
+    #for var_name, arr in dynamics_dict.items():
+    #    assert arr.name is None, f'{arr.name=} was not None'
+    #    arr.name = var_name
 
     return dynamics_dict
 
@@ -8428,6 +8437,7 @@ def _plot(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
         assert 'time_s' in dims
         # this should not trip if we already called mean_over_nontime_dims in outer
         # _plot_normed call
+        # TODO require explicit flag to be set True for this behavior?
         if len(dims) > 1:
             xs = mean_over_nontime_dims(xs)
             assert xs.sizes == {'time_s': len(ts)}
@@ -8468,6 +8478,7 @@ def _plot_normed(ax: Axes, xs_or_ts, xs: Optional = None, **kwargs) -> None:
     if isinstance(xs, xr.DataArray):
         dims = xs.squeeze().dims
         if len(dims) > 1:
+            # TODO require explicit flag to be set True for this behavior?
             # pretty sure i want to take mean before normalizing, when input does have
             # more than just a time dimension
             xs = mean_over_nontime_dims(xs)
@@ -8587,6 +8598,9 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     # TODO delete hack? either explicitly pass in wPNKC, or regenerate claw outputs so
     # that bouton_cols (=[PN_ID, BOUTON_ID]) are also in index levels (needed to align
     # with bouton outputs below)
+    # NOTE: outputs won't exist under here if called from within fit_mb_model (before
+    # those outputs are saved in the save_and_remove_from_param_dict call, which happens
+    # after fit_mb_model call [using it's param_dict output])
     model_output_dir = plot_dir.resolve().parent
     wPNKC_path = model_output_dir / 'wPNKC.parquet'
     if not wPNKC_path.exists() and wPNKC is None:
@@ -8704,10 +8718,6 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
 
     suptitle = f'{title_prefix}{odor_str} responses'
 
-    # TODO delete var2nunits, now that i'm only expanding within the loop?
-    # since we will be expanding each into var2ordered_df
-    var2nunits: Dict[str, int] = dict()
-    #
     var2df: Dict[str, pd.DataFrame] = dict()
     def get_odor_df(var_name: str) -> pd.DataFrame:
         arr = dynamics_dict[var_name]
@@ -8722,7 +8732,6 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
             assert xmax <= df.columns.max()
             df = df.loc[:, df.columns <= xmax].copy()
 
-        var2nunits[var_name] = len(df)
         # TODO or just recall this fn?
         var2df[var_name] = df
         return df
@@ -8730,8 +8739,6 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     # storing full expanded dfs here was causing too much memory usage (actually, it was
     # some bug in another fn. could probably restore this if i wanted), but hopefully i
     # can store the indices necessary to recreate the expanded dataframes, one at a time
-    # TODO delete
-    #var2ordered_df = dict()
     var2order = dict()
 
     pns = get_odor_df('pn_sims')
@@ -8808,9 +8815,6 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         claws = claws2
         del kcs, kcs2, claws2
 
-        # TODO delete
-        #var2ordered_df['vm_sims'] = kcs
-        #var2ordered_df['claw_sims'] = claws
         var2order['vm_sims'] = kc_order
         var2order['claw_sims'] = claws.index.copy()
 
@@ -8818,11 +8822,15 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
             claw2bouton.loc[claws.index].reset_index(drop=True)
         )
         assert bouton_order.names == boutons.index.names
-        assert len(boutons) < len(claws)
+
+        if not drop_nonresponders:
+            assert len(boutons) < len(claws), f'{len(boutons)=} >= {len(claws)=}'
+        else:
+            if len(boutons) >= len(claws):
+                warn(f'{len(claws)=} <= {len(boutons)=} after dropping non-responders')
+
         boutons = boutons.loc[bouton_order]
         assert len(boutons) == len(claws)
-        # TODO delete
-        #var2ordered_df['bouton_sims'] = boutons
         var2order['bouton_sims'] = bouton_order
         del boutons
 
@@ -8830,15 +8838,18 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         pn_order = bouton_order.droplevel(
             [x for x in bouton_order.names if x != glomerulus_col]
         )
-        assert len(pns) < len(claws)
+        if not drop_nonresponders:
+            assert len(pns) < len(claws)
+        else:
+            if len(pns) >= len(claws):
+                warn(f'{len(claws)=} <= {len(pns)=} after dropping non-responders')
+
         # NOTE: glomeruli will now be repeated many times and be out of order
         # TODO maybe i should have a another plot to the side giving each glomerulus a
         # color, and then add another part of PN Axes (or adjacent one) showing color
         # for each?
         pns = pns.loc[pn_order]
         assert len(pns) == len(claws)
-        # TODO delete
-        #var2ordered_df['pn_sims'] = pns
         var2order['pn_sims'] = pn_order
         del pns
 
@@ -9030,23 +9041,8 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         # TODO well i should probably put these somewhere right? and i'm wanting to
         # delete ylabel? simplify and then put in title(s) / suptitle / cbar label?
         unit_desc = dynamics_var2units[var_name]
-        # TODO remove this unit_desc suffix? (yea)
         # TODO or at least say a.u. or '~Vm' in KC one. nothing is in real units, as
         # model currently run.
-        #title = f'{n_unit_str}\n{unit_desc}'
-
-        # TODO delete?
-        # TODO put these in labels instead (/ too?)
-        #if var_name == 'vm_sims':
-        #    title += ' (Vm)'
-        ## TODO will i even be able to handle spike_recordings here? maybe if i just do
-        ## at top of loop and then break before non-shared stuff?
-        #elif var_name == 'spike_recordings':
-        #    title += ' (spikes)'
-
-        # TODO delete?
-        #ylabel = f'{unit} {unit_desc}'
-
 
         # NOTE: (presumably since vmin=0) can't explicitly set vmin=vmin on LogNorm
         # below, but works w/o specifying, and also w/ manual >0 value I hardcode below
@@ -9063,8 +9059,6 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
             )
         )
         log10_str = r'$\log_{10}$'
-        # TODO delete
-        #log_ax.set_ylabel(f'{log10_str} {ylabel}', fontsize=label_size)
 
         if only_plot_logscaled:
             log_ax.set_title(title, fontsize=label_size)
@@ -9085,15 +9079,11 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
             fig.colorbar(im, ax=raw_ax, orientation='vertical', label_order=False)
 
             raw_ax.set_title(title, fontsize=label_size)
-            # TODO delete
-            #raw_ax.set_ylabel(ylabel, fontsize=label_size)
 
             normed = ((df.T - df.T.min()) / df.max(axis=1)).T
             _, _ = cluster_timeseries_and_plot(normed, fixed_order=True, ax=normed_ax,
                 cmap='viridis', imshow_kws=dict(interpolation='none')
             )
-            # TODO delete
-            #normed_ax.set_ylabel(f'[0,1]-scaled\n(per {unit})', fontsize=label_size)
 
         # TODO if group_pns, use labels?
         if order_by_kcs:
@@ -9617,9 +9607,35 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
 
 def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     stim_timing_kws: Optional[dict] = None, *, odor: Union[slice, str] = slice(None),
-    title_prefix: str = '') -> None:
+    # TODO delete wPNKC if i don't end up using for checks
+    title_prefix: str = '', wPNKC: Optional[pd.DataFrame] = None,
+    wAPLKC: Optional[pd.DataFrame] = None, wAPLPN: Optional[pd.DataFrame] = None,
+    wKCAPL: Optional[pd.DataFrame] = None, wPNAPL: Optional[pd.DataFrame] = None,
+    var2range: Optional[MinMaxDict] = None,
+    warn_: bool = True) -> None:
     # TODO doc
+    """
+    Args:
+        wAPLKC: if not passed, will attempt to load from `wAPLKC.parquet` in
+            `plot_dir.parent`, and will fail if that is not possible. used to compute
+            APL>KC (really KC=claw, most of the time) inhibition for plotting the mean
+            of that.
 
+        wAPLPN: see `wAPLKC`. for computing + plotting APL>PN (where typically
+            PN=bouton) inhibition.
+
+        wKCAPL: should truly be optional. if passed, or if exists as parquet in
+            `plot_dir.parent`, will be used to recompute and check `olfsysm`
+            calculations of some things
+
+        wPNAPL: see `wKCAPL`
+
+        wPNKC:  see `wKCAPL`
+
+        warn_: if True, will warn if `wKCAPL` or `wPNAPL` were not passed, and also were
+            not available as a parquet file in `plot_dir.parent`, since we can't do all
+            checks without them.
+    """
     odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
 
     # TODO TODO refactor to de-dupe w/ APL stuff in plot_example_model_dynamics
@@ -9682,6 +9698,17 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # `not Is_all0` should imply `pn_claw_to_apl=False`
     if not Is_all0:
         Is_shifted = Is_sims.shift(time_s=1).dropna('time_s')
+        # only need this rename if i keep the code that sets these names. trying to
+        # revert all names to being None now. may want to just check coords_equal and
+        # .equals moving forward, to simplify
+        if Is_shifted.name is not None:
+            assert Is_shifted.name == 'Is_sims'
+            assert Is_from_kcs.name == 'Is_from_kcs'
+            # if i'm assigning names to these DataArrays, need to rename one to get
+            # these to be .identical again (hong2p.xarray.coords_equal and .equals
+            # regardless)
+            Is_shifted = Is_shifted.rename('Is_from_kcs')
+        #
         assert Is_shifted.identical(Is_from_kcs.sel(time_s=Is_shifted.time_s))
         del Is_shifted
     #
@@ -9708,8 +9735,9 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     #_plot(ax, Is_sims.sel(odor=odor), label='APL current (I)', alpha=alpha)
 
     inh_sims = dynamics_dict['inh_sims']
+    assert (inh_sims >= 0).all()
     # TODO move this warning to get_dynamics instead? refactor to do in both places?
-    if (inh_sims == 0).all().item():
+    if (inh_sims == 0).all():
         # TODO maybe i should be skipping this plot altogether if this is hit?
         warn('APL Vm (inh_sims) was 0 everywhere! only makes sense if APL was '
             'intentionally disabled somehow'
@@ -9728,19 +9756,65 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
 
     title_fontsize = 9
 
-    # TODO fix hack (pass in dir w/ these, or loaded vals directly?)
+    # TODO also allow passing in dir for these?
     # plot_dir should be `model_output_dir / 'dynamics'`
+    # NOTE: outputs won't exist under here if called from within fit_mb_model (before
+    # those outputs are saved in the save_and_remove_from_param_dict call, which happens
+    # after fit_mb_model call [using it's param_dict output])
     model_output_dir = plot_dir.resolve().parent
-    wAPLKC = read_parquet(model_output_dir / 'wAPLKC.parquet')
-    wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
+    if wAPLKC is None:
+        wAPLKC = read_parquet(model_output_dir / 'wAPLKC.parquet')
 
-    # TODO TODO also take mean over odors in case odor=slice(None)? or after some of the
-    # arithmetic below? or convert both to DataArray before multiplication below?
+    if wAPLPN is None:
+        wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
+
+    if wKCAPL is None:
+        parquet = model_output_dir / 'wKCAPL.parquet'
+        if parquet.exists():
+            wKCAPL = read_parquet(parquet)
+        elif warn_:
+            warn(f'plot_apl_dynamics: wKCAPL not passed, and {parquet} did not exist. '
+                'will not be able to do all checks.'
+            )
+
+    if wPNAPL is None:
+        parquet = model_output_dir / 'wPNAPL.parquet'
+        if parquet.exists():
+            wPNAPL = read_parquet(parquet)
+        elif warn_:
+            warn(f'plot_apl_dynamics: wPNAPL not passed, and {parquet} did not exist. '
+                'will not be able to do all checks.'
+            )
+
+    # TODO TODO require these weights (or at least wPNKC), so i can plot claws_no_inh?
+    if wPNKC is None:
+        parquet = model_output_dir / 'wPNKC.parquet'
+        if parquet.exists():
+            wPNKC = read_parquet(parquet)
+        elif warn_:
+            warn(f'plot_apl_dynamics: wPNKC not passed, and {parquet} did not exist. '
+                'will not be able to do all checks.'
+            )
+
+    optional_weights = [wKCAPL, wPNAPL, wPNKC]
+    if any(x is None for x in optional_weights):
+        assert all(x is None for x in optional_weights), ('currently assuming that if '
+            'any of the optional wKCAPL/wPNAPL/wPNKC weights are passed, they all are'
+        )
+        have_optional_weights = False
+    else:
+        have_optional_weights = True
+
     odor_inh_sims = inh_sims.sel(odor=odor).squeeze(drop=True)
     ts = odor_inh_sims.get_index('time_s')
 
+    # TODO refactor the sel->squeeze?
+    pns = dynamics_dict['pn_sims'].sel(odor=odor).squeeze(drop=True)
+    boutons = dynamics_dict['bouton_sims'].sel(odor=odor).squeeze(drop=True)
+    claws = dynamics_dict['claw_sims'].sel(odor=odor).squeeze(drop=True)
+
     # TODO TODO TODO add code to olfsysm to compute same means / sums, and check
-    # against values here
+    # against values here (actually necessary?)
     # TODO TODO TODO TODO figure out why mean to each isn't same. am i dividing by the
     # right number of units when scaling PN weights??? revisit that, and maybe try to
     # move all unit normalization to olfsysm again
@@ -9757,16 +9831,149 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # or boutons (for claws) and then this inh?
     # TODO TODO TODO put # units in title, if not already there
     # of shape (# claws, # timepoints)
-    inh2kcs = odor_inh_sims.values * wAPLKC.to_frame().values
-    mean_inh2kcs = inh2kcs.mean(axis=0)
-    _plot(apl2kc_ax, ts, mean_inh2kcs, label='mean APL>claw inh')
+    assert (wAPLKC >= 0).all()
+    # uses values from wAPLKC, and gets appropriate (matching index) coordinates from
+    # claws
+    wAPLKC = series2xarray_like(wAPLKC, claws)
+    # need input w/ 'time_s' dim to go first, for calls using ts below
+    inh2kcs = outer_product(odor_inh_sims, wAPLKC)
+    _plot(apl2kc_ax, inh2kcs, label='mean APL>claw inh')
     apl2kc_ax.set_title('APL>claw inhibition', fontsize=title_fontsize)
 
-    inh2pns = odor_inh_sims.values * wAPLPN.to_frame().values
-    mean_inh2pns = inh2pns.mean(axis=0)
-    _plot(apl2pn_ax, ts, mean_inh2pns, label='mean APL>PN inh')
+    assert (wAPLPN >= 0).all()
+    # uses values from wAPLPN, and gets appropriate (matching index) coordinates from
+    # boutons
+    wAPLPN = series2xarray_like(wAPLPN, boutons)
+    inh2pns = outer_product(odor_inh_sims, wAPLPN)
+    _plot(apl2pn_ax, inh2pns, label='mean APL>PN inh')
     apl2pn_ax.set_title('APL>bouton inhibition', fontsize=title_fontsize)
-    breakpoint()
+
+    if var2range is not None:
+        # TODO if not getting range from same exact thing (and inh computed above was
+        # not yet clipped), assert range of above is within range we are getting here?
+        # (or also compute [outside, probably, where var2range currently defined] +
+        # store (mean?) inh2[kcs|pns] values, and also include in var2range)
+        # (should be fine as long as i replace above w/ plotting clipped values, which
+        # makes more sense anyway. may need to make more weights required then, maybe
+        # all)
+
+        # inh2kcs should be describing mean inh onto *claws*, and since (clipped)
+        # inhibition should never be able to exceed the pre-inhibition quantity, and
+        # since boutons are the pre-inhibition input to claws, this range should be an
+        # upper bound on what would make sense for inhibition
+        # TODO TODO want something smaller than an upper bound? actually compute clipped
+        # inh and store limits of that var? (probably) (unless i want to also always
+        # plot the pre-inh activities on same scale...)
+        vmin, vmax = var2range['bouton_sims']
+        inh2kcs_min = inh2kcs.min().item()
+        inh2kcs_max = inh2kcs.max().item()
+        # TODO TODO need to fix? should def be True if we are taking mean of clipped
+        # inhibition, which above should probably be replaced w/ anyway
+        assert vmin <= inh2kcs_min, f'{vmin=} > {inh2kcs_min=}'
+        assert vmax >= inh2kcs_max, f'{vmax=} < {inh2kcs_max=}'
+        # expect vmin to be 0, if we include cases w/ any meaningful APL>PN inhibition
+        # TODO some buffer around?
+        apl2kc_ax.set_ylim([vmin, vmax])
+
+        # pn_sims should bound inh on boutons (what inh2pns should be), by same logic as
+        # above comment
+        vmin, vmax = var2range['pn_sims']
+        inh2pns_min = inh2pns.min().item()
+        inh2pns_max = inh2pns.max().item()
+        # TODO TODO need to fix? should def be True if we are taking mean of clipped
+        # inhibition, which above should probably be replaced w/ anyway
+        assert vmin <= inh2pns_min, f'{vmin=} > {inh2pns_min=}'
+        assert vmax >= inh2pns_max, f'{vmax=} < {inh2pns_max=}'
+
+    # TODO may want to remove the `odor != slice(None)` restriction later, would just
+    # add to complexity of code in this conditional slightly
+    if have_optional_weights and odor != slice(None):
+        wKCAPL = series2xarray_like(wKCAPL, claws)
+        wPNAPL = series2xarray_like(wPNAPL, boutons)
+
+        # don't need fn like above for DataFrames. DataArray constructor handles those
+        # fine.
+        wPNKC_arr = xr.DataArray(data=wPNKC, dims=['claw', 'bouton'])
+        assert np.array_equal(wPNKC_arr.values, wPNKC.values)
+
+        claw_index = wPNKC_arr.get_index('claw')
+        assert claw_index.equals(wPNKC.index)
+        claw_index2 = claws.get_index('claw')
+        assert glomerulus_col in claw_index2.names
+        assert claw_index2.droplevel(glomerulus_col).equals(claw_index)
+
+        bouton_index = wPNKC_arr.get_index('bouton')
+        assert bouton_index.equals(wPNKC.columns)
+        assert boutons.get_index('bouton').equals(bouton_index)
+        wPNKC = wPNKC_arr
+
+        # ah, it's failing when we are not also analyzing just a single odor.
+        # ipdb> odor
+        # slice(None, None, None)
+        # ipdb> pns.dims
+        # ('panel', 'glomerulus', 'time_s')
+        assert pns.dims == ('glomerulus', 'time_s'), f'{pns.dims=}'
+        # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
+        # outside of the bouton index (first row in output below):
+        # Coordinates:
+        #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+        # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
+        # * bouton      (bouton) MultiIndex
+        # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+        # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
+        # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
+        #
+        # expanding each PN up to # of times it appears in boutons (and in same order as
+        # there)
+        boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
+            'glomerulus'
+        )
+        assert boutons_no_inh.dims == ('bouton', 'time_s')
+        assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
+
+        # (it is True now that i've actually removed the NaN by here)
+        # > (boutons >= 0).all()
+        # False
+        boutons_min = boutons.min().item()
+        # should == 0 almost certainly, at least if there is any meaningful PN>APL
+        # inhibition enabled, with APL actually getting activity
+        # TODO assert it's >0 otherwise?
+        assert boutons_min >= 0, f'had some bouton activities < 0. min={boutons_min}'
+
+        # TODO see if we get any performance benefit to using any scipy.sparse or Sparse
+        # (https://sparse.pydata.org/en/stable/) representation of data while
+        # constructing wPNKC
+        # TODO any other way to get sparse DataArrays?
+        #
+        # need to start w/ boutons that have already have inh applied here.
+        # takes a couple seconds, but haven't gotten killed yet.
+        # .dot returns something that had dot product computed over shared dimensions,
+        # which is just 'bouton' between these two, so we will be left with dims
+        # ('time_s', 'claw')
+        claws_no_inh = wPNKC.dot(boutons)
+
+        # removing the 'glomerulus' level from the 'claw' MultiIndex, since wPNKC (and
+        # thus claws_no_inh, does not have it)
+        claws = claws.reset_index('claw').drop_vars('glomerulus')
+        # restoring the 'claw' dim MultiIndex
+        claws = move_all_coords_to_index(claws)
+
+        # TODO TODO assert (claws_no_inh >= claws).all()
+        # TODO TODO and same for boutons?
+
+        # TODO TODO TODO plot inh onto each after clipping (s.t. inh can't push it below
+        # 0)?
+
+        # TODO define something like `dot` similar to `outer_product`, to use wPNKC to
+        # compute reduced values? or maybe that's not the right name? see what i need to
+        # do w/o a custom fn first... just a `*` operation i assume (after renaming one
+        # array)?
+        # TODO TODO TODO restore
+        print('RESTORE BREAKPOINT')
+        breakpoint()
+
+    # TODO delete
+    #breakpoint()
     #
 
     fig.legend(loc='upper right', fontsize=8)
@@ -9791,6 +9998,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # (presynaptic) vs "subtractive" (postsynaptic) Ann talks about in her text?
     # should i change some of the math to make it so, if not (i.e. does this
     # indicate an issue w/ my implementation?)? what is basis for her claim?
+    # TODO anything in dayan/abbott or other main computational book about this?
     # TODO TODO does she have a citation for that claim, either in thesis or in
     # preprint? olsen/wilson explain why in their paper?
     savefig(fig, plot_dir, f'apl_dynamics{odor_fname_suffix}')
@@ -9812,7 +10020,11 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
     all_bouton_dynamics: bool = True, apl_dynamics: bool = True,
     aligned_dynamics: bool = True, mp: Optional[osm.ModelParams] = None, stim_start:
     Optional[float] = None, stim_end: Optional[float] = None,
-    title: Optional[str] = None, _odor_index: Optional[pd.Index] = None) -> None:
+    title: Optional[str] = None, _odor_index: Optional[pd.Index] = None,
+    var2range: Optional[MinMaxDict] = None, wPNKC: Optional[pd.DataFrame] = None,
+    wAPLKC: Optional[pd.DataFrame] = None, wAPLPN: Optional[pd.DataFrame] = None,
+    wKCAPL: Optional[pd.DataFrame] = None, wPNAPL: Optional[pd.DataFrame] = None,
+    ) -> MinMaxDict:
     # TODO say which plots are saved
     """Saves several figures in `plot_dir`
 
@@ -9846,6 +10058,9 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
 
         _odor_index: if passed, checks that `orn_sims` odor index matches this.
             Otherwise `orn_sims` odor index is used everywhere.
+
+    Returns dict with variable name to (min, max) tuples, for use determining fixed
+    ranges to use for subsequent calls.
     """
     assert plot_dir.exists(), f'{plot_dir=} did not exist'
 
@@ -9922,21 +10137,47 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
             warn(f'picking last odor {odor} for example dynamics plots')
         del odor_values
 
+    # not to be confused w/ var2range the input parameter (None or dict like this)
+    # TODO rename one/both of them?
+    _var2range = dict()
+    store_range_of = ['Is_from_kcs', 'Is_from_pns', 'inh_sims', 'Is_sims', 'vm_sims',
+        'claw_sims', 'bouton_sims', 'pn_sims'
+    ]
+    seen = set()
+    for k, arr in dynamics_dict.items():
+        if k not in store_range_of:
+            continue
+        vmin = arr.min().item(0)
+        vmax = arr.max().item(0)
+        _var2range[k] = (vmin, vmax)
+        seen.add(k)
+    # TODO might this ever trip? try running load_and_plot_dynamics_cli on root
+    # containing both pn-claw-to-apl_[True|False]? maybe even non-bouton|claw stuff?
+    # fail more gracefully there?
+    assert seen == set(store_range_of), f'{seen=} != set of {store_range_of=}'
+    # TODO delete?
+    # TODO pprint here? if verbose?
+    print('_var2range:')
+    pprint(_var2range)
+    #
+
     if apl_dynamics:
         plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
-            title_prefix=title_prefix
+            title_prefix=title_prefix, wAPLKC=wAPLKC, wAPLPN=wAPLPN, wKCAPL=wKCAPL,
+            wPNAPL=wPNAPL, wPNKC=wPNKC, var2range=var2range
         )
     # TODO delete
-    print('EXITING AFTER PLOT APL DYNAMICS')
-    import sys; sys.exit()
+    print('RESTORE EXITING')
+    #print('EXITING AFTER PLOT APL DYNAMICS')
+    #import sys; sys.exit()
     #
 
     if aligned_dynamics:
         plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,
-            title_prefix=title_prefix, drop_nonresponders=True
+            title_prefix=title_prefix, wPNKC=wPNKC, drop_nonresponders=True
         )
         plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,
-            title_prefix=title_prefix
+            title_prefix=title_prefix, wPNKC=wPNKC
         )
 
     plot_example_model_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
@@ -9976,6 +10217,8 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
                 title_prefix=title_prefix
             )
             del bouton_sims
+
+    return _var2range
 
 
 def dynamics_var_paths(model_dir: Path, *, mtime_tolerance_s: float = 300.0
@@ -10105,12 +10348,6 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
     else:
         missing = ALL_DYNAMICS_VARS - have_vars
 
-    # TODO delete
-    print()
-    print(f'{warn_=}')
-    print(f'{missing=}')
-    print(f'{len(missing)=}')
-    #
     if warn_ and len(missing) > 0:
         warn(f'{model_dir}: missing .nc files for the following dynamics variables:\n'
             f'{pformat(missing)}'
@@ -10150,12 +10387,102 @@ def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
 
         # TODO can load_datarray fail? how?
         arr = load_dataarray(f)
+
+        # TODO TODO maybe revert this, to simplify multplying weight matrices by some
+        # variable (they need to share name to multiply it seems, and that also works if
+        # both have name None). see also end of fit_mb_model that sets these for fresh
+        # outputs.
+        #if arr.name is None:
+        #    warn(f'arr.name was None. must be an old output. setting to {var_name=}')
+        #    arr.name = var_name
+        # TODO keep this?
+        if arr.name is not None:
+            warn(f'{arr.name=} was NOT None (at one point I was setting them, but '
+                'trying to revert, to simplify multiplications). setting to None.'
+            )
+            arr.name = None
+        #
+
         dynamics_dict[var_name] = arr
+
+    # TODO delete here eventually? should also do before returning from fit_mb_model
+    # now? (if i want to have this done in plot_dynamics, and i want this fn to operate
+    # inplace, that is required [so long as i am still calling plot_dynamics in
+    # fit_mb_model])
+    dropna_and_subset_all_to_same_times(dynamics_dict)
 
     return dynamics_dict
 
 
-def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
+# TODO use in test code too (that currently probably dupes this)
+# TODO + anywhere else where it would make sense
+def dropna_and_subset_all_to_same_times(dynamics_dict: DynamicsDict, *,
+    last_allowed_nan_time: float = -0.5, warn_: bool = True) -> None:
+    """If bouton_sims has NaN first time point, drop that and same time in all others.
+
+    Modifies dict inplace.
+    """
+    boutons = None
+    dropped = False
+    for k, arr in dynamics_dict.items():
+        if k != 'bouton_sims':
+            assert not arr.isnull().any(), (f'{k=} had null values. only expect one for'
+                ' bouton_sims (at first index only)'
+            )
+        else:
+            boutons = arr
+            t0 = boutons.get_index('time_s')[0]
+            if not boutons.isel(time_s=0).isnull().all():
+                if warn_ and t0 <= last_allowed_nan_time:
+                    # TODO check whether value of time index there is <= -0.5 before
+                    # warning?
+                    warn('boutons was not all null at first time index, as expected')
+            else:
+                if warn_:
+                    warn(f'dropped {t0=} (first time point) from bouton_sims, which was'
+                        ' all NaN. will subset all other values in dynamics_dict to '
+                        "have the same 'time_s' index"
+                    )
+
+                len_before = boutons.sizes['time_s']
+                boutons = boutons.isel(time_s=slice(1, None))
+                assert boutons.sizes['time_s'] == len_before - 1
+                dropped = True
+
+            assert not boutons.isnull().any(), ('boutons had null other than in '
+                'time point'
+            )
+
+    # no point subsetting if nothing had NaN (and only this one is allowed to)
+    if not dropped:
+        return
+
+    assert boutons is not None
+    nt_before = dynamics_dict['bouton_sims'].sizes['time_s']
+    dynamics_dict['bouton_sims'] = boutons
+    assert boutons.sizes['time_s'] == nt_before - 1
+
+    ts = boutons.get_index('time_s')
+    for k in list(dynamics_dict.keys()):
+        if k == 'bouton_sims':
+            continue
+
+        arr = dynamics_dict[k]
+        ts2 = arr.get_index('time_s')
+        if ts2.equals(ts):
+            # TODO TODO why is Is_from_kcs already subset? stale output (no)?
+            # Is_from_pns too. no others currently (in pn-claw-to-apl_False dir)
+            warn(f'{k=} already had times subset to match boutons')
+            continue
+
+        assert ts2[1:].equals(ts), f'time index on {k=} did not match that of boutons'
+
+        arr = arr.isel(time_s=slice(1, None)).copy()
+        assert arr.get_index('time_s').equals(ts)
+        dynamics_dict[k] = arr
+
+
+def load_and_plot_dynamics(model_dir: Path, **kwargs) -> MinMaxDict:
     # TODO say what we typically use kwargs for (currently nothing. delete? or use for
     # CLI vmin/vmax for certain plots?)
     """Loads all NetCDF (.nc) dynamics to a dict, and passes to `plot_dynamics`.
@@ -10163,8 +10490,11 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
     Saves all plots under a `model_dir / 'dynamics'` directory, which will be created if
     needed.
 
+    Returns dict with variable name to (min, max) tuples, for use determining fixed
+    ranges to use for subsequent calls, same as `plot_dynamics`.
+
     Args:
-        **kwargs: passed to `plot_example_dynamics`
+        **kwargs: passed to `plot_dynamics`
     """
     dynamics_dict = load_dynamics(model_dir)
 
@@ -10208,13 +10538,19 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
     plot_dir = model_dir / 'dynamics'
     makedirs(plot_dir)
 
+    # TODO add wAPL[KC|PN] and w[KC|PN]APL to kwargs for all calls?
+    # (otherwise will load from plot_dir.parent, should should be fine in this context
+    # ig)
+
     # all glomeruli, but still the default single odor
     #
     # currently makes:
     # - model_dynamics_<odor>_all-gloms.pdf
     # - bouton_dynamics_<odor>.pdf
     # - apl_dynamics_<odor>.pdf
-    plot_dynamics(plot_dir, dynamics_dict, stim_start=stim_start,
+    # NOTE: var2range should use all odor and all glomeruli, regardless of those
+    # arguments, so don't need to define separately for each call
+    var2range = plot_dynamics(plot_dir, dynamics_dict, stim_start=stim_start,
         stim_end=stim_end, title=title, glom=slice(None), **kwargs
     )
 
@@ -10248,6 +10584,8 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> None:
     )
     #
 
+    return var2range
+
 
 # TODO use elsewhere (+ factor to hong2p.util)
 def print_paths(paths: Sequence[Path]) -> None:
@@ -10258,6 +10596,35 @@ def print_paths(paths: Sequence[Path]) -> None:
     """
     for p in paths:
         print(p)
+
+
+def update_var2range(var2range: MinMaxDict, curr_var2range: MinMaxDict) -> None:
+    """Modifies var2range inplace, updating each min/max from curr_var2range
+
+    Currently expect all `curr_var2range` inputs (across all calls sharing the same
+    `var2range`), to have the same set of keys.
+    """
+    assert len(curr_var2range) > 0, 'curr_var2range can not be empty'
+    if len(var2range) != 0:
+        var_keys = var2range.keys()
+        # initially was asserting. hadn't tested that, but worried it might
+        # actually fail if called from a root containing models w/ sufficiently
+        # different parameters, such that they might have slightly different
+        # dynamics available.
+        if var_keys != curr_var2range.keys():
+            warn(f'{var_keys=} != {curr_var2range.keys()=}. check this makes sense!')
+
+    for k, (curr_min, curr_max) in curr_var2range.items():
+        if k not in var2range:
+            var2range[k] = (curr_min, curr_max)
+            continue
+
+        vmin, vmax = var2range[k]
+        if curr_min < vmin:
+            vmin = curr_min
+        if curr_max > vmax:
+            vmax = curr_max
+        var2range[k] = (vmin, vmax)
 
 
 def load_and_plot_dynamics_cli() -> None:
@@ -10297,8 +10664,18 @@ def load_and_plot_dynamics_cli() -> None:
     al_util.verbose = True
 
     if not recursive:
-        load_and_plot_dynamics(model_dir)
+        var2range = load_and_plot_dynamics(model_dir)
     else:
+        # TODO restore
+        #_n_dir_limit: Optional[int] = None
+        # TODO delete
+        _n_dir_limit: Optional[int] = 2
+        if _n_dir_limit is not None:
+            assert _n_dir_limit > 0
+            warn(f'ONLY ANALYZING FIRST {_n_dir_limit=} DIRS (HARDCODED DEBUG VALUE)! '
+                'set this value back to None when not debugging'
+            )
+
         model_output_root = model_dir
         model_output_dirs = []
         other_dirs = []
@@ -10325,8 +10702,31 @@ def load_and_plot_dynamics_cli() -> None:
             )
             print_paths(model_output_dirs)
 
+        var2range: MinMaxDict = dict()
+        count = 0
         for d in tqdm(model_output_dirs, unit='model-output-dir'):
-            load_and_plot_dynamics(d)
+            # TODO TODO have these calls return ranges for certain data types, so i can
+            # find max/min for fixed limits across all plots? mainly for
+            # plot_apl_dynamics, but maybe also plot_aligned_dynamics
+            # (maybe one dict w/ var_name -> range tuple/list?)
+            #
+            # NOTE: might need two calls, one from each root i want to set a fixed scale
+            # across (e.g. if i want different scales for
+            # PNAPL_steping/pn-claw-to-apl_False vs PNAPL_steping/pn-claw-to-apl_True)
+            curr_var2range = load_and_plot_dynamics(d)
+            update_var2range(var2range, curr_var2range)
+            # TODO print as we go?
+
+            count += 1
+            if _n_dir_limit is not None and count >= _n_dir_limit:
+                warn(f'STOPPING EARLY BECAUSE REACHED {_n_dir_limit=}! '
+                    'set back to None after debugging.'
+                )
+                break
+
+    print()
+    print('var2range:')
+    pprint(var2range)
 
 
 # TODO delete all these? or re-organize? want to minimize how much mb_model stuff
@@ -13754,6 +14154,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         delete_pretime=delete_pretime
     )
     if return_dynamics or plot_example_dynamics:
+        # inplace
+        dropna_and_subset_all_to_same_times(dynamics_dict)
+
         # TODO delete? may be able to handle via checking sim_only in get_dynamics now
         # (and this path has not been run in a while now...)
         if tune_on_hallem and not hallem_input:
@@ -13779,7 +14182,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert plot_dir is not None and make_plots
         dynamics_plot_dir = makedirs(plot_dir / 'dynamics')
         plot_dynamics(dynamics_plot_dir, dynamics_dict, mp=mp, title=title,
-            _odor_index=odor_index
+            wPNKC=wPNKC, wAPLKC=wAPLKC, wAPLPN=wAPLPN, _odor_index=odor_index,
         )
 
     orn_sims = dynamics_dict['orn_sims']
