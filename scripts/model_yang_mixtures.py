@@ -96,6 +96,9 @@ def main():
         comp_df = addlevel(diag_subset.droplevel('panel', axis='columns'), 'panel',
             panel, axis='columns'
         )
+        if panel == 'diag-binaries_max-rest0':
+            comp_df.loc[~comp_df.index.isin(odor2glom.values())] = 0
+
         # technically not just a list of series anymore... but should still work
         series_list.append(comp_df)
 

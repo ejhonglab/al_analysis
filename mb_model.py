@@ -2633,6 +2633,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             extra_cols_to_keep = [glomerulus_col, kc_type_col, 'instance_post']
             check_unique_per_claw = None
             if prat_boutons:
+                # TODO TODO how is that being handled?
                 # everything besides bouton_col
                 check_unique_per_claw = list(extra_cols_to_keep)
                 extra_cols_to_keep.append(bouton_col)
@@ -4199,15 +4200,6 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     else:
         assert len(wPNKC) == n_claws
 
-    # TODO see if i can also sort output in uniform case (b/c if not, might suggest
-    # there is other order-of-glomeruli dependence in fit_mb_model THAT THERE SHOULD NOT
-    # BE)
-    # TODO (still true? test described actually relevant? delete?) i can not seem to
-    # recreate uniform output (by sorting wPNKC post-hoc), but i'm not sure that's
-    # actually a problem. maybe input *should* always just be in a particular order, and
-    # shouldn't necessarily matter that it's this one...
-    wPNKC = wPNKC.sort_index(axis='columns')
-
     if Btn_separate:
         warn(f'expanding wPNKC to fixed # of boutons ({Btn_num_per_glom=}) per PN')
         wPNKC_btn = expand_wPNKC_to_boutons(wPNKC=wPNKC,
@@ -4672,9 +4664,43 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # gloms w/ 0 weight in either PN<>APL direction?
 
         wPNKC = wPNKC3
+        # TODO delete
+        # NOTE: this is all w/ sort_index on columns above, as i had before
+        # TODO TODO TODO what's wrong here?
+        # columns have [glom, pn, bouton] in reverse order in c2 and claw2bouton, but
+        # there is something else different
+        # both indices are sorted
+        # TODO TODO TODO oh, need to reset_index or something here? why not in other
+        # calls tho?
+        #c2 = claw2bouton_from_wPNKC(wPNKC)
+        # TODO TODO TODO why getting KeyError when called from model_yang_mixtures.py
+        # now??? and seemingly not from other contexts, like pnapl stepping or
+        # test_dynamics_indexing??? had just saved this plot:
+        ## prat-claws_True__prat-boutons_True__connectome-APL_True/n_kcs_per_glom_order-n-syn.pdf
+        #c2 = c2.reset_index().set_index(claw_cols)[claw2bouton.columns]
+        ## ok it was just some weird dtype thing. claw2bouton had them as type object for
+        ## some reason (vs int64 in c2)
+        #assert c2.convert_dtypes().equals(claw2bouton.convert_dtypes())
+        #
+        # NOTE: columns are NOT equal to themselves sorted here (if it matters, which it
+        # might?). rows are though (and presumably also were in other cases)
 
     # TODO add assertion (for both tianpei case and mine) that no bouton
     # (columns) have all 0 values? (currently doing in prat_boutons=True case above)
+
+    # TODO see if i can also sort output in uniform case (b/c if not, might suggest
+    # there is other order-of-glomeruli dependence in fit_mb_model THAT THERE SHOULD NOT
+    # BE)
+    # TODO (still true? test described actually relevant? delete?) i can not seem to
+    # recreate uniform output (by sorting wPNKC post-hoc), but i'm not sure that's
+    # actually a problem. maybe input *should* always just be in a particular order, and
+    # shouldn't necessarily matter that it's this one...
+    wPNKC = wPNKC.sort_index(axis='columns')
+    # (delete) also check that all KC<>APL weights and PN<>APL weights also have
+    # their indices sorted?
+    # KC<>APL ones did, but not PN<>APL ones. those only did after sorting
+    # here, although their indices were equal to wPNKC.columns
+    assert wPNKC.index.equals(wPNKC.index.sort_values())
 
     # TODO option to also return a version of (long-form) df, so i can use for a test
     # comparing old + new hemibrain version, as i'm currently doing w/ sloppy code
@@ -5167,9 +5193,12 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     assert not (wPNKC == 0).T.all().any()
 
                     index_names = wPNKC.index.names
-                    # TODO TODO TODO need to check this is same as at similar step in
+                    # TODO TODO need to check this is same as at similar step in
                     # connectome_wPNKC? any way to avoid re-introducing these dupes in
                     # the first place?
+                    # (oh well, this is a less important branch anyway.
+                    # per_claw_pn_apl_weights=False is actually the important one.)
+                    breakpoint()
                     wPNKC = wPNKC.reset_index().drop_duplicates(subset=claw_cols
                         ).set_index(index_names)
 
@@ -5178,6 +5207,10 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 # index from there)
                 claw2bouton = wPNKC.replace(0, np.nan).stack().index.to_frame(
                     index=False).set_index(claw_cols).explode(BOUTON_ID).reset_index()
+                # TODO TODO should i use claw2bouton_from_wPNKC here?
+                # (oh well, this is a less important branch anyway.
+                # per_claw_pn_apl_weights=False is actually the important one.)
+                breakpoint()
 
                 # TODO TODO remove as much of claw2bouton stuff below as i can. no
                 # longer need most (now that it's all duped to, and may only be needed
@@ -5236,7 +5269,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 only_assigned_bouton_apl2pn = apl2pn_df[apl2pn_df[BOUTON_ID] != -1]
 
                 if plot_dir is not None:
-
                     # TODO plot this (in connectome_wPNKC, if not already plotted there)
                     #
                     # NOTE: prior filtering is mostly done on a claw basis (requiring
@@ -5904,6 +5936,9 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         index = pd.Index((apl2kc_ids | kc2apl_ids), name=KC_ID)
     #
     else:
+        # TODO TODO TODO where am i getting bouton index from tho?
+        # TODO TODO TODO i'm not using this for either of the PN<>APL weight vectors, am
+        # i?
         index = wPNKC.index.copy()
         unique_kc_ids = index.get_level_values(KC_ID).unique()
 
@@ -6386,6 +6421,10 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
             assert not wPNKC.columns.duplicated().any()
 
+            # TODO TODO use my own reindex fn?
+            # TODO TODO TODO how was this passing, if wPNKC columns were previously NOT
+            # sorted here, but these things are below? i don't see an explicit sort
+            # below
             wAPLPN = wAPLPN.reindex(wPNKC.columns)
             assert wAPLPN.index.equals(wPNKC.columns)
 
@@ -7223,19 +7262,15 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     # TODO TODO assert sum of claws is reasonable though (probably going
                     # to just delete bouton plot here, or normalize first, or else would
                     # want to do something similar there)
-                    # TODO delete
-                    #breakpoint()
 
+    # TODO (delete? still present?) fill in unknown KC type (NaN here) w/ mean weight of
+    # other type? or drop? (and prob do one by default) (at least it's just 80/1830
+    # cells) (what is latest fraction w/ v3 pratyush data?)
 
-    # TODO fill in unknown KC type (NaN here) w/ mean weight of other type? or
-    # drop? (and prob do one by default) (at least it's just 80/1830 cells)
-    # (what is latest fraction w/ v3 pratyush data?)
+    # true, in prat_boutons=True case tested (and presumably all others)
+    for x in [wAPLKC, wKCAPL, wAPLPN, wPNAPL]:
+        assert x.index.equals(x.index.sort_values())
 
-    # TODO TODO TODO actually save wAPLPN/wPNAPL (in fit_and_plot... maybe actually loop
-    # over objects in param_dict, and pop all Series, and use that to replace existing
-    # hardcode code for wAPLKC/wKCAPL?)
-    # TODO add flags to control shape of wAPLPN/wPNAPL (length # claws make sense? #
-    # glomeruli? # boutons?)?
     return wAPLKC, wKCAPL, wAPLPN, wPNAPL
 
 
@@ -9624,13 +9659,14 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         wAPLPN: see `wAPLKC`. for computing + plotting APL>PN (where typically
             PN=bouton) inhibition.
 
+        wPNKC: see `wAPLKC`. for computing pre-inhibition versions of some responses,
+            which is used to compute clipped version of inhition (per-unit)
+
         wKCAPL: should truly be optional. if passed, or if exists as parquet in
             `plot_dir.parent`, will be used to recompute and check `olfsysm`
             calculations of some things
 
         wPNAPL: see `wKCAPL`
-
-        wPNKC:  see `wKCAPL`
 
         warn_: if True, will warn if `wKCAPL` or `wPNAPL` were not passed, and also were
             not available as a parquet file in `plot_dir.parent`, since we can't do all
@@ -9768,6 +9804,9 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     if wAPLPN is None:
         wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
 
+    if wPNKC is None:
+        wPNKC = read_parquet(model_output_dir / 'wPNKC.parquet')
+
     if wKCAPL is None:
         parquet = model_output_dir / 'wKCAPL.parquet'
         if parquet.exists():
@@ -9786,20 +9825,10 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
                 'will not be able to do all checks.'
             )
 
-    # TODO TODO require these weights (or at least wPNKC), so i can plot claws_no_inh?
-    if wPNKC is None:
-        parquet = model_output_dir / 'wPNKC.parquet'
-        if parquet.exists():
-            wPNKC = read_parquet(parquet)
-        elif warn_:
-            warn(f'plot_apl_dynamics: wPNKC not passed, and {parquet} did not exist. '
-                'will not be able to do all checks.'
-            )
-
-    optional_weights = [wKCAPL, wPNAPL, wPNKC]
+    optional_weights = [wKCAPL, wPNAPL]
     if any(x is None for x in optional_weights):
         assert all(x is None for x in optional_weights), ('currently assuming that if '
-            'any of the optional wKCAPL/wPNAPL/wPNKC weights are passed, they all are'
+            'any of the optional wKCAPL/wPNAPL weights are passed, they all are'
         )
         have_optional_weights = False
     else:
@@ -9879,6 +9908,9 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # above comment
         vmin, vmax = var2range['pn_sims']
         inh2pns_min = inh2pns.min().item()
+        # TODO TODO TODO jesus christ:
+        # TODO TODO TODO TODO figure out the clipping
+        # AssertionError: vmax=177.49935256444556 < inh2pns_max=50617.26800558423
         inh2pns_max = inh2pns.max().item()
         # TODO TODO need to fix? should def be True if we are taking mean of clipped
         # inhibition, which above should probably be replaced w/ anyway
@@ -9887,10 +9919,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
 
     # TODO may want to remove the `odor != slice(None)` restriction later, would just
     # add to complexity of code in this conditional slightly
-    if have_optional_weights and odor != slice(None):
-        wKCAPL = series2xarray_like(wKCAPL, claws)
-        wPNAPL = series2xarray_like(wPNAPL, boutons)
-
+    if odor != slice(None):
         # don't need fn like above for DataFrames. DataArray constructor handles those
         # fine.
         wPNKC_arr = xr.DataArray(data=wPNKC, dims=['claw', 'bouton'])
@@ -9902,6 +9931,8 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         assert glomerulus_col in claw_index2.names
         assert claw_index2.droplevel(glomerulus_col).equals(claw_index)
 
+        # TODO TODO TODO is it problematic that this index is not equal to itself
+        # sorted? could that be part of indexing issue? (if there is one...)
         bouton_index = wPNKC_arr.get_index('bouton')
         assert bouton_index.equals(wPNKC.columns)
         assert boutons.get_index('bouton').equals(bouton_index)
@@ -9928,6 +9959,8 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
             'glomerulus'
         )
+        # TODO TODO TODO maybe restrict this comparison to odor window? something weird
+        # happening after?
         assert boutons_no_inh.dims == ('bouton', 'time_s')
         assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
 
@@ -9950,6 +9983,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # .dot returns something that had dot product computed over shared dimensions,
         # which is just 'bouton' between these two, so we will be left with dims
         # ('time_s', 'claw')
+        # TODO TODO do i have to do anything with spont?
         claws_no_inh = wPNKC.dot(boutons)
 
         # removing the 'glomerulus' level from the 'claw' MultiIndex, since wPNKC (and
@@ -9958,8 +9992,27 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # restoring the 'claw' dim MultiIndex
         claws = move_all_coords_to_index(claws)
 
-        # TODO TODO assert (claws_no_inh >= claws).all()
-        # TODO TODO and same for boutons?
+        # TODO this all work?
+        assert coords_equal(boutons, boutons_no_inh)
+        assert coords_equal(claws, claws_no_inh)
+
+        # NOTE: would probably also fail if there was any chance of boutons (or anything
+        # really) having NaN still
+        #
+        # ok, this one is true at least
+        # TODO TODO TODO also see if we can subtract inh2pns we recalculated above from
+        # boutons_no_inh, and get boutons (after clipping)
+        assert (boutons_no_inh >= boutons).all()
+        # TODO TODO TODO FIX. at least claws one is failing
+        print('FIX CLAWS_NO_INH < CLAWS (bouton indexing issue?)')
+        # TODO TODO ok, well maybe my sorting change did do something? this is different
+        # from what i remember (thought it was more like 0.5, but i could be wrong)
+        # (maybe that was in pn_claws_to_apl=False case? below in =True case)
+        # ipdb> (claws_no_inh >= claws).mean()
+        # <xarray.DataArray ()>
+        # array(0.15)
+        #
+        #assert (claws_no_inh >= claws).all()
 
         # TODO TODO TODO plot inh onto each after clipping (s.t. inh can't push it below
         # 0)?
@@ -9970,7 +10023,24 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # array)?
         # TODO TODO TODO restore
         print('RESTORE BREAKPOINT')
-        breakpoint()
+        #breakpoint()
+
+    # TODO may want to remove the `odor != slice(None)` restriction later, would just
+    # add to complexity of code in this conditional slightly
+    if have_optional_weights and odor != slice(None):
+        # TODO TODO TODO actually use these two
+        print('before KCAPL call', flush=True)
+        wKCAPL = series2xarray_like(wKCAPL, claws)
+        print('before PNAPL call', flush=True)
+        # TODO TODO why is this an issue again? are yang model outputs wrong?
+        # TODO TODO why was this not triggering call at end of connectome_APL_weights,
+        # that checks indices are sorted?
+        # ipdb> i1.equals(i1.sort_values())
+        # False
+        # ipdb> i2.equals(i2.sort_values())
+        # True
+        # TODO TODO TODO fix
+        wPNAPL = series2xarray_like(wPNAPL, boutons)
 
     # TODO delete
     #breakpoint()
@@ -11550,6 +11620,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         kc_index = wPNKC.index.copy()
     else:
         claw_index = wPNKC.index.copy()
+        # TODO TODO TODO do rows of this need to also have claws in order so that
+        # corresponding PNs are consecutive, with PNs sorted, in order for outputs to
+        # make sense? see what olfsysm is doing. check claw2bouton?
 
         # assumed that these are the only KC-only levels, and that all other levels are
         # defined per-claw
@@ -12029,8 +12102,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert wPNKC.columns.equals(glomerulus_index)
         assert wPNKC.columns.equals(sfr.index)
     else:
-        assert wPNKC.columns.equals(bouton_index)
         assert wPNKC.columns.get_level_values(glomerulus_col).unique().equals(sfr.index)
+        # bouton_index is defined from wPNKC.columns above, so is this just checking
+        # nothing changed? or is it not checking anything?
+        assert wPNKC.columns.equals(bouton_index)
 
     # TODO delete eventually. just checking that old code that subset like this
     # wasn't necessary
@@ -12428,6 +12503,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             'glom_to_btn did not start from index 0!'
 
         rv.pn.Btn_to_pn = btn_to_glom_idx
+        # TODO TODO TODO TODO also check this one. it's used to compute
+        # pn_to_kc_drive_at_t
         rv.pn.pn_to_Btns = glom_to_btn
 
     if fixed_thr is not None and not is_scalar(fixed_thr):
@@ -12725,12 +12802,22 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 'per_claw_pn_apl_weights=True case'
             )
 
+            index_before = wPNKC.index.copy()
+            columns_before = wPNKC.columns.copy()
             # will no longer have bouton_cols in columns after
             # TODO want to do anything to move them back to index first? should be ok
             # w/o them, right?
             # TODO refactor to avoid need for this separate variable?
             # TODO .mean() instead?
-            wPNKC_for_model = wPNKC.groupby(glomerulus_col, axis='columns').sum()
+            # TODO ah, fuck, was this causing the disconnect between these and APL<>PN
+            # weights (by sorting, when wPNKC and PN<>APL weights previously had equal
+            # indices, but accidentally not sorted)?
+            # (it's not the important per_claw_pn_apl_weights=False case...)
+            wPNKC_for_model = wPNKC.groupby(level=glomerulus_col, axis='columns',
+                sort=False).sum()
+
+            # TODO assert above doesn't change index/columns
+            breakpoint()
 
             # since still expecting {0, 1} for values below
             # (could probably also replace .sum() above w/ .any()?)
@@ -12742,6 +12829,35 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # and not sure that will change...)
         # if `_wPNKC is not None`, its contents were already copied into wPNKC above
         rv.kc.wPNKC = wPNKC_for_model
+
+        # ok, so in per_claw_pn_apl_weights=False case (the important one), still had
+        # w[APLPN|PNAPL].index equal to wPNKC.columns here, even when none were sorted
+        # (b/c no sort_index(axis='columns') call on wPNKC before returning).
+        # still possible the fact that it's not sorted was a problem?
+        # orn_deltas glomeruli currently also in order as in wPNKC. i assume at least
+        # the glomeruli were sorted before? maybe not?
+        # (i'm trying to understand why claws_no_inh is often larger than claws in
+        # plot_apl_dynamics)
+        # TODO TODO check order of orn_deltas and everything are still in same order
+        # here?
+        # TODO TODO TODO check i can invert claw2boutons? (and maybe that i couldn't
+        # before)
+        # NOTE: claw_index rows with the same glomeruli are NOT consecutive in
+        # claw2bouton_from_wPNKC output, which returns index same as claw_index
+        if prat_boutons:
+            Btn_to_pn = np.array(rv.pn.Btn_to_pn)
+            # TODO was this also true before sorting wPNKC?
+            assert orn_deltas.iloc[Btn_to_pn].index.equals(
+                wPNKC.columns.get_level_values(glomerulus_col)
+            )
+            #
+            # can't convert this one to an array, cause it's a list of lists
+            # (where inner lists are of variable length)
+            # TODO TODO what to check here?
+            print('what to check here?')
+            pn_to_Btns = rv.pn.pn_to_Btns
+            #breakpoint()
+            # TODO TODO TODO save those outputs in olfsysm to check against?
 
     # TODO need delete=False?
     # TODO need to set delete_on_close=False too?
@@ -13840,13 +13956,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO move outside containing conditional?
         if prat_boutons and not per_claw_pn_apl_weights:
+            # TODO delete eventually
+            assert bouton_index.equals(bouton_index.sort_values())
+            assert bouton_index.equals(wAPLPN.index)
+            assert bouton_index.equals(wPNAPL.index)
+            #
+
             # TODO refactor (to ideally one fn per weight vector. above and below)
             wAPLPN2 = pd.Series(index=bouton_index, data=rv.pn.wAPLPN.squeeze())
             wPNAPL2 = pd.Series(index=bouton_index, data=rv.pn.wPNAPL.squeeze())
             # TODO TODO double check this is just a rescaled version of input
             # (or just equal to input) before overwriting (want to make sure we
             # preserving indexing)
-            #breakpoint()
             wAPLPN = wAPLPN2
             wPNAPL = wPNAPL2
 
@@ -14182,7 +14303,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert plot_dir is not None and make_plots
         dynamics_plot_dir = makedirs(plot_dir / 'dynamics')
         plot_dynamics(dynamics_plot_dir, dynamics_dict, mp=mp, title=title,
-            wPNKC=wPNKC, wAPLKC=wAPLKC, wAPLPN=wAPLPN, _odor_index=odor_index,
+            # TODO should warn if only some of these are passed in, and not all
+            wPNKC=wPNKC, wAPLKC=wAPLKC, wAPLPN=wAPLPN, wKCAPL=wKCAPL, wPNAPL=wPNAPL,
+            _odor_index=odor_index,
         )
 
     orn_sims = dynamics_dict['orn_sims']

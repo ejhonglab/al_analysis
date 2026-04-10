@@ -20,7 +20,7 @@ import xarray as xr
 import al_util
 #
 from hong2p.util import pd_allclose, equals
-from hong2p.xarray import coords_equal
+from hong2p.xarray import coords_equal, series2xarray_like, move_all_coords_to_index
 import olfsysm as osm
 
 from al_util import warn, diag_panel_str, fly_cols, load_natmix_dff, data_root
@@ -3185,7 +3185,7 @@ def test_dynamics_indexing(orn_deltas):
     # (2nd omits it, and False is default)
     kws = BOUTON_MODEL_KW_LIST[0]
 
-    responses, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
+    responses, _, wPNKC1, params = _fit_mb_model(orn_deltas=orn_deltas,
         return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
         # TODO TODO TODO set weights TO APL to nonzero. should still work, and then
         # could test (some of?) inh / Is / Is_from_kcs calcs, right? would then just
@@ -3229,16 +3229,28 @@ def test_dynamics_indexing(orn_deltas):
 
     time_s_after = boutons.time_s.to_index()
     dropped_timepoints = time_s_before.difference(time_s_after)
-    assert len(dropped_timepoints) == 1, \
-        'dropped more than one NaN bouton timepoint (pretime deleted?)'
-    t0 = dropped_timepoints[0]
-    assert t0 == time_s_before.min(), \
-        'dropped timepoint was not first (pretime deleted?)'
-    warn(f'dropped first timepoint (={t0}) after pretime '
-        '(= start time < odor onset = 0)'
-    )
-    assert boutons.sizes['time_s'] == n_samples0 - 1
+    if len(dropped_timepoints) == 0:
+        warn('bouton NaN was probably already dropped? where exactly though? make '
+            'more explicit?'
+        )
+        assert boutons.sizes['time_s'] == 2499
+        # just checking we already dropped them in everything
+        assert {
+            x.sizes['time_s'] for x in params.values() if isinstance(x, xr.DataArray)
+        } == {2499}
+    else:
+        assert len(dropped_timepoints) == 1, \
+            'dropped more than one NaN bouton timepoint (pretime deleted?)'
+        t0 = dropped_timepoints[0]
+        assert t0 == time_s_before.min(), \
+            'dropped timepoint was not first (pretime deleted?)'
+        warn(f'dropped first timepoint (={t0}) after pretime '
+            '(= start time < odor onset = 0)'
+        )
+        assert boutons.sizes['time_s'] == n_samples0 - 1
 
+    # TODO could skip the .sel stuff, as it seems we are now in the case above where we
+    # have already dropped that one timepoint from everything
     claws = params['claw_sims'].sel(time_s=boutons.time_s)
     kcs = params['vm_sims'].sel(time_s=boutons.time_s)
     # orns/pns are the only ones not 0 for first timepoint (the one dropped from
@@ -3246,8 +3258,7 @@ def test_dynamics_indexing(orn_deltas):
     pns = params['pn_sims'].sel(time_s=boutons.time_s)
     orns = params['orn_sims'].sel(time_s=boutons.time_s)
 
-    # TODO delete (move to unit test for coords_equal)
-    #
+    wPNKC = xr.DataArray(wPNKC1, dims=['claw', 'bouton'])
 
     # TODO also some kind of check against orn_deltas / wPNKC indices?
     # TODO and kc/claw indices vs those of APL<>KC weights?
@@ -3325,6 +3336,8 @@ def test_dynamics_indexing(orn_deltas):
     assert bouton_glom_mins.identical(boutons.groupby('glomerulus').max())
     assert bouton_glom_mins.identical(pns)
 
+    # TODO TODO convert wPNKC to arr and check we can recreate claw from bouton?
+
     claw_glom_mins = claws.groupby('glomerulus').min()
     assert claw_glom_mins.identical(claws.groupby('glomerulus').max())
     # TODO worth a test that if we have non-0/1 wPNKC we can get the expected divergence
@@ -3335,26 +3348,34 @@ def test_dynamics_indexing(orn_deltas):
     # bouton_sims are
     assert claw_glom_mins.identical(pns)
 
+    # pretty slow. just do for ~2 odors?
+    # TODO delete. too slow (and tests on it might get killed)
+    #claws2 = wPNKC.dot(boutons)
+    for oi in [0, 3]:
+        odor_claws = claws.isel(stim=oi).squeeze(drop=True)
+
+        odor_boutons = boutons.isel(stim=oi).squeeze(drop=True)
+        odor_claws2 = wPNKC.dot(odor_boutons)
+
+        odor_claws = move_all_coords_to_index(
+            odor_claws.reset_index('claw').drop_vars(['glomerulus', 'stim'])
+        )
+        # TODO why does drop=True not remove this 'stim' var? call my fn to remove
+        # scalar coords?
+        odor_claws2 = odor_claws2.drop_vars('stim')
+        # the coords check is pretty slow (~5-10s). allclose is faster.
+        assert coords_equal(odor_claws2, odor_claws)
+        assert np.allclose(odor_claws2, odor_claws)
+
     # TODO some way to not drop other metadata? want to preserve what we have in `kcs`,
     # but prob nbd. just kc_type missing it seems (may actually want to drop some
     # metadata, if [as i assume] we have more claw metadata than kc metadata)
+    # NOTE: these are used in fn below
     claw_sums = claws.groupby('kc_id').sum()
     assert np.array_equal(claw_sums.kc_id, kcs.kc_id)
     # TODO assert coords are only diff by kc_type (b/c kcs has it but claw_sums
     # doesn't), or also resolve that and assert coords equal?
     #
-    # TODO (delete?) need to make KC_ID the only index on KC dim in order for this to
-    # work?
-    # ipdb> claw_sums.sizes
-    # Frozen({'stim': 17, 'kc_id': 1732, 'time_s': 2499})
-    # ipdb> kcs.sizes
-    # Frozen({'stim': 17, 'kc': 1732, 'time_s': 2499})
-    # ipdb> claw_sums.sizes == kcs.sizes
-    # False
-
-    # TODO TODO TODO check something w/ wPNKC (check w/ claw_sums vs boutons[/pns] not
-    # already doing that?) (that we can recalc claws from boutons and wPNKC, ideally)
-
     # TODO also check other odors? currently hardcoding isel(stim=0)
     def check_we_can_recreate_kc_vm_from_claw_sums(i: int, j: Optional[int] = None
         ) -> float:
@@ -3444,23 +3465,208 @@ def test_dynamics_indexing(orn_deltas):
         # have equal arr1/arr2? (+ tqdm at that point?) (maybe there would be some rows
         # equal though?)
 
-    # TODO TODO TODO use (/ delete)
-    # TODO i assert something about Is shifted relative to Is_from_kcs in
-    # mb_model.plot_dynamics, right? move that here (too?)?
-    Is = params['Is_sims'].sel(time_s=boutons.time_s)
-    Is_from_kcs = params['Is_from_kcs'].sel(time_s=boutons.time_s)
-    Is_from_pns = params['Is_from_pns'].sel(time_s=boutons.time_s)
-    inh = params['inh_sims'].sel(time_s=boutons.time_s)
-    #
-
-    wKCAPL = params['wKCAPL']
-    wPNAPL = params['wPNAPL']
-
+    wKCAPL = series2xarray_like(params['wKCAPL'], claws)
+    wPNAPL = series2xarray_like(params['wPNAPL'], boutons)
 
     # TODO TODO TODO prob need separate call w/o APL output disabled to actually check
     # these?
-    wAPLKC = params['wAPLKC']
-    wAPLPN = params['wAPLPN']
+    wAPLKC = series2xarray_like(params['wAPLKC'], claws)
+    wAPLPN = series2xarray_like(params['wAPLPN'], boutons)
+
+    Is = params['Is_sims'].sel(time_s=boutons.time_s)
+    Is_from_kcs = params['Is_from_kcs'].sel(time_s=boutons.time_s)
+    if mp.kc.pn_claw_to_apl:
+        assert coords_equal(claws.dot(wKCAPL), Is_from_kcs)
+        assert np.allclose(claws.dot(wKCAPL), Is_from_kcs)
+        # TODO this doesn't matter, right? explain why i dont want to use this var for
+        # Is_from_kcs here? i suppose cause this has dynamics and Is_from_kcs wouldn't
+        # here (i.e. it's own decay)?
+        assert (Is == 0).all()
+    else:
+        # TODO also check we can recreate Is here
+        # TODO TODO TODO what to test here? use spike_recordings?
+        breakpoint()
+
+    # TODO TODO TODO then just need to verify wAPLPN indexing (need to enable some
+    # inhibition for that?)
+    Is_from_pns = params['Is_from_pns'].sel(time_s=boutons.time_s)
+    # this should verify wPNAPL indexing in model (and pn>bouton indexing should already
+    # have been confirmed above). not .equals exactly, but allclose.
+    assert coords_equal(boutons.dot(wPNAPL), Is_from_pns)
+    assert np.allclose(boutons.dot(wPNAPL), Is_from_pns)
+
+    # TODO TODO TODO use (/ delete) all below
+    # TODO i assert something about Is shifted relative to Is_from_kcs in
+    # mb_model.plot_dynamics, right? move that here (too?)?
+    # TODO TODO TODO also test this one here (already have some code for this in
+    # mb_model?) (will handle later. higher priority to check APL>(KC,PN) weights below)
+    inh = params['inh_sims'].sel(time_s=boutons.time_s)
+
+    assert mp.pn.preset_wPNAPL
+    # TODO TODO TODO why does inh blow up towards the end, but this doesn't?
+    # also happen w/ more realistic setups? just test w/ all weights enabled, below?
+    inh2 = (Is_from_pns + Is_from_kcs - inh.shift(time_s=1)) * (dt/mp.kc.apl_taum)
+    print('finish checking inh2 vs inh (finding why so diff...)')
+    #breakpoint()
+    #
+    # TODO TODO fix so below won't get killed. del all above? separate test?
+
+
+# TODO combine back into one test? rename at least
+def test_dynamics_indexing2(orn_deltas):
+    # shouldn't matter which of the two (pn_claw_to_apl=True/False) we use
+    # NOTE: 1st currently has pn_claw_to_apl=True, and 2nd is same but with it False
+    # (2nd omits it, and False is default)
+    kws = BOUTON_MODEL_KW_LIST[0]
+
+    # TODO TODO TODO separate tests w/ only either wAPLKC or wAPLPN = 1 (other 0),
+    # to see if outputs make more sense for either of those?
+    _, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
+        # refactor to share w/ above. only difference here is wAPLKC & wAPLPN
+        # are now also 1.0 (instead of 0.0 before)
+        # TODO TODO TODO restore
+        #fixed_thr=1e6, wAPLKC=1.0, wAPLPN=1.0, wKCAPL=1.0, wPNAPL=1.0, **kws
+        #fixed_thr=1e6, wAPLKC=0.0, wAPLPN=0.0, wKCAPL=1.0, wPNAPL=1.0, **kws
+        # TODO TODO TODO actually, i think i need to test w/ either wKCAPL or wPNAPL 0
+        # (-> see if we can recreate inh any better)
+        fixed_thr=1e6, wAPLKC=0.0, wAPLPN=0.0, wKCAPL=1.0, wPNAPL=0.0, **kws
+    )
+    # shouldn't be able to re-run model, since I set delete_pretime=True above (to save
+    # memory), but should still be able to get parameters from these without issue
+    # TODO also assert wAPLKC in this is all 0?
+    rv = params['rv']
+    mp = params['mp']
+
+    # TODO get dt from diffing time index instead (/check against that?)?
+    dt = mp.time_dt
+
+    # we should have set the threshold high enough to avoid spiking
+    assert (params['spike_recordings'] == 0).all()
+
+    # TODO delete. was only for when this was part of test above
+    # don't need to redefine the DataArray wPNKC (constructed from wPNKC1), if this
+    # passes
+    #assert wPNKC1.equals(wPNKC2)
+    # TODO also remove the time_s subsetting in above. shouldn't be needed anymore
+    # TODO subset all down to one odor first? or change code below?
+    pns = params['pn_sims']
+    boutons = params['bouton_sims']
+    claws = params['claw_sims']
+    inh = params['inh_sims']
+
+    Is_from_kcs = params['Is_from_kcs']
+    Is_from_pns = params['Is_from_pns']
+    wAPLKC_all0 = (rv.kc.wKCAPL == 0).all()
+    wAPLPN_all0 = (rv.pn.wPNAPL == 0).all()
+    # may also want to assert only one is not all0 (or at least focus on those cases for
+    # now. could integrate into one test w/ both enabled in one call later)
+    assert not (wAPLKC_all0 and wAPLPN_all0)
+
+    if wAPLKC_all0:
+        assert (Is_from_kcs == 0).all()
+
+    if wAPLPN_all0:
+        assert (Is_from_pns == 0).all()
+
+    assert mp.pn.preset_wPNAPL
+    # TODO TODO TODO why does inh blow up towards the end, but this doesn't?
+    # also happen w/ more realistic setups? just test w/ all weights enabled, below?
+    # TODO TODO does it still here (like w/ two weight scales 0 above)?
+    inh2 = (Is_from_pns + Is_from_kcs - inh.shift(time_s=1)) * (dt/mp.kc.apl_taum)
+    # TODO TODO TODO fix still large divergence between inh/inh2 in case only
+    # Is_from_pns nonzero
+
+    # NOTE: much of below copied from WIP code in plot_apl_dynamics don't need fn like
+    # above for DataFrames. DataArray constructor handles those fine.
+    wPNKC_arr = xr.DataArray(data=wPNKC, dims=['claw', 'bouton'])
+    assert np.array_equal(wPNKC_arr.values, wPNKC.values)
+
+    claw_index = wPNKC_arr.get_index('claw')
+    assert claw_index.equals(wPNKC.index)
+    claw_index2 = claws.get_index('claw')
+    assert glomerulus_col in claw_index2.names
+    assert claw_index2.droplevel(glomerulus_col).equals(claw_index)
+
+    # TODO TODO TODO is it problematic that this index is not equal to itself
+    # sorted? could that be part of indexing issue? (if there is one...)
+    bouton_index = wPNKC_arr.get_index('bouton')
+    assert bouton_index.equals(wPNKC.columns)
+    assert boutons.get_index('bouton').equals(bouton_index)
+    wPNKC = wPNKC_arr
+
+    # TODO subset to single odor from here? or change code below?
+    # TODO why am i needing tot manually drop 'stim' on all these?
+    pns = pns.isel(stim=0).squeeze(drop=True).drop_vars('stim')
+    boutons = boutons.isel(stim=0).squeeze(drop=True).drop_vars('stim')
+    claws = claws.isel(stim=0).squeeze(drop=True).drop_vars('stim')
+    #
+
+    # ah, it's failing when we are not also analyzing just a single odor.
+    # ipdb> odor
+    # slice(None, None, None)
+    # ipdb> pns.dims
+    # ('panel', 'glomerulus', 'time_s')
+    assert pns.dims == ('glomerulus', 'time_s'), f'{pns.dims=}'
+    # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
+    # outside of the bouton index (first row in output below):
+    # Coordinates:
+    #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+    # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
+    # * bouton      (bouton) MultiIndex
+    # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+    # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
+    # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
+    #
+    # expanding each PN up to # of times it appears in boutons (and in same order as
+    # there)
+    boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
+        'glomerulus'
+    )
+    assert boutons_no_inh.dims == ('bouton', 'time_s')
+    assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
+
+    # (it is True now that i've actually removed the NaN by here)
+    # > (boutons >= 0).all()
+    # False
+    boutons_min = boutons.min().item()
+    # should == 0 almost certainly, at least if there is any meaningful PN>APL
+    # inhibition enabled, with APL actually getting activity
+    # TODO assert it's >0 otherwise?
+    assert boutons_min >= 0, f'had some bouton activities < 0. min={boutons_min}'
+
+    # TODO see if we get any performance benefit to using any scipy.sparse or Sparse
+    # (https://sparse.pydata.org/en/stable/) representation of data while
+    # constructing wPNKC
+    # TODO any other way to get sparse DataArrays?
+    #
+    # need to start w/ boutons that have already have inh applied here.
+    # takes a couple seconds, but haven't gotten killed yet.
+    # .dot returns something that had dot product computed over shared dimensions,
+    # which is just 'bouton' between these two, so we will be left with dims
+    # ('time_s', 'claw')
+    claws_no_inh = wPNKC.dot(boutons)
+
+    # removing the 'glomerulus' level from the 'claw' MultiIndex, since wPNKC (and
+    # thus claws_no_inh, does not have it)
+    claws = claws.reset_index('claw').drop_vars('glomerulus')
+    # restoring the 'claw' dim MultiIndex
+    breakpoint()
+    claws = move_all_coords_to_index(claws)
+
+    # TODO this all work?
+    assert coords_equal(boutons, boutons_no_inh)
+    assert coords_equal(claws, claws_no_inh)
+
+    # NOTE: would probably also fail if there was any chance of boutons (or anything
+    # really) having NaN still
+    #
+    # ok, this one is true at least
+    assert (boutons_no_inh >= boutons).all()
+    # TODO TODO TODO FIX. at least claws one is failing
+    print('FIX CLAWS_NO_INH < CLAWS (bouton indexing issue?)')
+    #assert (claws_no_inh >= claws).all()
+
 
     # TODO TODO TODO also test alignment of APL<>KC and PN<>APL weights
     # (at least when claw & bouton lengths, respectively)

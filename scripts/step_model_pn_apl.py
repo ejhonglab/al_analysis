@@ -495,6 +495,9 @@ def main():
         help='only analyzes the corners of the sweep, also excluding the tuned values. '
         'for quick tests of extreme behavior.'
     )
+    # TODO is this also happening in initial fit_mb_model calls w/o me requesting it (i
+    # think so. ig it's default?)? do i want that? maybe assert this flag isn't passed
+    # unless -o/--only-analyze-outputs then?
     parser.add_argument('-p', '--plot-dynamics', action='store_true',
         help='loads and plots saved dynamics (in the analyze_outputs call, so '
         'works with -o/--only-analyze-outputs)'
@@ -514,6 +517,11 @@ def main():
     # TODO is this required to see when we are saving figs (think so)? change so that's
     # not the case (and for saving other things, if necessary)?
     al_util.verbose = True
+
+    # TODO TODO TODO also analyze natmix (ea/eb/binary/kmix, same for control) mix
+    # suppression (and plot avg of metric(s) of that across steps, and do same for yangs
+    # real and synthetic odors) (here or be factoring some code out of here and then
+    # calling in those scripts? prob here)
 
     # should now be loading the new signed absmax response calc version
     orn_deltas = megamat_orn_deltas()
