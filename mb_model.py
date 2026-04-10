@@ -8969,6 +8969,7 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         max_fig_height = 650
         assert n_claws <= max_n_claws, f'{n_claws=} > {max_n_claws=}'
         fig_height = round((n_claws/max_n_claws) * max_fig_height)
+        fig_height = max(fig_height, 6)
         assert 0 < fig_height <= max_fig_height, f'{fig_height=}'
 
         fig, all_axs = plt.subplots(nrows=nrows, ncols=ncols, layout='compressed',
@@ -9956,7 +9957,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         assert vmin <= inh2pns_min, f'{vmin=} > {inh2pns_min=}'
         assert vmax >= inh2pns_max, f'{vmax=} < {inh2pns_max=}'
 
-    # TODO may want to remove the `odor != slice(None)` restriction later, would just
+    # TODO TODO TODO remove the `odor != slice(None)` restriction, would just
     # add to complexity of code in this conditional slightly
     if odor != slice(None):
         # don't need fn like above for DataFrames. DataArray constructor handles those
@@ -10072,7 +10073,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # TODO what fontsize?
     ax.set_xlabel('time (seconds)')
 
-    ax.set_title('APL response to {odor_str}', fontsize=title_fontsize)
+    ax.set_title(f'APL response to {odor_str}', fontsize=title_fontsize)
 
     fig.suptitle(title_prefix)
 

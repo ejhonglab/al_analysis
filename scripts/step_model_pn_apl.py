@@ -97,10 +97,10 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
         # TODO TODO TODO have diverging cmap around 0.1
         # TODO TODO have diverging cmap around tuned value for all of these?
         #'sparsity': (0, 1),
-        'sparsity': (0, .15),
+        'sparsity': (0, .2),
 
         # TODO assert no data exceeds max here
-        'n_avg_odors_responded_to': (0, 5),
+        'n_avg_odors_responded_to': (0, 6),
 
         # TODO is this correct? verify
         'avg_lts': (0, 1),
@@ -113,10 +113,15 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     var2range: MinMaxDict = dict()
 
     dir_iter = list(plot_dir.glob('*/'))
+    if corners_only or corners_and_tuned:
+        if corners_only:
+            total = 4
+        elif corners_and_tuned:
+            total = 9
+        dir_iter = tqdm(dir_iter, unit='model-dir', total=total)
+
     existing_var2range = None
     if plot_dynamics:
-        dir_iter = tqdm(dir_iter, unit='model-dir', total=4)
-
         var2range_json = plot_dir / 'var2range.json'
         if var2range_json.exists():
             # TODO refactor to share tuple conversion w/ check below? or change type to
@@ -691,8 +696,9 @@ def main():
             corners_only=corners_only, corners_and_tuned=corners_and_tuned
         )
 
+        # TODO TODO TODO why not exist?
         extra_panels_dir = plot_dir / EXTRA_PANELS_DIRNAME
-        breakpoint()
+        #breakpoint()
         if extra_panels_dir.is_dir():
             for panel_dir in extra_panels_dir.glob('*'):
                 if not panel_dir.is_dir():
