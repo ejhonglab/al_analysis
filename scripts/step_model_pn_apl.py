@@ -49,7 +49,7 @@ OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
 STEPS = [100, 20, 1.0, 0.5, 10, .1]
 
 def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
-    corners_only: bool = False) -> None:
+    corners_only: bool = False, corners_and_tuned: bool = False) -> None:
     # TODO doc
 
     kstr = plot_dir.name
@@ -87,7 +87,7 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     plot_suffix: str = '.pdf'
     d0_dynamics_plotnames: Optional[Set[str]] = None
     d0_dynamics_plot_dirnames: Set[str] = set()
-    n_corners_seen = 0
+    n_combos_seen = 0
     var2range: MinMaxDict = dict()
 
     dir_iter = list(plot_dir.glob('*/'))
@@ -132,14 +132,19 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
 
         a2p = float(a2p.split('-')[-1])
         p2a = float(p2a.split('-')[-1])
+        options = None
         if corners_only:
-            limits = (min(STEPS), max(STEPS))
-            if not (a2p in limits and p2a in limits):
-                warn(f'skipping {d.name} because not among corners (and '
-                    'corners_only=True)'
+            options = (min(STEPS), max(STEPS))
+        elif corners_and_tuned:
+            options = (min(STEPS), 1.0, max(STEPS))
+
+        if options is not None:
+            if not (a2p in options and p2a in options):
+                warn(f'skipping {d.name} because not among parameter subset selected by'
+                    '-c or -C'
                 )
                 continue
-            n_corners_seen += 1
+            n_combos_seen += 1
 
         # this step is slow, so want to be after corners_only check
         if plot_dynamics:
@@ -211,28 +216,32 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     if corners_only:
         # TODO change if needed, if i sweep over more than 2 dims (i.e. adding wAPLKC
         # and wKCAPL)
-        assert n_corners_seen == 4, f'{n_corners_seen=} != 4'
+        assert n_combos_seen == 4, f'{n_combos_seen=} != 4'
+    elif corners_and_tuned:
+        assert n_combos_seen == 9, f'{n_combos_seen=} != 9'
 
     df = pd.DataFrame.from_records(vals, columns=cols)
     df = df.set_index(['wAPLPN', 'wPNAPL'], verify_integrity=True)
     if len(df) == 0:
         raise IOError(f'found no stepped model output subdirectories under {plot_dir}')
 
-    print()
-    # {'Is_from_kcs': (1.5808925149559592, 77.70825644115786),
-    # 'Is_from_pns': (0.028954122482549444, 2248.2127184891215),
-    # 'Is_sims': (0.0, 0.0),
-    # 'bouton_sims': (0.0, 177.49935256444556),
-    # 'claw_sims': (0.0, 177.49935256444556),
-    # 'inh_sims': (0.24619630866805273, 844.2746926926052),
-    # 'vm_sims': (0.0, 595.8084413722237)}
-    print('var2range:')
-    pprint(var2range)
-    # TODO change type of this to use lists instead of tuples for the ranges?
-    # that's why check=True path is failing, b/c they are converted to lists on reading
-    to_json(var2range, var2range_json, check=False)
-    v2r2 = {k: tuple(v) for k, v in read_json(var2range_json).items()}
-    assert v2r2 == var2range
+    if plot_dynamics:
+        print()
+        # {'Is_from_kcs': (1.5808925149559592, 77.70825644115786),
+        # 'Is_from_pns': (0.028954122482549444, 2248.2127184891215),
+        # 'Is_sims': (0.0, 0.0),
+        # 'bouton_sims': (0.0, 177.49935256444556),
+        # 'claw_sims': (0.0, 177.49935256444556),
+        # 'inh_sims': (0.24619630866805273, 844.2746926926052),
+        # 'vm_sims': (0.0, 595.8084413722237)}
+        print('var2range:')
+        pprint(var2range)
+        # TODO change type of this to use lists instead of tuples for the ranges?
+        # that's why check=True path is failing, b/c they are converted to lists on
+        # reading
+        to_json(var2range, var2range_json, check=False)
+        v2r2 = {k: tuple(v) for k, v in read_json(var2range_json).items()}
+        assert v2r2 == var2range
 
     # TODO rotate xticks to horizontal (+ put on bottom, or put xlabel in title
     # instead?)
@@ -285,7 +294,8 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
 
 def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     kws: ParamDict, *, ignore_existing: bool = False, save_dynamics: bool = False,
-    tuned_only: bool = False, corners_only: bool = False) -> None:
+    tuned_only: bool = False, corners_only: bool = False,
+    corners_and_tuned: bool = False) -> None:
     # TODO doc
     """Runs `orn_deltas`
     Args:
@@ -343,10 +353,17 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # similar model w/o the PN<>APL weights?
     # TODO try a hypergrid stepping thr and APL independently too? (w/ same steps
     # for PN>APL and APL>PN weights)
+    # TODO TODO TODO try to fix so second call of this isn't getting killed
     params = fit_and_plot_mb_model(plot_root, plot_dirname=plot_dir.name,
         orn_deltas=orn_deltas, verbose=True, try_cache=not ignore_existing,
         **kws, **output_kws, return_olfsysm_vars=return_olfsysm_vars,
-        delete_pretime=delete_pretime, max_iters=max_iters
+        delete_pretime=delete_pretime, max_iters=max_iters,
+        # works when i was normalizing all vectors to SUM of 1
+        # (one step = 187.68 for pn-claw-to-apl_True case. didn't see how other case
+        # worked before updating numerators for all to len)
+        #
+        # for numerator = len(vector), 10 was too much
+        sp_lr_coeff=1.5
     )
     if tuned_only:
         warn('skipping all PN<>APL weight sweeping, because tuned_only=True')
@@ -407,10 +424,12 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # same?)
     # TODO worth trying w/ a couple diff sp_factor_pre_APL? (1.5 / 3.0?)
     # TODO TODO these are ultimately sorted before plots, right?
-    if not corners_only:
-        steps = STEPS
-    else:
+    if corners_only:
         steps = [min(STEPS), max(STEPS)]
+    elif corners_and_tuned:
+        steps = [min(STEPS), 1.0, max(STEPS)]
+    else:
+        steps = STEPS
 
     # TODO provide warning / fail early if we can estimate we won't have enough disk
     # space (if return_dynamics / plot_example_dynamics)?
@@ -495,9 +514,16 @@ def main():
         help='only analyzes the corners of the sweep, also excluding the tuned values. '
         'for quick tests of extreme behavior.'
     )
+    parser.add_argument('-C', '--corners-and-tuned', action='store_true',
+        help='only analyzes the parameters combos where both parameters are either min/'
+        'tuned[=1]/max scale. does 5 more combos than -c/--corners-only. mostly for '
+        'testing.'
+    )
     # TODO is this also happening in initial fit_mb_model calls w/o me requesting it (i
     # think so. ig it's default?)? do i want that? maybe assert this flag isn't passed
     # unless -o/--only-analyze-outputs then?
+    # TODO TODO try to make sure this does work w/ --tuned-only tho (maybe still via
+    # analyze_outputs?)
     parser.add_argument('-p', '--plot-dynamics', action='store_true',
         help='loads and plots saved dynamics (in the analyze_outputs call, so '
         'works with -o/--only-analyze-outputs)'
@@ -508,11 +534,17 @@ def main():
     tuned_only = args.tuned_only
     only_analyze_outputs = args.only_analyze_outputs
     corners_only = args.corners_only
+    corners_and_tuned = args.corners_and_tuned
     plot_dynamics = args.plot_dynamics
+
+    assert not (corners_only and corners_and_tuned), 'only pick one of -c or -C'
 
     if only_analyze_outputs:
         assert not (save_dynamics or tuned_only or ignore_existing), \
             'all of these incompatible with -o/--only-analyze-outputs'
+
+    # TODO TODO TODO is `step_model_pn_apl -C -i -d` really not regenerating dynamics
+    # for tuned dirs, or am i tripping? fix if it isn't
 
     # TODO is this required to see when we are saving figs (think so)? change so that's
     # not the case (and for saving other things, if necessary)?
@@ -554,7 +586,8 @@ def main():
         if not only_analyze_outputs:
             step_pn_apl_weights_around_tuned(plot_dir, orn_deltas, kws,
                 ignore_existing=ignore_existing, save_dynamics=save_dynamics,
-                tuned_only=tuned_only, corners_only=corners_only
+                tuned_only=tuned_only, corners_only=corners_only,
+                corners_and_tuned=corners_and_tuned
             )
 
     if tuned_only:
@@ -568,7 +601,7 @@ def main():
         # kws not actually used by analyze_outputs, so could just keep a list of
         # plot_dirs...
         analyze_outputs(plot_dir, plot_dynamics=plot_dynamics,
-            corners_only=corners_only
+            corners_only=corners_only, corners_and_tuned=corners_and_tuned
         )
 
 

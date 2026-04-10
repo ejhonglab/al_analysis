@@ -6497,10 +6497,15 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         wAPLKC = wAPLKC.fillna(0)
         assert wAPLKC.sum() > 0
         assert (wAPLKC >= 0).all()
-        wAPLKC_normalization_factor = n_kcs / wAPLKC.sum()
+        #wAPLKC_normalization_factor = n_kcs / wAPLKC.sum()
+        # TODO TODO TODO this work at all? would be simpler...
+        # TODO TODO try again?
+        #wAPLKC_normalization_factor = 1 / wAPLKC.sum()
+        wAPLKC_normalization_factor = len(wAPLKC) / wAPLKC.sum()
         wAPLKC = wAPLKC * wAPLKC_normalization_factor
-        assert np.isclose(wAPLKC.sum() / n_kcs, 1)
-        assert np.isclose(wAPLKC.groupby('kc_id').sum().mean(), 1)
+        # TODO TODO restore?
+        #assert np.isclose(wAPLKC.sum() / n_kcs, 1)
+        #assert np.isclose(wAPLKC.groupby('kc_id').sum().mean(), 1)
 
         # TODO TODO can't just let filling happen below? does NaN cause issues in this
         # branch?
@@ -6517,19 +6522,26 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         # TODO TODO TODO or if not, maybe scale boutons within each glomerulus (in
         # python, below), similar to how we are scaling claws within KCs here?
         # TODO or don't scale claws w/in KCs?
-        wKCAPL_normalization_factor = n_kcs / wKCAPL.sum()
+        # TODO TODO TODO restore?
+        #wKCAPL_normalization_factor = n_kcs / wKCAPL.sum()
+        # TODO TODO try again? let olfsysm go from here?
+        #wKCAPL_normalization_factor = 1 / wKCAPL.sum()
+        wKCAPL_normalization_factor = len(wKCAPL) / wKCAPL.sum()
         # TODO TODO use to invert for plotting (if i can't figure out how to do it
         # automatically, without saving these factors)
         wKCAPL = wKCAPL * wKCAPL_normalization_factor
+        # TODO TODO restore?
         # TODO is this actually a property we want to enforce tho?
-        assert np.isclose(wKCAPL.sum() / n_kcs, 1)
+        #assert np.isclose(wKCAPL.sum() / n_kcs, 1)
         # why do we not want assertions like these outside of one_row_per_claw
         # conditional? (because one_row_per_claw=False path currently
         # does NOT normalize in here. currently happens outside [after] this function.)
         # TODO may want to change to be consistent at some point in the future...
         #
         # TODO replace some of the assertions above w/ these?
-        assert np.isclose(wKCAPL.groupby('kc_id').sum().mean(), 1)
+        #assert np.isclose(wKCAPL.groupby('kc_id').sum().mean(), 1)
+
+        # TODO TODO TODO just try scaling everything by sum, to avoid all this mess?
 
         # TODO delete
         if verbose:
@@ -6537,6 +6549,8 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             print('connectome_APL_weights:')
             print(f'{wAPLKC.mean()=}')
             print(f'{wKCAPL.mean()=}')
+            print(f'{wAPLKC.sum()=}')
+            print(f'{wKCAPL.sum()=}')
         #
 
         # TODO even need this in any prat_boutons case? don't think there is still
@@ -6566,28 +6580,46 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
             # scaling to olfsysm, to avoid doing it wrong outside?
             if not per_claw_pn_apl_weights:
                 assert len(wAPLPN) == n_boutons
-                wAPLPN_normalization_factor = n_boutons / wAPLPN.sum()
+                # TODO TODO restore?
+                #wAPLPN_normalization_factor = n_boutons / wAPLPN.sum()
+                # TODO TODO restore?
+                #wAPLPN_normalization_factor = 1 / wAPLPN.sum()
+                wAPLPN_normalization_factor = len(wAPLPN) / wAPLPN.sum()
             else:
                 # TODO TODO try reverting to n_claws while also changing init of this
                 # (and wKCAPL, in olfsysm, to use length of vector rather than # KCs
                 # there)
+                # TODO TODO TODO what problem could n_kcs in numerator possibly have
+                # been causing anyway?
                 #assert len(wAPLPN) == n_claws
                 #wAPLPN_normalization_factor = n_claws / wAPLPN.sum()
-                wAPLPN_normalization_factor = n_kcs / wAPLPN.sum()
+                # TODO restore? or n_boutons?
+                #wAPLPN_normalization_factor = n_kcs / wAPLPN.sum()
+                # TODO TODO restore?
+                #wAPLPN_normalization_factor = 1 / wAPLPN.sum()
+                wAPLPN_normalization_factor = len(wAPLPN) / wAPLPN.sum()
 
             wPNAPL = wPNAPL.fillna(0)
             assert wPNAPL.sum() > 0
             assert (wPNAPL >= 0).all()
             if not per_claw_pn_apl_weights:
                 assert len(wPNAPL) == n_boutons
-                wPNAPL_normalization_factor = n_boutons / wPNAPL.sum()
+                # TODO TODO restore?
+                #wPNAPL_normalization_factor = n_boutons / wPNAPL.sum()
+                # TODO TODO restore?
+                #wPNAPL_normalization_factor = 1 / wPNAPL.sum()
+                wPNAPL_normalization_factor = len(wPNAPL) / wPNAPL.sum()
             else:
                 # TODO TODO try reverting to n_claws while also changing init of this
                 # (and wKCAPL, in olfsysm, to use length of vector rather than # KCs
                 # there)
                 #assert len(wPNAPL) == n_claws
                 #wPNAPL_normalization_factor = n_claws / wPNAPL.sum()
-                wPNAPL_normalization_factor = n_kcs / wPNAPL.sum()
+                # TODO TODO restore?
+                #wPNAPL_normalization_factor = n_kcs / wPNAPL.sum()
+                # TODO restore?
+                #wPNAPL_normalization_factor = 1 / wPNAPL.sum()
+                wPNAPL_normalization_factor = len(wPNAPL) / wPNAPL.sum()
 
             # TODO delete
             if verbose:
@@ -10005,6 +10037,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         assert (boutons_no_inh >= boutons).all()
         # TODO TODO TODO FIX. at least claws one is failing
         print('FIX CLAWS_NO_INH < CLAWS (bouton indexing issue?)')
+        # TODO TODO TODO also try adding back inh multiplied by weights??
         # TODO TODO ok, well maybe my sorting change did do something? this is different
         # from what i remember (thought it was more like 0.5, but i could be wrong)
         # (maybe that was in pn_claws_to_apl=False case? below in =True case)
@@ -10023,23 +10056,13 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # array)?
         # TODO TODO TODO restore
         print('RESTORE BREAKPOINT')
-        #breakpoint()
+        breakpoint()
 
     # TODO may want to remove the `odor != slice(None)` restriction later, would just
     # add to complexity of code in this conditional slightly
     if have_optional_weights and odor != slice(None):
         # TODO TODO TODO actually use these two
-        print('before KCAPL call', flush=True)
         wKCAPL = series2xarray_like(wKCAPL, claws)
-        print('before PNAPL call', flush=True)
-        # TODO TODO why is this an issue again? are yang model outputs wrong?
-        # TODO TODO why was this not triggering call at end of connectome_APL_weights,
-        # that checks indices are sorted?
-        # ipdb> i1.equals(i1.sort_values())
-        # False
-        # ipdb> i2.equals(i2.sort_values())
-        # True
-        # TODO TODO TODO fix
         wPNAPL = series2xarray_like(wPNAPL, boutons)
 
     # TODO delete
