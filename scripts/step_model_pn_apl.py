@@ -27,7 +27,7 @@ from al_util import savefig, ParamDict, warn, read_parquet, to_json, read_json
 from mb_model import (fit_and_plot_mb_model, megamat_orn_deltas, dict_seq_product,
     format_weights, format_model_params, get_thr_and_APL_weights, glomerulus_col,
     save_and_remove_from_param_dict, drop_silent_model_cells, load_and_plot_dynamics,
-    update_var2range, MinMaxDict
+    update_var2range, MinMaxDict, natmix_orn_deltas
 )
 
 
@@ -44,6 +44,7 @@ MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(
 )
 
 OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
+EXTRA_PANELS_DIRNAME: str = 'extra_panels'
 
 # TODO tuple, to make sure this doesn't get mutated?
 STEPS = [100, 20, 1.0, 0.5, 10, .1]
@@ -52,11 +53,32 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     corners_only: bool = False, corners_and_tuned: bool = False) -> None:
     # TODO doc
 
+    if plot_dir.parent.name == EXTRA_PANELS_DIRNAME:
+        panel = plot_dir.name
+    else:
+        panel = 'megamat'
+
     kstr = plot_dir.name
-    cols = ['wAPLPN', 'wPNAPL', 'sparsity', 'n_silent_cells', 'hept_pent_corr',
-        'avg_lts', 'n_avg_odors_responded_to'
+    shared_cols = ['wAPLPN', 'wPNAPL', 'sparsity', 'n_silent_cells', 'avg_lts',
+        'n_avg_odors_responded_to'
     ]
-    cols_computed_over_nonresponders = ['avg_lts', 'n_avg_odors_responded_to',
+    natmix_cols = [
+        # TODO TODO TODO implement at least these
+        '5mix_mix_minus_max_avg_sparsity',
+        '5mix_mix_minus_max_avg_n_spikes',
+        'binary-mix_minus_max_avg_sparsity',
+        'binary-mix_minus_max_avg_n_spikes',
+        # TODO TODO also (within responders) compute cell specific mix - max component
+        # TODO TODO also count # of mix responders / # component only responders, and
+        # summarize those?
+    ]
+    panel2extra_cols = {
+        'megamat': ['hept_pent_corr'],
+        'kiwi': natmix_cols,
+        'control': natmix_cols,
+    }
+    cols = shared_cols + panel2extra_cols[panel]
+    cols_computed_over_responders_only = ['avg_lts', 'n_avg_odors_responded_to',
         'hept_pent_corr'
     ]
     col2range = {
@@ -167,7 +189,13 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
             src = dynamics_plot_dir / p
             # TODO convert to warning? or fine as long as this happens after
             # plot_dynamics (as it does now)?
-            assert src.is_file() and not src.is_symlink()
+            try:
+                assert src.is_file() and not src.is_symlink()
+            except AssertionError:
+                warn(f'{d.name} missing plot {p}. need to regenerated. may have had '
+                    'and error in plot creation'
+                )
+                continue
 
             curr_plot_link_dir = (plot_dir / p).with_suffix('')
             assert curr_plot_link_dir.is_dir()
@@ -191,14 +219,9 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
 
         # NOTE: all quantities computed using rs_nosilent (as opposed to responses that
         # still have non-responding cells) should have their column name manually added
-        # to cols_computed_over_nonresponders above
+        # to cols_computed_over_responders_only above
         rs_nosilent = drop_silent_model_cells(rs)
         n_silent = len(rs) - len(rs_nosilent)
-        # TODO average over corr w/ 1-6ol too? also eb/ep vs 1-5ol/1-6ol block?
-        # TODO + maybe ratio/diff w/ corrs in rest of off diag, if needed (but prob not)
-        hept_pent_corr = rs_nosilent.corr().loc['1-5ol @ -3', '2h @ -3']
-        # TODO TODO say what remy's value (computed on real KCs) is here, for reference?
-
         xs = rs_nosilent
         n_odors = (xs > 0).T.sum()
         avg_n_odors = n_odors.mean()
@@ -211,7 +234,30 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
         L = L.fillna(1.0)
         assert len(L) == len(n_odors)
 
-        vals.append((a2p, p2a, sp, n_silent, hept_pent_corr, L.mean(), avg_n_odors))
+        shared_vals = (a2p, p2a, sp, n_silent, L.mean(), avg_n_odors)
+
+        panel_vals = None
+        if panel == 'megamat':
+            # TODO average over corr w/ 1-6ol too? also eb/ep vs 1-5ol/1-6ol block?
+            # TODO + maybe ratio/diff w/ corrs in rest of off diag, if needed (but prob
+            # not)
+            hept_pent_corr = rs_nosilent.corr().loc['1-5ol @ -3', '2h @ -3']
+            # TODO TODO say what remy's value (computed on real KCs) is here, for
+            # reference?
+            panel_vals = (hept_pent_corr,)
+
+        elif panel in ('kiwi', 'control'):
+            '5mix_mix_minus_max_avg_sparsity',
+            '5mix_mix_minus_max_avg_n_spikes',
+            'binary-mix_minus_max_avg_sparsity',
+            'binary-mix_minus_max_avg_n_spikes',
+            # TODO TODO TODO implement (some measures of mix suppression, at least)
+            breakpoint()
+
+        assert panel_vals is not None, f'{panel=} not recognized'
+
+        # TODO use a dict instead? or something else make it easier to swap out a few
+        vals.append(shared_vals + panel_vals)
 
     if corners_only:
         # TODO change if needed, if i sweep over more than 2 dims (i.e. adding wAPLKC
@@ -282,7 +328,7 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
         ax.set_xlabel(mat.columns.name, fontsize=10)
 
         title = f'{kstr}\n{c}'
-        if c in cols_computed_over_nonresponders:
+        if c in cols_computed_over_responders_only:
             title += '\nsilent cells dropped'
         else:
             title += '\nall cells, including silent'
@@ -312,7 +358,10 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
             dynamic quantities (e.g. membrane potential of KCs over time, to each odor)
 
         corners_only: if True, only analyzes combinations of min/max step for each
-            paramerter
+            parameter
+
+        corners_and_tuned: similar to `corners_only`, but adds tuned (scale = 1.0) value
+            too, for a total of 9 combos.
     """
     output_kws = dict(
         # if return_dynamics is True, fit_and_plot_mb_model will write DataArrays
@@ -353,7 +402,7 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # similar model w/o the PN<>APL weights?
     # TODO try a hypergrid stepping thr and APL independently too? (w/ same steps
     # for PN>APL and APL>PN weights)
-    # TODO TODO TODO try to fix so second call of this isn't getting killed
+    # TODO TODO try to fix so second call of this isn't getting killed
     params = fit_and_plot_mb_model(plot_root, plot_dirname=plot_dir.name,
         orn_deltas=orn_deltas, verbose=True, try_cache=not ignore_existing,
         **kws, **output_kws, return_olfsysm_vars=return_olfsysm_vars,
@@ -363,11 +412,15 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         # worked before updating numerators for all to len)
         #
         # for numerator = len(vector), 10 was too much
-        sp_lr_coeff=1.5
+        # eventually worked on hal. commenting to use cache again.
+        #sp_lr_coeff=1.5
     )
     if tuned_only:
         warn('skipping all PN<>APL weight sweeping, because tuned_only=True')
         return
+
+    # TODO TODO check for signs output dirs below are older than tuned dir, and regen if
+    # so
 
     # TODO add option just to reanalyze any saved dynamics, if i factor out that
     # plotting code from fit_mb_model? (do have plot-dynamics CLI for that now)
@@ -429,18 +482,30 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     else:
         steps = STEPS
 
-    # TODO TODO add kiwi/control at least (-> summarize mix suppression for them)
-    #breakpoint()
+    natmix_deltas = natmix_orn_deltas()
+    natmix_panel_vals = natmix_deltas.columns.get_level_values('panel')
+    kiwi_deltas = natmix_deltas.loc[:, natmix_panel_vals == 'kiwi']
+    control_deltas = natmix_deltas.loc[:, natmix_panel_vals == 'control']
+
     panel2orn_deltas = {
         'megamat': orn_deltas,
+        'kiwi': kiwi_deltas,
+        'control': control_deltas,
     }
     # TODO provide warning / fail early if we can estimate we won't have enough disk
     # space (if return_dynamics / plot_example_dynamics)?
+    extra_panel_dirs = []
+    extra_panels_root = plot_root / EXTRA_PANELS_DIRNAME
+    if len(set(panel2orn_deltas.keys()) - {'megamat'}) > 0:
+        extra_panels_root.mkdir(exist_ok=True)
+
     for panel, deltas in tqdm(panel2orn_deltas.items(), unit='panel'):
         if panel == 'megamat':
             panel_plot_dir = plot_dir
         else:
-            panel_plot_dir = plot_root / panel
+            panel_plot_dir = extra_panels_root / panel / plot_dir.name
+            panel_plot_dir.mkdir(exist_ok=True, parents=True)
+            extra_panel_dirs.append(panel_plot_dir)
 
         print()
         print(f'panel: {panel}')
@@ -484,8 +549,8 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
             # TODO (delete) also pass try_cache=(not ignore_existing) here (prob, yea)?
             # or would i prefer to do the checking in here (prob not)?
             fit_and_plot_mb_model(panel_plot_dir, plot_dirname=param_dir.name,
-                try_cache=not ignore_existing, orn_deltas=orn_deltas,
-                **step, **kws, **output_kws
+                try_cache=not ignore_existing, orn_deltas=deltas, **step, **kws,
+                **output_kws
             )
 
             # TODO (delete?) breadth across KCs (vs max) (make sense?) (something else
@@ -563,6 +628,7 @@ def main():
 
     # TODO TODO is `step_model_pn_apl -C -i -d` really not regenerating dynamics
     # for tuned dirs, or am i tripping? fix if it isn't
+    # TODO TODO and why is `-t -d` running the model again? (no -i)
 
     # TODO is this required to see when we are saving figs (think so)? change so that's
     # not the case (and for saving other things, if necessary)?
@@ -592,7 +658,7 @@ def main():
     # more params to the list (which would change subset that is same across all)?
     same_in_all = set(subset_same_in_all_dicts(MODEL_TUNE_KWS).keys())
 
-    plot_dir2kws: Dict[Path, ParamDict] = dict()
+    plot_dir_list: List[Path] = list()
 
     model_kws = list(MODEL_TUNE_KWS)
     if reverse:
@@ -603,12 +669,12 @@ def main():
 
         plot_dirname = format_model_params(kws, exclude=same_in_all)
         plot_dir = plot_root / plot_dirname
-        assert plot_dir not in plot_dir2kws, f'duplicate {plot_dir=}'
-        plot_dir2kws[plot_dir] = kws
+        assert plot_dir not in plot_dir_list, f'duplicate {plot_dir=}'
+        plot_dir_list.append(plot_dir)
 
         if not only_analyze_outputs:
-            step_pn_apl_weights_around_tuned(plot_dir, orn_deltas, kws,
-                ignore_existing=ignore_existing, save_dynamics=save_dynamics,
+            step_pn_apl_weights_around_tuned(plot_dir, orn_deltas,
+                kws, ignore_existing=ignore_existing, save_dynamics=save_dynamics,
                 tuned_only=tuned_only, corners_only=corners_only,
                 corners_and_tuned=corners_and_tuned
             )
@@ -620,12 +686,26 @@ def main():
         )
         return
 
-    for plot_dir, kws in plot_dir2kws.items():
-        # kws not actually used by analyze_outputs, so could just keep a list of
-        # plot_dirs...
+    for plot_dir in plot_dir_list:
         analyze_outputs(plot_dir, plot_dynamics=plot_dynamics,
             corners_only=corners_only, corners_and_tuned=corners_and_tuned
         )
+
+        extra_panels_dir = plot_dir / EXTRA_PANELS_DIRNAME
+        breakpoint()
+        if extra_panels_dir.is_dir():
+            for panel_dir in extra_panels_dir.glob('*'):
+                if not panel_dir.is_dir():
+                    continue
+
+                panel_plot_dir = panel_dir / plot_dir.name
+                if not panel_plot_dir.is_dir():
+                    warn(f'{panel_plot_dir=} was not a directory!')
+                    continue
+
+                analyze_outputs(panel_dir, plot_dynamics=plot_dynamics,
+                    corners_only=corners_only, corners_and_tuned=corners_and_tuned
+                )
 
 
 if __name__ == '__main__':

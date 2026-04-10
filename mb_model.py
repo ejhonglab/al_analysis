@@ -208,6 +208,7 @@ paper_validation2_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-19/'
     'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
 )
 
+# TODO TODO why is this seemingly not writing on hal?
 onestep_lr_cache_path: Path = Path('~/.mb_model_onestep_lr_cache.json').expanduser()
 onestep_lr_key: str = 'sp_lr_coeff_to_tune_in_one_iter'
 
@@ -8633,15 +8634,7 @@ def get_odor_strs(odor: Union[str, slice], dynamics_dict: Optional[DynamicsDict]
     return odor_str, odor_fname_suffix
 
 
-# TODO TODO TODO similar plot, but for all units from gloms->boutons->claws->kc
-# VM->spikes (and maybe apl below one thing? or probably better to leave that to its own
-# plot, for now at least)
-# align everything, and have everything in a consistent order (expand as needed),
-# cluster on KCs (-> sort claws within KC?), or maybe on claw responses, then expand KC
-# data and bouton data so there is one line (in bouton axes on left, and KC axis on
-# right, for each line in the claw axes).
-# TODO draw hline between claws from diff KCs
-# TODO TODO TODO this might make it so boutons from same PN are not grouped. maybe i
+# TODO this might make it so boutons from same PN are not grouped. maybe i
 # could try another plot in that order?
 # TODO if i make this version, draw hline between boutons from diff PNs
 #
@@ -8683,6 +8676,10 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         spikes = dynamics_dict['spike_recordings'].sel(odor=odor).squeeze(drop=True)
         responder_mask = spikes.any('time_s').squeeze(drop=True)
         responders = responder_mask[responder_mask].get_index('kc')
+        if len(responders) == 0:
+            warn('no responders! returning without making plot')
+            return
+
         assert KC_ID in responders.names, f'{KC_ID=} not in {responders.names=}'
         # mainly to drop kc_type, which will complicate indexing with this
         responder_kc_ids = responders.droplevel(
@@ -9387,6 +9384,14 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         orn_label = 'ORN, mean across gloms'
         pn_label = 'PN, mean across gloms'
 
+    # TODO TODO TODO fix (got on hal, but with what should be same xarray version)
+    # maybe diff pandas or something? yea i'm using 1.5.0 here, and it's 2.0.3 there.
+    # not sure yet if reverting to 1.5 will fix it.
+    #  117, in remap_label_indexers
+    #     idxr, new_idx = index.query(labels, method=method, tolerance=tolerance)
+    #   File "envs/olfsysm/lib/python3.8/site-packages/xarray/core/indexes.py", line 224, in query
+    #     indexer = index.get_loc(
+    # TypeError: get_loc() got an unexpected keyword argument 'method'
     _plot_normed(ax, orn_sims.sel(odor=odor, glomerulus=glom), label=orn_label)
 
     pn_sims = dynamics_dict['pn_sims']
@@ -9615,7 +9620,12 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # NOTE: plot_spike_rasters currently drops silent cells itself anyway
         # TODO but modify it to have it say somewhere how many it dropped?
         # or like a kwarg flag to enabled putting that info in y-label or something?
-        plot_spike_rasters(example_odor_spikes, ax=spike_raster_ax)
+        try:
+            plot_spike_rasters(example_odor_spikes, ax=spike_raster_ax)
+        # no responders in input
+        except ValueError:
+            warn('no responders!')
+            return
 
         assert KC_ID in example_odor_spikes.index.names, ('expected index to be for KCs'
             ' but names={example_odor_spikes.index.names} did not include {KC_ID}'
@@ -9928,7 +9938,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         vmin, vmax = var2range['bouton_sims']
         inh2kcs_min = inh2kcs.min().item()
         inh2kcs_max = inh2kcs.max().item()
-        # TODO TODO need to fix? should def be True if we are taking mean of clipped
+        # TODO need to fix? should def be True if we are taking mean of clipped
         # inhibition, which above should probably be replaced w/ anyway
         assert vmin <= inh2kcs_min, f'{vmin=} > {inh2kcs_min=}'
         assert vmax >= inh2kcs_max, f'{vmax=} < {inh2kcs_max=}'
@@ -9940,11 +9950,8 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # above comment
         vmin, vmax = var2range['pn_sims']
         inh2pns_min = inh2pns.min().item()
-        # TODO TODO TODO jesus christ:
-        # TODO TODO TODO TODO figure out the clipping
-        # AssertionError: vmax=177.49935256444556 < inh2pns_max=50617.26800558423
         inh2pns_max = inh2pns.max().item()
-        # TODO TODO need to fix? should def be True if we are taking mean of clipped
+        # TODO need to fix? should def be True if we are taking mean of clipped
         # inhibition, which above should probably be replaced w/ anyway
         assert vmin <= inh2pns_min, f'{vmin=} > {inh2pns_min=}'
         assert vmax >= inh2pns_max, f'{vmax=} < {inh2pns_max=}'
@@ -10032,42 +10039,30 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # really) having NaN still
         #
         # ok, this one is true at least
-        # TODO TODO TODO also see if we can subtract inh2pns we recalculated above from
+        # TODO also see if we can subtract inh2pns we recalculated above from
         # boutons_no_inh, and get boutons (after clipping)
         assert (boutons_no_inh >= boutons).all()
-        # TODO TODO TODO FIX. at least claws one is failing
-        print('FIX CLAWS_NO_INH < CLAWS (bouton indexing issue?)')
-        # TODO TODO TODO also try adding back inh multiplied by weights??
-        # TODO TODO ok, well maybe my sorting change did do something? this is different
-        # from what i remember (thought it was more like 0.5, but i could be wrong)
-        # (maybe that was in pn_claws_to_apl=False case? below in =True case)
-        # ipdb> (claws_no_inh >= claws).mean()
-        # <xarray.DataArray ()>
-        # array(0.15)
-        #
-        #assert (claws_no_inh >= claws).all()
+        # TODO also try adding back inh multiplied by weights??
+        assert (claws_no_inh >= claws).all()
 
-        # TODO TODO TODO plot inh onto each after clipping (s.t. inh can't push it below
-        # 0)?
+        # TODO assert anything on vmin/vmax for below two (vs that of plot)?
+        # should be ok
+        _plot(apl2pn_ax, boutons_no_inh, label='mean boutons (BEFORE inh)')
+        _plot(apl2kc_ax, claws_no_inh, label='mean claws (BEFORE inh)')
 
-        # TODO define something like `dot` similar to `outer_product`, to use wPNKC to
-        # compute reduced values? or maybe that's not the right name? see what i need to
-        # do w/o a custom fn first... just a `*` operation i assume (after renaming one
-        # array)?
-        # TODO TODO TODO restore
-        print('RESTORE BREAKPOINT')
-        breakpoint()
+        _plot(apl2pn_ax, boutons, label='mean boutons')
+        _plot(apl2kc_ax, claws, label='mean claws')
+
+        # TODO plot inh onto each after clipping (s.t. inh can't push it below 0)?
+        # (shouldn't need to recalc this anymore to plot, but could incorporate some of
+        # this kind of recalc into a test)
 
     # TODO may want to remove the `odor != slice(None)` restriction later, would just
     # add to complexity of code in this conditional slightly
     if have_optional_weights and odor != slice(None):
-        # TODO TODO TODO actually use these two
+        # TODO TODO actually use these two (or in test?)
         wKCAPL = series2xarray_like(wKCAPL, claws)
         wPNAPL = series2xarray_like(wPNAPL, boutons)
-
-    # TODO delete
-    #breakpoint()
-    #
 
     fig.legend(loc='upper right', fontsize=8)
 
@@ -16142,8 +16137,17 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # TODO set fixed_thr/wAPLKC/etc instead? would be faster
             if use_lr_cache and onestep_lr_cache_path.exists():
                 onestep_lr_cache = read_json(onestep_lr_cache_path)
-                if model_id in onestep_lr_cache:
-                    sp_lr_coeff = onestep_lr_cache[model_id]
+                # TODO fix hack + delete (these two cases should be getting same model
+                # ID anyway, since that suffix is for a default value of the param)
+                fix_model_id = 'prat-claws_True__prat-boutons_True__connectome-APL_True'
+                if model_id == fix_model_id:
+                    _model_id = f'{fix_model_id}__pn-claw-to-apl_False'
+                    assert _model_id in onestep_lr_cache
+                else:
+                    _model_id = model_id
+                #
+                if _model_id in onestep_lr_cache:
+                    sp_lr_coeff = onestep_lr_cache[_model_id]
 
                     if not variable_n_claws:
                         cached_coeff_str = f'{sp_lr_coeff=:.3f}'

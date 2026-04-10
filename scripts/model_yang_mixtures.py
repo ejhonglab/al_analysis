@@ -160,15 +160,19 @@ def main():
     panels = list(test_df.columns.get_level_values('panel').unique())
 
     # saw 0.212 on some kiwi/control stuff (tuned on megamat)
-    response_rate_plot_max = 0.22
+    # now .2228 on something
+    response_rate_plot_max = 0.23
 
     dfs = []
     tuned_dfs = []
     for kws in tqdm(model_tune_kws, unit='model (on all panels)'):
         print(f'{kws=}')
 
+        # TODO TODO why is this seemingly not using LR cache in home? it's still tuning
+        # on megamat, so it should be the same, no?
         tuned_params = fit_and_plot_mb_model(plot_root, orn_deltas=tune_df,
-            try_cache=use_cache, response_rate_plot_max=response_rate_plot_max, **kws
+            try_cache=use_cache, response_rate_plot_max=response_rate_plot_max,
+            max_iters=100, **kws
         )
         thr_and_apl_kws = get_thr_and_APL_weights(tuned_params, kws)
         print(f'tuned thr and APL weights: {pformat(thr_and_apl_kws)}')
