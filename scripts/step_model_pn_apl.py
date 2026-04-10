@@ -415,8 +415,6 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         # used)
         wPNAPL_scale = wAPLPN_scale / n_boutons
 
-    print()
-    print('stepping wAPLPN & wPNAPL around tuned value:')
     # TODO TODO also try at a few diff wKCAPL/wAPLKC scales? (paper hemibrain was
     # wAPLKC=4.63/wKCAPL=0.00252, for ref)
     # TODO TODO worth trying w/ change in how thr is calculated, so it's not
@@ -431,52 +429,67 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     else:
         steps = STEPS
 
+    # TODO TODO add kiwi/control at least (-> summarize mix suppression for them)
+    #breakpoint()
+    panel2orn_deltas = {
+        'megamat': orn_deltas,
+    }
     # TODO provide warning / fail early if we can estimate we won't have enough disk
     # space (if return_dynamics / plot_example_dynamics)?
-    for ap, pa in tqdm(list(product(steps, steps)), unit='param-combo'):
-        # TODO save plots/dynamics from previous call, and link to that dir?
-        # (do definitely want to include it, one way or another)
-        #if ap == 1 and pa == 1:
-        #    continue
+    for panel, deltas in tqdm(panel2orn_deltas.items(), unit='panel'):
+        if panel == 'megamat':
+            panel_plot_dir = plot_dir
+        else:
+            panel_plot_dir = plot_root / panel
 
-        step = dict(thr_and_apl_kws)
-        step['wAPLPN'] = wAPLPN_scale * ap
-        # TODO TODO make sure this one is also in format_model_params output,
-        # esp when not derivable from wAPLPN (not using format_model_params for now)
-        step['wPNAPL'] = wPNAPL_scale * pa
-        # TODO remove part about wAPLKC?
-        #param_dir = plot_dir / format_model_params(step)
+        print()
+        print(f'panel: {panel}')
+        print(f'saving outputs under: {panel_plot_dir}')
+        print('stepping wAPLPN & wPNAPL around tuned value:')
+        for ap, pa in tqdm(list(product(steps, steps)), unit='param-combo'):
+            # TODO save plots/dynamics from previous call, and link to that dir?
+            # (do definitely want to include it, one way or another)
+            #if ap == 1 and pa == 1:
+            #    continue
 
-        # TODO TODO TODO actually try per bouton/claw[/KC?] inh dynamics (prob both for
-        # KC claws and PN boutons)
-        # TODO TODO only matter if i also have a per-bouton/claw synaptic depression (or
-        # some other kind of saturation?) add that too?
+            step = dict(thr_and_apl_kws)
+            step['wAPLPN'] = wAPLPN_scale * ap
+            # TODO (delete?) make sure this one is also in format_model_params output,
+            # esp when not derivable from wAPLPN (not using format_model_params for now)
+            step['wPNAPL'] = wPNAPL_scale * pa
 
-        param_dir = plot_dir / (
-            # TODO factor ', ' stripping into option for format_weights (/ another fn?)
-            # with orig values scaled, could get duplicate plot dir names, b/c some
-            # values too small for .3f float format
-            # TODO change float formatting in format_weights to fix that
-            # TODO delete?
-            #format_weights(step['wAPLPN'], 'wAPLPN').strip(', ') + '_' +
-            #format_weights(step['wPNAPL'], 'wPNAPL').strip(', ')
-            format_weights(ap, 'wAPLPN').strip(', ') + '_' +
-            format_weights(pa, 'wPNAPL').strip(', ')
-        ).replace('=', '-')
+            # TODO TODO actually try per bouton/claw[/KC?] inh dynamics (prob both
+            # for KC claws and PN boutons)
+            # TODO (delete?) only matter if i also have a per-bouton/claw synaptic
+            # depression (or some other kind of saturation?) add that too?
 
-        print(f'{param_dir.name}')
+            param_dir = panel_plot_dir / (
+                # TODO factor ', ' stripping into option for format_weights (/ another
+                # fn?) with orig values scaled, could get duplicate plot dir names, b/c
+                # some
+                # values too small for .3f float format
+                # TODO change float formatting in format_weights to fix that
+                # TODO delete?
+                #format_weights(step['wAPLPN'], 'wAPLPN').strip(', ') + '_' +
+                #format_weights(step['wPNAPL'], 'wPNAPL').strip(', ')
+                format_weights(ap, 'wAPLPN').strip(', ') + '_' +
+                format_weights(pa, 'wPNAPL').strip(', ')
+            ).replace('=', '-')
 
-        # TODO add arg to skip CSV saving + plotting for cached outputs (preferable)? or
-        # handle cache checking in here, to avoid calling (would rather not)?
-        # TODO (delete) also pass try_cache=(not ignore_existing) here (prob, yea)?
-        # or would i prefer to do the checking in here (prob not)?
-        fit_and_plot_mb_model(plot_dir, plot_dirname=param_dir.name,
-            try_cache=not ignore_existing, orn_deltas=orn_deltas,
-            **step, **kws, **output_kws
-        )
+            print(f'{param_dir.name}')
 
-        # TODO (delete?) breadth across KCs (vs max) (make sense?) (something else that
-        # might be diff across KCs to account for sparsity diff?)?
+            # TODO TODO add arg to skip CSV saving + plotting for cached outputs
+            # (preferable)? or handle cache checking in here, to avoid calling (would
+            # rather not)?
+            # TODO (delete) also pass try_cache=(not ignore_existing) here (prob, yea)?
+            # or would i prefer to do the checking in here (prob not)?
+            fit_and_plot_mb_model(panel_plot_dir, plot_dirname=param_dir.name,
+                try_cache=not ignore_existing, orn_deltas=orn_deltas,
+                **step, **kws, **output_kws
+            )
+
+            # TODO (delete?) breadth across KCs (vs max) (make sense?) (something else
+            # that might be diff across KCs to account for sparsity diff?)?
 
 
 def main():
@@ -505,6 +518,10 @@ def main():
         help='only runs the initial tuned version of each model parameters, skipping '
         'all of the stepping of PN>APL and APL>PN weight scales. mainly for testing.'
     )
+    parser.add_argument('-r', '--reverse', action='store_true', help='iterates through '
+        'MODEL_TUNE_KWS in reverse order, as an easy way to test multiple cases if '
+        'code downstream of tuning is causing earlier cases to fail.'
+    )
     parser.add_argument('-o', '--only-analyze-outputs', action='store_true',
         help='skip even checking that all model directories are created. only run '
         'analyze_outputs on model output directories that are immediate children '
@@ -532,6 +549,7 @@ def main():
     ignore_existing = args.ignore_existing
     save_dynamics = args.save_dynamics
     tuned_only = args.tuned_only
+    reverse = args.reverse
     only_analyze_outputs = args.only_analyze_outputs
     corners_only = args.corners_only
     corners_and_tuned = args.corners_and_tuned
@@ -543,7 +561,7 @@ def main():
         assert not (save_dynamics or tuned_only or ignore_existing), \
             'all of these incompatible with -o/--only-analyze-outputs'
 
-    # TODO TODO TODO is `step_model_pn_apl -C -i -d` really not regenerating dynamics
+    # TODO TODO is `step_model_pn_apl -C -i -d` really not regenerating dynamics
     # for tuned dirs, or am i tripping? fix if it isn't
 
     # TODO is this required to see when we are saving figs (think so)? change so that's
@@ -575,7 +593,12 @@ def main():
     same_in_all = set(subset_same_in_all_dicts(MODEL_TUNE_KWS).keys())
 
     plot_dir2kws: Dict[Path, ParamDict] = dict()
-    for kws in MODEL_TUNE_KWS:
+
+    model_kws = list(MODEL_TUNE_KWS)
+    if reverse:
+        model_kws = model_kws[::-1]
+
+    for kws in model_kws:
         print(f'{kws=}')
 
         plot_dirname = format_model_params(kws, exclude=same_in_all)
