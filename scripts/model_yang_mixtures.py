@@ -18,7 +18,7 @@ import al_util
 from al_util import savefig, plot_responses, read_parquet, to_csv, to_parquet
 from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model, megamat_orn_deltas,
     natmix_orn_deltas, get_thr_and_APL_weights, format_model_params,
-    get_odor_fname_suffix, KC_ID, dict_seq_product
+    get_odor_fname_suffix, KC_ID, dict_seq_product, abbrev_model_id
 )
 
 
@@ -39,22 +39,6 @@ model_tune_kws = [
 #        use_connectome_APL_weights=True
 #    ),
 #]
-
-# TODO factor to mb_model?
-def abbrev_model_id(x: str) -> str:
-    replace_dict = {
-        'pn2kc_uniform__n-claws_7': 'uniform',
-        'weight-divisor_': 'wd',
-        'prat-claws_True__prat-boutons_True': 'prat-claws-boutons',
-        'prat-claws_True': 'prat-claws',
-        # TODO something shorter?
-        'connectome-APL_True': 'connectome-APL',
-        '__': '_',
-    }
-    for k, v in replace_dict.items():
-        x = x.replace(k, v)
-    return x
-
 
 def main():
     parser = ArgumentParser()
@@ -276,8 +260,7 @@ def main():
             panel_dir = plot_root / panel
             panel_dir.mkdir(exist_ok=True)
             panel_df = test_df.loc[:,test_df.columns.get_level_values('panel') == panel]
-            # TODO TODO try to disable all the downstream csv writing / plotting before
-            # cached model contents are returned. that should only be enabled w/ a flag
+
             params = fit_and_plot_mb_model(panel_dir, orn_deltas=panel_df,
                 try_cache=use_cache, response_rate_plot_max=response_rate_plot_max,
                 **kws, **thr_and_apl_kws
@@ -293,7 +276,6 @@ def main():
                 series = addlevel(series, 'model', model_str)
                 return addlevel(series, 'panel', panel)
 
-            # TODO do just w/in responders? (eh, B would probably not want that)
             mean_num_spikes = add_metadata(ss.mean())
             mean_num_spikes.name = 'mean_num_spikes'
 
@@ -324,16 +306,12 @@ def main():
     # assuming only one panel ('megamat'), so it's ok this doesn't have a panel column
     tdf = pd.concat(tuned_dfs, verify_integrity=True)
     tdf = tdf.reset_index()
-
-    # TODO keep this, or remove def of dict above, and just use abbrev_model_id fn
-    # here directly?
-    tdf.model = tdf.model.map(model_str2abbrev)
-
-    # TODO (delete?) print tdf (/ use to set / check ylim below)
+    tdf.model = tdf.model.apply(abbrev_model_id)
     tdf.odor = tdf.odor.map(parse_odor_name)
     tdf = pd.melt(tdf, id_vars=['model', 'odor'], value_vars=stat_names,
         var_name='stat'
     )
+    # TODO (delete?) print tdf (/ use to set / check ylim below)
 
     col_order = ['mean_num_spikes', 'mean_response_rate']
     assert set(col_order) == set(stat_names)

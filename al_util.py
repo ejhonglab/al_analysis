@@ -1622,7 +1622,7 @@ megamat_odor_names = set(panel2name_order['megamat'])
 def odor_is_megamat(odor: str) -> bool:
     """Takes odor str (with conc) like 'va @ -3' to whether it's among 17 megamat odors.
     """
-    return olf.parse_odor_name(odor) in megamat_odor_names
+    return olf.parse_odor_name(odor, require_conc=False) in megamat_odor_names
 
 
 # changed in al_analysis.main (exposed as command line arguments)

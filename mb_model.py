@@ -489,6 +489,21 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     return param_str
 
 
+def abbrev_model_id(x: str) -> str:
+    replace_dict = {
+        'pn2kc_uniform__n-claws_7': 'uniform',
+        'weight-divisor_': 'wd',
+        'prat-claws_True__prat-boutons_True': 'prat-claws-boutons',
+        'prat-claws_True': 'prat-claws',
+        # TODO something shorter?
+        'connectome-APL_True': 'connectome-APL',
+        '__': '_',
+    }
+    for k, v in replace_dict.items():
+        x = x.replace(k, v)
+    return x
+
+
 def model_id2title(model_id: str) -> str:
     parts = model_id.split('__')
     return '\n'.join(parts).replace('_', ': ').replace('-', '_')
@@ -14356,16 +14371,18 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     # TODO delete from here to end of `if megamat` block?
     if sim_odors is not None:
-        # TODO have parse_odor_name return input (rather than current ValueError), if
-        # input doesn't have '@' in it (or add in model_test.py r1 call that currently
-        # is failing b/c of this)
-        input_odor_names = {olf.parse_odor_name(x) for x in sim_odors}
+        input_odor_names = {
+            olf.parse_odor_name(x, require_conc=False) for x in sim_odors
+        }
     else:
         # TODO need to exclude extra_orn_deltas from this?
         # (given i'm checking subset below, prob fine. but COULD also prob exclude extra
         # odors, if that helps simplify code)
         input_odor_names = {
-            olf.parse_odor_name(x) for x in odor_index.get_level_values('odor')
+            # TODO maybe just check that if some have conc delimiter, all do?
+            # not sure even that matters
+            olf.parse_odor_name(x, require_conc=False)
+            for x in odor_index.get_level_values('odor')
         }
     # TODO may want to discard some for some plots (e.g. in cases when input is not
     # hallem, but also has diagnostics / fake odors added in addition to megamat odors)?
