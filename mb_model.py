@@ -8447,11 +8447,18 @@ def summarize_isi(spikes: xr.DataArray) -> None:
 def mark_odor_pulse(ax: Axes,
     mp: Optional[osm.ModelParams] = None, *,
     stim_start: Optional[float] = None, stim_end: Optional[float] = None,
-    label: Optional[str] = None, color='k') -> Tuple[float, float]:
+    label: Optional[str] = None, color='k', alpha: float = 0.3, **kwargs
+    ) -> Tuple[float, float]:
+    # TODO finish doc
     """Draw vertical lines indicating start and end of model odor pulse.
 
     Returns `stim_start, `stim_end`, if you want to check they are within the timepoints
     in your dynamics data.
+
+    Args:
+        ax: Axes to draw lines for odor start/stop on
+
+        **kwargs: passed to `axvline` calls
     """
     if mp is None:
         if stim_start is None and stim_end is None:
@@ -8480,8 +8487,8 @@ def mark_odor_pulse(ax: Axes,
     # TODO label='odor' for start only? flag for that, if factoring out?
     # TODO make fn (/find a library for) plotting a stimlus bar along some time axis (->
     # use that here instead)?
-    ax.axvline(stim_start, color=color, label=label)
-    ax.axvline(stim_end, color=color)
+    ax.axvline(stim_start, color=color, label=label, alpha=alpha, **kwargs)
+    ax.axvline(stim_end, color=color, alpha=alpha, **kwargs)
 
     return stim_start, stim_end
 
@@ -8751,6 +8758,7 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         'vm_sims': 'KC',
         'spike_recordings': 'KC'
     }
+    # TODO delete?
     dynamics_var2units = {
         'pn_sims': 'firing rate (Hz)',
         'bouton_sims': '~"firing rate" (Hz)',
@@ -8760,6 +8768,7 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         'vm_sims': 'Vm',
         'spike_recordings': 'spikes',
     }
+    #
     dynamics_var2logscale_vmin = {
         # 5Hz (to the extent that units are meaningful...) seems like a reasonable min?
         # TODO compare to something like 0.5?
@@ -9543,7 +9552,7 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # ORN/PN, to another axes)
 
     inh_sims = dynamics_dict['inh_sims']
-    _plot_normed(ax, inh_sims.sel(odor=odor), label='APL Vm')
+    _plot_normed(ax, inh_sims.sel(odor=odor), label='APL activity')
 
     Is_sims = dynamics_dict['Is_sims']
     # plotting these before the KC mean[+types] now, since that part of the plot
@@ -9554,8 +9563,8 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     if 'Is_from_kcs' in dynamics_dict:
         Is_from_kcs = dynamics_dict['Is_from_kcs']
         Is_from_pns = dynamics_dict['Is_from_pns']
-        _plot_normed(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current')
-        _plot_normed(ax, Is_from_pns.sel(odor=odor), label='PN>APL current')
+        _plot_normed(ax, Is_from_kcs.sel(odor=odor), label='KC>APL input')
+        _plot_normed(ax, Is_from_pns.sel(odor=odor), label='PN>APL input')
 
     # TODO if Is_from_kcs is now just the same as Is_sims (in pn_claw_to_apl=False
     # case, shifted by 1), do i want to add back some dynamic variable in olfsysm, for
@@ -9573,7 +9582,7 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
 
     # taking mean over KCs, giving us a series of length equal to #-timepoints
     mean_vm_sims = example_odor_vm_sims.mean('kc')
-    _plot_normed(ax, mean_vm_sims, label='mean KC Vm')
+    _plot_normed(ax, mean_vm_sims, label='mean KC activity')
 
     # TODO TODO (done?) modify fit_mb_model to accept arbitrary wAPLKC/wKCAPL, like
     # i had for _wPNKC (-> use to play around w/ per-subtype scales from here)
@@ -9611,7 +9620,7 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # normalizing to max of 1, as elsewhere
         vm_sims_by_type = vm_sims_by_type / vm_sims_by_type.max('time_s')
         kc_type_labels = [
-            f'mean {x}-KC Vm' for x in vm_sims_by_type[KC_TYPE].values
+            f'mean {x}-KC activity' for x in vm_sims_by_type[KC_TYPE].values
         ]
         # normalized within each type above, so no need for _plot_normed
         _plot(ax, vm_sims_by_type.T, label=kc_type_labels)
@@ -9703,9 +9712,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # TODO delete wPNKC if i don't end up using for checks
     title_prefix: str = '', wPNKC: Optional[pd.DataFrame] = None,
     wAPLKC: Optional[pd.DataFrame] = None, wAPLPN: Optional[pd.DataFrame] = None,
-    wKCAPL: Optional[pd.DataFrame] = None, wPNAPL: Optional[pd.DataFrame] = None,
-    var2range: Optional[MinMaxDict] = None,
-    warn_: bool = True) -> None:
+    var2range: Optional[MinMaxDict] = None, warn_: bool = True) -> None:
     # TODO doc
     """
     Args:
@@ -9720,22 +9727,37 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         wPNKC: see `wAPLKC`. for computing pre-inhibition versions of some responses,
             which is used to compute clipped version of inhition (per-unit)
 
-        wKCAPL: should truly be optional. if passed, or if exists as parquet in
-            `plot_dir.parent`, will be used to recompute and check `olfsysm`
-            calculations of some things
-
-        wPNAPL: see `wKCAPL`
-
-        warn_: if True, will warn if `wKCAPL` or `wPNAPL` were not passed, and also were
+        warn_: if True, will warn if `wAPLKC` or `wAPLPN` were not passed, and also were
             not available as a parquet file in `plot_dir.parent`, since we can't do all
             checks without them.
     """
+    # TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
+    # and "PN input to KCs" (4.8d) from Ann's thesis
+    # TODO TODO also, do i also get the same response fraction to the lower conc
+    # hallem odors, like she does in 4.8a/b? essentially 0 KCs responding at -8,
+    # and for many odors at -6. ig it's just a small number for -8 / -6, judging
+    # by 4.8b/c?
+    # TODO TODO TODO does APL>PN vs APL>KC really behave as the "divisive"
+    # (presynaptic) vs "subtractive" (postsynaptic) Ann talks about in her text?
+    # should i change some of the math to make it so, if not (i.e. does this
+    # indicate an issue w/ my implementation?)? what is basis for her claim?
+    # TODO anything in dayan/abbott or other main computational book about this?
+    # TODO TODO does she have a citation for that claim, either in thesis or in
+    # preprint? olsen/wilson explain why in their paper?
+
     odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
 
-    # TODO TODO refactor to de-dupe w/ APL stuff in plot_example_model_dynamics
+    # TODO refactor to de-dupe w/ APL stuff in plot_example_model_dynamics
     # (or delete from there. just make sure there's nothing i'm doing there that i want
     # here)
-    fig, (ax, apl2kc_ax, apl2pn_ax) = plt.subplots(ncols=3, layout='constrained')
+    if odor != slice(None):
+        # TODO decrease fig height somewhat (to decrease space between suptitle and
+        # titles)?
+        fig, (ax, apl2kc_ax, apl2pn_ax) = plt.subplots(ncols=3, layout='constrained')
+    else:
+        # TODO TODO also implement plotting onto these last two axes for slice(None)
+        # (i.e. all/multiple odors case)? would just complicate code below slightly
+        fig, ax = plt.subplots(layout='constrained')
 
     mp = None
     if stim_timing_kws is not None:
@@ -9765,15 +9787,6 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # initialized correctly when loading dynamics, right? should be using
     # stim_[start|end] there?
     if not Is_all0:
-        # TODO delete. no point in plotting this now, since it's either all 0 in
-        # pn_claw_to_apl=True case, or just shifted by one dt (=0.0005s) (relative to
-        # Is_from_kcs) in pn_claw_to_apl=False case (so we can just plot Is_from_kcs
-        # there)
-        # TODO TODO first add assertion in here that above is true? (should currently
-        # have in test_dynamics_indexing, but still)
-        #_plot_normed(ax, Is_sims.sel(odor=odor),
-        #    label='KC>APL current (filters spiking)'
-        #)
         if mp is not None:
             assert mp.kc.pn_claw_to_apl == False
     else:
@@ -9781,59 +9794,24 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
             assert mp.kc.pn_claw_to_apl
     #
 
-    # TODO TODO also assert Is_from_pns is all 0 unless certain flag set
+    # TODO also assert Is_from_pns is all 0 unless certain flag set? at least in a
+    # test...
     # TODO and don't plot Is_from_pns if so
 
     assert 'Is_from_kcs' in dynamics_dict, 'would fail on older versions of model'
     Is_from_kcs = dynamics_dict['Is_from_kcs']
     Is_from_pns = dynamics_dict['Is_from_pns']
 
-    # TODO TODO move (/duplicate) this checking to test_dynamics_indexing
-    # `not Is_all0` should imply `pn_claw_to_apl=False`
-    if not Is_all0:
-        Is_shifted = Is_sims.shift(time_s=1).dropna('time_s')
-        # only need this rename if i keep the code that sets these names. trying to
-        # revert all names to being None now. may want to just check coords_equal and
-        # .equals moving forward, to simplify
-        if Is_shifted.name is not None:
-            assert Is_shifted.name == 'Is_sims'
-            assert Is_from_kcs.name == 'Is_from_kcs'
-            # if i'm assigning names to these DataArrays, need to rename one to get
-            # these to be .identical again (hong2p.xarray.coords_equal and .equals
-            # regardless)
-            Is_shifted = Is_shifted.rename('Is_from_kcs')
-        #
-        assert Is_shifted.identical(Is_from_kcs.sel(time_s=Is_shifted.time_s))
-        del Is_shifted
-    #
-
     assert Is_from_kcs.get_index('time_s').equals(Is_from_pns.get_index('time_s'))
     _plot(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current', alpha=alpha)
     _plot(ax, Is_from_pns.sel(odor=odor), label='PN>APL current', alpha=alpha)
-
-    # TODO TODO also check that APL "Vm" can be recalculated from adding up
-    # Is_sims in here? or not true? (delete? do i have this in test_dynamics_indexing
-    # now?)
-
-    # TODO TODO want Is on same scale (as what are currently dI/dt quantities)
-    # or not? separate axes (or move Vm to separate axes, and use twinx for
-    # that?)?
-    # TODO TODO update label to be accurate
-    # TODO TODO TODO why does this look like all 0? need a diff scale?
-    # TODO TODO TODO warn/err if it's all 0? (and w/ others that currently seem like
-    # they might be)
-    # TODO TODO TODO update. (add Is_from_kcs and Is_from_pns? don't already have some
-    # variable that accounts for that right? maybe could calculate something equal from
-    # diff inh?)
-    # TODO delete. should be replaced by Is_from_kcs above
-    #_plot(ax, Is_sims.sel(odor=odor), label='APL current (I)', alpha=alpha)
 
     inh_sims = dynamics_dict['inh_sims']
     assert (inh_sims >= 0).all()
     # TODO move this warning to get_dynamics instead? refactor to do in both places?
     if (inh_sims == 0).all():
         # TODO maybe i should be skipping this plot altogether if this is hit?
-        warn('APL Vm (inh_sims) was 0 everywhere! only makes sense if APL was '
+        warn('APL activity (inh_sims) was 0 everywhere! only makes sense if APL was '
             'intentionally disabled somehow'
         )
 
@@ -9842,13 +9820,39 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # m=magenta. just needs to be distinct from default colors chosen for ax,
     # since sharing one axes+legend
     apl_vm_color = 'm'
-    _plot(apl_vm_ax, inh_sims.sel(odor=odor), label='APL Vm', color=apl_vm_color)
-    apl_vm_ax.set_ylabel('APL Vm', color=apl_vm_color)
+    _plot(apl_vm_ax, inh_sims.sel(odor=odor), label='APL activity', color=apl_vm_color)
+    apl_vm_ax.set_ylabel('APL activity', color=apl_vm_color)
     apl_vm_ax.tick_params(axis='y', color=apl_vm_color)
     for text in apl_vm_ax.yaxis.get_ticklabels():
         text.set_color(apl_vm_color)
 
     title_fontsize = 9
+
+    ax.set_ylabel('input to APL')
+    ax.set_xlabel('time (seconds)')
+    ax.set_title(f'APL response to {odor_str}', fontsize=title_fontsize)
+    fig.suptitle(title_prefix)
+
+    def legend_below(ax: Axes, yoffset: float = -.17) -> None:
+        # despite saying 'upper center', this will actually place the legend below the
+        # axes, b/c of the bbox_to_anchor arg
+        # https://stackoverflow.com/questions/4700614
+        # -.05 overlapped w/ 'time (seconds) xlabel too much. only slightly under -.05
+        # might work well for right two axes (just need to avoid overlapping ticklabels)
+        ax.legend(loc='upper center', fontsize=8, bbox_to_anchor=(0.5, yoffset))
+
+    legend_below(ax)
+
+    def _savefig():
+        savefig(fig, plot_dir, f'apl_dynamics{odor_fname_suffix}')
+
+    if odor == slice(None):
+        _savefig()
+        warn('plot_apl_dynamics: not plotting additional 2 Axes for mean effect of APL '
+            ' on claws/boutons, because that is currently only implemented for a '
+            'single odor (pass `odor=<str>`)'
+        )
+        return
 
     # TODO also allow passing in dir for these?
     # plot_dir should be `model_output_dir / 'dynamics'`
@@ -9865,33 +9869,6 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     if wPNKC is None:
         wPNKC = read_parquet(model_output_dir / 'wPNKC.parquet')
 
-    if wKCAPL is None:
-        parquet = model_output_dir / 'wKCAPL.parquet'
-        if parquet.exists():
-            wKCAPL = read_parquet(parquet)
-        elif warn_:
-            warn(f'plot_apl_dynamics: wKCAPL not passed, and {parquet} did not exist. '
-                'will not be able to do all checks.'
-            )
-
-    if wPNAPL is None:
-        parquet = model_output_dir / 'wPNAPL.parquet'
-        if parquet.exists():
-            wPNAPL = read_parquet(parquet)
-        elif warn_:
-            warn(f'plot_apl_dynamics: wPNAPL not passed, and {parquet} did not exist. '
-                'will not be able to do all checks.'
-            )
-
-    optional_weights = [wKCAPL, wPNAPL]
-    if any(x is None for x in optional_weights):
-        assert all(x is None for x in optional_weights), ('currently assuming that if '
-            'any of the optional wKCAPL/wPNAPL weights are passed, they all are'
-        )
-        have_optional_weights = False
-    else:
-        have_optional_weights = True
-
     odor_inh_sims = inh_sims.sel(odor=odor).squeeze(drop=True)
     ts = odor_inh_sims.get_index('time_s')
 
@@ -9900,31 +9877,103 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     boutons = dynamics_dict['bouton_sims'].sel(odor=odor).squeeze(drop=True)
     claws = dynamics_dict['claw_sims'].sel(odor=odor).squeeze(drop=True)
 
-    # TODO TODO TODO add code to olfsysm to compute same means / sums, and check
-    # against values here (actually necessary?)
-    # TODO TODO TODO TODO figure out why mean to each isn't same. am i dividing by the
-    # right number of units when scaling PN weights??? revisit that, and maybe try to
-    # move all unit normalization to olfsysm again
-    # TODO TODO TODO need to clip values to 0 before mean? if mp indicates so?
-    # TODO TODO TODO TODO get kc/pn activities, subtract these from those, and then see
-    # if we need to clip things (as we probably should, at least in default
-    # mp.kc.allow_net_inh_per_claw=false case)
-    # TODO TODO TODO TODO but what we have here (claw_sims) should already have had
-    # these subtracted and clipped, no? so do i need to save a new variable in olfsysm
-    # or not?
-    # TODO TODO TODO plot mean activity of each to be clear (and can i recreate
-    # pre-inhibition from that? if i subtract inh as calculated below, do i then get
-    # some negative values? or can i recreate values without inh from pns (for boutons)
-    # or boutons (for claws) and then this inh?
-    # TODO TODO TODO put # units in title, if not already there
-    # of shape (# claws, # timepoints)
+    # don't need fn like above for DataFrames. DataArray constructor handles those
+    # fine.
+    wPNKC_arr = xr.DataArray(data=wPNKC, dims=['claw', 'bouton'])
+    assert np.array_equal(wPNKC_arr.values, wPNKC.values)
+
+    claw_index = wPNKC_arr.get_index('claw')
+    assert claw_index.equals(wPNKC.index)
+    claw_index2 = claws.get_index('claw')
+    assert glomerulus_col in claw_index2.names
+    assert claw_index2.droplevel(glomerulus_col).equals(claw_index)
+
+    bouton_index = wPNKC_arr.get_index('bouton')
+    assert bouton_index.equals(wPNKC.columns)
+    assert boutons.get_index('bouton').equals(bouton_index)
+    wPNKC = wPNKC_arr
+
+    # ah, it's failing when we are not also analyzing just a single odor.
+    # ipdb> odor
+    # slice(None, None, None)
+    # ipdb> pns.dims
+    # ('panel', 'glomerulus', 'time_s')
+    assert pns.dims == ('glomerulus', 'time_s'), f'{pns.dims=}'
+    # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
+    # outside of the bouton index (first row in output below):
+    # Coordinates:
+    #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+    # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
+    # * bouton      (bouton) MultiIndex
+    # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+    # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
+    # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
+    #
+    # expanding each PN up to # of times it appears in boutons (and in same order as
+    # there)
+    boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
+        'glomerulus'
+    )
+    assert boutons_no_inh.dims == ('bouton', 'time_s')
+    assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
+
+    # (it is True now that i've actually removed the NaN by here)
+    # > (boutons >= 0).all()
+    # False
+    boutons_min = boutons.min().item()
+    # should == 0 almost certainly, at least if there is any meaningful PN>APL
+    # inhibition enabled, with APL actually getting activity
+    # TODO assert it's >0 otherwise?
+    assert boutons_min >= 0, f'had some bouton activities < 0. min={boutons_min}'
+
+    # TODO see if we get any performance benefit to using any scipy.sparse or Sparse
+    # (https://sparse.pydata.org/en/stable/) representation of data while
+    # constructing wPNKC
+    # TODO any other way to get sparse DataArrays?
+    #
+    # need to start w/ boutons that have already have inh applied here.
+    # takes a couple seconds, but haven't gotten killed yet.
+    # .dot returns something that had dot product computed over shared dimensions,
+    # which is just 'bouton' between these two, so we will be left with dims
+    # ('time_s', 'claw')
+    claws_no_inh = wPNKC.dot(boutons)
+
+    # removing the 'glomerulus' level from the 'claw' MultiIndex, since wPNKC (and
+    # thus claws_no_inh, does not have it)
+    claws = claws.reset_index('claw').drop_vars('glomerulus')
+    # restoring the 'claw' dim MultiIndex
+    claws = move_all_coords_to_index(claws)
+
+    # TODO this all work?
+    assert coords_equal(boutons, boutons_no_inh)
+    assert coords_equal(claws, claws_no_inh)
+
+    # NOTE: would probably also fail if there was any chance of boutons (or anything
+    # really) having NaN still
+    #
+    # ok, this one is true at least
+    # TODO also see if we can subtract inh2pns we recalculated above from
+    # boutons_no_inh, and get boutons (after clipping)
+    assert (boutons_no_inh >= boutons).all()
+    # TODO also try adding back inh multiplied by weights??
+    assert (claws_no_inh >= claws).all()
+
+    # TODO assert anything on vmin/vmax for below two (vs that of plot)?
+    # should be ok
+    _plot(apl2pn_ax, boutons_no_inh, label='mean boutons (before inh)')
+    _plot(apl2kc_ax, claws_no_inh, label='mean claws (before inh)')
+
+    _plot(apl2pn_ax, boutons, label='mean boutons')
+    _plot(apl2kc_ax, claws, label='mean claws')
+
     assert (wAPLKC >= 0).all()
     # uses values from wAPLKC, and gets appropriate (matching index) coordinates from
     # claws
     wAPLKC = series2xarray_like(wAPLKC, claws)
     # need input w/ 'time_s' dim to go first, for calls using ts below
     inh2kcs = outer_product(odor_inh_sims, wAPLKC)
-    _plot(apl2kc_ax, inh2kcs, label='mean APL>claw inh')
+    inh2kcs_clipped = inh2kcs.where(inh2kcs > claws_no_inh, claws_no_inh)
+    _plot(apl2kc_ax, inh2kcs_clipped, label='mean APL>claw inh')
     apl2kc_ax.set_title('APL>claw inhibition', fontsize=title_fontsize)
 
     assert (wAPLPN >= 0).all()
@@ -9932,9 +9981,11 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # boutons
     wAPLPN = series2xarray_like(wAPLPN, boutons)
     inh2pns = outer_product(odor_inh_sims, wAPLPN)
-    _plot(apl2pn_ax, inh2pns, label='mean APL>PN inh')
+    inh2pns_clipped = inh2pns.where(inh2pns > boutons_no_inh, boutons_no_inh)
+    _plot(apl2pn_ax, inh2pns_clipped, label='mean APL>PN inh')
     apl2pn_ax.set_title('APL>bouton inhibition', fontsize=title_fontsize)
 
+    # TODO check this is being hit
     if var2range is not None:
         # TODO if not getting range from same exact thing (and inh computed above was
         # not yet clipped), assert range of above is within range we are getting here?
@@ -9972,151 +10023,11 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         assert vmin <= inh2pns_min, f'{vmin=} > {inh2pns_min=}'
         assert vmax >= inh2pns_max, f'{vmax=} < {inh2pns_max=}'
 
-    # TODO TODO TODO remove the `odor != slice(None)` restriction, would just
-    # add to complexity of code in this conditional slightly
-    if odor != slice(None):
-        # don't need fn like above for DataFrames. DataArray constructor handles those
-        # fine.
-        wPNKC_arr = xr.DataArray(data=wPNKC, dims=['claw', 'bouton'])
-        assert np.array_equal(wPNKC_arr.values, wPNKC.values)
+    yoffset = -.1
+    legend_below(apl2kc_ax, yoffset)
+    legend_below(apl2pn_ax, yoffset)
 
-        claw_index = wPNKC_arr.get_index('claw')
-        assert claw_index.equals(wPNKC.index)
-        claw_index2 = claws.get_index('claw')
-        assert glomerulus_col in claw_index2.names
-        assert claw_index2.droplevel(glomerulus_col).equals(claw_index)
-
-        # TODO TODO TODO is it problematic that this index is not equal to itself
-        # sorted? could that be part of indexing issue? (if there is one...)
-        bouton_index = wPNKC_arr.get_index('bouton')
-        assert bouton_index.equals(wPNKC.columns)
-        assert boutons.get_index('bouton').equals(bouton_index)
-        wPNKC = wPNKC_arr
-
-        # ah, it's failing when we are not also analyzing just a single odor.
-        # ipdb> odor
-        # slice(None, None, None)
-        # ipdb> pns.dims
-        # ('panel', 'glomerulus', 'time_s')
-        assert pns.dims == ('glomerulus', 'time_s'), f'{pns.dims=}'
-        # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
-        # outside of the bouton index (first row in output below):
-        # Coordinates:
-        #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-        # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-        # * bouton      (bouton) MultiIndex
-        # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-        # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
-        # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
-        #
-        # expanding each PN up to # of times it appears in boutons (and in same order as
-        # there)
-        boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
-            'glomerulus'
-        )
-        # TODO TODO TODO maybe restrict this comparison to odor window? something weird
-        # happening after?
-        assert boutons_no_inh.dims == ('bouton', 'time_s')
-        assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
-
-        # (it is True now that i've actually removed the NaN by here)
-        # > (boutons >= 0).all()
-        # False
-        boutons_min = boutons.min().item()
-        # should == 0 almost certainly, at least if there is any meaningful PN>APL
-        # inhibition enabled, with APL actually getting activity
-        # TODO assert it's >0 otherwise?
-        assert boutons_min >= 0, f'had some bouton activities < 0. min={boutons_min}'
-
-        # TODO see if we get any performance benefit to using any scipy.sparse or Sparse
-        # (https://sparse.pydata.org/en/stable/) representation of data while
-        # constructing wPNKC
-        # TODO any other way to get sparse DataArrays?
-        #
-        # need to start w/ boutons that have already have inh applied here.
-        # takes a couple seconds, but haven't gotten killed yet.
-        # .dot returns something that had dot product computed over shared dimensions,
-        # which is just 'bouton' between these two, so we will be left with dims
-        # ('time_s', 'claw')
-        # TODO TODO do i have to do anything with spont?
-        claws_no_inh = wPNKC.dot(boutons)
-
-        # removing the 'glomerulus' level from the 'claw' MultiIndex, since wPNKC (and
-        # thus claws_no_inh, does not have it)
-        claws = claws.reset_index('claw').drop_vars('glomerulus')
-        # restoring the 'claw' dim MultiIndex
-        claws = move_all_coords_to_index(claws)
-
-        # TODO this all work?
-        assert coords_equal(boutons, boutons_no_inh)
-        assert coords_equal(claws, claws_no_inh)
-
-        # NOTE: would probably also fail if there was any chance of boutons (or anything
-        # really) having NaN still
-        #
-        # ok, this one is true at least
-        # TODO also see if we can subtract inh2pns we recalculated above from
-        # boutons_no_inh, and get boutons (after clipping)
-        assert (boutons_no_inh >= boutons).all()
-        # TODO also try adding back inh multiplied by weights??
-        assert (claws_no_inh >= claws).all()
-
-        # TODO assert anything on vmin/vmax for below two (vs that of plot)?
-        # should be ok
-        _plot(apl2pn_ax, boutons_no_inh, label='mean boutons (BEFORE inh)')
-        _plot(apl2kc_ax, claws_no_inh, label='mean claws (BEFORE inh)')
-
-        _plot(apl2pn_ax, boutons, label='mean boutons')
-        _plot(apl2kc_ax, claws, label='mean claws')
-
-        # TODO plot inh onto each after clipping (s.t. inh can't push it below 0)?
-        # (shouldn't need to recalc this anymore to plot, but could incorporate some of
-        # this kind of recalc into a test)
-
-    # TODO may want to remove the `odor != slice(None)` restriction later, would just
-    # add to complexity of code in this conditional slightly
-    if have_optional_weights and odor != slice(None):
-        # TODO TODO actually use these two (or in test?)
-        wKCAPL = series2xarray_like(wKCAPL, claws)
-        wPNAPL = series2xarray_like(wPNAPL, boutons)
-
-    fig.legend(loc='upper right', fontsize=8)
-
-    ax.set_ylabel('current to APL')
-
-    # TODO move to _plot?
-    # TODO what fontsize?
-    ax.set_xlabel('time (seconds)')
-
-    ax.set_title(f'APL response to {odor_str}', fontsize=title_fontsize)
-
-    fig.suptitle(title_prefix)
-
-    # TODO TODO check we can recreate timecourse "KC input to APL" (4.8e)
-    # and "PN input to KCs" (4.8d) from Ann's thesis
-    # TODO TODO also, do i also get the same response fraction to the lower conc
-    # hallem odors, like she does in 4.8a/b? essentially 0 KCs responding at -8,
-    # and for many odors at -6. ig it's just a small number for -8 / -6, judging
-    # by 4.8b/c?
-    # TODO TODO TODO does APL>PN vs APL>KC really behave as the "divisive"
-    # (presynaptic) vs "subtractive" (postsynaptic) Ann talks about in her text?
-    # should i change some of the math to make it so, if not (i.e. does this
-    # indicate an issue w/ my implementation?)? what is basis for her claim?
-    # TODO anything in dayan/abbott or other main computational book about this?
-    # TODO TODO does she have a citation for that claim, either in thesis or in
-    # preprint? olsen/wilson explain why in their paper?
-    savefig(fig, plot_dir, f'apl_dynamics{odor_fname_suffix}')
-
-    # TODO TODO re-evaluate below, now that i've changed olfsysm (in 2e1508377)
-    # to only have KC spiking APL input (and only in pn_claw_to_apl=false case)
-    # filter through Is dynamics + time constant. everything else is now current
-    # directly into dinhdt
-    # TODO TODO TODO assert that Is_from_kcs + Is_from_pns is can reproduce inh_sims
-    # (maybe if mp.kc.apl_current_is_integral=False)
-    # TODO TODO TODO and is Is == Is_from_kcs in pn_claw_to_apl=True case now?
-    # TODO TODO figure out if Is_from_[kcs|pns] makes sense
-    # (test_dynamics_indexing should soon start to get at this, to make sure
-    # calculation is correct at least)
+    _savefig()
 
 
 def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
@@ -10267,14 +10178,9 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
 
     if apl_dynamics:
         plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
-            title_prefix=title_prefix, wAPLKC=wAPLKC, wAPLPN=wAPLPN, wKCAPL=wKCAPL,
-            wPNAPL=wPNAPL, wPNKC=wPNKC, var2range=var2range
+            title_prefix=title_prefix, wAPLKC=wAPLKC, wAPLPN=wAPLPN, wPNKC=wPNKC,
+            var2range=var2range
         )
-    # TODO delete
-    print('RESTORE EXITING')
-    #print('EXITING AFTER PLOT APL DYNAMICS')
-    #import sys; sys.exit()
-    #
 
     if aligned_dynamics:
         plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,

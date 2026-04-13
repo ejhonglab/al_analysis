@@ -2769,7 +2769,10 @@ def apl_weights(orn_deltas, request):
     warn('fix precalc_weights=True (to speed up this test in general, and mainly to '
         'fix whatever underlying consistency issue!'
     )
-    #precalc_weights = True
+    # TODO TODO TODO try again to get this to work (both so i can set these vectors
+    # before tuning, for sensitivity analysis, but also so i can hardcode offsets for
+    # KCs based on breadth)
+    precalc_weights = True
     if precalc_weights:
         # TODO delete after saving/committing/replacing these with use of those outputs?
         # unless flag set, maybe?
@@ -3176,34 +3179,17 @@ def test_apl_weights_osm(apl_weights):
     #
 
 
-# TODO TODO parametrize on at least two cases, one w/o boutons?
-# TODO also one w/o claws, ideally
-# (can probabably always test w/ connectome APL weights)
-def test_dynamics_indexing(orn_deltas):
-    # shouldn't matter which of the two (pn_claw_to_apl=True/False) we use
-    # NOTE: 1st currently has pn_claw_to_apl=True, and 2nd is same but with it False
-    # (2nd omits it, and False is default)
-    kws = BOUTON_MODEL_KW_LIST[0]
-
+# TODO at at least one test case w/o boutons? i mean, if this works, that prob would
+# too...
+# TODO also one w/o claws?
+@pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
+def test_feedforward_indexing(orn_deltas, kws):
     responses, _, wPNKC1, params = _fit_mb_model(orn_deltas=orn_deltas,
         return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
-        # TODO TODO TODO set weights TO APL to nonzero. should still work, and then
-        # could test (some of?) inh / Is / Is_from_kcs calcs, right? would then just
-        # need to figure out how to test alignment of weights FROM APL (just enable weak
-        # amount? or just check first timepoint or two? necessary?)?
-        # TODO TODO TODO separate call after most checks below, where we just try to
-        # check alignment of weights FROM APL?
         # setting threshold high enough that no KCs should spike
         # (so that claw_sims should sum, within each KC, to an entry KC vm_sims)
         fixed_thr=1e6, wAPLKC=0.0, wAPLPN=0.0, wKCAPL=1.0, wPNAPL=1.0, **kws
     )
-    # TODO TODO check i can recreate dot product to get [inh diff?] at least, prob also
-    # accounting for dt & appropriate tau there)
-    # TODO TODO check i can recreate Is_from_kcs diff w/ wKCAPL weights and either
-    # spiking or inh?
-    # TODO TODO TODO more important to check in pn_claw_to_apl=True case (and also if i
-    # add anything where inh can be shape #-KCs/claws instead of scalar)
-
     assert params['wAPLKC'].sum() == 0
 
     # shouldn't be able to re-run model, since I set delete_pretime=True above (to save
@@ -3336,8 +3322,6 @@ def test_dynamics_indexing(orn_deltas):
     assert bouton_glom_mins.identical(boutons.groupby('glomerulus').max())
     assert bouton_glom_mins.identical(pns)
 
-    # TODO TODO convert wPNKC to arr and check we can recreate claw from bouton?
-
     claw_glom_mins = claws.groupby('glomerulus').min()
     assert claw_glom_mins.identical(claws.groupby('glomerulus').max())
     # TODO worth a test that if we have non-0/1 wPNKC we can get the expected divergence
@@ -3433,6 +3417,7 @@ def test_dynamics_indexing(orn_deltas):
         # comparison of kc_id across claw_sums and kcs (before this fn) should guarantee
         # this
         assert k1 == k2
+        del fc, fk, k1, k2
 
         # this adds a NaN dropped below, when shifting
         arr1 = (claw_sums.isel(stim=0, kc_id=i) - kcs.isel(stim=0, kc=i).shift(time_s=1)
@@ -3465,89 +3450,27 @@ def test_dynamics_indexing(orn_deltas):
         # have equal arr1/arr2? (+ tqdm at that point?) (maybe there would be some rows
         # equal though?)
 
-    wKCAPL = series2xarray_like(params['wKCAPL'], claws)
-    wPNAPL = series2xarray_like(params['wPNAPL'], boutons)
 
-    # TODO TODO TODO prob need separate call w/o APL output disabled to actually check
-    # these?
-    wAPLKC = series2xarray_like(params['wAPLKC'], claws)
-    wAPLPN = series2xarray_like(params['wAPLPN'], boutons)
-
-    Is = params['Is_sims'].sel(time_s=boutons.time_s)
-    Is_from_kcs = params['Is_from_kcs'].sel(time_s=boutons.time_s)
-    if mp.kc.pn_claw_to_apl:
-        assert coords_equal(claws.dot(wKCAPL), Is_from_kcs)
-        assert np.allclose(claws.dot(wKCAPL), Is_from_kcs)
-        # TODO this doesn't matter, right? explain why i dont want to use this var for
-        # Is_from_kcs here? i suppose cause this has dynamics and Is_from_kcs wouldn't
-        # here (i.e. it's own decay)?
-        assert (Is == 0).all()
-    else:
-        # TODO also check we can recreate Is here
-        # TODO TODO TODO what to test here? use spike_recordings?
-        breakpoint()
-
-    # TODO TODO TODO then just need to verify wAPLPN indexing (need to enable some
-    # inhibition for that?)
-    Is_from_pns = params['Is_from_pns'].sel(time_s=boutons.time_s)
-    # this should verify wPNAPL indexing in model (and pn>bouton indexing should already
-    # have been confirmed above). not .equals exactly, but allclose.
-    assert coords_equal(boutons.dot(wPNAPL), Is_from_pns)
-    assert np.allclose(boutons.dot(wPNAPL), Is_from_pns)
-
-    # TODO TODO TODO use (/ delete) all below
-    # TODO i assert something about Is shifted relative to Is_from_kcs in
-    # mb_model.plot_dynamics, right? move that here (too?)?
-    # TODO TODO TODO also test this one here (already have some code for this in
-    # mb_model?) (will handle later. higher priority to check APL>(KC,PN) weights below)
-    inh = params['inh_sims'].sel(time_s=boutons.time_s)
-
-    assert mp.pn.preset_wPNAPL
-    # TODO TODO TODO why does inh blow up towards the end, but this doesn't?
-    # also happen w/ more realistic setups? just test w/ all weights enabled, below?
-    inh2 = (Is_from_pns + Is_from_kcs - inh.shift(time_s=1)) * (dt/mp.kc.apl_taum)
-    print('finish checking inh2 vs inh (finding why so diff...)')
-    #breakpoint()
-    #
-    # TODO TODO fix so below won't get killed. del all above? separate test?
-
-
-# TODO combine back into one test? rename at least
-def test_dynamics_indexing2(orn_deltas):
-    # shouldn't matter which of the two (pn_claw_to_apl=True/False) we use
-    # NOTE: 1st currently has pn_claw_to_apl=True, and 2nd is same but with it False
-    # (2nd omits it, and False is default)
-    kws = BOUTON_MODEL_KW_LIST[0]
-
-    # TODO TODO TODO separate tests w/ only either wAPLKC or wAPLPN = 1 (other 0),
-    # to see if outputs make more sense for either of those?
+@pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
+def test_apl_indexing(orn_deltas, kws):
     _, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
         return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
-        # refactor to share w/ above. only difference here is wAPLKC & wAPLPN
-        # are now also 1.0 (instead of 0.0 before)
-        # TODO TODO TODO restore
-        #fixed_thr=1e6, wAPLKC=1.0, wAPLPN=1.0, wKCAPL=1.0, wPNAPL=1.0, **kws
-        #fixed_thr=1e6, wAPLKC=0.0, wAPLPN=0.0, wKCAPL=1.0, wPNAPL=1.0, **kws
-        # TODO TODO TODO actually, i think i need to test w/ either wKCAPL or wPNAPL 0
-        # (-> see if we can recreate inh any better)
-        fixed_thr=1e6, wAPLKC=0.0, wAPLPN=0.0, wKCAPL=1.0, wPNAPL=0.0, **kws
+        # no spikes at fixed_thr of 300. and 200... kc_spont_in.max() == 188
+        # (and w APL active, and APL>PN weights, will probably often need more than that
+        # anyway)
+        fixed_thr=100, wAPLKC=1.0, wAPLPN=1.0, wKCAPL=1.0, wPNAPL=1.0, **kws
     )
     # shouldn't be able to re-run model, since I set delete_pretime=True above (to save
     # memory), but should still be able to get parameters from these without issue
-    # TODO also assert wAPLKC in this is all 0?
     rv = params['rv']
     mp = params['mp']
 
-    # TODO get dt from diffing time index instead (/check against that?)?
     dt = mp.time_dt
 
-    # we should have set the threshold high enough to avoid spiking
-    assert (params['spike_recordings'] == 0).all()
+    # we need some spiking, at least in the pn_claw_to_apl=false case, to test we can
+    # recreate inh
+    assert (params['spike_recordings'] > 0).any(), 'set fixed_thr lower in call above'
 
-    # TODO delete. was only for when this was part of test above
-    # don't need to redefine the DataArray wPNKC (constructed from wPNKC1), if this
-    # passes
-    #assert wPNKC1.equals(wPNKC2)
     # TODO also remove the time_s subsetting in above. shouldn't be needed anymore
     # TODO subset all down to one odor first? or change code below?
     pns = params['pn_sims']
@@ -3559,26 +3482,20 @@ def test_dynamics_indexing2(orn_deltas):
     Is_from_pns = params['Is_from_pns']
     wAPLKC_all0 = (rv.kc.wKCAPL == 0).all()
     wAPLPN_all0 = (rv.pn.wPNAPL == 0).all()
+    # TODO do same for other two weight vectors (to APL)?
     # may also want to assert only one is not all0 (or at least focus on those cases for
     # now. could integrate into one test w/ both enabled in one call later)
-    assert not (wAPLKC_all0 and wAPLPN_all0)
+    assert not (wAPLKC_all0  or wAPLPN_all0)
 
-    if wAPLKC_all0:
-        assert (Is_from_kcs == 0).all()
-
-    if wAPLPN_all0:
-        assert (Is_from_pns == 0).all()
-
+    # TODO TODO TODO also test we can recreate Is_from_kcs (/ Is_sims?) (at least in
+    # pn_claw_to_apl=false case)? that's not handled in test_feedforward_indexing,
+    # right?  b/c thr always set to disable spiking there
     assert mp.pn.preset_wPNAPL
-    # TODO TODO TODO why does inh blow up towards the end, but this doesn't?
-    # also happen w/ more realistic setups? just test w/ all weights enabled, below?
-    # TODO TODO does it still here (like w/ two weight scales 0 above)?
-    inh2 = (Is_from_pns + Is_from_kcs - inh.shift(time_s=1)) * (dt/mp.kc.apl_taum)
-    # TODO TODO TODO fix still large divergence between inh/inh2 in case only
-    # Is_from_pns nonzero
 
     # NOTE: much of below copied from WIP code in plot_apl_dynamics don't need fn like
     # above for DataFrames. DataArray constructor handles those fine.
+    # TODO refactor to share whis wPNKC handling w/ test above? (wPNKC is still needed
+    # here)
     wPNKC_arr = xr.DataArray(data=wPNKC, dims=['claw', 'bouton'])
     assert np.array_equal(wPNKC_arr.values, wPNKC.values)
 
@@ -3588,18 +3505,59 @@ def test_dynamics_indexing2(orn_deltas):
     assert glomerulus_col in claw_index2.names
     assert claw_index2.droplevel(glomerulus_col).equals(claw_index)
 
-    # TODO TODO TODO is it problematic that this index is not equal to itself
-    # sorted? could that be part of indexing issue? (if there is one...)
     bouton_index = wPNKC_arr.get_index('bouton')
     assert bouton_index.equals(wPNKC.columns)
     assert boutons.get_index('bouton').equals(bouton_index)
     wPNKC = wPNKC_arr
 
-    # TODO subset to single odor from here? or change code below?
-    # TODO why am i needing tot manually drop 'stim' on all these?
+    wKCAPL = series2xarray_like(params['wKCAPL'], claws)
+    wPNAPL = series2xarray_like(params['wPNAPL'], boutons)
+
+    Is = params['Is_sims'].sel(time_s=boutons.time_s)
+    Is_from_kcs = params['Is_from_kcs'].sel(time_s=boutons.time_s)
+    if mp.kc.pn_claw_to_apl:
+        assert coords_equal(claws.dot(wKCAPL), Is_from_kcs)
+        assert np.allclose(claws.dot(wKCAPL), Is_from_kcs)
+        # TODO this doesn't matter, right? explain why i dont want to use this var for
+        # Is_from_kcs here? i suppose cause this has dynamics and Is_from_kcs wouldn't
+        # here (i.e. it's own decay)?
+        assert (Is == 0).all()
+    else:
+        Is_shifted = Is.shift(time_s=1).dropna('time_s')
+        assert Is_shifted.identical(Is_from_kcs.sel(time_s=Is_shifted.time_s))
+        del Is_shifted
+        # TODO also check we can recreate Is here
+        # TODO TODO what to test here? use spike_recordings? (would prob have to take a
+        # similar approach of recreating the diff, as for dKCdt and dinhdt)
+        #breakpoint()
+
+    Is_from_pns = params['Is_from_pns'].sel(time_s=boutons.time_s)
+    # this should verify wPNAPL indexing in model (and pn>bouton indexing should already
+    # have been confirmed above). not .equals exactly, but allclose.
+    assert coords_equal(boutons.dot(wPNAPL), Is_from_pns)
+    assert np.allclose(boutons.dot(wPNAPL), Is_from_pns)
+
+    # TODO i assert something about Is shifted relative to Is_from_kcs in
+    # mb_model.plot_dynamics, right? move that here (too?)?
+    inh = params['inh_sims'].sel(time_s=boutons.time_s)
+
+    assert mp.pn.preset_wPNAPL
+    # TODO refactor to share w/ checks recreating dKCdt above?
+    dinhdt = (Is_from_pns + Is_from_kcs - inh.shift(time_s=1)) * (dt/mp.kc.apl_taum)
+    # TODO same indexing work for dKCdt above? much simpler here. if not, why not?
+    inh_diff = inh.diff('time_s')
+    dinhdt = dinhdt.dropna('time_s')
+    assert np.array_equal(dinhdt.time_s, inh_diff.time_s)
+    assert np.allclose(dinhdt, inh_diff)
+
+    # TODO try reverting to testing more than one odor?
+    # i assume i ran out of memory? or was just really slow?
+    #
+    # TODO why am i needing to manually drop 'stim' on all these?
     pns = pns.isel(stim=0).squeeze(drop=True).drop_vars('stim')
     boutons = boutons.isel(stim=0).squeeze(drop=True).drop_vars('stim')
     claws = claws.isel(stim=0).squeeze(drop=True).drop_vars('stim')
+    inh = inh.isel(stim=0).squeeze(drop=True).drop_vars('stim')
     #
 
     # ah, it's failing when we are not also analyzing just a single odor.
@@ -3651,10 +3609,8 @@ def test_dynamics_indexing2(orn_deltas):
     # thus claws_no_inh, does not have it)
     claws = claws.reset_index('claw').drop_vars('glomerulus')
     # restoring the 'claw' dim MultiIndex
-    breakpoint()
     claws = move_all_coords_to_index(claws)
 
-    # TODO this all work?
     assert coords_equal(boutons, boutons_no_inh)
     assert coords_equal(claws, claws_no_inh)
 
@@ -3663,32 +3619,64 @@ def test_dynamics_indexing2(orn_deltas):
     #
     # ok, this one is true at least
     assert (boutons_no_inh >= boutons).all()
-    # TODO TODO TODO FIX. at least claws one is failing
-    print('FIX CLAWS_NO_INH < CLAWS (bouton indexing issue?)')
-    #assert (claws_no_inh >= claws).all()
+    assert (claws_no_inh >= claws).all()
 
+    wAPLKC = series2xarray_like(params['wAPLKC'], claws)
+    claws_with_inh2 = (claws_no_inh - wAPLKC.dot(inh))
+    assert claws_with_inh2.min() < 0, 'some claws should have been pushed below 0'
+    # set any values below 0 to 0
+    claws2 = claws_with_inh2.where(claws_with_inh2 >= 0, 0)
+    assert claws2.min() == 0
+    # TODO why mismatch between claws2 and claws?  even in first timepoint, some values
+    # are 0 in claws2 but claws doesn't seem to have any 0 values in first timepoint
+    # (mismatch is actually *only* in first timepoint)
+    assert coords_equal(
+        claws2.isel(time_s=slice(1, None)), claws.isel(time_s=slice(1, None))
+    )
+    # TODO TODO why not true on first timepoint? matter?
+    assert np.allclose(
+        claws2.isel(time_s=slice(1, None)), claws.isel(time_s=slice(1, None))
+    )
+    # TODO TODO why does claws have all non-zero values for first element, but then all
+    # 0 after there? just b/c strength of inhibition?
+    # ipdb> (claws.isel(time_s=0) == 0).sum()
+    # <xarray.DataArray ()>
+    # array(0)
+    # Coordinates:
+    #     time_s   float64 -0.4995
+    # ipdb> (claws2.isel(time_s=0) == 0).sum()
+    # <xarray.DataArray ()>
+    # array(6879)
 
-    # TODO TODO TODO also test alignment of APL<>KC and PN<>APL weights
-    # (at least when claw & bouton lengths, respectively)
-    # TODO TODO TODO need some model run(s) w/ APL>KC and APL>PN not disabled, to test
-    # indexing of those? how to set up?
+    wAPLPN = series2xarray_like(params['wAPLPN'], boutons)
+    if mp.kc.pn_claw_to_apl:
+        boutons_with_inh2 = (boutons_no_inh - wAPLPN.dot(inh))
+    else:
+        boutons_with_inh2 = (boutons_no_inh - wAPLPN.dot(inh).shift(time_s=1)).dropna(
+            'time_s'
+        )
 
-    # TODO delete
-    breakpoint()
-    #
+    assert boutons_with_inh2.min() < 0, 'some boutons should have been pushed below 0'
+    # set any values below 0 to 0
+    boutons2 = boutons_with_inh2.where(boutons_with_inh2 >= 0, 0)
+    assert boutons2.min() == 0
 
-    # TODO TODO TODO also check that we can recalculate Is_sims / inh_sims from
-    # claw_sims (or pn_sims, if wPNKC_one_row_per_claw=False)? or at least
-    # Is_from_[kcs|pns]?
-    # TODO TODO TODO TODO need to add separate variable to olfsysm, to be able to tell
-    # for sure we are recreating these values? otherwise would probably have to recreate
-    # claw/bouton activities, by applying this recalculated inhibition
-    # TODO TODO TODO should need separate test to check Is_from_kcs, at least if KC>APL
-    # input requires spiking (currently threshold set above to disable spiking)
+    # NOTE: need to shift by one in pn_claw_to_apl=false case
+    if mp.kc.pn_claw_to_apl:
+        # TODO same issue as above (first timepoint doesn't match. none 0 in real
+        # thing, many 0s here. why?)
+        assert coords_equal(
+            boutons.isel(time_s=slice(1, None)), boutons2.isel(time_s=slice(1, None))
+        )
+        assert np.allclose(
+            boutons.isel(time_s=slice(1, None)), boutons2.isel(time_s=slice(1, None))
+        )
+    else:
+        # TODO some coords_equal here? or delete from above?
 
-    # TODO worth also shuffling things by int index, to make sure we are actually
-    # relying on DataArray/pandas indexing, and not existing order of entries?
-    # prob not (b/c would need to re-order indices then anyway, to compare, no?)?
+        # NOTE: need to use .values here, b/c after shifting and everything, the
+        # time indices are currently off by one from each other
+        assert np.allclose(boutons.sel(time_s=boutons2.time_s), boutons2)
 
 
 @pytest.mark.parametrize('apl_weights', BOUTON_MODEL_KW_LIST, ids=format_model_params,
