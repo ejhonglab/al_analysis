@@ -114,7 +114,7 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
     n_final_megamat_kc_flies, MultipleSavesPerRunException, print_curr_mem_usage,
     data_root, fly_cols, flyroi_cols, read_parquet, to_parquet, to_json, read_json,
     ParamDict, written_since_proc_start, format_mtime, response_calc_params_json_name,
-    sent_to_remy, produces_output
+    sent_to_remy, produces_output, in_pytest
 )
 import al_util
 
@@ -530,6 +530,7 @@ BOUTON_MODEL_KW_LIST: List[ParamDict] = dict_seq_product([
     ],
     # TODO switch order (maybe not until figuring out latest issues?)?
     [dict(pn_claw_to_apl=True), dict()]
+    # TODO TODO add claw dynamics somewhere in here?
 )
 # should cover all the main paths in olfsysm, but also in fit_mb_model/etc
 MODEL_KW_LIST: List[ParamDict] = BOUTON_MODEL_KW_LIST + dict_seq_product([
@@ -10779,13 +10780,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     tune_on_hallem: bool = False, pn2kc_connections: str = 'hemibrain',
     use_connectome_APL_weights: bool = False, weight_divisor: Optional[float] = None,
     prat_claws: bool = False, prat_boutons: bool = False,
-
-    # TODO TODO TODO implement both of these
+    # TODO implement / delete
     microglomeruli_apl_units: bool = False,
-    # TODO abbreviate this one for directory names
-    apl_current_from_kcs_is_integral: bool = True,
     #
-
     per_claw_pn_apl_weights: bool = False,
     add_PNAPL_to_KCAPL: bool = False, replace_KCAPL_with_PNAPL: bool = False,
     dist_weight: Optional[str] = None, _wPNKC: Optional[pd.DataFrame] = None,
@@ -10802,7 +10799,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     max_iters: Optional[int] = None, sp_acc: Optional[float] = None,
     # TODO TODO change default sp_lr_coeff here (or in olfsysm?)? will need to restore
     # old value (=1) for some repro tests to continue passing
-    sp_lr_coeff: Optional[float] = None, hardcode_initial_sp: bool = False,
+    sp_lr_coeff: Optional[float] = 1.5, hardcode_initial_sp: bool = False,
     # TODO delete
     #pn_apl_scale_factor: float = 1.0,
     #
@@ -10817,7 +10814,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     wAPLPN: Optional[float] = None, wPNAPL: Optional[float] = None,
     # TODO TODO rename pn_claw_to_apl, and then in all outputs too (want it to be
     # spiking_required_for_kc_apl_input [with inverted logic]). just regen all?
-    pn_claw_to_apl: bool = False, n_claws_active_to_spike: Optional[int] = None,
+    pn_claw_to_apl: bool = False, claw_dynamics: bool = False,
+    n_claws_active_to_spike: Optional[int] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -11044,7 +11042,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert wPNAPL is None
         assert wAPLPN is None
 
-    if pn_claw_to_apl:
+    if pn_claw_to_apl or claw_dynamics:
         assert one_row_per_claw, ('must have one_row_per_claw=True for '
             'pn_claw_to_apl=True'
         )
@@ -11113,8 +11111,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO also warn in python, if this is true (similar to what is logged in olfsysm
     # now)
     mp.kc.hardcode_initial_sp = hardcode_initial_sp
-
-    mp.kc.apl_current_from_kcs_is_integral = apl_current_from_kcs_is_integral
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
@@ -11597,6 +11593,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert len(kc_index) == len(kc_index.unique())
 
         mp.kc.pn_claw_to_apl = pn_claw_to_apl
+        mp.kc.claw_dynamics = claw_dynamics
         mp.kc.microglomeruli_apl_units = microglomeruli_apl_units
 
         if n_claws_active_to_spike is not None:
@@ -16060,6 +16057,21 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             if model_kws.get('sp_lr_coeff') is not None:
                 use_lr_cache = False
 
+            if use_lr_cache:
+                # set as `export MB_MODEL_USE_LR_CACHE=0` in your ~/.bashrc or whatever,
+                # to disable all use of this cache (or set it as a prefix to invoking a
+                # script, like `MB_MODEL_USE_LR_CACHE=0 step_model_pn_apl ...`
+                use_lr_cache_envvar = 'MB_MODEL_USE_LR_CACHE'
+                if not bool(int(os.getenv(use_lr_cache_envvar, 1))):
+                    warn('disabling onestep_lr_cache, because env var '
+                        f'{use_lr_cache_envvar}=0'
+                    )
+                    use_lr_cache = False
+
+                elif in_pytest():
+                    warn('disabling onestep_lr_cache because in pytest')
+                    use_lr_cache = False
+
             # TODO set fixed_thr/wAPLKC/etc instead? would be faster
             if use_lr_cache and onestep_lr_cache_path.exists():
                 onestep_lr_cache = read_json(onestep_lr_cache_path)
@@ -16080,6 +16092,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     else:
                         cached_coeff_str = 'sp_lr_coeff list (one per seed)'
 
+                    # TODO TODO try to move this warning closer to when the model starts
+                    # so we can see it right above the tuning iterations
                     warn(f'using {cached_coeff_str} from onestep_lr_cache '
                         f'({onestep_lr_cache_path}), to tune in one iteration. '
                         'set use_lr_cache=False to disable.'

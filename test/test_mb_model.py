@@ -2772,7 +2772,7 @@ def apl_weights(orn_deltas, request):
     # TODO TODO TODO try again to get this to work (both so i can set these vectors
     # before tuning, for sensitivity analysis, but also so i can hardcode offsets for
     # KCs based on breadth)
-    precalc_weights = True
+    #precalc_weights = True
     if precalc_weights:
         # TODO delete after saving/committing/replacing these with use of those outputs?
         # unless flag set, maybe?
@@ -2824,12 +2824,42 @@ def apl_weights(orn_deltas, request):
         breakpoint()
         #
     else:
+        # TODO TODO move this hardcoding into fit_mb_model, for prat_boutons case?
+        # (esp if i need a bunch of different learning rates for new versions, i.e.
+        # potentially w/ PN spiking enabled)
+        #'''
+        if kws.get('prat_boutons', False):
+            # NOTE: all tests should now automatically have onestep LR cache disabled,
+            # behind in_pytest check in mb_model
+            assert 'sp_lr_coeff' not in kws
+            # 2.5 too much
+            sp_lr_coeff = 1.5
+            # this was value from onestep lr cache, for
+            # prat-claws_True__prat-boutons_True__connectome-APL_True__pn-claw-to-apl_True
+            # case
+            # TODO this still work? (for the one case?)
+            # TODO TODO stil allow onestep LR cache for FAST path (rather than always
+            # disabling [in mb_model] based on in_pytest)?
+            #sp_lr_coeff = 5.803226467581852
+            warn(f'hardcoding {sp_lr_coeff=} for prat_boutons=True case')
+            kws['sp_lr_coeff'] = sp_lr_coeff
+        #'''
+        #
+
+        # (delete) why is this not converging now? (wastes basically all steps
+        # trying to get lower step size. max_iters=100 sp_lr_coeff=10)
+        # (was because i was wKCAPL_scale by # claws instead of always # KCs in olfsysm)
         ret = _fit_mb_model(orn_deltas=orn_deltas, return_olfsysm_vars=True,
             **kws
         )
 
     return ret, kws
 
+
+# TODO TODO did my change to mb_model weight normalization break being able to tune
+# in one step by hardcoding a certain learning rate (at least when also using APL<>PN
+# weights?)? test i haven't broken that!
+# TODO and if so, can i fix it by some olfsysm change? happy medium?
 
 # TODO (below should be start of these. delete)
 #
@@ -3059,33 +3089,14 @@ def test_apl_weights_osm(apl_weights):
     # lower KC response rate)
     boutons_no_APLPN = np.array(rv.pn.bouton_sims).copy()
     print(f'{boutons_no_APLPN[:, :, stim_start_idx:stim_end_idx].mean()=}')
-    # TODO delete
-    breakpoint()
-    #
     print()
-    # TODO TODO TODO why is this smaller? (not sure it is anymore. don't think it's
-    # doing anything at all now...)
-    # TODO TODO TODO sanity check w/ plots at least?
-    # (in an earlier version of this code, i did get 0.138738 here, but maybe i made a
-    # mistake there?) (or maybe that was w/ or w/o pn-claw-to-APL? check?)
-    # (sp_no_APLPN=0.06483494090476838)
-    # TODO TODO TODO is this implying that *more* overall PN activity leads to less KC
-    # activity (presumably b/c broader APL input)???
-    # TODO TODO make some plots of dynamics to sanity check this?
-    # 2026-02-22: once again smaller, now:
-    # sp_no_APLPN=0.05077435131096318 (in !pn-claw-to-APL case)
-    # sp_no_APLPN=0.06802744192365168  (in pn-claw-to-APL case)
-    # TODO TODO TODO fix
-    #assert sp0 < sp_no_APLPN < sp_no_APL
-    #
-    rv.pn.wAPLPN = ap_arr.copy()
-
     warn('setting both wAPLKC and wAPLPN to 0')
     rv.kc.wAPLKC = np.zeros(rv.kc.wAPLKC.shape)
     rv.pn.wAPLPN = np.zeros(rv.pn.wAPLPN.shape)
     osm.run_KC_sims(mp, rv, regen)
     sp_no_APL = np.mean(rv.kc.responses)
     print(f'{sp_no_APL=} (same for both no APL cases)')
+    assert sp0 < sp_no_APLPN < sp_no_APL
     print()
     rv.kc.wAPLKC = ak_arr.copy()
     rv.pn.wAPLPN = ap_arr.copy()
@@ -3109,22 +3120,14 @@ def test_apl_weights_osm(apl_weights):
     rv.kc.wKCAPL = ka_arr.copy()
     rv.pn.wPNAPL = pa_arr.copy()
 
-    # TODO (delete. no longer having seg fault issue that made me want to try this) try
-    # w/ regen=True and setting tune_apl_weights=False?  is current =False 3rd arg
-    # actually being respected anyway? i think my usual init of APL weights is actually
-    # expected to happen in fit_sparseness. should probably move it out of there
     warn('setting wAPLKC to 0 (restored others)')
-    # TODO this not working? dtype/shape issue? (doesn't seem like that)
     rv.kc.wAPLKC = np.zeros(rv.kc.wAPLKC.shape)
-    # can this print to cout still? (yes)
-    #
-    # TODO TODO am i even able to re-run after changing weights like this?
-    # TODO TODO TODO maybe if i regen but set tune_APL_weights=False (and configure so
+    # TODO (delete?) maybe if i regen but set tune_APL_weights=False (and configure so
     # weights now appear as fixed? any point to not just doing separate calls then?
     # speed, i guess? would that then be duplicate w/ other test?)
     osm.run_KC_sims(mp, rv, regen)
-    # TODO TODO TODO TODO does it actually make sense that this is so high? can any
-    # PN<>APL stuff alone change response rate at all? if not, why not?
+    # TODO (delete? still an issue?) does it actually make sense that this is so high?
+    # can any PN<>APL stuff alone change response rate at all? if not, why not?
     sp_no_APLKC = np.mean(rv.kc.responses)
     # sp_no_APLKC=0.1999728297785627
     print(f'{sp_no_APLKC=}')
@@ -3137,7 +3140,7 @@ def test_apl_weights_osm(apl_weights):
             'irrelevant)! FIX!'
         )
     #
-    #assert sp0 < sp_no_APLKC < sp_no_APL
+    assert sp0 < sp_no_APLKC < sp_no_APL
     rv.kc.wAPLKC = ak_arr.copy()
 
     # TODO TODO TODO should i try to tweak PN<>APL scale(s) relative to KC<>APL
@@ -3174,10 +3177,6 @@ def test_apl_weights_osm(apl_weights):
     spr = np.mean(rv.kc.responses)
     assert spr == sp0, 'did not get same sparsity after restoring weights'
 
-    # TODO delete
-    breakpoint()
-    #
-
 
 # TODO at at least one test case w/o boutons? i mean, if this works, that prob would
 # too...
@@ -3197,6 +3196,12 @@ def test_feedforward_indexing(orn_deltas, kws):
     # TODO also assert wAPLKC in this is all 0?
     rv = params['rv']
     mp = params['mp']
+
+    try:
+        claw_dynamics = mp.kc.claw_dynamics
+        assert not claw_dynamics, '(subest of) test will need to be updated for this'
+    except AttributeError:
+        pass
 
     # TODO get dt from diffing time index instead (/check against that?)?
     dt = mp.time_dt
@@ -3464,6 +3469,12 @@ def test_apl_indexing(orn_deltas, kws):
     # memory), but should still be able to get parameters from these without issue
     rv = params['rv']
     mp = params['mp']
+
+    try:
+        claw_dynamics = mp.kc.claw_dynamics
+        assert not claw_dynamics, '(subest of) test will need to be updated for this'
+    except AttributeError:
+        pass
 
     dt = mp.time_dt
 

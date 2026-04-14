@@ -37,10 +37,16 @@ MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(
             use_connectome_APL_weights=True
         )
     ],
-    # pn_claw_to_apl=False is the default, and could normally be omitted, but doing it
-    # this way produces nicer directory names when using subset_same_in_all_dicts to
-    # exclude params
-    [dict(pn_claw_to_apl=True), dict(pn_claw_to_apl=False)]
+    dict_seq_product(
+        # claw_dynamics=False is the default, and how the code has been for a long time
+        [dict()] + dict_seq_product([dict(claw_dynamics=True)],
+            [dict(), dict(allow_net_inh_per_claw=True)],
+        ),
+        # pn_claw_to_apl=False is the default, and could normally be omitted, but doing
+        # it this way produces nicer directory names when using subset_same_in_all_dicts
+        # to exclude params
+        [dict(pn_claw_to_apl=True), dict(pn_claw_to_apl=False)]
+    )
 )
 
 OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
@@ -374,12 +380,22 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         # plot_example_dynamics will make some internal plots using the same data, but
         # then will not return them from fit_mb_model (so they will not be saved).
         return_dynamics=save_dynamics,
+
+        # TODO TODO TODO restore. just currently broken on claw_dynamics=True stuff
+        # ...
+        #    plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
+        #  File "/home/tom/src/al_analysis/mb_model.py", line 9960, in plot_apl_dynamics
+        #    assert (claws_no_inh >= claws).all()
+        #
         # TODO delete make_plots=True? just make sure plot_example_dynamics sets
         # that? or do i really want (/have) a flag controlling plots other than
         # plot_example_dynamics (i.e. internal corrs)? rename, if that's what
         # it's for?
-        plot_example_dynamics=True, make_plots=True, connectome_weight_plots=False
+        #plot_example_dynamics=True,
+
+        make_plots=True, connectome_weight_plots=False
     )
+    print('restore plot_example_dynamics=True')
 
     # TODO add fit_mb_model option to assert output is still within target sparsity,
     # when passing in fixed_thr and wAPLKC (to check we are still within what would
@@ -418,6 +434,9 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         #
         # for numerator = len(vector), 10 was too much
         # eventually worked on hal. commenting to use cache again.
+        # TODO delete, now that we have onestep values in cache (but if that cache does
+        # exist, we could set this)
+        # TODO TODO should this be new default value, at least in prat-boutons cases?
         #sp_lr_coeff=1.5
     )
     if tuned_only:
@@ -692,6 +711,9 @@ def main():
         return
 
     for plot_dir in plot_dir_list:
+        # TODO TODO some plots that compare tuned values for same stats across elements
+        # of this plot list? maybe w/ and w/o connectome APL? (similar to
+        # model_yang_mixtures.py plots)
         analyze_outputs(plot_dir, plot_dynamics=plot_dynamics,
             corners_only=corners_only, corners_and_tuned=corners_and_tuned
         )
