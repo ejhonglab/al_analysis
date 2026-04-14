@@ -3007,15 +3007,11 @@ def test_apl_weights_osm(apl_weights):
     assert np.allclose(ap_arr.squeeze(), wAPLPN)
     assert np.allclose(pa_arr.squeeze(), wPNAPL)
 
-    # TODO TODO reorganize C++ to avoid need to set this true to avoid segfault?
-    # TODO TODO TODO why did we get sample_PN_spont pn.sims[i].block ... check failing
-    # w/ regen=True (in first call below)?
-    #regen = True
     regen = False
     if regen:
         mp.kc.tune_apl_weights = False
 
-    # TODO TODO refactor to share w/ fit_mb_model usage (have fn get_time_index now. use
+    # TODO refactor to share w/ fit_mb_model usage (have fn get_time_index now. use
     # that.)
     t0 = mp.time_pre_start
     t1 = mp.time_end
@@ -3027,62 +3023,14 @@ def test_apl_weights_osm(apl_weights):
     stim_end_idx = np.searchsorted(ts, mp.time_stim_end)
     #
 
-    # TODO TODO also plot non-normed APL? or assert APL inh/whatever is in
-    # direction we expect too? breadth across KCs (vs max) (something else that might be
-    # diff across KCs to account for sparsity diff?)?
     boutons = np.array(rv.pn.bouton_sims).copy()
     print(f'{boutons[:, :, stim_start_idx:stim_end_idx].mean()=}')
 
-    # TODO delete. replaced by code that was moved to test_apl_weights_fitmbmodel (which
-    # should be broken off into a script anyway. scripts/step_model_pn_apl.py)
-    '''
-    # starts at 1.937 in pn_claw_to_apl=True case
-    print()
-    print('stepping wAPLPN around tuned value:')
-    for ap in [0.1, 20, 0.5, 10]:
-        rv.pn.wAPLPN = ap * ap_arr.copy()
-        # TODO TODO reword (and work from unscaled, so that numbers in list above could
-        # directly be used as *_scaled param?)?
-        warn(f'setting wAPLPN to {ap} * original vector')
-        osm.run_KC_sims(mp, rv, regen)
-        sp_ap_step = np.mean(rv.kc.responses)
-        print(f'{sp_ap_step=}')
-        print()
-    rv.pn.wAPLPN = ap_arr.copy()
-
-    # TODO TODO TODO also do for PNAPL
-    print()
-    print('stepping wPNAPL around tuned value:')
-    for pa in [0.1, 20, 0.5, 10]:
-        rv.pn.wPNAPL = pa * pa_arr.copy()
-        # TODO TODO reword (and work from unscaled, so that numbers in list above could
-        # directly be used as *_scaled param?)?
-        warn(f'setting wPNAPL to {pa} * original vector')
-        osm.run_KC_sims(mp, rv, regen)
-        sp_pa_step = np.mean(rv.kc.responses)
-        print(f'{sp_pa_step=}')
-        print()
-    rv.pn.wPNAPL = pa_arr.copy()
-    # TODO delete
-    breakpoint()
-    '''
-    #
-
-    # TODO TODO TODO test that w/ high enough scale factor, we can indeed change
-    # response rate with this one (in both pn_claw_to_apl=True/False)
-    # TODO TODO TODO ...we can, just not in the direction i expected. why??? explain.
     warn('setting wAPLPN to 0')
     rv.pn.wAPLPN = np.zeros(rv.pn.wAPLPN.shape)
     osm.run_KC_sims(mp, rv, regen)
     sp_no_APLPN = np.mean(rv.kc.responses)
     print(f'{sp_no_APLPN=}')
-    # TODO TODO TODO test that bouton_sims at least goes down (w/in odor window?)
-    # TODO TODO get APL dynamics inh/Is, and check at least that is in direction we
-    # expect? or can i not really place expectations on that either?
-    # TODO delete
-    if sp_no_APLPN <= sp0:
-        print('SPARSITY STAYS SAME OR GETS SMALLER WITH APL>PN=0! FIX/EXPLAIN!')
-    #
 
     # TODO assert these are all individually (elementwise) higher than `boutons` above?
     # or never less than, and all >=? (the mean in odor window is indeed larger, despite
@@ -3122,23 +3070,10 @@ def test_apl_weights_osm(apl_weights):
 
     warn('setting wAPLKC to 0 (restored others)')
     rv.kc.wAPLKC = np.zeros(rv.kc.wAPLKC.shape)
-    # TODO (delete?) maybe if i regen but set tune_APL_weights=False (and configure so
-    # weights now appear as fixed? any point to not just doing separate calls then?
-    # speed, i guess? would that then be duplicate w/ other test?)
     osm.run_KC_sims(mp, rv, regen)
-    # TODO (delete? still an issue?) does it actually make sense that this is so high?
-    # can any PN<>APL stuff alone change response rate at all? if not, why not?
     sp_no_APLKC = np.mean(rv.kc.responses)
-    # sp_no_APLKC=0.1999728297785627
     print(f'{sp_no_APLKC=}')
     print()
-    # TODO TODO TODO assert this one is less than sp_no_APL though (currently it's not,
-    # it's equal, at least for pn_claw_to_apl=True case)
-    # TODO delete
-    if sp_no_APL == sp_no_APLKC:
-        print('APL>KC=0 HAD SAME EFFECT AS DISABLING APL ENTIRELY (so APL>PN '
-            'irrelevant)! FIX!'
-        )
     #
     assert sp0 < sp_no_APLKC < sp_no_APL
     rv.kc.wAPLKC = ak_arr.copy()
@@ -3150,9 +3085,6 @@ def test_apl_weights_osm(apl_weights):
     rv.pn.wPNAPL = np.zeros(rv.pn.wPNAPL.shape)
     osm.run_KC_sims(mp, rv, regen)
     sp_no_PNAPL = np.mean(rv.kc.responses)
-    # sp_no_PNAPL=0.13153783453335144 (!pn-claw-to-APL)
-    # sp_no_PNAPL= (pn-claw-to-APL) (is this also the .1133337 i get in other test
-    # here?)
     print(f'{sp_no_PNAPL=}')
     print()
     assert sp0 < sp_no_PNAPL < sp_no_APL, f'{sp0=} {sp_no_PNAPL=} {sp_no_APL}'
@@ -3162,13 +3094,10 @@ def test_apl_weights_osm(apl_weights):
     rv.kc.wKCAPL = np.zeros(rv.kc.wKCAPL.shape)
     osm.run_KC_sims(mp, rv, regen)
     sp_no_KCAPL = np.mean(rv.kc.responses)
-    # sp_no_KCAPL=0.12780192908572205 (!pn-claw-to-APL)
-    # sp_no_KCAPL= (pn-claw-to-APL)
     print(f'{sp_no_KCAPL=}')
     print()
     assert sp0 < sp_no_KCAPL < sp_no_APL
     rv.kc.wKCAPL = ka_arr.copy()
-    #'''
 
     warn('restoring all weights and re-running')
     rv.kc.wAPLKC = ak_arr.copy()

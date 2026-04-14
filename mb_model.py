@@ -12873,22 +12873,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     rv.verbose = verbose
 
     temp_log_dir = temp_log_path.parent
-    latest_log_link = temp_log_dir / 'olfsysm.log'
-    # NOTE: exists() will be False for a symlink that exists, but has non-existant
-    # target (but if the link exists, is_symlink() will be True)
-    if latest_log_link.is_symlink():
-        latest_log_link.unlink()
-
-    assert not latest_log_link.exists()
-    latest_log_link.symlink_to(temp_log_path)
-    assert latest_log_link.is_symlink()
 
     # TODO delete?
     if tee_olfsysm or print_olfsysm_log:
         # TODO maybe print this regardless though? logging regardless...
-        print(f'writing olfsysm log to {temp_log_path} '
-            f'(and linking {latest_log_link} to it)'
-        )
+        print(f'writing olfsysm log to {temp_log_path}')
 
     osm.run_ORN_LN_sims(mp, rv)
     osm.run_PN_sims(mp, rv)
