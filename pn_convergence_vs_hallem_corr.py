@@ -24,7 +24,7 @@ from drosolf import orns
 
 # TODO refactor so we don't need to import from al_analysis (which still runs too much
 # outside of __main__ check) (/ fix al_analysis to not do that)
-from al_analysis import panel2name_order
+from al_analysis.al_analysis import panel2name_order
 
 
 orn_df = orns.orns(columns='glomerulus')

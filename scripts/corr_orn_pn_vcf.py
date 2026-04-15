@@ -11,11 +11,13 @@ from scipy.stats import permutation_test, pearsonr
 from hong2p.olf import parse_odor_name
 from hong2p.util import pd_allclose, shorten_path, addlevel
 from hong2p.viz import matshow, dff_latex
-import al_util
-from al_util import (mean_of_fly_corrs, corr_triangular, invert_corr_triangular, warn,
-    plot_corr, plot_responses, data_root, sort_odors, savefig, diverging_cmap_kwargs
+
+from al_analysis import al_util
+from al_analysis.al_util import (mean_of_fly_corrs, corr_triangular,
+    invert_corr_triangular, warn, plot_corr, plot_responses, data_root, sort_odors,
+    savefig, diverging_cmap_kwargs
 )
-from al_analysis import fill_to_hemibrain
+from al_analysis.al_analysis import fill_to_hemibrain
 
 
 megamat_abbrev2inchi = {

@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 
 from hong2p.xarray import load_dataarray
 
-import al_util
-from al_util import warn, savefig
-from mb_model import (plot_spike_rasters, summarize_isi, REFRACTORY_PERIOD,
+from al_analysis import al_util
+from al_analysis.al_util import warn, savefig
+from al_analysis.mb_model import (plot_spike_rasters, summarize_isi, REFRACTORY_PERIOD,
     get_odor_fname_suffix
 )
 

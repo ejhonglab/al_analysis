@@ -7,7 +7,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from al_analysis import trial_response_traces, delta_f_over_f, compute_trial_stats
+from al_analysis.al_analysis import (trial_response_traces, delta_f_over_f,
+    compute_trial_stats
+)
 
 # TODO better way?
 from conftest import test_data_dir

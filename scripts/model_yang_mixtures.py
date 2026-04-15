@@ -14,10 +14,12 @@ from tqdm import tqdm
 from hong2p.util import pd_allclose, addlevel
 from hong2p.olf import parse_odor_name
 
-import al_util
-from al_util import savefig, plot_responses, read_parquet, to_csv, to_parquet
-from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model, megamat_orn_deltas,
-    natmix_orn_deltas, get_thr_and_APL_weights, format_model_params,
+from al_analysis import al_util
+from al_analysis.al_util import (savefig, plot_responses, read_parquet, to_csv,
+    to_parquet
+)
+from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
+    megamat_orn_deltas, natmix_orn_deltas, get_thr_and_APL_weights, format_model_params,
     get_odor_fname_suffix, KC_ID, dict_seq_product, abbrev_model_id
 )
 

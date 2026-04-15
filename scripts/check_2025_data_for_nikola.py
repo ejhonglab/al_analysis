@@ -6,7 +6,7 @@ import pandas as pd
 
 from hong2p.olf import parse_odor_name
 
-from al_util import read_csv
+from al_analysis.al_util import read_csv
 
 
 def main():

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# TODO should this be installed as a script / entrypoint in pyproject.toml now? + moved
+# under scripts dir? (should that dir be a subdir of this package?)
+
 import argparse
 import atexit
 from multiprocessing import Process, Queue
@@ -10,7 +13,7 @@ import queue
 # Factored init_logger into this minimal module (outside al_analysis.py), to avoid
 # major import time costs associated with importing al_analysis, such that we can import
 # this unconditionally up here (and log stuff doing server/client setup)
-from hong_logging import init_logger
+from al_analysis.logging import init_logger
 
 
 SERVER_HOST = 'localhost'
@@ -136,7 +139,7 @@ def main():
     # Only importing these *after* client would have exited, so those invocations don't
     # need to suffer long import time (importing al_analysis imports a lot of other
     # stuff, which takes maybe 1-3 seconds).
-    from plot_roi_util import load_and_plot
+    from al_analysis.plot_roi_util import load_and_plot
 
     arg_queue = Queue()
 

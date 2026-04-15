@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from hong2p import viz
 
-from al_analysis import diverging_cmap, plot_corr
+from al_analysis.al_analysis import diverging_cmap, plot_corr
 
 
 def main():

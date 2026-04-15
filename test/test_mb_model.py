@@ -17,14 +17,16 @@ import xarray as xr
 # TODO does importing this before hong2p.equals allow that warning (optional from within
 # `equals`) to be hooked in same way (from `al_util` module-level warning format
 # handling change)? import order matter? (delete if not)
-import al_util
+from al_analysis import al_util
 #
 from hong2p.util import pd_allclose, equals
 from hong2p.xarray import coords_equal, series2xarray_like, move_all_coords_to_index
 import olfsysm as osm
 
-from al_util import warn, diag_panel_str, fly_cols, load_natmix_dff, data_root
-from mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
+from al_analysis.al_util import (warn, diag_panel_str, fly_cols, load_natmix_dff,
+    data_root
+)
+from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
     connectome_APL_weights, KC_ID, CLAW_ID, BOUTON_ID, KC_TYPE, step_around,
     read_param_csv, read_params, read_tuned_params, get_thr_and_APL_weights,
     variable_n_claw_options, dict_seq_product, get_connectome_wPNKC_params,

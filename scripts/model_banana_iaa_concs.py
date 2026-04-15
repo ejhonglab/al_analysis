@@ -13,11 +13,11 @@ from pathlib import Path
 import pandas as pd
 
 # TODO delete
-import al_util
+from al_analysis import al_util
 #
-from al_util import warn
-from al_analysis import process_sam_glomeruli_names
-from mb_model import fit_and_plot_mb_model
+from al_analysis.al_util import warn
+from al_analysis.al_analysis import process_sam_glomeruli_names
+from al_analysis.mb_model import fit_and_plot_mb_model
 
 
 # subdirectories will be created, each with output from one parameterization of the MB

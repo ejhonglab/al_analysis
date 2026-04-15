@@ -21,9 +21,9 @@ import traceback
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import warnings
 
+from importlib_resources import files
 import numpy as np
 import pandas as pd
-import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib import patches
 from matplotlib.figure import Figure
@@ -42,6 +42,7 @@ else:
         'PYTHONMALLOC=malloc'
     )
 from termcolor import cprint, colored
+import xarray as xr
 
 from hong2p import olf, util, viz
 from hong2p.olf import format_mix_from_strs, solvent_str
@@ -3066,7 +3067,8 @@ def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = F
 # mb_model, rather than here in al_util? (al_analysis can import from mb_model, mb_model
 # just can't import from al_analysis)
 
-data_root: Path = Path(__file__).resolve().parent / 'data'
+# using importlib_resources now
+data_root: Path = files('al_analysis.data')
 
 sent_to_remy: Path = data_root / 'sent_to_remy'
 

@@ -6,7 +6,7 @@ import pandas as pd
 
 from hong2p.util import pd_allclose, pd_isclose, pd_indices_equal, shorten_path
 
-from al_util import data_root, read_csv
+from al_analysis.al_util import data_root, read_csv
 
 
 # TODO replace this whole script w/ test(s)?

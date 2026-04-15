@@ -6,8 +6,8 @@ Analyzes outputs made via scripts/model_banana_iaa_concs.py
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from al_util import cluster_rois
-from mb_model import drop_silent_model_cells
+from al_analysis.al_util import cluster_rois
+from al_analysis.mb_model import drop_silent_model_cells
 
 
 def main():

@@ -16,12 +16,12 @@ from hong2p.xarray import get_example_orn_dynamics
 from hong2p.viz import matshow
 from hong2p.olf import solvent_str
 
-from al_util import (MultipleSavesPerRunException, read_json, plot_fmt, ParamDict,
-    load_natmix_dff, mean_of_fly_corrs, diverging_cmap, savefig
+from al_analysis.al_util import (MultipleSavesPerRunException, read_json, plot_fmt,
+    ParamDict, load_natmix_dff, mean_of_fly_corrs, diverging_cmap, savefig
 )
-import al_util
+from al_analysis import al_util
 # just to include in produces_output test
-from mb_model import save_dataarray
+from al_analysis.mb_model import save_dataarray
 
 # TODO better way?
 from conftest import test_data_dir

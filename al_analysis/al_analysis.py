@@ -74,22 +74,22 @@ import natmix
 from natmix import load_corr_dataarray, drop_nonlone_pair_expt_odors, dropna_odors
 from natmix import write_corr_dataarray as _write_corr_dataarray
 
-# TODO move this to hong2p probably
-from hong_logging import init_logger
+# TODO move this to hong2p probably?
+from al_analysis.logging import init_logger
 #
-from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_order,
-    diag_panel_str, warn, should_ignore_existing, ignore_existing_options, data_root,
-    produces_output, to_csv, to_pickle, read_pickle, plot_fmt, makedirs, cmap,
-    diverging_cmap, diverging_cmap_kwargs, bootstrap_seed, cluster_rois, plot_corr,
-    plot_responses, mean_of_fly_corrs, print_curr_mem_usage, fly_cols, flyroi_cols,
-    plot_all_roi_mean_responses, plot_n_per_odor_and_glom, get_gsheet_metadata,
-    zscore_traces_per_recording, sort_concs, sort_fly_roi_cols, fly_roi_id,
-    response_stat_fn, roimean_plot_kws, roi_plot_kws, count_n_per_odor_and_glom,
-    format_panel, roi_label, mean_response_desc, to_json, read_json, to_parquet,
-    response_calc_params_json_name
+from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
+    panel2name_order, diag_panel_str, warn, should_ignore_existing,
+    ignore_existing_options, data_root, produces_output, to_csv, to_pickle, read_pickle,
+    plot_fmt, makedirs, cmap, diverging_cmap, diverging_cmap_kwargs, bootstrap_seed,
+    cluster_rois, plot_corr, plot_responses, mean_of_fly_corrs, print_curr_mem_usage,
+    fly_cols, flyroi_cols, plot_all_roi_mean_responses, plot_n_per_odor_and_glom,
+    get_gsheet_metadata, zscore_traces_per_recording, sort_concs, sort_fly_roi_cols,
+    fly_roi_id, response_stat_fn, roimean_plot_kws, roi_plot_kws,
+    count_n_per_odor_and_glom, format_panel, roi_label, mean_response_desc, to_json,
+    read_json, to_parquet, response_calc_params_json_name
 )
-import al_util
-from mb_model import model_mb_responses
+from al_analysis import al_util
+from al_analysis.mb_model import model_mb_responses
 
 
 # TODO just do invalid='raise'? (divide/over/under are options besides invalid)

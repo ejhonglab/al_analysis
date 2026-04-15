@@ -10,10 +10,10 @@ import seaborn as sns
 from hong2p.util import pd_allclose, addlevel
 from hong2p.olf import parse_odor_name
 
-import al_util
-from al_util import warn, savefig, read_csv
-from mb_model import (megamat_orn_deltas, fit_and_plot_mb_model, megamat_orn_deltas,
-    get_thr_and_APL_weights, format_model_params, read_orn_deltas,
+from al_analysis import al_util
+from al_analysis.al_util import warn, savefig, read_csv
+from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
+    megamat_orn_deltas, get_thr_and_APL_weights, format_model_params, read_orn_deltas,
     scale_dff_to_est_spike_deltas_using_hallem
 )
 

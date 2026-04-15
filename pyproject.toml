@@ -1,7 +1,8 @@
 
 [build-system]
 # 75.3.4 should be max setuptools that 3.8.12 supports
-requires = ["setuptools >= 75.3.4"]
+# same w/ setuptools-scm 9.2.2 (used for installing data files)
+requires = ["setuptools >= 75.3.4", "setuptools-scm>=9.2.2"]
 build-backend = "setuptools.build_meta"
 # TODO should i also be specifying pip / wheel here? (the other things in that section
 # of my `savedeps` output. see exact-requirements.txt after ~2026-03-20)
@@ -19,15 +20,17 @@ dynamic = ["dependencies"]
 readme = "README.md"
 
 [tool.setuptools]
+packages = ["al_analysis"]
 # editable installs seem to work fine so far
-py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antennal_csv",
+#py-modules = ["al_analysis", "mb_model", "al_util", "hong_logging", "load_antennal_csv",
     # TODO TODO change name of scripts dir so this isn't installing a global "scripts"
     # package. move everything under an al_analysis package dir, including scripts? any
     # other way to change name of package this is under, or directly provide the module
     # w/o a containing package?
     # TODO could consolidate all scripts / CLI entrypoints in one dir?
-    "scripts.step_model_pn_apl"
-]
+py-modules = ["scripts.step_model_pn_apl"]
+#]
+include-package-data = true
 
 [tool.setuptools.dynamic]
 # NOTE: this can not use -r / -e in lines in those files, which would prevent some of

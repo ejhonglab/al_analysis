@@ -18,9 +18,9 @@ from tqdm import tqdm
 from termcolor import cprint
 
 from hong2p.util import format_date, symlink
-from al_util import warn
-from mb_model import (read_param_csv, format_model_params, fitandplot_finished_writing,
-    megamat_orn_deltas, fit_and_plot_mb_model
+from al_analysis.al_util import warn
+from al_analysis.mb_model import (read_param_csv, format_model_params,
+    fitandplot_finished_writing, megamat_orn_deltas, fit_and_plot_mb_model
 )
 
 # how to import this? (couldn't quickly figure it out when this script was originally in

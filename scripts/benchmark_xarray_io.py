@@ -15,7 +15,7 @@ import xarray as xr
 from hong2p.util import is_path_on_hdd, file_size_bytes, format_nbytes
 from hong2p.xarray import save_dataarray, load_dataarray, NETCDF_ENGINE
 
-from mb_model import (fit_mb_model, MODEL_KW_LIST, megamat_orn_deltas,
+from al_analysis.mb_model import (fit_mb_model, MODEL_KW_LIST, megamat_orn_deltas,
     format_model_params
 )
 

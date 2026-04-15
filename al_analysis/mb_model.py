@@ -103,10 +103,10 @@ import faulthandler, sys
 faulthandler.enable(file=sys.stderr, all_threads=True)
 #
 
-from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_order,
-    diag_panel_str, warn, should_ignore_existing, to_csv, to_pickle, read_pickle,
-    makedirs, corr_triangular, invert_corr_triangular, n_choose_2, diverging_cmap,
-    diverging_cmap_kwargs, bootstrap_seed, mean_of_fly_corrs, plot_corr,
+from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
+    panel2name_order, diag_panel_str, warn, should_ignore_existing, to_csv, to_pickle,
+    read_pickle, makedirs, corr_triangular, invert_corr_triangular, n_choose_2,
+    diverging_cmap, diverging_cmap_kwargs, bootstrap_seed, mean_of_fly_corrs, plot_corr,
     plot_responses_and_corr, rotate_xticklabels, cluster_rois, odor_is_megamat,
     megamat_odor_names, remy_data_dir, remy_binary_response_dir, remy_megamat_sparsity,
     remy_date_col, remy_fly_cols, remy_fly_id, remy_fly_binary_response_fname,
@@ -116,7 +116,7 @@ from al_util import (savefig, abbrev_hallem_odor_index, sort_odors, panel2name_o
     ParamDict, written_since_proc_start, format_mtime, response_calc_params_json_name,
     sent_to_remy, produces_output, in_pytest
 )
-import al_util
+from al_analysis import al_util
 
 
 warnings.filterwarnings('error', category=pd.errors.SettingWithCopyWarning)

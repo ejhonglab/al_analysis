@@ -16,7 +16,7 @@ from hong2p.roi import certain_roi_indices
 from hong2p.types import Pathlike
 from hong2p.util import pd_allclose
 
-from al_util import (format_mtime, warn, sort_odors, fly_cols, flyroi_cols,
+from al_analysis.al_util import (format_mtime, warn, sort_odors, fly_cols, flyroi_cols,
     read_csv, roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
     plot_n_per_odor_and_glom, get_gsheet_metadata
 )

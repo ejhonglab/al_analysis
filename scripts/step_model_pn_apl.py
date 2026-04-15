@@ -22,12 +22,15 @@ from tqdm import tqdm
 
 from hong2p.viz import matshow
 from hong2p.util import symlink, subset_same_in_all_dicts, shorten_path
-import al_util
-from al_util import savefig, ParamDict, warn, read_parquet, to_json, read_json
-from mb_model import (fit_and_plot_mb_model, megamat_orn_deltas, dict_seq_product,
-    format_weights, format_model_params, get_thr_and_APL_weights, glomerulus_col,
-    save_and_remove_from_param_dict, drop_silent_model_cells, load_and_plot_dynamics,
-    update_var2range, MinMaxDict, natmix_orn_deltas
+
+from al_analysis import al_util
+from al_analysis.al_util import (savefig, ParamDict, warn, read_parquet, to_json,
+    read_json
+)
+from al_analysis.mb_model import (fit_and_plot_mb_model, megamat_orn_deltas,
+    dict_seq_product, format_weights, format_model_params, get_thr_and_APL_weights,
+    glomerulus_col, save_and_remove_from_param_dict, drop_silent_model_cells,
+    load_and_plot_dynamics, update_var2range, MinMaxDict, natmix_orn_deltas
 )
 
 
