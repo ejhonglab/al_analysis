@@ -12,7 +12,7 @@ from al_analysis.al_analysis import (trial_response_traces, delta_f_over_f,
 )
 
 # TODO better way?
-from conftest import test_data_dir
+from .conftest import test_data_dir
 
 
 @pytest.fixture(scope='session')

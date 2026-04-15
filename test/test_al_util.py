@@ -24,7 +24,7 @@ from al_analysis import al_util
 from al_analysis.mb_model import save_dataarray
 
 # TODO better way?
-from conftest import test_data_dir
+from .conftest import test_data_dir
 
 
 # TODO some builtin pytest way of monkey patching module-level variables like this?

@@ -41,7 +41,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
 )
 
 # TODO better way?
-from conftest import test_data_dir
+from .conftest import test_data_dir
 
 
 # TODO test i can recreate committed megamat_orn_deltas() contents. prob need to recalc
