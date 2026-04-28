@@ -210,7 +210,7 @@ paper_validation2_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-19/'
 
 # TODO TODO why is this seemingly not writing on hal?
 onestep_lr_cache_path: Path = Path('~/.mb_model_onestep_lr_cache.json').expanduser()
-onestep_lr_key: str = 'sp_lr_coeff_to_tune_in_one_iter'
+ONESTEP_LR_KEY: str = 'sp_lr_coeff_to_tune_in_one_iter'
 
 # TODO support arbitrary # of inputs? (how to type hint all elements of e.g. *args are
 # of same type?)
@@ -301,6 +301,8 @@ exclude_params = {
     '_wPNKC',
     '_wAPLKC',
     '_wKCAPL',
+    '_wAPLPN',
+    '_wPNAPL',
 
     'responses_to',
     'tune_from',
@@ -313,6 +315,10 @@ exclude_params = {
     'sp_acc',
     'megamat_sparsity',
 
+    # TODO keep here? should be clear enough from other params, except maybe in some
+    # test code? decided to add here when working on test_preset_series_weights
+    'tune_apl_weights',
+
     # TODO keep these here?
     'wAPLKC_scale',
     'wKCAPL_scale',
@@ -322,7 +328,7 @@ exclude_params = {
 
     'max_iters',
     'sp_lr_coeff',
-    onestep_lr_key,
+    ONESTEP_LR_KEY,
 
     # TODO TODO remove wKCAPL/wPNAPL (and just handle by filtering DataFrame/Series
     # inputs if needed, before saving tuned_param_cache. should have separate exclude
@@ -433,8 +439,19 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     if n_seeds > 1:
         param_str += f'{sep}n_seeds={n_seeds}'
 
-    if fixed_thr is not None or wAPLKC is not None:
-        assert fixed_thr is not None and wAPLKC is not None
+    # TODO TODO TODO make sure, especially in scale_pre_tuning case, all relevant
+    # scaling params are included (or generally if wPNAPL or wKCAPL is passed, and not
+    # equivalent [i.e. isclose] to what we would calculate from wAPLPN or wAPLKC)
+    # TODO TODO factor out calculation of one of the weights from the other, to share
+    # here (currently just in fit_mb_model?)
+
+    if fixed_thr is not None:
+        # TODO also check tune_apl_weights? or assert some value? (1-2 case(s) in
+        # test_preset_series_weights currently has cases that would probably violate
+        # whatever assertion [e.g. that we are not tuning weights in this case], but
+        # prob nbd to remove those case(s))
+        if not model_kws.get('scale_pre_tuning', False):
+            assert wAPLKC is not None
 
         # TODO maybe only do if _in_sens_analysis. don't think i actually want in
         # hemibrain case (other than within sens analysis subcalls)
@@ -997,6 +1014,7 @@ def get_APL_weights(param_dict: ParamDict, kws: ParamDict) -> Dict[str,
 
     # TODO factor out, to also use w/ fixed_thr? would need to apass variable_n_claws
     # and maybe one other flag?
+    # TODO TODO uh... set hack= False? all calls currently using this
     def check_weight_type(weights, _hack=True) -> None:
         # added _hack flag b/c don't want to check that for wAPLPN/wPNAPL vectors,
         # which will always have the *_scale factors, so shouldn't need this.
@@ -4544,6 +4562,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             savefig(fig, plot_dir, 'n_claws_per_bouton_hist')
 
             assert claw2bouton.index.equals(df['n_synapses'].index)
+            # TODO TODO factor this into claw2bouton_from_wPNKC? (maybe w a flag to add
+            # it or not?)
             # TODO TODO maybe also include synapse counts multibouton dropped stuff?
             # should be easier than actually merging IDs? i assume df n_synapses  has
             # excluded those?
@@ -4681,26 +4701,24 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # gloms w/ 0 weight in either PN<>APL direction?
 
         wPNKC = wPNKC3
-        # TODO delete
-        # NOTE: this is all w/ sort_index on columns above, as i had before
-        # TODO TODO TODO what's wrong here?
-        # columns have [glom, pn, bouton] in reverse order in c2 and claw2bouton, but
-        # there is something else different
-        # both indices are sorted
-        # TODO TODO TODO oh, need to reset_index or something here? why not in other
-        # calls tho?
+
+        # TODO delete eventually
         c2 = claw2bouton_from_wPNKC(wPNKC)
-        # TODO TODO TODO why getting KeyError when called from model_yang_mixtures.py
-        # now??? and seemingly not from other contexts, like pnapl stepping or
-        # test_dynamics_indexing??? had just saved this plot:
-        # prat-claws_True__prat-boutons_True__connectome-APL_True/n_kcs_per_glom_order-n-syn.pdf
-        c2 = c2.reset_index().set_index(claw_cols)[claw2bouton.columns]
-        # ok it was just some weird dtype thing. claw2bouton had them as type object for
-        # some reason (vs int64 in c2)
-        assert c2.convert_dtypes().equals(claw2bouton.convert_dtypes())
+        c1 = claw2bouton
+        if c1.index.names == claw_cols:
+            c1 = c1.reset_index()
+        else:
+            assert c1.index.names == [None]
+        c1 = c1.set_index(c2.index.names)
+        if 'n_synapses' in c1.columns:
+            c1 = c1.drop(columns='n_synapses')
+        assert set(c1.columns) == set(c2.columns)
+        c1 = c1[c2.columns].convert_dtypes()
+        c2 = c2.convert_dtypes()
+        assert c1.index.equals(c2.index)
+        assert c1.columns.equals(c2.columns)
+        assert c1.equals(c2)
         #
-        # NOTE: columns are NOT equal to themselves sorted here (if it matters, which it
-        # might?). rows are though (and presumably also were in other cases)
 
     # TODO add assertion (for both tianpei case and mine) that no bouton
     # (columns) have all 0 values? (currently doing in prat_boutons=True case above)
@@ -4782,6 +4800,10 @@ def fmt_frac(x: int, y: int, *, den: bool = True, dec: bool = True) -> str:
         msg += f' ({x/y:.3f})'
     return msg
 
+
+# TODO don't make global, but have fn take kws, to define based on prat_boutons/etc?
+# or just drop missing ones?
+APL_WEIGHT_NAMES: Tuple[str] = ('wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL')
 
 def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     prat_boutons: bool = False, per_claw_pn_apl_weights: bool = False,
@@ -10810,8 +10832,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     ab_prime_response_rate_target: Optional[float] = None,
     homeostatic_thrs: bool = False,
     fixed_thr: Optional[Union[float, np.ndarray]] = None,
+    # TODO TODO can these actually be Series input tho? if so, why even have e.g.
+    # _wAPLKC?
+    # TODO TODO any tests covering that case?
     wAPLKC: Weights = None, wKCAPL: Weights = None,
     wAPLPN: Optional[float] = None, wPNAPL: Optional[float] = None,
+    scale_pre_tuning: bool = False,
     # TODO TODO rename pn_claw_to_apl, and then in all outputs too (want it to be
     # spiking_required_for_kc_apl_input [with inverted logic]). just regen all?
     pn_claw_to_apl: bool = False, claw_dynamics: bool = False,
@@ -10895,6 +10921,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wAPLPN, wPNAPL: similar to corresponding KC weights, but can also be of length #
             boutons if `per_claw_pn_apl_weights=False` (othewise length claws). requires
             `prat_boutons=True`
+
+        scale_pre_tuning: if False, expects `fixed_thr` and all parameters necessary to
+            skip tuning are passed.
+
+            If True, scales the `connectome_APL_weights` (or hardcoded `_<x>=<Series>`
+            e.g. `wAPLKC=<Series>`) weight vectors by the float scales in e.g.
+            `wAPLKC=<float>`, and then proceeds with the normal tuning process, with the
+            default initial scales. The passed in scales should be thought of as
+            additional scaling factors, where 1.0 leaves the process unchanged, and
+            anything else proportionally scales that particular weight by that factor.
 
         use_connectome_APL_weights: if True, `connectome_APL_weights` called (with
             `connectome=pn2kc_connections`) to set `rv.kc.w[APLKC|KCAPL]`.
@@ -10992,6 +11028,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert tune_apl_weights is None, ('normally, other parameters imply value '
             'mp.kc.tune_apl_weights will take. setting explicitly just for test code'
         )
+
+    if scale_pre_tuning:
+        assert tune_apl_weights != False
+        if tune_apl_weights is None:
+            tune_apl_weights = True
 
     if pn2kc_connections not in pn2kc_connections_options:
         raise ValueError(f'{pn2kc_connections=} not in {pn2kc_connections_options}')
@@ -12462,9 +12503,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     wPNAPL_scale = None
     if wAPLKC is not None:
         assert target_sparsity_factor_pre_APL is None
-        assert fixed_thr is not None, 'for now, assuming both passed if either is'
+        if not scale_pre_tuning:
+            assert fixed_thr is not None, 'for now, assuming both passed if either is'
 
-        mp.kc.tune_apl_weights = False
+            mp.kc.tune_apl_weights = False
 
         if wKCAPL is None:
             # TODO assert this on save? b/c seems some cases violated this at some
@@ -12483,22 +12525,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert is_scalar(wAPLKC)
             assert is_scalar(wKCAPL)
         else:
-            # currently seems one-row-per-claw=True cases always have non-float
-            # input here (in contrast to how i might originally have implemented
-            # it)
+            # currently seems (NON-connectome-APL) one-row-per-claw=True cases always
+            # have non-float input here (in contrast to how i might originally have
+            # implemented it)
             assert isinstance(wAPLKC, pd.Series)
             assert isinstance(wKCAPL, pd.Series)
 
         if use_connectome_APL_weights:
-            # TODO TODO add additional kwargs, to allow setting and/or scaling only one
-            # of these at at time (would also want to change block above setting
-            # mp.kc.preset_w[APLKC|KCAPL] above)?
-            # TODO TODO TODO just change init values by some scale factor? or/also allow
-            # hardcoding some, and letting tuning vary the others?
             wAPLKC_scale = wAPLKC
             wKCAPL_scale = wKCAPL
-            rv.kc.wAPLKC_scale = wAPLKC_scale
-            rv.kc.wKCAPL_scale = wKCAPL_scale
         else:
             # NOTE: min/max for these should all be the same. they are essentially
             # scalars, at least as tuned before
@@ -12547,8 +12582,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         wAPLPN_scale = wAPLPN
         wPNAPL_scale = wPNAPL
-        rv.pn.wAPLPN_scale = wAPLPN_scale
-        rv.pn.wPNAPL_scale = wPNAPL_scale
 
     # TODO delete
     '''
@@ -12662,8 +12695,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert wPNKC.index.equals(wAPLKC.index)
         else:
             assert pd_index_equal(wPNKC, wAPLKC, only_check_shared_levels=True)
-            # TODO delete
-            #assert len(wPNKC) == len(wAPLKC)
 
         # TODO delete (this was all before scaling, presumably)
         # (min is 1 for both of these)
@@ -12673,9 +12704,45 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # 27.0
 
         # TODO delete
-        # TODO don't warn in one-row-per-claw case, if we don't do that there...
-        # (move warning to where scaling happens, at least, to keep more accurate)
-        warn(f'scaling {connectome=} wAPLKC & wKCAPL, each to mean of 1')
+        # TODO TODO replace this w/ an updated (i.e. accurate to current math) warning,
+        # emitted in connectome_APL_weights where there are actually scaled
+        #warn(f'scaling {connectome=} wAPLKC & wKCAPL, each to mean of 1')
+
+        if scale_pre_tuning:
+            # TODO re-organize all these into a dict so i can loop over them?
+            # (trying to modify locals() was a bad idea and would not work)
+
+            # TODO allow None (or require =1)?
+            # TODO TODO prob allow None (seeing as we are setting None below anyway...)
+            assert wAPLKC_scale is not None
+            if wAPLKC_scale != 1:
+                warn(f'scaling "normalized" wAPLKC (pre-tuning) by {wAPLKC_scale:.1f}')
+                wAPLKC = wAPLKC.copy() * wAPLKC_scale
+
+            assert wKCAPL_scale is not None
+            if wKCAPL_scale != 1:
+                warn(f'scaling "normalized" wKCAPL (pre-tuning) by {wKCAPL_scale:.1f}')
+                wKCAPL = wKCAPL.copy() * wKCAPL_scale
+
+            if prat_boutons and not per_claw_pn_apl_weights:
+                assert wAPLPN_scale is not None
+                if wAPLPN_scale != 1:
+                    warn('scaling "normalized" wAPLPN (pre-tuning) by '
+                        f'{wAPLPN_scale:.1f}'
+                    )
+                    wAPLPN = wAPLPN.copy() * wAPLPN_scale
+
+                assert wPNAPL_scale is not None
+                if wPNAPL_scale != 1:
+                    warn('scaling "normalized" wPNAPL (pre-tuning) by '
+                        f'{wPNAPL_scale:.1f}'
+                    )
+                    wPNAPL = wPNAPL.copy() * wPNAPL_scale
+
+            wAPLKC_scale = None
+            wKCAPL_scale = None
+            wAPLPN_scale = None
+            wPNAPL_scale = None
 
         wAPLKC_arr = np.expand_dims(wAPLKC, 1)
         if one_row_per_claw:
@@ -12720,6 +12787,19 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         else:
             assert not mp.pn.preset_wAPLPN
             assert not mp.pn.preset_wPNAPL
+
+    if wAPLKC_scale is not None:
+        # TODO TODO add additional kwargs, to allow setting and/or scaling only one
+        # of these at at time (would also want to change block above setting
+        # mp.kc.preset_w[APLKC|KCAPL] above)?
+        # TODO TODO just change init values by some scale factor? or/also allow
+        # hardcoding some, and letting tuning vary the others?
+        rv.kc.wAPLKC_scale = wAPLKC_scale
+        rv.kc.wKCAPL_scale = wKCAPL_scale
+
+    if wAPLPN_scale is not None:
+        rv.pn.wAPLPN_scale = wAPLPN_scale
+        rv.pn.wPNAPL_scale = wPNAPL_scale
 
     # TODO implement (+ delete similar comment above if so)
     # TODO TODO restore this assertion? still relevant for multiresponder_APL_boost
@@ -12879,6 +12959,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO maybe print this regardless though? logging regardless...
         print(f'writing olfsysm log to {temp_log_path}')
 
+    # TODO TODO can i set OMP_NUM_THREADS env var dynamically? any way other than env
+    # var to set it? anyway for extension code to see that env var, in a way that python
+    # can set it before call? (mainly want to limit to # of odors, in cases where [like
+    # on hal] there are more threads than odors. should be no benefit of using more
+    # threads than that. any other way to dynamically configure the # of threads OMP
+    # uses?
     osm.run_ORN_LN_sims(mp, rv)
     osm.run_PN_sims(mp, rv)
     before_any_tuning = time.time()
@@ -14095,9 +14181,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         }
         try:
             onestep_lr = rv.kc.sp_lr_coeff_to_tune_in_one_iter
-            tuning_dict[onestep_lr_key] = onestep_lr
+            tuning_dict[ONESTEP_LR_KEY] = onestep_lr
         except AttributeError:
-            warn(f'current olfsysm version does not have rv.kc.{onestep_lr_key}')
+            warn(f'current olfsysm version does not have rv.kc.{ONESTEP_LR_KEY}')
 
         if not silent:
             print('tuning parameters:')
@@ -16013,8 +16099,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # test in case where plotting is disabled?
         param_dir = plot_dir / plot_dirname
 
-        if fixed_thr is not None or wAPLKC is not None:
-            assert fixed_thr is not None and wAPLKC is not None
+        if fixed_thr is not None:
+            if not model_kws.get('scale_pre_tuning', False):
+                assert wAPLKC is not None
             # TODO assert target_sparsity_factor_pre_APL is None?
 
             # in n_seeds > 1 case, fixed_thr/wAPLKC will be lists of floats, and will be
@@ -16041,7 +16128,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
             # TODO include something else for case where fixed_thr is vector (which
             # currently requires wAPLKC set, to a float as before)?
-            assert fixed_thr is None and wAPLKC is None and wAPLPN is None
+            assert fixed_thr is None
+            if not model_kws.get('scale_pre_tuning', False):
+                wAPLKC is None and wAPLPN is None
 
             if model_kws.get('sp_lr_coeff') is not None:
                 use_lr_cache = False
@@ -16057,7 +16146,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     )
                     use_lr_cache = False
 
-                elif in_pytest():
+                # TODO refactor to share QUICK env var getting w/ test_mb_model.py?
+                elif in_pytest() and not bool(int(os.getenv('QUICK', False))):
                     warn('disabling onestep_lr_cache because in pytest')
                     use_lr_cache = False
 
@@ -16674,9 +16764,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             save_dynamics=return_dynamics, keys_not_to_remove=keys_not_to_remove
         )
 
-        if onestep_lr_key in param_dict:
-            onestep_sp_lr_coeff = param_dict[onestep_lr_key]
-            # would be hit, if we didn't avoid adding onestep_lr_key to param_dict
+        # TODO TODO overwrite old value if we were not able to tune in one iter w/
+        # current value (or at least clear cache for this key, and warn)
+        if ONESTEP_LR_KEY in param_dict:
+            onestep_sp_lr_coeff = param_dict[ONESTEP_LR_KEY]
+            # would be hit, if we didn't avoid adding ONESTEP_LR_KEY to param_dict
             # (in fit_mb_model) when tune_apl_weights=False
             assert onestep_sp_lr_coeff != 0
 
@@ -17320,6 +17412,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         else:
             title = f'sparsity={sparsity:.3g}'
 
+    # TODO TODO label cbar saying it's pearson, and savefig in a way taht doesn't cut
+    # off text (bbox_inches='tight'? use constrained layout? decrease fontsize?)
+    # (mainly getting clipped when there are long strings describing weight scales, but
+    # could change float formatting to decrease # of digits shown too. currently many
+    # leading 0s. scientific notation would probably be better)
     plot_corr(pearson, param_dir, 'corr', xlabel=title)
 
     if responses_to == 'hallem':

@@ -7,7 +7,7 @@ from pprint import pformat
 # TODO delete?
 import traceback
 #
-from typing import Hashable, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import Hashable, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,7 @@ import xarray as xr
 # handling change)? import order matter? (delete if not)
 from al_analysis import al_util
 #
-from hong2p.util import pd_allclose, equals
+from hong2p.util import pd_allclose, equals, is_scalar, pd_indices_equal
 from hong2p.xarray import coords_equal, series2xarray_like, move_all_coords_to_index
 import olfsysm as osm
 
@@ -32,8 +32,8 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     variable_n_claw_options, dict_seq_product, get_connectome_wPNKC_params,
     format_model_params, eval_and_check_compatible, glomerulus_col, ParamDict,
     format_weights, megamat_orn_deltas, paper_megamat_orn_deltas,
-    paper_hemibrain_output_dir, get_dynamics, get_time_index,
-    fit_dff2spiking_from_remypaper_flies_and_hallem,
+    paper_hemibrain_output_dir, get_dynamics, get_time_index, ONESTEP_LR_KEY,
+    fit_dff2spiking_from_remypaper_flies_and_hallem, APL_WEIGHT_NAMES,
     scale_dff_to_est_spike_deltas_using_hallem, remypaper_dff2spiking_data_dir,
     written_since_proc_start, dff_to_spiking_model_choices_csv_name,
     dff_to_spiking_data_csv_name, read_parquet, MODEL_KW_LIST, QUICK_MODEL_KW_LIST,
@@ -273,7 +273,8 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
     check_with_allclose=('wKCAPL','wKCAPL_scale'),
     only_check_overlapping_keys: bool = False, ignore_tuning_iters: bool = False,
     expected_missing_keys: Iterable[str] = tuple(),
-    check_tuning_outputs: bool = True) -> None:
+    check_tuning_outputs: bool = True, exclude_params: Optional[Tuple[str]] = None
+    ) -> None:
     # TODO doc if can come from a serialized output, which (and how to load, and whether
     # that's equiv to checking output returned from a call directly)
     # TODO and are param dicts from these two fns the same? doc how differ, if not
@@ -284,12 +285,36 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
 
         expected_missing_keys: keys that `params2` is expected to be missing, but
             `params` is expected to have
+
+        exclude_params: param keys to skip checking. ('rv', 'mp', 'output_dir') will
+            always be added to anything passed in, or used as default otherwise.
+            If `ignore_tuning_iters=True`, 'tuning_iters' will also be added.
     """
+    if exclude_params is None:
+        exclude_params = tuple()
+    exclude_params += ('rv', 'mp', 'output_dir')
     # params that we'd expect to be different between the fixed thr/APL-weights call
     # and the call that picked those values (tuning_iters), and other special cases
-    exclude_params = ('rv', 'mp', 'output_dir')
     if ignore_tuning_iters:
         exclude_params += ('tuning_iters',)
+
+    # NOTE: onestep sp_lr_coeff cache should only be used by test code if QUICK=1
+    # (enforced by checking if we are in pytest in fit_and_plot_mb_model)
+    if QUICK:
+        for ps in (params, params2):
+            if (ONESTEP_LR_KEY in ps and ps['tuning_iters'] == 1 and
+                np.isclose(ps[ONESTEP_LR_KEY], ps['sp_lr_coeff'])):
+
+                # may not necessarily be a problem, but would be unexpected
+                assert ps.get('tune_apl_weights', True) != False
+
+                # this is a kwarg of fit_and_plot_mb_model, not fit_mb_model, so we
+                # might never actually see it here. should be fine if we can't check it
+                # here. wasn't expecting this to ever fail.
+                assert ps.get('use_lr_cache', True)
+
+                exclude_params += ('sp_lr_coeff',)
+                break
 
     if len(expected_missing_keys) > 0:
         missing_keys = set(params.keys()) - set(params2.keys())
@@ -564,22 +589,23 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
         # xarray, but it does work w/ np.ndarray, which is only other thing i think i
         # currently have in pickles (except for dict in params_for_csv.p, which should
         # be excluded anyway)
+        # TODO delete teh pickle ones eventually? now?
         if name.endswith('.p'):
             p1 = pd.read_pickle(output_dir / name)
             p2 = pd.read_pickle(output_dir2 / name)
+        #
         else:
             assert name.endswith('.parquet')
-            # TODO use my own read_parquet wrapper instead
-            p1 = pd.read_parquet(output_dir / name)
-            p2 = pd.read_parquet(output_dir2 / name)
+            p1 = read_parquet(output_dir / name)
+            p2 = read_parquet(output_dir2 / name)
 
         # TODO delete?
+        # TODO do same w/ p2?
         assert not isinstance(p1, np.ndarray)
 
         # parquet files should all be one of these two pandas types
         assert isinstance(p1, (pd.DataFrame, pd.Series))
 
-        # TODO TODO TODO this working?
         # TODO use check_float_with_allclose elsewhere too
         assert equals(p1, p2, check_float_with_allclose=True), \
             f'{name=}\n{p1=}\nnot equals\n{p2=}'
@@ -685,28 +711,6 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     )
     #
 
-    wAPLKC2 = None
-    # TODO assert neither of these would be Series in output_dir2 / params2? (tho
-    # separate files containing just the Series should match)
-    if 'wAPLKC' in params:
-        # in these cases, should be excluded via expected_missing_keys defined above,
-        # for all assert_param_dicts_equal calls
-        # TODO also want to pop from dicts?
-        if isinstance(params['wAPLKC'], pd.Series):
-            wAPLKC2 = params['wAPLKC']
-
-    wKCAPL2 = None
-    if 'wKCAPL' in params:
-        if isinstance(params['wKCAPL'], pd.Series):
-            wKCAPL2 = params['wKCAPL']
-
-    # TODO TODO if wAPLKC/wKCAPL exist and are series, check that they match
-    # wAPLKC/wKCAPL.p files in same dir, then exclude from param dict checking call
-    # below (probably only applies to limited `one_row_per_claw and not
-    # use_connectome_APL` cases)
-    # TODO don't just thread kwargs thru all these kwargs? only manually pass
-    # expected_missing_keys and ignore others for now? (esp since only doing on this
-    # first call)
     assert_param_dicts_equal(params, params2,
         expected_missing_keys=expected_missing_keys, **kwargs
     )
@@ -715,13 +719,6 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     # assuming passed in expected_missing_keys (in kwargs) are still relevant.
     a2 = read_params(output_dir)
     b2 = read_params(output_dir2)
-
-    # TODO update to some new assertion?
-    # (no longer true, now that we are saving stuff to params_for_csv.p that get
-    # filtered out by filter_params_for_csv before writing params.csv. e.g. stuff with
-    # .shape, like kc_spont_in, wAPLKC, wKCAPL)
-    #assert (a1.keys() - a2.keys()) == set()
-    #assert (b1.keys() - b2.keys()) == set()
 
     # TODO check contents same for overlap too? could require type conversion in some
     # cases, and prob not worth...
@@ -749,20 +746,24 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     #expected_missing_keys = set(kwargs.pop('expected_missing_keys', tuple()))
     ## should no longer be serializing any of these in pickle, so as long as the 2nd arg
     ## is the older output, should be ok here
-    ## TODO TODO TODO was this an error, tha it was b1 and not a1? dict checking fn says
+    ## TODO TODO was this an error, tha it was b1 and not a1? dict checking fn says
     ## 1 but not 2 should have it, no?
     #expected_missing_keys |= set(k for k, v in b1.items()
     #    if isinstance(v, pd.DataFrame) or isinstance(v, pd.Series)
     #)
     #
-    # TODO ok to also pass kwargs here? (may need to separately expose just
-    # ignore_tuning_params, if not)
+
+    kwargs = dict(kwargs)
+    if 'only_check_overlapping_keys' in kwargs:
+        del kwargs['only_check_overlapping_keys']
+
     # TODO can i delete only_check_overlapping_keys=True now?
+    # (could also delete hack above removing from kwargs if so)
     assert_param_dicts_equal(a1, b1, expected_missing_keys=expected_missing_keys,
         only_check_overlapping_keys=True, **kwargs
     )
-    # TODO could maybe check the other way around? but we will always expect more in
-    # params than either of these pickle outputs
+    # TODO (delete?) could maybe check the other way around? but we will always expect
+    # more in params than either of these pickle outputs
     #assert (a1.keys() - params.keys()) == set()
     #assert (b1.keys() - params.keys()) == set()
 
@@ -775,42 +776,36 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     # other than these and params.csv (dealt with above), seems only CSVs currently are:
     # {'responses.csv', 'wPNKC.csv', 'orn_deltas.csv'} (though this may change,
     # especially if I move/duplicate something currently only in pickles to CSVs)
-    # TODO TODO pass something thru so i can read w/ `index_col=[KC_ID, 'seed']` for
+    # TODO pass something thru so i can read w/ `index_col=[KC_ID, 'seed']` for
     # stuff w/ variable_n_claws (and n_seeds > 1)
     df = _read_spike_counts(output_dir)
     df2 = _read_spike_counts(output_dir2)
     assert df.equals(df2)
 
+    check_pn_apl_weights = False
+    if (params.get('prat_boutons', False) and
+            not params.get('per_claw_pn_apl_weights', False)
+        ):
+        # should be able to assume also true w/ params2 at this point
+        assert 'wPNAPL_scale' in params
+        assert 'wAPLPN_scale' in params
+        wPNKC = read_parquet(output_dir / 'wPNKC.parquet')
+        check_pn_apl_weights = True
+
     if 'wAPLKC' not in params:
         assert 'wKCAPL' not in params
-
-        # TODO also check for CSVs if i also write to those in the future?
-        # (+ check equiv to pickles, if so)
-        # TODO TODO replace check of these pickles w/ just the parquet versions, after
-        # checking i can replace w/ those
-        assert 'wAPLKC.p' in output_dir_pickles
-        assert 'wKCAPL.p' in output_dir_pickles
 
         assert 'wAPLKC.parquet' in output_dir_parquets
         assert 'wKCAPL.parquet' in output_dir_parquets
 
-        # TODO TODO read the parquet instead
-        #
-        # we don't need to read from both dirs, b/c we already checked pickles of same
-        # name have same contents (across the two dirs) above
-        wAPLKC = pd.read_pickle(output_dir / 'wAPLKC.p')
-        wKCAPL = pd.read_pickle(output_dir / 'wKCAPL.p')
-
-        # TODO should i assert these are not None? or only have in some cases?
-        if wAPLKC2 is not None:
-            assert wAPLKC.equals(wAPLKC2)
-
-        if wKCAPL2 is not None:
-            assert wKCAPL.equals(wKCAPL2)
+        # we don't need to read from both dirs, b/c we already checked pickles &
+        # parquets of same name have same contents (across the two dirs) above
+        wAPLKC = read_parquet(output_dir / 'wAPLKC.parquet')
+        wKCAPL = read_parquet(output_dir / 'wKCAPL.parquet')
 
         assert isinstance(wAPLKC, pd.Series)
         assert isinstance(wKCAPL, pd.Series)
-        # TODO TODO may need to fix some one-row-per-claw=True cases (which currently
+        # TODO may need to fix some one-row-per-claw=True cases (which currently
         # may save these as ndarrays instead of Series), but prob want that
         assert wAPLKC.index.equals(wKCAPL.index)
         assert not wAPLKC.isna().any()
@@ -824,12 +819,43 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
             # TODO double check values still make sense here. are weights averaged
             # wAPLKC.index longer and has claw levels. df.index only KCs.
             assert len(df.index) < len(wAPLKC.index)
+
+        if check_pn_apl_weights:
+            assert 'wAPLPN.parquet' in output_dir_parquets
+            assert 'wPNAPL.parquet' in output_dir_parquets
+
+            # we don't need to read from both dirs, b/c we already checked pickles &
+            # parquets of same name have same contents (across the two dirs) above
+            wAPLPN = read_parquet(output_dir / 'wAPLPN.parquet')
+            wPNAPL = read_parquet(output_dir / 'wPNAPL.parquet')
+
+            assert isinstance(wAPLPN, pd.Series)
+            assert isinstance(wPNAPL, pd.Series)
+            assert wAPLPN.index.equals(wPNAPL.index)
+            assert not wAPLPN.isna().any()
+            assert not wPNAPL.isna().any()
+
+            assert wAPLPN.index.equals(wPNKC.columns)
+
     # TODO delete this path now? (always popping above, before assert_param_dicts_equal
     # calls? or should i only be doing that in certain cases?)
     else:
         assert 'wKCAPL' in params
         assert params['wAPLKC'] is not None
         assert params['wKCAPL'] is not None
+        # TODO correct? and if so, can i remove the None checks above (this also catch
+        # that?)
+        assert is_scalar(params['wAPLKC'])
+        assert is_scalar(params['wKCAPL'])
+        #
+        if check_pn_apl_weights:
+            assert params['wPNAPL'] is not None
+            assert params['wAPLPN'] is not None
+            # TODO correct? and if so, can i remove the None checks above (this also
+            # catch that?)
+            assert is_scalar(params['wAPLPN'])
+            assert is_scalar(params['wPNAPL'])
+            #
     #
 
     # TODO warn about any files (that are not plots) that we are not checking?
@@ -1831,87 +1857,6 @@ def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
     )
 
 
-# TODO care to understand the difference between the output i had then and what i'm
-# getting now? meaningfully different?
-#
-# TODO maybe delete anyway, once i get generate_reference_outputs_for_repro.py +
-# corresponding repro test in here established?
-# TODO also delete any data i might have committed / added for this
-'''
-# TODO xfail this one until i get can it to work?
-#@pytest.mark.xfail(
-#    # TODO what's reason actually? not sure...
-#    #reason='`one_row_per_claw and not prat_claws` path currently broken'
-#    run=False
-#)
-def test_connectome_wPNKC_repro():
-    # TODO save outputs + test repro for other param options (could prob be handled as
-    # part of fit_mb_model tests, if i add output saving + repro verifying tests for
-    # that...)
-
-    wPNKC_dir = test_data_dir / ('prat-claws_True__-wPNKC-one-row-per-claw_True__'
-        'connectome-APL_True__pn-claw-to-APL_True__target-sp_0.1_wPNKC_ref'
-    )
-    # TODO use w/ other assertion fns that check param dicts? (maybe only if enough in
-    # these to be worth checking [i.e. also not too much missing...]?)
-    params = read_params(wPNKC_dir)
-
-    # TODO delete? still need after get_connectome_wPNKC_params?
-    if params.get('one_row_per_claw'):
-        prat_claws = params.get('prat_claws')
-        assert prat_claws, ("otherwise would need to specify Tianpei's synapse_con_path"
-            f'+synapse_loc_path, which prob would not be in params?\n{params=}'
-        )
-
-    wPNKC_params = get_connectome_wPNKC_params(params)
-
-    wPNKC = connectome_wPNKC(**wPNKC_params)
-
-    # assuming this will be portable enough to not need to use a CSV instead (which
-    # would complicate [de]serialization. equal to a pickle serialized version, so just
-    # using this.
-    w1 = pd.read_parquet(wPNKC_dir / 'wPNKC.parquet')
-
-    # TODO delete
-    w2 = wPNKC.loc[:, w1.columns]
-    w2 = w2[~ (w2 == 0).T.all()]
-    assert w2.shape == w1.shape
-    assert w1.columns.equals(w2.columns)
-
-    # TODO TODO TODO what's mismatch? (shapes at least were same when initially getting
-    # this mismatch, but may have changed more things since)
-    # ipdb> w1.index.equals(w2.index)
-    # False
-    # ipdb> w1.sort_index().index.equals(w2.sort_index().index)
-    # False
-
-    # ipdb> w2.sort_index().index.to_frame(index=False)[['kc_id','claw_id']].equals(
-    #    w1.sort_index().index.to_frame(index=False)[['kc_id','claw_id']])
-    # False
-    # ipdb> w2.sort_index().index.to_frame(index=False)[['kc_id','claw_id']
-    #  ].index.equals(
-    #  w1.sort_index().index.to_frame(index=False)[['kc_id','claw_id']].index
-    # )
-    # True
-
-    # TODO delete
-    breakpoint()
-    #
-
-    # TODO TODO will need to exlude renumbered CLAW_ID from comparison (which i'm
-    # dropping in future versions, as it would cause confusion and prevent alignment
-    # with other datasets w/ claw IDs [e.g. APL<>KC stuff]) (should rename
-    # 'anatomical_claw'->CLAW_ID for future versions)
-
-    # TODO TODO TODO why is this failing? was it that certain stuff happened
-    # before/after glomerulus renames in one_row_per_claw=True cases? something simple?
-    # responses same, despite this?
-    # (yea, seems VC3 is present in wPNKC after refactor, but wasn't before. probably
-    # should be there, so probably was a mistake earlier)
-    assert w1.equals(wPNKC)
-'''
-
-
 # TODO TODO TODO either pass hardcode_initial_sp=True (which should fix failure, or
 # regen output) (or just let *_fitandplot_repro tests replace this? any reason not to?)
 @pytest.mark.xfail(
@@ -2754,6 +2699,416 @@ def test_btn_expansion(tmp_path, orn_deltas, kws):
 # TODO test we can start tuning at arbitrary tuning iters (w/ weights + scale params
 # set appropriately), and still get to same final output
 
+def _rerun_with_certain_apl_weights_0(mp: osm.ModelParams, rv: osm.RunVars,
+    to_zero: Union[str, List[str]], *, regen: bool = False) -> float:
+    """
+    Returns average (binarized) response rate.
+    """
+
+    if isinstance(to_zero, str):
+        to_zero = [to_zero]
+
+    assert len(to_zero) > 0, 'no weight names in to_zero'
+    assert all(x in APL_WEIGHT_NAMES for x in to_zero), \
+        f'{to_zero=} not all in {APL_WEIGHT_NAMES=}'
+
+    # TODO assert pretime has not been deleted? how?
+
+    # TODO delete? shouldn't ever need True, right?
+    if regen:
+        mp.kc.tune_apl_weights = False
+
+    def _get_obj(rv, n):
+        if 'PN' in n:
+            assert 'KC' not in n
+            obj = rv.pn
+        else:
+            assert 'KC' in n
+            obj = rv.kc
+        return obj
+
+    warn(f'setting {",".join(to_zero)} to 0')
+    to_restore = dict()
+    for n in to_zero:
+        obj = _get_obj(rv, n)
+        weights = getattr(obj, n).copy()
+        # TODO assert it wasn't already 0?
+        to_restore[n] = weights
+        zeros = np.zeros(weights.shape)
+        setattr(obj, n, zeros)
+
+    osm.run_KC_sims(mp, rv, regen)
+
+    for n, weights in to_restore.items():
+        obj = _get_obj(rv, n)
+        setattr(obj, n, weights)
+
+    return np.mean(rv.kc.responses)
+
+
+# TODO TODO do w/ more than BOUTON_MODEL_KW_LIST? at least some claw-but-not-bouton
+# stuff? wd20?
+@pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
+def test_preset_series_weights(tmp_path, orn_deltas, kws):
+    # NOTE: this test body originally copied from (non-working) precalc_weights=True
+    # path of apl_weights fixture
+
+    wPNKC_params = get_connectome_wPNKC_params(kws)
+    # NOTE: one_row_per_claw is not an argument to connectome_wPNKC, nor is
+    # use_connectome_APL_weights
+    # TODO TODO change how this adds a connectome='hemibrain' we don't have as
+    # input? why can't i just let that be handled by default? (any other uses
+    # currently depend on that? just check no tests fail after removing [once less
+    # tests in general are failing...])
+    #assert all(x in kws for x in wPNKC_params)
+    wPNKC = connectome_wPNKC(**wPNKC_params)
+
+    assert kws['use_connectome_APL_weights']
+
+    # TODO neither fn below explicitly takes this, so could delete if i end up
+    # changing so it's implied by e.g. prat_claws=True (or even if it's the default)
+    assert kws['one_row_per_claw']
+    # TODO delete
+    print(f'{wPNKC_params=}')
+    #
+
+    # TODO TODO still need a way to return these weights if precalc...=True
+    # (currently only returning params) (just separate fixture? prob used by this
+    # one, if so)
+    # TODO TODO do i want to be able to scale these by scalars in <x> for each
+    # series passed in via _<x>? or do i want to be able to use only the _<x> parameters
+    # to force a certain fixed weight? or maybe some pre-tuning weight? probably a
+    # certain fixed weight, and then later i can provide other means of the other two
+    # things? (former is trivial, and can be derived from this. pre-tuning stuff can
+    # probably also be derived from that?)
+    weights = connectome_APL_weights(wPNKC=wPNKC, **wPNKC_params)
+    # True as of 2026-04-14 (and maybe not always after), when scaling (in python)
+    # each weight vector by `len(weights) / weights.sum()`
+    assert all(np.isclose(ws.mean(), 1) for ws in weights), ('still scaling (in python)'
+        ' each weight vector to mean of 1?'
+    )
+    # not yet scaled by tuning in olfsysm, just "normalization" in python
+    wAPLKC, wKCAPL, wAPLPN, wPNAPL = weights
+    name2weights = {
+        'wAPLKC': wAPLKC,
+        'wKCAPL': wKCAPL,
+        'wAPLPN': wAPLPN,
+        'wPNAPL': wPNAPL,
+    }
+    # TODO TODO TODO fixture to return all the above stuff? (move back into apl_weights,
+    # and use that?)
+    # TODO + add option to cache weights for QUICK=1 path?
+    # TODO TODO another fixture that also returns the below (to share w/
+    # test_preset_series_weights and test_scale_before_tuning)?
+
+    output_dirs: Set[str] = set()
+    # NOTE: using this rather than _fit_mb_model, so that onestep LR cache can be used
+    # (if QUICK=1). not available in fit_mb_model.
+    ret = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, **kws
+    )
+    output_dir = ret['output_dir']
+    output_dirs.add(output_dir)
+
+    # currently (in one test case) 0.09006928406466512, just barely within tolerance
+    sp0 = ret['sparsity']
+    sp_max = 0.2
+
+    # TODO move this part just to separate test_scale_before_tuning?
+    # (along w/ return_olfsysm_vars=True above)
+    mp = ret['mp']
+    rv = ret['rv']
+    sp0_no_APLPN = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLPN')
+    sp0_no_APLKC = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLKC')
+    assert sp0 < sp0_no_APLKC < sp_max, f'{sp0_no_APLKC=} out of range'
+    assert sp0 < sp0_no_APLPN < sp_max, f'{sp0_no_APLPN=} out of range'
+    #
+
+    scale_param_names = tuple(k for k in ret.keys()
+        if k.startswith('w') and k.endswith('_scale')
+    )
+
+    scaled_series_weight_kws = dict()
+    normed_not_scaled_series_weight_kws = dict()
+    for k, scale in ret.items():
+        if k not in scale_param_names:
+            continue
+
+        assert type(scale) is float, \
+            f'expected type float for {k=}. got {type(scaled)=}'
+
+        # e.g. 'wAPLKC_scale' -> 'wAPLKC'
+        n = k.split('_')[0]
+        scaled = read_parquet(tmp_path / output_dir / f'{n}.parquet')
+        normed_but_not_tuning_scaled = name2weights[n]
+        assert pd_allclose(normed_but_not_tuning_scaled * scale, scaled), f'{k=}'
+
+        scaled_series_weight_kws[f'_{n}'] = scaled
+        # TODO TODO avoid need for this? or do it internally somewhere?
+        # TODO TODO and how should it interact w/ (TBD) flag(s) to control whether
+        # tuning happens or not?
+        scaled_series_weight_kws[n] = 1.0
+
+        # TODO TODO TODO add test that passing these in WITHOUT the n -> <float-scalar>
+        # entries gets us back the same float scalar scales? (assuming we can configure
+        # it to tune? i think i do want to add support for that, if i don't have it
+        # already)
+        normed_not_scaled_series_weight_kws[f'_{n}'] = normed_but_not_tuning_scaled
+        # the scaling factors are expected to be passed in as e.g. `wAPLKC=<float>`,
+        # NOT as `wAPLKC_scale=<float>`
+        normed_not_scaled_series_weight_kws[n] = scale
+
+    # this is required if we are hardcoding weights (would have to tune otherwise, but
+    # would actually just raise an error before that)
+    fixed_thr = ret['fixed_thr']
+
+    # TODO TODO TODO restore commented ret2/3/etc calls
+    ret2 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, fixed_thr=fixed_thr,
+        # need to add this prefix so the two output dirs won't be the same
+        # TODO TODO why wasn't it caught by something getting ovewritten though?
+        # (i.e. triggering a MultiSaves...Exception?)
+        param_dir_prefix='fixed-series-weights_normed-only_',
+        **normed_not_scaled_series_weight_kws, **kws
+    )
+    # TODO assert no tuning iters here? or something along those lines?
+    output_dir2 = ret2['output_dir']
+    assert output_dir2 not in output_dirs, f'{output_dir2=} already seen'
+    output_dirs.add(output_dir2)
+    assert_fit_and_plot_outputs_equal(tmp_path, ret, ret2,
+        only_check_overlapping_keys=True, ignore_tuning_iters=True
+    )
+
+    normed_series_no_fixed_scalars_kws = dict(normed_not_scaled_series_weight_kws)
+    for n in APL_WEIGHT_NAMES:
+        scale = normed_series_no_fixed_scalars_kws[n]
+        assert scale is not None
+        assert is_scalar(scale)
+        assert scale != 1
+        # or set =None? shouldn't matter
+        del normed_series_no_fixed_scalars_kws[n]
+
+    # TODO fix so fixed_thr can be specified without causing some assertion errors?
+    # (tune_apl_weights=True even working correctly here?)
+    ret3 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, #fixed_thr=fixed_thr,
+        param_dir_prefix='fixed-series-weights_normed-only_retuned_',
+        tune_apl_weights=True, **normed_series_no_fixed_scalars_kws, **kws
+    )
+    output_dir3 = ret3['output_dir']
+    assert output_dir3 not in output_dirs, f'{output_dir3=} already seen'
+    output_dirs.add(output_dir3)
+    assert_fit_and_plot_outputs_equal(tmp_path, ret, ret3,
+        only_check_overlapping_keys=True, ignore_tuning_iters=True
+    )
+
+    ret4 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, fixed_thr=fixed_thr,
+        # need to add this prefix so the two output dirs won't be the same
+        # TODO TODO why wasn't it caught by something getting ovewritten though?
+        # (i.e. triggering a MultiSaves...Exception?)
+        # TODO TODO should i hardcode (inside fit_mb_model) the *_scale parameters to 1
+        # if these are set?
+        param_dir_prefix='fixed-series-weights_scaled_', **scaled_series_weight_kws,
+        **kws
+    )
+    # TODO assert no tuning iters here? or something along those lines?
+    output_dir4 = ret4['output_dir']
+    assert output_dir4 not in output_dirs, f'{output_dir4=} already seen'
+    output_dirs.add(output_dir4)
+    # TODO assert all *_scale params are still 1 one this one (i'm setting them to be 1
+    # above. not sure what they'd otherwise end up being here. could def be initialized
+    # to something else...)
+    assert_fit_and_plot_outputs_equal(tmp_path, ret, ret4,
+        only_check_overlapping_keys=True, exclude_params=scale_param_names,
+        ignore_tuning_iters=True
+    )
+
+    # TODO TODO restore
+    # TODO TODO TODO (delete?) don't i *want* to tune APL scales in this case though
+    # (when vectors but not scalars passed)? or do i really just want a separate flag to
+    # indicate that? either way, need to support that.
+    # TODO TODO TODO see scale_pre_tuning param i started to implement. separate flag
+    # might actually make sense, to clarify it's separate scaling before whatever
+    # default initial scales in tuning step (done implementing now. delete comment?
+    # delete this test case?
+    scaled_series_weight_noscalar_kws = {
+        # e.g. keeping _wAPLKC=<Series> and discarding wAPLKC=<float scale>
+        k: v for k, v in scaled_series_weight_kws.items() if k.startswith('_')
+    }
+    # this does just run the fixed_thr fitting again, and then use the same hardcoded
+    # APL weights. that may not often (if ever) make sense, but it is what happens in
+    # this case, and since that threshold choosing gives us t he same output, ret5 has
+    # same output as ret. does not apply some hardcoded initial scale onto the APL
+    # weights, since the C++ code does not fit the APL weights in this case. doesn't
+    # matter that fixed_thr not specified.
+    ret5 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        param_dir_prefix='fixed-series-weights_scaled_no-fixed-thr-or-scales_',
+        **scaled_series_weight_noscalar_kws, **kws
+    )
+    output_dir5 = ret5['output_dir']
+    assert output_dir5 not in output_dirs, f'{output_dir5=} already seen'
+    output_dirs.add(output_dir5)
+    assert_fit_and_plot_outputs_equal(tmp_path, ret, ret5,
+        only_check_overlapping_keys=True, exclude_params=scale_param_names,
+        ignore_tuning_iters=True
+    )
+
+    no_APLPN_kws = dict(scaled_series_weight_kws)
+    assert no_APLPN_kws['wAPLPN'] == 1.0
+    no_APLPN_kws['wAPLPN'] = 0.0
+    ret_no_APLPN = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        fixed_thr=fixed_thr, param_dir_prefix='no-APLPN_', **no_APLPN_kws, **kws
+    )
+    output_dir_no_APLPN = ret_no_APLPN['output_dir']
+    assert output_dir_no_APLPN not in output_dirs, \
+        f'{output_dir_no_APLPN=} already seen'
+    output_dirs.add(output_dir_no_APLPN)
+    sp_no_APLPN = ret_no_APLPN['sparsity']
+    assert sp0 < sp_no_APLPN < sp_max, f'{sp0=} {sp_no_APLPN=} {sp_max=}'
+
+    no_APLKC_kws = dict(scaled_series_weight_kws)
+    assert no_APLKC_kws['wAPLKC'] == 1.0
+    no_APLKC_kws['wAPLKC'] = 0.0
+    ret_no_APLKC = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        fixed_thr=fixed_thr, param_dir_prefix='no-APLKC_', **no_APLKC_kws, **kws
+    )
+    output_dir_no_APLKC = ret_no_APLKC['output_dir']
+    assert output_dir_no_APLKC not in output_dirs, \
+        f'{output_dir_no_APLKC=} already seen'
+    output_dirs.add(output_dir_no_APLKC)
+    sp_no_APLKC = ret_no_APLKC['sparsity']
+    assert sp0 < sp_no_APLKC < sp_max, f'{sp0=} {sp_no_APLKC=} {sp_max=}'
+
+    no_APL_kws = dict(scaled_series_weight_kws)
+    assert no_APL_kws['wAPLPN'] == 1.0
+    assert no_APL_kws['wAPLKC'] == 1.0
+    no_APL_kws['wAPLPN'] = 0.0
+    no_APL_kws['wAPLKC'] = 0.0
+    ret_no_APL = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        fixed_thr=fixed_thr, param_dir_prefix='no-APL-output_', **no_APL_kws, **kws
+    )
+    output_dir_no_APL = ret_no_APL['output_dir']
+    assert output_dir_no_APL not in output_dirs, f'{output_dir_no_APL=} already seen'
+    output_dirs.add(output_dir_no_APL)
+    sp_no_APL = ret_no_APL['sparsity']
+    if kws.get('n_spikes_for_response', 1) == 1:
+        assert np.isclose(sp_no_APL, sp_max, rtol=1e-3)
+    else:
+        # TODO TODO assert within larger tolerance (10%? whatever parameter used, if
+        # separate from sparsity tolerance parameter)
+        breakpoint()
+
+    for_scaling_pre_tuning = dict(normed_not_scaled_series_weight_kws)
+    for k in name2weights.keys():
+        # these scales would have been the ones post-tuning (from ret), but we want to
+        # start them around 1.0 for pre-tuning scaling
+        # TODO allow having all but just 1 or a subset of these None?
+        # TODO check that =None does same thing? (would require slight changes in
+        # mb_model)
+        for_scaling_pre_tuning[k] = 1.0
+
+    # TODO test w/ all None instead of 1? maybe not for all parametrizations?
+    ret6 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, #fixed_thr=fixed_thr,
+        param_dir_prefix='normed-only_pre-tuning-scales-all-1_',
+        scale_pre_tuning=True, **for_scaling_pre_tuning, **kws
+    )
+    output_dir6 = ret6['output_dir']
+    assert output_dir6 not in output_dirs, f'{output_dir6=} already seen'
+    output_dirs.add(output_dir6)
+    assert_fit_and_plot_outputs_equal(tmp_path, ret, ret6,
+        only_check_overlapping_keys=True, ignore_tuning_iters=True
+    )
+
+    kvp_sp_influence0 = (sp0_no_APLKC - sp0) / (sp0_no_APLPN - sp0)
+
+    APLPN_down_kws = dict(for_scaling_pre_tuning)
+    assert APLPN_down_kws['wAPLPN'] == 1.0
+    APLPN_down_kws['wAPLPN'] = 0.5
+    ret_APLPN_down = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        scale_pre_tuning=True, param_dir_prefix='APLPN_down_', return_olfsysm_vars=True,
+        **APLPN_down_kws, **kws
+    )
+    output_dir_APLPN_down = ret_APLPN_down['output_dir']
+    assert output_dir_APLPN_down not in output_dirs, \
+        f'{output_dir_APLPN_down=} already seen'
+    output_dirs.add(output_dir_APLPN_down)
+    sp_APLPN_down = ret_APLPN_down['sparsity']
+    assert sp_APLPN_down != sp0, 'would be suspicious is sparsities were exactly equal'
+    mp = ret_APLPN_down['mp']
+    rv = ret_APLPN_down['rv']
+    sp_no_APLPN = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLPN')
+    sp_no_APLKC = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLKC')
+    assert sp_APLPN_down < sp_no_APLKC < sp_max, f'{sp_no_APLKC=} out of range'
+    assert sp_APLPN_down < sp_no_APLPN < sp_max, f'{sp_no_APLPN=} out of range'
+    kvp_sp_influence = (sp_no_APLKC - sp_APLPN_down) / (sp_no_APLPN - sp_APLPN_down)
+    assert kvp_sp_influence > kvp_sp_influence0, ('wAPLKC should have larger '
+        'effect on sparsity than wAPLPN, since we scaled wAPLPN down before tuning'
+    )
+
+    APLKC_down_kws = dict(for_scaling_pre_tuning)
+    assert APLKC_down_kws['wAPLKC'] == 1.0
+    APLKC_down_kws['wAPLKC'] = 0.5
+    ret_APLKC_down = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        scale_pre_tuning=True, param_dir_prefix='APLKC_down_', return_olfsysm_vars=True,
+        **APLKC_down_kws, **kws
+    )
+    output_dir_APLKC_down = ret_APLKC_down['output_dir']
+    assert output_dir_APLKC_down not in output_dirs, \
+        f'{output_dir_APLKC_down=} already seen'
+    output_dirs.add(output_dir_APLKC_down)
+    sp_APLKC_down = ret_APLKC_down['sparsity']
+    assert sp_APLKC_down != sp0, 'would be suspicious is sparsities were exactly equal'
+    # TODO load weights and check actually changed as expected (and only those ones)?
+    if kws.get('pn_claw_to_apl', False):
+        rp = read_parquet(tmp_path / output_dir_APLPN_down / 'responses.parquet')
+        rk = read_parquet(tmp_path / output_dir_APLKC_down / 'responses.parquet')
+        # ok yea, we were just unlucky
+        assert not rp.equals(rk)
+        assert pd_indices_equal(rp, rk)
+        assert not rp.isna().any().any()
+        assert not rk.isna().any().any()
+    else:
+        assert sp_APLKC_down != sp_APLPN_down, \
+            'would be suspicious is sparsities were exactly equal'
+
+    # TODO TODO do a post-tuning version of this test too?
+    APLKC_down_kws2 = dict(for_scaling_pre_tuning)
+    for k in APL_WEIGHT_NAMES:
+        del APLKC_down_kws2[k]
+    APLKC_down_kws2['_wAPLKC'] = APLKC_down_kws2['_wAPLKC'].copy() * 0.5
+    ret_APLKC_down2 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas,
+        tune_apl_weights=True, param_dir_prefix='APLKC_down2_',
+        return_olfsysm_vars=True, **APLKC_down_kws2, **kws
+    )
+    output_dir_APLKC_down2 = ret_APLKC_down2['output_dir']
+    assert output_dir_APLKC_down2 not in output_dirs, \
+        f'{output_dir_APLKC_down2=} already seen'
+    output_dirs.add(output_dir_APLKC_down2)
+    sp_APLKC_down2 = ret_APLKC_down2['sparsity']
+    # TODO only ignore_tuning_iters for most, if QUICK=1? (except when one side actually
+    # not tuned)
+    assert_fit_and_plot_outputs_equal(tmp_path, ret_APLKC_down, ret_APLKC_down2,
+        only_check_overlapping_keys=True, ignore_tuning_iters=True
+    )
+
+    mp = ret_APLKC_down['mp']
+    rv = ret_APLKC_down['rv']
+    sp_no_APLPN = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLPN')
+    sp_no_APLKC = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLKC')
+    assert sp_APLKC_down < sp_no_APLKC < sp_max, f'{sp_no_APLKC=} out of range'
+    assert sp_APLKC_down < sp_no_APLPN < sp_max, f'{sp_no_APLPN=} out of range'
+    kvp_sp_influence = (sp_no_APLKC - sp_APLKC_down) / (sp_no_APLPN - sp_APLKC_down)
+    assert kvp_sp_influence < kvp_sp_influence0, ('wAPLPN should have larger '
+        'effect on sparsity than wAPLKC, since we scaled wAPLKC down before tuning'
+    )
+
+    # TODO TODO add separate test at this point? get rv and use that to re-run?
+    # (kinda want to share the no_APL* stuff tho... and do i want that in a separate
+    # test?)
+    # TODO TODO assert sparsity still w/in tolerance (but not exactly equal to above),
+    # but that PN contribution is less? how (try to use rv/mp to re-run)?
+    # (get scaled vectors from output of call above, and pass those two new calls, each
+    # setting one scale scalar to 0)
+
+
 # TODO need scope='function' here? can still share params (w/ one cached output for
 # each? if not?)
 @pytest.fixture(scope='function')
@@ -2840,7 +3195,7 @@ def apl_weights(orn_deltas, request):
             # prat-claws_True__prat-boutons_True__connectome-APL_True__pn-claw-to-apl_True
             # case
             # TODO this still work? (for the one case?)
-            # TODO TODO stil allow onestep LR cache for FAST path (rather than always
+            # TODO TODO stil allow onestep LR cache for QUICK path (rather than always
             # disabling [in mb_model] based on in_pytest)?
             #sp_lr_coeff = 5.803226467581852
             warn(f'hardcoding {sp_lr_coeff=} for prat_boutons=True case')
@@ -3009,10 +3364,6 @@ def test_apl_weights_osm(apl_weights):
     assert np.allclose(ap_arr.squeeze(), wAPLPN)
     assert np.allclose(pa_arr.squeeze(), wPNAPL)
 
-    regen = False
-    if regen:
-        mp.kc.tune_apl_weights = False
-
     # TODO refactor to share w/ fit_mb_model usage (have fn get_time_index now. use
     # that.)
     t0 = mp.time_pre_start
@@ -3025,37 +3376,27 @@ def test_apl_weights_osm(apl_weights):
     stim_end_idx = np.searchsorted(ts, mp.time_stim_end)
     #
 
-    boutons = np.array(rv.pn.bouton_sims).copy()
-    print(f'{boutons[:, :, stim_start_idx:stim_end_idx].mean()=}')
+    # TODO delete?
+    #boutons = np.array(rv.pn.bouton_sims).copy()
+    #print(f'{boutons[:, :, stim_start_idx:stim_end_idx].mean()=}')
 
-    warn('setting wAPLPN to 0')
-    rv.pn.wAPLPN = np.zeros(rv.pn.wAPLPN.shape)
-    osm.run_KC_sims(mp, rv, regen)
-    sp_no_APLPN = np.mean(rv.kc.responses)
+    sp_no_APLPN = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLPN')
     print(f'{sp_no_APLPN=}')
+    print()
 
     # TODO assert these are all individually (elementwise) higher than `boutons` above?
     # or never less than, and all >=? (the mean in odor window is indeed larger, despite
     # lower KC response rate)
-    boutons_no_APLPN = np.array(rv.pn.bouton_sims).copy()
-    print(f'{boutons_no_APLPN[:, :, stim_start_idx:stim_end_idx].mean()=}')
-    print()
-    warn('setting both wAPLKC and wAPLPN to 0')
-    rv.kc.wAPLKC = np.zeros(rv.kc.wAPLKC.shape)
-    rv.pn.wAPLPN = np.zeros(rv.pn.wAPLPN.shape)
-    osm.run_KC_sims(mp, rv, regen)
-    sp_no_APL = np.mean(rv.kc.responses)
+    # TODO delete?
+    #boutons_no_APLPN = np.array(rv.pn.bouton_sims).copy()
+    #print(f'{boutons_no_APLPN[:, :, stim_start_idx:stim_end_idx].mean()=}')
+
+    sp_no_APL = _rerun_with_certain_apl_weights_0(mp, rv, ['wAPLKC', 'wAPLPN'])
     print(f'{sp_no_APL=} (same for both no APL cases)')
     assert sp0 < sp_no_APLPN < sp_no_APL
     print()
-    rv.kc.wAPLKC = ak_arr.copy()
-    rv.pn.wAPLPN = ap_arr.copy()
 
-    warn('setting both wKCAPL and wPNAPL to 0 (restored weights from APL)')
-    rv.kc.wKCAPL = np.zeros(rv.kc.wKCAPL.shape)
-    rv.pn.wPNAPL = np.zeros(rv.pn.wPNAPL.shape)
-    osm.run_KC_sims(mp, rv, regen)
-    sp_no_APL2 = np.mean(rv.kc.responses)
+    sp_no_APL2 = _rerun_with_certain_apl_weights_0(mp, rv, ['wKCAPL', 'wPNAPL'])
     # if APL has no input, should have same effect as if all weights from APL are 0
     assert sp_no_APL == sp_no_APL2, (f'{sp_no_APL=} (0 weights FROM APL) != '
         f'{sp_no_APL2=} (0 weights TO APL)'
@@ -3067,46 +3408,200 @@ def test_apl_weights_osm(apl_weights):
     # 0.2
     assert np.isclose(sp_no_APL, sp_max, atol=1e-4), \
         f'{sp_no_APL=} not close to {sp_max=}'
-    rv.kc.wKCAPL = ka_arr.copy()
-    rv.pn.wPNAPL = pa_arr.copy()
 
-    warn('setting wAPLKC to 0 (restored others)')
-    rv.kc.wAPLKC = np.zeros(rv.kc.wAPLKC.shape)
-    osm.run_KC_sims(mp, rv, regen)
-    sp_no_APLKC = np.mean(rv.kc.responses)
+    sp_no_APLKC = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLKC')
     print(f'{sp_no_APLKC=}')
     print()
     #
     assert sp0 < sp_no_APLKC < sp_no_APL
     rv.kc.wAPLKC = ak_arr.copy()
 
-    # TODO TODO TODO should i try to tweak PN<>APL scale(s) relative to KC<>APL
+    # TODO TODO (delete?) should i try to tweak PN<>APL scale(s) relative to KC<>APL
     # scale(s), s.t. removing either has similar effect on sparsity?
     # TODO if so, assert change in sparsity is close to some tolerance?
-    warn('setting wPNAPL to 0 (restored others)')
-    rv.pn.wPNAPL = np.zeros(rv.pn.wPNAPL.shape)
-    osm.run_KC_sims(mp, rv, regen)
-    sp_no_PNAPL = np.mean(rv.kc.responses)
+    sp_no_PNAPL = _rerun_with_certain_apl_weights_0(mp, rv, 'wPNAPL')
     print(f'{sp_no_PNAPL=}')
     print()
     assert sp0 < sp_no_PNAPL < sp_no_APL, f'{sp0=} {sp_no_PNAPL=} {sp_no_APL}'
     rv.pn.wPNAPL = pa_arr.copy()
 
-    warn('setting wKCAPL to 0 (restored others)')
-    rv.kc.wKCAPL = np.zeros(rv.kc.wKCAPL.shape)
-    osm.run_KC_sims(mp, rv, regen)
-    sp_no_KCAPL = np.mean(rv.kc.responses)
+    sp_no_KCAPL = _rerun_with_certain_apl_weights_0(mp, rv, 'wKCAPL')
     print(f'{sp_no_KCAPL=}')
     print()
     assert sp0 < sp_no_KCAPL < sp_no_APL
     rv.kc.wKCAPL = ka_arr.copy()
 
-    warn('restoring all weights and re-running')
-    rv.kc.wAPLKC = ak_arr.copy()
-    rv.pn.wAPLPN = ap_arr.copy()
+    warn('re-running (all weights should be restored)')
+    # TODO refactor to share regen=False w/ _rerun...?
+    regen = False
     osm.run_KC_sims(mp, rv, regen)
     spr = np.mean(rv.kc.responses)
     assert spr == sp0, 'did not get same sparsity after restoring weights'
+
+
+@pytest.mark.parametrize('apl_weights', BOUTON_MODEL_KW_LIST, ids=format_model_params,
+    indirect=['apl_weights']
+)
+def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
+    # NOTE: apl_weights fixture currently also returns kws, for the convenience of this
+    # test
+    # TODO otherwise, pass BOUTON_MODEL_KW_LIST twice in parametrize, for apl_weights
+    # and kws? or better way to have a param be both direct and indirect?
+    ret, kws = apl_weights
+    params = ret[-1]
+
+    thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
+    # TODO delete
+    print()
+    print(f'{[k for k in kws if "APL" in k and k.startswith("w")]=}')
+    #
+
+    print(f'{thr_and_apl_kws=}')
+
+    # TODO should i move this to fixture? what happens if a test fixture fails? do all
+    # selected tests using it also fail?
+    #
+    # working for both pn_claw_to_apl=True/False cases
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, **{**thr_and_apl_kws, **kws})
+    assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
+
+    responses = ret[0]
+    # ipdb> responses.mean().mean()
+    #0.10728841190055699
+
+    # TODO TODO well if both fns use apl_weights fixture are using these, not much point
+    # in trying to precalc weights, right? can i remove use of this here?
+    # TODO TODO at least add an arg to fit_and_plot_mb_model to return these scales too?
+    # or to some other fn?
+    rv = params['rv']
+    # these will not currently be in thr_and_apl_kws (assumed each can be calculated
+    # from the from-APL weights), so need to get separately
+    # TODO TODO need to fix so these two aren't removed from param dict then?
+    wKCAPL_scale = rv.kc.wKCAPL_scale
+    wPNAPL_scale = rv.pn.wPNAPL_scale
+
+    wAPLPN_scale = thr_and_apl_kws['wAPLPN']
+    wAPLKC_scale = thr_and_apl_kws['wAPLKC']
+    # TODO delete
+    breakpoint()
+    #
+
+    no_APLPN = dict(thr_and_apl_kws)
+    # TODO important this is actually a double? add some pybind11 magic to automatically
+    # cast to double from int, if so?
+    no_APLPN['wAPLPN'] = 0.0
+    # TODO TODO work?
+    # need to specify this separately, otherwise it will be computed from wAPLPN
+    no_APLPN['wPNAPL'] = wPNAPL_scale
+    ret_no_APLPN = _fit_mb_model(orn_deltas=orn_deltas, **{**no_APLPN, **kws})
+    responses_no_APLPN, spike_counts_no_APLPN, _, params_no_APLPN = \
+        ret_no_APLPN
+
+    # with no weights hardcoded, as calls above...
+    # with pn_claw_to_apl=True:
+    # average (across odor) values in odor_stats:
+    # max_kc_apl_drive: 68.547
+    # avg_kc_apl_drive: 32.4625
+    # max_bouton_apl_drive: 21.0145
+    # avg_bouton_apl_drive: 5.52647
+    # avg_kc_pre_inh: 508970
+    # avg_bouton_pre_inh: 19749.2
+    # avg_kc_inh: 197132
+    # avg_bouton_inh: 44275.1
+    #
+    # with pn_claw_to_apl=False (default):
+    # average (across odor) values in odor_stats:
+    # max_kc_apl_drive: 0.0205206
+    # avg_kc_apl_drive: 0.0005523
+    # max_bouton_apl_drive: 43.9507
+    # avg_bouton_apl_drive: 13.189
+    # avg_kc_pre_inh: 508970
+    # avg_bouton_pre_inh: 19749.2
+    # avg_kc_inh: 122444
+    # avg_bouton_inh: 27500.4
+
+    # with pn_claw_to_apl=True:
+    # average (across odor) values in odor_stats:
+    # max_kc_apl_drive: 54.1662
+    # avg_kc_apl_drive: 21.1573
+    # max_bouton_apl_drive: 89.5107
+    # avg_bouton_apl_drive: 55.9184
+    # avg_kc_pre_inh: 508970
+    # avg_bouton_pre_inh: 19749.2
+    # avg_kc_inh: 412409
+    # avg_bouton_inh: 0
+    #
+    # with pn_claw_to_apl=False (default):
+    # average (across odor) values in odor_stats:
+    # max_kc_apl_drive: 0.0092385
+    # avg_kc_apl_drive: 0.000203146
+    # max_bouton_apl_drive: 121.734
+    # avg_bouton_apl_drive: 76.0487
+    # avg_kc_pre_inh: 508970
+    # avg_bouton_pre_inh: 19749.2
+    # avg_kc_inh: 580218
+    # avg_bouton_inh: 0
+    #
+    # TODO TODO TODO this also misbehaving like in other test? (yes) why???
+    # responses_no_APLPN.mean().mean()=0.06802744192365166 (pn_claw_to_apl=True)
+    # responses_no_APLPN.mean().mean()=0.05077435131096319 (pn_claw_to_apl=False)
+    print(f'{responses_no_APLPN.mean().mean()=}')
+    # TODO TODO add similar sparsity assertions to in other test (that would pass here,
+    # for reason i'm not clear on...)
+    # TODO delete
+    #
+
+    # pn_claw_to_apl=True:
+    # average (across odor) values in odor_stats:
+    # max_kc_apl_drive: 71.7594
+    # avg_kc_apl_drive: 34.177
+    # max_bouton_apl_drive: 0
+    # avg_bouton_apl_drive: 0
+    # avg_kc_pre_inh: 508970
+    # avg_bouton_pre_inh: 19749.2
+    # avg_kc_inh: 177800
+    # avg_bouton_inh: 39933.2
+    #
+    # pn_claw_to_apl=False:
+    # average (across odor) values in odor_stats:
+    # max_kc_apl_drive: 0.02932
+    # avg_kc_apl_drive: 0.000796943
+    # max_bouton_apl_drive: 0
+    # avg_bouton_apl_drive: 0
+    # avg_kc_pre_inh: 508970
+    # avg_bouton_pre_inh: 19749.2
+    # avg_kc_inh: 36376.3
+    # avg_bouton_inh: 8169.96
+    no_PNAPL = dict(thr_and_apl_kws)
+    no_PNAPL['wAPLPN'] = wAPLPN_scale
+    no_PNAPL['wPNAPL'] = 0.0
+    ret_no_PNAPL = _fit_mb_model(orn_deltas=orn_deltas, **{**no_PNAPL, **kws})
+    responses_no_PNAPL, spike_counts_no_PNAPL, _, params_no_PNAPL = \
+        ret_no_PNAPL
+    print(f'{responses_no_PNAPL.mean().mean()=}')
+
+    # TODO restore?
+    '''
+    no_APLKC = dict(thr_and_apl_kws)
+    no_APLKC['wAPLKC'] = 0.0
+    no_APLKC['wKCAPL'] = wKCAPL_scale
+    ret_no_APLKC = _fit_mb_model(orn_deltas=orn_deltas, **{**no_APLKC, **kws})
+    responses_no_APLKC, spike_counts_no_APLKC, _, params_no_APLKC = \
+        ret_no_APLKC
+    print(f'{responses_no_APLKC.mean().mean()=}')
+
+    no_KCAPL = dict(thr_and_apl_kws)
+    no_KCAPL['wAPLKC'] = wAPLKC_scale
+    no_KCAPL['wKCAPL'] = 0.0
+    ret_no_KCAPL = _fit_mb_model(orn_deltas=orn_deltas, **{**no_KCAPL, **kws})
+    responses_no_KCAPL, spike_counts_no_KCAPL, _, params_no_KCAPL = \
+        ret_no_KCAPL
+    print(f'{responses_no_KCAPL.mean().mean()=}')
+    '''
+
+    # TODO delete
+    breakpoint()
+    #
 
 
 # TODO at at least one test case w/o boutons? i mean, if this works, that prob would
@@ -3619,164 +4114,6 @@ def test_apl_indexing(orn_deltas, kws):
         # NOTE: need to use .values here, b/c after shifting and everything, the
         # time indices are currently off by one from each other
         assert np.allclose(boutons.sel(time_s=boutons2.time_s), boutons2)
-
-
-@pytest.mark.parametrize('apl_weights', BOUTON_MODEL_KW_LIST, ids=format_model_params,
-    indirect=['apl_weights']
-)
-def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
-    # NOTE: apl_weights fixture currently also returns kws, for the convenience of this
-    # test
-    # TODO otherwise, pass BOUTON_MODEL_KW_LIST twice in parametrize, for apl_weights
-    # and kws? or better way to have a param be both direct and indirect?
-    ret, kws = apl_weights
-    params = ret[-1]
-
-    thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
-    # TODO delete
-    print()
-    print(f'{[k for k in kws if "APL" in k and k.startswith("w")]=}')
-    #
-
-    print(f'{thr_and_apl_kws=}')
-
-    # TODO should i move this to fixture? what happens if a test fixture fails? do all
-    # selected tests using it also fail?
-    #
-    # working for both pn_claw_to_apl=True/False cases
-    ret2 = _fit_mb_model(orn_deltas=orn_deltas, **{**thr_and_apl_kws, **kws})
-    assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
-
-    responses = ret[0]
-    # ipdb> responses.mean().mean()
-    #0.10728841190055699
-
-    rv = params['rv']
-    # these will not currently be in thr_and_apl_kws (assumed each can be calculated
-    # from the from-APL weights), so need to get separately
-    wKCAPL_scale = rv.kc.wKCAPL_scale
-    wPNAPL_scale = rv.pn.wPNAPL_scale
-
-    wAPLPN_scale = thr_and_apl_kws['wAPLPN']
-    wAPLKC_scale = thr_and_apl_kws['wAPLKC']
-
-    # TODO TODO TODO restore after back into test def commented w/ docstring above
-    no_APLPN = dict(thr_and_apl_kws)
-    # TODO important this is actually a double? add some pybind11 magic to automatically
-    # cast to double from int, if so?
-    no_APLPN['wAPLPN'] = 0.0
-    # TODO TODO work?
-    # need to specify this separately, otherwise it will be computed from wAPLPN
-    no_APLPN['wPNAPL'] = wPNAPL_scale
-    ret_no_APLPN = _fit_mb_model(orn_deltas=orn_deltas, **{**no_APLPN, **kws})
-    responses_no_APLPN, spike_counts_no_APLPN, _, params_no_APLPN = \
-        ret_no_APLPN
-
-    # with no weights hardcoded, as calls above...
-    # with pn_claw_to_apl=True:
-    # average (across odor) values in odor_stats:
-    # max_kc_apl_drive: 68.547
-    # avg_kc_apl_drive: 32.4625
-    # max_bouton_apl_drive: 21.0145
-    # avg_bouton_apl_drive: 5.52647
-    # avg_kc_pre_inh: 508970
-    # avg_bouton_pre_inh: 19749.2
-    # avg_kc_inh: 197132
-    # avg_bouton_inh: 44275.1
-    #
-    # with pn_claw_to_apl=False (default):
-    # average (across odor) values in odor_stats:
-    # max_kc_apl_drive: 0.0205206
-    # avg_kc_apl_drive: 0.0005523
-    # max_bouton_apl_drive: 43.9507
-    # avg_bouton_apl_drive: 13.189
-    # avg_kc_pre_inh: 508970
-    # avg_bouton_pre_inh: 19749.2
-    # avg_kc_inh: 122444
-    # avg_bouton_inh: 27500.4
-
-    # with pn_claw_to_apl=True:
-    # average (across odor) values in odor_stats:
-    # max_kc_apl_drive: 54.1662
-    # avg_kc_apl_drive: 21.1573
-    # max_bouton_apl_drive: 89.5107
-    # avg_bouton_apl_drive: 55.9184
-    # avg_kc_pre_inh: 508970
-    # avg_bouton_pre_inh: 19749.2
-    # avg_kc_inh: 412409
-    # avg_bouton_inh: 0
-    #
-    # with pn_claw_to_apl=False (default):
-    # average (across odor) values in odor_stats:
-    # max_kc_apl_drive: 0.0092385
-    # avg_kc_apl_drive: 0.000203146
-    # max_bouton_apl_drive: 121.734
-    # avg_bouton_apl_drive: 76.0487
-    # avg_kc_pre_inh: 508970
-    # avg_bouton_pre_inh: 19749.2
-    # avg_kc_inh: 580218
-    # avg_bouton_inh: 0
-    #
-    # TODO TODO TODO this also misbehaving like in other test? (yes) why???
-    # responses_no_APLPN.mean().mean()=0.06802744192365166 (pn_claw_to_apl=True)
-    # responses_no_APLPN.mean().mean()=0.05077435131096319 (pn_claw_to_apl=False)
-    print(f'{responses_no_APLPN.mean().mean()=}')
-    # TODO TODO add similar sparsity assertions to in other test (that would pass here,
-    # for reason i'm not clear on...)
-    # TODO delete
-    #
-
-    # pn_claw_to_apl=True:
-    # average (across odor) values in odor_stats:
-    # max_kc_apl_drive: 71.7594
-    # avg_kc_apl_drive: 34.177
-    # max_bouton_apl_drive: 0
-    # avg_bouton_apl_drive: 0
-    # avg_kc_pre_inh: 508970
-    # avg_bouton_pre_inh: 19749.2
-    # avg_kc_inh: 177800
-    # avg_bouton_inh: 39933.2
-    #
-    # pn_claw_to_apl=False:
-    # average (across odor) values in odor_stats:
-    # max_kc_apl_drive: 0.02932
-    # avg_kc_apl_drive: 0.000796943
-    # max_bouton_apl_drive: 0
-    # avg_bouton_apl_drive: 0
-    # avg_kc_pre_inh: 508970
-    # avg_bouton_pre_inh: 19749.2
-    # avg_kc_inh: 36376.3
-    # avg_bouton_inh: 8169.96
-    no_PNAPL = dict(thr_and_apl_kws)
-    no_PNAPL['wAPLPN'] = wAPLPN_scale
-    no_PNAPL['wPNAPL'] = 0.0
-    ret_no_PNAPL = _fit_mb_model(orn_deltas=orn_deltas, **{**no_PNAPL, **kws})
-    responses_no_PNAPL, spike_counts_no_PNAPL, _, params_no_PNAPL = \
-        ret_no_PNAPL
-    print(f'{responses_no_PNAPL.mean().mean()=}')
-
-    # TODO restore?
-    '''
-    no_APLKC = dict(thr_and_apl_kws)
-    no_APLKC['wAPLKC'] = 0.0
-    no_APLKC['wKCAPL'] = wKCAPL_scale
-    ret_no_APLKC = _fit_mb_model(orn_deltas=orn_deltas, **{**no_APLKC, **kws})
-    responses_no_APLKC, spike_counts_no_APLKC, _, params_no_APLKC = \
-        ret_no_APLKC
-    print(f'{responses_no_APLKC.mean().mean()=}')
-
-    no_KCAPL = dict(thr_and_apl_kws)
-    no_KCAPL['wAPLKC'] = wAPLKC_scale
-    no_KCAPL['wKCAPL'] = 0.0
-    ret_no_KCAPL = _fit_mb_model(orn_deltas=orn_deltas, **{**no_KCAPL, **kws})
-    responses_no_KCAPL, spike_counts_no_KCAPL, _, params_no_KCAPL = \
-        ret_no_KCAPL
-    print(f'{responses_no_KCAPL.mean().mean()=}')
-    '''
-
-    # TODO delete
-    breakpoint()
-    #
 
 
 # TODO TODO test orn deltas can't actually ever go negative (+ fix if so), since scaling

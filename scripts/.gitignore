@@ -16,3 +16,5 @@ xarray_netcdf_io_bench.csv
 
 # covers output from (so far) sim_hh_kcs.py
 *_output/
+
+megamat_multiresponder_apl_boost/
