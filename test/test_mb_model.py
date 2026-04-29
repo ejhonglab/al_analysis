@@ -1485,9 +1485,13 @@ def test_fixed_inh_params(tmp_path, orn_deltas, kws):
     )
     responses2, spike_counts2, wPNKC2, params2 = ret2
 
+    # TODO delete
     # does 0 actually imply no tuning happened? yes, it's incremented to 1 on first
-    # iteration.
-    assert params2['tuning_iters'] == 0
+    # iteration. (but now, this and other APL_TUNING_PARAMS are not even added to params
+    # unless APL tuning was performed)
+    #assert params2['tuning_iters'] == 0
+    #
+    assert not any(x in params2 for x in APL_TUNING_PARAMS)
 
     assert_fit_outputs_equal(ret, ret2, ignore_tuning_params=True)
 
@@ -2872,7 +2876,6 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     # would actually just raise an error before that)
     fixed_thr = ret['fixed_thr']
 
-    # TODO TODO TODO restore commented ret2/3/etc calls
     ret2 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, fixed_thr=fixed_thr,
         # need to add this prefix so the two output dirs won't be the same
         # TODO TODO why wasn't it caught by something getting ovewritten though?
@@ -2888,7 +2891,7 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
         # TODO can i remove only_check_overlapping_keys, if i replace
         # ignore_tuning_iters w/ ignore_tuning_params?
         #only_check_overlapping_keys=True, ignore_tuning_iters=True
-        only_check_overlapping_keys=True, ignore_tuning_params=True
+        ignore_tuning_params=True
     )
 
     normed_series_no_fixed_scalars_kws = dict(normed_not_scaled_series_weight_kws)
@@ -2913,7 +2916,7 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
         # TODO can i remove only_check_overlapping_keys, if i replace
         # ignore_tuning_iters w/ ignore_tuning_params?
         #only_check_overlapping_keys=True, ignore_tuning_iters=True
-        only_check_overlapping_keys=True, ignore_tuning_params=True
+        ignore_tuning_params=True
     )
 
     ret4 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, fixed_thr=fixed_thr,
@@ -2935,16 +2938,15 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret4,
         # TODO can i remove only_check_overlapping_keys, if i replace
         # ignore_tuning_iters w/ ignore_tuning_params?
-        only_check_overlapping_keys=True, ignore_tuning_params=True,
+        ignore_tuning_params=True,
         #only_check_overlapping_keys=True, ignore_tuning_iters=True,
         exclude_params=scale_param_names
     )
 
-    # TODO TODO restore
-    # TODO TODO TODO (delete?) don't i *want* to tune APL scales in this case though
+    # TODO TODO (delete?) don't i *want* to tune APL scales in this case though
     # (when vectors but not scalars passed)? or do i really just want a separate flag to
     # indicate that? either way, need to support that.
-    # TODO TODO TODO see scale_pre_tuning param i started to implement. separate flag
+    # TODO TODO see scale_pre_tuning param i started to implement. separate flag
     # might actually make sense, to clarify it's separate scaling before whatever
     # default initial scales in tuning step (done implementing now. delete comment?
     # delete this test case?
@@ -2968,7 +2970,7 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret5,
         # TODO can i remove only_check_overlapping_keys, if i replace
         # ignore_tuning_iters w/ ignore_tuning_params?
-        only_check_overlapping_keys=True, ignore_tuning_params=True,
+        ignore_tuning_params=True,
         #only_check_overlapping_keys=True, ignore_tuning_iters=True,
         exclude_params=scale_param_names
     )
@@ -3038,7 +3040,7 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret6,
         # TODO can i remove only_check_overlapping_keys, if i replace
         # ignore_tuning_iters w/ ignore_tuning_params?
-        only_check_overlapping_keys=True, ignore_tuning_params=True
+        ignore_tuning_params=True
         #only_check_overlapping_keys=True, ignore_tuning_iters=True
     )
 
@@ -3113,7 +3115,7 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     # TODO can i remove only_check_overlapping_keys, if i replace ignore_tuning_iters w/
     # ignore_tuning_params?
     assert_fit_and_plot_outputs_equal(tmp_path, ret_APLKC_down, ret_APLKC_down2,
-        only_check_overlapping_keys=True, ignore_tuning_params=True
+        ignore_tuning_params=True
         #only_check_overlapping_keys=True, ignore_tuning_iters=True
     )
 
@@ -3483,9 +3485,6 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     #
     # working for both pn_claw_to_apl=True/False cases
     ret2 = _fit_mb_model(orn_deltas=orn_deltas, **{**thr_and_apl_kws, **kws})
-    # TODO can i remove only_check_overlapping_keys, if i replace ignore_tuning_iters w/
-    # ignore_tuning_params?
-    #assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
     assert_fit_outputs_equal(ret, ret2, ignore_tuning_params=True)
 
     responses = ret[0]
