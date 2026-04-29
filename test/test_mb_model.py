@@ -2930,8 +2930,8 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret4,
         # TODO can i remove only_check_overlapping_keys, if i replace
         # ignore_tuning_iters w/ ignore_tuning_params?
-        only_check_overlapping_keys=True, ignore_tuning_params=True
-        #only_check_overlapping_keys=True, ignore_tuning_iters=True
+        only_check_overlapping_keys=True, ignore_tuning_params=True,
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True,
         exclude_params=scale_param_names
     )
 
@@ -2963,8 +2963,8 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret5,
         # TODO can i remove only_check_overlapping_keys, if i replace
         # ignore_tuning_iters w/ ignore_tuning_params?
-        only_check_overlapping_keys=True, ignore_tuning_params=True
-        #only_check_overlapping_keys=True, ignore_tuning_iters=True
+        only_check_overlapping_keys=True, ignore_tuning_params=True,
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True,
         exclude_params=scale_param_names
     )
 
