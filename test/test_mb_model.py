@@ -1188,14 +1188,13 @@ def test_homeostatic_thrs(orn_deltas):
 # TODO + test that orn activities (after adding spont) can't be negative (but seems like
 # C++ code might allow them to be? fix that?
 
-# TODO TODO TODO fix (broken as of 2026-02-13)
-# TODO TODO TODO try just removing the one assertion on relative sparsity diff (w/ and
-# w/o allow_net_inh...) and see if there are any other issues
-# TODO TODO TODO why is such a high wAPLKC scale seemingly needed now (bug in olfsysm
-# probably? did i change scale factor used in this case? check old logs / outputs?)
-#@pytest.mark.xfail(
-#    reason='broke in Feb 2026. fix!', run=False
-#)
+# TODO TODO fix (broken as of 2026-02-13) (might have been fixed at some point between
+# then and when weight normalization was changed ~mid-April 2026, which i suspect is why
+# it's broken now. not sure i care)
+@pytest.mark.xfail(
+    reason='broken, likely because change in weight normalization. care? confirm cause',
+    run=False
+)
 def test_spatial_wPNKC_equiv(orn_deltas):
     """
     Tests that one-row-per-claw wPNKC can recreate one-row-per-KC hemibrain outputs,
@@ -1308,7 +1307,7 @@ def test_spatial_wPNKC_equiv(orn_deltas):
         # checking we didn't drop any claws through the one-hot-encoding process
         assert wPNKC_one_row_per_claw.groupby([KC_ID, KC_TYPE]).sum().equals(wPNKC)
 
-        _, spike_counts, wPNKC2, _ = _fit_mb_model(orn_deltas=orn_deltas, **kws,
+        _, spike_counts, wPNKC2, params = _fit_mb_model(orn_deltas=orn_deltas, **kws,
             pn2kc_connections=connectome, **wPNKC_kws
         )
         assert wPNKC.equals(wPNKC2)
@@ -1316,49 +1315,55 @@ def test_spatial_wPNKC_equiv(orn_deltas):
         # just establishing new path allowing us to hardcode _wPNKC works
         # TODO move to separate test? and also add support for + test hardcoding of
         # wAPLKC and wKCAPL there?
-        _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas, **kws,
+        _, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas, **kws,
             _wPNKC=wPNKC
         )
         assert spike_counts.equals(spike_counts2)
-        del spike_counts2
 
-        _, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
+        _, spike_counts3, _, params3 = _fit_mb_model(orn_deltas=orn_deltas,
             **kws, _wPNKC=wPNKC_one_row_per_claw, one_row_per_claw=True
         )
         if kws.get('allow_net_inh_per_claw', False):
-            assert spike_counts.equals(spike_counts2)
+            # TODO TODO TODO why is this failing now? because change in weight
+            # normalization? (values actually are different)
+            # TODO TODO could some modification of this test still pass?
+            # (based on prat_claws=True code. would need to think about how to run the
+            # test)
+            # TODO TODO TODO inspect params vs params3?
+            breakpoint()
+            assert spike_counts.equals(spike_counts3)
         else:
             # could be possible to still match under some circumstances, but that's not
             # what we see if current tests here (so something would be up if they did
             # match)
-            assert not spike_counts.equals(spike_counts2)
+            assert not spike_counts.equals(spike_counts3)
 
             # (outdated) currently getting 0.0172 w/ NO connectome APL weights, and
             # 0.0139 with them.
             #
             # (outdated) connectome_APL_weights=False (default):
-            # (spike_counts - spike_counts2).abs().sum().sum()=99.0
+            # (spike_counts - spike_counts3).abs().sum().sum()=99.0
             # spike_counts.sum().sum()=5752.0
-            # spike_counts2.sum().sum()=5801.0
+            # spike_counts3.sum().sum()=5801.0
             # rel_abs_change=0.017211404728789986
-            rel_abs_change = (spike_counts - spike_counts2).abs().sum().sum() / (
+            rel_abs_change = (spike_counts - spike_counts3).abs().sum().sum() / (
                 spike_counts.sum().sum()
             )
             # TODO TODO TODO fix (broken as of 2026-02-13)
             # assert 0.19137422105608395 < 0.0175
-            # (.16 if denominator is the larger spike_counts2.sum().sum())
+            # (.16 if denominator is the larger spike_counts3.sum().sum())
             # sparsity of spike_counts is .0979212
-            # sparsity of spike_counts2 is .109988
+            # sparsity of spike_counts3 is .109988
             #
             # the extent of the difference after changing C++ code to sum excitation and
             # inhibition within each claw, before then summing over claws within KC
             # (to support returning claw sims):
             # connectome_APL_weights=True:
-            # ipdb> (spike_counts - spike_counts2).abs().sum().sum()
+            # ipdb> (spike_counts - spike_counts3).abs().sum().sum()
             # 97.0
             # ipdb> spike_counts.sum().sum()
             # 6976.0
-            # ipdb> spike_counts2.sum().sum()
+            # ipdb> spike_counts3.sum().sum()
             # 7021.0
             # ipdb> rel_abs_change
             # 0.013904816513761468

@@ -57,12 +57,16 @@ def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, name2weights: Para
     # would actually just raise an error before that)
     fixed_thr = ret['fixed_thr']
 
+    boost = 20
+
     # TODO TODO TODO do another version using normed-but-not-scaled (for pre-tuning
     # scaling?) (or does my implementation require the other ones, for some reason?)
 
     # TODO TODO TODO plot clustered responses in a way that tracks the same cells from
     # tuning and the calls below (use fixed order, from clustering on tuning) (factor
     # out any fns for this? already have code for it in natmix_data/analysis.py?)
+    # TODO TODO TODO and plot spike counts (log color scale?) instead of binarized
+    # "responses" anyway
 
     apl_boost_kws = dict(scaled_series_weight_kws)
     rs = read_parquet(plot_root / output_dir / 'responses.parquet')
@@ -70,11 +74,11 @@ def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, name2weights: Para
     # TODO TODO try scaling proportional to # odors, instead of just a flat scale?
     multiresponders = n_odors >= 2
     _wAPLKC = apl_boost_kws['_wAPLKC'].copy()
-    _wAPLKC.loc[multiresponders[multiresponders].index.droplevel('kc_type')] *= 20
+    _wAPLKC.loc[multiresponders[multiresponders].index.droplevel('kc_type')] *= boost
     apl_boost_kws['_wAPLKC'] = _wAPLKC
     ret3 = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, fixed_thr=fixed_thr,
-        # TODO TODO format factor into param_dir_prefix
-        param_dir_prefix='wAPLKC-multiresponder-20x_', **apl_boost_kws, **kws
+        param_dir_prefix=f'wAPLKC-multiresponder-posttune-{boost:.0f}x_',
+        **apl_boost_kws, **kws
     )
     # TODO delete
     breakpoint()
