@@ -4805,6 +4805,18 @@ def fmt_frac(x: int, y: int, *, den: bool = True, dec: bool = True) -> str:
 # or just drop missing ones?
 APL_WEIGHT_NAMES: Tuple[str] = ('wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL')
 
+# TODO frozenset instead? how to type hint [str] for that?
+# keys that will be in output of fit_mb_model call if APL tuning was done
+APL_TUNING_PARAMS: Set[str] = {
+    'sp_acc',
+    'max_iters',
+    'sp_lr_coeff',
+    'apltune_subsample',
+    'tuning_iters',
+    # this one may not be there for older versions of olfsysm
+    ONESTEP_LR_KEY,
+}
+
 def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     prat_boutons: bool = False, per_claw_pn_apl_weights: bool = False,
     # TODO delete
@@ -10450,39 +10462,66 @@ def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
 # TODO use in test code too (that currently probably dupes this)
 # TODO + anywhere else where it would make sense
 def dropna_and_subset_all_to_same_times(dynamics_dict: DynamicsDict, *,
-    last_allowed_nan_time: float = -0.5, warn_: bool = True) -> None:
+    last_allowed_nan_time: float = -0.5, warn_: bool = True, expected_t0: float = -0.5
+    ) -> None:
     """If bouton_sims has NaN first time point, drop that and same time in all others.
 
     Modifies dict inplace.
+
+    Args:
+        expected_t0: should match `mp.time_start` default (and hopefully value model run
+            with). If input did not have "pre-time" [-2.0, -0.5] deleted (via
+            `delete_pretime=True` in `fit_mb_model`), then data should start at time
+            -2.0 instead (default `mp.time_pre_start`).
     """
+    bouton_key = 'bouton_sims'
+
     boutons = None
     dropped = False
     for k, arr in dynamics_dict.items():
-        if k != 'bouton_sims':
+        if k != bouton_key:
             assert not arr.isnull().any(), (f'{k=} had null values. only expect one for'
-                ' bouton_sims (at first index only)'
+                f' {bouton_key} (at first index only)'
             )
         else:
             boutons = arr
-            t0 = boutons.get_index('time_s')[0]
+            ts = boutons.get_index('time_s')
+            t0 = ts[0]
+
+            if t0 != expected_t0:
+                atol = np.diff(ts).max() * 1.25
+                # replace equality check in `if` condition above if this ever fails
+                # (with isclose check like this)
+                assert not np.isclose(t0, expected_t0, atol=atol), f'{t0=}'
+                assert t0 < expected_t0, f'{t0=}'
+                # equality check seems like it would also work here, but w/e
+                # -2.0 is default "pre-time" start time
+                assert np.isclose(t0, -2.0), f'{t0=}'
+                boutons = boutons.sel(time_s=slice(expected_t0, None))
+
             if not boutons.isel(time_s=0).isnull().all():
                 if warn_ and t0 <= last_allowed_nan_time:
                     # TODO check whether value of time index there is <= -0.5 before
                     # warning?
-                    warn('boutons was not all null at first time index, as expected')
+                    warn('boutons was not all null at first time index, as '
+                        'expected'
+                    )
             else:
                 if warn_:
-                    warn(f'dropped {t0=} (first time point) from bouton_sims, which was'
-                        ' all NaN. will subset all other values in dynamics_dict to '
-                        "have the same 'time_s' index"
+                    warn(f'dropped {t0=} (first time point) from {bouton_key}, '
+                        'which was all NaN. will subset all other values in '
+                        "dynamics_dict to have the same 'time_s' index"
                     )
 
                 len_before = boutons.sizes['time_s']
-                boutons = boutons.isel(time_s=slice(1, None))
+                # .copy() necessary to actually free memory (important if we dropping
+                # the [large amount of] pretime data here, if it's present)
+                # (which would, in this case, have been dropped in the .sel call above)
+                boutons = boutons.isel(time_s=slice(1, None)).copy()
                 assert boutons.sizes['time_s'] == len_before - 1
                 dropped = True
 
-            assert not boutons.isnull().any(), ('boutons had null other than in '
+            assert not boutons.isnull().any(), ('boutons had null other than in 1st '
                 'time point'
             )
 
@@ -10491,26 +10530,28 @@ def dropna_and_subset_all_to_same_times(dynamics_dict: DynamicsDict, *,
         return
 
     assert boutons is not None
-    nt_before = dynamics_dict['bouton_sims'].sizes['time_s']
-    dynamics_dict['bouton_sims'] = boutons
-    assert boutons.sizes['time_s'] == nt_before - 1
+    dynamics_dict[bouton_key] = boutons
 
     ts = boutons.get_index('time_s')
+    # TODO just get [0] and [-1] instead? should be monotonic increasing anyway
+    tmin = ts.min()
+    tmax = ts.max()
     for k in list(dynamics_dict.keys()):
-        if k == 'bouton_sims':
+        if k == bouton_key:
             continue
 
         arr = dynamics_dict[k]
         ts2 = arr.get_index('time_s')
         if ts2.equals(ts):
-            # TODO TODO why is Is_from_kcs already subset? stale output (no)?
-            # Is_from_pns too. no others currently (in pn-claw-to-apl_False dir)
+            # TODO TODO (still true?) why is Is_from_kcs already subset? stale output
+            # (no)? Is_from_pns too. no others currently (in pn-claw-to-apl_False dir)
             warn(f'{k=} already had times subset to match boutons')
             continue
 
-        assert ts2[1:].equals(ts), f'time index on {k=} did not match that of boutons'
-
-        arr = arr.isel(time_s=slice(1, None)).copy()
+        # .copy() necessary to actually free memory (important if we dropping the [large
+        # amount of] pretime data here, if it's present)
+        arr = arr.sel(time_s=slice(tmin, tmax)).copy()
+        # TODO remove?
         assert arr.get_index('time_s').equals(ts)
         dynamics_dict[k] = arr
 
@@ -14179,11 +14220,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # should be how many iterations it took to tune,
             'tuning_iters': rv.kc.tuning_iters,
         }
+        missing_tuning_keys = set()
+        # TODO delete this and assume it's always there now?
         try:
             onestep_lr = rv.kc.sp_lr_coeff_to_tune_in_one_iter
             tuning_dict[ONESTEP_LR_KEY] = onestep_lr
         except AttributeError:
             warn(f'current olfsysm version does not have rv.kc.{ONESTEP_LR_KEY}')
+            missing_tuning_keys.add(ONESTEP_LR_KEY)
+        #
+        assert APL_TUNING_PARAMS - set(tuning_dict.keys()) == missing_tuning_keys
 
         if not silent:
             print('tuning parameters:')

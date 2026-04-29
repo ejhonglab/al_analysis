@@ -34,10 +34,11 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     format_weights, megamat_orn_deltas, paper_megamat_orn_deltas,
     paper_hemibrain_output_dir, get_dynamics, get_time_index, ONESTEP_LR_KEY,
     fit_dff2spiking_from_remypaper_flies_and_hallem, APL_WEIGHT_NAMES,
-    scale_dff_to_est_spike_deltas_using_hallem, remypaper_dff2spiking_data_dir,
-    written_since_proc_start, dff_to_spiking_model_choices_csv_name,
-    dff_to_spiking_data_csv_name, read_parquet, MODEL_KW_LIST, QUICK_MODEL_KW_LIST,
-    BOUTON_MODEL_KW_LIST, get_fitandplot_model_kw_list, model_mb_responses
+    APL_TUNING_PARAMS, scale_dff_to_est_spike_deltas_using_hallem,
+    remypaper_dff2spiking_data_dir, written_since_proc_start,
+    dff_to_spiking_model_choices_csv_name, dff_to_spiking_data_csv_name, read_parquet,
+    MODEL_KW_LIST, QUICK_MODEL_KW_LIST, BOUTON_MODEL_KW_LIST,
+    get_fitandplot_model_kw_list, model_mb_responses
 )
 
 # TODO better way?
@@ -271,10 +272,9 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
     # particular tests? (check none w/ allclose by default) (or am i going to need to
     # specify wKCAPL enough that i shouldn't...?)
     check_with_allclose=('wKCAPL','wKCAPL_scale'),
-    only_check_overlapping_keys: bool = False, ignore_tuning_iters: bool = False,
-    expected_missing_keys: Iterable[str] = tuple(),
-    check_tuning_outputs: bool = True, exclude_params: Optional[Tuple[str]] = None
-    ) -> None:
+    only_check_overlapping_keys: bool = False, ignore_tuning_params: bool = False,
+    expected_missing_keys: Iterable[str] = tuple(), check_tuning_outputs: bool = True,
+    exclude_params: Optional[Tuple[str]] = None) -> None:
     # TODO doc if can come from a serialized output, which (and how to load, and whether
     # that's equiv to checking output returned from a call directly)
     # TODO and are param dicts from these two fns the same? doc how differ, if not
@@ -288,15 +288,19 @@ def assert_param_dicts_equal(params: ParamDict, params2: ParamDict, *,
 
         exclude_params: param keys to skip checking. ('rv', 'mp', 'output_dir') will
             always be added to anything passed in, or used as default otherwise.
-            If `ignore_tuning_iters=True`, 'tuning_iters' will also be added.
+            If `ignore_tuning_params=True`, APL_TUNING_PARAMS will also be added.
     """
     if exclude_params is None:
         exclude_params = tuple()
     exclude_params += ('rv', 'mp', 'output_dir')
     # params that we'd expect to be different between the fixed thr/APL-weights call
     # and the call that picked those values (tuning_iters), and other special cases
-    if ignore_tuning_iters:
-        exclude_params += ('tuning_iters',)
+    if ignore_tuning_params:
+        assert 'tuning_iters' in APL_TUNING_PARAMS
+        # TODO only add sp_lr_coeff + ONESTEP_LR_KEY (things that might be set by tuning
+        # / cache), instead of adding all of them? but ig all will not be added if not
+        # tuning now, so maybe need to keep like this?
+        exclude_params += tuple(APL_TUNING_PARAMS)
 
     # NOTE: onestep sp_lr_coeff cache should only be used by test code if QUICK=1
     # (enforced by checking if we are in pytest in fit_and_plot_mb_model)
@@ -1175,7 +1179,8 @@ def test_homeostatic_thrs(orn_deltas):
     #
 
     ret2 =  _fit_mb_model(orn_deltas=orn_deltas, fixed_thr=thrs, wAPLKC=wAPLKC)
-    assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
+    # TODO work now?
+    assert_fit_outputs_equal(ret, ret2, ignore_tuning_params=True)
 
 
 # TODO add test that allow_net_inh_per_claw=True (the default) produces some
@@ -1479,7 +1484,7 @@ def test_fixed_inh_params(tmp_path, orn_deltas, kws):
     # iteration.
     assert params2['tuning_iters'] == 0
 
-    assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
+    assert_fit_outputs_equal(ret, ret2, ignore_tuning_params=True)
 
     # TODO delete? move to a script to generate test data (along w/ related code
     # above)?
@@ -1700,7 +1705,7 @@ def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas, kws):
     )
 
     assert_fit_and_plot_outputs_equal(plot_root, params, params2,
-        ignore_tuning_iters=True
+        ignore_tuning_params=True
     )
 
     # TODO also test we can load all the things that either downstream stuff in
@@ -2875,7 +2880,10 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert output_dir2 not in output_dirs, f'{output_dir2=} already seen'
     output_dirs.add(output_dir2)
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret2,
-        only_check_overlapping_keys=True, ignore_tuning_iters=True
+        # TODO can i remove only_check_overlapping_keys, if i replace
+        # ignore_tuning_iters w/ ignore_tuning_params?
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True
+        only_check_overlapping_keys=True, ignore_tuning_params=True
     )
 
     normed_series_no_fixed_scalars_kws = dict(normed_not_scaled_series_weight_kws)
@@ -2897,7 +2905,10 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert output_dir3 not in output_dirs, f'{output_dir3=} already seen'
     output_dirs.add(output_dir3)
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret3,
-        only_check_overlapping_keys=True, ignore_tuning_iters=True
+        # TODO can i remove only_check_overlapping_keys, if i replace
+        # ignore_tuning_iters w/ ignore_tuning_params?
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True
+        only_check_overlapping_keys=True, ignore_tuning_params=True
     )
 
     ret4 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, fixed_thr=fixed_thr,
@@ -2917,8 +2928,11 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     # above. not sure what they'd otherwise end up being here. could def be initialized
     # to something else...)
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret4,
-        only_check_overlapping_keys=True, exclude_params=scale_param_names,
-        ignore_tuning_iters=True
+        # TODO can i remove only_check_overlapping_keys, if i replace
+        # ignore_tuning_iters w/ ignore_tuning_params?
+        only_check_overlapping_keys=True, ignore_tuning_params=True
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True
+        exclude_params=scale_param_names
     )
 
     # TODO TODO restore
@@ -2947,8 +2961,11 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert output_dir5 not in output_dirs, f'{output_dir5=} already seen'
     output_dirs.add(output_dir5)
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret5,
-        only_check_overlapping_keys=True, exclude_params=scale_param_names,
-        ignore_tuning_iters=True
+        # TODO can i remove only_check_overlapping_keys, if i replace
+        # ignore_tuning_iters w/ ignore_tuning_params?
+        only_check_overlapping_keys=True, ignore_tuning_params=True
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True
+        exclude_params=scale_param_names
     )
 
     no_APLPN_kws = dict(scaled_series_weight_kws)
@@ -3014,7 +3031,10 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     assert output_dir6 not in output_dirs, f'{output_dir6=} already seen'
     output_dirs.add(output_dir6)
     assert_fit_and_plot_outputs_equal(tmp_path, ret, ret6,
-        only_check_overlapping_keys=True, ignore_tuning_iters=True
+        # TODO can i remove only_check_overlapping_keys, if i replace
+        # ignore_tuning_iters w/ ignore_tuning_params?
+        only_check_overlapping_keys=True, ignore_tuning_params=True
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True
     )
 
     kvp_sp_influence0 = (sp0_no_APLKC - sp0) / (sp0_no_APLPN - sp0)
@@ -3085,8 +3105,11 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     sp_APLKC_down2 = ret_APLKC_down2['sparsity']
     # TODO only ignore_tuning_iters for most, if QUICK=1? (except when one side actually
     # not tuned)
+    # TODO can i remove only_check_overlapping_keys, if i replace ignore_tuning_iters w/
+    # ignore_tuning_params?
     assert_fit_and_plot_outputs_equal(tmp_path, ret_APLKC_down, ret_APLKC_down2,
-        only_check_overlapping_keys=True, ignore_tuning_iters=True
+        only_check_overlapping_keys=True, ignore_tuning_params=True
+        #only_check_overlapping_keys=True, ignore_tuning_iters=True
     )
 
     mp = ret_APLKC_down['mp']
@@ -3100,14 +3123,6 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
         'effect on sparsity than wAPLKC, since we scaled wAPLKC down before tuning'
     )
 
-    # TODO TODO add separate test at this point? get rv and use that to re-run?
-    # (kinda want to share the no_APL* stuff tho... and do i want that in a separate
-    # test?)
-    # TODO TODO assert sparsity still w/in tolerance (but not exactly equal to above),
-    # but that PN contribution is less? how (try to use rv/mp to re-run)?
-    # (get scaled vectors from output of call above, and pass those two new calls, each
-    # setting one scale scalar to 0)
-
 
 # TODO need scope='function' here? can still share params (w/ one cached output for
 # each? if not?)
@@ -3118,7 +3133,7 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
 def apl_weights(orn_deltas, request):
     kws = request.param
 
-    # TODO TODO TODO move this intial part (defining weights at least, probably not
+    # TODO TODO move this intial part (defining weights at least, probably not
     # initial rv? maybe it's fine as long as only one downstream test ever uses that
     # rv?) to a fixture (-> share w/ two new tests from remaining section)
     precalc_weights = False
@@ -3126,7 +3141,7 @@ def apl_weights(orn_deltas, request):
     warn('fix precalc_weights=True (to speed up this test in general, and mainly to '
         'fix whatever underlying consistency issue!'
     )
-    # TODO TODO TODO try again to get this to work (both so i can set these vectors
+    # TODO TODO try again to get this to work (both so i can set these vectors
     # before tuning, for sensitivity analysis, but also so i can hardcode offsets for
     # KCs based on breadth)
     #precalc_weights = True
@@ -3463,7 +3478,10 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     #
     # working for both pn_claw_to_apl=True/False cases
     ret2 = _fit_mb_model(orn_deltas=orn_deltas, **{**thr_and_apl_kws, **kws})
-    assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
+    # TODO can i remove only_check_overlapping_keys, if i replace ignore_tuning_iters w/
+    # ignore_tuning_params?
+    #assert_fit_outputs_equal(ret, ret2, ignore_tuning_iters=True)
+    assert_fit_outputs_equal(ret, ret2, ignore_tuning_params=True)
 
     responses = ret[0]
     # ipdb> responses.mean().mean()
