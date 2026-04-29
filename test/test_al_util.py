@@ -20,6 +20,7 @@ from al_analysis.al_util import (MultipleSavesPerRunException, read_json, plot_f
     ParamDict, load_natmix_dff, mean_of_fly_corrs, diverging_cmap, savefig
 )
 from al_analysis import al_util
+from al_analysis.al_util import warn
 # just to include in produces_output test
 from al_analysis.mb_model import save_dataarray
 
@@ -79,6 +80,11 @@ save_fn_name2suffix: Dict[str, str] = {
     # NOTE: not currently wrapped by produces_output, but would like to make it so it is
     'savefig': f'.{plot_fmt}',
     # TODO just f'.{plot_fmt}', or also other formats? separate test for that?
+
+    # this fn is defined in natmix.io, and only wrapped in al_analysis. neither enforces
+    # the '.p' suffix, the natmix fn is saving a pickle, so i'd probably only be using
+    # that suffix
+    'write_corr_dataarray': '.p',
 }
 # TODO some way to have values of dict be fixtures instead? or how would it make sense
 # to do this?
@@ -139,9 +145,15 @@ example_params: ParamDict = read_json(
     test_data_dir / 'example_saved_model_params/params.json'
 )
 
+# don't use this function currently really, and don't want to remind myself what kind of
+# test data i need to input here (see al_analysis.py). defined in natmix.io, and wrapped
+# with produces_output in al_analysis.py
+exclude_save_fns: List[str] = ['write_corr_dataarray']
+
 # TODO maybe a fixture that takes an argument (fn [name?]), and loads/computes the data
 # and returns as needed? (then pass indirect arg to that fixture, from parametrized
 # test)
+corr_df = get_example_corr(df)
 save_fn_name2test_data: Dict[str, Any] = {
     'to_csv': df,
     'to_parquet': df,
@@ -152,7 +164,7 @@ save_fn_name2test_data: Dict[str, Any] = {
 
     # TODO add savefig if i also include it (maybe in separate tests tho?)
     # (generate a fig here, maybe viz.matshow corr from df, esp if one of my dfs)
-    'savefig': make_corr_fig(get_example_corr(df)),
+    'savefig': make_corr_fig(corr_df),
 }
 fn_names_with_check_flag: Set[str] = set()
 def get_produces_output_wrapped_fns() -> List[Callable]:
@@ -168,6 +180,12 @@ def get_produces_output_wrapped_fns() -> List[Callable]:
     fns = []
     for name, fn in al_util._fn_name2wrapped_fn.items():
         fn_name = fn.__name__
+        if fn_name in exclude_save_fns:
+            warn(f'will not test @produces_output wrapped version of {fn_name}, '
+                'because in exclude_save_fns'
+            )
+            continue
+
         params = inspect.signature(fn).parameters
         assert 'checks' not in params, "expecting 'check' spelling, not 'checks'"
         if 'check' in params:
