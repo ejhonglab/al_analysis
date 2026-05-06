@@ -2343,14 +2343,31 @@ diverging_cmap_kwargs = dict(
 
 
 # TODO don't require prefix, and save to plot_dir / 'corr.<plot_fmt>' by default?
-def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
-    as_corr_dist: bool = False, verbose: bool = False, _save_kws=None, **kwargs
-    ) -> pd.DataFrame:
-    """Saves odor-odor correlation plot under <plot_dir>/<prefix>.<plot_fmt>
+def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
+    as_corr_dist: bool = False, verbose: bool = False, method: str = 'pearson',
+    _save_kws=None, **kwargs) -> pd.DataFrame:
+    """Saves odor-odor correlation plot under <plot_dir>/<fname>.<plot_fmt>
+
+    Args:
+        df: data on which to compute correlations between columns (via `df.corr()`),
+            or pre-computed correlation [/ correlation distance] matrix (assumes this is
+            the case if row and column index are equal)
+
+        plot_dir: where to save a plot of the correlation matrix
+            (named `<fname>.<plot_fmt>`)
+
+        fname: name of plot to save (excluding the '.<plot_fmt>' extension)
+
+        method: passed to `df.corr()`. assumed this is also the method for any
+            precomputed corrs passed in (and cbar label should include it)
+
+        **kwargs: passed to `hong2p.viz.matshow`
+
+    Returns DataFrame containing these odor-odor correlations.
     """
     # otherwise, we assume input is already a correlation (/ difference of correlations)
     if not df.columns.equals(df.index):
-        # TODO delete?
+        # TODO delete? or check set instead?
         if len(df.columns) == len(df.index):
             print('double check input is not already a correlation [diff]!')
             import ipdb; ipdb.set_trace()
@@ -2358,21 +2375,41 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
 
         # TODO TODO use new al_util.mean_of_fly_corrs instead (when appropriate, e.g.
         # when input has multiple flies [/ model seeds])?
-        corr = df.corr()
+        corr = df.corr(method=method)
     else:
         corr = df.copy()
         # to check not a corr dist input
         # TODO also check that range is consistent w/ corr and not corr-dist?
         #
         # TODO delete. won't work w/ corr_diff input i'm using in one place.
-        # TODO TODO TODO fix (prob w/ new mean_of_... input)
+        # TODO TODO fix (prob w/ new mean_of_... input)
         '''
         try:
             assert (corr.max() == 1).all()
         except AssertionError:
-            import ipdb; ipdb.set_trace()
+            breakpoint()
         '''
 
+    # should not fail if there is no log10_conc, but should be None in that field if not
+    # (or for inputs that are not formatted as I expect my odor strings to be)
+    odors = corr.index.map(olf.parse_odor)
+    concs = [x['log10_conc'] for x in odors]
+    # TODO allow certain things (like solvent / 'pfo') to have None conc?
+    # or if most odors are at one conc, say that, and strip for them?
+    shared_conc = None
+    if not any(x is None for x in concs):
+        conc_set = set(concs)
+        if len(conc_set) == 1:
+            shared_conc = conc_set.pop()
+
+    ylabel = None
+    if shared_conc is not None:
+        index = odors.map(lambda x: x['name'])
+        corr.index = index
+        corr.columns = index
+        ylabel = f'all odors at {shared_conc:g}'
+
+    cbar_label = f'{method.title()} correlation'
     if not as_corr_dist:
         vmin = -1.0
         vmax = 1.0
@@ -2390,25 +2427,32 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *, title: str = '',
         # should be this on the diagonals
         assert (corr_dist.min() == 0).all()
         to_plot = corr_dist
+        cbar_label += ' distance'
         # TODO have cbar ticks be [0, 0.5, 1, 1.5, 2] in this case
         # (in both cases i just want multiples of 0.5)
 
-    # TODO TODO check that results w/ norm/vcenter not passed equiv to new results w/
+    # TODO check that results w/ norm/vcenter not passed equiv to new results w/
     # norm='two-slope'+vcenter=0
+    #
+    # already constrained layout by default (as most everything should be).
+    # w/ 17x17 odors, figsize is currently width=6.4 height=4.8
     fig, _ = viz.matshow(to_plot, cmap=cmap, vmin=vmin, vcenter=vcenter, vmax=vmax,
         # just using 'two-slope', since 'centered' norm code would require
         # modification to get it to work w/ vcenter != 0.
-        norm='two-slope', **kwargs
+        norm='two-slope', cbar_label=cbar_label, ylabel=ylabel, title=title, fontsize=9,
+        bigtext_fontsize_scaler=1.2, **kwargs
     )
 
-    if len(title) > 0:
-        fig.suptitle(title)
-
+    # TODO still used? delete? (so far seems ok to pass bbox_inches='tight', if this is
+    # all it was used for. unless that is why some long text is getting clipped.
+    # probably want to make text smaller or fig bigger there anyway)
     if _save_kws is None:
         _save_kws = dict()
 
     # TODO any downside to hardcoding bbox_inches='tight'? was unspecified before
-    savefig(fig, plot_dir, prefix, bbox_inches='tight', debug=verbose, **_save_kws)
+    savefig(fig, plot_dir, fname, bbox_inches='tight', debug=verbose,
+        normalize_fname=False, **_save_kws
+    )
 
     return corr
 

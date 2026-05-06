@@ -212,14 +212,18 @@ paper_validation2_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-19/'
 onestep_lr_cache_path: Path = Path('~/.mb_model_onestep_lr_cache.json').expanduser()
 ONESTEP_LR_KEY: str = 'sp_lr_coeff_to_tune_in_one_iter'
 
-# TODO support arbitrary # of inputs? (how to type hint all elements of e.g. *args are
-# of same type?)
 # TODO move to hong2p.util?
-def dict_seq_product(dict_seq1: Sequence[dict], dict_seq2: Sequence[dict], *,
-    allow_key_overlap: bool = False) -> List[dict]:
+def dict_seq_product(*dict_seqs: Sequence[dict], allow_key_overlap: bool = False
+    ) -> List[dict]:
+    # TODO doc example of where you would or would not want to use allow_key_overlap,
+    # or delete
+    # TODO and if allow_key_overlap=True, is it the last iterable that contains the key
+    # whose value gets used, the first, or what? doc + test to confirm
     """Returns a sequence of dicts, by combining product of input dict sequences.
 
     Args:
+        *dict_seqs: 
+
         allow_key_overlap: if False, will raise ValueError if inputs share keys,
             otherwise value from last input should be used.
 
@@ -227,14 +231,20 @@ def dict_seq_product(dict_seq1: Sequence[dict], dict_seq2: Sequence[dict], *,
     [{'b': 1}, {}, {'a': 1, 'b': 1}, {'a': 1}]
     """
     output_seq = []
-    for ds in itertools.product(dict_seq1, dict_seq2):
+    for ds in itertools.product(*dict_seqs):
         combined = dict()
+        overlapping_keys = set()
         for d in ds:
-            if not allow_key_overlap and any(k in combined.keys() for k in d.keys()):
-                # TODO say which keys overlapped?
-                raise ValueError('inputs had overlapping keys')
+            overlapping_keys.update(set(combined.keys()) & set(d.keys()))
             combined.update(d)
+
+        # TODO or define overlapping_keys outside outer loop, and report at end?
+        if not allow_key_overlap and len(overlapping_keys) > 0:
+            raise ValueError(f'some inputs in:\n{pformat(ds)}\n'
+                f'...had overlapping keys: {overlapping_keys}'
+            )
         output_seq.append(combined)
+
     return output_seq
 
 
@@ -545,12 +555,34 @@ BOUTON_MODEL_KW_LIST: List[ParamDict] = dict_seq_product([
             use_connectome_APL_weights=True
         )
     ],
-    # TODO switch order (maybe not until figuring out latest issues?)?
+    # pn_claw_to_apl=True: no-spiking required; direct claw>APL input
     [dict(pn_claw_to_apl=True), dict()]
-    # TODO TODO add claw dynamics somewhere in here?
+    # TODO add claw dynamics somewhere in here?
 )
+CLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    # TODO remove need to specify one_row_per_claw=True here. have prat_claws=True
+    # imply it, if it doesn't already. if not already implied, i believe
+    # one_row_per_claw is removed from (some?) IDs if prat_claws=True is present
+    [dict(one_row_per_claw=True, prat_claws=True)],
+    [dict(pn_claw_to_apl=True), dict()],
+    [dict(use_connectome_APL_weights=True), dict()]
+)
+# TODO (easily?) possible to implement some kind of analogue to pn_claw_to_apl=True
+# for this (non-claw) weight_divisor=20 case?
+NONCLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    [dict(weight_divisor=20)],
+    [dict(use_connectome_APL_weights=True), dict()]
+)
+# NOTE: uniform/hemibrain models currently use # of KCs from hemibrain connectome
+# (1837 if _drop_glom_with_plus=False [= old behavior], or 1830 otherwise). model
+# would default to 2000 otherwise. fafb data more cells (2482 in left, probably
+# similar in right).
+UNIFORM_MODEL_KWS: ParamDict = dict(pn2kc_connections='uniform', n_claws=7)
+
 # should cover all the main paths in olfsysm, but also in fit_mb_model/etc
-MODEL_KW_LIST: List[ParamDict] = BOUTON_MODEL_KW_LIST + dict_seq_product([
+MODEL_KW_LIST: List[ParamDict] = (
+    BOUTON_MODEL_KW_LIST + CLAW_MODEL_KW_LIST + NONCLAW_MODEL_KW_LIST
+) + [UNIFORM_MODEL_KWS] + dict_seq_product([
         # TODO delete these two eventually. don't do anything really (moves things in
         # direction of uniform [i.e. non-connectome-APL] model, but no real change)
         dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
@@ -578,21 +610,15 @@ MODEL_KW_LIST: List[ParamDict] = BOUTON_MODEL_KW_LIST + dict_seq_product([
     #
 ) + dict_seq_product(
     [
-        # pn_claw_to_apl=True: no-spiking required; direct claw>APL input
-        dict(one_row_per_claw=True, prat_claws=True, pn_claw_to_apl=True),
-
         # TODO test n_claws_active_to_spike=2/3? (betty didn't care much about that
         # code)
 
-        dict(one_row_per_claw=True, prat_claws=True),
         # TODO keep? (tianpei's version. may eventually need to specify
         # prat_claws=False)
         dict(one_row_per_claw=True),
 
-        # TODO maybe pick only either this or dict() to do w/ both
-        # use_connectome_APL_weights=True/False. prob don't need both for each?
-        dict(weight_divisor=20),
-        # TODO move to top of this list, after debugging prat_claws=True case?
+        # TODO actually care to do both use_connectome_APL_weights=True/False w/ this?
+        # and all other things in this list?
         dict(),
 
         # TODO keep? just want to check output not changing when starting to rework
@@ -611,12 +637,6 @@ MODEL_KW_LIST: List[ParamDict] = BOUTON_MODEL_KW_LIST + dict_seq_product([
     [dict(use_connectome_APL_weights=True), dict()]
 
 ) + [
-    # NOTE: uniform/hemibrain models currently use # of KCs from hemibrain connectome
-    # (1837 if _drop_glom_with_plus=False [= old behavior], or 1830 otherwise). model
-    # would default to 2000 otherwise. fafb data more cells (2482 in left, probably
-    # similar in right).
-    dict(pn2kc_connections='uniform', n_claws=7),
-
     # TODO also test 'caron'? 'hemidraw'? (though neither currently used, and would want
     # to re-implement hemidraw to fix some issues anyway...)
 
@@ -6736,12 +6756,42 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
         wAPLKC_normalization_factor = None
         wKCAPL_normalization_factor = None
 
+        # TODO delete
+        if KC_TYPE in index.names:
+            index_notype = index.droplevel(KC_TYPE)
+            # TODO if model_id='weight-divisor_20__connectome-APL_True' did
+            # not have KC_TYPE here, what did exactly? (was some other case hit in
+            # scripts/boost_apl_megamat_model_multiresponders.py)
+            # (seems this is hit when connectome_APL_weights called directly from
+            # scripts/boost_apl....py, rather than from a fit_mb_model call. how are
+            # inputs different tho?)
+            #
+            # from within that script, input to connectome_APL_weights:
+            # wPNKC=<dataframe-with-type>, connectome='hemibrain' (nothing else)
+            # ...and i assume input from fit_mb_model has a wPNKC where type has been
+            # (temporarily?) dropped?
+        else:
+            index_notype = index
+
+        s1 = reindex(apl2kc_weights, index_notype)
+        s2 = pd.Series(index=index_notype, data=apl2kc_weights)
+        assert s1.equals(s2)
+        #
+
+        # TODO delete (i do need to handle)
+        # or do i need to handle case where KC_TYPE not there?
+        #assert KC_TYPE in index.names, f'{index.names=}'
+
         # TODO delete this comparison eventually? (just use the non-2-suffixed version
         # of each, and remove this else conditional)
-        wAPLKC2 = pd.Series(index=index, data=apl2kc_weights)
-        wKCAPL2 = pd.Series(index=index, data=kc2apl_weights)
-        assert wAPLKC.equals(wAPLKC2)
-        assert wKCAPL.equals(wKCAPL2)
+        wAPLKC2 = pd.Series(index=index_notype, data=apl2kc_weights)
+        wKCAPL2 = pd.Series(index=index_notype, data=kc2apl_weights)
+        if KC_TYPE in index.names:
+            assert wAPLKC.droplevel(KC_TYPE).equals(wAPLKC2)
+            assert wKCAPL.droplevel(KC_TYPE).equals(wKCAPL2)
+        else:
+            assert wAPLKC.equals(wAPLKC2)
+            assert wKCAPL.equals(wKCAPL2)
         #
 
     # TODO move into reindex_to_wPNKC (if not already there?) or still want after
@@ -10204,7 +10254,8 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
     # TODO might this ever trip? try running load_and_plot_dynamics_cli on root
     # containing both pn-claw-to-apl_[True|False]? maybe even non-bouton|claw stuff?
     # fail more gracefully there?
-    assert seen == set(store_range_of), f'{seen=} != set of {store_range_of=}'
+    # TODO also assert some minimum set? (now that i'm checking <= instead of ==)
+    assert seen <= set(store_range_of), f'{seen=} > set of {store_range_of=}'
     # TODO delete?
     # TODO pprint here? if verbose?
     print('_var2range:')
@@ -10860,6 +10911,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     target_sparsity: Optional[float] = None,
     target_sparsity_factor_pre_APL: Optional[float] = None,
     max_iters: Optional[int] = None, sp_acc: Optional[float] = None,
+    thr_sp_lr_coeff: Optional[float] = None,
+    n_spikes_for_response: Optional[int] = None,
     # TODO TODO change default sp_lr_coeff here (or in olfsysm?)? will need to restore
     # old value (=1) for some repro tests to continue passing
     sp_lr_coeff: Optional[float] = 1.5, hardcode_initial_sp: bool = False,
@@ -11066,9 +11119,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     else:
         assert _wKCAPL is None, '_wKCAPL and _wAPLKC must be passed together'
         assert _wAPLPN is None and _wPNAPL is None
-        assert tune_apl_weights is None, ('normally, other parameters imply value '
-            'mp.kc.tune_apl_weights will take. setting explicitly just for test code'
-        )
 
     if scale_pre_tuning:
         assert tune_apl_weights != False
@@ -11144,8 +11194,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         orn_deltas = orn_deltas.copy()
         #
 
-        # TODO switch to requiring glomerulus_col (and in the one test that passes hallem
-        # as input explicitly, process to convert to glomeruli before calling this fn)?
+        # TODO switch to requiring glomerulus_col (and in the one test that passes
+        # hallem as input explicitly, process to convert to glomeruli before calling
+        # this fn)?
         valid_orn_index_names = ('receptor', glomerulus_col)
         if orn_deltas.index.name not in valid_orn_index_names:
             raise ValueError(f"{orn_deltas.index.name=} not in {valid_orn_index_names}")
@@ -11206,12 +11257,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         )
 
     if fixed_thr is not None:
-        # TODO TODO (still an issue?) probably still allow non-None target_sparsity if
-        # there is vector fixed_thr (why?)? (currently just also hardcoding wAPLKC from
-        # call in test_vector_thr)
-        assert target_sparsity is None
-        assert target_sparsity_factor_pre_APL is None
-        #
         assert wAPLKC is not None, 'for now, assuming both passed if either is'
 
         if prat_boutons and not per_claw_pn_apl_weights:
@@ -11269,14 +11314,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             mp.kc.use_homeostatic_thrs = True
 
     if target_sparsity is not None:
-        assert wAPLKC is None and wKCAPL is None
-        # TODO let these be set anyway?
-        assert wAPLPN is None and wPNAPL is None
-        #
         mp.kc.sp_target = target_sparsity
 
     if sp_acc is not None:
         mp.kc.sp_acc = sp_acc
+
+    if n_spikes_for_response is not None:
+        mp.kc.n_spikes_for_response = n_spikes_for_response
+
+    if thr_sp_lr_coeff is not None:
+        mp.kc.thr_sp_lr_coeff = thr_sp_lr_coeff
 
     if sp_lr_coeff is not None:
         mp.kc.sp_lr_coeff = sp_lr_coeff
@@ -12547,6 +12594,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if not scale_pre_tuning:
             assert fixed_thr is not None, 'for now, assuming both passed if either is'
 
+            assert not tune_apl_weights
             mp.kc.tune_apl_weights = False
 
         if wKCAPL is None:
@@ -12714,6 +12762,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # _tune_apl_weights?  first test i want to use _wAPLKC/etc for is to check
             # thr/pks are same from first step in fit_sparseness, whether or not
             # wAPLKC/wKCAPL are the 0-vector or not
+            # TODO TODO handle outside of this case too (so that this flag always
+            # can set mp.kc.tune_apl_weights)
             if tune_apl_weights is None:
                 tune_apl_weights = False
             else:
@@ -12733,7 +12783,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         assert wAPLKC.index.equals(wKCAPL.index)
         if not one_row_per_claw:
-            assert wPNKC.index.equals(wAPLKC.index)
+            assert wPNKC.index.get_level_values(KC_ID).equals(
+                wAPLKC.index.get_level_values(KC_ID)
+            )
+            assert pd_index_equal(wPNKC, wAPLKC, only_check_shared_levels=True)
+            # TODO delete? (or fix/handle the intermittent precense of KC_TYPE level,
+            # which we may only have when calling connectome_APL_weights directly w/
+            # wPNKC input that has it, like from scripts/boost_apl_megamat_model_....py)
+            #assert wPNKC.index.equals(wAPLKC.index)
         else:
             assert pd_index_equal(wPNKC, wAPLKC, only_check_shared_levels=True)
 
@@ -13175,7 +13232,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # olfsysm.choose_KC_thresh_uniform (and can be set by passing as the fixed_thr
         # kwarg to this function, which will also set mp.kc.add_fixed_thr_to_spont=True)
         fixed_thr = unique_thrs_and_counts.sort_values().index[-1]
-        assert np.allclose(fixed_thr, unique_fixed_thrs)
+        assert np.allclose(fixed_thr, unique_fixed_thrs), \
+            f'{pformat(list(unique_fixed_thrs))}'
 
         # TODO put behind verbose kwarg (/delete)
         if not silent:
@@ -13687,6 +13745,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # NOTE: just assuming we want to union all the per-panel masks in this dir
             # (as long as this branch is only hit in the pre-tuning on control+kiwi
             # data, that should be ok)
+            # TODO warn we are using this. shouldn't be default otherwise
             mask_dir = Path(
                 '~/src/natmix_data/pdf/scaled_model_versions/final_scaling'
             ).expanduser()
@@ -13911,16 +13970,16 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             assert wAPLKC is not None
             #
             if wAPLKC is not None:
-                assert kc_ids.equals(wAPLKC.index)
-                assert kc_ids.equals(input_wAPLKC.index)
+                assert kc_ids.equals(wAPLKC.index.get_level_values(KC_ID))
+                assert kc_ids.equals(input_wAPLKC.index.get_level_values(KC_ID))
 
             # TODO TODO is it even possible for wKCAPL to be None here? mean to check
             # *_scale instead or something? just delete?
             assert wKCAPL is not None
             #
             if wKCAPL is not None:
-                assert kc_ids.equals(wKCAPL.index)
-                assert kc_ids.equals(input_wKCAPL.index)
+                assert kc_ids.equals(wKCAPL.index.get_level_values(KC_ID))
+                assert kc_ids.equals(input_wKCAPL.index.get_level_values(KC_ID))
 
         apl_weight_index = kc_index
     else:
@@ -14224,6 +14283,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO delete this and assume it's always there now?
         try:
             onestep_lr = rv.kc.sp_lr_coeff_to_tune_in_one_iter
+            # fixed. shouldn't trigger anymore.
+            assert onestep_lr != 0
             tuning_dict[ONESTEP_LR_KEY] = onestep_lr
         except AttributeError:
             warn(f'current olfsysm version does not have rv.kc.{ONESTEP_LR_KEY}')
@@ -16217,8 +16278,12 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     else:
                         cached_coeff_str = 'sp_lr_coeff list (one per seed)'
 
-                    # TODO TODO try to move this warning closer to when the model starts
-                    # so we can see it right above the tuning iterations
+                    # TODO try to move this warning closer to when the model starts
+                    # so we can see it right above the tuning iterations (not sure i can
+                    # easily [nicely] move this inside fit_mb_model. maybe just an extra
+                    # arg for it?)
+                    # TODO move this warning after other message about loading
+                    # everything from cache (and all this code, ideally)
                     warn(f'using {cached_coeff_str} from onestep_lr_cache '
                         f'({onestep_lr_cache_path}), to tune in one iteration. '
                         'set use_lr_cache=False to disable.'
@@ -16368,7 +16433,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     _fit_and_plot_seen_param_dirs.add(param_dir)
 
     # NOTE: this currently will cause -c/-C checks to fail
-    # TODO TODO want to fix that (i.e. remove this from that output, but still keep long
+    # TODO want to fix that (i.e. remove this from that output, but still keep long
     # enough to use for what i wanted? possible?)?
     params_for_csv['used_model_cache'] = use_cache
 
@@ -17338,6 +17403,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         pearson.columns.name = 'odor'
 
     if panel is not None and panel in panel2name_order:
+        # TODO TODO still needed? try to change other code to not need this? plot_corr
+        # need something like this to avoid re-ordering, when responses (/whatever
+        # non-corr input) passed in? (if not, prob don't need here, right?)
         pearson = _resort_corr(pearson, panel,
             warn=False if responses_to == 'hallem' else True
         )
@@ -17458,12 +17526,101 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         else:
             title = f'sparsity={sparsity:.3g}'
 
-    # TODO TODO label cbar saying it's pearson, and savefig in a way taht doesn't cut
-    # off text (bbox_inches='tight'? use constrained layout? decrease fontsize?)
+    n_spikes_for_response = model_kws.get('n_spikes_for_response')
+    # TODO savefig in a way that doesn't cut off text (bbox_inches='tight' [plot_corr
+    # already doing this, and may be the issue]? use constrained layout [not already the
+    # default? check? it is the default)? decrease fontsize (just did)? or make figures
+    # bigger?)
     # (mainly getting clipped when there are long strings describing weight scales, but
     # could change float formatting to decrease # of digits shown too. currently many
     # leading 0s. scientific notation would probably be better)
-    plot_corr(pearson, param_dir, 'corr', xlabel=title)
+    # TODO what's one test case that was having these text clipping issues?
+    #
+    # TODO explicitly indicate no silent in fname of these too?
+    xprefix = 'computed on '
+    xsuffix = ''
+    if n_spikes_for_response not in (None, 1):
+        xsuffix = f'\n{n_spikes_for_response=}'
+
+    # title should already indicate that silent cells were dropped (according to
+    # whatever response definition, which should be consistent throughout model tuning
+    # and analysis [in terms of how many spikes are required. 1 by default, and
+    # typically])
+    xlabel = f'{xprefix}binarized responses{xsuffix}'
+    # TODO use returned corr, and assert equal to pearson? it seems it is
+    plot_corr(responses, param_dir, 'corr', title=title, xlabel=xlabel)
+
+    rng = np.random.default_rng(1337)
+
+    # TODO do a version of this w/ silent cells still in there?
+    #
+    # =1 makes things look totally uncorrelated, as kind of makes sense
+    for stddev in (0.1, 0.25, 0.5):
+        noise = rng.normal(loc=0.0, scale=stddev, size=responses.shape)
+        responses_with_noise = responses + noise
+        xlabel = f'{xlabel}\nnormal noise added ($\sigma$={stddev})'
+        fname = f'corr_with-noise-{stddev:g}sd'
+        plot_corr(responses_with_noise, param_dir, fname, title=title, xlabel=xlabel)
+    #
+
+    # would only fail if there were no silent cells, which should never be true really
+    assert len(responses) < len(spike_counts), ('either silent cells not dropped from '
+        'responses, already dropped from spike_counts, or no silent cells'
+    )
+    spike_counts_nosilent = spike_counts.loc[responses.index]
+    xlabel = f'{xprefix}spike counts{xsuffix}'
+    plot_corr(spike_counts_nosilent, param_dir, 'corr_spike-counts', title=title,
+        xlabel=xlabel
+    )
+
+    # TODO TODO log scale / whatever spikes before adding noise (or whatever scaling
+    # similar to what i do in natmix_data/analysis.py logistic maybe? factor out a
+    # fn for that, and give it defaults close to the fit values?)
+    # TODO (delete) try correlation (computed across everything?) with representative
+    # noise added (ideally matching what noise might look like from imaging data)
+    #
+    # 0.5 didn't seem to change things much when i first looked at it (in prat boutons
+    # w/ connectome APL case, w/ n_spikes_for_response=2)
+    for stddev in (0.25, 0.5, 1.0):
+        noise = rng.normal(loc=0.0, scale=stddev, size=spike_counts.shape)
+        spike_counts_with_noise = spike_counts + noise
+        # TODO TODO try a version of the binarized responses with noise added too?
+        # (maybe stddev 0.5 there?)
+
+        xlabel = f'{xprefix}spike counts\nnormal noise added ($\sigma$={stddev})'
+        fname = f'corr_spike-counts_with-noise-{stddev:g}sd'
+        plot_corr(spike_counts_with_noise, param_dir,
+            f'{fname}_including-silent', title=title_including_silent_cells,
+            xlabel=f'{xlabel}\nincluding silent cells too'
+        )
+
+        spike_counts_with_noise_nosilent = spike_counts_with_noise.loc[
+            spike_counts_nosilent.index
+        ]
+        plot_corr(spike_counts_with_noise_nosilent, param_dir, fname, title=title,
+            xlabel=xlabel
+        )
+
+    if n_spikes_for_response not in (None, 1):
+        # TODO also binarized responses including silent? idk...
+
+        spike_counts_nosilent_1spikethr = drop_silent_model_cells(spike_counts)
+        # would be surprising if this failed. would probably, but not necessarily,
+        # indicate a bug
+        assert len(spike_counts_nosilent_1spikethr) > len(spike_counts_nosilent)
+        assert len(spike_counts_nosilent_1spikethr) < len(spike_counts)
+
+        # TODO say how many cells left/dropped here?
+        xlabel = f'{xprefix}spike counts\ncounting any # of spikes as a response'
+        plot_corr(spike_counts_nosilent_1spikethr, param_dir,
+            'corr_spike-counts_1spikethr', title=title_including_silent_cells,
+            xlabel=xlabel
+        )
+
+        xlabel = f'{xprefix}spike counts\nincluding silent cells too'
+        plot_corr(spike_counts, param_dir, 'corr_spike-counts_including-silent',
+            title=title_including_silent_cells, xlabel=xlabel
+        )
 
     if responses_to == 'hallem':
         # TODO factor to use len(megamat_odor_names) / something instead of 17...

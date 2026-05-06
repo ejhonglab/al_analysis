@@ -1438,6 +1438,8 @@ def test_fixed_inh_params(tmp_path, orn_deltas, kws):
 
     # TODO delete (move to script to generate test data)
     return_olfsysm_vars = False
+    # TODO delete
+    #return_olfsysm_vars = True
     # (using to get pks & thr, to compare to after new code which might resolve
     # possible bug in code that picks thresholds (wAPLKC/wKCAPL may not be 0 when
     # they are supposed to be. for some reason APL activity [inh & Is] still seem to
@@ -4341,6 +4343,34 @@ def test_model_mb_responses(tmp_path):
     # TODO TODO either skip sensitivity analysis, or force it to do dramatically fewer
     # steps
     model_mb_responses(df, tmp_path, dff2spiking_cache_dir=model_dir)
+
+
+# TODO parametrize? over what? at least BOUTON_MODEL_KWS?
+def test_n_spikes_for_response(orn_deltas):
+    n_spikes_for_response = 2
+    ret = _fit_mb_model(orn_deltas=orn_deltas,
+        # TODO fix so i can actually disable apl tuning by setting this flag
+        # here. not currently doing anything. (doesn't really matter. was only trying to
+        # save time when testing)
+        n_spikes_for_response=n_spikes_for_response #, tune_apl_weights=False
+    )
+    responses, spike_counts, _, params = ret
+    assert (spike_counts >= n_spikes_for_response).equals(responses.astype(bool))
+    # TODO also assert it's actually within tolerance of output sparsity?
+    # (and then `spike_counts >= 1` is not?)
+    thr = params['fixed_thr']
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, n_spikes_for_response=1)
+    responses2, spike_counts2, _, params2 = ret2
+    thr2 = params2['fixed_thr']
+    # should require a lower threshold to get same (pre-APL) sparsity, when we require a
+    # higher # of spikes to consider a cell as having responded to an odor
+    assert n_spikes_for_response > 1 and thr2 > thr
+    assert not np.isclose(thr, thr2)
+
+    # (set max_iter = 0 or maybe 1 for both of these)
+    # TODO test case where iteration converges at exactly max_iter (-1?)
+    # TODO test case where iteration fails to converge at exactly max_iter (-1?)
 
 
 # TODO commit some (dramatically subset, perhaps also compressed) example model

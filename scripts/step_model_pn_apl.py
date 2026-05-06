@@ -34,6 +34,7 @@ from al_analysis.mb_model import (fit_and_plot_mb_model, megamat_orn_deltas,
 )
 
 
+# TODO TODO also try (everything with?) target sparsity of 0.05-0.06? (instead of 0.1)
 MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(
     [
         dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
