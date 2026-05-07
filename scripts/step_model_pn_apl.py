@@ -41,16 +41,14 @@ MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(
             use_connectome_APL_weights=True
         )
     ],
-    dict_seq_product(
-        # claw_dynamics=False is the default, and how the code has been for a long time
-        [dict()] + dict_seq_product([dict(claw_dynamics=True)],
-            [dict(), dict(allow_net_inh_per_claw=True)],
-        ),
-        # pn_claw_to_apl=False is the default, and could normally be omitted, but doing
-        # it this way produces nicer directory names when using subset_same_in_all_dicts
-        # to exclude params
-        [dict(pn_claw_to_apl=True), dict(pn_claw_to_apl=False)]
-    )
+    # claw_dynamics=False is the default, and how the code has been for a long time
+    [dict()] + dict_seq_product([dict(claw_dynamics=True)],
+        [dict(), dict(allow_net_inh_per_claw=True)],
+    ),
+    # pn_claw_to_apl=False is the default, and could normally be omitted, but doing
+    # it this way produces nicer directory names when using subset_same_in_all_dicts
+    # to exclude params
+    [dict(pn_claw_to_apl=True), dict(pn_claw_to_apl=False)]
 )
 
 OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
@@ -72,6 +70,9 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     shared_cols = ['wAPLPN', 'wPNAPL', 'sparsity', 'n_silent_cells', 'avg_lts',
         'n_avg_odors_responded_to'
     ]
+    # TODO TODO TODO also compute # of cells in diff response classes, using same code
+    # natmix_data/analysis.py currently uses for that (after the scaling and
+    # everything)?
     natmix_cols = [
         # TODO TODO TODO implement at least these
         '5mix_mix_minus_max_avg_sparsity',
@@ -450,6 +451,8 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # TODO TODO check for signs output dirs below are older than tuned dir, and regen if
     # so
 
+    # TODO TODO TODO also implement scaling pre-tuning now
+
     # TODO add option just to reanalyze any saved dynamics, if i factor out that
     # plotting code from fit_mb_model? (do have plot-dynamics CLI for that now)
     thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
@@ -510,6 +513,9 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     else:
         steps = STEPS
 
+    # TODO should i pass these in? or basically doesn't matter?
+    # TODO TODO or should it all be a separate call, where we tune on these (maybe like
+    # whatever i currently think makes sense as input to natmix_data/analysis.py)?
     natmix_deltas = natmix_orn_deltas()
     natmix_panel_vals = natmix_deltas.columns.get_level_values('panel')
     kiwi_deltas = natmix_deltas.loc[:, natmix_panel_vals == 'kiwi']
@@ -700,6 +706,8 @@ def main():
         assert plot_dir not in plot_dir_list, f'duplicate {plot_dir=}'
         plot_dir_list.append(plot_dir)
 
+        # still want to build plot_dir_list above, as it's used for loop below, even if
+        # only analyzing existing outputs
         if not only_analyze_outputs:
             step_pn_apl_weights_around_tuned(plot_dir, orn_deltas,
                 kws, ignore_existing=ignore_existing, save_dynamics=save_dynamics,
