@@ -37,10 +37,11 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     APL_TUNING_PARAMS, scale_dff_to_est_spike_deltas_using_hallem,
     remypaper_dff2spiking_data_dir, written_since_proc_start,
     dff_to_spiking_model_choices_csv_name, dff_to_spiking_data_csv_name, read_parquet,
-    MODEL_KW_LIST, QUICK_MODEL_KW_LIST, BOUTON_MODEL_KW_LIST,
-    get_fitandplot_model_kw_list, model_mb_responses, assert_param_dicts_equal,
-    assert_fit_outputs_equal, assert_fit_and_plot_outputs_equal, read_spike_counts,
-    FitMBModelOutputs
+    MODEL_KW_LIST, QUICK_MODEL_KW_LIST, BOUTON_MODEL_KW_LIST, CLAW_MODEL_KW_LIST,
+    NONCLAW_MODEL_KW_LIST, UNIFORM_MODEL_KWS, get_fitandplot_model_kw_list,
+    model_mb_responses, assert_param_dicts_equal, assert_fit_outputs_equal,
+    assert_fit_and_plot_outputs_equal, read_spike_counts, FitMBModelOutputs,
+    claw2bouton_from_wPNKC
 )
 
 # TODO better way?
@@ -825,6 +826,8 @@ def test_fixed_inh_params(tmp_path, orn_deltas, kws):
     responses2, spike_counts2, wPNKC2, params2 = ret2
 
     # TODO delete
+    # TODO still assert this if return_olfsysm_vars (and maybe have a separate test that
+    # doesn't do whole parameterization, but does test that?)
     # does 0 actually imply no tuning happened? yes, it's incremented to 1 on first
     # iteration. (but now, this and other APL_TUNING_PARAMS are not even added to params
     # unless APL tuning was performed)
@@ -1492,6 +1495,11 @@ def test_multiresponder_APL_boost(orn_deltas):
 # diff in matlab vs olfsysm), but could have ann's code generate the wPNKCs and then
 # pass easy via new _wPNKC kwarg to fit_mb_model?
 
+paper_repro_kws = dict(
+    target_sparsity=0.0915, drop_kcs_with_no_input=False, hardcode_initial_sp=True,
+    sp_lr_coeff=10.0, max_iters=10
+)
+
 # TODO also check we can repro 2025-03-19 validation2 (hemibrain) outputs?
 # 2025-02-19/validation2_hemibrain_model*.csv(s)? what are the CSVs i should check
 # against?
@@ -1514,13 +1522,7 @@ def test_hemibrain_paper_repro(tmp_path):
         # I would not normally recommend you hardcode any of these except perhaps
         # weight_divisor=20. The defaults target_sparsity=0.1 and
         # _drop_glom_with_plus=True should be fine.
-        target_sparsity=0.0915, weight_divisor=20, _drop_glom_with_plus=False,
-        # TODO (delete? should be fixed now) are drop_kcs_with_no_input and
-        # _drop_glom_with_plus still doing what they were before? currently getting 1828
-        # (instead of paper 1837) cells in wPNKC)
-        drop_kcs_with_no_input=False,
-        # TODO check we actually need hardcode_intial_sp=True
-        hardcode_initial_sp=True
+        weight_divisor=20, _drop_glom_with_plus=False, **paper_repro_kws
     )
 
     plot_root = tmp_path
@@ -1653,7 +1655,7 @@ def test_uniform_paper_repro(tmp_path):
     orn_deltas = paper_megamat_orn_deltas()
 
     # TODO need .resolve() call? pytest only ever going to be called from repo root?
-    sent_to_anoop = Path('data/sent_to_anoop').resolve()
+    sent_to_anoop = data_root / 'sent_to_anoop'
 
     # TODO delete this one + use below
     # v2 dir outputs should never really have been used, and (from data/README.md)
@@ -1686,9 +1688,9 @@ def test_uniform_paper_repro(tmp_path):
     params = read_param_csv(may29_dir / 'megamat_uniform_model_params.csv')
 
     kws = dict(
-        pn2kc_connections='uniform', n_claws=7, target_sparsity=0.0915,
-        # TODO check we actually need hardcode_intial_sp=True
-        drop_kcs_with_no_input=False, hardcode_initial_sp=True,
+        # TODO refactor to share most of these kws across uniform/hemibrain paper repro
+        # tests
+        pn2kc_connections='uniform', n_claws=7, **paper_repro_kws
     )
 
     plot_root = tmp_path
@@ -1788,7 +1790,7 @@ def test_hemibrain_matt_repro():
     # TODO delete (may want to commit some other things from here first tho)
     #matt_data_dir = Path('../matt/matt-modeling/data')
     #
-    matt_data_dir = Path('data/from_matt')
+    matt_data_dir = data_root / 'from_matt'
 
     # NOTE: was NOT also committed under data/from_matt (like
     # hemibrain/halfmat/responses.csv below was)
@@ -3709,6 +3711,84 @@ def test_n_spikes_for_response(orn_deltas):
     # (set max_iter = 0 or maybe 1 for both of these)
     # TODO test case where iteration converges at exactly max_iter (-1?)
     # TODO test case where iteration fails to converge at exactly max_iter (-1?)
+
+
+kws_producing_diff_wPNKC: List[ParamDict] = [
+    BOUTON_MODEL_KW_LIST[0],
+    CLAW_MODEL_KW_LIST[0],
+    NONCLAW_MODEL_KW_LIST[0],
+    # NOTE: can NOT test this one currently, because the weight matrix here is generated
+    # in olfsysm, so connectome_wPNKC currently has nothing to do with the
+    # pn2kc_connections='uniform' case (other than perhaps setting total # of KCs)
+    #UNIFORM_MODEL_KWS,
+]
+wPNKC_param_set = {frozenset(get_connectome_wPNKC_params(kws).items())
+    for kws in kws_producing_diff_wPNKC
+}
+
+# expecting this to not be specified for any entries, so they all use default
+# ='hemibrain', which will translate to connectome='hemibrain' in wPNKC_params
+# NOTE: if this ever fails (i.e. if i wanted to test on a connectome other than
+# hemibrain), would instead want to assert that, if we drop default pn2kc_connections
+# from all entries in list, set is same length
+assert not any('pn2kc_connections' in kws for kws in kws_producing_diff_wPNKC), \
+    'currently may not detect all duplicates via wPNKC_param_set without this'
+
+assert len(wPNKC_param_set) == len(kws_producing_diff_wPNKC), \
+    'kws_producing_diff_wPNKC do not all have unique get_connectome_wPNKC_params output'
+
+# TODO also make test IDs just use get_connectome_wPNKC_params output here? (that should
+# also be able to do at least some of the unique checking i'm doing manually above...).
+# would also give tests more clear names.
+@pytest.mark.parametrize('kws', kws_producing_diff_wPNKC, ids=format_model_params)
+def test_claw2bouton_from_wPNKC(kws):
+    # TODO delete. handled by assertion above that pn2kc_connections is not specified
+    #
+    # currently, connectome_options={'hemibrain', 'fafb-left', 'fafb-right'}
+    #pn2kc_connections = kws.get('pn2kc_connections')
+    #
+    ## TODO if this ever fails, would need to drop default connectome='hemibrain'
+    ## from all entries in wPNKC_param_set above, before the assertion with it
+    #assert pn2kc_connections is not None, ('could be a problem if a mix of None and '
+    #    "connectome='hemibrain' in kws_producing_diff_wPNKC (test cases may not be "
+    #    'unique)'
+    #)
+    #
+    #assert pn2kc_connections in connectome_options, ('can only use connectome_wPNKC for'
+    #    ' these cases!'
+    #)
+    ## currently, variable_n_claw_options={'uniform', 'caron', 'hemidraw'}
+    #assert pn2kc_connections not in variable_n_claw_options, ('can NOT only use '
+    #    'connectome_wPNKC for these cases! olfsysm currently is what generates the '
+    #    'wPNKC matrices for these cases, with only # of KCs taken from any connectome '
+    #    'information, if even that'
+    #)
+    #
+
+    wPNKC_params = get_connectome_wPNKC_params(kws)
+    # TODO delete
+    debug = False
+    if debug:
+        print(f'{wPNKC_params=}')
+    #
+    wPNKC = connectome_wPNKC(**wPNKC_params)
+    # TODO delete
+    if debug:
+        print()
+        print('wPNKC:')
+        print(wPNKC)
+        print()
+    #
+
+    # letting assertions in this do the testing
+    claw2bouton = claw2bouton_from_wPNKC(wPNKC)
+    # TODO delete
+    if debug:
+        print()
+        print('claw2bouton:')
+        print(claw2bouton)
+        print()
+    #
 
 
 # TODO commit some (dramatically subset, perhaps also compressed) example model

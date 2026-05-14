@@ -259,15 +259,14 @@ def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, orn_deltas: pd.Dat
     _wAPLKC.loc[multiresponder_index] *= boost
     pretune_apl_boost_kws['_wAPLKC'] = _wAPLKC
     plot_dirname = f'wAPLKC-multiresponder-pretune-{boost:.0f}x'
-    # TODO TODO are these never using LR cache? fix, if true (oh, prob cause i'm
-    # explicitly specifying sp_lr_coeff=1.2 here...)
-    # TODO TODO TODO can i still save a value to cache despite having it passed in? it's
-    # not dependent on initial sp_lr_coeff, right? (or at least check i already am. may
-    # be. doesn't seem so?)
+    # are these never using LR cache? fix, if true (oh, cause i was explicitly
+    # specifying sp_lr_coeff=1.2 here...)
+    # TODO can i still save a value to cache despite having it passed in? it's not
+    # dependent on initial sp_lr_coeff, right? (or at least check i already am. may be.
+    # doesn't seem so?)
     ret2 = fit_and_plot_mb_model(tune_dir, plot_dirname=plot_dirname,
         orn_deltas=orn_deltas, try_cache=try_cache, try_lr_cache=try_lr_cache,
-        fixed_thr=fixed_thr, scale_pre_tuning=True, #sp_lr_coeff=1.2,
-        max_iters=200,
+        fixed_thr=fixed_thr, scale_pre_tuning=True, max_iters=200,
         # NOTE: need to specify this separately from plot_dirname, since it will be
         # included in model ID genereted from parameters (and thus will be used in some
         # caches, etc, like onestep_lr_cache)

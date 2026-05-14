@@ -12042,6 +12042,9 @@ def main():
         )
         savefig(fig, plot_root, f'{prefix}mean', bbox_inches='tight')
 
+        # TODO TODO actually label cbar (or something) saying it's stddev
+        # (so we don't think it's SEM or something) (and maybe i should get an SEM
+        # version...)
         fig, _ = viz.matshow(stddev_df.T, vmin=0, vmax=vmax, **diverging_cmap_kwargs,
             **shared_kws
         )

@@ -218,6 +218,16 @@ def fly_roi_id(row: pd.Series, *, fly_only: bool = False) -> str:
         return f'{row.roi}'
 
 
+def _have_fly_cols(data: Union[pd.DataFrame, pd.Series]) -> bool:
+    if isinstance(data, pd.DataFrame):
+        names = data.columns.names
+    else:
+        assert isinstance(data, pd.Series)
+        names = data.index.names
+
+    return all(x in names for x in fly_cols)
+
+
 # TODO refactor inches_per_cell (+extra_figsize) to share w/ plot_roi_util?
 # just move into plot_all_... default? (would need extra_figsize[1] == 1.0 to work here)
 # TODO rename to clarify these aren't for plot_rois calls...
@@ -2368,9 +2378,13 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
     # otherwise, we assume input is already a correlation (/ difference of correlations)
     if not df.columns.equals(df.index):
         # TODO delete? or check set instead?
+        # TODO add flag to skip all this checking?
         if len(df.columns) == len(df.index):
-            print('double check input is not already a correlation [diff]!')
-            import ipdb; ipdb.set_trace()
+            if (df.index.names == df.columns.names and
+                df.index.sort_values().equals(df.columns.sort_values())):
+
+                print('double check input is not already a correlation [diff]!')
+                breakpoint()
         #
 
         # TODO TODO use new al_util.mean_of_fly_corrs instead (when appropriate, e.g.

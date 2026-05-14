@@ -50,7 +50,7 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from matplotlib.image import AxesImage
 from matplotlib.ticker import MaxNLocator
-from matplotlib.colors import to_rgba, LogNorm
+from matplotlib.colors import to_rgba, LogNorm, SymLogNorm
 # TODO delete
 #from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib as mpl
@@ -114,7 +114,7 @@ from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
     n_final_megamat_kc_flies, MultipleSavesPerRunException, print_curr_mem_usage,
     data_root, fly_cols, flyroi_cols, read_parquet, to_parquet, to_json, read_json,
     ParamDict, written_since_proc_start, format_mtime, response_calc_params_json_name,
-    sent_to_remy, produces_output, in_pytest
+    sent_to_remy, produces_output, in_pytest, _have_fly_cols
 )
 from al_analysis import al_util
 
@@ -162,6 +162,7 @@ CLAW_ID: str = 'claw_id'
 PN_ID: str = 'pn_id'
 BOUTON_ID: str = 'bouton_id'
 
+# TODO rename GLOM[ERULUS]_ID?
 glomerulus_col: str = 'glomerulus'
 
 # in all Prat's "v5" outputs that deal with PN data
@@ -553,6 +554,7 @@ def check_model_kws_unique(model_kw_list: List[ParamDict]) -> None:
         f'duplicate model IDs: {[k for k,v in counts.items() if v > 1]}'
 
 
+# TODO TODO include allow_net_inh_per_claw=True cases here?
 BOUTON_MODEL_KW_LIST: List[ParamDict] = dict_seq_product([
         dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
             use_connectome_APL_weights=True
@@ -697,12 +699,16 @@ def get_fitandplot_model_kw_list(model_kw_list: List[ParamDict], n_seeds: int,
 
 # 2 prat_boutons=True (BOUTON_MODEL_KW_LIST) elements currently are quite slow actually,
 # w/o hardcoded learning rate, at least...
+# TODO skip subset of BOUTON_MODEL_KW_LIST, esp if i expand it (e.g. to include
+# allow_net_inh_per_claw=True)?
+# TODO define in terms of CLAW_MODEL_KW_LIST, filtering pn_claw_to_apl=True
+# entries out? (+ NONCLAW_MODEL_KW_lIST)
 QUICK_MODEL_KW_LIST: List[ParamDict] = BOUTON_MODEL_KW_LIST + dict_seq_product(
     [dict(one_row_per_claw=True, prat_claws=True), dict(weight_divisor=20),],
     # will test the connectome APL version first
     [dict(use_connectome_APL_weights=True), dict()]
 )[::-1] + [
-    dict(pn2kc_connections='uniform', n_claws=7),
+    UNIFORM_MODEL_KWS,
 ]
 check_model_kws_unique(QUICK_MODEL_KW_LIST)
 
@@ -1897,33 +1903,160 @@ def assert_one_glom_per_pn(df: pd.DataFrame, *, pn_id_col: str = PN_ID) -> None:
 # TODO refactor to use other places (many other places only stack one level though,
 # and perhaps often incorrectly so... that might mostly be old/unused code. basically,
 # don't want to assume BOUTON_ID are unique w/o also grouping w/in PN_ID anywhere)
+# TODO rename [kc|claw?]2glom_from_wPNKC if i also want to support non-claw input?
+# (prob want to keep claw in name, since i think i'll want to expand # rows to # "claws"
+# in non-claw case [also expanding index]. don't remember if "bouton" cols other than
+# glomerulus are ever part of output, so maybe "bouton" should stay in name?)
 def claw2bouton_from_wPNKC(wPNKC: pd.DataFrame) -> pd.DataFrame:
-    assert CLAW_ID in wPNKC.index.names, 'not sure i want to support other inputs'
+    assert not wPNKC.isna().any().any()
+
+    assert KC_ID in wPNKC.index.names
+
+    # TODO TODO assert # of these doesn't change (= # rows in all outputs cases? or just
+    # claw version? need to binarize non-claw output weights to check? need to binarize
+    # in all cases?)
+    n_gt0 = (wPNKC > 0).sum().sum()
 
     col_names = wPNKC.columns.names
     assert (
         col_names == [glomerulus_col] or col_names == [glomerulus_col] + bouton_cols
     ), f'unexpected {col_names=}'
 
-    old_index_names = list(wPNKC.index.names)
+    # TODO replace w/ just an assertion there are none of these here? duplicating
+    # this code to calling code that originally caused issue here
+    wPNKC_all0 = (wPNKC == 0).T.all()
+    n_wPNKC_all0 = wPNKC_all0.sum()
+    if n_wPNKC_all0 > 0:
+        # this would probably just be b/c drop_kcs_with_no_input=False flag used to
+        # reproduce some older outputs
+        warn(f'claw2bouton_from_wPNKC: {n_wPNKC_all0} wPNKC rows were all 0! dropping!')
+        # TODO TODO need to add these back (not sure how i could do that. would probably
+        # also need special handling outside anyway)? or drop from analysis in code that
+        # uses this (prob need to do latter...)?
+        wPNKC = wPNKC[~wPNKC_all0]
+    #
 
-    # NOTE: this can be quite slow, and can use a lot of memory
-    df = wPNKC.replace(0, np.nan).stack(col_names).index.to_frame(index=False)
+    input_index = wPNKC.index.copy()
 
-    try:
-        # should be restoring claw / KC index, with columns left just what were in
-        # col_names before (none of original wPNKC.values in output, just the metadata)
-        df = df.set_index(old_index_names, verify_integrity=True)
-        assert len(df) == len(wPNKC)
-    except ValueError:
-        warn('claw2bouton_from_wPNKC: duplicates in claw2bouton index! there are '
-            'likely still claws that are labelled as having input from multiple PNs '
-            "(probably an artifact of Pratyush's analysis. seemed to all be from same "
-            'PN_ID, for duplicates I saw)'
+    if CLAW_ID in wPNKC.index.names:
+        # TODO support values >1? (i.e. if multibouton claws not dropped?)
+        unique_vals = set(np.unique(wPNKC))
+        # this should also imply that sum of wPNKC is same as n_gt0 above
+        assert unique_vals == {0, 1}, ('expected wPNKC weight to be 0 or 1 for all claw'
+            ' and glom/bouton combos'
         )
-        df = df.set_index(old_index_names)
 
-    assert sorted(df.columns) == sorted(col_names), f'{df.columns=} != {col_names=}'
+        # NOTE: this can be quite slow, and can use a lot of memory
+        # TODO (delete?) replace w/ melt? in claw-case, could assert values are all 1
+        # (maybe? as long as we are dropping multibouton?) (still have [/ can get]
+        # values without melt? assert regardless?), and in non-claw case, could sort
+        # glomeruli within KC by how many synapses from each?
+        # (doesn't seem to be a way to dropna during melt though, so probably wouldn't
+        # work [or at least be faster / use less memory] in claw case])
+        # TODO ig we could do that sorting for claw case too, just counting across
+        # claws, and grouping by glomerulus (assuming each claw essentially has same #
+        # synapses, since i'm not currently tracking actual count of T-bars. that
+        # assumption has seemed approximately true when i checked in the past)
+        df = wPNKC.replace(0, np.nan).stack(col_names).index.to_frame(index=False)
+
+        old_index_names = list(wPNKC.index.names)
+        try:
+            # should be restoring claw / KC index, with columns left just what were in
+            # col_names before (none of original wPNKC.values in output, just the
+            # metadata)
+            df = df.set_index(old_index_names, verify_integrity=True)
+            assert len(df) == len(wPNKC)
+        except ValueError:
+            warn('claw2bouton_from_wPNKC: duplicates in claw2bouton index! there are '
+                'likely still claws that are labelled as having input from multiple PNs'
+                " (probably an artifact of Pratyush's analysis. seemed to all be from "
+                'same PN_ID, for duplicates I saw)'
+            )
+            df = df.set_index(old_index_names)
+
+        # works for claw+bouton case, at least (where i assume we are still dropping
+        # multibouton claws, as has been default for a while, and probably will remain
+        # so)
+        assert n_gt0 == len(df), (f'# of non-zero wPNKC entries before ({n_gt0}) was '
+            f'not length of output DataFrame ({len(df)})'
+        )
+        # TODO still try to have PN_ID in claw-but-non-bouton outputs? currently just
+        # have glomerulus_col as only column. not sure it matters...
+    else:
+        df = wPNKC.replace(0, np.nan).melt(ignore_index=False, value_name='n_claws'
+            ).dropna(subset='n_claws')
+
+        assert len(df) == n_gt0, ('melt should have produced output counting # of '
+            '"claws" for each (KC, glom) combo'
+        )
+
+        kc_ids1 = wPNKC.index.get_level_values(KC_ID)
+        kc_ids2 = df.index.get_level_values(KC_ID)
+        assert not kc_ids1.duplicated().any()
+        # TODO TODO fix. failing in hemibrain_paper_repro test
+        # TODO TODO oh, need to not err if we have these 9 cells that have 0 input in
+        # the hemibrain_paper_repro case
+        assert set(kc_ids1) == set(kc_ids2.unique())
+
+        # if this ever fails, would have to do some other checking that output is in
+        # order i want (b/c couldn't just sort expanded output then. would actually have
+        # check all consecutive in expanded kc_ids2. all currently NOT consecutive w/
+        # current implementation, hence the sorting)
+        assert kc_ids1.sort_values().equals(kc_ids1), ('could not sort kc_ids2 to get '
+            'same order (with all entries consecutive). may need diff implementation.'
+        )
+        assert KC_ID == df.index.names[0], 'could not use .loc below otherwise'
+
+        # relying on groupby sort=True to ensure that all entries for one KC will be
+        # consecutive (and matching the also-currently-sorted order we can expect on
+        # wPNKC KC IDs).
+        # doesn't seem there is a way to prevent .melt from re-ordering index, so
+        # needing to re-order after.
+        df = df.groupby(level=KC_ID, sort=True, group_keys=False).apply(
+            lambda x: x.sort_values(by='n_claws', ascending=False, kind='stable')
+        )
+        # so sort=True doesn't work w/ level=KC_ID? (doesn't seem to on my
+        # current pandas version [1.5.0] at least). seems we need to re-order here, or
+        # else output of groupby above does not have KCs all consecutive (so obviously
+        # not sorted either)
+        df = df.loc[kc_ids1].copy()
+        assert df.index.get_level_values(KC_ID).equals(kc_ids2.sort_values())
+        assert len(df) == n_gt0, 'operations on df must have changed len'
+
+        assert pd_allclose(df.n_claws, df.n_claws.astype(int))
+        df = df.astype({'n_claws': int})
+        assert (df['n_claws'] > 0).all()
+
+        # this seems to all make sense, although maybe a bit more double inputs from
+        # single glomeruli than expected (and also total # of claws):
+        # ipdb> df.n_claws.value_counts()
+        # 1    5965
+        # 2    3327
+        # 3     264
+        # 4      24
+        # 5       1
+        #
+        # ipdb> len(df)
+        # 9581
+        # ipdb> len((df.glomerulus.map(lambda x: [x]) * df.n_claws).explode())
+        # 13512
+        #
+        # ipdb> (df.glomerulus.map(lambda x: [x]) * df.n_claws).explode().groupby(KC_ID
+        #   ).size().mean()
+        # 7.391684901531729
+        # ipdb> df.groupby(KC_ID).size().mean()
+        # 5.241247264770241
+        df = (
+            df[glomerulus_col].map(lambda x: [x]) * df.n_claws
+        ).explode().to_frame(name=glomerulus_col)
+        assert len(df) == wPNKC.sum().sum()
+
+    assert list(df.columns) == list(col_names), f'{df.columns=} != {col_names=}'
+
+    if CLAW_ID in wPNKC.index.names:
+        assert df.index.equals(input_index)
+    else:
+        assert df.index.drop_duplicates().equals(input_index)
 
     return df
 
@@ -7437,9 +7570,8 @@ def _get_silent_cell_suffix(responses_including_silent, responses_without_silent
     n_total_cells = len(responses_including_silent)
     n_silent_cells = n_total_cells - len(responses_without_silent)
 
-    # TODO could relax to assert >=, if ever fails
     # (same as asserting len(responses_without_silent) > 0)
-    assert n_total_cells > n_silent_cells
+    assert n_total_cells > n_silent_cells, f'{n_total_cells=} <= {n_silent_cells=}'
 
     # TODO delete. prob no longer true (matter?)
     # titles these will be appended to should already end w/ '\n'
@@ -8751,12 +8883,12 @@ def get_odor_strs(odor: Union[str, slice], dynamics_dict: Optional[DynamicsDict]
 # TODO take stim_timing_kws, and use to mark odor onset/offset on plots? (like other fns
 # do) make optional for other plots (pretty obvious when odor comes on...)?
 #
-# TODO TODO replace plot_all_bouton_dynamics w/ this? or share code?
+# TODO TODO replace plot_all_bouton_dynamics w/ this (prob)? or share code?
 def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str, *,
     order_by_kcs: Optional[bool] = None, group_pns: bool = False,
     wPNKC: Optional[pd.DataFrame] = None, drop_nonresponders: bool = False,
-    title_prefix: str = '', xlim: Optional[Tuple[float, float]] = (-0.025, 0.4)
-    ) -> None:
+    title_prefix: str = '', xlim: Optional[Tuple[float, float]] = (-0.025, 0.4),
+    mp: Optional[osm.ModelParams] = None) -> None:
     # TODO doc
 
     xmin = None
@@ -8781,15 +8913,48 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     if wPNKC is None:
         wPNKC = read_parquet(wPNKC_path)
 
+    wPNKC_all0 = (wPNKC == 0).T.all()
+    n_wPNKC_all0 = wPNKC_all0.sum()
+    if n_wPNKC_all0 > 0:
+        # this would probably just be b/c drop_kcs_with_no_input=False flag used to
+        # reproduce some older outputs
+        warn(f'plot_aligned_dynamics: {n_wPNKC_all0} wPNKC rows were all 0! dropping!')
+        # TODO TODO need to drop other things down to match this?
+        wPNKC = wPNKC[~wPNKC_all0]
+
+    have_claws = 'claw_sims' in dynamics_dict
+    have_boutons = 'bouton_sims' in dynamics_dict
+    if have_boutons:
+        assert have_claws, 'none of these cases currently supported'
+
+    max_n_units = None
+    if not have_claws:
+        # want this to be the # of "claws" before dropping non-responders, i think
+        # (or probably just hardcode something otherwise?)
+        max_n_units = wPNKC.sum().sum()
+
     responder_kc_ids = None
     if drop_nonresponders:
         spikes = dynamics_dict['spike_recordings'].sel(odor=odor).squeeze(drop=True)
+        # TODO TODO change def of responders herer to be consistent w/
+        # n_spikes_for_response > 1
+        #responder_mask = spikes.sum('time_s').squeeze(drop=True) >= n_spikes_for_response
         responder_mask = spikes.any('time_s').squeeze(drop=True)
         responders = responder_mask[responder_mask].get_index('kc')
         if len(responders) == 0:
             warn('no responders! returning without making plot')
             return
 
+        # TODO TODO handle elsewhere? might always be a problem when only one level in
+        # KC index in DataArrays tho... (as currently defined)
+        if responders.names == ['kc']:
+            responders = responders.rename(KC_ID)
+        #
+
+        # TODO TODO rename uniform outputs to use KC_ID instead of 'kc' (or at least
+        # whatever is loaded in test_uniform_paper_repro, if it's not something being
+        # computed denovo)
+        # TODO TODO or always skip these plots for uniform models?
         assert KC_ID in responders.names, f'{KC_ID=} not in {responders.names=}'
         # mainly to drop kc_type, which will complicate indexing with this
         responder_kc_ids = responders.droplevel(
@@ -8801,12 +8966,18 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         # claw2bouton work w/ drop_nonresponders? yes.
         # need to also drop any columns that are all 0 first? no.
 
-    # NOTE: this function currently only supports cases where CLAW_ID is in
-    # wPNKC.index.names (although that could probably be relaxed by just removing that
-    # assertion, if i wanted)
-    # TODO or better yet, maintain these bouton_cols in claw index? to begin with?
-    claw2bouton = claw2bouton_from_wPNKC(wPNKC)
-    assert claw2bouton.index.equals(wPNKC.index)
+    claw2bouton = None
+    claw2glom = None
+    if have_boutons:
+        # TODO or better yet, maintain these bouton_cols in claw index? to begin with?
+        claw2bouton = claw2bouton_from_wPNKC(wPNKC)
+        assert claw2bouton.index.equals(wPNKC.index)
+    else:
+        claw2glom = claw2bouton_from_wPNKC(wPNKC)
+        if have_claws:
+            assert claw2glom.index.equals(wPNKC.index)
+        else:
+            assert len(claw2glom) > len(wPNKC)
 
     if order_by_kcs is None and not group_pns:
         order_by_kcs = True
@@ -8826,16 +8997,13 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     if drop_nonresponders:
         fname_suffix += '_responders-only'
 
-    # TODO handle spike_recordings separately, since it might need separate plot
-    # handling?  (and no point having a log / normed version there. may just want top
-    # row (raw) to start anyway)
-    # TODO at least would want to del the last two axes (the bottom two for the
-    # spike_recordings column
-    to_plot_left_to_right = ['pn_sims', 'bouton_sims', 'claw_sims', 'vm_sims',
-        # TODO delete? we don't actually need, since we can see the dips in vm_sims when
-        # there are spikes
-        #'spike_recordings'
-    ]
+    to_plot_left_to_right = ['pn_sims']
+    if have_boutons:
+        to_plot_left_to_right.append('bouton_sims')
+    if have_claws:
+        to_plot_left_to_right.append('claw_sims')
+    to_plot_left_to_right.append('vm_sims')
+
     # TODO factor to module level? other code that could use this?
     dynamics_var2unit_name = {
         'pn_sims': 'PN',
@@ -8868,19 +9036,18 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     # ok, some of these are clearly ridiculous numerical values, e.g. for kcs:
     # ipdb> df.mask(df == 0).min().min()
     # 9.936210371253575e-56
+    # TODO delete (/use instead of fixed_vmin or whatever similar parameter i'll use to
+    # determine linear range of SymLogNorm)
     # TODO so maybe default to 1e-3 or -4 or something?
-    default_logscale_vmin = 1e-3
-
-    # TODO TODO TODO PN, bouton, claw, KC vm, KC spiking (does plot_spike_rasters also
-    # take fixed_order kwarg? make so, if not)
-
-    # TODO maybe visually compare expanded versions to non-expanded (but in same sort
-    # order) plots, to sanity check
+    #default_logscale_vmin = 1e-3
 
     # for the very tall plots i'm making, 10 not enough
     label_size = 20
-    cmap = plt.get_cmap('magma')
-    cmap.set_bad('gray')
+    # TODO restore? (behind some option to not only use the SymLogNorm?)
+    #cmap = plt.get_cmap('magma')
+    #cmap.set_bad('gray')
+    #
+    cmap = diverging_cmap.copy()
 
     # my current matplotlib has default 'figure.titlesize'='large' in rcParams,
     # and that equals 12.0 if you make a text object with that size and call
@@ -8918,15 +9085,25 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     var2order = dict()
 
     pns = get_odor_df('pn_sims')
-    boutons = get_odor_df('bouton_sims')
-    claws = get_odor_df('claw_sims')
+    if have_boutons:
+        boutons = get_odor_df('bouton_sims')
 
-    # may drop non-responders later
-    max_n_claws = len(claws)
+    if have_claws:
+        claws = get_odor_df('claw_sims')
+        max_n_units = len(claws)
 
     n_total_kcs = None
     if order_by_kcs:
         kcs = get_odor_df('vm_sims')
+
+        # TODO handle elsewhere? (also duped above)
+        if kcs.index.names == ['kc']:
+            kcs = kcs.rename_axis(index=KC_ID)
+        #
+
+        if n_wPNKC_all0 > 0:
+            kcs = kcs.loc[wPNKC.index]
+
         if drop_nonresponders:
             n_total_kcs = len(kcs)
             kcs = kcs.loc[responder_kc_ids]
@@ -8939,113 +9116,144 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         # data, since we didn't specify fixed_order=<some-fixed-order-index>
         kcs, order_str = cluster_timeseries(kcs)
         order = kcs.index
-
-        assert claws.index.names[0] == KC_ID, '.loc(s) below will not work otherwise'
-
-        # sorting w/ highest max responding claws at top
-        # TODO check this is preserved through rest of operations on claws[2]
-        if drop_nonresponders:
-            # just subsetting before max so it's faster. will .loc again with actual KC
-            # order.
-            claws = claws.loc[responder_kc_ids]
-            claws = claws.loc[
-                claws.max(axis='columns').sort_values(ascending=False).index
-            ]
-
         kc_id_order = order.get_level_values(KC_ID)
-        claws2 = claws.loc[kc_id_order]
-        # TODO also assert all repeats consecutive? do i have some fn for that already?
-        # some idiomatic pandas way? (should essentially be doing that w/ assertion w/
-        # kcs.index.repeat below... delete)
-        assert claws2.index.get_level_values(KC_ID).unique().equals(kc_id_order)
 
-        assert kcs.index.names[0] == KC_ID, ('indexing of kc2nclaws below will not make'
-            ' sense without this'
-        )
-        assert len(kcs) < len(claws2) == len(claws)
-        kc_order = claws2.index.get_level_values(KC_ID)
-        kcs2 = kcs.loc[kc_order]
-        assert len(kcs2) == len(claws2)
+        if have_claws:
+            assert claws.index.names[0] == KC_ID, \
+                '.loc(s) below will not work otherwise'
 
-        # NOTE: without specifying level=KC_ID (i.e. if i just did
-        # `groupby(KC_ID, sort=False)`), the index actually would be sorted despite my
-        # request, at least w/ pandas==1.5.0
-        kc2nclaws = claws2.groupby(level=KC_ID, sort=False).size()
-        # from Index.repeat docs: "returns a new Index where each element of the current
-        # Index is repeated *consecutively* a given number of times" (emphasis mine)
-        assert kcs.index.repeat(kc2nclaws).equals(kcs2.index)
+            # sorting w/ highest max responding claws at top
+            # TODO check this is preserved through rest of operations on claws[2]
+            if drop_nonresponders:
+                # just subsetting before max so it's faster. will .loc again with actual
+                # KC order.
+                claws = claws.loc[responder_kc_ids]
+                claws = claws.loc[
+                    claws.max(axis='columns').sort_values(ascending=False).index
+                ]
 
-        assert kcs2.index.get_level_values(KC_ID).equals(
-            claws2.index.get_level_values(KC_ID)
-        )
-        kcs2_index_df = kcs2.index.to_frame(index=False)
-        kcs2_index_df[CLAW_ID] = claws2.index.get_level_values(CLAW_ID)
-        other_levels = [x for x in kcs2_index_df.columns if x not in (KC_ID, CLAW_ID)]
-        level_order = [KC_ID, CLAW_ID] + other_levels
-        kc_index = pd.MultiIndex.from_frame(kcs2_index_df).reorder_levels(level_order)
-        kcs2.index = kc_index
+            claws2 = claws.loc[kc_id_order]
+            # TODO also assert all repeats consecutive? do i have some fn for that
+            # already?  some idiomatic pandas way? (should essentially be doing that w/
+            # assertion w/ kcs.index.repeat below... delete)
+            assert claws2.index.get_level_values(KC_ID).unique().equals(kc_id_order)
 
-        assert claws2.index.to_frame(index=False).iloc[:, :2].equals(
-            kcs2.index.to_frame(index=False).iloc[:, :2]
-        )
-        claws = claws2
-        del kcs, kcs2, claws2
+            assert kcs.index.names[0] == KC_ID, ('indexing of kc2nclaws below will not '
+                'make sense without this'
+            )
+            assert len(kcs) < len(claws2) == len(claws)
+            kc_order = claws2.index.get_level_values(KC_ID)
+            var2order['vm_sims'] = kc_order
 
-        var2order['vm_sims'] = kc_order
-        var2order['claw_sims'] = claws.index.copy()
+            kcs2 = kcs.loc[kc_order]
+            assert len(kcs2) == len(claws2)
+            # NOTE: without specifying level=KC_ID (i.e. if i just did `groupby(KC_ID,
+            # sort=False)`), the index actually would be sorted despite my request, at
+            # least w/ pandas==1.5.0
+            kc2nclaws = claws2.groupby(level=KC_ID, sort=False).size()
+            # from Index.repeat docs: "returns a new Index where each element of the
+            # current Index is repeated *consecutively* a given number of times"
+            # (emphasis mine)
+            assert kcs.index.repeat(kc2nclaws).equals(kcs2.index)
 
-        bouton_order = pd.MultiIndex.from_frame(
-            claw2bouton.loc[claws.index].reset_index(drop=True)
-        )
-        assert bouton_order.names == boutons.index.names
+            assert kcs2.index.get_level_values(KC_ID).equals(
+                claws2.index.get_level_values(KC_ID)
+            )
+            kcs2_index_df = kcs2.index.to_frame(index=False)
+            kcs2_index_df[CLAW_ID] = claws2.index.get_level_values(CLAW_ID)
+            other_levels = [
+                x for x in kcs2_index_df.columns if x not in (KC_ID, CLAW_ID)
+            ]
+            level_order = [KC_ID, CLAW_ID] + other_levels
+            kc_index = pd.MultiIndex.from_frame(kcs2_index_df).reorder_levels(
+                level_order
+            )
+            kcs2.index = kc_index
+
+            assert claws2.index.to_frame(index=False).iloc[:, :2].equals(
+                kcs2.index.to_frame(index=False).iloc[:, :2]
+            )
+            claws = claws2
+            del kcs, kcs2, claws2
+            var2order['claw_sims'] = claws.index.copy()
+
+        if have_boutons:
+            bouton_order = pd.MultiIndex.from_frame(
+                claw2bouton.loc[claws.index].reset_index(drop=True)
+            )
+            assert bouton_order.names == boutons.index.names
+
+            if not drop_nonresponders:
+                assert len(boutons) < len(claws), f'{len(boutons)=} >= {len(claws)=}'
+            else:
+                if len(boutons) >= len(claws):
+                    warn(f'{len(claws)=} <= {len(boutons)=} after dropping '
+                        'non-responders'
+                    )
+
+            boutons = boutons.loc[bouton_order]
+            assert len(boutons) == len(claws)
+            var2order['bouton_sims'] = bouton_order
+            del boutons
+
+            pn_order = bouton_order.droplevel(
+                [x for x in bouton_order.names if x != glomerulus_col]
+            )
+
+            # this is just for assertion/warning below
+            for_order = claws
+        else:
+            if have_claws:
+                for_order = claws.index
+            else:
+                for_order = kc_id_order.copy()
+
+            claw2glom = claw2glom.loc[for_order]
+            # TODO TODO test in claw-but-not-bouton case
+            pn_order = pd.Index(claw2glom.reset_index(drop=True).squeeze())
+            assert pn_order.name == glomerulus_col, f'{pn_order.name=}'
 
         if not drop_nonresponders:
-            assert len(boutons) < len(claws), f'{len(boutons)=} >= {len(claws)=}'
+            assert len(pns) < len(for_order)
         else:
-            if len(boutons) >= len(claws):
-                warn(f'{len(claws)=} <= {len(boutons)=} after dropping non-responders')
-
-        boutons = boutons.loc[bouton_order]
-        assert len(boutons) == len(claws)
-        var2order['bouton_sims'] = bouton_order
-        del boutons
+            if len(pns) >= len(for_order):
+                warn(f'{len(for_order)=} <= {len(pns)=} after dropping non-responders')
+        del for_order
 
         assert pns.index.names == [glomerulus_col]
-        pn_order = bouton_order.droplevel(
-            [x for x in bouton_order.names if x != glomerulus_col]
-        )
-        if not drop_nonresponders:
-            assert len(pns) < len(claws)
-        else:
-            if len(pns) >= len(claws):
-                warn(f'{len(claws)=} <= {len(pns)=} after dropping non-responders')
-
         # NOTE: glomeruli will now be repeated many times and be out of order
         # TODO maybe i should have a another plot to the side giving each glomerulus a
         # color, and then add another part of PN Axes (or adjacent one) showing color
         # for each?
         pns = pns.loc[pn_order]
-        assert len(pns) == len(claws)
+        if have_claws:
+            assert len(pns) == len(claws)
+            assert 'vm_sims' in var2order
+        else:
+            # since pns (from pn_order) above, should be expanded to # "claws" in this
+            # case
+            assert len(pns) > len(kcs)
+            assert 'vm_sims' not in var2order
+            var2order['vm_sims'] = claw2glom.index.get_level_values(KC_ID)
+
         var2order['pn_sims'] = pn_order
-        del pns
 
         # (for cases like 'max sorted\n(clustering failed)')
         order_str = order_str.replace('\n', ' ')
 
-        suptitle += (f'\nordered by KC activity: {order_str}'
-            '\ninner sort on max claw activity'
-        )
+        suptitle += f'\nordered by KC activity: {order_str}'
+        if have_claws:
+            suptitle += '\ninner sort on max claw activity'
 
         fixed_vmax = 595
 
-    # TODO TODO delete? do i even want this? would have to repeat KCs for each glom they
+    # TODO delete? do i even want this? would have to repeat KCs for each glom they
     # are part of... (or only plot up to claws here?)
-    # TODO TODO TODO actually probably want to skip plotting KCs altogether
+    # TODO TODO actually probably want to skip plotting KCs altogether
     # TODO should i still support drop_nonresponders in this case? prob not. are there
     # even any? i think it's a negligible fraction of boutons, if so.
     else:
         assert group_pns
-
         assert not drop_nonresponders, 'not supported in group_pns=True case'
 
         suptitle += '\nordered by glomeruli'
@@ -9056,7 +9264,13 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
 
     # important this is after subsetting to claws from responding KCs, in
     # drop_nonresponders=True case
-    n_claws = len(claws)
+    if have_claws:
+        n_units = len(claws)
+    else:
+        n_units = len(pns)
+
+    assert max_n_units is not None
+    assert n_units <= max_n_units, f'{n_units=} > {max_n_units=}'
 
     n_vars = len(to_plot_left_to_right)
     # otherwise, would have 3 rows of Axes with top being raw, middle log-scaled, and
@@ -9079,8 +9293,7 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
             ncols = 1
 
         max_fig_height = 650
-        assert n_claws <= max_n_claws, f'{n_claws=} > {max_n_claws=}'
-        fig_height = round((n_claws/max_n_claws) * max_fig_height)
+        fig_height = round((n_units/max_n_units) * max_fig_height)
         fig_height = max(fig_height, 6)
         assert 0 < fig_height <= max_fig_height, f'{fig_height=}'
 
@@ -9102,21 +9315,47 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
     if all_units_in_one_fig:
         fig, all_axs = get_fig_and_axs()
 
+    use_symlog_norm_for = set()
+
     # TODO add flag to control whether fixed_vmax is used? and same for fixed_vmin (or
     # at least allow fixed_vmin to be passed in?)?
     #
     # currently only support shared_colorbar=True when only plotting logscale
     shared_colorbar: bool = True
+    norm = None
     if shared_colorbar:
-        #mins = []
+        mins = []
         maxs = []
+        symlog_mins = []
+        symlog_maxs = []
         for var_name in to_plot_left_to_right:
             df = var2df[var_name]
+
             vmin = df.min().min()
-            #mins.append(vmin)
-            assert vmin >= 0
             vmax = df.max().max()
-            maxs.append(vmax)
+            if vmin < 0:
+                warn(f'{var_name=} has min (={vmin:.2f}) < 0')
+                if not have_claws:
+                    # does seem like ann's/matt's model are not rectifying KC Vm, from
+                    # initial check
+                    assert var_name == 'vm_sims', f'{var_name=} {vmin=}'
+                else:
+                    if mp is not None:
+                        # TODO check it's actually possible for both to go negative
+                        # here?
+                        if mp.kc.allow_net_inh_per_claw:
+                            assert var_name in ('claw_sims', 'vm_sims'), \
+                                f'{var_name=} {vmin=}'
+                    else:
+                        warn(f'could not check whether negative values for {var_name} '
+                            'make sense, because mp=None'
+                        )
+                use_symlog_norm_for.add(var_name)
+                symlog_mins.append(vmin)
+                symlog_maxs.append(vmax)
+            else:
+                mins.append(vmin)
+                maxs.append(vmax)
 
         # TODO separate one for KCs? everything else could use 160
         # TODO different (also fixed) scale for KCs? they are way above everything else
@@ -9125,10 +9364,46 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         # vmax=595.3349805575511
 
         # TODO delete? not actually used. vmin hardcoded below
-        #vmin = min(mins)
+        assert len(mins) > 0
+        vmin = min(mins)
         vmax = max(maxs)
-        # TODO TODO try fixed_vmin other than 5 for sake of KC vm?
-        fixed_vmin = 2.5
+
+        # TODO take + use var2range (as an option instead of calculating this
+        # stuff?)
+
+        if len(use_symlog_norm_for) > 0:
+            symlog_vmin = min(symlog_mins)
+            symlog_vmax = max(symlog_maxs)
+            vmin = min(vmin, symlog_vmin)
+            vmax = max(vmax, symlog_vmax)
+
+        # TODO up fixed_max, or use data ranges if any of these fail
+        if abs(vmin) > fixed_vmax:
+            warn(f'abs({vmin=}) > {fixed_vmax=}! setting fixed_vmax to abs(vmin)!')
+
+        if vmax > fixed_vmax:
+            warn(f'{vmax=} > {fixed_vmax=}! setting fixed_vmax to vmax!')
+
+        # TODO does SymLogNorm actually want two ends to be equal? or can i kind of
+        # use it like TwoSlopeNorm (seems so?)?
+        # TODO what's a good value for linthresh and linscale?
+        # linear (not logarithmic) within [-linthresh, linthresh] (centered on 0)
+        # TODO what's a good value for linscale? default of 1.0?
+        # TODO use data (/fixed) vmin instead of -vmax?
+        # TODO TODO does decreasing this dedicate more of the scale to log? (should,
+        # right?) so transitions should be more gradual?
+        # do 2.5 / 5 instead?
+        linthresh = 1.0
+        #linthresh = 0.1
+        # this should be default of 1
+        linscale = 0.1
+        norm = SymLogNorm(linthresh=linthresh, linscale=linscale,
+            vmin=-fixed_vmax, vmax=fixed_vmax
+        )
+
+        # TODO TODO delete? or restore option for this, for the ones not in
+        # use_symlog_norm_for? (then have two colorbars)
+        #fixed_vmin = 2.5
 
     for var_name in to_plot_left_to_right:
         if not all_units_in_one_fig:
@@ -9147,11 +9422,15 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
 
         # TODO or re-call get_odor_df?
         df = var2df[var_name]
+
+        # TODO delete? currently handled when picking norm vmin/vmax (which also
+        # currently allows negative values, and uses one SymLogNorm for everything)
+        #
         # TODO just make sure all this happens in get_dynamics instead (except for
         # orn_sims which might, for better or worse, currently be allowed to go
         # negative?)? and after changing bouton initialization to use 0 instead of NaN
         # (or dropping everything consistently before here)
-        assert not (df < 0).any().any(), f'{var_name}: had some negative values'
+        #assert not (df < 0).any().any(), f'{var_name}: had some negative values'
 
         if var_name == 'bouton_sims':
             # TODO drop earlier?
@@ -9225,14 +9504,22 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         # below, but works w/o specifying, and also w/ manual >0 value I hardcode below
         if not shared_colorbar:
             vmin = df.min().min()
+            # TODO TODO would fail for some quantities that can sometimes be negative
+            # (Vm sims in either `not have_claws`, or either vm_sims or claw_sims in
+            # mp.kc.allow_net_inh_per_claw=True case)
             assert vmin >= 0
             vmax = df.max().max()
-        # TODO TODO warn if much is outside fixed_v[min|max]
+
+            raise NotImplementedError
+
+        # TODO TODO warn/err if (much? any?) outside fixed_v[min|max]
 
         im2, _ = cluster_timeseries_and_plot(df, fixed_order=True, ax=log_ax, cmap=cmap,
             label_order=False, imshow_kws=dict(interpolation='none',
-                # TODO add flag to still allow using vmax from data?
-                norm=LogNorm(vmin=fixed_vmin, vmax=fixed_vmax)
+                # TODO delete? flag to re-enabled this (or do so if no negative
+                # quantities?)
+                #norm=LogNorm(vmin=fixed_vmin, vmax=fixed_vmax)
+                norm=norm
             )
         )
         log10_str = r'$\log_{10}$'
@@ -9647,7 +9934,6 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # can vary (in terms of # of lines), so having this earlier fixes the colors for
     # these
     Is_from_kcs = None
-    assert 'Is_from_kcs' in dynamics_dict
     if 'Is_from_kcs' in dynamics_dict:
         Is_from_kcs = dynamics_dict['Is_from_kcs']
         Is_from_pns = dynamics_dict['Is_from_pns']
@@ -9702,8 +9988,7 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # TODO make separate plots with these? prob not worth
     # no longer plotting by default, to avoid clutter
     plot_avg_vm_by_type = False
-    # TODO TODO TODO fix how kc_index not defined here
-    breakpoint()
+    kc_index = example_odor_vm_sims.get_index('kc')
     if plot_avg_vm_by_type and KC_TYPE in kc_index.names:
         vm_sims_by_type = example_odor_vm_sims.groupby(KC_TYPE).mean()
 
@@ -9742,8 +10027,12 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
             warn('no responders!')
             return
 
+        # TODO handle elsewhere?
+        if example_odor_spikes.index.names == ['kc']:
+            example_odor_spikes = example_odor_spikes.rename_axis(index=KC_ID)
+
         assert KC_ID in example_odor_spikes.index.names, ('expected index to be for KCs'
-            ' but names={example_odor_spikes.index.names} did not include {KC_ID}'
+            f' but names={example_odor_spikes.index.names} did not include {KC_ID=}'
         )
         assert example_odor_spikes.columns.name == 'time_s'
         n_ts_before = len(example_odor_spikes.columns)
@@ -9801,7 +10090,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     stim_timing_kws: Optional[dict] = None, *, odor: Union[slice, str] = slice(None),
     # TODO delete wPNKC if i don't end up using for checks
     title_prefix: str = '', wPNKC: Optional[pd.DataFrame] = None,
-    wAPLKC: Optional[pd.DataFrame] = None, wAPLPN: Optional[pd.DataFrame] = None,
+    wAPLKC: Optional[pd.Series] = None, wAPLPN: Optional[pd.Series] = None,
     var2range: Optional[MinMaxDict] = None, warn_: bool = True) -> None:
     # TODO doc
     """
@@ -9837,13 +10126,31 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
 
     odor_str, odor_fname_suffix = get_odor_strs(odor, dynamics_dict)
 
+    have_claws = 'claw_sims' in dynamics_dict
+
+    have_boutons = False
+    # this key will be missing (along w/ Is_from_pns) when not using model with boutons
+    # enabled, and will then just have the comparable quantity in Is_sims
+    if 'Is_from_kcs' not in dynamics_dict:
+        assert 'Is_from_pns' not in dynamics_dict
+    else:
+        have_boutons = True
+
+    if have_boutons:
+        assert have_claws, 'ever want to support boutons w/o claws? prob not'
+
     # TODO refactor to de-dupe w/ APL stuff in plot_example_model_dynamics
     # (or delete from there. just make sure there's nothing i'm doing there that i want
     # here)
     if odor != slice(None):
-        # TODO decrease fig height somewhat (to decrease space between suptitle and
-        # titles)?
-        fig, (ax, apl2kc_ax, apl2pn_ax) = plt.subplots(ncols=3, layout='constrained')
+        if have_boutons:
+            # TODO decrease fig height somewhat (to decrease space between suptitle and
+            # titles)?
+            fig, axs = plt.subplots(ncols=3, layout='constrained')
+            ax, apl2kc_ax, apl2pn_ax = axs
+        else:
+            fig, axs = plt.subplots(ncols=2, layout='constrained')
+            ax, apl2kc_ax = axs
     else:
         # TODO TODO also implement plotting onto these last two axes for slice(None)
         # (i.e. all/multiple odors case)? would just complicate code below slightly
@@ -9873,9 +10180,6 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # can vary (in terms of # of lines), so having this earlier fixes the colors for
     # these
     Is_all0 = (Is_sims == 0).all().item()
-    # TODO do we need to make sure mp was not passed in then, since this part won't be
-    # initialized correctly when loading dynamics, right? should be using
-    # stim_[start|end] there?
     if not Is_all0:
         if mp is not None:
             assert mp.kc.pn_claw_to_apl == False
@@ -9888,13 +10192,15 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # test...
     # TODO and don't plot Is_from_pns if so
 
-    assert 'Is_from_kcs' in dynamics_dict, 'would fail on older versions of model'
-    Is_from_kcs = dynamics_dict['Is_from_kcs']
-    Is_from_pns = dynamics_dict['Is_from_pns']
+    if not have_boutons:
+        _plot(ax, Is_sims.sel(odor=odor), label='KC>APL current', alpha=alpha)
+    else:
+        Is_from_kcs = dynamics_dict['Is_from_kcs']
+        Is_from_pns = dynamics_dict['Is_from_pns']
 
-    assert Is_from_kcs.get_index('time_s').equals(Is_from_pns.get_index('time_s'))
-    _plot(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current', alpha=alpha)
-    _plot(ax, Is_from_pns.sel(odor=odor), label='PN>APL current', alpha=alpha)
+        assert Is_from_kcs.get_index('time_s').equals(Is_from_pns.get_index('time_s'))
+        _plot(ax, Is_from_kcs.sel(odor=odor), label='KC>APL current', alpha=alpha)
+        _plot(ax, Is_from_pns.sel(odor=odor), label='PN>APL current', alpha=alpha)
 
     inh_sims = dynamics_dict['inh_sims']
     assert (inh_sims >= 0).all()
@@ -9953,7 +10259,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     if wAPLKC is None:
         wAPLKC = read_parquet(model_output_dir / 'wAPLKC.parquet')
 
-    if wAPLPN is None:
+    if have_boutons and wAPLPN is None:
         wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
 
     if wPNKC is None:
@@ -9964,23 +10270,60 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
 
     # TODO refactor the sel->squeeze?
     pns = dynamics_dict['pn_sims'].sel(odor=odor).squeeze(drop=True)
-    boutons = dynamics_dict['bouton_sims'].sel(odor=odor).squeeze(drop=True)
-    claws = dynamics_dict['claw_sims'].sel(odor=odor).squeeze(drop=True)
+
+    if have_boutons:
+        boutons = dynamics_dict['bouton_sims'].sel(odor=odor).squeeze(drop=True)
+
+    if have_claws:
+        claws = dynamics_dict['claw_sims']
+        kc2apl_input = claws
+        kc_index_name = 'claw'
+        kc2apl_input_name = 'claw'
+    else:
+        kcs = dynamics_dict['vm_sims']
+        kc2apl_input = kcs
+        kc_index_name = 'kc'
+        kc2apl_input_name = 'KC'
+
+    kc2apl_input = kc2apl_input.sel(odor=odor).squeeze(drop=True)
+
+    pn_index_name = glomerulus_col
+    if have_boutons:
+        # need to start w/ boutons that have already have inh applied here.
+        # takes a couple seconds, but haven't gotten killed yet.
+        # .dot returns something that had dot product computed over shared dimensions,
+        # which is just 'bouton' between these two, so we will be left with dims
+        # ('time_s', 'claw')
+        kc_input = boutons
+        pn_index_name = 'bouton'
+    else:
+        kc_input = pns
+
+    # TODO see if we get any performance benefit to using any scipy.sparse or Sparse
+    # (https://sparse.pydata.org/en/stable/) representation of data while
+    # constructing wPNKC
+    # TODO any other way to get sparse DataArrays?
+
+    wPNKC_dims = [kc_index_name, pn_index_name]
 
     # don't need fn like above for DataFrames. DataArray constructor handles those
     # fine.
-    wPNKC_arr = xr.DataArray(data=wPNKC, dims=['claw', 'bouton'])
+    wPNKC_arr = xr.DataArray(data=wPNKC, dims=wPNKC_dims)
     assert np.array_equal(wPNKC_arr.values, wPNKC.values)
 
-    claw_index = wPNKC_arr.get_index('claw')
-    assert claw_index.equals(wPNKC.index)
-    claw_index2 = claws.get_index('claw')
-    assert glomerulus_col in claw_index2.names
-    assert claw_index2.droplevel(glomerulus_col).equals(claw_index)
+    kc_index = wPNKC_arr.get_index(kc_index_name)
+    assert kc_index.equals(wPNKC.index)
+    kc_index2 = kc2apl_input.get_index(kc_index_name)
+    if have_claws:
+        assert glomerulus_col in kc_index2.names
+        assert kc_index2.droplevel(glomerulus_col).equals(kc_index)
+    else:
+        assert kc_index2.equals(kc_index)
 
-    bouton_index = wPNKC_arr.get_index('bouton')
-    assert bouton_index.equals(wPNKC.columns)
-    assert boutons.get_index('bouton').equals(bouton_index)
+    pn_index = wPNKC_arr.get_index(pn_index_name)
+    assert pn_index.equals(wPNKC.columns)
+    assert kc_input.get_index(pn_index_name).equals(pn_index)
+
     wPNKC = wPNKC_arr
 
     # ah, it's failing when we are not also analyzing just a single odor.
@@ -9989,91 +10332,129 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # ipdb> pns.dims
     # ('panel', 'glomerulus', 'time_s')
     assert pns.dims == ('glomerulus', 'time_s'), f'{pns.dims=}'
-    # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
-    # outside of the bouton index (first row in output below):
-    # Coordinates:
-    #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-    # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-    # * bouton      (bouton) MultiIndex
-    # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-    # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
-    # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
-    #
-    # expanding each PN up to # of times it appears in boutons (and in same order as
-    # there)
-    boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
-        'glomerulus'
-    )
-    assert boutons_no_inh.dims == ('bouton', 'time_s')
-    assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
 
-    # (it is True now that i've actually removed the NaN by here)
-    # > (boutons >= 0).all()
-    # False
-    boutons_min = boutons.min().item()
-    # should == 0 almost certainly, at least if there is any meaningful PN>APL
-    # inhibition enabled, with APL actually getting activity
-    # TODO assert it's >0 otherwise?
-    assert boutons_min >= 0, f'had some bouton activities < 0. min={boutons_min}'
+    # TODO can't really compute this in non-claw case, right (because the actually
+    # things we care about are KC activity, which also depends on spiking, right?) do i
+    # still want anything in apl2kc_ax, or remove that whole ax in that case?
+    kc2apl_input_no_inh = wPNKC.dot(kc_input)
 
-    # TODO see if we get any performance benefit to using any scipy.sparse or Sparse
-    # (https://sparse.pydata.org/en/stable/) representation of data while
-    # constructing wPNKC
-    # TODO any other way to get sparse DataArrays?
-    #
-    # need to start w/ boutons that have already have inh applied here.
-    # takes a couple seconds, but haven't gotten killed yet.
-    # .dot returns something that had dot product computed over shared dimensions,
-    # which is just 'bouton' between these two, so we will be left with dims
-    # ('time_s', 'claw')
-    claws_no_inh = wPNKC.dot(boutons)
+    if have_claws:
+        # removing the 'glomerulus' level from the 'claw' MultiIndex, since wPNKC (and
+        # thus claws_no_inh, does not have it)
+        kc2apl_input = kc2apl_input.reset_index('claw').drop_vars('glomerulus')
+        # restoring the 'claw' dim MultiIndex
+        kc2apl_input = move_all_coords_to_index(kc2apl_input)
 
-    # removing the 'glomerulus' level from the 'claw' MultiIndex, since wPNKC (and
-    # thus claws_no_inh, does not have it)
-    claws = claws.reset_index('claw').drop_vars('glomerulus')
-    # restoring the 'claw' dim MultiIndex
-    claws = move_all_coords_to_index(claws)
+    assert coords_equal(kc2apl_input, kc2apl_input_no_inh)
 
-    # TODO this all work?
-    assert coords_equal(boutons, boutons_no_inh)
-    assert coords_equal(claws, claws_no_inh)
+    # TODO fix (/update) to work in non-claw case (not sure it's easily possible...)
+    if have_claws:
+        assert (kc2apl_input_no_inh >= kc2apl_input).all()
+        prefix = f'mean {kc2apl_input_name}'
+        # TODO would need to this be based on spiking in non-claw case... prob just
+        # don't want to support this apl2kc_ax for non-claw cases...
+        _plot(apl2kc_ax, kc2apl_input, label=prefix)
+        _plot(apl2kc_ax, kc2apl_input_no_inh, label=f'{prefix} (before inh)')
 
-    # NOTE: would probably also fail if there was any chance of boutons (or anything
-    # really) having NaN still
-    #
-    # ok, this one is true at least
-    # TODO also see if we can subtract inh2pns we recalculated above from
-    # boutons_no_inh, and get boutons (after clipping)
-    assert (boutons_no_inh >= boutons).all()
-    # TODO also try adding back inh multiplied by weights??
-    assert (claws_no_inh >= claws).all()
+    if have_boutons:
+        # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
+        # outside of the bouton index (first row in output below):
+        # Coordinates:
+        #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+        # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
+        # * bouton      (bouton) MultiIndex
+        # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
+        # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
+        # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
+        #
+        # expanding each PN up to # of times it appears in boutons (and in same order as
+        # there)
+        boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
+            'glomerulus'
+        )
+        # TODO assert len is that of boutons (and greater than that of pns)
+        assert boutons_no_inh.dims == ('bouton', 'time_s')
+        assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
 
-    # TODO assert anything on vmin/vmax for below two (vs that of plot)?
-    # should be ok
-    _plot(apl2pn_ax, boutons_no_inh, label='mean boutons (before inh)')
-    _plot(apl2kc_ax, claws_no_inh, label='mean claws (before inh)')
+        # (it is True now that i've actually removed the NaN by here)
+        # > (boutons >= 0).all()
+        # False
+        boutons_min = boutons.min().item()
+        # should == 0 almost certainly, at least if there is any meaningful PN>APL
+        # inhibition enabled, with APL actually getting activity
+        # TODO assert it's >0 otherwise?
+        assert boutons_min >= 0, f'had some bouton activities < 0. min={boutons_min}'
 
-    _plot(apl2pn_ax, boutons, label='mean boutons')
-    _plot(apl2kc_ax, claws, label='mean claws')
+        assert coords_equal(boutons, boutons_no_inh)
+        # NOTE: would probably also fail if there was any chance of boutons (or anything
+        # really) having NaN still
+        #
+        # TODO (delete?) also see if we can subtract inh2pns we recalculated above from
+        # boutons_no_inh, and get boutons (after clipping)
+        assert (boutons_no_inh >= boutons).all()
+        # TODO (delete?) assert anything on vmin/vmax for below two (vs that of plot)?
+        # should be ok
+        _plot(apl2pn_ax, boutons, label='mean boutons')
+        _plot(apl2pn_ax, boutons_no_inh, label='mean boutons (before inh)')
+
+    if is_scalar(wAPLKC):
+        # TODO + add (to?) unit test to verify that this produces appropriate inh2kcs
+        # values
+        wAPLKC = pd.Series(index=kc2apl_input.get_index('kc'), data=wAPLKC)
 
     assert (wAPLKC >= 0).all()
     # uses values from wAPLKC, and gets appropriate (matching index) coordinates from
-    # claws
-    wAPLKC = series2xarray_like(wAPLKC, claws)
+    # kc2apl_input (which is either kcs or claws)
+    wAPLKC = series2xarray_like(wAPLKC, kc2apl_input)
     # need input w/ 'time_s' dim to go first, for calls using ts below
     inh2kcs = outer_product(odor_inh_sims, wAPLKC)
-    inh2kcs_clipped = inh2kcs.where(inh2kcs > claws_no_inh, claws_no_inh)
-    _plot(apl2kc_ax, inh2kcs_clipped, label='mean APL>claw inh')
-    apl2kc_ax.set_title('APL>claw inhibition', fontsize=title_fontsize)
 
-    assert (wAPLPN >= 0).all()
-    # uses values from wAPLPN, and gets appropriate (matching index) coordinates from
-    # boutons
-    wAPLPN = series2xarray_like(wAPLPN, boutons)
-    inh2pns = outer_product(odor_inh_sims, wAPLPN)
-    inh2pns_clipped = inh2pns.where(inh2pns > boutons_no_inh, boutons_no_inh)
-    _plot(apl2pn_ax, inh2pns_clipped, label='mean APL>PN inh')
-    apl2pn_ax.set_title('APL>bouton inhibition', fontsize=title_fontsize)
+    # TODO check it's true we also want to clip negative inhibition in non-claw
+    # case (should be fine?) at least assert we have no negative inhs?
+    clip_negative_inhibition = False
+    if have_claws:
+        clip_negative_inhibition = True
+        if mp is not None:
+            # defaults to false, so assuming this is only set true
+            if mp.kc.allow_net_inh_per_claw:
+                clip_negative_inhibition = False
+        else:
+            # shouldn't need to warn if unit is KCs not claws, b/c i don't think choice
+            # matters there?
+            warn('mp=<ModelParams> not passed. assuming we want to clip negative claw '
+                'inhibitions (as would be the case if model were run with mp.kc.'
+                'allow_net_inh_per_claw=false)'
+            )
+    else:
+        warn('currently assuming we do not need to limit inh2kcs to '
+            'kc2apl_input_no_inh in non-claw cases. this latter variable is not '
+            'currently computed in a meaningful way in those cases.'
+        )
+
+    # TODO TODO need to also limit in non-claw cases, or not? worth it?
+    # can't compute this way, because kc2apl_input_no_inh doesn't currently make sense
+    # in non-claw case (esp since spiking required)
+    if clip_negative_inhibition:
+        inh2kcs = inh2kcs.where(inh2kcs > kc2apl_input_no_inh, kc2apl_input_no_inh)
+
+    _plot(apl2kc_ax, inh2kcs, label=f'mean APL>{kc2apl_input_name} inh')
+    # TODO keep this in non-claw case? don't think i can easily compute/plot previous
+    # two lines that are also plotted in claw-case
+    apl2kc_ax.set_title(f'APL>{kc2apl_input_name} inhibition', fontsize=title_fontsize)
+
+    if have_boutons:
+        assert not is_scalar(wAPLPN), 'not implemented'
+
+        # there is currently no olfsysm code path that supports APL>PN inhibition other
+        # than when the model also has separate boutons
+        assert (wAPLPN >= 0).all()
+        # uses values from wAPLPN, and gets appropriate (matching index) coordinates
+        # from boutons
+        wAPLPN = series2xarray_like(wAPLPN, boutons)
+        inh2pns = outer_product(odor_inh_sims, wAPLPN)
+        inh2pns_clipped = inh2pns.where(inh2pns > boutons_no_inh, boutons_no_inh)
+        _plot(apl2pn_ax, inh2pns_clipped, label='mean APL>PN inh')
+        apl2pn_ax.set_title('APL>bouton inhibition', fontsize=title_fontsize)
 
     # TODO check this is being hit
     if var2range is not None:
@@ -10085,37 +10466,31 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         # makes more sense anyway. may need to make more weights required then, maybe
         # all)
 
-        # inh2kcs should be describing mean inh onto *claws*, and since (clipped)
-        # inhibition should never be able to exceed the pre-inhibition quantity, and
-        # since boutons are the pre-inhibition input to claws, this range should be an
-        # upper bound on what would make sense for inhibition
-        # TODO TODO want something smaller than an upper bound? actually compute clipped
-        # inh and store limits of that var? (probably) (unless i want to also always
-        # plot the pre-inh activities on same scale...)
-        vmin, vmax = var2range['bouton_sims']
+        # TODO work in pn_sims case? make sense?
+        vmin, vmax = var2range['bouton_sims' if have_boutons else 'pn_sims']
         inh2kcs_min = inh2kcs.min().item()
         inh2kcs_max = inh2kcs.max().item()
-        # TODO need to fix? should def be True if we are taking mean of clipped
-        # inhibition, which above should probably be replaced w/ anyway
         assert vmin <= inh2kcs_min, f'{vmin=} > {inh2kcs_min=}'
         assert vmax >= inh2kcs_max, f'{vmax=} < {inh2kcs_max=}'
         # expect vmin to be 0, if we include cases w/ any meaningful APL>PN inhibition
         # TODO some buffer around?
         apl2kc_ax.set_ylim([vmin, vmax])
 
-        # pn_sims should bound inh on boutons (what inh2pns should be), by same logic as
-        # above comment
-        vmin, vmax = var2range['pn_sims']
-        inh2pns_min = inh2pns.min().item()
-        inh2pns_max = inh2pns.max().item()
-        # TODO need to fix? should def be True if we are taking mean of clipped
-        # inhibition, which above should probably be replaced w/ anyway
-        assert vmin <= inh2pns_min, f'{vmin=} > {inh2pns_min=}'
-        assert vmax >= inh2pns_max, f'{vmax=} < {inh2pns_max=}'
+        if have_boutons:
+            # pn_sims should bound inh on boutons (what inh2pns should be), by same
+            # logic as above comment
+            vmin, vmax = var2range['pn_sims']
+            inh2pns_min = inh2pns.min().item()
+            inh2pns_max = inh2pns.max().item()
+            # TODO need to fix? should def be True if we are taking mean of clipped
+            # inhibition, which above should probably be replaced w/ anyway
+            assert vmin <= inh2pns_min, f'{vmin=} > {inh2pns_min=}'
+            assert vmax >= inh2pns_max, f'{vmax=} < {inh2pns_max=}'
 
     yoffset = -.1
     legend_below(apl2kc_ax, yoffset)
-    legend_below(apl2pn_ax, yoffset)
+    if have_boutons:
+        legend_below(apl2pn_ax, yoffset)
 
     _savefig()
 
@@ -10127,8 +10502,8 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
     Optional[float] = None, stim_end: Optional[float] = None,
     title: Optional[str] = None, _odor_index: Optional[pd.Index] = None,
     var2range: Optional[MinMaxDict] = None, wPNKC: Optional[pd.DataFrame] = None,
-    wAPLKC: Optional[pd.DataFrame] = None, wAPLPN: Optional[pd.DataFrame] = None,
-    wKCAPL: Optional[pd.DataFrame] = None, wPNAPL: Optional[pd.DataFrame] = None,
+    # TODO TODO allow floats for these, to support non-connectome-APL cases?
+    wAPLKC: Optional[pd.Series] = None, wAPLPN: Optional[pd.Series] = None,
     ) -> MinMaxDict:
     # TODO say which plots are saved
     """Saves several figures in `plot_dir`
@@ -10242,12 +10617,18 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
             warn(f'picking last odor {odor} for example dynamics plots')
         del odor_values
 
-    # not to be confused w/ var2range the input parameter (None or dict like this)
+    # not to be confused w/ var2range the input parameter (None or dict like this).
+    # _var2range is returned so that one global var2range can be calculated, and then
+    # passed to future calls (see step_model_pn_apl.py), so they all share a fixed
+    # range. _var2range shouldn't be used to set range within a call, because if we
+    # don't have a precomputed var2range passed in, we should do just as well to let
+    # each plot limits vary.
     # TODO rename one/both of them?
     _var2range = dict()
-    store_range_of = ['Is_from_kcs', 'Is_from_pns', 'inh_sims', 'Is_sims', 'vm_sims',
-        'claw_sims', 'bouton_sims', 'pn_sims'
-    ]
+    shared_vars = ['inh_sims', 'Is_sims', 'vm_sims', 'pn_sims']
+    bouton_only_vars = ['Is_from_kcs', 'Is_from_pns', 'bouton_sims']
+    claw_only_vars = ['claw_sims']
+    store_range_of = shared_vars + claw_only_vars + bouton_only_vars
     seen = set()
     for k, arr in dynamics_dict.items():
         if k not in store_range_of:
@@ -10256,11 +10637,14 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
         vmax = arr.max().item(0)
         _var2range[k] = (vmin, vmax)
         seen.add(k)
-    # TODO might this ever trip? try running load_and_plot_dynamics_cli on root
-    # containing both pn-claw-to-apl_[True|False]? maybe even non-bouton|claw stuff?
-    # fail more gracefully there?
-    # TODO also assert some minimum set? (now that i'm checking <= instead of ==)
     assert seen <= set(store_range_of), f'{seen=} > set of {store_range_of=}'
+    assert seen >= set(shared_vars), f'{seen=} did not have all of {shared_vars=}'
+
+    bouton_var_set = set(bouton_only_vars) | set(claw_only_vars) | set(shared_vars)
+    have_boutons = 'bouton_sims' in seen
+    if have_boutons:
+        assert bouton_var_set == seen, f'{bouton_var_set=} != {seen=}'
+
     # TODO delete?
     # TODO pprint here? if verbose?
     print('_var2range:')
@@ -10274,10 +10658,10 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
         )
 
     if aligned_dynamics:
-        plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,
+        plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor, mp=mp,
             title_prefix=title_prefix, wPNKC=wPNKC, drop_nonresponders=True
         )
-        plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor,
+        plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor, mp=mp,
             title_prefix=title_prefix, wPNKC=wPNKC
         )
 
@@ -10285,6 +10669,8 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
         glom=glom, title_prefix=title_prefix
     )
 
+    if not have_boutons:
+        all_bouton_dynamics = False
     # TODO delete all this warning conditional stuff, and rename
     # plot_all_bouton_dynamics to plot_unit_dynamics or something
     # (plot_aligned_dynamics?), and then just plot what we have no matter what
@@ -10395,7 +10781,8 @@ ALL_DYNAMICS_VARS: Set[str] = REQUIRED_DYNAMICS_VARS | {
 # from whether or not we have claw_sims / bouton_sims (latter of which we might want to
 # require based on saved model params instead)
 def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
-    warn_: bool = True, verbose: bool = False, **kwargs) -> bool:
+    warn_: bool = True, verbose: bool = False, _return_var2netcdf: bool = False,
+    **kwargs) -> Union[bool, Tuple[bool, ParamDict]]:
     """
     Args:
         model_dir: directory to search for .nc dynamics files from
@@ -10411,6 +10798,8 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
             in cases where dirs don't exist, or have no .nc files, or none with matching
             names)
 
+        _return_var2netcdf: internal use only
+
         **kwargs: passed to `dynamics_var_paths`. only currently for
             `mtime_tolerance_s`.
 
@@ -10424,7 +10813,10 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
             # TODO more info? full traceback?
             warn(err)
 
-        return False
+        if not _return_var2netcdf:
+            return False
+        else:
+            return False, None
 
     have_vars = set(varname2netcdf_path.keys())
 
@@ -10454,11 +10846,16 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
             f'{pformat(missing)}'
         )
 
-    return len(missing) == 0
+    have_required = len(missing) == 0
+    if not _return_var2netcdf:
+        return have_required
+    else:
+        return have_required, varname2netcdf_path
 
 
-def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
-    ) -> DynamicsDict:
+# TODO also take (all/some) args have_all_saved_dynamics does, and thread thru?
+def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True,
+    require: bool = True, **kwargs) -> DynamicsDict:
     """Loads all NetCDF (.nc) files into dynamics dict, with one key per file.
 
     Args:
@@ -10467,8 +10864,11 @@ def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
         skip_unrecognized: if True, will warn about (and not load) .nc files whose
             prefix are not in `ALL_DYNAMICS_VARS`
 
-        **kwargs: passed to `dynamics_var_paths`. only currently for
-            `mtime_tolerance_s`.
+        require: if True, will raise IOError if `have_all_saved_dynamics(model_dir)`
+            returns False
+
+        **kwargs: passed to `dynamics_var_paths` (via `have_all_saved_dynamics`).
+            only currently for `mtime_tolerance_s`.
 
     Returns dict of name -> data, for each name of an output containing model
     dynamics. E.g. `model_dir / 'claw_sims.nc'` will be inserted with key 'claw_sims',
@@ -10476,7 +10876,15 @@ def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True, **kwargs
 
     Raises `IOError` or `RuntimeError` when `dynamics_var_paths` does.
     """
-    varname2netcdf_path = dynamics_var_paths(model_dir, **kwargs)
+    have_required, varname2netcdf_pat = have_all_saved_dynamics(model_dir, verbose=True,
+        _return_var2netcdf=True, **kwargs
+    )
+    if require and not have_required:
+        # use something distinct here, so we can catch these cases separate from IOError
+        # that might be raised by dynamics_var_paths call?
+        # should be fine to catch those errors same as this one. it raises IOError if
+        # model_dir is not a directory or there are NO .nc files in it.
+        raise IOError(f'{model_dir} did not have required dynamics files!')
 
     dynamics_dict = dict()
     for var_name, f in varname2netcdf_path.items():
@@ -10612,6 +11020,20 @@ def dropna_and_subset_all_to_same_times(dynamics_dict: DynamicsDict, *,
         dynamics_dict[k] = arr
 
 
+def default_model_odor_startstop_times() -> Tuple[float, float]:
+    """Returns `olfsysm.ModelParams` default `mp.time_stim_[start|end]`
+    """
+    # assuming model was run w/ same stim start/end as current defaults. could also not
+    # pass these, but then there would be several warnings in plot_dynamics
+    # (saying essentially the same thing: that it is assuming current defaults)
+    # (and passing mp could cause some checks to fail, since it is not necessarily
+    # initialized the same as the mp actually used to run the model)
+    mp = osm.ModelParams()
+    stim_start = mp.time_stim_start
+    stim_end = mp.time_stim_end
+    return stim_start, stim_end
+
+
 def load_and_plot_dynamics(model_dir: Path, **kwargs) -> MinMaxDict:
     # TODO say what we typically use kwargs for (currently nothing. delete? or use for
     # CLI vmin/vmax for certain plots?)
@@ -10628,14 +11050,7 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> MinMaxDict:
     """
     dynamics_dict = load_dynamics(model_dir)
 
-    # assuming model was run w/ same stim start/end as current defaults. could also not
-    # pass these, but then there would be several warnings in plot_dynamics
-    # (saying essentially the same thing: that it is assuming current defaults)
-    # (and passing mp could cause some checks to fail, since it is not necessarily
-    # initialized the same as the mp actually used to run the model)
-    mp = osm.ModelParams()
-    stim_start = mp.time_stim_start
-    stim_end = mp.time_stim_end
+    stim_start, stim_end = default_model_odor_startstop_times()
 
     # TODO TODO do i already have a fn to load all other outputs from a model dir?
     # just fit_and_plot... w/ try_cache=True? want something even simpler than that?
@@ -14265,10 +14680,19 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         param_dict['type2thr'] = thr_by_type.to_dict()
         param_dict['retune_apl_post_equalized_thrs'] = retune_apl_post_equalized_thrs
 
-    if mp.kc.tune_apl_weights:
-        tuning_iters = rv.kc.tuning_iters
+    tuning_iters = rv.kc.tuning_iters
+    # TODO delete
+    print(f'{tuning_iters=}')
+    #
+    if not mp.kc.tune_apl_weights:
+        assert tuning_iters == 0, f'{tuning_iters=} > 0, despite tune_apl_weights=false'
+    else:
         # test_fixed_inh_params has an assertion like for this for the tune case, so not
         # expecting this to fail
+        # TODO TODO TODO fix. still failing in this case:
+        # megamat_multiresponder_apl_boost/weight-divisor_20__connectome-APL_True__target-sp_0.05
+        # when running ./boost_apl_megamat_model_multiresponders.py
+        # (when progress bar says 10/16)
         assert tuning_iters > 0, ('if rv.kc.tune_apl_weights was true, APL tuning_iters'
             ' should start at at least 1, indicating some tuning happened'
         )
@@ -14429,6 +14853,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # dynamics? (currently doing that dropna -> reindexing all others to match in
         # test_dynamics_indexing)
 
+    no_responses = not responses.any().any()
+    if no_responses:
+        warn('no model responses at all! disabling any plotting')
+        plot_example_dynamics = False
+        make_plots = False
+
     if plot_example_dynamics:
         # TODO make dynamics plotting not depend on make_plot? and rename that, to
         # control just the other plots below?
@@ -14436,8 +14866,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         dynamics_plot_dir = makedirs(plot_dir / 'dynamics')
         plot_dynamics(dynamics_plot_dir, dynamics_dict, mp=mp, title=title,
             # TODO should warn if only some of these are passed in, and not all
-            wPNKC=wPNKC, wAPLKC=wAPLKC, wAPLPN=wAPLPN, wKCAPL=wKCAPL, wPNAPL=wPNAPL,
-            _odor_index=odor_index,
+            wPNKC=wPNKC, wAPLKC=wAPLKC, wAPLPN=wAPLPN, _odor_index=odor_index,
         )
 
     orn_sims = dynamics_dict['orn_sims']
@@ -15934,11 +16363,16 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
         elif isinstance(v, np.ndarray):
             print()
             print(f'{k=}')
-            print(f'{type(k)=}')
+            print(f'{type(v)=}')
             print(f'{v=}')
             print('was a numpy array! pop + save separately?')
             breakpoint()
             # TODO raise ValueError or something?
+
+        # TODO delete. actually *want* to do nothing with many things that
+        # would fall here (e.g. list-of-float for fixed_thr, in uniform case)
+        #else:
+        #    assert False, f'unexpected type for {k=} {type(v)=}'
         #
 
     # TODO update comment (/fix code). not always all scalars now, at least b/c
@@ -15962,6 +16396,8 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
     write_tuned_params(param_dict, param_dir, keys_not_to_remove=keys_not_to_remove)
 
     # TODO put behind a checks=True flag?
+    # TODO TODO why does uniform model (at least in test_uniform_paper_repro) not seem
+    # to have these? fix?
     if save_dynamics:
         assert have_all_saved_dynamics(param_dir, warn_=True, verbose=True)
 
@@ -16516,10 +16952,18 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # ID anyway, since that suffix is for a default value of the param)
             fix_model_id = 'prat-claws_True__prat-boutons_True__connectome-APL_True'
             if model_id == fix_model_id:
+                # TODO delete this hack (or at least warn we are doing it?)
+                # TODO TODO should i be setting model_id to this (rather than just
+                # _model_id) (so it gets written into cache this way too)?
                 _model_id = f'{fix_model_id}__pn-claw-to-apl_False'
                 assert _model_id in onestep_lr_cache
             else:
                 _model_id = model_id
+            #
+            # TODO delete. debugging.
+            print()
+            print('_model_id (for lookup in onestep_lr_cache):')
+            print(_model_id)
             #
             if _model_id in onestep_lr_cache:
                 sp_lr_coeff = onestep_lr_cache[_model_id]
@@ -16527,6 +16971,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 if not variable_n_claws:
                     cached_coeff_str = f'{sp_lr_coeff=:.3f}'
                 else:
+                    # TODO oh, did i already plan for support for this? i think
+                    # elsewhere i was assuming this wouldn't work in this case, or maybe
+                    # not even setting into / using cache there?
+                    # does it work after all? test?
                     cached_coeff_str = 'sp_lr_coeff list (one per seed)'
 
                 # TODO try to move this warning closer to when the model starts
@@ -16535,15 +16983,25 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 # arg for it?)
                 # TODO move this warning after other message about loading
                 # everything from cache (and all this code, ideally)
-                warn(f'using {cached_coeff_str} from onestep_lr_cache '
+                warn(
+                    # TODO delete
+                    ('#' * 80) + '\n' +
+                    #
+                    f'using {cached_coeff_str} from onestep_lr_cache '
                     f'({onestep_lr_cache_path}), to tune in one iteration. '
                     'set try_lr_cache=False to disable.'
+                    # TODO delete
+                    + '\n' + ('#' * 80)
                 )
                 model_kws['sp_lr_coeff'] = sp_lr_coeff
 
                 used_lr_cache = True
+            # TODO delete
+            print()
+            #
         #
 
+        dynamics_dict = dict()
         # TODO check i can replace model_test.py portion like this w/ this
         # implementation?
         if n_seeds > 1:
@@ -16702,6 +17160,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                         # below passing again)
                         if not isinstance(v, xr.DataArray)
                     ]
+                    if return_dynamics:
+                        dynamics_dict = {k: v for k, v in param_dict.items()
+                            if isinstance(v, xr.DataArray)
+                        }
+                        assert len(dynamics_dict) > 0
                 else:
                     assert set(param_dict.keys()) == set(param_dict_keys), (
                         f'{set(param_dict.keys())}\n... != ...\n'
@@ -16722,6 +17185,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             param_dict = {
                 k: [x[k] for x in param_dict_list] for k in param_dict_keys
             }
+
+            assert not any(k in param_dict for k in dynamics_dict)
+            param_dict.update(dynamics_dict)
+
             param_dict['kc_spont_in'] = kc_spont_in
         else:
             # TODO delete?
@@ -16924,8 +17391,31 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             save_dynamics=return_dynamics, keys_not_to_remove=keys_not_to_remove
         )
 
+        update_lr_cache = False
         if ONESTEP_LR_KEY in param_dict:
             tuning_iters = param_dict['tuning_iters']
+            # TODO TODO handle seeds separately (append to dict key?) or unsupport
+            # uniform model case here
+            if isinstance(tuning_iters, list):
+                warn('onestep_lr_cache not currently supported in variable_n_claws '
+                    'cases (such as uniform wPNKC model)'
+                )
+            else:
+                update_lr_cache = True
+
+        # TODO TODO save parallel files with model_id -> context written from (script
+        # name, and timestamp, at least?), to debug where things might be getting
+        # written incorrectly? (i mean, all writing should happen in this code, but
+        # could get the calling script? that even matter? maybe some other args?)
+        # TODO delete
+        print()
+        print(f'{update_lr_cache=}')
+        #
+        if update_lr_cache:
+            # TODO delete. debugging.
+            print('model_id (for lookup in onestep_lr_cache):')
+            print(model_id)
+            #
             # TODO should be true, right?
             assert tuning_iters >= 1, ('expect this to start on 1 when any APL tuning '
                 'happens'
@@ -16941,19 +17431,57 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             else:
                 onestep_lr_cache = dict()
 
-            if used_lr_cache and tuning_iters != 1:
-                warn('should have converged in one step b/c used onestep sp_lr_coeff '
-                    'from cache, but did not! model (/usage) must have changed! '
-                    f'removing this model ID ({model_id}) from cache!'
-                )
-                assert np.isclose(onestep_sp_lr_coeff, onestep_lr_cache[model_id])
-                del onestep_lr_cache[model_id]
+            cache_error = False
+            if used_lr_cache:
+                remove_suffix = f' removing this model ID ({model_id}) from cache!'
+
+                cached_lr_coeff = onestep_lr_cache[model_id]
+                if not np.isclose(onestep_sp_lr_coeff, cached_lr_coeff):
+                    warn(f'{cached_lr_coeff=} does not match current '
+                        f'{onestep_sp_lr_coeff=}, but they should be the same since we '
+                        'used cached onstep sp_lr_coeff!' + remove_suffix
+                    )
+                    cache_error = True
+
+                if tuning_iters != 1:
+                    warn('should have converged in one step because used cached onestep'
+                        ' sp_lr_coeff, but did not!' + remove_suffix
+                    )
+                    cache_error = True
+
+                if cache_error:
+                    del onestep_lr_cache[model_id]
             else:
                 onestep_lr_cache[model_id] = onestep_sp_lr_coeff
 
             to_json(onestep_lr_cache, onestep_lr_cache_path,
-                multiple_saves_per_run_ok=True
+                # TODO delete verbose=True after debugging?
+                multiple_saves_per_run_ok=True, verbose=True
             )
+
+            if cache_error:
+                # TODO TODO TODO how am i getting 7 now for some step_model_pn_apl
+                # cases???
+                # /mnt/d0/PNAPL_stepping/pn-claw-to-apl_True/scale-pre-tuning_True_wAPLPN-0.10_wPNAPL-1.00
+                # TODO delete
+                # TODO TODO can i repro this? maybe via the boost... script i think i
+                # initially saw it with? (oh, yea. and more)
+                # TODO TODO fix. getting false positive here (was equal to 2 at one
+                # point, but probably fixed that)
+                # TODO TODO actually i think it's something about how the onestep
+                # coeff is calculated in failing cases (not sure anymore...). i don't
+                # think it's actually a value that is enabling tuning in one iteration
+                # (is that true? something inconsistent about how i'm counting
+                # iterations? add print to sim_KC_layer call block to count # of times
+                # that's run after enabling APL?)
+                print(f'{(_model_id == model_id)=}')
+                print()
+                print(f'{tuning_iters=}')
+                print(f'{onestep_sp_lr_coeff=}')
+                print(f'{cached_lr_coeff=}')
+                breakpoint()
+                print()
+                #
 
         # TODO don't save in sensitivity analysis subcalls? as this should not change
         # across those (+ make a list of files to exclude and pass to automated saving
@@ -17137,6 +17665,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     to_csv(spike_counts, param_dir / 'spike_counts.csv',
         verbose=(not _in_sens_analysis)
     )
+
+    no_responses = not responses.any().any()
+    if no_responses:
+        warn('no model responses at all! disabling any plotting')
+        make_plots = False
 
     # NOTE: 'pearson' is added after this
     # TODO if i want it, will need to return later (and if i want in CSV in this
@@ -17620,9 +18153,13 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     for stddev in (0.1, 0.25, 0.5):
         noise = rng.normal(loc=0.0, scale=stddev, size=responses.shape)
         responses_with_noise = responses + noise
-        xlabel = f'{xlabel}\nnormal noise added ($\sigma$={stddev})'
+        # TODO still work w/ '\\sigma' instead of '\sigma'? think i was getting invalid
+        # escape sequence warning but latter
+        xlabel_noise = f'{xlabel}\nnormal noise added ($\\sigma$={stddev})'
         fname = f'corr_with-noise-{stddev:g}sd'
-        plot_corr(responses_with_noise, param_dir, fname, title=title, xlabel=xlabel)
+        plot_corr(responses_with_noise, param_dir, fname, title=title,
+            xlabel=xlabel_noise
+        )
     #
 
     # would only fail if there were no silent cells, which should never be true really
@@ -17649,7 +18186,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO TODO try a version of the binarized responses with noise added too?
         # (maybe stddev 0.5 there?)
 
-        xlabel = f'{xprefix}spike counts\nnormal noise added ($\sigma$={stddev})'
+        # TODO still work w/ '\\sigma' instead of '\sigma'? think i was getting invalid
+        # escape sequence warning b/c of that
+        xlabel = f'{xprefix}spike counts\nnormal noise added ($\\sigma$={stddev})'
         fname = f'corr_spike-counts_with-noise-{stddev:g}sd'
         plot_corr(spike_counts_with_noise, param_dir,
             f'{fname}_including-silent', title=title_including_silent_cells,
@@ -24247,6 +24786,8 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
         assert equals(p1, p2, check_float_with_allclose=True), \
             f'{name=}\n{p1=}\nnot equals\n{p2=}'
 
+    # TODO modify to exclude stuff that is a symlink? maybe if a certain kwarg flag is
+    # set (by default warning if any are symlinks?)
     def filenames_with_ext(output_dir: Path, ext: str) -> Set[str]:
         return {x.name for x in output_dir.glob(f'*.{ext}')
             if not x.stem in file_stems_to_ignore
@@ -24506,6 +25047,355 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     # (excluding *.pdf, model_internals/ (which should only have *.pdf), and
     # olfsysm_log.txt [or renamed logs if multiple seeds]) should leave us only pickles
     # and CSVs, right?
+
+
+# TODO option to group by as many components as there are ncomps (splitting
+# out e.g. separate classes for 2nd-highest-response-comp, for each ncomps=2 class with
+# a given max-comp already fixed) (or would all these be so small as to not matter?
+# check!) (how to sort? tuple for max_comp_idx, sorted like (max_comp_idx,
+# 2nd-highest-comp-idx, ...) (may need fixed length tuples, probably of # of
+# components)?
+def sort_rois_by_response_classes(df: pd.DataFrame, response_threshold: float, *,
+    merge_maxcomp_ncomps0: bool = True) -> pd.DataFrame:
+    """Sorts input by #-components/mix responses, then by max-response component index.
+
+    Uses `>= response_threshold` to determine which elements are considered responses.
+
+    Args:
+        df: responses with odor rows and responding unit (e.g. KC) columns. the last
+            row is expected to have 'mix' in the name, and all preceding rows are
+            assumed to be the components of this mix
+
+        response_threshold: binarize df with anything `>= response_threshold` counted as
+            a response. response classes are then defined (per-unit) in terms of whether
+            they respond to the mix, how many components they respond to, and which
+            component elicits the max response (if there is a component response. see
+            `merge_maxcomp_ncomps0`).
+
+        merge_maxcomp_ncomps0: if True, cells not responding to any component will not
+            all receive -1 for the last component of the key, which would otherwise
+            indicate the index of the component to which the cell responded the
+            strongest. If False, cells will still receive the index of the
+            (subthreshold) max component response, for this 3rd element of the key.
+
+    Returns a copy of `df` with an extra 'key' level added to column (KC) index,
+    indicating which "response class" that KC belongs to, and also sorts on this key.
+
+    The sorting on this key should order cells in a meaningful way based on their
+    responses, first grouping mix responders together, and within that sorting by how
+    many components the cell responded to, and which it responded to the strongest.
+    """
+    binarized = df >= response_threshold
+
+    # last row should be mix
+    mix_resp = binarized.iloc[-1]
+    # TODO change so input expects KCs as rows instead? ifl most of my functions are
+    # currently like that, and probably should remain so (converting other stuff using
+    # opposite convention in natmix_data/analysis.py, where this fn was copied from)
+    #
+    # should be 'cmix @ 0.0' or 'kmix @ 0.0' (or maybe one of the lower concs, like
+    # -1/-2, if those weren't dropped yet)
+    assert 'mix' in mix_resp.name, (f'{mix_resp.name=} (input need transposed? rows '
+        'currently expected to be odors)'
+    )
+    # TODO assert anything about component odor strs? no solvent pfo? no '+' or '-'?
+    # or at least nothing that parses as a mix? # of them (maybe warning if >5? or if !=
+    # another kwarg indicating component number?)?
+
+    comp_resps = binarized.iloc[:-1]
+    n_comps = comp_resps.sum()
+    max_comp_idx = df.iloc[:-1].reset_index(drop=True).idxmax()
+
+    # TODO option to disable this? not sure i always want it...
+    max_comp_magnitude = df.iloc[:-1].max()
+
+    df = df.copy()
+    df.loc['key'] = list(zip(mix_resp, n_comps, max_comp_idx, max_comp_magnitude))
+    df = df.sort_values('key', axis=1)
+
+    # currently dropping max_comp_magnitude before we return (to not have to change any
+    # downstream code that reprocesses this index). wouldn't necessarily be a huge deal
+    # to change that code, if I wanted this magnitude outside.
+    df.loc['key'] = df.loc['key'].map(lambda x: x[:-1])
+
+    # TODO add flag to choose whether we do this? (move global default to kwarg now?)
+    #
+    # merging classes that have no (>=threshold) responses to components, and that
+    # otherwise only differ in which component they respond the strongest to. sorting
+    # has already happened, so that will have already influenced order.
+    #
+    # would need to also maintain max_comp_magnitude (i.e. x[3]), if I decide I don't
+    # want to drop it (as line above is currently doing).
+    if merge_maxcomp_ncomps0:
+        df.loc['key'] = df.loc['key'].map(
+            lambda x: (x[0], x[1], -1 if x[1] == 0 else x[2])
+        )
+
+    df = df.T.set_index('key', append=True).T
+
+    # TODO assert input started as this dtype?
+    #
+    # key was added as another row (type object) at bottom, so each column then gets
+    # a dtype of object. all prior rows still have float values, so after dropping
+    # key row above, can restore value type.
+    df = df.astype(float)
+
+    # TODO return namedtuples or something instead? to avoid risk of confusing meaning
+    # of elements? can those be used as levels of pandas indices just as easily?
+    return df
+
+
+# TODO use something simliar to add counts/fractions for clust_means plot?
+# (using counts instead of class_sizes)
+def format_response_class(x: Union[Tuple[bool, int, int], Tuple[bool, int]], *,
+    sep: str = '  ', df: Optional[pd.DataFrame] = None, n_total: Optional[int] = None,
+    class_sizes: Optional[pd.Series] = None) -> str:
+    """Formats tuple with info on single-panel mix/component responses.
+
+    Expects tuples in format `sort_rois_by_response_classes` adds under the `'key'`
+    column level, or similar tuples that are just the first two elements of the former.
+
+    Args:
+        x: tuple where elements are (in order): whether the unit responsed to mix
+           (bool), how many components the unit responded to (int), (optional) index (in
+           sorted odors) of the component the unit responded to the most (int)
+
+        sep: placed between parts of formatted str, when including parts showing:
+            1) which component had max response (if `len(x) == 3`), or
+            2) how many (+ what fraction) units are in this response class
+               (if `class_sizes` passed)
+
+        df: index used to map component index to component name (odors must be in same
+            sorted order [with no solvent] as used in `sort_rois_by_response_classes`).
+            see also `n_total`.
+
+        n_total: only used if `class_sizes` are passed, to show fraction of total #
+            units for this class. if `df` is passed, but this is not, `len(df.columns)`
+            is used.
+
+        class_sizes: series mapping the same 3-tuples to how many units are in each
+            class.
+    """
+    assert type(x[0]) is bool
+
+    ncomps = x[1]
+    # most number of components i currently have in either of my panels (kiwi /
+    # control). would need to update if using any of this code for some of Sam's future
+    # mixtures w/ more components (/ anything else with more components)
+    # TODO expose as kwarg?
+    max_n_comps = 5
+    assert type(ncomps) is int and 0 <= ncomps <= max_n_comps
+
+    class_desc = f'mix={int(x[0])} ncomps={ncomps}'
+
+    if len(x) == 3:
+        max_comp_idx = x[2]
+        # may want to use -1 to group stuff w/ ncomps=0 together tho (if NaN gives me a
+        # hard time, and if i don't want to set them all to 0 or something)
+        assert type(max_comp_idx) is int
+        # TODO refactor to have a constant for -1 here and where they are set to that
+        # magic value (should mean we all comps were below thresh, and flag to merge
+        # those was True)
+        if max_comp_idx != -1:
+            if df is not None:
+                max_comp_str = olf.parse_odor_name(df.index[max_comp_idx])
+            else:
+                max_comp_str = str(max_comp_idx)
+
+            # TODO assertion(s) that df.index has what we need to get comp name?
+
+            # TODO leave as index if i don't pass in df (or some other var to
+            # serve the purpose df was previously)
+            # TODO separate flag to disable showing index/odor? or just don't if input
+            # is a 2-tuple instead of a 3-tuple? (leaning towards latter)
+            # TODO s/max_comp/max/g (shorter, but less clear)?
+            class_desc += f'{sep}max_comp={max_comp_str}'
+
+    # TODO assert class_sizes is None if len(x) == 2? or can we still do something
+    # there (sum across classes matching 2-tuple input?)?
+    if class_sizes is not None:
+        n = class_sizes[x]
+        n_str = f'n={n}'
+
+        if n_total is None and df is not None:
+            # TODO warn here?
+            n_total = len(df.columns)
+
+        if n_total is not None:
+            frac = n / n_total
+            # will format 0.0512... like '5.1%'
+            n_str += f' ({frac:.1%})'
+
+        class_desc += f'{sep}{n_str}'
+
+    return class_desc
+
+
+def print_n_and_frac_series(n_ser: pd.Series, frac_ser: pd.Series) -> None:
+    series_strs = n_ser.astype(str) + frac_ser.map(lambda x: f' ({x:.1%})')
+    print(series_strs.to_frame())
+
+
+def summarize_response_classes(df: pd.DataFrame,
+    response_threshold: Optional[float] = None, *, sum_across_flies: bool = False,
+    verbose: bool = True) -> pd.Series:
+    """Prints and returns info about # of each response classes
+
+    Args:
+        verbose: if set False, will not print anything
+    """
+    # TODO assert input does not contain panel level (response classes
+    # computation only set up to work w/ input from a single panel)
+
+    # TODO doc this behavior, and purpose of it
+    if 'key' not in df.columns.names:
+        assert response_threshold is not None
+        df = sort_rois_by_response_classes(df, response_threshold)
+    else:
+        assert response_threshold is None
+
+    class_sizes = df.groupby(level='key', sort=False, axis='columns').size()
+    # getting one count per class, rather than having each count duplicated for
+    # each odor (w/ rows=odors & columns=classes, before this .iloc slicing)
+    assert (class_sizes.iloc[0] == class_sizes).all().all()
+    class_sizes = class_sizes.iloc[0]
+    class_sizes.name = 'n_rois'
+    assert class_sizes.sum() == len(df.columns)
+
+    class_sizes.index = pd.MultiIndex.from_tuples(class_sizes.index,
+        names=['mix_resp', 'n_comps', 'max_comp_idx']
+    )
+
+    try:
+        n_mix_only_responders = class_sizes.loc[(True, 0)].sum()
+
+    # TODO TODO why do some model cases have a KeyError here despite there
+    # still seeming to be mix-only responders in the
+    # clust_hierarch_control_subthresh-to-0--001.pdf plot?
+    # (set threshold below min. this scaled model data had min of 0.069263, w/ next
+    # smallest value of 0.4845663942272249)
+    # TODO update (all?) scaling so 0 is actually 0?
+    #
+    # TODO TODO fix! not sure what was tripping this before, but can now repro w/
+    # ./analysis.py tuned-on_control-kiwi_target-sp_0.1__prat-claws_True__-wPNKC-one-row-per-claw_True__connectome-APL_True__fixed-thr_234__wAPLKC_3.89 -m -s -U
+    # ...where it will reach this when working on
+    # thr_and_APL_sensitivity/thr116.84_wAPLKC23.34, right after saving by-cluster
+    # control panel plots
+    except KeyError:
+        # TODO
+        #breakpoint()
+        #
+        # TODO TODO restore?
+        #raise
+        warn('harcoding n_mix_only_responders=0, b/c KeyError!')
+        # TODO at least warn here (if no longer raising above)
+        n_mix_only_responders = 0
+
+    # NOTE: fraction of input, not of all ROIs in raw data (e.g. in KC cases,
+    # still currently dropping ROIs not in Remy's "good" clusters, as she does)
+    frac_mix_only_responders = n_mix_only_responders / len(df.columns)
+
+    if verbose:
+        print(f'{n_mix_only_responders} mix only responders (across all flies)'
+            f' ({frac_mix_only_responders:.1%} of ROIs still being analyzed)'
+        )
+
+    # TODO count # of diff classes above some threshold size -> use to try to
+    # inform number of clusters we should aim for? (in natmix_data/analysis.py
+    # clustering. move this comment there [/delete])
+
+    have_fly_cols = _have_fly_cols(df)
+    if have_fly_cols:
+        fly_class_sizes = df.groupby(level=['key'] + fly_cols, sort=False,
+            axis='columns').size()
+
+        # TODO refactor to share w/ above?
+        assert (fly_class_sizes.iloc[0] == fly_class_sizes).all().all()
+        fly_class_sizes = fly_class_sizes.iloc[0]
+        fly_class_sizes.name = 'n_rois'
+        assert fly_class_sizes.sum() == len(df.columns)
+        #
+
+        for_index = pd.MultiIndex.from_tuples(
+            fly_class_sizes.index.get_level_values('key'),
+            names=['mix_resp', 'n_comps', 'max_comp_idx']
+        ).to_frame(index=False)
+
+        for_index['date'] = fly_class_sizes.index.get_level_values('date')
+        for_index['fly_num'] = fly_class_sizes.index.get_level_values('fly_num')
+
+        fly_class_sizes.index = pd.MultiIndex.from_frame(for_index)
+        del for_index
+
+        assert fly_class_sizes.groupby(level=class_sizes.index.names,
+            sort=False).sum().equals(class_sizes)
+
+        # TODO TODO TODO make a plot for this too? or save / something so i can
+        # make one plot combining this for both panels?
+        # (-> turn into a two column swarmplot / similar, w/ fraction of
+        # mix-only responders per panel)
+        if verbose:
+            # e.g. for Remy KCs, w/ panel=control:
+            # date        fly_num
+            # 2022-03-29  2           55
+            # 2022-04-04  1          102
+            # 2022-07-20  2          135
+            # 2022-07-25  2           82
+            # Name: n_rois, dtype: int64
+            n_mix_only_responders_per_fly = fly_class_sizes.loc[True, 0
+                ].groupby(fly_cols).sum()
+
+            n_rois_per_fly = df.groupby(level=fly_cols, sort=False, axis='columns'
+                ).size().iloc[0]
+            n_rois_per_fly.name = 'n_rois'
+
+            frac_mix_only_responders_per_fly = (
+                n_mix_only_responders_per_fly / n_rois_per_fly
+            )
+
+            print('# ROIs responding only to mix, per fly:')
+            print_n_and_frac_series(n_mix_only_responders_per_fly,
+                frac_mix_only_responders_per_fly
+            )
+
+    if verbose:
+        print()
+
+        class_sizes_without_odor = class_sizes.groupby(['mix_resp', 'n_comps']
+            ).sum()
+
+        class_fracs_without_odor = class_sizes_without_odor / len(df.columns)
+
+        # TODO want plots for any of the below?
+        # (should have most now elsewhere. have all i want? delete comment)
+
+        print('# of ROIs, by whether mix response and # component responses:')
+        print_n_and_frac_series(class_sizes_without_odor, class_fracs_without_odor)
+        print()
+
+        # those that don't respond to the mix, and that only respond to a single
+        # component
+        n_comp_selective = class_sizes.loc[False, 1].copy()
+        # component odors should still be in first 5 positions of df.index, and in
+        # same order from where these indices were defined
+        n_comp_selective.index = n_comp_selective.index.map(lambda i: df.index[i])
+        n_comp_selective.index.name = 'odor'
+
+        frac_comp_selective = n_comp_selective / len(df.columns)
+
+        print('# of component-selective (no mix or other component responses) ROIs'
+            ', by odor:'
+        )
+        print_n_and_frac_series(n_comp_selective, frac_comp_selective)
+        print()
+
+    if have_fly_cols:
+        if sum_across_flies:
+            return class_sizes
+
+        return fly_class_sizes
+    else:
+        return class_sizes
 
 
 def main():
