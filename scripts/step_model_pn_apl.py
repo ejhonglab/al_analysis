@@ -505,9 +505,10 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
 
 
 def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
-    kws: ParamDict, *, ignore_existing: bool = False, save_dynamics: bool = False,
-    tuned_only: bool = False, corners_only: bool = False,
-    corners_and_tuned: bool = False, scale_pre_tuning: bool = False) -> None:
+    kws: ParamDict, *, ignore_existing: bool = False, try_lr_cache: bool = False,
+    save_dynamics: bool = False, plot_dynamics: bool = False, tuned_only: bool = False,
+    corners_only: bool = False, corners_and_tuned: bool = False,
+    scale_pre_tuning: bool = False) -> None:
     # TODO doc
     """Runs `orn_deltas`
     Args:
@@ -519,6 +520,8 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         ignore_existing: if False, will attempt to load cached model outputs (already in
             directories that would be created), rather than re-running models. If True,
             will always re-run models.
+
+        try_lr_cache: passed to `fit_and_plot_mb_model`
 
         save_dynamics: if True, will save DataArray pickles of all model internal
             dynamic quantities (e.g. membrane potential of KCs over time, to each odor)
@@ -543,7 +546,7 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         # then will not return them from fit_mb_model (so they will not be saved).
         return_dynamics=save_dynamics,
 
-        # TODO TODO TODO restore. just currently broken on claw_dynamics=True stuff
+        # TODO TODO TODO was broken on claw_dynamics=True stuff (still an issue?)
         # ...
         #    plot_apl_dynamics(plot_dir, dynamics_dict, stim_timing_kws, odor=odor,
         #  File "/home/tom/src/al_analysis/mb_model.py", line 9960, in plot_apl_dynamics
@@ -553,14 +556,10 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         # that? or do i really want (/have) a flag controlling plots other than
         # plot_example_dynamics (i.e. internal corrs)? rename, if that's what
         # it's for?
-        # TODO TODO add CLI arg for this? already have one?
-        #plot_example_dynamics=True,
+        plot_example_dynamics=plot_dynamics,
 
         make_plots=True, connectome_weight_plots=False
     )
-    # TODO delete?
-    print('restore plot_example_dynamics=True')
-    #
 
     # TODO add fit_mb_model option to assert output is still within target sparsity,
     # when passing in fixed_thr and wAPLKC (to check we are still within what would
@@ -588,14 +587,11 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # similar model w/o the PN<>APL weights?
     # TODO try a hypergrid stepping thr and APL independently too? (w/ same steps
     # for PN>APL and APL>PN weights)
-    # TODO TODO TODO why does this seem to not be using LR cache? fix!
-    # (still an issue? i think at one point, it was because every other run kept
-    # deleting them from cache, b/c wrong # tuning iters or mismatch w/ initial
-    # sp_lr_coeff or something)
     params = fit_and_plot_mb_model(plot_root, plot_dirname=plot_dir.name,
         orn_deltas=orn_deltas, verbose=True, try_cache=not ignore_existing,
-        **kws, **output_kws, return_olfsysm_vars=return_olfsysm_vars,
-        delete_pretime=delete_pretime, max_iters=max_iters
+        try_lr_cache=try_lr_cache, **kws, **output_kws,
+        return_olfsysm_vars=return_olfsysm_vars, delete_pretime=delete_pretime,
+        max_iters=max_iters
     )
     if tuned_only:
         warn('skipping all PN<>APL weight sweeping, because tuned_only=True')
@@ -743,7 +739,8 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
             # cache (should be a CLI arg that also applies to above tuning calls too)
             step_params = fit_and_plot_mb_model(panel_plot_dir,
                 plot_dirname=param_dir.name, try_cache=not ignore_existing,
-                orn_deltas=deltas, scale_pre_tuning=scale_pre_tuning, **step, **kws,
+                try_lr_cache=try_lr_cache, orn_deltas=deltas,
+                scale_pre_tuning=scale_pre_tuning, **step, **kws,
                 **output_kws
             )
 
@@ -817,6 +814,10 @@ def main():
         help='re-runs model (and at each parameter step), rather than just doing '
         'downstream analysis on existing saved outputs'
     )
+    parser.add_argument('-r', '--ignore-lr-cache', action='store_true', help='uses no '
+        'values in any cache of learning rates (e.g. sp_lr_coeff) (but will still write'
+        ' to them in the same circumstances as normal)'
+    )
     # TODO provide disk space usage estimate as we proceed through this one?
     parser.add_argument('-d', '--save-dynamics', action='store_true',
         help='saves DataArray pickles of internal model dynamics (in '
@@ -826,7 +827,7 @@ def main():
         help='only runs the initial tuned version of each model parameters, skipping '
         'all of the stepping of PN>APL and APL>PN weight scales. mainly for testing.'
     )
-    parser.add_argument('-r', '--reverse', action='store_true', help='iterates through '
+    parser.add_argument('-R', '--reverse', action='store_true', help='iterates through '
         'MODEL_TUNE_KWS in reverse order, as an easy way to test multiple cases if '
         'code downstream of tuning is causing earlier cases to fail.'
     )
@@ -862,6 +863,7 @@ def main():
     )
     args = parser.parse_args()
     ignore_existing = args.ignore_existing
+    try_lr_cache = not args.ignore_lr_cache
     save_dynamics = args.save_dynamics
     tuned_only = args.tuned_only
     reverse = args.reverse
@@ -932,10 +934,10 @@ def main():
             continue
 
         step_pn_apl_weights_around_tuned(plot_dir, orn_deltas, kws,
-            ignore_existing=ignore_existing, save_dynamics=save_dynamics,
+            ignore_existing=ignore_existing, try_lr_cache=try_lr_cache,
+            save_dynamics=save_dynamics, plot_dynamics=plot_dynamics,
             tuned_only=tuned_only, corners_only=corners_only,
-            corners_and_tuned=corners_and_tuned,
-            scale_pre_tuning=scale_pre_tuning
+            corners_and_tuned=corners_and_tuned, scale_pre_tuning=scale_pre_tuning
         )
 
     if tuned_only:
@@ -952,7 +954,9 @@ def main():
     print()
 
     analyze_kws = dict(
-        plot_dynamics=plot_dynamics,
+        # if only_analyze_outputs=False, the same plots should have been created in
+        # calls above
+        plot_dynamics=(plot_dynamics and only_analyze_outputs),
         corners_only=corners_only,
         corners_and_tuned=corners_and_tuned,
     )

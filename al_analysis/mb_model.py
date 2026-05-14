@@ -11373,6 +11373,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     print_olfsysm_log: Optional[bool] = None, return_dynamics: bool = False,
     delete_pretime: Optional[bool] = None, plot_dir: Optional[Path] = None,
     make_plots: bool = True, connectome_weight_plots: bool = True,
+    # TODO rename to do_plot_dynamics or something?
     plot_example_dynamics: bool = False, title: str = '',
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
     repro_preprint_s1d: bool = False, return_olfsysm_vars: bool = False,
@@ -16971,11 +16972,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             else:
                 _model_id = model_id
             #
-            # TODO delete. debugging.
-            print()
-            print('_model_id (for lookup in onestep_lr_cache):')
-            print(_model_id)
-            #
             if _model_id in onestep_lr_cache:
                 sp_lr_coeff = onestep_lr_cache[_model_id]
 
@@ -16988,28 +16984,13 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     # does it work after all? test?
                     cached_coeff_str = 'sp_lr_coeff list (one per seed)'
 
-                # TODO try to move this warning closer to when the model starts
-                # so we can see it right above the tuning iterations (not sure i can
-                # easily [nicely] move this inside fit_mb_model. maybe just an extra
-                # arg for it?)
-                # TODO move this warning after other message about loading
-                # everything from cache (and all this code, ideally)
-                warn(
-                    # TODO delete
-                    ('#' * 80) + '\n' +
-                    #
-                    f'using {cached_coeff_str} from onestep_lr_cache '
+                warn(f'using {cached_coeff_str} from onestep_lr_cache '
                     f'({onestep_lr_cache_path}), to tune in one iteration. '
                     'set try_lr_cache=False to disable.'
-                    # TODO delete
-                    + '\n' + ('#' * 80)
                 )
                 model_kws['sp_lr_coeff'] = sp_lr_coeff
 
                 used_lr_cache = True
-            # TODO delete
-            print()
-            #
         #
 
         dynamics_dict = dict()
@@ -17414,20 +17395,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             else:
                 update_lr_cache = True
 
-        # TODO TODO save parallel files with model_id -> context written from (script
-        # name, and timestamp, at least?), to debug where things might be getting
-        # written incorrectly? (i mean, all writing should happen in this code, but
-        # could get the calling script? that even matter? maybe some other args?)
-        # TODO delete
-        print()
-        print(f'{update_lr_cache=}')
-        #
         if update_lr_cache:
-            # TODO delete. debugging.
-            print('model_id (for lookup in onestep_lr_cache):')
-            print(model_id)
-            #
-            # TODO should be true, right?
             assert tuning_iters >= 1, ('expect this to start on 1 when any APL tuning '
                 'happens'
             )
@@ -17466,33 +17434,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 onestep_lr_cache[model_id] = onestep_sp_lr_coeff
 
             to_json(onestep_lr_cache, onestep_lr_cache_path,
-                # TODO delete verbose=True after debugging?
-                multiple_saves_per_run_ok=True, verbose=True
+                multiple_saves_per_run_ok=True
             )
-
-            if cache_error:
-                # TODO TODO TODO how am i getting 7 now for some step_model_pn_apl
-                # cases???
-                # /mnt/d0/PNAPL_stepping/pn-claw-to-apl_True/scale-pre-tuning_True_wAPLPN-0.10_wPNAPL-1.00
-                # TODO delete
-                # TODO TODO can i repro this? maybe via the boost... script i think i
-                # initially saw it with? (oh, yea. and more)
-                # TODO TODO fix. getting false positive here (was equal to 2 at one
-                # point, but probably fixed that)
-                # TODO TODO actually i think it's something about how the onestep
-                # coeff is calculated in failing cases (not sure anymore...). i don't
-                # think it's actually a value that is enabling tuning in one iteration
-                # (is that true? something inconsistent about how i'm counting
-                # iterations? add print to sim_KC_layer call block to count # of times
-                # that's run after enabling APL?)
-                print(f'{(_model_id == model_id)=}')
-                print()
-                print(f'{tuning_iters=}')
-                print(f'{onestep_sp_lr_coeff=}')
-                print(f'{cached_lr_coeff=}')
-                breakpoint()
-                print()
-                #
 
         # TODO don't save in sensitivity analysis subcalls? as this should not change
         # across those (+ make a list of files to exclude and pass to automated saving
@@ -21759,6 +21702,9 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         # or need something new from her?
         #
         # 0.091491682899149
+        # TODO TODO TODO does this have the binarized response data i would need to
+        # compute correlation on binarized data? how does that compare to my model
+        # binarized correlations?
         remy_sparsity_exact = remy_megamat_sparsity()
 
         # remy_sparsity_exact - remy_sparsity: -8.317100850752102e-06
