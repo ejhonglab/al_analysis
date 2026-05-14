@@ -10876,8 +10876,8 @@ def load_dynamics(model_dir: Path, *, skip_unrecognized: bool = True,
 
     Raises `IOError` or `RuntimeError` when `dynamics_var_paths` does.
     """
-    have_required, varname2netcdf_pat = have_all_saved_dynamics(model_dir, verbose=True,
-        _return_var2netcdf=True, **kwargs
+    have_required, varname2netcdf_path = have_all_saved_dynamics(model_dir,
+        verbose=True, _return_var2netcdf=True, **kwargs
     )
     if require and not have_required:
         # use something distinct here, so we can catch these cases separate from IOError
@@ -10953,15 +10953,26 @@ def dropna_and_subset_all_to_same_times(dynamics_dict: DynamicsDict, *,
             t0 = ts[0]
 
             if t0 != expected_t0:
-                atol = np.diff(ts).max() * 1.25
+                # should all pretty much be the same value (dt=0.0005 i think?)
+                max_ts_diff = np.diff(ts).max()
+                atol = max_ts_diff * 1.25
                 # replace equality check in `if` condition above if this ever fails
                 # (with isclose check like this)
-                assert not np.isclose(t0, expected_t0, atol=atol), f'{t0=}'
-                assert t0 < expected_t0, f'{t0=}'
-                # equality check seems like it would also work here, but w/e
-                # -2.0 is default "pre-time" start time
-                assert np.isclose(t0, -2.0), f'{t0=}'
-                boutons = boutons.sel(time_s=slice(expected_t0, None))
+                # TODO de-dedupe w/ code below that checks time 0 for null (delete
+                # below?)
+                if not np.isclose(t0, expected_t0, atol=atol):
+                    if t0 < expected_t0:
+                        # equality check seems like it would also work here, but w/e
+                        # -2.0 is default "pre-time" start time
+                        assert np.isclose(t0, -2.0), f'{t0=}'
+                        boutons = boutons.sel(time_s=slice(expected_t0, None))
+                    else:
+                        # TODO assert it's just one timestep away? (or isclose to that?)
+                        # (b/c we should have just already dropped the first timepoint)
+                        assert np.isclose(t0, expected_t0 + max_ts_diff, atol=atol)
+                        # assuming if this is True, no NaN anywhere. could check all,
+                        # but takes considerably longer.
+                        assert not boutons.isel(time_s=0).isnull().any()
 
             if not boutons.isel(time_s=0).isnull().all():
                 if warn_ and t0 <= last_allowed_nan_time:
