@@ -65,6 +65,8 @@ OUTPUT_ROOT_NAME: str = 'PNAPL_stepping'
 EXTRA_PANELS_DIRNAME: str = 'extra_panels'
 spike_counts_parquet: str = 'spike_counts.parquet'
 
+SCALE_PRETUNING_PREFIX: str = 'scale-pre-tuning_True_'
+
 # TODO tuple, to make sure this doesn't get mutated?
 #STEPS = [100, 20, 1.0, 0.5, 10, .1]
 # TODO TODO may need different steps if scale_pre_tuning=True
@@ -76,7 +78,8 @@ spike_counts_parquet: str = 'spike_counts.parquet'
 STEPS = [10, 5, 1.0, 0.5, .1]
 
 def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
-    corners_only: bool = False, corners_and_tuned: bool = False) -> None:
+    corners_only: bool = False, corners_and_tuned: bool = False,
+    scale_pre_tuning: bool = False) -> None:
     # TODO doc
 
     # TODO put behind verbose flag?
@@ -185,10 +188,17 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
         if d.name in {'model_internals', 'dynamics'} | d0_dynamics_plot_dirnames:
             continue
 
+        if scale_pre_tuning and not d.name.startswith(SCALE_PRETUNING_PREFIX):
+            continue
+
         # TODO pad all numbers for symlinking (or in general?), so sorting is
         # consistent? (actually, happens to be fine as-is, for current steps at least)
+        for_params = d.name
+        if scale_pre_tuning:
+            for_params = for_params[len(SCALE_PRETUNING_PREFIX):]
+
         try:
-            a2p, p2a = d.name.split('_')
+            a2p, p2a = for_params.split('_')
         # ValueError: too many values to unpack (expected 2)
         # probably would be b/c an old plot has a link dir setup, but
         # d0_dynamics_plot_dirnames doesn't currently include that plot
@@ -432,7 +442,12 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     df = pd.DataFrame.from_records(vals, columns=cols)
     df = df.set_index(['wAPLPN', 'wPNAPL'], verify_integrity=True)
     if len(df) == 0:
-        raise IOError(f'found no stepped model output subdirectories under {plot_dir}')
+        #raise IOError(f'found no stepped model output subdirectories under {plot_dir}')
+        warn(f'found no stepped model output subdirectories under {plot_dir}! '
+            'returning!'
+        )
+        print()
+        return
 
     if plot_dynamics:
         print()
@@ -506,6 +521,13 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
         # TODO include other model params?
         ax.set_title(title)
 
+        # TODO TODO TODO also indicate whether pre-tuning scaling or not in either plot
+        # name, or group them into separate directories probably
+        # TODO TODO TODO also save under each plot directory, rather than under
+        # plot_root?
+        # TODO TODO TODO only save plots computed across model variants in plot root
+        # (and make at least a version w/ tuned for each there, for all of these same
+        # quantities, maybe as a bargraph or something)
         savefig(fig, plot_root, f'{kstr}__{c}', bbox_inches='tight')
 
     # TODO put behind verbose flag?
@@ -669,7 +691,7 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # relative to spont in? (how to even do? what's that look like w/ other things
     # same?)
     # TODO worth trying w/ a couple diff sp_factor_pre_APL? (1.5 / 3.0?)
-    # TODO TODO these are ultimately sorted before plots, right?
+    # TODO these are ultimately sorted before plots, right?
     if corners_only:
         steps = [min(STEPS), max(STEPS)]
     elif corners_and_tuned:
@@ -749,7 +771,7 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
             # depression (or some other kind of saturation?) add that too?
 
             param_dirname = (
-                ('scale-pre-tuning_True_' if scale_pre_tuning else '') +
+                (SCALE_PRETUNING_PREFIX if scale_pre_tuning else '') +
                 # TODO factor ', ' stripping into option for format_weights (/ another
                 # fn?) with orig values scaled, could get duplicate plot dir names, b/c
                 # some
@@ -845,8 +867,8 @@ def main():
     # TODO but ideally still log all output to a file...
     #
     # RawTextHelpFormatter is to preserve the newlines
-    # TODO TODO TODO add include/exclude args on tuned model output dirnames, similar
-    # to those i recently added for natmix_data/analysis.py model loading
+    # TODO TODO also print model_id for each of these in list below, so i can use for
+    # -e/etc
     parser = ArgumentParser(description='will run models with the following '
         f'parameters:\n{pformat(MODEL_TUNE_KWS)}\n...on precomputed megamat est spike '
         'deltas, varying scales of PN>APL and APL>PN weights in a grid around tuned '
@@ -1062,6 +1084,7 @@ def main():
         plot_dynamics=(plot_dynamics and only_analyze_outputs),
         corners_only=corners_only,
         corners_and_tuned=corners_and_tuned,
+        scale_pre_tuning=scale_pre_tuning,
     )
     for plot_dir in plot_dir_list:
         # TODO TODO some plots that compare tuned values for same stats across elements

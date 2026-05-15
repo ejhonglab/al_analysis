@@ -343,6 +343,7 @@ exclude_params = {
     'max_iters',
     'sp_lr_coeff',
     'linear_lr_falloff',
+    'binary_search_on_overshoot',
     ONESTEP_LR_KEY,
 
     # TODO TODO remove wKCAPL/wPNAPL (and just handle by filtering DataFrame/Series
@@ -4970,6 +4971,8 @@ APL_TUNING_PARAMS: Set[str] = {
     'sp_lr_coeff',
     'apltune_subsample',
     'tuning_iters',
+    'linear_lr_falloff',
+    'binary_search_on_overshoot',
     # this one may not be there for older versions of olfsysm
     ONESTEP_LR_KEY,
 }
@@ -10331,7 +10334,9 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
 
     # TODO fix (/update) to work in non-claw case (not sure it's easily possible...)
     if have_claws:
-        assert (kc2apl_input_no_inh >= kc2apl_input).all()
+        # TODO TODO TODO warn anyway in claw_dynamics case? assert if not?
+        # still want to continue with plotting in claw_dynamics case?
+        #assert (kc2apl_input_no_inh >= kc2apl_input).all()
         prefix = f'mean {kc2apl_input_name}'
         # TODO would need to this be based on spiking in non-claw case... prob just
         # don't want to support this apl2kc_ax for non-claw cases...
@@ -11326,7 +11331,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     max_iters: Optional[int] = None, sp_acc: Optional[float] = None,
     thr_sp_lr_coeff: Optional[float] = None,
     n_spikes_for_response: Optional[int] = None,
-    sp_lr_coeff: Optional[float] = 10.0, linear_lr_falloff: bool = False,
+    sp_lr_coeff: Optional[float] = 10.0, linear_lr_falloff: bool = True,
+    binary_search_on_overshoot: bool = True,
     hardcode_initial_sp: bool = False,
     Btn_separate: bool = False, Btn_num_per_glom: int = 10,
     _use_matt_wPNKC: bool = False,
@@ -11740,6 +11746,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     if linear_lr_falloff is not None:
         mp.kc.linear_lr_falloff = linear_lr_falloff
+
+    if binary_search_on_overshoot is not None:
+        mp.kc.binary_search_on_overshoot = binary_search_on_overshoot
 
     if max_iters is not None:
         mp.kc.max_iters = max_iters
@@ -14714,8 +14723,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             'max_iters': mp.kc.max_iters,
 
             'sp_lr_coeff': mp.kc.sp_lr_coeff,
+
             # TODO delete? already have in input i suppose?
             'linear_lr_falloff': mp.kc.linear_lr_falloff,
+            'binary_search_on_overshoot': mp.kc.binary_search_on_overshoot,
+
             'apltune_subsample': mp.kc.apltune_subsample,
 
             # should be how many iterations it took to tune (starts at 1 if any tuning
