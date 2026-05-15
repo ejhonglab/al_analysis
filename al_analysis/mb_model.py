@@ -226,7 +226,7 @@ def dict_seq_product(*dict_seqs: Sequence[dict], allow_key_overlap: bool = False
     """Returns a sequence of dicts, by combining product of input dict sequences.
 
     Args:
-        *dict_seqs: 
+        *dict_seqs:
 
         allow_key_overlap: if False, will raise ValueError if inputs share keys,
             otherwise value from last input should be used.
@@ -342,6 +342,7 @@ exclude_params = {
 
     'max_iters',
     'sp_lr_coeff',
+    'linear_lr_falloff',
     ONESTEP_LR_KEY,
 
     # TODO TODO remove wKCAPL/wPNAPL (and just handle by filtering DataFrame/Series
@@ -4975,9 +4976,6 @@ APL_TUNING_PARAMS: Set[str] = {
 
 def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     prat_boutons: bool = False, per_claw_pn_apl_weights: bool = False,
-    # TODO delete
-    #pn_apl_scale_factor: float = 1.0,
-    #
     wPNKC: Optional[pd.DataFrame] = None, kc_types: Optional[pd.Series] = None,
     kc_to_claws: Optional[List[List[int]]] = None, _drop_glom_with_plus: bool = True,
     plot_dir: Optional[Path] = None, verbose: bool = True
@@ -6840,11 +6838,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 print(f'{wPNAPL_normalization_factor=}')
             #
 
-            # TODO delete
-            #wAPLPN_normalization_factor = (n_kcs / wAPLPN.sum()) / pn_apl_scale_factor
             wAPLPN = wAPLPN * wAPLPN_normalization_factor
-            # TODO delete
-            #wPNAPL_normalization_factor = (n_kcs / wPNAPL.sum()) / pn_apl_scale_factor
             wPNAPL = wPNAPL * wPNAPL_normalization_factor
 
             # TODO delete
@@ -6857,18 +6851,6 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 print(f'{wPNAPL.sum()=}')
                 print()
             #
-
-            # TODO delete
-            '''
-            if pn_apl_scale_factor != 1:
-                # TODO TODO redef above, so scale factor isn't so arbitrary here (to
-                # remove n_kcs from numerator, or at least also ref # boutons). then
-                # update what any hardcoded scale factors (e.g. in pn_claw_to_apl=False
-                # branch in test code, currently =200) to what new values should be
-                warn(f'dividing PN<>APL weights all by {pn_apl_scale_factor=} (to '
-                    'scale relative to KC<>APL weights)'
-                )
-            '''
 
             # TODO same assertions, but grouping by glomeruli for the
             # `not per_claw_pn_apl_weights` case?
@@ -11344,12 +11326,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     max_iters: Optional[int] = None, sp_acc: Optional[float] = None,
     thr_sp_lr_coeff: Optional[float] = None,
     n_spikes_for_response: Optional[int] = None,
-    # TODO TODO change default sp_lr_coeff here (or in olfsysm?)? will need to restore
-    # old value (=1) for some repro tests to continue passing
-    sp_lr_coeff: Optional[float] = 1.5, hardcode_initial_sp: bool = False,
-    # TODO delete
-    #pn_apl_scale_factor: float = 1.0,
-    #
+    sp_lr_coeff: Optional[float] = 10.0, linear_lr_falloff: bool = False,
+    hardcode_initial_sp: bool = False,
     Btn_separate: bool = False, Btn_num_per_glom: int = 10,
     _use_matt_wPNKC: bool = False,
     drop_kcs_with_no_input: bool = True, _drop_glom_with_plus: bool = True,
@@ -11759,6 +11737,9 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     if sp_lr_coeff is not None:
         mp.kc.sp_lr_coeff = sp_lr_coeff
+
+    if linear_lr_falloff is not None:
+        mp.kc.linear_lr_falloff = linear_lr_falloff
 
     if max_iters is not None:
         mp.kc.max_iters = max_iters
@@ -13104,18 +13085,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         wAPLPN_scale = wAPLPN
         wPNAPL_scale = wPNAPL
 
-    # TODO delete
-    '''
-    if not (prat_boutons and not per_claw_pn_apl_weights):
-        # only relevant in this case. don't  want it polluting param_dict otherwise
-        if pn_apl_scale_factor != 1:
-            # TODO TODO TODO working correctly?
-            # TODO fix + remove need for hack
-            warn('setting pn_apl_scale_factor=1 because of other params')
-            #
-            pn_apl_scale_factor = 1
-    '''
-
     if use_connectome_APL_weights:
         # TODO can i delete this (and from connectome_APL_weights)? don't i already have
         # this info in wPNKC still?
@@ -13136,9 +13105,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 connectome=connectome, wPNKC=wPNKC, prat_claws=prat_claws,
                 prat_boutons=prat_boutons,
                 per_claw_pn_apl_weights=per_claw_pn_apl_weights,
-                # TODO delete
-                #pn_apl_scale_factor=pn_apl_scale_factor,
-                #
                 kc_types=for_kc_types, kc_to_claws=kc_to_claws,
                 _drop_glom_with_plus=_drop_glom_with_plus,
                 plot_dir=(plot_dir if make_plots and connectome_weight_plots else None),
@@ -13241,31 +13207,37 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         if scale_pre_tuning:
             # TODO re-organize all these into a dict so i can loop over them?
             # (trying to modify locals() was a bad idea and would not work)
+            if wAPLKC_scale is None:
+                wAPLKC_scale = 1.0
 
-            # TODO allow None (or require =1)?
-            # TODO TODO prob allow None (seeing as we are setting None below anyway...)
-            assert wAPLKC_scale is not None
             if wAPLKC_scale != 1:
-                warn(f'scaling "normalized" wAPLKC (pre-tuning) by {wAPLKC_scale:.1f}')
+                # TODO any downsides to just :g formatting?
+                warn(f'scaling "normalized" wAPLKC (pre-tuning) by {wAPLKC_scale:g}')
                 wAPLKC = wAPLKC.copy() * wAPLKC_scale
 
-            assert wKCAPL_scale is not None
+            if wKCAPL_scale is None:
+                wKCAPL_scale = 1.0
+
             if wKCAPL_scale != 1:
-                warn(f'scaling "normalized" wKCAPL (pre-tuning) by {wKCAPL_scale:.1f}')
+                warn(f'scaling "normalized" wKCAPL (pre-tuning) by {wKCAPL_scale:g}')
                 wKCAPL = wKCAPL.copy() * wKCAPL_scale
 
             if prat_boutons and not per_claw_pn_apl_weights:
-                assert wAPLPN_scale is not None
+                if wAPLPN_scale is None:
+                    wAPLPN_scale = 1.0
+
                 if wAPLPN_scale != 1:
                     warn('scaling "normalized" wAPLPN (pre-tuning) by '
-                        f'{wAPLPN_scale:.1f}'
+                        f'{wAPLPN_scale:g}'
                     )
                     wAPLPN = wAPLPN.copy() * wAPLPN_scale
 
-                assert wPNAPL_scale is not None
+                if wPNAPL_scale is None:
+                    wPNAPL_scale = 1.0
+
                 if wPNAPL_scale != 1:
                     warn('scaling "normalized" wPNAPL (pre-tuning) by '
-                        f'{wPNAPL_scale:.1f}'
+                        f'{wPNAPL_scale:g}'
                     )
                     wPNAPL = wPNAPL.copy() * wPNAPL_scale
 
@@ -13560,6 +13532,42 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # (abs(sp - p.kc.sp_target) > (p.kc.sp_acc * p.kc.sp_target)
         abs_sp_diff = abs(sp_actual - mp.kc.sp_target)
         rel_sp_diff = abs_sp_diff / mp.kc.sp_target
+
+        # TODO TODO TODO fix how olfsysm not currently raising error about max_iters
+        # being reached in correct cases (and if i can't easily catch that error in
+        # python anyway, want to handle differently):
+        # i=201 sp=0.0284608 target=0.1 rel_sp_diff=-0.715392 acc=0.1
+        #   wAPLKC_scale=0.0955327 delta(wAPLKC)=-0.0755022 lr=0.10554
+        # in scale_APL_weights:
+        # rv.kc.wAPLKC mean: 0.0200305
+        # rv.kc.wKCAPL mean: 1.15649e-05
+        # rv.pn.wAPLPN mean: 0.200305
+        # rv.pn.wPNAPL mean: 0.000514922
+        # rv.kc.wAPLKC_scale: 0.0200305
+        # rv.kc.wKCAPL_scale: 1.15649e-05
+        # rv.pn.wAPLPN_scale: 0.0200305
+        # rv.pn.wPNAPL_scale: 5.14922e-05
+        # sp_lr_coeff to tune in one step: 5.97997
+        # FINAL TUNING_ITERS=202
+        # done fitting sparseness
+        #
+        # using 12 threads
+        # average sparsity (response rate): 0.170969
+        # Traceback (most recent call last):
+        #   File "/home/tom/src/al_analysis/venv/bin/step_model_pn_apl", line 8, in <module>
+        #     sys.exit(main())
+        #   File "/home/tom/src/al_analysis/scripts/step_model_pn_apl.py", line 962, in main
+        #     if only_analyze_outputs:
+        #   File "/home/tom/src/al_analysis/scripts/step_model_pn_apl.py", line 758, in step_pn_apl_weights_aro
+        # und_tuned
+        #     print(f'{param_dir.name}')
+        #   File "/home/tom/src/al_analysis/al_analysis/mb_model.py", line 17208, in fit_and_plot_mb_model
+        #     to_pickle(orn_deltas, param_dir / 'orn_deltas.p', write_parquet=False)
+        #   File "/home/tom/src/al_analysis/al_analysis/mb_model.py", line 13573, in fit_mb_model
+        #
+        # AssertionError: rel_sp_diff=0.709686183942399 > mp.kc.sp_acc=0.1
+        # sp_actual=0.1709686183942399
+        # mp.kc.sp_target=0.1
 
         # TODO raise some kind of custom convergence failure error instead, with message
         # including which parameters can be changed to try to get it to converge
@@ -14671,15 +14679,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # called again to modify title in fit_and_plot..., after this fn returns
         title += weight_debug_suffix(param_dict)
 
-    # TODO delete
-    '''
-    if pn_apl_scale_factor != 1:
-        # TODO TODO TODO replace w/ one factor for each (of 4 instead of of 2) weight,
-        # rather than one ratio between two of them?
-        param_dict['pn_apl_scale_factor'] = pn_apl_scale_factor
-    '''
-    #
-
     # NOTE: currently will probably not be able to achieve these after APL tuning
     # (until olfsysm is modified to tune within subtypes), but (if not None) per-type
     # thresholds will be picked to achieve sparsities here scaled by
@@ -14699,12 +14698,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     if not mp.kc.tune_apl_weights:
         assert tuning_iters == 0, f'{tuning_iters=} > 0, despite tune_apl_weights=false'
     else:
-        # test_fixed_inh_params has an assertion like for this for the tune case, so not
-        # expecting this to fail
-        # TODO TODO TODO fix. still failing in this case:
-        # megamat_multiresponder_apl_boost/weight-divisor_20__connectome-APL_True__target-sp_0.05
-        # when running ./boost_apl_megamat_model_multiresponders.py
-        # (when progress bar says 10/16)
         assert tuning_iters > 0, ('if rv.kc.tune_apl_weights was true, APL tuning_iters'
             ' should start at at least 1, indicating some tuning happened'
         )
@@ -14721,6 +14714,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             'max_iters': mp.kc.max_iters,
 
             'sp_lr_coeff': mp.kc.sp_lr_coeff,
+            # TODO delete? already have in input i suppose?
+            'linear_lr_falloff': mp.kc.linear_lr_falloff,
             'apltune_subsample': mp.kc.apltune_subsample,
 
             # should be how many iterations it took to tune (starts at 1 if any tuning
@@ -16940,6 +16935,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO how to handle <weight> (or _<weight>) = Series? fine as-is?
         if not model_kws.get('scale_pre_tuning') and wAPLKC is not None:
             try_lr_cache = False
+
+        # TODO TODO + process existing cache to remove linear_lr_falloff those from keys
 
         if try_lr_cache:
             # set as `export MB_MODEL_USE_LR_CACHE=0` in your ~/.bashrc or whatever,
@@ -20053,7 +20050,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
         model_dir: if not None, will save/load model (+ choices & input data) to/from
             files in here. Defined as `plot_dir`, if not passed.
 
-        use_cache: 
+        use_cache:
 
         response_calc_params: if `use_cache`, will check cached outputs had same values
             as run that produced cached dF/F -> spiking model (err-ing if not), loading

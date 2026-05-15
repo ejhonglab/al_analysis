@@ -3149,6 +3149,7 @@ signedmax_orn_dff_dir: Path = sent_to_remy / '2025-09-30_tom_orn_data_signed-max
 # downstream
 def load_natmix_dff(**kwargs) -> pd.DataFrame:
     data_dir = signedmax_orn_dff_dir / 'kiwi_control_signed-max'
+    # TODO doc
 
     # TODO also load parquet (and prefer that, if we have it). need to regen and commit
     # new outputs first

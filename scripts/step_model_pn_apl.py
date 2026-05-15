@@ -43,7 +43,8 @@ from al_analysis.mb_model import (fit_and_plot_mb_model, megamat_orn_deltas,
 # and use here and elsewhere)
 MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(
     [
-        # TODO TODO also try prat_boutons=False
+        # TODO TODO also try prat_boutons=False (stepping is currently ONLY over PN<>APL
+        # weights though, so would require changes to that code)
         dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
             # TODO TODO also try w/ this =False?
             use_connectome_APL_weights=True
@@ -65,7 +66,14 @@ EXTRA_PANELS_DIRNAME: str = 'extra_panels'
 spike_counts_parquet: str = 'spike_counts.parquet'
 
 # TODO tuple, to make sure this doesn't get mutated?
-STEPS = [100, 20, 1.0, 0.5, 10, .1]
+#STEPS = [100, 20, 1.0, 0.5, 10, .1]
+# TODO TODO may need different steps if scale_pre_tuning=True
+# (100/100 scale on PN<>APL weights currently doesn't converge in max_iters=100 with
+# sparsity at 0 the entire time. 10/10 works, or at least seems like it will)
+# TODO TODO TODO at least provide some way to catch and track nonconvergence issues.
+# can't just havve the program abort. that may mean i need to change handling in C++,
+# perhaps just to set some status flag rather than actually calling abort()
+STEPS = [10, 5, 1.0, 0.5, .1]
 
 def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     corners_only: bool = False, corners_and_tuned: bool = False) -> None:
@@ -505,7 +513,8 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
 
 
 def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
-    kws: ParamDict, *, ignore_existing: bool = False, try_lr_cache: bool = False,
+    kws: ParamDict, *, ignore_existing: bool = False,
+    ignore_existing_stepped: bool = False, try_lr_cache: bool = False,
     save_dynamics: bool = False, plot_dynamics: bool = False, tuned_only: bool = False,
     corners_only: bool = False, corners_and_tuned: bool = False,
     scale_pre_tuning: bool = False) -> None:
@@ -539,6 +548,9 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
             again), but should always produce average response rates within target range
             (if convergence is achieved, and there'd be an error if not).
     """
+    if ignore_existing:
+        ignore_existing_stepped = True
+
     output_kws = dict(
         # if return_dynamics is True, fit_and_plot_mb_model will write DataArrays
         # containing dynamics as pickles, before popping them from returned param dict.
@@ -581,6 +593,9 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     # didn't work (2026-03-15): 50 (but it was still oscillating a lot. try lower
     # initial sp_lr_coeff?)
     max_iters = 200
+
+    # TODO like? help?
+    kws['linear_lr_falloff'] = True
 
     plot_root = plot_dir.parent
     # TODO TODO also step around fixed_thr/wAPLKC from previous tuning, e.g. a
@@ -689,6 +704,11 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         if panel == 'megamat':
             panel_plot_dir = plot_dir
         else:
+            # TODO delete
+            # TODO TODO TODO in tune_pre_scaling case, use megamat tuned-pre-scaling
+            # version of the model, if possible
+            breakpoint()
+            #
             panel_plot_dir = extra_panels_root / panel / plot_dir.name
             panel_plot_dir.mkdir(exist_ok=True, parents=True)
             extra_panel_dirs.append(panel_plot_dir)
@@ -700,7 +720,7 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
         print(f'panel: {panel}')
         print(f'saving outputs under: {panel_plot_dir}')
         print('stepping wAPLPN & wPNAPL around tuned values:')
-        for ap, pa in tqdm(list(product(steps, steps)), unit='param-combo'):
+        for ap, pa in tqdm(list(product(steps, steps)), unit='APL-weight-step'):
             step = dict(thr_and_apl_kws)
             if not scale_pre_tuning:
                 step['wAPLPN'] = wAPLPN_scale * ap
@@ -709,9 +729,19 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
                 # format_model_params for now)
                 step['wPNAPL'] = wPNAPL_scale * pa
             else:
-                # TODO TODO need to do anything else?
                 step['wAPLPN'] = ap
                 step['wPNAPL'] = pa
+
+                # TODO TODO don't remove (/set None/1) if i want to also step these as
+                # well, in some hypergrid
+                step['wAPLKC'] = 1.0
+                step['wKCAPL'] = 1.0
+                # removing these keys, setting =None or =1 should all be equivalent
+                # (not actually right now, b/c of at least earlier code that checks
+                # others are only set if wAPLKC is)
+                #del step['wAPLKC']
+                # TODO delete. this one not in there currently.
+                ##del step['wKCAPL']
 
             # TODO TODO actually try per bouton/claw[/KC?] inh dynamics (prob both
             # for KC claws and PN boutons)
@@ -735,31 +765,47 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
 
             print(f'{param_dir.name}')
 
-            # TODO (esp when implementing pre-tuning scaling?) add option to ignore LR
-            # cache (should be a CLI arg that also applies to above tuning calls too)
+            # TODO TODO TODO ideally, use output of scale_pre_tuning process (on
+            # megamat) to get fixed model to use for kiwi/control panels
+            # TODO add test case (behind checks flag) in here, that that approach
+            # reproduces same output on megamat panel
             step_params = fit_and_plot_mb_model(panel_plot_dir,
-                plot_dirname=param_dir.name, try_cache=not ignore_existing,
+                plot_dirname=param_dir.name, try_cache=not ignore_existing_stepped,
                 try_lr_cache=try_lr_cache, orn_deltas=deltas,
-                scale_pre_tuning=scale_pre_tuning, **step, **kws,
+                scale_pre_tuning=scale_pre_tuning, max_iters=max_iters, **step, **kws,
                 **output_kws
             )
 
             # TODO update to work when stepping arbitrary # of parameters
             if ap == 1 and pa == 1:
                 if panel == 'megamat':
+                    # TODO TODO fix / skip in scale_pre_tuning=True case
+                    # getting: {'sparsity', 'megamat_sparsity', 'scale_pre_tuning'}
+                    # TODO TODO seems like sparsity and megamat_sparsity are not in
+                    # values loaded from cache (is that a bug?)? can just specify to
+                    # exclude them for now?
+                    # TODO TODO TODO fuck, why are the weight scales different here
+                    # though? is it just b/c the tuning process converged in a slightly
+                    # different spot? maybe if i set linear_lr_falloff here it would be
+                    # equiv?
+                    # TODO TODO why does one not have that though?
                     # TODO put behind a checks flag?
                     #
                     # should inspire confidence the same should be (approximately) true
                     # for the extra_panels cases, even though we don't currently have
                     # thet separate tuned outputs there
-                    assert_fit_and_plot_outputs_equal(plot_root, params, step_params,
-                        plot_root2=panel_plot_dir,
-                        # TODO would need to test something else if we also do
-                        # pretune scaling as one case of script run w/ no args
-                        # (this assumes it's just one or the other)
-                        ignore_tuning_params=not scale_pre_tuning
-                    )
-                    print('megamat tuned values matched those in 1/1 scaled output dir')
+                    pass
+                    # TODO TODO TODO TODO restore after regenerating tuned w/
+                    # linear_lr_falloff=True, and then regenerating all stepped values
+                    # around that tuned output
+                    #assert_fit_and_plot_outputs_equal(plot_root, params, step_params,
+                    #    plot_root2=panel_plot_dir,
+                    #    # TODO would need to test something else if we also do
+                    #    # pretune scaling as one case of script run w/ no args
+                    #    # (this assumes it's just one or the other)
+                    #    ignore_tuning_params=not scale_pre_tuning
+                    #)
+                    #print('megamat tuned values matched those in 1/1 scaled output dir')
                 else:
                     stepped_output_dir = panel_plot_dir / step_params['output_dir']
                     assert stepped_output_dir.is_dir(), f'{stepped_output_dir=}'
@@ -799,6 +845,8 @@ def main():
     # TODO but ideally still log all output to a file...
     #
     # RawTextHelpFormatter is to preserve the newlines
+    # TODO TODO TODO add include/exclude args on tuned model output dirnames, similar
+    # to those i recently added for natmix_data/analysis.py model loading
     parser = ArgumentParser(description='will run models with the following '
         f'parameters:\n{pformat(MODEL_TUNE_KWS)}\n...on precomputed megamat est spike '
         'deltas, varying scales of PN>APL and APL>PN weights in a grid around tuned '
@@ -807,12 +855,12 @@ def main():
         'created in the current path, and model outputs will be stored in '
         'sub-directories within.', formatter_class=RawTextHelpFormatter
     )
-    # TODO add (+implement) -c flag to check outputs match existing ones
-    # (can i use existing fns / code for that? want subset of behavior al_analysis.py
-    # supports with -c/-C)
     parser.add_argument('-i', '--ignore-existing', action='store_true',
         help='re-runs model (and at each parameter step), rather than just doing '
         'downstream analysis on existing saved outputs'
+    )
+    parser.add_argument('-I', '--ignore-existing-stepped', action='store_true',
+        help='re-runs model at each parameter step, but uses cached tuned model'
     )
     parser.add_argument('-r', '--ignore-lr-cache', action='store_true', help='uses no '
         'values in any cache of learning rates (e.g. sp_lr_coeff) (but will still write'
@@ -861,8 +909,12 @@ def main():
         'often be [potentially far] outside target range), scales weights before tuning'
         ' (currently leaving threshold same as in tuned).'
     )
+    # TODO add (+implement) -c flag to check outputs match existing ones
+    # (can i use existing fns / code for that? want subset of behavior al_analysis.py
+    # supports with -c/-C)
     args = parser.parse_args()
     ignore_existing = args.ignore_existing
+    ignore_existing_stepped = args.ignore_existing_stepped
     try_lr_cache = not args.ignore_lr_cache
     save_dynamics = args.save_dynamics
     tuned_only = args.tuned_only
@@ -876,7 +928,8 @@ def main():
     assert not (corners_only and corners_and_tuned), 'only pick one of -c or -C'
 
     if only_analyze_outputs:
-        assert not (save_dynamics or tuned_only or ignore_existing), \
+        assert not (save_dynamics or tuned_only or ignore_existing or
+            ignore_existing_stepped), \
             'all of these incompatible with -o/--only-analyze-outputs'
 
     # TODO TODO is `step_model_pn_apl -C -i -d` really not regenerating dynamics
@@ -934,7 +987,8 @@ def main():
             continue
 
         step_pn_apl_weights_around_tuned(plot_dir, orn_deltas, kws,
-            ignore_existing=ignore_existing, try_lr_cache=try_lr_cache,
+            ignore_existing=ignore_existing,
+            ignore_existing_stepped=ignore_existing_stepped, try_lr_cache=try_lr_cache,
             save_dynamics=save_dynamics, plot_dynamics=plot_dynamics,
             tuned_only=tuned_only, corners_only=corners_only,
             corners_and_tuned=corners_and_tuned, scale_pre_tuning=scale_pre_tuning
@@ -947,7 +1001,8 @@ def main():
         )
         return
 
-    # TODO TODO should scale_pre_tuning also apply to calls below?
+    # TODO TODO should scale_pre_tuning also apply to calls below? (how could it even?
+    # switch between those or the post-tuning-scaled stepped outputs? how?)
     # TODO want to sort those outputs separately somehow, either way?
 
     # TODO delete / verbose?
