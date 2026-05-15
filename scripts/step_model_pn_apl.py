@@ -855,6 +855,23 @@ def main():
         'created in the current path, and model outputs will be stored in '
         'sub-directories within.', formatter_class=RawTextHelpFormatter
     )
+    # TODO refactor to share these 3 w/ natmix_data/analysis.py? all copied from there
+    parser.add_argument('model_output_dirnames', nargs='?', help='Comma separated '
+        'list of substrings matching model output directory names \n(subdirectories of '
+        '<model_output_root>/<panel> directories). \nSee also -e and -x. '
+        'Incompatible with -M.'
+    )
+    parser.add_argument('-e', '--exclude-substrings', action='store', help='Comma '
+        'separated list of substrings to EXCLUDE model output directory names \n'
+        'containing them. Complementary to model_output_dirnames.\n'
+        'Incompatible with -M.'
+    )
+    parser.add_argument('-x', '--exact-model-dirnames', action='store_true',
+        help='model_output_dirnames is interpreted as a list of exact directory names,'
+        '\nrather than a list of substrings contained within some model output \n'
+        'directory names.'
+    )
+    #
     parser.add_argument('-i', '--ignore-existing', action='store_true',
         help='re-runs model (and at each parameter step), rather than just doing '
         'downstream analysis on existing saved outputs'
@@ -913,6 +930,9 @@ def main():
     # (can i use existing fns / code for that? want subset of behavior al_analysis.py
     # supports with -c/-C)
     args = parser.parse_args()
+    model_output_dirnames = args.model_output_dirnames
+    exclude_substrings = args.exclude_substrings
+    exact_model_dirnames = args.exact_model_dirnames
     ignore_existing = args.ignore_existing
     ignore_existing_stepped = args.ignore_existing_stepped
     try_lr_cache = not args.ignore_lr_cache
@@ -924,6 +944,12 @@ def main():
     corners_and_tuned = args.corners_and_tuned
     plot_dynamics = args.plot_dynamics
     scale_pre_tuning = args.scale_pre_tuning
+
+    if model_output_dirnames is not None:
+        model_output_dirnames = model_output_dirnames.split(',')
+
+    if exclude_substrings is not None:
+        exclude_substrings = exclude_substrings.split(',')
 
     assert not (corners_only and corners_and_tuned), 'only pick one of -c or -C'
 
@@ -977,6 +1003,28 @@ def main():
         print(f'{kws=}')
 
         plot_dirname = format_model_params(kws, exclude=same_in_all)
+
+        if (exclude_substrings is not None and
+            any(s in plot_dirname for s in exclude_substrings)):
+            warn(f'skipping {plot_dirname} because it contained an exclude substring')
+            continue
+
+        if model_output_dirnames is not None:
+            if (not exact_model_dirnames and
+                not any(s in plot_dirname for s in model_output_dirnames)):
+
+                warn(f'skipping {plot_dirname} because it did not match any substring '
+                    'in model_output_dirnames'
+                )
+                continue
+
+            elif (exact_model_dirnames and
+                not any(s == plot_dirname for s in model_output_dirnames)):
+                warn(f'skipping {plot_dirname} because it did not match any element of '
+                    'model_output_dirnames'
+                )
+                continue
+
         plot_dir = plot_root / plot_dirname
         assert plot_dir not in plot_dir_list, f'duplicate {plot_dir=}'
         plot_dir_list.append(plot_dir)
