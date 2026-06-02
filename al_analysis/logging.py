@@ -13,6 +13,8 @@ from typing import Optional
 # NOTE: this 3rd party package doesn't work on Windows
 # (and may have issues in some other specific circumstances, such as if there are
 # threads involved too)
+# TODO delete? (and seems to be getting called now when it wasn't before? some config
+# change other than kwarg?)
 from multiprocessing_logging import install_mp_handler
 
 # TODO profile extra time this import adds -> delete/type-checking-guard if it's

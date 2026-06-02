@@ -62,8 +62,13 @@ mpl.use('Agg')
 # from a from scipy.stats._boost.beta_ufunc import. other scipy imports seem to also be
 # an issue (at least stats too)
 if os.getenv('PYTHONMALLOC') != 'malloc':
-    from scipy.stats import spearmanr, pearsonr, f_oneway, percentileofscore
+    from scipy.cluster.hierarchy import leaves_list
     from scipy.interpolate import interp1d
+    from scipy.optimize import minimize
+    from scipy.spatial.distance import euclidean
+    from scipy.stats import (spearmanr, pearsonr, f_oneway, percentileofscore,
+        wasserstein_distance
+    )
     # these all also ends up importing scipy
     from sklearn.cluster import DBSCAN
     from sklearn.preprocessing import maxabs_scale as sk_maxabs_scale
@@ -92,7 +97,7 @@ from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
 )
 from hong2p.viz import dff_latex, no_constrained_layout, add_group_labels_and_lines
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
-    reindex, is_scalar, pd_index_equal, equals
+    reindex, is_scalar, pd_index_equal, equals, format_params, addlevel
 )
 from hong2p.types import Pathlike, DataFrameOrSeries, CMap, KwargDict
 from natmix import drop_mix_dilutions
@@ -217,8 +222,10 @@ onestep_lr_cache_path: Path = Path('~/.mb_model_onestep_lr_cache.json').expandus
 ONESTEP_LR_KEY: str = 'sp_lr_coeff_to_tune_in_one_iter'
 
 # TODO move to hong2p.util?
-def dict_seq_product(*dict_seqs: Sequence[dict], allow_key_overlap: bool = False
-    ) -> List[dict]:
+# Can not specifiy keyword-only after *args. *args should imply all following are
+# keyword only.
+def dict_seq_product(*dict_seqs: List[dict], allow_key_overlap: bool = False,
+    try_all_with_default: bool = False) -> List[dict]:
     # TODO doc example of where you would or would not want to use allow_key_overlap,
     # or delete
     # TODO and if allow_key_overlap=True, is it the last iterable that contains the key
@@ -231,9 +238,32 @@ def dict_seq_product(*dict_seqs: Sequence[dict], allow_key_overlap: bool = False
         allow_key_overlap: if False, will raise ValueError if inputs share keys,
             otherwise value from last input should be used.
 
+        try_all_with_default: treats each input list as if it started with `dict()`,
+            and asserts `dict()` not already in any input dict sequences
+
     >>> dict_seq_product([dict(), dict(a=1)], [dict(b=1), dict()])
     [{'b': 1}, {}, {'a': 1, 'b': 1}, {'a': 1}]
     """
+    for ds in dict_seqs:
+        # TODO or change type hint on input back to sequence, and just check it's NOT a
+        # dict here?
+        assert type(ds) is list, ('expected all elements of dict_seqs to be lists! '
+            f'got {type(ds)=} for an element in:\n{pformat(dict_seqs)}'
+        )
+        for d in ds:
+            assert type(d) is dict, ('expected all list elements to be dicts! got '
+                f'{type(d)=} for an element in {ds}'
+            )
+            if try_all_with_default:
+                assert d != dict(), ('can not have empty dicts in any input dict '
+                    'sequences, when using try_all_with_default=True, where empty '
+                    'dicts will be added to all input dict sequences.\nempty dict in: '
+                    f'{ds}'
+                )
+
+    if try_all_with_default:
+        dict_seqs = [[dict()] + list(ds) for ds in dict_seqs]
+
     output_seq = []
     for ds in itertools.product(*dict_seqs):
         combined = dict()
@@ -556,7 +586,92 @@ def check_model_kws_unique(model_kw_list: List[ParamDict]) -> None:
         f'duplicate model IDs: {[k for k,v in counts.items() if v > 1]}'
 
 
-# TODO TODO include allow_net_inh_per_claw=True cases here?
+TRY_ALL_MODELS_WITH: List[ParamDict] = dict_seq_product(
+    [dict(target_sparsity=0.05)],
+    [dict(n_spikes_for_response=2)],
+    # TODO TODO APL time constant?
+    # TODO anything else we want to try for everything?
+
+    # will add dict() to start of all lists above, trying model w/ default parameters
+    # before any of the above (and in all combinations thereafter)
+    try_all_with_default=True
+)
+# TODO move this to a unit test
+#TRY_ALL_MODELS_WITH2 = dict_seq_product(
+#    [dict(), dict(target_sparsity=0.05)],
+#    [dict(), dict(n_spikes_for_response=2)],
+#)
+#assert TRY_ALL_MODELS_WITH == TRY_ALL_MODELS_WITH2
+
+# for everything except variable_n_claw_options (e.g. pn2kc_connections='uniform')
+TRY_NONCLAW_MODELS_WITH: List[ParamDict] = dict_seq_product(
+    [dict(use_connectome_APL_weights=True), dict()],
+    # TODO try some scale_pre_tuning=True variants w/ diff ratios of APL>KC and KC>APL
+    # scales? that code even working correctly?
+
+    TRY_ALL_MODELS_WITH
+)
+# TODO want versions of this that excludes either of above?
+# TODO maybe define FULL_CLAW_MODEL_KW_LIST, QUICK_*, as well as default
+# CLAW_MODEL_KW_LIST?
+# TODO TODO or otherwise use this in def of CLAW_MODEL_KW_LIST? and maybe provide a fn
+# to filter out certain subsets we don't care about (e.g. for QUICK_MODEL_KW_LIST
+# generation)
+# will also apply to all bouton models
+TRY_CLAW_MODELS_WITH: List[ParamDict] = dict_seq_product(
+    # TODO want to explicitly specify default pn_claw_to_apl=False, like in
+    # step_model_pn_apl.py? meh. just check (if i use this var there) the directory
+    # names are still ok there. fn i was using to compute them might have produced nicer
+    # outputs with both of these explicit?
+    [dict(), dict(pn_claw_to_apl=True)],
+    # TODO maybe only try allow_net_inh_per_true with claw_dynamics=True?
+    # for some reason, that's how i initially specified it in step_model_pn_apl.py
+    [dict(), dict(allow_net_inh_per_claw=True)],
+    # TODO also try different time constants for claw_dynamics=True case
+    # (and what is name of that param again?)
+    [dict(), dict(claw_dynamics=True)],
+
+    TRY_NONCLAW_MODELS_WITH
+)
+# TODO TODO is dict_seq_product idempotent? i.e. if we pass it a single list, it just
+# returns that, right? add to test!
+TRY_BOUTON_MODELS_WITH: List[ParamDict] = dict_seq_product(
+    # TODO TODO add some scale_pre_tuning=True variants that change ratios of APL<>KC
+    # and APL<>PN scales
+    TRY_CLAW_MODELS_WITH
+)
+
+# NOTE: uniform/hemibrain models currently use # of KCs from hemibrain connectome
+# (1837 if _drop_glom_with_plus=False [= old behavior], or 1830 otherwise). model
+# would default to 2000 otherwise. fafb data more cells (2482 in left, probably
+# similar in right).
+UNIFORM_MODEL_KWS: ParamDict = dict(pn2kc_connections='uniform', n_claws=7)
+# TODO (easily?) possible to implement some kind of analogue to pn_claw_to_apl=True
+# for this (non-claw) weight_divisor=20 case?
+NONCLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    [dict(weight_divisor=20)],
+    [dict(use_connectome_APL_weights=True), dict()]
+)
+FULL_NONCLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    [dict(weight_divisor=20)],
+    TRY_NONCLAW_MODELS_WITH
+)
+CLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    # TODO remove need to specify one_row_per_claw=True here. have prat_claws=True
+    # imply it, if it doesn't already. if not already implied, i believe
+    # one_row_per_claw is removed from (some?) IDs if prat_claws=True is present
+    [dict(one_row_per_claw=True, prat_claws=True)],
+    # see note in step_model_pn_apl.py about whether or not we want to have
+    # pn_claw_to_apl=False (default) explicitly specified for nice dir names
+    [dict(pn_claw_to_apl=True), dict()],
+    [dict(use_connectome_APL_weights=True), dict()]
+)
+# TODO replace above w/ this? or too long? 64 elements currently...
+COMMON_CLAW_MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True)
+FULL_CLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    [COMMON_CLAW_MODEL_KWS], TRY_CLAW_MODELS_WITH
+)
+# TODO replace w/ [maybe a filtered verison of] FULL_BOUTON_MODEL_KW_LIST?
 BOUTON_MODEL_KW_LIST: List[ParamDict] = dict_seq_product([
         dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
             use_connectome_APL_weights=True
@@ -564,27 +679,46 @@ BOUTON_MODEL_KW_LIST: List[ParamDict] = dict_seq_product([
     ],
     # pn_claw_to_apl=True: no-spiking required; direct claw>APL input
     [dict(pn_claw_to_apl=True), dict()]
-    # TODO add claw dynamics somewhere in here?
 )
-CLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
-    # TODO remove need to specify one_row_per_claw=True here. have prat_claws=True
-    # imply it, if it doesn't already. if not already implied, i believe
-    # one_row_per_claw is removed from (some?) IDs if prat_claws=True is present
-    [dict(one_row_per_claw=True, prat_claws=True)],
-    [dict(pn_claw_to_apl=True), dict()],
-    [dict(use_connectome_APL_weights=True), dict()]
+# TODO actually want to try any w/o connectome APL weights? (would have to filter
+# TRY_* list if not...)
+COMMON_BOUTON_MODEL_KWS: ParamDict = dict(
+    one_row_per_claw=True, prat_claws=True, prat_boutons=True
 )
-# TODO (easily?) possible to implement some kind of analogue to pn_claw_to_apl=True
-# for this (non-claw) weight_divisor=20 case?
-NONCLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
-    [dict(weight_divisor=20)],
-    [dict(use_connectome_APL_weights=True), dict()]
+FULL_BOUTON_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    [COMMON_BOUTON_MODEL_KWS], TRY_BOUTON_MODELS_WITH
 )
-# NOTE: uniform/hemibrain models currently use # of KCs from hemibrain connectome
-# (1837 if _drop_glom_with_plus=False [= old behavior], or 1830 otherwise). model
-# would default to 2000 otherwise. fafb data more cells (2482 in left, probably
-# similar in right).
-UNIFORM_MODEL_KWS: ParamDict = dict(pn2kc_connections='uniform', n_claws=7)
+for x in [
+        NONCLAW_MODEL_KW_LIST,
+        FULL_NONCLAW_MODEL_KW_LIST,
+        CLAW_MODEL_KW_LIST,
+        FULL_CLAW_MODEL_KW_LIST,
+        BOUTON_MODEL_KW_LIST,
+        FULL_BOUTON_MODEL_KW_LIST,
+    ]:
+    check_model_kws_unique(x)
+
+FULL_MODEL_KW_LIST: List[ParamDict] = (
+    [UNIFORM_MODEL_KWS] +
+    FULL_NONCLAW_MODEL_KW_LIST +
+    FULL_CLAW_MODEL_KW_LIST +
+    FULL_BOUTON_MODEL_KW_LIST
+)
+check_model_kws_unique(FULL_MODEL_KW_LIST)
+
+for subset, full in [
+        (NONCLAW_MODEL_KW_LIST, FULL_NONCLAW_MODEL_KW_LIST),
+        (CLAW_MODEL_KW_LIST, FULL_CLAW_MODEL_KW_LIST),
+        (BOUTON_MODEL_KW_LIST, FULL_BOUTON_MODEL_KW_LIST),
+    ]:
+    # TODO use model IDs or frozensets or what? (current approach not triggering any
+    # assertions at least. check that's also true w/ converting to str model IDs?)
+    # i suppose model IDs should be same whether default is explicitly specified?
+    # TODO above is not actually true is it? prob want that options tho... if not to
+    # have that be default behavior
+    subset = set(frozenset(x.items()) for x in subset)
+    full = set(frozenset(x.items()) for x in full)
+    assert subset <= full, f'subset - full:\n{pformat(subset - full)}'
 
 # should cover all the main paths in olfsysm, but also in fit_mb_model/etc
 MODEL_KW_LIST: List[ParamDict] = (
@@ -601,7 +735,8 @@ MODEL_KW_LIST: List[ParamDict] = (
             per_claw_pn_apl_weights=True
         ),
         #
-        # TODO TODO add some thresholding the per-claw weights, like betty wanted
+        # TODO add some thresholding the per-claw weights, like betty wanted (nah.
+        # delete)
     ],
     # TODO want both?
     [dict(pn_claw_to_apl=True), dict()]
@@ -4975,6 +5110,8 @@ APL_TUNING_PARAMS: Set[str] = {
     'binary_search_on_overshoot',
     # this one may not be there for older versions of olfsysm
     ONESTEP_LR_KEY,
+    # TODO TODO TODO want this one here?
+    'scale_pre_tuning',
 }
 
 def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
@@ -12390,7 +12527,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         if 'panel' in orn_deltas.columns.names:
             assert 'extra' not in set(orn_deltas.columns.get_level_values('panel'))
-            extra_orn_deltas = util.addlevel(extra_orn_deltas, 'panel', 'extra',
+            extra_orn_deltas = addlevel(extra_orn_deltas, 'panel', 'extra',
                 axis='columns'
             )
 
@@ -14734,6 +14871,12 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # happened at all. 0 if no tuning happened.
             # NOTE: thr_tuning_iters behaves differently, always starting at 0
             'tuning_iters': tuning_iters,
+
+            # TODO do i want scale_pre_tuning in tuning_dict or not? i assume it's
+            # already in another component of params saved (via input kws in all
+            # relevant cases, most likely?)? will currently cause assertion below wrt
+            # APL_TUNING_PARAMS to fail as-is, if excluded here
+            'scale_pre_tuning': scale_pre_tuning,
         }
         missing_tuning_keys = set()
         # TODO delete this and assume it's always there now?
@@ -14746,7 +14889,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             warn(f'current olfsysm version does not have rv.kc.{ONESTEP_LR_KEY}')
             missing_tuning_keys.add(ONESTEP_LR_KEY)
         #
-        assert APL_TUNING_PARAMS - set(tuning_dict.keys()) == missing_tuning_keys
+        assert APL_TUNING_PARAMS - set(tuning_dict.keys()) == missing_tuning_keys, \
+            f'{APL_TUNING_PARAMS - set(tuning_dict.keys())=} != {missing_tuning_keys=}'
 
         if not silent:
             print('tuning parameters:')
@@ -16439,6 +16583,14 @@ def fitandplot_finished_writing(model_output_dir: Path) -> bool:
     return last_nonplot_output.exists()
 
 
+class NoCachedModelOutputsError(Exception):
+    """Only raised from `fit_and_plot_mb_model` if `cache_only=True` and no cached model
+    outputs exist for the model in `plot_dir`.
+    """
+    def __init__(self, msg: str = 'no cached model outputs', *args, **kwargs):
+        super().__init__(msg, *args, **kwargs)
+
+
 _fit_and_plot_seen_param_dirs = set()
 # TODO why is sim_odors an explicit kwarg? just to not have included in strs describing
 # model params? i already special case orn_deltas to exclude it. why not do something
@@ -16451,7 +16603,10 @@ _fit_and_plot_seen_param_dirs = set()
 # fit_mb_model)
 def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     sens_analysis_kws: Optional[ParamDict] = None, _in_sens_analysis: bool = False,
-    try_cache: bool = True, plot_dirname: Optional[str] = None,
+    # TODO actually hide more things when quiet=True (all? except plot names being
+    # saved?)
+    try_cache: bool = True, cache_only: bool = False, quiet: bool = False,
+    plot_dirname: Optional[str] = None,
     # TODO rename comparison_responses to indicate it's only used for sensitivity
     # analysis stuff? (and to be more clear how it differs from comparison_[kcs|orns])
     comparison_responses: Optional[pd.DataFrame] = None,
@@ -16483,6 +16638,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     try_lr_cache: bool = True, **model_kws) -> Optional[ParamDict]:
     # TODO doc which extra plots made by each of comparison* inputs (or which plots are
     # changed, if no new ones)
+    # TODO why the asterisk on "force" in try_cache doc?
     """
     Args:
         plot_dir: parent to directory that will be created to contain model outputs and
@@ -16496,6 +16652,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         try_cache: set False to force* any model cache to be ignored. Calls via
             `al_analysis.py` CLI with `-i model` will have the same effect.
+
+        cache_only: will raise `NoCachedModelOutputsError` if no cached outputs exists,
+            otherwise will return them
 
         min_sparsity: (internal use only) only used for models parameterized with fixed
             `fixed_thr` and `wAPLKC` (typically in context of sensitivity analysis).
@@ -16534,6 +16693,18 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     #
     assert n_seeds >= 1
 
+    # TODO TODO have it be standard to have tune_dir passed in with path to tuning
+    # directory, for pre-tuned models (or use tune_from for that? prob want to clear
+    # that key if pre-tuned anyway, or delete that code entirely? also clear/delete
+    # tune_on_hallem)
+
+    if cache_only:
+        assert try_cache, 'can not set try_cache=False and cache_only=True'
+        # can be None or True
+        assert only_return_params != False, \
+            'can not set only_return_params=False and cache_only=True'
+        only_return_params = True
+
     # TODO delete restrict_sparsity? currently used?
     # TODO delete [min|max]_sparsity too?
     if not restrict_sparsity:
@@ -16570,6 +16741,12 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     variable_n_claws = pn2kc_connections in variable_n_claw_options
     use_connectome_APL_weights = model_kws.get('use_connectome_APL_weights', False)
     one_row_per_claw = model_kws.get('one_row_per_claw', False)
+
+    # TODO TODO TODO also need to handle scale_pretuning? any other cases? is there a
+    # reliable way to detect at output of fit_mb_model maybe it's even easier there, and
+    # that's where i should define this?
+    is_pretuned = fixed_thr is not None and wAPLKC is not None
+    #
 
     param_str = format_model_params({**model_kws, **{
             'fixed_thr': fixed_thr, 'wAPLKC': wAPLKC, 'wAPLPN': wAPLPN,
@@ -16712,10 +16889,12 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 target_sparsity = model_kws['target_sparsity']
             else:
                 target_sparsity = 0.1
+                # TODO move this after decision to use cache, or delete (or at least put
+                # behind not quiet)
                 # TODO replace .3g w/ a format_sparsity fn? (doing .3g [or .2g?] if
                 # there are 0s after decimal point, and maybe .2f otherwise? some way to
                 # accomplish something like that within f-str syntax?)
-                warn(f'using default target_sparsity of {target_sparsity:.3g}')
+                #warn(f'using default target_sparsity of {target_sparsity:.3g}')
 
             # TODO include something else for case where fixed_thr is vector (which
             # currently requires wAPLKC set, to a float as before)?
@@ -16765,11 +16944,24 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     extra_spikecounts_cache = param_dir / extra_spikecounts_cache_name
     extra_spikecounts = None
 
-    use_cache = try_cache and (not should_ignore_existing('model')) and (
+    # check if CLI `-i` option had `model` among its (comma-separated) arguments
+    ignore_existing_model = should_ignore_existing('model')
+    if cache_only:
+        assert not ignore_existing_model, ('can not specify `-i model` CLI arg for a '
+            'fit_and_plot_mb_model call with cache_only=True'
+        )
+
+    cached_responses_exist = (
         # checking both since i had previously only been returning+saving the 1st
+        # TODO also test wPNKC existance here? params? anything else?
         model_responses_cache.exists() and model_spikecounts_cache.exists()
-        # TODO also test wPNKC existance here?
     )
+    if cache_only and not cached_responses_exist:
+        # TODO shorten path?
+        raise NoCachedModelOutputsError(f'{param_dir} cached responses did not exist!')
+
+    use_cache = try_cache and not ignore_existing_model and cached_responses_exist
+
     # TODO TODO why was this False for step_model_pn_apl.py initial fit_mb_model
     # outputs?
     # TODO TODO (delete?) also, how did any of them ever have responses.p /
@@ -16816,6 +17008,12 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 )
                 use_cache = False
 
+                # TODO or just ignore the stale cache and return here?
+                if cache_only:
+                    raise NoCachedModelOutputsError(f'{tuning_output_dir} cached '
+                        'responses were stale! see warning above!'
+                    )
+
         if tuned_param_cache.exists():
             param_dict = read_tuned_params(param_dir)
 
@@ -16834,8 +17032,19 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     'inputs! setting use_cache=False!'
                 )
                 use_cache = False
+
+                # TODO or just ignore the stale cache and return here?
+                if cache_only:
+                    raise NoCachedModelOutputsError(f'{param_dir} cached fixed_thr/'
+                        'wAPLKC did not match current inputs. cache invalid!'
+                        'see warning above.'
+                    )
         else:
             assert not use_cache
+
+            # assume we must want to assert this, if we wanted to assert `not use_cache`
+            # here...
+            assert not cache_only
 
         # TODO also check that cached params references same tuning_output_dir (and set
         # use_cache = False if not)? or just assert it's same if already in cache?
@@ -16851,10 +17060,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         use_cache = True
     #
 
-    if use_cache and only_return_params is None:
-        only_return_params = True
-    else:
-        only_return_params = False
+    if only_return_params is None:
+        if use_cache:
+            only_return_params = True
+        else:
+            only_return_params = False
 
     # TODO delete this anyway? was from before i was setting default only_return_params
     # based on use_cache (had to split into two conditionals, this one and the above)
@@ -16891,12 +17101,15 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
             params_for_csv.update(param_dict)
             # TODO shorten dir?
-            print(f'loading model params from cache: {param_dir}')
+            if not quiet:
+                print(f'loading model params from cache: {param_dir}')
+
             # TODO this really matter that it skips some other code below it used to
             # run (in only_return_params=True case)? delete all that code below if not
             return params_for_csv
         else:
-            print(f'loading model responses (+params) from cache: {param_dir}')
+            if not quiet:
+                print(f'loading model responses (+params) from cache: {param_dir}')
 
         # TODO why using my read_pickle wrapper for only some of these?
         # TODO TODO are these actually returned? delete? (esp for
@@ -17145,13 +17358,13 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     )
                     return None
 
-                responses = util.addlevel(responses, 'seed', seed)
-                spike_counts = util.addlevel(spike_counts, 'seed', seed)
+                responses = addlevel(responses, 'seed', seed)
+                spike_counts = addlevel(spike_counts, 'seed', seed)
 
                 # TODO assert order of wPNKC columns same in each?
-                wPNKC = util.addlevel(wPNKC, 'seed', seed)
+                wPNKC = addlevel(wPNKC, 'seed', seed)
 
-                kc_spont_in = util.addlevel(kc_spont_in, 'seed', seed)
+                kc_spont_in = addlevel(kc_spont_in, 'seed', seed)
 
                 if first_param_dict is None:
                     first_param_dict = param_dict
@@ -17244,6 +17457,16 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             spike_counts = spike_counts.iloc[:, :len(input_odors)].copy()
 
         del input_odors
+
+        if is_pretuned:
+            # this key should only be added (along with several others, but this one is
+            # the least likely to ever change) to fit_mb_model param_dict output when
+            # APL weights have been tuned
+            assert 'tuning_iters' not in param_dict, ('tuning_iters should only have '
+                'been set at all (in fit_mb_model output) if APL weights were tuned, '
+                'which is inconsistent with model appearing to have been pre-tuned in '
+                'fit_and_plot_mb_model (is_pretuned=True)'
+            )
 
         # TODO also pass in + save a copy of full input ORN data (same as in
         # ij_certain-roi_stats.[csv|p], maybe just load that in here, to not need to
@@ -18167,12 +18390,39 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
     if n_spikes_for_response not in (None, 1):
         # TODO also binarized responses including silent? idk...
-
         spike_counts_nosilent_1spikethr = drop_silent_model_cells(spike_counts)
-        # would be surprising if this failed. would probably, but not necessarily,
-        # indicate a bug
-        assert len(spike_counts_nosilent_1spikethr) > len(spike_counts_nosilent)
-        assert len(spike_counts_nosilent_1spikethr) < len(spike_counts)
+        try:
+            # would be surprising if either of these failed. would probably, but not
+            # necessarily, indicate a bug
+            assert len(spike_counts_nosilent_1spikethr) < len(spike_counts), \
+                'had no silent cells, even at a threshold of only 1 spike'
+
+            # this one actually was failing without including equality, in some cases.
+            #
+            # 2026-05-25 scripts/model_yang_mixtures.py, running megamat-tuned model on
+            # syn-diag-binaries panel, with this version of the model:
+            # prat-claws_True__pn-claw-to-apl_True__claw-dynamics_True__
+            # connectome-APL_True__n-spikes-for-response_2__fixed-thr_118__wAPLKC_0.28
+            assert len(spike_counts_nosilent_1spikethr) >= len(spike_counts_nosilent), (
+                'every cell that responded with only 1 spike also responded with at '
+                f'least {n_spikes_for_response=} spikes to some other odor'
+            )
+            # maybe this will fail in some cases? we would have already returned by this
+            # point if responses were fully silent, so it feels extremely unlikely, at
+            # least in tuned models
+            #
+            # one case that will trigger this (with min non-zero spike_counts == 2):
+            # yang_mix_outputs/syn-diag-binaries/prat-claws_True__pn-claw-to-apl_True__
+            # claw-dynamics_True__connectome-APL_True__target-sp_0.05__
+            # n-spikes-for-response_2__fixed-thr_163__wAPLKC_0.30
+            assert (spike_counts == 1).any().any(), ('no KCs responded to any odor with'
+                ' just one spike'
+            )
+        except AssertionError as err:
+            if is_pretuned:
+                warn(f'{err}, but possible this is OK for pre-tuned models like this')
+            else:
+                raise
 
         # TODO say how many cells left/dropped here?
         xlabel = f'{xprefix}spike counts\ncounting any # of spikes as a response'
@@ -20284,7 +20534,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     flymins = fly_quantiles[0.0].rename('min')
     flymaxs = fly_quantiles[1.0].rename('max')
     if al_util.verbose:
-        before_scaling = util.addlevel(pd.concat([flymins, flymaxs], axis='columns'),
+        before_scaling = addlevel(pd.concat([flymins, flymaxs], axis='columns'),
             '', 'before', axis='columns'
         )
 
@@ -20411,7 +20661,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     if al_util.verbose and scaling_method is not None:
         flymins = fly_mean_df.groupby('fly_id')[col_to_fit].min().rename('min')
         flymaxs = fly_mean_df.groupby('fly_id')[col_to_fit].max().rename('max')
-        after_scaling = util.addlevel(pd.concat([flymins, flymaxs], axis='columns'),
+        after_scaling = addlevel(pd.concat([flymins, flymaxs], axis='columns'),
             '', 'after', axis='columns'
         )
         scaling_summary = pd.concat([before_scaling, after_scaling], axis='columns')
@@ -21341,6 +21591,9 @@ def process_mix_odor_names_hack(df: pd.DataFrame) -> pd.DataFrame:
 # all? (even tho thats the only one for now...)
 # TODO rename remypaper_and_kiwicontrol_modelling (/similar)? still want something with
 # a name like this?
+# TODO TODO option to pass in pre-scaled est_spike_deltas instead of dF/F (and to skip
+# that scaling). would then still get the benefits of saving a CSV summarizing model
+# tuning output params across models...
 def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
     model_kw_list: Optional[List[ParamDict]] = None, quick: bool = True,
     roi_depths: Optional[pd.DataFrame] = None, skip_sensitivity_analysis: bool = False,
@@ -21392,6 +21645,9 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
         dff2spiking_cache_dir: passed to `scale_dff_to_est_spike_deltas_using_hallem`
             `model_dir` kwarg
+
+        response_calc_params: passed to `scale_dff_to_est_spike_deltas_using_hallem`.
+            see documentation there.
     """
     # TODO delete
     # TODO why `memory usage (MiB): rss=4136.91 vms=7756.15` already here???
@@ -21618,6 +21874,11 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         sys.exit()
 
     if response_calc_params is not None:
+        # TODO check this, whether or not it's in copy_to_model_dirs? since we are
+        # excluding it from subset of files actually copied via exclude_names anyway, at
+        # least for next _write_inputs.. call below, since scale_dff_to_est... should
+        # manage that file. i suppose it might be copied by the subsetquent
+        # _write_inputs... calls below?
         for x in copy_to_model_dirs:
             if x.name == response_calc_params_json_name:
                 rc2 = read_json(x)
@@ -23449,11 +23710,11 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool
         # Remy gave me for making fig 2E (which have a 'datefly' column, that should be
         # formatted like this)
         datefly = f'{format_date(date)}/{fly_num}'
-        mean_response_df = util.addlevel(mean_response_df, 'datefly', datefly)
+        mean_response_df = addlevel(mean_response_df, 'datefly', datefly)
 
         # just to conform to format in loop below. only one recording for each of these
         # flies.
-        mean_response_df = util.addlevel(mean_response_df, 'thorimage', thorimage)
+        mean_response_df = addlevel(mean_response_df, 'thorimage', thorimage)
 
         mean_response_list.append(mean_response_df)
 
@@ -23536,10 +23797,10 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool
         # Remy gave me for making fig 2E (which have a 'datefly' column, that should be
         # formatted like this)
         datefly = f'{format_date(date)}/{fly_num}'
-        mean_response_df = util.addlevel(mean_response_df, 'datefly', datefly)
+        mean_response_df = addlevel(mean_response_df, 'datefly', datefly)
 
         # multiple recordings for most/all flies, presumably each w/ diff odors
-        mean_response_df = util.addlevel(mean_response_df, 'thorimage', thorimage)
+        mean_response_df = addlevel(mean_response_df, 'thorimage', thorimage)
 
         mean_response_list.append(mean_response_df)
         if verbose:
@@ -24306,8 +24567,8 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
             square_nonfinal_corrs.columns = square_nonfinal_corrs.columns + ' @ -3'
             square_nonfinal_corrs.index = square_nonfinal_corrs.index + ' @ -3'
 
-            square_nonfinal_corrs = sort_odors(util.addlevel(
-                    util.addlevel(square_nonfinal_corrs, 'panel', 'megamat').T,
+            square_nonfinal_corrs = sort_odors(addlevel(
+                    addlevel(square_nonfinal_corrs, 'panel', 'megamat').T,
                 'panel', 'megamat'
                 ), warn=False
             )
@@ -25015,14 +25276,837 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     # and CSVs, right?
 
 
+def get_roi_level(index: pd.Index) -> str:
+    # TODO better way?
+    if 'cells' in index.names:
+        roi_level = 'cells'
+    elif 'roi' in index.names:
+        roi_level = 'roi'
+    elif KC_ID in index.names:
+        roi_level = KC_ID
+    else:
+        assert False
+
+    return roi_level
+
+
+def count_flies_and_rois(df: pd.DataFrame, *, verbose: bool = True
+    ) -> Tuple[Optional[int], int]:
+    """Returns n_flies, n_rois. n_flies can be None, e.g. with model input.
+    """
+    roi_col = get_roi_level(df.columns)
+
+    flyroi_index_allna = df.isna().all()
+    assert roi_col in flyroi_index_allna.index.names
+    # other NaNs should be fine, but don't really expect any where it isn't the full
+    # panel NaN/not, for a given column.
+    assert not flyroi_index_allna.any()
+
+    if not _have_fly_cols(df):
+        n_rois = df.columns.get_level_values(roi_col).nunique()
+        n_flies = None
+        return n_flies, n_rois
+
+    grouped_by_fly = df.columns.to_frame(index=False).groupby(fly_cols)
+    n_rois_by_fly = grouped_by_fly[roi_col].nunique()
+    n_rois_by_fly.name = 'n_rois'
+
+    n_flies = len(n_rois_by_fly)
+    n_rois = n_rois_by_fly.sum()
+    if verbose:
+        print(f'{n_flies} flies ({n_rois} ROIs)')
+        print(n_rois_by_fly.to_frame().reset_index().to_string(index=False))
+
+    return n_flies, n_rois
+
+
+def _fly_colors_ser2img(fly_colors_ser: pd.Series) -> np.ndarray:
+    # expand_dims to go from shape (<cells>, <color-channels>) ->
+    # (<cells>, 1, <color-channels>)
+    return np.expand_dims(np.array([x for x in fly_colors_ser]), axis=1)
+
+
+# TODO factor this (or something like it) to hong2p.viz / al_analysis? use in
+# al_analysis.cluster_rois to define fly_colors there?
+# TODO TODO also use for KC_TYPE colors in al_analysis.mb_model (rename to be generic
+# when refactoring) (may make a new implementation there for now, but try to unify)
+def get_fly_color_series(df: pd.DataFrame, **kwargs) -> pd.Series:
+    """Returns a series w/ color values (unique per fly), and index from df.columns
+
+    Arg:
+        df: columns should contain `fly_cols`
+        **kwargs: passed to `sns.color_palette`
+    """
+    for_fly_colors = df.T.reset_index().set_index(fly_cols).index
+    n_flies = for_fly_colors.nunique()
+    assert n_flies >= 1
+    fly_palette = sns.color_palette(n_colors=n_flies, **kwargs)
+    fly_palette_dict = dict(zip(for_fly_colors.unique().sort_values(), fly_palette))
+
+    # Index.map wasn't seeming to work (error about length of names) after expand_dims,
+    # shape should be (n, 1, 3), which should allow imshow to correctly interpret last
+    # dim as color channels
+    fly_colors = np.expand_dims([fly_palette_dict[x] for x in for_fly_colors],
+        axis=1
+    )
+
+    fly_colors_ser = pd.Series([tuple(*x) for x in fly_colors], index=df.columns,
+        name='fly'
+    )
+
+    fly_colors2 = _fly_colors_ser2img(fly_colors_ser)
+    assert np.array_equal(fly_colors, fly_colors2)
+
+    return fly_colors_ser
+
+
+def _df2ser(df: pd.DataFrame, *, dropna: bool = True) -> pd.Series:
+    ser = df.unstack(df.index.names)
+    assert isinstance(ser, pd.Series)
+    if dropna:
+        ser = ser.dropna()
+    return ser
+
+
+_bottom_quantiles = [0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25]
+_top_quantiles = [1 - x for x in _bottom_quantiles][::-1]
+def quantiles(x, q=None, *, top_only: Optional[bool] = None, **kwargs) -> pd.Series:
+    """
+    Args:
+        x: data to print quantiles for
+
+        q: quantile(s) to print
+
+        top_only: only prints quantiles >= 0.5. if `None` and input is non-negative,
+            default as if `True`.
+
+        **kwargs: passed to `Series.quantile` (can use for `interpolation`)
+    """
+    if len(x.shape) > 1:
+        x = _df2ser(x)
+    # TODO need to dropna if input is already series? how is NaN handled?
+
+    if q is None:
+        q = _bottom_quantiles + _top_quantiles
+
+    if top_only is None:
+        if (x < 0).any():
+            top_only = False
+        else:
+            top_only = True
+
+    # TODO support float (rather than list/array) `q`? would need special handling here
+    bottom_quantiles = [x for x in q if x < 0.5]
+    top_quantiles = [x for x in q if x >= 0.5]
+
+    quantile_values = x.quantile(top_quantiles, **kwargs)
+    if not top_only:
+        bottom_quantile_values = x.quantile(bottom_quantiles, **kwargs)
+        quantile_values = pd.concat([bottom_quantile_values, quantile_values])
+
+    return quantile_values
+
+
+def print_quantiles(x, **kwargs) -> None:
+    """
+    Args:
+        x: data to print quantiles for
+
+        **kwargs: passed to `quantiles`
+    """
+    quantile_values = quantiles(x, **kwargs)
+    bottom_quantiles_mask = quantile_values.index < 0.5
+
+    if bottom_quantiles_mask.any():
+        bottom_quantile_values = quantile_values[bottom_quantiles_mask]
+        print(bottom_quantile_values.to_string())
+
+        if not bottom_quantiles_mask.all():
+            # separator to make it easier to inspect just the top-quantiles following
+            print('...')
+
+    top_quantile_values = quantile_values[~bottom_quantiles_mask]
+    print(top_quantile_values.to_string())
+
+
+# TODO or just upgrade to scipy 1.11 (from my current 1.10) and use
+# scipy.stats.ecdf?
+def ecdf(x):
+    # https://stackoverflow.com/questions/15792552
+    xs = np.sort(x)
+    ys = np.arange(1, len(xs) + 1) / float(len(xs))
+    return xs, ys
+
+
+# TODO TODO try also matching model and real KCs, and then computing distance across
+# that? change scaling parameterization so low numbers of spikes can be sent to 0 (for
+# logistic, at least), then see if fitting either this way (or previous ways), gives us
+# a scaling that sends anything to 0. maybe retry w/ model inputs w/ higher target
+# rates, or with olfsysm run such that target rate is only met by N spikes (prob too
+# messy...)?
+def distribution_distance(model_ser: pd.Series, kc_ser: pd.Series, *,
+    metric: str = 'scaled_euclidean', example_plot_dir: Optional[Path] = None,
+    plot_suffix: str = '') -> float:
+    """
+    Sorts both KC and model input responses, resamples the sorted KC data to be the
+    same length as the model data (currently just via linear interpolation), then
+    computes a distance (currently Euclidean, divided by sqrt(len(model_ser)), to try to
+    make distances comparable across choices of subsetting input datasets) between them.
+    """
+    assert metric in ('scaled_euclidean', 'wasserstein')
+
+    # might become false if i start working w/ hemidraw/uniform inputs. could remove
+    # this.
+    assert len(model_ser) < len(kc_ser), 'expecting more real KCs than model cells'
+
+    # TODO ecdf + "supnorm"/"inf" norm (i.e. max(abs(x - y))) is (as i understand it),
+    # the basis for the KS test, so maybe there's better justification for that norm
+    # here too? try that?
+
+    # TODO delete
+    #
+    # TODO compare to ecdf based approach (still not sure how to compute distances w/
+    # `ecdf` outputs, and feels like it should be the same. plotting ecdf outputs below
+    # made curves very much like the sorted value plots i have)? equivalent?
+    #
+    # TODO does this: https://stats.stackexchange.com/questions/113094
+    # imply we'd get the same result by defining cost as:
+    # model_ser.mean() - kc_ser.mean()? probably only if distance metric was
+    # sum(abs(x - y)) (cause then it'd be more like the "area between ecdfs" in the
+    # question), and then still only if the ecdf's dont intersect.
+    # try that (if same output, much simpler...)
+
+    if metric == 'scaled_euclidean':
+        model_xs = np.linspace(0, 1, num=len(model_ser))
+        kc_xs = np.linspace(0, 1, num=len(kc_ser))
+
+        # TODO use scipy.interp1d so i can specify kind='nearest' or something else
+        # other than linear interpolation? not sure that interpolation is 100%
+        # reasonable given the very spikey (i.e. in
+        # drop-silent-frac_False__method_logistic__fit-L_True__kc-quantile-for-L_1/hist.pdf
+        # there are 6 peaks [and 7 unique values, after rounding to 1 decimal place.
+        # rounding to 3 only adds 2 unique values])
+        # TODO scipy.interp1d wasn't the fn i tried that was giving me "ringing" or that
+        # weird artifact at the start (from fft based method) was itT?
+        resampled_kc_ser = np.interp(model_xs, kc_xs, kc_ser.sort_values())
+        assert len(resampled_kc_ser) == len(model_ser)
+
+        model_ser = model_ser.sort_values()
+
+        # euclidean(x, y) same as np.sqrt(((x - y)**2).sum())
+        #
+        # dividing by sqrt(len(model_ser)) to try make costs more comparable across
+        # cases where we are/aren't dropping a subset of data, i.e.
+        # drop_silent_frac=True/False.
+        # for why divide by sqrt(len(x)) instead of len(x):
+        # https://math.stackexchange.com/questions/4753657
+        distance = euclidean(resampled_kc_ser, model_ser) / np.sqrt(len(model_ser))
+
+    elif metric == 'wasserstein':
+        # testing indicates resampling kc data essentially doesn't change
+        # wasserstein_distance output, which is good. sort order of inputs also doesn't
+        # matter.
+        #
+        # aka Earth-mover's distance
+        # https://en.wikipedia.org/wiki/Wasserstein_metric
+        # https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.wasserstein_distance.html
+        distance = wasserstein_distance(kc_ser, model_ser)
+
+    # TODO also try energy_distance? it's the only other fn in the section of
+    # scipy.stats w/ wassterstein_distance
+
+    if metric == 'scaled_euclidean' and example_plot_dir is not None:
+        fig, ax = plt.subplots()
+        ax.plot(model_xs, model_ser, label='model responses sorted')
+        ax.plot(model_xs, resampled_kc_ser, label='KC responses sorted')
+        ax.set_title(f'distance={distance:.2f}')
+        ax.legend()
+        savefig(fig, example_plot_dir, f'example_distribution_distance{plot_suffix}')
+        # TODO delete
+        # (yes, the ecdf lines look like flipped+rotated versions of the sorted value
+        # plots, but still not sure how to compute a distance in the ecdf form, and i
+        # also still feel it'd pretty much be equivalent)
+        '''
+        fig, ax = plt.subplots()
+        xs, ys = ecdf(model_ser)
+        ax.set_title('model ECDF')
+        ax.plot(xs, ys)
+
+        fig, ax = plt.subplots()
+        xs2, ys2 = ecdf(kc_ser)
+        ax.set_title('KC ECDF')
+        ax.plot(xs2, ys2)
+
+        fig, ax = plt.subplots()
+        ax.plot(model_xs, model_ser, label='model responses sorted')
+        ax.set_title('model responses sorted')
+
+        fig, ax = plt.subplots()
+        ax.plot(model_xs, resampled_kc_ser, label='KC responses sorted')
+        ax.set_title('resampled KC responses sorted')
+        #
+
+        plt.show()
+        import ipdb; ipdb.set_trace()
+        '''
+
+    return distance
+
+
+# TODO type hint x (and return type) to union of Series and DataFrame?
+# (does work w/ both. using it w/ both)
+# TODO break anything if i add defaults to these? seems like reasonable (round) defaults
+# might be k=2, x0=2, L=3 (getting values around there for a few fits. see notes in
+# model_yang_mixtures.py)
+def logistic(x, k: float, x0: float, L: float):
+    """
+    Args:
+        x: array to transform (1d Series / 2d DataFrame both work)
+        k: "logistic growth rate" / steepness
+        x0: "x value of function's midpoint"
+        L: "carrying capacity" (= max)
+
+    https://en.wikipedia.org/wiki/Logistic_function
+    """
+    return L / ( 1 + np.exp(-k * (x - x0) ) )
+
+
+def logp1(x, base: float):
+    # log change-of-base formula: log_{b}(a) = log_{c}(a) / log_{c}(b)
+    #
+    # NOTE: np.log is natural logarithm (base np.e)
+    # np.emath.logn(base, x) == np.log(x) / np.log(base)
+    #
+    # this way preserves DataFrame type, unlike np.emath.logn(base, x)
+    return np.log(1 + x) / np.log(base)
+
+
+def make_cost_fn(fn_to_fit: Callable, *, fixed_params: Optional[Dict[str, Any]] = None,
+    **kwargs) -> Callable:
+    """
+    Wraps a fn that scales model data, to also take model and KC data return
+    `distribution_distance` output. Output should be suitable for using with
+    `scipy.optimize.minimize` (and probably some other similar fns).
+
+    Args:
+        fn_to_fit: function to scale model spike count data, with parameters to
+            optimize. must take spike count data as first arg, and all remaining args
+            must be parameters to fit (or specified)
+
+        fixed_params: dict of params to fix. currently assumed all these are after all
+            params that may vary, in the definition of input `fn_to_fit`
+
+        **kwargs: passed thru to `distribution_distance` call within returned function
+    """
+    if fixed_params is None:
+        fixed_params = dict()
+
+    def cost_fn(params: np.ndarray, model_ser: pd.Series, kc_ser: pd.Series) -> float:
+        # TODO need to ensure fixed_params are at all after the non-fixed ones (in input
+        # fn defs)? (probably, b/c i'm doing *params...)
+        # TODO assert (via inspect?) model_ser and kc_ser are last args to input fn?
+        # TODO assert len of fixed_params + len(params) == total number of args to input
+        # fn (also via inspect)?
+        # sig = inspect.signature(fn_to_fit)
+
+        scaled_model_ser = fn_to_fit(model_ser, *params, **fixed_params)
+        cost = distribution_distance(scaled_model_ser, kc_ser, **kwargs)
+        return cost
+
+    return cost_fn
+
+
+_made_drop_silent_frac_kc_plots = False
+# TODO make plot_root default to None (-> delete make_plots)?
+# TODO TODO also estimate noise from nonresponders in real KC data (have them labelled?
+# estimate myself?), and add gaussian noise w/ same SD to my responses at end?
+# TODO TODO factor to al_analysis.mb_model, and give reasonable defaults (w/o needing to
+# pass kc_df in)
+# TODO TODO option to always set n_spikes_for_response as midpoint (or something similar
+# to what current fits have been doing?) (as one way to not really require fitting, for
+# method='logistic', or to require less? not sure how i'd want to handle the other
+# params)
+def scale_model_spike_counts(model_df: pd.DataFrame,
+    kc_df: Optional[pd.DataFrame] = None, *,
+    fit_params: Optional[Dict[str, Any]] = None, plot_root: Optional[Path] = None,
+    # TODO change drop_silent_frac default to True? anything depend on its default
+    # value? "final" scaling choice has it =False
+    example_distance_plots: bool = False, drop_silent_frac: bool = True,
+    method: str = 'logistic', fit_L: bool = False, kc_quantile_for_L: float = 1,
+    optimize_log_base: bool = True, log_quantile_to_match: float = 1,
+    make_plots: bool = True, verbose: bool = True, **distribution_distance_kws):
+    """
+    Args:
+        kc_df: KC data to use a target distribution, for picking parameters of the
+            functions used to scale the model spike count data. if None, expects
+            `fit_params`, and will only return scaled data (using `fit_params` to
+            parameterize the scaling fn).
+
+        fit_L: only relevant for `method='logistic'`
+
+        kc_quantile_for_L: only relevant for `method='logistic'`, and only if
+            `fit_L=False`. which quantile of KC data to use for maximum of logistic fn
+            output.
+
+        optimize_log_base: only relevant for `method='log'`. if True,
+            log_quantile_to_match is ignored, and the same optimization-based approach
+            as used to pick logistic parameters is used to pick log base
+
+        log_quantile_to_match: only relevant for `method='log'`. base will be chosen to
+            match this quantile between the KC data and transformed model spike count
+            data. if `=1`, this is matching the maximums between the spaces.
+    """
+    global _made_drop_silent_frac_kc_plots
+
+    assert method in ('logistic', 'log')
+
+    if plot_root is None:
+        warn('setting make_plots=False because plot_root=None')
+
+    # TODO break this into its own fn so i can restore a reasonable type hint on return
+    # of this fn?
+    # TODO TODO delete? seems unused b/c assertion below
+    if kc_df is None:
+        assert fit_params is not None
+        fit_params = {k: v for k, v in fit_params.items() if 'cost' not in k}
+
+        if method == 'logistic':
+            return logistic(model_df, **fit_params)
+
+        elif method == 'log':
+            return logp1(model_df, **fit_params)
+
+    # TODO TODO why asserting this is None? so `kc_df is None` block above isn't used at
+    # all? delete that above branch then?
+    assert fit_params is None
+    #
+
+    input_params = {
+        'drop_silent_frac': drop_silent_frac, 'method': method,
+        **distribution_distance_kws
+    }
+
+    kc_ser = kc_df.unstack(kc_df.index.names).dropna()
+    # TODO TODO why would there be any NaN in this in the first place? is there (yes!
+    # 1956/7032)? assert not? probably because dropping silent cells without panels.
+    # should i even be doing that before this though? ifl i should not be?
+    model_ser = model_df.unstack(model_df.index.names).dropna()
+
+    # TODO what are (model) response rate(s) (mean and to each odor) in each panel,
+    # after dropping non-responders (and compare to before)?
+
+    # NOTE: behavior of this will somewhat depend on whether we dropped silent model
+    # cells within or across panels before, but not sure exactly how
+    if drop_silent_frac:
+        # TODO am i dropping real KCs or model KCs? interfere w/ current usage/def of
+        # n_total_rois anywhere? drop_silent_frac=False is "final" scaling choice, so
+        # maybe this branch doesn't really matter anyway
+        # TODO delete
+        breakpoint()
+        #
+        # 0.621212... (across both panels)
+        frac_to_drop = (model_ser == 0).sum() / len(model_ser)
+
+        # TODO TODO is this at all in the realm of what remy might use to binarize this
+        # data?  what approach might she take?
+        #
+        # 0.24530870033970772 (for frac_to_drop=0.621212...)
+        # why is this 0.38355346175750493 and not the 0.245... i had written before?
+        # presumably cause i dropped the weakest cells now i assume (using that input
+        # from main, rather than full KC data)?
+        drop_less_than = kc_ser.quantile(frac_to_drop)
+
+        # TODO or maybe don't drop the bottom frac, but instead just set to
+        # zero on kc side of things (will that make default 'BFGS' optimization work
+        # again? i.e. not return negative x0 and k params)
+        # (how could the two methods be meaningfully different?)
+        #
+        # NOTE: these variables should only be used for computing similarity of scaled
+        # model (vs real KC) data distributions
+        model_ser = model_ser[model_ser > 0].copy()
+        kc_ser = kc_ser[kc_ser >= drop_less_than].copy()
+
+        kc_df_after_dropping = kc_ser.unstack(fly_cols + ['cells'])
+
+        # no ['date', 'fly_num', 'cells'] combo has all odor responses NaN
+        assert not kc_df_after_dropping.isna().all().any()
+
+        n_flies_before, n_rois_before = count_flies_and_rois(kc_df, verbose=False)
+        n_flies, n_rois = count_flies_and_rois(kc_df_after_dropping, verbose=False)
+
+        # to check that we aren't fully dropping any flies w/ above cutoff on KC data
+        assert n_flies_before == n_flies
+
+        if verbose:
+            n_dropped_cells = n_rois_before - n_rois
+            print()
+            print(f'dropped {n_dropped_cells} cells from KC data '
+                f'(with response <{drop_less_than:.2f}) (to match {frac_to_drop:.2f},'
+                ' the fraction of 0-spike model entries dropped) before scaling model'
+                'data to it'
+            )
+
+        # TODO TODO move this out of this fn? doesn't depend on scaling, right?
+        #
+        # above dropping process will happen once for each call, but outcome should be
+        # the same
+        if make_plots and not _made_drop_silent_frac_kc_plots:
+            _made_drop_silent_frac_kc_plots = True
+
+            # TODO check this doesn't get cut off
+            title = (
+                f'after dropping (odor X cell) pair values <{drop_less_than:.3f}\n'
+                f'(to match silent frac ({frac_to_drop:.3f}) of model pairs)\n'
+                f'n={n_flies} ({n_rois} ROIs)'
+            )
+
+            fig, ax = plt.subplots()
+            sns.histplot(kc_ser, ax=ax, legend=False, bins=n_bins)
+            ax.set_yscale('log')
+            ax.set_title(title)
+            savefig(fig, plot_root, 'kc_hist_drop-model-silent-frac')
+
+            vmin = kc_df.min().min()
+            vmax = kc_df.max().max()
+            row_colors = get_fly_color_series(kc_df)
+
+            for panel, pdf in kc_df.groupby(level='panel'):
+                pdf = pdf.dropna(how='all', axis='columns')
+
+                # TODO factor to share most kwargs w/ cluster_rois call that handles all
+                # kc data elsewhere?
+                cg, row_linkage, _ = cluster_rois(pdf, norm='two-slope', vmin=vmin,
+                    vmax=vmax, cmap=diverging_cmap, odor_sort=False,
+                    title='KC data before zeroing', row_colors=row_colors,
+                    return_linkages=True, optimal_ordering=False
+                )
+                # NOTE: should have same content as hierarchichal clustering for
+                # whichever KC input kc_df is from, but not worth passing that extra
+                # stuff in (nor tracking down that other plot)
+                savefig(cg, plot_root, f'kc_clust_{panel}')
+                clust_order_indices = leaves_list(row_linkage)
+
+                zeroed_kc_df = pdf.copy()
+                zeroed_kc_df = zeroed_kc_df.iloc[:, clust_order_indices]
+                zeroed_kc_df[zeroed_kc_df < drop_less_than] = 0
+
+                # optimal_ordering= should not be relevant here since row_cluster=False
+                # should disable ROI clustering
+                cg = cluster_rois(zeroed_kc_df, norm='two-slope', vmin=vmin, vmax=vmax,
+                    cmap=diverging_cmap, odor_sort=False, row_cluster=False,
+                    title=title, row_colors=row_colors
+                )
+                savefig(cg, plot_root, f'kc_clust_silent-frac-zeroed_{panel}')
+
+    # TODO check these match ax.get_xlim() (in plot made at end of this fn)?
+    xmin = model_ser.min()
+    xmax = model_ser.max()
+    fn_plot_xs = np.linspace(xmin, xmax, num=200)
+
+    # (before breaking things apart by panel, or dropping some lowest percentage
+    # equal to number of silent model (odor X cell) pairs, and also before
+    # fit_L=True was an option):
+    # method2min_cost:
+    # {'CG': 41.919381856532,
+    #  'L-BFGS-B': 41.91938185652981,
+    #  'Nelder-Mead': 238.52679381319177,
+    #  'Powell': array(41.92),
+    #  'SLSQP': 41.9193818579659,
+    #  'TNC': 41.91942077145603,
+    #  'trust-constr': 41.91938185652943}
+    #
+    # (from trying different method= options, beyond default 'BFGS' i'm using now)
+    # parameters all seem pretty consistent around [0.13, 23.5] (excluding badly
+    # performing 'Nelder-Mead'), which is also what i get from curve_fit and brute
+    # TODO restore?
+    #opt_method = 'BFGS'
+
+    # TODO compare (again) to 'SLSQP'?
+    # with default opt_method='BFGS' (which doesn't accept `bounds=` kwarg) and
+    # drop_silent_frac=True, currently seem to be getting negative values for logistic k
+    # and x0 params
+    opt_method = 'L-BFGS-B'
+
+    # can be used for methods where bounds can be supplied (brute or minimize w/
+    # method in method_with_bounds)
+    method_with_bounds = {
+        'Nelder-Mead',
+        'L-BFGS-B',
+        'TNC',
+        'SLSQP',
+        'Powell',
+        'trust-constr',
+        'COBYLA',
+        'COBYQA',
+    }
+    minimize_kwargs = dict()
+
+    # TODO try (an option for) sklearn preprocessing.robust_scale (can choose quantiles
+    # to target i think?)
+    # TODO try (an option for) percentile based scaling / transform? how? replace each
+    # datapoint w/ quantile? care about what that does to inhibition?
+    final_cost = None
+    if method == 'logistic':
+        method_params = {'fit_L': fit_L, 'kc_quantile_for_L': kc_quantile_for_L}
+        if fit_L:
+            assert kc_quantile_for_L == 1
+        else:
+            assert 0 < kc_quantile_for_L <= 1
+
+        # (below costs were before i was dividing by sqrt(len(model_ser)) in cost fn
+        #
+        # NOTE: min cost is 22.43 rather than 41.9 if I also fit L! (worth trying other
+        # optimization methods again now?) (still w/o splitting by panel and w/o droping
+        # any low fraction). fit L is 2.93 (w/ k=1.54, x0=2.19), and given that there
+        # are still several hundred (real-KC X odor) pairs that have Fc_zscore above
+        # this, i'm not sure i want to cap the value there... maybe i should just pick a
+        # different cost function or something then? or maybe this whole
+        # distribution-matching approach is flawed?)
+
+        # logistic fn max output ("carrying capacity")
+        L = kc_ser.quantile(kc_quantile_for_L)
+
+        # TODO try diff inits (see my old kc_natural_mixes/kc_mix_analysis.py
+        # minimize_multiple_init fn for that?)?
+        k0 = 1
+        # TODO better initial midpoint? pick from mean kc_ser (or mode_ser?)?
+        x0_0 = 0
+        initial_param_guess = [k0, x0_0]
+
+        ranges = [
+            # k (steepness)
+            (0, 20),
+            # x0 (midpoint) (should be in units of spike counts)
+            (0, 30),
+        ]
+        if not fit_L:
+            fixed_params = {'L': L}
+        else:
+            fixed_params = None
+            L0 = L
+            initial_param_guess.append(L0)
+            ranges.append((0, L0 * 2))
+
+        if opt_method in method_with_bounds:
+            minimize_kwargs = dict(bounds=ranges)
+
+        cost_fn = make_cost_fn(logistic, fixed_params=fixed_params,
+            **distribution_distance_kws
+        )
+        args = (model_ser, kc_ser)
+        result = minimize(cost_fn, initial_param_guess, args, method=opt_method,
+            **minimize_kwargs
+        )
+        final_cost = result.fun
+
+        if not fit_L:
+            k, x0 = result.x
+            if verbose:
+                print(f'L not fit. hardcoded to KC quantile {kc_quantile_for_L}: {L}')
+        else:
+            k, x0, L = result.x
+
+        scaled_model_df = logistic(model_df, k, x0, L)
+        scaling_fn = logistic
+        fit_params = {'k': k, 'x0': x0, 'L': L}
+
+        fn_plot_ys = logistic(fn_plot_xs, k, x0, L)
+
+    elif method == 'log':
+        method_params = {
+            'optimize_log_base': optimize_log_base,
+            'log_quantile_to_match': log_quantile_to_match
+        }
+        assert 0 < log_quantile_to_match <= 1
+
+        base = kc_ser.quantile(log_quantile_to_match) / np.log(model_ser + 1).max()
+
+        if optimize_log_base:
+            assert log_quantile_to_match == 1
+
+            # mostly just want to avoid a <=0 base. might need to have lower bound >0 to
+            # really fix that, idk...
+            ranges = [(0, 20)]
+            # TODO refactor?
+            if opt_method in method_with_bounds:
+                minimize_kwargs = dict(bounds=ranges)
+            #
+
+            # TODO delete
+            # TODO TODO fix in drop_silent_frac=True case
+            # getting: `ValueError: array must not contain infs or NaNs`
+            # (seems like i might have fixed it by adding bounds keeping it >[=]0?)
+            '''
+            if drop_silent_frac:
+                # ipdb> np.isfinite(kc_ser).all()
+                # True
+                # ipdb> np.isfinite(model_ser).all()
+                # True
+                import ipdb; ipdb.set_trace()
+            '''
+            #
+            args = (model_ser, kc_ser)
+            cost_fn = make_cost_fn(logp1, **distribution_distance_kws)
+            result = minimize(cost_fn, base, args, method=opt_method, **minimize_kwargs)
+            base = result.x[0]
+            final_cost = result.fun
+        else:
+            # TODO actually support log_quantile_to_match < 1???
+            # TODO and if so, do i actually want to match that quantile from both
+            # datasets, or just match the max scaled model spike count to this quantile
+            # from the kc data?
+
+            # TODO delete
+            #
+            # will only differ from below if log_quantile_to_match < 1, so would have to
+            # pick a value < 1 to test
+            if log_quantile_to_match < 1:
+                base2 = (
+                    kc_ser.quantile(log_quantile_to_match) /
+                    np.log(model_ser + 1).quantile(log_quantile_to_match)
+                )
+                print(f'{base2=}')
+                # TODO add comment w/ quanties (-> pick between base and base2 method)
+                scaled_model_df2 = logp1(model_df, base2)
+                # (would now want to compare to those in CSV written in main, as i
+                # removed the quantile prints elsewhere)
+                print_quantiles(scaled_model_df2)
+                print()
+                print()
+            #
+
+            # TODO try other bases that actually match ranges of cluster means better.
+            # matching maxes may not be the way to go... percentiles may fix?
+            # TODO try 1.5/2 (round numbers near this base)? (allow passing base, or
+            # other full sets of params in?)
+
+        scaled_model_df = logp1(model_df, base)
+        scaling_fn = logp1
+        fit_params = {'base': base}
+
+        fn_plot_ys = logp1(fn_plot_xs, base)
+
+    assert len(set(input_params.keys()) & set(method_params.keys())) == 0
+    input_params.update(method_params)
+    input_param_str = format_params(input_params, sort=False)
+
+    scaled_model_ser = _df2ser(scaled_model_df)
+    # TODO or just leave as None in this case? actually meaningful / used?
+    if final_cost is None:
+        final_cost = distribution_distance(scaled_model_ser, kc_ser)
+
+    # TODO also latex format (or sep version doing that for plot made in here?)?
+    fit_param_str = format_params(fit_params, sort=False)
+    if verbose:
+        print()
+        print(f'input params: {input_param_str}')
+        # doesn't necessarily mean an optimization-based approach was used for all
+        # TODO also print equation (or at least name of it), maybe also a description of
+        # each parameter. + log these parameters somewhere? am i already?
+        # want a log of the values across all models / panels / whatever i use, to see
+        # to what extent the fit varies
+        # TODO and how would it change if i added gaussian noise to spike counts
+        # before fitting (which was optimized in a prior step to match non-responder
+        # distribution around 0)?
+        print(f'fit params: {fit_param_str}')
+        print(f'final cost: {final_cost:.3f}')
+        print(f'# spikes -> output of {method} scaling fn:')
+        for n_spikes in range(6):
+            print(f'{n_spikes=}: {scaling_fn(n_spikes, **fit_params):.2f}')
+        print()
+
+    fit_params['cost'] = final_cost
+
+    if example_distance_plots:
+        plot_suffix = '' if not drop_silent_frac else '__drop-silent-frac_True'
+        distribution_distance(model_ser, kc_ser, example_plot_dir=plot_root,
+            plot_suffix=plot_suffix
+        )
+        distribution_distance(scaled_model_ser, kc_ser, example_plot_dir=plot_root,
+            plot_suffix=f'{plot_suffix}_after-scaling'
+        )
+
+    # TODO try to remove need for this switch (just make plot_root default to None, and
+    # test that?)
+    if make_plots:
+        # TODO factor this into option for util.format_params? or otherwise factor to
+        # share w/ al_analysis modelling param_dir code i copied from?
+        plot_dirname = input_param_str.replace('_','-').replace('=','_').replace(
+            ', ','__'
+        )
+
+        # TODO assert we haven't already seen this one this run?
+        plot_dir = plot_root / plot_dirname
+        plot_dir.mkdir(exist_ok=True)
+
+        # TODO at least one call to distribution_distance w/ example_plot_dir=plot_dir
+        # passed in
+        # TODO want one version also explaining drop_silent_frac procedure? not sure
+        # that procedure is useful tho... might not keep it
+
+        fig, (fn_ax, output_hist_ax) = plt.subplots(ncols=2, sharey=True)
+
+        # share x-axis, but have different y-axis. overlayed.
+        ax = fn_ax.twinx()
+        sns.histplot(model_ser, ax=ax, legend=False, bins=n_bins)
+        ax.yaxis.set_label_position('left')
+        ax.yaxis.tick_left()
+        ax.set_yscale('log')
+
+        fn_ax.plot(fn_plot_xs, fn_plot_ys, color='r')
+        fn_ax.set_xlabel('RAW model spike counts')
+        fn_ax.yaxis.set_label_position('right')
+        fn_ax.yaxis.tick_right()
+        # scaled into this range through the fitting / parameter selection for the
+        # non-linear fn
+        fn_ax.set_ylabel('SCALED model spike counts (~ KC response units)', color='r')
+        fn_ax.tick_params(axis='y', colors='r')
+        fn_ax.set_title('input + transform')
+        # from docs: "artists with higher zorder are drawn on top"
+        # https://stackoverflow.com/questions/38687887
+        fn_ax.set_zorder(ax.get_zorder() + 1)
+        # (i think) so the white box behind line doesn't hide the entire histogram
+        fn_ax.patch.set_visible(False)
+
+        sns.histplot(y=scaled_model_ser, ax=output_hist_ax, legend=False, bins=n_bins)
+        output_hist_ax.set_xscale('log')
+        # these line up with those from the left facet. ylabel between the two applies
+        # to both.
+        output_hist_ax.yaxis.tick_left()
+        output_hist_ax.tick_params(axis='y', colors='r')
+        output_hist_ax.set_title('scaled output')
+
+        fig.suptitle(f'{input_param_str}\n{fit_param_str}')
+
+        # TODO version of this, where each output bin gets a separate color, and the
+        # input bins that map to that get the same color? (at least when there is a
+        # small number of output bins, so probably just the logistic transforms that
+        # saturate after a small number of spikes) (some continuous colormap?)
+        #
+        # bbox_inches='tight' does seem to fix long suptitles being cut off
+        savefig(fig, plot_dir, 'scale_transform', bbox_inches='tight')
+    else:
+        plot_dir = None
+
+    # transformed spike count hist should be handled by a subsequent analyze_by_panel
+    # call
+
+    # TODO also plot clustered model inputs and outputs (maybe try one order for both?)
+
+    return scaled_model_df, plot_dir, input_params, fit_params
+
+
 # TODO option to group by as many components as there are ncomps (splitting
 # out e.g. separate classes for 2nd-highest-response-comp, for each ncomps=2 class with
 # a given max-comp already fixed) (or would all these be so small as to not matter?
 # check!) (how to sort? tuple for max_comp_idx, sorted like (max_comp_idx,
 # 2nd-highest-comp-idx, ...) (may need fixed length tuples, probably of # of
 # components)?
-def sort_rois_by_response_classes(df: pd.DataFrame, response_threshold: float, *,
-    merge_maxcomp_ncomps0: bool = True) -> pd.DataFrame:
+# TODO TODO automatically operate on True/False if input data is dtype boolean?
+# (and make response_threshold optional then)
+def sort_rois_by_response_classes(df: pd.DataFrame,
+    response_threshold: Optional[float] = None, *, merge_maxcomp_ncomps0: bool = True
+    ) -> pd.DataFrame:
     """Sorts input by #-components/mix responses, then by max-response component index.
 
     Uses `>= response_threshold` to determine which elements are considered responses.
@@ -25038,6 +26122,9 @@ def sort_rois_by_response_classes(df: pd.DataFrame, response_threshold: float, *
             component elicits the max response (if there is a component response. see
             `merge_maxcomp_ncomps0`).
 
+            If input data is all dtype bool, response_threshold will be set to 0.5, and
+            will err if it's not None or within (0, 1].
+
         merge_maxcomp_ncomps0: if True, cells not responding to any component will not
             all receive -1 for the last component of the key, which would otherwise
             indicate the index of the component to which the cell responded the
@@ -25051,6 +26138,12 @@ def sort_rois_by_response_classes(df: pd.DataFrame, response_threshold: float, *
     responses, first grouping mix responders together, and within that sorting by how
     many components the cell responded to, and which it responded to the strongest.
     """
+    # TODO just set binarized to df here, and skip threshold altogether? should be
+    # equiv...
+    if df.values.dtype == bool:
+        assert response_threshold is None or (0 < response_threshold <= 1)
+        response_threshold = 0.5
+
     binarized = df >= response_threshold
 
     # last row should be mix
@@ -25061,6 +26154,7 @@ def sort_rois_by_response_classes(df: pd.DataFrame, response_threshold: float, *
     #
     # should be 'cmix @ 0.0' or 'kmix @ 0.0' (or maybe one of the lower concs, like
     # -1/-2, if those weren't dropped yet)
+    # TODO relax, to support binary mixes?
     assert 'mix' in mix_resp.name, (f'{mix_resp.name=} (input need transposed? rows '
         'currently expected to be odors)'
     )
@@ -25197,11 +26291,101 @@ def format_response_class(x: Union[Tuple[bool, int, int], Tuple[bool, int]], *,
     return class_desc
 
 
+MERGE_MAXCOMP_NCOMPS0: bool = True
+
+# TODO also factor this into mb_model?
+# TODO also support clusters? would prob need cluster means passed in, to determine
+# which cluster is the non-responding one (if there even is one unique cluster)
+# TODO or should it return dataframe if input has fly_cols
+def add_missing_cells_to_nonresponders(counts: pd.Series, n_total: Union[int, pd.Series]
+    ) -> pd.Series:
+    # TODO doc
+
+    # TODO assert just expected key index level(s) otherwise?
+    if _have_fly_cols(counts):
+        assert isinstance(n_total, pd.Series)
+        fly_fixed_list = []
+        for fly_key, fly_counts in counts.groupby(level=fly_cols):
+            fly_total = int(n_total[fly_key])
+            assert fly_counts.sum() <= fly_total
+            if fly_counts.sum() == fly_total:
+                warn(f'{fly_key}: seems to already have all non-responder ROIs '
+                    'included'
+                )
+
+            fly_fixed = add_missing_cells_to_nonresponders(
+                fly_counts.droplevel(fly_cols), fly_total
+            )
+            # TODO assert everything except nonresponder part of series unchanged?
+            date, fly_num = fly_key
+            fly_fixed = addlevel(addlevel(fly_fixed, 'fly_num', fly_num), 'date', date)
+            fly_fixed_list.append(fly_fixed)
+
+        fixed = pd.concat(fly_fixed_list, verify_integrity=True)
+        # will return a dataframe where columns.names are fly_cols here, and row index
+        # same as it would be otherwise
+        fixed = fixed.unstack(fly_cols).fillna(0)
+        assert np.allclose(fixed, fixed.astype(int))
+        return fixed.astype(int)
+    else:
+        assert isinstance(n_total, int)
+
+    # TODO any way to support this in MERGE_MAXCOMP_NCOMPS0=False case? mabye if i
+    # redef class_sizes in here, to still behave as if =False? or define a separate
+    # one just for that? (otherwise, how would i distribute missing cells across
+    # mix_resp=False & n_comps=0, for different (!= -1, b/c
+    # MERGE_MAXCOMP_NCOMPS0=False) max_comp_idx values? no way that makes sense)
+    # TODO add separate flag that enables whether we add missing cells to
+    # resp_class_counts/class_sizes, to still allow MERGE_MAXCOMP_NCOMPS=False path
+    # to run, just without this correction?
+    assert MERGE_MAXCOMP_NCOMPS0
+
+    n_missing_cells = n_total - counts.sum()
+    assert n_missing_cells >= 0
+
+    def is_nonresponding_class(x):
+        # mix=False, ncomps=0
+        return x[0] == False and x[1] == 0
+
+    counts_nonresponders = counts.index.map(is_nonresponding_class)
+    # TODO relax? want to support clusters (where might be multiple non-responding
+    # ones. add new one just to indicate missing cells?)?
+    assert np.sum(counts_nonresponders) <= 1
+    if not counts_nonresponders.any():
+        # NOTE: does seem that putting the new Series first changes dtype of index
+        # (or at least how it is printed...), which I'm not sure I want. also not
+        # sure if it matters that non-responders are first, so just appending to end
+        # for now
+        # TODO also assert other existing index elements are also just length-3, to
+        # ensure we are being consistent w/ what we are adding here
+        counts = pd.concat([
+                counts, pd.Series({(False, 0, -1): n_missing_cells})
+            ], verify_integrity=True
+        )
+    else:
+        counts_nonresponder_idx = counts.index.get_loc((False, 0, -1))
+
+        # so we don't modify input
+        counts = counts.copy()
+
+        # TODO warn we are doing this?
+        counts.iloc[counts_nonresponder_idx] += n_missing_cells
+
+    # TODO want to sort index again (have some fn for that?) before returning?
+    # currently seems to put non-responders at end, if weren't already any
+
+    assert counts.sum() == n_total
+    return counts
+
+
 def print_n_and_frac_series(n_ser: pd.Series, frac_ser: pd.Series) -> None:
     series_strs = n_ser.astype(str) + frac_ser.map(lambda x: f' ({x:.1%})')
     print(series_strs.to_frame())
 
 
+# TODO accept something to add nonresponders to that class?
+# (flag to call add_missing_cells_to_nonresponders. or just keep calling that fn
+# explicitly?)
 def summarize_response_classes(df: pd.DataFrame,
     response_threshold: Optional[float] = None, *, sum_across_flies: bool = False,
     verbose: bool = True) -> pd.Series:
@@ -25215,7 +26399,6 @@ def summarize_response_classes(df: pd.DataFrame,
 
     # TODO doc this behavior, and purpose of it
     if 'key' not in df.columns.names:
-        assert response_threshold is not None
         df = sort_rois_by_response_classes(df, response_threshold)
     else:
         assert response_threshold is None
@@ -25362,6 +26545,448 @@ def summarize_response_classes(df: pd.DataFrame,
         return fly_class_sizes
     else:
         return class_sizes
+
+
+SUPPORTED_COMP_STATS: Tuple[str] = ('sum', 'max')
+COMP_STAT: str = 'max'
+assert COMP_STAT in SUPPORTED_COMP_STATS
+
+DIFF_COL_PREFIX: str = f'mix_minus_comp-'
+
+def get_diff_col(df: pd.DataFrame) -> str:
+    """Returns single column in `df` starting with `DIFF_COL_PREFIX`
+
+    This is the same name as the column `calc_mix_suppression` should return, and can be
+    passed as input to `diff_col2desc` function.
+
+    Raises ValueError if 0 or >1 columns start with that prefix.
+    """
+    columns = df.columns
+    assert len(columns.names) == 1, (f'{columns.names=}. expected single level '
+        'column index'
+    )
+    assert all(type(x) is str for x in columns), f'{columns=}. expected all str values'
+
+    diff_col = None
+    for x in columns:
+        if not x.startswith(DIFF_COL_PREFIX):
+            continue
+
+        if diff_col is not None:
+            raise ValueError(f'multiple columns starting with {DIFF_COL_PREFIX=}!')
+        diff_col = x
+
+    if diff_col is None:
+        raise ValueError(f'no columns starting with {DIFF_COL_PREFIX=}!')
+
+    return diff_col
+
+
+def diff_col2desc(diff_col: str) -> str:
+    """Returns human-readable description of `diff_col` mix suppression calculation.
+
+    Expects `diff_col` to be in format `f'{DIFF_COL_PREFIX}{comp_stat}'`, where
+    `comp_stat` is in `SUPPORTED_COMP_STATS`. The output of `calc_mix_suppression`
+    should have a single column matching this format.
+    """
+    assert diff_col.startswith(DIFF_COL_PREFIX), (f'{diff_col=} did not start with '
+        f'{DIFF_COL_PREFIX=}'
+    )
+    comp_stat = diff_col[len(DIFF_COL_PREFIX):]
+    assert comp_stat in SUPPORTED_COMP_STATS, (f'{comp_stat=} (suffix of {diff_col=}) '
+        f'was not in {SUPPORTED_COMP_STATS=}'
+    )
+    diff_desc = f'mix - {comp_stat}(components)'
+    return diff_desc
+
+
+# Prefixes of mixes, all of which will be assumed to have 5-components.
+# To add calc_mix_suppression support for more components (other than 2 or 5), would be
+# best to require all to be separated by '+', rather than using abbreviations. Could add
+# a dict of mix name prefix -> components (or to # of components), if we wanted to keep
+# using these mix nicknames for things with != 5 components.
+MIX_NAME_PREFIXES: Tuple[str] = ('kmix', 'cmix')
+
+# TODO allow taking comp_stat as kwarg? (then define diff_col inside?)
+def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
+    ) -> pd.DataFrame:
+    # TODO change output type to series, if not too much work changing surrounding code
+    # (or change so this doesn't transpose input, if keeping df output? might want to
+    # keep df output so we can calculate both binary and 5-comp mix suppression in one
+    # call, but that would probably add confusion to code using this)
+    """
+    Args:
+        df: data with single-level odor str index. Must have exactly one mix (and thus
+            data must currently just be from a single panel), either binary (where
+            components are separated by '+'), or 5-component (where odor name starts
+            with any of `MIX_NAME_PREFIXES`, e.g. 'kmix'/'cmix'), and all other rows
+            must correspond to components of that mix. Assumes that all mixes in
+            `MIX_NAME_PREFIXES` are 5-component mixtures.
+
+            Columns should contain different flies and/or ROIs.
+
+    Returns output with index same as input columns (mix suppression calculated within
+    each), and one column named to indicate how mixture suppression was calculated
+    (contains `comp_stat`).
+    """
+    index = df.index
+    # TODO also require it doesn't have '-<1,2,...>' in it? or '-' at all?
+    # (to exclude mix dilutions)
+    mix_masks = [index.str.startswith(x) for x in MIX_NAME_PREFIXES]
+    is_5comp_mix = mix_masks[0]
+    for mask in mix_masks[1:]:
+        # TODO |= work? use diff syntax?
+        is_5comp_mix |= mask
+
+    # intentionally not using olf.component_delim (' + '), in case we want to pass in
+    # abbreviated input like '2h+ma'
+    is_binary_mix = index.str.contains('+', regex=False)
+    # str.count doesn't accept regex=False kwarg, hence why i'm escaping the '+' here
+    # instead
+    assert index.str.count('\+').max() <= 1, ('either >2 components or an odor w/ + in '
+        f'name. neither currently supported. {index=}'
+    )
+
+    assert not (is_5comp_mix & is_binary_mix).any(), ('>=1 odor matched as both binary'
+        f' and 5comp mix. {index[is_5comp_mix & is_binary_mix]=}'
+    )
+
+    # TODO relax this, and just toss any solvent / binary mixes if we have 5comp?
+    # i suppose there would be ambiguity then about which mix we are calculating
+    # suppression relative to? return output that has suppression calculated both ways
+    # (i.e. stat across 2 components and their mix, as well as across 5 components and
+    # their mix)?
+    assert not (is_5comp_mix.any() and is_binary_mix.any()), ('currently just '
+        'supporting input with EITHER binary or 5comp mixes, and only components '
+        'besides that'
+    )
+
+    mix_mask = is_5comp_mix | is_binary_mix
+    # would also have to relax this if i want to support input with both binary and
+    # 5comp mixes
+    assert mix_mask.sum() == 1, 'expected only one mix entry'
+    # TODO convert mix_df into a Series, instead of a 1-row dataframe?
+    # (stat_over_comps below is a Series) (if i ever want to process both binary and
+    # 5comp mixes in input simultaneously, that would be one reason to keep output a df)
+    mix_df = df[mix_mask]
+
+    # TODO call olf.drop_solvent_odors first?
+    comp_df = df[~ mix_mask]
+    if is_5comp_mix.any():
+        assert len(comp_df) == 5, ('expected exactly 5 components for 5-component mix. '
+            f'had {comp_df.index}'
+        )
+    elif is_binary_mix.any():
+        assert len(comp_df) == 2, ('expected exactly 2 components for binary mix. '
+            f'had {comp_df.index}'
+        )
+    else:
+        raise ValueError(f'no odor in {index} that matched as either a binary '
+            "(containing '+') or a 5-component ('cmix'/'kmix') mix"
+        )
+
+    if comp_stat == 'max':
+        stat_over_comps = comp_df.max()
+    elif comp_stat == 'sum':
+        stat_over_comps = comp_df.sum()
+    else:
+        assert not comp_stat in SUPPORTED_COMP_STATS, f'{comp_stat=}'
+        raise ValueError(f'unrecognized {comp_stat=}. {SUPPORTED_COMP_STATS=}')
+
+    diff = (mix_df - stat_over_comps).T
+    # TODO why was i having this as a DataFrame not a Series? return a Series from this
+    # fn and convert to DataFrame in place i moved this code from (analyze_by_panel)?
+    assert len(diff.columns) == 1
+
+    diff_col = f'mix_minus_comp-{comp_stat}'
+    diff.columns = [diff_col]
+
+    return diff
+
+
+# TODO uppercase (and in natmix_data/analysis.py)
+ci: Union[int, float] = 95
+BOOTSTRAP_SEED: int = 0
+
+# TODO TODO factor to al_analysis.mb_model?
+# TODO TODO change so consistent sort order of xlabels (see ORN data, where some of
+# 'mix=0 ...' labels come after some of the 'mix=1 ...' labels) (still?)
+# TODO TODO TODO try to include nonreponders in total used to make this plot
+# (pre-dropping fully silent cells [/ silent panel cells] in model cases)
+# (am i not currently? or was it a different plot?)
+def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
+    title: Optional[str] = None, facet_kws: Optional[ParamDict] = None,
+    call_on_grids_before_save: Optional[Callable] = None, **kwargs) -> None:
+    # TODO doc
+
+    have_fly_cols = _have_fly_cols(class_fracs)
+
+    frac_mix_only_responders = class_fracs[
+        class_fracs.index.get_level_values('mix_resp').values &
+        (class_fracs.index.get_level_values('n_comps') == 0)
+    ].copy()
+    '''
+    # TODO assert first two levels are what i expect(+require) for this?
+    # (and which are those again?)
+    mix_only_slice = (True, 0)
+    # NOTE: this needs to happen before class_fracs.reset_index() below
+    # TODO TODO TODO fix:
+    # KeyError: 'True: boolean label can not be used without a boolean index'
+    try:
+        frac_mix_only_responders = class_fracs.loc[mix_only_slice]
+    # TODO delete
+    except KeyError:
+        print()
+        print('class_fracs:')
+        print(class_fracs)
+        breakpoint()
+    '''
+    #
+    frac_mix_only_responders.name = 'frac_mix-only_responders'
+
+    # TODO (still an issue?) fix for call from main
+    y_col = class_fracs.name
+    assert y_col is not None
+    class_fracs = class_fracs.reset_index()
+
+    # TODO did i have some standard way of doing this before? check fly_col(s) instead of
+    # 'source'?
+    # TODO delete if not needed
+    '''
+    if have_fly_cols:
+        from_model = class_fracs.date.isna()
+        assert from_model.equals(class_fracs.fly_num.isna())
+    else:
+        from_model = pd.Series(index=class_fracs.index, data=True)
+    '''
+
+    # TODO include N/fraction here?
+    class_fracs['response_class_str'] = class_fracs.apply(
+        lambda x: format_response_class((x['mix_resp'], x['n_comps'])), axis='columns'
+    )
+
+
+    def plot_fn(data, *cols, model_marker_kws: Optional[ParamDict] = None,
+        jitter: Union[float, bool] = 0.3, **kwargs) -> None:
+        if not have_fly_cols:
+            model_data = data
+        else:
+            from_kcs = data.date.notna()
+            assert from_kcs.equals(data.fly_num.notna())
+            # TODO otherwise, would need to have call below in a conditional
+            assert from_kcs.any()
+
+            model_data = data[~from_kcs]
+
+            # TODO minimize entanglement w/ model_yang_mixtures.py code i copied this
+            # from
+            if 'err_kws' not in kwargs:
+                err_alpha = kwargs.get('alpha', 0.5)
+                err_kws = dict(linewidth=1.5, alpha=err_alpha)
+            else:
+                err_kws = kwargs.pop('err_kws')
+
+            # need dodge=False here as long as we only have one hue level
+            # here, or else will get ZeroDivisionError
+            sns.pointplot(data[from_kcs], *cols, dodge=False, markerfacecolor='none',
+                linestyle='none', seed=BOOTSTRAP_SEED, err_kws=err_kws,
+                # TODO try legend=True again?
+                errorbar=('ci', ci), capsize=0.3, legend=False, **kwargs
+            )
+        #
+
+        marker = '.'
+
+        if model_marker_kws is None:
+            model_marker_kws = dict()
+
+        if 'connectome_apl' not in model_data.columns:
+            sns.stripplot(model_data, *cols, jitter=jitter, dodge=False, marker=marker,
+                **model_marker_kws, **kwargs
+            )
+        else:
+            # TODO move these to module level here (-> import in
+            # model_yang_mixtures.py)?
+            uniform_apl_marker = '.'
+            connectome_apl_marker = '+'
+
+            # TODO change to not have this as a strict requirement, and only do if
+            # connectome_apl column is available (or group and map arbitrary inputs to
+            # diff markers)
+            for connectome_apl in (True, False):
+                # doing it this way, rather than initial groupby, so that point markers
+                # get plotted last, so all i have to do is add a separate colorless '+'
+                # marker to legend to handle that (was mix of '.' and '+' in legend,
+                # since uniform doesn't have connectome APL case.
+                gdf = model_data[model_data.connectome_apl == connectome_apl]
+                marker = (
+                    uniform_apl_marker if not connectome_apl else connectome_apl_marker
+                )
+
+                # can't use float dodge here like in some other places unfortunately.
+                # TODO ig i could make figure wider?
+                # jitter=1.0 is too much. 0.3 too much too, esp w/ aspect=1.1
+                sns.stripplot(gdf, *cols, jitter=jitter, dodge=False, marker=marker,
+                    **model_marker_kws, **kwargs
+                )
+
+    if facet_kws is None:
+        facet_kws = dict()
+
+    # TODO need to do something so xlabels look nice across panels (despite being
+    # different in each facet)? (or can they be the same? need to fill some 0?)
+    # (may need to test where they actually do differ across facets?)
+    # TODO TODO just add hue= to this call (if we have fly_cols)
+    # TODO should i set sharex=False? should i fill in any that might be missing in one
+    # panel but not the other?
+    cg = sns.FacetGrid(data=class_fracs, col='panel', **facet_kws)
+    cg.map_dataframe(plot_fn, x='response_class_str', y=y_col, **kwargs)
+    cg.set_titles('{col_name}')
+    cg.fig.subplots_adjust(wspace=0.3)
+
+    # TODO refactor to share this code w/ model_yang... (copied from there)
+    xlabels = None
+    for ax in cg.axes.flatten():
+        curr_xlabels = ax.get_xticklabels()
+        if xlabels is None:
+            xlabels = curr_xlabels
+        else:
+            # == doesn't seem to return True when i'd want for Text objects
+            # reprs are like "Text(0, 0, '2h')", and include both position
+            # of label and text
+            assert all(repr(x) == repr(y) for x, y in zip(xlabels, curr_xlabels))
+            assert all(
+                x.get_text() == y.get_text() for x, y in zip(xlabels, curr_xlabels)
+            )
+    #
+
+    new_labels = []
+    mix_parts = []
+    for i, label in enumerate(xlabels):
+        text = label.get_text()
+        parts = text.split(' ')
+        prefix = 'ncomps='
+        assert parts[1].startswith(prefix), f'{parts=}'
+        n_comps = parts[1][len(prefix):]
+        if i == 0:
+            new_labels.append(f'$N_{{components}}={n_comps}$')
+        else:
+            new_labels.append(f'${n_comps}$')
+        mix_parts.append(parts[0])
+
+    mix_labels = [
+        'mix NON-responders' if x == 'mix=0' else 'mix-responders' for x in mix_parts
+    ]
+    for ax in cg.axes.flatten():
+        ax.set_xticks(range(len(new_labels)))
+        ax.set_xticklabels(new_labels, horizontalalignment='right')
+        add_group_labels_and_lines(ax, x=mix_labels, linecolor=(0.8, 0.8, 0.8),
+            label_offset=-1.15
+        )
+
+    if have_fly_cols:
+        title_y = 1.07
+    else:
+        # just a hack to compensate for very long (many line) titles in model cases
+        # TODO TODO work?
+        title_y = 1.20
+
+    if title is not None:
+        cg.fig.suptitle(title, y=title_y)
+
+    cg.set_axis_labels(
+        y_var=f'fraction of ROIs\n(with {ci:.0f}% CI)',
+        x_var='response class'
+    )
+    if call_on_grids_before_save is not None:
+        call_on_grids_before_save(cg)
+
+    cg.set_xlabels('')
+
+    assert y_col == 'frac_response_class', ('no longer saving plot with name '
+        'documented in comment below'
+    )
+    # saves `frac_response_class.pdf`
+    savefig(cg, plot_dir, y_col, bbox_inches='tight')
+    # TODO break above into its own fn, perhaps also returning but not saving the
+    # facetgrid (or option for that?)
+
+    kwargs_to_pop = ['model_marker_kws', 'jitter', 'alpha']
+    for k in kwargs_to_pop:
+        if k in kwargs:
+            kwargs.pop(k)
+
+    y_col = frac_mix_only_responders.name
+    frac_mix_only_responders = frac_mix_only_responders.reset_index()
+
+    cg2 = sns.catplot(frac_mix_only_responders, x='panel', y=y_col, kind='point',
+        linestyles='none', markerfacecolor='none', errorbar=('ci', ci),
+        seed=BOOTSTRAP_SEED, alpha=0.5, **kwargs
+    )
+
+    if have_fly_cols:
+        # TODO only do under certain circumstances?
+        assert frac_mix_only_responders['date'].isna().equals(
+            frac_mix_only_responders['fly_num'].isna()
+        )
+
+        # just intended for case where frac_mix_only_responders is already a DataFrame
+        # (no MultiIndex), and model has NaN data/fly_num for those rows
+        frac_mix_only_responders = frac_mix_only_responders.dropna()
+
+        if 'source' in frac_mix_only_responders.columns:
+            # TODO warn we are dropping these for this plot?
+            # (or else don't drop, and have separate color for ORNs?)
+            kc_only = frac_mix_only_responders[frac_mix_only_responders.source != 'orn']
+        # TODO keep?
+        else:
+            kc_only = frac_mix_only_responders
+
+        # seaborn catplot docs also do layer plots with a separate call like this
+        # (for case where there is only one facet, like this one).
+        # seems to be working fine w/ explicitly passing in ax like i was before
+        # (code to get ax is not inside add_panel_n_to_titles_or_xticklabels).
+        # legend=False b/c catplot call above will handle that (and this would add one
+        # overlapping the axes, which i don't want)
+        #
+        # TODO (delete. fixed.) fix:
+        # FutureWarning: Setting a gradient palette using color= is deprecated and will
+        # be removed in v0.14.0. Set `palette='dark:k'` for the same effect.
+        # seems that if i omit **kwargs (which only has hue='source' here),
+        # it doesn't have the same issue
+        kwargs_no_hue = {k: v for k, v in kwargs.items() if k not in ('hue', 'palette')}
+        # TODO add label='KC' or something then, to still get source for this one? was
+        # it in legend as is, with old code?
+        sns.swarmplot(kc_only, x='panel', y=y_col, color='k', legend=False,
+            **kwargs_no_hue
+        )
+
+    # TODO compute some other way (rather than using ymax=None, like below, where
+    # max marker is then pushed right up against top of facet...)
+    #
+    # TODO delete. round not gauranteed to be > input, right?
+    # round is doing e.g. 0.015584415584415584 -> 0.02
+    #ymax = frac_mix_only_responders.max().round(decimals=2)
+    ymax = None
+    cg2.set(ylim=(0, ymax))
+
+    if title is not None:
+        cg2.fig.suptitle(title, y=title_y)
+
+    cg2.set_axis_labels(
+        y_var=f'fraction of ROIs responding only to mix\n(with {ci:.0f}% CI)'
+    )
+
+    # TODO work? (i.e. does new branch of add_panel_n* work? think so)
+    if call_on_grids_before_save is not None:
+        call_on_grids_before_save(cg2)
+    #
+
+    assert y_col == 'frac_mix-only_responders', ('no longer saving plot with name '
+        'documented in comment below'
+    )
+    # saves `frac_mix-only_responders.pdf`
+    savefig(cg2, plot_dir, y_col, bbox_inches='tight')
 
 
 def main():

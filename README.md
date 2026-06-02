@@ -1,27 +1,21 @@
 
 ### Installation
 
-#### Manual
-
 ```
 mkdir -p ~/src
 cd ~/src
 
-# My modified version of suite2p
-git clone https://github.com/tom-f-oconnell/suite2p
-
-git clone https://github.com/ejhonglab/hong2p
 git clone https://github.com/ejhonglab/al_analysis
+cd al_analysis
 
-# This will make a conda environment named 'suite2p'
-conda env create -f suite2p/environment.yml
-
-conda activate suite2p
-cd ~/src/al_analysis
-pip install -r requirements.txt
+# This will make a conda environment named 'al_analysis'
+conda env create -f environment.yml
+conda activate al_analysis
 ```
 
-Then set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA` appropriately:
+
+### For `al-analysis`
+Set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA` appropriately:
 
 - `$HONG_NAS` should contain a directory `mb_team` directly under it.
 
@@ -36,13 +30,6 @@ Then set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA` appropriate
   directory `analysis_intermediates`, which will be created under this directory.
 
 
-#### Mostly automated
-
-To install as manual install above, but using SSH authentication, you may simply call
-`./install.sh` after cloning. If it asks you to set environment variables, you will need
-to manually do so.
-
-
 #### Setting up link to Google sheet with metadata
 
 For the analysis to use the metadata in my Google Sheet `Hong lab documents/Tom - odor
@@ -50,32 +37,30 @@ mixture experiments/pair_grid_data`, open the sheet and copy the link to a file 
 `pair_grid_data_gsheet_link.txt` in the top-level of this repository.
 
 
+##### TODO
+
+Document expectation on this Google Sheet? Make public read-only template and share
+link?
+
+
 ### Running
 
 ```
 # (or whatever else you named the environment for this project)
-conda activate suite2p
+conda activate al_analysis
 
-./al_analysis.py
+al-analysis <command line arguments ...>
+
+# To display help message describing how to run and different command line arguments
+al-analysis -h
 ```
 
-Plots will be created under a directory such as `svg`, under the current directory.
+Plots will be created under a directory such as `pdf`, under the current directory.
 
 
 ### Installation notes
 
-Only tested on Ubuntu 18.04.
-
-Note that despite the fact that `suite2p/environment.yml` includes the line `suite2p`,
-my current conda installation (despite `conda clean -a` and deleting all but the base
-environment) thinks it already has `suite2p` when it gets to that part of the install
-step. This is only really an issue because it suggests some other dependencies may not
-be installed correctly, as I would otherwise want to prevent suite2p from being
-installed, so that I can install an editable version of my fork without any ambiguity
-about other versions possibly being installed.
-
-This is the relevant line:
-```
-Requirement already satisfied: suite2p in /home/tom/src/suite2p (from -r /home/tom/src/suite2p/      condaenv.npju4l22.requirements.txt (line 15)) (0.10.2.dev11+gc7af998.d20210802)
-```
+Initially tested on Ubuntu 18.04, mostly on 20.04, and also believe it has worked on at
+least 24.04 (not sure if I've tested 26.04 yet). Some things, like symbolic links, may
+not work as expected by default on Windows.
 

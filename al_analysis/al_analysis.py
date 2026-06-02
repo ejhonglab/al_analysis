@@ -75,6 +75,9 @@ from natmix import load_corr_dataarray, drop_nonlone_pair_expt_odors, dropna_odo
 from natmix import write_corr_dataarray as _write_corr_dataarray
 
 # TODO move this to hong2p probably?
+# NOTE: before adding this script to pyproject.toml scripts (now expected to be run as
+# `al-analysis ...` rather than `./al_analysis.py ...`, this line caused an error about
+# circular imports
 from al_analysis.logging import init_logger
 #
 from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,

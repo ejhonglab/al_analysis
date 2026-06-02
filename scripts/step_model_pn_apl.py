@@ -55,6 +55,12 @@ MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(
     [dict()] + dict_seq_product([dict(claw_dynamics=True)],
         [dict(), dict(allow_net_inh_per_claw=True)],
     ),
+    # TODO TODO test what dirs look like with and w/o specifying this explicitly.
+    # maybe add kwarg to dict_seq_product (taking a fn?) to use inspection to get
+    # defaults for each parameter stepped? or just process to fill in here?
+    # (want to use new TRY_[CONNECTOME|CLAW]_MODELS_WITH, but that doesn't explicitly
+    # specify default pn_claw_to_apl=False)
+    #
     # pn_claw_to_apl=False is the default, and could normally be omitted, but doing
     # it this way produces nicer directory names when using subset_same_in_all_dicts
     # to exclude params
@@ -816,18 +822,46 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
                     # should inspire confidence the same should be (approximately) true
                     # for the extra_panels cases, even though we don't currently have
                     # thet separate tuned outputs there
-                    pass
                     # TODO TODO TODO TODO restore after regenerating tuned w/
                     # linear_lr_falloff=True, and then regenerating all stepped values
                     # around that tuned output
-                    #assert_fit_and_plot_outputs_equal(plot_root, params, step_params,
-                    #    plot_root2=panel_plot_dir,
-                    #    # TODO would need to test something else if we also do
-                    #    # pretune scaling as one case of script run w/ no args
-                    #    # (this assumes it's just one or the other)
-                    #    ignore_tuning_params=not scale_pre_tuning
-                    #)
+                    # TODO put behind check=True flag (+ CLI arg)
+                    # TODO TODO maybe just warn if not the same, but have next check
+                    # require equality?
+                    # TODO TODO TODO is there one version of the two ways i could
+                    # configure things s.t. tuning outputs are equal (i.e. setting scale
+                    # and having mean-1 vectors, vs setting scale of vectors and diff
+                    # initial scale [=what single value in vectors would have been])?
+                    # TODO TODO add above to existing unit test?
+                    # TODO TODO TODO or is it just b/c other tuning params were diff
+                    # still, and stuff needs to be regened, that it's not equal in
+                    # some/all cases? (i.e. linear_lr_falloff or
+                    # binary_search_on_overshoot)
+                    assert_fit_and_plot_outputs_equal(plot_root, params, step_params,
+                        plot_root2=panel_plot_dir,
+                        # TODO would need to test something else if we also do
+                        # pretune scaling as one case of script run w/ no args
+                        # (this assumes it's just one or the other)
+                        #
+                        # TODO TODO TODO only explicitly ignore scale_pre_tuning (and
+                        # only if needed [i.e. if scale_pre_tuning=True], but keep
+                        # looking at other tuning params? at least in the
+                        # scale_pre_tuning=True case)
+                        #
+                        #ignore_tuning_params=not scale_pre_tuning
+                        ignore_tuning_params=True
+                    )
                     #print('megamat tuned values matched those in 1/1 scaled output dir')
+                    # TODO TODO TODO separate check that we can load scaled values, run
+                    # model with those (on megamat), and that it matches again
+                    # (-> then use that approach for kiwi/control stuff)
+                    # TODO TODO TODO add above to existing unit test?
+                    breakpoint()
+                    # TODO TODO TODO assert scale of output things still maintains scale
+                    # ratios of input pre-scaling? it should, right?
+                    # TODO TODO or is it multiplied by the initial scales? fix to
+                    # compensate for that?
+                    # TODO TODO TODO add above to existing unit test?
                 else:
                     stepped_output_dir = panel_plot_dir / step_params['output_dir']
                     assert stepped_output_dir.is_dir(), f'{stepped_output_dir=}'

@@ -43,11 +43,14 @@ dependencies = {file = "exact-requirements.txt"}
 
 # TODO repackage backup_rois.py under here?
 [project.scripts]
-csvinfo = "load_antennal_csv:csvinfo_cli"
-# TODO delete?
-#csvdiff = "load_antennal_csv:csvdiff_cli"
+al-analysis = "al_analysis.al_analysis:main"
+plot-roi = "al_analysis.plot_roi:main"
 
-plot-dynamics = "mb_model:load_and_plot_dynamics_cli"
+csvinfo = "al_analysis.load_antennal_csv:csvinfo_cli"
+# TODO delete?
+#csvdiff = "al_analysis.load_antennal_csv:csvdiff_cli"
+
+plot-dynamics = "al_analysis.mb_model:load_and_plot_dynamics_cli"
 
 # doesn't seem we need an __init__.py in scripts/ or anything
 # ah, but just b/c pip completed the install (w/o 'scripts.' prefix here), doesn't mean
