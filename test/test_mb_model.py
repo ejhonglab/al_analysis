@@ -24,7 +24,7 @@ from hong2p.xarray import coords_equal, series2xarray_like, move_all_coords_to_i
 import olfsysm as osm
 
 from al_analysis.al_util import (warn, diag_panel_str, fly_cols, load_natmix_dff,
-    data_root
+    data_root, paper_repro_kws
 )
 from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
     connectome_APL_weights, KC_ID, CLAW_ID, BOUTON_ID, KC_TYPE, step_around,
@@ -41,7 +41,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     NONCLAW_MODEL_KW_LIST, UNIFORM_MODEL_KWS, get_fitandplot_model_kw_list,
     model_mb_responses, assert_param_dicts_equal, assert_fit_outputs_equal,
     assert_fit_and_plot_outputs_equal, read_spike_counts, FitMBModelOutputs,
-    claw2bouton_from_wPNKC
+    claw2bouton_from_wPNKC, paper_repro_kws, hemibrain_paper_repro_kws
 )
 
 # TODO better way?
@@ -1214,7 +1214,7 @@ def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
     )
 
 
-# TODO TODO TODO either pass hardcode_initial_sp=True (which should fix failure, or
+# TODO TODO either pass hardcode_initial_sp=True (which should fix failure, or
 # regen output) (or just let *_fitandplot_repro tests replace this? any reason not to?)
 @pytest.mark.xfail(
     reason='would need to regen outputs with hardcode_initial_sp=True at least. may '
@@ -1495,11 +1495,6 @@ def test_multiresponder_APL_boost(orn_deltas):
 # diff in matlab vs olfsysm), but could have ann's code generate the wPNKCs and then
 # pass easy via new _wPNKC kwarg to fit_mb_model?
 
-paper_repro_kws = dict(
-    target_sparsity=0.0915, drop_kcs_with_no_input=False, hardcode_initial_sp=True,
-    sp_lr_coeff=10.0, max_iters=10
-)
-
 # TODO also check we can repro 2025-03-19 validation2 (hemibrain) outputs?
 # 2025-02-19/validation2_hemibrain_model*.csv(s)? what are the CSVs i should check
 # against?
@@ -1518,20 +1513,15 @@ def test_hemibrain_paper_repro(tmp_path):
     """
     orn_deltas = paper_megamat_orn_deltas()
 
-    kws = dict(
-        # I would not normally recommend you hardcode any of these except perhaps
-        # weight_divisor=20. The defaults target_sparsity=0.1 and
-        # _drop_glom_with_plus=True should be fine.
-        weight_divisor=20, _drop_glom_with_plus=False, **paper_repro_kws
-    )
-
     plot_root = tmp_path
 
     # TODO modify this fn so dirname includes all same params by default (rather than
     # just e.g. param_dir='data_pebbled'), as the ones i'm currently manually creating
     # by calls in model_mb_... (prob behaving diff b/c e.g.
     # pn2kc_connections='hemibrain' is explicitly passed there)
-    param_dict = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, **kws)
+    param_dict = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
+        **hemibrain_paper_repro_kws
+    )
 
     output_dir = plot_root / param_dict['output_dir']
     assert output_dir.is_dir()

@@ -41,9 +41,9 @@
     send anything to her via email during the same time frame.
 
   - `2023-10-29`
-    - should be final megamat data (pebbled and GH146)
-      (`pebbled_ij_certain-roi_stats.csv` here is exactly the same as
-      `sent_to_anoop/v1/megamat_ij_certain-roi_stats.csv`)
+    - should be final (no longer true, right? old response calc? is that only
+      difference?) megamat data (pebbled and GH146) (`pebbled_ij_certain-roi_stats.csv`
+      here is exactly the same as `sent_to_anoop/v1/megamat_ij_certain-roi_stats.csv`)
 
     - sent on: Slack
 

@@ -90,11 +90,28 @@ def sign_preserving_maxabs(x):
     # TODO why .flatten? replace w/ .squeeze() at least, if that's the issue?
     return df.values.flatten()
 
-response_stat_fn = sign_preserving_maxabs
+# NOTE: need to manually switch between these two values depending on whether you want
+# to use `al-analysis`'s `-R/--repro-paper-models` CLI argument
+#
+# use this value by default (all new analysis; except when using -R)
+#response_stat_fn = sign_preserving_maxabs
+#
+# use this value for -R
+#
 # mean was what I had used for a while (also with n_volumes_for_response=2, I believe),
 # including to generate Remy-paper outputs, and inputs to modelling for that.
-#response_stat_fn = np.mean
+response_stat_fn = np.mean
+# TODO (delete) or was it max before? i think it was? should be able to compare positive
+# values? or was window also 3 instead of 2, or something like that? (no, does seem like
+# mean is closer, almost exactly)
+#response_stat_fn = np.max
 
+# TODO refactor to fn(s), so i can recompute this/these if al-analysis called w/ -R (to
+# use old stat)? pretty much always compute only as needed, recomputing each time?
+# TODO TODO probably just need to refactor most of this back to al_analysis? seems like
+# some things use roi_plot_kws (like load_antennal_csv, which might not all want to
+# import al_analysis?), but almost all variables defined between response_stat_fn and
+# that are only used by al_analysis.py
 if response_stat_fn.__name__ == 'mean':
     # TODO want to avoid just 'mean', to avoid confusion w/ 'mean ' prefixes that might
     # get prepended, once we start dealing with means over either trials or flies?
@@ -141,6 +158,24 @@ else:
 
 response_calc_params_json_name: str = 'response_calc_params.json'
 
+
+# TODO can i also set weight_divisor=20, _drop_glom_with_plus=False here, or need
+# to not do either of those for uniform case? check latter in uniform case?
+# (probably can't. uniform test at least loops over the two values of _drop_glom...
+# currently, though maybe doesn't need to)
+paper_repro_kws = dict(
+    target_sparsity=0.0915, drop_kcs_with_no_input=False, hardcode_initial_sp=True,
+    sp_lr_coeff=10.0, max_iters=10,
+    # TODO rename hardcode_initial_sp as repro...<something> and then have it imply both
+    # of these?
+    binary_search_on_overshoot=False, linear_lr_falloff=False
+)
+hemibrain_paper_repro_kws = dict(
+    # I would not normally recommend you hardcode any of these except perhaps
+    # weight_divisor=20. The defaults target_sparsity=0.1 and
+    # _drop_glom_with_plus=True should be fine.
+    weight_divisor=20, _drop_glom_with_plus=False, **paper_repro_kws
+)
 
 # TODO adapt -> share w/ (at least) drop_redone_odors?
 # TODO type hint Mapping? can it be Series or Dict?
@@ -1100,7 +1135,8 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
     # 'repeat' should always be the last level, so if we find that, we know we only have
     # to read index_col up to there (in next read_csv call)
     eq_repeat = index_row == 'repeat'
-    assert eq_repeat.sum() == 1
+    # TODO TODO why failing now?
+    assert eq_repeat.sum() == 1, f'{eq_repeat.sum()=}'
     # index starts at 0, so we will need to read 1 more index_col level past this
     repeat_idx = eq_repeat.idxmax()
     n_index_col_levels = repeat_idx + 1
@@ -2102,8 +2138,14 @@ def invert_corr_triangular(corr_ser, diag_value=1., _index=None, name='odor'):
         #
         # pandas <Series>.unique() keeps order of input (assuming all are adjacent, at
         # least)
-        assert for_odor_index.names[0].startswith('odor')
-        assert for_odor_index.names[1].startswith('odor')
+        # TODO just delete? stuff below should trip anywhere if there's actually an
+        # issue...
+        # TODO update (or fix calling code). currently getting ['c1','c2'] for some
+        # .names in model_mb_responses invocations
+        # TODO flag to just skip this assertion, or only ever warn instead (and also
+        # allow disabling that)?
+        #assert for_odor_index.names[0].startswith('odor')
+        #assert for_odor_index.names[1].startswith('odor')
         odor1 = for_odor_index.get_level_values(0).unique()
         odor2 = for_odor_index.get_level_values(1).unique()
 
@@ -3166,6 +3208,13 @@ def load_natmix_dff(**kwargs) -> pd.DataFrame:
 # TODO assert matches subset of
 # data/internal/for_dff_to_spiking_fn/ij_certain-roi_stats.parquet?
 # TODO use in tests
+# TODO TODO add flag to load old stat computation version of this (for recreating
+# outputs), or just leave that to the spike delta version of this fn? (can't pass into
+# model_mb_responses tho..., at least without changing that)
+# (that fn `mb_model.megamat_orn_deltas` also does not have a flag to load old data.
+# see hemibrain repro test, which i assume references some committed version, presumably
+# of the ORN deltas. oh nvm i have the paper_megamat_orn_deltas fn for that. still want
+# a corresponding fn / flag here, which should be able to reproduce those)
 def load_megamat_dff(**kwargs) -> pd.DataFrame:
     data_dir = signedmax_orn_dff_dir / 'megamat_signed-max'
     csv_path = data_dir / 'ij_certain-roi_stats.csv'

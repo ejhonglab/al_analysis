@@ -1,7 +1,10 @@
 TODO:
+- move some of the key args needed to repro stuff to help message of `al-analysis`?
+
 - also talk about old kiwi/control data
   this work?
   `./al_analysis.py -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model`
+  (data in this range even of useable quality? still bad genetics?)
 
 - mention which data are good candidates for diagnostic examples
   - aphe was bumped from -5 to -4 starting with fly 2023-05-10, so it only was at final

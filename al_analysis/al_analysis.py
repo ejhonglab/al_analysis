@@ -296,9 +296,12 @@ one_baseline_per_odor = False
 # currently called anywhere, but may want to use it in future. see where it's commented
 # in main.)
 # TODO move these to al_util too now?
+# TODO TODO or move most back here (so new -R can actually change them in main, without
+# as much headache...)
+response_stat_fn_name = response_stat_fn.__name__
 response_calc_params = dict(
     # saving fn .__name__ instead of fn itself, to cause less issues when refactoring
-    response_stat_fn_name=response_stat_fn.__name__,
+    response_stat_fn_name=response_stat_fn_name,
     n_volumes_for_response=n_volumes_for_response,
     n_volumes_for_baseline=n_volumes_for_baseline,
     median_for_baseline=median_for_baseline,
@@ -9606,11 +9609,6 @@ def main():
         f'Elements must be in {skippable_steps}. '
         '-s with no following string skips NO steps.'
     )
-    parser.add_argument('-M', '--first-model-only', action='store_true',
-        help='When calling model_mb_responses, sets first_model_kws_only=True to skip '
-        'all but the first set of model parameters (in model_kw_list internal to that '
-        'function).'
-    )
     parser.add_argument('-r', '--retry-failed', action='store_true',
         help='Retry steps that previously failed (frame-to-odor assignment or suite2p).'
     )
@@ -9711,7 +9709,26 @@ def main():
         'prompt about the would-be change, and pause execution until user indicates '
         'whether the file should be overwritten.'
     )
-
+    parser.add_argument('-M', '--first-model-only', action='store_true',
+        help='When calling model_mb_responses, sets first_model_kws_only=True to skip '
+        'all but the first set of model parameters (in model_kw_list internal to that '
+        'function).'
+    )
+    # TODO assert date range or whatever is one of the sensible possibilities if this is
+    # true? and/or set of panel(s)?
+    parser.add_argument('-R', '--repro-paper-models', action='store_true',
+        # NOTE: doesn't actually change response calc statistic
+        # (al_util.response_stat_fn), just asserts we are using the old one... changing
+        # it would require a lot of refactoring of code back to here, so just using that
+        # hack for now
+        help='Changes response calc statistic to old mean (from newer '
+        '`sign_preserving_maxabs`), for purposes of computing dF/F -> est spike delta '
+        'function (on megamat + validation2 data). Also sets repro_remy_paper=True in '
+        'call to model_mb_responses. Will still require at least two calls to '
+        'al-analysis (one to regenerate ROI outputs, using old response calc, and fit '
+        'dF/F -> est spike delta fn from that), and another to run model on just '
+        'panel(s) of interest. See `reproducing.md` at root of repo.'
+    )
     args = parser.parse_args()
 
     matching_substrs = args.matching_substrs
@@ -9787,6 +9804,22 @@ def main():
             'you may omit -s/--skip <steps> option, to same effect.'
         )
     '''
+
+    repro_paper_models = args.repro_paper_models
+    if repro_paper_models:
+        warn('current al_util.response_stat_fn is old mean! should be changed back to '
+            'newer sign_preserving_maxabs once done with -R/--repro-paper-models'
+        )
+        assert response_stat_fn_name == 'mean', (
+            'should be using old `response_stat_fn = mean` in `al_analysis.al_util`, '
+            'when -R/--repro-paper-models is passed. please manually change this '
+            'variable in the code.'
+        )
+    else:
+        assert response_stat_fn_name == 'sign_preserving_maxabs', (
+            'should be using newer `response_stat_fn = sign_preserving_maxabs` in '
+            '`al_analysis.al_util`. please manually change this code back.'
+        )
 
     del parser, args
 
@@ -10853,7 +10886,9 @@ def main():
     #
     # Also equal to wPNKC right after call to
     # connectome_wPNKC(_use_matt_wPNKC=False)
-    prat_hemibrain_wPNKC_csv = 'data/sent_to_grant/2024-04-05/connectivity/wPNKC.csv'
+    prat_hemibrain_wPNKC_csv = (
+        data_root / 'sent_to_grant/2024-04-05/connectivity/wPNKC.csv'
+    )
 
     wPNKC_for_filling = pd.read_csv(prat_hemibrain_wPNKC_csv).set_index('bodyid')
     wPNKC_for_filling.columns.name = 'glomerulus'
@@ -12203,7 +12238,7 @@ def main():
         'perfume geosmin': 'geosmin',
     }
 
-    remy_odor_metadata_dir = Path('data/from_remy/2024-06-05')
+    remy_odor_metadata_dir = data_root / 'from_remy/2024-06-05'
     panel2master_sheet = {
         'megamat': 'Sheet1',
         'validation2': 'validation2',
@@ -12635,6 +12670,25 @@ def main():
             # wil be created by model_mb_responses
             modeling_root = across_fly_ijroi_dir / 'mb_modeling'
 
+            # TODO (delete. i don't think it mattered) actually want to do this? seems
+            # that this data is coming from the validation2 flies? delete?
+            #if repro_paper_models:
+            #    to_drop = certain_df[
+            #        (certain_df.index.get_level_values('panel') == diag_panel_str) &
+            #        (certain_df.index.get_level_values('odor1') == '2h @ -3')
+            #    ].index
+            #
+            #    # TODO or maybe only one call (of the two CLI calls needed to
+            #    # generate model outputs), drops this? matter?
+            #    if len(to_drop) > 0:
+            #        warn('dropping the following from consensus_df before modelling, as'
+            #            'it seemed required to reproduce paper outputs:\n'
+            #            f'{to_drop.to_frame().to_string(index=False)}'
+            #        )
+            #
+            #    consensus_df = consensus_df.drop(to_drop)
+            #
+
             # NOTE: use_consensus_for_all_acrossfly must be False if I want to try using
             # certain_df again here (if True, certain_df is redefined to consensus_df
             # above)
@@ -12647,6 +12701,7 @@ def main():
                 first_model_kws_only=first_model_kws_only,
                 copy_to_model_dirs=copy_to_model_dirs,
                 response_calc_params=response_calc_params,
+                repro_remy_paper=repro_paper_models,
             )
         else:
             print(f'not running MB model(s), as driver not in {orn_drivers=}')
