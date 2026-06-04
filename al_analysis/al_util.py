@@ -94,13 +94,13 @@ def sign_preserving_maxabs(x):
 # to use `al-analysis`'s `-R/--repro-paper-models` CLI argument
 #
 # use this value by default (all new analysis; except when using -R)
-#response_stat_fn = sign_preserving_maxabs
+response_stat_fn = sign_preserving_maxabs
 #
 # use this value for -R
 #
 # mean was what I had used for a while (also with n_volumes_for_response=2, I believe),
 # including to generate Remy-paper outputs, and inputs to modelling for that.
-response_stat_fn = np.mean
+#response_stat_fn = np.mean
 # TODO (delete) or was it max before? i think it was? should be able to compare positive
 # values? or was window also 3 instead of 2, or something like that? (no, does seem like
 # mean is closer, almost exactly)
