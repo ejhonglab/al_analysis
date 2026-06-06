@@ -1,0 +1,98 @@
+...
+
+connectome_APL_weights:
+wAPLKC.mean()=1.0000000000000002
+wKCAPL.mean()=1.0
+wAPLKC.sum()=9867.000000000002
+wKCAPL.sum()=9867.0
+
+before
+wAPLPN.mean()=5.57840616966581
+wAPLPN.sum()=2170.0
+wAPLPN_normalization_factor=0.1792626728110599
+wPNAPL.mean()=6.038560411311054
+wPNAPL.sum()=2349.0
+wPNAPL_normalization_factor=0.16560238399318858
+
+after
+wAPLPN.mean()=1.0
+wAPLPN.sum()=389.0
+wPNAPL.mean()=1.0
+wPNAPL.sum()=389.0
+
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wAPLKC_hist_per-kc_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wKCAPL_hist_per-kc_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wAPLKC_hist_per-claw_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wKCAPL_hist_per-claw_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wAPLKC_weight_vs_radius.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wKCAPL_weight_vs_radius.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wAPLKC_nonzero-claw_radius_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wKCAPL_nonzero-claw_radius_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wAPLKC_weight_vs_radius_hist.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wKCAPL_weight_vs_radius_hist.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wAPLKC_nonclaw_syn_hist_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wKCAPL_nonclaw_syn_hist_by-type.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wAPLKC_claw_vs_nonclaw_weight.pdf
+/home/tom/src/al_analysis/scripts/yang_mix_outputs/prat-claws_True__prat-boutons_True__pn-claw-to-apl
+_True__allow-net-inh-per-claw_True__connectome-APL_True/wKCAPL_claw_vs_nonclaw_weight.pdf
+what to check here?
+writing olfsysm log to /tmp/tmptrtoa2cp.olfsysm.log
+EIGEN_WORLD_VERSION: 3 EIGEN_MAJOR_VERSION: 4 EIGEN_MINOR_VERSION: 1
+...
+p.kc.tune_apl_weights=1
+
+generating new KC replicate
+fitting sparseness
+fit_sparseness initial APL weights (before any zeroing for threshold picking):
+rv.kc.wAPLKC mean: 1
+rv.kc.wKCAPL mean: 1
+rv.pn.wAPLPN mean: 1
+rv.pn.wPNAPL mean: 1
+rv.kc.wAPLKC_scale: 1
+rv.kc.wKCAPL_scale: 1
+rv.pn.wAPLPN_scale: 1
+rv.pn.wPNAPL_scale: 1
+setting spont_in w/ sum_across...
+setting threshold higher than should ever be reached, to disable KC spiking for threshold-setting phase
+choosing thresholds from spontaneous input (thrtype=4 [=uniform])
+thr min=240.765 max=600.687 mean=387.07
+spont_in min=8.29736 max=188.258 mean=81.4494
+fixed_thr: 224.171
+tuning APL<->KC weights; tuning begin (target=0.1 acc=0.1 sp_lr_coeff=10 thr=387.07)
+fit_sparseness INITIAL APL weights:
+rv.kc.wAPLKC mean: 6
+rv.kc.wKCAPL mean: 0.0034642
+rv.pn.wAPLPN mean: 6
+rv.pn.wPNAPL mean: 0.0154242
+rv.kc.wAPLKC_scale: 6
+rv.kc.wKCAPL_scale: 0.0034642
+rv.pn.wAPLPN_scale: 6
+rv.pn.wPNAPL_scale: 0.0154242
+terminate called after throwing an instance of 'std::invalid_argument'
+  what():  terminate called recursively
+terminate called recursively
+Fatal Python error: Fatal Python error: AbortedAborted
+
+
+
+Thread 0xThread 0x00007fc9f204070000007fc9f2040700 (most recent call first):
+ (most recent call first):
+  File "  File /"u/surs/rl/ilbi/bp/yptyhtohno3n.38./8t/htrheraedaidnign.gp.yp"y, line "306, line  in 306 in wwaiati
+t  File
+"  File /"u/surs/rl/ilbi/bp/yptyhtohno3n.38./8t/htrheraedaidnign.gp.yp"y, line "558, line  in 558w in awiati
+t  File
+  File ""//hhoome/mtoem/src//al_tanaloysis/mvenv//lib/slibolfsysm/src/olfsysm.cpp:1096 in `pn_to_kc_drive_at_t` check `last_inh >= 0` failedrc
+/al_analysis/vAborted (core dumped)

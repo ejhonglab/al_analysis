@@ -1,0 +1,7 @@
+# only contained one ~170MB VCF embedding file, which was too large to commit (at least,
+# too large to push to Github). copied to a backup under tensor-archive/Tom, just in
+# case it's useful to reproduce anything (even though Remy probably also has it backed
+# up). the filename:
+# VCFQuantHMDS_N0452_S2190_StandardScaler_pearson_MP05__ND030__lsf__shepard.tsv
+# copied to tensor-archive/Tom/remy-paper/from_remy/2025-07-07/
+2025-07-07/

@@ -1645,7 +1645,7 @@ def get_connectome(pn2kc_connections: Optional[str]) -> str:
     return pn2kc_connections if pn2kc_connections in connectome_options else 'hemibrain'
 
 
-from_prat = repo_root / 'data/from_pratyush'
+from_prat: Path = repo_root / 'data/from_pratyush'
 
 # hemibrain PN/KC/APL weights (PN->KC, APL<->KC, APL<->PN), split by claw (using Prat's
 # dendritic-tree based claw determination) but not currently by bouton. no MB-C1 yet.
@@ -1654,14 +1654,14 @@ from_prat = repo_root / 'data/from_pratyush'
 #
 # TODO delete v3
 # "v3"
-prat_hemibrain_seg_v3_dir = from_prat / '2025-09-24'
+prat_hemibrain_seg_v3_dir: Path = from_prat / '2025-09-24'
 #
 #
 # "v5", which should also be final version of these hemibrain outputs (he never handed
 # over a "v4", if I recall correctly, though he may have had one himself)
-prat_hemibrain_seg_dir = from_prat / '2025-12-05'
+prat_hemibrain_seg_dir: Path = from_prat / '2025-12-05'
 
-claw_coord_cols = [f'claw_{d}' for d in ('x', 'y', 'z')]
+claw_coord_cols: List[str] = [f'claw_{d}' for d in ('x', 'y', 'z')]
 
 def center_each_claw_coord(wPNKC: pd.DataFrame) -> pd.DataFrame:
     """Returns dataframe like input, with each of `claw_coord_cols` separately centered.
@@ -11434,16 +11434,6 @@ def load_and_plot_dynamics_cli() -> None:
     pprint(var2range)
 
 
-# TODO delete all these? or re-organize? want to minimize how much mb_model stuff
-# assumes a certain output folder structure
-#
-# TODO also use for wPNKC(s)? anything else?
-data_outputs_root = Path('data')
-hallem_csv_root = data_outputs_root / 'preprocessed_hallem'
-hallem_delta_csv = hallem_csv_root / 'hallem_orn_deltas.csv'
-hallem_sfr_csv = hallem_csv_root / 'hallem_sfr.csv'
-#
-
 # TODO delete? the series is just a hack to support one case i believe (one-row +
 # no-connectome-apl)
 #
@@ -11534,7 +11524,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     multiresponder_APL_boost: Optional[float] = None,
     _multiresponder_mask: Optional[pd.Series] = None,
     boost_wKCAPL: Literal[False, True, 'only'] = False, verbose: Optional[bool] = None,
-    silent: bool = False
+    silent: bool = False, checks: bool = True
     # TODO this return signature still accurate?
     # TODO TODO move all things into ParamDict? would make handling of saving simpler in
     # fit_and_plot... could let the loop handle things, rather than having to manually
@@ -11992,7 +11982,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
     hallem_orn_deltas = orns.orns(add_sfr=False, drop_sfr=False, columns=glomerulus_col).T
 
-    checks = True
     if checks:
         # columns: [glomeruli, receptors]
         hc_data = pd.read_csv(hc_data_csv, header=[0,1], index_col=[0,1])
@@ -12111,7 +12100,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     hallem_orn_deltas_for_csv = hallem_orn_deltas.sort_index(axis='index')
     sfr_for_csv = sfr.sort_index()
 
-    if hallem_delta_csv.exists():
+    if checks:
+        # just used to check current preprocessed Hallem deltas/SFR (to the extent they
+        # are used... mainly just SFR now probably?) are consistent w/ what I had when
+        # these were generated
+        hallem_csv_root = data_root / 'preprocessed_hallem'
+        hallem_delta_csv = hallem_csv_root / 'hallem_orn_deltas.csv'
+        hallem_sfr_csv = hallem_csv_root / 'hallem_sfr.csv'
+        assert hallem_delta_csv.exists(), 'should be loading committed data now'
         assert hallem_sfr_csv.exists()
         # TODO or just save to root, but only do so if not already there? and load and
         # check against that otherwise? maybe save to ./data
@@ -12131,24 +12127,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         #assert hallem_orn_deltas_for_csv.equals(deltas_from_csv)
         assert np.array_equal(hallem_orn_deltas_for_csv, deltas_from_csv)
         assert hallem_orn_deltas_for_csv.index.equals(deltas_from_csv.index)
-    else:
-        if data_outputs_root.is_dir():
-            # (subdirectory of data_outputs_root)
-            hallem_csv_root.mkdir(exist_ok=True)
-
-            # TODO assert columns of the two match here (so i don't need to check from
-            # loaded versions, and so i can only check one against wPNKC, not both)
-            to_csv(hallem_orn_deltas_for_csv, hallem_delta_csv)
-            to_csv(sfr_for_csv, hallem_sfr_csv)
-
-            # TODO delete? unused
-            #deltas_from_csv = hallem_orn_deltas_for_csv.copy()
-            #sfr_from_csv = sfr_for_csv.copy()
-            #
-
-        # TODO warn if data_outputs_root does not exist
-
-    del hallem_orn_deltas_for_csv, sfr_for_csv
+        del hallem_orn_deltas_for_csv, sfr_for_csv
 
     if hallem_input:
         orn_deltas = hallem_orn_deltas.copy()
@@ -12828,7 +12807,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO TODO restore for at least everything but prat_claws + dist_weight != None
         # cases?
         '''
-        checks = True
         # TODO factor out these checks and share w/ end of connectome_wPNKC (in a
         # new branch shared by all one-row-per-claw cases, which currently would need to
         # be made a more complex conditional)
@@ -14228,7 +14206,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             if not retune_apl_post_equalized_thrs:
                 mp.kc.tune_apl_weights = False
 
-            checks = True
             # TODO move/dupe these checks to a unit test
             if checks:
                 # TODO check that another run_KC_sims call before changing rv gives us

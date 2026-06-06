@@ -36,15 +36,14 @@ from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
 )
 
 
-# TODO use pre-existing const kw list vars in mb_model for that, and to replace some of
-# what i have here now
-#
-# passing the CLI arg -f will use FULL_MODEL_KW_LIST (currently len 137) instead of this
+# TODO use pre-existing const kw list vars in mb_model to replace some of what i have
+# here now?
 test_with_connectome_vs_uniform_apl = [
     dict(weight_divisor=20),
     dict(one_row_per_claw=True, prat_claws=True),
     dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True),
 ]
+# passing the CLI arg -f will use FULL_MODEL_KW_LIST (currently len 137) instead of this
 SHORT_MODEL_TUNE_KWS = [
     # comparison for all other model cases, to see to what extent changes to PN>KC
     # weight matrix (and potentially other changes) matter
@@ -52,6 +51,8 @@ SHORT_MODEL_TUNE_KWS = [
 ] + dict_seq_product(test_with_connectome_vs_uniform_apl,
     [dict(), dict(use_connectome_APL_weights=True)]
 )
+del test_with_connectome_vs_uniform_apl
+
 
 def yang2tom_odor_index(df: pd.DataFrame) -> pd.MultiIndex:
     """Returns new column index for `df`, with levels 'odor' and 'repeat'
@@ -845,6 +846,10 @@ def main():
     if not full_model_params:
         model_tune_kws = SHORT_MODEL_TUNE_KWS
     else:
+        # TODO TODO see 2026-05-25_yang_err.txt for an invalid_argument olfsysm error i
+        # hadn't seen before, in prat-claws_True__prat-boutons_True__pn-claw-to-apl__
+        # True__allow-net-inh-per-claw_True__connectome-APL_True case
+        # (can i repro? fix?)
         model_tune_kws = FULL_MODEL_KW_LIST
         warn(f'running models on all {len(FULL_MODEL_KW_LIST)} elements in '
             'FULL_MODEL_KW_LIST, because -f/--full-model-params passed!'
