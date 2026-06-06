@@ -1,0 +1,87 @@
+chem_cols:
+- chem_ecfp
+- chem_fcfp
+- chem_rdkit
+- chem_pattern
+neural_cols:
+- orn_remy
+- orn_remy_mean_scaled
+- orn_remy_scaled_mean
+- pn_dendrites-correlation
+- pn_dendrites-cosine
+- pn_dendrites-euclidean
+- pn_boutons_Fc
+- pn_boutons_F
+- pn_boutons_spks
+- pn_boutons_F_zscore
+- pn_boutons_Fc_zscore
+- kc_claws_Fc
+- kc_claws_F
+- kc_claws_Fneu
+- kc_claws_spks
+- kc_claws_F_zscore
+- kc_claws_Fc_zscore
+- kc_remy
+- kc_remy_mean_scaled
+- kc_remy_scaled_mean
+- kc_remy_combo
+- kc_remy_combo_mean_scaled
+- kc_remy_combo_scaled_mean
+neural_cols_new_zscore:
+- new_pn_boutons_zscore
+- new_kc_claws_zscore
+- new_kc_soma_nls_zscore
+neural_cols_new_dff:
+- new_pn_boutons_dff
+- new_kc_claws_dff
+- new_kc_soma_nls_dff
+model_cols:
+- uniform_tom
+- hemibrain_tom
+- hemibrain_wd20_tom
+vcf5a_cols:
+- vcf5a_emb_seed01
+- vcf5a_emb_seed02
+- vcf5a_emb_seed03
+- vcf5a_emb_seed04
+- vcf5a_emb_seed05
+- vcf5a_emb_seed06
+- vcf5a_emb_seed07
+- vcf5a_emb_seed08
+- vcf5a_emb_seed09
+- vcf5a_emb_seed10
+- vcf5a_dat
+vcf5b_cols:
+- vcf5b_emb_seed01
+- vcf5b_emb_seed02
+- vcf5b_emb_seed03
+- vcf5b_emb_seed04
+- vcf5b_emb_seed05
+- vcf5b_emb_seed06
+- vcf5b_emb_seed07
+- vcf5b_emb_seed08
+- vcf5b_emb_seed09
+- vcf5b_emb_seed10
+- vcf5b_dat
+vcf5q_D03_cols:
+- vcf5q_ND030_D03_seed01
+- vcf5q_ND030_D03_seed02
+- vcf5q_ND030_D03_seed03
+- vcf5q_ND030_D03_seed04
+- vcf5q_ND030_D03_seed05
+- vcf5q_ND030_D03_seed06
+- vcf5q_ND030_D03_seed07
+- vcf5q_ND030_D03_seed08
+- vcf5q_ND030_D03_seed09
+- vcf5q_ND030_D03_seed10
+vcf5q_D04_cols:
+- vcf5q_ND030_D04_seed01
+- vcf5q_ND030_D04_seed02
+- vcf5q_ND030_D04_seed03
+- vcf5q_ND030_D04_seed04
+- vcf5q_ND030_D04_seed05
+- vcf5q_ND030_D04_seed06
+- vcf5q_ND030_D04_seed07
+- vcf5q_ND030_D04_seed08
+- vcf5q_ND030_D04_seed09
+- vcf5q_ND030_D04_seed10

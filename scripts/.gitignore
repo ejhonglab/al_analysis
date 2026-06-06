@@ -2,9 +2,6 @@
 # for one paramterization of the MB model
 model_banana_iaa_concs/
 
-# model outputs for model_diags_and_synthetic_mixes.py
-diag_est-spike-deltas_for_yang/
-
 # covers outputs from:
 # - model_prive_odors_for_kai_grant.py
 # - model_yang_mixtures.py
@@ -18,6 +15,5 @@ xarray_netcdf_io_bench.csv
 *_output/
 
 megamat_multiresponder_apl_boost/
-
 
 paper_repro/

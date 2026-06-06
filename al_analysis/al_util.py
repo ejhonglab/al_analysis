@@ -18,7 +18,9 @@ import sys
 from tempfile import NamedTemporaryFile
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import (Any, Callable, Dict, List, Optional, Set, Sequence, Tuple, Type,
+    Union
+)
 import warnings
 
 from importlib_resources import files
@@ -2027,13 +2029,23 @@ def n_multichoose_k(n: int, k: int) -> int:
 # be ok... kind of a hack though)
 # TODO TODO add option to pass sequence of odors, to generate something like ordered
 # pairs? (for convenience when averaging over groups w/ diff sets of odors/pairs)
-def corr_triangular(corr_df, *, ordered_pairs=None):
-    assert corr_df.index.equals(corr_df.columns)
+def corr_triangular(corr_df: pd.DataFrame, *, sort: bool = True,
+    # TODO also accept order of odors, if not pairs?
+    # TODO TODO does this even work? did i break it? didn't seem to be working when i
+    # tried to use from scripts/corr_minus_orn_vs_vcf_repro/step05b-run-resampling.py
+    ordered_pairs: Optional[Sequence[Tuple[str, str]]] = None,
+    # TODO delete check_index_names (and always don't, or only warn?)?
+    check_index_names: bool = True) -> pd.Series:
+
+    index = corr_df.index
+    assert index.equals(corr_df.columns)
+
+    if sort:
+        index = index.sort_values()
 
     # TODO TODO support panel level being in this index (or at least drop, and make sure
     # that handling is correct. may at least need to also assert same odor doesn't show
     # up in >1 panel then)
-
     # TODO this causing difficulties later? alternatives?
     # (w/ needing to sort again)
     #
@@ -2042,7 +2054,7 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     # in the other order in this index (and thus merging won't find a matching
     # pair).
     # TODO .loc still work w/ list(...)?
-    pairs = list(itertools.combinations(corr_df.index.sort_values(), 2))
+    pairs = list(itertools.combinations(index, 2))
 
     # need to stack all levels, in case we also have 'panel' in index names
     # TODO why dropna=False? matter?
@@ -2055,13 +2067,15 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
         # matters)
         #assert set(ordered_pairs) - set(corr_ser.index) == set()
 
+        # TODO debug that says which of these we are swapping? option to not swap any,
+        # and take as-is?
         pairs = [(b,a) if (b,a) in ordered_pairs else (a,b) for a,b in pairs]
 
     # itertools.combinations will not give us any combinations of an element with
     # itself. in other words, we won't be keeping the identity correlations.
     assert not any(a == b for a, b in pairs)
 
-    if 'panel' in corr_df.index.names:
+    if 'panel' in index.names:
         flat_tuples = []
         # e.g. (('control', '1o3ol @ -3'), ('control', '1o3ol+2h @ 0'))
         for p in pairs:
@@ -2079,28 +2093,30 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
     # itertools.combinations essentially selects one triangular, excluding diagonal
     corr_ser = corr_ser.loc[pairs]
 
-    if 'panel' not in corr_df.index.names:
-        # TODO switch to assertion(s) on input index/column names?
-        # (just to fail sooner / be more clear)
-        #
-        # TODO make more general than assuming 'odor' prefix?
-        assert len(corr_ser.index.names) == 2
+    if check_index_names:
+        if 'panel' not in index.names:
+            # TODO switch to assertion(s) on input index/column names?
+            # (just to fail sooner / be more clear)
+            #
+            # TODO make more general than assuming 'odor' prefix?
+            assert len(corr_ser.index.names) == 2
 
-        # TODO delete?
-        assert all(x.startswith('odor') for x in corr_ser.index.names), \
-            f'{corr_ser.index.names=}'
+            # TODO delete?
+            assert all(x.startswith('odor') for x in corr_ser.index.names), \
+                f'{corr_ser.index.names=}'
 
-        # TODO do 'a','b' instead? other suffix ('_row','_col')? (to not confused w/
-        # 'odor1'/'odor2' used in many other MultiIndex levels in here, where 'odor2' is
-        # a almost-never-used-anymore optional 2nd odor, where 2 delivered at same time
-        # (most recently in kiwi/control 2-component ramp experiments).
-        corr_ser.index.names = ['odor1', 'odor2']
-    else:
-        assert len(corr_ser.index.names) == 4
-        odor_var = olf.first_odor_level(corr_df.index)
-        assert corr_ser.index.names == ['panel', odor_var, 'panel', odor_var]
-        # TODO again, would prefer to use _a/_b suffixes
-        corr_ser.index.names = ['panel1', 'odor1', 'panel2', 'odor2']
+            # TODO do 'a','b' instead? other suffix ('_row','_col')? (to not confused w/
+            # 'odor1'/'odor2' used in many other MultiIndex levels in here, where
+            # 'odor2' is a almost-never-used-anymore optional 2nd odor, where 2
+            # delivered at same time (most recently in kiwi/control 2-component ramp
+            # experiments).
+            corr_ser.index.names = ['odor1', 'odor2']
+        else:
+            assert len(corr_ser.index.names) == 4
+            odor_var = olf.first_odor_level(index)
+            assert corr_ser.index.names == ['panel', odor_var, 'panel', odor_var]
+            # TODO again, would prefer to use _a/_b suffixes
+            corr_ser.index.names = ['panel1', 'odor1', 'panel2', 'odor2']
 
     # TODO sort output so odors appear in same order as in input (within each component
     # of pair, at least)?
@@ -2110,7 +2126,8 @@ def corr_triangular(corr_df, *, ordered_pairs=None):
 
 # TODO unit test
 # TODO remove "private" '_' prefix of _index kwarg?
-def invert_corr_triangular(corr_ser, diag_value=1., _index=None, name='odor'):
+def invert_corr_triangular(corr_ser: pd.Series, diag_value: float = 1., *,
+    _index: Optional[pd.Index] = None, name: str = 'odor') -> pd.DataFrame:
     if _index is None:
         for_odor_index = corr_ser.index
     else:
@@ -3240,6 +3257,7 @@ def load_validation2_dff(**kwargs) -> pd.DataFrame:
 
 # TODO implement this one too (may need to recalc and commit? or instead have flags for
 # validation / megamat load fns?
+# TODO rename load_paper_megamat_dff?
 #def load_remypaper_dff(**kwargs) -> pd.DataFrame:
 
 

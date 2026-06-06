@@ -3833,9 +3833,6 @@ def main():
 
     # contains both model and KC 5comp kiwi/control data
     class_fracs = pd.concat(natmix_panel_class_frac_list, verify_integrity=True)
-    # TODO delete
-    #to_parquet(class_fracs, 'class_fracs.parquet')
-    #
 
     # TODO TODO second log-yscale version of this?
     plot_response_class_summary(class_fracs, plot_root, hue='model_pnkc_class',

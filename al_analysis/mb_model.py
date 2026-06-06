@@ -188,6 +188,8 @@ MinMaxDict = Dict[str, Tuple[float, float]]
 # (or keep module level and share w/ his script PNKC_claw_plots_dif_color.py?)
 PIXEL_TO_UM: float = 8/1000
 
+n_megamat_odors: int = 17
+
 # NOTE: paper results probably use an older response calculation (mean within response
 # window, rather than newer sign_preserving_maxabs (developed w/ Sam, a little while ago
 # now). Responses look quite similar either way, so nothing big-picture should change,
@@ -217,7 +219,29 @@ paper_validation2_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-19/'
     'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
 )
 
-# TODO TODO why is this seemingly not writing on hal?
+sent_to_anoop: Path = data_root / 'sent_to_anoop'
+
+# contains close-to but probably not final hemibrain (wd20 came after), but what
+# should be final uniform responses.
+#
+# NOTE: it is actually 2024-05-16 that I can repro (at least for first 2 seeds, and
+# w/ _drop_gloms_with_plus=False, which does matters), and not v2.
+# _drop_gloms_with_plus=True does not work to reproduce either.
+paper_uniform_output_dir: Path = sent_to_anoop / '2024-05-16'
+
+# TODO make similar fn for megamat responses (-> use in that test)
+def paper_uniform_model_responses() -> pd.DataFrame:
+    uniform_response_csv_name: str = 'megamat_uniform_model_responses_n-seeds_100.csv'
+    paper_uniform_response_csv: Path = paper_uniform_output_dir / uniform_response_csv_name
+    # TODO rename 'model_kc' -> KC_ID (='kc_id') in those committed outputs?
+    # NOTE: older output still used 'model_kc' instead of KC_ID, for KC ID column
+    pdf = pd.read_csv(paper_uniform_response_csv, index_col=['model_kc', 'seed'])
+    # TODO share w/ n_megamat_odors elsewhere?
+    assert len(pdf.columns) == 17
+    return pdf
+
+
+# TODO TODO why is this seemingly not writing on hal? (still true?)
 # TODO use more canonical user data dir for this?
 onestep_lr_cache_path: Path = Path('~/.mb_model_onestep_lr_cache.json').expanduser()
 ONESTEP_LR_KEY: str = 'sp_lr_coeff_to_tune_in_one_iter'
@@ -21905,8 +21929,9 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     certain_df.columns.to_frame(index=False)[fly_cols
                         ].drop_duplicates()
                 # NOTE: 9 final megamat flies and 5 final validation2 flies (after
-                # dropping the 1 Betty wanted). see reproducing.md or
-                # CSVs under data/sent_to_anoop/v1 for the specific flies.
+                # dropping the 1 Betty wanted). see reproducing.md or CSVs under
+                # data/sent_to_anoop/v1 [prob some newer dirs would be more appropriate
+                # now... see what tests use, and reproducing.md] for the specific flies.
                 ) == (9 + 5)
             ):
 
@@ -23433,6 +23458,20 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
             kc_mean_dists = remy_2e_corrs_in_model.groupby('odor_pair_str'
                 ).correlation_distance.mean()
+
+            # to check against the KC dists Remy has there. easier to save full square
+            # correlation matrix and reduce to specific pairs in order Remy uses for her
+            # triangular later (since indexing dependent on odor order).
+            kc_mean_dist_square = invert_corr_triangular(remy_2e_corrs_in_model.groupby(
+                    ['abbrev_row', 'abbrev_col']
+                ).correlation_distance.mean().rename_axis(index=['odor1', 'odor2']),
+                # diagonal should be 0, not 1, since it's a correlation *distance*
+                diag_value=0.0
+            )
+            to_parquet(kc_mean_dist_square,
+                plot_dir / 'kc_mean_megamat_corrdist.parquet'
+            )
+
             kc_minus_uniform = kc_mean_dists - mean_model_dists.loc['uniform']
             kc_minus_uniform_order = kc_minus_uniform.sort_values(ascending=False).index
 
@@ -23804,7 +23843,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 # doesn't involve all the plotting for paper w/ remy)
 # (or at least move to al_util, to declutter this file?)
 
-n_megamat_odors = 17
 assert len(megamat_odor_names) == n_megamat_odors
 
 # TODO put in docstring which files we are loading from

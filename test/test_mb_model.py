@@ -32,7 +32,8 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     variable_n_claw_options, dict_seq_product, get_connectome_wPNKC_params,
     format_model_params, eval_and_check_compatible, glomerulus_col, ParamDict,
     format_weights, megamat_orn_deltas, paper_megamat_orn_deltas,
-    paper_hemibrain_output_dir, get_dynamics, get_time_index, ONESTEP_LR_KEY,
+    paper_hemibrain_output_dir, paper_uniform_output_dir, paper_uniform_model_responses,
+    get_dynamics, get_time_index, ONESTEP_LR_KEY,
     fit_dff2spiking_from_remypaper_flies_and_hallem, APL_WEIGHT_NAMES,
     APL_TUNING_PARAMS, scale_dff_to_est_spike_deltas_using_hallem,
     remypaper_dff2spiking_data_dir, written_since_proc_start,
@@ -1644,38 +1645,12 @@ def test_uniform_paper_repro(tmp_path):
     """
     orn_deltas = paper_megamat_orn_deltas()
 
-    # TODO need .resolve() call? pytest only ever going to be called from repo root?
-    sent_to_anoop = data_root / 'sent_to_anoop'
+    pdf = paper_uniform_model_responses()
 
-    # TODO delete this one + use below
-    # v2 dir outputs should never really have been used, and (from data/README.md)
-    # "still had the offset in the dF/F -> est. spike delta fn, and thus still had
-    # unnecessarily high KC correlations"
-    may26_dir = sent_to_anoop / 'v2'
-    #
-
-    # TODO also check uniform_model_wPNKC_n-seeds_100.csv /
-    # megamat_uniform_model_params.csv in same folder?
-    #
-    # contains close-to but probably not final hemibrain (wd20 came after), but what
-    # should be final uniform responses.
-    may29_dir = sent_to_anoop / '2024-05-16'
-
-    # NOTE: it is actually 2024-05-16 that I can repro (at least for first 2 seeds, and
-    # w/ _drop_gloms_with_plus=False, which does matters), and not v2.
-    # _drop_gloms_with_plus=True does not work to reproduce either.
-    #
-    uniform_response_csv_name = 'megamat_uniform_model_responses_n-seeds_100.csv'
-    paper_uniform_responses = may29_dir / uniform_response_csv_name
-    assert paper_uniform_responses.exists()
-
-    # TODO rename 'model_kc' -> KC_ID (='kc_id') in those committed outputs?
-    # NOTE: older output still used 'model_kc' instead of KC_ID, for KC ID column
-    pdf = pd.read_csv(paper_uniform_responses, index_col=['model_kc', 'seed'])
-    # TODO share w/ n_megamat_odors elsewhere?
-    assert len(pdf.columns) == 17
-
-    params = read_param_csv(may29_dir / 'megamat_uniform_model_params.csv')
+    params = read_param_csv(
+        paper_uniform_output_dir / 'megamat_uniform_model_params.csv'
+    )
+    # TODO also check wPNKC in same folder?
 
     kws = dict(
         # TODO refactor to share most of these kws across uniform/hemibrain paper repro

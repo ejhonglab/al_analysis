@@ -1,0 +1,9 @@
+resampled3_remy_backup/
+
+# .parquet and .nc files (~700M and 1.3G, respectively. too large to commit. can
+# reference Remy's outputs I originally copied from:
+# tensor-nightly/Remy/002_PycharmProjects/OdorSpaceShare/manuscript/data/figure-04/
+# 04cde/all_odor_spaces
+# (which should be backed up in AWS)
+*_resampled_128_iter05000_*
+*_resampled_136_iter05000_*

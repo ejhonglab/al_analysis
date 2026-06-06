@@ -1,0 +1,575 @@
+#!/usr/bin/env python3
+"""
+Resampling analysis for validation2 panel.
+
+Generates xr.Dataset:
+======================
+    <xarray.Dataset> Size: 5GB
+    Dimensions:                  (resampling_fraction: 10, iter: 5000,
+                                  space_row: 91, space_col: 91)
+    Coordinates:
+      * resampling_fraction      (resampling_fraction) float64 80B 0.1 0.2 ... 1.0
+      * iter                     (iter) int64 40kB 0 1 2 3 4 ... 4996 4997 4998 4999
+      * space_col                (space_col) <U45 16kB 'chem-maccs' ... 'vcf-stri...
+      * space_row                (space_row) <U45 16kB 'chem-maccs' ... 'vcf-stri...
+    Data variables:
+        pearson                  (resampling_fraction, iter, space_row, space_col) float32 2GB ...
+        spearman                 (resampling_fraction, iter, space_row, space_col) float32 2GB ...
+        n_overlap_pairs_sampled  (resampling_fraction, iter, space_row, space_col) float32 2GB ...
+    Attributes:
+        n_odor_pairs:      231
+        with_replacement:  0
+
+
+Save to:
+  - Folder:
+        - `figure-06/all_odor_spaces/resampled/with_replacement/{}_odor_pairs/`
+        - `figure-06/all_odor_spaces/resampled/no_replacement/{}_odor_pairs/`
+    - Filename: xrds_resampled_136_iter01000_no_replacement.nc
+
+
+"""
+import json
+# from tqdm.notebook import tqdm
+import time
+from itertools import combinations, product
+from pathlib import Path
+
+import matplotlib_inline
+import numpy as np
+import pandas as pd
+import xarray as xr
+import yaml
+from tqdm import tqdm
+
+from hong2p.util import pd_allclose, pd_isclose
+
+from al_analysis.al_util import data_root, fly_cols, read_csv, read_parquet, n_choose_2
+
+matplotlib_inline.backend_inline.set_matplotlib_formats('svg')
+
+#data_folder = Path("/home/remy/PycharmProjects/OdorSpaceShare/manuscript/data/"
+#                   "figure-04/04cde")
+data_folder = Path('data')
+
+kc_ord = ['2h', 'IaA', 'pa',
+          '2-but', 'eb', 'ep',
+          'aa', 'va',
+          'B-cit', 'Lin',
+          '6al', 't2h',
+          '1-8ol', '1-5ol', '1-6ol',
+          'benz', 'ms'
+          ]
+
+# Load inchi --> abbrev map
+with open(data_folder.joinpath('anoop_inchi_2_abbrev.json'), 'r') as f:
+    anoop_inchi_2_abbrev = json.load(f)
+
+# Also Make abbrev --> inchi map
+anoop_abbrev_2_inchi = {v: k for k, v in anoop_inchi_2_abbrev.items()}
+
+anoop_inchis = list(anoop_inchi_2_abbrev.keys())
+inchi_pairs = list(combinations(anoop_inchis, 2))
+abbrev_pairs = list(combinations(kc_ord, 2))
+# %%
+
+# # Load inchi 2 abbrev mappings
+# def load_inchi_2_abbrev():
+#     json_file = Path("/home/remy/PycharmProjects/OdorSpaceShare/manuscript/data/"
+#                      "by_imaging_panel/validation2/ids/strict_inchi_2_abbrev.json")
+#
+#     with open(json_file, 'r') as f:
+#         inchi_2_abbrev = json.load(f)
+#     return inchi_2_abbrev
+
+
+# %% Step 1: select subsets of odors to include in resampling
+
+# def keep_n_odor_pairs(tidy_triu_dists, n_odor_pairs):
+
+# %% Load distances and columns
+#tidy_abbrev_dists = pd.read_pickle(data_folder / "all_odor_spaces" / "tidy_abbrev_dists.pkl")
+# TODO TODO TODO double check i can also recreate the KC dists she has here? and VCF
+# too? (and that they all visually match what's in paper?
+# TODO TODO + check it matches outputs remy already had computed (that are in my copied
+# folder, or still on tensor-nightly) (well md5 is different, but maybe that's to be
+# expected w/ netcdf format [maybe the backend i'm using, or something else silly like
+# that? or is she not seeding stuff? (no, she does seem to be seeding below. unless seed
+# needs to be not only >=0, but also >0)
+# TODO and that changing al_analysis.al_util.response_stat_fn to new
+# sign_preserving_maxabs (and rerunning both uniform and hemibrain model) doesn't
+# fundamentally change point?
+tidy_abbrev_dists = pd.read_pickle(data_folder / "tidy_abbrev_dists.pkl")
+tidy_triu_abbrev_dists = tidy_abbrev_dists.loc[abbrev_pairs, :].copy(deep=True)
+
+assert int(np.sqrt(len(tidy_abbrev_dists))) == len(kc_ord)
+assert len(tidy_triu_abbrev_dists) == n_choose_2(len(kc_ord)) == 136
+
+with open(data_folder / "column_groups.yaml", 'r') as f:
+    column_groups = yaml.safe_load(f)
+
+# TODO delete? not currently used below
+#column_groups['vcf5a_cols'] = ['vcf5a_emb_seed01',
+#                               'vcf5a_emb_seed02',
+#                               'vcf5a_emb_seed03',
+#                               'vcf5a_emb_seed04',
+#                               'vcf5a_emb_seed05',
+#                               'vcf5a_emb_seed06',
+#                               'vcf5a_emb_seed07',
+#                               'vcf5a_emb_seed08',
+#                               'vcf5a_emb_seed09',
+#                               'vcf5a_emb_seed10']
+
+# TODO delete? not currently used below
+#column_groups['vcf5b_cols'] = ['vcf5b_emb_seed01',
+#                               'vcf5b_emb_seed02',
+#                               'vcf5b_emb_seed03',
+#                               'vcf5b_emb_seed04',
+#                               'vcf5b_emb_seed05',
+#                               'vcf5b_emb_seed06',
+#                               'vcf5b_emb_seed07',
+#                               'vcf5b_emb_seed08',
+#                               'vcf5b_emb_seed09',
+#                               'vcf5b_emb_seed10', ]
+
+all_columns = [col for grp in column_groups.values() for col in grp] + ['vcf5q_dat']
+# %%
+# TODO TODO TODO and which subset of these actually go into figure? that clear from the
+# next script or no?
+resampling_cols_128 = (column_groups['chem_cols'] +
+                       column_groups['neural_cols'] +
+                       column_groups['neural_cols_new_zscore'] +
+                       column_groups['neural_cols_new_dff'] +
+                       column_groups['model_cols'] +
+                       # column_groups['vcf5a_cols'] +
+                       # column_groups['vcf5b_cols'] +
+                       column_groups['vcf5q_D03_cols'] +
+                       # column_groups['vcf5q_D04_cols'] +
+                       ['vcf5q_dat']
+                       )
+
+resampling_cols_136 = (column_groups['chem_cols'] +
+                       column_groups['neural_cols'] +
+                       column_groups['neural_cols_new_zscore'] +
+                       column_groups['neural_cols_new_dff'] +
+                       column_groups['model_cols'] +
+                       # column_groups['vcf5a_cols'] +
+                       # column_groups['vcf5b_cols'] +
+                       column_groups['vcf5q_D03_cols'] +
+                       # column_groups['vcf5q_D04_cols'] +
+                       ['vcf5q_dat']
+                       )
+
+# > pp column_groups
+# {'chem_cols': ['chem_ecfp', 'chem_fcfp', 'chem_rdkit', 'chem_pattern'],
+#  'model_cols': ['uniform_tom', 'hemibrain_tom', 'hemibrain_wd20_tom'],
+#  'neural_cols': ['orn_remy',
+#                  'orn_remy_mean_scaled',
+#                  'orn_remy_scaled_mean',
+#                  'pn_dendrites-correlation',
+#                  'pn_dendrites-cosine',
+#                  'pn_dendrites-euclidean',
+#                  'pn_boutons_Fc',
+#                  'pn_boutons_F',
+#                  'pn_boutons_spks',
+#                  'pn_boutons_F_zscore',
+#                  'pn_boutons_Fc_zscore',
+#                  'kc_claws_Fc',
+#                  'kc_claws_F',
+#                  'kc_claws_Fneu',
+#                  'kc_claws_spks',
+#                  'kc_claws_F_zscore',
+#                  'kc_claws_Fc_zscore',
+#                  'kc_remy',
+#                  'kc_remy_mean_scaled',
+#                  'kc_remy_scaled_mean',
+#                  'kc_remy_combo',
+#                  'kc_remy_combo_mean_scaled',
+#                  'kc_remy_combo_scaled_mean'],
+#  'neural_cols_new_dff': ['new_pn_boutons_dff',
+#                          'new_kc_claws_dff',
+#                          'new_kc_soma_nls_dff'],
+#  'neural_cols_new_zscore': ['new_pn_boutons_zscore',
+#                             'new_kc_claws_zscore',
+#                             'new_kc_soma_nls_zscore'],
+#  ...
+#  'vcf5q_D03_cols': ['vcf5q_ND030_D03_seed01',
+#                    'vcf5q_ND030_D03_seed02',
+#                    'vcf5q_ND030_D03_seed03',
+#                    'vcf5q_ND030_D03_seed04',
+#                    'vcf5q_ND030_D03_seed05',
+#                    'vcf5q_ND030_D03_seed06',
+#                    'vcf5q_ND030_D03_seed07',
+#                    'vcf5q_ND030_D03_seed08',
+#                    'vcf5q_ND030_D03_seed09',
+#                    'vcf5q_ND030_D03_seed10'],
+# ...
+# (only thing added which isn't in one of above is 'vcf5q_dat')
+# TODO what is 'vcf5q_dat'?
+
+# NOTE: this dropna seems to be the only difference between these two
+# TODO and say where the NaNs are (vcf i assume? which odors [/pairs]?)
+tidy_triu_abbrev_dists_128 = (tidy_triu_abbrev_dists.loc[:, resampling_cols_128]
+                              .dropna()
+                              .copy(deep=True)
+                              )
+assert len(tidy_triu_abbrev_dists_128) == 128
+assert not tidy_triu_abbrev_dists_128.isna().any().any()
+
+tidy_triu_abbrev_dists_136 = (tidy_triu_abbrev_dists.loc[:, resampling_cols_136]
+                              .copy(deep=True)
+                              )
+assert len(tidy_triu_abbrev_dists_136) == 136
+na136 = tidy_triu_abbrev_dists_136.isna().any()
+assert na136.sum() == 1
+col_with_nan = tidy_triu_abbrev_dists_136.loc[:, na136].columns[0]
+# none of other VCF columns have NaN (presumably because they are all from embeddings
+# that impute missing values for odor [pairs] not in VCF), and presumably this is some
+# raw VCF distance?
+assert col_with_nan == 'vcf5q_dat', f'{col_with_nan=}'
+
+from hong2p.olf import strip_concs_from_odor_str
+from al_analysis.al_util import corr_triangular
+from al_analysis.mb_model import (paper_hemibrain_output_dir,
+    paper_uniform_model_responses, drop_silent_model_cells
+)
+
+ur = paper_uniform_model_responses()
+# all other columns are odor names in this
+hr = pd.read_csv(paper_hemibrain_output_dir / 'responses.csv', index_col='model_kc')
+
+assert len(hr.columns) == len(kc_ord)
+
+assert ur.columns.equals(hr.columns)
+without_conc = hr.columns.map(strip_concs_from_odor_str).rename('odor')
+assert list(without_conc) == kc_ord
+hr.columns = without_conc
+ur.columns = without_conc
+del without_conc
+
+ur = drop_silent_model_cells(ur)
+hr = drop_silent_model_cells(hr)
+
+# TODO TODO TODO only use 'orn_remy' and 'kc_remy_combo'
+# TODO TODO TODO can i save mean KC corrs from my model_mb_responses 2e analysis, and
+# does that match any of these values? does it match the one she is using (or how much
+# is it off by, if not?)?
+
+u7corr = corr_triangular(ur.corr(), sort=False)
+hbcorr = corr_triangular(hr.corr(), sort=False)
+
+# 1 - x to convert from correlation to correlation distance
+du = 1 - u7corr
+dh = 1 - hbcorr
+
+# both contain pearson correlation *distances*
+d1 = tidy_triu_abbrev_dists_128.rename_axis(index=['odor1', 'odor2'])
+d2 = tidy_triu_abbrev_dists_136.rename_axis(index=['odor1', 'odor2'])
+
+assert d2.index.equals(du.index)
+assert d2.index.equals(dh.index)
+
+rdu = d2['uniform_tom']
+rdh = d2['hemibrain_wd20_tom']
+
+assert rdh.equals(dh)
+udiff = rdu - du
+# TODO where is minor remaining discrepancy from? present in both cases, or just
+# uniform? (just in uniform, yea. seems small enough it probably doesn't matter)
+# ipdb> udiff.abs().max()
+# 0.0010470835459980288
+# ipdb> udiff.abs().mean()
+# 0.00018991702883396853
+udiff_abs = udiff.abs()
+assert udiff_abs.mean() < 0.0002, f'{udiff_abs.mean()=}'
+assert udiff_abs.max() < 0.00105, f'{udiff_abs.max()=}'
+
+# vs using new response_stat_fn=sign_preserving_maxabs analysis of ORN data
+use_old_meanstat_orn_data = True
+#use_old_meanstat_orn_data = False
+if use_old_meanstat_orn_data:
+    # TODO TODO or is contents of
+    # data_root/sent_to_remy/2023-10-29/pebbled_ij_certain-roi_stats.csv (dff) a better
+    # match (vs curr dff3)? (the path to the pickle remy said she was using had the same
+    # date in the filepath somewhere)
+    #
+    # (well, the md5 of the pickle she was using matches that of the committed pickle i
+    # have, so assuming my pickle and CSV match [which read_csv should already be
+    # checking], it should be approximately the right [old] data...)
+    #
+    # only differs in a few ROIs for one fly:
+    # ipdb> dff.columns[((dff3 - dff).max() != 0)]
+    # MultiIndex([('2023-05-10', 1,  'DC3'),
+    #             ('2023-05-10', 1,  'DC4'),
+    #             ('2023-05-10', 1, 'DP1m'),
+    #             ('2023-05-10', 1,  'VA6'),
+    #             ('2023-05-10', 1, 'VA7l'),
+    #             ('2023-05-10', 1, 'VL2a'),
+    #             ('2023-05-10', 1,  'VM2'),
+    #             ('2023-05-10', 1, 'VM5v')],
+    #            names=['date', 'fly_num', 'roi'])
+    # TODO TODO restore?
+    #orn_csv = paper_hemibrain_output_dir / 'full_orn_dff_input.csv'
+    orn_csv= data_root / 'sent_to_remy/2023-10-29/pebbled_ij_certain-roi_stats.csv'
+else:
+    orn_dir = (data_root /
+        'sent_to_remy/2025-09-30_tom_orn_data_signed-max/megamat_signed-max'
+    )
+    orn_csv = orn_dir / 'ij_certain-roi_stats.csv'
+
+odf = read_csv(orn_csv, drop_old_odor_levels=True)
+mean_odf = odf.loc['megamat'].groupby(level='odor1', sort=False).mean().groupby(
+    level='roi', axis='columns').mean()
+
+without_conc = mean_odf.index.map(strip_concs_from_odor_str).rename('odor')
+assert list(without_conc) == kc_ord
+mean_odf.index = without_conc
+del without_conc
+
+orn_corr = corr_triangular(mean_odf.T.corr(), sort=False)
+d_orn = 1 - orn_corr
+
+# TODO check the other orn_* columns, to see if any have a lower error?
+rd_orn = d2['orn_remy']
+# ipdb> odf.groupby(fly_cols, axis='columns').apply(lambda x: len(x.columns))
+# date        fly_num
+# 2023-04-22  2          38
+#             3          35
+# 2023-04-26  2          36
+#             3          34
+# 2023-05-08  1          37
+#             3          36
+# 2023-05-09  1          38
+# 2023-05-10  1          38
+# 2023-06-22  1          34
+orn_diff = rd_orn - d_orn
+
+orn_diff_abs = orn_diff.abs()
+
+# use_old_meanstat_orn_data=False
+# orn_csv: /home/tom/src/al_analysis/al_analysis/data/sent_to_remy/2025-09-30_tom_orn_data_signed-max/megamat_signed-max/ij_certain-roi_stats.csv
+# orn_diff_abs.mean()=0.04221018502423536
+# orn_diff_abs.max()=0.16088968562144967
+#
+# use_old_meanstat_orn_data=True
+# orn_csv: /home/tom/src/al_analysis/al_analysis/data/sent_to_remy/2025-03-18/dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__weight-divisor_20__drop-plusgloms_False__target-sp_0.0915/full_orn_dff_input.csv
+# orn_diff_abs.mean()=0.0351330318478869
+# orn_diff_abs.max()=0.09843088479888418
+
+# using 2023-10-29 data instead of committed hemibrain model input data (probably closer
+# to what remy was using, but still not matching for some reason...):
+# use_old_meanstat_orn_data=True
+# orn_csv: /home/tom/src/al_analysis/al_analysis/data/sent_to_remy/2023-10-29/pebbled_ij_certain-roi_stats.csv
+# orn_diff_abs.mean()=0.03557251465213224
+# orn_diff_abs.max()=0.0981883567850893
+
+print(f'{use_old_meanstat_orn_data=}')
+print(f'orn_csv: {orn_csv}')
+print(f'{orn_diff_abs.mean()=}')
+print(f'{orn_diff_abs.max()=}')
+
+# generated in model_mb_responses (by scripts/repro_remy_paper_modeling.py, but could
+# also be by al-analysis)
+kdists_square = read_parquet('kc_mean_megamat_corrdist.parquet')
+
+# TODO delete (replaced by stack() based code below)
+#ordered_pairs = [x for x in du.index]
+#assert all(type(x) is tuple and len(x) == 2 and all(type(s) is str for s in x)
+#    for x in ordered_pairs
+#)
+# TODO so does ordered_pairs argument to corr_triangular not even work? did i break
+# it? (whatever, i can just stack and use index from one of the others)
+#d_kc = corr_triangular(kdists_square, ordered_pairs=ordered_pairs)
+#
+d_kc = kdists_square.stack().rename_axis(index=d_orn.index.names).loc[d_orn.index]
+
+rd_kc = d2['kc_remy_combo']
+# TODO TODO TODO worth regening 2e with diff data (kc_mean_megamat_corrdist should
+# correspond to what i used for 2E)? and were there any other plots i made that will be
+# used, that i should regen too?
+kc_close = pd_isclose(d_kc, rd_kc)
+# 3
+#print(f'{(~kc_close).sum()=}')
+
+kc_diff = (rd_kc - d_kc)
+# ipdb> kc_diff.abs().max()
+# 0.025973204422689466
+# ipdb> kc_diff.abs().mean()
+# 0.00044805786111347146
+
+def get_sorted_indices(dists: pd.Series, index_vals: pd.Index) -> np.ndarray:
+    sorted_dists = dists.sort_values(ascending=False)
+    sorted_indices = sorted_dists.index.get_indexer(index_vals)
+    i1 = sorted_dists.iloc[sorted_indices]
+    i2 = sorted_dists.loc[index_vals]
+    assert i1.equals(i2)
+    return sorted_indices
+
+# ipdb> d_kc.max()
+# 1.1074444140250272
+#
+# ipdb> kc_diff[~kc_close]
+# odor1  odor2
+# 2-but  1-6ol    -0.023214
+#        benz     -0.025973
+# 1-6ol  benz     -0.011749
+# ipdb> d_kc[~kc_close]
+# odor1  odor2
+# 2-but  1-6ol    0.984899
+#        benz     1.081649
+# 1-6ol  benz     0.927795
+#
+# ipdb> rd_kc[~kc_close]
+# odor1  odor2
+# 2-but  1-6ol    0.961685
+#        benz     1.055676
+# 1-6ol  benz     0.916046
+#
+kc_mismatch_pairs = kc_close[~kc_close].index
+d_kc_mismatch_indices = get_sorted_indices(d_kc, kc_mismatch_pairs)
+rd_kc_mismatch_indices = get_sorted_indices(rd_kc, kc_mismatch_pairs)
+
+# indices min=0 max=135
+# ipdb> d_kc_mismatch_indices
+# array([52,  8, 90])
+# ipdb> rd_kc_mismatch_indices
+# array([69, 17, 94])
+#
+#              remy_sorted_index  my_sorted_index
+# odor1 odor2
+# 2-but 1-6ol                 69               52
+#       benz                  17                8
+# 1-6ol benz                  94               90
+index_mismatch_df = pd.DataFrame(index=kc_mismatch_pairs,
+    columns=['remy_sorted_index', 'my_sorted_index'],
+    data=np.array([rd_kc_mismatch_indices, d_kc_mismatch_indices]).T
+)
+
+# TODO TODO check overall point remains the same if i run things w/ my version of
+# everything rather than her version of everything?
+# TODO TODO and also check plots unchanged w/ recomputing ORN responses and model w/
+# sign_preserving_maxabs? (or at least model, if she already updated ORN responses)
+# TODO TODO TODO actually, aren't her ORN distance coming from new
+# sign_preserving_maxabs anyway, or did she not actually update to using them?
+
+breakpoint()
+# %%
+
+n_iters = 5000
+resampling_fractions = np.arange(0.1, 1 + 0.0001, 0.1).round(2)
+
+for n_odor_pairs, with_replacement in product([128, 136], [True, False]):
+
+    print(f"\nn_odor_pairs: {n_odor_pairs}, with_replacement: {with_replacement}")
+    print("=====================================================================")
+
+    if n_odor_pairs == 128:
+        tidy_triu_dists_to_resample = tidy_triu_abbrev_dists_128
+    elif n_odor_pairs == 136:
+        tidy_triu_dists_to_resample = tidy_triu_abbrev_dists_136
+
+    # compute n (# of odor pairs) used in calulation
+    df_notnull = tidy_triu_dists_to_resample.notnull() * 1.0
+    df_overlap_count = df_notnull.T.dot(df_notnull)
+
+    # Compute weights
+    # df_weights = tidy_triu_dists_to_resample.notna() / tidy_triu_dists_to_resample.notna().sum()
+    # %% Make tidy triu. distance dataframe to resample
+    # %% Run resampling
+
+    n_cols = tidy_triu_dists_to_resample.shape[1]
+    # TODO delete. unused.
+    #cols_to_resample = tidy_triu_dists_to_resample.columns.to_list()
+
+    ds_dims = (resampling_fractions.size, n_iters, n_cols, n_cols)
+    dimnames = ['resampling_fraction', 'iter', 'space_row', 'space_col']
+
+    ds_resampled_at_fraction = xr.Dataset(
+            coords=dict(
+                    resampling_fraction=resampling_fractions,
+                    iter=np.arange(n_iters),
+                    space_col=tidy_triu_dists_to_resample.columns.to_list(),
+                    space_row=tidy_triu_dists_to_resample.columns.to_list(),
+                    ),
+            data_vars=dict(
+                    pearson=xr.DataArray(np.zeros(ds_dims), dims=dimnames),
+                    spearman=xr.DataArray(np.zeros(ds_dims), dims=dimnames),
+                    # kendall=xr.DataArray(np.zeros(ds_dims), dims=dimnames),
+                    n_overlap_pairs_sampled=xr.DataArray(np.zeros(ds_dims), dims=dimnames),
+                    ),
+            attrs=dict(n_odor_pairs=n_odor_pairs,
+                       with_replacement=with_replacement * 1, )
+            ).astype('float32')
+    # %%
+
+    resampling_folder = data_folder.joinpath(
+            'resampled3',
+            'with_replacement' if with_replacement else 'no_replacement',
+            f'{n_odor_pairs}_odor_pairs')
+
+    resampling_folder.mkdir(parents=True, exist_ok=True)
+    # %%
+    for resampling_fraction in tqdm(resampling_fractions):
+        start = time.time()
+        samples = [tidy_triu_dists_to_resample.sample(frac=resampling_fraction,
+                                                      replace=with_replacement,
+                                                      random_state=i
+                                                      ) for i in range(n_iters)
+                   ]
+
+        arr_overlaps = np.stack([(item.notna() * 1).T.dot(item.notna() * 1)
+                                 for item in samples],
+                                axis=0)
+        arr_pearson = np.stack([item.corr(method='pearson') for item in samples], axis=0)
+        arr_spearman = np.stack([item.corr(method='spearman') for item in samples], axis=0)
+        # arr_kendall = np.stack([item.corr(method='kendall') for item in samples], axis=0)
+
+        ds_resampled_at_fraction['pearson'].loc[dict(resampling_fraction=resampling_fraction)] = (
+            arr_pearson)
+        ds_resampled_at_fraction['spearman'].loc[dict(resampling_fraction=resampling_fraction)] = (
+            arr_spearman)
+        # ds_resampled_at_fraction['kendall'].loc[dict(resampling_fraction=resampling_fraction)] = (
+        #     arr_pearson)
+        ds_resampled_at_fraction['n_overlap_pairs_sampled'].loc[
+            dict(resampling_fraction=resampling_fraction)] = (
+            arr_overlaps)
+        end = time.time()
+
+        print(f"Resampling time elapsed ({resampling_fraction:.2f}) = {end - start}")
+
+    # Save netcdf file
+    # ==================
+    filename = (f"xrds_resampled_{n_odor_pairs}_iter{n_iters:05d}"
+                f"_{'with_replacement' if with_replacement else 'no_replacement'}"
+                f".nc")
+    print("\nSaving " + filename)
+
+    ds_resampled_at_fraction.to_netcdf(resampling_folder / filename)
+
+# %%
+# ds_resampled_at_fraction = xr.Dataset(
+#         coords=dict(
+#                 iter=np.arange(n_iters),
+#                 space_cols=tidy_triu_dists_to_resample.columns.to_list(),
+#                 space_rows=tidy_triu_dists_to_resample.columns.to_list(),
+#                 ),
+#         data_vars=dict(
+#                 pearson=xr.DataArray(arr_pearson, dims=['iter', 'space_row', 'space_col']),
+#                 spearman=xr.DataArray(arr_spearman, dims=['iter', 'space_row', 'space_col']),
+#                 kendall=xr.DataArray(arr_kendall, dims=['iter', 'space_row', 'space_col']),
+#                 ),
+#         attrs=dict(n_odor_pairs=n_odor_pairs,
+#                    with_replacement=with_replacement, )
+#         ).astype('float32')
+# make dataframe for resampling fraction
+#
+# df_resampled_fraction = pd.concat(samples, axis=0)
+#
+# # Save resampled space corrs
+# df_resampled_fraction.to_pickle(resampling_folder.joinpath(
+#         f'{n_odor_pairs}_odor_pairs',
+#         f'df_resampled_{n_odor_pairs}_'
+#         f'{n_iters}iter_with_replacement_'
+#         f'{resampling_fraction:.2f}.pkl')
+#         )
+# %%
