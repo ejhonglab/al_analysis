@@ -1,47 +1,51 @@
+#!/usr/bin/env python3
 """Functions for making natural mixture data compatible with tom's analysis code.
 
 Required inputs:
 - 'pin_odor_mixture_list.json'
 """
+
 from pathlib import Path
+from itertools import combinations
+import json
+
 import numpy as np
 import pandas as pd
 import xarray as xr
 from sklearn import preprocessing
-import xrsa
-import stimuli
-import external.tom
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import seaborn as sns
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
-import json
-from itertools import combinations
 
-from external.tom.plot import AggregateOrnPlotter
+# TODO TODO TODO what subset of these do i actually need? current versions of all these
+# work? all in one repo of Remy's or where?
+#import xrsa
+#import stimuli
+# TODO does this syntax provide us `external.tom` or `tom`? either? actually used?
+# (seems to provide `external.tom`, which currently only seems used for validation2
+# stuff below, assuming similar code for megamat data wasn't just changed/removed)
+#import external.tom
+#from external.tom.plot import AggregateOrnPlotter
+
+# this syntax doesn't work
+#from . import rdm
+import rdm
+assert Path(rdm.__file__).parent == Path(__file__).resolve().parent
+
+
+# TODO TODO TODO which file(s) that this writes do i actually need to reproduce?
+
+# TODO TODO or copy everything on matrix to a local path, and change all paths to not
+# reference matrix (mainly to avoid accidentally overwriting stuff there...)
+#data_root = Path('/mnt/matrix')
+data_root = Path('data')
 
 plt.rcParams.update({'pdf.fonttype': 42,
                      'text.usetex': False})
 
-tom_abbrevs = {'kiwi approx.': '~kiwi',
-               'ethyl acetate': 'EA',
-               'ethyl butyrate': 'EB',
-               'isoamyl alcohol': 'IAol',
-               'isoamyl acetate': 'IAA',
-               'ethanol': 'EtOH',
-               '1-octen-3-ol': 'OCT',
-               '2-heptanone': '2H',
-               'methyl salicylate': 'MS',
-               'valeric acid': 'VA',
-               'furfural': 'FUR',
-               'control mix': 'control mix',
-               'paraffin': 'pfo',
-               'pfo': 'pfo',
-               # 'trans-2-hexenal': 'T2H',
-               # '3-methylthio-1-propanol': '3MT1P'
-               }
-
+# TODO refactor to share w/ elsewhere (also redefined below)
 kc_odor_ord = ['2h', 'IaA', 'pa', '2-but', 'eb', 'ep', 'aa', 'va', 'B-cit', 'Lin', '6al', 't2h',
                '1-8ol', '1-5ol', '1-6ol', 'benz', 'ms']
 
@@ -51,9 +55,10 @@ kc_stim_ord = [f"{item} @ -3" for item in kc_odor_ord]
 # %%
 
 def make_dataframes_from_xlsx(file):
-    # file = Path("/local/matrix/Remy-Data/projects/odor_space_collab"
+    # file = (data_root / "Remy-Data/projects/odor_space_collab"
     #             "/analysis_outputs/from_tom/data_from_tom(4).xlsx")
 
+    # TODO TODO to what extent was this data used? what was it generated from?
     df_orns_ = pd.read_excel(file, sheet_name='orn_terminals', header=[0, 1, 2],
                              index_col=[0, 1, 2, 3, 4])
     df_orns_.columns.names = ['date', 'fly_num', 'roi']
@@ -122,6 +127,7 @@ def convert_xlsx_to_netcdfs(file):
     return da_orn_fixed, da_pn_fixed
 
 
+# TODO try using this fn instead of current code processing megamat17 data?
 def compute_orn_rdms(da_orn_trials_, da_orn_stim_, metric_list=None):
     if metric_list is None:
         metric_list = ['correlation', 'cosine', 'euclidean']
@@ -132,20 +138,23 @@ def compute_orn_rdms(da_orn_trials_, da_orn_stim_, metric_list=None):
 
     for metric_ in metric_list:
         da_orn_trial_rdm_concat_ = xr.concat(
-                [xrsa.rdm.compute_trial_respvec_rdm(
+                #[xrsa.rdm.compute_trial_respvec_rdm(
+                [rdm.compute_trial_respvec_rdm(
                         da_.dropna(dim='cells', how='all').dropna(dim='trials', how='all'),
                         metric=metric_)
                     for _, da_ in da_orn_trials_.groupby('datefly')],
                 dim='acq').rename(metric_)
 
         da_orn_stim_rdm_concat_ = xr.concat(
-                [xrsa.rdm.compute_rdm(
+                #[xrsa.rdm.compute_rdm(
+                [rdm.compute_rdm(
                     da_.dropna(dim='cells', how='all').dropna(dim='stim', how='all'),
                     input_dim_ord=['stim', 'cells'],
                     metric=metric_)
                  for _, da_ in da_orn_stim_.groupby('datefly')],
                 dim='acq').rename(metric_)
 
+        # TODO also get this? qc file? (this fn not seemingly used tho)
         da_orn_trial_rdm_concat_blockavg_ = xrsa.qc.compute_trial_rdm_blockavg(
                 da_orn_trial_rdm_concat_).rename(metric_)
 
@@ -190,6 +199,7 @@ def invert_euc_dist_rbf(da_euc, gamma):
 
 # validation2.py panel
 ########################
+'''
 date_shared =
 # date_shared = "2024-01-12" # finalized roi stats
 # date_shared = '2024-01-29'
@@ -199,8 +209,8 @@ date_2_filename = {
     '2024-01-29': 'validation2_ij_roi_stats.p',
     }
 
-data_dir = Path(
-        "/local/matrix/Remy-Data/projects/odor_space_collab/analysis_outputs/from_tom").joinpath(
+data_dir = (data_root /
+        "Remy-Data/projects/odor_space_collab/analysis_outputs/from_tom").joinpath(
         date_shared)
 # %%
 df_orn_ori = pd.read_pickle(data_dir.joinpath(date_2_filename[date_shared]))
@@ -250,6 +260,10 @@ print(da_orn_reshaped)
 
 # save to netcdf
 #################
+# TODO TODO TODO avoid overwriting this on NAS?
+# TODO delete
+print(f"WOULD HAVE WRITTEN {data_dir.joinpath('xrda_orn_with_datefly.nc')}")
+#
 da_orn_reshaped.reset_index('acq').to_netcdf(data_dir.joinpath('xrda_orn_with_datefly.nc'))
 
 # # %% fix stimuli
@@ -325,6 +339,8 @@ da_orn_stim_proc.attrs['preprocessing'] = 'maxabs_scale'
 data_dir.joinpath('respvec').mkdir(exist_ok=True)
 
 # save unprocessed
+# TODO TODO TODO avoid overwriting
+breakpoint()
 da_orn_trials.reset_index('trials').reset_index('acq').to_netcdf(
         data_dir.joinpath('respvec', 'xrda_orn_trials.nc'))
 
@@ -572,6 +588,7 @@ with (sns.axes_style('ticks')):
             pdf.savefig(fig)
 # %%
 ds_orn_stim_rdm_concat_highconc = xr.load_dataset(
+        # TODO TODO don't hardcode data_dir.with_name('2024-01-12')?
         data_dir.with_name('2024-01-12').joinpath('rdm', 'xrds_orn_stim_rdm_concat.nc')
         )
 ds_orn_stim_rdm_concat_highconc = stimuli.split_stim_coord(ds_orn_stim_rdm_concat_highconc,
@@ -826,7 +843,6 @@ da_orn_reshaped = (da_orn_with_datefly
 
 # %%
 # average across repeats
-import seaborn as sns
 
 df_orn_stim = (df_orn_ori
                .droplevel(['is_pair', 'odor2'])
@@ -848,25 +864,62 @@ for (date_imaged, fly_num), df in df_orn_stim.T.groupby(['date', 'fly_num']):
 # %%
 panel_name = 'validation2.py'
 
-data_dir = Path("/local/matrix/Remy-Data/projects/odor_space_collab/"
+data_dir = (data_root / "Remy-Data/projects/odor_space_collab/"
                 "analysis_outputs/from_tom/2023-11-28/")
 
-df_orn_ori = pd.read_pickle("/local/matrix/Remy-Data/projects/odor_space_collab/"
-                            "analysis_outputs/from_tom/2023-11-28/ij_roi_stats.p")
-da_orn = fix_da_ori(df_ori_2_dataarray(df_orn_ori), panel_name=panel_name)
+# TODO TODO TODO check it's the (seemingly more recent validation2 stuff referenced
+# above that is ultimately used for this panel, rather than this? check against what i
+# have on record as final validation2 outputs [presumably she also isn't using signed
+# maxabs here, so latest before that?])
+#df_orn_ori = pd.read_pickle(data_root / "Remy-Data/projects/odor_space_collab/"
+#                            "analysis_outputs/from_tom/2023-11-28/ij_roi_stats.p")
+#da_orn = fix_da_ori(df_ori_2_dataarray(df_orn_ori), panel_name=panel_name)
+'''
+
 # %%
+# TODO TODO was this ever used? the excel file is at a hardcoded path on matrix, and
+# unclear what raw data of mine generated that
 # da_orn, da_pn = convert_xlsx_to_netcdfs(al_file)
-# df_orn_ori = pd.read_pickle("/local/matrix/Remy-Data/projects/odor_space_collab/"
+# df_orn_ori = pd.read_pickle(data_root / "Remy-Data/projects/odor_space_collab/"
 #                             "analysis_outputs/from_tom/pebbled_ij_roi_stats.p")
 
-df_orn_ori = pd.read_pickle("/local/matrix/Remy-Data/projects/odor_space_collab/"
-                            "analysis_outputs/from_tom/2023-10-29/pebbled_ij_certain-roi_stats.p")
-da_orn = fix_da_ori(df_ori_2_dataarray(df_orn_ori), panel_name)
+# TODO TODO TODO was any of the code above executed with these variables defined as they
+# are here? get remy to walk me through how to generate (at least the minimal relevant
+# output)
+#
+# ./corr_minus_orn_vs_vcf_repro$ find . -name pebbled_ij_certain-roi_stats.p -exec md5sum "{}" \;
+# 4c77005283d5e31c22b7bec41ed8adae  ./pebbled_ij_certain-roi_stats.p
+# 4c77005283d5e31c22b7bec41ed8adae
+# ./data/by_imaging_panel/megamat17/orn_terminals/pebbled_ij_certain-roi_stats.p
+#
+#
+# TODO and this pickle (dff) didn't differ from expected model inputs (dff3) by much, in
+# repro_remy_paper_modeling.py, right? check again
+#
+# read_csv default check (from repro_remy_paper_modeling.py) confirms that the similarly
+# named CSV in that dir has contents that match this pickle. so ORN data should match
+# that one.
+# al_analysis/data/sent_to_remy/2023-10-29$ md5 pebbled_ij_certain-roi_stats.p
+# 4c77005283d5e31c22b7bec41ed8adae  pebbled_ij_certain-roi_stats.p
+#
+# TODO delete. using local copy.
+#df_orn_ori = pd.read_pickle(data_root / "Remy-Data/projects/odor_space_collab/"
+#                            "analysis_outputs/from_tom/2023-10-29/pebbled_ij_certain-roi_stats.p")
+df_orn_ori = pd.read_pickle("pebbled_ij_certain-roi_stats.p")
+# TODO this is correct panel_name, right?
+panel_name = 'megamat'
+da_orn = df_ori_2_dataarray(df_orn_ori)
+da_orn = fix_da_ori(da_orn, panel_name)
+#da_orn = fix_da_ori(df_ori_2_dataarray(df_orn_ori), panel_name)
+
+# TODO any code blocks above run with it tho?
+# not used below
+#del df_orn_ori
 
 # %%
-df_pn_ori = pd.read_pickle("/local/matrix/Remy-Data/projects/odor_space_collab/"
-                           "analysis_outputs/from_tom/2023-10-29/GH146_ij_certain-roi_stats.p")
-da_pn = fix_da_ori(df_ori_2_dataarray(df_pn_ori))
+#df_pn_ori = pd.read_pickle(data_root / "Remy-Data/projects/odor_space_collab/"
+#                           "analysis_outputs/from_tom/2023-10-29/GH146_ij_certain-roi_stats.p")
+#da_pn = fix_da_ori(df_ori_2_dataarray(df_pn_ori))
 
 # %% make individual dataarrays for ORNs
 #########################################
@@ -874,6 +927,8 @@ da_pn = fix_da_ori(df_ori_2_dataarray(df_pn_ori))
 orn_trial_respvecs_by_datefly = []
 orn_stim_respvecs_by_datefly = []
 
+# TODO TODO replace set_xindex w/ something else? not present in xarray==0.19.0 i'm
+# currently using. even need anything? (3 other calls to set_xindex in loop too...)
 for (imaging_date, fly_num), da in da_orn.set_xindex(['date', 'fly_num']).groupby('col'):
     print(imaging_date)
     print(fly_num)
@@ -905,34 +960,51 @@ for (imaging_date, fly_num), da in da_orn.set_xindex(['date', 'fly_num']).groupb
                                         )
 # %% make concatenated RDMs
 
-orn_trial_rdms = [xrsa.rdm.compute_trial_respvec_rdm(item)
+# TODO TODO TODO need xrsa rdm? get recent version off tensor-nightly (that version
+# seems to have changed somewhat from 3 year old version of rsa.py on Remy's xRSA
+# github, but may not have meaningfully changed in code used here)?
+#orn_trial_rdms = [xrsa.rdm.compute_trial_respvec_rdm(item)
+orn_trial_rdms = [rdm.compute_trial_respvec_rdm(item)
                   for item in orn_trial_respvecs_by_datefly]
 
 da_orn_trial_rdm_concat = xr.concat(orn_trial_rdms, 'acq')
 
-orn_stim_rdms = [xrsa.rdm.compute_rdm(item, input_dim_ord=['stim', 'cells'])
+#orn_stim_rdms = [xrsa.rdm.compute_rdm(item, input_dim_ord=['stim', 'cells'])
+orn_stim_rdms = [rdm.compute_rdm(item, input_dim_ord=['stim', 'cells'])
                  for item in orn_stim_respvecs_by_datefly
                  ]
 
 da_orn_stim_rdm_concat = xr.concat(orn_stim_rdms, 'acq')
 # %%
+# custom dir name so we don't overwrite anything i already got from remy
+data_dir = Path('tom-py_output')
+data_dir.mkdir(exist_ok=True)
+
 da_orn_trial_rdm_concat.reset_index('trial_row').reset_index('trial_col') \
     .to_netcdf(data_dir.joinpath('xrda_orn_trial_rdm_concat.nc'))
 
+# TODO TODO TODO can i recreate this one? and with what input data?
 da_orn_stim_rdm_concat.to_netcdf(data_dir.joinpath('xrda_orn_stim_rdm_concat.nc'))
-# %% pick stim ord
-from scipy.cluster import hierarchy
-from scipy.spatial.distance import squareform
 
-Z_odor = hierarchy.linkage(squareform(da_orn_stim_rdm_concat.mean(dim='acq'), force='tovector'),
-                           metric='correlation',
-                           method='average')
-leaf_ord_odor = hierarchy.leaves_list(Z_odor)
-stim_clust_ord = da_orn_stim_rdm_concat['stim_row'].to_numpy()[leaf_ord_odor].tolist()
+del data_dir
+
+# TODO TODO TODO just comment everything below?
+breakpoint()
+
+# %% pick stim ord
+# TODO delete? not used. don't think i care to pick an order here
+#Z_odor = hierarchy.linkage(squareform(da_orn_stim_rdm_concat.mean(dim='acq'), force='tovector'),
+#                           metric='correlation',
+#                           method='average')
+#leaf_ord_odor = hierarchy.leaves_list(Z_odor)
+#stim_clust_ord = da_orn_stim_rdm_concat['stim_row'].to_numpy()[leaf_ord_odor].tolist()
 # %%
-da_orn_trial_rdm_concat = xr.load_dataarray("/local/matrix/Remy-Data/projects/odor_space_collab/"
+# TODO this code is all just for validation2 panel stuff right? or was any also used for
+# megamat processing?
+'''
+da_orn_trial_rdm_concat = xr.load_dataarray(data_root / "Remy-Data/projects/odor_space_collab/"
                                             "analysis_outputs/from_tom/2023-11-28/xrda_orn_trial_rdm_concat.nc")
-da_orn_stim_rdm_concat = xr.load_dataarray("/local/matrix/Remy-Data/projects/odor_space_collab/"
+da_orn_stim_rdm_concat = xr.load_dataarray(data_root / "Remy-Data/projects/odor_space_collab/"
                                            "analysis_outputs/from_tom/2023-11-28/xrda_orn_stim_rdm_concat.nc")
 
 stim_to_replace = {'1-3ol @ -3': '1-prop @ -3',
@@ -1037,13 +1109,19 @@ da_orn_stim_rdm_concat = da_orn_stim_rdm_concat.assign_coords(
         abbrev_col=('stim_col', abbrev_col),
 
         )
-# %%
-trial_idx = [trial_abbrev_row.index(item) for item in da_orn_trial_rdm_concat[
-    'row_abbrev'].to_numpy()]
+'''
 
 # %%
+# TODO delete? not referenced elsewhere
+#trial_idx = [trial_abbrev_row.index(item) for item in da_orn_trial_rdm_concat[
+#    'row_abbrev'].to_numpy()]
+
+# %%
+# TODO delete (both of these defined above, and probably same here)
 kc_odor_ord = ['2h', 'IaA', 'pa', '2-but', 'eb', 'ep', 'aa', 'va', 'B-cit', 'Lin', '6al', 't2h',
                '1-8ol', '1-5ol', '1-6ol', 'benz', 'ms']
+
+# TODO TODO is all below necessary, or duplicated elsewhere for megamat orn processing?
 
 kc_stim_ord = [f"{item} @ -3" for item in kc_odor_ord]
 
@@ -1054,17 +1132,26 @@ da_orn_trial_rdm_concat = (da_orn_trial_rdm_concat
                            .rename({'row_occ': 'row_stim_occ',
                                     'col_occ': 'col_stim_occ'})
                            )
-da_orn_trial_rdm_concat = xrsa.rdm.sort_trial_rdm_by_stim_ord(da_orn_trial_rdm_concat,
-                                                              stim_ord=ecfp_stim_ord)
+#da_orn_trial_rdm_concat = xrsa.rdm.sort_trial_rdm_by_stim_ord(da_orn_trial_rdm_concat,
+da_orn_trial_rdm_concat = rdm.sort_trial_rdm_by_stim_ord(da_orn_trial_rdm_concat,
+    stim_ord=kc_stim_ord
+    # TODO delete
+    #stim_ord=ecfp_stim_ord
+)
 da_orn_trial_rdm_concat = (da_orn_trial_rdm_concat
                            .set_xindex(['row_stim', 'row_stim_occ'])
                            .set_xindex(['col_stim', 'col_stim_occ'])
                            )
 # %% force order - stim RDMs
-da_orn_stim_rdm_concat = xrsa.rdm.sort_stim_rdm_by_stim_ord(da_orn_stim_rdm_concat,
-                                                            stim_ord=ecfp_stim_ord)
+#da_orn_stim_rdm_concat = xrsa.rdm.sort_stim_rdm_by_stim_ord(da_orn_stim_rdm_concat,
+da_orn_stim_rdm_concat = rdm.sort_stim_rdm_by_stim_ord(da_orn_stim_rdm_concat,
+    stim_ord=kc_stim_ord
+    # TODO delete
+    #stim_ord=ecfp_stim_ord
+)
 # %% plot KC ordered RDMs
 
+# TODO also want this xrsa.vis.rdm code??
 fig_trial_rdms = xrsa.vis.rdm.plot_individual_and_mean_rdms(1 - da_orn_trial_rdm_concat)
 fig_trial_rdms.suptitle('ORNs (Pebbled)')
 plt.show()
@@ -1076,13 +1163,16 @@ fig_stim_rdms = xrsa.vis.rdm.plot_individual_and_mean_rdms(1 - da_orn_stim_rdm_c
 fig_stim_rdms.suptitle('ORNs (Pebbled)')
 plt.show()
 # %%
-save_folder = Path("/local/matrix/Remy-Data/projects/odor_space_collab/"
-                   "analysis_outputs/from_tom/2023-11-28")
+# TODO TODO delete below, or rename / change paths for megamat input? doing the same
+# for megamat data elsewhere already?
+#save_folder = (data_root / "Remy-Data/projects/odor_space_collab/"
+#                   "analysis_outputs/from_tom/2023-11-28")
+#
+#with PdfPages(save_folder.joinpath('orn_RDMs__mean_and_individual__ecfp_ord.pdf')) as pdf:
+#    pdf.savefig(fig_trial_rdms)
+#    pdf.savefig(fig_stim_rdms)
 
-with PdfPages(save_folder.joinpath('orn_RDMs__mean_and_individual__ecfp_ord.pdf')) as pdf:
-    pdf.savefig(fig_trial_rdms)
-    pdf.savefig(fig_stim_rdms)
-
+'''
 # %% make individual dataarrays for PNs
 #########################################
 
@@ -1167,10 +1257,11 @@ fig_pn_stim_rdms = xrsa.vis.rdm.plot_individual_and_mean_rdms(1 - da_pn_stim_rdm
 fig_pn_stim_rdms.suptitle('PNs (GH146)')
 plt.show()
 # %%
-save_folder = Path("/local/matrix/Remy-Data/projects/odor_space_collab/"
+save_folder = (data_root / "Remy-Data/projects/odor_space_collab/"
                    "analysis_outputs/from_tom/2023-10-29")
 
 with PdfPages(save_folder.joinpath('pn_RDMs__mean_and_individual.pdf')) as pdf:
+    # TODO was one of these supposed to be something else? (this line was duplicated)
     pdf.savefig(fig_pn_stim_rdms)
-    pdf.savefig(fig_pn_stim_rdms)
+'''
 # %%

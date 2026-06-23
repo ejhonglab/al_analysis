@@ -1,0 +1,18 @@
+# output directory I added to tom.py, to save regenerated ORN
+# xrda_orn_stim_rdm_concat.nc too (input to step-02...py script, which generates
+# tidy_orn_dists_abbrev.pkl, presumably part of what is used to generate input to
+# step05b...py script)
+tom-py_output/
+
+# like above, but for update_orn_rdms.py script remy is now saying i should use instead
+# of tom.py
+update-orn-rdms_output/
+
+# also using this for running update_orn_rdms.py
+tom-py_venv/
+
+# TODO what is generating this again?
+data/neural_remy/
+
+# my new figure output dir for step04...py
+fig4_repro/

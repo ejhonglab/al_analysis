@@ -96,17 +96,15 @@ def sign_preserving_maxabs(x):
 # to use `al-analysis`'s `-R/--repro-paper-models` CLI argument
 #
 # use this value by default (all new analysis; except when using -R)
-response_stat_fn = sign_preserving_maxabs
+# TODO TODO TODO restore
+#response_stat_fn = sign_preserving_maxabs
 #
 # use this value for -R
 #
 # mean was what I had used for a while (also with n_volumes_for_response=2, I believe),
 # including to generate Remy-paper outputs, and inputs to modelling for that.
-#response_stat_fn = np.mean
-# TODO (delete) or was it max before? i think it was? should be able to compare positive
-# values? or was window also 3 instead of 2, or something like that? (no, does seem like
-# mean is closer, almost exactly)
-#response_stat_fn = np.max
+# TODO TODO TODO comment again, after regening outputs for paper
+response_stat_fn = np.mean
 
 # TODO refactor to fn(s), so i can recompute this/these if al-analysis called w/ -R (to
 # use old stat)? pretty much always compute only as needed, recomputing each time?
@@ -2251,6 +2249,8 @@ def invert_corr_triangular(corr_ser: pd.Series, diag_value: float = 1., *,
 def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     # TODO after testing, try to have keep_panel default to True?
     square: bool = True, keep_panel: bool = False) -> Union[pd.Series, pd.DataFrame]:
+    # TODO TODO also use this for uniform model w/ id_cols='seed'? how do i currently
+    # handle that?
     """
     Args:
         df: DataFrame with odor level on row index, and levels from id_cols
@@ -3274,20 +3274,20 @@ n_final_megamat_kc_flies: int = 4
 # Remy/odor_space_collab/analysis_outputs/multistage/multiregion_data/\
 #     response_breadth/by_trialavg_ref_stim/megamat
 # (Remy sent me a link on Slack 2024-04-04)
-remy_sparsity_dir = (remy_data_dir /
+remy_sparsity_dir: Path = (remy_data_dir /
     'response_rates/refstim__ep_at_-3.0__median__0.120-0.130'
 )
 
 # TODO refactor to share?
-remy_date_col = 'date_imaged'
+remy_date_col: str = 'date_imaged'
 # she uses 'fly_num' same as I do, to number flies within each day (i.e. the numbers not
 # unique across days). these two can generally be used to compute/lookup values for
 # remy_fly_id.
-remy_fly_cols = [remy_date_col, 'fly_num']
+remy_fly_cols: List[str] = [remy_date_col, 'fly_num']
 
 # 0, 1, ..., 3 (or all 0 in one of the CSVs, by accident, but that CSV redundant
 # anyway)
-remy_fly_id = 'acq'
+remy_fly_id: str = 'acq'
 
 # e.g. '1-5ol @ -3.0'
 remy_odor_col = 'stim'

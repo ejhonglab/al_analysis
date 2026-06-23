@@ -18,6 +18,11 @@ from al_analysis.mb_model import (model_mb_responses, paper_megamat_orn_deltas,
 def main():
     plot_root = Path('paper_repro')
     plot_root.mkdir(exist_ok=True)
+    # TODO (delete) should this be erring (like `al-analysis ... -R` does), if
+    # `al_util.response_stat_fn` != `np.mean`? don't think so, b/c data should be loaded
+    # from precomputed outputs referenced in here, not the stuff under the uncommitted
+    # analysis output directory. maybe print something about which file(s) used which
+    # response stat tho? or at least doc in here?
 
     # TODO avoid need for this ffs...
     al_util.verbose = True
@@ -49,6 +54,10 @@ def main():
     # (yup. what is dropping it in al-analysis? refactor + run that here? is it just
     # that it's only ever constructed with that level now?)
     drop_old_odor_levels = False
+    # this matches the pickle in the same directory (according to read_csv default
+    # check), and the md5 of that pickle matches the md5 of the two
+    # pebbled_ij_certain-roi_stats.p files I have committed now under the scripts/
+    # corr_minus_orn_vs_vcf_repro directory (4c77005283d5e31c22b7bec41ed8adae).
     dff = read_csv(old_dff_csv, drop_old_odor_levels=drop_old_odor_levels)
     assert dff.columns.names == flyroi_cols == ['date', 'fly_num', 'roi'], \
         f'{dff.columns.names=}'
@@ -185,7 +194,9 @@ def main():
 
     # TODO so it was just some small changes in ROIs? matter?
     # TODO TODO TODO which of dff3 vs dff better matches what remy is computing
-    # correlations from? use that one for [load_]paper_megamat_dff fn?
+    # correlations from (dff should match exactly. just need to confirm by regenerating
+    # outputs using relevant section of her tom.py script)? use that one for
+    # [load_]paper_megamat_dff fn?
     # ipdb> dff.columns[((dff3 - dff).max() != 0)]
     # MultiIndex([('2023-05-10', 1,  'DC3'),
     #             ('2023-05-10', 1,  'DC4'),
@@ -196,6 +207,12 @@ def main():
     #             ('2023-05-10', 1,  'VM2'),
     #             ('2023-05-10', 1, 'VM5v')],
     #            names=['date', 'fly_num', 'roi'])
+    # ipdb> (dff3 - dff).loc[:, (dff3 - dff).max() != 0].abs().mean().mean()
+    # 0.019030484580113798
+    # ipdb> dff3.loc[:, (dff3 - dff).max() != 0].abs().mean().mean()
+    # 0.2719786327060094
+    # ipdb> dff.loc[:, (dff3 - dff).max() != 0].abs().mean().mean()
+    # 0.27571867336565425
 
     for d2 in [dff2, dff3, dff4, dff5]:
         assert pd_indices_equal(dff, d2)

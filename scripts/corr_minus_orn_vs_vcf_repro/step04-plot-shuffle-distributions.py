@@ -16,6 +16,7 @@ Plot types:
 from itertools import product
 from pathlib import Path
 from typing import List, Tuple
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -26,7 +27,8 @@ from attrs import define, field
 
 # %%
 plt.style.reload_library()
-plt.style.use('remy-default')
+# TODO TODO get this from same thing remy sent
+#plt.style.use('remy-default')
 plt.rcParams['pdf.fonttype'] = 42
 plt.rcParams['ps.fonttype'] = 42
 # set seaborn style
@@ -62,12 +64,10 @@ hues = dict(chem='#1b9e77',  # green
             vcf='#7570b3',  # purple
             )
 
-data_folder = Path("/home/remy/PycharmProjects/OdorSpaceShare/manuscript/data/"
-                   "figure-04/04cde")
+data_folder = Path('data')
 
-figure_folder = Path("/home/remy/PycharmProjects/OdorSpaceShare/manuscript/figures/"
-                     "figure-04/04cde")
-
+figure_folder = Path('fig4_repro')
+figure_folder.mkdir(exist_ok=True)
 
 # TODO refactor to share w/ other definitions of these in other scripts
 def get_resampling_filename(n_iter: int, n_odor_pairs: int, with_replacement: bool,
@@ -88,8 +88,7 @@ def get_resampling_filename(n_iter: int, n_odor_pairs: int, with_replacement: bo
 
 
 def get_resampling_folder(n_iter: int, n_odor_pairs: int, with_replacement: bool) -> Path:
-    return Path("/home/remy/PycharmProjects/OdorSpaceShare/manuscript/data/figure-04/04cde/"
-                "all_odor_spaces/resampled3/"
+    return (data_folder / "resampled3/"
                 f"{'with_replacement' if with_replacement else 'no_replacement'}/"
                 f"{n_odor_pairs:d}_odor_pairs")
 
@@ -184,11 +183,6 @@ rs_loader = ResamplingLoader(n_iter, n_odor_pairs, with_replacement)
 df_resampled = rs_loader.load_resampling()
 
 
-# df_pearson_diffs = compute_resampled_space_corr_diffs(df_resampled,
-#                                                       diff_space_info,
-#                                                       'pearson')
-
-
 # %%
 @define
 class ResampledDiffPlotter:
@@ -272,26 +266,27 @@ class ResampledDiffPlotter:
 
 # %%
 plot_rows = (['chem_ecfp',
-              'chem_fcfp',
-              'chem_rdkit',
-              'chem_pattern',
-              # 'uniform_tom',
-              # 'hemibrain_wd20_tom'
+              #'chem_fcfp',
+              #'chem_rdkit',
+              #'chem_pattern',
+              # TODO TODO why were these commented? want that to be the case here?
+              'uniform_tom',
+              'hemibrain_wd20_tom'
               ] +
              ['vcf5q_ND030_D03_seed08', ]
              )
 
 diff_space_info = [
-    ('orn_remy', 'pn_dendrites-correlation', 'PN dendrites - ORN'),
-    ('orn_remy', 'pn_boutons_F_zscore', 'PN boutons - ORN'),
-    ('orn_remy', 'new_pn_boutons_zscore', 'PN boutons (new zscored) - ORN'),
-    ('orn_remy', 'new_pn_boutons_dff', 'PN boutons (new dF/F) - ORN'),
-    ('orn_remy', 'kc_claws_Fc_zscore', 'KC claws - ORN'),
-    ('orn_remy', 'new_kc_claws_zscore', 'KC claws (new zscored) - ORN'),
-    ('orn_remy', 'new_kc_claws_dff', 'KC claws (new dF/F) - ORN'),
+    #('orn_remy', 'pn_dendrites-correlation', 'PN dendrites - ORN'),
+    #('orn_remy', 'pn_boutons_F_zscore', 'PN boutons - ORN'),
+    #('orn_remy', 'new_pn_boutons_zscore', 'PN boutons (new zscored) - ORN'),
+    #('orn_remy', 'new_pn_boutons_dff', 'PN boutons (new dF/F) - ORN'),
+    #('orn_remy', 'kc_claws_Fc_zscore', 'KC claws - ORN'),
+    #('orn_remy', 'new_kc_claws_zscore', 'KC claws (new zscored) - ORN'),
+    #('orn_remy', 'new_kc_claws_dff', 'KC claws (new dF/F) - ORN'),
     ('orn_remy', 'kc_remy_combo', 'KC - ORN'),
-    ('orn_remy', 'new_kc_soma_nls_zscore', 'KC soma (new zscored) - ORN'),
-    ('orn_remy', 'new_kc_soma_nls_dff', 'KC soma (new dF/F) - ORN'),
+    #('orn_remy', 'new_kc_soma_nls_zscore', 'KC soma (new zscored) - ORN'),
+    #('orn_remy', 'new_kc_soma_nls_dff', 'KC soma (new dF/F) - ORN'),
     ('orn_remy', 'uniform_tom', 'uniform - ORN'),
     ('orn_remy', 'hemibrain_wd20_tom', 'hemibrain_wd20 - ORN'),
     ]
@@ -303,18 +298,21 @@ resampled_diff_plotter = ResampledDiffPlotter(n_iter, n_odor_pairs,
 pearson_diff_figs = []
 
 for diff_col in [
-    'PN boutons - ORN',
-    'PN boutons (new zscored) - ORN',
-    'PN boutons (new dF/F) - ORN',
-    'KC claws - ORN',
-    'KC claws (new zscored) - ORN',
-    'KC claws (new dF/F) - ORN',
+    #'PN boutons - ORN',
+    #'PN boutons (new zscored) - ORN',
+    #'PN boutons (new dF/F) - ORN',
+    #'KC claws - ORN',
+    #'KC claws (new zscored) - ORN',
+    #'KC claws (new dF/F) - ORN',
     'KC - ORN',
-    'KC soma (new zscored) - ORN',
-    'KC soma (new dF/F) - ORN',
+    #'KC soma (new zscored) - ORN',
+    #'KC soma (new dF/F) - ORN',
     'uniform - ORN',
     'hemibrain_wd20 - ORN'
     ]:
+    # TODO delete
+    print(f'{diff_col=}', flush=True)
+    #
     fig, ax = resampled_diff_plotter.plot(1.0,
                                           plot_rows,
                                           diff_col,
@@ -324,7 +322,7 @@ for diff_col in [
     ax.set_title('pearson', fontsize=10)
     sns.despine()
     plt.tight_layout()
-    plt.show()
+    #plt.show()
     pearson_diff_figs.append(fig)
 # %%
 pdf_filename = (f"resampled_split_violins_"
@@ -332,25 +330,29 @@ pdf_filename = (f"resampled_split_violins_"
                 f"{'with_replacement' if with_replacement else 'no_replacement'}"
                 f"_diff__pearson__models.pdf")
 
-with PdfPages(figure_folder / f"resampled3/{pdf_filename}") as pdf:
+with PdfPages(figure_folder / pdf_filename) as pdf:
     for fig in pearson_diff_figs:
         pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
 # %%
 spearman_diff_figs = []
 
 for diff_col in [
-    'PN boutons - ORN',
-    'PN boutons (new zscored) - ORN',
-    'PN boutons (new dF/F) - ORN',
-    'KC claws - ORN',
-    'KC claws (new zscored) - ORN',
-    'KC claws (new dF/F) - ORN',
+    #'PN boutons - ORN',
+    #'PN boutons (new zscored) - ORN',
+    #'PN boutons (new dF/F) - ORN',
+    #'KC claws - ORN',
+    #'KC claws (new zscored) - ORN',
+    #'KC claws (new dF/F) - ORN',
     'KC - ORN',
-    'KC soma (new zscored) - ORN',
-    'KC soma (new dF/F) - ORN',
+    #'KC soma (new zscored) - ORN',
+    #'KC soma (new dF/F) - ORN',
     'uniform - ORN',
     'hemibrain_wd20 - ORN'
     ]:
+    # TODO delete
+    print(f'(2) {diff_col=}', flush=True)
+    #
     fig, ax = resampled_diff_plotter.plot(1.0,
                                           plot_rows,
                                           diff_col,
@@ -360,7 +362,7 @@ for diff_col in [
     ax.set_title('spearman', fontsize=10)
     plt.tight_layout()
     sns.despine()
-    plt.show()
+    #plt.show()
     spearman_diff_figs.append(fig)
 # %%
 pdf_filename = (f"resampled_split_violins_"
@@ -368,22 +370,29 @@ pdf_filename = (f"resampled_split_violins_"
                 f"{'with_replacement' if with_replacement else 'no_replacement'}"
                 f"_diff__spearman__models.pdf")
 
-with PdfPages(figure_folder / f"resampled3/{pdf_filename}") as pdf:
+with PdfPages(figure_folder / pdf_filename) as pdf:
     for fig in spearman_diff_figs:
         pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
 # %%
-diff_col_to_plot = 'PN boutons (new zscored) - ORN'
-ci = 95
+# TODO delete?
+#diff_col_to_plot = 'PN boutons (new zscored) - ORN'
+#ci = 95
+
+df_pearson_diffs = compute_resampled_space_corr_diffs(df_resampled,
+                                                      diff_space_info,
+                                                      'pearson')
+
 
 df_plot_diff = (df_pearson_diffs.xs(1.0, level='resampling_fraction')
                 .query("space_row in @plot_rows").reset_index())
 
 sns.despine()
 plt.tight_layout()
-plt.show()
+#plt.show()
 
 # %%
-with open(data_folder / "all_odor_spaces" / "column_groups.yaml", 'r') as f:
+with open(data_folder / 'column_groups.yaml', 'r') as f:
     column_groups = yaml.safe_load(f)
 
 column_groups['vcf5a_cols'] = ['vcf5a_emb_seed01',
@@ -545,8 +554,8 @@ viol_figs = []
 
 plot_rows = ['orn_remy',
              # 'pn_dendrites-correlation',
-             'pn_boutons_F_zscore',
-             'kc_claws_Fc_zscore',
+             #'pn_boutons_F_zscore',
+             #'kc_claws_Fc_zscore',
              'kc_remy_combo',
              'uniform_tom',
              'hemibrain_wd20_tom'
@@ -564,6 +573,14 @@ for resampling_fraction, space_metric, ci in product(
         np.arange(0.1, 1.001, 0.1).round(2),
         ['pearson', 'spearman'],
         [90, 95]):
+
+    if space_metric != 'pearson' or resampling_fraction != 1.0 or ci != 90:
+        # TODO warn?
+        continue
+
+    # TODO delete
+    print(f'{resampling_fraction=} {space_metric=} {ci=}', flush=True)
+    #
     with sns.axes_style('ticks'):
         title = (
             f"n_odor_pairs={n_odor_pairs}, with_replacement={with_replacement}, n_iter={n_iter},"
@@ -582,25 +599,26 @@ for resampling_fraction, space_metric, ci in product(
         ax.set_title(title, fontsize=8)
 
         plt.tight_layout()
-        plt.show()
+        #plt.show()
         viol_figs.append(fig_viol)
 # %%
 pdf_file = (figure_folder /
-            (f"resampled3/resampled_split_violins_{n_odor_pairs}_iter{n_iter:05d}_"
+            (f"resampled_split_violins_{n_odor_pairs}_iter{n_iter:05d}_"
              f"{'with_replacement' if with_replacement else 'no_replacement'}.pdf"))
 
 with PdfPages(pdf_file) as pdf:
     for fig in viol_figs:
         pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
 
 # %% 2. Plot split violins (split = observed)
 
 viol_figs = []
 
 plot_rows = (['chem_ecfp',
-              'chem_fcfp',
-              'chem_rdkit',
-              'chem_pattern',
+              #'chem_fcfp',
+              #'chem_rdkit',
+              #'chem_pattern',
               'uniform_tom',
               # 'hemibrain_tom',
               'hemibrain_wd20_tom'] +
@@ -619,6 +637,14 @@ for resampling_fraction, space_metric, ci in product(
         np.arange(0.1, 1.00001, 0.1).round(2),
         ['pearson', 'spearman'],
         [90, 95]):
+
+    if space_metric != 'pearson' or resampling_fraction != 1.0 or ci != 90:
+        # TODO warn?
+        continue
+
+    # TODO delete
+    print(f'(2) {resampling_fraction=} {space_metric=} {ci=}', flush=True)
+    #
     with sns.axes_style('ticks'):
         title = (
             f"n_odor_pairs={n_odor_pairs}, with_replacement={with_replacement}, n_iter={n_iter},"
@@ -636,23 +662,24 @@ for resampling_fraction, space_metric, ci in product(
         ax.set_title(title, fontsize=8)
 
         plt.tight_layout()
-        plt.show()
+        #plt.show()
         viol_figs.append(fig_viol)
 # %%
 pdf_file = (figure_folder /
-            (f"resampled3/resampled_split_violins_{n_odor_pairs}_iter{n_iter:05d}_"
+            (f"resampled_split_violins_{n_odor_pairs}_iter{n_iter:05d}_"
              f"{'with_replacement' if with_replacement else 'no_replacement'}_obs"
              f".pdf"))
 
 with PdfPages(pdf_file) as pdf:
     for fig in viol_figs:
         pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
 
 # %% Compute stats of differences (KC - ORN)
 
 # %%
 plot_rows = ['uniform_tom',
-             'hemibrain_tom',
+             #'hemibrain_tom',
              'hemibrain_wd20_tom',
              'chem_ecfp',
              ] + [
@@ -739,11 +766,11 @@ df_spearman_qt = (df_spearman_diff
 viol_figs = []
 
 plot_rows = (['chem_ecfp',
-              'chem_fcfp',
-              'chem_rdkit',
-              'chem_pattern',
+              #'chem_fcfp',
+              #'chem_rdkit',
+              #'chem_pattern',
               'uniform_tom',
-              'hemibrain_tom',
+              #'hemibrain_tom',
               'hemibrain_wd20_tom'] +
              ['vcf5q_ND030_D03_seed08', ]
 
@@ -768,6 +795,9 @@ plot_rows = (['chem_ecfp',
 # plot_diff = 'PN dendrites - ORN'
 # plot_diff = 'PN boutons - ORN'
 # plot_diff = 'KC claws - ORN'
+# TODO delete? or should this be modified to loop over certain values, or hardcode
+# something other than 'PN boutons ...'?
+'''
 plot_diff = 'PN boutons - ORN'
 
 for resampling_fraction, space_metric, ci in product(
@@ -834,23 +864,32 @@ for resampling_fraction, space_metric, ci in product(
             if hasattr(artist, "set_clip_on"):
                 artist.set_clip_on(False)
         plt.tight_layout()
-        plt.show()
+        #plt.show()
         viol_figs.append(fig)
 # %%
 pdf_file = (figure_folder /
-            (f"resampled3/resampled_split_violins_{n_odor_pairs}_iter{n_iter:05d}_"
+            (f"resampled_split_violins_{n_odor_pairs}_iter{n_iter:05d}_"
              f"{'with_replacement' if with_replacement else 'no_replacement'}_diff"
              f"__{plot_diff}.pdf"))
 
 with PdfPages(pdf_file) as pdf:
     for fig in viol_figs:
         pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+'''
 # %%
 
 diff_figs = []
 for resampling_fraction in np.arange(0.1, 1.0001, 0.1).round(2):
     for space_metric in ['pearson', 'spearman']:
         for ci in [90, 95]:
+            if space_metric != 'pearson' or resampling_fraction != 1.0 or ci != 90:
+                # TODO warn?
+                continue
+
+            # TODO delete
+            print(f'(3) {resampling_fraction=} {space_metric=} {ci=}', flush=True)
+            #
 
             if ci == 90:
                 lq = 0.05
@@ -918,15 +957,16 @@ for resampling_fraction in np.arange(0.1, 1.0001, 0.1).round(2):
                         )
 
                 plt.tight_layout()
-                plt.show()
+                #plt.show()
                 diff_figs.append(g.figure)
     # %%
 
     pdf_file = (figure_folder /
-                (f"resampled3/resampled_diff_dists_{n_odor_pairs}_iter{n_iter:05d}_"
+                (f"resampled_diff_dists_{n_odor_pairs}_iter{n_iter:05d}_"
                  f"{'with_replacement' if with_replacement else 'no_replacement'}.pdf"))
 
     with PdfPages(pdf_file) as pdf:
         for fig in diff_figs:
             pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
     # %%

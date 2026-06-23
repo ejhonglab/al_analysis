@@ -15,7 +15,7 @@ Wrappers to facilitate running `olfsysm` MB models, mainly:
   - fills glomeruli to intersection of those in hemibrain and Task et al. 2022
   - imputes mean Hallem SFR
 
-See also docstring for `connectome_wPNKC` below.repo_root
+See also docstring for `connectome_wPNKC` below.
 """
 
 from argparse import ArgumentParser
@@ -151,8 +151,6 @@ FitMBModelOutputs = Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, ParamDict]
 # hemibrain repro test? or don't, if i load from there in the first place... then would
 # be a tautology
 
-repo_root: Path = Path(__file__).parent
-
 # e.g. before calculating correlations across model KC populations.
 #
 # Remy generally DOES drop "bad" cells, which are largely silent cells, but that isn't
@@ -189,6 +187,14 @@ MinMaxDict = Dict[str, Tuple[float, float]]
 PIXEL_TO_UM: float = 8/1000
 
 n_megamat_odors: int = 17
+# 136
+n_megamat_only_pairs: int = n_choose_2(n_megamat_odors)
+
+# TODO TODO use as part of checks / filtering, in all places that would make sense
+# TODO TODO TODO delete (see comment near similar variable in loading fn def below)
+final4_megamat_flies: Set[str] = {
+    '2022-10-10/1', '2022-10-10/2', '2022-10-11/1', '2022-11-10/1'
+}
 
 # NOTE: paper results probably use an older response calculation (mean within response
 # window, rather than newer sign_preserving_maxabs (developed w/ Sam, a little while ago
@@ -1645,7 +1651,7 @@ def get_connectome(pn2kc_connections: Optional[str]) -> str:
     return pn2kc_connections if pn2kc_connections in connectome_options else 'hemibrain'
 
 
-from_prat: Path = repo_root / 'data/from_pratyush'
+from_prat: Path = data_root / 'from_pratyush'
 
 # hemibrain PN/KC/APL weights (PN->KC, APL<->KC, APL<->PN), split by claw (using Prat's
 # dendritic-tree based claw determination) but not currently by bouton. no MB-C1 yet.
@@ -2467,7 +2473,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
     if connectome == 'hemibrain':
         if _use_matt_wPNKC:
-            matt_data_dir = repo_root / 'data/from_matt/hemibrain'
+            matt_data_dir = data_root / 'from_matt/hemibrain'
 
             # TODO which was that other CSV (that maybe derived these?) that was full
             # PN->KC connectome matrix?
@@ -3953,7 +3959,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             wPNKC = add_compartment_index(wPNKC, shape=0)
 
         else:
-            data_path = repo_root / 'data/PNtoKC_connections_raw.xlsx'
+            data_path = data_root / 'PNtoKC_connections_raw.xlsx'
             df = pd.read_excel(data_path)
 
             pn_id_col = 'a.bodyId'
@@ -11946,13 +11952,14 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # NOTE: I committed olfsysm/hc_data.csv under al_analysis/data, since I couldn't
     # find a nice mechanism to install that CSV as part of olfsysm setup. This should be
     # the same as the olfsysm CSV.
-    hc_data_csv = repo_root / 'data/hc_data.csv'
+    hc_data_csv = data_root / 'hc_data.csv'
     # get crypic `ValueError: stod` in `osm.load_hc_data` below, if this doesn't exist
     assert hc_data_csv.exists()
 
     # just assuming olfsysm is at the path I would typically clone it to. this check
     # isn't super important. just establishing that the hc_data.csv committed in this
     # repo matches where we copied it from.
+    # TODO warn if we can't check this? find olfsysm path some other way?
     olfsysm_repo = Path('~/src/olfsysm').expanduser()
     if olfsysm_repo.exists():
         olfsysm_hc_data_csv = olfsysm_repo / 'hc_data.csv'
@@ -15830,7 +15837,7 @@ def bootstrapped_corr(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
         key = (_plot_dir, x, y)
         assert key not in _spear_inputs2dfs, f'{key=} already seen!'
         # TODO delete
-        print(f'ADDING {key=} TO _SPEAR_INPUTS2DFS')
+        #print(f'ADDING {key=} TO _SPEAR_INPUTS2DFS')
         #
         _spear_inputs2dfs[key] = df.copy()
 
@@ -22388,6 +22395,13 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
             # this is a mean-of-fly-corrs (WAS for Remy's 4 final KC flies, but now
             # adapting to also load the older data too)
+            # TODO TODO TODO dropna to assert these only use final 4 flies? or at least
+            # assert # of flies [or maybe better to assert the specific set of them]?
+            # (or do those checks / dropping in this fn probably)
+            # TODO TODO TODO want final4_flies_only=True here?
+            # TODO TODO TODO TODO or maybe a different flag (shared named w/ one on
+            # load_remy_2e_corrs), to just drop those 4 flies with insufficient # of
+            # megamat pairs
             comparison_kc_corrs = load_remy_megamat_mean_kc_corrs()
 
             # TODO replace these two lines w/ just sorting, if that works (would have to
@@ -22411,6 +22425,10 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 raw_dff_panel_df.index.get_level_values('odor1')
             )
             mean_orn_corrs = mean_of_fly_corrs(raw_dff_panel_df, square=False)
+            # TODO TODO TODO do i really want to take a mean of corrs, rather than
+            # bootstrapping over data that includes each flies KC corr (for each odor
+            # pair) separately? does it matter? any of those plots / outputs currently
+            # used in paper?
             mean_kc_corrs = corr_triangular(comparison_kc_corrs)
 
             assert mean_kc_corrs.index.equals(mean_orn_corrs.index)
@@ -23433,9 +23451,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             mean_model_dists = model_corrs.groupby(['model', 'odor_pair_str']
                 ).correlation_distance.mean()
 
-            kc_mean_dists = remy_2e_corrs_in_model.groupby('odor_pair_str'
-                ).correlation_distance.mean()
-
             # to check against the KC dists Remy has there. easier to save full square
             # correlation matrix and reduce to specific pairs in order Remy uses for her
             # triangular later (since indexing dependent on odor order).
@@ -23445,9 +23460,34 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 # diagonal should be 0, not 1, since it's a correlation *distance*
                 diag_value=0.0
             )
+            # TODO TODO check something in this is consistent w/ kc_mean_dists below?
             to_parquet(kc_mean_dist_square,
                 plot_dir / 'kc_mean_megamat_corrdist.parquet'
             )
+
+            # ipdb> diff_pairs = [('1-6ol', '2-but'), ('2-but', 'benz'), ('1-6ol', 'benz')]
+            # ipdb> corr_triangular(kc_mean_dist_square).loc[diff_pairs]
+            # odor1  odor2
+            # 1-6ol  2-but    0.984899
+            # 2-but  benz     1.081649
+            # 1-6ol  benz     0.927795
+            #
+            # flies_per_pair = remy_2e_corrs_in_model.groupby(['abbrev_row','abbrev_col'
+            #   ]).datefly.agg(['unique', 'nunique'])
+            #
+            # see 2026-06-17 slack message to remy for output of this:
+            # ipdb> for p in diff_pairs:
+            # print(p)
+            # print(f"# flies: {flies_per_pair.loc[p]['nunique']}")
+            # pprint(sorted(flies_per_pair.loc[p]['unique']))
+            # print()
+            #
+            # TODO delete
+            #breakpoint()
+            #
+
+            kc_mean_dists = remy_2e_corrs_in_model.groupby('odor_pair_str'
+                ).correlation_distance.mean()
 
             kc_minus_uniform = kc_mean_dists - mean_model_dists.loc['uniform']
             kc_minus_uniform_order = kc_minus_uniform.sort_values(ascending=False).index
@@ -24146,11 +24186,24 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool
 
 # TODO rename all of these fns to remove '_megamat' (unless i actually drop down to just
 # megamat, but i don't think i want that?)? or just do it anyway to shorten these names?
-def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, **kwargs) -> pd.DataFrame:
-    mean_responses = _load_remy_megamat_kc_responses(**kwargs)
+def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, *, drop_nonmegamat: bool = True,
+    **kwargs) -> pd.DataFrame:
+    """
+    Args:
+        ordered_pairs: passed to each per-fly `corr_triangular` call
 
-    # TODO move some functionality like this into al_util.mean_of_fly_corrs (to average within
-    # fly across recordings first)?
+        drop_nonmegamat: used in `checks=True` code, and also passed to
+            `_load_remy_megamat_kc_responses`
+
+        **kwargs: passed to `_load_remy_megamat_kc_responses`
+    """
+    mean_responses = _load_remy_megamat_kc_responses(drop_nonmegamat=drop_nonmegamat,
+        **kwargs
+    )
+
+    # TODO move some functionality like this into al_util.mean_of_fly_corrs (to average
+    # within fly across recordings first)?
+    # TODO factor out the def of these cols? already have somewhere?
     recording_corrs = mean_responses.groupby(level=['datefly', 'thorimage'], sort=False
         ).apply(lambda x: corr_triangular(x.corr(), ordered_pairs=ordered_pairs))
 
@@ -24211,9 +24264,7 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, **kwargs) -> pd.DataFrame
             {'datefly': ('acq', datefly_strs)}).set_index({'acq': 'datefly'}
         )
 
-        fly_corrs_has_dropped_non_megamat = kwargs.get('drop_nonmegamat', True)
-
-        if fly_corrs_has_dropped_non_megamat:
+        if drop_nonmegamat:
             # (to compare to the single fly corrs in the .nc file Remy gave Anoop in
             # November 2024, which also included old megamat data, in addition to the
             # final 4 flies we had been using)
@@ -24222,10 +24273,7 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, **kwargs) -> pd.DataFrame
             megamat_pairs = fly_corrs.columns.to_frame().applymap(odor_is_megamat
                 ).all(axis='columns')
             corrs_to_compare_to_anoop_data = fly_corrs.loc[:, megamat_pairs]
-
-            n_megamat_only_pairs = n_choose_2(n_megamat_odors)
             assert len(corrs_to_compare_to_anoop_data.columns) == n_megamat_only_pairs
-
 
         for datefly in corrs_to_compare_to_anoop_data.index:
             fly_corr = corrs_to_compare_to_anoop_data.loc[datefly]
@@ -24274,7 +24322,12 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, **kwargs) -> pd.DataFrame
 
 # don't need ordered_pairs here b/c output of this fn should be square, so it no longer
 # matters.
-def load_remy_megamat_mean_kc_corrs(**kwargs) -> pd.DataFrame:
+# TODO TODO TODO delete final4_flies_only stuff. Remy actually uses the same subset i
+# should be using for 2E now, which only *drops* 4(?) flies with a small number of
+# megamat pairs, for everything. never just 4 flies now, but also older ones with less
+# than all of the megamat odors.
+def load_remy_megamat_mean_kc_corrs(final4_flies_only: bool = False, **kwargs
+    ) -> pd.DataFrame:
     """Returns mean of fly correlations, for Remy's 4 final megamat KC flies.
 
     Drops cells from bad clusters (as Remy does, using xarray attrs['good_xid'] that she
@@ -24284,8 +24337,27 @@ def load_remy_megamat_mean_kc_corrs(**kwargs) -> pd.DataFrame:
     fly's correlation. Correlation is computed within each fly, and then the average is
     computed across these correlations. This should all be consistent with how Remy
     computes correlations.
+
+    Args:
+        **kwargs: passed to `_remy_megamat_flymean_kc_corrs`
     """
+    # TODO refactor to cache this (or some calls within it, to not need cache
+    # dependent on kwargs?)?
     fly_corrs = _remy_megamat_flymean_kc_corrs(**kwargs)
+
+    assert len(fly_corrs.columns) == n_megamat_only_pairs, \
+        f'{len(fly_corrs.columns)=} != {n_megamat_only_pairs=}'
+
+    if final4_flies_only:
+        fly_corrs = fly_corrs.dropna()
+
+        curr_flies = set(fly_corrs.index)
+        assert curr_flies == final4_megamat_flies, \
+            f'{curr_flies=}\n{final4_megamat_flies=}'
+
+    # TODO TODO warn about what's happening whether final4_flies_only or not?
+    # or do in the only place this is currently called?
+
     mean_corr_ser = fly_corrs.mean()
     mean_corr = invert_corr_triangular(mean_corr_ser)
     return mean_corr
@@ -24544,8 +24616,23 @@ def _finish_remy_2e_plot(g, *, n_first_seeds=n_first_seeds_for_errorbar
 
 
 # TODO rename to ...corr_dists or something?
-def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFrame:
+def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
+    use_preprint_data: bool = False, drop_flies_with_little_megamat: bool = True
+    ) -> pd.DataFrame:
+    """
+    Args:
+        drop_flies_with_little_megamat: if `True`, will drop the following flies which
+            only had (across them, maybe within each?) 3 pairs also in megamat pairs:
+            - 2022-09-21/1
+            - 2022-09-22/2
+            - 2022-09-26/[1|3]
+            (these 4 flies are all the flies from each of the dates above)
 
+            They had more odors not in megamat, but now that we are filtering even 2E
+            (sorted scatterplot comparing KC and model correlations) to just the megamat
+            pairs, better to drop these flies to be consistent with Remy's final choices
+            elsewhere in paper. Only relevant if `use_preprint_data=False`.
+    """
     # just for some debug outputs (currently 1 CSV w/ flies listed for each odor pair,
     # and recreation of Remy's old 2E plot). nothing hugely important.
     if plot_dir is not None:
@@ -24553,40 +24640,57 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
     else:
         output_root = Path('.')
 
-    # TODO move relevant data to my own path in this repo (to pin version, independent
-    # of what remy pushes to this repo) (-> use those files below)
-    _repo_root = Path.home() / 'src/OdorSpaceShare'
-    assert _repo_root.is_dir()
+    if use_preprint_data:
+        drop_flies_with_little_megamat = False
 
-    preprint_data_folder = _repo_root / 'preprint/data/figure-02/02e'
-
+    # these files used to be loaded from ~/src/OdorSpaceShare (a repo of Remy's, which I
+    # had at version 67c6a1a3f when I copied these files into this repo), at paths:
+    # manuscript:  manuscript/data/figure-02/02e
+    # preprint:      preprint/data/figure-02/02e
+    data_dir = remy_data_dir / '02e'
+    assert data_dir.is_dir()
     # TODO roughly compare old vs new data? or just make plots w/ both (after settling
     # on error repr...)
     if use_preprint_data:
+        preprint_data_folder = data_dir / 'preprint'
         warn('using pre-print data for 2E (set use_preprint_data=False to use newer '
             'data)!'
         )
         data_folder = preprint_data_folder
         csv_name = 'df_obs_plot_trialavg.csv'
     else:
-        # TODO TODO TODO which flies are in this but not in old megamat data i'm now
-        # loading for a lot of things? any?
-        data_folder = _repo_root / 'manuscript/data/figure-02/02e'
+        data_folder = data_dir / 'manuscript'
         # df_obs.csv in the same folder was one of her earlier attempts to get me a
         # newer version of this data, but was not completely consistent w/ format of old
         # CSV (and also had 'correlation' col that was actually correlation distance).
         # df_obs.csv should not be used.
         csv_name = 'df_obs_for_tom.csv'
 
-    assert data_folder.is_dir()
+    assert data_folder.is_dir(), f'{data_folder=}'
 
     csv_path = data_folder.joinpath(csv_name)
     if al_util.verbose:
         print(f'loading Remy correlations for 2E from {csv_path}')
 
     df_obs = pd.read_csv(csv_path)
-
     assert not df_obs.isna().any().any()
+
+    dates_with_little_megamat = ('2022-09-21', '2022-09-22', '2022-09-26')
+    if drop_flies_with_little_megamat:
+        # see docstring for which 4 flies this is dropping and why
+        to_drop = df_obs.datefly.str.split('/').apply(
+            lambda x: x[0] in dates_with_little_megamat
+        )
+        assert to_drop.sum() > 0
+        warn('load_remy_2e_corrs: dropping the following flies, because '
+            'drop_flies_with_little_megamat=True: '
+            f'{sorted(df_obs.datefly[to_drop].unique())}'
+        )
+        # TODO TODO TODO need to also update checking below to not err because of this?
+        # (presumably just need to drop same flies there)
+        # TODO TODO TODO that code did not seem to fail! should i update it so that it
+        # would? is the check even working??? matter?
+        df_obs = df_obs[~to_drop].copy()
 
     df_obs[['abbrev_row','abbrev_col']] = df_obs['odor_pair_str'].str.split(pat=', ',
         expand=True
@@ -24738,9 +24842,7 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
     # only want to make this plot (to show we can recreate preprint figure), when data
     # we are loading is same as in preprint. currently i'm only ever using that data to
     # show we can recreate this plot.
-    plot = use_preprint_data
-
-    if plot:
+    if use_preprint_data:
         # TODO fix so i can pass new errorbar into plotting fns, so that i can force
         # that seed_errorbar value for reproducing this plot?
         if seed_errorbar != ('ci', 95):
@@ -24799,14 +24901,6 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         # TODO refactor w/ place copied from in model_mb...?
         remy_pairs = set(list(zip(df_obs.abbrev_row, df_obs.abbrev_col)))
 
-        # TODO does it actually matter? does df_obs have all the corrs i would compute
-        # for old flies anyway? maybe just expand checks below to also check those
-        # flies?
-        #
-        # TODO TODO can i switch things to using corrs from
-        # _load_remy_megamat_kc_responses? cause otherwise would prob need to have Remy
-        # regen this file, including older megamat data betty now wants us to include...
-        #
         # TODO TODO use -c check to verify i 2e outputs not changed by switching this
         # fn? add option to -c to pass substrs of outputs to check (ignoring rest)?
         #
@@ -24814,58 +24908,81 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         # data from best 4 "final" flies, which are the only megamat odor correlations
         # used anywhere in the paper except for figure 2E.
         #
-        # TODO delete
-        #mean_responses = _load_remy_megamat_kc_responses(drop_nonmegamat=False)
-        #
+        # TODO TODO TODO are these used for any of my paper outputs? may need to check
+        # more closely i'm using same flies as 2E (even with new
+        # drop_flies_with_little_megamat=True, it seems there might be more flies going
+        # into 2E than here? at least warn about difference? or doc being more clear
+        # about what's actually checked here)
         flymean_corrs = _remy_megamat_flymean_kc_corrs(ordered_pairs=remy_pairs,
+            # TODO if i set this true, do i actually only get the "final" megamat flies
+            # then? do i have some other way to do that? do i actually ever need that?
+            #
+            # no, but it does give me output with 136 odor pair columns, even
+            # with remy_pairs of len 222, and if i dropna then i get an index with only
+            # those 4 final dateflies:
+            # - 2022-10-10/1
+            # - 2022-10-10/2
+            # - 2022-10-11/1
+            # - 2022-11-10/1
+            # TODO add a test that if i call _remy_megamat... w/ drop_nonmegmat=True &
+            # ordered_pairs=remy_pairs (of len 222), i initially get output with more
+            # flies (none of which has *all* megamat pairs NaN, but only the above flies
+            # which have all megamat pairs, i.e. what's left after dropna() on output)?
             drop_nonmegamat=False
         )
 
+        # TODO TODO rename, since now it's not just the 4 "final" flies used
+        # (and not just always megamat either)
         final_megamat_datefly = set(flymean_corrs.index.get_level_values('datefly'))
         # TODO delete (or update to include final 4 + however many old megamat flies i'm
         # now supposed to include)
+        # TODO TODO TODO define a constant which specifies which specific datefly values
+        # are the "final" flies used in other analyses (and are there any other analyses
+        # that I'm reponsible for, other than 2E, that should be using anything other
+        # than those final flies?)
         assert n_final_megamat_kc_flies <= len(final_megamat_datefly)
 
         flymean_corrs.columns = pd.MultiIndex.from_frame(
             flymean_corrs.columns.to_frame(index=False).applymap(olf.parse_odor_name)
         )
         assert not flymean_corrs.columns.duplicated().any()
-        # TODO delete
-        #mean_responses.columns = mean_responses.columns.map(olf.parse_odor_name)
-        #assert not mean_responses.columns.duplicated().any()
-
-        # TODO relax to include other pairs? or just drop? i assume we still won't have
-        # all the data in df_obs if we just don't drop from latest set of (the old)
-        # flies i'm loading?
-        #assert set(mean_responses.columns) == megamat_odor_names
-
-        # TODO delete? (replace w/ flymean_corrs)
-        #corrs = mean_responses.groupby(level='datefly').apply(
-        #    lambda x: corr_triangular(x.corr(), ordered_pairs=remy_pairs)
-        #)
-        #assert not corrs.isna().any().any()
-        #
 
         # TODO move this dropna into above fn? this even doing anything? why would a
         # column be all NaN (and is that the right interpretation of axis='columns'?)?
+        # TODO are any columns even all NaN at this point? or only partially NaN?
         flymean_corrs = flymean_corrs.dropna(how='all', axis='columns')
         corrs = flymean_corrs
+        # TODO add assertions comparing odors pairs (columns. 2-level 'odor[1|2]'
+        # multiindex) between this and 2E input?
 
-        n_megamat_only_pairs = n_choose_2(n_megamat_odors)
         # TODO delete? already relaxed from == to >=
         assert len(corrs.columns) >= n_megamat_only_pairs
 
+        # TODO restore debug=False? only =True if al_util.verbose?
+        debug = True
+
+        if debug:
+            s1 = set(corrs.index)
+            s2 = set(df_obs.datefly.unique())
+            if drop_flies_with_little_megamat:
+                assert s1 == s2
+            else:
+                assert s1 - s2 == set()
+                assert s2 - s1 == set(dates_with_little_megamat)
+
+        if debug:
+            print('load_remy_2e_corrs: checking 2E input vs corrs recalculated from '
+                'Remy fly response data'
+            )
+
         for datefly in corrs.index:
+            if debug:
+                print(f'checking {datefly} corrs')
+
             fly_df = df_obs[df_obs.datefly == datefly]
-
-            remy_2e_csv_ser = fly_df[['abbrev_row', 'abbrev_col',
-                'correlation_distance']].set_index(['abbrev_row', 'abbrev_col'])
-
-            # just to convert from shape (n, 1) to (n,)
-            remy_2e_csv_ser = remy_2e_csv_ser.iloc[:, 0]
-
+            remy_2e_csv_ser = fly_df[['abbrev_row', 'abbrev_col', 'correlation_distance'
+                ]].set_index(['abbrev_row', 'abbrev_col']).squeeze()
             remy_2e_csv_ser.index.names = ['odor1', 'odor2']
-
             # convert from correlation distance to correlation (to match what we have in
             # corrs)
             remy_2e_csv_ser = 1 - remy_2e_csv_ser
@@ -24876,18 +24993,34 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
             # since corrs is of shape (<n_flies>, <n_total_odor_pairs>), this will drop
             # the pairs down to those actually measured in this fly
             recalced_ser = recalced_ser.dropna()
+
             assert not remy_2e_csv_ser.isna().any()
+            # TODO delete. not true. some flies still don't have all of megamat.
+            # TODO replace w/ <= then? maybe still not true (even tho 2E would
+            # ultimately only be plotting megamat stuff)?
+            #if drop_flies_with_little_megamat:
+            #    assert len(remy_2e_csv_ser) == n_megamat_only_pairs, \
+            #        f'{len(remy_2e_csv_ser)=} != {n_megamat_only_pairs=}'
 
             recalced_pair_set = set(recalced_ser.index)
             # neither index should have any duplicate pairs
             assert len(recalced_pair_set) == len(recalced_ser)
             assert len(recalced_pair_set) == len(remy_2e_csv_ser)
 
+            # TODO TODO how is this not failing if i sometimes have only 79 pairs
+            # for remy_2e_csv_ser? shouldn't all of recalced data have all megamat
+            # flies? or still loading some flies not included in other analyses? then
+            # separately call out (in debug=True path at least) flies that are or are
+            # NOT used in other analyses? (prob need to define that set of "final"
+            # 4 megamat datefly values, as mentioned above)
             assert recalced_pair_set == set(remy_2e_csv_ser.index)
 
             # above assertion justifies indexing one by the other, as it's just the
             # order that is different, not that either series has any different pairs
             assert pd_allclose(recalced_ser, remy_2e_csv_ser.loc[recalced_ser.index])
+
+        if debug:
+            print('load_remy_2e_corrs: done checking corrs')
 
         df_megamat = df_obs[
             df_obs.abbrev_row.isin(megamat_odor_names) &
@@ -24916,7 +25049,7 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
         #  '2019-09-12/1',
         #  '2019-09-12/2',
         #  '2022-09-21/1',
-        #  '2022-09-22/2',o
+        #  '2022-09-22/2',
         #  '2022-09-26/1',
         #  '2022-09-26/3'}
         assert final_megamat_datefly - set(df_megamat.datefly) == set()
@@ -24980,13 +25113,16 @@ def load_remy_2e_corrs(plot_dir=None, *, use_preprint_data=False) -> pd.DataFram
             )
             '''
         # TODO that fn still make the same assertion?
-        # TODO TODO well, it does still seem to be hitting some assertion error here, in
-        # at least one call (but there's only one call without preprint data anyway, so
-        # it's that one...)
+        # TODO TODO (can i repro? yea, still an issue even called from
+        # ./repro_remy_paper_modeling.py) well, it does still seem to be hitting some
+        # assertion error here, in at least one call (but there's only one call without
+        # preprint data anyway, so it's that one...)
         # ...
         #   File "./al_analysis.py", line 1208, in invert_corr_triangular
         #     assert all(odor2[:-1] == odor1[1:])
         except AssertionError:
+            # TODO TODO delete
+            raise
             # TODO elaborate on why?
             warn('could not plot 2e square matrix corr plots')
     #
@@ -26719,7 +26855,12 @@ def add_missing_cells_to_nonresponders(counts: pd.Series, n_total: Union[int, pd
         assert np.allclose(fixed, fixed.astype(int))
         return fixed.astype(int)
     else:
-        assert isinstance(n_total, int)
+        assert isinstance(n_total, int) or (
+            # TODO is it actually necessary to pass .dtype, rather than just
+            # np.issubdtype(n_total, int)? latter seems to work... and i think i've used
+            # that code elsewhere
+            hasattr(n_total, 'dtype') and np.issubdtype(n_total.dtype, int)
+        )
 
     # TODO any way to support this in MERGE_MAXCOMP_NCOMPS0=False case? mabye if i
     # redef class_sizes in here, to still behave as if =False? or define a separate
@@ -26999,6 +27140,9 @@ def diff_col2desc(diff_col: str) -> str:
 MIX_NAME_PREFIXES: Tuple[str] = ('kmix', 'cmix')
 
 # TODO allow taking comp_stat as kwarg? (then define diff_col inside?)
+# TODO TODO don't err if there are other index levels, so long as all of them together
+# only have one value? (e.g. for 'pair_dilution_factor' level now in
+# model_yang_mixtures.py)
 def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
     ) -> pd.DataFrame:
     # TODO change output type to series, if not too much work changing surrounding code
@@ -27020,7 +27164,10 @@ def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
     each), and one column named to indicate how mixture suppression was calculated
     (contains `comp_stat`).
     """
-    index = df.index
+    #index = df.index
+    # TODO work always? delete above if so
+    index = df.index.get_level_values('odor')
+
     # TODO also require it doesn't have '-<1,2,...>' in it? or '-' at all?
     # (to exclude mix dilutions)
     mix_masks = [index.str.startswith(x) for x in MIX_NAME_PREFIXES]
@@ -27164,6 +27311,10 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
         if not have_fly_cols:
             model_data = data
         else:
+            # TODO TODO rename from_kcs from_flies? (to be inclusive of ORN case,
+            # assuming i want that?)
+            # TODO TODO also check hue column isn't 'orn', and/or is in a set of
+            # values matching KC data ('KCs' / 'Fc_zscore')?
             from_kcs = data.date.notna()
             assert from_kcs.equals(data.fly_num.notna())
             # TODO otherwise, would need to have call below in a conditional
@@ -27181,6 +27332,11 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
 
             # need dodge=False here as long as we only have one hue level
             # here, or else will get ZeroDivisionError
+            # TODO TODO TODO fix how hue='source' and color=<some color RGB triple> in
+            # kwargs (produces FutureWarning -> error)
+            # TODO TODO TODO is it only an issue here b/c there are actually multiple
+            # unique hue='source' values in problem call (b/c 'orns' incorrectly marked
+            # as KCs here) (would palette still fix it tho?)
             sns.pointplot(data[from_kcs], *cols, dodge=False, markerfacecolor='none',
                 linestyle='none', seed=BOOTSTRAP_SEED, err_kws=err_kws,
                 # TODO try legend=True again?
@@ -27233,6 +27389,8 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     # TODO should i set sharex=False? should i fill in any that might be missing in one
     # panel but not the other?
     cg = sns.FacetGrid(data=class_fracs, col='panel', **facet_kws)
+    # TODO TODO problem that hue='source' here (when despite that, color= specified in
+    # some calls internally, causing FutureWarning->error)
     cg.map_dataframe(plot_fn, x='response_class_str', y=y_col, **kwargs)
     cg.set_titles('{col_name}')
     cg.fig.subplots_adjust(wspace=0.3)
