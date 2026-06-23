@@ -27140,9 +27140,6 @@ def diff_col2desc(diff_col: str) -> str:
 MIX_NAME_PREFIXES: Tuple[str] = ('kmix', 'cmix')
 
 # TODO allow taking comp_stat as kwarg? (then define diff_col inside?)
-# TODO TODO don't err if there are other index levels, so long as all of them together
-# only have one value? (e.g. for 'pair_dilution_factor' level now in
-# model_yang_mixtures.py)
 def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
     ) -> pd.DataFrame:
     # TODO change output type to series, if not too much work changing surrounding code
@@ -27151,12 +27148,13 @@ def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
     # call, but that would probably add confusion to code using this)
     """
     Args:
-        df: data with single-level odor str index. Must have exactly one mix (and thus
-            data must currently just be from a single panel), either binary (where
-            components are separated by '+'), or 5-component (where odor name starts
-            with any of `MIX_NAME_PREFIXES`, e.g. 'kmix'/'cmix'), and all other rows
-            must correspond to components of that mix. Assumes that all mixes in
-            `MIX_NAME_PREFIXES` are 5-component mixtures.
+        df: data with one odor str index level (either by itself or part of a
+            `MultiIndex`. uses `hong2p.olf.first_odor_level` to find which to use).
+            Must have exactly one mix (and thus data must currently just be from a
+            single panel), either binary (where components are separated by '+'), or
+            5-component (where odor name starts with any of `MIX_NAME_PREFIXES`, e.g.
+            'kmix'/'cmix'), and all other rows must correspond to components of that
+            mix. Assumes that all mixes in `MIX_NAME_PREFIXES` are 5-component mixtures.
 
             Columns should contain different flies and/or ROIs.
 
@@ -27164,16 +27162,14 @@ def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
     each), and one column named to indicate how mixture suppression was calculated
     (contains `comp_stat`).
     """
-    #index = df.index
-    # TODO work always? delete above if so
-    index = df.index.get_level_values('odor')
+    odor_level = first_odor_level(df.index)
+    index = df.index.get_level_values(odor_level)
 
     # TODO also require it doesn't have '-<1,2,...>' in it? or '-' at all?
     # (to exclude mix dilutions)
     mix_masks = [index.str.startswith(x) for x in MIX_NAME_PREFIXES]
     is_5comp_mix = mix_masks[0]
     for mask in mix_masks[1:]:
-        # TODO |= work? use diff syntax?
         is_5comp_mix |= mask
 
     # intentionally not using olf.component_delim (' + '), in case we want to pass in
