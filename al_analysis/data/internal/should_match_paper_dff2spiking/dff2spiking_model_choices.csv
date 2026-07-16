@@ -1,0 +1,5 @@
+scaling_method,to-avg-max
+add_constant,False
+separate_inh_model,False
+avg_flymin,-0.37794633945146483
+avg_flymax,2.3752654024879907

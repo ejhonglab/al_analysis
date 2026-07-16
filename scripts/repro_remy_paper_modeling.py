@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+from argparse import ArgumentParser
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from hong2p.util import pd_allclose, pd_indices_equal
@@ -11,11 +13,23 @@ from al_analysis.al_util import (data_root, read_csv, read_parquet, load_megamat
     flyroi_cols, fly_cols, diag_panel_str
 )
 from al_analysis.mb_model import (model_mb_responses, paper_megamat_orn_deltas,
-    paper_hemibrain_output_dir
+    paper_hemibrain_output_dir, paper_uniform_model_responses, read_orn_deltas,
+    read_spike_counts, KC_ID
 )
 
 
 def main():
+    parser = ArgumentParser()
+    parser.add_argument('-i', '--ignore-existing', action='store_true', help='will '
+        're-run all models, regardless of whether outputs exist for them'
+    )
+    args = parser.parse_args()
+    ignore_existing = args.ignore_existing
+    # TODO TODO also check against what i'm loading in step05b-run-resampling.py? or
+    # easier to just save (as kc_mean_megamat_corrdist.parquet written by 2E code in
+    # model_mb_responses already does) and load in that step05-... script, and do the
+    # check there?
+
     plot_root = Path('paper_repro')
     plot_root.mkdir(exist_ok=True)
     # TODO (delete) should this be erring (like `al-analysis ... -R` does), if
@@ -112,6 +126,7 @@ def main():
     # input data, rather than the input scale that's the issue? or some cache being used
     # when it shouldn't be? recompute scale factor from (normed) dF/F and est spike rate
     # deltas [don't have the per-fly scaling nicely factored out tho, do i?]?)
+    # (above still true?)
 
     # TODO TODO TODO check current ORN input vs:
     # paper_hemibrain_output_dir / 'full_orn_dff_input.csv'
@@ -133,12 +148,12 @@ def main():
 
     repo_dir = Path('~/src/al_analysis').expanduser()
     curr_output_dir = repo_dir / 'pebbled_6f/pdf/ijroi/mb_modeling'
-    df4 = pd.read_csv(curr_output_dir / 'mean_est_spike_deltas_from-max-n2.csv',
-        index_col=0, header=[0, 1]
-    )
+    df4 = read_orn_deltas(curr_output_dir / 'mean_est_spike_deltas_from-max-n2.csv')
     dff4 = read_csv(curr_output_dir / 'full_orn_dff_input_from-max-n2.csv',
         drop_old_odor_levels=drop_old_odor_levels
     )
+
+    # TODO TODO commit both of these somewhere
 
     # also read the *_from-mean-n2.csv outputs i copied in there (ones since then would
     # be named *_from-max-n2.csv)
@@ -147,9 +162,10 @@ def main():
     )
     # TODO don't use *my* read_csv for this
     #df5 = read_csv(curr_output_dir / 'mean_est_spike_deltas_from-mean-n2.csv')
-    df5 = pd.read_csv(curr_output_dir / 'mean_est_spike_deltas_from-mean-n2.csv',
-        index_col=0, header=[0, 1]
-    )
+    # TODO TODO TODO assert this one matches committed one at least, if i'm unsure
+    # whether current scale function is correct? (especially if i don't commit +
+    # hardcode relevant files there)
+    df5 = read_orn_deltas(curr_output_dir / 'mean_est_spike_deltas_from-mean-n2.csv')
 
     def drop_flies_without_megamat(df: pd.DataFrame) -> pd.DataFrame:
         megamat_and_diag = df.loc[
@@ -163,6 +179,14 @@ def main():
         # TODO actually need to do this, or ok to pass right to model_mb_responses (for
         # both calls?)?
         return flies_dropped.loc[~flies_dropped.isna().T.all()].copy()
+
+    dff2spiking_committed_dir = data_root / 'internal/should_match_paper_dff2spiking'
+
+    # TODO anything to even check against here? megamat subset still needs to be
+    # generated separately, because of the way some of the normalization works, right?
+    #committed_allpanel_deltas = read_orn_deltas(
+    #    dff2spiking_committed_dir / 'mean_est_spike_deltas.csv'
+    #)
 
     # TODO or try just re-ordering and doing the not_in_old drop first (then
     # comparisons to dff3 concat, then drop_flies...)?
@@ -234,13 +258,45 @@ def main():
     # TODO TODO do i also need to drop the diagnostic '2h @ -3' in the one validation2
     # fly has, in order for fit (and outputs) to better match those in the paper?
     # matter?
+    # TODO TODO assert there are there expected # of both megamat and validation
+    # flies, and that both have diags first (before thios is used to fit dF/F -> spiking
+    # fn)
     allpanel_dff = dff5b
+
+    allpanel_dff2 = read_csv(dff2spiking_committed_dir / 'full_orn_dff_input.csv')
+    assert pd_allclose(allpanel_dff.droplevel('is_pair'), allpanel_dff2, equal_nan=True)
+
+
+    old_dff2spiking_data = pd.read_csv(
+        paper_hemibrain_output_dir / 'dff2spiking_model_input.csv'
+    )
+    new_dff2spiking_data = read_parquet(
+        dff2spiking_committed_dir / 'dff2spiking_model_input.parquet'
+    )
+    index_cols = fly_cols + ['fly_id', 'odor', 'glomerulus']
+    # old data duplicated within index_cols b/c it didn't have panel level
+    # new data is not duplicated within ['panel'] + index_cols
+    #
+    # ok so to-avg-max_scaled_delta_f_over_f is seemingly the same in each, after
+    # sorting at least
+    old_dff = old_dff2spiking_data['to-avg-max_scaled_delta_f_over_f (X_train)']
+    new_dff = new_dff2spiking_data['to-avg-max_scaled_delta_f_over_f']
+    assert np.isclose(old_dff.sort_values(), new_dff.sort_values()).all()
+    # TODO TODO is order really what matters? that seems unlikely
+    print('does order in these really matter?')
+    #breakpoint()
+
+    # TODO TODO TODO if i pass allpanel_dff in instead of just megamat subset, does that
+    # repro better (don't really think it should matter?)? or what about dropping
+    # glomeruli_diags first?
 
     # aiming to just fit dF/F -> spiking fn
     # TODO TODO handle via some way other than sys.exit tho... so i don't need two calls
     # to this script (or two calls to al-analysis)
     # TODO at least make CLI flag or something (or only call this if need to generate
     # it, and warn otherwise?)
+    # TODO TODO TODO call this if doesn't exist, or w/ CLI arg (and use committed data
+    # as input)
     #model_mb_responses(allpanel_dff, plot_root)
 
     # TODO TODO TODO why not allclose again? matter (could be the difference, right?)?
@@ -249,52 +305,107 @@ def main():
     # ipdb> pd_allclose(dff, dff5, equal_nan=True)
     # False
 
-    # TODO TODO TODO and why is same problem there for dff vs dff3?
+    # TODO TODO and why is same problem there for dff vs dff3?
     # dff and dff5 closer (well, still not allclose...)?
 
-    # TODO delete
-    #breakpoint()
-    #
+    # TODO compare to some saved outputs under model_mb_responses dir?
+    # TODO TODO why these two so diff??? df5 actualy matter? it's dff5 that should match
+    # (or at least did at one point, though dff5 input uncommitted) dff3 (paper dff
+    # input) which should actually match
+    #df5_megamat_only = df5.loc[:, df5.columns.get_level_values('panel') == 'megamat']
+    paper_deltas = paper_megamat_orn_deltas()
+    # TODO TODO check something against this? after model_mb_responses call that should
+    # generate it?
 
     # TODO drop diag or no? no, right?
     #
-    # this fn currently just takes dF/F input,m not ORN spike rate delta input
-    # TODO TODO also need roi_depths? no, right?
-    # TODO skip_sensitivity_analysis=True by default, even here?
-    # TODO skip_hallem_models?
-    # TODO TODO dff2spiking_cache_dir? prob necessary, or need to change code.
-    # currently getting:
-    # No such file or directory: 'paper_repro/dff2spiking_model_choices.csv'
-    # TODO response_calc_params?
-    # TODO TODO TODO need to hardcode all default-changign convergence params to old
-    # values? and hardcode_intial_sp=True, etc? anything else?
-    # TODO TODO TODO oh, it's actualy on the first element of extra_orn_deltas, which is
-    # the 18th odor
-    #model_mb_responses(dff2, plot_root, repro_remy_paper=True,
-    # dff or dff5 should be the same input here, right?
+    # this fn currently just takes dF/F input, not ORN spike rate delta input
+    # dff or dff5 should be the same input here, right? (well 3 and 5 are, and 3 should
+    # be full committed paper inputs. both were also checked against more recent
+    # committed all-panel inputs (recalculated in way to match, with old response calc
+    # and everything))
     # TODO any option to load existing model outputs? (seems to be doing that
     # by default. add CLI option to ignore those caches?)
-    model_mb_responses(dff5, plot_root, repro_remy_paper=True,
-        skip_hallem_models=True, skip_sensitivity_analysis=True,
-        # TODO TODO TODO i assume this isn't the cached dF/F -> spike delta fn from
-        # the paper tho? either commit + use that, or go back to trying to work from
-        # spike deltas instead (would require factoring out the 2e plotting from
-        # model_mb_responses...)
-        # TODO TODO TODO why am i getting:
-        # ```
-        # ValueError: libolfsysm/src/olfsysm.cpp:995 in `sample_PN_spont` check
-        # `(rv.pn.sims[i].block(0, sp_t1, row_dim, sp_t2-sp_t1).rowwise().mean().array()
-        # == rv.pn.sims[0].block(0, sp_t1, row_dim,
-        # sp_t2-sp_t1).rowwise().mean().array() ).all()` failed
-        # ```
-        # ...on first call? b/c wrong dff2spiking_cache_dir (NOPE! getting w/ dff2 as
-        # input too!)? still something worth giving a better error message for?
-        skip_model_dynamics_saving=True
+    # TODO TODO TODO check this is remaking 3Di/ii too (and that those correlations are
+    # also dropping the correct flies, and only those. should be using >4 flies total,
+    # and only dropping those on dates in remy_dates_with_little_megamat, if those are
+    # loaded at all)
+    # TODO TODO try to replace input w/ something committed
+    # TODO TODO TODO try to fix still? giving up and add
+    # input_is_already_est_spike_deltas flag, to skip all the scaling
+    #model_mb_responses(dff5, plot_root, repro_remy_paper=True,
+    # TODO even work?
+    model_mb_responses(paper_deltas, plot_root, input_is_already_est_spike_deltas=True,
+        repro_remy_paper=True, dff2spiking_cache_dir=dff2spiking_committed_dir,
+        try_cache=not ignore_existing, skip_hallem_models=True,
+        skip_sensitivity_analysis=True, skip_model_dynamics_saving=True
     )
 
-    # TODO compare to some saved outputs under model_mb_responses dir?
-    # TODO delete?
-    df = paper_megamat_orn_deltas()
+    hemibrain_dirname = ('weight-divisor_20__drop-plusgloms_False__target-sp_0.09__'
+        'drop-kcs-with-no-input_False__hardcode-initial-sp_True'
+    )
+    # TODO assert it was populated since run start too? at least if not using cache?
+    curr_hemibrain_dir = plot_root / 'megamat' / hemibrain_dirname
+    curr_hb_spike_counts = read_spike_counts(curr_hemibrain_dir)
+    # this one just has model_kc->int [0, n-1] as index, and just odors as columns,
+    # unlike newer outputs w/ actual KC IDs and other metadata
+    paper_hb_spike_counts = pd.read_csv(
+        paper_hemibrain_output_dir / 'spike_counts.csv', index_col='model_kc'
+    )
+    assert np.array_equal(curr_hb_spike_counts, paper_hb_spike_counts)
+
+    uniform_dirname = ('pn2kc_uniform__n-claws_7__drop-plusgloms_False__target-sp_0.09'
+        '__drop-kcs-with-no-input_False__hardcode-initial-sp_True__n-seeds_100'
+    )
+    curr_uniform_dir = plot_root / 'megamat' / uniform_dirname
+    # don't actually have spike count CSV committed in uniform paper dir, just
+    # responses, so will compare those
+    curr_u7_responses = pd.read_csv(curr_uniform_dir / 'responses.csv',
+        index_col=[KC_ID, 'seed']
+    )
+    paper_u7_responses = paper_uniform_model_responses()
+    assert np.array_equal(curr_u7_responses, paper_u7_responses)
+
+    curr_deltas = read_orn_deltas(plot_root / 'mean_est_spike_deltas.csv')
+    # exclude the diagnostic data
+    curr_deltas = curr_deltas.loc[:,
+        curr_deltas.columns.get_level_values('panel') == 'megamat'
+    ]
+    # TODO TODO fuck, why are these still diff from paper deltas?
+
+    # TODO TODO from loading old committed dF/F->spiking model fit pickle:
+    model = pd.read_pickle(data_root / (
+        'sent_to_remy/2025-03-18/dff_scale-to-avg-max__data_pebbled__hallem-tune_'
+        'False__pn2kc_hemibrain__weight-divisor_20__drop-plusgloms_False__target-sp'
+        '_0.0915/dff2spiking_fit.p'
+    ))
+    # coef below matches the 127 shown in june 3rd paper_repro/dff_vs_hallem*.pdf
+    # plots...
+    # TODO TODO TODO so what's issue now?
+    # TODO TODO TODO new one also seems to match 127... so idk
+    # ipdb> model.summary()
+    # <class 'statsmodels.iolib.summary.Summary'>
+    #                                  OLS Regression Results
+    # =======================================================================================
+    # Dep. Variable:       delta_spike_rate   R-squared (uncentered):                   0.589
+    # Model:                            OLS   Adj. R-squared (uncentered):              0.589
+    # Method:                 Least Squares   F-statistic:                              4534.
+    # Date:                Tue, 30 Jun 2026   Prob (F-statistic):                        0.00
+    # Time:                        15:29:36   Log-Likelihood:                         -17078.
+    # No. Observations:                3169   AIC:                                  3.416e+04
+    # Df Residuals:                    3168   BIC:                                  3.416e+04
+    # Df Model:                           1
+    # Covariance Type:            nonrobust
+    #  ====================================================================================================
+    #                                        coef    std err          t      P>|t|      [0.025      0.975]
+    # ----------------------------------------------------------------------------------------------------
+    # to-avg-max_scaled_delta_f_over_f   126.9782      1.886     67.338      0.000     123.281     130.675
+    # ==============================================================================
+    # Omnibus:                      555.402   Durbin-Watson:                   0.605
+    # Prob(Omnibus):                  0.000   Jarque-Bera (JB):             1343.654
+    # Skew:                           0.975   Prob(JB):                    1.70e-292
+    # Kurtosis:                       5.525   Cond. No.                         1.00
+    # ==============================================================================
 
     breakpoint()
 

@@ -116,9 +116,9 @@ from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
     megamat_odor_names, remy_data_dir, remy_binary_response_dir, remy_megamat_sparsity,
     remy_date_col, remy_fly_cols, remy_fly_id, remy_fly_binary_response_fname,
     load_remy_fly_binary_responses, load_remy_megamat_kc_binary_responses,
-    n_final_megamat_kc_flies, MultipleSavesPerRunException, print_curr_mem_usage,
-    data_root, fly_cols, flyroi_cols, read_parquet, to_parquet, to_json, read_json,
-    ParamDict, written_since_proc_start, format_mtime, response_calc_params_json_name,
+    MultipleSavesPerRunException, print_curr_mem_usage, data_root, fly_cols,
+    flyroi_cols, read_parquet, to_parquet, to_json, read_json, ParamDict,
+    written_since_proc_start, format_mtime, response_calc_params_json_name,
     sent_to_remy, produces_output, in_pytest, _have_fly_cols, paper_repro_kws,
     hemibrain_paper_repro_kws
 )
@@ -130,6 +130,13 @@ warnings.filterwarnings('error', category=pd.errors.SettingWithCopyWarning)
 warnings.filterwarnings('error', message='FixedFormatter should only be used together '
     'with FixedLocator'
 )
+# TODO where is this warning (which i'm pretty sure i wrote?) coming from?
+# ..."going to skip clustering and sort samples" (on a separate line, and way too
+# indented, skipping a line too)
+# oh it seems it's in rastermap. i guess they have their own fallback to sorting.
+# TODO TODO want to use different clustering anyway? i think i might want something that
+# can work w/ <= 50 samples anyway...
+#warnings.filterwarnings('error', message='data has <= 50 samples')
 
 # TODO does this not actually trigger in pytest? if not, why not (and is there a
 # workaround?)?
@@ -181,6 +188,26 @@ bouton_cols: List[str] = [PN_ID, BOUTON_ID]
 DynamicsDict = Dict[str, xr.DataArray]
 MinMaxDict = Dict[str, Tuple[float, float]]
 
+# TODO TODO move any portions of comments only relevant to natmix_data/analysis.py
+# (where this constant was moved from) back to that script, and delete here
+#
+# NOTE: 1 seems to be a reasonable cutoff for Remy's KC data (and thus probably scaled
+# model data, since it's scaled to try to match range of her data)
+# TODO TODO try two versions of all of these for model KC inputs (+ real?)
+# (want one version for all model inputs w/ thresh is basically anything nonzero, and
+# want a similarly low cutoff for real KC data to compare that against)
+#REMY_KC_RESPONSE_THRESHOLD: float = 0.8
+# TODO TODO revert? or use log scale on counts+means plot? (much less passing than
+# 0.8...) (anything look qualitatively diff vs 0.8?)
+# TODO TODO support doing both (and including in fnames of all outputs?)
+# TODO maybe one plot plotting response class (aggregated across maxcomp, prob) for the
+# versions thresholded the two ways?
+REMY_KC_RESPONSE_THRESHOLD: float = 1.5
+#
+
+# copied from natmix_data/analysis.py. had also experimented w/ stuff from 0.2 to 0.6
+NATMIX_ORN_RESPONSE_THRESH: float = 0.15
+
 # TODO rename to hemibrain or something? presumably this is specfic to that?
 # TODO move into the one place that uses it (tianpei's part of connectome_wPNKC)
 # (or keep module level and share w/ his script PNKC_claw_plots_dif_color.py?)
@@ -189,12 +216,6 @@ PIXEL_TO_UM: float = 8/1000
 n_megamat_odors: int = 17
 # 136
 n_megamat_only_pairs: int = n_choose_2(n_megamat_odors)
-
-# TODO TODO use as part of checks / filtering, in all places that would make sense
-# TODO TODO TODO delete (see comment near similar variable in loading fn def below)
-final4_megamat_flies: Set[str] = {
-    '2022-10-10/1', '2022-10-10/2', '2022-10-11/1', '2022-11-10/1'
-}
 
 # NOTE: paper results probably use an older response calculation (mean within response
 # window, rather than newer sign_preserving_maxabs (developed w/ Sam, a little while ago
@@ -238,7 +259,9 @@ paper_uniform_output_dir: Path = sent_to_anoop / '2024-05-16'
 # TODO make similar fn for megamat responses (-> use in that test)
 def paper_uniform_model_responses() -> pd.DataFrame:
     uniform_response_csv_name: str = 'megamat_uniform_model_responses_n-seeds_100.csv'
-    paper_uniform_response_csv: Path = paper_uniform_output_dir / uniform_response_csv_name
+    paper_uniform_response_csv: Path = (
+        paper_uniform_output_dir / uniform_response_csv_name
+    )
     # TODO rename 'model_kc' -> KC_ID (='kc_id') in those committed outputs?
     # NOTE: older output still used 'model_kc' instead of KC_ID, for KC ID column
     pdf = pd.read_csv(paper_uniform_response_csv, index_col=['model_kc', 'seed'])
@@ -603,6 +626,70 @@ def model_id2title(model_id: str) -> str:
     return '\n'.join(parts).replace('_', ': ').replace('-', '_')
 
 
+EXPECTED_MODEL_PNKC_CLASSES: Tuple[str] = ('uniform', 'nonclaw', 'claw', 'bouton')
+
+def model_pnkc_class(model_str: str, *,
+    # TODO it's actually a Counter (not dict), so use Mapping?
+    pnkc2n_models: Optional[Dict[str, int]] = None) -> str:
+    # TODO rename nonclaw?
+    # TODO TODO update part of doc that's vestigal from when i copied this from
+    # model_yang_mixtures.py
+    """Groups models into 'uniform'/'nonclaw'/'claw'/'bouton'
+
+    Args:
+        model_str: should be full name of model output directory, not 'source'
+            abbreviation column values
+
+        pnkc2n_models: counts of how many variants there are for each of the classes
+            this fn assigns. Used to add suffices like ' (<n> variants)' e.g.
+            'claw (54 variants)' to give legends more info.
+
+            Only used if `full_model_params and not max_supp_models_only`, because
+            if `max_supp_models_only=True`, will be dropped down to one variant for
+            each anyway.
+    """
+    uniform_substr = 'pn2kc_uniform'
+    wd20_substr = 'weight-divisor_20'
+    # TODO also accept abbreviations that go into 'source' column, so i can accept
+    # that too (instead of just full model_dirname)?
+    # i.e. 'wd20' / 'prat-[claws|boutons]' (without the '_True' suffix')?
+    claw_substr = 'prat-claws_True'
+    bouton_substr = 'prat-boutons_True'
+
+    if uniform_substr in model_str:
+        assert not any(
+            x in model_str for x in [wd20_substr, claw_substr, bouton_substr]
+        )
+        pnkc = 'uniform'
+
+    elif wd20_substr in model_str:
+        assert not any(x in model_str for x in [claw_substr, bouton_substr])
+        pnkc = 'nonclaw'
+
+    elif bouton_substr in model_str:
+        # this one actually should always be present if bouton_substr is, for now
+        assert claw_substr in model_str
+        pnkc = 'bouton'
+
+    else:
+        assert claw_substr in model_str, f'{model_str=} did not match any classes'
+        pnkc = 'claw'
+
+    assert pnkc in EXPECTED_MODEL_PNKC_CLASSES, \
+        f'{pnkc=} not in {EXPECTED_MODEL_PNKC_CLASSES=}'
+
+    suffix = ''
+    if pnkc2n_models is not None:
+        n_variants = pnkc2n_models[pnkc]
+        assert n_variants > 0, f'{pnkc=} had 0 variants'
+        if n_variants == 1:
+            suffix = f' ({n_variants} variant)'
+        else:
+            suffix = f' ({n_variants} variants)'
+
+    return f'{pnkc}{suffix}'
+
+
 def check_model_kws_unique(model_kw_list: List[ParamDict]) -> None:
     """Raises AssertionError if >1 entry in input has same `format_model_params` output
     """
@@ -623,6 +710,7 @@ TRY_ALL_MODELS_WITH: List[ParamDict] = dict_seq_product(
     # TODO TODO APL time constant?
     # TODO anything else we want to try for everything?
 
+    # TODO TODO use this for all below too?
     # will add dict() to start of all lists above, trying model w/ default parameters
     # before any of the above (and in all combinations thereafter)
     try_all_with_default=True
@@ -677,6 +765,9 @@ TRY_BOUTON_MODELS_WITH: List[ParamDict] = dict_seq_product(
 # would default to 2000 otherwise. fafb data more cells (2482 in left, probably
 # similar in right).
 UNIFORM_MODEL_KWS: ParamDict = dict(pn2kc_connections='uniform', n_claws=7)
+UNIFORM_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
+    [UNIFORM_MODEL_KWS], TRY_ALL_MODELS_WITH
+)
 # TODO (easily?) possible to implement some kind of analogue to pn_claw_to_apl=True
 # for this (non-claw) weight_divisor=20 case?
 NONCLAW_MODEL_KW_LIST: List[ParamDict] = dict_seq_product(
@@ -730,7 +821,7 @@ for x in [
     check_model_kws_unique(x)
 
 FULL_MODEL_KW_LIST: List[ParamDict] = (
-    [UNIFORM_MODEL_KWS] +
+    UNIFORM_MODEL_KW_LIST +
     FULL_NONCLAW_MODEL_KW_LIST +
     FULL_CLAW_MODEL_KW_LIST +
     FULL_BOUTON_MODEL_KW_LIST
@@ -879,6 +970,126 @@ QUICK_MODEL_KW_LIST: List[ParamDict] = BOUTON_MODEL_KW_LIST + dict_seq_product(
     UNIFORM_MODEL_KWS,
 ]
 check_model_kws_unique(QUICK_MODEL_KW_LIST)
+
+# TODO TODO TODO and how many other existing dirs would have the (any of the 3 below)
+# same issues if i tried to regen them? any?
+#
+# TODO TODO TODO TODO also fix maybe a whole other family of issues like:
+# pn2kc_uniform__n-claws_7__target-sp_0.05
+# weight-divisor_20__connectome-APL_True__target-sp_0.05
+# weight-divisor_20__target-sp_0.05
+# prat-claws_True__target-sp_0.05
+# prat-claws_True__claw-dynamics_True
+# prat-claws_True__claw-dynamics_True__target-sp_0.05
+# prat-claws_True__allow-net-inh-per-claw_True__target-sp_0.05
+# prat-claws_True__allow-net-inh-per-claw_True__claw-dynamics_True
+# prat-claws_True__allow-net-inh-per-claw_True__claw-dynamics_True__target-sp_0.05
+# (where tuning_iters is currently 0 at the end, which it shouldn't be. should be at
+# least 1)
+#
+# TODO TODO TODO TODO same issue w/ ~60/140?
+# prat-claws_True__pn-claw-to-apl_True__allow-net-inh-per-claw_True__connectome-APL_True
+# TODO TODO and 61/140:
+# prat-claws_True__pn-claw-to-apl_True__allow-net-inh-per-claw_True__connectome-APL_True__n-spikes-for-response_2
+# TODO TODO and 62/140:
+# prat-claws_True__pn-claw-to-apl_True__allow-net-inh-per-claw_True__connectome-APL_True__target-sp_0.05
+# TODO TODO TODO TODO fix how tuning seems to be sending wAPLKC in wrong direction here
+# (just keeps increasing even though response rate is maxxed out at .97-something):
+# prat-claws_True__pn-claw-to-apl_True__allow-net-inh-per-claw_True__connectome-APL_True__target-sp_0.05__n-spikes-for-response_2
+# (from ./model_yang_mixtures.py -c -f) (olfsysm freshly recompiled from latest
+# (~63/140 in current full model kw list)
+# ...
+# i=4 sp=0.0916995 target=0.1 rel_sp_diff=-0.083005 acc=0.025 delta(thr)=-1.85605 lr=22.3607 thr.mean()
+# =413.123
+# i=5 sp=0.0941448 target=0.1 rel_sp_diff=-0.0585518 acc=0.025 delta(thr)=-1.19518 lr=20.4124 thr.mean(
+# )=411.928
+# i=6 sp=0.0961147 target=0.1 rel_sp_diff=-0.0388534 acc=0.025 delta(thr)=-0.734261 lr=18.8982 thr.mean
+# ()=411.193
+# i=7 sp=0.0970656 target=0.1 rel_sp_diff=-0.0293438 acc=0.025 delta(thr)=-0.518731 lr=17.6777 thr.mean
+# ()=410.675
+# done tuning threshold for n_spikes_for_response=2
+# rv.kc.thr.mean()=410.675 sp=0.097643
+# thr_sp_lr_coeff to tune in one step: 95.7633
+# tuning APL<->KC weights; tuning begin (target=0.05 acc=0.1 sp_lr_coeff=10 thr=410.675)
+# fit_sparseness INITIAL APL weights:
+# rv.kc.wAPLKC mean: 6
+# rv.kc.wKCAPL mean: 0.0034642
+# rv.kc.wAPLKC_scale: 6
+# rv.kc.wKCAPL_scale: 0.0034642
+# i=0 sp=0.976905 target=0.05 rel_sp_diff=18.5381 acc=0.1 wAPLKC_scale=6 delta(wAPLKC)=185.381 lr=10
+# at end of scale_APL_weights:
+# rv.kc.wAPLKC mean: 191.381
+# rv.kc.wKCAPL mean: 0.110497
+# rv.kc.wAPLKC_scale: 191.381
+# rv.kc.wKCAPL_scale: 0.110497
+# i=1 sp=0.976905 target=0.05 rel_sp_diff=18.5381 acc=0.1 wAPLKC_scale=191.381 delta(wAPLKC)=92.6905 lr
+# =5
+# at end of scale_APL_weights:
+# rv.kc.wAPLKC mean: 284.072
+# rv.kc.wKCAPL mean: 0.164014
+# rv.kc.wAPLKC_scale: 284.072
+# rv.kc.wKCAPL_scale: 0.164014
+# i=2 sp=0.976905 target=0.05 rel_sp_diff=18.5381 acc=0.1 wAPLKC_scale=284.072 delta(wAPLKC)=61.7937 lr
+# =3.33333
+# at end of scale_APL_weights:
+# rv.kc.wAPLKC mean: 345.865
+# rv.kc.wKCAPL mean: 0.199691
+# rv.kc.wAPLKC_scale: 345.865
+# rv.kc.wKCAPL_scale: 0.199691
+#
+# TODO TODO TODO ALSO, the above should not think it finished tuning successfully, as it
+# currently does (at least fit_mb_model assertion fails, but still):
+# ...
+# i=100 sp=0.976905 target=0.05 rel_sp_diff=18.5381 acc=0.1 wAPLKC_scale=967.642 delta(wAPLKC)=1.83546
+# lr=0.0990099
+# at end of scale_APL_weights:
+# rv.kc.wAPLKC mean: 969.477
+# rv.kc.wKCAPL mean: 0.559744
+# rv.kc.wAPLKC_scale: 969.477
+# rv.kc.wKCAPL_scale: 0.559744
+# i=101 sp=0.976905 target=0.05 rel_sp_diff=18.5381 acc=0.1 wAPLKC_scale=969.477 delta(wAPLKC)=1.81746
+# lr=0.0980392
+# at end of scale_APL_weights:
+# rv.kc.wAPLKC mean: 971.294
+# rv.kc.wKCAPL mean: 0.560794
+# rv.kc.wAPLKC_scale: 971.294
+# rv.kc.wKCAPL_scale: 0.560794
+# sp_lr_coeff to tune in one step: 52.0708
+# FINAL TUNING_ITERS=102
+# done fitting sparseness
+#
+# using 12 threads
+# average sparsity (response rate): 0.976905
+
+# TODO TODO TODO TODO fix how (~120+/140 in current full model kw list):
+# prat-claws_True__prat-boutons_True__pn-claw-to-apl_True__allow-net-inh-per-claw_True__connectome-APL_True
+# (run the same way as above) fails w:
+# fit_sparseness INITIAL APL weights:
+# rv.kc.wAPLKC mean: 6
+# rv.kc.wKCAPL mean: 0.0034642
+# rv.pn.wAPLPN mean: 6
+# rv.pn.wPNAPL mean: 0.0154242
+# rv.kc.wAPLKC_scale: 6
+# rv.kc.wKCAPL_scale: 0.0034642
+# rv.pn.wAPLPN_scale: 6
+# rv.pn.wPNAPL_scale: 0.0154242
+# t: 3003 last_inh: -12.088
+# t: 3003 last_inh: -12.088
+# t: 3003 last_inh: -12.088
+# terminate called after throwing an instance of 'std::invalid_argument'
+# terminate called recursively
+# t: 3003 last_inh: -12.088
+# Fatal Python error:   what():  Aborted
+#
+# t: 3003 last_inh: -12.088
+# libolfsysm/src/olfsysm.cpp:1124 in `pn_to_kc_drive_at_t` check `last_inh >= 0` failedThread 0x
+# 00007fd644856700terminate called recursively
+#  (most recent call first):
+# terminate called recursively
+#   File t: 3003 last_inh: -12.088
+# "terminate called recursively
+# /usr/lib/pythterminate called recursively
+
 
 sf = set(format_model_params(x) for x in MODEL_KW_LIST)
 sq = set(format_model_params(x) for x in QUICK_MODEL_KW_LIST)
@@ -5077,6 +5288,35 @@ def get_param_subset(kwargs: ParamDict, fn: Callable) -> ParamDict:
     return kwarg_subset
 
 
+# TODO factor out core but (to use w/ arbitrary fn) and put in hong2p.util?
+# TODO allow default to be None (if a flag is set? just warn regardless?)?
+def get_fitmbmodel_default(x: str) -> Any:
+    """Returns `fit_mb_model`'s default value for keyword argument `x`.
+
+    Raises ValueError if `x` does not have a default, or if it is `None`.
+    """
+    parameters = inspect.signature(fit_mb_model).parameters
+
+    # TODO need to handle KeyError or something here? or at least doc that it can also
+    # raise that?
+    #
+    # of type inspect.Parameter
+    param = parameters.get(x)
+
+    default = param.default
+    # https://stackoverflow.com/questions/64427593
+    if default is param.empty:
+        raise ValueError(f"parameter {x} had no default in fit_mb_model's signature")
+
+    if default is None:
+        raise ValueError(f"parameter {x} default of None fit_mb_model's signature. "
+            'this is assumed to mean the real default is set internally, and thus '
+            'this function probably should not be used.'
+        )
+
+    return default
+
+
 # TODO keep (/move to test code?)? only currently can get use of this in
 # test_connectome_wPNKC_repro, b/c in fit_mb_model, params are all split out into
 # separate names, rather than condensed in one kwargs dict. would need a further layer
@@ -5113,6 +5353,116 @@ def get_connectome_wPNKC_params(kwargs: ParamDict) -> ParamDict:
     )
     wPNKC_kwargs['connectome'] = connectome
     return wPNKC_kwargs
+
+
+_seen_model_plot_dirs = set()
+def analyze_spatial_claws(claw_df: pd.DataFrame, model_plot_dir: Optional[Path] = None
+    ) -> Tuple[pd.Series, pd.Series]:
+    """Returns n_surround_claws & n_center_claws, counting KC claws in 2 compartments.
+
+    On first call for a given `model_plot_dir` (of which there should be one unique
+    directory for model outputs with a particular set of parameters), also saves some
+    distribution plots.
+
+    Args:
+        claw_df: dataframe of length equal to # of claws, with metadata for each claw.
+            must include 'compartment' (0=center / 1=surround), KC_ID, as well as
+            spatial coordinates.
+
+        model_plot_dir: directory with all outputs for a MB model with one particular
+            set of parameters (encoded in directory name)
+
+    Returns n_surround_claws, n_center_claws
+    """
+    make_plots = False
+    if model_plot_dir is not None:
+        make_plots = True
+        if model_plot_dir in _seen_model_plot_dirs:
+            make_plots = False
+        else:
+            _seen_model_plot_dirs.add(model_plot_dir)
+
+    kc_id = KC_ID
+    # TODO delete? may already be KC_ID (='kc_id') if i were to regenerate outputs
+    #kc_id = 'b.bodyId'
+
+    # TODO either relax (/remove), or rename this fn to indicate it's only for
+    # center/surrouond compartmentalization?
+    #
+    # would become false if we start implementing APL compartments defined some other
+    # way than the 2-compartment center/surround
+    assert set(claw_df.compartment.unique()) == {0, 1}
+
+    center_comp = 0
+    surround_comp = 1
+
+    # TODO this is what fn adding compartment uses right? rather than (0,0,0)? matter?
+    center_xyz = claw_df[claw_coord_cols].mean()
+
+    comp2mean_dist_to_center = claw_df.groupby('compartment').apply(lambda x:
+        np.linalg.norm(x[claw_coord_cols] - center_xyz, axis=1).mean()
+    )
+    assert comp2mean_dist_to_center.idxmin() == center_comp
+    assert (
+        comp2mean_dist_to_center[center_comp] < comp2mean_dist_to_center[surround_comp]
+    )
+
+    # TODO summarize # connections in each compartment? (and print? plot [already have
+    # some of these below]? what?)
+
+    # TODO maybe compute as a fraction of claws instead (or separately
+    # show how many in center?) (or do this after this fn call?)
+    n_claws_in_surround = claw_df.groupby(kc_id).apply(
+        lambda x: (x.compartment != center_comp).sum()
+    )
+    n_claws_in_surround.name = 'n_surround_claws'
+
+    n_claws_in_center = claw_df.groupby(kc_id).apply(
+        lambda x: (x.compartment == center_comp).sum()
+    )
+    n_claws_in_center.name = 'n_center_claws'
+
+    if make_plots:
+        # TODO TODO hist (w/ one count per claw) of dist from center of calyx?
+
+        # TODO limiting to just the KCs that are responding (would need to pass input,
+        # as well as some str to make plot names unique w/in plot dir, and would then
+        # want to make regardless of whether we had seen this model_plot_dir before),
+        # for another version of plots?
+        fig, ax = plt.subplots()
+        sns.histplot(claw_df.groupby(kc_id).size(), ax=ax, discrete=True)
+        savefig(fig, model_plot_dir, 'spatial_wPNKC_n-claws-per-KC')
+
+        comp_counts = claw_df.groupby([kc_id, 'compartment']).size()
+        comp_counts.name = 'n_claws'
+        comp_counts = comp_counts.reset_index()
+
+        # TODO unify w/ def of compartments above
+        comp_counts.compartment = comp_counts.compartment.map(
+            {center_comp: 'center', surround_comp: 'surround'}
+        )
+
+        # TODO delete? 2D hist below might be more what i want anyway
+        fig, ax = plt.subplots()
+        sns.histplot(comp_counts, ax=ax, x='n_claws', hue='compartment', discrete=True)
+        savefig(fig, model_plot_dir, 'spatial_wPNKC_n-claws-per-KC_per-compartment')
+        #
+
+        comp_df = pd.concat([n_claws_in_center, n_claws_in_surround], axis='columns')
+        fig, ax = plt.subplots()
+        sns.histplot(comp_df, ax=ax, x='n_center_claws', y='n_surround_claws',
+            discrete=True
+        )
+        savefig(fig, model_plot_dir, 'spatial_wPNKC_n-claws-per-KC_per-compartment_2D')
+
+    # renaming each from kc_id (e.g. 'b.bodyId')
+    n_claws_in_surround = n_claws_in_surround.rename_axis(index=KC_ID)
+    n_claws_in_center = n_claws_in_center.rename_axis(index=KC_ID)
+
+    assert n_claws_in_surround.index.name == KC_ID
+    assert n_claws_in_center.index.name == KC_ID
+
+    return n_claws_in_surround, n_claws_in_center
 
 
 # TODO use in connectome_wPNKC?
@@ -7698,9 +8048,13 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
 
 # TODO doc expected input format (i.e. what are rows / cols)
 def drop_silent_model_cells(responses: pd.DataFrame) -> pd.DataFrame:
+    # TODO doc
+
     # .any() checks for any non-zero, so should also work for spike counts
     # (or 1.0/0.0, instead of True/False)
     nonsilent_cells = responses.T.any()
+    # TODO assert at least some entries are 0? (lest we are dealing w/ e.g.
+    # post-logistic scaling input, where 0 will [currently] typically not map to 0)
 
     # TODO maybe restore as warning, or behind a checks flag or something.
     # (now that i should be using KC_ID='kc_id' everywhere, rather than a mix of
@@ -8817,8 +9171,7 @@ def summarize_isi(spikes: xr.DataArray) -> None:
 
 
 # TODO use for other plots (+ axes within first example dynamics plot) that make sense
-def mark_odor_pulse(ax: Axes,
-    mp: Optional[osm.ModelParams] = None, *,
+def mark_odor_pulse(ax: Axes, mp: Optional[osm.ModelParams] = None, *,
     stim_start: Optional[float] = None, stim_end: Optional[float] = None,
     label: Optional[str] = None, color='k', alpha: float = 0.3, **kwargs
     ) -> Tuple[float, float]:
@@ -8861,7 +9214,13 @@ def mark_odor_pulse(ax: Axes,
     # TODO make fn (/find a library for) plotting a stimlus bar along some time axis (->
     # use that here instead)?
     ax.axvline(stim_start, color=color, label=label, alpha=alpha, **kwargs)
-    ax.axvline(stim_end, color=color, alpha=alpha, **kwargs)
+
+    xmin, xmax = ax.get_xlim()
+    if stim_end > xmax:
+        # will prob be the case for aligned dynamics plot?
+        warn(f'{stim_end=:.1f} > axes {xmax=:.2f} so not plotting odor offset vline')
+    else:
+        ax.axvline(stim_end, color=color, alpha=alpha, **kwargs)
 
     return stim_start, stim_end
 
@@ -9062,6 +9421,16 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         raise IOError(f'expected {wPNKC_path} to exist, to load wPNKC from. you may '
             'also manually pass wPNKC via kwarg'
         )
+    # TODO TODO pick example odor better. idk why currently picking 'va' in control
+    # panel. want cmix, or at least top component (or both), no?
+    # TODO TODO TODO twoslope log norm, showing blue off better? or is it just some
+    # display issue? (current SymLogNorm should be able to handle this. diff parameters?
+    # be more clear in cbar what nan color is? and use something other than grey for NaN
+    # color, to distinguish from the blue end of spectrum? what is current NaN color
+    # anyway, and is that what it does for stuff in the middle? or would stuff in the
+    # middle be white?)
+    # TODO TODO TODO show vline where odor comes on, particular to show difference
+    # between claw_dynamics=True/False cases
 
     if wPNKC is None:
         wPNKC = read_parquet(wPNKC_path)
@@ -9486,6 +9855,9 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
 
             vmin = df.min().min()
             vmax = df.max().max()
+            # TODO TODO any that i should use linear TwoSlopeNorm for instead of
+            # SymLogNorm? which really needed that log scale anyway? was claw dynamics
+            # among them? is it still?
             if vmin < 0:
                 warn(f'{var_name=} has min (={vmin:.2f}) < 0')
                 if not have_claws:
@@ -9527,8 +9899,18 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
         if len(use_symlog_norm_for) > 0:
             symlog_vmin = min(symlog_mins)
             symlog_vmax = max(symlog_maxs)
+            # TODO TODO why mixing the two again? make sense?
             vmin = min(vmin, symlog_vmin)
             vmax = max(vmax, symlog_vmax)
+            # TODO delete (trying to figure out cbar display issue. weak blue or NaN
+            # grey? is nan not black anyway?) (also, seems we are hardcoding to use log
+            # for everything currently below anyway, fwiw...)
+            print(f'{use_symlog_norm_for=}')
+            print(f'{symlog_mins=}')
+            print(f'{symlog_maxs=}')
+            print(f'{symlog_vmin=}')
+            print(f'{symlog_vmax=}')
+            #
 
         # TODO up fixed_max, or use data ranges if any of these fail
         if abs(vmin) > fixed_vmax:
@@ -9669,12 +10051,11 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
 
         im2, _ = cluster_timeseries_and_plot(df, fixed_order=True, ax=log_ax, cmap=cmap,
             label_order=False, imshow_kws=dict(interpolation='none',
-                # TODO delete? flag to re-enabled this (or do so if no negative
-                # quantities?)
-                #norm=LogNorm(vmin=fixed_vmin, vmax=fixed_vmax)
                 norm=norm
             )
         )
+        # TODO was this up here cause i wanted to put it in title or something?
+        # (currently only used further below)
         log10_str = r'$\log_{10}$'
 
         if only_plot_logscaled:
@@ -9741,6 +10122,12 @@ def plot_aligned_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, odor: str
             label_fn(label, fontsize=label_size)
 
         for ax in axs:
+            # TODO what color do i want? would use white if it wasn't ambiguous w/
+            # spikes resetting stuff to 0. still fine? black already separating
+            # quantities
+            # NOTE: mp will be overridden if None here anyway
+            mark_odor_pulse(ax=ax, mp=mp, color='gray')
+
             ax.yaxis.set_visible(False)
             ax.yaxis.set_ticks([])
             # for xticks
@@ -10246,6 +10633,10 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     wAPLKC: Optional[pd.Series] = None, wAPLPN: Optional[pd.Series] = None,
     var2range: Optional[MinMaxDict] = None, warn_: bool = True) -> None:
     # TODO doc
+    # TODO TODO should i still plot anything if no connectome APL weights
+    # (in which case the wAPLKC parquet wont exist, but i could also just get the scale
+    # from parameters and recreate it from a vector of 1s multiplied by that scale...
+    # maybe i should do that?)
     """
     Args:
         wAPLKC: if not passed, will attempt to load from `wAPLKC.parquet` in
@@ -10398,7 +10789,7 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     if odor == slice(None):
         _savefig()
         warn('plot_apl_dynamics: not plotting additional 2 Axes for mean effect of APL '
-            ' on claws/boutons, because that is currently only implemented for a '
+            'on claws/boutons, because that is currently only implemented for a '
             'single odor (pass `odor=<str>`)'
         )
         return
@@ -10409,14 +10800,52 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # those outputs are saved in the save_and_remove_from_param_dict call, which happens
     # after fit_mb_model call [using it's param_dict output])
     model_output_dir = plot_dir.resolve().parent
-    if wAPLKC is None:
-        wAPLKC = read_parquet(model_output_dir / 'wAPLKC.parquet')
+
+    if wPNKC is None:
+        wPNKC = read_parquet(model_output_dir / 'wPNKC.parquet')
+
+    wAPLKC_parquet = model_output_dir / 'wAPLKC.parquet'
+    if wAPLKC is None and wAPLKC_parquet.exists():
+        wAPLKC = read_parquet(wAPLKC_parquet)
 
     if have_boutons and wAPLPN is None:
         wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
 
-    if wPNKC is None:
-        wPNKC = read_parquet(model_output_dir / 'wPNKC.parquet')
+    params = read_params(model_output_dir)
+    if wAPLKC is None:
+        connectome_apl = params.get('use_connectome_APL_weights', False)
+        if not connectome_apl:
+            # TODO TODO how does this make sense? some calculation not what i expected?
+            # is it not sum of 1 within each KC (across claws?) directory name indicates
+            # wAPLKC scale of 0.23... and no wAPLKC/wAPLKC_scale param in params
+            # currently.
+            #
+            # /mnt/d0/yang_mix_outputs/control/prat-claws_True__pn-claw-to-apl_True__claw-dynamics_True__target-sp_0.05__n-spikes-for-response_2__fixed-thr_163__wAPLKC_0.23
+            #
+            # ipdb> wAPLKC.groupby('kc_id').sum()
+            # kc_id
+            # 300968622     1.326346
+            # 301309622     1.326346
+            # 301314150     1.326346
+            # 301314154     1.326346
+            # 301314208     1.326346
+            #                 ...
+            #
+            # we could still recalculate here in theory, but we should have the file
+            assert not params.get('one_row_per_claw', False), (f'{wAPLKC_parquet=} '
+                'should have existed'
+            )
+            wAPLKC = params['wAPLKC']
+            assert isinstance(wAPLKC, float)
+            # TODO test/check this is correct (/consistent w/ def elsewhere)
+            wAPLKC = pd.Series(index=wPNKC.index, data=wAPLKC)
+
+    if wAPLPN is None and have_boutons:
+        # TODO would this code ever even work or be needed? test?
+        wAPLPN = params['wAPLPN']
+        assert isinstance(wAPLPN, float)
+        # TODO test/check this is correct (/consistent w/ def elsewhere)
+        wAPLPN = pd.Series(index=wPNKC.columns, data=wAPLPN)
 
     odor_inh_sims = inh_sims.sel(odor=odor).squeeze(drop=True)
     ts = odor_inh_sims.get_index('time_s')
@@ -10574,12 +11003,10 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
             if mp.kc.allow_net_inh_per_claw:
                 clip_negative_inhibition = False
         else:
-            # shouldn't need to warn if unit is KCs not claws, b/c i don't think choice
-            # matters there?
-            warn('mp=<ModelParams> not passed. assuming we want to clip negative claw '
-                'inhibitions (as would be the case if model were run with mp.kc.'
-                'allow_net_inh_per_claw=false)'
-            )
+            # TODO always use this, instead of mp? and/or assert consistent if mp
+            # passed?
+            allow_net_inh_per_claw = params.get('allow_net_inh_per_claw', False)
+            clip_negative_inhibition = not allow_net_inh_per_claw
     else:
         warn('currently assuming we do not need to limit inh2kcs to '
             'kc2apl_input_no_inh in non-claw cases. this latter variable is not '
@@ -10813,6 +11240,9 @@ def plot_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict, *,
         )
 
     if aligned_dynamics:
+        # TODO TODO another version that is the same # of cells as the responders one
+        # (to the same odor), but for the cells closest to (but not reaching) spike
+        # threshold?
         plot_aligned_dynamics(plot_dir, dynamics_dict, odor=odor, mp=mp,
             title_prefix=title_prefix, wPNKC=wPNKC, drop_nonresponders=True
         )
@@ -11347,20 +11777,35 @@ def load_and_plot_dynamics_cli() -> None:
     # stim_start - eps)? (PN spont shutting off when PN>APL inhibition is enabled is
     # meanginful tho...)
     msg = load_and_plot_dynamics_cli.__doc__
-    fn_msg = load_and_plot_dynamics.__doc__.split('Args:\n')[0].strip()
+    fn_msg = load_and_plot_dynamics.__doc__.split('Args:\n')[0].strip().split(
+        'Returns')[0]
     fn_msg = '\n'.join(x.strip() for x in fn_msg.splitlines())
     msg += f'\nload_and_plot_dynamics: {fn_msg}\n'
+    # TODO update part in msg about "Returns dict with ..." as that's not relevant here
     parser = ArgumentParser(description=msg)
 
+    # TODO add exclude substring arg (e.g. to exclude megamat-tuned when analyzing
+    # control/kiwi/etc outputs under yang_mix_outputs dir)
     parser.add_argument('model_dir', type=Path, default=Path('.'), nargs='?',
         help='model output directory, as created by `fit_and_plot_mb_model`, with '
         'model dynamics saved within as NetCDF (.nc) files within (via '
-        'save_dynamics=True flag to `fit_and_plot_mb_model`)'
+        'save_dynamics=True flag to `fit_and_plot_mb_model`). Uses current path by '
+        'default.'
     )
     parser.add_argument('-r', '--recursive', action='store_true', help='assumes '
         'subdirectories are model output directories, and calls '
         '`load_and_plot_dynamics` on each valid subdirectory, saving plots within each '
         'subdirectory'
+    )
+    parser.add_argument('-e', '--exclude-substrings', action='store', help='Comma '
+        'separated list of substrings to EXCLUDE model output directory paths '
+        'containing them. Full path (relative to root script is called from) is '
+        'checked for substring, so it can also be used to exclude based on containing '
+        'directories. Only relevant if -r/--recursive'
+    )
+    parser.add_argument('-s', '--skip-first-n', action='store', help='Skips first '
+        'N directories that would be iterated over (to pick up from where a previous '
+        'failure left off). Only relevant if -r/--recursive'
     )
     parser.add_argument('-v', '--verbose', action='store_true', help='if -r/--recursive'
         ", then will print separate lists of directories that do/don't have the "
@@ -11369,7 +11814,17 @@ def load_and_plot_dynamics_cli() -> None:
     args = parser.parse_args()
     model_dir = args.model_dir
     recursive = args.recursive
+    exclude_substrs = args.exclude_substrings
+    skip_first_n = args.skip_first_n
     verbose = args.verbose
+
+    if exclude_substrs is not None:
+        exclude_substrs = set(exclude_substrs.split(','))
+        assert all(len(x) > 0 for x in exclude_substrs), 'no empty substrs allowed'
+
+    if skip_first_n is not None:
+        skip_first_n = int(skip_first_n)
+        assert skip_first_n > 0
 
     # so we see prints telling us when and where plots are being saved
     al_util.verbose = True
@@ -11378,20 +11833,29 @@ def load_and_plot_dynamics_cli() -> None:
         var2range = load_and_plot_dynamics(model_dir)
     else:
         # TODO restore
-        #_n_dir_limit: Optional[int] = None
+        _n_dir_limit: Optional[int] = None
+
+        # TODO what was i debugging anyway?
         # TODO delete
-        _n_dir_limit: Optional[int] = 2
-        if _n_dir_limit is not None:
-            assert _n_dir_limit > 0
-            warn(f'ONLY ANALYZING FIRST {_n_dir_limit=} DIRS (HARDCODED DEBUG VALUE)! '
-                'set this value back to None when not debugging'
-            )
+        #_n_dir_limit: Optional[int] = 2
+        #if _n_dir_limit is not None:
+        #    assert _n_dir_limit > 0
+        #    warn(f'ONLY ANALYZING FIRST {_n_dir_limit=} DIRS (HARDCODED DEBUG VALUE)! '
+        #        'set this value back to None when not debugging'
+        #    )
 
         model_output_root = model_dir
         model_output_dirs = []
         other_dirs = []
         for d in model_output_root.rglob('*'):
             if not d.is_dir():
+                continue
+
+            dstr = str(d)
+            if exclude_substrs is not None and any(x in dstr for x in exclude_substrs):
+                warn(f'skipping {d} because it contained an element of -e/'
+                    '--exclude-substrings'
+                )
                 continue
 
             # TODO CLI args to thread thru to any of the args here? require_all?
@@ -11416,6 +11880,12 @@ def load_and_plot_dynamics_cli() -> None:
         var2range: MinMaxDict = dict()
         count = 0
         for d in tqdm(model_output_dirs, unit='model-output-dir'):
+            if skip_first_n is not None and skip_first_n > 0:
+                skip_first_n -= 1
+                warn(f'skipping {d} because -s/--skip-first-n')
+                continue
+
+            print(f'{d}')
             # TODO TODO have these calls return ranges for certain data types, so i can
             # find max/min for fixed limits across all plots? mainly for
             # plot_apl_dynamics, but maybe also plot_aligned_dynamics
@@ -19985,10 +20455,25 @@ def load_data_and_refit_dff2spiking_model(model_dir: Path, *, verbose: bool = Tr
     # actually need)? ever actually missing?
     avg_flymax = kwargs.pop('avg_flymax')
     avg_flymin = kwargs.pop('avg_flymin')
-
+    # TODO delete
+    print()
+    print(f'{model_dir=}')
+    print(f'{dff_to_spiking_parquet=}')
+    print(f'{scaling_method=}')
+    print(f'{col_to_fit=}')
+    print()
+    #
     model, inh_model = fit_dff2spiking_model(merged_dff_and_hallem, col_to_fit,
         **kwargs
     )
+    # TODO delete
+    # TODO TODO is this not pretty much what i had before? why does output seem so diff
+    # then?
+    # to-avg-max_scaled_delta_f_over_f    126.978199
+    # TODO TODO TODO is this the same model actually used to scale megamat data? and is
+    # scaling done the same way?
+    print(f'{model.params=}')
+    #
     return model, inh_model
 
 
@@ -20017,6 +20502,10 @@ def predict_spiking_from_dff(df: pd.DataFrame, model: RegressionResultsWrapper,
         assert 'const' in model.params
         add_constant = True
         col_to_fit == [x for x in model.params.keys() if x != 'const'][0]
+    # TODO delete
+    print()
+    print(f'predict_spiking_from_dff: {col_to_fit=}')
+    #
 
     separate_inh_model = False
     if inh_model is not None:
@@ -21318,6 +21807,14 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     # this predict(...) call is the one actually adding the estimated spike deltas,
     # computed from data to be modelled (which can be different from data originally
     # used to compute dF/F -> spike delta est fn).
+    # TODO TODO TODO call below working correctly (or same as what made 2025-03-18
+    # outputs?)
+    # TODO TODO TODO or maybe it's scaling that creates fly_mean_df above? maybe either
+    # before/no we are (or are not) including diags when calculing fly maxes?
+    # TODO delete
+    print()
+    breakpoint()
+    #
     mean_est_df = predict_spiking_from_dff(fly_mean_df, model, inh_model)
 
     # TODO once again skip all below if use_cache=False? (and actually used cache) would
@@ -21514,8 +22011,9 @@ def scale_dff_then_fitandplot_mb_model(plot_root: Path, dff_df: pd.DataFrame,
 
 
 # TODO refactor to share w/ natmix_data/analysis.py (copied from there)
-def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = True
-    ) -> pd.DataFrame:
+def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = True,
+    # TODO change keep_binary default to True?
+    keep_binary: bool = False) -> pd.DataFrame:
     """Drops odors not typically analyzed from kiwi/control data.
 
     Odors dropped are:
@@ -21533,18 +22031,23 @@ def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = Tru
     - the undiluted 5-component mixture for each
     - an in-vial binary mixture of the top two components for each
     """
-    odor_strs = df.index.get_level_values('odor1')
+    odor_level = first_odor_level(df.index)
+    odor_strs = df.index.get_level_values(odor_level)
     to_drop = (
         # hack to remove stuff like 'cmix-1 @ 0'
         odor_strs.str.contains('x-', regex=False) |
 
+        # this will drop the air mix binary w/ '+' in it too, but we will leave '+'
+        # based dropping to part behind keep_binary below
+        odor_strs.str.contains('(air mix)', regex=False)
+    )
+    if keep_binary:
         # to remove 2 component mixtures (whether in-vial or air mixture).
         #
         # stripping '+' first (which only removes any start/end characters in passed
         # set), to exclude stuff like 'validation2' panel's '+pul @ -2', which is
         # neither a mixture nor a mix dilution.
-        odor_strs.str.strip('+').str.contains('+', regex=False)
-    )
+        to_drop |= odor_strs.str.strip('+').str.contains('+', regex=False)
 
     # TODO delete?
     if drop_pfo:
@@ -21561,7 +22064,9 @@ def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = Tru
     df = drop_mix_dilutions(df)
     dropped = index_before.difference(df.index)
     if len(dropped) > 0:
-        dropped = dropped.droplevel('repeat').drop_duplicates()
+        if 'repeat' in dropped.names:
+            dropped = dropped.droplevel('repeat').drop_duplicates()
+
         warn('dropped the following odors, which should be mixtures or mix '
             f'dilutions:\n{dropped.to_frame().to_string(index=False)}'
         )
@@ -21654,15 +22159,13 @@ def process_mix_odor_names_hack(df: pd.DataFrame) -> pd.DataFrame:
 # all? (even tho thats the only one for now...)
 # TODO rename remypaper_and_kiwicontrol_modelling (/similar)? still want something with
 # a name like this?
-# TODO TODO option to pass in pre-scaled est_spike_deltas instead of dF/F (and to skip
-# that scaling). would then still get the benefits of saving a CSV summarizing model
-# tuning output params across models...
 def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
     model_kw_list: Optional[List[ParamDict]] = None, quick: bool = True,
     roi_depths: Optional[pd.DataFrame] = None, skip_sensitivity_analysis: bool = False,
     skip_models_with_seeds: bool = False, skip_model_dynamics_saving: bool = False,
     skip_hallem_models: bool = False, first_model_kws_only: bool = False,
-    copy_to_model_dirs: Optional[List[Path]] = None,
+    copy_to_model_dirs: Optional[List[Path]] = None, try_cache: bool = False,
+    input_is_already_est_spike_deltas: bool = False,
     dff2spiking_cache_dir: Optional[Path] = None,
     response_calc_params: Optional[ParamDict] = None,
     drop_binaries_and_mixdilutions: bool = False, repro_remy_paper: bool = False
@@ -21690,6 +22193,9 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
             Row index names should be ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
             (possible that not all are required, but 'panel' and 'odor1' should be)
+
+            Or pre-scaled estimated spike deltas, if
+            `input_is_already_est_spike_deltas=True`.
 
         plot_dir: will contain be created to contain any model output directories
             (and other across-model plots, like dF/F -> spike delta scaling details).
@@ -21726,51 +22232,54 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
     #
     makedirs(plot_dir)
 
-    # written below in _write_inputs_for_reproducibility.
-    # not otherwise used.
-    unmodified_orn_dff_input_df = certain_df.copy()
+    if not input_is_already_est_spike_deltas:
+        # written below in _write_inputs_for_reproducibility.
+        # not otherwise used.
+        unmodified_orn_dff_input_df = certain_df.copy()
 
-    # NOTE: same filtering on roi_depths now handled in
-    # scale_dff_to_est_spike_deltas_using_hallem (was needed for some refactoring. why
-    # again?)
-    if 'is_pair' in certain_df.index.names:
-        assert (certain_df.index.get_level_values('is_pair') == False).all()
-        certain_df = certain_df.droplevel('is_pair', axis='index')
+        # NOTE: same filtering on roi_depths now handled in
+        # scale_dff_to_est_spike_deltas_using_hallem (was needed for some refactoring.
+        # why again?)
+        if 'is_pair' in certain_df.index.names:
+            assert (certain_df.index.get_level_values('is_pair') == False).all()
+            certain_df = certain_df.droplevel('is_pair', axis='index')
 
-    # dropping pfo before drop_binaries_mixdilutions_and_pfo, so the warning that would
-    # generate doesn't also include pfo (which that fn also currently would drop)
-    drop_solvent: bool = True
-    # shouldn't be in megamat/validation/diagnostic data. added for new kiwi/control
-    # data.
-    if drop_solvent:
-        certain_df = drop_solvent_odors(certain_df)
+        # dropping pfo before drop_binaries_mixdilutions_and_pfo, so the warning that
+        # would generate doesn't also include pfo (which that fn also currently would
+        # drop)
+        drop_solvent: bool = True
+        # shouldn't be in megamat/validation/diagnostic data. added for new kiwi/control
+        # data.
+        if drop_solvent:
+            certain_df = drop_solvent_odors(certain_df)
 
-    # TODO TODO why is process_mix_odor_names_hack doing something now? was this
-    # only dropping one of the two things process_mix_odor_names_hack processes?
-    # (i.e. are the 6/108 rows dropped either all mix dilutions? probably just at the
-    # top conc too)
-    # TODO have it warn about the two cases separately (and/or list all odors
-    # processed)
-    #
-    # TODO + factor this [+ similar tom-specific hacks] out of this fn, and into
-    # one just to analyze paper and/or kiwi-control data
-    if drop_binaries_and_mixdilutions:
-        certain_df = drop_binaries_mixdilutions_and_pfo(certain_df)
+        # TODO TODO why is process_mix_odor_names_hack doing something now? was this
+        # only dropping one of the two things process_mix_odor_names_hack processes?
+        # (i.e. are the 6/108 rows dropped either all mix dilutions? probably just at
+        # the top conc too)
+        # TODO have it warn about the two cases separately (and/or list all odors
+        # processed)
+        #
+        # TODO + factor this [+ similar tom-specific hacks] out of this fn, and into
+        # one just to analyze paper and/or kiwi-control data
+        if drop_binaries_and_mixdilutions:
+            certain_df = drop_binaries_mixdilutions_and_pfo(certain_df)
 
-    # NOTE: shouldn't do anything if drop_binaries_mixdilutions_and_pfo called first
-    # (all odors it would process should be dropped). leaving in case we ever want to
-    # not drop some odors it would process.
-    # TODO and what would happen then? doc
-    certain_df = process_mix_odor_names_hack(certain_df)
+        # NOTE: shouldn't do anything if drop_binaries_mixdilutions_and_pfo called first
+        # (all odors it would process should be dropped). leaving in case we ever want
+        # to not drop some odors it would process.
+        # TODO and what would happen then? doc
+        certain_df = process_mix_odor_names_hack(certain_df)
 
-    # after above two hacks, for kiwi/control data, sort_odors should order odors as:
-    # pfo, components, 2-component mix, 2-component air mix, 5-component mix, dilutions
-    # of 5-component mix (with more dilute mixtures further towards the end)
-    certain_df = sort_odors(certain_df)
+        # after above two hacks, for kiwi/control data, sort_odors should order odors
+        # as: pfo, components, 2-component mix, 2-component air mix, 5-component mix,
+        # dilutions of 5-component mix (with more dilute mixtures further towards the
+        # end)
+        certain_df = sort_odors(certain_df)
 
-    # written below in _write_inputs_for_reproducibility.
-    # not otherwise used.
-    filtered_orn_dff_input_df = certain_df.copy()
+        # written below in _write_inputs_for_reproducibility.
+        # not otherwise used.
+        filtered_orn_dff_input_df = certain_df.copy()
 
     if copy_to_model_dirs is None:
         copy_to_model_dirs = []
@@ -21828,30 +22337,36 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         # TODO refactor to share date_format= part w/ consensus_df saving i copied this
         # from? / delete? not sure it's even relevant if date is in index...
         unmodified_orn_dff_csv = output_dir / 'full_orn_dff_input.csv'
-        to_csv(unmodified_orn_dff_input_df, unmodified_orn_dff_csv,
-            date_format=date_fmt_str
-        )
-        # this includes a round trip check (that we can load values and they match
-        # written ones) by default
-        to_parquet(unmodified_orn_dff_input_df,
-            unmodified_orn_dff_csv.with_suffix('.parquet')
-        )
-        # TODO skip pickle now?
-        to_pickle(unmodified_orn_dff_input_df, unmodified_orn_dff_csv.with_suffix('.p'),
-            write_parquet=False
-        )
-
         filtered_orn_dff_csv = output_dir / 'filtered_orn_dff_input.csv'
-        to_csv(filtered_orn_dff_input_df, filtered_orn_dff_csv,
-            date_format=date_fmt_str
-        )
-        to_parquet(filtered_orn_dff_input_df,
-            filtered_orn_dff_csv.with_suffix('.parquet')
-        )
-        # TODO skip pickle now?
-        to_pickle(filtered_orn_dff_input_df, filtered_orn_dff_csv.with_suffix('.p'),
-            write_parquet=False
-        )
+        if not input_is_already_est_spike_deltas:
+            to_csv(unmodified_orn_dff_input_df, unmodified_orn_dff_csv,
+                date_format=date_fmt_str
+            )
+            # this includes a round trip check (that we can load values and they match
+            # written ones) by default
+            to_parquet(unmodified_orn_dff_input_df,
+                unmodified_orn_dff_csv.with_suffix('.parquet')
+            )
+            # TODO skip pickle now?
+            to_pickle(unmodified_orn_dff_input_df,
+                unmodified_orn_dff_csv.with_suffix('.p'), write_parquet=False
+            )
+
+            to_csv(filtered_orn_dff_input_df, filtered_orn_dff_csv,
+                date_format=date_fmt_str
+            )
+            to_parquet(filtered_orn_dff_input_df,
+                filtered_orn_dff_csv.with_suffix('.parquet')
+            )
+            # TODO skip pickle now?
+            to_pickle(filtered_orn_dff_input_df, filtered_orn_dff_csv.with_suffix('.p'),
+                write_parquet=False
+            )
+        else:
+            warn(f'not writing either {filtered_orn_dff_csv.name} or '
+                f'{unmodified_orn_dff_csv.name}, because '
+                f'{input_is_already_est_spike_deltas=}'
+            )
 
         for to_copy in copy_to_model_dirs:
             if exclude_names is not None and to_copy.name in exclude_names:
@@ -21893,133 +22408,144 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             )
             _written_via_copy.add(dst)
 
+    if not input_is_already_est_spike_deltas:
+        # hack to tell whether we should fit model (if input is megamat panel [which
+        # overlaps well enough w/ hallem], and has at least 7 flies there, we should).
+        # otherwise, we should try to load a saved model, and use that.
+        try:
+            # TODO cleaner solution than this hack (probably involving preserving panel
+            # throughout, and splitting each panel out before passing thru model, then
+            # just always recompute model and do all in one run? now doing a prior run
+            # just to save model, then later runs to pass each particular panel thru
+            # model)
+            #
+            # hack to only fit model if we are passing all panel (including validation)
+            # data, on all flies (shape is 198x517 there)
+            if (certain_df.shape[1] > 500 and len(certain_df) > 150 and
 
-    # hack to tell whether we should fit model (if input is megamat panel [which
-    # overlaps well enough w/ hallem], and has at least 7 flies there, we should).
-    # otherwise, we should try to load a saved model, and use that.
-    try:
-        # TODO cleaner solution than this hack (probably involving preserving
-        # panel throughout, and splitting each panel out before passing thru model, then
-        # just always recompute model and do all in one run? now doing a prior run just
-        # to save model, then later runs to pass each particular panel thru model)
-        #
-        # hack to only fit model if we are passing all panel (including validation)
-        # data, on all flies (shape is 198x517 there)
-        if (certain_df.shape[1] > 500 and len(certain_df) > 150 and
+                    set(certain_df.index.get_level_values('panel')) == {
+                        'megamat', 'validation2', diag_panel_str
+                    } and len(
+                        certain_df.columns.to_frame(index=False)[fly_cols
+                            ].drop_duplicates()
+                    # NOTE: 9 final megamat flies and 5 final validation2 flies (after
+                    # dropping the 1 Betty wanted). see reproducing.md or CSVs under
+                    # data/sent_to_anoop/v1 [prob some newer dirs would be more
+                    # appropriate now... see what tests use, and reproducing.md] for the
+                    # specific flies.
+                    ) == (9 + 5)
+                ):
 
-                set(certain_df.index.get_level_values('panel')) == {
-                    'megamat', 'validation2', diag_panel_str
-                } and len(
-                    certain_df.columns.to_frame(index=False)[fly_cols
-                        ].drop_duplicates()
-                # NOTE: 9 final megamat flies and 5 final validation2 flies (after
-                # dropping the 1 Betty wanted). see reproducing.md or CSVs under
-                # data/sent_to_anoop/v1 [prob some newer dirs would be more appropriate
-                # now... see what tests use, and reproducing.md] for the specific flies.
-                ) == (9 + 5)
-            ):
+                use_saved_dff_to_spiking_model = False
+            else:
+                use_saved_dff_to_spiking_model = True
 
-            use_saved_dff_to_spiking_model = False
-        else:
+        # TODO what exacty triggers this? doc in comment
+        except KeyError:
             use_saved_dff_to_spiking_model = True
 
-    # TODO what exacty triggers this? doc in comment
-    except KeyError:
-        use_saved_dff_to_spiking_model = True
+        # this option currently can't actually trigger recomputation that wouldn't
+        # happen anyway... (always recomputed if input data is large enough, never
+        # otherwise) TODO delete this option then?
+        if use_saved_dff_to_spiking_model and should_ignore_existing('dff2spiking'):
+            warn('would NOT have saved dff->spiking model, but requested regeneration '
+                'of it!\n\nchange args to run on all data (so that model would get '
+                'saved. see reproducing.md), OR remove `-i dff2spiking` option.\n\n'
+                'exiting!'
+            )
+            sys.exit()
 
-    # this option currently can't actually trigger recomputation that wouldn't happen
-    # anyway... (always recomputed if input data is large enough, never otherwise)
-    # TODO delete this option then?
-    if use_saved_dff_to_spiking_model and should_ignore_existing('dff2spiking'):
-        warn('would NOT have saved dff->spiking model, but requested regeneration of '
-            'it!\n\nchange args to run on all data (so that model would get saved. see '
-            'reproducing.md), OR remove `-i dff2spiking` option.'
-            '\n\nexiting!'
+        if response_calc_params is not None:
+            # TODO check this, whether or not it's in copy_to_model_dirs? since we are
+            # excluding it from subset of files actually copied via exclude_names
+            # anyway, at least for next _write_inputs.. call below, since
+            # scale_dff_to_est... should manage that file. i suppose it might be copied
+            # by the subsetquent _write_inputs... calls below?
+            for x in copy_to_model_dirs:
+                if x.name == response_calc_params_json_name:
+                    rc2 = read_json(x)
+                    assert response_calc_params == rc2
+
+        ret = scale_dff_to_est_spike_deltas_using_hallem(plot_dir, certain_df,
+            roi_depths, use_cache=use_saved_dff_to_spiking_model,
+            model_dir=dff2spiking_cache_dir, response_calc_params=response_calc_params
         )
-        sys.exit()
+        if not use_saved_dff_to_spiking_model:
+            exclude_names = set()
+            if response_calc_params is not None and (response_calc_params_json_name in
+                    set(x.name for x in copy_to_model_dirs)
+                ):
+                # letting scale_dff... above write and manage this one, at least for the
+                # directory containing the data/choices necessary to reproduce the
+                # dF/F->spike delta fn itself.
+                #
+                # since i'm also checking this file against response_calc_params above,
+                # fine to let it be handled by copy_to_model_dirs for all other calls.
+                exclude_names.add(response_calc_params_json_name)
 
-    if response_calc_params is not None:
-        # TODO check this, whether or not it's in copy_to_model_dirs? since we are
-        # excluding it from subset of files actually copied via exclude_names anyway, at
-        # least for next _write_inputs.. call below, since scale_dff_to_est... should
-        # manage that file. i suppose it might be copied by the subsetquent
-        # _write_inputs... calls below?
-        for x in copy_to_model_dirs:
-            if x.name == response_calc_params_json_name:
-                rc2 = read_json(x)
-                assert response_calc_params == rc2
+            _write_inputs_for_reproducibility(plot_dir, exclude_names=exclude_names)
 
-    ret = scale_dff_to_est_spike_deltas_using_hallem(plot_dir, certain_df, roi_depths,
-        use_cache=use_saved_dff_to_spiking_model, model_dir=dff2spiking_cache_dir,
-        response_calc_params=response_calc_params
-    )
-    if not use_saved_dff_to_spiking_model:
-        exclude_names = set()
-        if response_calc_params is not None and (
-            response_calc_params_json_name in set(x.name for x in copy_to_model_dirs)):
-            # letting scale_dff... above write and manage this one, at least for the
-            # directory containing the data/choices necessary to reproduce the
-            # dF/F->spike delta fn itself.
-            #
-            # since i'm also checking this file against response_calc_params above, fine
-            # to let it be handled by copy_to_model_dirs for all other calls.
-            exclude_names.add(response_calc_params_json_name)
-
-        _write_inputs_for_reproducibility(plot_dir, exclude_names=exclude_names)
-
-    # TODO test whether downstream code works fine w/o stopping here (at least
-    # check equiv in megamat case. may want to hardcode a skip of the validation2 panel
-    # by default anyway [w/ a flag])
-    # TODO (delete?) would checking megamat subset of fly_mean_df is same between two
-    # runs (w/ all data vs just megamat flies) get us most/all of the way there?
-    #
-    # TODO delete hack (see corresponding hack above where this flag is defined)
-    # (plus now rest of modeling code loops over panels anyway, no?)
-    # TODO / move this hack to calling code (script / fn that just runs on paper
-    # al_analysis.py outputs, or when called from al_analysis)
-    if not use_saved_dff_to_spiking_model:
-        print('EXITING EARLY AFTER HAVING SAVED MODEL ON ALL DATA (analyze specific '
-            'panels with additional al_analysis runs, restricting date range to only '
-            'one panel)!'
-        )
-        sys.exit()
-    #
-
-    (mean_est_df, dff_to_spiking_model_choices, dff2spiking_choices_str,
-        hallem_delta_wide, for_copy_to_model_dirs
-    ) = ret
-
-    copy_to_model_dirs.extend(for_copy_to_model_dirs)
-    # before we actually have to call _write_inputs_... later
-    for x in copy_to_model_dirs:
-        assert x.is_file(), f'{x=} was not a file! would fail to copy later'
-
-    # TODO explicitly compare fitting on hallem vs hallem-megamat vs remy's megamat data
-    # passed thru fn to get est spike deltas
-
-    if response_calc_params is None:
-        extra_params = dict()
-    else:
-        # TODO move these all to end instead? just when writing to CSV/whatever?
+        # TODO test whether downstream code works fine w/o stopping here (at least
+        # check equiv in megamat case. may want to hardcode a skip of the validation2
+        # panel by default anyway [w/ a flag])
+        # TODO (delete?) would checking megamat subset of fly_mean_df is same between
+        # two runs (w/ all data vs just megamat flies) get us most/all of the way there?
         #
-        # all types in this should be json serializable, at least in >=March 2026
-        # outputs, where response_calc_fn_name is stored, rather than fn itself
-        # TODO assert that?
-        extra_params = dict(response_calc_params)
+        # TODO delete hack (see corresponding hack above where this flag is defined)
+        # (plus now rest of modeling code loops over panels anyway, no?)
+        # TODO / move this hack to calling code (script / fn that just runs on paper
+        # al_analysis.py outputs, or when called from al_analysis)
+        if not use_saved_dff_to_spiking_model:
+            print('EXITING EARLY AFTER HAVING SAVED MODEL ON ALL DATA (analyze specific'
+                ' panels with additional al_analysis runs, restricting date range to '
+                'only one panel)!'
+            )
+            sys.exit()
+        #
 
-    # TODO also include actual equation for scaling in this (just one constant w/
-    # current choices)? currently just includes choices that influence that, but since
-    # we aren't including full data in there (though we are copying it to each model dir
-    # now), we can't quickly tell which scaling factor was used
-    # (could refactor part of plotting code that gets `model_eq` for title, and use that
-    # str equation here too? might want a bit more precision on some params, so maybe
-    # include them [e.g. `model.params`] as well?)
-    #
-    # will be saved alongside later params, inside each model output dir
-    # (for reproducibility)
-    extra_params.update({
-        f'dff2spiking_{k}': v for k, v in dff_to_spiking_model_choices.to_dict().items()
-    })
+        (mean_est_df, dff_to_spiking_model_choices, dff2spiking_choices_str,
+            hallem_delta_wide, for_copy_to_model_dirs
+        ) = ret
+
+        copy_to_model_dirs.extend(for_copy_to_model_dirs)
+        # before we actually have to call _write_inputs_... later
+        for x in copy_to_model_dirs:
+            assert x.is_file(), f'{x=} was not a file! would fail to copy later'
+
+        # TODO explicitly compare fitting on hallem vs hallem-megamat vs remy's megamat
+        # data passed thru fn to get est spike deltas
+
+        if response_calc_params is None:
+            extra_params = dict()
+        else:
+            # TODO move these all to end instead? just when writing to CSV/whatever?
+            #
+            # all types in this should be json serializable, at least in >=March 2026
+            # outputs, where response_calc_fn_name is stored, rather than fn itself
+            # TODO assert that?
+            extra_params = dict(response_calc_params)
+
+        # TODO also include actual equation for scaling in this (just one constant w/
+        # current choices)? currently just includes choices that influence that, but
+        # since we aren't including full data in there (though we are copying it to each
+        # model dir now), we can't quickly tell which scaling factor was used
+        # (could refactor part of plotting code that gets `model_eq` for title, and use
+        # that str equation here too? might want a bit more precision on some params, so
+        # maybe include them [e.g. `model.params`] as well?)
+        #
+        # will be saved alongside later params, inside each model output dir
+        # (for reproducibility)
+        extra_params.update({
+            f'dff2spiking_{k}': v
+            for k, v in dff_to_spiking_model_choices.to_dict().items()
+        })
+    else:
+        mean_est_df = certain_df.copy()
+        # TODO other warnings here?
+        warn('not able to write many of the usual reproducibility outputs, since '
+            f'{input_is_already_est_spike_deltas=}'
+        )
+        extra_params = dict()
 
     # TODO delete? even used anymore (hardcoded in paper repro params now i think)?
     # (maybe get this value from those params, for use in check code below?)
@@ -22229,53 +22755,55 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         model_param_csv = panel_plot_dir / 'param_summary.csv'
         model_params = None
 
-        raw_dff_panel_df = sort_odors(certain_df.loc[panel], panel=panel)
+        if not input_is_already_est_spike_deltas:
+            raw_dff_panel_df = sort_odors(certain_df.loc[panel], panel=panel)
 
-        mean_fly_dff_corr = mean_of_fly_corrs(raw_dff_panel_df)
+            mean_fly_dff_corr = mean_of_fly_corrs(raw_dff_panel_df)
 
-        # just checking that mean_of_fly_corrs isn't screwing up odor order, since
-        # raw_dff_panel_df odors are sorted (and easier to check against panel_est_df,
-        # as that doesn't have the repeats in it like raw_dff_panel_does, but the order
-        # of the odors in the two should be the same)
-        assert mean_fly_dff_corr.columns.equals(mean_fly_dff_corr.index)
-        # this doesn't check .name, which is good, b/c mean_fly_dff_corr has 'odor1',
-        # not 'odor'
-        assert mean_fly_dff_corr.columns.equals(
-            panel_est_df.columns.get_level_values('odor')
-        )
-
-        # TODO (just for ticklabels in plots) for kiwi/control at least (but maybe for
-        # everything?) hide the '@ 0' part of conc strs [maybe unless there is another
-        # odor w/ a diff conc, but may not matter]
-
-        # TODO restore response matrix plot versions of these (i.e. plot responses in
-        # addition to just corrs) (would technically be duped w/ ijroi versions, for
-        # convenient comparison to 'est_orn_spike_deltas*' versions? or symlink to the
-        # ijroi one?
-        plot_corr(mean_fly_dff_corr, panel_plot_dir, 'orn_dff_corr',
-            # TODO use one of newer strs in al_analysis.py for this (-> move to
-            # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
-            xlabel=f'ORN {dff_latex}'
-        )
-
-        fly_dff_hallem_subset = raw_dff_panel_df.loc[:,
-            raw_dff_panel_df.columns.get_level_values('roi').isin(
-                hallem_delta_wide.columns
+            # just checking that mean_of_fly_corrs isn't screwing up odor order, since
+            # raw_dff_panel_df odors are sorted (and easier to check against
+            # panel_est_df, as that doesn't have the repeats in it like
+            # raw_dff_panel_does, but the order of the odors in the two should be the
+            # same)
+            assert mean_fly_dff_corr.columns.equals(mean_fly_dff_corr.index)
+            # this doesn't check .name, which is good, b/c mean_fly_dff_corr has
+            # 'odor1', not 'odor'
+            assert mean_fly_dff_corr.columns.equals(
+                panel_est_df.columns.get_level_values('odor')
             )
-        ]
-        mean_fly_dff_hallem_corr = mean_of_fly_corrs(fly_dff_hallem_subset)
-        plot_corr(mean_fly_dff_hallem_corr, panel_plot_dir,
-            'orn_dff_hallem-subset_corr',
-            # TODO use one of newer strs in al_analysis.py for this (-> move to
-            # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
-            xlabel=f'ORN {dff_latex}\nHallem glomeruli only'
-        )
-        plot_corr(mean_fly_dff_hallem_corr, panel_plot_dir,
-            'orn_dff_hallem-subset_corr-dist',
-            # TODO use one of newer strs in al_analysis.py for this (-> move to
-            # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
-            xlabel=f'ORN {dff_latex}\nHallem glomeruli only', as_corr_dist=True
-        )
+
+            # TODO (just for ticklabels in plots) for kiwi/control at least (but maybe
+            # for everything?) hide the '@ 0' part of conc strs [maybe unless there is
+            # another odor w/ a diff conc, but may not matter]
+
+            # TODO restore response matrix plot versions of these (i.e. plot responses
+            # in addition to just corrs) (would technically be duped w/ ijroi versions,
+            # for convenient comparison to 'est_orn_spike_deltas*' versions? or symlink
+            # to the ijroi one?
+            plot_corr(mean_fly_dff_corr, panel_plot_dir, 'orn_dff_corr',
+                # TODO use one of newer strs in al_analysis.py for this (-> move to
+                # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
+                xlabel=f'ORN {dff_latex}'
+            )
+
+            fly_dff_hallem_subset = raw_dff_panel_df.loc[:,
+                raw_dff_panel_df.columns.get_level_values('roi').isin(
+                    hallem_delta_wide.columns
+                )
+            ]
+            mean_fly_dff_hallem_corr = mean_of_fly_corrs(fly_dff_hallem_subset)
+            plot_corr(mean_fly_dff_hallem_corr, panel_plot_dir,
+                'orn_dff_hallem-subset_corr',
+                # TODO use one of newer strs in al_analysis.py for this (-> move to
+                # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
+                xlabel=f'ORN {dff_latex}\nHallem glomeruli only'
+            )
+            plot_corr(mean_fly_dff_hallem_corr, panel_plot_dir,
+                'orn_dff_hallem-subset_corr-dist',
+                # TODO use one of newer strs in al_analysis.py for this (-> move to
+                # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
+                xlabel=f'ORN {dff_latex}\nHallem glomeruli only', as_corr_dist=True
+            )
 
         # should i also be passing each *individual fly* data thru dF/F -> est spike
         # delta fn (-> recomputing)? should i be doing that w/ all of modeling?
@@ -22292,16 +22820,19 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         est_df = panel_est_df.droplevel('panel', axis='columns').T.copy()
 
         # TODO also plot hemibrain filled version(s) of this
-        scaling_method = dff_to_spiking_model_choices['scaling_method']
-        est_corr = plot_responses_and_corr(est_df.T, panel_plot_dir,
-            f'est_orn_spike_deltas_{dff2spiking_choices_str}',
+        xlabel = 'est. ORN spike deltas'
+        fname = 'est_orn_spike_deltas'
+        if not input_is_already_est_spike_deltas:
+            scaling_method = dff_to_spiking_model_choices['scaling_method']
             # TODO maybe borrow final part from scaling_method2desc (but current strs
             # there have more info than i want)
-            xlabel=('est. ORN spike deltas\n'
-                # TODO use one of newer strs in al_analysis.py for this (-> move to
-                # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
-                f'{dff_latex} scaling: {scaling_method}'
-            ),
+            # TODO use one of newer strs in al_analysis.py for this (-> move to
+            # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
+            xlabel += f'\n{dff_latex} scaling: {scaling_method}'
+            fname += f'_{dff2spiking_choices_str}'
+
+        est_corr = plot_responses_and_corr(est_df.T, panel_plot_dir, fname,
+            xlabel=xlabel
         )
         del est_corr
 
@@ -22313,7 +22844,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         # meaningful degree?)
 
         # TODO or just move before loop over panels?
-        if panel == 'megamat':
+        if not input_is_already_est_spike_deltas and panel == 'megamat':
             hallem_megamat = hallem_delta_wide.loc[
                 # get_level_values('odor') should work whether panel_est_df has 'odor'
                 # as one level of a MultiIndex, or as single level of a regular Index
@@ -22368,9 +22899,10 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         ax.set_title(f'pebbled {panel}')
         # TODO or save in panel dir? this consistent w/ saving of hallem megamat stuff
         # above tho...
-        savefig(fig, plot_dir,
-            f'{dff2spiking_choices_str}__hist_est-spike-delta_{panel}'
-        )
+        fname = f'__hist_est-spike-delta_{panel}'
+        if not input_is_already_est_spike_deltas:
+            fname = f'{dff2spiking_choices_str}{fname}'
+        savefig(fig, plot_dir, fname)
         del tidy_est
 
         pebbled_input_df = panel_est_df
@@ -22381,27 +22913,19 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         # TODO also only do if repro_remy_paper=True?
         if panel == 'megamat':
             comparison_orns = {
-                'raw-dff': raw_dff_panel_df,
-
                 # NOTE: this one does not have single fly data like raw_dff_panel_df
                 # (it's just mean responses), so correlation computed not exactly
                 # apples-to-apples with most others (but similar to how model output
                 # corr computed, given model is run on mean data)
                 'est-spike-delta': est_df,
-
                 # TODO also a version zero-filling like fit_mb_model does internally
                 # (happy enough w/ corr_diff plots i added in fit_mb_model?)
             }
+            if not input_is_already_est_spike_deltas:
+                comparison_orns['raw-dff'] = raw_dff_panel_df
 
             # this is a mean-of-fly-corrs (WAS for Remy's 4 final KC flies, but now
             # adapting to also load the older data too)
-            # TODO TODO TODO dropna to assert these only use final 4 flies? or at least
-            # assert # of flies [or maybe better to assert the specific set of them]?
-            # (or do those checks / dropping in this fn probably)
-            # TODO TODO TODO want final4_flies_only=True here?
-            # TODO TODO TODO TODO or maybe a different flag (shared named w/ one on
-            # load_remy_2e_corrs), to just drop those 4 flies with insufficient # of
-            # megamat pairs
             comparison_kc_corrs = load_remy_megamat_mean_kc_corrs()
 
             # TODO replace these two lines w/ just sorting, if that works (would have to
@@ -22421,80 +22945,89 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 xlabel='observed KCs', as_corr_dist=True
             )
 
-            assert set(comparison_kc_corrs.index) == set(
-                raw_dff_panel_df.index.get_level_values('odor1')
-            )
-            mean_orn_corrs = mean_of_fly_corrs(raw_dff_panel_df, square=False)
-            # TODO TODO TODO do i really want to take a mean of corrs, rather than
-            # bootstrapping over data that includes each flies KC corr (for each odor
-            # pair) separately? does it matter? any of those plots / outputs currently
-            # used in paper?
+            # TODO do i really want to take a mean of corrs, rather than bootstrapping
+            # over data that includes each flies KC corr (for each odor pair)
+            # separately? does it matter? any of those plots / outputs currently used in
+            # paper? (only plot where it might be relevant is 3Di/ii. not sure how
+            # KC data is currently handled there)
             mean_kc_corrs = corr_triangular(comparison_kc_corrs)
-
-            assert mean_kc_corrs.index.equals(mean_orn_corrs.index)
-
-            orn_col = 'mean_orn_corr'
             kc_col = 'mean_kc_corr'
-            mean_orn_corrs.name = orn_col
             mean_kc_corrs.name = kc_col
 
-            merged_corrs = pd.concat([mean_orn_corrs, mean_kc_corrs], axis='columns')
+            if not input_is_already_est_spike_deltas:
+                assert set(comparison_kc_corrs.index) == set(
+                    raw_dff_panel_df.index.get_level_values('odor1')
+                )
+                mean_orn_corrs = mean_of_fly_corrs(raw_dff_panel_df, square=False)
+                orn_col = 'mean_orn_corr'
+                mean_orn_corrs.name = orn_col
+                assert mean_kc_corrs.index.equals(mean_orn_corrs.index)
+
+                merged_corrs = pd.concat([mean_orn_corrs,mean_kc_corrs], axis='columns')
+            else:
+                # TODO work? just skip everything below instead?
+                merged_corrs = mean_kc_corrs.copy()
 
             # TODO refactor to share w/ where i copied from
-            fig, ax = plt.subplots()
-            add_unity_line(ax)
-            lineplot_kws = dict(
-                ax=ax, data=merged_corrs, x=orn_col, y=kc_col, linestyle='None',
-                color='black'
-            )
-            marker_only_kws = dict(
-                markers=True, marker='o', errorbar=None,
+            if not input_is_already_est_spike_deltas:
+                fig, ax = plt.subplots()
+                add_unity_line(ax)
+                lineplot_kws = dict(
+                    ax=ax, data=merged_corrs, x=orn_col, y=kc_col, linestyle='None',
+                    color='black'
+                )
+                marker_only_kws = dict(
+                    markers=True, marker='o', errorbar=None,
 
-                # seems to default to white otherwise
-                markeredgecolor='black',
+                    # seems to default to white otherwise
+                    markeredgecolor='black',
 
-                markerfacecolor='None',
-                alpha=0.175,
-            )
-            # plot points
-            sns.lineplot(**lineplot_kws, **marker_only_kws)
+                    markerfacecolor='None',
+                    alpha=0.175,
+                )
+                # plot points
+                sns.lineplot(**lineplot_kws, **marker_only_kws)
 
-            metric_name = 'correlation'
-            # TODO use one of newer strs in al_analysis.py for this (-> move to
-            # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
-            ax.set_xlabel(f'{metric_name} of raw ORN {dff_latex} (observed)')
-            ax.set_ylabel(f'{metric_name} of KCs (observed)')
+                metric_name = 'correlation'
+                # TODO use one of newer strs in al_analysis.py for this (-> move to
+                # al_util?)? might this ever be 'Z-scored F' instead of dF/F?
+                ax.set_xlabel(f'{metric_name} of raw ORN {dff_latex} (observed)')
+                ax.set_ylabel(f'{metric_name} of KCs (observed)')
 
-            # TODO just take .max().max() / etc? these are the only two columns... (at
-            # least here)
-            metric_max = max(merged_corrs[kc_col].max(), merged_corrs[orn_col].max())
-            metric_min = min(merged_corrs[kc_col].min(), merged_corrs[orn_col].min())
+                # TODO just take .max().max() / etc? these are the only two columns...
+                # (at least here)
+                metric_max = max(
+                    merged_corrs[kc_col].max(), merged_corrs[orn_col].max()
+                )
+                metric_min = min(
+                    merged_corrs[kc_col].min(), merged_corrs[orn_col].min()
+                )
 
-            plot_max = 1
-            plot_min = -.5
-            assert metric_max <= plot_max, f'{metric_max=} > {plot_max=}'
-            assert metric_min >= plot_min, f'{metric_min=} < {plot_min=}'
+                plot_max = 1
+                plot_min = -.5
+                assert metric_max <= plot_max, f'{metric_max=} > {plot_max=}'
+                assert metric_min >= plot_min, f'{metric_min=} < {plot_min=}'
 
-            ax.set_xlim([plot_min, plot_max])
-            ax.set_ylim([plot_min, plot_max])
+                ax.set_xlim([plot_min, plot_max])
+                ax.set_ylim([plot_min, plot_max])
 
-            # should give us an Axes that is of square size in figure coordinates
-            ax.set_box_aspect(1)
+                # should give us an Axes that is of square size in figure coordinates
+                ax.set_box_aspect(1)
 
-            # TODO TODO if needed, return some value from this (/ use a currently unused
-            # retval) rather than using _spear_inputs2dfs elements this sets
-            spear_text, _, _, _, _ = bootstrapped_corr(merged_corrs, kc_col, orn_col,
-                method='spearman',
-                # TODO delete (for debugging)
-                _plot_dir=panel_plot_dir
-            )
-            ax.set_title(spear_text)
+                # TODO TODO if needed, return some value from this (/ use a currently
+                # unused retval) rather than using _spear_inputs2dfs elements this sets
+                spear_text, _, _, _, _ = bootstrapped_corr(merged_corrs, kc_col,
+                    orn_col, method='spearman',
+                    # TODO delete (for debugging)
+                    _plot_dir=panel_plot_dir
+                )
+                ax.set_title(spear_text)
 
-            # TODO also include errorbars along both x and y here? (across flies whose
-            # correlations went into mean corr)
+                # TODO also include errorbars along both x and y here? (across flies
+                # whose correlations went into mean corr)
 
-            savefig(fig, panel_plot_dir, 'remy-kc_vs_orn-raw-dff_corrs')
-            # (end part to refactor to share w/ copied code)
+                savefig(fig, panel_plot_dir, 'remy-kc_vs_orn-raw-dff_corrs')
+                # (end part to refactor to share w/ copied code)
 
         model_kw_list = []
         for model_kws in fitandplot_model_kw_list:
@@ -22548,10 +23081,22 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             model_kw_list.append(model_kws)
 
 
+        if input_is_already_est_spike_deltas:
+            if not skip_hallem_models:
+                skip_hallem_models = True
+                warn(f'setting {skip_hallem_models=} since not supported in '
+                    f'{input_is_already_est_spike_deltas=} case'
+                )
+
         # TODO do in separate script, regardless of panel? not even using that panel's
         # data, right? (i suppose for KC comparison i still am, and using remy's data
         # there?)
-        if repro_remy_paper and panel == 'megamat':
+        if skip_hallem_models:
+            warn('skipping all models using Hallem data (rather than our measured '
+                'ORN data) as input (because `-s model-hallem` CLI option)'
+            )
+
+        if not skip_hallem_models and repro_remy_paper and panel == 'megamat':
             hallem_for_comparison = hallem_delta_wide.copy()
             assert hallem_for_comparison.index.str.contains(' @ -3').all()
             # so things line up in comparison_orns path (fit_mb_model hallem data has '@
@@ -22609,15 +23154,10 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     _strip_concs_comparison_kc_corrs=True,
                 ),
             ]
-            if not skip_hallem_models:
-                # all entries in preprint_repro_model_kw_list use hallem data, and all
-                # entries in model_kw_list (before line below) should not use hallem
-                # data
-                model_kw_list = model_kw_list + preprint_repro_model_kw_list
-            else:
-                warn('skipping all models using Hallem data (rather than our measured '
-                    'ORN data) as input (because `-s model-hallem` CLI option)'
-                )
+            # all entries in preprint_repro_model_kw_list use hallem data, and all
+            # entries in model_kw_list (before line below) should not use hallem
+            # data
+            model_kw_list = model_kw_list + preprint_repro_model_kw_list
 
         # hack to skip long running models, if I want to test something on pebbled and
         # hallem cases w/o re-running many seeds before getting an answer on the test.
@@ -22636,7 +23176,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             assert panel in ('megamat', 'validation2'), ('repro_remy_paper=True '
                 'probably does not make sense for use on new data'
             )
-
 
         # TODO have denominator accurate when -M restricts # of models run? (currently
         # to always just 1)
@@ -22748,7 +23287,10 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 # this call is to pre-tune model on specified panels, and then calls
                 # below will run the current panel(s) through this pre-tuned model
                 param_dict = fit_and_plot_mb_model(tuning_panels_plot_dir,
-                    extra_params=extra_params,
+                    # TODO maybe can only pass try_cache to second call?
+                    # there are currently some assertions that i think regard it and
+                    # only_return_params=True
+                    extra_params=extra_params, try_cache=try_cache,
 
                     # NOTE: this is intended to prevent any sensitivity analysis
                     # recursive calls from running, and also skips most/all plotting
@@ -22896,7 +23438,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 tuning_prefix = f'tuned-on_{tuning_panels_str}{tuning_param_str}__'
                 param_dir_prefix = f'{tuning_prefix}{param_dir_prefix}'
 
-            params_for_csv = fit_and_plot_mb_model(panel_plot_dir,
+            params_for_csv = fit_and_plot_mb_model(panel_plot_dir, try_cache=try_cache,
                 param_dir_prefix=param_dir_prefix, extra_params=_extra_params,
                 fixed_thr=fixed_thr, wAPLKC=wAPLKC, **model_kws
             )
@@ -23460,17 +24002,42 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 # diagonal should be 0, not 1, since it's a correlation *distance*
                 diag_value=0.0
             )
-            # TODO TODO check something in this is consistent w/ kc_mean_dists below?
+            assert kc_mean_dist_square.index.equals(kc_mean_dist_square.columns)
+            # TODO check something in this is consistent w/ kc_mean_dists below?
             to_parquet(kc_mean_dist_square,
                 plot_dir / 'kc_mean_megamat_corrdist.parquet'
             )
 
+            # TODO de-dupe w/ other checks flag def above? move to kwarg?
+            checks = True
+            if checks:
+                mean_corr = load_remy_megamat_mean_kc_corrs()
+                assert mean_corr.columns.equals(mean_corr.index)
+
+                odors = mean_corr.index.map(olf.parse_odor_name)
+                assert odors.equals(kc_mean_dist_square.index)
+
+                mean_corr.index = odors
+                mean_corr.columns = odors
+                assert pd_allclose(kc_mean_dist_square, 1 - mean_corr)
+                del mean_corr
+
+            # TODO delete. should be fixed now
             # ipdb> diff_pairs = [('1-6ol', '2-but'), ('2-but', 'benz'), ('1-6ol', 'benz')]
             # ipdb> corr_triangular(kc_mean_dist_square).loc[diff_pairs]
             # odor1  odor2
             # 1-6ol  2-but    0.984899
             # 2-but  benz     1.081649
             # 1-6ol  benz     0.927795
+            #
+            # after dropping flies with little megamat, w/ new flag (and new default
+            # behavior), now getting:
+            # odor1  odor2
+            # 1-6ol  2-but    0.961685
+            # 2-but  benz     1.055676
+            # 1-6ol  benz     0.916046
+            # (which i assume matches what i was trying to recreate in
+            # scripts/corr_minus_orn_vs_vcf_repro/step05b-run-resampling.py)
             #
             # flies_per_pair = remy_2e_corrs_in_model.groupby(['abbrev_row','abbrev_col'
             #   ]).datefly.agg(['unique', 'nunique'])
@@ -23481,10 +24048,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             # print(f"# flies: {flies_per_pair.loc[p]['nunique']}")
             # pprint(sorted(flies_per_pair.loc[p]['unique']))
             # print()
-            #
-            # TODO delete
-            #breakpoint()
-            #
 
             kc_mean_dists = remy_2e_corrs_in_model.groupby('odor_pair_str'
                 ).correlation_distance.mean()
@@ -23574,7 +24137,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             else:
                 assert remy_2e_modelsubset_facetgrid is None
 
-            if desc != 'hallem':
+            if not input_is_already_est_spike_deltas and desc != 'hallem':
                 # TODO TODO delete this (and all _spear_inputs2dfs stuff)
                 # TODO delete
                 '''
@@ -23862,9 +24425,13 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
 assert len(megamat_odor_names) == n_megamat_odors
 
+# flies from these dates are the only thing that should be dropped from megamat in all
+# paper correlation calculations. never just "final" 4 flies anymore.
+remy_dates_with_little_megamat: Tuple[str] = ('2022-09-21', '2022-09-22', '2022-09-26')
+
 # TODO put in docstring which files we are loading from
-def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool = True
-    ) -> pd.DataFrame:
+def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool = True,
+    drop_flies_with_little_megamat: bool = True) -> pd.DataFrame:
 
     fly_response_root = remy_data_dir / 'megamat17' / 'per_fly'
     response_file_to_use = 'xrds_suite2p_respvec_mean_peak.nc'
@@ -24181,6 +24748,15 @@ def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool
         assert pfo_mask.sum() > 0
         mean_responses = mean_responses.loc[:, ~pfo_mask]
 
+    if drop_flies_with_little_megamat:
+        date_set = set(mean_responses.index.get_level_values('datefly').str.split('/'
+            ).map(lambda x: x[0])
+        )
+        # looks like we already did not have them
+        assert date_set & set(remy_dates_with_little_megamat) == set()
+    else:
+        assert False, 'not implemented (or do not have data from those dates)'
+
     return mean_responses
 
 
@@ -24322,13 +24898,12 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, *, drop_nonmegamat: bool 
 
 # don't need ordered_pairs here b/c output of this fn should be square, so it no longer
 # matters.
-# TODO TODO TODO delete final4_flies_only stuff. Remy actually uses the same subset i
-# should be using for 2E now, which only *drops* 4(?) flies with a small number of
-# megamat pairs, for everything. never just 4 flies now, but also older ones with less
-# than all of the megamat odors.
-def load_remy_megamat_mean_kc_corrs(final4_flies_only: bool = False, **kwargs
-    ) -> pd.DataFrame:
-    """Returns mean of fly correlations, for Remy's 4 final megamat KC flies.
+_remy_megamat_mean_kc_corrs: Optional[pd.DataFrame] = None
+def load_remy_megamat_mean_kc_corrs() -> pd.DataFrame:
+    """Returns mean of fly correlations, for Remy's megamat KC data
+
+    Include both the best 4 flies with all megamat data, as well as several older flies
+    that had a sufficient number of megamat odor pairs.
 
     Drops cells from bad clusters (as Remy does, using xarray attrs['good_xid'] that she
     sets to good clusters, excluding clusters of bad cells, which should mostly be
@@ -24337,29 +24912,20 @@ def load_remy_megamat_mean_kc_corrs(final4_flies_only: bool = False, **kwargs
     fly's correlation. Correlation is computed within each fly, and then the average is
     computed across these correlations. This should all be consistent with how Remy
     computes correlations.
-
-    Args:
-        **kwargs: passed to `_remy_megamat_flymean_kc_corrs`
     """
-    # TODO refactor to cache this (or some calls within it, to not need cache
-    # dependent on kwargs?)?
-    fly_corrs = _remy_megamat_flymean_kc_corrs(**kwargs)
+    global _remy_megamat_mean_kc_corrs
+
+    if _remy_megamat_mean_kc_corrs is not None:
+        return _remy_megamat_mean_kc_corrs.copy()
+
+    fly_corrs = _remy_megamat_flymean_kc_corrs()
 
     assert len(fly_corrs.columns) == n_megamat_only_pairs, \
         f'{len(fly_corrs.columns)=} != {n_megamat_only_pairs=}'
 
-    if final4_flies_only:
-        fly_corrs = fly_corrs.dropna()
-
-        curr_flies = set(fly_corrs.index)
-        assert curr_flies == final4_megamat_flies, \
-            f'{curr_flies=}\n{final4_megamat_flies=}'
-
-    # TODO TODO warn about what's happening whether final4_flies_only or not?
-    # or do in the only place this is currently called?
-
     mean_corr_ser = fly_corrs.mean()
     mean_corr = invert_corr_triangular(mean_corr_ser)
+    _remy_megamat_mean_kc_corrs = mean_corr.copy()
     return mean_corr
 
 
@@ -24675,21 +25241,17 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
     df_obs = pd.read_csv(csv_path)
     assert not df_obs.isna().any().any()
 
-    dates_with_little_megamat = ('2022-09-21', '2022-09-22', '2022-09-26')
+    # TODO refactor to share dropping w/ other code loading her corrs? make sense?
     if drop_flies_with_little_megamat:
         # see docstring for which 4 flies this is dropping and why
         to_drop = df_obs.datefly.str.split('/').apply(
-            lambda x: x[0] in dates_with_little_megamat
+            lambda x: x[0] in remy_dates_with_little_megamat
         )
         assert to_drop.sum() > 0
         warn('load_remy_2e_corrs: dropping the following flies, because '
             'drop_flies_with_little_megamat=True: '
             f'{sorted(df_obs.datefly[to_drop].unique())}'
         )
-        # TODO TODO TODO need to also update checking below to not err because of this?
-        # (presumably just need to drop same flies there)
-        # TODO TODO TODO that code did not seem to fail! should i update it so that it
-        # would? is the check even working??? matter?
         df_obs = df_obs[~to_drop].copy()
 
     df_obs[['abbrev_row','abbrev_col']] = df_obs['odor_pair_str'].str.split(pat=', ',
@@ -24907,12 +25469,6 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
         # TODO update comment. no longer just final 4.
         # data from best 4 "final" flies, which are the only megamat odor correlations
         # used anywhere in the paper except for figure 2E.
-        #
-        # TODO TODO TODO are these used for any of my paper outputs? may need to check
-        # more closely i'm using same flies as 2E (even with new
-        # drop_flies_with_little_megamat=True, it seems there might be more flies going
-        # into 2E than here? at least warn about difference? or doc being more clear
-        # about what's actually checked here)
         flymean_corrs = _remy_megamat_flymean_kc_corrs(ordered_pairs=remy_pairs,
             # TODO if i set this true, do i actually only get the "final" megamat flies
             # then? do i have some other way to do that? do i actually ever need that?
@@ -24931,16 +25487,9 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
             drop_nonmegamat=False
         )
 
-        # TODO TODO rename, since now it's not just the 4 "final" flies used
+        # TODO TODO rename (/delete), since now it's not just the 4 "final" flies used
         # (and not just always megamat either)
         final_megamat_datefly = set(flymean_corrs.index.get_level_values('datefly'))
-        # TODO delete (or update to include final 4 + however many old megamat flies i'm
-        # now supposed to include)
-        # TODO TODO TODO define a constant which specifies which specific datefly values
-        # are the "final" flies used in other analyses (and are there any other analyses
-        # that I'm reponsible for, other than 2E, that should be using anything other
-        # than those final flies?)
-        assert n_final_megamat_kc_flies <= len(final_megamat_datefly)
 
         flymean_corrs.columns = pd.MultiIndex.from_frame(
             flymean_corrs.columns.to_frame(index=False).applymap(olf.parse_odor_name)
@@ -25026,106 +25575,7 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
             df_obs.abbrev_row.isin(megamat_odor_names) &
             df_obs.abbrev_col.isin(megamat_odor_names)
         ]
-
-        # TODO (delete? satisfied?) are all of the old megamat flies that i'm now
-        # supposed to use a subset of these? do the correlations match what i would
-        # compute?
-        #
-        # ipdb> len(set(df_megamat.datefly) - final_megamat_datefly)
-        # 18
-        # ipdb> pp (set(df_megamat.datefly) - final_megamat_datefly)
-        # {'2018-10-21/1',
-        #  '2019-03-06/3',
-        #  '2019-03-06/4',
-        #  '2019-03-07/2',
-        #  '2019-04-26/4',
-        #  '2019-05-09/4',
-        #  '2019-05-09/5',
-        #  '2019-05-23/2',
-        #  '2019-05-24/1',
-        #  '2019-05-24/3',
-        #  '2019-05-24/4',
-        #  '2019-07-19/2',
-        #  '2019-09-12/1',
-        #  '2019-09-12/2',
-        #  '2022-09-21/1',
-        #  '2022-09-22/2',
-        #  '2022-09-26/1',
-        #  '2022-09-26/3'}
-        assert final_megamat_datefly - set(df_megamat.datefly) == set()
-        df_megamat_nonfinal = df_megamat[
-            ~df_megamat.datefly.isin(final_megamat_datefly)
-        ]
-
-        # TODO delete (/update) (no longer just using final 4 flies)
-        #
-        # only the 4 "final" flies have all 17 odors measured (-> all 136 non-identity
-        # pairs)
-        #
-        # ipdb> [len(x) for _, x in df_megamat_nonfinal.groupby('datefly')]
-        # [47, 10, 28, 30, 21, 38, 38, 36, 36, 36, 57, 79, 71, 71, 3, 3, 3, 3]
-        #assert all(len(x) < n_megamat_only_pairs
-        #    for _, x in df_megamat_nonfinal.groupby('datefly')
-        #)
-
-        assert remy_2e_metric == 'correlation_distance'
-        mean_nonfinal_corrdist = df_megamat_nonfinal.groupby(['abbrev_row','abbrev_col']
-            )[remy_2e_metric].mean()
-
-        mean_nonfinal_corrdist.index.names = ['odor1', 'odor2']
-
-        # TODO better check than this try/except
-        # (why was it actually failing anyway? just bug?)
-        try:
-            square_nonfinal_corrdist = invert_corr_triangular(mean_nonfinal_corrdist,
-                diag_value=0, _index=corrs.columns
-            )
-
-            square_nonfinal_corrs = 1 - square_nonfinal_corrdist
-
-            # since sorting expects concentrations apparently...
-            square_nonfinal_corrs.columns = square_nonfinal_corrs.columns + ' @ -3'
-            square_nonfinal_corrs.index = square_nonfinal_corrs.index + ' @ -3'
-
-            square_nonfinal_corrs = sort_odors(addlevel(
-                    addlevel(square_nonfinal_corrs, 'panel', 'megamat').T,
-                'panel', 'megamat'
-                ), warn=False
-            )
-
-            square_nonfinal_corrs = square_nonfinal_corrs.droplevel('panel',
-                axis='columns'
-            ).droplevel('panel', axis='index')
-
-            plot_corr(square_nonfinal_corrs, output_root,
-                '2e_remy_nonfinal-flies-only_corr', xlabel='non-final flies only'
-            )
-
-            # TODO actually plot this / delete
-            '''
-            nonfinal_pair_n = df_megamat_nonfinal.groupby(['abbrev_row','abbrev_col']
-                ).size()
-            # TODO just rename these cols in dataframe before (so we don't have to do
-            # this here and for mean)
-            nonfinal_pair_n.index.names = ['odor1', 'odor2']
-            nonfinal_pair_n = invert_corr_triangular(nonfinal_pair_n, diag_value=np.nan,
-                _index=corrs.columns
-            )
-            '''
-        # TODO that fn still make the same assertion?
-        # TODO TODO (can i repro? yea, still an issue even called from
-        # ./repro_remy_paper_modeling.py) well, it does still seem to be hitting some
-        # assertion error here, in at least one call (but there's only one call without
-        # preprint data anyway, so it's that one...)
-        # ...
-        #   File "./al_analysis.py", line 1208, in invert_corr_triangular
-        #     assert all(odor2[:-1] == odor1[1:])
-        except AssertionError:
-            # TODO TODO delete
-            raise
-            # TODO elaborate on why?
-            warn('could not plot 2e square matrix corr plots')
-    #
+        assert final_megamat_datefly == set(df_megamat.datefly)
 
     return df_obs
 
@@ -25838,6 +26288,8 @@ def count_flies_and_rois(df: pd.DataFrame, *, verbose: bool = True
     n_rois_by_fly = grouped_by_fly[roi_col].nunique()
     n_rois_by_fly.name = 'n_rois'
 
+    # TODO TODO factor this to its own fn (just for counting # of flies)? in
+    # hong2p.util?
     n_flies = len(n_rois_by_fly)
     n_rois = n_rois_by_fly.sum()
     if verbose:
@@ -27251,8 +27703,10 @@ BOOTSTRAP_SEED: int = 0
 # (pre-dropping fully silent cells [/ silent panel cells] in model cases)
 # (am i not currently? or was it a different plot?)
 def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
-    title: Optional[str] = None, facet_kws: Optional[ParamDict] = None,
-    call_on_grids_before_save: Optional[Callable] = None, **kwargs) -> None:
+    title: Optional[str] = None, title_y: Optional[float] = None,
+    facet_kws: Optional[ParamDict] = None, fname_suffix: str = '',
+    call_on_grids_before_save: Optional[Callable] = None,
+    mixonly_responders_plot: bool = False, **kwargs) -> None:
     # TODO doc
 
     have_fly_cols = _have_fly_cols(class_fracs)
@@ -27261,6 +27715,8 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
         class_fracs.index.get_level_values('mix_resp').values &
         (class_fracs.index.get_level_values('n_comps') == 0)
     ].copy()
+
+    # TODO delete?
     '''
     # TODO assert first two levels are what i expect(+require) for this?
     # (and which are those again?)
@@ -27303,7 +27759,7 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
 
 
     def plot_fn(data, *cols, model_marker_kws: Optional[ParamDict] = None,
-        jitter: Union[float, bool] = 0.3, **kwargs) -> None:
+        jitter: Union[float, bool] = 0.3, capsize: float = 0.0, **kwargs) -> None:
         if not have_fly_cols:
             model_data = data
         else:
@@ -27335,8 +27791,11 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
             # as KCs here) (would palette still fix it tho?)
             sns.pointplot(data[from_kcs], *cols, dodge=False, markerfacecolor='none',
                 linestyle='none', seed=BOOTSTRAP_SEED, err_kws=err_kws,
+                # TODO make line thicker, now that capsize=0 by default? other changes?
+                errorbar=('ci', ci), capsize=capsize,
                 # TODO try legend=True again?
-                errorbar=('ci', ci), capsize=0.3, legend=False, **kwargs
+                #legend=False,
+                **kwargs
             )
         #
 
@@ -27431,18 +27890,21 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
             label_offset=-1.15
         )
 
-    if have_fly_cols:
-        title_y = 1.07
-    else:
-        # just a hack to compensate for very long (many line) titles in model cases
-        # TODO TODO work?
-        title_y = 1.20
+    # TODO allow overriding title_y w/ kwarg?
+    if title_y is None:
+        if have_fly_cols:
+            title_y = 1.07
+        else:
+            # just a hack to compensate for very long (many line) titles in model cases
+            # TODO TODO work?
+            title_y = 1.20
 
+    # TODO rename kwarg to suptitle?
     if title is not None:
         cg.fig.suptitle(title, y=title_y)
 
     cg.set_axis_labels(
-        y_var=f'fraction of ROIs\n(with {ci:.0f}% CI)',
+        y_var=f'fraction of ROIs\n(with {ci:.0f}% CI on mean)',
         x_var='response class'
     )
     if call_on_grids_before_save is not None:
@@ -27453,10 +27915,16 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     assert y_col == 'frac_response_class', ('no longer saving plot with name '
         'documented in comment below'
     )
+
+    cg.add_legend()
+
     # saves `frac_response_class.pdf`
-    savefig(cg, plot_dir, y_col, bbox_inches='tight')
+    savefig(cg, plot_dir, f'{y_col}{fname_suffix}', bbox_inches='tight')
     # TODO break above into its own fn, perhaps also returning but not saving the
     # facetgrid (or option for that?)
+
+    if not mixonly_responders_plot:
+        return
 
     kwargs_to_pop = ['model_marker_kws', 'jitter', 'alpha']
     for k in kwargs_to_pop:
@@ -27466,6 +27934,37 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     y_col = frac_mix_only_responders.name
     frac_mix_only_responders = frac_mix_only_responders.reset_index()
 
+    # TODO TODO fix: ValueError: left cannot be >= right (or at least better error
+    # message) (getting from natmix_data/analysis.py w/ args:
+    # -r ~/src/al_analysis/scripts/yang_mix_outputs -o last_chosen_modeldirs.csv
+    # ipdb> u
+    # > /home/tom/src/al_analysis/venv/lib/python3.8/site-packages/seaborn/categorical.py(3128)catplot()
+    #    3127     if show_legend:
+    # -> 3128         g.add_legend(title=p.variables.get("hue"), label_order=hue_order)
+    #    3129
+    #
+    # ipdb> !p.variables.get('hue')
+    # 'source'
+    # ipdb> hue_order
+    # ipdb> !g._legend_data
+    # {'Fc_zscore': <matplotlib.lines.Line2D object at 0x7fa083474040>,
+    #  'spike_counts_prat-claws_True__pn-claw-to-apl_True__claw-dyns__sp_0.05__n-spikes-for-response_2': <matplotlib.lines.Line2D object at 0x7fa083448ac0>,
+    #  'spike_counts_wd20__sp_0.05__n-spikes-for-response_2': <matplotlib.lines.Line2D object at 0x7fa0f81dde50>, 'orn': <matplotlib.lines.Line2D object at 0x7fa0f81dd8e0>}
+    #
+    # ipdb> pp kwargs
+    # {'hue': 'source',
+    #  'palette': {'Fc_zscore': (0.12156862745098039,
+    #                            0.4666666666666667,
+    #                            0.7058823529411765),
+    #              'orn': (0.8392156862745098,
+    #                      0.15294117647058825,
+    #                      0.1568627450980392),
+    #              'spike_counts_prat-claws_True__pn-claw-to-apl_True__claw-dyns__sp_0.05__n-spikes-for-response_2': (1.0,
+    #                                                                                                                 0.4980392156862745,
+    #                                                                                                                 0.054901960784313725),
+    #              'spike_counts_wd20__sp_0.05__n-spikes-for-response_2': (0.17254901960784313,
+    #                                                                      0.6274509803921569,
+    #                                                                      0.17254901960784313)}}
     cg2 = sns.catplot(frac_mix_only_responders, x='panel', y=y_col, kind='point',
         linestyles='none', markerfacecolor='none', errorbar=('ci', ci),
         seed=BOOTSTRAP_SEED, alpha=0.5, **kwargs
@@ -27533,7 +28032,7 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
         'documented in comment below'
     )
     # saves `frac_mix-only_responders.pdf`
-    savefig(cg2, plot_dir, y_col, bbox_inches='tight')
+    savefig(cg2, plot_dir, f'{y_col}{fname_suffix}', bbox_inches='tight')
 
 
 def main():

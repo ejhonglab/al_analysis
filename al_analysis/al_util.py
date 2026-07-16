@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import patches
+from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.testing.exceptions import ImageComparisonFailure
 # TODO replace w/ conditional import of seaborn / scipy as needed?
@@ -50,7 +51,7 @@ from hong2p import olf, util, viz
 from hong2p.olf import format_mix_from_strs, solvent_str
 from hong2p.roi import is_ijroi_named
 from hong2p.util import pd_allclose
-from hong2p.viz import dff_latex
+from hong2p.viz import dff_latex, map_each_series_to_rgb, rgb_tuple_df_to_3d_array
 from hong2p.types import Pathlike
 import natmix
 
@@ -97,14 +98,14 @@ def sign_preserving_maxabs(x):
 #
 # use this value by default (all new analysis; except when using -R)
 # TODO TODO TODO restore
-#response_stat_fn = sign_preserving_maxabs
+response_stat_fn = sign_preserving_maxabs
 #
 # use this value for -R
 #
 # mean was what I had used for a while (also with n_volumes_for_response=2, I believe),
 # including to generate Remy-paper outputs, and inputs to modelling for that.
 # TODO TODO TODO comment again, after regening outputs for paper
-response_stat_fn = np.mean
+#response_stat_fn = np.mean
 
 # TODO refactor to fn(s), so i can recompute this/these if al-analysis called w/ -R (to
 # use old stat)? pretty much always compute only as needed, recomputing each time?
@@ -2201,7 +2202,6 @@ def invert_corr_triangular(corr_ser: pd.Series, diag_value: float = 1., *,
 
     # TODO maybe columns and index should have diff names? keep odor1/odor2?
 
-
     square_corr = pd.DataFrame(index=odor_index, columns=odor_index, data=float('nan'))
     for a in odor_index:
         for b in odor_index:
@@ -2382,7 +2382,9 @@ diverging_cmap = plt.get_cmap('RdBu_r').copy()
 # contain white), but now is not distinct from cmap midpoint (0.)
 #
 # lighter gray than 'gray', and according to Sam, B takes less issue with this color
-diverging_cmap.set_bad((0.8, 0.8, 0.8))
+#light_gray = (0.8, 0.8, 0.8)
+light_gray = (0.9, 0.9, 0.9)
+diverging_cmap.set_bad(light_gray)
 
 # TODO actually set colors for stuff outside diverging_cmap range?
 # (just need cmap.set_[over|under] and extend='both' (or 'min'|'max', if only want
@@ -2534,12 +2536,24 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
 # plot_all...? see also mean_df/etc plotting in main, that recreates much of those
 # kwargs for use w/ viz.matshow)
 def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
-    vmin=None, vmax=None, title: str = '', _save_kws=None, **kwargs) -> None:
+    vmin=None, vmax=None, title: str = '', title_kws: Optional[ParamDict] = None,
+    _save_kws=None, **kwargs) -> None:
+    # TODO accept subplot_kws for subplots?
 
-    fig, _ = viz.matshow(df, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs, **kwargs)
+    # TODO delete?
+    #fig, _ = viz.matshow(df, ax=ax, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs)
+    fig, ax = plt.subplots()
+    viz.matshow(df, ax=ax, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs, **kwargs)
 
     if len(title) > 0:
-        fig.suptitle(title)
+        if title_kws is None:
+            title_kws = dict()
+
+        ax.set_title(title, **title_kws)
+
+        # TODO change old code to use a suptitle=kwarg instead? or like set_title
+        # outputs there too?
+        #fig.suptitle(title, **title_kws)
 
     if _save_kws is None:
         _save_kws = dict()
@@ -2604,6 +2618,7 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
     # TODO plus, this will screw up [h|v]line_level_fn stuff...
     # TODO warn/fail if this is not the case? accidentally didn't hit this when there
     # was a bug in above
+    # TODO use natmix get_odor_var (or is it _get_odor_var?)?
     if 'odor1' in df.columns.names:
         # TODO why? comment explaining? just use an appropriate index-value-dict ->
         # formatted str fn? isn't that what i do w/ hong2p.viz.matshow calls?
@@ -2615,6 +2630,9 @@ def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap
     # (2025-11-05: planning to add some related code to viz.clustermap, for use in
     # natmix_data/analysis.py)
 
+    # TODO TODO add option to cluster within each fly (would have to hide dendrogram, to
+    # make it not too much extra work) (refactor to share code with within-cluster
+    # hierarchichal clustering from natmix_data/analysis.py?)
     ret = viz.clustermap(df, col_cluster=False, cmap=cmap,
         return_linkages=return_linkages, **kwargs
     )
@@ -3180,11 +3198,89 @@ def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = F
     return fig, n_per_odor_and_glom
 
 
+# TODO TODO any reason to not just move all this extra behavior into viz fn?
+# (was originally made in natmix_data/analysis.py, but then moved here to share w/
+# model_yang_mixtures.py)
+def add_legends_and_colorbars(*args, **kwargs) -> None:
+    # 'upper center' / 'center' generally won't work, and 'lower right' may overlap w/
+    # clustermap cbar. these locations in priority order, chosen with current clustermap
+    # plots [the ones with many row_colors] in mind.
+    legend_locations = ['upper right', 'lower right', 'lower left', 'upper left',
+        'center right', 'lower center'
+    ]
+    if 'legend_locations' not in kwargs:
+        kwargs['legend_locations'] = legend_locations
+
+    viz.add_legends_and_colorbars(*args, **kwargs)
+
+
+# TODO TODO try to move this (+ additional special casing above) into hong2p.viz
+def plot_cols_with_diff_colormaps(df: pd.DataFrame, fig_kws: Optional[Dict] = None,
+    legend_and_cbar_kws: Optional[Dict] = None, **kwargs) -> Tuple[Figure, Axes]:
+    """
+    Args:
+        df: data to map columns to different colormaps (some of which can be shared).
+            see `map_each_series_to_rgb` for options and more details, in particular
+            `name2palette`, which can be used to define colormaps to use for particular
+            columns.
+
+        fig_kws: passed to `plt.subplots()` call creating the figure
+
+        legend_and_cbar_kws: passed to `add_legends_and_colorbars`. has internal
+            default, if not passed.
+
+        **kwargs: passed to `map_each_series_to_rgb`
+
+    Returns a created Figure and the Axes with the main `imshow` data.
+    """
+    color_df, for_curr_legends, for_curr_cbars = map_each_series_to_rgb(df, **kwargs)
+
+    if fig_kws is None:
+        fig_kws = dict()
+
+    fig, ax = plt.subplots(**fig_kws)
+
+    # TODO factor this and the plotting below into a fn for plotting these types of
+    # dataframes? (returning ax at least, maybe just the next two calls? maybe also
+    # calling add_legends_and_colorbars [that need any of intermediate stuff?]?)
+    #
+    # since imshow/pcolormesh/similar aren't able to take 2D arrays of 3-tuples, but
+    # need (x, y, c) 3D arrays
+    arr = rgb_tuple_df_to_3d_array(color_df)
+
+    # TODO add some of the viz.matshow features to viz.imshow, to also allow specifying
+    # xticklabels in a similar manner?
+    ax.imshow(arr)
+
+    # TODO refactor the ticks->ticklabels thing? (to hong2p?) (or just combine by
+    # passing labels as 2nd arg of set_*ticks() calls, which should be same?)
+    # TODO assert color_df.columns is a single level str index?
+    ax.set_xticks(np.arange(len(color_df.columns)))
+    # these should already all be str variable names
+    ax.set_xticklabels([x for x in color_df.columns])
+
+    ax.tick_params('x', rotation=90)
+
+    # width of colorbars, and hmargin largely to leave enough space between colorbars,
+    # for the label on each to not overlap the next colorbar
+    default_legend_and_cbar_kws = dict(width=0.01, hmargin=0.09)
+    if legend_and_cbar_kws is None:
+        legend_and_cbar_kws = dict()
+    legend_and_cbar_kws = {**default_legend_and_cbar_kws, **legend_and_cbar_kws}
+
+    # default cbar_fontsize is effectively 10
+    add_legends_and_colorbars(fig, for_curr_legends, for_curr_cbars,
+        **legend_and_cbar_kws
+    )
+    return fig, ax
+
+
 # TODO maybe some of below (stuff re: remy's kc data) should be moved into
 # mb_model, rather than here in al_util? (al_analysis can import from mb_model, mb_model
 # just can't import from al_analysis)
 
 # using importlib_resources now
+# TODO move to top (+ caps)
 data_root: Path = files('al_analysis.data')
 
 sent_to_remy: Path = data_root / 'sent_to_remy'
@@ -3264,8 +3360,6 @@ def load_validation2_dff(**kwargs) -> pd.DataFrame:
 # TODO also anchor path to script dir? would only be to support running from elsewhere,
 # which i prob don't care about
 remy_data_dir: Path = data_root / 'from_remy'
-
-n_final_megamat_kc_flies: int = 4
 
 # NOTE: contains sparsities in top level CSVs, as well as individual fly binarized
 # responses in subdirectories
@@ -3525,7 +3619,12 @@ def remy_megamat_sparsity() -> float:
     del df2
 
     assert not df.isna().any().any()
+    # TODO delete? ideally, i'd use more flies, but i'm not sure if she calculated the
+    # sparsity (esp not pegged to one odor, if this was) for the other partial-panel
+    # flies she's now using for all megamat corr calculations in paper
+    n_final_megamat_kc_flies = 4
     assert df[remy_fly_id].nunique() == n_final_megamat_kc_flies
+    #
     assert set(x.stim.nunique() for _, x in df.groupby(remy_fly_id)) == {
         len(megamat_odor_names)
     }

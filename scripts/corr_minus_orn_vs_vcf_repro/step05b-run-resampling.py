@@ -370,8 +370,8 @@ assert pd_allclose(d_orn, rd_orn)
 
 # generated in model_mb_responses (by scripts/repro_remy_paper_modeling.py, but could
 # also be by al-analysis)
-# TODO TODO TODO save an xarray file with all flies alongside (/instead of) this, and
-# compute mean in here? (to troubleshoot difference)
+# TODO TODO TODO update this and make sure all my code is using a consistent calculation
+# (and update my 2E and the other KC vs model plots I have)
 kdists_square = read_parquet('kc_mean_megamat_corrdist.parquet')
 
 # TODO delete (replaced by stack() based code below)
@@ -386,73 +386,10 @@ kdists_square = read_parquet('kc_mean_megamat_corrdist.parquet')
 d_kc = kdists_square.stack().rename_axis(index=d_orn.index.names).loc[d_orn.index]
 
 rd_kc = d2['kc_remy_combo']
-# TODO TODO TODO worth regening 2e with diff data (kc_mean_megamat_corrdist should
-# correspond to what i used for 2E)? and were there any other plots i made that will be
-# used, that i should regen too?
-kc_close = pd_isclose(d_kc, rd_kc)
-# 3
-#print(f'{(~kc_close).sum()=}')
-
-kc_diff = (rd_kc - d_kc)
-# ipdb> kc_diff.abs().max()
-# 0.025973204422689466
-# ipdb> kc_diff.abs().mean()
-# 0.00044805786111347146
-
-def get_sorted_indices(dists: pd.Series, index_vals: pd.Index) -> np.ndarray:
-    sorted_dists = dists.sort_values(ascending=False)
-    sorted_indices = sorted_dists.index.get_indexer(index_vals)
-    i1 = sorted_dists.iloc[sorted_indices]
-    i2 = sorted_dists.loc[index_vals]
-    assert i1.equals(i2)
-    return sorted_indices
-
-# ipdb> d_kc.max()
-# 1.1074444140250272
-#
-# ipdb> kc_diff[~kc_close]
-# odor1  odor2
-# 2-but  1-6ol    -0.023214
-#        benz     -0.025973
-# 1-6ol  benz     -0.011749
-# ipdb> d_kc[~kc_close]
-# odor1  odor2
-# 2-but  1-6ol    0.984899
-#        benz     1.081649
-# 1-6ol  benz     0.927795
-#
-# ipdb> rd_kc[~kc_close]
-# odor1  odor2
-# 2-but  1-6ol    0.961685
-#        benz     1.055676
-# 1-6ol  benz     0.916046
-#
-kc_mismatch_pairs = kc_close[~kc_close].index
-d_kc_mismatch_indices = get_sorted_indices(d_kc, kc_mismatch_pairs)
-rd_kc_mismatch_indices = get_sorted_indices(rd_kc, kc_mismatch_pairs)
-
-# indices min=0 max=135
-# ipdb> d_kc_mismatch_indices
-# array([52,  8, 90])
-# ipdb> rd_kc_mismatch_indices
-# array([69, 17, 94])
-#
-#              remy_sorted_index  my_sorted_index
-# odor1 odor2
-# 2-but 1-6ol                 69               52
-#       benz                  17                8
-# 1-6ol benz                  94               90
-index_mismatch_df = pd.DataFrame(index=kc_mismatch_pairs,
-    columns=['remy_sorted_index', 'my_sorted_index'],
-    data=np.array([rd_kc_mismatch_indices, d_kc_mismatch_indices]).T
-)
-
-# TODO TODO check overall point remains the same if i run things w/ my version of
-# everything rather than her version of everything?
-# TODO TODO and also check plots unchanged w/ recomputing ORN responses and model w/
-# sign_preserving_maxabs? (or at least model, if she already updated ORN responses)
-# TODO TODO TODO actually, aren't her ORN distance coming from new
-# sign_preserving_maxabs anyway, or did she not actually update to using them?
+# after regenerating KC dists, dropping the 4 flies (on 3 dates) with too little pairs
+# from megamat panel (as are the only flies remy drops now for all megamat paper corr
+# analyses), this works
+assert pd_allclose(d_kc, rd_kc)
 
 # %%
 
