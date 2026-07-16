@@ -1,3 +1,7 @@
+build/
+*.egg-info/
+# this excluded from subdirs too? yang had it under scripts/
+.ipynb_checkpoints/
 svg/
 png/
 pdf/

@@ -1817,9 +1817,15 @@ def main():
     #             claw           False
     #             claw            True
     #           bouton            Tru
+    one_model_per_pnkc_class = simplify_models and (
+        max_supp_models_only or not full_model_params
+    )
+    # TODO delete. these should be equiv
     only_analyzing_few_models = simplify_models and not (
         full_model_params and not max_supp_models_only
     )
+    assert only_analyzing_few_models == one_model_per_pnkc_class
+    #
 
     if not full_model_params:
         model_tune_kws = SHORT_MODEL_TUNE_KWS
@@ -1919,10 +1925,24 @@ def main():
     yang_df, yang_bin_df = load_yang_kc_data(drop_exp_type=False, verbose=verbose)
 
     model_strs = [format_model_params(x) for x in model_tune_kws]
-    model_str2abbrev = {m: abbrev_model_id(m) for m in model_strs}
+
+    if not one_model_per_pnkc_class:
+        unique_pnkc_classes = {model_pnkc_class(x) for x in model_strs}
+        if len(model_tune_kws) == len(unique_pnkc_classes):
+            assert model_tune_kws == SHORT_MODEL_TUNE_KWS, ('this was only case i was '
+                'currently expecting to only have one model per PNKC class (except '
+                'those where one_model_per_pnkc_class is already True), and only '
+                'for current hardcoded version, which has no connectome-APL versions'
+            )
+            one_model_per_pnkc_class = True
+        del unique_pnkc_classes
+
     if verbose:
+        model_str2abbrev = {m: abbrev_model_id(m) for m in model_strs}
         # TODO delete? now that i'm mostly not using the abbrevs anyway (for now, at
         # least, after mostly using model_pnkc_class now)
+        #
+        # these abbreviations are also applied (via abbrev_model_id fn) elsewhere
         print('model ID -> abbrev:')
         pprint(model_str2abbrev)
         print()
@@ -2735,6 +2755,9 @@ def main():
     # need the .reset_index() since KC_TYPE not present for uniform model (but is for
     # all others), so can't concat based on indices, which produces bad output when not
     # all have same level names
+    # TODO TODO add CLI option to load this instead of computing via loop above (esp to
+    # shortcut testing stuff in -f case) (would need to cache w/ CLI options in name,
+    # and no caching or loading cache if any str based inclusion/exclusion)
     model_roi_odor_df = pd.concat([x.reset_index() for x in model_roi_odor_dfs])
     assert not model_roi_odor_df[['panel', 'model', 'odor', 'kc_id']].duplicated(
         ).any()
@@ -6242,16 +6265,6 @@ def main():
 
         # otherwise, could not just groupby source to summarize response rate of each
         # model (probably won't anyway tho...)
-        # NOTE: this assertion lets us droplevel other_pivot_levels below
-        # TODO delete. this is no longer true if 'connectome_apl' is in levels, b/c
-        # that info is stripped from 'source' level. only care to print (or include mean
-        # model response rates in titles) if -M, which ignores connectome_apl, and also
-        # if not -f
-        #n_unique_models = len(responded_cols[nonroi_pivot_cols].drop_duplicates())
-        #assert n_unique_models == responded_cols.source.nunique(), (
-        #    f'{nonroi_pivot_cols=}\n'
-        #    f'{n_unique_models=} != {responded_cols.source.nunique()=}'
-        #)
         # with `-o -M` (2026-07-15):
         #
         # model_pnkc_class      claw   uniform
@@ -6269,15 +6282,30 @@ def main():
         # uniform    0.059784
         perodor_model_response_rate = responded.groupby(level=nonroi_pivot_cols,
             axis='columns').mean().droplevel(other_pivot_levels, axis='columns')
-        # TODO print this if we PNKC_CLASS_COL values don't have n-variant suffices
-        # (mainly if -M and either -m or no -f)
+        # TODO say how many models we are averaging over to get the response rates
+        # in title, for the cases where one_model_per_pnkc_class=True but
+        # not just one model per PNKC_CLASS_COL value (e.g. `-m` or default without
+        # `-M`)
         mean_model_response_rate = perodor_model_response_rate.mean()
-        mean_model_response_rate = addlevel(mean_model_response_rate, 'panel', panel)
-        mean_model_response_rate_list.append(mean_model_response_rate)
 
-        if only_analyzing_few_models:
+        if mean_model_response_rate.index.duplicated().any():
+            assert not one_model_per_pnkc_class
+            # TODO also print value_counts() of them?
+            warn(f'averaging over all model variants within a given {PNKC_CLASS_COL}, '
+                'to get one mean response rate per PNKC class (rather than for each '
+                'single model)'
+            )
+            mean_model_response_rate = mean_model_response_rate.groupby(
+                level=PNKC_CLASS_COL, sort=False).mean()
+        else:
+            assert one_model_per_pnkc_class
+
+        if one_model_per_pnkc_class:
             print(f'mean response rate per model (across all {panel=} odors analyzed):')
             print(mean_model_response_rate.to_string())
+
+        mean_model_response_rate = addlevel(mean_model_response_rate, 'panel', panel)
+        mean_model_response_rate_list.append(mean_model_response_rate)
 
         # TODO put in title/fname too
         # TODO remove this step? we are already subsetting in both binary and 5comp
@@ -6614,6 +6642,11 @@ def main():
             model_mean_mix_supp = model_mix_supp.groupby(model_nonroi_levels, sort=False
                 )[diff_col].mean()
 
+            # NOTE: there is no 'mix' level here, as we are averaging over all the
+            # currently-still-analyzed model odors, which include 5comp odors as well as
+            # the undiluted binary mix. should be comparable to the KC mean response
+            # rate calculated above (the one used towards end, for part of response
+            # class plot titles)
             model_mean_mix_supp = addlevel(model_mean_mix_supp, 'panel', panel)
             model_mean_mix_supp_sers.append(model_mean_mix_supp)
 
@@ -6758,12 +6791,8 @@ def main():
                         data = data[data.stat != 'num_spikes'].copy()
 
                         model_stat = 'logistic_scaled_num_spikes'
-                        kc_stat = 'Fc_zscore'
+                        kc_stat = 'mean_Fc_zscore'
                         unique_stats = set(data.stat.unique())
-                        # TODO TODO TODO what did i change (wasn't i just changing ORN
-                        # handling?) that led to this now failing:
-                        # AssertionError:
-                        # unique_stats={'mean_Fc_zscore', 'logistic_scaled_num_spikes'}
                         assert unique_stats == {kc_stat, model_stat}, f'{unique_stats=}'
                 else:
                     data = kc_mix_supp
@@ -6776,10 +6805,9 @@ def main():
                     # would have to do something else if i did
                     facet_kws['row_order'] = sorted(data.mix.unique())[::-1]
 
-                # TODO TODO TODO remove right column model+KC plot (num_spikes), unless
-                # i can find a way to get scales in line (prob just try that on a
-                # separate plot anyway, if at all)
-                #g = sns.FacetGrid(data=data, palette=palette, **facet_kws)
+                # TODO TODO remove right column model+KC plot (num_spikes) (done),
+                # unless i can find a way to get scales in line (still want to try?)
+                # (prob just try that on a separate plot anyway, if at all)
                 g = sns.FacetGrid(data=data, **facet_kws)
                 g.map_dataframe(plot_one_dist_per_model, **plot_kws, **kwargs)
 
@@ -6852,9 +6880,6 @@ def main():
 
                 savefig(g, plot_dir, f'{fname}{fname_suffix}')
 
-            # TODO delete. like cut-3 (sns default cut=) better
-            #plot_mixsupp_dists(kde=True, cut=0, fname_suffix='_kde_cut-0')
-            #
             plot_mixsupp_dists(kde=True, fname_suffix='_kde')
             plot_mixsupp_dists()
             plot_mixsupp_dists(model_only=True)
@@ -7057,10 +7082,6 @@ def main():
 
                 # TODO rename either this or the var before the loop
                 # (currently renaming one before loop at last second to all_*)
-                # NOTE: (delete) still have boutons here
-                # TODO TODO TODO am i accidentally unconditionally dropping
-                # connectome-APL=False stuff below (and thus dropping boutons that way)
-                # (even in `-o -f` case)?
                 model_response_strengths = response_strengths[
                     response_strengths.source != 'KCs'
                 ]
@@ -7252,8 +7273,6 @@ def main():
                     if len(group_cols) == 1:
                         group_cols = group_cols[0]
 
-                    # TODO TODO make sure we are skipping any KC data here
-                    # (or just make sure we would have already returned)
                     for gn, gdf in data.groupby(group_cols, sort=False):
                         if odor_linestyle:
                             source, odor = gn
@@ -7273,8 +7292,20 @@ def main():
                                 uniform_apl_linestyle
                             )
 
-                        # TODO delete
-                        #sns.kdeplot(data=gdf, ax=ax, linewidth=model_linewidth,
+                        # TODO sufficient to just check NaN? need the dirname -> class
+                        # -> pnkc_class_is_model checking below too (prob not)?
+                        assert gdf.model_dirname.notna().all()
+                        # TODO delete?
+                        model_dirnames = gdf.model_dirname.unique()
+                        assert len(model_dirnames) == 1
+                        model_dirname = model_dirnames[0]
+                        pnkc_class = model_pnkc_class(model_dirname)
+                        assert pnkc_class_is_model(pnkc_class), (f'{source=} does '
+                            'not seem to refer to model data'
+                        )
+                        #
+                        assert source not in EXPECTED_NONMODEL_PNKC_VALS, f'{source=}'
+
                         # TODO fill=False? (for at least some [which?], yes.
                         # everything?)
                         distplot(data=gdf, ax=ax, fill=False, linewidth=model_linewidth,
@@ -7674,13 +7705,6 @@ def main():
             model_mean_mix_supp.panel.isin(natmix_panels)
         ].groupby(model_cols)[mixsupp_cols].mean()
 
-        # TODO delete. isn't sufficient to have first 3 index levels be the same =(
-        #
-        # re-ordering levels, so that we can index from  model_acrosspanel_mean_mix_supp
-        # more easily
-        #model_mean_mix_supp = model_mean_mix_supp.set_index(model_cols + [
-        #    x for x in nonstat_cols if x not in model_cols
-        #])
         model_mean_mix_supp = model_mean_mix_supp.set_index(model_cols)
 
         for stat in mixsupp_cols:
@@ -7737,7 +7761,7 @@ def main():
     title = (f'observed KC mean response rate: {kc_no_dilution_mean_resp_rate:.3g}\n'
         f'(with a mean Fc_zscore threshold of {NATMIX_KC_THRESH:.2f}'
     )
-    if only_analyzing_few_models:
+    if one_model_per_pnkc_class:
         natmix_mean_model_response_rates = mean_model_response_rate.loc[
             list(natmix_panels)].groupby(level=PNKC_CLASS_COL, sort=False).mean()
 

@@ -17,3 +17,7 @@ xarray_netcdf_io_bench.csv
 megamat_multiresponder_apl_boost/
 
 paper_repro/
+
+# some things had had that should be ignored
+.ipynb_checkpoints/
+yang_mix_output*/

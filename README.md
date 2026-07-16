@@ -14,6 +14,23 @@ conda activate al_analysis
 ```
 
 
+### Updating
+
+```
+cd ~/src/al_analysis
+
+# activate whatever conda/venv/etc environment you installed al_analysis into,
+# if it is not a conda environment named 'al_analysis'
+conda activate al_analysis
+
+# this should install requirements specified in exact-requirements.txt, via a reference
+# to that file in pyproject.toml. this `pip install .` command is also the only command
+# or requirement specified in the environment.yml file (other than specifying the python
+# version to [currently] 3.8.12)
+pip install .
+```
+
+
 ### For `al-analysis`
 Set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA` appropriately:
 
