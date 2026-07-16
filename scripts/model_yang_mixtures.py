@@ -56,29 +56,7 @@ from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
 from al_analysis.al_analysis import fill_to_hemibrain
 
 
-# TODO use pre-existing const kw list vars in mb_model to replace some of what i have
-# here now?
-'''
-test_with_connectome_vs_uniform_apl = [
-    dict(weight_divisor=20),
-    dict(one_row_per_claw=True, prat_claws=True),
-    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True),
-]
-# passing the CLI arg -f will use FULL_MODEL_KW_LIST (currently len 137) instead of this
-# TODO TODO TODO replace these w/ something chosen from -M output
-# (n_spikes_for_response=2 & target_sparsity=0.05, mainly), and add flag to restore this
-# original variations w/ APL options and everything
-SHORT_MODEL_TUNE_KWS = [
-    # comparison for all other model cases, to see to what extent changes to PN>KC
-    # weight matrix (and potentially other changes) matter
-    dict(pn2kc_connections='uniform', n_claws=7),
-] + dict_seq_product(test_with_connectome_vs_uniform_apl,
-    [dict(), dict(use_connectome_APL_weights=True)]
-)
-del test_with_connectome_vs_uniform_apl
-'''
-# TODO TODO add flag to restore commented above?
-# TODO TODO TODO check these are set i want to use from looking at -m output
+# TODO double check these are set i want to use from looking at -m output
 nonshared_model_kws = [
     dict(pn2kc_connections='uniform', n_claws=7),
     dict(weight_divisor=20),
@@ -90,10 +68,29 @@ nonshared_model_kws = [
     # cached existing dir? or manually copy to fix for now...?
     dict(one_row_per_claw=True, prat_claws=True, pn_claw_to_apl=True, claw_dynamics=True),
 ]
+# passing the CLI arg -f will use FULL_MODEL_KW_LIST (currently len 137) instead of this
 SHORT_MODEL_TUNE_KWS = dict_seq_product(nonshared_model_kws,
+    # this doesn't changethe length of nonshared_model_kws, just adds these parameters
+    # to each dict in existing list
     [dict(target_sparsity=0.05, n_spikes_for_response=2)]
 )
+
 # TODO assert the above are a subset of FULL_MODEL_KW_LIST? they are, right?
+# (for both OLD_* and new SHORT_*)
+test_with_connectome_vs_uniform_apl = [
+    dict(weight_divisor=20),
+    dict(one_row_per_claw=True, prat_claws=True),
+    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True),
+]
+# passing the CLI arg -O will use this instead of SHORT_MODEL_TUNE_KWS
+OLD_SHORT_MODEL_TUNE_KWS = [
+    # comparison for all other model cases, to see to what extent changes to PN>KC
+    # weight matrix (and potentially other changes) matter
+    dict(pn2kc_connections='uniform', n_claws=7),
+] + dict_seq_product(test_with_connectome_vs_uniform_apl,
+    [dict(), dict(use_connectome_APL_weights=True)]
+)
+del test_with_connectome_vs_uniform_apl
 
 # TODO delete
 # TODO this even help? (maybe? regen all w ~10. worked ok for 5comp control?
@@ -313,11 +310,6 @@ NORM_TO_FLYMEAN_MAX: bool = True
 NORM_PER_FLY: bool = False
 # TODO delete? make sense? enough flies have all / most odors?
 #NORM_PER_FLY: bool = True
-
-# whether each parameterization of model will have it's max odor response (w/in
-# panel[+mix]) scaled to 1 (=True), or whether all models (w/in panel[+mix]) will be
-# scaled such that max odor response across all models is 1 (=False).
-NORM_PER_MODEL: bool = True
 
 def normalize_one_panel(raw_df: pd.DataFrame) -> pd.DataFrame:
     stats = raw_df.stat.unique()
@@ -1764,6 +1756,17 @@ def main():
         'terms of average kiwi/control mix suppression), to simplify plots for thesis '
         '(and thus the writing about it).'
     )
+    parser.add_argument('-O', '--old-model-kws', action='store_true', help='will use '
+        'older definition OLD_SHORT_MODEL_TUNE_KWS, which had '
+        'use_connectome_APL_weights=True variants of each of several models, and did '
+        'not include parameters now known to help improve mixture suppression'
+    )
+    parser.add_argument('-N', '--norm-across-models', action='store_true',
+        help='Restores old behavior where (for intensity point plots) model values are '
+        'scaled such that the max single (model, odor) value, across all models, was '
+        'set to 1. New behavior is to scale each model variant separately, so each will'
+        ' have max odor response set to 1.'
+    )
     parser.add_argument('-v', '--verbose', action='store_true', help='print more')
     args = parser.parse_args()
     model_output_dirnames = args.model_output_dirnames
@@ -1776,6 +1779,8 @@ def main():
     ignore_existing = args.ignore_existing
     max_supp_models_only = args.max_supp_models_only
     simplify_models = args.simplify_models
+    norm_across_models = args.norm_across_models
+    old_model_kws = args.old_model_kws
     verbose = args.verbose
     quiet = not verbose
     # TODO (still true? delete?) set in fit_and_plot_mb_model instead? (currently errs
@@ -1794,6 +1799,8 @@ def main():
         exclude_substrings = exclude_substrings.split(',')
         assert len(exclude_substrings) == len(set(exclude_substrings))
 
+    had_str_model_filtering = model_output_dirnames or exclude_substrings
+
     # TODO instead of RHS, check whether we skipped any models (for reasons other
     # than missing cache, which i think are counted separately anyway)? (by checking
     # after loop loading models)
@@ -1801,9 +1808,14 @@ def main():
     # def now? since i think i'd like to keep this simpler def up top now
     unrestricted_full_model_params = (
         full_model_params and not (max_supp_models_only or simplify_models or
-            model_output_dirnames or exclude_substrings
+            had_str_model_filtering
         )
     )
+
+    if old_model_kws:
+        assert not full_model_params, '-f incompatible with -O'
+        # TODO support? prob not
+        assert not max_supp_models_only, '-m incompatible with -O'
 
     # calculate instead based on whether we have n-variant suffices?
     # can't! b/c why don't we have n_variants=2 for the two here w/ and
@@ -1828,7 +1840,10 @@ def main():
     #
 
     if not full_model_params:
-        model_tune_kws = SHORT_MODEL_TUNE_KWS
+        if not old_model_kws:
+            model_tune_kws = SHORT_MODEL_TUNE_KWS
+        else:
+            model_tune_kws = OLD_SHORT_MODEL_TUNE_KWS
     else:
         # TODO TODO see 2026-05-25_yang_err.txt for an invalid_argument olfsysm error i
         # hadn't seen before, in prat-claws_True__prat-boutons_True__pn-claw-to-apl__
@@ -1878,16 +1893,24 @@ def main():
     # NOTE: -m implies -f, so should just need these two fname parts
     max_supp_models_only_fname_part = 'max-mixsupp-only'
 
+    old_model_kws_fname_part = 'old-model-kws'
+
     subdirname_parts = []
     if simplify_models:
         subdirname_parts.append(simplify_models_fname_part)
     if max_supp_models_only:
         subdirname_parts.append(max_supp_models_only_fname_part)
+    if old_model_kws:
+        subdirname_parts.append(old_model_kws_fname_part)
 
     if unrestricted_full_model_params:
-        assert not (simplify_models or max_supp_models_only)
+        assert not (simplify_models or max_supp_models_only or old_model_kws)
         subdirname_parts = ['full-param-sweep']
 
+    # whether each parameterization of model will have it's max odor response (w/in
+    # panel[+mix]) scaled to 1 (=True), or whether all models (w/in panel[+mix]) will be
+    # scaled such that max odor response across all models is 1 (=False).
+    NORM_PER_MODEL: bool = not norm_across_models
     if NORM_PER_MODEL:
         subdirname_parts.append('norm-per-model')
 
@@ -2781,12 +2804,14 @@ def main():
         # use this link when passing to e.g. natmix_data/analysis.py
         chosen_modeldirs_link = model_root / f'last_{chosen_modeldirs_prefix}.csv'
 
-        # TODO does simplify_models actually depend on -f? seems it might not? matter?
         if simplify_models:
             chosen_modeldirs_prefix += f'_{simplify_models_fname_part}'
 
         if max_supp_models_only:
             chosen_modeldirs_prefix += f'_{max_supp_models_only_fname_part}'
+
+        if old_model_kws_fname_part:
+            chosen_modeldirs_prefix += f'_{old_model_kws_fname_part}'
 
         chosen_modeldirs_fname = f'{chosen_modeldirs_prefix}.csv'
         chosen_modeldirs_csv = model_root / chosen_modeldirs_fname
