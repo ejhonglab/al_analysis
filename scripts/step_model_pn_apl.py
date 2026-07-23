@@ -32,7 +32,7 @@ from al_analysis.mb_model import (fit_and_plot_mb_model, megamat_orn_deltas,
     dict_seq_product, format_weights, format_model_params, get_thr_and_APL_weights,
     glomerulus_col, save_and_remove_from_param_dict, drop_silent_model_cells,
     load_and_plot_dynamics, update_var2range, MinMaxDict, natmix_orn_deltas,
-    sort_rois_by_response_classes, format_response_class, summarize_response_classes,
+    sort_rois_by_response_classes, format_response_class,
     assert_fit_and_plot_outputs_equal
 )
 

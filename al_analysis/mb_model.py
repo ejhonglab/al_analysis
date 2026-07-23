@@ -95,11 +95,11 @@ from hong2p.xarray import (save_dataarray as _save_dataarray, load_dataarray,
 from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
     first_odor_level
 )
-from hong2p.viz import dff_latex, no_constrained_layout, add_group_labels_and_lines
+from hong2p.types import Pathlike, DataFrameOrSeries, CMap, ParamDict
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
     reindex, is_scalar, pd_index_equal, equals, format_params, addlevel
 )
-from hong2p.types import Pathlike, DataFrameOrSeries, CMap, KwargDict
+from hong2p.viz import dff_latex, no_constrained_layout, add_group_labels_and_lines
 from natmix import drop_mix_dilutions
 import olfsysm as osm
 
@@ -117,10 +117,9 @@ from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
     remy_date_col, remy_fly_cols, remy_fly_id, remy_fly_binary_response_fname,
     load_remy_fly_binary_responses, load_remy_megamat_kc_binary_responses,
     MultipleSavesPerRunException, print_curr_mem_usage, data_root, fly_cols,
-    flyroi_cols, read_parquet, to_parquet, to_json, read_json, ParamDict,
-    written_since_proc_start, format_mtime, response_calc_params_json_name,
-    sent_to_remy, produces_output, in_pytest, _have_fly_cols, paper_repro_kws,
-    hemibrain_paper_repro_kws
+    flyroi_cols, read_parquet, to_parquet, to_json, read_json, written_since_proc_start,
+    format_mtime, response_calc_params_json_name, sent_to_remy, produces_output,
+    in_pytest, _have_fly_cols, paper_repro_kws, hemibrain_paper_repro_kws
 )
 from al_analysis import al_util
 
@@ -8290,7 +8289,7 @@ def cluster_timeseries(df: pd.DataFrame, *, n_PCs: int = 10, n_clusters: int = 5
 # TODO want diff default cmap here?
 def cluster_timeseries_and_plot(df: pd.DataFrame,
     fixed_order: Optional[Union[pd.Index, bool]] = None, *, ax: Optional[Axes] = None,
-    cmap: Optional[CMap] = 'gray_r', imshow_kws: Optional[KwargDict] = None,
+    cmap: Optional[CMap] = 'gray_r', imshow_kws: Optional[ParamDict] = None,
     vmin: Optional[float] = None, vmax: Optional[float] = None,
     label_order: bool = True, verbose: bool = False, checks: bool = True,
     ylabel_fontsize=10, **kwargs) -> Tuple[Optional[AxesImage], pd.Index]:
@@ -8407,8 +8406,8 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
 
     # TODO want to downsample, if not plotting X_embedding (from model)?
 
-    im = ax.imshow(clustered, vmin=vmin, vmax=vmax, cmap=cmap,
-        aspect='auto', extent=extent, **imshow_kws
+    im = ax.imshow(clustered, vmin=vmin, vmax=vmax, cmap=cmap, aspect='auto',
+        extent=extent, **imshow_kws
     )
 
     if label_order:
@@ -22011,9 +22010,10 @@ def scale_dff_then_fitandplot_mb_model(plot_root: Path, dff_df: pd.DataFrame,
 
 
 # TODO refactor to share w/ natmix_data/analysis.py (copied from there)
+# TODO add flag to keep mix dilutions?
 def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = True,
     # TODO change keep_binary default to True?
-    keep_binary: bool = False) -> pd.DataFrame:
+    keep_binary: bool = False, warn_: bool = True) -> pd.DataFrame:
     """Drops odors not typically analyzed from kiwi/control data.
 
     Odors dropped are:
@@ -22046,7 +22046,8 @@ def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = Tru
         #
         # stripping '+' first (which only removes any start/end characters in passed
         # set), to exclude stuff like 'validation2' panel's '+pul @ -2', which is
-        # neither a mixture nor a mix dilution.
+        # neither a mixture nor a mix dilution. str.strip() does not have a regex
+        # option, so no need for regex=False / escaping
         to_drop |= odor_strs.str.strip('+').str.contains('+', regex=False)
 
     # TODO delete?
@@ -22063,7 +22064,7 @@ def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = Tru
     df = df.loc[~to_drop].copy()
     df = drop_mix_dilutions(df)
     dropped = index_before.difference(df.index)
-    if len(dropped) > 0:
+    if warn_ and len(dropped) > 0:
         if 'repeat' in dropped.names:
             dropped = dropped.droplevel('repeat').drop_duplicates()
 
@@ -26267,6 +26268,7 @@ def get_roi_level(index: pd.Index) -> str:
     return roi_level
 
 
+# TODO move this to al_util -> use elsewhere (like in al_analysis.py)
 def count_flies_and_rois(df: pd.DataFrame, *, verbose: bool = True
     ) -> Tuple[Optional[int], int]:
     """Returns n_flies, n_rois. n_flies can be None, e.g. with model input.
@@ -26593,6 +26595,33 @@ def make_cost_fn(fn_to_fit: Callable, *, fixed_params: Optional[Dict[str, Any]] 
         return cost
 
     return cost_fn
+
+
+def print_spike_scaling_effect(scaling_fn: Callable, *, max_n_spikes: int = 5, **kwargs
+    ) -> None:
+    # TODO doc
+    for n_spikes in range(max_n_spikes + 1):
+        # TODO should i assert output of scaling fn always nonnegative? maybe it won't
+        # be?
+        print(f'{n_spikes=}: {scaling_fn(n_spikes, **kwargs):.2f}')
+
+
+def print_logistic_scaling_effect(k: float, x0: float, L: float, *,
+    midpoint_scaler: float = 1.75, **kwargs) -> None:
+    kwargs = dict(kwargs)
+    if 'max_n_spikes' not in kwargs:
+        kwargs['max_n_spikes'] = int(round(x0 * midpoint_scaler))
+
+    logistic_params = dict(k=k, x0=x0, L=L)
+    # TODO factor out? also used in model_yang_mixtures.py
+    # TODO also rename dict keys in this to include description of each, like
+    # 'k (growth rate) = 0.5, x0 (x-midpoint) = 5.0, L (max) = 2.5'?
+    logistic_scaling_str = format_params(logistic_params, sort=False,
+        float_format='.1f'
+    )
+    #
+    print(f'when using logistic scaling fn (current params: {logistic_scaling_str}):')
+    print_spike_scaling_effect(logistic, **kwargs, **logistic_params)
 
 
 _made_drop_silent_frac_kc_plots = False
@@ -26990,8 +27019,7 @@ def scale_model_spike_counts(model_df: pd.DataFrame,
         print(f'fit params: {fit_param_str}')
         print(f'final cost: {final_cost:.3f}')
         print(f'# spikes -> output of {method} scaling fn:')
-        for n_spikes in range(6):
-            print(f'{n_spikes=}: {scaling_fn(n_spikes, **fit_params):.2f}')
+        print_spike_scaling_effect(scaling_fn, **fit_params)
         print()
 
     fit_params['cost'] = final_cost
@@ -27075,14 +27103,25 @@ def scale_model_spike_counts(model_df: pd.DataFrame,
     return scaled_model_df, plot_dir, input_params, fit_params
 
 
+# TODO really not have something like this elsewhere? move to hong2p.olf (+ use
+# elsewhere, if not)?
+# NOTE: outside of this script, component_delim='+' (instead of imported
+# component_delim=' + ') would also be in single odors like (+)-carene or whatever, so
+# may want to default to one with spaces if refactoring
+# may also need to check hardcoded list of full mix names (e.g. 'kiwi approx.'), if
+# refactoring...
+def is_mix(odor: str, *, component_delim: str = '+') -> bool:
+    if 'mix' in odor or component_delim in odor:
+        return True
+    return False
+
+
 # TODO option to group by as many components as there are ncomps (splitting
 # out e.g. separate classes for 2nd-highest-response-comp, for each ncomps=2 class with
 # a given max-comp already fixed) (or would all these be so small as to not matter?
 # check!) (how to sort? tuple for max_comp_idx, sorted like (max_comp_idx,
 # 2nd-highest-comp-idx, ...) (may need fixed length tuples, probably of # of
 # components)?
-# TODO TODO automatically operate on True/False if input data is dtype boolean?
-# (and make response_threshold optional then)
 def sort_rois_by_response_classes(df: pd.DataFrame,
     response_threshold: Optional[float] = None, *, merge_maxcomp_ncomps0: bool = True
     ) -> pd.DataFrame:
@@ -27116,12 +27155,21 @@ def sort_rois_by_response_classes(df: pd.DataFrame,
     The sorting on this key should order cells in a meaningful way based on their
     responses, first grouping mix responders together, and within that sorting by how
     many components the cell responded to, and which it responded to the strongest.
+
+    See `format_response_class` for expectations on format of response class tuples in
+    the 'key' level.
     """
     # TODO just set binarized to df here, and skip threshold altogether? should be
     # equiv...
     if df.values.dtype == bool:
         assert response_threshold is None or (0 < response_threshold <= 1)
         response_threshold = 0.5
+        # TODO just do `binarized = df[.copy()]` if bool?
+
+    if response_threshold is None:
+        raise ValueError('if df.values.dtype is not bool, must pass float '
+            'response_threshold, so responses can be binarized'
+        )
 
     binarized = df >= response_threshold
 
@@ -27134,7 +27182,7 @@ def sort_rois_by_response_classes(df: pd.DataFrame,
     # should be 'cmix @ 0.0' or 'kmix @ 0.0' (or maybe one of the lower concs, like
     # -1/-2, if those weren't dropped yet)
     # TODO relax, to support binary mixes?
-    assert 'mix' in mix_resp.name, (f'{mix_resp.name=} (input need transposed? rows '
+    assert is_mix(mix_resp.name), (f'{mix_resp.name=} (input need transposed? rows '
         'currently expected to be odors)'
     )
     # TODO assert anything about component odor strs? no solvent pfo? no '+' or '-'?
@@ -27142,6 +27190,8 @@ def sort_rois_by_response_classes(df: pd.DataFrame,
     # another kwarg indicating component number?)?
 
     comp_resps = binarized.iloc[:-1]
+    assert not any(is_mix(x) for x in comp_resps.index)
+
     n_comps = comp_resps.sum()
     max_comp_idx = df.iloc[:-1].reset_index(drop=True).idxmax()
 
@@ -27150,7 +27200,7 @@ def sort_rois_by_response_classes(df: pd.DataFrame,
 
     df = df.copy()
     df.loc['key'] = list(zip(mix_resp, n_comps, max_comp_idx, max_comp_magnitude))
-    df = df.sort_values('key', axis=1)
+    df = df.sort_values('key', axis='columns')
 
     # currently dropping max_comp_magnitude before we return (to not have to change any
     # downstream code that reprocesses this index). wouldn't necessarily be a huge deal
@@ -27184,15 +27234,38 @@ def sort_rois_by_response_classes(df: pd.DataFrame,
     return df
 
 
+MERGE_MAXCOMP_NCOMPS0: bool = True
+
+ResponseClassTuple = Tuple[bool, int, int]
+
+# TODO share w/ is_nonresponding_class?
+NONRESPONDING_CLASS: ResponseClassTuple = (False, 0, -1)
+
+def is_nonresponding_class(x: ResponseClassTuple) -> bool:
+    # TODO ever need to work w/ len 2 here? (redef ResponseClassTuple to union if so?)
+    assert len(x) == 3, f'{x=} not length 3'
+    # mix=False, ncomps=0
+    return x[0] == NONRESPONDING_CLASS[0] and x[1] == NONRESPONDING_CLASS[1]
+
+
 # TODO use something simliar to add counts/fractions for clust_means plot?
 # (using counts instead of class_sizes)
-def format_response_class(x: Union[Tuple[bool, int, int], Tuple[bool, int]], *,
+# TODO wait, i allow len 2 tuples?? delete that from union? any code still use that?
+def format_response_class(x: Union[ResponseClassTuple, Tuple[bool, int]], *,
     sep: str = '  ', df: Optional[pd.DataFrame] = None, n_total: Optional[int] = None,
     class_sizes: Optional[pd.Series] = None) -> str:
+    # TODO provide example values for x, of all possible variants
     """Formats tuple with info on single-panel mix/component responses.
 
     Expects tuples in format `sort_rois_by_response_classes` adds under the `'key'`
     column level, or similar tuples that are just the first two elements of the former.
+
+    Tuples should be in one of these two formats, either:
+    (<responded-to-mix?>, <n-components-responded-to>)
+
+    Or (same first two):
+    (<mix?>, <n-components>, <index-of-component-with-max-response>)
+
 
     Args:
         x: tuple where elements are (in order): whether the unit responsed to mix
@@ -27237,8 +27310,11 @@ def format_response_class(x: Union[Tuple[bool, int, int], Tuple[bool, int]], *,
         # those was True)
         if max_comp_idx != -1:
             if df is not None:
-                max_comp_str = olf.parse_odor_name(df.index[max_comp_idx])
+                max_comp_str = olf.parse_odor_name(df.index[max_comp_idx],
+                    require_conc=False
+                )
             else:
+                # TODO something else here?
                 max_comp_str = str(max_comp_idx)
 
             # TODO assertion(s) that df.index has what we need to get comp name?
@@ -27253,12 +27329,36 @@ def format_response_class(x: Union[Tuple[bool, int, int], Tuple[bool, int]], *,
     # TODO assert class_sizes is None if len(x) == 2? or can we still do something
     # there (sum across classes matching 2-tuple input?)?
     if class_sizes is not None:
+        if _have_fly_cols(class_sizes):
+            # TODO TODO remove, and just assert no fly cols? i think this would not
+            # behave as expected in case of input w/ 'cluster' level in index (in
+            # addition to fly_cols + ['key'] level)
+            class_sizes = class_sizes.groupby(level='key', sort=False).sum()
+        else:
+            class_sizes = class_sizes.copy()
+            # doing this so `class_sizes[x]` works below (neither that, nor `.loc[x]`)
+            # works with a single level MultiIndex. currently get:
+            # ValueError: Cannot remove 1 levels from an index with 1 levels: at least
+            # one level must be left.
+            #
+            # TODO fix earlier? wherever this one level MultiIndex is getting created?
+            # (any other cases that needs index set here anyway, other than when it's a
+            # single level multiindex?)
+            class_sizes.index = class_sizes.index.get_level_values('key')
+            assert not class_sizes.index.duplicated().any()
+
         n = class_sizes[x]
+        # TODO fix how something is changing class_sizes/counts dtypes to float instead?
+        assert np.isclose(n, int(n))
+        n = int(n)
         n_str = f'n={n}'
 
-        if n_total is None and df is not None:
+        if n_total is None:
             # TODO warn here?
-            n_total = len(df.columns)
+            n_total = class_sizes.sum()
+
+        if df is not None:
+            assert len(df.columns) <= n_total
 
         if n_total is not None:
             frac = n / n_total
@@ -27270,9 +27370,51 @@ def format_response_class(x: Union[Tuple[bool, int, int], Tuple[bool, int]], *,
     return class_desc
 
 
-MERGE_MAXCOMP_NCOMPS0: bool = True
+def format_n_components(n_comps: int, *, i: Optional[int] = None,
+    abbrev: Optional[bool] = None) -> str:
 
-# TODO also factor this into mb_model?
+    if abbrev is None:
+        abbrev = i is None
+
+    if i == 0 or i is None:
+        # TODO just format all of them this way, if not easy to pass in index?
+        # can i precompute group labels (for when doing something similar in
+        # plot_means_and_counts)
+        subtext = 'c' if abbrev else 'components'
+        return f'$N_{{{subtext}}}={n_comps}$'
+    else:
+        return f'${n_comps}$'
+
+
+def format_mix_responder(mix_resp: bool) -> str:
+    if not mix_resp:
+        return 'mix NON-responders'
+    else:
+        return 'mix-responders'
+
+
+def response_class_str2n_components_formatted(x: str, **kwargs) -> str:
+    parts = x.split(' ')
+    prefix = 'ncomps='
+    assert parts[1].startswith(prefix), f'{parts=}'
+    n_comps = int(parts[1][len(prefix):])
+    return format_n_components(n_comps, **kwargs)
+
+
+def response_class_str2mix_responder_formatted(x: str) -> str:
+    parts = x.split(' ')
+    prefix = 'mix='
+    assert parts[0].startswith(prefix), f'{parts=}'
+    mix_resp_str = parts[0][len(prefix):]
+    expected = ('0', '1')
+    assert mix_resp_str in expected, f'{mix_resp_str=} not in {expected=}'
+    mix_resp = bool(int(mix_resp_str))
+    return format_mix_responder(mix_resp)
+
+
+# TODO TODO TODO check handling downstream of add_missing_cells...
+NO_CLUSTER: int = -1
+
 # TODO also support clusters? would prob need cluster means passed in, to determine
 # which cluster is the non-responding one (if there even is one unique cluster)
 # TODO or should it return dataframe if input has fly_cols
@@ -27280,12 +27422,28 @@ def add_missing_cells_to_nonresponders(counts: pd.Series, n_total: Union[int, pd
     ) -> pd.Series:
     # TODO doc
 
+    # TODO TODO is pd.Series n_total actually supported? is that just if
+    # _have_fly_cols(counts)? assert it's int in other case, if not supported there
+
+    # TODO TODO explain purpose of this (/delete)
+    #
     # TODO assert just expected key index level(s) otherwise?
     if _have_fly_cols(counts):
-        assert isinstance(n_total, pd.Series)
+        gb_fly = counts.groupby(level=fly_cols)
+
+        # TODO delete? or change calling code?
+        #assert isinstance(n_total, pd.Series)
+        if not isinstance(n_total, pd.Series):
+            assert np.issubdtype(type(n_total), int)
+            assert gb_fly.ngroups == 1
+
         fly_fixed_list = []
-        for fly_key, fly_counts in counts.groupby(level=fly_cols):
-            fly_total = int(n_total[fly_key])
+        for fly_key, fly_counts in gb_fly:
+            if isinstance(n_total, pd.Series):
+                fly_total = int(n_total[fly_key])
+            else:
+                fly_total = n_total
+
             assert fly_counts.sum() <= fly_total
             if fly_counts.sum() == fly_total:
                 warn(f'{fly_key}: seems to already have all non-responder ROIs '
@@ -27326,84 +27484,247 @@ def add_missing_cells_to_nonresponders(counts: pd.Series, n_total: Union[int, pd
 
     n_missing_cells = n_total - counts.sum()
     assert n_missing_cells >= 0
+    if n_missing_cells == 0:
+        return counts.copy()
 
-    def is_nonresponding_class(x):
-        # mix=False, ncomps=0
-        return x[0] == False and x[1] == 0
+    count_df = counts.reset_index(name='count')
+    if 'key' in counts.index.names:
+        classes = count_df['key']
+    else:
+        assert all(x in counts.index.names for x in RESPONSE_CLASS_VARS)
+        non_rc_vars = [x for x in counts.index.names if x not in RESPONSE_CLASS_VARS]
+        classes = counts.droplevel(non_rc_vars).reorder_levels(RESPONSE_CLASS_VARS
+            ).index.to_series()
+        count_df['key'] = classes.reset_index(drop=True)
 
-    counts_nonresponders = counts.index.map(is_nonresponding_class)
-    # TODO relax? want to support clusters (where might be multiple non-responding
-    # ones. add new one just to indicate missing cells?)?
-    assert np.sum(counts_nonresponders) <= 1
-    if not counts_nonresponders.any():
+    counts_nonresponders = classes.map(is_nonresponding_class)
+    n_nonresponding_classes = counts_nonresponders.sum()
+    if n_nonresponding_classes == 0:
+        # TODO TODO matter? delete?
+        # TODO may not be true if i ever allow index to have more than just
+        # RESPONSE_CLASS_VARS/'key'... (failing even without that, in call from:
+        # ...
+        # File "/home/tom/src/natmix_data/analysis.py", line 4323, in analyze_by_panel
+        #   clust_means, clust_df = cluster_rois_and_plot(mdf, alg_class, plot_dir,
+        # File "/home/tom/src/natmix_data/analysis.py", line 3925, in cluster_rois_and_plot
+        #   resp_class_counts = add_missing_cells_to_nonresponders(resp_class_counts,
+        # ...
+        #assert counts.equals(counts.sort_index())
+
         # NOTE: does seem that putting the new Series first changes dtype of index
         # (or at least how it is printed...), which I'm not sure I want. also not
         # sure if it matters that non-responders are first, so just appending to end
         # for now
         # TODO also assert other existing index elements are also just length-3, to
         # ensure we are being consistent w/ what we are adding here
-        counts = pd.concat([
-                counts, pd.Series({(False, 0, -1): n_missing_cells})
-            ], verify_integrity=True
-        )
+        if counts.index.names == RESPONSE_CLASS_VARS:
+            counts = counts.copy()
+            counts.loc[NONRESPONDING_CLASS] = n_missing_cells
+        else:
+            # TODO TODO how to handle anyway tho? not gonna add something to plot tho
+            # (0s for mean?), am i? flag to disable this non-responder filling?
+            if set(counts.index.names) == {'cluster', 'key'}:
+                warn('add_missing_cells_to_nonresponders: adding cluster value '
+                    f'{NO_CLUSTER=} for non-responding class, since input did not have '
+                    'any non-responders (so no cluster associated with them)'
+                )
+                to_add = pd.Series({(NO_CLUSTER, NONRESPONDING_CLASS): n_missing_cells}
+                    ).rename_axis(index=counts.index.names)
+            else:
+                # was erring w/ ['cluster','key'] for model data, called from
+                # natmix_data/analysis.py (before i added branch above)
+                assert counts.index.names == ['key'], \
+                    f'could not filling missing index metadata. {counts.index.names=}'
+
+                # TODO delete?
+                # TODO did i ever need this as a tuple here? counts.sort_index() fails
+                # below, b/c added class is a one length tuple of the other tuple...
+                # ...
+                # (False, 2, 1)           1
+                # ((False, 0, -1),)    1389
+                #to_add = pd.Series({(NONRESPONDING_CLASS,): n_missing_cells}
+                #
+                # TODO oh, i think i just can't call rename_axis, but the concat will
+                # still work, as long as the key above is NONRESPONDING_CLASS, and not
+                # (NONRESPONDING_CLASS,)
+                to_add = pd.Series({NONRESPONDING_CLASS: n_missing_cells})
+                # TODO delete?
+                #).rename_axis(index=counts.index.names)
+
+            counts = pd.concat([counts, to_add], verify_integrity=True)
+            if counts.index.names == [None]:
+                assert 'cluster' not in to_add.index.names
+                counts.index.name = 'key'
+
+        # since it was sorted before, won't change order of anything but nonresponding
+        # class added (which should sort to be the first element)
+        counts = counts.sort_index()
     else:
-        counts_nonresponder_idx = counts.index.get_loc((False, 0, -1))
+        # TODO could we ever not have it? add if needed?
+        if n_nonresponding_classes > 1:
+            warn(f'multiple clusters had key={NONRESPONDING_CLASS=}! picking the one '
+                'with the highest # of ROIs to add missing non-responders to'
+            )
 
-        # so we don't modify input
-        counts = counts.copy()
+        highest_counts_first = count_df.sort_values(by='count', ascending=False)
+        df_int_idx = (highest_counts_first.key == NONRESPONDING_CLASS).idxmax()
+        assert count_df.loc[df_int_idx, 'key'] == NONRESPONDING_CLASS
+        count_df.loc[df_int_idx, 'count'] += n_missing_cells
 
-        # TODO warn we are doing this?
-        counts.iloc[counts_nonresponder_idx] += n_missing_cells
+        # TODO an issue if i don't remove the `.name = 'count'` gonna assume no
+        new_counts = count_df.set_index(counts.index.names, verify_integrity=True)
+        assert new_counts.index.equals(counts.index)
+
+        if 'key' not in counts.index.names:
+            assert 'key' in new_counts.columns
+            new_counts = new_counts.drop(columns='key')
+
+        # TODO also sort_index() here, for consistency w/ above (move to after
+        # conditional, if so)?
+        counts = new_counts.squeeze()
 
     # TODO want to sort index again (have some fn for that?) before returning?
     # currently seems to put non-responders at end, if weren't already any
+    # (that would just be in case non-responding class not already in data. not sure
+    # that's hit much anymore? maybe for model cells?)
 
     assert counts.sum() == n_total
     return counts
 
 
 def print_n_and_frac_series(n_ser: pd.Series, frac_ser: pd.Series) -> None:
+    # TODO doc
     series_strs = n_ser.astype(str) + frac_ser.map(lambda x: f' ({x:.1%})')
     print(series_strs.to_frame())
 
 
+# TODO use elsewhere?
+RESPONSE_CLASS_VARS: List[str] = ['mix_resp', 'n_comps', 'max_comp_idx']
+
 # TODO accept something to add nonresponders to that class?
 # (flag to call add_missing_cells_to_nonresponders. or just keep calling that fn
 # explicitly?)
-def summarize_response_classes(df: pd.DataFrame,
-    response_threshold: Optional[float] = None, *, sum_across_flies: bool = False,
-    verbose: bool = True) -> pd.Series:
+# TODO TODO default to returning odor name instead of max_comp_idx? (then outputs would
+# be comparable whether or not input component order is the same)
+# TODO TODO add test checking order of input components doesn't matter for comp idx at
+# least
+def summarize_response_classes(df: pd.DataFrame, *,
+    responses: Optional[pd.DataFrame] = None,
+    response_threshold: Optional[float] = None, sum_across_flies: bool = False,
+    warn_: bool = True, verbose: bool = True
+    ) -> Tuple[pd.Series, Optional[pd.DataFrame]]:
     """Prints and returns info about # of each response classes
 
+    See `format_response_class` for expectations on format of response class tuples in
+    the 'key' level, which input gets added to column index by
+    `sort_rois_by_response_classes` (if input does not already have such a 'key' column
+    index level).
+
     Args:
+        df: either a bool mask (True if cell responded to odor, False otherwise), or a r
+            response matrix to be thresholded via `response_threshold`.
+
+            If `responses=None` and this is dtype float, it will also be used as
+            `responses=`. If this is bool and `responses` are not passed, mean responses
+            within each class can not be computed.
+
+        responses: response matrix to be used if `df` is a response mask. Will be used
+            to compute means responses within each response class.
+
+        response_threshold: threshold to use to binarize responses.
+            See `sort_rois_by_response_classes`.
+
+        sum_across_flies: if input has `fly_cols`, and this is False, will compute
+            response class counts (and means, if applicable) separately in each fly, so
+            output will also have `fly_cols` among the output indices describing the
+            response classes.
+
+        warn_: whether to warn if input doesn't have float responses to compute means
+            within each response class
+
         verbose: if set False, will not print anything
     """
-    # TODO assert input does not contain panel level (response classes
-    # computation only set up to work w/ input from a single panel)
+    err_suffix = '\nthis function must only be run on data from one panel'
+    assert 'panel' not in df.columns.names, ('drop panel level from column index'
+        f'{err_suffix}'
+    )
+    assert (
+        'panel' not in df.index.names or
+        df.index.get_level_values('panel').nunique() == 1
+    ), f'index can not not contain multiple panel values{err_suffix}'
 
-    # TODO doc this behavior, and purpose of it
+    if responses is not None:
+        assert df.columns.equals(responses.columns)
+        assert df.index.equals(responses.index)
+        assert np.issubdtype(df.values.dtype, bool)
+        # is_scalar checks it is either a float or an int, but not bool (either python
+        # or numpy, in all cases)
+        assert is_scalar(responses.values.dtype)
+        assert response_threshold is None
+    else:
+        if is_scalar(df.values.dtype):
+            assert 'key' in df.columns.names or response_threshold is not None
+            # TODO keep copy()?
+            responses = df.copy()
+        elif warn_:
+            warn('summarize_response_classes: can not compute mean responses without '
+                'float/int responses in df or responses='
+            )
+
+    if responses is not None:
+        assert not responses.isna().any().any()
+
+    # 'key' contains values describing response class. a tuple like (False, 1, 0)
+    # (which would mean it did not respond to the mix (=False), it responded to one
+    # component (=1), and the index of the component with the highest response was 0
     if 'key' not in df.columns.names:
-        df = sort_rois_by_response_classes(df, response_threshold)
+        df = sort_rois_by_response_classes(df, response_threshold=response_threshold)
+        if responses is not None:
+            # TODO maybe x.loc[:, y] (where all of x index levels are first index levels
+            # in y, but y has 'key' level after) only works if responses columns are
+            # already a multiindex?
+            if responses.columns.nlevels > 1:
+                responses = responses.loc[:, df.columns]
+            else:
+                assert responses.columns.nlevels == 1
+                shared = responses.columns.name
+                assert df.columns.names == [shared, 'key']
+                responses = responses.loc[:, df.columns.get_level_values(shared)]
+
+            assert responses.columns.equals(df.columns.droplevel('key'))
+            # TODO keep copy()?
+            responses = responses.copy()
+            responses.columns = df.columns.copy()
     else:
         assert response_threshold is None
 
-    class_sizes = df.groupby(level='key', sort=False, axis='columns').size()
-    # getting one count per class, rather than having each count duplicated for
-    # each odor (w/ rows=odors & columns=classes, before this .iloc slicing)
-    assert (class_sizes.iloc[0] == class_sizes).all().all()
-    class_sizes = class_sizes.iloc[0]
-    class_sizes.name = 'n_rois'
+    class_sizes = df.groupby(level='key', sort=False, axis='columns').apply(
+        lambda x: len(x.columns)
+    ).rename('n_rois')
     assert class_sizes.sum() == len(df.columns)
+    assert isinstance(class_sizes, pd.Series)
 
-    class_sizes.index = pd.MultiIndex.from_tuples(class_sizes.index,
-        names=['mix_resp', 'n_comps', 'max_comp_idx']
+    # converts single-level Index of tuples to a MultiIndex where each element of the
+    # tuple gets its own level
+    new_index = pd.MultiIndex.from_tuples(class_sizes.index,
+        names=RESPONSE_CLASS_VARS
     )
+    class_sizes.index = new_index
+
+    class_means = None
+    if responses is not None:
+        # TODO even compute this if have_fly cols? only gonna return that recomputed
+        # (per-fly) version below in that case (although could use this in
+        # sum_across_flies=True case ig)
+        class_means = responses.groupby(level='key', sort=False, axis='columns').mean()
+        assert class_means.columns.equals(class_sizes.index)
+        assert class_means.index.equals(df.index)
+        class_means.columns = new_index
 
     try:
         n_mix_only_responders = class_sizes.loc[(True, 0)].sum()
-
-    # TODO TODO why do some model cases have a KeyError here despite there
-    # still seeming to be mix-only responders in the
+    # TODO TODO (still? can i repro?) why do some model cases have a KeyError here
+    # despite there still seeming to be mix-only responders in the
     # clust_hierarch_control_subthresh-to-0--001.pdf plot?
     # (set threshold below min. this scaled model data had min of 0.069263, w/ next
     # smallest value of 0.4845663942272249)
@@ -27415,19 +27736,22 @@ def summarize_response_classes(df: pd.DataFrame,
     # thr_and_APL_sensitivity/thr116.84_wAPLKC23.34, right after saving by-cluster
     # control panel plots
     except KeyError:
-        # TODO
-        #breakpoint()
-        #
-        # TODO TODO restore?
-        #raise
-        warn('harcoding n_mix_only_responders=0, b/c KeyError!')
-        # TODO at least warn here (if no longer raising above)
+        # TODO delete this? or maybe i should be filling all other classes?  ig i'm only
+        # using this for prints in this fn, and it's not affecting what is returned?
+        warn('summarize_response_classes: hardcoding n_mix_only_responders=0, because '
+            'none in data!'
+        )
         n_mix_only_responders = 0
+
+    # TODO TODO maybe what is returned should always be filled up to some full set of
+    # response classes? (or another fn for that [that either adds n_comps up to max for
+    # each mix_resp, and maybe max_comp_idx up to max for each of those], or that takes
+    # list of other inputs and unions the response classes they have [returning a new
+    # index]?)
 
     # NOTE: fraction of input, not of all ROIs in raw data (e.g. in KC cases,
     # still currently dropping ROIs not in Remy's "good" clusters, as she does)
     frac_mix_only_responders = n_mix_only_responders / len(df.columns)
-
     if verbose:
         print(f'{n_mix_only_responders} mix only responders (across all flies)'
             f' ({frac_mix_only_responders:.1%} of ROIs still being analyzed)'
@@ -27438,35 +27762,39 @@ def summarize_response_classes(df: pd.DataFrame,
     # clustering. move this comment there [/delete])
 
     have_fly_cols = _have_fly_cols(df)
-    if have_fly_cols:
-        fly_class_sizes = df.groupby(level=['key'] + fly_cols, sort=False,
-            axis='columns').size()
+    if sum_across_flies:
+        assert have_fly_cols, ('_have_fly_cols(df) must return True if '
+            'sum_across_flies=True'
+        )
 
-        # TODO refactor to share w/ above?
-        assert (fly_class_sizes.iloc[0] == fly_class_sizes).all().all()
-        fly_class_sizes = fly_class_sizes.iloc[0]
-        fly_class_sizes.name = 'n_rois'
+    fly_class_means = None
+    if have_fly_cols:
+        by = ['key'] + fly_cols
+        fly_class_sizes = df.groupby(level=by, sort=False, axis='columns').apply(
+            lambda x: len(x.columns)).rename('n_rois')
         assert fly_class_sizes.sum() == len(df.columns)
-        #
 
         for_index = pd.MultiIndex.from_tuples(
             fly_class_sizes.index.get_level_values('key'),
-            names=['mix_resp', 'n_comps', 'max_comp_idx']
+            names=RESPONSE_CLASS_VARS
         ).to_frame(index=False)
-
         for_index['date'] = fly_class_sizes.index.get_level_values('date')
         for_index['fly_num'] = fly_class_sizes.index.get_level_values('fly_num')
-
-        fly_class_sizes.index = pd.MultiIndex.from_frame(for_index)
+        fly_class_index = pd.MultiIndex.from_frame(for_index)
         del for_index
+
+        if responses is not None:
+            fly_class_means = responses.groupby(level=by, sort=False, axis='columns'
+                ).mean()
+            assert fly_class_sizes.index.equals(fly_class_means.columns)
+            assert fly_class_means.index.equals(df.index)
+            fly_class_means.columns = fly_class_index
+
+        fly_class_sizes.index = fly_class_index
 
         assert fly_class_sizes.groupby(level=class_sizes.index.names,
             sort=False).sum().equals(class_sizes)
 
-        # TODO TODO TODO make a plot for this too? or save / something so i can
-        # make one plot combining this for both panels?
-        # (-> turn into a two column swarmplot / similar, w/ fraction of
-        # mix-only responders per panel)
         if verbose:
             # e.g. for Remy KCs, w/ panel=control:
             # date        fly_num
@@ -27485,7 +27813,6 @@ def summarize_response_classes(df: pd.DataFrame,
             frac_mix_only_responders_per_fly = (
                 n_mix_only_responders_per_fly / n_rois_per_fly
             )
-
             print('# ROIs responding only to mix, per fly:')
             print_n_and_frac_series(n_mix_only_responders_per_fly,
                 frac_mix_only_responders_per_fly
@@ -27493,10 +27820,7 @@ def summarize_response_classes(df: pd.DataFrame,
 
     if verbose:
         print()
-
-        class_sizes_without_odor = class_sizes.groupby(['mix_resp', 'n_comps']
-            ).sum()
-
+        class_sizes_without_odor = class_sizes.groupby(RESPONSE_CLASS_VARS[:2]).sum()
         class_fracs_without_odor = class_sizes_without_odor / len(df.columns)
 
         # TODO want plots for any of the below?
@@ -27524,11 +27848,992 @@ def summarize_response_classes(df: pd.DataFrame,
 
     if have_fly_cols:
         if sum_across_flies:
-            return class_sizes
+            return class_sizes, class_means
 
-        return fly_class_sizes
+        return fly_class_sizes, fly_class_means
     else:
-        return class_sizes
+        return class_sizes, class_means
+
+
+def get_n_total(n_total_rois: Union[int, pd.Series]) -> int:
+    # TODO doc
+    if isinstance(n_total_rois, pd.Series):
+        # TODO assert it's castable to int, if happens to be float for some reason?
+        # (and then cast, so issubdtype check below doesn't fail)
+        n_total = n_total_rois.sum()
+    else:
+        n_total = n_total_rois
+
+    # works w/ both python int and np.int[64] scalars
+    assert np.issubdtype(type(n_total), int)
+    return n_total
+
+
+def replace_index_response_vars_with_key_tuples(index: pd.Index) -> pd.MultiIndex:
+    index_df = index.to_frame(index=False)
+    key_df = index_df[RESPONSE_CLASS_VARS]
+    keys = key_df.apply(lambda x: tuple(x), axis='columns').rename('key')
+    index_df = index_df.drop(columns=RESPONSE_CLASS_VARS)
+    index_df['key'] = keys
+    if len(index_df.columns) == 1:
+        # otherwise, for index_df w/ just a 'key' column (w/ response class tuple
+        # values), we would get a MultiIndex where .get_level_values('key') behaves as
+        # normal, giving us tuples, but slicing/iterating over the index directly gives
+        # us length 1 tuples (each containing the tuple we actually want)
+        return pd.Index(index_df.squeeze())
+    else:
+        return pd.MultiIndex.from_frame(index_df)
+
+
+# TODO delete? not always the only cols... ig it should always be the min now, except in
+# uniform case?
+model_cols: List[str] = [KC_ID, 'kc_type']
+
+#CLASS_SIZE_FRAC_THRESH: float = 0.008
+# TODO TODO what's a good value now that i'm also including non-responders? will i need
+# to special case model again?
+CLASS_SIZE_FRAC_THRESH: float = 0.0025
+assert 0 <= CLASS_SIZE_FRAC_THRESH <= 1.0
+
+# TODO rename '-with-subthresh-maxcomp'
+NON_MERGE_MAXCOMP_SUFFIX: str = '-with-maxcomp'
+
+# TODO make second arg default to above caps const?
+def drop_small_classes(class_sizes: pd.Series, class_size_frac_thresh: float
+    ) -> pd.Series:
+
+    if _have_fly_cols(class_sizes):
+        nonfly_cols = [x for x in class_sizes.index.names if x not in fly_cols]
+        # currently have ['cluster'] + fly_cols + ['key'] in at least one call from
+        # natmix_data/analysis.py
+        class_sizes = class_sizes.groupby(level=nonfly_cols, sort=False).sum()
+
+    # NOTE: assuming we've already adding any nonresponders to class_sizes,
+    # so class_sizes.sum() should be the total # OF ROIs measured / model cells.
+    class_size_fracs = class_sizes / class_sizes.sum()
+    classes_above_thresh = class_size_fracs >= class_size_frac_thresh
+    classes_above_thresh = class_sizes[classes_above_thresh].copy()
+
+    return classes_above_thresh
+
+
+# TODO factor out the part for plotting counts to its own fn (in mb_model), and use
+# that in step_model_pn_apl.py?
+# TODO TODO have multiresponder mask stuff not do anything by default (and only enable
+# if some flag set by calls from natmix_data/analysis.py)
+def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Path,
+    fname_prefix: str, *, class_sizes: Optional[pd.Series] = None,
+    class_size_frac_thresh: Optional[float] = CLASS_SIZE_FRAC_THRESH,
+    n_total_rois: Optional[Union[int, pd.Series]] = None, warn_: bool = True,
+    break_axes_for_nonresponders: bool = True, fname_suffix: str = '', title:
+    Optional[str] = None, norm='two-slope', cmap: CMap = diverging_cmap,
+    vmin: Optional[float] = None, vmax: Optional[float] = None,
+    multiresponder_mask: Optional[pd.Series] = None,
+    # TODO delete?
+    wrote_multiresponder_mask: bool = False,
+    #
+    odor_name_row_labels: bool = True, **kwargs) -> None:
+    # TODO doc
+    # TODO warn if plot_dir is None? or assert it isn't? (could skip this fn if we ever
+    # did actually want that, right? not returning anything)
+    """
+    Args:
+        plot_dir: if not None, plot will be save under this directory named like
+            f'{fname_prefix}_means{fname_suffix}' (e.g. clust_KMeans_means_<panel>.pdf,
+            or response-class_means_<panel>.pdf)
+
+        class_sizes: series with `RESPONSE_CLASS_VARS` index levels, that should be the
+            unfiltered superset of keys in `counts`, where the only difference should be
+            that some classes might have been excluded from `counts` because a threshold
+            on the number or fraction of ROIs in the class
+
+        odor_name_row_labels: if False, just index of max component, otherwise the name
+            of the odor at the corresponding index. The last component of each 'key'
+            tuple, which represents index of component the class responded the
+            strongest to, should be defined consistent w/ order odors currently are in
+            `mean_df.index`, for `=True` to work correctly.
+    """
+    # TODO warn + set class_size_frac_thresh=None if `group_level = 'cluster'`? maybe
+    # just change default to =None (and pass in the model_yang_mixture.py calls that
+    # currently use that default)
+
+    if class_size_frac_thresh is not None:
+        if class_sizes is not None:
+            raise ValueError('only pass class_sizes=<unfiltered-counts> if not using '
+                'class_size_frac_thresh=<float> filtering in this function.\nset '
+                'class_size_frac_thresh=None, if you want to continue passing in '
+                'filtered counts (and corresponding unfiltered class_sizes)'
+
+            )
+
+    have_fly_cols = _have_fly_cols(counts)
+    if have_fly_cols:
+        # TODO TODO TODO fix:
+        # ipdb> s1 = counts.index.droplevel(fly_cols).drop_duplicates().sort_values()
+        # ipdb> s2 = mean_df.columns.sort_values()
+        # ipdb> s1.difference(s2)
+        # MultiIndex([(False, 0, -1)],
+        #            names=['mix_resp', 'n_comps', 'max_comp_idx'])
+        # ipdb> s2.difference(s1)
+        # MultiIndex([], names=['mix_resp', 'n_comps', 'max_comp_idx'])
+        # TODO sufficient to check sorted versions? what was causing mismatch in order
+        # w/o (only in second call, w/o 'cluster')
+        assert counts.index.droplevel(fly_cols).drop_duplicates().sort_values().equals(
+            mean_df.columns.sort_values()
+        )
+    else:
+        assert mean_df.columns.equals(counts.index)
+
+    assert not mean_df.columns.duplicated().any()
+
+    # TODO only make these after checking if responder count is above rest be
+    # a certain amount? (or just err / warn if it's not, and this is set True?)
+    # (would require a lot of code changes tho... just raising ValueError below when
+    # needed, when not many more nonresponders than any other class)
+    if not break_axes_for_nonresponders:
+        fig, (mean_ax, count_ax) = plt.subplots(1, 2, figsize=(12, 6.4))
+    else:
+        fig, (mean_ax, count_ax, count_ax_to_break_bar) = plt.subplots(1, 3,
+            # TODO happy with these width ratios?
+            # TODO TODO why does this seem to prodice barplot even more shrunken (along
+            # Y axis) than before?)
+            figsize=(12, 6.4), width_ratios=(1, 0.7, 0.3)
+        )
+        # TODO necessary?
+        # TODO delete. should already be handled via sns.despine below?
+        # https://matplotlib.org/stable/gallery/subplots_axes_and_figures/broken_axis.html
+        count_ax.spines.right.set_visible(False)
+        count_ax_to_break_bar.spines.left.set_visible(False)
+        #
+        # TODO work?
+        count_ax_to_break_bar.tick_params(labelright=False)
+
+        # "proportion of vertical to horizontal extent of the slanted line"
+        d = .5
+        # TODO TODO also plot these for any hlines and the non-responder bar
+        break_kws = dict(marker=[(-1, -d), (1, d)], markersize=12, linestyle='none',
+            color='k', mec='k', mew=1, clip_on=False
+        )
+        # "(0,0) is bottom left of Axes, and (1,1) is top right" (1,0) should be bottom
+        # right (these seem to work)
+        count_ax.plot([1], [0], transform=count_ax.transAxes, **break_kws)
+        count_ax_to_break_bar.plot([0], [0], transform=count_ax_to_break_bar.transAxes,
+            **break_kws
+        )
+
+    if vmin is None:
+        vmin = mean_df.min().min()
+
+    if vmax is None:
+        vmax = mean_df.max().max()
+
+    # NOTE: these are still expected in `'cluster' in col_names` case, where
+    # cluster means are assigned response classes, and then grouped and plotted
+    # according to those
+    #
+    # draw lines between changes in (mix?, #-comps-responded-to), but ignore last
+    # element of tuple (max_comp_idx)
+    hline_level_fn = lambda x: x['key'][:2]
+    hgroup_formatter = lambda x: format_n_components(x[1])
+
+    # '$N_{{c}}=0$' -> '$N_{{c}}=$' + <explanation>
+    xlabel = format_n_components(0).replace('0', '') + (
+        # TODO remove 'unit'? say 'cell' if not group_level=='cluster'?
+        '# components unit responded to'
+    )
+
+    col_names = mean_df.columns.names
+    if 'key' not in col_names:
+        assert all(x in col_names for x in RESPONSE_CLASS_VARS), ('mean_df.columns '
+            "(and counts.index) must both have either a 'key' level, as added by "
+            'sort_rois_by_response_classes, or must have all components of the key '
+            f'({RESPONSE_CLASS_VARS=}) as separate index levels'
+        )
+        mean_df = mean_df.copy()
+        mean_df.columns = replace_index_response_vars_with_key_tuples(
+            mean_df.columns
+        )
+        # TODO or want to process counts regardless of 'cluster' being there? prob not?
+        if 'cluster' not in col_names:
+            counts = counts.copy()
+            counts.index = replace_index_response_vars_with_key_tuples(counts.index)
+
+    show_yticklabels: bool = False
+    if 'cluster' in col_names:
+        show_yticklabels = True
+        group_level = 'cluster'
+        yticklabels = lambda x: x['cluster']
+        hgroup_label_offset = 0.16
+        group_fontsize = None
+    else:
+        group_level = 'key'
+
+        if not show_yticklabels:
+            yticklabels = False
+        elif not odor_name_row_labels:
+            yticklabels = lambda x: x['key'][-1]
+        else:
+            def row_label_fn(x):
+                key = x['key']
+                assert len(key) == 3, f'{key=} not len 3'
+                index = key[-1]
+
+                # this -1 is not actually to be interpreted as an index. it is a
+                # reserved value for indicating there are no component responses to
+                # get a max index over
+                if index == NONRESPONDING_CLASS[-1]:
+                    return 'n/a'
+
+                odor = mean_df.index[index]
+                # can detect other misordering (e.g. of just components), but can at
+                # least detect this
+                assert not is_mix(odor), ('mean_df.index not in same order "key" odor '
+                    'component indices defined from!'
+                )
+                return odor
+
+            yticklabels = row_label_fn
+
+        # 0.3 was pretty good, but maybe slightly too much. 0.27 still slightly too
+        # much.
+        if show_yticklabels:
+            hgroup_label_offset = 0.25
+        else:
+            # TODO good?
+            hgroup_label_offset = 0.05
+
+        group_fontsize = 10
+
+    if have_fly_cols:
+        counts_across_flies = counts.groupby(level=group_level, sort=False).sum()
+    else:
+        counts_across_flies = counts
+
+    warn_prefix = 'plot_means_and_counts: '
+
+    n_total = None
+    if class_sizes is not None:
+        # class_sizes has separate levels for each element of RESPONSE_CLASS_VARS,
+        # unlike concatenated single tuple level 'key' I'm using for most of this fn
+        # TODO is this idempotent, if class_sizes happened to already just have key
+        # level? if not, check?
+        # TODO delete
+        #class_sizes_keys = pd.Index(class_sizes.index.to_frame()[RESPONSE_CLASS_VARS
+        #    ].apply(lambda x: tuple(x), axis='columns').rename('key')
+        #)
+        class_sizes = class_sizes.copy()
+        class_sizes.index = replace_index_response_vars_with_key_tuples(
+            class_sizes.index
+        )
+        class_sizes_keys = class_sizes.index.get_level_values('key')
+        assert len(counts_across_flies.index.difference(class_sizes_keys)) == 0, (
+            'class_sizes was supposed to be an unprocessed version of counts, without '
+            'any classes having potentially been dropped, so it should have all keys '
+            'that counts does (and maybe more)'
+        )
+
+        # TODO skip even more stuff in this case? shouldn't be dropping classes in
+        # `grouplevel = 'cluster'` case, right?
+        # TODO TODO move this below, to also check after the drop_small_classes call in
+        # here?
+        # TODO also move below add_missing_cells... in case input is model data w/o
+        # NONRESPONDING_CLASS? or fix that some other way? (probably fixed now?)
+        if group_level == 'key':
+            dropped_classes = class_sizes[ ~(
+                class_sizes_keys.isin(counts_across_flies.index) |
+                (class_sizes_keys == NONRESPONDING_CLASS)
+            )]
+            # TODO warn otherwise? i did just add a warning that would trip earlier in
+            # case that was seeing this (checking `n_total_rois is None`)
+            if len(dropped_classes) > 0:
+                if not have_fly_cols:
+                    # TODO why is NONRESPONDING_CLASS in dropped_classes here?  (when
+                    # called from natmix_data/analysis.py) (b/c it's in class_sizes
+                    # passed in, but non-responders dropped from mean_df/counts passsed
+                    # in)
+                    assert dropped_classes.max() < counts.min()
+                else:
+                    max_from_dropped_classes = dropped_classes.groupby('key', sort=False
+                        ).sum().max()
+                    min_from_kept_classes = counts.groupby('key',sort=False).sum().min()
+                    assert (
+                        max_from_dropped_classes < min_from_kept_classes
+                    ), f'{max_from_dropped_classes=} >= {min_from_kept_classes=}'
+
+        # TODO delete
+        #c2 = class_sizes.copy()
+        #c2.index = class_sizes_keys
+        # for the shared keys, counts should be the same
+        #assert c2.loc[counts.index].equals(counts)
+        #
+        # TODO restore and use counts_across_flies? meh
+        # TODO TODO fix? in a group_level='key' case, only differ in
+        # NONRESPONDING_CLASS, at least (where class_sizes seems to have had
+        # nonresponders added, and counts_across_flies has not)
+        #assert class_sizes.loc[counts_across_flies.index].equals(counts_across_flies)
+    else:
+        if class_size_frac_thresh is None:
+            warn(f'{warn_prefix}setting `class_sizes=counts.copy()`. OK as long as no '
+                'classes have been dropped from input counts (e.g. small classes). to '
+                'silence, either:\n - pass class_sizes=<Series> (like counts, but '
+                'without any classes dropped)\n - pass unfiltered counts, no '
+                'class_sizes, and use class_size_frac_thresh=<float-in-(0,1)>\n   (so '
+                'filtering is done in this function)\n'
+            )
+        class_sizes = counts.copy()
+
+    if n_total_rois is None and warn_:
+        warn(f'{warn_prefix}n_total_rois=None!\n\nIf you intended for this call to add '
+            'to a the count of a non-responder class, to fill missing non-responders '
+            '(and thus have percentages shown and filtering work with the full '
+            'population size as the denominator), please set n_total_rois=<int> with '
+            f'the full population size (or a series with {fly_cols=} -> per-fly total)!'
+            '\n\nIf you are satisfied with any percentages shown / filtering done '
+            'operating on the sum of the counts passed in as the denominator, or if '
+            'non-responders are currently included in the counts in either `counts` or '
+            '`class_sizes=`, then set `warn_=False` (or pass `n_total_rois=`) to '
+            'silence this warning.\n'
+        )
+
+    n_total = None
+    if n_total_rois is not None:
+        n_total = get_n_total(n_total_rois)
+    elif class_sizes is not None:
+        # TODO delete?
+        warn(f'{warn_prefix}setting `n_total = class_sizes.sum()` for this model '
+            'input. OK as long as non-responders already included in counts in '
+            '`class_sizes`. pass n_total_rois=<int|Series> to silence.\n'
+        )
+        #
+        n_total = class_sizes.sum()
+    else:
+        # TODO delete?
+        warn(f'{warn_prefix}setting `n_total = counts.sum()` for this model input. '
+            'OK as long as non-responders already added. pass n_total_rois=<int|Series>'
+            ' to silence.\n'
+        )
+        #
+        n_total = counts.sum()
+
+    # in have_fly_cols case, add_missing_cells_to_nonresponders is called below
+    if not have_fly_cols:
+        # this does nothing if input already sums to n_total
+        counts = add_missing_cells_to_nonresponders(counts, n_total)
+        class_sizes = add_missing_cells_to_nonresponders(class_sizes, n_total)
+
+    if not have_fly_cols and class_sizes is not None:
+        # TODO can we assume class_sizes has had non-responders added tho?
+        assert n_total == class_sizes.sum(), ('class_sizes should not have had any '
+            'response classes dropped'
+        )
+
+    if class_size_frac_thresh is not None:
+        # TODO TODO warn if `n_total_rois is None`, especially if `class_sizes` is also
+        # None? (just saying that maybe they should be, or otherwise assuming counts
+        # includes non-responders already. add a warn_=True flag that can be used to
+        # silence it)
+
+        # TODO assert equal instead? / too?
+        assert class_sizes.sum() == counts.sum(), 'some already dropped?'
+        classes_above_thresh = drop_small_classes(class_sizes, class_size_frac_thresh)
+        # TODO assert some classes left (besides non-resonders?)?
+
+        assert group_level == 'key', ('non-None class_size_frac_thresh not currently '
+            f'supported for {group_level=}. set =None in call.'
+        )
+        # would probably have to do something other than
+        # counts.index.get_level_values('key'), if wanted to try to support in
+        # group_level='cluster' case (but don't think i do)
+        counts = counts.loc[counts.index.get_level_values('key').isin(
+            classes_above_thresh.index
+        )].copy()
+
+        # TODO change assertion using this below to something computed from counts
+        # instead, and delete this?
+        #
+        # only used below in have_fly_cols=True case
+        if have_fly_cols:
+            # same calculation as above
+            counts_across_flies = counts.groupby(level=group_level, sort=False).sum()
+        else:
+            del counts_across_flies
+        #
+
+        # TODO .copy()?
+        mean_df = mean_df.loc[:,
+            mean_df.columns.get_level_values('key').isin(classes_above_thresh.index)
+        ].copy()
+
+    # important this def happoens after possible subsetting of mean_df above
+    # TODO factor out a fn for all the getting of this level? get_keys(index)?
+    response_classes = mean_df.columns.get_level_values('key')
+
+    # default linewidth=0.5
+    n_comp_linewidth: float = 0.1
+
+    # transposing so clusters/response-classes are rows (and odors are columns), which
+    # is more analagous to samples=rows
+    fig, _ = viz.matshow(mean_df.T, ax=mean_ax, xlabel=xlabel, bigtext_fontsize=10,
+        xticklabels=True, yticklabels=yticklabels, cmap=cmap, norm=norm, vmin=vmin,
+        vmax=vmax,
+
+        # full keys are:
+        # (<responded-to-mix?>, <#-components-responded-to>, <max-comp-resp-idx>)
+        # just using first two parts to draw dividing lines (+ for labels)
+        # TODO TODO what about if 'cluster' in col_names but 'key' isn't? support + test
+        # that case again? what should i use here for that? some concatenation of all
+        # non 'cluster' columns? nothing?
+        hline_level_fn=hline_level_fn,
+        # NOTE: not including group sizes (neither absolute nor fractional) here.
+        # letting other format_response_class call below (for counts Axes to the right)
+        # do that
+        # TODO (done?) strip the shared suffix (the strs produced here) from
+        # format_response_class output below, which should then just show
+        # 'max_comp=<odor> n=<N> (<percentage-of-total-ROIs>%)'
+        hgroup_formatter=hgroup_formatter,
+
+        levels_from_labels=False,
+        hline_group_text=True,
+        hgroup_label_offset=hgroup_label_offset,
+        group_fontsize=group_fontsize,
+
+        linecolor='k', linewidth=n_comp_linewidth,
+
+        # TODO come up w/ something more elegant than this hardcode. just based on #
+        # rows?
+        # TODO want more in cluster case now? was 10 if ... else 8, but i didn't find 8
+        # to be enough anymore
+        fontsize=10 if group_level == 'cluster' else 10,
+
+        **kwargs
+    )
+    if not show_yticklabels:
+        mean_ax.set_yticks([])
+
+    # TODO TODO also put total frac (+ #) of segmenting cells somewhere in plot. xlabel?
+    # (and maybe some other stats? total frac (+ #) non-responders?)
+
+    # e.g. 'mix=0 ncomps=0 n=1479 (85.4%)' -> 'n=1479 (85.4%)' or
+    # 'mix=0 ncomps=1 max_comp=ea n=48 (2.8%)' -> 'n=48 (2.8%)'
+    def response_class_str2bar_label(x: str) -> str:
+        parts = x.split()
+        # NOTE: class_sizes will have to be passed in format_response_class in order for
+        # the last two parts to be available. should always be defined in model case now
+        # at least.
+        # TODO TODO is it also always defined (e.g. as ` = counts`, if needed) in fly
+        # case now? fix if not (also warn if doing that, as current model handling)
+        assert len(parts) in (4, 5), (
+            f'{len(parts)=}\n{parts=}\n{class_sizes=}\nneed to pass class_sizes?'
+        )
+        return ' '.join(parts[-2:])
+
+    def bar_labels_from_response_class_strs(xs: List[str]) -> List[str]:
+        return [response_class_str2bar_label(x) for x in xs]
+
+
+    def count_barh(counts: pd.Series, *, labels: Optional = None,
+        label: Optional[str] = None, **kwargs) -> None:
+
+        yticks = list(range(len(counts)))[::-1]
+        count_ax.barh(yticks, counts, label=label, **kwargs)
+        if labels is not None:
+            assert len(counts) == len(labels)
+            count_ax.set_yticks(yticks, labels)
+
+        if break_axes_for_nonresponders:
+            # omitting label= from this call, to not duplicate in legend
+            count_ax_to_break_bar.barh(yticks, counts, **kwargs)
+
+
+    if not have_fly_cols:
+        # TODO delete (after fixing code around breakpoint in else branch
+        # below) (haven't used that code in a while anyway...)
+        if multiresponder_mask is not None:
+            print('hardcoding multiresponder_mask=None')
+            breakpoint()
+            multiresponder_mask = None
+        #
+
+        # TODO delete
+        # TODO TODO only place this is now err-ing is when i have to add
+        # (NO_CLUSTER, NONRESPONDING_CLASS) -> <n-nonresponders> in add_missing_cells...
+        # (when input is model data w/ non-responders dropped, as appparently is the
+        # case for at least some calls from natmix_data/analysis.py)
+        #
+        # TODO will this ever fail? delete if not
+        #
+        # TODO can i also do in fly_cols case? should i?
+        # TODO replace w/ assertion columns match counts.index? not sure i can...
+        #index_before = counts.index.copy()
+        #counts = reindex(counts, mean_df.columns, fill_value=0)
+        #index_after = counts.index.copy()
+        #assert index_before.equals(index_after)
+        #
+
+        # TODO is this even being hit anymore? or why am i seeming to get all-blue
+        # multiresponder=False plot now? indicate an error? or just need to hide a
+        # legend that shouldn't be there? (is for new prat_claws=True output, but may
+        # not be for some older outputs i expected to hit this path?)
+        if multiresponder_mask is None:
+            if group_level == 'cluster':
+                # index has levels ['cluster', 'key'] here now (at least in some calls)
+                # (still have just 'cluster' ever?)
+                labels = counts.index.get_level_values('cluster').astype(str)
+            else:
+                # TODO also define in fly case (and try to unify def if i can, moving
+                # before this conditional), and use at bottom to add mix group labels
+                # (actually, not sure i need this anymore..., at least not for input to
+                # response_class_str2* fns i was originally planning. using fns working
+                # on key directly now instead)
+                # TODO TODO this won't always work if group_level='cluster', at least so
+                # long as 'cluster' is dropped from index of counts. care to fix that
+                # case? (was previously before this conditional, but moved inside once i
+                # realized that)
+                # TODO TODO even in group_level='cluster', use these for 'n=<n>
+                # <percent>%' strs for bar plot labels, so long as the call below
+                # doesn't raise AssertionError?  or calculate similar strings
+                # differently for that case? care?
+                response_class_strs = [format_response_class(x, class_sizes=class_sizes,
+                        n_total=n_total, df=mean_df
+                    ) for x in counts.index.get_level_values('key')
+                ]
+                # TODO TODO what is changing name of this single level index from
+                # 'key'->None in some model calls from natmix_data/analysis.py?
+                # (doesn't seem  to start that way)
+                assert len(response_class_strs) == len(set(response_class_strs))
+
+                labels = bar_labels_from_response_class_strs(response_class_strs)
+
+            count_barh(counts, labels=labels)
+        else:
+            # TODO TODO doc why we aren't using passed in `counts` here (or warn in the
+            # meantime?)
+
+            # TODO delete
+            warn('still need to doc why not using passed in counts in this case '
+                '(plot_means_and_counts: multiresponder_mask != None)'
+            )
+
+            # TODO TODO TODO df is no longer defined. either make optional again, and
+            # only use here, figure out how to redefine this
+            breakpoint()
+            column_df = df.columns.to_frame(index=False).set_index(model_cols)
+
+            # cells in column_df but not multiresponder_mask index are probably new
+            # responders, created by reduced APL activity (since APL now inhibits some
+            # high-responders [defined by this same mask] by an artificially increased
+            # amount)
+            is_multiresponder = multiresponder_mask.reindex_like(column_df).fillna(False
+                ).to_frame('is_multiresponder')
+
+            # TODO TODO delete? or test in this path from natmix_data/analysis.py, and
+            # get working w/o df? or w/ only minimal input, clearly named?
+            column_df = pd.concat([column_df, is_multiresponder], axis='columns',
+                verify_integrity=True
+            )
+
+            # TODO change way mask was saved so i can say how many odors each
+            # (multiresponding) cell previously responded to (or which cluster it came
+            # from / full tuning?)?
+            bottom = pd.Series(index=mean_df.columns,
+                data=np.zeros(len(mean_df.columns))
+            )
+            # TODO care about which we plot first / in which color? sort other way?
+            for is_multiresponder, gser in column_df.groupby('is_multiresponder'):
+                curr_counts = gser[group_level].value_counts()
+                # TODO delete
+                # TODO TODO check these counts against those passed in? may need to
+                # make sure we are using counts filled w/ missing cells in
+                # non-responding class[/cluster]
+                if n_total_rois is not None:
+                    breakpoint()
+                #
+                curr_counts = reindex(curr_counts, mean_df.columns, fill_value=0)
+
+                if group_level == 'cluster':
+                    labels = curr_counts.index.astype(str)
+                else:
+                    # TODO refactor this labels def to share w/ other conditional
+                    # branches?
+                    labels = [format_response_class(x, class_sizes=class_sizes,
+                            df=mean_df
+                        ) for x in curr_counts.index
+                    ]
+                    # TODO delete
+                    # TODO TODO see if we can define this once before groupby? same set
+                    # w/in each group or no? (could define once before conditional if
+                    # so)
+                    breakpoint()
+                    #
+                    assert len(labels) == len(set(labels))
+                    labels = bar_labels_from_response_class_strs(labels)
+
+                count_barh(curr_counts, labels=labels, left=bottom,
+                    label=f'{is_multiresponder}'
+                )
+                bottom += curr_counts
+
+            if wrote_multiresponder_mask:
+                count_ax.legend(title='multiresponder:')
+            else:
+                count_ax.legend(title='was multiresponder pre APL boost:')
+    else:
+        # TODO TODO use/delete
+        #flies = counts.index.droplevel(
+        #    [x for x in counts.index.names if x not in fly_cols]
+        #).drop_duplicates().sort_values()
+        ## TODO accept kwargs for palette (palette_kws?)? accept palette?
+        #fly_palette = sns.color_palette(n_colors=len(flies))
+        ## TODO may not be true if it wraps?
+        #assert len(fly_palette) == len(flies) == len(set(fly_palette))
+        ## TODO accept kwarg for this dict directly
+        #fly2color = dict(zip(flies, fly_palette))
+        #
+
+        # TODO delete this after grouping over counts instead of using (date, fly_num)
+        # from fly_colors_ser.groupby?
+        #nonfly_levels = [x for x in counts.index.names if x not in fly_cols]
+        #counts = counts.reorder_levels(fly_cols + nonfly_levels)
+        #
+
+        if group_level == 'cluster':
+            labels = mean_df.columns.get_level_values('cluster').unique().astype(str)
+            warn('not currently bothering to show counts in group_level="cluster" '
+                'version of plot'
+            )
+        else:
+            assert group_level == 'key'
+            class_sizes = class_sizes.groupby(level='key', sort=False).sum()
+            # TODO -> check against curr_labels in loop -> delete that code
+            # (seems like i can. assertion not failing)
+            labels = [format_response_class(x, class_sizes=class_sizes,
+                    n_total=n_total, df=mean_df
+                ) for x in mean_df.columns
+            ]
+
+        common_group_vals = mean_df.columns.get_level_values(group_level)
+        bottom = pd.Series(index=common_group_vals, data=np.zeros(len(mean_df.columns)))
+        n_loop_rois = 0
+        # TODO delete
+        #print()
+        #print(f'{n_total_rois=}')
+        #
+        for (date, fly_num), fly_counts in counts.groupby(fly_cols):
+            # TODO delete (after fixing, still gets converted to a DataFrame below)
+            #print()
+            #print(f'fly_counts before:\n{fly_counts.to_string()}')
+            assert isinstance(fly_counts, pd.Series)
+            #
+            # TODO care if this happens before or after reindex above? add assertion all
+            # of fly_counts index was in mean_df.columns (or vice versa? both?) before
+            # reindex above (to check order shouldn't matter too much?)?
+            if n_total_rois is not None:
+                assert isinstance(n_total_rois, pd.Series), \
+                    'n_total_rois should be Series if have_fly_cols'
+
+                n_fly_total = n_total_rois.loc[(date, fly_num)]
+                fly_counts = add_missing_cells_to_nonresponders(fly_counts, n_fly_total)
+
+                # TODO delete (after fixing, still gets converted to a (n, 1) DataFrame)
+                # TODO fix how add_missing_cells_... seems to change shape from (n,) to
+                # (n,1) (w/ fly metadata in column), causing need for .squeeze() here?
+                # (still true? add `assert isinstance(fly_counts, pd.Series)` check here
+                # to tell?)
+                #print(f'fly_counts after:\n{fly_counts.to_string()}')
+                #assert isinstance(fly_counts, pd.Series)
+                #
+                fly_counts = fly_counts.squeeze()
+
+            # need to leave the key level until after add_missing_cells_to_nonresponders
+            if group_level == 'cluster':
+                fly_counts = fly_counts.droplevel('key')
+
+            # TODO delete hack after fixing how these levels are not always dropped
+            # by add_missing_cells...
+            #
+            # not sure why I didn't seem to need to do this in the group_level='key'
+            # case (was it already happening somehow?)
+            # not true!!! in at least some cases i do also need to do it for
+            # group_level='key' cases, so now just always checking for fly_cols.
+            #
+            # is it a matter of something else, like whether n_total_rois is
+            # present? seems like it might be a matter of the path through
+            # add_missing_cells... too (see below)
+            # TODO TODO test all combinations of paths through add_missing_cells...
+            # (with and without fly_cols) to catch this and similar issues
+            # (with and without 'cluster' level and with either key vs
+            # RESPONSE_CLASS_VARS too)
+            #
+            # can't drop fly_cols unconditionally, because i'm seeing at least one
+            # case with just cluster level here. context for that case:
+            # n_total_rois=2022-03-29  2    4215
+            # 2022-04-04  1    5260
+            # 2022-07-20  2    3304
+            # 2022-07-25  2    3608
+            # fly_counts before:
+            # cluster  date        fly_num  key
+            # 2        2022-03-29  2        (False, 0, -1)    223
+            # 6        2022-03-29  2        (False, 0, -1)    807
+            # 8        2022-03-29  2        (False, 1, 0)     189
+            # 5        2022-03-29  2        (False, 1, 1)     251
+            # 1        2022-03-29  2        (False, 1, 2)     307
+            # 4        2022-03-29  2        (False, 1, 2)     179
+            # 7        2022-03-29  2        (False, 1, 3)     214
+            # 3        2022-03-29  2        (False, 1, 4)     180
+            # 0        2022-03-29  2        (False, 1, 4)     146
+            # 9        2022-03-29  2        (True, 0, -1)     127
+            # Warning: multiple clusters had key=NONRESPONDING_CLASS=(False, 0, -1)!
+            # picking the one with the highest # of ROIs to add missing
+            # non-responders to
+            if _have_fly_cols(fly_counts):
+                fly_counts = fly_counts.droplevel(fly_cols)
+
+            assert fly_counts.sum() > 0, 'fly {date=} {fly_num=} with all 0 counts!'
+
+            # 0-fills counts for any clusters/response class 'key' tuples present in
+            # some flies but not this one. this currently needs to be after dropping
+            # 'key' level above, or else reindex call will err (could use another call?)
+            fly_counts = reindex(fly_counts, common_group_vals, fill_value=0)
+            assert fly_counts.sum() > 0, 'reindexing failure? {date=} {fly_num=}'
+
+            # TODO delete. assertions seem to be passing (so no need to compute in loop)
+            if group_level == 'cluster':
+                curr_labels = fly_counts.index.get_level_values('cluster').astype(str)
+                # both are an Index here, so can use equals
+                assert curr_labels.equals(labels)
+            else:
+                curr_labels = [format_response_class(x, class_sizes=class_sizes,
+                        n_total=n_total, df=mean_df
+                    ) for x in fly_counts.index
+                ]
+                assert len(curr_labels) == len(set(curr_labels))
+                assert curr_labels == labels
+            #
+
+            # TODO refactor?
+            fly_str = f'{format_date(date)}/{fly_num}'
+            #
+            count_barh(fly_counts, left=bottom, label=fly_str)
+            bottom += fly_counts
+            n_loop_rois += fly_counts.sum()
+
+        assert n_loop_rois == n_total, f'{n_loop_rois=} != {n_total=}'
+
+        # TODO delete this now that i'm checking vs n_total above?
+        if n_total_rois is not None:
+            assert n_loop_rois == n_total_rois.sum()
+        #
+
+        assert len(counts_across_flies) == len(labels), (
+            f'{len(counts_across_flies)=} != {len(labels)=}'
+        )
+        yticks = list(range(len(counts_across_flies)))[::-1]
+        # TODO delete
+        # TODO or dont del, and use for break_axes_for_nonresponders code below?
+        # (is what i define from counts there equiv to this?)
+        counts_across_flies2 = counts_across_flies
+        #
+        del counts_across_flies
+
+        if group_level == 'key':
+            labels = bar_labels_from_response_class_strs(labels)
+
+        count_ax.set_yticks(yticks, labels)
+
+        fig.legend(loc='outside right upper')
+
+    mix_resp_strs = [format_mix_responder(x[0]) for x in response_classes]
+    mix_resp_dividing_linewidth = 1.0
+    add_group_labels_and_lines(mean_ax, y=mix_resp_strs, labels=True, lines=True,
+        # thicker line here (0.1 above) (0.5 was not noticeably different)
+        # 2.0 was a bit much maybe
+        label_offset=hgroup_label_offset + 0.3, rotation='vertical',
+        linewidth=mix_resp_dividing_linewidth
+    )
+
+    # TODO delete. hline_level_fn/hgroup_formatter/etc above should handle this, right?
+    #
+    # TODO define earlier and replace use of hline_level_fn with this? duplicated
+    # effort, and should produce same output
+    # TODO add these even if `group_level != 'key'`?
+    #hline_levels = [format_n_components(x[1]) for x in response_classes]
+    # TODO change conditional to just LHS + assert hline_levels is not None eventually?
+    #if group_level == 'key' and hline_levels is not None:
+    #    # TODO also do in group_level == 'cluster' case, after fixing def of
+    #    # hline_levels above in that case?
+    #    assert hline_levels is not None
+    #    add_group_labels_and_lines(count_ax, y=hline_levels[::-1], lines=True,
+    #        labels=False
+    #    )
+    #
+    if break_axes_for_nonresponders:
+        # TODO check whether i can use prev def (currently counts_across_flies2
+        # here)?
+        counts_across_flies = counts
+        if have_fly_cols and group_level == 'key':
+            counts_across_flies = counts_across_flies.groupby(level='key', sort=False
+                ).sum()
+
+        # TODO delete. does have_fly_cols actually matter? def need to handle cluster
+        # specially recardless of have_fly_cols...
+        #if not (have_fly_cols and group_level == 'cluster'):
+        if group_level == 'cluster':
+            counts_across_flies = counts_across_flies.groupby(level=['key', 'cluster'],
+                sort=False).sum()
+            max_nonresponding_cluster = counts_across_flies.loc[NONRESPONDING_CLASS
+                ].idxmax()
+            # this is just the cluster with the highest nonresponder count (cause that's
+            # gonna be the max bar height), if there are multiple. assumes there is at
+            # least one cluster that is given key=NONRESPONDING_CLASS
+            max_nonresponding_key = (NONRESPONDING_CLASS, max_nonresponding_cluster)
+            nonresponder_class_count = counts_across_flies.loc[max_nonresponding_key]
+            # this can technically also include "nonresponding" clusters but whatever
+            max_responder_class_count = counts_across_flies.drop(max_nonresponding_key
+                ).max()
+            nonresponder_class_id = max_nonresponding_key
+        else:
+            max_responder_class_count = counts_across_flies.drop(NONRESPONDING_CLASS
+                ).max()
+            nonresponder_class_count = counts_across_flies.at[NONRESPONDING_CLASS]
+            nonresponder_class_id = NONRESPONDING_CLASS
+
+        assert max_responder_class_count < nonresponder_class_count, (
+            f'{max_responder_class_count=} >= {nonresponder_class_count=}\n'
+            'would not make sense to break axes between them'
+        )
+        margin = 0.1
+        count_ax_xmax = max_responder_class_count * (1 + margin)
+        count_ax.set_xlim([0, count_ax_xmax])
+
+        start_break_ax_at = nonresponder_class_count - 200
+        # TODO ideally we'd do this count checking before any plot creation (so we could
+        # fallback to not breaking in the case that would err here), but that would be
+        # more work than just faililng here, and forcing calling code to fix the problem
+        if start_break_ax_at <= count_ax_xmax:
+            # NOTE: currently hitting this in call from natmix_data/analysis.py where
+            # input has fly_cols, and group_level='cluster'. n_total_rois=None there (as
+            # it is at the start of the cluster_rois_and_plot call, at least for that
+            # call. i think n_total_rois might get redefed inside the fn tho, before the
+            # second plot_means_and_counts call?)
+            raise ValueError(f'{warn_prefix}non-responder class {nonresponder_class_id}'
+                f' only had {nonresponder_class_count - max_responder_class_count} more'
+                ' units than the responder class with the highest count! default '
+                'break_axes_for_nonresponders=True does not make sense for this input! '
+                'either:\n - pass n_total_rois= with the total # units (including '
+                'non-responders),\n   to fill up counts to where a break should make '
+                'sense, or\n - set break_axes_for_nonresponders=False\n\nall counts '
+                f'(summed across flies, if any):\n{counts_across_flies.to_string()}'
+            )
+
+        count_ax_to_break_bar.set_xlim([
+            start_break_ax_at, nonresponder_class_count * (1 + margin)
+        ])
+        # TODO hide all but left and right xtick?
+
+        # trim=True was also causing issues here (axes spine was not extending all the
+        # way left to where the break was), and didn't seem to be doing anything i
+        # needed anyway)
+        sns.despine(ax=count_ax_to_break_bar, left=True, right=True, top=True,
+            bottom=False
+        )
+        count_ax_to_break_bar.set_yticks([])
+
+        axs = (count_ax, count_ax_to_break_bar)
+    else:
+        axs = (count_ax,)
+
+    sns.despine(ax=count_ax)
+
+    n_comps = [x[1] for x in response_classes]
+    line_artists = []
+    for ax in axs:
+        ax.set_ylim(-0.5, len(mean_df.columns) - 0.5)
+        # default linecolor='k' for both of these
+        _, lines = add_group_labels_and_lines(ax, y=n_comps[::-1], labels=False,
+            lines=True, linewidth=n_comp_linewidth
+        )
+        line_artists.extend(lines)
+
+        _, lines = add_group_labels_and_lines(ax, y=mix_resp_strs[::-1], labels=False,
+            lines=True, linewidth=mix_resp_dividing_linewidth
+        )
+        line_artists.extend(lines)
+
+    if break_axes_for_nonresponders:
+        # x positions of breaks, in data coords, for each axes
+        axs_break_xs = (count_ax.get_xlim()[1], count_ax_to_break_bar.get_xlim()[0])
+
+        # TODO this right? check (0 was on the wrong side)
+        nonresponder_bar_y = len(mean_df.columns) - 1
+        for ax, x in zip(axs, axs_break_xs):
+            ax.plot([x], [nonresponder_bar_y], **break_kws)
+
+        for line in line_artists:
+            ys = set(line.get_ydata())
+            assert len(ys) == 1, f'{ys=}. expected a single unique y value for hline'
+            y = ys.pop()
+            for ax, x in zip(axs, axs_break_xs):
+                ax.plot([x], [y], **break_kws)
+
+    # TODO TODO refactor to share w/ natmix_data/analysis.py code this was copied from
+    if class_size_frac_thresh is not None:
+        assert class_sizes.index.names == classes_above_thresh.index.names
+        n_classes_above_thresh = len(classes_above_thresh)
+        n_rois_in_classes_below_thresh = class_sizes[
+            ~class_sizes.index.isin(classes_above_thresh.index)
+        ].sum()
+
+        if have_fly_cols:
+            assert not _have_fly_cols(class_sizes)
+            assert not _have_fly_cols(classes_above_thresh)
+            assert _have_fly_cols(counts), f'counts:\n{counts}'
+            counts = counts.groupby(level='key', sort=False).sum()
+
+        n_total_classes = len(class_sizes)
+        assert n_total_classes >= len(counts)
+
+        index_diff = counts.index.difference(class_sizes.index)
+        assert len(index_diff) == 0, f'{index_diff=}'
+
+        if n_total_classes == len(counts):
+            warn(f'{warn_prefix}no classes were dropped, despite '
+                f'{class_size_frac_thresh=}. set higher to actually drop classes, or '
+                'None if you either:\n - do not want to drop small classes, or \n - if '
+                'you have already filtered your input\n...or this may be a bug?\n'
+                f'current classes and # of units in each:\n{counts.to_string()}\n'
+            )
+        else:
+            assert n_classes_above_thresh < n_total_classes
+            assert n_rois_in_classes_below_thresh > 0
+
+        # TODO fix whatever is converting class_sizes to float instead?
+        assert np.isclose(
+            n_rois_in_classes_below_thresh, int(n_rois_in_classes_below_thresh)
+        )
+        n_rois_in_classes_below_thresh = int(n_rois_in_classes_below_thresh)
+        #
+        title += ('\n\n'
+            # TODO how to format this? (at least for 0.0025, as-is is fine. shows as
+            # '0.0025')
+            # TODO also say how many ROIs this corresponds to? (rounding appropriately)
+            f'{class_size_frac_thresh=}\n'
+            f'({n_classes_above_thresh}/{n_total_classes} classes above size thresh)\n'
+            # TODO also phrase as a percentage?
+            f'({n_rois_in_classes_below_thresh} ROIs in classes below size thresh)'
+        )
+
+    if title is not None:
+        fig.suptitle(title)
+
+    if plot_dir is not None:
+        if group_level == 'key' and not MERGE_MAXCOMP_NCOMPS0:
+            fname_prefix += NON_MERGE_MAXCOMP_SUFFIX
+
+        # TODO define fname_prefix from group_level (i.e. 'response-class' if
+        # group_level='key') by default?
+        savefig(fig, plot_dir, f'{fname_prefix}_means{fname_suffix}',
+            bbox_inches='tight', normalize_fname=False
+        )
 
 
 SUPPORTED_COMP_STATS: Tuple[str] = ('sum', 'max')
@@ -27867,24 +29172,20 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     #
 
     new_labels = []
-    mix_parts = []
+    mix_labels = []
     for i, label in enumerate(xlabels):
         text = label.get_text()
-        parts = text.split(' ')
-        prefix = 'ncomps='
-        assert parts[1].startswith(prefix), f'{parts=}'
-        n_comps = parts[1][len(prefix):]
-        if i == 0:
-            new_labels.append(f'$N_{{components}}={n_comps}$')
-        else:
-            new_labels.append(f'${n_comps}$')
-        mix_parts.append(parts[0])
 
-    mix_labels = [
-        'mix NON-responders' if x == 'mix=0' else 'mix-responders' for x in mix_parts
-    ]
+        new_label = response_class_str2n_components_formatted(text, i=i)
+        new_labels.append(new_label)
+
+        mix_label = response_class_str2mix_responder_formatted(text)
+        mix_labels.append(mix_label)
+
     for ax in cg.axes.flatten():
         ax.set_xticks(range(len(new_labels)))
+        # TODO also want some kind of alignment when showing these as group labels in
+        # plot_means_and_counts?
         ax.set_xticklabels(new_labels, horizontalalignment='right')
         add_group_labels_and_lines(ax, x=mix_labels, linecolor=(0.8, 0.8, 0.8),
             label_offset=-1.15

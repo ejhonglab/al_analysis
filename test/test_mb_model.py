@@ -19,6 +19,7 @@ import xarray as xr
 # handling change)? import order matter? (delete if not)
 from al_analysis import al_util
 #
+from hong2p.types import ParamDict
 from hong2p.util import pd_allclose, equals, is_scalar, pd_indices_equal
 from hong2p.xarray import coords_equal, series2xarray_like, move_all_coords_to_index
 import olfsysm as osm
@@ -30,12 +31,11 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     connectome_APL_weights, KC_ID, CLAW_ID, BOUTON_ID, KC_TYPE, step_around,
     read_param_csv, read_params, read_tuned_params, get_thr_and_APL_weights,
     variable_n_claw_options, dict_seq_product, get_connectome_wPNKC_params,
-    format_model_params, eval_and_check_compatible, glomerulus_col, ParamDict,
-    format_weights, megamat_orn_deltas, paper_megamat_orn_deltas,
-    paper_hemibrain_output_dir, paper_uniform_output_dir, paper_uniform_model_responses,
-    get_dynamics, get_time_index, ONESTEP_LR_KEY,
-    fit_dff2spiking_from_remypaper_flies_and_hallem, APL_WEIGHT_NAMES,
-    APL_TUNING_PARAMS, scale_dff_to_est_spike_deltas_using_hallem,
+    format_model_params, eval_and_check_compatible, glomerulus_col, format_weights,
+    megamat_orn_deltas, paper_megamat_orn_deltas, paper_hemibrain_output_dir,
+    paper_uniform_output_dir, paper_uniform_model_responses, get_dynamics,
+    get_time_index, ONESTEP_LR_KEY, fit_dff2spiking_from_remypaper_flies_and_hallem,
+    APL_WEIGHT_NAMES, APL_TUNING_PARAMS, scale_dff_to_est_spike_deltas_using_hallem,
     remypaper_dff2spiking_data_dir, written_since_proc_start,
     dff_to_spiking_model_choices_csv_name, dff_to_spiking_data_csv_name, read_parquet,
     MODEL_KW_LIST, QUICK_MODEL_KW_LIST, BOUTON_MODEL_KW_LIST, CLAW_MODEL_KW_LIST,

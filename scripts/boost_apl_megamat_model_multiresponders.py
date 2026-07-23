@@ -9,9 +9,11 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from hong2p.types import ParamDict
+
 from al_analysis import al_util
 from al_analysis.al_util import warn
-from al_analysis.mb_model import (fit_and_plot_mb_model, connectome_wPNKC, ParamDict,
+from al_analysis.mb_model import (fit_and_plot_mb_model, connectome_wPNKC,
     connectome_APL_weights, read_parquet, megamat_orn_deltas, pd_allclose,
     get_connectome_wPNKC_params, BOUTON_MODEL_KW_LIST, NONCLAW_MODEL_KW_LIST,
     dict_seq_product, check_model_kws_unique, assert_fit_and_plot_outputs_equal

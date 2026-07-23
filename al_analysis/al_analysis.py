@@ -63,7 +63,7 @@ from hong2p.olf import (format_mix_from_strs, format_odor_list, solvent_str,
 from hong2p.viz import dff_latex
 from hong2p.err import NoStimulusFile
 from hong2p.thor import OnsetOffsetNumMismatch
-from hong2p.types import ExperimentOdors, Pathlike
+from hong2p.types import CMap, ExperimentOdors, Pathlike, ParamDict
 from hong2p.xarray import (move_all_coords_to_index, unique_coord_value, scalar_coords,
     drop_scalar_coords, assign_scalar_coords_to_dim, odor_corr_frame_to_dataarray
 )
@@ -266,12 +266,12 @@ do_analyze_response_volumes = False
 # (using 2 to accomodate earlier recordings for Remy's project, where pulse was still
 # 2s) (which were affected? am i still using those? don't think so? methods summary CSVs
 # should help clarify that, assuming pulse timing part of those are accurate...)
-n_volumes_for_response = 2
+n_volumes_for_response: int = 2
 
 # If this is None, it will use all the everything from the start of the trial to the
 # frame before the first odor frames (see also exclude_last_pre_odor_frame below).
 # Otherwise, will use this many frames before first odor frame.
-n_volumes_for_baseline = None
+n_volumes_for_baseline: Optional[int] = None
 
 # TODO use a fn for this, like in compute_trial_stats stat= kwarg?
 # NOTE: this did not exist for a long time (baseline was always a mean of however many
@@ -2759,16 +2759,12 @@ def plot_roi_stats_odorpair_grid(single_roi_series, show_repeats=False, ax=None,
 
 
 # TODO delete odor_scaled_version kwarg if i don't end up using
+# TODO type hint for bbox_inches? mpl says Bbox, but was i just passing a tuple (len 2
+# or 4?)
 def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
-    fname_prefix: str, *, odor_scaled_version=False, bbox_inches=None,
-    vmin=None, vmax=None, cbar_kws=None,
-
-    # TODO TODO fix sort_rois_first_on handling in stddev case ->
-    # delete this option (which was added just to special case fix that)
-    # (or have this option replace that code?)
-    sort_glomeruli_with_diags_first=False,
-
-    **kwargs) -> None:
+    fname_prefix: str, *, odor_scaled_version: bool = False, bbox_inches=None,
+    vmin: Optional[float] = None, vmax: Optional[float] = None,
+    cbar_kws: Optional[ParamDict] = None, **kwargs) -> None:
     """Saves response matrix plots to <plot_dir>/<fname_prefix>[_normed].<plot_fmt>
 
     Args:
@@ -2794,9 +2790,7 @@ def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
     fig, _ = plot_all_roi_mean_responses(df, roi_min_max_scale=True, **kwargs)
     savefig(fig, plot_dir, f'{fname_prefix}_normed', bbox_inches=bbox_inches)
 
-    # TODO TODO and a scaled-within-each-fly version?
-
-    # TODO delete? not sure i want this
+    # TODO delete? not sure i want this (default is =False anyway)
     # TODO or maybe just move out to the one place i might want this (diagnostics
     # response matrix example for now)
     if odor_scaled_version:
@@ -2807,18 +2801,12 @@ def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
     # don't want this for the stddev plots
     kwargs.pop('xticks_also_on_bottom', None)
 
-    # TODO TODO delete hack (replace w/ assertion it is in df.index.names? when was
-    # this even being hit [/ what was it being used for?])
-    assert 'repeat' in df.index.names
-    if 'repeat' not in df.index.names:
-        print('PLOT_RESPONSES_AND_SCALED_VERSIONS RETURNING EARLY!')
-        return
-    #
-
-    assert 'repeat' in df.index.names
+    # apparently this was failing at some point, but can't repro, running whole ijroi
+    # analysis to repro paper plots now
+    assert 'repeat' in df.index.names, f'{df.index.names=}'
     names_before = set(df.index.names)
     # taking mean across trials first
-    fly_means = df.groupby([x for x in df.index.names if x != 'repeat'],
+    fly_means = df.groupby(level=[x for x in df.index.names if x != 'repeat'],
         sort=False
     ).mean()
 
@@ -2827,7 +2815,9 @@ def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
 
     # numeric_only=True shouldn't actually be doing anything, since all columns should
     # be numeric to begin with (just using to silence FutureWarning)
-    stddev = fly_means.groupby('roi', axis='columns', sort=False).std(numeric_only=True)
+    stddev = fly_means.groupby(level='roi', axis='columns', sort=False).std(
+        numeric_only=True
+    )
 
     if not all(x in df.columns.names for x in fly_cols):
         # or either way, can't compute stddev across flies
@@ -2843,36 +2833,12 @@ def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
     if n_flies <= 1:
         return
 
-    # TODO fix / refactor sort_rois_first_on / diag-glomeruli-first sorting -> delete
-    # this code (copied from calling place that calculates sort_rois_first_on)
-    # (only broken in stddev case, cause shape changes when it averages across flies)
-    glomeruli_with_diags = set(all_odor_str2target_glomeruli.values())
-    def glom_has_diag(index_dict):
-        glom = index_dict['roi']
-        return glom in glomeruli_with_diags
-    #
-
     # TODO check this isn't screwing up some other plots (diag, uncertain, etc)?
     # NOTE: updating kwargs w/ roimean_plot_kws is a hack to try to get this behaving
     # like mean plots (e.g. ijroi/certain_mean.pdf) which also use roimean_plot_kws
     #
     # intended to overwrite any keys in kwargs with value from roimean_plot_kws
     kwargs = {**kwargs, **roimean_plot_kws}
-
-    if sort_glomeruli_with_diags_first:
-        assert 'sort_rois_first_on' in  kwargs
-        # replacing with recalulated version that should have right shape
-        kwargs['sort_rois_first_on'] = [x not in glomeruli_with_diags
-            for x in stddev.columns.get_level_values('roi')
-        ]
-        # TODO warn if overwriting? should prob just refactor anyway
-        kwargs['hline_level_fn'] = glom_has_diag
-
-        # TODO why (here and in normal sort_rois_first_on stuff above)
-        # is VM5d sorted right before VM7d (it's b/c 2h appearing twice in that
-        # diagnostic data, at 2 concs for 2 diff targets), but otherwise all diagnostics
-        # are ordered correctly?  (related to 2h appearing twice [for va4 at -3 in new
-        # data])
 
     # TODO maybe handle case where it's not in kwargs (just set to 'std' or something?)
     assert 'cbar_label' in kwargs
@@ -2938,7 +2904,7 @@ def suite2p_traces(analysis_dir):
 # thinner lines?
 # TODO change how LUT is defined to at least allow ~single pixels NOT washing out whole
 # range (e.g. from motion correction artifact at edge)
-def plot_rois(*args, nrows=1, cmap=anatomical_cmap, **kwargs):
+def plot_rois(*args, nrows: int = 1, cmap: CMap = anatomical_cmap, **kwargs):
     # TODO test display of cmap default in generated docs. try to get it to look nice
     # (without having to manually specify the default in the docstring)
     """
@@ -3678,6 +3644,8 @@ def trace_plots(raw_traces, z_indices, bounding_frames, odor_lists, roi_plot_dir
     # mainly dealing with now
 
     # TODO make axhlines between changes in z_indices
+    # TODO use callable (accepting dict from values in input df index) for
+    # sort_rois_first_on now?
     fig, mean_df = plot_all_roi_mean_responses(trial_df, sort_rois_first_on=z_indices,
         odor_sort=is_pair, title=main_plot_title, cbar_label=mean_response_desc,
         cbar_shrink=0.4
@@ -8209,6 +8177,7 @@ def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.Da
     # probably not...
     #
     # negating mask so non-certain are all at end (rather than all at start)
+    # TODO pass callable for sort_first_on now?
     df = sort_fly_roi_cols(df, sort_first_on=[not x for x in certain_mask])
 
     # TODO delete
@@ -8485,7 +8454,14 @@ def acrossfly_correlation_plots(output_root: Path, trial_df: pd.DataFrame, *,
         plot_corrs(gh146_roi_only_ij_corr_list, output_root, gh146_rois_only_reldir)
 
 
-# TODO TODO (at least when plot format is svg) add metadata to matshow plots to allow
+PAPER_ORN_VMIN: float = -0.35
+PAPER_ORN_VMAX: float = 2.5
+# everything after -0.3 here is what would automatically be shown if cbar_kws including
+# these as ticks= not passed below (if just vmin/vmax above set)
+PAPER_ORN_CBAR_TICKS = [PAPER_ORN_VMIN, 0, 0.5, 1.0, 1.5, 2.0, PAPER_ORN_VMAX]
+PAPER_ORN_CBAR_KWS = dict(ticks=PAPER_ORN_CBAR_TICKS)
+
+# TODO (at least when plot format is svg) add metadata to matshow plots to allow
 # showing glomerulus / odor on hover, as in:
 # https://matplotlib.org/stable/gallery/user_interfaces/svg_tooltip_sgskip.html
 # (requires loading svg in a browser, or at least something that actually runs the
@@ -8502,47 +8478,19 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     else:
         fname_prefix = ''
 
-    # TODO TODO TODO versions of these plots that only focus on pebbled ROIs that
-    # are in GH146 (that i have also been able to find in it / are known to be in it)
-    # (so that i can put them side-by-side)
+    # TODO (done?) versions of these plots that only focus on pebbled ROIs that are in
+    # GH146 (that i have also been able to find in it / are known to be in it) (so that
+    # i can put them side-by-side)
     # TODO interactive plot (/format) where scrolling past view of (top) xlabel text
     # keeps xlabel text in view, but just scrolls through data? to be able to actually
     # read odors for stuff plotted further down (or break into multiple plots, according
     # to a reasonable vertical size?)
-
-    # TODO TODO separate option for handling ROIs that only ever have '?' suffix
-    # (e.g. 'DL3?' when i haven't corroborated this ROI from other data)
-    # (want to still be able to see these things in some versions of the average plots,
-    # to compare new flies to this mean, but don't want to drop the suffix cause the
-    # high uncertainty)
-
-    # TODO TODO per-roi-mean plot (both normalized within ROI and not) where ROIs
-    # are ordered according to clustering rather than just alphabetically
-
-    # TODO TODO change '+' ROI handling from just suffix to anywhere in (but maybe
-    # include debug list of all ROIs matching, to make sure there aren't some that i
-    # didn't actually want discarded? (anything containing '+' should be dropped)
-
-    # TODO TODO versions of all-roi-mean plots where if only uncertain ( "<x>?") ROIs
-    # exist (within a recording/fly) for a given glomerulus name, then those are also
-    # included in average (but still exclude uncertain when they exist alongside certain
-    # ROIs of same name)
-    # TODO and maybe (also?) break these into their own plot?
-
-    # TODO version of mean plot w/ zeros added for non-responsive glomeruli? (maybe w/
-    # some indicator for those we are particularly unsure of / in general? how tho?)
-
-    # TODO version of all-roi-mean plots where any (odor, ROI) combos w/ less than all
-    # flies having that odor are shown as missing (white)? (actually want this? maybe
-    # some threshold such as at least 2 or half?)
-
     certain_df = select_certain_rois(df)
-
     if len(certain_df.columns) == 0:
         # I.e. no "certain" ROIs (those named and without '?' suffix, or other
         # characters marking uncertainty)
         warn(f'{plot_dir.name}: no ImageJ ROIs were confidently identified!')
-        # TODO TODO do i want to do any uncertain ROI plots in here tho? maybe?
+        # TODO do i want to do any uncertain ROI plots in here tho? maybe?
         return
 
     makedirs(plot_dir)
@@ -8563,15 +8511,14 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     n_flies = len(certain_df.columns.to_frame(index=False)[['date','fly_num']
         ].drop_duplicates())
 
-    # TODO assert plot_dir is where a <driver>_<indicator> dir should be?
-    # other checks?
+    # TODO assert plot_dir is where a <driver>_<indicator> dir should be? other checks?
     driver, indicator = plot_dir.parts[0].split('_')
 
     # TODO maybe (here and elsewhere), map driver to something simple like ('ORN'/'PN'),
     # for use in titles/etc
     # TODO remove the '<=' part eventually (or special case when whole plot has same n)
     # or just show min? range?
-    # TODO TODO only show '<=' if some odors have less n than odors (as w/ aa/va in
+    # TODO only show '<=' if some odors have less n than odors (as w/ aa/va in
     # megamat panel) (otherwise, just use '=')
     # TODO or show n range instead?
     title = f'{driver}>{indicator} (n<={n_flies})'
@@ -8581,128 +8528,76 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     fig, n_per_odor_and_glom = plot_n_per_odor_and_glom(certain_df, title_prefix=title)
     savefig(fig, plot_dir, f'{fname_prefix}certain_n')
 
-    # TODO TODO should i be normalizing within fly or something before taking mean?
+    # TODO should i be normalizing within fly or something before taking mean?
     # (maybe scaling to response to diagnostic panel? then remaking them in a timely
     # manner might be more important...)
-    #
-    # TODO TODO factor into option of plot_all_..., so that i can share code to
-    # show N for each ROI w/ case calling from before loop over panels
-    mean_certain_df = certain_df.groupby('roi', sort=False, axis='columns').mean()
-
-    # TODO delete (what was this even for?)
-    '''
-    if plot_dir.name != 'ijroi' and fname_prefix == '':
-        print(plot_dir.name)
-        # taking mean across repeats before getting min/max (should corresond to entries
-        # in mean plots)
-        mdf = mean_certain_df.groupby('odor1').mean()
-        print(f'{mdf.shape=}')
-        # also averaging acrosss repeats
-        print(f'{mdf.max().max()=}')
-        print(f'{mdf.min().min()=}')
-    '''
-    # glomeruli_diagnostics (when run on validation2 data only)
-    # mdf.shape=(25, 40)
-    # mdf.max().max()=2.1187355870376936
-    # mdf.min().min()=-0.3089174054102511
-    #
-    # validation2
-    # mdf.shape=(22, 40)
-    # mdf.max().max()=2.4357667244018546
-    # mdf.min().min()=-0.2681457206864409
-    #
-    # glomeruli_diagnostics (when run on megamat data only)
-    # mdf.shape=(26, 38)
-    # mdf.max().max()=1.3093118527266558
-    # mdf.min().min()=-0.1576990730421217
-    #
-    # megamat
-    # mdf.shape=(17, 38)
-    # mdf.max().max()=1.628468070216096
-    # mdf.min().min()=-0.18102526894048887
-    #
+    mean_certain_df = certain_df.groupby(level='roi', sort=False, axis='columns').mean()
 
     # taking mean across repeats before getting min/max (should corresond to entries
     # in mean plots)
-    mdf = mean_certain_df.groupby('odor1').mean()
+    mdf = mean_certain_df.groupby(level='odor1', sort=False).mean()
     min_mean = mdf.min().min()
     max_mean = mdf.max().max()
+    del mdf
 
     # want one range for all of these plots in paper, to more easily compare across
     # panels (though might still not make 100% sense w/o any kind of scaling per fly)
-    vmin = -0.35
-    vmax = 2.5
+    vmin = PAPER_ORN_VMIN
+    vmax = PAPER_ORN_VMAX
+    # TODO fail here if trying to repro paper outputs and we can't hardcode b/c
+    # vmin/vmax (pass in what is currently repro_paper_models=<bool>)?
+    # (should never happen... already reproduced the paper outputs i care about)
     if vmin <= min_mean and max_mean <= vmax:
-        # TODO or calculate rather than hardcoding (prob hard...)?
-        # TODO err if vmin/vmax very different from cbar limits / the former doesn't
-        # contain latter?
-        #cbar_ticks = [-0.3, 0, 2.5]
-        # everything after -0.3 here is what would automatically be shown if cbar_kws
-        # not passed below
-        #cbar_ticks = [-0.3, 0, 0.5, 1.0, 1.5, 2.0, 2.5]
-        # TODO TODO this work (or can i make it if i set float formatting right?)?
-        # (yes, it does show same number of sig figs for all)
-        # TODO TODO try to change formatter to fix
-        cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
-        cbar_kws = dict(ticks=cbar_ticks)
-        # TODO delete (after stopping hardcode)
-        print(f'response_matrix_plots: HARDCODING {vmin=} {vmax=}')
-        print(f'response_matrix_plots: HARDCODING CBAR TICKS TO {cbar_ticks=}')
-        #
+        cbar_kws = dict(PAPER_ORN_CBAR_KWS)
+        # TODO delete (after stopping hardcode)? or only do if repro_paper_models=True
+        # passed it?
+        warn(f'response_matrix_plots: hardcoding {vmin=} {vmax=} (paper values), '
+            'as well as the particular cbar_kws=dict(ticks=...) to be shown'
+        )
     else:
-        # TODO does it matter to have one consistent scale in this context? if so, may
-        # still need to hardcode / similar...
+        # TODO or calculate list of nice intermediate ticks, rather than hardcoding like
+        # above? (would also want to handle in matshow/add_colorbar)
         # TODO round up/down to nearest multiple of 0.5/0.25 or something, when using
-        # dmin/dmax?
-        # TODO just leave None?
-        #vmin = min_mean
-        #vmax = max_mean
+        # dmin/dmax? (would want to handle in matshow/add_colorbar, if anything)
         # (defaults)
         vmin = None
         vmax = None
         # the default
         cbar_kws = None
 
-    # TODO refactor to not duplicate defs of so many kwargs across the two calls below
-    # (just make another var here)
+    # NOTE: wasn't planning on passing vmin/vmax, but need to so stddev plot can share
+    # limit w/ mean plots generated in next call (and do want to pass to fix for all
+    # paper outputs anyway, when making those)
+    shared_kws = dict(
+        vmin=vmin, vmax=vmax, title=title, cbar_kws=cbar_kws, bbox_inches='tight',
+    )
 
     # TODO just check # of columns to decide if we want to add bbox_inches='tight'
     # (between diags + megamat and that number + validation2)? or always pass it?
     # what is the downside to always passing it?
     plot_responses_and_scaled_versions(certain_df, plot_dir, f'{fname_prefix}certain',
-        # NOTE: wasn't planning on passing vmin/vmax, but need to so stddev plot can
-        # share limit w/ mean plots generated in next call
-        #
-        # TODO refactor stddev plotting to just another plot_all_... call here (rather
-        # than lumping it into '*certain' call below), to make it easier to share
-        # vmin/vmax w/ '*certain_mean' call w/o forcing individual fly data in
-        # '*certain' onto same scale?
-        vmin=vmin, vmax=vmax, title=title, cbar_kws=cbar_kws, bbox_inches='tight',
-
         # TODO only actually pass thru xticks_also_on_bottom for the plots that have
-        # separate rows for ROIs from diff flies (e.g. NOT the stddev plot)
+        # separate rows for ROIs from diff flies (e.g. NOT the stddev plot)?
         # (currently have a hack inside plot_responses... that should exclude it in
         # most/all of those cases)
-        xticks_also_on_bottom=True,
-
-        # NOTE: currently ignoring these for stddev plot made within, and using
-        # roimean_plot_kws there instead. hoping that hack is good enough for now.
-        **roi_plot_kws
+        # NOTE: currently ignoring roi_plot_kws for stddev plot made within (...how?),
+        # and using roimean_plot_kws there instead. hoping that hack is good enough for
+        # now.
+        xticks_also_on_bottom=True, **shared_kws, **roi_plot_kws
     )
 
     # TODO check and remove uncertainty from this comment...
     # I think this (plot_all...?) (now wrapped behind plot_responses_and_scaled...) is
     # sorting on output of the grouping fn (on ROI name), as I want.
     plot_responses_and_scaled_versions(mean_certain_df, plot_dir,
-        f'{fname_prefix}certain_mean', vmin=vmin, vmax=vmax, title=title,
-        cbar_kws=cbar_kws, bbox_inches='tight', **roimean_plot_kws
+        f'{fname_prefix}certain_mean', **shared_kws, **roimean_plot_kws
     )
     # TODO refactor so stddev is plotted here, at least to make text / other plot params
     # more consistent (or otherwise fix that font size consistency issue)?
-    # TODO TODO or should i make + save mean in plot_responses_and_scaled_version (would
-    # it be easier?)
+    # (the latter, if anything) (+ easier to share vmax w/ '*certain_mean' call w/o
+    # forcing individual fly data in '*certain' onto same scale?)
 
-    # TODO TODO normalized **w/in fly** versions too (instead of just per ROI)?
+    # TODO normalized **w/in fly** versions too (instead of just per ROI)?
     # (copy scaling from my MB modeling code?) (+ use same glomeruli, fillna-ing where
     # appropriate, across all.)
 
@@ -8758,7 +8653,7 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         diag_df = None
 
 
-    for panel, panel_df in trial_df.groupby('panel', sort=False):
+    for panel, panel_df in trial_df.groupby(level='panel', sort=False):
         _printed_any_flies = False
 
         # TODO TODO switch all code to work w/ initial 2 index levels:
@@ -8792,7 +8687,6 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # response_matrix_plots will make these if needed
         panel_ijroi_dir = across_fly_ijroi_dir / 'by_panel' / panel
 
-
         pdf_certain = pdf.loc[:,
             pdf.columns.get_level_values('roi').map(is_ijroi_certain)
         ]
@@ -8802,42 +8696,43 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         filled_mean_certain = fill_to_hemibrain(mean_certain)
         filled_mean_certain = sort_odors(filled_mean_certain, add_panel=panel)
 
-        # TODO TODO move into plot_responses? have something else for this?
-        filled_mean_certain.index = filled_mean_certain.index.get_level_values('odor1'
-            ).map(olf.parse_odor_name)
+        # TODO apply same processing to the plots besides the filled* one too?
+        # (or just move into plot_responses?)
+        #
+        # TODO TODO factor into some new fn to process odor strs pre-plotting? (could
+        # then use in plot_responses, and before other plots)
+        odor_names_without_concs = filled_mean_certain.index.get_level_values('odor1'
+                ).map(lambda x: olf.parse_odor_name(x, require_conc=False))
+        odor_names_duped = odor_names_without_concs.duplicated()
+        if odor_names_duped.any():
+            warn(f'{panel=} had the following odors at >1 concentration:\n'
+                f'{list(odor_names_without_concs[odor_names_duped])}\n...so leaving '
+                # and also to avoid a ValueError that plot_responses would emit, since
+                # allow_duplicate_labels=True not set (nor should it be. want to tell
+                # them apart)
+                'concentration in all xticklabels, to be able to tell them apart'
+            )
+            # NOTE: could set mix_col=<some-other-name> if this assertion fails,
+            # in call to add_mix_str_index_level
+            assert 'odor' not in filled_mean_certain.index.names, (
+                f'{filled_mean_certain.index.names=} set mix_col=<something-else> '
+                'for add_mix_str_index_level call below'
+            )
+            # will add a new 'odor' index level from any 'odor1','odor2',etc levels in
+            # input, with all components formatted into one str per row
+            filled_mean_certain = olf.add_mix_str_index_level(filled_mean_certain)
+            # since plotting fn is probably still expecting just a single str index
+            # level
+            filled_mean_certain.index = filled_mean_certain.index.get_level_values(
+                'odor'
+            )
+        else:
+            filled_mean_certain.index = odor_names_without_concs
         #
 
-        # TODO TODO TODO fix (on ORN data):
-        # ...
-        # Uncaught exception
-        # Traceback (most recent call last):
-        #   File "./al_analysis.py", line 13386, in <module>
-        #     main()
-        #   File "./al_analysis.py", line 13297, in main
-        #     acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver,
-        #   File "./al_analysis.py", line 9829, in acrossfly_response_matrix_plots
-        #     plot_responses(filled_mean_certain.T, ... 'certain_mean_filled',
-        #   File "/home/tom/src/al_analysis/al_util.py", line 1572, in plot_responses
-        #     fig, _ = viz.matshow(df, ... vmax=vmax, **diverging_cmap_kwargs, **kwargs)
-        #   File "/home/tom/src/hong2p/hong2p/viz.py", line 531, in wrapped_plot_fn
-        #     return plot_fn(data, *args, norm=norm, **kwargs)
-        #   File "/home/tom/src/hong2p/hong2p/viz.py", line 565, in wrapped_plot_fn
-        #     return plot_fn(*args, **kwargs)
-        #   File "/home/tom/src/hong2p/hong2p/viz.py", line 216, in wrapped_plot_fn
-        #     return plot_fn(df, *args, **kwargs)
-        #   File "/home/tom/src/hong2p/hong2p/viz.py", line 1313, in matshow
-        #     set_ticklabels(ax, 'x', xticklabels,
-        #   File "/home/tom/src/hong2p/hong2p/viz.py", line 1276, in set_ticklabels
-        #     raise ValueError(err_msg)
-        # ValueError: duplicate xticklabels duplicated entries, with counts:
-        # 'aphe' (2)
-        try:
-            plot_responses(filled_mean_certain.T, panel_ijroi_dir,
-                'certain_mean_filled', cbar_label=mean_response_desc, title=title
-            )
-        except ValueError:
-            warn('plotting certain_mean_filled failed!')
-            pass
+        plot_responses(filled_mean_certain.T, panel_ijroi_dir, 'certain_mean_filled',
+            cbar_label=mean_response_desc, title=title
+        )
 
         # TODO remove other code that just deals w/ plotting correlations?
         # (has long been unused)
@@ -8900,20 +8795,12 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             comparable_via_name = diag_and_panel_df.loc[:, mask]
             del mask
 
-            # TODO show a mean for the certain things for each group? (eh...)
-            # (rather than each of the lines individually?)
-
             df = comparable_via_name
             del comparable_via_name
 
-            # TODO TODO TODO why is this shape (129, 0) and not original (129, 294)?
-            # (for panel='megamat') (matter? delete?)
-            #df.dropna(how='any', axis='columns').shape
-
             fly_rois = df.columns.to_frame(index=False)
             fly_rois['name_as_if_certain'] = fly_rois.roi.map(ijroi_name_as_if_certain)
-
-            # TODO might need to handle if triggered
+            # TODO might need to handle if triggered (not triggered on any of my data)
             assert not fly_rois.name_as_if_certain.isna().any()
 
             # TODO warn if number of ROIs w/ same ijroi_name_as_if_certain are
@@ -8922,12 +8809,14 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             # which could include all the same ROIs by the end...)
             # or build + write summary CSV?
             #
-            # TODO factor out n_flies calc?
+            # TODO factor out n_flies calc? (one exists in mb_model now:
+            # count_flies_and_rois. should move it to al_util and use that)
             # TODO nunique?
             n_flies = len(fly_rois[['date','fly_num']].drop_duplicates())
 
             glom_counts = fly_rois.name_as_if_certain.value_counts()
-            # TODO TODO how could this possibly fail? fix!
+            # TODO how could this possibly fail? (is case below really something that
+            # would currently fail? delete comment?)
             # ipdb> fly_rois[fly_rois.name_as_if_certain == 'DP1l']
             #           date fly_num     roi name_as_if_certain
             # 16  2023-04-22       2    DP1l               DP1l
@@ -8941,16 +8830,13 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             # 285 2023-05-10       1    DP1l               DP1l
             # 325 2023-06-22       1   DP1l?               DP1l
             # TODO better error message (in case i accidentally do this again)
+            # TODO + more explicit check (in addition, at least) of whatever this is
+            # checking... bit unclear
             assert (glom_counts <= n_flies).all()
 
             fly_rois['certain'] = fly_rois.roi.map(is_ijroi_certain)
 
             allfly_certain_roi_set = set(fly_rois[fly_rois.certain].roi)
-            # TODO delete?
-            #allfly_roi_set = set(fly_rois.name_as_if_certain)
-            #print('ROIs only ever uncertain: '
-            #    f'{pformat(allfly_roi_set - allfly_certain_roi_set)}'
-            #)
 
             # (and <same> + ['roi'] w/ roi_keys) ...here, and elsewhere
             # TODO groupby_fly_keys fn?
@@ -8981,8 +8867,8 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                     # sorting on them?)
                     pprint(set(sorted(rois, key=glom_counts.get)))
 
-                # TODO TODO TODO also warn (when merging ROIs) if strongest signal comes
-                # from a plane marked uncertain (also w/ +?)
+                # TODO also warn (when merging ROIs) if strongest signal comes from a
+                # plane marked uncertain (also w/ +?)
 
                 missing_completely = (
                     allfly_certain_roi_set - set(onefly_rois.name_as_if_certain)
@@ -8993,9 +8879,15 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                     print('missing completely (marked certain in >=1 panel fly):')
                     _print_rois(missing_completely)
 
-                # TODO sort=False actually doing anything?
-                uncertain_only = ~ onefly_rois.groupby('name_as_if_certain', sort=False
-                    ).certain.any()
+                # TODO TODO factor my own groupby fn and use that everywhere, to avoid
+                # need to manually set level= all the time, when setting sort=False (and
+                # to exclude it when the key in question is in the columns instead)
+                assert 'name_as_if_certain' in onefly_rois.columns, (
+                    'otherwise (if it was in index.names), would need level= prefix '
+                    'to have sort=False actually work'
+                )
+                uncertain_only = ~ onefly_rois.groupby('name_as_if_certain',
+                    sort=False).certain.any()
 
                 if uncertain_only.any():
                     _print_flystr_if_havent()
@@ -9004,33 +8896,22 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                     # (w/ '?' or whatever suffix)
                     _print_rois(uncertain_only)
 
-                # TODO TODO TODO also warn about stuff where the name entered doesn't
+                # TODO TODO also warn about stuff where the name entered doesn't
                 # refer to the specific glomerulus name (e.g. 'VA7' for 'VA7m' vs 'VA7l'
                 # (or 'DL2' vs 'DL2v'/'DL2d', etc) )
                 # (could just do based on whether any ROIs have another ROI name as a
                 # prefix? any cases where this wouldn't work?)
+                # TODO use same list fill_to_hemibrain does? factor out something
+                # to get that list (it's loaded, not hardcoded, right?)
 
                 if _printed_flystr:
                     print()
-
-            # TODO count use certain_counts == 0 if i want another summary of
-            # uncertain-only ROIs (besides fly-by-fly prints in loop below)
-            #certain_counts = fly_rois.groupby('name_as_if_certain').certain.sum()
-            # TODO don't actually need/want n_flies, right? cause if all certain and
-            # have less than n flies, still want to drop from plot, no?
-            #certain_only = (certain_counts == n_flies)
 
             certain_only = fly_rois.groupby('name_as_if_certain').certain.all()
             certain_only = set(certain_only[certain_only].index)
 
             df = df.loc[:, ~df.columns.get_level_values('roi').isin(certain_only)]
 
-            # TODO version of this plot, also comparing to most correlated other stuff
-            # in same fly each comes from? (would be too busy?)
-
-            # TODO diff hline thicknesses between uncertain/certain vs ROI-name-changed
-            # cases? possible? or change color/font of ticklabels for subgroups?
-            #
             # default ROI sorting should put uncertain after certain
             # (just b/c default of 'x' < 'x?')
             plot_responses_and_scaled_versions(df, panel_ijroi_dir,
@@ -9043,10 +8924,10 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         if _printed_any_flies:
             print()
 
-        # TODO TODO move all the below plots into response_matrix_plots (/delete)?
+        # TODO move all the below plots into response_matrix_plots (/delete)?
         # (maybe behind a new flag like plot_uncertain?)
 
-        # TODO TODO only save this (and similar) if there are *some* uncertain, right?
+        # TODO only save this (and similar) if there are *some* uncertain, right?
         # TODO want to keep this plot? what purpose does it serve?
         # is something focusing on just uncertain ROIs not enough?
         fig, _ = plot_all_roi_mean_responses(pdf, title=title, **roi_plot_kws)
@@ -9059,35 +8940,25 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # i'm currently trying to identify?)
 
         # TODO these plots still useful?
-        # TODO TODO also cluster + plot w/ normalized (max->1, min->0) rows
-        # (/ "z-scored" ok?)
-        # TODO maybe turn this into a fn looking up max using index?
+        # TODO also cluster + plot w/ normalized (max->1, min->0) rows (/ "z-scored"
+        # ok?) (done? maybe w/o clustering?)
 
-        # TODO TODO just continue early if no uncertain stuff?
+        # TODO just continue early if no uncertain stuff?
         if uncertain_rois.sum() > 0:
             glom_maxes = pdf.max(axis='rows')
             fig, _ = plot_all_roi_mean_responses(pdf.loc[:, uncertain_rois],
                 # negative glom_maxes, so sort is as if ascending=False
+                # TODO use callable (accepting dict from values in input df index) for
+                # sort_rois_first_on now?
                 sort_rois_first_on=-glom_maxes[uncertain_rois], title=title,
                 **uncertain_roi_plot_kws
             )
             savefig(fig, panel_ijroi_dir, 'uncertain_by_max_resp')
         else:
-            # TODO warn instead?
-            print('no uncertain ROIs. not generating uncertain_by_max_resp fig')
+            warn('no uncertain ROIs. not generating uncertain_by_max_resp fig')
 
-        # TODO TODO (also) cluster only uncertain stuff?
-        # or maybe only unnamed stuff? maybe uncertain stuff (specifically the subset w/
-        # '?' suffix), should be handled mainly in another plot, comparing to each
-        # other / similar certain ROIs in other flies (when available)?
-
-        # TODO same type of clustering, but with responses to *all* odors
-        # (or maybe panel + diags? couldn't  really do all since everything would
-        # probably get dropped, since flies tend to only have one panel beyond diags...)
-        # (for trying to identify set of glomeruli we are dealing with)
-        #
-        # Mean across repeats (done by plot_all_roi_mean_responses in other cases).
-        # Should be one row per odor after.
+        # mean across repeats (done by plot_all_roi_mean_responses in other cases).
+        # should be one row per odor after.
         # NOTE: I specifically need to use level= rather than by= or using positional
         # arg (to specifiy 'odor1' in all cases), or else it will be sorted even with
         # sort=False. https://github.com/pandas-dev/pandas/issues/17537
@@ -9101,16 +8972,10 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # Clustering will fail if there are any NaN in the input.
         clust_df = mean_df.dropna(how='any', axis='index')
 
-        # TODO TODO and why was dropna(df, how='any') not working even when ROIs
-        # were dropped first? shouldn't be empty, no?
-        # (still an issue?)
-
         # Clustering will also fail if the dropna above drops *everything*
-        # TODO TODO fail early / skip here if df empty
-        # (still an issue?)
+        # TODO fail early / skip here if df empty (still an issue?)
 
-        # TODO TODO fix cause of (it's b/c after dropna above, clust_df can be
-        # empty):
+        # TODO fix cause of (it's b/c after dropna above, clust_df can be empty):
         # ValueError: zero-size array to reduction operation fmin which has no
         # identity
         # (is it simply an issue of only have one recording as input?)
@@ -9132,13 +8997,9 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             savefig(cg, panel_ijroi_dir, 'with-uncertain_clust')
         except ValueError:
             traceback.print_exc()
-            import ipdb; ipdb.set_trace()
+            breakpoint()
 
-        # TODO TODO also cluster ROIs same way in ROI plots made within calls made
-        # in process_recording (some that would be regen if `-i ijroi` passed)
-        # TODO or otherwise, may want a fly-specific version here?
-
-        # TODO TODO response matrix plots showing each trial for BEST PLANE ROI
+        # TODO response matrix plots showing each trial for BEST PLANE ROI
         # (mainly to identify motion issues?)
 
         # <driver_indicator>/<plot_fmt>/ijroi/by_panel/<diag_panel_str>/each_fly
@@ -9151,51 +9012,41 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
         # (not doing for any other panels...)
         if panel == diag_panel_str:
             # only did CO2 in one fly, and not planning on routinely presenting it.
-            # TODO this not still working? also include '2h @ -3' (what was that for /
-            # which fly was it in anyway? seems to have been in some pebbled megamat or
-            # validation2 fly)? or was there some other mechanism to drop these from the
-            # across-panel plots? diff consensus_df computation, that also included
-            # odors?
-            diags_to_drop = ['CO2 @ 0']
+            # what was the purpose of '2h @ -3' again? and it's not longer in use,
+            # right?
+            diags_to_drop = ['CO2 @ 0', '2h @ -3']
             certain_df = certain_df.loc[
                 ~ certain_df.index.get_level_values('odor1').isin(diags_to_drop), :
             ]
 
             # TODO calculate these once up top of this fn?
             glomeruli_with_diags = set(all_odor_str2target_glomeruli.values())
-            odor_glom_combos_to_highlight = [
-                dict(odor=o, glomerulus=g)
-                for o, g in all_odor_str2target_glomeruli.items()
-            ]
 
-            # TODO define up top?
+            curr_diags = set(
+                certain_df.loc[diag_panel_str].index.get_level_values('odor1').unique()
+            )
+            odor2target_glom = dict(all_odor_str2target_glomeruli)
+            odor2target_glom = {
+                o: g for o, g in odor2target_glom.items() if o in curr_diags
+            }
+            # TODO fix / refactor sort_rois_first_on / diag-glomeruli-first sorting ->
+            # delete this code (copied from calling place that calculates
+            # sort_rois_first_on) (only broken in stddev case, cause shape changes when
+            # it averages across flies) (still true?)
+            glomeruli_with_diags = set(odor2target_glom.values())
             def glom_has_diag(index_dict):
                 glom = index_dict['roi']
                 return glom in glomeruli_with_diags
+            #
 
-            # TODO delete?
-            '''
-            # `x not in glomeruli_with_diags` puts those with diags first, as I want
-            sort_rois_first_on = [x not in glomeruli_with_diags
-                for x in certain_df.columns.get_level_values('roi')
+            odor_glom_combos_to_highlight = [
+                dict(odor=o, glomerulus=g) for o, g in odor2target_glom.items()
             ]
-            '''
 
-            # TODO version that doesn't have the glomeruli w/o diags?
-
-            # TODO TODO TODO update to handle one odor at two concs (or at least assert
-            # / warn if an odor appears at two concs in diag panel). currently causing
-            # problems w/ 2h appearing twice in new data (validation2 flies only, and
-            # only last 2).
-            #
-            # TODO sort to group useful-to-compare odors/glomeruli next to each
-            # other? not sure how...
-            # TODO or order odors by how reliable of diagnostics they are?
-            # (maybe just using strength of response in target?)
-            # TODO or leave sorted same as i typically have odors ordered
-            # (alphabetical)?
-            #
-            # should produce a nice, easy-to-follow, diagonal
+            # TODO TODO update to handle one odor at two concs (w/ diff targets) (or at
+            # least assert / warn if an odor appears at two concs in diag panel).
+            # currently causing problems w/ 2h appearing twice in new data (validation2
+            # flies only, and only last 2). (currently just dropping '2h @ -3')
             odors_sorted_by_target_glom = sorted(
                 certain_df.index.get_level_values('odor1'),
                 key=all_odor_str2target_glomeruli.get
@@ -9204,16 +9055,6 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             assert all(x is not None for x in odors_sorted_by_target_glom)
 
             names = [olf.parse_odor_name(o) for o in odors_sorted_by_target_glom]
-            # TODO delete
-            '''
-            print(f'{len(set(odors_sorted_by_target_glom))=}')
-            print(f'{len(set(names))=}')
-            import ipdb; ipdb.set_trace()
-            '''
-            #
-            # TODO delete
-            # failing because aphe at -4 and -5. prob doesn't matter?
-            #assert len(set(odors_sorted_by_target_glom)) == len(set(names))
 
             # list(set(names)) does NOT preserve order of names, so doing it this
             # way instead.
@@ -9226,48 +9067,27 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
 
             certain_df = olf.sort_odors(certain_df, name_order=name_order)
 
-            # TODO maybe use same dF/F range as in plot_rois invocations that
-            # produce diagnostic examples (clipped)?
+            # TODO do a certain_mean + stddev version of diag-highlight plot
 
-            # TODO TODO TODO do a certain_mean version of diag-highlight plot!!!
-            # (still want?)
-            # TODO (with a stddev version too)
-            print('ADD CERTAIN_MEAN (+stddev) VERSION OF DIAG-HIGHLIGHT PLOT')
-
-            # TODO TODO can i pass this as a fn, rather than a list (to make work w/
-            # stddev inside plot_responses_and_scaled_versions more easily?)
-            #
             # `x not in glomeruli_with_diags` puts those with diags first, as I want
-            sort_rois_first_on = [x not in glomeruli_with_diags
-                for x in certain_df.columns.get_level_values('roi')
-            ]
+            put_glom_with_diags_first = lambda x: x['roi'] not in glomeruli_with_diags
+
+            paper_kws = dict(vmin=PAPER_ORN_VMIN, vmax=PAPER_ORN_VMAX)
 
             # TODO TODO save not in each_fly (unless i rename it to something fitting
             # both) (just save up one level) (maybe save both in one subdir though?)
-            # TODO TODO restore roi label hline group text
+            # TODO restore roi label hline group text
             plot_responses_and_scaled_versions(certain_df, each_fly_diag_response_dir,
                 f'diag-highlight_certain',
-                # TODO TODO add a thicker hline between diag / non-diag stuff?
-                # (prob still want hlines between ROIs in non-single-fly case...)
-                # TODO could use hline_level_fn as below in stddev case internal to
-                # plot_responses_and_scaled_versions tho...)
-                sort_rois_first_on=sort_rois_first_on,
+                sort_rois_first_on=put_glom_with_diags_first,
                 odor_glomerulus_combos_to_highlight=odor_glom_combos_to_highlight,
 
-                # TODO TODO fix sort_rois_first_on handling in stddev case ->
-                # delete this option (which was added just to special case fix that)
-                sort_glomeruli_with_diags_first=True,
-
-                # TODO TODO TODO prob just fix... now getting:
-                #  File "./al_analysis.py", line 2594, in plot_all_roi_mean_responses
-                #    assert matching_roi.sum() == 1
                 # TODO was there something that this didn't work with, that i care
-                # about?
+                # about? (maybe just aphe, if at -4 and -5 and not showing conc?)
+                # (or was it a duplicate row label issue?)
                 allow_duplicate_labels=True,
 
-                # TODO like (eh... i still think i find the roi scaled more useful)?
-                # delete?
-                #odor_scaled_version=True,
+                **paper_kws,
 
                 # NOTE: this will no longer have only one white hline between diag'd and
                 # non-diag'd glomeruli. there will be usual hline between each
@@ -9275,8 +9095,7 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 **roi_plot_kws
             )
 
-        for (date, fly_num), fly_df in certain_df.groupby(['date', 'fly_num'],
-            axis='columns'):
+        for (date, fly_num), fly_df in certain_df.groupby(fly_cols, axis='columns'):
 
             # TODO refactor to share w/ other places
             date_str = format_date(date)
@@ -9292,9 +9111,8 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 fly_df = olf.sort_odors(fly_df, name_order=name_order)
 
                 # `x not in glomeruli_with_diags` puts those with diags first, as I want
-                sort_rois_first_on = [x not in glomeruli_with_diags
-                    for x in fly_df.columns.get_level_values('roi')
-                ]
+                sort_rois_first_on = put_glom_with_diags_first
+
                 hline_level_fn = glom_has_diag
                 odor_glom_combos_to_highlight = odor_glom_combos_to_highlight
                 # TODO like (eh... i still think i find the roi scaled more useful)?
@@ -9302,20 +9120,16 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 odor_scaled_version = True
 
                 _extra_kws = dict()
-                # TODO diff fname_prefix (instead of f'{fly_str}_certain') here?
             else:
                 sort_rois_first_on = None
 
-                # TODO TODO or is there a default one i can leave it as (from
+                # TODO or is there another default one i'd want to use? (from
                 # single_fly_roi_plot_kws?)?
                 hline_level_fn = None
 
                 odor_glom_combos_to_highlight = None
                 odor_scaled_version = False
 
-                # TODO TODO add vlines between odors (now that there are 3 trials)
-                # TODO TODO vline group text for odor name + trial for xticklabel (or
-                # don't show)
                 def panel_odor_tuple(x):
                     return (format_panel(x), x.get('odor1'))
 
@@ -9331,18 +9145,17 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                     # non-adjacent?) odors w/ same panel. probably wouldn't work...
                     # (in which case, either just set False or maybe try to rework how
                     # level_fn/group_text stuff works?)
-                    # TODO TODO maybe change vline_level_fn to accept an iterable of
+                    # TODO maybe change vline_level_fn to accept an iterable of
                     # fns (using first or something for vline_group_text?)?
                     # and/or allow taking fn for vline_group_text, mapping level values
                     # to group text (and/or to tick labels too)?
                     group_ticklabels=True,
                 )
-                # TODO TODO TODO also do a version averaged across trials
 
-                # TODO TODO fix how for this plot (and presumably others), '2h @ -5' and
+                # TODO fix how for this plot (and presumably others), '2h @ -5' and
                 # '2h @ -5' + 'oct @ -3' do NOT have a vline between them (b/c 'odor1'
                 # same, despite 'odor2' being diff). see how i changed plot_roi_util.py
-                # vline_level_fn to new hong2p.olf.strip_concs_... fn.
+                # vline_level_fn to new hong2p.olf.strip_concs_... fn. (still?)
                 plot_responses_and_scaled_versions(fly_df, each_fly_diag_response_dir,
                     f'{fly_str}_certain_trials', title=f'{fly_str}\n({title})',
                     single_fly=True,
@@ -9353,6 +9166,7 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
 
                     odor_scaled_version=odor_scaled_version,
 
+                    **paper_kws,
                     # using this syntax with the goal of overwriting vline_level_fn in
                     # single_fly_roi_plot_kws
                     **{**single_fly_roi_plot_kws, **_extra_kws}
@@ -9376,8 +9190,7 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
                 odor_glomerulus_combos_to_highlight=odor_glom_combos_to_highlight,
 
                 odor_scaled_version=odor_scaled_version,
-
-                **single_fly_roi_plot_kws
+                **paper_kws, **single_fly_roi_plot_kws
             )
 
     print('done')
@@ -9716,6 +9529,8 @@ def main():
     )
     # TODO assert date range or whatever is one of the sensible possibilities if this is
     # true? and/or set of panel(s)?
+    # TODO rename to repro-paper or something (since also special casing for repro-ing
+    # ijroi plots)
     parser.add_argument('-R', '--repro-paper-models', action='store_true',
         # NOTE: doesn't actually change response calc statistic
         # (al_util.response_stat_fn), just asserts we are using the old one... changing
@@ -11962,22 +11777,21 @@ def main():
 
     dmin = mean_df.min().min()
     dmax = mean_df.max().max()
-    vmin = -0.35
+
+    vmin = PAPER_ORN_VMIN
     # value I had been using for megamat/validation data. new 2024 kiwi/control data
     # seems to go outside this somewhat...
-    vmax = 2.5
+    vmax = PAPER_ORN_VMAX
     if vmin <= dmin and dmax <= vmax:
-        # TODO TODO are these just changing the labels (breaking meaning of their
-        # position on the cbar?) why else are these not at the limits?
-        # (no, i think it was just vmin2/vmax2 had a larger range than dmin/dmax)
-        # TODO check another plot actually using vmin/vmax tho
-        #
-        # was using these for old megamat/validation analysis (pre 2024 kiwi/control)
-        # TODO generate these dynamically
-        cbar_ticks = [vmin, 0, 0.5, 1.0, 1.5, 2.0, vmax]
-
-        cbar_kws = dict(ticks=cbar_ticks)
+        cbar_kws = dict(PAPER_ORN_CBAR_KWS)
     else:
+        # TODO TODO ideally do somthing like this inside acrossfly_response_matrix_plots
+        # too (pass in repro_paper_models)
+        if repro_paper_models:
+            raise ValueError('could not set vmin/vmax as needed because current data '
+                'limits go out of those bounds'
+            )
+
         # TODO does it matter to have one consistent scale in this context? if so, may
         # still need to hardcode / similar...
         # TODO round up/down to nearest multiple of 0.5/0.25 or something, when using
@@ -12070,6 +11884,24 @@ def main():
         # panels.
         # assuming same holds true for other 2 DataFrames (checked indexes equal above).
         assert not mean_df.droplevel('panel').index.duplicated().any()
+
+    if repro_paper_models:
+        # TODO drop diag '2h @ -3 and 'CO2 @ 0' from trial_df / consensus_df /
+        # [mean|stddev]_df / n_per_odor_and_glom
+
+        def drop_nonpaper_odors(df: pd.DataFrame) -> pd.DataFrame:
+            index_df = df.index.to_frame()
+            diag_odors_to_drop = ('2h @ -3', 'CO2 @ 0')
+            drop_mask = (
+                (index_df.panel == diag_panel_str) &
+                index_df.odor1.isin(diag_odors_to_drop)
+            )
+            # TODO TODO warn about what we are dropping (and because of -R)
+            return df.drop(index=index_df[drop_mask].index)
+
+        # actually diag, '2h @ -3' not in mean_df/etc
+        trial_df = drop_nonpaper_odors(trial_df)
+        consensus_df = drop_nonpaper_odors(consensus_df)
 
     # TODO say (print? warn?) that we aren't saving these plots b/c this is False, in
     # that case?

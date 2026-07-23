@@ -12,7 +12,7 @@ import os
 from os.path import getmtime
 from pathlib import Path
 import pickle
-from pprint import pformat
+from pprint import pformat, pprint
 import psutil
 import sys
 from tempfile import NamedTemporaryFile
@@ -51,13 +51,14 @@ from hong2p import olf, util, viz
 from hong2p.olf import format_mix_from_strs, solvent_str
 from hong2p.roi import is_ijroi_named
 from hong2p.util import pd_allclose
-from hong2p.viz import dff_latex, map_each_series_to_rgb, rgb_tuple_df_to_3d_array
-from hong2p.types import Pathlike
+from hong2p.viz import (dff_latex, map_each_series_to_rgb, rgb_tuple_df_to_3d_array,
+    Ticklabels
+)
+from hong2p.types import (Axis, Color, CMap, Pathlike, ParamDict, DataFrameOrSeries,
+    MplRotation
+)
 import natmix
 
-
-# TODO move to hong2p.types? already have something like that there?
-ParamDict = Dict[str, Any]
 
 bootstrap_seed: int = 1337
 
@@ -69,6 +70,28 @@ fly_cols: List[str] = ['date', 'fly_num']
 flyroi_cols: List[str] = fly_cols + ['roi']
 
 diag_panel_str: str = 'glomeruli_diagnostics'
+
+# TODO maybe log all warnings?
+def warn(msg) -> None:
+    color = 'yellow'
+
+    # since i couldn't otherwise figure out how to get pytest to show warnings before
+    # debugger breakpoint, especially if pytest is configured to ignore warnings, so now
+    # we'll just also print it before pytest cleanup.
+    # TODO check pytest config options again for something to disable warning-exclusive
+    # capturing / formatting / output control?
+    #
+    # if pytest is capturing stderr, we probably aren't debugging, and thus shouldn't
+    # need these extra prints.
+    # TODO once per run, warn we are changing warning behavior based on this?
+    if in_pytest() and not is_pytest_capturing_stderr():
+        print(colored(str(msg), color))
+
+    # TODO replace w/ logging.warning? (have init_logger just hook into warnings.warn?
+    # some standard mechanism for that?)
+    # TODO how to get color to work here too? possible?
+    warnings.warn(str(msg))
+
 
 # TODO test
 # TODO type hint
@@ -93,19 +116,21 @@ def sign_preserving_maxabs(x):
     # TODO why .flatten? replace w/ .squeeze() at least, if that's the issue?
     return df.values.flatten()
 
+
 # NOTE: need to manually switch between these two values depending on whether you want
 # to use `al-analysis`'s `-R/--repro-paper-models` CLI argument
 #
 # use this value by default (all new analysis; except when using -R)
-# TODO TODO TODO restore
 response_stat_fn = sign_preserving_maxabs
 #
 # use this value for -R
 #
 # mean was what I had used for a while (also with n_volumes_for_response=2, I believe),
 # including to generate Remy-paper outputs, and inputs to modelling for that.
-# TODO TODO TODO comment again, after regening outputs for paper
 #response_stat_fn = np.mean
+
+if response_stat_fn != sign_preserving_maxabs:
+    warn('al_util.response_stat_fn is not the standard sign_preserving_maxabs!')
 
 # TODO refactor to fn(s), so i can recompute this/these if al-analysis called w/ -R (to
 # use old stat)? pretty much always compute only as needed, recomputing each time?
@@ -180,6 +205,7 @@ hemibrain_paper_repro_kws = dict(
 
 # TODO adapt -> share w/ (at least) drop_redone_odors?
 # TODO type hint Mapping? can it be Series or Dict?
+# TODO define my own hong2p.types.DictOrSeries?
 def format_panel(x) -> str:
     panel = x.get('panel')
     # TODO maybe return None if it'd make more consistent vline_level_fn usage
@@ -196,6 +222,7 @@ def format_panel(x) -> str:
     return panel
 
 
+# TODO also take series ever? share type hint w/ format_panel, if i add one?
 def roi_label(index_dict) -> str:
     roi = index_dict['roi']
     if is_ijroi_named(roi):
@@ -256,12 +283,12 @@ def fly_roi_id(row: pd.Series, *, fly_only: bool = False) -> str:
 
 def _have_fly_cols(data: Union[pd.DataFrame, pd.Series]) -> bool:
     if isinstance(data, pd.DataFrame):
-        names = data.columns.names
+        names_lists = [data.columns.names, data.columns, data.index.names]
     else:
         assert isinstance(data, pd.Series)
-        names = data.index.names
+        names_lists = [data.index.names]
 
-    return all(x in names for x in fly_cols)
+    return any(all(x in names for x in fly_cols) for names in names_lists)
 
 
 # TODO refactor inches_per_cell (+extra_figsize) to share w/ plot_roi_util?
@@ -386,18 +413,14 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
     if sort_first_on is not None:
         # NOTE: for now, just gonna support this being of-same-length as df.columns
 
-        # TODO delete try/except
-        # triggered when trying to adapt each_fly diag resp matrix code to across fly
-        # case
-        try:
-            assert len(sort_first_on) == len(df.columns)
-        except AssertionError:
-            print(f'{sort_first_on=}')
-            print(f'{df.columns=}')
-            print(f'{len(sort_first_on)=}')
-            print(f'{len(df.columns)=}')
-            import ipdb; ipdb.set_trace()
+        if isinstance(sort_first_on, Callable):
+            sort_first_on = [
+                sort_first_on(dict(zip(df.columns.names, x))) for x in df.columns
+            ]
 
+        assert len(sort_first_on) == len(df.columns), (
+            f'{len(sort_first_on)=} {len(df.columns)=}'
+        )
         # Seems to also work when input is a list of tuples (so you can list(zip(...))
         # multiple iterables of keys, in the order you want them to take priority).
         sort_first_on = pd.Series(list(sort_first_on), name='_sort_first_on').to_frame()
@@ -479,28 +502,6 @@ def is_pytest_capturing_stderr() -> bool:
     return True
 
 
-# TODO maybe log all warnings?
-def warn(msg) -> None:
-    color = 'yellow'
-
-    # since i couldn't otherwise figure out how to get pytest to show warnings before
-    # debugger breakpoint, especially if pytest is configured to ignore warnings, so now
-    # we'll just also print it before pytest cleanup.
-    # TODO check pytest config options again for something to disable warning-exclusive
-    # capturing / formatting / output control?
-    #
-    # if pytest is capturing stderr, we probably aren't debugging, and thus shouldn't
-    # need these extra prints.
-    # TODO once per run, warn we are changing warning behavior based on this?
-    if in_pytest() and not is_pytest_capturing_stderr():
-        print(colored(str(msg), color))
-
-    # TODO replace w/ logging.warning? (have init_logger just hook into warnings.warn?
-    # some standard mechanism for that?)
-    # TODO how to get color to work here too? possible?
-    warnings.warn(str(msg))
-
-
 # TODO move to hong2p.util?
 def format_mtime(mtime_or_path: Union[float, Pathlike], *, year: bool = False,
     seconds: bool = False) -> str:
@@ -543,7 +544,7 @@ _all_seen_inputs: Set[Path] = set()
 CodeContext = namedtuple('CodeContext', 'filename lineno fn_name')
 _saved_path2last_save_code_context: Dict[Path, CodeContext] = dict()
 # TODO what is _fn for again? keep?
-def produces_output(_fn=None, *, verbose=True):
+def produces_output(_fn=None, *, verbose: bool = True):
     # for how to make a decorator with optional  arg:
     # https://realpython.com/primer-on-python-decorators
 
@@ -777,7 +778,7 @@ def caller_info() -> traceback.FrameSummary:
 
 @produces_output
 # input could be at least Series|DataFrame
-def to_csv(data, path: Path, **kwargs) -> None:
+def to_csv(data: DataFrameOrSeries, path: Path, **kwargs) -> None:
     """
     NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
     """
@@ -790,7 +791,7 @@ _SERIES_NAME_PLACEHOLDER: str = '__UNNAMED-SERIES'
 # non-wrapped-by-@produces_output core, and then redef wrapped here?)
 # TODO some nice way to make a list of all these fns and then redef all of them w/
 # wrapper? or too meta-programmy (don't want to eval...)?
-def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.Series]:
+def read_parquet(path: Path, *, squeeze: bool = True) -> DataFrameOrSeries:
     # TODO try changing default engine (='fastparquet'? or ='pyarrow'? latter should be
     # default, if both installed [at least in pandas 3.0...])? that fix any of column
     # level type handling i add below?
@@ -861,8 +862,7 @@ def read_parquet(path: Path, *, squeeze: bool = True) -> Union[pd.DataFrame, pd.
 
 
 @produces_output(verbose=True)
-def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path, *, check: bool = True
-    ) -> None:
+def to_parquet(data: DataFrameOrSeries, path: Path, *, check: bool = True) -> None:
     """Write `data` to parquet at `path`, with default check loaded value matches input.
     """
     assert path.suffix == '.parquet', f"{path.suffix} should be '.parquet'"
@@ -975,7 +975,7 @@ def to_parquet(data: Union[pd.DataFrame, pd.Series], path: Path, *, check: bool 
 # TODO delete write_parquet kwarg eventually? after adding explicit calls where i want
 # (may have done that everywhere i care now? in mb_model, most likely, and maybe
 # al_analysis too? anywhere else i want to add an explicit to_parquet call?)
-def to_pickle(data, path: Path, *, write_parquet: bool = True) -> None:
+def to_pickle(data: Any, path: Path, *, write_parquet: bool = True) -> None:
     """Writes input to pickle at `path`.
 
     Args:
@@ -1026,7 +1026,7 @@ def to_pickle(data, path: Path, *, write_parquet: bool = True) -> None:
 
 
 # TODO move to hong2p?
-def read_pickle(path: Pathlike):
+def read_pickle(path: Pathlike) -> Any:
     path = Path(path)
     return pickle.loads(path.read_bytes())
 
@@ -1102,7 +1102,8 @@ def drop_old_odor_index_levels(df: pd.DataFrame, *, warn_: bool = True
 # TODO rename to include dff in name? or antennal? it's not just the counterpart to my
 # wrapped to_csv fn, which is intended to writing general CSVs, not just this specific
 # format of them
-# TODO TODO tho should i test this fn can read CSVs written by my to_csv fn?
+# TODO (delete?) tho should i test this fn can read CSVs written by my to_csv fn?
+# TODO can it also be a series? should output be DataFrameOrSeries?
 def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
     check_vs_pickle: bool = True, warn_: bool = True, verbose: bool = True
     ) -> pd.DataFrame:
@@ -1644,7 +1645,8 @@ panel2name_order['validation2'] = [
 # TODO olf.sort_odors allow specifying axis?
 # TODO TODO how to get this to not sort control panel '2h @ -5 + oct @ -3' (air
 # mix, using odor2 level) right after '2h @ -5'? (and same for kiwi)
-def sort_odors(df: pd.DataFrame, add_panel: Optional[str] = None, **kwargs
+# TODO can input/output also be a series?
+def sort_odors(df: pd.DataFrame, *, add_panel: Optional[str] = None, **kwargs
     ) -> pd.DataFrame:
 
     # TODO TODO check in here whether panel(s) are in panel2name_order (rather than
@@ -1936,7 +1938,8 @@ def savefig(fig_or_seaborngrid,
 # we routinely use) (in the meantime, check all odors i have decent data for are NOT in
 # hallem)
 # TODO fn to combine this w/ loading of hallem data (-> only use that wrapper)?
-def abbrev_hallem_odor_index(df: pd.DataFrame, axis='index') -> pd.DataFrame:
+# TODO can input/output also be Series?
+def abbrev_hallem_odor_index(df: pd.DataFrame, axis: Axis = 'index') -> pd.DataFrame:
     """Abbreviates Hallem odor names in single-level row index.
     """
     # TODO assert some got replaced (as a check axis was correct)
@@ -2248,7 +2251,7 @@ def invert_corr_triangular(corr_ser: pd.Series, diag_value: float = 1., *,
 # index (-> use that to calc mean -> invert_corr_triangular in here)
 def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     # TODO after testing, try to have keep_panel default to True?
-    square: bool = True, keep_panel: bool = False) -> Union[pd.Series, pd.DataFrame]:
+    square: bool = True, keep_panel: bool = False) -> DataFrameOrSeries:
     # TODO TODO also use this for uniform model w/ id_cols='seed'? how do i currently
     # handle that?
     """
@@ -2536,12 +2539,11 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
 # plot_all...? see also mean_df/etc plotting in main, that recreates much of those
 # kwargs for use w/ viz.matshow)
 def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
-    vmin=None, vmax=None, title: str = '', title_kws: Optional[ParamDict] = None,
-    _save_kws=None, **kwargs) -> None:
+    vmin: Optional[float] = None, vmax: Optional[float] = None, title: str = '',
+    title_kws: Optional[ParamDict] = None, _save_kws: Optional[ParamDict] = None,
+    **kwargs) -> None:
     # TODO accept subplot_kws for subplots?
 
-    # TODO delete?
-    #fig, _ = viz.matshow(df, ax=ax, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs)
     fig, ax = plt.subplots()
     viz.matshow(df, ax=ax, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs, **kwargs)
 
@@ -2564,7 +2566,8 @@ def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
 
 # TODO also break out a plot_responses fn from first part (-> use here)?
 def plot_responses_and_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
-    vmin=None, vmax=None, title: str = '', **kwargs) -> pd.DataFrame:
+    vmin: Optional[float] = None, vmax: Optional[float] = None, title: str = '',
+    **kwargs) -> pd.DataFrame:
 
     # TODO expose bbox_inches (or remove kwarg in plot_[responses|corr], and just accept
     # the hardcode to bbox_inches='tight' in both of those, if no downside)? ever need
@@ -2580,7 +2583,7 @@ def plot_responses_and_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
 # (e.g. in response matrix plots)
 #cmap = 'plasma'
 # to match remy
-cmap = 'magma'
+cmap: CMap = 'magma'
 
 # TODO why does this decorator not seem required anymore? mpl/sns version thing?
 #
@@ -2589,9 +2592,9 @@ cmap = 'magma'
 #@no_constrained_layout
 # TODO find where sns.ClusterGrid is actually defined and use that as return type?
 # shouldn't need any more generality (Grid was used above to include FacetGrid)
-def cluster_rois(df: pd.DataFrame, title=None, odor_sort: bool = True, cmap=cmap,
+def cluster_rois(df: pd.DataFrame, *, title: Optional[str] = None,
+    odor_sort: bool = True, cmap: CMap = cmap, return_linkages: bool = False, **kwargs):
     #return_linkages: bool = False, **kwargs) -> sns.axisgrid.Grid:
-    return_linkages: bool = False, **kwargs):
     # TODO update doc on row_colors. what are other ways? if i add features to
     # viz.clustermap, just reference that doc here?
     """
@@ -2771,20 +2774,20 @@ def get_gsheet_metadata() -> pd.DataFrame:
 # can always see the xticklabels (at the top), without having to scroll up?
 # TODO add option to chop off odor concentrations in odor matshow xticklabels IF it's
 # all the same on the input data? maybe default to that?
-def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=True,
-    sort_rois_first_on=None, odor_sort=True, keep_panels_separate=True,
-    roi_min_max_scale=False, odor_min_max_scale=False,
+def plot_all_roi_mean_responses(trial_df: pd.DataFrame, *, title: Optional[str] = None,
+    roi_sort: bool = True, sort_rois_first_on=None, odor_sort: Optional[bool] = True,
+    keep_panels_separate: bool = True, roi_min_max_scale: bool = False,
+    odor_min_max_scale: bool = False, use_diverging_cmap: bool = True,
 
-    use_diverging_cmap: bool = True,
-
-    # TODO delete hack!
-    yticklabels=None,
+    # TODO delete hack! (?)
+    yticklabels: Ticklabels = None,
 
     # TODO keep?
     avg_repeats: bool = True,
 
     single_fly: bool = False,
-    odor_glomerulus_combos_to_highlight: Optional[List[Dict]] = None, **kwargs):
+    odor_glomerulus_combos_to_highlight: Optional[List[Dict]] = None, **kwargs
+    ) -> Tuple[Figure, pd.DataFrame]:
     # TODO rename odor_sort -> conc_sort (or delete altogether)
     """Plots odor x ROI data displayed with odors as columns and ROI means as rows.
 
@@ -2855,7 +2858,7 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, title=None, roi_sort=Tru
         # This will throw away any metadata in multiindex levels other than these
         # (so can't just add metadata once at beginning and have it propate through
         # here, without extra work at least)
-        mean_df = trial_df.groupby(avg_levels, sort=False).mean()
+        mean_df = trial_df.groupby(level=avg_levels, sort=False).mean()
 
     # TODO might wanna drop 'panel' level after mean in keep_panels_separate case, so
     # that we don't get the format_mix_from_strs warning about other levels (or just
@@ -3119,8 +3122,9 @@ def count_n_per_odor_and_glom(df: pd.DataFrame, *, count_zero: bool = True
 # outputs or not? use decorator to add save (option?) to plot fns that dont save
 # (having all either just return fig, or at least having fig as first var returned?)?
 def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = False,
-    count_zero: bool = True, cmap: str = 'cividis', zero_color='white',
+    count_zero: bool = True, cmap: CMap = 'cividis', zero_color: Color = 'white',
     title: bool = True, title_prefix='', **kwargs) -> Tuple[Figure, pd.DataFrame]:
+    # TODO doc. what is count_zero?
 
     if not input_already_counts:
         n_per_odor_and_glom = count_n_per_odor_and_glom(df, count_zero=count_zero)
@@ -3156,19 +3160,17 @@ def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = F
     n_roi_plot_kws.update(kwargs)
 
     fig, _ = plot_all_roi_mean_responses(n_per_odor_and_glom, cmap=cmap,
-
         # TODO more elegant solution -> delete (detect whether cmap diverging inside
         # plot_all*?)
         use_diverging_cmap=False,
-
         # TODO why isn't 0 in the bar tho? if the data had 0, would there be?
-        #
         # vmin has to be > 0, so that zero_color set correctly via cmap's set_under
         vmin=0.5, vmax=(max_n + 0.5),
         cbar_kws=dict(ticks=np.arange(1, max_n + 1)), **n_roi_plot_kws
     )
 
     # TODO delete
+    # (was to draw numbers over the center of each cell, with the count)
     # unuseable as is. font too big and may not be transposed and/or aligned correctly.
     #
     # TODO was it constrained layout that was causing (most of?) the issues?
@@ -3388,25 +3390,25 @@ remy_odor_col = 'stim'
 
 remy_conc_str = ' @ -3.0'
 # TODO refactor to share w/ some similar fns?
-def _strip_remy_concs(x):
+def _strip_remy_concs(x: Union[pd.Series, pd.Index]) -> Union[pd.Series, pd.Index]:
     assert x.str.endswith(remy_conc_str).all()
     return x.str.replace(remy_conc_str, '', regex=False)
 
 
 # contains CSVs remy made from the pickles she sent earlier under 'by_acq'
 # (which i couldn't load)
-remy_binary_response_dir = remy_sparsity_dir / 'by_acq_csvs'
+remy_binary_response_dir: Path = remy_sparsity_dir / 'by_acq_csvs'
 
 # looks like the top-level sparsity CSVs are computed from peak amplitude alone
 # (rather than options involving "std"), so only going to load these pickles
 # (out of the 3 options in each fly_dir)
-remy_fly_binary_response_fname = 'df_stim_responders_from_peak.csv'
+remy_fly_binary_response_fname: str = 'df_stim_responders_from_peak.csv'
 
 
 # TODO add verbose kwarg and set False when calling for debug purposes from kc response
 # loading code
 def load_remy_fly_binary_responses(fly_sparsity_path: Path,
-    acq_ledger: Optional[pd.DataFrame]=None, *, reset_index: bool = True,
+    acq_ledger: Optional[pd.DataFrame] = None, *, reset_index: bool = True,
     _seen_date_fly_combos=None) -> pd.DataFrame:
     # TODO check row/col is correct
     # TODO update doc? is it actually reading netcdf? loooks like i'm reading csvs...
@@ -3577,7 +3579,7 @@ def load_remy_megamat_kc_binary_responses() -> pd.DataFrame:
 
 # TODO factor to hong2p.viz
 # TODO simpler way?
-def rotate_xticklabels(ax, rotation=90):
+def rotate_xticklabels(ax: Axes, rotation: MplRotation = 90):
     for x in ax.get_xticklabels():
         x.set_rotation(rotation)
 
