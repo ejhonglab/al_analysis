@@ -1,4 +1,5 @@
 
+import argparse
 from copy import deepcopy
 from collections import namedtuple
 import difflib
@@ -202,6 +203,90 @@ hemibrain_paper_repro_kws = dict(
     # _drop_glom_with_plus=True should be fine.
     weight_divisor=20, _drop_glom_with_plus=False, **paper_repro_kws
 )
+
+# TODO factor (/rename) into something that also adds the -v/--verbose flag, and sets
+# `al_util.verbose` accordingly? (lots of scripts just unconditionally set that true, so
+# prob not)
+def add_check_outputs_unchanged_CLI_flag_and_parse_args(parser: argparse.ArgumentParser,
+    *, check_nonmain_option: bool = False) -> argparse.Namespace:
+    """Adds -c CLI arg, parses args, and sets related `al_util` globals.
+
+    Sets:
+    - `al_util.check_outputs_unchanged`
+    - `al_util.check_nonmain_outputs_unchanged`
+    - `al_util.prompt_if_changed`
+
+    Returns args as from `parser.parse_args()`
+
+    Will raise `argparse.ArgumentError` if trying to add any args already defined.
+    """
+    global check_outputs_unchanged
+    global check_nonmain_outputs_unchanged
+    global prompt_if_changed
+
+    if check_nonmain_option:
+        add_to = parser.add_mutually_exclusive_group()
+    else:
+        add_to = parser
+
+    # TODO option to warn but not err as well?
+    # TODO warn in cases like sensitivity_analysis's deletion of it's root output folder
+    # before starting (invalidating these checks...) (err if any folder would be
+    # deleted when we have this flag?)
+    # TODO maybe this should prompt for pickles/csvs by default (w/ option to
+    # approve single or all?)? maybe backup ones that would be replaced too?
+    add_to.add_argument('-c', '--check-outputs-unchanged', action='store_true',
+        # TODO update doc? is it actually true there are any plot formats i don't
+        # support? or at least, this isn't the reason anymore, right? now it should just
+        # be anything that mpl fn i'm using (which converts things to png i think) works
+        # w/?
+        # TODO specifically call out which formats this will/won't work for (png?)
+        # work for PDF? implement some kind of image based diffing to support those?
+        # TODO or maybe just err if this is passed with an unsupported plot format being
+        # requested
+        # TODO doc whether pickles (or other outputs saved via produces_output wrapper)
+        # are checked for exact file equality (i assume that is the only default
+        # implementation)
+        help='For CSVs/pickles/plots (saved with my to_[csv|pickle]/savefig wrappers, '
+        'or anything save function wrapped by `@produces_output` decorator), check new '
+        'outputs against any existing outputs they would overwrite. If there is a '
+        'discrepancy, exit with an error. Currently do not support certain plot '
+        'formats (where metadata includes things like file creation time, so same '
+        'strategy can not be used to check files for equality).'
+    )
+    flags_added = ['-c']
+    if check_nonmain_option:
+        add_to.add_argument('-C', '--check-nonmain-outputs-unchanged',
+            action='store_true', help='Like -c, but excludes outputs saved in main() '
+            'from checks, so that per-panel analysis outputs can be checked separately.'
+            ' Outputs that would trigger a warning with this flag will not be '
+            'overwritten.'
+        )
+        flags_added.append('-C')
+
+    flags_str = '/'.join(flags_added)
+    parser.add_argument('-P', '--prompt-if-changed', action='store_true',
+        help=f'If {flags_str} would trigger an error because a file changed, will '
+        'instead prompt about the would-be change, and pause execution until user '
+        'indicates whether the file should be overwritten.'
+    )
+    args = parser.parse_args()
+
+    check_outputs_unchanged = args.check_outputs_unchanged
+
+    if check_nonmain_option:
+        check_nonmain_outputs_unchanged = args.check_nonmain_outputs_unchanged
+        if check_nonmain_outputs_unchanged:
+            assert not check_outputs_unchanged
+            check_outputs_unchanged = 'nonmain'
+
+    prompt_if_changed = args.prompt_if_changed
+    if prompt_if_changed:
+        # TODO raise an argument error in arg parsing instead?
+        assert check_outputs_unchanged != False, f'-P can only be passed if {flags_str}'
+
+    return args
+
 
 # TODO adapt -> share w/ (at least) drop_redone_odors?
 # TODO type hint Mapping? can it be Series or Dict?

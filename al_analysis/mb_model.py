@@ -99,7 +99,9 @@ from hong2p.types import Pathlike, DataFrameOrSeries, CMap, ParamDict
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
     reindex, is_scalar, pd_index_equal, equals, format_params, addlevel
 )
-from hong2p.viz import dff_latex, no_constrained_layout, add_group_labels_and_lines
+from hong2p.viz import (dff_latex, no_constrained_layout, add_group_labels_and_lines,
+    stripplot
+)
 from natmix import drop_mix_dilutions
 import olfsysm as osm
 
@@ -28998,7 +29000,7 @@ def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
 
 
 # TODO uppercase (and in natmix_data/analysis.py)
-ci: Union[int, float] = 95
+CI: Union[int, float] = 95
 BOOTSTRAP_SEED: int = 0
 
 # TODO TODO factor to al_analysis.mb_model?
@@ -29008,60 +29010,64 @@ BOOTSTRAP_SEED: int = 0
 # (pre-dropping fully silent cells [/ silent panel cells] in model cases)
 # (am i not currently? or was it a different plot?)
 def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
-    title: Optional[str] = None, title_y: Optional[float] = None,
+    title: Optional[str] = None, title_y: Optional[float] = None, ci: float = CI,
     facet_kws: Optional[ParamDict] = None, fname_suffix: str = '',
     call_on_grids_before_save: Optional[Callable] = None,
     mixonly_responders_plot: bool = False, **kwargs) -> None:
     # TODO doc
-
+    """
+    Args:
+        **kwargs: passed to `plot_fn` via `map_dataframe`. all used for `sns.pointplot`
+            call (which shows mean and errorbar for observed data), and all but
+            'err_kws' (if present) used for `hong2p.viz.stripplot` calls (which show
+            points for model data). any `model_marker_kws` key is assume to have
+            `ParamDict` value, and is passed to `stripplot` calls only, unpacked
+            alongside `**kwargs`.
+    """
     have_fly_cols = _have_fly_cols(class_fracs)
 
     frac_mix_only_responders = class_fracs[
         class_fracs.index.get_level_values('mix_resp').values &
         (class_fracs.index.get_level_values('n_comps') == 0)
     ].copy()
-
-    # TODO delete?
-    '''
-    # TODO assert first two levels are what i expect(+require) for this?
-    # (and which are those again?)
-    mix_only_slice = (True, 0)
-    # NOTE: this needs to happen before class_fracs.reset_index() below
-    # TODO TODO TODO fix:
-    # KeyError: 'True: boolean label can not be used without a boolean index'
-    try:
-        frac_mix_only_responders = class_fracs.loc[mix_only_slice]
-    # TODO delete
-    except KeyError:
-        print()
-        print('class_fracs:')
-        print(class_fracs)
-        breakpoint()
-    '''
-    #
     frac_mix_only_responders.name = 'frac_mix-only_responders'
 
-    # TODO (still an issue?) fix for call from main
+    # TODO delete? (seems not needed?)
+    #
+    # TODO assert first two levels are what i expect(+require) for this?
+    # (and which are those again?)
+    #mix_only_slice = (True, 0)
+    ## NOTE: this needs to happen before class_fracs.reset_index() below
+    ## TODO TODO fix:
+    ## KeyError: 'True: boolean label can not be used without a boolean index'
+    #try:
+    #    frac_mix_only_responders = class_fracs.loc[mix_only_slice]
+    ## TODO delete
+    #except KeyError:
+    #    print()
+    #    print('class_fracs:')
+    #    print(class_fracs)
+    #    breakpoint()
+    #
+
     y_col = class_fracs.name
     assert y_col is not None
     class_fracs = class_fracs.reset_index()
 
-    # TODO did i have some standard way of doing this before? check fly_col(s) instead of
-    # 'source'?
-    # TODO delete if not needed
-    '''
-    if have_fly_cols:
-        from_model = class_fracs.date.isna()
-        assert from_model.equals(class_fracs.fly_num.isna())
-    else:
-        from_model = pd.Series(index=class_fracs.index, data=True)
-    '''
+    # TODO delete if not needed (seems not?)
+    # TODO did i have some standard way of doing this before? check fly_col(s) instead
+    # of 'source'?
+    #if have_fly_cols:
+    #    from_model = class_fracs.date.isna()
+    #    assert from_model.equals(class_fracs.fly_num.isna())
+    #else:
+    #    from_model = pd.Series(index=class_fracs.index, data=True)
+    #
 
     # TODO include N/fraction here?
     class_fracs['response_class_str'] = class_fracs.apply(
         lambda x: format_response_class((x['mix_resp'], x['n_comps'])), axis='columns'
     )
-
 
     def plot_fn(data, *cols, model_marker_kws: Optional[ParamDict] = None,
         jitter: Union[float, bool] = 0.3, capsize: float = 0.0, **kwargs) -> None:
@@ -29085,37 +29091,39 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
                 err_alpha = kwargs.get('alpha', 0.5)
                 err_kws = dict(linewidth=1.5, alpha=err_alpha)
             else:
+                # popping because downstream stripplot calls would fail with it
                 err_kws = kwargs.pop('err_kws')
 
             # need dodge=False here as long as we only have one hue level
             # here, or else will get ZeroDivisionError
-            # TODO TODO TODO fix how hue='source' and color=<some color RGB triple> in
-            # kwargs (produces FutureWarning -> error)
-            # TODO TODO TODO is it only an issue here b/c there are actually multiple
+            # TODO TODO fix how hue='source' and color=<some color RGB triple> in
+            # kwargs (produces FutureWarning -> error) (fixed?)
+            # TODO TODO is it only an issue here b/c there are actually multiple
             # unique hue='source' values in problem call (b/c 'orns' incorrectly marked
-            # as KCs here) (would palette still fix it tho?)
+            # as KCs here) (would palette still fix it tho?) (fixed?)
             sns.pointplot(data[from_kcs], *cols, dodge=False, markerfacecolor='none',
-                linestyle='none', seed=BOOTSTRAP_SEED, err_kws=err_kws,
                 # TODO make line thicker, now that capsize=0 by default? other changes?
-                errorbar=('ci', ci), capsize=capsize,
                 # TODO try legend=True again?
                 #legend=False,
-                **kwargs
+                linestyle='none', seed=BOOTSTRAP_SEED, err_kws=err_kws,
+                errorbar=('ci', ci), capsize=capsize, **kwargs
             )
         #
 
+        # TODO allow overriding? i assume this can currently conflict w/
+        # model_marker_kws/kwargs?
         marker = '.'
 
         if model_marker_kws is None:
             model_marker_kws = dict()
 
         if 'connectome_apl' not in model_data.columns:
-            sns.stripplot(model_data, *cols, jitter=jitter, dodge=False, marker=marker,
+            stripplot(model_data, *cols, jitter=jitter, dodge=False, marker=marker,
                 **model_marker_kws, **kwargs
             )
         else:
             # TODO move these to module level here (-> import in
-            # model_yang_mixtures.py)?
+            # model_yang_mixtures.py)? (duplicated there)
             uniform_apl_marker = '.'
             connectome_apl_marker = '+'
 
@@ -29135,7 +29143,7 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
                 # can't use float dodge here like in some other places unfortunately.
                 # TODO ig i could make figure wider?
                 # jitter=1.0 is too much. 0.3 too much too, esp w/ aspect=1.1
-                sns.stripplot(gdf, *cols, jitter=jitter, dodge=False, marker=marker,
+                stripplot(gdf, *cols, jitter=jitter, dodge=False, marker=marker,
                     **model_marker_kws, **kwargs
                 )
 
@@ -29191,7 +29199,6 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
             label_offset=-1.15
         )
 
-    # TODO allow overriding title_y w/ kwarg?
     if title_y is None:
         if have_fly_cols:
             title_y = 1.07

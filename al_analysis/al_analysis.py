@@ -89,7 +89,8 @@ from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
     get_gsheet_metadata, zscore_traces_per_recording, sort_concs, sort_fly_roi_cols,
     fly_roi_id, response_stat_fn, roimean_plot_kws, roi_plot_kws,
     count_n_per_odor_and_glom, format_panel, roi_label, mean_response_desc, to_json,
-    read_json, to_parquet, response_calc_params_json_name
+    read_json, to_parquet, response_calc_params_json_name,
+    add_check_outputs_unchanged_CLI_flag_and_parse_args
 )
 from al_analysis import al_util
 from al_analysis.mb_model import model_mb_responses
@@ -9486,42 +9487,6 @@ def main():
         help='Report which glomeruli are missing from current ImageJ ROIs, then exit.'
     )
 
-    group = parser.add_mutually_exclusive_group()
-    # TODO option to warn but not err as well?
-    # TODO warn in cases like sensitivity_analysis's deletion of it's root output folder
-    # before starting (invalidating these checks...) (err if any folder would be
-    # deleted when we have this flag?)
-    # TODO maybe this should prompt for pickles/csvs by default (w/ option to
-    # approve single or all?)? maybe backup ones that would be replaced too?
-    group.add_argument('-c', '--check-outputs-unchanged', action='store_true',
-        # TODO update doc? is it actually true there are any plot formats i don't
-        # support? or at least, this isn't the reason anymore, right? now it should just
-        # be anything that mpl fn i'm using (which converts things to png i think) works
-        # w/?
-        # TODO specifically call out which formats this will/won't work for (png?)
-        # work for PDF? implement some kind of image based diffing to support those?
-        # TODO or maybe just err if this is passed with an unsupported plot format being
-        # requested
-        # TODO doc whether pickles (or other outputs saved via produces_output wrapper)
-        # are checked for exact file equality (i assume that is the only default
-        # implementation)
-        help='For CSVs/pickles/plots (saved with my to_[csv|pickle]/savefig wrappers, '
-        'or anything save function wrapped by `@produces_output` decorator), check new '
-        'outputs against any existing outputs they would overwrite. If there is a '
-        'discrepancy, exit with an error. Currently do not support certain plot '
-        'formats (where metadata includes things like file creation time, so same '
-        'strategy can not be used to check files for equality).'
-    )
-    group.add_argument('-C', '--check-nonmain-outputs-unchanged', action='store_true',
-        help='Like -c, but excludes outputs saved in main() from checks, so that '
-        'per-panel analysis outputs can be checked separately. Outputs that would '
-        'trigger a warning with this flag will not be overwritten.'
-    )
-    parser.add_argument('-P', '--prompt-if-changed', action='store_true',
-        help='If -c/-C would trigger an error because a file changed, will instead '
-        'prompt about the would-be change, and pause execution until user indicates '
-        'whether the file should be overwritten.'
-    )
     parser.add_argument('-M', '--first-model-only', action='store_true',
         help='When calling model_mb_responses, sets first_model_kws_only=True to skip '
         'all but the first set of model parameters (in model_kw_list internal to that '
@@ -9544,8 +9509,10 @@ def main():
         'dF/F -> est spike delta fn from that), and another to run model on just '
         'panel(s) of interest. See `reproducing.md` at root of repo.'
     )
-    args = parser.parse_args()
 
+    args = add_check_outputs_unchanged_CLI_flag_and_parse_args(parser,
+        check_nonmain_option=True
+    )
     matching_substrs = args.matching_substrs
     force_across_fly = args.force_across_fly
 
@@ -9574,16 +9541,6 @@ def main():
     al_util.verbose = verbose
 
     print_skipped = verbose
-
-    al_util.check_outputs_unchanged = args.check_outputs_unchanged
-    check_nonmain_outputs_unchanged = args.check_nonmain_outputs_unchanged
-    if check_nonmain_outputs_unchanged:
-        assert not al_util.check_outputs_unchanged
-        al_util.check_outputs_unchanged = 'nonmain'
-
-    al_util.prompt_if_changed = args.prompt_if_changed
-    if al_util.prompt_if_changed:
-        assert al_util.check_outputs_unchanged != False
 
     # TODO share --ignore-existing and --skip parsing (prob refactoring into parser arg
     # to add_argument calls?) (make sure to handle no-string-passed --skip and bool
