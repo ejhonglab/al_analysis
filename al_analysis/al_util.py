@@ -697,6 +697,7 @@ def produces_output(_fn=None, *, verbose: bool = True):
                     ' is likely a mistake'
                 )
 
+            # TODO TODO try to only add these after successfully saving
             seen_inputs.add(normalized_path)
             # TODO why did i need a fn specific cache anyway? paths should be unique
             # across all fns anyway, right? i don't want two fns overwriting each others
@@ -1057,16 +1058,8 @@ def to_parquet(data: DataFrameOrSeries, path: Path, *, check: bool = True) -> No
 
 @produces_output(verbose=False)
 # input could be at least Series|DataFrame
-# TODO delete write_parquet kwarg eventually? after adding explicit calls where i want
-# (may have done that everywhere i care now? in mb_model, most likely, and maybe
-# al_analysis too? anywhere else i want to add an explicit to_parquet call?)
-def to_pickle(data: Any, path: Path, *, write_parquet: bool = True) -> None:
+def to_pickle(data: Any, path: Path) -> None:
     """Writes input to pickle at `path`.
-
-    Args:
-        write_parquet: if True, will also write any `pd.Series|DataFrame` data to
-            `path.with_suffix('.parquet')` (i.e. '<x>/<y>.parquet', for input
-            '<x>/<y>.p').
 
     NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
     """
@@ -1081,26 +1074,6 @@ def to_pickle(data: Any, path: Path, *, write_parquet: bool = True) -> None:
         # just specifying protocol b/c docs say it is (sometimes?) much faster
         path.write_bytes(pickle.dumps(data, protocol=-1))
         return
-
-    # TODO delete eventually (replace calls [that i can] of to_pickle w/ to_parquet
-    # first)
-    if isinstance(data, (pd.Series, pd.DataFrame)):
-        if write_parquet:
-            # replacing .p w/ .parquet
-            parquet_path = path.with_suffix('.parquet')
-            # TODO also include line of calling code? easily possible?
-            warn(f'also saving to {parquet_path} via to_parquet call inside to_pickle. '
-                'replace with explicit to_parquet call in the future!'
-            )
-            to_parquet(data, parquet_path)
-    else:
-        # write_parquet=False must have been manually specified, which indicates i
-        # thought that input was a DataFrame/Series that would have been written as a
-        # parquet file otherwise, which is incorrect if we are in this `else`
-        assert write_parquet, (f'{type(data)=} was not the DataFrame/Series you '
-            'seemed to expect, by setting explicit write_parquet=False'
-        )
-    #
 
     if hasattr(data, 'to_pickle'):
         # TODO maybe do this if instance DataFrame/Series, but otherwise fall back to

@@ -8,14 +8,14 @@ from pprint import pformat, pprint
 from itertools import combinations, product
 import shutil
 import traceback
-from typing import Any, Dict, List, Optional, Set, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Sequence, Tuple, Union
 import warnings
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.legend import Legend
 from matplotlib.patches import Rectangle, Patch
-from matplotlib.colors import LogNorm, LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import LogNorm, LinearSegmentedColormap, ListedColormap, to_rgb
 from matplotlib.collections import PolyCollection
 from matplotlib.container import BarContainer
 import pandas as pd
@@ -34,7 +34,7 @@ from hong2p.viz import (dff_latex, add_group_labels_and_lines, map_each_series_t
     stripplot
 )
 from hong2p.util import symlink, is_scalar
-from hong2p.types import ParamDict, Color, DataFrameOrSeries, Axis
+from hong2p.types import ParamDict, Color, DataFrameOrSeries, Axis, Palette
 from natmix import drop_mix_dilutions
 
 from al_analysis import al_util
@@ -42,8 +42,10 @@ from al_analysis.al_util import (savefig, plot_responses, read_parquet, to_csv,
     to_parquet, data_root, fly_cols, flyroi_cols, warn, cluster_rois, _have_fly_cols,
     add_legends_and_colorbars, diverging_cmap, plot_cols_with_diff_colormaps,
     panel2name_order, load_natmix_dff, plot_corr, mean_of_fly_corrs, format_panel,
-    mean_response_desc, plot_fmt, add_check_outputs_unchanged_CLI_flag_and_parse_args
+    mean_response_desc, plot_fmt, add_check_outputs_unchanged_CLI_flag_and_parse_args,
+    to_pickle
 )
+from al_analysis.al_util import mean_response_desc as orn_response_desc
 from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
     megamat_orn_deltas, natmix_orn_deltas, get_thr_and_APL_weights, format_model_params,
     get_odor_fname_suffix, KC_ID, CLAW_ID, dict_seq_product, abbrev_model_id,
@@ -55,7 +57,7 @@ from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
     TRY_CLAW_MODELS_WITH, TRY_BOUTON_MODELS_WITH, drop_binaries_mixdilutions_and_pfo,
     drop_silent_model_cells, analyze_spatial_claws, model_pnkc_class, is_mix,
     EXPECTED_MODEL_PNKC_CLASSES, REMY_KC_RESPONSE_THRESHOLD, NATMIX_ORN_RESPONSE_THRESH,
-    plot_means_and_counts, print_logistic_scaling_effect, CLASS_SIZE_FRAC_THRESH
+    plot_means_and_counts, print_logistic_scaling_effect, CLASS_SIZE_FRAC_THRESH, CI
 )
 from al_analysis.al_analysis import fill_to_hemibrain
 
@@ -208,8 +210,9 @@ kc_point_alpha = 0.3
 # pointplot calls, instead of specifically to the err_kws=<dict> this gets passed to?
 kc_err_kws = dict(linewidth=1.5, alpha=kc_err_alpha)
 
+# CI from mb_model should be 95
 kc_pointplot_kws = dict(marker='o', markerfacecolor='none', linestyle='none', seed=1,
-    errorbar=('ci', 95), capsize=0, err_kws=kc_err_kws
+    errorbar=('ci', CI), capsize=0, err_kws=kc_err_kws
 )
 
 # TODO jitter/dodge more (than default)?
@@ -224,18 +227,19 @@ perfly_stripplot_kws = dict(alpha=kc_point_alpha, legend=False, size=5.0)
 _USE_KDEPLOT: bool = False
 
 #  will be set to model_alpha_for_legend=0.7 in add_fixed_legend (still?)
-MODEL_ALPHA = 0.5
+MODEL_ALPHA: float = 0.5
 
 # 1.5 seems to be pretty much the same as the default being used for KC line in
 # mixsupp distplot
-MODEL_LINEWIDTH = 1.5
+MODEL_LINEWIDTH: float = 1.5
 # 8.0 seems too small now for some reason. related all the "The figure layout has
 # changed to tight" warnings i'm seeing?
 # for some reason this needs to be much larger than the KC stripplot markersize
 # values
 # 15.0 was a bit too much
-MODEL_MARKERSIZE = 13.0
+MODEL_MARKERSIZE: float = 13.0
 
+# TODO caps name?
 marker_kws = dict(
     # default markeredgewidth seems ~2
     # TODO TODO set even lower markeredgewidth/markersize if full_model_params?
@@ -247,6 +251,9 @@ marker_kws = dict(
     # TODO take out of here? use model_markersize (always the largest one?)
     markersize=MODEL_MARKERSIZE
 )
+
+# TODO -.35 instead? ig preprint stuff wasn't using signed abs max tho
+ORN_VMIN: float = -0.5
 
 
 def parse_odor_name(odor: str) -> str:
@@ -313,12 +320,14 @@ def distplot(data=None, *, kde: Optional[bool] = None, common_norm: bool = False
             # TODO also disable fill if log xscale?
             log_yscale = log_scale[1]
 
+    # TODO also explicitly accept log_yscale here? how was other code doing it?
+
     if 'x' in kwargs:
         assert isinstance(data, pd.DataFrame)
         x = kwargs['x']
         values = data[x]
     else:
-        if isinstance(x, pd.DataFrame):
+        if isinstance(data, pd.DataFrame):
             raise ValueError('must pass x=<col-name> for DataFrame input')
 
         # NOTE: assuming 1D Series/list/array here
@@ -374,6 +383,79 @@ def distplot(data=None, *, kde: Optional[bool] = None, common_norm: bool = False
         return sns.kdeplot(data=data, common_norm=common_norm, **kwargs)
 
 
+# TODO move to hong2p.util?
+# TODO TODO use everwhere else i duplicate this
+# TODO add allow_nan=False flag? idk
+def get_single_unique(ser: Union[pd.Series, pd.Index]) -> Any:
+
+    # TODO maybe if all NaN, it's ok? flag for this?
+    assert ser.notna().all(), (f'get_unique expects no NaN. {ser.name=}'
+        f'\nser value counts:\n{ser.value_counts(dropna=False).to_string()}'
+    )
+
+    unique = ser.unique()
+    assert len(unique) == 1, f'{unique=}'
+    return unique[0]
+
+
+def get_single_unique_kc_panel(data: pd.DataFrame) -> str:
+    check_not_in_index_or_column_names(data, 'panel')
+    # operating on unique values might be a bit faster, but whatever
+    kc_panel = data.panel.map(panel2kc_panel)
+    return get_single_unique(kc_panel)
+
+
+# TODO ok to have norm_to_kc_panel=True as default?
+def get_single_unique_panel_and_mix(data: pd.DataFrame, *, norm_to_kc_panel: bool = True
+    ) -> Tuple[str, str]:
+    # TODO support these being anything other than columns? or just (.T +) reset_index()
+    # (or get frame from index) first if needed? (prob not. get_single_unique_kc_panel
+    # would also need changing)
+    if norm_to_kc_panel:
+        # this normalizes panel names (combining a few model ones) *BEFORE* checking
+        # unique (i.e. we can't just apply `panel2kc_panel` fn on output of
+        # `get_single_unique(data.panel)` here, as there would be multiple unique value
+        # (-> error)
+        panel = get_single_unique_kc_panel(data)
+    else:
+        panel = get_single_unique(data.panel)
+
+    mix = get_single_unique(data.mix)
+    return panel, mix
+
+
+# TODO move to hong2p.util?
+def get_index(data: DataFrameOrSeries, *, axis: Axis = 'index') -> pd.Index:
+    row_axis_opts = (0, 'index', 'rows')
+    col_axis_opts = (1, 'columns')
+    all_axis_opts = row_axis_opts + col_axis_opts
+
+    if axis in row_axis_opts:
+        index = data.index
+    elif axis in col_axis_opts:
+        if isinstance(data, pd.Series):
+            raise ValueError(f'axis={axis} requested for Series data, which only have '
+                f'row index, as specified by any of {row_axis_opts}'
+            )
+        index = data.columns
+    else:
+        raise ValueError(f'{axis=} was not in {all_axis_opts}')
+    return index
+
+
+# TODO move to hong2p.olf?
+def get_odors(data: DataFrameOrSeries, *, axis: Axis = 'index') -> pd.Index:
+    index = get_index(data, axis=axis)
+    # TODO loop over axes and get odors for first that has first_odor_level not raise
+    # ValueError (or assert all equal if multiple axes have it)? (if axis is not None,
+    # and default to None?)
+    # TODO ever need (default) allow_multiple=True? thread thru kwarg?
+    level = olf.first_odor_level(index, allow_multiple=False)
+    odors = index.get_level_values(level)
+    assert odors.notna().all(), 'get_odors expects no NaN odor values'
+    return odors
+
+
 # TODO use this elsewhere this value is currently hardcoded
 N_VARIANTS_DELIM: str = ' ('
 
@@ -415,7 +497,9 @@ def pnkc_class_is_model(x: Union[float, str]) -> bool:
     return is_model
 
 
-def has_model(df: pd.DataFrame) -> bool:
+# TODO delete dropna= flag after fixing all cases where there are NaN in this col?
+# or nah?
+def has_model(df: pd.DataFrame, *, dropna: bool = False) -> bool:
     """Checks `PNKC_CLASS_COL` is in `df.columns`, and whether it contains model values.
 
     Values matching or starting with one of `EXPECTED_MODEL_PNKC_CLASSES` count as model
@@ -424,6 +508,9 @@ def has_model(df: pd.DataFrame) -> bool:
     Raises ValueError if unexpected values in this column, but NaN currently allowed
     (assumed non-model). Besides model values and NaN, only values in
     `EXPECTED_MODEL_PNKC_CLASSES` are allowed.
+
+    Args:
+        dropna: if False, will assert `df[PNKC_CLASS_COL]` has no NaN
     """
     assert PNKC_CLASS_COL not in df.index.names, 'handle?'
 
@@ -431,6 +518,8 @@ def has_model(df: pd.DataFrame) -> bool:
         # TODO ever any cases where i'd want to check something else?
         return False
 
+    # TODO restore? i think i've fixed this now. no calls currently set dropna=True
+    #
     # TODO delete. there is NaN sometimes currently (e.g. from some plot_fn calls)
     # TODO assert no NaN in this column? i have it filled pretty much everywhere,
     # right? (could just drop if it's an issue)
@@ -440,7 +529,15 @@ def has_model(df: pd.DataFrame) -> bool:
 
     # doing the dropna() since I could not always currently assert no NaN
     # (assuming NaN would only ever be for non-model stuff tho)
-    vals = df[PNKC_CLASS_COL].dropna().unique()
+    vals = df[PNKC_CLASS_COL]
+    if dropna:
+        vals = vals.dropna()
+    else:
+        assert vals.notna().all(), ('has_model: set dropna=True to ignore NaN here, '
+            f'or fix why there are NaN in this {PNKC_CLASS_COL=} in the first place'
+        )
+
+    vals = vals.unique()
     for x in vals:
         if x in EXPECTED_NONMODEL_PNKC_VALS:
             continue
@@ -457,6 +554,7 @@ def has_model(df: pd.DataFrame) -> bool:
 
 
 def has_connectome_apl(df: pd.DataFrame, *, apl_col: str = 'connectome_apl') -> bool:
+    # TODO TODO factor a fn to get whatever variable from either index or columns?
     if apl_col in df.index.names:
         assert apl_col not in df.columns, (
             f'{apl_col} in both index.names and columns! drop one'
@@ -464,10 +562,116 @@ def has_connectome_apl(df: pd.DataFrame, *, apl_col: str = 'connectome_apl') -> 
         apl_vals = df.index.get_level_values(apl_col)
     elif apl_col in df.columns:
         apl_vals = df[apl_col]
+    #
     else:
         return False
 
     return apl_vals.any()
+
+
+def check_not_in_index_or_column_names(df: pd.DataFrame, x: str) -> None:
+    """Raise if `x` in `df.index.names` or `df.columns.names`
+
+    Usually so we know we only have to check for the variable name in `.columns`, or as
+    part of assertion that the variable in nowhere (including in `.columns`).
+    """
+    assert all(x not in names for names in (df.index.names, df.columns.names)), \
+        f'expecting {x=} in at most .columns, not index.names or columns.names'
+
+
+def add_source_and_class_cols(df: pd.DataFrame, val: str, *, copy: bool = True
+    ) -> pd.DataFrame:
+    """Adds ['source', PNKC_CLASS_COL, 'source_type'] columns to `df`, all `= val`
+
+    For setting this metadata for KC & ORN inputs, where these columns should not
+    already exist, and for which they should all have the same value. For model data,
+    'source' & PNKC_CLASS_COL can take multiple str values, and only 'source_type' would
+    be expected to be a single value (='model').
+    """
+    # TODO also handle model data in here (just checking 'source' / PNKC_CLASS_COL, and
+    # adding 'source_type' -> 'model')?) (meh)
+    if copy:
+        df = df.copy()
+
+    # TODO keep this? (not if i add support for model input, at least not
+    # unconditionally)
+    assert val in EXPECTED_NONMODEL_PNKC_VALS, (
+        f'expected {val=} in {EXPECTED_NONMODEL_PNKC_VALS=}'
+    )
+
+    cols_to_add = ['source', PNKC_CLASS_COL, 'source_type']
+    for x in cols_to_add:
+        # TODO TODO allow them to exist, but check all matches `val` if so?
+        # (might make easier to call this in more places i want to?)
+        check_not_in_index_or_column_names(df, x)
+        assert x not in df.columns, f'{x=} already in {df.columns=}!'
+        df[x] = val
+
+    return df
+
+
+def get_unique_source_types(df: pd.DataFrame) -> Set[str]:
+    assert len(df) > 0
+    assert df.source_type.notna().all()
+    source_types = set(df.source_type.unique())
+    assert source_types - EXPECTED_NONMODEL_PNKC_VALS == {'model'}, (
+        f"expected all {source_types=} to be either 'model' or in "
+        f'{EXPECTED_NONMODEL_PNKC_VALS=}'
+    )
+    return source_types
+
+
+DEFAULT_SOURCE_TYPES_TO_PLOT: Tuple[str] = ('model', 'KCs')
+assert set(DEFAULT_SOURCE_TYPES_TO_PLOT) - set(EXPECTED_NONMODEL_PNKC_VALS) == {'model'}
+
+class MissingRequestedSourcesError(ValueError):
+    pass
+
+def get_model_kc_orn_data(df: pd.DataFrame, *,
+    # TODO change copy default to True?
+    # TODO should i even have a default for source_types? make it positional?
+    source_types: Sequence[str] = DEFAULT_SOURCE_TYPES_TO_PLOT, copy: bool = False
+    ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    # TODO doc
+    """Returns (model, KC, ORN) data, subset from `df`, each either a DataFrame or None.
+
+    Args:
+        df: data to subset model/KC/ORN data from. must have a 'source_type' column,
+            with values all str and one of 'model' / 'KCs' / 'ORNs'.
+
+        source_types: 'source_type' values for which to return dataframe subsets
+
+        copy: whether to call `.copy()` on each dataframe output before returning.
+            NOTE: unlike my other functions that use this kwarg, this one defaults to
+            False currently.
+
+    Raises MissingRequestedSourcesError if `df` does not have all requested sources.
+    """
+    # TODO add EXPECTED_SOURCE_TYPES module-level def, for better error message if
+    # requrested type is never going to exist?
+    df_source_types = get_unique_source_types(df)
+    requested = set(source_types)
+    if not requested - df_source_types == set():
+        raise MissingRequestedSourcesError('not all requested source_types='
+            f'{requested} were in df source_types={df_source_types}\n...for panel/mix:'
+            f"\n{df[['panel','mix']].drop_duplicates().to_string(index=False)}"
+        )
+
+    model_data = df[df.source_type == 'model'] if 'model' in requested else None
+    kc_data = df[df.source_type == 'KCs'] if 'KCs' in requested else None
+    orn_data = df[df.source_type == 'ORNs'] if 'ORNs' in requested else None
+
+    if copy:
+        if model_data is not None:
+            model_data = model_data.copy()
+
+        if kc_data is not None:
+            kc_data = kc_data.copy()
+
+        if orn_data is not None:
+            orn_data = orn_data.copy()
+
+    return model_data, kc_data, orn_data
 
 
 # TODO pick only either this or my other fn (odor_sort_key, which is just used manually
@@ -479,6 +683,27 @@ def sort_odors(data: pd.DataFrame, **kwargs):
         # (e.g. 'diag-binaries_max')
         if_panel_missing=None, **kwargs
     )
+
+
+def has_multiple_mixes(df: pd.DataFrame, *, norm_to_kc_panel: bool = True) -> bool:
+    # checking only one (/no) panel too, because that's the only context in which this
+    # was defined before (in loop over panels), and that's the context within which we
+    # want to check for and multiple multiple mixes
+    if 'panel' in df.columns:
+        check_not_in_index_or_column_names(df, 'panel')
+        # this will also raise assertion error if not a single unique non-NaN value
+        # (or after normalizing to kc panel, in that case)
+        if norm_to_kc_panel:
+            get_single_unique_kc_panel(df)
+        else:
+            get_single_unique(df.panel)
+
+    check_not_in_index_or_column_names(df, 'mix')
+
+    # TODO will this be true?
+    assert df.mix.notna().all(), 'expected no NaN mix'
+
+    return 'mix' in df.columns and df.mix.nunique() > 1
 
 
 def assert_all_mix_after_component(df_or_odors: Union[pd.DataFrame, Sequence]) -> None:
@@ -510,7 +735,6 @@ def calc_max_flymean(df: pd.DataFrame) -> pd.DataFrame:
 
 
 NORM_PREFIX: str = 'normalized_'
-
 # TODO put NORM_[TO_FLYMEAN_MAX|PER_FLY] in fnames?
 
 # If False, the max individual fly (trial-averaged) response (across all KC data,
@@ -544,9 +768,17 @@ def normalize_one_panel(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     normed_df = raw_df.copy()
     # TODO also try subtracting min? meh
-    # TODO TODO try NORM_PER_FLY again?
-    if not NORM_PER_FLY:
+    # TODO try NORM_PER_FLY again?
+
+    if NORM_TO_FLYMEAN_MAX:
+        normed_df['value'] /= calc_max_flymean(normed_df)
+        assert np.isclose(calc_max_flymean(normed_df), 1)
+        assert pd_allclose(raw_df.value / calc_max_flymean(raw_df), normed_df.value)
+        assert np.isclose(normed_df.groupby('odor').value.mean().max(), 1)
+
+    elif not NORM_PER_FLY:
         normed_df['value'] = normed_df.value / normed_df.value.max()
+        assert np.isclose(normed_df.value.max(), 1)
     else:
         # if i decide to include stuff defined across odors in these KC
         # dfs (i.e. mix suppression), may need to change handling here
@@ -569,17 +801,28 @@ def normalize_one_panel(raw_df: pd.DataFrame) -> pd.DataFrame:
         normed_df = normed_df.reset_index()[cols_before].copy()
         assert np.allclose(normed_df.groupby(fly_cols).value.max(), 1)
 
-    if NORM_TO_FLYMEAN_MAX:
-        normed_df['value'] /= calc_max_flymean(normed_df)
-        assert np.isclose(calc_max_flymean(normed_df), 1)
-        # TODO if i ever restore NORM_PER_FLY=True, would have to move the assertion
-        # below into a conditional probably
-        # TODO well at least it doesn't matter that i'm already doing the
-        # `not NORM_PER_FLY` step above
-        assert pd_allclose(raw_df.value / calc_max_flymean(raw_df), normed_df.value)
-
     normed_df['stat'] = f'{NORM_PREFIX}{stat}'
     return normed_df
+
+
+MEAN_PREFIX: str = 'mean_'
+def get_single_unique_stat(df: pd.DataFrame, *, strip_mean_prefix: bool = True,
+    strip_norm_prefix: bool = True) -> str:
+    """Returns unique value in df.stat columns, removing prefixes optionally
+    """
+    stat = get_single_unique(df.stat)
+    # TODO want to support this?
+    assert not (NORM_PREFIX in stat and MEAN_PREFIX in stat)
+
+    assert (MEAN_PREFIX not in stat or stat.startswith(MEAN_PREFIX))
+    if strip_mean_prefix:
+        stat = stat.replace(MEAN_PREFIX, '')
+
+    assert (NORM_PREFIX not in stat or stat.startswith(NORM_PREFIX))
+    if strip_norm_prefix:
+        stat = stat.replace(NORM_PREFIX, '')
+
+    return stat
 
 
 def get_hierarch_clust_fname_prefix(fname_suffix: str, *,
@@ -976,6 +1219,15 @@ def plot_hierarch_clustered_rois(plot_dir: Path, df: pd.DataFrame, fname_suffix:
 
     if not discrete:
         if not nonnegative:
+            # TODO delete
+            # TODO TODO is vmin actually working correctly for this?
+            # or at least, is cbar actually reflecting correct range, or should i set
+            # colorbar=False and add my own via add_colorbar? i think the bluest blue is
+            # probably vmin, which should be ~-.5 or something, if from the data, not
+            # the -vmax, if size of colorbar is to be believed [negative half has no
+            # ticklabels currently tho])
+            print('fix negative side of clust hierarch cbars / cbar ticks')
+            #
             norm_kws = dict(norm='two-slope', vmin=vmin, vmax=vmax)
         else:
             norm_kws = dict(vmin=vmin, vmax=vmax)
@@ -2571,56 +2823,6 @@ def all_bool_combos_of_length_n(n: int, *, false_first: bool = True) -> Sequence
     return product(*([bools] * n))
 
 
-# TODO move to hong2p.util?
-# TODO TODO use everwhere else i duplicate this
-def get_single_unique(ser: Union[pd.Series, pd.Index]) -> Any:
-
-    # TODO maybe if all NaN, it's ok? flag for this?
-    assert ser.notna().all(), 'get_unique expects no NaN'
-
-    unique = ser.unique()
-    assert len(unique) == 1, f'{unique=}'
-    return unique[0]
-
-
-def get_single_unique_panel_and_mix(data: pd.DataFrame) -> Tuple[str, str]:
-    panel = get_single_unique(data.panel)
-    mix = get_single_unique(data.mix)
-    return panel, mix
-
-
-# TODO move to hong2p.util?
-def get_index(data: DataFrameOrSeries, *, axis: Axis = 'index') -> pd.Index:
-    row_axis_opts = (0, 'index', 'rows')
-    col_axis_opts = (1, 'columns')
-    all_axis_opts = row_axis_opts + col_axis_opts
-
-    if axis in row_axis_opts:
-        index = data.index
-    elif axis in col_axis_opts:
-        if isinstance(data, pd.Series):
-            raise ValueError(f'axis={axis} requested for Series data, which only have '
-                f'row index, as specified by any of {row_axis_opts}'
-            )
-        index = data.columns
-    else:
-        raise ValueError(f'{axis=} was not in {all_axis_opts}')
-    return index
-
-
-# TODO move to hong2p.olf?
-def get_odors(data: DataFrameOrSeries, *, axis: Axis = 'index') -> pd.Index:
-    index = get_index(data, axis=axis)
-    # TODO loop over axes and get odors for first that has first_odor_level not raise
-    # ValueError (or assert all equal if multiple axes have it)? (if axis is not None,
-    # and default to None?)
-    # TODO ever need (default) allow_multiple=True? thread thru kwarg?
-    level = olf.first_odor_level(index, allow_multiple=False)
-    odors = index.get_level_values(level)
-    assert odors.notna().all(), 'get_odors expects no NaN odor values'
-    return odors
-
-
 # TODO move to hong2p.util? / olf?
 def subset_second_to_odors_in_first(df1: pd.DataFrame, df2: pd.DataFrame, *,
     copy: bool = True) -> pd.DataFrame:
@@ -2632,6 +2834,7 @@ def subset_second_to_odors_in_first(df1: pd.DataFrame, df2: pd.DataFrame, *,
 
     df2 = df2[df2.odor.isin(s1)]
     s2 = set(df2.odor.unique())
+    # also implies df2 non-empty, obviously
     assert s1 == s2, ('df2 did not have all odors in df1!\ndf1 odors: {s1}\ndf2 odors: '
         f'{s2}'
     )
@@ -2657,7 +2860,7 @@ def rename_natmix_odors(df: pd.DataFrame, level='odor') -> pd.DataFrame:
         'ea+eb @ 0': 'ea+eb',
         '1o3ol+2h @ 0': '1o3ol+2h',
     }
-    # TODO delete. everything besides maybe orn_mdf gonna be missing at least half of
+    # TODO delete. everything besides maybe orn_df gonna be missing at least half of
     # these
     #odor_set = set(odors.unique())
     #rename_keys = set(rename_dict.keys())
@@ -2755,17 +2958,21 @@ def split_mixes(df: pd.DataFrame, responded: Optional[pd.DataFrame] = None, *,
     ]:
     """Returns binary mix dataframes and (if panel in kiwi/control) full mix dataframe.
     """
-    index = df.index
-    names = index.names
-    assert 'mix' not in names, f"index {names=} already had 'mix' level"
+    # so there should be nothing besides a single 'odor' / 'odor1' level here.
+    # no 'panel'/'mix'/anything
+    check_unique_odor_only(df.index)
+
+    columns = df.columns
+    names = columns.names
+    assert 'mix' not in names, f"columns {names=} already had 'mix' level"
 
     df_panel = None
     if 'panel' in names:
-        df_panel = get_single_unique(index.get_level_values('panel'))
+        df_panel = get_single_unique(columns.get_level_values('panel'))
         df_panel = panel2kc_panel(df_panel)
 
     elif panel is None:
-        raise ValueError("'panel' level must either be in df.index.names, or "
+        raise ValueError("'panel' level must either be in column names, or "
             'panel=<str> must be passed in'
         )
 
@@ -2787,7 +2994,15 @@ def split_mixes(df: pd.DataFrame, responded: Optional[pd.DataFrame] = None, *,
             f'same indices as df, if {drop_nonresponders_per_mix=}'
         )
 
+    index = df.index
     if responded is not None:
+        # the columns will NOT be equal when there are >1 stats in df
+        # (in that case df will have twice as many columns)
+        if 'stat' in df.columns.names:
+            assert df.columns.droplevel('stat').drop_duplicates().equals(
+                responded.columns
+            )
+
         assert responded.index.equals(index), \
             'may not be able to use masks defined from one on the other'
 
@@ -2811,7 +3026,25 @@ def split_mixes(df: pd.DataFrame, responded: Optional[pd.DataFrame] = None, *,
         # (per responding (KC, odor)) response strength dists, then no)
         # (should be fine to just keep doing in here w/ the flag)
         if drop_nonresponders_per_mix:
-            for_binary = for_binary.loc[:, responded[binary_and_comp_mask].any()]
+            responder_mask = responded[binary_and_comp_mask].any()
+            # even tho for_binary sometimes has multiple stats (in final MultiIndex
+            # level), indexing on responder_mask still seems to work, producing same set
+            # of ['source','model_pnkc_class','roi'] unique values in first test case I
+            # checked:
+            # > c1 = for_binary.loc[:, responder_mask].columns.drop_duplicates()
+            # > c2 = responded.columns[responder_mask]
+            # > c1.droplevel('stat').drop_duplicates().equals(c2)
+            # True
+            for_binary = for_binary.loc[:, responder_mask]
+
+            # TODO delete? put behind checks=True flag?
+            # TODO duplicate for 5comp stuff below?
+            c1 = for_binary.loc[:, responder_mask].columns.drop_duplicates()
+            if 'stat' in c1.names:
+                c1 = c1.droplevel('stat').drop_duplicates()
+            c2 = responded.columns[responder_mask]
+            assert c1.equals(c2)
+            #
 
         if panel == 'diag-binaries':
             for_binary = addlevel(for_binary, 'mix', binary_mix, axis='columns')
@@ -2844,7 +3077,15 @@ def split_mixes(df: pd.DataFrame, responded: Optional[pd.DataFrame] = None, *,
         full_mix_df = df[full_mix_and_comp_mask]
 
         if drop_nonresponders_per_mix:
-            full_mix_df = full_mix_df.loc[:, responded[full_mix_and_comp_mask].any()]
+            responder_mask = responded[full_mix_and_comp_mask].any()
+            full_mix_df = full_mix_df.loc[:, responder_mask]
+            # TODO delete? put behind checks=True flag?
+            c1 = full_mix_df.loc[:, responder_mask].columns.drop_duplicates()
+            if 'stat' in c1.names:
+                c1 = c1.droplevel('stat').drop_duplicates()
+            c2 = responded.columns[responder_mask]
+            assert c1.equals(c2)
+            #
 
         # TODO use name of mix instead? (meh)
         full_mix_df = addlevel(full_mix_df, 'mix', '5comp', axis='columns')
@@ -2863,14 +3104,14 @@ def plot_kc_orn_eag_intensity_comparison(plot_dir: Path, palette: Dict[str, Colo
     # TODO TODO unnnormalized versions of these, where data are in different facets
     # w/ diff ylabels and sharey=False
     # TODO delete
-    print('UNNORMALIZED VERSION OF INTENSITY PLOT (or rather, add + change yscales)')
-    # TODO TODO TODO or actually, just overwrite existing left y-axis and add new right
+    #print('UNNORMALIZED VERSION OF INTENSITY PLOT (or rather, add + change yscales)')
+    # TODO TODO or actually, just overwrite existing left y-axis and add new right
     # y-axis, each with one absolute scale for the kc+orn only version of plot?
-    # then just need one plot...
+    # then just need one plot... (tried some code doing this below w/ secondary_yaxis,
+    # but having trouble getting it to work right)
     # TODO tho may still want to compare to a raw plot with comprable limit set, just
     # for sanity checking
     #
-
     panel, mix = get_single_unique_panel_and_mix(kc_df)
 
     # TODO rename df1=kc_df, df2=orn_df, df3=eag_df eventually
@@ -2879,17 +3120,7 @@ def plot_kc_orn_eag_intensity_comparison(plot_dir: Path, palette: Dict[str, Colo
     assert df1.stat.nunique() == 1, f'{df1.stat.unique()=}'
     df1 = add_group_id(df1, fly_cols, 'fly_id')
 
-    df2 = orn_df[
-        # TODO TODO even both this this? will subset based on odors below, right?
-        #(orn_df.index.get_level_values('panel') == panel) &
-        #
-        # TODO remove separate calculations of EAG/ORN normalization that was done
-        # before this plot call. seems some stuff got screwed up doing that before
-        # subsetting odors again here (or something like that) (so now normalizing all
-        # in list comp below)
-        ~orn_df.index.get_level_values('is_normalized')
-    ].reset_index()
-    df2 = df2.drop(columns='is_normalized')
+    df2 = orn_df.reset_index()
     df2 = add_group_id(df2, fly_cols, 'fly_id')
     df2 = df2.drop(columns=fly_cols)
 
@@ -2899,11 +3130,7 @@ def plot_kc_orn_eag_intensity_comparison(plot_dir: Path, palette: Dict[str, Colo
     fname_parts = ['kc', 'orn']
     to_subset = [df2]
     if eag_df is not None:
-        df3 = eag_df[
-            (eag_df.index.get_level_values('panel') == panel) &
-            ~eag_df.index.get_level_values('is_normalized')
-        ].reset_index()
-        df3 = df3.drop(columns='is_normalized')
+        df3 = eag_df.reset_index()
         assert set(df2.columns) == set(df3.columns)
         to_subset.append(df3)
         # would want to do this after checking we could subset odors to same, if we
@@ -2912,13 +3139,26 @@ def plot_kc_orn_eag_intensity_comparison(plot_dir: Path, palette: Dict[str, Colo
         # fine)
         fname_parts.append('eag')
 
+    # no longer need to drop is_normalized above
+    assert all('is_normalized' not in x.columns for x in to_subset)
+
     subset_dfs = []
     for df in to_subset:
         # this will assert df has all odors in df1
+        # TODO assert only one panel/mix after this, if present? do that inside this
+        # subset fn?
         df = subset_second_to_odors_in_first(df1, df)
         subset_dfs.append(df)
 
     dfs = [df1] + subset_dfs
+
+    # need to calculate this on raw data, before normalizing, so i can get scales for
+    # secondary y-axes
+    max_flymeans = [calc_max_flymean(x) for x in dfs]
+
+    # TODO delete after debugging below
+    odfs = [x.copy() for x in dfs]
+    #
 
     # TODO assert dfs all have same set of odors (they should now anyway)
     dfs = [normalize_one_panel(x) for x in dfs]
@@ -2940,22 +3180,102 @@ def plot_kc_orn_eag_intensity_comparison(plot_dir: Path, palette: Dict[str, Colo
     intensity_comp_df = sort_odors(intensity_comp_df)
 
     fig, ax = plt.subplots()
-    # TODO something more distinct than gray (wrt brown) (for eag)
     shared_kws = dict(ax=ax, x='odor', y='value', hue='source', palette=new_palette)
-    sns.pointplot(intensity_comp_df, dodge=True, legend=True, **kc_pointplot_kws,
-        **shared_kws
+    # TODO why is there stil a legend inside the axes?
+    # i think we do need this to use a fig.legend, so would have to hide the pointplot
+    # one, if i still wanted one outside axes
+    sns.pointplot(intensity_comp_df, dodge=True, legend=True,
+        **kc_pointplot_kws, **shared_kws
     )
     stripplot(intensity_comp_df, **shared_kws, **perfly_stripplot_kws)
     ax.set_ylabel('normalized intensity (max mean -> 1)'
-        '\n(with 95% CI on mean)'
+        f'\n(with {CI:.0f}% CI on mean)'
     )
 
-    # TODO ymax need changing?
+    # this happening before secondary_yax def causing problems? (doesnt seem to matter)
     ymin, ymax = ax.get_ylim()
     ax.set_ylim([0.0, ymax])
 
+    # TODO fix/delete
+    '''
+    # ipdb> odfs[1].value.max()
+    # 1.027183224543563
+    # ipdb> odfs[0].value.max()
+    # 0.7569451967522122
+    # ipdb> odfs[0].groupby('odor').value.mean().max()
+    # 0.5911110921263032
+    # ipdb> max_flymeans
+    # [0.5911110921263032, 0.8402593444470375]
+    # 1.027183224543563
+    # ipdb> odfs[0].value.max()
+    # TODO delete
+    print()
+    print(f'{odfs[0].value.max()=}')
+    print(f'{odfs[1].value.max()=}')
+    print(f'{max_flymeans=}')
+    odf = odfs[1]
+    print()
+    #
+    # TODO delete restore?
+    #locations = ['left', 'right']
+    loc_dicts = [dict(location='right'), dict(location=1.2, transform=ax.transAxes)]
+    # also doesn't seem to matter if i define two vs 1 (wrong either way)
+    #for df, max_flymean, loc in zip(dfs[1:], max_flymeans[1:], loc_dicts[:1]):
+    for df, max_flymean, loc in zip(dfs, max_flymeans, locations):
+        source = get_single_unique(df.source)
+
+        stat = get_single_unique(df.stat)
+        if stat.startswith(NORM_PREFIX):
+            stat = stat[len(NORM_PREFIX):]
+
+        # removing N suffix we now have in source
+        label = f'{source.split()[0]} {stat}'
+        color = new_palette[source]
+        # TODO delete
+        print(f'{source=}')
+        print(f'{max_flymean=}')
+        print()
+        #
+        # TODO TODO offset the loc = 'left' one with some transform, like example
+        # (secondary_yaxis(3, transform=ax.transData), w/ 3 in data coords)
+        # x * max_flymean should be correct to convert from normed to unnormed.
+        # TODO TODO is this correct or do i have them backwards?
+        yax = ax.secondary_yaxis(**loc,
+            # TODO what is appropriate inverse? why do docs have an example passing the
+            # same fn for both?
+            # https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.secondary_yaxis.html
+            # TODO TODO did i have it backwards?
+            # TODO TODO TODO why is this not working?
+            functions=(lambda x: x * max_flymean, lambda x: x / max_flymean),
+            # no, this is even worse
+            #functions=(lambda x: x / max_flymean, lambda x: x * max_flymean),
+            # seems similar to above
+            #functions=(lambda x: x / max_flymean, lambda x: x / max_flymean),
+        )
+        # none of this code was really changing anything either
+        # TODO refactor to share w/ twinx mb_model APL Vm plotting /etc?
+        yax.set_ylabel(label, color=color)
+        # TODO delete. did not accept color
+        #yax.set_label(label, color=color)
+        # TODO need to specify axis='y' or something? (probably, as set_label above
+        # needed to be replaced w/ set_Ylabel, in order to accept color)
+        yax.tick_params(axis='y', color=color)
+        for text in yax.yaxis.get_ticklabels():
+            # alpha also not supported here
+            text.set_color(color)
+        # TODO maybe hide original KC normalized ylabel?
+    '''
+
     ax.set_title(f'intensity comparison\n{panel}/{mix}')
-    savefig(fig, plot_dir, f'intensity_{"-".join(fname_parts)}_{panel}_{mix}')
+
+    # TODO like this loc? legend populated properly?
+    ##fig.legend(loc='outside right upper')
+    #fig.legend(loc='outside left upper')
+
+    savefig(fig, plot_dir, f'intensity_{panel}_{mix}_{"-".join(fname_parts)}')
+    # TODO delete
+    #breakpoint()
+    #
 
 
 # TODO factor to hong2p.olf?
@@ -3000,6 +3320,144 @@ def check_odor_index_sorted_within_panel(data: DataFrameOrSeries) -> None:
     )
 
 
+dilution_factor_delim: str = ' / '
+# TODO also sort components in fixed order? matter (prob not?)?
+def odor_sort_fn(x):
+    panels_to_check = set(NATMIX_PANELS)
+    # TODO matter? set global if so (or pass)
+    #if skip_panels is not None:
+    #    panels_to_check -= set(skip_panels)
+    panels_to_check = sorted(panels_to_check)
+
+    odors = x.unique()
+    # NOTE: this approach will not work for input with multiple panels...
+    # (as this fn is only ever called on odor level as a key, at least now)
+    panel = None
+    for curr_panel in panels_to_check:
+        curr_name_order = panel2name_order[curr_panel]
+        # TODO TODO still need to handle these for kiwi/control, or never gonna
+        # analyse those w/ -L/--leave-concs?
+        # TODO TODO just try parse_odor_name? anything it wouldn't work on?
+        # TODO TODO actually, wasn't i just not calling process_odor_str_for_model
+        # when i should have been?
+        assert not any('@' in x for x in odors), ('would need parse_odor_name in '
+            'panel loop below if we had concs sometimes'
+        )
+        if all(o in curr_name_order for o in odors):
+            assert panel is None, (f'multiple panels in {NATMIX_PANELS=} matched '
+                f'{odors=}'
+            )
+            panel = curr_panel
+
+    if panel is not None:
+        name_order = panel2name_order[panel]
+        # TODO or need negative of index?
+        key = x.map(name_order.index)
+        return key
+
+    # TODO TODO are components sorted alphabetically be default? sorted at all?
+    # check!
+
+    # TODO why are we also including '/'? are all mixtures not using '+'? provide
+    # example of what uses '/' at least (or switch all to using '+'?)
+    # TODO TODO must have been for the synthetic diags. test with this again before
+    # deleting
+    # TODO delete if i can, now that i'm using ' / <x>' to  indicate pair dilutions
+    #v1 = 1 * (x.str.contains('+', regex=False)) | (x.str.contains('/', regex=False))
+    v1 = 1 * x.str.contains('+', regex=False)
+
+    # to put the cmix/kmix at end
+    v2 = 2 * x.str.contains('mix', regex=False)
+
+    key = v1 + v2
+
+    # TODO TODO keep this code? try to change handling to using a diff index level,
+    # and my add_group_labels_and_lines fn, and delete these (and delete code adding
+    # this to odor strs)?
+    if x.str.contains(dilution_factor_delim, regex=False).any():
+        # TODO want to reverse order of this? just flip sign? flag for that?
+        dilution_factor = x.str.split(dilution_factor_delim, regex=False).map(
+            lambda x: 0.0 if len(x) == 1 else float(x[1])
+        )
+        # so lower concentrations (higher dilution factors) are placed first in
+        # order
+        dilution_factor = -1 * dilution_factor
+        # TODO flag to swap dilution_factor and key here?
+        key = pd.Series(index=x.index, data=zip(dilution_factor, key))
+    #
+
+    return key
+
+
+KC_RESP_COL: str = 'mean_Fc_zscore'
+# TODO refactor? how?
+ORN_RESP_COL: str = 'mean_peak_dff'
+
+def mix_supp_list2flystat_df(mix_supp_dfs: List[pd.DataFrame], *,
+    stat: str = KC_RESP_COL) -> pd.DataFrame:
+    # TODO doc
+
+    # TODO assert stat is in something already? like a column name? and do i want to
+    # remove that column name? (or is it not?)
+
+    mix_supp = pd.concat(mix_supp_dfs, verify_integrity=True).reset_index()
+    diff_col = get_diff_col(mix_supp)
+
+    assert 'stat' not in mix_supp.columns
+    # TODO problem that it isn't previxed w/ MEAN_PREFIX
+    # (will probably have to change handling of model ones anyway, for same reason,
+    # if theres an issue)
+    # TODO and we are just assuming this is already computed mixsupp from the
+    # named stat?
+    mix_supp['stat'] = stat
+
+    assert 'value' not in mix_supp.columns
+    return mix_supp
+
+
+def tidy2responses_and_response_mask(mix_df: pd.DataFrame) -> Tuple[
+        pd.DataFrame, pd.DataFrame
+    ]:
+    """Returns wide dataframes (responses, responded) with same shape and indices.
+
+    Args:
+        mix_df: tidy (long form) dataframe with at least columns (no NaN in any):
+            - `al_util.flyroi_cols` (`['date', 'fly_num', 'roi']`)
+               (will be columns levels of output)
+
+            - 'value','responded': will form values of `responses` and `responded`,
+              respectively. should respectively be of types `float|int` and `bool`.
+
+            - 'odor': will be single-level row index of output
+
+            - 'panel','mix': currently just used to check that input only has a single
+              unique value for each (and will also currently fail if missing or NaN),
+              but not included in output (maybe they should be, alongside 'odor' in row
+              index.  some code currently assumes single-level str index downstream of
+              this tho...)
+    """
+    # this is just to check input only has one unique (panel, mix)
+    get_single_unique_panel_and_mix(mix_df)
+
+    # TODO should i also actually use the (panel, mix) (see note in docstring tho)
+
+    # dtype of this is asserted bool in response_class_means_and_perfly_counts
+    responded = mix_df.pivot(columns=flyroi_cols, index='odor', values='responded')
+    responded = responded.sort_index(kind='stable', key=odor_sort_fn)
+
+    is_responder = responded.any()
+    assert _have_fly_cols(is_responder)
+    assert not is_responder.all(), 'expected to still have non-responders here'
+    del is_responder
+
+    # TODO refactor to share pivot -> sorting w/ `responded` above
+    responses = mix_df.pivot(columns=flyroi_cols, index='odor', values='value')
+    responses = responses.sort_index(kind='stable', key=odor_sort_fn)
+    assert not responses.isna().any().any()
+
+    return responses, responded
+
+
 def response_class_means_and_perfly_counts(responded: pd.DataFrame,
     responses: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     """Returns response class means and counts.
@@ -3021,6 +3479,8 @@ def response_class_means_and_perfly_counts(responded: pd.DataFrame,
     assert np.issubdtype(dtype, bool)
     del dtype
 
+    # TODO take verbose= kwarg to this fn, and use to control verbose= for this first
+    # call?
     class_sizes_by_fly, perfly_class_means = summarize_response_classes(
         responded, responses=responses
     )
@@ -3052,6 +3512,1163 @@ def response_class_means_and_perfly_counts(responded: pd.DataFrame,
     # seen 0.017494055096707442 in kiwi/binary (prob lowest?)
 
     return class_means, class_sizes_by_fly
+
+
+# NOTE: currently just seems to be used in add_fixed_legend called from plot_stats
+# (at least, outside of current main)
+kc_color: Color = 'm'
+
+source_col: str = 'source'
+def add_fixed_legend(g: sns.axisgrid.FacetGrid, df: pd.DataFrame, palette: Palette, *,
+    lines: bool = True, add_mix_vs_comp_linestyle: bool = False) -> None:
+    # TODO doc lines in particular. say more?
+    # TODO TODO part about replacing label doesn't seem always true. still says 'KCs'
+    # for kc-only mixsupp dist plot i'm looking at. is that just for some other cases?
+    # even still used?
+    """
+    Args:
+        lines: if True, uses `line_kws` instead of `marker_kws` for APL artists added.
+            If False, also replaces 'KCs' label with 'KCs (<ci>% CI on mean)'
+    """
+    # TODO TODO what to do if this doesn't already have the model values, but
+    # have_model=True (like seems to be the case in response-strength_* plots now.
+    # still? delete?)?
+    legend_data = dict(g._legend_data)
+
+    # how to get multiple "titles" with different section in legend:
+    # https://stackoverflow.com/questions/24787041
+    # other (more complicated answer) might even allow nice left alignment, but
+    # going with simpler solution using title_proxy Rectangle for now.
+    title_proxy = Rectangle((0,0), 0, 0, color='w')
+    # TODO (delete. i think issue was just that there *are* no uniform-APL 'boutons'
+    # cases) try to replace all existing (PN>KC) (so != 'KCs') legend entries w/
+    # the circle artists of the same hue, so it doesn't matter which we plot first
+    # (currently only the bouton case is getting + as marker. it does have some
+    # non-connectome-APL cases right? or no?)
+    # TODO add a suffix to 'boutons' clarifying it only has connectome-APL variant,
+    # if leaving marker as-is there?
+
+    line_kws = dict(linestyle='-', marker='none')
+    # TODO add line_kws in here? or still want the ability to override (prob on
+    # linestyle at least... marker='none' always? just overwrite line_kws w/ kws?
+    # TODO also default to color='k', alpha=0.5?
+    def line_artist(**kws):
+        return Line2D([0], [0], **kws)
+
+    have_model = has_model(df)
+    if not have_model:
+        label_order = []
+    else:
+        all_pnkc_classes = df[PNKC_CLASS_COL].unique()
+        # TODO sort order or nah?
+        model_only_classes = [x for x in all_pnkc_classes if pnkc_class_is_model(x)]
+        label_order = model_only_classes
+        del all_pnkc_classes, model_only_classes
+
+        model_alpha_for_legend: float = 0.7
+
+        for k in label_order:
+            color = palette[k]
+            assert type(color) is tuple and len(color) == 3, (f'{color=} was '
+                f'not a RGB tuple for {k=} (in palette)'
+            )
+            artist = None
+            curr_line_kws = dict(line_kws)
+            if k in legend_data:
+                existing = legend_data[k]
+                rgb, _ = artist_rgb_and_alpha(existing)
+
+                # TODO maybe need to check w/ np.allclose? (doesn't seem so. delete
+                # comment)
+                assert rgb == color, f'existing artist {rgb=} != desired {color=}'
+
+                # TODO anything else? (so far, no)
+                if isinstance(existing, (BarContainer, PolyCollection)):
+                    # TODO (delete?) ever want line artist for PolyCollection? check
+                    # get_facecolor() is not white / transparent or something?
+                    # (and use line if so)
+                    # TODO actually need label=k?
+                    artist = Patch(facecolor=color, alpha=model_alpha_for_legend,
+                        label=k
+                    )
+                else:
+                    assert isinstance(existing, Line2D), (f'{type(existing)=} '
+                        # TODO say what plot calls BarContainer and PolyCollection
+                        # are from? i'm assuming former is from some bar[h] calls,
+                        # but what about PolyCollection?
+                        'currently unsupported. only Line2D/BarContainer/'
+                        'PolyCollection currently are'
+                    )
+                    # TODO (delete? seems ok so far) linewidth too? anything else?
+                    vars_to_copy = ['linestyle', 'marker', 'markeredgecolor',
+                        'markeredgewidth', 'markerfacecolor', 'markersize'
+                    ]
+                    for x in vars_to_copy:
+                        val = artist_var(existing, x)
+                        curr_line_kws[x] = val
+
+            if artist is None:
+                artist = line_artist(alpha=model_alpha_for_legend, color=color,
+                    **curr_line_kws
+                )
+
+            legend_data[k] = artist
+
+        pnkc_title = 'model PN>KC connectivity:'
+        legend_data[pnkc_title] = title_proxy
+        label_order = [pnkc_title] + label_order
+
+    # TODO is this only an issue because mean_response_rate doesn't have a
+    # separate twin ax to plot real KC data on? or would it be an issue
+    # regardless? either way, this is probably the easiest fix.
+    if 'exp_type' in df.columns:
+        # TODO assert not have_model? delete this conditional anyway?
+        unique_exp_types = df.exp_type.dropna().unique()
+        legend_data = {
+            k: v for k, v in legend_data.items() if k not in unique_exp_types
+        }
+        # TODO TODO also redefine label order (to match set of keys)? actually test this
+        # case again?
+
+    # TODO only do this if i need to (i.e. if something is coming next?)?
+    # (or is something always coming next?)
+    empty_line = ''
+    legend_data[empty_line] = title_proxy
+
+    if len(label_order) > 0:
+        label_order.append(empty_line)
+
+    replace = {
+        'bouton': 'bouton (no uniform APL)',
+    }
+
+    # since they are handled w/ a separate plot call that just plots KCs, and we
+    # set legend=False on that
+    # this even being hit? (yes)
+    # (and commenting it did get rid of erroneous KCs line in model-only legends)
+    # TODO why didn't it cause assertion below (about label_order matching
+    # legend_data.keys()) to fail, when i commented it
+    unique_sources = df[source_col].unique()
+    put_at_top = []
+    for x in ('KCs', 'ORNs'):
+        if x in unique_sources and x not in legend_data:
+            # TODO delete
+            # TODO TODO does df[source_col] really have 'KCs' when i don't want it
+            # in legend (seems so) (when? can i fix outside?)
+            print(f'adding {x} line to legend')
+            #
+            # TODO pass in kc_alpha (but use this as default)?
+            legend_data[x] = line_artist(color=kc_color, alpha=kc_err_alpha, **line_kws)
+            # TODO also do one for KC points? (if any. add flag?)
+
+        # TODO if we didn't add it to legend_data above, would these always be
+        # there if in unique_sources? and vice versa?
+        if x in legend_data:
+            put_at_top.append(x)
+
+            if not lines:
+                replace.update({
+                    x: f'{x} ({CI:.0f}% CI on mean)',
+                })
+
+    if len(put_at_top) > 0:
+        label_order = put_at_top + [empty_line] + label_order
+
+    legend_data = {
+        (replace[k] if k in replace else k): v for k, v in legend_data.items()
+    }
+    label_order = [replace[k] if k in replace else k for k in label_order]
+
+    have_connectome_apl = has_connectome_apl(df)
+    assert not have_connectome_apl, 'must drop the connectome_apl data'
+
+    odor_artist_kws = dict(color='k', alpha=0.5)
+    odor_artist_kws.update(line_kws)
+
+    mix_kws = dict(linestyle=mix_linestyle)
+    component_kws = dict(linestyle=component_linestyle)
+
+    if add_mix_vs_comp_linestyle:
+        odor_title = 'odor (within each hue):'
+        legend_data[odor_title] = title_proxy
+        label_order.append(odor_title)
+
+        mix_odor = 'mix'
+        assert mix_odor not in legend_data, \
+            'would overwrite previous legend entry'
+
+        legend_data[mix_odor] = line_artist(
+            **{**odor_artist_kws, **mix_kws}
+        )
+        component_odor = 'component'
+        legend_data[component_odor] = line_artist(
+            **{**odor_artist_kws, **component_kws}
+        )
+        label_order += [mix_odor, component_odor]
+
+    if have_connectome_apl:
+        apl_artist_kws = dict(color='k', alpha=0.5)
+        if lines:
+            apl_artist_kws.update(line_kws)
+        else:
+            apl_artist_kws.update(marker_kws)
+
+        # assumed the markers we want are either lines (solid vs dashed) or point
+        # circles/X's markers
+        if lines:
+            uniform_apl_kws = dict(linestyle=uniform_apl_linestyle)
+            connectome_apl_kws = dict(linestyle=connectome_apl_linestyle)
+        else:
+            uniform_apl_kws = dict(marker=uniform_apl_marker, markeredgewidth=0.0)
+            connectome_apl_kws = dict(
+                marker=connectome_apl_marker, markeredgewidth=1.0
+            )
+
+        apl_title = 'model APL (within each hue):'
+        legend_data[apl_title] = title_proxy
+        label_order.append(apl_title)
+
+        # TODO (delete) automatically switch between *_apl_marker and
+        # *_apl_linestyle, based on type of other legend artists?
+        #
+        # adding an extra space at end here so that it doesn't conflict with
+        # 'uniform' PN>KC entry from earlier
+        uniform_apl = 'uniform '
+        assert uniform_apl not in legend_data, \
+            'would overwrite previous PN>KC uniform'
+
+        legend_data[uniform_apl] = line_artist(
+            **{**apl_artist_kws, **uniform_apl_kws}
+        )
+        connectome_apl = 'connectome'
+        legend_data[connectome_apl] = line_artist(
+            **{**apl_artist_kws, **connectome_apl_kws}
+        )
+        label_order += [uniform_apl, connectome_apl]
+
+    assert set(label_order) == set(legend_data.keys()), \
+        f'{label_order=} {legend_data.keys()=}'
+
+    g.add_legend(legend_data=legend_data, label_order=label_order,
+        # TODO just always have it be source_col?
+        #title='model variant' if source_col == 'model' else 'source'
+        title=''
+    )
+
+
+def plot_one_dist_per_fly(data: pd.DataFrame, *, flies_share_bins: bool = True,
+    **kwargs) -> None:
+
+    if flies_share_bins and _USE_KDEPLOT:
+        warn('plot_one_dist_per_fly: can not use flies_share_bins=True'
+            f' when {_USE_KDEPLOT=}. ignoring!'
+        )
+        flies_share_bins = False
+
+    if flies_share_bins:
+        assert 'x' in kwargs
+        x = kwargs['x']
+        values = data[x]
+        binrange = (values.min(), values.max())
+        # TODO delete
+        #print(f'plot_one_dist_per_fly: {binrange=}')
+        #
+
+    assert all(x in data.columns for x in fly_cols), 'need level= kwarg for sort=False'
+    # TODO or CI across flies? possible?
+    for gn, gdf in data.groupby(fly_cols, sort=False):
+        # TODO or try low alpha instead of fill=False?
+        distplot(data=gdf, fill=False, **kwargs)
+
+
+MODEL_STAT_ORDER: List[str] = ['logistic_scaled_num_spikes', 'num_spikes']
+
+# TODO TODO should everything be z-scored before computing mix - max?
+# or how to make more comparable (at least, in terms of the expected offset
+# from 0)? i suppose even just making logistic ceiling higher would do that?
+def plot_one_dist_per_model(data: pd.DataFrame, model_only: bool = False, **kwargs
+    ) -> None:
+    pnkc_class = get_single_unique(data[PNKC_CLASS_COL])
+
+    assert 'alpha' not in kwargs, 'we set this manually below'
+
+    # it can be NaN some places still, right? hopefully not here tho
+    assert pd.notna(pnkc_class)
+
+    model_input = pnkc_class_is_model(pnkc_class)
+    if model_only:
+        assert model_input
+
+    # either 'binary'/'5comp' (for control/kiwi KC data), or
+    # '2h+farn'/'farn+ma'/'2h+ma' (for Yang's diag-binaries data)
+    # TODO still or NaN for model? must not be now? (no? delete?)
+    mix = get_single_unique(data.mix)
+
+    if not model_input:
+        # TODO delete (don't want in new row_per_mix=False code)
+        # TODO refactor to a kc_alpha const?
+        #alpha = 1.0
+        #distplot(data=data, fill=False, alpha=alpha, **kwargs)
+        distplot(data=data, fill=False, **kwargs)
+        if not model_input:
+            return
+
+    # TODO restore verbose=True
+    verbose = False
+    if verbose:
+        stat = data.stat.unique()[0]
+        print(f'{mix=} {stat=}')
+        # TODO TODO check impression of these against hists/KDEs
+        to_print = data[diff_col].round(decimals=1).value_counts(
+            ).sort_index().to_frame().T
+        to_print.columns.name = diff_col
+        to_print.index = ['count']
+        # was originally trying to fit them all in one row, but not
+        # happening, so transposing again
+        print(to_print.T.reset_index().to_string(index=False))
+        print()
+
+    group_cols = ['source']
+    have_connectome_apl = has_connectome_apl(data)
+    if have_connectome_apl:
+        # so connectome_apl=False comes second, which is hopefully what
+        # makes it into legend (so i don't have the dotted lines there, just
+        # the hue)
+        data = data.sort_values(by='connectome_apl', ascending=False,
+            kind='stable'
+        )
+        group_cols.append('connectome_apl')
+
+    # to avoid: FutureWarning: In a future version of pandas, a length 1
+    # tuple will be returned when iterating over a groupby with a grouper
+    # equal to a list of length 1. Don't supply a list with a single grouper
+    # to avoid this warning.
+    if len(group_cols) == 1:
+        group_cols = group_cols[0]
+
+    for gn, gdf in data.groupby(group_cols, sort=False):
+        if have_connectome_apl:
+            source, connectome_apl = gn
+        else:
+            source = gn
+            connectome_apl = False
+
+        # TODO (delete? presumably this was fixed?) fix legend so it shows
+        # both linestyles (and uses that to show connectome vs uniform APL,
+        # w/o color, like i do w/ markers for other legend. refactor?)
+        linestyle = '--' if connectome_apl else '-'
+        # I think I do like (default) fill=True here, right?
+        distplot(data=gdf, linewidth=MODEL_LINEWIDTH, linestyle=linestyle,
+            alpha=MODEL_ALPHA, **kwargs
+        )
+
+
+MIX_SUPP_IN_RESPONDERS_ONLY: bool = True
+
+def plot_mixsupp_dists(df: pd.DataFrame, plot_dir: Path, palette: Palette,
+    source_types: Sequence[str] = DEFAULT_SOURCE_TYPES_TO_PLOT, *,
+    fname_suffix: str = '', **kwargs) -> None:
+    """
+    Args:
+        **kwargs: passed to `map_dataframe` call, which calls `plot_one_dist_per_model`
+    """
+    panel = get_single_unique_kc_panel(df)
+    multiple_mixes = has_multiple_mixes(df)
+
+    # TODO use a const for this instead everywhere?
+    diff_col = get_diff_col(df)
+
+    model_df, kc_df, orn_df = get_model_kc_orn_data(df, source_types=source_types)
+
+    # TODO rewrite below to not need these flags?
+    model_only = model_df is not None and (kc_df is None and orn_df is None)
+    kc_only = kc_df is not None and (model_df is None and orn_df is None)
+    kc_and_orn_only = kc_df is not None and orn_df is not None and model_df is None
+    model_vs_kcs = kc_df is not None and model_df is not None and orn_df is None
+    assert sum([model_only, kc_only, kc_and_orn_only, model_vs_kcs]) == 1
+    #
+
+    facet_kws = dict(sharex=False, sharey=False, hue=PNKC_CLASS_COL, palette=palette)
+
+    # TODO check no stats have NORM_PREFIX? (or at least not used? subset above if
+    # present?)
+
+    model_stat = None
+    kc_stat = None
+    plot_kws = dict(x=diff_col)
+    if model_df is not None:
+        # TODO TODO delete? what about KC vs ORN case? need that flag there too?
+        plot_kws.update(dict(model_only=False))
+
+        if kc_df is None:
+            facet_kws.update(dict(col='stat', col_order=MODEL_STAT_ORDER))
+            # TODO TODO delete?
+            data = model_df
+            #
+        else:
+            assert facet_kws.get('col') is None
+            # TODO only print this if we actually have any stats w/ num_spikes?
+            warn('plot_mixsupp_dists: dropping raw num_spikes for '
+                'comparison between model and KC data! see model_only=True'
+                ' version of plot for the distribution of those values'
+            )
+            # TODO check no other stats have 'num_spikes' in them (at least, w/o
+            # 'logistic_scaled' also in them)?
+            model_df = model_df[model_df.stat != 'num_spikes'].copy()
+
+            # don't even need ignore_index=True now, since were just split from one df
+            # w/ same index
+            data = pd.concat([kc_df, model_df])
+
+            # TODO compute from relevant subsections of data? or assert matches at
+            # least? (prefer former)
+            model_stat = 'logistic_scaled_num_spikes'
+            kc_stat = 'mean_Fc_zscore'
+            # TODO TODO restore just checking the specific elements we split from above?
+            # if i define unique_stats from df, would not be subsetr, so have more than
+            # wanted
+            #unique_stats = set(data.stat.unique())
+            #assert unique_stats == {kc_stat, model_stat}, f'{unique_stats=}'
+    else:
+        if orn_df is None:
+            data = kc_df.copy()
+            # TODO why col='stat' here? are there even multiple?
+            facet_kws.update(dict(col='stat'))
+        else:
+            # TODO TODO TODO so if i keep this for ORN case, it will also have a
+            # separate col for each. want to try on same axes instead?
+            #
+            # col='stat' would also split them apart, but want at least the 'KCs' vs
+            # 'ORNs' in Axes titles
+            facet_kws.update(dict(col='source'))
+            # TODO TODO need other options here?
+            data = pd.concat([kc_df, orn_df])
+
+    # if False, will try using alpha per mix instead, by making a custom palette.
+    # assumes only one combo of (source, mix) per axes in cases trying to use
+    # `row_per_mix=False`.
+    row_per_mix: bool = False
+    if multiple_mixes:
+        mix_order = sorted(df.mix.unique())[::-1]
+
+        if set(df.mix.unique()) != set(NATMIX_MIX_TYPES):
+            if not row_per_mix:
+                warn(f'row_per_mix=False not currently supported for {panel=}')
+            row_per_mix = True
+
+        if not row_per_mix and model_df is None:
+            data['source_and_mix'] = data['source'] + '/' + data['mix']
+            # TODO want to support 'diag-binaries'? care?
+            #assert set(df.mix.unique()) == set(NATMIX_MIX_TYPES), ('will have to make '
+            #    f'below conditional if this trips. {df.mix.unique()=}'
+            #)
+
+            # TODO or use linestyle?
+            # TODO TODO fix! alpha doesn't seem respected. dict palettes even allow
+            # that?
+            # TODO delete. not sure it will work w/ alpha
+            #binary_alpha = 0.3
+            #fullmix_alpha = 1.0
+            #
+            # TODO like this? 0.3 was too much desat for kc_color='m', and OK for cyan
+            # 0.5 was still similar.
+            binary_desat = 0.65
+            fullmix_desat = 1.0
+
+            # TODO actually do something with mix order here or no?
+            kc_rgb = to_rgb(palette['KCs'])
+            orn_rgb = None
+            if orn_df is not None:
+                orn_rgb = to_rgb(palette['ORNs'])
+
+            palette = dict()
+            # ['KCs/5comp', 'KCs/binary', 'ORNs/5comp', 'ORNs/binary']
+            for source_and_mix in data['source_and_mix'].unique():
+                source, mix = source_and_mix.split('/')
+                if source == 'KCs':
+                    rgb = kc_rgb
+                else:
+                    assert source == 'ORNs'
+                    assert orn_rgb is not None
+                    rgb = orn_rgb
+
+                if mix == 'binary':
+                    #alpha = binary_alpha
+                    desat = binary_desat
+                else:
+                    assert mix == '5comp'
+                    #alpha = fullmix_alpha
+                    desat = fullmix_desat
+
+                # TODO work? (no!) delete
+                #palette[source_and_mix] = rgb + (alpha,)
+                #
+                palette[source_and_mix] = sns.desaturate(rgb, desat)
+
+            facet_kws['palette'] = palette
+            # replacing hue=PNKC_CLASS_COL
+            facet_kws['hue'] = 'source_and_mix'
+        else:
+            facet_kws['row'] = 'mix'
+            # will put 'binary' on top, and '5comp' on bottom. not sure i care
+            # about order for other mixtures (e.g. yang's diag binaries), but
+            # would have to do something else if i did
+            facet_kws['row_order'] = mix_order
+
+    # TODO TODO remove right column model+KC plot (num_spikes) (done),
+    # unless i can find a way to get scales in line (still want to try?)
+    # (prob just try that on a separate plot anyway, if at all)
+    g = sns.FacetGrid(data=data, **facet_kws)
+    g.map_dataframe(plot_one_dist_per_model, **plot_kws, **kwargs)
+
+    # TODO TODO replace w/ different means of choosing when (and what) to fix xlim to?
+    # TODO delete
+    # yea, don't like this range for ORN data
+    if orn_df is None and not (model_only or kc_only):
+        # TODO update ranges to be wider for even the one plot i still want
+        # to keep comparing logistic scaled model and KC data?
+        if panel != 'diag-binaries':
+            xlim = (-6, 4)
+        else:
+            xlim = (-6, 6)
+        warn(f'plot_mixsupp_dists: hardcoding {xlim=} for model vs KC plot')
+        g.set(xlim=xlim)
+    #
+
+    unit_str = 'KCs'
+    if orn_df is not None:
+        unit_str += '/glomeruli'
+
+    suptitle = f'{panel}\ndistribution of "mixture suppression" across {unit_str}'
+    suptitle_y = 1.10
+    if MIX_SUPP_IN_RESPONDERS_ONLY:
+        suptitle += '\nsilent KCs dropped'
+        if orn_df is None and not (model_only or kc_only):
+            suptitle += ' (both model and real KCs)'
+    else:
+        suptitle += '\nall KCs included'
+
+    if g.col_names != []:
+        # TODO also assert there are multiple columns? or not always true?
+        assert facet_kws.get('col') is not None
+        # this case is just when col= is in facet_kws
+        assert model_stat is None, ('we should have two separat model stats when '
+            'plotting model_only, so no single model_stat def'
+        )
+        # TODO restore?
+        #assert model_only or kc_only
+        #
+        # currently have ORN and KC data on separate columns, but could change if data
+        # range seems comparable
+        assert model_only or kc_only or kc_and_orn_only
+        # TODO change so col='source' instead, so it's labelled KCs / ORNs
+        g.set_titles('{col_name}')
+    else:
+        # currently have ORN and KC data on separate columns, but could change if data
+        # range seems comparable
+        assert not (model_only or kc_only or kc_and_orn_only)
+        # TODO restore?
+        #assert not (model_only or kc_only)
+        assert model_stat is not None
+        g.set_titles('')
+        stat_part = ('\n\nmix suppression computed on:\n'
+            f'{model_stat} for model\n{kc_stat} for observed'
+        )
+        suptitle += stat_part
+        suptitle_y += 0.1
+
+    # TODO fontsize small enough? y high enough?
+    g.fig.suptitle(suptitle, y=suptitle_y, fontsize=9)
+
+    if model_df is not None or row_per_mix:
+        # TODO what's lines=True doing for us?
+        add_fixed_legend(g, data, palette, lines=True)
+    # TODO like better than ax.legend() below?
+    # trying this for both KC-only and KC-vs-ORN plot
+    else:
+        g.add_legend()
+
+    # TODO put odor (components + mix? just mix name?) in this actually
+    # (instead of ylabel), and show for both rows?
+    g.set_xlabels(diff_col2desc(diff_col))
+
+    ylabel_suffix = ''
+    if 'row' in facet_kws:
+        assert len(g.row_names) > 1, f'{g.row_names=}'
+        assert g.axes.shape[0] == len(g.row_names)
+    else:
+        if 'col' in facet_kws:
+            n_cols = data[facet_kws['col']].nunique()
+            assert g.axes.shape == (1, n_cols)
+        else:
+            assert g.axes.shape == (1, 1)
+
+        ylabel_suffix = f'density across {unit_str}'
+
+    for (i, j, hue), gdf in g.facet_data():
+        ax = g.axes[i, j]
+        # TODO delete
+        # TODO need to fix per-axes legends here? (maybe if i weren't using new
+        # row_per_mix=False)
+        #if kc_df is not None and orn_df is not None:
+        #    breakpoint()
+        #
+
+        # TODO TODO still make sure that axes xlim are shared within a column, for the
+        # kc-orn plot? (as i'll no longer be fixing xlim above)
+        # (if i don't collapse down so each is just two lines, w/ diff alphas/whatever
+        # [one for each of mix=binary/5comp])
+        # TODO TODO if i make a plot like that, put legend inside each axes
+        if hue != 0:
+            continue
+
+        ylabel = ''
+        if j == 0:
+            if 'row' in facet_kws:
+                ylabel = f'{g.row_names[i]} mix\n'
+            ylabel += ylabel_suffix
+
+        if i != 0:
+            ax.set_title('')
+
+        ax.set_ylabel(ylabel)
+
+        # TODO work? (yes, but would want smaller, at least for KC only. will try
+        # g.add_legend())
+        #ax.legend()
+
+    # each plot should contain all mixes, so no mix in fname
+    fname = f'mixsupp_dists_{panel}'
+    if model_only:
+        fname += '_model-only'
+
+    if kc_only:
+        fname += '_kc-only'
+
+    if kc_and_orn_only:
+        fname += '_kc-orn'
+
+    savefig(g, plot_dir, f'{fname}{fname_suffix}')
+
+
+def plot_response_strength_dist_per_model(data: pd.DataFrame,
+    kc_df: Optional[pd.DataFrame] = None, **kwargs) -> None:
+
+    model_only = False
+    have_model = True
+    have_orns = False
+    unique_sources = set(data.source.unique())
+    # TODO make args more explicit, rather than meaning of
+    # data/kc_df being conditional?
+    if kc_df is None:
+        if has_model(data):
+            model_only = True
+        # assuming data is KC data only in this case
+        else:
+            have_model = False
+            if 'ORNs' in unique_sources:
+                assert unique_sources == {'ORNs'}, f'{unique_sources=}'
+                have_orns=True
+    else:
+        group_cols = ['panel','mix','odor']
+        model_odors = data[group_cols].drop_duplicates().reset_index(drop=True)
+        kc_odors = kc_df[group_cols].drop_duplicates().reset_index(drop=True)
+        # TODO may need to sort both? ok so far
+        #
+        # otherwise checking data for each ax._kc_df attribute I set, when making
+        # kc_ax from ax.twiny(), would not make sense.
+        assert model_odors.equals(kc_odors)
+        del group_cols
+    #
+
+    if kc_df is not None:
+        assert not have_orns
+        # otherwise, kc_df should just be in data (and should not `kc_df = data`, as it
+        # would screw up some checks below)
+        assert have_model
+
+    model_stat = None
+    have_connectome_apl = has_connectome_apl(data)
+    if have_model:
+        model_stat = get_single_unique(data.stat)
+
+    ax = plt.gca()
+    if not model_only:
+        if have_model:
+            # TODO TODO sanity check we are only calling twiny once for the same ax? or
+            # maybe define outside? (we were not, but now we should be. i assume it was
+            # just plotting the same thing on top of itself tho)
+            # TODO delete
+            #print(f'{hasattr(ax, "_twiny_ax")=}')
+            #print(f'{ax=} {id(ax)=}')
+            if not hasattr(ax, '_twiny'):
+                kc_ax = ax.twiny()
+                # TODO delete
+                # TODO TODO afterwards, assert all these have same ylim as ax do (and
+                # set to share if not)
+                print(f'called ax.twiny() to produce {kc_ax=} {id(kc_ax)=}')
+                print('assert all twiny ax end with same ylim as ax? or do not hide '
+                    'yticks?'
+                )
+                #
+                ax._twiny_ax = kc_ax
+                # NOTE: need to make sure only one unique kc_df is used per ax (and thus
+                # per `kc_ax = ax.twiny()`, or checking this wouldn't make sense)
+                ax._kc_df = kc_df.copy()
+            else:
+                assert hasattr(ax, '_kc_df')
+                assert ax._kc_df.equals(kc_df)
+            # TODO delete
+            #print(f'{hasattr(ax, "_twiny_ax")=}')
+            #
+
+            # to check we no longer need subset_second_to... below
+            # (because we should be subsetting outside appropriately now)
+            assert set(kc_df.odor.unique()) == set(data.odor.unique())
+
+        if kc_df is not None:
+            kc_stat = get_single_unique_stat(kc_df)
+            # TODO delete eventually? just to check we aren't also doing the
+            # threshold subtracting outside now (does that even change name of stat?)
+            assert kc_stat == 'Fc_zscore', f'{kc_stat=}'
+        else:
+            if have_orns:
+                # NOTE: currently (at least when on separate cols, data *only* has ORN
+                # data for calls with ORN data. and kc_df=None for all of those calls)
+                orn_stat = get_single_unique_stat(data, strip_mean_prefix=False)
+                assert orn_stat == ORN_RESP_COL, f'{orn_stat=}'
+            # TODO not actually used tho right? delete?
+            else:
+                assert unique_sources == {'KCs'}
+                kc_stat = get_single_unique_stat(data)
+                assert kc_stat == 'Fc_zscore', f'{kc_stat=}'
+            #
+
+        # TODO TODO even make sense in this case? pretty sure it doesn't
+        # when we are comparing against the logistic scaled data, right?
+        # TODO still add flag to decide whether to do this, even for
+        # num_spikes?
+        if kc_df is not None and model_stat == 'num_spikes':
+            # TODO add assertion kc_min is thresh (at least if using
+            # remy's data, where it's one single thresh. couldn't do
+            # same for yang's)?
+            # TODO in yang's case, maybe i should be subtracting
+            # something other than just min tho? can the threshold
+            # really be reduced to one number in her case? matter?
+            kc_min = kc_df.value.min()
+            assert not np.isclose(kc_min, 0)
+            kc_df = kc_df.copy()
+            # TODO warn we are doing this? what was reason i thought it
+            # made sense again?
+            kc_df.value -= kc_min
+            assert np.isclose(kc_df.value.min(), 0)
+            kc_stat += ' - threshold'
+
+    if not model_only:
+        obs_df = kc_df
+        if have_orns:
+            obs_df = data
+        # to handle KC-only case
+        elif unique_sources == {'KCs'}:
+            obs_df = data
+        assert obs_df is not None
+
+        obs_kws = dict(kwargs)
+        obs_kws['fill'] =False
+
+        assert_all_mix_after_component(obs_df)
+        assert 'odor' in obs_df.columns, ('must pass level= for sort=False to work if '
+            'in index.names and not .columns'
+        )
+        for odor, gdf in obs_df.groupby('odor', sort=False):
+            # TODO refactor to share w/ below? (+ legend fixing)
+            linestyle = mix_linestyle if is_mix(odor) else component_linestyle
+
+            # TODO change label to include bit about mix? (+ component) (and to hide KCs
+            # label if that's the only color being plotted? via removing label='KCs'
+            # from obs_kws above) (or just put mix + comp info in title?)
+            distplot(data=gdf, linestyle=linestyle, **obs_kws)
+
+        # TODO fix kc color in outputs like response-strength_dists_control_5comp.pdf
+        # (that plot model and KC data on same axes)
+        # (currently gray, same as mix/component lines in legend, but add_fixed_legend
+        # didn't seem to be responsible f or making them gray)
+        # TODO + try to fix so area of KC and model curves actualy seem comparable.
+        # show kc_ax yticklabels to sanity check? (otherwise, can't really use this
+        # version of the plots anyway)
+
+        # kc_df is always None in KC vs ORN case too, so wioll not end up screwing with
+        # their shared axes limits / ticks / labels
+        if kc_df is not None:
+            kc_color = kwargs.get('color')
+            assert kc_color is not None
+            # TODO also want to change color of anything for ORN? prob not...
+            kc_ax.set_xlabel(f'KC {kc_stat}', color=kc_color)
+            # TODO refactor to share w/ twinx mb_model APL Vm plotting?
+            # alpha not supported here
+            kc_ax.tick_params(axis='x', color=kc_color)
+            for text in kc_ax.xaxis.get_ticklabels():
+                # alpha also not supported here
+                text.set_color(kc_color)
+            #
+
+            # TODO set color of top spine / ticks, like in APL Vm plotting elsewhere?
+            # TODO factor out fn for setting color of all the things i typically want,
+            # to hong2p.viz?
+            kc_ax.spines['right'].set_visible(False)
+            kc_min = kc_df.value.min()
+            kc_max = kc_df.value.max()
+            # TODO any point in this?
+            kc_ax.set_xlim([kc_min - 0.5, kc_max + 0.5])
+
+    if not have_model:
+        return
+
+    group_cols = ['source']
+
+    # previously had a code path that would use linestyles or at least some other
+    # row/col/whatever for connectome-APL, but now i'm just always dropping
+    # connectome-APL so i can use linestyle for mix vs top-comp, and don't care to
+    # show connectome-APL cases currently. so now, i'm just unconditionally
+    # asserting `not have_connectome_apl`
+    #if simplify_models:
+    #    assert not have_connectome_apl
+    #
+    assert not have_connectome_apl
+
+    # TODO even need sort, or just the reset_index?
+    data = data.sort_values(by='odor', kind='stable', key=odor_sort_fn
+        ).reset_index(drop=True)
+
+    # TODO and why does this matter again? might just not assign to linestyles
+    # properly? am i still assuming a certain order for that?
+    assert_all_mix_after_component(data)
+    group_cols.append('odor')
+
+    if have_connectome_apl:
+        # so connectome_apl=False comes second, which is hopefully what
+        # makes it into legend (so i don't have the dotted lines there,
+        # just the hue)
+        data = data.sort_values(by='connectome_apl', ascending=False, kind='stable')
+        group_cols.append('connectome_apl')
+
+    assert all(x in data.columns for x in group_cols), ('would need level=<by> '
+        f'if {group_cols=} were not in data.columns (but data.index.names), for '
+        'sort=False to actually work'
+    )
+    # to avoid a FutureWarning
+    if len(group_cols) == 1:
+        group_cols = group_cols[0]
+
+    for gn, gdf in data.groupby(group_cols, sort=False):
+        source, odor = gn
+        # TODO refactor to share w/ above?
+        linestyle = mix_linestyle if is_mix(odor) else component_linestyle
+
+        # TODO sufficient to just check NaN? need the dirname -> class
+        # -> pnkc_class_is_model checking below too (prob not)?
+        assert gdf.model_dirname.notna().all()
+
+        model_dirname = get_single_unique(gdf.model_dirname)
+        pnkc_class = model_pnkc_class(model_dirname)
+        assert pnkc_class_is_model(pnkc_class), (f'{source=} does not seem to '
+            'refer to model data'
+        )
+        assert source not in EXPECTED_NONMODEL_PNKC_VALS, f'{source=}'
+
+        # TODO fill=False? (for at least some [which?], yes. everything?)
+        distplot(data=gdf, ax=ax, fill=False, linewidth=MODEL_LINEWIDTH,
+            linestyle=linestyle, **kwargs
+        )
+
+
+FIXED_NUM_SPIKES_XMIN: float = 0.0
+# TODO like this?
+# much more (double digit percentages) of both binary/5comp kiwi panels are past 10,
+# but barely any of control mixes are.
+# TODO TODO TODO care? currently still (w/ =15.0):
+# - 14% (66/469 responder) (KC, odor) counts above X-max in kiwi/5comp case
+# - 33% (141/423) in kiwi/binary case
+# - only 2.8% (17/605) (binary) and 1.5% (9/606) (5comp) control cases
+#
+# increased to =20.0, and now:
+# - 24.1% in kiwi/binary
+# - 9.4% in kiwi/5comp
+# ...and not sure i want to extend xmax much beyond this. starting to be harder to focus
+# on the part of the curve i care about.
+# TODO TODO still try =25.0 or something, to compare?
+#
+# TODO TODO and is it claw model mainly to blame for most of clipped counts?
+FIXED_NUM_SPIKES_XMAX: float = 20.0
+
+# TODO delete log_yscale flag? don't think i ever liked =True
+def plot_response_strength_dists(df: pd.DataFrame, plot_dir: Path, palette: Palette,
+    source_types: Sequence[str] = DEFAULT_SOURCE_TYPES_TO_PLOT, *,
+    orn_kc_on_diff_rows: bool = False, log_yscale: bool = False) -> None:
+
+    # should only have input with one (normalized) panel and one mix
+    panel, mix = get_single_unique_panel_and_mix(df)
+
+    model_data, kc_data, orn_data = get_model_kc_orn_data(df, source_types=source_types)
+    assert not (model_data is None and kc_data is None)
+    # TODO or at least plot ORNs separately by themselves, in a way comparable
+    # to KC data, if can't get a good plot with them on the same axes. maybe just plot
+    # w/ separate row / col (and share[x|y]/common_norm=False, as appropriate)
+    if orn_data is not None:
+        assert kc_data is not None and model_data is None, ('currently expect to '
+            'plot only either model-vs-KC or ORN-vs-KC'
+        )
+    else:
+        assert not orn_kc_on_diff_rows
+
+    facet_kws = dict(hue=PNKC_CLASS_COL, palette=palette)
+    if model_data is not None:
+        data = model_data
+        assert has_model(data)
+        if has_connectome_apl(data):
+            # TODO make a separate plot with the connectome_apl=True
+            # data in this case? prob don't really care to...
+            warn('plot_response_strength_dist: subsetting data to '
+                'connectome_apl=False. linestyle would be ambiguous between '
+                'uniform-vs-connectome APL and mix-vs-component'
+            )
+            data = data[data.connectome_apl == False]
+
+        # TODO delete if fixed (or disable these plots?)
+        if kc_data is not None:
+            warn('plot_response_strength_dists: KC vs model hist areas may not both be '
+                'correct for this model + KC version of the plot (and KC color '
+                'currently broken)'
+            )
+        #
+        facet_kws.update(dict(col='stat', col_order=MODEL_STAT_ORDER))
+    else:
+        if orn_data is None:
+            data = kc_data
+            # TODO can i simplify called fn at all, now that using hue/palette here?
+            # have i already? (i.e. removing separate explicit references to KC color,
+            # etc) (or is that part of what broke the KC color in model vs KC case?
+            # don't care too much about that case anyway for this plot type)
+            facet_kws.update(dict(hue=PNKC_CLASS_COL, palette=palette))
+        else:
+            data = pd.concat([kc_data, orn_data])
+            facet_kws.update(dict(hue=PNKC_CLASS_COL, palette=palette))
+            # can i have it be both row and hue? yes
+            if orn_kc_on_diff_rows:
+                facet_kws['row'] = PNKC_CLASS_COL
+
+    g = sns.FacetGrid(data=data, sharey=False, sharex=False, **facet_kws)
+
+    # TODO delete
+    #print()
+    #print('plot_response_strength_dists: before map_dataframe:')
+    #
+    # TODO rename plot_response_strength_dist_per_source
+    g.map_dataframe(plot_response_strength_dist_per_model,
+        kc_df=(None if model_data is None else kc_data),
+        x='value', alpha=MODEL_ALPHA, log_scale=(False, log_yscale)
+    )
+    # TODO delete
+    #print()
+    #print('plot_response_strength_dists: after map_dataframe')
+    #print()
+    #
+
+    # TODO want any fixed x/y limits in any cases? maybe for some of other
+    # other plots? maybe if a -F CLI arg set, and then fix all as desired for thesis.
+    # (currently fixing num_spikes, but maybe only do want to do that if requested by
+    # such a CLI arg...)
+
+    g.fig.subplots_adjust(hspace=0.6)
+
+    # TODO version of this plot including nonresponding values too
+    # (mainly for sanity checking)?
+    units_str = 'KCs'
+    pair_unit_str = 'KC'
+    if orn_data is not None:
+        units_str += ' & ORNs'
+        pair_unit_str += '|glomerulus'
+
+    add_fixed_legend(g, data, palette, lines=True, add_mix_vs_comp_linestyle=True)
+
+    # TODO TODO set something with N? copy code for that from natmix_data/analysis.py?
+    g.set_titles('')
+
+    const_stat_name = None
+
+    if not orn_kc_on_diff_rows:
+        # it should be this value when row= not specified in FacetGrid init
+        assert g.row_names == []
+        assert g.axes.shape[0] == 1
+
+        if orn_data is not None and not orn_kc_on_diff_rows:
+            # TODO also only do this if source/stat/etc not in row=/col= of facet_kws?
+            assert kc_data is not None
+            orn_stat = get_single_unique_stat(orn_data, strip_mean_prefix=False)
+            kc_stat = get_single_unique_stat(kc_data, strip_mean_prefix=False)
+            # TODO or two lines? this is ok. slightly clipped on left side, w/ current
+            # fig size (prefer two lines. delete)
+            #const_stat_name = f'ORNs: {orn_stat}, KCs: {kc_stat}'
+            #
+            const_stat_name = f'ORNs: {orn_stat}\nKCs: {kc_stat}'
+
+    ij2stat_name = dict()
+    num_spikes_dropped_count = 0
+    num_spikes_ax = None
+    for (i, j, hue), gdf in g.facet_data():
+        # should only be true if (as in ORN vs KC case), hues exist only on one row/col,
+        # or something like that
+        if len(gdf) == 0:
+            continue
+
+        ax = g.axes[i, j]
+
+        mmin = gdf.value.min()
+        mmax = gdf.value.max()
+
+        model_stat_name = None
+        if model_data is not None and kc_data is None:
+            # should still only be one stat per facet
+            model_stat_name = get_single_unique_stat(gdf)
+
+        if model_stat_name == 'num_spikes':
+            # this should be the hue level (share def w/ above tho?), so also should
+            # only have one per iteration of this loop
+            pnkc_class = get_single_unique(gdf[PNKC_CLASS_COL])
+
+            num_spikes_ax = ax
+
+            n_clipped = (gdf.value > FIXED_NUM_SPIKES_XMAX).sum()
+            # TODO delete
+            # TODO ever fail? warn instead if so
+            # this is not true w/ 15 (but probably do want 15 instead of 10 if i want a
+            # chance of not throwing away so much kiwi data)
+            #assert n_clipped > 0, ('expected all models to have some spike counts above'
+            #    f' {FIXED_NUM_SPIKES_XMAX=}'
+            #)
+            if n_clipped == 0:
+                warn('expected all models to have some spike counts above '
+                    f'{FIXED_NUM_SPIKES_XMAX=}, but {panel}/{mix} {pnkc_class} did not'
+                )
+
+            if n_clipped > 0:
+                warn(f'plot_response_strength_dists: setting {FIXED_NUM_SPIKES_XMAX=} '
+                    f'for model-only num_spikes facet, which clips {n_clipped}/'
+                    f'{len(gdf)} (KC, odor) counts above this for hue {pnkc_class=}'
+                )
+                num_spikes_dropped_count += n_clipped
+        else:
+            # in case there are multiple hue levels sharing same facet
+            curr_xmin, curr_xmax = ax.get_xlim()
+
+            # TODO (delete?) 0.05 instead of 0.25?
+            margin = (mmax - mmin) * 0.05
+            # TODO is there actually any need for this? was this just to counteract
+            # fixed margins i had above? try deleting?
+            ax.set_xlim([min(curr_xmin, mmin - margin), max(curr_xmax, mmax + margin)])
+
+        stat_name = const_stat_name
+        if const_stat_name is None:
+            if g.col_names == []:
+                assert model_data is None
+                stat_name = get_single_unique_stat(gdf)
+            else:
+                assert model_data is not None
+                stat_name = g.col_names[j]
+
+        ij = (i, j)
+        if ij in ij2stat_name:
+            # to catch cases where two things w/ diff stats are plotted on same axes
+            # (like ORN vs KCs, when facet_kws doesn't separate them on row=/col=
+            assert stat_name == ij2stat_name[ij], f'{stat_name=} != {ij2stat_name[ij]=}'
+            # don't want to skip hues that only exist in separate ij
+            if hue != 0:
+                continue
+
+        ij2stat_name[ij] = stat_name
+
+        gdf_is_orn_data = False
+        if orn_kc_on_diff_rows:
+            assert orn_data is not None
+            unique_source = get_single_unique(gdf.source)
+            gdf_is_orn_data = unique_source == 'ORNs'
+            if not gdf_is_orn_data:
+                assert unique_source == 'KCs'
+
+            stat_name = f'{unique_source} ({stat_name})'
+
+        ylabel = ''
+        if j == 0:
+            ylabel = 'density across KCs'
+            if orn_data is not None:
+                if not orn_kc_on_diff_rows:
+                    ylabel += ' / glomeruli'
+
+                # TODO assert all KC data otherwise here?
+                elif gdf_is_orn_data:
+                    assert i == 1, 'expected ORNs on second row'
+                    ylabel = 'density across glomeruli'
+
+        if i != 0:
+            ax.set_title('')
+
+        ax.set_ylabel(ylabel)
+        ax.tick_params(labelbottom=True)
+        ax.set_xlabel(stat_name)
+
+    suptitle_y = 1.10
+    # this is only (currently) set for the model-only version of the plot
+    if num_spikes_ax is not None:
+        assert num_spikes_dropped_count > 0, ('expected some num_spikes values would be'
+            f' above {FIXED_NUM_SPIKES_XMAX=}, but seemingly none'
+        )
+
+        # TODO TODO also change bins, to not clip stuff? meh
+
+        n_total_num_spike_count = (data.stat == 'num_spikes').sum()
+        frac_dropped = num_spikes_dropped_count / n_total_num_spike_count
+        n_dropped_str = (
+            f'{num_spikes_dropped_count}/{n_total_num_spike_count} ({frac_dropped:.1%})'
+        )
+        warn(f'plot_response_strength_dists: setting {FIXED_NUM_SPIKES_XMAX=} '
+            f'(for model-only num_spikes facet) clipped a total of {n_dropped_str}'
+        )
+
+        # TODO log_yscale this one? prob not...
+        num_spikes_ax.set_xlim([FIXED_NUM_SPIKES_XMIN, FIXED_NUM_SPIKES_XMAX])
+
+        title = num_spikes_ax.get_title()
+        if title != '':
+            title += '\n'
+        title += f'{n_dropped_str} (KC, odor) counts above X-max'
+        num_spikes_ax.set_title(title, fontsize=7)
+
+        suptitle_y += 0.05
+
+    suptitle = (f'{panel}/{mix}\nactivation strengths across {units_str}\n'
+        f'responder ({pair_unit_str}, odor) pairs only'
+    )
+    g.fig.suptitle(suptitle, y=suptitle_y)
+
+    fname = f'response-strength_dists_{panel}_{mix}'
+    if model_data is None:
+        if orn_data is not None:
+            fname += '_kc-orn'
+            if orn_kc_on_diff_rows:
+                fname += '_sep-rows'
+        else:
+            fname += '_kc-only'
+    else:
+        assert orn_data is None
+
+    if kc_data is None:
+        assert orn_data is None
+        fname += '_model-only'
+
+    if log_yscale:
+        fname += '_logy'
+
+    savefig(g, plot_dir, fname)
 
 
 def main():
@@ -3386,6 +5003,54 @@ def main():
         )
         plot_root = model_root / subdir_name
         plot_root.mkdir(exist_ok=True)
+
+
+    def plot_all_comparisons_for(plot_fn: Callable, df: pd.DataFrame, **kwargs) -> None:
+        # TODO would re-ordering signature of these fns so plot_dir is first make
+        # things easier? matter? (going to try treating all as keyword arguments, for
+        # now)
+        """
+        Takes a function with arguments:
+            - `df`: a DataFrame with 'source_type' column (and most/all other data in
+              separate columns, like after `.reset_index()`)
+
+            - `plot_dir`: a directory `Path`, in which to save plots
+
+            - `source_types`: a sequence of 'source_type' (e.g. 'model', 'KCs', ORNs')
+              values to analyze together
+
+        ...and calls it for each combination we want to analyze in thesis:
+        - model vs KCs
+        - KCs only
+        - model only
+        - KCs vs ORNs
+
+        Expects each `plot_fn` to change output filenames to be unique in each call.
+        """
+        source_types_list = [
+            ('model', 'KCs'),
+            ('KCs',),
+            ('model',),
+            # TODO TODO plot ORN only too, for sanity checking of normalization / axis
+            # labelling on the KC vs ORN plots
+            ('KCs', 'ORNs'),
+        ]
+        # TODO add flag to control whether to fail / skip if we are missing any of the
+        # source types (particularly 'ORNs', but also 'KCs'. maybe even 'model')?
+        for source_types in source_types_list:
+            plot_dir = model_root
+            # plot_root is a subdir of model_root (or same directory). if subdir, it is
+            # named with model-specific processing choices, to keep separate analysis
+            # choices in parallel, while not cluttering with multiple fnames
+            if 'model' in source_types:
+                plot_dir = plot_root
+
+            try:
+                plot_fn(df=df, plot_dir=plot_dir, source_types=source_types, **kwargs)
+            except MissingRequestedSourcesError as err:
+                warn(err)
+                warn(f'skipping {source_types=} for this odor panel')
+
 
     # otherwise we currently won't see the names of plots being saved printed in blue
     al_util.verbose = True
@@ -3783,7 +5448,8 @@ def main():
     # TODO switch between maxes depending on whether we are comparing to real KC
     # data or not ?
     # TODO delete? even still used? make lower?
-    response_rate_plot_max: float = 0.32
+    #response_rate_plot_max: float = 0.32
+    response_rate_plot_max: float = 0.15
 
     # by this point, model_cols should all be present, and match those we would have
     # below, where these mixture-suppression sorted models are saved
@@ -4288,13 +5954,13 @@ def main():
             to_cluster_list = [ss, logistic_scaled_num_spikes]
             stat2to_cluster_nosilent = dict()
             keep_binary: bool = True
-            for ci, to_cluster in enumerate(to_cluster_list):
+            for j, to_cluster in enumerate(to_cluster_list):
                 df = to_cluster.unstack(['panel', 'odor']).droplevel('model')
 
                 # TODO TODO TODO wait, so was model run with mix dilutions? (oh, yea.
                 # nice). actually analyze?
                 warn_ = ((i == len(model_tune_kws) - 1) and (panel == panels[-1]) and
-                    (ci == len(to_cluster_list) - 1)
+                    (j == len(to_cluster_list) - 1)
                 )
                 # do currently need the internal .T to get this fn to work, and the
                 # external one for drop_silent_model_cells to currently work
@@ -4879,7 +6545,6 @@ def main():
     # function shared here?) print # of spikes -> values, for first few # of spikes, and
     # print max before and after (after should approach L, right?)
 
-    source_col = 'source'
     model_roi_odor_df = model_roi_odor_df.rename(columns={
         'model': source_col,
         'kc_id': 'roi',
@@ -4920,73 +6585,6 @@ def main():
     # TODO assert no '_connectome-APL' in any of the strs if simplify_models=True?
 
     # TODO (delete?) print tdf (/ use to set / check ylim below)
-
-    dilution_factor_delim: str = ' / '
-    # TODO also sort components in fixed order? matter (prob not?)?
-    def odor_sort_fn(x):
-        panels_to_check = set(NATMIX_PANELS)
-        if skip_panels is not None:
-            panels_to_check -= set(skip_panels)
-        panels_to_check = sorted(panels_to_check)
-
-        odors = x.unique()
-        # NOTE: this approach will not work for input with multiple panels...
-        # (as this fn is only ever called on odor level as a key, at least now)
-        panel = None
-        for curr_panel in panels_to_check:
-            curr_name_order = panel2name_order[curr_panel]
-            # TODO TODO still need to handle these for kiwi/control, or never gonna
-            # analyse those w/ -L/--leave-concs?
-            # TODO TODO just try parse_odor_name? anything it wouldn't work on?
-            # TODO TODO actually, wasn't i just not calling process_odor_str_for_model
-            # when i should have been?
-            assert not any('@' in x for x in odors), ('would need parse_odor_name in '
-                'panel loop below if we had concs sometimes'
-            )
-            if all(o in curr_name_order for o in odors):
-                assert panel is None, (f'multiple panels in {NATMIX_PANELS=} matched '
-                    f'{odors=}'
-                )
-                panel = curr_panel
-
-        if panel is not None:
-            name_order = panel2name_order[panel]
-            # TODO or need negative of index?
-            key = x.map(name_order.index)
-            return key
-
-        # TODO TODO are components sorted alphabetically be default? sorted at all?
-        # check!
-
-        # TODO why are we also including '/'? are all mixtures not using '+'? provide
-        # example of what uses '/' at least (or switch all to using '+'?)
-        # TODO TODO must have been for the synthetic diags. test with this again before
-        # deleting
-        # TODO delete if i can, now that i'm using ' / <x>' to  indicate pair dilutions
-        #v1 = 1 * (x.str.contains('+', regex=False)) | (x.str.contains('/', regex=False))
-        v1 = 1 * x.str.contains('+', regex=False)
-
-        # to put the cmix/kmix at end
-        v2 = 2 * x.str.contains('mix', regex=False)
-
-        key = v1 + v2
-
-        # TODO TODO keep this code? try to change handling to using a diff index level,
-        # and my add_group_labels_and_lines fn, and delete these (and delete code adding
-        # this to odor strs)?
-        if x.str.contains(dilution_factor_delim, regex=False).any():
-            # TODO want to reverse order of this? just flip sign? flag for that?
-            dilution_factor = x.str.split(dilution_factor_delim, regex=False).map(
-                lambda x: 0.0 if len(x) == 1 else float(x[1])
-            )
-            # so lower concentrations (higher dilution factors) are placed first in
-            # order
-            dilution_factor = -1 * dilution_factor
-            # TODO flag to swap dilution_factor and key here?
-            key = pd.Series(index=x.index, data=zip(dilution_factor, key))
-        #
-
-        return key
 
     model_roi_odor_df = model_roi_odor_df[~(
         model_roi_odor_df.odor.str.contains('mix-') |
@@ -5064,21 +6662,15 @@ def main():
         # TODO ? delete? not used anyway
         NORM_DESC = f'{model_norm_desc} and per KC fly'
 
-    # TODO rename KC_RESPONSE_COL or something?
-    resp_col: str = 'mean_Fc_zscore'
-    # TODO refactor?
-    orn_resp_col: str = 'mean_peak_dff'
-
     compare_normalized = {
         # TODO separate mapping indicating what we should call this shared
         # thing? or maybe i should keep both names, esp if i want to compare
         # multiple normalized response strength metrics (i.e. adding a logistic
         # scaled version of # spikes)
-        'mean_num_spikes': resp_col,
-        'mean_logistic_scaled_num_spikes': resp_col,
+        'mean_num_spikes': KC_RESP_COL,
+        'mean_logistic_scaled_num_spikes': KC_RESP_COL,
     }
 
-    kc_color = 'm'
     # TODO need to check if we actually load KC data? prob doesn't matter...
     source_palette['KCs'] = kc_color
 
@@ -5129,19 +6721,20 @@ def main():
     model_markersize = MODEL_MARKERSIZE
     model_linewidth = MODEL_LINEWIDTH
     model_alpha = MODEL_ALPHA
-    if unrestricted_full_model_params:
-        # TODO TODO still use default alpha (and/or plot last) for uniform, in this
-        # case, since there's only one point liek that and it's hard to find
-        # TODO dodge/jitter more? other changes?
-        # will be set to model_alpha_for_legend=0.7 in add_fixed_legend
-        model_alpha = 0.15
-        # TODO use this for everything? (markers included? comparable to
-        # markeredgewidth?)
-        model_markersize = 6.0
+    # TODO delete (or set into some global thing if i really care)
+    #if unrestricted_full_model_params:
+    #    # TODO TODO still use default alpha (and/or plot last) for uniform, in this
+    #    # case, since there's only one point liek that and it's hard to find
+    #    # TODO dodge/jitter more? other changes?
+    #    # will be set to model_alpha_for_legend=0.7 in add_fixed_legend
+    #    model_alpha = 0.15
+    #    # TODO use this for everything? (markers included? comparable to
+    #    # markeredgewidth?)
+    #    model_markersize = 6.0
 
-        # NOTE: different from (what I think can be constant linewidth for
-        # model_marker_kws. this is used for actual line plots
-        model_linewidth = 0.5
+    #    # NOTE: different from (what I think can be constant linewidth for
+    #    # model_marker_kws. this is used for actual line plots
+    #    model_linewidth = 0.5
 
     # TODO which plot call was this comment referring to? seem to be using something now
     # that expects different set of args...
@@ -5158,245 +6751,11 @@ def main():
     # plot_response_class_summary). don't need in add_fixed_legend.
     model_marker_kws = dict(size=model_markersize, linewidth=1.5, edgecolor='none')
 
-    # TODO move to module level
-    def add_fixed_legend(g: sns.axisgrid.FacetGrid, df: pd.DataFrame,
-        lines: bool = True) -> None:
-        # TODO TODO what to do if this doesn't already have the model values, but
-        # have_model=True (like seems to be the case in response-strength_* plots now.
-        # still? delete?)?
-        legend_data = dict(g._legend_data)
-
-        # how to get multiple "titles" with different section in legend:
-        # https://stackoverflow.com/questions/24787041
-        # other (more complicated answer) might even allow nice left alignment, but
-        # going with simpler solution using title_proxy Rectangle for now.
-        title_proxy = Rectangle((0,0), 0, 0, color='w')
-        # TODO (delete. i think issue was just that there *are* no uniform-APL 'boutons'
-        # cases) try to replace all existing (PN>KC) (so != 'KCs') legend entries w/
-        # the circle artists of the same hue, so it doesn't matter which we plot first
-        # (currently only the bouton case is getting + as marker. it does have some
-        # non-connectome-APL cases right? or no?)
-        # TODO add a suffix to 'boutons' clarifying it only has connectome-APL variant,
-        # if leaving marker as-is there?
-
-        line_kws = dict(linestyle='-', marker='none')
-        # TODO add line_kws in here? or still want the ability to override (prob on
-        # linestyle at least... marker='none' always? just overwrite line_kws w/ kws?
-        # TODO also default to color='k', alpha=0.5?
-        def line_artist(**kws):
-            return Line2D([0], [0], **kws)
-
-        have_model = has_model(df)
-        if not have_model:
-            label_order = []
-        else:
-            df_pnkc_classes = set(df[PNKC_CLASS_COL].unique())
-            # TODO do i never currently have variants here for some reason?
-            # (no, we do w/ `-f` alone, but seemingly not with `-m -M` or `-m`. that
-            # right? try w/ no args [other than `-o`]?)
-            # and seems like if we have variants there, we also have them in
-            # unique_model_pnkc_classes, so maybe there is no issue
-            df_only_classes = df_pnkc_classes - set(unique_model_pnkc_classes)
-            for x in df_only_classes:
-                # stuff only in df should be non-model values like 'KCs'
-                assert not pnkc_class_is_model(x)
-
-            # maintains order in unique_model_pnkc_classes, in case i might care
-            # TODO sort into a particular order? (should already be in order i want,
-            # with uniform first and more complex models moving down) (if so, so it at
-            # unique_model_pnkc_classes def anyway, not here)
-            label_order = [x for x in unique_model_pnkc_classes if x in df_pnkc_classes]
-
-            model_alpha_for_legend: float = 0.7
-
-            for k in label_order:
-                color = source_palette[k]
-                assert type(color) is tuple and len(color) == 3, (f'{color=} was '
-                    f'not a RGB tuple for {k=} (in source_palette)'
-                )
-                artist = None
-                curr_line_kws = dict(line_kws)
-                if k in legend_data:
-                    existing = legend_data[k]
-                    rgb, _ = artist_rgb_and_alpha(existing)
-
-                    # TODO maybe need to check w/ np.allclose? (doesn't seem so. delete
-                    # comment)
-                    assert rgb == color, f'existing artist {rgb=} != desired {color=}'
-
-                    # TODO anything else? (so far, no)
-                    if isinstance(existing, (BarContainer, PolyCollection)):
-                        # TODO (delete?) ever want line artist for PolyCollection? check
-                        # get_facecolor() is not white / transparent or something?
-                        # (and use line if so)
-                        # TODO actually need label=k?
-                        artist = Patch(facecolor=color, alpha=model_alpha_for_legend,
-                            label=k
-                        )
-                    else:
-                        assert isinstance(existing, Line2D), (f'{type(existing)=} '
-                            # TODO say what plot calls BarContainer and PolyCollection
-                            # are from? i'm assuming former is from some bar[h] calls,
-                            # but what about PolyCollection?
-                            'currently unsupported. only Line2D/BarContainer/'
-                            'PolyCollection currently are'
-                        )
-                        # TODO (delete? seems ok so far) linewidth too? anything else?
-                        vars_to_copy = ['linestyle', 'marker', 'markeredgecolor',
-                            'markeredgewidth', 'markerfacecolor', 'markersize'
-                        ]
-                        for x in vars_to_copy:
-                            val = artist_var(existing, x)
-                            curr_line_kws[x] = val
-
-                if artist is None:
-                    artist = line_artist(alpha=model_alpha_for_legend, color=color,
-                        **curr_line_kws
-                    )
-
-                legend_data[k] = artist
-
-            pnkc_title = 'model PN>KC connectivity:'
-            legend_data[pnkc_title] = title_proxy
-            label_order = [pnkc_title] + label_order
-
-        # TODO is this only an issue because mean_response_rate doesn't have a
-        # separate twin ax to plot real KC data on? or would it be an issue
-        # regardless? either way, this is probably the easiest fix.
-        if 'exp_type' in df.columns:
-            # TODO assert not have_model? delete this conditional anyway?
-            unique_exp_types = df.exp_type.dropna().unique()
-            legend_data = {
-                k: v for k, v in legend_data.items() if k not in unique_exp_types
-            }
-
-        # TODO only do this if i need to (i.e. if something is coming next?)?
-        # (or is something always coming next?)
-        empty_line = ''
-        legend_data[empty_line] = title_proxy
-        # TODO can i repeat an entry in label_order, or will i need to define something
-        # like empty_line2 = ' '?
-        label_order.append(empty_line)
-
-        # since they are handled w/ a separate plot call that just plots KCs, and we
-        # set legend=False on that
-        # this even being hit? (yes)
-        # (and commenting it did get rid of erroneous KCs line in model-only legends)
-        # TODO why didn't it cause assertion below (about label_order matching
-        # legend_data.keys()) to fail, when i commented it
-        #'''
-        if 'KCs' in df[source_col].unique() and 'KCs' not in legend_data:
-            # TODO delete
-            # TODO TODO TODO does df[source_col] really have 'KCs' when i don't want it
-            # in legend (seems so)
-            print('adding KCs line to legend')
-            #
-            # TODO pass in kc_alpha (but use this as default)?
-            legend_data['KCs'] = line_artist(color=kc_color, alpha=kc_err_alpha,
-                **line_kws
-            )
-            # TODO also do one for KC points? (if any. add flag?)
-        #'''
-
-        # TODO what's purpose of this? why put empty_line here?
-        if 'KCs' in legend_data:
-            label_order = ['KCs', empty_line] + label_order
-
-        replace = {
-            'bouton': 'bouton (no uniform APL)',
-        }
-        if not lines:
-            replace.update({
-                'KCs': 'KCs (95% CI on mean)',
-            })
-
-        legend_data = {
-            (replace[k] if k in replace else k): v for k, v in legend_data.items()
-        }
-        label_order = [replace[k] if k in replace else k for k in label_order]
-
-        have_connectome_apl = has_connectome_apl(df)
-        assert not have_connectome_apl, 'must drop the connectome_apl data'
-
-        odor_artist_kws = dict(color='k', alpha=0.5)
-        odor_artist_kws.update(line_kws)
-
-        mix_kws = dict(linestyle=mix_linestyle)
-        component_kws = dict(linestyle=component_linestyle)
-
-        odor_title = 'odor (within each hue):'
-        legend_data[odor_title] = title_proxy
-        label_order.append(odor_title)
-
-        mix_odor = 'mix'
-        assert mix_odor not in legend_data, \
-            'would overwrite previous legend entry'
-
-        legend_data[mix_odor] = line_artist(
-            **{**odor_artist_kws, **mix_kws}
-        )
-        component_odor = 'component'
-        legend_data[component_odor] = line_artist(
-            **{**odor_artist_kws, **component_kws}
-        )
-        label_order += [mix_odor, component_odor]
-
-        if have_connectome_apl:
-            apl_artist_kws = dict(color='k', alpha=0.5)
-            if lines:
-                apl_artist_kws.update(line_kws)
-            else:
-                apl_artist_kws.update(marker_kws)
-
-            # assumed the markers we want are either lines (solid vs dashed) or point
-            # circles/X's markers
-            if lines:
-                uniform_apl_kws = dict(linestyle=uniform_apl_linestyle)
-                connectome_apl_kws = dict(linestyle=connectome_apl_linestyle)
-            else:
-                uniform_apl_kws = dict(marker=uniform_apl_marker, markeredgewidth=0.0)
-                connectome_apl_kws = dict(
-                    marker=connectome_apl_marker, markeredgewidth=1.0
-                )
-
-            apl_title = 'model APL (within each hue):'
-            legend_data[apl_title] = title_proxy
-            label_order.append(apl_title)
-
-            # TODO (delete) automatically switch between *_apl_marker and
-            # *_apl_linestyle, based on type of other legend artists?
-            #
-            # adding an extra space at end here so that it doesn't conflict with
-            # 'uniform' PN>KC entry from earlier
-            uniform_apl = 'uniform '
-            assert uniform_apl not in legend_data, \
-                'would overwrite previous PN>KC uniform'
-
-            legend_data[uniform_apl] = line_artist(
-                **{**apl_artist_kws, **uniform_apl_kws}
-            )
-            connectome_apl = 'connectome'
-            legend_data[connectome_apl] = line_artist(
-                **{**apl_artist_kws, **connectome_apl_kws}
-            )
-            label_order += [uniform_apl, connectome_apl]
-
-        assert set(label_order) == set(legend_data.keys()), \
-            f'{label_order=} {legend_data.keys()=}'
-
-        g.add_legend(legend_data=legend_data, label_order=label_order,
-            # TODO just always have it be source_col?
-            #title='model variant' if source_col == 'model' else 'source'
-            title=''
-        )
-
-
-    mean_prefix = 'mean_'
-
     # TODO rename stats->intensity? remove panel?
     def plot_panel_stats_across_models(df: pd.DataFrame, panel: str, suffix: str = ''
         ) -> None:
 
+        # TODO delete? even relevant anymore? maybe if data sits within these limits?
         stat2ymax = {
             'mean_response_rate': response_rate_plot_max,
             'mean_num_spikes': 0.4,
@@ -5410,8 +6769,8 @@ def main():
                 if k.startswith(NORM_PREFIX):
                     continue
 
-                # TODO warn/err if not startswith mean_prefix?
-                assert k.startswith(mean_prefix)
+                # TODO warn/err if not startswith MEAN_PREFIX?
+                assert k.startswith(MEAN_PREFIX)
                 v2 = stat2ymax[k]
                 if v > v2:
                     # TODO TODO is this even triggering? why is scale still broken?
@@ -5427,9 +6786,6 @@ def main():
                 assert len(is_normalized) == 1, f'{is_normalized=}'
                 is_normalized = is_normalized[0]
 
-            # NOTE: previous code checking model_pnkc_class here did check whether the
-            # column was all NaN, so has_model might need to deal with that actually
-            # (assertion would trip), if that code was ever actually hit
             have_model = has_model(data)
 
             ax = plt.gca()
@@ -5634,8 +6990,6 @@ def main():
                             warn('not plotting individual flies, b/c '
                                 f'{plot_individual_flies=}'
                             )
-                    # TODO TODO say somewhere what the errorbars are 95% CI (on mean) by
-                    # default
 
                 if have_model:
                     # can't use float dodge w/ striplot unfortunately
@@ -5722,7 +7076,10 @@ def main():
                 #print(f'{normed_df.equals(normed_df2)=}')
                 #
                 normed_df = raw_df.copy()
-                # TODO strip 'mean_' before prepending NORM_PREFIX? (don't think so?)
+                # TODO strip MEAN_PREFIX before prepending NORM_PREFIX? (don't think
+                # so?) (well i'm stripping for the other case below...) (maybe this one
+                # already have MEAN_PREFIX removed when defined tho?) (assert not both
+                # prefixes in any stat name? fn for that?)
                 model_normed_response_stat = f'{NORM_PREFIX}{model_response_stat}'
                 normed_df['stat'] = model_normed_response_stat
                 if not NORM_PER_MODEL:
@@ -5768,20 +7125,10 @@ def main():
                 # TODO may need to update if i include logistic scaled stuf in same plot
                 # TODO fix (kc_normed_response_stat not defined here in KC-only case, or
                 # None now actually)
-                expected_stats = {'mean_response_rate',
-                    kc_normed_response_stat, kc_response_stat
+                expected_stats = {'mean_response_rate', kc_normed_response_stat,
+                    kc_response_stat
                 }
                 assert kc_stats == expected_stats
-                # TODO delete
-                #if have_model:
-                #    expected_stats = {'mean_response_rate',
-                #        kc_normed_response_stat, kc_response_stat
-                #    }
-                #    assert kc_stats == expected_stats
-                #else:
-                #    # TODO what is correct here?
-                #    print('what is right here?')
-                #    #assert expected_stats - kc_stats <= {kc_normed_res}
 
                 df['is_normalized'] = df.stat.str.startswith(NORM_PREFIX)
 
@@ -5800,8 +7147,11 @@ def main():
                     model_response_stat: shared_norm_stat_name,
                     model_normed_response_stat: shared_norm_stat_name,
                 })
-                if model_response_stat.startswith(mean_prefix):
-                    model_response_stat = model_response_stat[len(mean_prefix):]
+                # TODO TODO why doing this after setting unmodified model_response_stat
+                # in dict above? make sense?
+                if model_response_stat.startswith(MEAN_PREFIX):
+                    model_response_stat = model_response_stat[len(MEAN_PREFIX):]
+                #
 
                 df['stat'] = df.stat.replace(replace_dict)
 
@@ -5810,8 +7160,8 @@ def main():
                 facet_kws = dict(row='is_normalized', row_order=row_order)
 
             if (kc_response_stat is not None and
-                kc_response_stat.startswith(mean_prefix)):
-                kc_response_stat = kc_response_stat[len(mean_prefix):]
+                kc_response_stat.startswith(MEAN_PREFIX)):
+                kc_response_stat = kc_response_stat[len(MEAN_PREFIX):]
 
             assert set(df.stat.unique()) == set(col_order), \
                 f'{set(df.stat.unique())=} != {set(col_order)=} {extra_suffix=}'
@@ -5822,7 +7172,7 @@ def main():
             g.map_dataframe(plot_fn, x='odor', y='value')
 
             if have_model:
-                add_fixed_legend(g, df, lines=False)
+                add_fixed_legend(g, df, source_palette, lines=False)
 
             assert g.col_names == col_order, (
                 f'{g.col_names=} != {col_order=} {extra_suffix=}'
@@ -6022,8 +7372,8 @@ def main():
 
                 if i == 0:
                     title = stat_col
-                    if title.startswith(mean_prefix):
-                        title = title[len(mean_prefix):]
+                    if title.startswith(MEAN_PREFIX):
+                        title = title[len(MEAN_PREFIX):]
                     # TODO assert it doesn't start with NORM_PREFIX?
 
                     if (panel in NATMIX_PANELS and 'response_rate' in stat_col and
@@ -6313,7 +7663,7 @@ def main():
         # from 2s after onset of a 2s odor pulse to 8s after onset (same as Remy's
         # maybe? / similar?)
         # TODO why did yang not start averaging within odor pulse? really that slow?
-        flyavg_ser = flyroi_ser.groupby(group_cols).mean().rename(resp_col)
+        flyavg_ser = flyroi_ser.groupby(group_cols).mean().rename(KC_RESP_COL)
         assert isinstance(flyavg_ser, pd.Series)
 
         flyroi_bin_ser = get_yang_panel_ser(panel, yang_bin_df)
@@ -6353,25 +7703,6 @@ def main():
         return flyavg_df
 
 
-    # TODO move to module level?
-    def mix_supp_list2flystat_df(mix_supp_dfs: List[pd.DataFrame], stat: str = resp_col
-        ) -> pd.DataFrame:
-        mix_supp = pd.concat(mix_supp_dfs, verify_integrity=True).reset_index()
-        diff_col = get_diff_col(mix_supp)
-
-        assert 'stat' not in mix_supp.columns
-        # TODO problem that it isn't previxed w/ 'mean_'
-        # (will probably have to change handling of model ones anyway, for same reason,
-        # if theres an issue)
-        mix_supp['stat'] = stat
-
-        assert 'value' not in mix_supp.columns
-        # TODO delete
-        #return mix_supp.rename(columns={diff_col: 'value'})
-        return mix_supp
-
-    MIX_SUPP_IN_RESPONDERS_ONLY: bool = True
-
     # TODO also do something with the other panel in yang_dfs? (natmix-top2-dilute)
     # (i think those concs are too low to be able to compare to any orn data we really
     # have currently... since the ramp experiments i did were not of good quality)
@@ -6381,13 +7712,12 @@ def main():
     # same time)
     # TODO rename flyodor->flyavg_odor?
     panel2kc_flyodor_stats: Dict[str, pd.DataFrame] = dict()
-    # TODO rename fly->flyroi?
-    panel2kc_fly_stats: Dict[str, pd.DataFrame] = dict()
+    panel2kc_mix_supp: Dict[str, pd.DataFrame] = dict()
     # stats like max intensity for each (ROI, odor), to make e.g. distributions of odor
     # intensity for mixes vs components
     panel2kc_flyroi_odor_stats: Dict[str, pd.DataFrame] = dict()
 
-    panel2orn_fly_stats: Dict[str, pd.DataFrame] = dict()
+    panel2orn_mix_supp: Dict[str, pd.DataFrame] = dict()
     panel2orn_flyroi_odor_stats: Dict[str, pd.DataFrame] = dict()
 
     for panel in ('diag-binaries',):
@@ -6436,7 +7766,7 @@ def main():
         panel_responded = panel_responded.rename('responded')
 
         flyroi_odor_stats = flyroi_df.copy()
-        flyroi_odor_stats['stat'] = resp_col
+        flyroi_odor_stats['stat'] = KC_RESP_COL
 
         flyroi_odor_stats = flyroi_odor_stats.set_index(panel_responded.index.names)
         flyroi_odor_stats['responded'] = panel_responded.loc[flyroi_odor_stats.index]
@@ -6524,7 +7854,7 @@ def main():
             mix_supp_dfs.append(mix_supp)
 
         mix_supp = mix_supp_list2flystat_df(mix_supp_dfs)
-        panel2kc_fly_stats[panel] = mix_supp
+        panel2kc_mix_supp[panel] = mix_supp
 
     # contents:
     # remy_kiwi-control_5comp_Fc_zscore.csv
@@ -6594,9 +7924,13 @@ def main():
     assert natmix_panels == set(NATMIX_PANELS)
     del natmix_panels
 
-    analyze_eag = False
+    # TODO move up somewhere? CLI flags? (don't want to rely on these inside any
+    # plotting fns inside main tho, and currently don't)
+    ANALYZE_ORN: bool = True
+    ANALYZE_EAG: bool = False
+
     eag_intensity = None
-    if analyze_eag:
+    if ANALYZE_EAG:
         # TODO move this file to data/ subdir of al_analysis, for consistency?
         eag = pd.read_csv('mean_min_eag.csv')
         eag['name'] = eag.odorname.map(olf.abbrev)
@@ -6664,21 +7998,20 @@ def main():
         eag_intensity['source'] = 'EAG'
         #
 
-    analyze_orn = True
-    if analyze_orn:
-        orn_mdf = load_natmix_dff()
+    if ANALYZE_ORN:
+        orn_df = load_natmix_dff()
 
         group_cols = ['panel', 'odor1']
-        orn_mdf = orn_mdf.groupby(level=group_cols, sort=False).mean()
-        orn_mdf = orn_mdf.loc[
-            ~orn_mdf.index.get_level_values('odor1').str.startswith('pfo')
+        orn_df = orn_df.groupby(level=group_cols, sort=False).mean()
+        orn_df = orn_df.loc[
+            ~orn_df.index.get_level_values('odor1').str.startswith('pfo')
         ]
-        orn_mdf = drop_mix_dilutions(orn_mdf)
+        orn_df = drop_mix_dilutions(orn_df)
         # NOTE: there is already not air mix in here, and odors already sorted as i want
         # within each panel (w/ binary mix at end, right before full mix)
 
         print('\nORN data:')
-        n_flies, n_rois = count_flies_and_rois(orn_mdf)
+        n_flies, n_rois = count_flies_and_rois(orn_df)
         del n_rois
 
         n_str = f'\nn={n_flies}'
@@ -6686,14 +8019,14 @@ def main():
         # TODO why am i calling this separately from preprocess_natmix_df call again?
         # cause odor level diff? (needed diff data format up here, but having renamed,
         # anyway?)
-        orn_mdf = rename_natmix_odors(orn_mdf, 'odor1')
+        orn_df = rename_natmix_odors(orn_df, 'odor1')
 
-        check_odor_index_sorted_within_panel(orn_mdf)
+        check_odor_index_sorted_within_panel(orn_df)
 
         # TODO seems maybe we were relying on odors already being sorted in output
         # of load_natmix_dff? assert sorted or re-sort here, to ensure?
 
-        orn_mean = orn_mdf.groupby(level='roi', axis='columns').mean()
+        orn_mean = orn_df.groupby(level='roi', axis='columns').mean()
         orn_mean = fill_to_hemibrain(orn_mean)
 
         # would just have to apply this sorting if it failed. checking none of the calls
@@ -6715,20 +8048,22 @@ def main():
             yticklabels=True,
             cbar_label=mean_response_desc,
             cbar_shrink=0.4,
+            # happy with this? default was probably -.2 or so (from mean data i assume)
+            vmin=ORN_VMIN,
             # TODO move cbar closer to main ax?
         )
 
         # dropping diagnostics
-        orn_mdf = orn_mdf[orn_mdf.index.get_level_values('panel').isin(NATMIX_PANELS)
+        orn_df = orn_df[orn_df.index.get_level_values('panel').isin(NATMIX_PANELS)
             ].copy()
 
-        assert set(orn_mdf.index.get_level_values('panel')) == set(NATMIX_PANELS)
+        assert set(orn_df.index.get_level_values('panel')) == set(NATMIX_PANELS)
         # TODO lines around binary mix?
         for panel in sorted(NATMIX_PANELS):
             if skip_panels is not None and panel in skip_panels:
                 continue
-            panel_orn_mdf = orn_mdf.loc[panel]
-            orn_corr = mean_of_fly_corrs(panel_orn_mdf)
+            panel_orn_df = orn_df.loc[panel]
+            orn_corr = mean_of_fly_corrs(panel_orn_df)
             plot_corr(orn_corr, model_root, f'orn_corr_{panel}',
                 title=f'mean ORN correlation{n_str}',
             )
@@ -6738,11 +8073,12 @@ def main():
         # (or in model_yang_mixtures?)
 
         # calling this after plot_responses b/c it reshapes and adds NaN. single rows
-        # would not show for both kiwi and control panels
-        # TODO move the odor renaming from this earlier tho?
-        orn_mdf = preprocess_natmix_df(orn_mdf)
+        # would not show for both kiwi and control panels.
+        # now duplicating the odor renaming from this earlier, so plots above use those
+        # names.
+        orn_df = preprocess_natmix_df(orn_df)
 
-        raw_orn = orn_mdf.groupby(level=['panel'] + fly_cols, sort=False,
+        raw_orn = orn_df.groupby(level=['panel'] + fly_cols, sort=False,
             axis='columns').mean().unstack().dropna()
         raw_orn = raw_orn.rename('value').to_frame()
 
@@ -6754,29 +8090,12 @@ def main():
         orn_stat = 'mean_peak_dff'
         raw_orn['stat'] = orn_stat
 
-        # TODO refactor to share w/ eag processing above
-        normed_orn_dfs = []
-        for panel  in NATMIX_PANELS:
-            pdf = raw_orn[raw_orn.index.get_level_values('panel') == panel]
-            normed_pdf = normalize_one_panel(pdf)
-            normed_orn_dfs.append(normed_pdf)
-
-        normed_orn_df = pd.concat(normed_orn_dfs, verify_integrity=True)
-
-        curr_levels = list(raw_orn.index.names)
-        level_order = curr_levels + ['is_normalized']
-        normed_orn_df = addlevel(normed_orn_df, 'is_normalized', True).reorder_levels(
-            level_order)
-
-        raw_orn = addlevel(raw_orn, 'is_normalized', False).reorder_levels(level_order)
-        orn_intensity = pd.concat([raw_orn, normed_orn_df], verify_integrity=True)
+        # TODO just start by defining it w/ this name, rather than renaming, once i
+        # delete commented normalization code above
+        orn_intensity = raw_orn
+        #
         orn_intensity['source'] = 'ORNs'
-
-        # TODO TODO TODO do response class analysis and plot on ORN data?
-
-        # TODO TODO TODO response breadth?
-
-        # TODO TODO TODO also process orn data below
+        del raw_orn
 
     # only the highest concs (the concs that are also the components in the 5-component
     # mixtures) of the binary ramp experiment should be in both natmix_df and bdf
@@ -6903,7 +8222,7 @@ def main():
     del diag_odors
 
     # TODO refactor to share across the two (binary/5comp) cases (and w/ diag stuff?)?
-    flyroi_binary_ser = diag_df.T.stack(diag_df.index.names).rename(resp_col)
+    flyroi_binary_ser = diag_df.T.stack(diag_df.index.names).rename(KC_RESP_COL)
     assert isinstance(flyroi_binary_ser, pd.Series)
     assert not flyroi_binary_ser.isna().any()
     assert len(flyroi_binary_ser) == diag_df.notna().sum().sum()
@@ -6921,7 +8240,7 @@ def main():
     # ipdb> c2
     # (11, 25055)
     #
-    flyroi_5comp_ser = mdf.T.stack().rename(resp_col)
+    flyroi_5comp_ser = mdf.T.stack().rename(KC_RESP_COL)
     # TODO append ORN data here too (no, prob wanna keep separate for now, since e.g.
     # natmix_stat_ser created from this is thresholded w/ KC thresh)? if i'm only adding
     # source='KCs' below (or whatever), do that here instead, to add 'ORNs' too?
@@ -6981,7 +8300,7 @@ def main():
     # 0.08485341122613663
     #
     # natmix_stat_ser just defined from pd.concat([flyroi_5comp_ser, flyroi_binary_ser])
-    # TODO TODO include this in suptitle of plots that use it
+    # TODO (should be done? for all?) include this in suptitle of plots that use it
     # TODO TODO include in fname too? plot for a few thresh values?
     # TODO TODO need to try using something lower, to be more consistent w/ what i
     # was using (0.8) before in natmix_data/analysis.py, unless i wanna use the
@@ -6994,9 +8313,8 @@ def main():
     #
     # should currently be 1.5 (but defined in mb_model, to share w/
     # natmix_data/analysis.py)
-    # TODO TODO TODO also refactor to share ORN thresh w/ that script
     #
-    # TODO TODO TODO make a new plot_root for case where NATMIX_KC_THRESH !=
+    # TODO TODO make a new plot_root for case where NATMIX_KC_THRESH !=
     # REMY_KC_RESPONSE_THRESHOLD
     NATMIX_KC_THRESH: float = REMY_KC_RESPONSE_THRESHOLD
     # TODO also make some plots showing effect of this cutoff (like the ones in
@@ -7042,77 +8360,17 @@ def main():
     #assert set(natmix_responders.index.names) & set(withinpanel_odor_cols) == set()
     #natmix_n_responding = natmix_responders.groupby(PANEL_COLS + fly_cols).sum()
 
+    # TODO delete comment? i've regenerated them with panel, right?
+    #
     # checking that no fly has either mix (5comp/binary) type for both panels
     # (kiwi/control), otherwise could not index fly2n_total_roi data sources without
     # panel (which they don't currently have)
-    # TODO can i just regen them with panel tho?
     assert (
         len(natmix_stat_ser.index.to_frame(index=False)[['mix'] + fly_cols
             ].drop_duplicates()) ==
         len(natmix_stat_ser.index.to_frame(index=False)[PANEL_COLS + fly_cols
             ].drop_duplicates())
     )
-    # technically redundant with assertion above
-    #assert not natmix_n_responding.index.droplevel('panel').duplicated().any()
-
-    # did i not need to reorder levels before and after this division? matter?
-    # (does not matter)
-    # TODO assert set of these indices (natmix_n_responding and natmix_nrois) are now
-    # the same, at least after reordering levels)
-    # TODO TODO rename frac_responding or something more clear?
-    #
-    # TODO TODO TODO is this calculation actually right? (no. delete!) isn't it just
-    # *other* places i want to compute this per ROI across odors, and here i actually do
-    # want it just per (cell, odor) pair?
-    # TODO TODO TODO isn't it currently *just* for clustering + plotting and diff_col
-    # mean/distribution that i currently want to filter out *rois* that are
-    # non-responding?
-    #natmix_flyavg_bin_ser = natmix_n_responding / natmix_nrois
-
-    # NOTE: kiwi/binary/2022-04-10/1 might be one fly without any filtering applied on
-    # ROIs
-    # ipdb> natmix_stat_ser.groupby(PANEL_COLS + fly_cols).apply(lambda x:
-    #   x.index.get_level_values('roi').nunique()) -
-    #   natmix_nrois.reorder_levels(PANEL_COLS + fly_cols).sort_index()
-    # panel    mix     date        fly_num
-    # control  5comp   2022-03-29  2         -1592
-    #                  2022-04-04  1         -2573
-    #                  2022-07-20  2         -2198
-    #                  2022-07-25  2         -1794
-    #          binary  2022-03-29  1          -225
-    #                              2         -2346
-    #                  2022-04-04  1          -294
-    # kiwi     5comp   2022-07-01  1         -1544
-    #                  2022-07-02  1         -1379
-    #                              2         -1752
-    #                  2022-07-11  1         -1259
-    #                              2         -2477
-    #                  2022-07-12  3         -1207
-    #                              5         -1367
-    #          binary  2022-04-09  1          -312
-    #                              2          -213
-    #                  2022-04-10  1             0
-    # dtype: int64
-    # ipdb> natmix_stat_ser.groupby(PANEL_COLS + fly_cols).apply(lambda x:
-    #   x.index.get_level_values('roi').nunique())
-    # panel    mix     date        fly_num
-    # control  5comp   2022-03-29  2          2623
-    #                  2022-04-04  1          2687
-    #                  2022-07-20  2          1106
-    #                  2022-07-25  2          1814
-    #          binary  2022-03-29  1          3634
-    #                              2           734
-    #                  2022-04-04  1          3652
-    # kiwi     5comp   2022-07-01  1          2605
-    #                  2022-07-02  1          2584
-    #                              2          1764
-    #                  2022-07-11  1          2655
-    #                              2          3107
-    #                  2022-07-12  3          2297
-    #                              5          1813
-    #          binary  2022-04-09  1          3352
-    #                              2          3002
-    #                  2022-04-10  1          3134
 
     # total # of ROIs responding, per odor
     n_responding_per_odor = (natmix_stat_ser >= NATMIX_KC_THRESH).groupby(
@@ -7180,10 +8438,8 @@ def main():
     natmix_stat_df = natmix_stat_df.reset_index()
     #
 
-    # TODO also add fly_id to this at some point?
-
-    # TODO TODO also skip this if -L? maybe still need to map process_odor_str_for_model
-    # tho?
+    # TODO also skip this if -L? maybe still need to map process_odor_str_for_model
+    # tho? (and not using -L for any natmix data currently, so not now)
     natmix_stat_df['odor'] = strip_concs(natmix_stat_df.odor)
     natmix_stat_df = natmix_stat_df.sort_values(by='odor', kind='stable',
         key=odor_sort_fn
@@ -7191,16 +8447,14 @@ def main():
     natmix_stat_df = natmix_stat_df.reset_index(drop=True)
 
     # TODO refactor to share w/ above?
-    if analyze_orn:
-        orn_flyroi_5comp_ser = orn_mdf.T.stack().rename(resp_col)
-        assert isinstance(orn_flyroi_5comp_ser, pd.Series)
-        assert not orn_flyroi_5comp_ser.isna().any()
-        assert len(orn_flyroi_5comp_ser) == orn_mdf.notna().sum().sum()
-        orn_flyroi_5comp_ser = addlevel(orn_flyroi_5comp_ser, 'mix', '5comp')
-
+    if ANALYZE_ORN:
+        orn_flyroi_ser = orn_df.T.stack().rename(KC_RESP_COL)
+        assert isinstance(orn_flyroi_ser, pd.Series)
+        assert not orn_flyroi_ser.isna().any()
+        assert len(orn_flyroi_ser) == orn_df.notna().sum().sum()
         assert (
-            orn_flyroi_5comp_ser.index.names ==
-            flyroi_binary_ser.index.droplevel('pair_dilution_factor').names
+            orn_flyroi_ser.index.names ==
+            flyroi_binary_ser.index.droplevel(['pair_dilution_factor', 'mix']).names
         )
     #
 
@@ -7209,6 +8463,8 @@ def main():
         if skip_panels is not None and panel in skip_panels:
             continue
 
+        # TODO also need this for orn data? (if just for intensity plots, nah. and
+        # yea i think that might be all)
         panel2kc_flyodor_stats[panel] = natmix_stat_df[natmix_stat_df.panel == panel]
 
         panel_mdf = mdf.loc[:, mdf.columns.get_level_values('panel') == panel
@@ -7216,33 +8472,38 @@ def main():
         assert not panel_mdf.isna().any().any()
         panel_mdf = addlevel(panel_mdf, 'mix', '5comp', axis='columns')
 
-        if analyze_orn:
-            orn_panel_df = orn_flyroi_5comp_ser.loc[
-                orn_flyroi_5comp_ser.index.get_level_values('panel') == panel
+        if ANALYZE_ORN:
+            orn_panel_df = orn_flyroi_ser.loc[
+                orn_flyroi_ser.index.get_level_values('panel') == panel
             ].unstack('odor').T
 
-            # TODO TODO refactor to share w/ elsewhere (and also pull in logic to get
-            # components and form a mask of components + mix from there to here)
-            binary_mix_mask = orn_panel_df.index.str.contains('+', regex=False)
-            assert binary_mix_mask.sum() == 1
-            #
+            # split_mixes will currently fail otherwise, b/c component names (split from
+            # e.g. 'ea+eb') will not be in index
+            orn_panel_df.index = orn_panel_df.index.map(parse_odor_name)
+            assert not orn_panel_df.index.duplicated().any()
 
-            orn_panel_mdf = orn_panel_df.loc[~binary_mix_mask]
+            assert 'mix' not in orn_panel_df.columns.names
+            assert 'mix' not in orn_panel_df.index.names
 
-            # TODO delete
-            print('want to split orn binary data out here? can share code w/ model?')
-            #breakpoint()
-            #
+            binary_mix_list, orn_panel_mdf = split_mixes(orn_panel_df)
+            assert len(binary_mix_list) == 1
+            orn_panel_bdf = binary_mix_list[0]
 
-            # TODO TODO construct orn_panel_bdf by subsetting to just top 2
-            # components and binary mix? (just wouldn't have pair_dilution_factor > 0)
-            # TODO TODO refactor to share code w/ model output processing?
-            # do here or above, to define one orn_bdf?
+            mdf_mix = get_single_unique(orn_panel_mdf.columns.get_level_values('mix'))
+            bdf_mix = get_single_unique(orn_panel_bdf.columns.get_level_values('mix'))
+            assert mdf_mix == '5comp'
+            assert bdf_mix == 'binary'
+
+            del orn_panel_df, binary_mix_list
 
         panel_bdf = diag_df.loc[:, bdf.columns.get_level_values('panel') == panel
             ].dropna(how='all')
         assert not panel_bdf.isna().any().any()
         panel_bdf = addlevel(panel_bdf, 'mix', 'binary', axis='columns')
+
+        # TODO this cause issues w/ calc_mix_suppression below? (no, but it was getting
+        # dropped by that call last i tried, so now adding below)
+        #panel_mdf = addlevel(panel_mdf, 'pair_dilution_factor', 0)
 
         if MIX_SUPP_IN_RESPONDERS_ONLY:
             panel_mdf_only_responders = panel_mdf.loc[:,
@@ -7251,9 +8512,13 @@ def main():
             panel_bdf_only_responders = panel_bdf.loc[:,
                 (panel_bdf >= NATMIX_KC_THRESH).any()
             ].copy()
-            if analyze_orn:
+
+            if ANALYZE_ORN:
                 orn_panel_mdf_only_responders = orn_panel_mdf.loc[:,
                     (orn_panel_mdf >= NATMIX_ORN_RESPONSE_THRESH).any()
+                ].copy()
+                orn_panel_bdf_only_responders = orn_panel_bdf.loc[:,
+                    (orn_panel_bdf >= NATMIX_ORN_RESPONSE_THRESH).any()
                 ].copy()
 
         # TODO factor out one KC row_coarsen_factor (have that now), or special
@@ -7274,24 +8539,29 @@ def main():
         # for each [alongside fraction of overall population]?  (and also do for
         # diag-binaries above)?
 
+        # this currently drops the pair_dilution_factor = 0 index level (which comes
+        # before odor, which is only other level), so we do need to add after
         mix_supp_5comp = calc_mix_suppression(panel_mdf_only_responders)
-        if analyze_orn:
-            orn_mix_supp_5comp = calc_mix_suppression(orn_panel_mdf_only_responders)
+        # TODO even matter? delete?
+        mix_supp_5comp = addlevel(mix_supp_5comp, 'pair_dilution_factor', 0)
 
-        # TODO delete
-        #mix_supp_binary = calc_mix_suppression(panel_bdf)
         # calc_mix_suppression only works when input has a single mix (and its
         # components, with mix at end)
         mix_supp_binary = panel_bdf_only_responders.groupby('pair_dilution_factor',
             sort=False).apply(calc_mix_suppression)
-
-        mix_supp_5comp = addlevel(mix_supp_5comp, 'pair_dilution_factor', 0)
         assert mix_supp_5comp.index.names == mix_supp_binary.index.names
+
+        if ANALYZE_ORN:
+            orn_mix_supp_5comp = calc_mix_suppression(orn_panel_mdf_only_responders)
+            # no pair_dilution_factor in ORN data (only highest was presented in my
+            # useable experiments)
+            orn_mix_supp_binary = calc_mix_suppression(orn_panel_bdf_only_responders)
+            assert orn_mix_supp_5comp.index.names == orn_mix_supp_binary.index.names
 
         # TODO delete
         # at least for orn_panel_mdf, the following two were equivalent:
-        # ipdb> s1 = orn_panel_mdf.T.stack(orn_panel_df.index.names).rename(orn_resp_col)
-        # ipdb> s2 = orn_panel_mdf.unstack().rename(orn_resp_col)
+        # ipdb> s1 = orn_panel_mdf.T.stack(orn_panel_df.index.names).rename(ORN_RESP_COL)
+        # ipdb> s2 = orn_panel_mdf.unstack().rename(ORN_RESP_COL)
         # ipdb> s1.equals(s2)
         # True
         # replace body of list comp w/ above simpler expr? (no, it only works for orn &
@@ -7305,14 +8575,18 @@ def main():
         # and columns `['mix', 'panel'] + fly_cols` to Series with the odor levels at
         # the end of a single index
         flyroi_odor_sers = [
-            x.T.stack(x.index.names).rename(resp_col) for x in [panel_mdf, panel_bdf]
+            x.T.stack(x.index.names).rename(KC_RESP_COL) for x in [panel_mdf, panel_bdf]
         ]
         panel_mser, panel_bser = flyroi_odor_sers
+        # TODO still necessary? (yes) aren't i adding this above? this isn't adding a
+        # second one, is it? (no, it's apparently not added to whatever creates this, or
+        # it was lost)
         panel_mser = addlevel(panel_mser, 'pair_dilution_factor', 0
             ).reorder_levels(panel_bser.index.names)
 
         flyroi_odor_stats = pd.concat([panel_mser, panel_bser], verify_integrity=True
             ).reset_index()
+        del panel_mser, panel_bser
         assert flyroi_odor_stats.notna().all().all()
 
         flyroi_odor_stats.odor = strip_concs(flyroi_odor_stats.odor)
@@ -7320,11 +8594,11 @@ def main():
             key=odor_sort_fn
         )
 
-        assert resp_col in flyroi_odor_stats.columns
+        assert KC_RESP_COL in flyroi_odor_stats.columns
         assert 'value' not in flyroi_odor_stats.columns
-        flyroi_odor_stats = flyroi_odor_stats.rename(columns={resp_col: 'value'})
+        flyroi_odor_stats = flyroi_odor_stats.rename(columns={KC_RESP_COL: 'value'})
         assert 'stat' not in flyroi_odor_stats.columns
-        flyroi_odor_stats['stat'] = resp_col
+        flyroi_odor_stats['stat'] = KC_RESP_COL
 
         # TODO what all are these being used for? doc here. cause it's already been
         # subset to responders (to any odor in panel, either across 5comp or binary)
@@ -7334,43 +8608,42 @@ def main():
         # NOTE: no longer subsetting to just non-responders above anymore
         flyroi_odor_stats['responded'] = flyroi_odor_stats.value >= NATMIX_KC_THRESH
 
-        if analyze_orn:
+        if ANALYZE_ORN:
+            orn_flyroi_odor_sers = [
+                x.unstack().rename(ORN_RESP_COL) for x in [orn_panel_mdf, orn_panel_bdf]
+            ]
             # TODO refactor to share w/ above?
-            orn_flyroi_odor_stats = orn_panel_mdf.unstack().rename(orn_resp_col
-                ).reset_index()
+            orn_flyroi_odor_stats = pd.concat(orn_flyroi_odor_sers,
+                verify_integrity=True).reset_index()
+            assert orn_flyroi_odor_stats.notna().all().all()
+
             orn_flyroi_odor_stats.odor = strip_concs(orn_flyroi_odor_stats.odor)
             orn_flyroi_odor_stats = orn_flyroi_odor_stats.sort_values(by='odor',
                 kind='stable', key=odor_sort_fn
             )
-            assert orn_resp_col in orn_flyroi_odor_stats.columns
+            assert ORN_RESP_COL in orn_flyroi_odor_stats.columns
             assert 'value' not in orn_flyroi_odor_stats.columns
             orn_flyroi_odor_stats = orn_flyroi_odor_stats.rename(
-                columns={orn_resp_col: 'value'}
+                columns={ORN_RESP_COL: 'value'}
             )
             assert 'stat' not in orn_flyroi_odor_stats.columns
-            orn_flyroi_odor_stats['stat'] = orn_resp_col
+            orn_flyroi_odor_stats['stat'] = ORN_RESP_COL
             orn_flyroi_odor_stats['responded'] = (
-                orn_flyroi_odor_stats.value >= NATMIX_KC_THRESH
+                orn_flyroi_odor_stats.value >= NATMIX_ORN_RESPONSE_THRESH
             )
             #
             panel2orn_flyroi_odor_stats[panel] = orn_flyroi_odor_stats
 
-            # TODO TODO also use binary subset here, if defined above (+ concat, right?)
-            print('concat binary orn subset here, if defined above')
-            #breakpoint()
-            orn_panel_mix_supp = mix_supp_list2flystat_df([orn_mix_supp_5comp],
-                stat=orn_resp_col
+            orn_panel_mix_supp = mix_supp_list2flystat_df(
+                [orn_mix_supp_5comp, orn_mix_supp_binary], stat=ORN_RESP_COL
             )
-            panel2orn_fly_stats[panel] = orn_panel_mix_supp
-
-        # TODO TODO TODO (done? still need to use it?) make parallel versions of
-        # each of these for ORN data?  already have what i need?
+            panel2orn_mix_supp[panel] = orn_panel_mix_supp
 
         panel2kc_flyroi_odor_stats[panel] = flyroi_odor_stats
+
         # TODO what does this function do exactly? doc?
         panel_mix_supp = mix_supp_list2flystat_df([mix_supp_5comp, mix_supp_binary])
-        # TODO rename panel2kc_mix_supp? (no other stats in here)
-        panel2kc_fly_stats[panel] = panel_mix_supp
+        panel2kc_mix_supp[panel] = panel_mix_supp
 
 
     # these should be the same across all model panels
@@ -7405,8 +8678,6 @@ def main():
         expected_kc_stats = set(compare_normalized.values()) | shared_stats
         assert kc_df.stat.isin(expected_kc_stats).all(), \
             f'{kc_df.stat.unique()=} {expected_kc_stats=}'
-
-        kc_df['source'] = 'KCs'
 
         normed_dfs = []
         # TODO add flag to also add normalized versions for any w/ name matching
@@ -7445,6 +8716,7 @@ def main():
             #
 
         kc_df = pd.concat([kc_df] + normed_dfs, ignore_index=True)
+        kc_df = add_source_and_class_cols(kc_df, 'KCs')
         panel2kc_flyodor_stats[panel] = kc_df
 
     model_response_strengths = model_roi_odor_df.pivot(columns='stat', values='value',
@@ -7458,412 +8730,10 @@ def main():
     # TODO rename all of above too, to avoid confusion (or rename var w/ same name in
     # loop below)
     all_model_response_strengths = model_response_strengths.reset_index()
+    all_model_response_strengths['source_type'] = 'model'
     # TODO any reason to calculate these *model_response_strengths, instead of
     # calculating directly from model_roi_df (/df, which just has them averaged over
     # ROIs)
-
-
-    # TODO try to move def to module level
-    model_stat_order = ['logistic_scaled_num_spikes', 'num_spikes']
-
-    # TODO try to move def to module level (or at least before loops)
-    # TODO TODO should everything be z-scored before computing mix - max?
-    # or how to make more comparable (at least, in terms of the expected offset
-    # from 0)? i suppose even just making logistic ceiling higher would do that?
-    # TODO TODO at least plot input distributions for each of this (hist
-    # for spike counts) and maybe kde/hist for logistic scaled spike counts
-    def plot_one_dist_per_model(data, model_only: bool = False, **kwargs
-        ) -> None:
-        pnkc_classes = data[PNKC_CLASS_COL].unique()
-        assert len(pnkc_classes) == 1, ('expected data from only one hue='
-            f'{PNKC_CLASS_COL} level to be passed in at a time'
-        )
-        pnkc_class = pnkc_classes[0]
-
-        assert 'alpha' not in kwargs, 'we set this manually below'
-
-        # it can be NaN some places still, right? hopefully not here tho
-        assert pd.notna(pnkc_class)
-
-        model_input = pnkc_class_is_model(pnkc_class)
-        if model_only:
-            assert model_input
-
-        if not simplify_models:
-            # make below conditional if this fails
-            assert 'connectome_apl' in data.columns
-
-        assert not data.mix.isna().any()
-        mix = data.mix.unique()
-        assert len(mix) == 1
-        # either 'binary'/'5comp' (for control/kiwi KC data), or
-        # '2h+farn'/'farn+ma'/'2h+ma' (for Yang's diag-binaries data)
-        # TODO still or NaN for model? must not be now?
-        mix = mix[0]
-
-        if not model_input:
-            # TODO refactor to a kc_alpha const?
-            alpha = 1.0
-            distplot(data=data, fill=False, alpha=alpha, **kwargs)
-            if not model_input:
-                return
-
-        # TODO restore verbose=True
-        verbose = False
-        if verbose:
-            stat = data.stat.unique()[0]
-            print(f'{mix=} {stat=}')
-            # TODO TODO check impression of these against hists/KDEs
-            to_print = data[diff_col].round(decimals=1).value_counts(
-                ).sort_index().to_frame().T
-            to_print.columns.name = diff_col
-            to_print.index = ['count']
-            # was originally trying to fit them all in one row, but not
-            # happening, so transposing again
-            print(to_print.T.reset_index().to_string(index=False))
-            print()
-
-        group_cols = ['source']
-        if not simplify_models:
-            # so connectome_apl=False comes second, which is hopefully what
-            # makes it into legend (so i don't have the dotted lines there, just
-            # the hue)
-            data = data.sort_values(by='connectome_apl', ascending=False,
-                kind='stable'
-            )
-            group_cols.append('connectome_apl')
-
-        # to avoid: FutureWarning: In a future version of pandas, a length 1
-        # tuple will be returned when iterating over a groupby with a grouper
-        # equal to a list of length 1. Don't supply a list with a single grouper
-        # to avoid this warning.
-        if len(group_cols) == 1:
-            group_cols = group_cols[0]
-
-        for gn, gdf in data.groupby(group_cols, sort=False):
-            if not simplify_models:
-                source, connectome_apl = gn
-            else:
-                source = gn
-                connectome_apl = False
-
-            # TODO (delete? presumably this was fixed?) fix legend so it shows
-            # both linestyles (and uses that to show connectome vs uniform APL,
-            # w/o color, like i do w/ markers for other legend. refactor?)
-            linestyle = '--' if connectome_apl else '-'
-            # TODO only label on first one or something legend screwed up
-            # otherwise?
-            #sns.kdeplot(data=gdf, linewidth=model_linewidth,
-            # I think I do like (default) fill=True here, right?
-            distplot(data=gdf, linewidth=model_linewidth, linestyle=linestyle,
-                alpha=model_alpha, **kwargs
-            )
-
-
-    # TODO move before loop (or ideally, to module level), to still analysis
-    # model data w/o kc data
-    # TODO both inputs are type DataFrame, right?
-    def plot_response_strength_dist_per_model(data: pd.DataFrame,
-        kc_response_strengths: Optional[pd.DataFrame] = None, **kwargs) -> None:
-
-        model_only = False
-        have_model = True
-        # TODO make args more explicit, rather than meaning of
-        # data/kc_response_strengths being conditional?
-        if kc_response_strengths is None:
-            if has_model(data):
-                model_only = True
-            # assuming data is KC data only in this case
-            else:
-                have_model = False
-                kc_response_strengths = data
-        #
-
-        model_stat = None
-        if have_model:
-            if not simplify_models:
-                assert 'connectome_apl' in data.columns
-
-            model_stats = data.stat.unique()
-            assert len(model_stats) == 1, f'{model_stats=}'
-            model_stat = model_stats[0]
-
-        ax = plt.gca()
-        if not model_only:
-            if have_model:
-                # (delete) this inheriting the logscale (if present) from
-                # parent ax? fix if not! (compare to kc-only one?)
-                # (yea, seems to be)
-                kc_ax = ax.twiny()
-            else:
-                kc_ax = ax
-
-            assert not data.odor.isna().any()
-            odors = data.odor.unique()
-            assert len(odors) == 2
-
-            kdf = kc_response_strengths[
-                kc_response_strengths.odor.isin(odors)
-            ].copy()
-            assert len(kdf) > 0
-
-            # TODO refactor to share this unique-stat-getting w/ below (in
-            # calling fn too) (including mean_prefix stripping)
-            kc_stats = kdf.stat.unique()
-            assert len(kc_stats) == 1, f'{kc_stats=}'
-            kc_stat = kc_stats[0]
-            # TODO delete eventually? just to check we aren't also doing the
-            # threshold subtracting outside now
-            assert kc_stat == 'mean_Fc_zscore'
-
-            # TODO do this back outside (on whole KC df, w/
-            # .stat.str.replace)? matter? previously was doing this only
-            # when subtracting threshold (min), but also was unconditionally
-            # doing that at the time
-            kc_stat = kc_stat.replace(mean_prefix, '')
-
-            # TODO TODO even make sense in this case? pretty sure it doesn't
-            # when we are comparing against the logistic scaled data, right?
-            # TODO still add flag to decide whether to do this, even for
-            # num_spikes?
-            if model_stat == 'num_spikes':
-                # TODO add assertion kc_min is thresh (at least if using
-                # remy's data, where it's one single thresh. couldn't do
-                # same for yang's)?
-                # TODO in yang's case, maybe i should be subtracting
-                # something other than just min tho? can the threshold
-                # really be reduced to one number in her case? matter?
-                kc_min = kdf.value.min()
-                assert not np.isclose(kc_min, 0)
-                # TODO warn we are doing this? what was reason i thought it
-                # made sense again?
-                kdf.value -= kc_min
-                assert np.isclose(kdf.value.min(), 0)
-                kc_stat += ' - threshold'
-
-        if not model_only:
-            exclude_kws = ('color', 'label')
-            kc_kws = {k: v for k, v in kwargs.items() if k not in exclude_kws}
-            # TODO is area under curve really same for all these (probably
-            # was, but that's cause units of x axes were pretty diff, w/
-            # #-spikes on more visually different one, so easier to get
-            # integral of 1 earlier.... what's solution? something w/
-            # percentiles? other normalization options in histplot i'm using
-            # now?)? do i need to share some axes i'm not for that to make
-            # sense? common_norm=False not doing it? (all kdeplot calls, for
-            # KC and model below, should have that, right?) (see
-            # response-strength_dists_kiwi.pdf. control too honestly)
-            kc_kws.update(dict(ax=kc_ax, color=kc_color, fill=False, label='KCs'))
-
-            assert_all_mix_after_component(kdf)
-            for odor, gdf in kdf.groupby('odor', sort=False):
-                # TODO refactor to share w/ below? (+ legend fixing)
-                linestyle = (mix_linestyle if is_mix(odor) else
-                    component_linestyle
-                )
-                # TODO TODO change label to include bit about mix? (+
-                # component) (and to hide KCs label if that's the only
-                # color being plotted? via removing label='KCs' from
-                # kc_kws above)
-                # (or just put mix + comp info in title?)
-                distplot(data=gdf, linestyle=linestyle, **kc_kws)
-
-            kc_ax.set_xlabel(f'KC {kc_stat}', color=kc_color)
-            # TODO refactor to share w/ twinx mb_model APL Vm plotting?
-            # alpha not supported here
-            kc_ax.tick_params(axis='x', color=kc_color)
-            for text in kc_ax.xaxis.get_ticklabels():
-                # alpha also not supported here
-                text.set_color(kc_color)
-            #
-
-            # TODO set color of top spine / ticks, like in APL Vm plotting
-            # elsewhere?
-            kc_ax.spines['right'].set_visible(False)
-            kmin = kdf.value.min()
-            kmax = kdf.value.max()
-            kc_ax.set_xlim([kmin - 0.5, kmax + 0.5])
-
-        if not have_model:
-            return
-
-        group_cols = ['source']
-
-        have_connectome_apl = has_connectome_apl(data)
-        if simplify_models:
-            assert not have_connectome_apl
-
-        assert not have_connectome_apl
-
-        # TODO this fix assertion failure below? (nope, well not
-        # w/o reset_index(drop=True). with reset_index, yes)
-        # TODO even need sort, or just the reset_index?
-        data = data.sort_values(by='odor', kind='stable',
-            key=odor_sort_fn
-        ).reset_index(drop=True)
-
-        # TODO and why does this matter again? might just not assign to
-        # linestyles properly? am i still assuming a certain order for
-        # that?
-        assert_all_mix_after_component(data)
-        group_cols.append('odor')
-
-        if have_connectome_apl:
-            # so connectome_apl=False comes second, which is hopefully what
-            # makes it into legend (so i don't have the dotted lines there,
-            # just the hue)
-            data = data.sort_values(by='connectome_apl', ascending=False,
-                kind='stable'
-            )
-            group_cols.append('connectome_apl')
-
-        # to avoid a FutureWarning
-        if len(group_cols) == 1:
-            group_cols = group_cols[0]
-
-        for gn, gdf in data.groupby(group_cols, sort=False):
-            source, odor = gn
-            # TODO refactor to share w/ above?
-            linestyle = (
-                mix_linestyle if is_mix(odor) else component_linestyle
-            )
-
-            # TODO sufficient to just check NaN? need the dirname -> class
-            # -> pnkc_class_is_model checking below too (prob not)?
-            assert gdf.model_dirname.notna().all()
-            # TODO delete?
-            model_dirnames = gdf.model_dirname.unique()
-            assert len(model_dirnames) == 1
-            model_dirname = model_dirnames[0]
-            pnkc_class = model_pnkc_class(model_dirname)
-            assert pnkc_class_is_model(pnkc_class), (f'{source=} does '
-                'not seem to refer to model data'
-            )
-            #
-            assert source not in EXPECTED_NONMODEL_PNKC_VALS, f'{source=}'
-
-            # TODO fill=False? (for at least some [which?], yes.
-            # everything?)
-            distplot(data=gdf, ax=ax, fill=False, linewidth=model_linewidth,
-                linestyle=linestyle, **kwargs
-            )
-
-
-    # TODO TODO want distribution for each odor, or just for top component
-    # vs mix? (currently just picking a top component for each)
-    # TODO delete log_yscale=True code. didn't like it
-    def plot_response_strength_dists(*, model_data: Optional[pd.DataFrame] = None,
-        kc_data: Optional[pd.DataFrame] = None, log_yscale: bool = False) -> None:
-        assert not (model_data is None and kc_data is None)
-
-        kws = dict()
-        if model_data is not None:
-            data = model_data
-            assert has_model(data)
-            if has_connectome_apl(data):
-                # TODO make a separate plot with the connectome_apl=True
-                # data in this case? prob don't really care to...
-                warn('plot_response_strength_dist: subsetting data to '
-                    'connectome_apl=False. linestyle would be ambiguous between '
-                    'uniform-vs-connectome APL and mix-vs-component'
-                )
-                data = data[data.connectome_apl == False]
-
-            kws.update(dict(
-                col='stat', col_order=model_stat_order, hue=PNKC_CLASS_COL,
-                palette=source_palette,
-            ))
-
-            panel, mix = get_single_unique_panel_and_mix(data)
-            if kc_data is not None:
-                kc_panel, kc_mix = get_single_unique_panel_and_mix(kc_data)
-                assert kc_panel == panel
-                assert kc_mix == mix
-        else:
-            data = kc_data
-            panel, mix = get_single_unique_panel_and_mix(data)
-
-        g = sns.FacetGrid(data=data, sharey=False, sharex=False, **kws)
-
-        plot_kws = dict()
-
-        g.map_dataframe(plot_response_strength_dist_per_model,
-            kc_response_strengths=(None if model_data is None else kc_data),
-            x='value', alpha=model_alpha, log_scale=(False, log_yscale), **plot_kws
-        )
-
-        # TODO TODO TODO want any fixed x/y limits in any cases? maybe for some of other
-        # other plots? maybe if a -F CLI arg set, and then fix all as desired for thesis
-        #g.set(ylim=(1e-5, 5))
-
-        g.fig.subplots_adjust(hspace=0.6)
-
-        # TODO version of this plot including nonresponding values too
-        # (mainly for sanity checking)?
-        suptitle = (f'{panel}\nactivation strengths across KCs\n'
-            'responder (KC, odor) pairs only'
-        )
-        g.fig.suptitle(suptitle, y=1.10)
-
-        add_fixed_legend(g, data, lines=True)
-
-        g.set_titles('')
-
-        # it should be this value when row= not specified in FacetGrid init
-        assert g.row_names == []
-        assert g.axes.shape[0] == 1
-
-        for (i, j, hue), gdf in g.facet_data():
-            if hue != 0:
-                continue
-
-            ax = g.axes[i, j]
-            ylabel = ''
-            if j == 0:
-                ylabel = 'density across KCs'
-
-            if i != 0:
-                ax.set_title('')
-
-            ax.set_ylabel(ylabel)
-            ax.tick_params(labelbottom=True)
-
-            if g.col_names == []:
-                assert model_data is None
-                # TODO refactor all this w/ other def of kc_stat?
-                stats = data.stat.unique()
-                assert len(stats) == 1
-                stat_name = stats[0]
-                stat_name = stat_name.replace(mean_prefix, '')
-                #
-            else:
-                assert model_data is not None
-                stat_name = g.col_names[j]
-            ax.set_xlabel(stat_name)
-
-            mmin = gdf.value.min()
-            mmax = gdf.value.max()
-            # TODO (delete?) 0.05 instead of 0.25?
-            margin = (mmax - mmin) * 0.05
-            ax.set_xlim([mmin - margin, mmax + margin])
-
-        fname = f'response-strength_dists_{panel}_{mix}'
-
-        plot_dir = plot_root
-        if model_data is None:
-            # will help declutter each model-subsetting-option-specific
-            # subdir (and these would be same across each of those anyway)
-            plot_dir = model_root
-            fname += '_kc-only'
-
-        if kc_data is None:
-            fname += '_model-only'
-
-        if log_yscale:
-            fname += '_logy'
-
-        savefig(g, plot_dir, fname)
-
 
     natmix_panel_class_frac_list = []
 
@@ -7892,17 +8762,30 @@ def main():
 
         if kc_panel is not None:
             assert kc_panel in panel2kc_flyodor_stats
-            assert kc_panel in panel2kc_fly_stats
+            assert kc_panel in panel2kc_mix_supp
             assert kc_panel in panel2kc_flyroi_odor_stats
-            # TODO and assert they are all not-None?
+
             for i, x in enumerate([
-                    panel2kc_fly_stats, panel2kc_fly_stats, panel2kc_flyroi_odor_stats
+                    panel2kc_flyodor_stats,
+                    panel2kc_mix_supp,
+                    panel2kc_flyroi_odor_stats,
                 ]):
-                assert panel2kc_fly_stats[kc_panel] is not None, \
+                assert panel2kc_mix_supp[kc_panel] is not None, \
                     f'{panel=} {kc_panel=} {i=}'
+
+            if ANALYZE_ORN and kc_panel in NATMIX_PANELS:
+                # NOTE: ORN data does not have panel2orn_flyodor_stats, as it is only
+                # used for intensity plots, which are handled separately in ORN case
+                assert kc_panel in panel2orn_mix_supp
+                assert kc_panel in panel2orn_flyroi_odor_stats
+                for i, x in enumerate([
+                        panel2orn_mix_supp, panel2orn_flyroi_odor_stats
+                    ]):
+                    assert panel2orn_mix_supp[kc_panel] is not None, \
+                        f'{panel=} {kc_panel=} {i=}'
         else:
             assert panel not in panel2kc_flyodor_stats
-            assert panel not in panel2kc_fly_stats
+            assert panel not in panel2kc_mix_supp
             assert panel not in panel2kc_flyroi_odor_stats
 
         if not simplify_models:
@@ -7986,9 +8869,10 @@ def main():
         mean_model_response_rate = addlevel(mean_model_response_rate, 'panel', panel)
         mean_model_response_rate_list.append(mean_model_response_rate)
 
+        # does it? change handling of ORN stuff?
         split_mixes_from = model_responses.copy()
         # TODO sort ROIs into response classes first? (maybe after grouping by mix, esp
-        # in diag-binaries case?)
+        # in diag-binaries case?) (meh)
         model_mix_supp = None
         all_model_mix_resps = None
         # TODO should i just continue if panel is not in one of these?
@@ -7996,8 +8880,15 @@ def main():
 
             binary_mix_list, full_mix_df = split_mixes(split_mixes_from,
                 model_responded, drop_nonresponders_per_mix=MIX_SUPP_IN_RESPONDERS_ONLY,
+                # input here doesn't also have panel in columns, like ORN stuff does,
+                # (nor in index) so passing in panel
                 panel=kc_panel
             )
+
+            binary_mix_odors = None
+            if panel in NATMIX_PANELS:
+                assert len(binary_mix_list) == 1
+                binary_mix_odors = list(binary_mix_list[0].index)
 
             # TODO TODO rename these variables to include model in them, to be clear
             # that the KC data is coming from elsewhere
@@ -8021,6 +8912,9 @@ def main():
                 full_mix_mask = is_natmix_full_mix(full_mix_df.index)
                 assert full_mix_mask.sum() == 1
                 full_mix = full_mix_df.index[full_mix_mask][0]
+                del full_mix_mask
+
+                full_mix_odors = list(full_mix_df.index)
 
                 panel2top_component = {
                     'control': '1o3ol',
@@ -8046,13 +8940,26 @@ def main():
                 # can i replace w/ part of full_mix_df? (would have to change
                 # indexing so that i drop all nonresponding (KC, odor) pairs, which
                 # isn't that easy in current format) (still true?)
-                panel_response_strengths = all_model_response_strengths[
-                    all_model_response_strengths.panel == panel
+                panel_allodor_response_strengths = all_model_response_strengths[
+                    (all_model_response_strengths.panel == panel)
                 ]
+                assert not panel_allodor_response_strengths.responded.all(), \
+                    'should still have non-responding (KC, odor) pairs here'
+
+                model_allodor_resp_strengths_5comp = panel_allodor_response_strengths[
+                    panel_allodor_response_strengths.odor.isin(full_mix_odors)
+                ].copy()
+                model_allodor_resp_strengths_5comp['mix'] = '5comp'
+
+                model_allodor_resp_strengths_binary = panel_allodor_response_strengths[
+                    panel_allodor_response_strengths.odor.isin(binary_mix_odors)
+                ].copy()
+                model_allodor_resp_strengths_binary['mix'] = 'binary'
+
                 # TODO leave the responded column to be able to make this decision
                 # later? / put behind flag similar to MIX_SUPP_IN_RESPONDERS_ONLY?
-                panel_response_strengths = panel_response_strengths[
-                    panel_response_strengths.responded
+                panel_response_strengths = panel_allodor_response_strengths[
+                    panel_allodor_response_strengths.responded
                 ]
                 # NOTE: the below also changes l1 above (unique combos of those columns
                 # that dont include odor... make sense?)
@@ -8070,10 +8977,17 @@ def main():
                 # fur                      0.721496    1.465144
                 # ms                       0.872448    1.795571
                 # va                       1.006529    2.084291
-                # TODO what is this line doing?
-                # (oh, this was for a plot that was just the response strength within
-                # responders, of top component and mix ig... not used for general
-                # per-odor response strength / sparsity plot, which is based on pdf)
+                # TODO move subsetting into plot_response_strength_dists fn?
+                # (as well as subsetting to responding (KC, odor) pairs too, if so)
+                # (well, at least i have the *_allodor_* versions now, which i'm using
+                # for new plot, tho still drop to responding (unit, odor) pairs for the
+                # version i like...)
+
+                # this is for the response strength dist plot that just includes (unit,
+                # odor) responders, of top component and mix. not used for general
+                # per-odor response strength / sparsity plot (which is based on pdf),
+                # nor the per-odor response distribution plots (which uses *allodor*
+                # variant)
                 model_response_strengths_5comp = panel_response_strengths[
                     # TODO refactor to share w/ other mask defs?
                     panel_response_strengths.odor.isin((top_component, full_mix))
@@ -8089,12 +9003,20 @@ def main():
                 binaries = [x for x in unique_odors if '+' in x]
                 assert len(binaries) == 1, f'{binaries=}'
                 binary_mix = binaries[0]
+                del unique_odors
 
+                # TODO TODO do this subsetting later, so i can plot dists across all
+                # components more easily
                 model_response_strengths_binary = panel_response_strengths[
                     panel_response_strengths.odor.isin((top_component, binary_mix))
                 ].copy()
                 model_response_strengths_binary['mix'] = 'binary'
 
+                model_allodor_resp_strengths = pd.concat([
+                        model_allodor_resp_strengths_5comp,
+                        model_allodor_resp_strengths_binary
+                    ], ignore_index=True
+                )
                 all_model_mix_resps = pd.concat(
                     [model_response_strengths_binary, model_response_strengths_5comp],
                     # need ignore_index so that we can duplicate the top_component
@@ -8165,59 +9087,66 @@ def main():
         # loading yang data?)
         # (they should be now, but assert that here?)
 
-        fly_stats = panel2kc_fly_stats[kc_panel]
         assert model_mix_supp is not None, ('model mix suppression not calculated '
             f'for {panel=} {kc_panel=}'
         )
         model_mix_supp = model_mix_supp.reset_index()
-        mix_supp = pd.concat([model_mix_supp, fly_stats], ignore_index=True)
+        # TODO or leave as model panel? (doing that for now. many fns using it will
+        # normalize to kc panel anyway, and any code that currently doesn't prob should)
+        model_mix_supp['panel'] = panel
+        # TODO already have this or no?
+        model_mix_supp['source_type'] = 'model'
 
-        # TODO set these in code populating panel2kc_fly_stats above? any other
-        # panel2* data currently missing this for KCs? add both even earlier in KC
+        kc_mix_supp = panel2kc_mix_supp[kc_panel]
+        kc_mix_supp = add_source_and_class_cols(kc_mix_supp, 'KCs')
+
+        mix_supp_list = [model_mix_supp, kc_mix_supp]
+        if ANALYZE_ORN and kc_panel in panel2orn_mix_supp:
+            orn_mix_supp = panel2orn_mix_supp[kc_panel]
+            orn_mix_supp = add_source_and_class_cols(orn_mix_supp, 'ORNs')
+            mix_supp_list.append(orn_mix_supp)
+
+        mix_supp = pd.concat(mix_supp_list, ignore_index=True)
+
+        # TODO why can i not always do this anyway? shouldn't it only be NaN for
+        # non-model stuff regardless? add assertion whether it is NaN for any models
         # data?
-        mix_supp[source_col] = mix_supp[source_col].fillna('KCs')
-        mix_supp[PNKC_CLASS_COL] = mix_supp[PNKC_CLASS_COL].fillna('KCs')
-
         if not simplify_models:
             mix_supp.connectome_apl = mix_supp.connectome_apl.fillna(False)
-        #
 
-        multiple_mixes = 'mix' in mix_supp.columns and mix_supp.mix.nunique() > 1
-
-        # TODO delete. should be filled earlier now
-        # TODO (still? delete?) well it's not, and neither is 'source' (why???)
-        #mix_supp[PNKC_CLASS_COL] = mix_supp[PNKC_CLASS_COL].fillna('KCs')
+        # TODO TODO (also?) serialize mix_supp here to parquet, if i can
+        # TODO TODO save to plot_root instead?
+        to_pickle(mix_supp, model_root / f'mix_supp_{panel}.p', verbose=True)
 
         diff_col = get_diff_col(mix_supp)
 
-        from_kcs = mix_supp.source == 'KCs'
-        kc_mix_supp = mix_supp[from_kcs]
-
-        def plot_one_dist_per_fly(data: pd.DataFrame, flies_share_bins: bool = True,
-            **kwargs) -> None:
-
-            if flies_share_bins and _USE_KDEPLOT:
-                warn('plot_one_dist_per_fly: can not use flies_share_bins=True'
-                    f' when {_USE_KDEPLOT=}. ignoring!'
-                )
-
-            if flies_share_bins and not _USE_KDEPLOT:
-                assert 'x' in kwargs
-                x = kwargs['x']
-                values = data[x]
-                binrange = (values.min(), values.max())
-                # TODO delete
-                #print(f'plot_one_dist_per_fly: {binrange=}')
-                #
-
-            # TODO or CI across flies? possible?
-            for gn, gdf in data.groupby(fly_cols, sort=False):
-                # TODO delete
-                #sns.kdeplot(data=gdf, **kwargs)
-                # TODO or try low alpha instead of fill=False?
-                distplot(data=gdf, fill=False, **kwargs)
+        # TODO TODO how was my pd_allclose returning False if (x == y).all().all() is
+        # True? fix bug!
+        # ipdb> pd_allclose(k2.reset_index()[kc_mix_supp.columns], kc_mix_supp)
+        # False
+        # ipdb> pd_allclose(k2.reset_index()[kc_mix_supp.columns], kc_mix_supp,
+        #   equal_nan=True)
+        # False
+        # ipdb> pd_isclose(k2.reset_index()[kc_mix_supp.columns], kc_mix_supp)
+        # *** TypeError: ufunc 'isfinite' not supported for the input types, and the
+        # inputs could not be safely coerced to any supported types according to the
+        # casting rule ''safe''
+        # ipdb> np.isclose(k2.reset_index()[kc_mix_supp.columns], kc_mix_supp)
+        # *** TypeError: ufunc 'isfinite' not supported for the input types, and the
+        # inputs could not be safely coerced to any supported types according to the
+        # casting rule ''safe''
+        # ipdb> (k2.reset_index()[kc_mix_supp.columns] == kc_mix_supp).all().all()
+        # True
+        # TODO delete
+        #breakpoint()
+        # TODO delete (def above should be fine)
+        #from_kcs = mix_supp.source == 'KCs'
+        #kc_mix_supp = mix_supp[from_kcs]
+        #
 
         if 'pair_dilution_factor' in kc_mix_supp.columns:
+            # TODO TODO factor this into separate plotting fn?
+
             # TODO do something to specifically silence:
             # `UserWarning: The figure layout has changed to tight` from these?
             # what else emitting them?
@@ -8272,7 +9201,7 @@ def main():
             # gets emitted for this (and many other figures...) (which line(s) are
             # actually doing it?)
             savefig(g, model_root,
-                f'{diff_col}_dists_kc-only_pair-dilutions_{panel}'
+                f'mixsupp_dists_kc-only_pair-dilutions_{panel}'
             )
             #
 
@@ -8280,8 +9209,11 @@ def main():
             # factors (as concentrations are stripped at this point)
             kc_mix_supp = kc_mix_supp[kc_mix_supp.pair_dilution_factor == 0].copy()
 
+        # TODO TODO factor this into a separate plotting fn too?
         facet_kws = dict()
         # TODO are there any panels where this isn't true? which?
+        # TODO TODO why is there NaN in mix here? add dropna flag to this?
+        multiple_mixes = has_multiple_mixes(mix_supp)
         if multiple_mixes:
             # TODO use row like above, or hue here?
             #
@@ -8289,32 +9221,39 @@ def main():
             # TODO was thinking of just gray=binary, black=5comp, but ideally need
             # something that also works for all 3 yang's binary mixes
             facet_kws = dict(
-                hue='mix',
-                # TODO don't re-use husl(3)?
-                palette='cubehelix' if panel in NATMIX_PANELS else 'husl'
+                # TODO don't re-use husl(3)? (where else is it?)
+                hue='mix', palette='cubehelix' if panel in NATMIX_PANELS else 'husl'
             )
 
-        # TODO refactor to share below w/ *_kc-only_pair-dilutions.pdf stuff above?
-        # TODO say i'm dropping non-responders in all mixsupp plots somewhere
-        g = sns.FacetGrid(data=kc_mix_supp, col='panel', **facet_kws)
-        # TODO just put each mix on a different row again, if hue is going to be too
-        # messy? (for yang's data, at least?)
-        g.map_dataframe(plot_one_dist_per_fly, x=diff_col,
-            # was using 0.6 for natmix w/ KDE, but want lower w/ stepwise hist
-            alpha=0.4 if panel in NATMIX_PANELS else 0.3,
-            linewidth=1.0 if panel in NATMIX_PANELS else 0.75
-        )
-        g.set_titles('{col_name}')
-        g.set_xlabels(diff_col2desc(diff_col))
-        g.set_ylabels('density across KCs')
-        # TODO keep all lines kc_color, and use linestyle for binary/5comp
-        # (dashed for binary)? (that's also used elsewhere tho... for mix vs top
-        # component response strength dists)
-        g.add_legend(title='mix')
-        # TODO change sparsity ylim on this one, so we can we more easily (more
-        # easily what? delete?)? [or maybe need to change threshold anyway?
-        # currently between about 0.02 and 0.1 response rate, for kiwi])
-        savefig(g, model_root, f'{diff_col}_dists_kc-only_{panel}_per-fly')
+        for data, fname_part in zip(
+                [kc_mix_supp, orn_mix_supp], ['kc-only', 'orn-only']
+            ):
+            # TODO refactor to share below w/ *_kc-only_pair-dilutions.pdf stuff above?
+            # TODO say i'm dropping non-responders in all mixsupp plots somewhere
+            g = sns.FacetGrid(data=data, col='panel', **facet_kws)
+            # TODO just put each mix on a different row again, if hue is going to be too
+            # messy? (for yang's data, at least?)
+            g.map_dataframe(plot_one_dist_per_fly, x=diff_col,
+                # was using 0.6 for natmix w/ KDE, but want lower w/ stepwise hist
+                alpha=0.4 if panel in NATMIX_PANELS else 0.3,
+                linewidth=1.0 if panel in NATMIX_PANELS else 0.75
+            )
+            g.set_titles('{col_name}')
+            g.set_xlabels(diff_col2desc(diff_col))
+            source = get_single_unique(data.source)
+            unit_str = source
+            if source == 'ORNs':
+                unit_str = 'glomeruli'
+            g.set_ylabels(f'density across {unit_str}')
+            # TODO keep all lines kc_color, and use linestyle for binary/5comp
+            # (dashed for binary)? (that's also used elsewhere tho... for mix vs top
+            # component response strength dists)
+            g.add_legend(title='mix')
+            # TODO change sparsity ylim on this one, so we can we more easily (more
+            # easily what? delete?)? [or maybe need to change threshold anyway?
+            # currently between about 0.02 and 0.1 response rate, for kiwi])
+            savefig(g, model_root, f'mixsupp_per-fly_dists_{panel}_{fname_part}')
+
 
         model_nonroi_levels = [
             x for x in model_mix_supp.columns if x not in ('roi', diff_col)
@@ -8330,157 +9269,35 @@ def main():
         # rate calculated above (the one used towards end, for part of response
         # class plot titles)
         model_mean_mix_supp = addlevel(model_mean_mix_supp, 'panel', panel)
+        # TODO TODO TODO also append KC / ORN data, and use that to plot mean (per fly,
+        # for those), after loop. split out the model data still for the sorting +
+        # saving of model params plot (that this is currently used for)
         model_mean_mix_supp_sers.append(model_mean_mix_supp)
 
+        # TODO delete?
         # TODO use use prior def of model_mix_supp? does code below actually need
         # anything added to mix_supp?
         # TODO try to define + use before we skip ananlysis w/o kc panel (or compute
         # directly from model_mean_mix_supp, also defined earlier)
-        model_mix_supp = mix_supp[~from_kcs]
+        #model_mix_supp = mix_supp[~from_kcs]
 
         # TODO in each facet title, say how many nonresponders were dropped
         # (or in suptitle/legend for KCs?) would probably need a CSV for models...
 
-        # TODO try to define earlier (s.t. KC data can be passed in), so that model-only
-        # plot can run without any KC data present
+        # TODO TODO try to define earlier (s.t. KC data can be passed in), so that
+        # model-only plot can run without any KC data present
         # TODO TODO figure out how to show num_spikes and KC computed data on same
         # scale (percentile? zscore?) (currently just not plotting those two against
         # each other, but removing col='stat' option from call plotting both model
         # and KC data)
-        # TODO TODO TODO also want mixsupp dist plots for ORNs vs KCs?
-        print('MIXSUPP DISTS PLOTS FOR ORNS VS KCS?')
-        def plot_mixsupp_dists(model_only: bool = False, kc_only: bool = False,
-            fname_suffix: str = '', **kwargs) -> None:
-            if model_only:
-                assert not kc_only
-
-            facet_kws = dict(sharex=False, sharey=False, hue=PNKC_CLASS_COL,
-                palette=source_palette
-            )
-
-            model_stat = None
-            kc_stat = None
-            plot_kws = dict(x=diff_col)
-            if not kc_only:
-                plot_kws.update(dict(model_only=model_only))
-
-                if model_only:
-                    facet_kws.update(dict(
-                        col='stat', col_order=model_stat_order
-                    ))
-                    data = model_mix_supp
-                else:
-                    assert facet_kws.get('col') != 'stat'
-                    # TODO TODO define this from concatenation of KC data we pass in,
-                    # and model_mix_supp defined before `kc_panel is None` check
-                    #
-                    # this wouldn't work if we didn't also want to subset to just
-                    # one KC stat here, because we have col='stat', and since KCs
-                    # stat is different from the two model ones, would never be
-                    # plotted on same Axes (and would not be plotted at all if not
-                    # in col_order)
-                    data = mix_supp
-
-                    warn('plot_mixsupp_dists: dropping raw num_spikes for '
-                        'comparison between model and KC data! see model_only=True'
-                        ' version of plot for the distribution of those values'
-                    )
-                    data = data[data.stat != 'num_spikes'].copy()
-
-                    model_stat = 'logistic_scaled_num_spikes'
-                    kc_stat = 'mean_Fc_zscore'
-                    unique_stats = set(data.stat.unique())
-                    assert unique_stats == {kc_stat, model_stat}, f'{unique_stats=}'
-            else:
-                data = kc_mix_supp
-                facet_kws.update(dict(col='stat'))
-
-            if multiple_mixes:
-                facet_kws['row'] = 'mix'
-                # will put 'binary' on top, and '5comp' on bottom. not sure i care
-                # about order for other mixtures (e.g. yang's diag binaries), but
-                # would have to do something else if i did
-                facet_kws['row_order'] = sorted(data.mix.unique())[::-1]
-
-            # TODO TODO remove right column model+KC plot (num_spikes) (done),
-            # unless i can find a way to get scales in line (still want to try?)
-            # (prob just try that on a separate plot anyway, if at all)
-            g = sns.FacetGrid(data=data, **facet_kws)
-            g.map_dataframe(plot_one_dist_per_model, **plot_kws, **kwargs)
-
-            if not (model_only or kc_only):
-                # TODO update ranges to be wider for even the one plot i still want
-                # to keep comparing logistic scaled model and KC data?
-                if kc_panel != 'diag-binaries':
-                    xlim = (-6, 4)
-                else:
-                    xlim = (-6, 6)
-                warn(f'plot_mixsupp_dists: hardcoding {xlim=} for model vs KC plot')
-                g.set(xlim=xlim)
-
-            suptitle = f'{panel}\ndistribution of "mixture suppression" across KCs'
-            suptitle_y = 1.10
-            if MIX_SUPP_IN_RESPONDERS_ONLY:
-                suptitle += '\nsilent cells dropped'
-                if not (model_only or kc_only):
-                    suptitle += ' (both model and real KCs)'
-            else:
-                suptitle += '\nall cells included'
-
-            if g.col_names != []:
-                # this case is just when col= is not in facet_kws
-                assert model_stat is None
-                assert model_only or kc_only
-                g.set_titles('{col_name}')
-            else:
-                assert not (model_only or kc_only)
-                assert model_stat is not None
-                g.set_titles('')
-                stat_part = ('\n\nmix suppression computed on:\n'
-                    f'{model_stat} for model\n{kc_stat} for observed'
-                )
-                suptitle += stat_part
-                suptitle_y += 0.1
-
-            g.fig.suptitle(suptitle, y=suptitle_y)
-
-            # TODO what's lines=True doing for us?
-            add_fixed_legend(g, data, lines=True)
-
-            # TODO put odor (components + mix? just mix name?) in this actually
-            # (instead of ylabel), and show for both rows?
-            g.set_xlabels(diff_col2desc(diff_col))
-
-            assert len(g.row_names) > 1
-            assert g.axes.shape[0] == len(g.row_names)
-            for (i, j, hue), gdf in g.facet_data():
-                if hue != 0:
-                    continue
-
-                ax = g.axes[i, j]
-                ylabel = ''
-                if j == 0:
-                    ylabel = f'{g.row_names[i]} mix\ndensity across KCs'
-
-                if i != 0:
-                    ax.set_title('')
-
-                ax.set_ylabel(ylabel)
-
-            fname = f'{diff_col}_dists_{panel}'
-            plot_dir = plot_root
-            if model_only:
-                fname += '_model-only'
-            if kc_only:
-                fname += '_kc-only'
-                plot_dir = model_root
-
-            savefig(g, plot_dir, f'{fname}{fname_suffix}')
-
-        plot_mixsupp_dists(kde=True, fname_suffix='_kde')
-        plot_mixsupp_dists()
-        plot_mixsupp_dists(model_only=True)
-        plot_mixsupp_dists(kc_only=True)
+        plot_all_comparisons_for(plot_mixsupp_dists, df=mix_supp,
+            palette=source_palette
+        )
+        # this model vs KCs one is the only one we wanted to try with kde=True, so
+        # handling outside of plot_all_comparisons_for
+        plot_mixsupp_dists(mix_supp, plot_root, source_palette, kde=True,
+            fname_suffix='_kde'
+        )
 
         # TODO TODO TODO also one [pointplot?] plot of means (+CI) diff_col values?
         # (comparing across KCs/ORNs and KCs/models?)
@@ -8512,30 +9329,7 @@ def main():
                 # only one we have model data to compare against
                 kc_mix_df = kc_mix_df[kc_mix_df.pair_dilution_factor == 0]
 
-            # dtype of this is asserted bool in response_class_means_and_perfly_counts
-            kc_responded = kc_mix_df.pivot(
-                columns=fly_cols + ['roi'], index='odor', values='responded'
-            )
-            kc_responded = kc_responded.sort_index(kind='stable', key=odor_sort_fn)
-
-            is_responder = kc_responded.any()
-            assert _have_fly_cols(is_responder)
-            assert not is_responder.all(), 'expected to still have non-responders here'
-            del is_responder
-
-            # TODO refactor to share pivot -> sorting w/ `kc_responded` above
-            kc_responses = kc_mix_df.pivot(
-                columns=fly_cols + ['roi'], index='odor', values='value'
-            )
-            kc_responses = kc_responses.sort_index(kind='stable', key=odor_sort_fn)
-            assert not kc_responses.isna().any().any()
-
-            # TODO TODO TODO duplicate for ORN data (at least for frac response
-            # class plot at end? plot_means_and_counts too (meh)?)
-            print('PLOT_MEANS_AND_COUNTS FOR ORN DATA?')
-            # TODO TODO TODO need orn_responded, orn_responses, both w/ index=odor (one
-            # panel + mix), and columns = flyroi_cols
-
+            kc_responses, kc_responded = tidy2responses_and_response_mask(kc_mix_df)
             kc_class_means, kc_class_sizes = response_class_means_and_perfly_counts(
                 kc_responded, kc_responses
             )
@@ -8575,29 +9369,23 @@ def main():
             # think i do...) (still an issue?)
             assert kc_class_sizes.sum().equals(n_total_kcs)
 
-            # TODO also need for ORN data, or no b/c not calling add_missing...?
             ser_class_sizes = kc_class_sizes.stack(fly_cols)
             assert ser_class_sizes.notna().all()
-            #
 
-            fname_suffix = f'_{panel}_{mix}_kc'
+            mix_fname_suffix = f'_{panel}_{mix}'
+            fname_suffix = f'{mix_fname_suffix}_kc'
+            title_suffix = f'\n{panel}/{mix}'
             title = (
-                f'KCs: n={n_flies} flies ({n_total_kcs.sum()} ROIs)\n{panel}/{mix}'
+                f'KCs: n={n_flies} flies ({n_total_kcs.sum()} ROIs){title_suffix}'
             )
-
             # just so tiny values don't look really blue (when default vmin from
             # data is like -0.05 or something)
-            # TODO delete
-            # TODO TODO TODO set vmin like this on any other plots? mean ORN responses?
-            # some clustering of KC responses?
-            print('also hardcode vmin away from 0 on other diverging_cmap plots?')
-            #
+            # TODO TODO refactor to share this as KC_VMIN (-> w/ hierarch clust plots,
+            # etc)
             vmin = -0.25
             mmin = kc_class_means.min().min()
             assert mmin > vmin, f'{vmin=} {mmin=}'
-
             kc_stat = get_single_unique(kc_mix_df.stat)
-
             # TODO compare plot outputs if moved before add_missing_cells_... ?
             # (w/ n_total_kcs= still passed) (should be same as output that had
             # already had add_missing_cells... called)
@@ -8608,6 +9396,40 @@ def main():
                 # default to None? or remove this?
                 class_size_frac_thresh=CLASS_SIZE_FRAC_THRESH, vmin=vmin
             )
+            # TODO or keep this and use below, for agging class sizes?
+            del ser_class_sizes
+
+            if ANALYZE_ORN and kc_panel in panel2orn_flyroi_odor_stats:
+                orn_flyroi_odor_stats = panel2orn_flyroi_odor_stats[kc_panel]
+                assert orn_flyroi_odor_stats.notna().all().all()
+                orn_mix_df = orn_flyroi_odor_stats[orn_flyroi_odor_stats.mix == mix]
+                orn_responses, orn_responded = tidy2responses_and_response_mask(
+                    orn_mix_df
+                )
+                orn_class_means, orn_class_sizes = \
+                    response_class_means_and_perfly_counts(orn_responded, orn_responses)
+
+                fname_suffix = f'{mix_fname_suffix}_orn'
+                # input .columns.names must have flyroi_cols, as orn_responses does
+                n_flies, n_rois = count_flies_and_rois(orn_responses, verbose=False)
+                title = (
+                    f'ORNs: n={n_flies} flies ({n_total_kcs.sum()} ROIs){title_suffix}'
+                )
+                vmin = ORN_VMIN
+                mmin = orn_class_means.min().min()
+                assert mmin > vmin, f'{vmin=} {mmin=}'
+                plot_means_and_counts(orn_class_means, orn_class_sizes, model_root,
+                    'response-class', fname_suffix=fname_suffix, title=title,
+                    cbar_label=orn_response_desc, cmap=diverging_cmap, vmin=vmin,
+                    warn_=False,
+                    # nothing was being dropped with the thresh used for KCs/model KCs,
+                    # so setting None to silence the warning (while not changing
+                    # anything, since still no small classes will be dropped)
+                    class_size_frac_thresh=None,
+                    # necessary b/c max responder class has more than non-responder
+                    # class
+                    break_axes_for_nonresponders=False
+                )
 
             if mix == '5comp':
                 to_drop_mask = model_responded.index == binary_mix
@@ -8687,27 +9509,6 @@ def main():
                 'calculation'
             )
 
-            # TODO replace this w/ something from calls below, that also pass
-            # responses (to not compute twice)?
-            model_class_sizes = gb_model.apply(lambda x:
-                # not passing responses= to this call, and just selecting first
-                # returned value (second would be None w/o responses= anyway)
-                summarize_response_classes(x, verbose=False, warn_=False)[0
-                    ].to_frame()
-            )
-            assert model_class_sizes.columns.names == model_id_cols + [None]
-            assert (
-                model_class_sizes.columns.get_level_values(-1) == 'n_rois'
-            ).all()
-            model_class_sizes = model_class_sizes.droplevel(level=-1,axis='columns')
-            model_class_sizes = model_class_sizes.fillna(0)
-            assert np.allclose(model_class_sizes, model_class_sizes.astype(int))
-            model_class_sizes = model_class_sizes.astype(int)
-            assert model_class_sizes.sum().equals(
-                curr_model_responded.columns.to_frame().groupby(level=model_id_cols,
-                    sort=False).size()
-            )
-
             # should halve this same set for all single models too
             # (i.e. in all iterations of loop over gb_model below)
             unique_stats = curr_model_responses.columns.get_level_values('stat'
@@ -8777,6 +9578,9 @@ def main():
                         title += f'\nconnectome-APL={metadata["connectome_apl"]}'
                         fname_suffix += '_connectome-APL'
 
+                    # TODO also want mix + panel in title, like for KC one? (meh. busy
+                    # already)
+
                     n_total_rois = model2n_kcs[gn]
 
                     cbar_label = get_model_stat_label(stat,
@@ -8793,21 +9597,66 @@ def main():
                     )
                 del stat
 
+            # TODO replace this w/ something from calls below, that also pass
+            # responses (to not compute twice)?
+            model_class_sizes = gb_model.apply(lambda x:
+                # not passing responses= to this call, and just selecting first
+                # returned value (second would be None w/o responses= anyway)
+                summarize_response_classes(x, verbose=False, warn_=False)[0
+                    ].to_frame()
+            )
+            assert model_class_sizes.columns.names == model_id_cols + [None]
+            assert (
+                model_class_sizes.columns.get_level_values(-1) == 'n_rois'
+            ).all()
+            model_class_sizes = model_class_sizes.droplevel(level=-1,axis='columns')
+            model_class_sizes = model_class_sizes.fillna(0)
+            assert np.allclose(model_class_sizes, model_class_sizes.astype(int))
+            model_class_sizes = model_class_sizes.astype(int)
+            assert model_class_sizes.sum().equals(
+                curr_model_responded.columns.to_frame().groupby(level=model_id_cols,
+                    sort=False).size()
+            )
+
             assert model_class_sizes.index.names == kc_class_sizes.index.names
             model_class_sizes = model_class_sizes.sort_index()
             assert kc_class_sizes.equals(kc_class_sizes.sort_index())
             if not model_class_sizes.index.equals(kc_class_sizes.index):
+                # TODO also include a bit about ORN stuff? move all this after agg tho?
                 warn(f'{panel=} response classes only in either model or KC:\n'
                     f'{model_class_sizes.index.difference(kc_class_sizes.index)=}\n'
                     f'{kc_class_sizes.index.difference(model_class_sizes.index)=}'
                 )
 
+            # TODO do i really need to reindex until after the agg_within... anyway?
+            # don't think it should matter
             shared_index = kc_class_sizes.index.union(model_class_sizes.index)
+
+            assert kc_class_sizes.index.sort_values().equals(
+                model_class_sizes.index.sort_values()
+            ) or (
+                len(shared_index) > len(kc_class_sizes) or
+                len(shared_index) > len(model_class_sizes)
+            )
+
+            # TODO move other conditional w/ same condition from above to here, to
+            # de-dedupe?
+            if ANALYZE_ORN and kc_panel in panel2orn_flyroi_odor_stats:
+                orn_class_sizes = orn_class_sizes.unstack(fly_cols).fillna(0
+                    ).astype(int)
+                assert orn_class_sizes.index.names == kc_class_sizes.index.names
+                assert orn_class_sizes.columns.names == kc_class_sizes.columns.names
+
+                shared_index = shared_index.union(orn_class_sizes.index)
+
             # TODO also check it has all consecutive categories? prob don't care
             # that much...
             assert shared_index.equals(shared_index.sort_values())
 
+            # TODO assert these reindex calls aren't changing stuff in index before
+            # and/or changing sums (just to sanity check)
             kc_class_sizes = reindex(kc_class_sizes, shared_index, fill_value=0)
+
             # TODO move analysis of these before `kc_panel is None` check
             model_class_sizes = reindex(model_class_sizes, shared_index,
                 fill_value=0
@@ -8822,6 +9671,11 @@ def main():
                 ser = ser.rename('frac_response_class')
                 return ser
 
+            model_class_fracs = model_class_sizes / model_class_sizes.sum()
+            model_class_fracs = agg_within_mixresp_and_ncomps(model_class_fracs)
+            model_class_fracs = model_class_fracs.reset_index()
+            model_class_fracs['source_type'] = 'model'
+
             # TODO move this class fracs stuff out from depending on
             # model_mix_resps? (i mean, may still not want to analyze for
             # diag-binaries panel, which is only panel it's not currently defined
@@ -8829,47 +9683,56 @@ def main():
             kc_class_fracs = kc_class_sizes / kc_class_sizes.sum()
             assert np.isclose(kc_class_fracs.sum(), 1).all()
             assert kc_class_fracs.sum().index.names == fly_cols
-
-            model_class_fracs = model_class_sizes / model_class_sizes.sum()
-
             kc_class_fracs = agg_within_mixresp_and_ncomps(kc_class_fracs)
-            model_class_fracs = agg_within_mixresp_and_ncomps(model_class_fracs)
-            # TODO expand both indices to full posibility of response classes (up to
+            kc_class_fracs = kc_class_fracs.reset_index()
+            kc_class_fracs = add_source_and_class_cols(kc_class_fracs, 'KCs')
+
+            class_frac_list = [kc_class_fracs, model_class_fracs]
+            if ANALYZE_ORN and kc_panel in panel2orn_flyroi_odor_stats:
+                orn_class_sizes = reindex(orn_class_sizes, shared_index, fill_value=0)
+
+                orn_class_fracs = orn_class_sizes / orn_class_sizes.sum()
+                assert np.isclose(orn_class_fracs.sum(), 1).all()
+                assert orn_class_fracs.sum().index.names == fly_cols
+                orn_class_fracs = agg_within_mixresp_and_ncomps(orn_class_fracs)
+
+                orn_class_fracs = orn_class_fracs.reset_index()
+                orn_class_fracs = add_source_and_class_cols(orn_class_fracs, 'ORNs')
+                class_frac_list.append(orn_class_fracs)
+
+            # TODO expand both indices to full possibility of response classes (up to
             # max observed), and fill any missing values w/ 0. or do at end?
             # (delete? already doing somewhere, where i'm warning about difference
             # in class indices i think)
-            panel_class_fracs = pd.concat(
-                [x.reset_index() for x in [kc_class_fracs, model_class_fracs]],
+
+            panel_class_fracs = pd.concat([x for x in class_frac_list],
                 ignore_index=True
             )
+            # TODO do unconditionally?
             if not simplify_models:
                 panel_class_fracs.connectome_apl = \
                     panel_class_fracs.connectome_apl.fillna(False)
 
-            panel_class_fracs.source = panel_class_fracs.source.fillna('KCs')
-            panel_class_fracs[PNKC_CLASS_COL] = \
-                panel_class_fracs[PNKC_CLASS_COL].fillna('KCs')
-
             panel_class_fracs = panel_class_fracs.set_index(
-                model_id_cols + fly_cols + group_cols,
+                ['source_type'] + model_id_cols + fly_cols + group_cols,
                 verify_integrity=True
             ).squeeze()
             panel_class_fracs = addlevel(panel_class_fracs, 'mix', mix)
             panel_class_fracs = addlevel(panel_class_fracs, 'panel', panel)
             natmix_panel_class_frac_list.append(panel_class_fracs)
 
-            # TODO TODO TODO move/duplicate def of this before `kc_panel is None` check
+            # TODO TODO move/duplicate def of this before `kc_panel is None` check
             # (and move the model only calls up there too)
             model_mix_resps = all_model_mix_resps[all_model_mix_resps.mix == mix]
 
-            kc_mix_resps = flyroi_odor_stats[
-                flyroi_odor_stats.responded &
-                # this is subsetting down to just mix (binary OR 5comp) +
-                # (hardcoded) "top" component, consistent w/ what i'm currently
-                # doing on model data above
-                flyroi_odor_stats.odor.isin(model_mix_resps.odor.unique())
+            # TODO TODO TODO plot hists (one line per odor) for these
+            # TODO TODO TODO and versions w/ and w/o dropping non-responding
+            # (KC,odor) pairs
+            model_mix_allodor_resps = model_allodor_resp_strengths[
+                model_allodor_resp_strengths.mix == mix
             ]
-            kc_mix_resps = kc_mix_resps.drop(columns='responded')
+            assert not model_mix_allodor_resps.responded.all()
+            assert model_mix_allodor_resps.odor.nunique() > 2
 
             # currently we are filtering to only have responding (KC, odor) pairs
             # above (but since this is just for one limited plot of
@@ -8882,62 +9745,252 @@ def main():
             model_stats = [x for x in model_mix_resps.columns if 'num_spikes' in x]
             model_mix_resps = model_mix_resps.melt(
                 value_vars=model_stats, var_name='stat',
+                # TODO share id_vars def w/ processing of *allodor* version?
+                # should be same, no? (no, one below needs ['responded'] as well.
+                # already dropped from this one)
                 id_vars=[x for x in model_mix_resps.columns if x not in model_stats]
             )
+            model_mix_allodor_resps = model_mix_allodor_resps.melt(
+                value_vars=model_stats, var_name='stat', id_vars=[
+                    x for x in model_mix_allodor_resps.columns if x not in model_stats
+                ]
+            )
+
+            kc_mix_allodor_resps = flyroi_odor_stats[flyroi_odor_stats.mix == mix]
+            assert kc_mix_allodor_resps.responded.any()
+            assert (
+                set(kc_mix_allodor_resps.odor.unique()) ==
+                set(model_mix_allodor_resps.odor.unique())
+            )
+            kc_mix_allodor_resps = add_source_and_class_cols(kc_mix_allodor_resps,
+                'KCs'
+            )
+
+            # TODO better (more specific) name for these (to not need the allodor
+            # specifier in less filtered version)
+            kc_mix_resps = kc_mix_allodor_resps[
+                kc_mix_allodor_resps.responded &
+                # this is subsetting down to just mix (binary OR 5comp) + (hardcoded)
+                # "top" component, consistent w/ what i'm currently doing on model data
+                # above
+                kc_mix_allodor_resps.odor.isin(model_mix_resps.odor.unique())
+            ]
+            kc_mix_resps = kc_mix_resps.drop(columns='responded')
+
+            mix_resp_list = [kc_mix_resps, model_mix_resps]
+            mix_allodor_resp_list = [kc_mix_allodor_resps, model_mix_allodor_resps]
+            if ANALYZE_ORN and kc_panel in panel2kc_flyroi_odor_stats:
+                orn_mix_allodor_resps = orn_flyroi_odor_stats[
+                    orn_flyroi_odor_stats.mix == mix
+                ]
+                assert orn_mix_allodor_resps.responded.any()
+                assert (
+                    set(orn_mix_allodor_resps.odor.unique()) ==
+                    set(model_mix_allodor_resps.odor.unique())
+                )
+                orn_mix_allodor_resps = add_source_and_class_cols(orn_mix_allodor_resps,
+                    'ORNs'
+                )
+                mix_allodor_resp_list.append(orn_mix_allodor_resps)
+
+                orn_mix_resps = orn_mix_allodor_resps[
+                    orn_flyroi_odor_stats.responded &
+                    orn_flyroi_odor_stats.odor.isin(model_mix_resps.odor.unique())
+                ]
+                orn_mix_resps = orn_mix_resps.drop(columns='responded')
+                mix_resp_list.append(orn_mix_resps)
 
             # TODO delete this concatenation, if i'm just going to plot model vs KC
             # stuff separately below?
-            response_strengths = pd.concat([kc_mix_resps, model_mix_resps],
+            response_strengths = pd.concat(mix_resp_list, ignore_index=True)
+
+            allodor_response_strengths = pd.concat(mix_allodor_resp_list,
                 ignore_index=True
             )
-            # TODO refactor to share w/ other filling
+
+            # TODO refactor to share w/ other filling?
+            # TODO do i not want to unconditionally do this? (maybe i didn't for model
+            # params ordered by avg mixsupp plot?)
             if not simplify_models:
                 response_strengths['connectome_apl'] = \
                     response_strengths.connectome_apl.fillna(False)
+                # TODO do for allodor_* too?
 
-            response_strengths['source'] = response_strengths.source.fillna('KCs')
-            response_strengths[PNKC_CLASS_COL] = \
-                response_strengths[PNKC_CLASS_COL].fillna('KCs')
-            #
+            to_pickle(allodor_response_strengths,
+                model_root / f'allodor_response_strengths_{panel}_{mix}.p', verbose=True
+            )
+
+            # TODO TODO serialize these (and other concatenated outputs) (to at least
+            # pickle, if not parquet)
+            # TODO TODO save to plot_root instead?
+            to_pickle(response_strengths,
+                model_root / f'response_strengths_{panel}_{mix}.p', verbose=True
+            )
+            # TODO fix whatever dtype error i have trying to write this one with my
+            # to_parquet wrapper? (and also stock <df>.to_parquet)?
+
             # TODO TODO zscore these? or how to align? based on min/max?
             # (since we are limiting all KC data to responses, might make sense to
             # have min->0) (should i even need to do anything in logistic scaled
             # case? currently subtracting KC threshold (min, really) when comparing
             # against raw model 'num_spikes', inside plotting fn)
 
-            # TODO rename either this or the var before the loop
-            # (currently renaming one before loop at last second to all_*)
-            model_response_strengths = response_strengths[
-                response_strengths.source != 'KCs'
-            ]
-            kc_response_strengths = response_strengths[
-                response_strengths.source == 'KCs'
-            ]
-
-            # TODO TODO TODO also want response strength dist plots for ORNs vs KCs?
-            print('RESPONSE STRENGTH DISTS PLOTS FOR ORNS VS KCS?')
-
-            # TODO TODO TODO versions (one for KC, one for best model. necessarily
-            # on diff axes? unless diff linestyle/something?), where it's all
-            # components and mix, w/ hue for that? define distinct palette for that
             if not unrestricted_full_model_params:
-                kc_data = kc_response_strengths[kc_response_strengths.mix == mix]
-                # used to also have log_yscale=True versions of these, but they were
-                # never an improvement in my hands
-                for kc_only in [False, True]:
-                    plot_response_strength_dists(
-                        model_data=None if kc_only else model_response_strengths,
-                        kc_data=kc_data
-                    )
-                    # TODO TODO keep? mainly to check bounds of model dists are not
-                    # clipped/whatever too badly on kc+model plot
-                    # TODO TODO make sure xlim set to include all model data (or
-                    # just not set?), to sanity check KDE bounds, etc?
-                    if kc_only:
+                facet_kws = dict()
+
+                unique_odors = allodor_response_strengths.odor.unique()
+                # odors seem already sorted. assuming that for now.
+                # (and with these assertions, only issue could be component ordering)
+                assert is_mix(unique_odors[-1])
+                assert not any(is_mix(c) for c in unique_odors[:-1])
+
+                odor_palette = sns.color_palette('Set2', n_colors=len(unique_odors))
+                odor_palette = dict(zip(unique_odors, odor_palette))
+                # TODO what in here is emitting this warning? any issue? (or in some of
+                # the code above related to this plot)
+                # Warning: Boolean Series key will be reindexed to match DataFrame index
+
+                # if not model_only, then KC & ORN only (so we can have col=stat for
+                # version with model, and not have to remove empty axes)
+                for flags in all_bool_combos_of_length_n(3):
+                    include_nonresponses, model_only, log_yscale = flags
+
+                    # only want to try log_scale for this one case
+                    if log_yscale and not (model_only and include_nonresponses):
                         continue
-                    # TODO try to move this call before `kc_panel is None` check
-                    plot_response_strength_dists(model_data=model_response_strengths)
+
+                    data = allodor_response_strengths
+
+                    if not include_nonresponses:
+                        data = data[data.responded]
+
+                    fname = f'perodor-response-strengths_{panel}_{mix}'
+
+                    kws = dict(facet_kws)
+                    if model_only:
+                        data = data[data.source_type == 'model']
+                        kws['col'] = 'stat'
+                        if one_model_per_pnkc_class and simplify_models:
+                            # TODO also define for other cases?
+                            kws['row_order'] = ['uniform', 'claw']
+
+                        unit_str = 'KC'
+                        plot_dir = plot_root
+                    else:
+                        data = data[data.source_type.isin(('KCs', 'ORNs'))]
+                        unit_str = 'KC|glomerulus'
+                        plot_dir = model_root
+                        kws['row_order'] = ['ORNs', 'KCs']
+
+                    # TODO share this panel/mix stuff w/ other titles?
+                    suptitle = (
+                        f'{panel}/{mix}\nper-odor response strength distributions'
+                    )
+                    if not include_nonresponses:
+                        suptitle += f'\nresponder ({unit_str}, odor) pairs only'
+                    else:
+                        suptitle += (
+                            f'\nnon-responding ({unit_str}, odor) pairs included too'
+                        )
+                        fname += '_with-nonresponses'
+
+                    if model_only:
+                        fname += '_model-only'
+                    else:
+                        fname += '_kc-orn'
+
+                    if log_yscale:
+                        fname += '_logy'
+
+                    fg = sns.FacetGrid(data=data, row=PNKC_CLASS_COL, hue='odor',
+                        palette=odor_palette, sharex=False, sharey=False, **kws
+                    )
+                    def plot_one_odor_dist(**kwargs) -> None:
+                        # TODO TODO fill=True if log_yscale?
+                        return distplot(fill=False, **kwargs)
+
+                    fg.map_dataframe(plot_one_odor_dist, x='value', alpha=0.7,
+                        log_scale=(False, log_yscale)
+                    )
+
+                    for (i, j, hue), gdf in fg.facet_data():
+                        ax = fg.axes[i, j]
+                        if hue != 0:
+                            continue
+
+                        source_type = get_single_unique(gdf.source_type)
+                        if source_type in ('KCs', 'model'):
+                            unit_str = 'KCs'
+                        else:
+                            assert source_type == 'ORNs'
+                            unit_str = 'ORNs'
+                        ax.set_ylabel(f'density across {unit_str}')
+
+                        stat = get_single_unique_stat(gdf, strip_mean_prefix=False)
+                        ax.set_xlabel(stat)
+
+                        xmin = None
+                        xmax = None
+                        if stat == 'num_spikes':
+                            xmin = FIXED_NUM_SPIKES_XMIN
+                            xmax = FIXED_NUM_SPIKES_XMAX
+                            # TODO also include message like in other case using these?
+                            # for responder only version maybe?
+
+                        elif stat == 'mean_Fc_zscore':
+                            curr_xmin, curr_xmax = ax.get_xlim()
+
+                            # TODO maybe 4.5?
+                            xmax = 5.0
+                            if curr_xmax < xmax:
+                                xmax = curr_xmax
+
+                            if include_nonresponses:
+                                xmin = -0.75
+                                if curr_xmin > xmin:
+                                    xmin = curr_xmin
+                            else:
+                                xmin = curr_xmin
+
+                        elif stat == 'mean_peak_dff':
+                            ax.set_xlabel(orn_response_desc)
+                            xmin, curr_xmax = ax.get_xlim()
+                            if curr_xmax > 3:
+                                xmax = 3.0
+
+                        if xmin is not None:
+                            assert xmax is not None
+                            ax.set_xlim([xmin, xmax])
+
+                    fg.set_titles('{row_name}')
+                    fg.add_legend()
+
+                    # hspace: 0.2 very much not enough. 0.6 a bit too much. 0.4 good
                     #
+                    # right: 0.85 good? for mode_only [=2 columns] case, yes, but it's
+                    # thoroughly overlapping plot axes for 1 column case? trying to make
+                    # it so legend isn't touching right. 0.7 for 1 col? just barely.
+                    right = 0.82 if model_only else 0.675
+                    fg.fig.subplots_adjust(hspace=0.4, right=right)
+
+                    # fontsize=8 was still maybe a bit too small
+                    fg.fig.suptitle(suptitle, y=1.05, fontsize=9)
+                    savefig(fg, plot_dir, fname)
+
+                # TODO try to move this call before `kc_panel is None` check
+                # (or at least the subset of calls that does not involve model data)
+                #
+                # TODO TODO TODO maybe append all in loop, and then at end loop over
+                # panels/mixes and plot all? (for all the main things plotted) could
+                # then also serialize one master version of each analyzed quantity
+                plot_all_comparisons_for(plot_response_strength_dists,
+                    df=response_strengths, palette=source_palette
+                )
+                # only want to true separate row for this one
+                plot_response_strength_dists(df=response_strengths, plot_dir=model_root,
+                    palette=source_palette, source_types=('KCs', 'ORNs'),
+                    orn_kc_on_diff_rows=True
+                )
             else:
                 # TODO memory profile? am i doing something stupid?
                 # TODO actually check if _USE_KDEPLOT=True solves it? or never used
@@ -8949,8 +10002,8 @@ def main():
                     'current implementation (i.e. "Terminated")'
                 )
 
-        # TODO still regenerate for final thesis models, with -M models only, and no
-        # other CLI args
+        # TODO TODO still regenerate for final thesis models, with -M models only, and
+        # no other CLI args
         # TODO TODO (done, right? in outputs on /mnt/d0? was it using same
         # threshold?) + diagnostic(? meaning the claw dynamics and weights + other
         # KC/claw metadata, right?) plots for a few particular model variants?  (and
@@ -8981,6 +10034,7 @@ def main():
             kc_df = kc_df[kc_df.pair_dilution_factor == 0]
 
         pdf = pd.concat([pdf, kc_df], ignore_index=True)
+        del kc_df
 
         kc_pdf = pdf[pdf.source == 'KCs']
         # TODO maybe some / all of below should be moved into `if kc_panel is not None`
@@ -9012,7 +10066,7 @@ def main():
                 assert (kc_mdf.source == 'KCs').all()
                 plot_panel_stats_across_models(kc_mdf, panel, f'{suffix}_{mix}_kc-only')
 
-                # TODO TODO TODO is there not a model-only version of this call? if so,
+                # TODO TODO is there not a model-only version of this call? if so,
                 # move before `kc_panel is None` check (there is but i think it's buried
                 # within this, not a separate call of plot_panel_stats.... fix)
                 model_mdf = model_pdf[model_pdf.odor.isin(kc_mdf.odor.unique())]
@@ -9027,6 +10081,16 @@ def main():
     mean_model_response_rate = pd.concat(mean_model_response_rate_list,
         verify_integrity=True
     )
+
+    # TODO TODO TODO actually analyze mean_mix_supp_sers besides just for model ordering
+    # below (rename to exclude model_ prefix, and subset model_mean_mix_supp out from
+    # concatenation below) (make plot like in natmix_data/analysis.py with mean mixture
+    # suppression per source (per panel/mix too)
+    # TODO delete
+    print('MAKE MEAN MIXSUPP PLOT COMPARING ALL SOURCES (after concatenating KC + ORN '
+        'stuff above, etc)'
+    )
+    #
 
     # don't want to overwrite these outputs unless currently analyzing all models
     if unrestricted_full_model_params:
@@ -9129,9 +10193,10 @@ def main():
                     mixsupp_order_parquet=mixsupp_order_parquet,
                 )
     else:
+        # TODO just define diff_col as a const anyway? (or once somewhere?)
         if diff_col is None:
-            if model_mix_supp is not None:
-                diff_col = get_diff_col(model_mix_supp)
+            if mix_supp is not None:
+                diff_col = get_diff_col(mix_supp)
             else:
                 diff_col = 'mix_minus_comp-max'
 
@@ -9143,27 +10208,25 @@ def main():
         # contains both model and KC 5comp kiwi/control data
         class_fracs = pd.concat(natmix_panel_class_frac_list, verify_integrity=True)
 
-        # TODO second log-yscale version of this?
-        # TODO TODO or use similar approach to other plot (plot_mean_and_counts) to
-        # break Y axis
-        #
-        # TODO TODO maybe, for myself, show one w/ two thresholds 0.8 / 1.5 on remy's
-        # data?
-        # TODO maybe change black fly points to same color as KCs/ORNs/whatever
-        # estimate, to add ORN data with fly points as well
-        #
-        # TODO TODO do for yang's data too somehow? maybe w/ a separate row for each
-        # mix?
+        # TODO also try to save to parquet
+        to_pickle(class_fracs, model_root / 'class_fracs.p', verbose=True)
 
-        # TODO TODO TODO also compare ORNs vs KCs (sharing ORN thresh w/
-        # natmix_data/analysis.py) (still need to compute thresholded ORN data)
-        print('ALSO COMPARE ORNS VS KCS FOR RESPONSE CLASS PLOTS?')
+        # TODO TODO second log-yscale version of this? (easier. trying this)
+        # TODO or use similar approach to other plot (plot_mean_and_counts) to
+        # break Y axis (difficult b/c FacetGrid. going w/ log_yscale actually)
+        #
+        # TODO maybe, for myself, show one w/ two thresholds 0.8 / 1.5 on remy's data?
+        #
+        # TODO do for yang's data too somehow? maybe w/ a separate row for each mix?
 
         # TODO define Fc_zscore part from getting KC stat, not hardcoding
         title = (f'observed KC mean response rate: {kc_no_dilution_mean_resp_rate:.2g}'
             f'\n(with a mean Fc_zscore threshold of {NATMIX_KC_THRESH:.2f})'
         )
         title_y = 1.07
+
+        title_for_model_kc = str(title)
+        title_y_for_model_kc = title_y
         if one_model_per_pnkc_class:
             natmix_mean_model_response_rates = mean_model_response_rate.loc[
                 list(NATMIX_PANELS)].groupby(level=PNKC_CLASS_COL, sort=False).mean()
@@ -9172,30 +10235,46 @@ def main():
             for pnkc_class, mean_resp_rate in natmix_mean_model_response_rates.items():
                 model_rr_strs.append(f'{pnkc_class}={mean_resp_rate:.2g}')
             model_rr_str = ' '.join(model_rr_strs)
-            title += model_rr_str
-            title_y += 0.08
+            title_for_model_kc += model_rr_str
+            title_y_for_model_kc += 0.08
 
         assert 'mix' in class_fracs.index.names
+        # TODO just assert the whole thing is not NaN?
         assert class_fracs.index.get_level_values('mix').notna().any()
 
         shared_kws = dict(
-            title=title, hue=PNKC_CLASS_COL, palette=source_palette,
+            hue=PNKC_CLASS_COL, palette=source_palette, alpha=model_alpha, ci=CI,
             # NOTE: model_marker_kws only goes to the stripplot calls inside this fn
-            model_marker_kws=model_marker_kws, alpha=model_alpha,
-            facet_kws=dict(height=4, aspect=1.2), title_y=title_y
+            facet_kws=dict(height=4, aspect=1.2), model_marker_kws=model_marker_kws
         )
         for mix, mix_df in class_fracs.groupby(level='mix', sort=False):
             # TODO TODO say N flies (+ROIs?) (for each panel) somewhere. share code for
             # that from natmix_data/analysis.py?
-            fname_suffix = f'_{mix}'
-            plot_response_class_summary(mix_df, plot_root, fname_suffix=fname_suffix,
-                # TODO did i really just want jitter=0.3 for model-vs-kc version?
-                jitter=0.3, **shared_kws
-            )
-            mix_df_kconly = mix_df.loc[mix_df.index.get_level_values('source') == 'KCs']
-            fname_suffix += '_kc-only'
-            plot_response_class_summary(mix_df_kconly, model_root,
-                fname_suffix=fname_suffix, **shared_kws
+            mix_suffix = f'_{mix}'
+            source_type = mix_df.index.get_level_values('source_type')
+            mix_df_model_and_kc = mix_df.loc[source_type.isin(('KCs', 'model'))]
+            mix_df_kconly = mix_df.loc[source_type == 'KCs']
+            mix_df_kc_orn = mix_df.loc[source_type.isin(('KCs', 'ORNs'))]
+
+            # plot_response_class_summary will append '_logy' to fname_suffix if this is
+            # True
+            for log_yscale in (False, True):
+                plot_response_class_summary(mix_df_model_and_kc, plot_root,
+                    fname_suffix=mix_suffix, title=title_for_model_kc,
+                    title_y=title_y_for_model_kc, log_yscale=log_yscale, **shared_kws
+                )
+
+                fname_suffix = f'{mix_suffix}_kc-only'
+                plot_response_class_summary(mix_df_kconly, model_root,
+                    fname_suffix=fname_suffix, title=title, title_y=title_y,
+                    log_yscale=log_yscale, **shared_kws
+                )
+
+            # don't need a log_yscale=True version of this?
+            fname_suffix = f'{mix_suffix}_kc-orn'
+            plot_response_class_summary(mix_df_kc_orn, model_root,
+                fname_suffix=fname_suffix, title=title, title_y=title_y,
+                **shared_kws
             )
     else:
         warn('had no natmix panel class frac data! presumably because kiwi,control were'

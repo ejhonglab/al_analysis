@@ -11255,9 +11255,7 @@ def main():
         to_parquet(roi_best_plane_depths, roi_depths_parquet)
         copy_to_model_dirs.append(roi_depths_parquet)
 
-        to_pickle(roi_best_plane_depths, roi_depths_parquet.with_suffix('.p'),
-            write_parquet=False
-        )
+        to_pickle(roi_best_plane_depths, roi_depths_parquet.with_suffix('.p'))
 
     response_calc_params_json = output_root / response_calc_params_json_name
     # this will check round trip (that loaded contents match what we saved) by default,
@@ -11278,7 +11276,7 @@ def main():
     copy_to_model_dirs.append(consensus_csv)
 
     consensus_pickle = consensus_csv.with_suffix('.p')
-    to_pickle(consensus_df, consensus_pickle, write_parquet=False)
+    to_pickle(consensus_df, consensus_pickle)
 
     consensus_parquet = consensus_csv.with_suffix('.parquet')
     to_parquet(consensus_df, consensus_parquet)
@@ -12314,7 +12312,7 @@ def main():
     # subset str defined (same w/ csv prob) (maybe also not start / end date?)
     # (would want to warn if i wasn't gonna over write this for either of these
     # reasons...)
-    to_pickle(trial_df, output_root / ij_roi_responses_cache, write_parquet=False)
+    to_pickle(trial_df, output_root / ij_roi_responses_cache)
 
     # TODO delete? probably
     # TODO still want to keep this?

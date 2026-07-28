@@ -242,9 +242,9 @@ def get_produces_output_wrapped_fns() -> List[Callable]:
     return fns
 
 
-save_fn_name2extra_kws = {
-    'to_pickle': dict(write_parquet=False),
-}
+# TODO delete this dict? don't currently need
+save_fn_name2extra_kws = dict()
+#
 wrapped_fns = get_produces_output_wrapped_fns()
 @pytest.mark.parametrize('save_fn', wrapped_fns)
 def test_produces_output(tmp_path, save_fn):

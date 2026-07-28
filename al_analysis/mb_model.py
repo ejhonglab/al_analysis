@@ -45,12 +45,13 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba, LogNorm, SymLogNorm
 from matplotlib.patches import Patch
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from matplotlib.image import AxesImage
 from matplotlib.ticker import MaxNLocator
-from matplotlib.colors import to_rgba, LogNorm, SymLogNorm
+import matplotlib.transforms as transforms
 # TODO delete
 #from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib as mpl
@@ -14201,7 +14202,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # und_tuned
         #     print(f'{param_dir.name}')
         #   File "/home/tom/src/al_analysis/al_analysis/mb_model.py", line 17208, in fit_and_plot_mb_model
-        #     to_pickle(orn_deltas, param_dir / 'orn_deltas.p', write_parquet=False)
+        #     to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
         #   File "/home/tom/src/al_analysis/al_analysis/mb_model.py", line 13573, in fit_mb_model
         #
         # AssertionError: rel_sp_diff=0.709686183942399 > mp.kc.sp_acc=0.1
@@ -17017,7 +17018,7 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
             to_parquet(v, parquet_path)
 
             # TODO delete?
-            to_pickle(v, pickle_path, verbose=True, write_parquet=False)
+            to_pickle(v, pickle_path, verbose=True)
 
             # TODO delete hack eventually
             if k in keys_not_to_remove:
@@ -18013,7 +18014,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # just saving these for manual reference, or for use in -c check.
             # not loaded elsewhere in the code.
             to_parquet(orn_deltas, param_dir / 'orn_deltas.parquet')
-            to_pickle(orn_deltas, param_dir / 'orn_deltas.p', write_parquet=False)
+            to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
 
             # TODO also save a hemibrain-filled version of this?
             #
@@ -18033,12 +18034,12 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         # TODO delete pickle versions eventually (-> change model_responses_cache[_name]
         # to use '.parquet' instead of '.p')
-        to_pickle(responses, model_responses_cache, write_parquet=False)
-        to_pickle(spike_counts, model_spikecounts_cache, write_parquet=False)
+        to_pickle(responses, model_responses_cache)
+        to_pickle(spike_counts, model_spikecounts_cache)
 
         wPNKC_cache = param_dir / wPNKC_cache_name
         to_parquet(wPNKC, wPNKC_cache.with_suffix('.parquet'))
-        to_pickle(wPNKC, wPNKC_cache, write_parquet=False)
+        to_pickle(wPNKC, wPNKC_cache)
 
         # currently just assuming that both will be in same format
         # (both either np.arrays/pd.Series [depending on which i end up settling on
@@ -18221,8 +18222,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 extra_spikecounts_cache.with_suffix('.parquet')
             )
             # TODO delete eventually
-            to_pickle(extra_responses, extra_responses_cache, write_parquet=False)
-            to_pickle(extra_spikecounts, extra_spikecounts_cache, write_parquet=False)
+            to_pickle(extra_responses, extra_responses_cache)
+            to_pickle(extra_spikecounts, extra_spikecounts_cache)
         else:
             assert extra_spikecounts is None
 
@@ -21538,7 +21539,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
 
         # TODO delete? now that we have explicit parquet above
         dff_to_spiking_pickle = dff_to_spiking_data_csv.with_suffix('.p')
-        to_pickle(merged_dff_and_hallem, dff_to_spiking_pickle, write_parquet=False)
+        to_pickle(merged_dff_and_hallem, dff_to_spiking_pickle)
         #
 
         to_csv(merged_dff_and_hallem, dff_to_spiking_data_csv, index=False,
@@ -22352,7 +22353,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             )
             # TODO skip pickle now?
             to_pickle(unmodified_orn_dff_input_df,
-                unmodified_orn_dff_csv.with_suffix('.p'), write_parquet=False
+                unmodified_orn_dff_csv.with_suffix('.p')
             )
 
             to_csv(filtered_orn_dff_input_df, filtered_orn_dff_csv,
@@ -22362,9 +22363,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 filtered_orn_dff_csv.with_suffix('.parquet')
             )
             # TODO skip pickle now?
-            to_pickle(filtered_orn_dff_input_df, filtered_orn_dff_csv.with_suffix('.p'),
-                write_parquet=False
-            )
+            to_pickle(filtered_orn_dff_input_df, filtered_orn_dff_csv.with_suffix('.p'))
         else:
             warn(f'not writing either {filtered_orn_dff_csv.name} or '
                 f'{unmodified_orn_dff_csv.name}, because '
@@ -26273,12 +26272,15 @@ def get_roi_level(index: pd.Index) -> str:
 # TODO move this to al_util -> use elsewhere (like in al_analysis.py)
 def count_flies_and_rois(df: pd.DataFrame, *, verbose: bool = True
     ) -> Tuple[Optional[int], int]:
-    """Returns n_flies, n_rois. n_flies can be None, e.g. with model input.
+    """Returns n_flies, n_rois. n_flies can be None, e.g. with index model input.
+
+    `al_util.flyroi_cols` all expected to be in column index level names.
     """
     roi_col = get_roi_level(df.columns)
+    assert roi_col in df.columns.names
 
     flyroi_index_allna = df.isna().all()
-    assert roi_col in flyroi_index_allna.index.names
+    assert df.columns.names == flyroi_index_allna.index.names
     # other NaNs should be fine, but don't really expect any where it isn't the full
     # panel NaN/not, for a given column.
     assert not flyroi_index_allna.any()
@@ -28012,7 +28014,6 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
 
         # "proportion of vertical to horizontal extent of the slanted line"
         d = .5
-        # TODO TODO also plot these for any hlines and the non-responder bar
         break_kws = dict(marker=[(-1, -d), (1, d)], markersize=12, linestyle='none',
             color='k', mec='k', mew=1, clip_on=False
         )
@@ -28174,13 +28175,13 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         # nonresponders added, and counts_across_flies has not)
         #assert class_sizes.loc[counts_across_flies.index].equals(counts_across_flies)
     else:
-        if class_size_frac_thresh is None:
+        if class_size_frac_thresh is None and warn_:
             warn(f'{warn_prefix}setting `class_sizes=counts.copy()`. OK as long as no '
                 'classes have been dropped from input counts (e.g. small classes). to '
-                'silence, either:\n - pass class_sizes=<Series> (like counts, but '
+                'silence, either:\n - pass `class_sizes=<Series>` (like counts, but '
                 'without any classes dropped)\n - pass unfiltered counts, no '
-                'class_sizes, and use class_size_frac_thresh=<float-in-(0,1)>\n   (so '
-                'filtering is done in this function)\n'
+                'class_sizes, and use `class_size_frac_thresh=<float-in-(0,1)>`\n   (so'
+                ' filtering is done in this function)\n - pass `warn_=False`'
             )
         class_sizes = counts.copy()
 
@@ -28200,21 +28201,23 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
     n_total = None
     if n_total_rois is not None:
         n_total = get_n_total(n_total_rois)
+
     elif class_sizes is not None:
-        # TODO delete?
-        warn(f'{warn_prefix}setting `n_total = class_sizes.sum()` for this model '
-            'input. OK as long as non-responders already included in counts in '
-            '`class_sizes`. pass n_total_rois=<int|Series> to silence.\n'
-        )
-        #
+        if warn_:
+            warn(f'{warn_prefix}setting `n_total = class_sizes.sum()` for this model '
+                'input. OK as long as non-responders already included in counts in '
+                '`class_sizes`. pass `n_total_rois=<int|Series>` (or `warn_=False`) to '
+                # TODO which input? class_sizes? counts? only one?
+                'silence. n_total_rois must currently be Series if input has fly cols\n'
+            )
         n_total = class_sizes.sum()
     else:
-        # TODO delete?
-        warn(f'{warn_prefix}setting `n_total = counts.sum()` for this model input. '
-            'OK as long as non-responders already added. pass n_total_rois=<int|Series>'
-            ' to silence.\n'
-        )
-        #
+        if warn_:
+            warn(f'{warn_prefix}setting `n_total = counts.sum()` for this model input. '
+                'OK as long as non-responders already added. pass `n_total_rois=<int|'
+                'Series>` (or `warn_=False`) to silence. n_total_rois must currently be'
+                ' Series if input has fly cols\n'
+            )
         n_total = counts.sum()
 
     # in have_fly_cols case, add_missing_cells_to_nonresponders is called below
@@ -29003,16 +29006,13 @@ def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
 CI: Union[int, float] = 95
 BOOTSTRAP_SEED: int = 0
 
-# TODO TODO factor to al_analysis.mb_model?
-# TODO TODO change so consistent sort order of xlabels (see ORN data, where some of
-# 'mix=0 ...' labels come after some of the 'mix=1 ...' labels) (still?)
-# TODO TODO TODO try to include nonreponders in total used to make this plot
-# (pre-dropping fully silent cells [/ silent panel cells] in model cases)
-# (am i not currently? or was it a different plot?)
+# TODO share w/ model_yang_mixtures.py i copied this from?
+perfly_stripplot_kws = dict(alpha=0.3, legend=False, size=5.0)
+
 def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     title: Optional[str] = None, title_y: Optional[float] = None, ci: float = CI,
     facet_kws: Optional[ParamDict] = None, fname_suffix: str = '',
-    call_on_grids_before_save: Optional[Callable] = None,
+    log_yscale: bool = False, call_on_grids_before_save: Optional[Callable] = None,
     mixonly_responders_plot: bool = False, **kwargs) -> None:
     # TODO doc
     """
@@ -29026,64 +29026,43 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     """
     have_fly_cols = _have_fly_cols(class_fracs)
 
+    if not log_yscale:
+        log_scale = False
+    else:
+        log_scale = (False, True)
+
     frac_mix_only_responders = class_fracs[
         class_fracs.index.get_level_values('mix_resp').values &
         (class_fracs.index.get_level_values('n_comps') == 0)
     ].copy()
     frac_mix_only_responders.name = 'frac_mix-only_responders'
 
-    # TODO delete? (seems not needed?)
-    #
-    # TODO assert first two levels are what i expect(+require) for this?
-    # (and which are those again?)
-    #mix_only_slice = (True, 0)
-    ## NOTE: this needs to happen before class_fracs.reset_index() below
-    ## TODO TODO fix:
-    ## KeyError: 'True: boolean label can not be used without a boolean index'
-    #try:
-    #    frac_mix_only_responders = class_fracs.loc[mix_only_slice]
-    ## TODO delete
-    #except KeyError:
-    #    print()
-    #    print('class_fracs:')
-    #    print(class_fracs)
-    #    breakpoint()
-    #
-
     y_col = class_fracs.name
     assert y_col is not None
     class_fracs = class_fracs.reset_index()
 
-    # TODO delete if not needed (seems not?)
-    # TODO did i have some standard way of doing this before? check fly_col(s) instead
-    # of 'source'?
-    #if have_fly_cols:
-    #    from_model = class_fracs.date.isna()
-    #    assert from_model.equals(class_fracs.fly_num.isna())
-    #else:
-    #    from_model = pd.Series(index=class_fracs.index, data=True)
-    #
+    hue = kwargs.get('hue')
+    assert hue is not None
+    # TODO how come we don't need marker='o' here? add it?
+    # (added for ax.plot calls putting puts on x-axis bottom (=0) in log_yscale case,
+    # but seems to be default for sns.pointplot?)
+    pointplot_kws = dict(markerfacecolor='none', linestyle='none')
 
     # TODO include N/fraction here?
     class_fracs['response_class_str'] = class_fracs.apply(
         lambda x: format_response_class((x['mix_resp'], x['n_comps'])), axis='columns'
     )
-
-    def plot_fn(data, *cols, model_marker_kws: Optional[ParamDict] = None,
-        jitter: Union[float, bool] = 0.3, capsize: float = 0.0, **kwargs) -> None:
+    def plot_fn(data, model_marker_kws: Optional[ParamDict] = None,
+        jitter: Union[float, bool] = 0.07, capsize: float = 0.0, **kwargs) -> None:
         if not have_fly_cols:
             model_data = data
         else:
-            # TODO TODO rename from_kcs from_flies? (to be inclusive of ORN case,
-            # assuming i want that?)
-            # TODO TODO also check hue column isn't 'orn', and/or is in a set of
-            # values matching KC data ('KCs' / 'Fc_zscore')?
-            from_kcs = data.date.notna()
-            assert from_kcs.equals(data.fly_num.notna())
-            # TODO otherwise, would need to have call below in a conditional
-            assert from_kcs.any()
+            from_flies = data.date.notna()
+            assert from_flies.equals(data.fly_num.notna())
+            assert from_flies.any()
 
-            model_data = data[~from_kcs]
+            model_data = data[~from_flies]
+            fly_data = data[from_flies]
 
             # TODO minimize entanglement w/ model_yang_mixtures.py code i copied this
             # from
@@ -29096,35 +29075,31 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
 
             # need dodge=False here as long as we only have one hue level
             # here, or else will get ZeroDivisionError
-            # TODO TODO fix how hue='source' and color=<some color RGB triple> in
-            # kwargs (produces FutureWarning -> error) (fixed?)
-            # TODO TODO is it only an issue here b/c there are actually multiple
-            # unique hue='source' values in problem call (b/c 'orns' incorrectly marked
-            # as KCs here) (would palette still fix it tho?) (fixed?)
-            sns.pointplot(data[from_kcs], *cols, dodge=False, markerfacecolor='none',
-                # TODO make line thicker, now that capsize=0 by default? other changes?
-                # TODO try legend=True again?
-                #legend=False,
-                linestyle='none', seed=BOOTSTRAP_SEED, err_kws=err_kws,
-                errorbar=('ci', ci), capsize=capsize, **kwargs
+            # TODO make line thicker, now that capsize=0 by default? other changes?
+            sns.pointplot(fly_data, dodge=False, seed=BOOTSTRAP_SEED, err_kws=err_kws,
+                errorbar=('ci', ci), capsize=capsize, **pointplot_kws, **kwargs
             )
+            have_model = len(model_data) > 0
+            if not have_model:
+                stripplot(fly_data, **perfly_stripplot_kws,
+                    **{k: v for k, v in kwargs.items() if k != 'alpha'}
+                )
         #
 
         # TODO allow overriding? i assume this can currently conflict w/
         # model_marker_kws/kwargs?
-        marker = '.'
+        uniform_apl_marker = '.'
 
         if model_marker_kws is None:
             model_marker_kws = dict()
 
         if 'connectome_apl' not in model_data.columns:
-            stripplot(model_data, *cols, jitter=jitter, dodge=False, marker=marker,
+            stripplot(model_data, jitter=jitter, dodge=False, marker=uniform_apl_marker,
                 **model_marker_kws, **kwargs
             )
         else:
             # TODO move these to module level here (-> import in
             # model_yang_mixtures.py)? (duplicated there)
-            uniform_apl_marker = '.'
             connectome_apl_marker = '+'
 
             # TODO change to not have this as a strict requirement, and only do if
@@ -29143,9 +29118,72 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
                 # can't use float dodge here like in some other places unfortunately.
                 # TODO ig i could make figure wider?
                 # jitter=1.0 is too much. 0.3 too much too, esp w/ aspect=1.1
-                stripplot(gdf, *cols, jitter=jitter, dodge=False, marker=marker,
+                stripplot(gdf, jitter=jitter, dodge=False, marker=marker,
                     **model_marker_kws, **kwargs
                 )
+
+        if log_yscale:
+            # TODO could use my np seed context manager (in viz, used in stripplot
+            # wrapper) to seed some x offsets to apply here?
+            group_cols = ['mix_resp', 'n_comps']
+            if len(model_data) > 0 and len(fly_data) > 0:
+                c1 = model_data[group_cols].drop_duplicates().reset_index(drop=True)
+                c2 = fly_data[group_cols].drop_duplicates().reset_index(drop=True)
+                assert c1.equals(c2)
+
+            ax = plt.gca()
+
+            xticklabels = ax.get_xticklabels()
+            xtick_pos = [x.get_position() for x in xticklabels]
+            assert all(x[-1] == 0 for x in xtick_pos)
+            all_xs = [x[0] for x in xtick_pos]
+            assert all_xs == list(range(len(xticklabels)))
+            xticklabels = [x.get_text() for x in xticklabels]
+            assert len(xticklabels) == len(set(xticklabels))
+
+            palette = kwargs.get('palette')
+            assert palette is not None
+            alpha = kwargs.get('alpha', 0.5)
+
+            kc_kws = dict(pointplot_kws)
+            # TODO is this in kwargs? or how is it shown correctly above but not here?
+            # is that default marker for pointplot?
+            kc_kws['marker'] = 'o'
+
+            model_stripplot_kws = dict(marker=uniform_apl_marker, **model_marker_kws)
+            # ax.plot and ax.scatter both don't like this. should i set this to
+            # markersize? i feel like they weren't equivalent before...
+            size = model_stripplot_kws.pop('size', None)
+            model_stripplot_kws['markersize'] = size
+            # now w/ ax.plot, getting complaing about edgecolor
+            model_stripplot_kws.pop('edgecolor', None)
+
+            trans = transforms.blended_transform_factory(ax.transData, ax.transAxes)
+            for df, kws, break_plot_fn in zip(
+                    [model_data, fly_data], [model_stripplot_kws, kc_kws],
+                    [ax.plot, ax.plot]
+                ):
+                if len(df) == 0:
+                    continue
+
+                empty_class_rows = df.frac_response_class == 0
+                empty_class_df = df.loc[empty_class_rows].drop_duplicates(
+                    subset=['response_class_str', hue]
+                )
+                # TODO delete? put behind verbose= flag?
+                if len(empty_class_df) > 0:
+                    print(f'{len(empty_class_df)} empty class points will be plotted')
+                #
+                empty_class_strs = empty_class_df['response_class_str']
+
+                for index, cstr in empty_class_strs.items():
+                    xdata = xticklabels.index(cstr)
+                    # TODO need to support more than dict palette? (prob not)
+                    hue_level = df.loc[index, hue]
+                    color = palette[hue_level]
+                    break_plot_fn([xdata], [0], transform=trans, color=color,
+                        clip_on=False, alpha=alpha, **kws
+                    )
 
     if facet_kws is None:
         facet_kws = dict()
@@ -29157,9 +29195,9 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     # TODO should i set sharex=False? should i fill in any that might be missing in one
     # panel but not the other?
     cg = sns.FacetGrid(data=class_fracs, col='panel', **facet_kws)
-    # TODO TODO problem that hue='source' here (when despite that, color= specified in
-    # some calls internally, causing FutureWarning->error)
-    cg.map_dataframe(plot_fn, x='response_class_str', y=y_col, **kwargs)
+    cg.map_dataframe(plot_fn, x='response_class_str', y=y_col, log_scale=log_scale,
+        **kwargs
+    )
     cg.set_titles('{col_name}')
     cg.fig.subplots_adjust(wspace=0.3)
 
@@ -29225,6 +29263,84 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     )
 
     cg.add_legend()
+
+    for ax in cg.axes.flat:
+        ax.tick_params(labelleft=True)
+
+    ymax = 1.0
+    # NOTE: can not have ymin=0 for log_yscale=True version, but it just warns and
+    # ignores. do i still want to force a certain scale or no?
+    if log_yscale:
+        fname_suffix += '_logy'
+        empty_classes = class_fracs[(class_fracs.frac_response_class == 0)
+            ].drop_duplicates(subset=[hue, 'response_class_str'])
+        n_empty_classes = len(empty_classes)
+        # TODO delete? at least drop some columns?
+        #if n_empty_classes > 0:
+        #    warn(f'{fname_suffix=}: {n_empty_classes=} empty classes, which can not '
+        #        f'typically be displayed with {log_yscale=}:\n'
+        #        f'{empty_classes.to_string(index=False)}'
+        #    )
+
+        # TODO this work for everything? assertion below (starting from ymin in original
+        # ax.get_ylim() failed in at least one case, with (in 5comp case):
+        # ymin=0.00030395646741952315 >= min_positive_frac=0.00017908309455587392
+        # TODO only hardcode this if needed? look ok for binary too?
+        ymin = .0001
+        min_positive_frac = class_fracs.frac_response_class.replace(0, np.nan).dropna(
+            ).min()
+        assert ymin < min_positive_frac, f'{ymin=} >= {min_positive_frac=}'
+        cg.set(ylim=(ymin, ymax))
+
+        # TODO delete? or integrate w/ hardcode? (i.e. falling back to this sometimes,
+        # like if commented assertion below would not fail?)
+        ylim_set = set([ax.get_ylim() for ax in cg.axes.flat])
+        assert len(ylim_set) == 1
+        ylim = ylim_set.pop()
+        curr_ymin, curr_ymax = ylim
+
+        yticks = None
+        for ax in cg.axes.flat:
+            if yticks is None:
+                yticks = ax.get_yticks()
+                yticklabels = ax.get_yticklabels()
+            else:
+                curr_yticks = ax.get_yticks()
+                assert np.array_equal(curr_yticks, yticks)
+        assert yticks is not None
+
+        mask = (yticks <= curr_ymax) & (yticks >= curr_ymin)
+        yticks = yticks[mask]
+        assert yticks.min() == curr_ymin
+        assert yticks.max() == curr_ymax
+        yticklabels = list(np.array(yticklabels)[mask])
+
+        # TODO flag to disable this relabeling?
+        if curr_ymax == 1:
+            top_label = yticklabels[-1]
+            top_label_text = top_label.get_text()
+            expected_top = '$\\mathdefault{10^{0}}$'
+            assert top_label_text == expected_top, ('expected top_label_text='
+                f'{expected_top} (for ymax=1) but got {top_label_text=}. just update '
+                'expected_top in code?'
+            )
+            top_label.set_text('$\\mathdefault{1}$')
+
+        if ymin == 0.0001:
+            bottom_label = yticklabels[0]
+            bottom_label_text = bottom_label.get_text()
+            expected_bottom = '$\\mathdefault{10^{-4}}$'
+            assert bottom_label_text == expected_bottom, ('expected bottom_label_text='
+                f'{expected_bottom} (for {ymin=}) but got {bottom_label_text=}. just '
+                'update expected_bottom in code?'
+            )
+            bottom_label.set_text('$\\mathdefault{0}$')
+
+        yticklabel_strs = [x.get_text() for x in yticklabels]
+        for ax in cg.axes.flat:
+            ax.set_yticks(yticks, labels=yticklabel_strs)
+    else:
+        cg.set(ylim=(0, ymax))
 
     # saves `frac_response_class.pdf`
     savefig(cg, plot_dir, f'{y_col}{fname_suffix}', bbox_inches='tight')
