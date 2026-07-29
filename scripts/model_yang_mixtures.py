@@ -52,12 +52,13 @@ from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
     read_params, exclude_params, calc_mix_suppression, get_diff_col, diff_col2desc,
     FULL_MODEL_KW_LIST, NoCachedModelOutputsError, logistic, summarize_response_classes,
     add_missing_cells_to_nonresponders, format_response_class, kc_type_hue_order,
-    plot_response_class_summary, get_fly_color_series, KC_TYPE, count_flies_and_rois,
-    get_fitmbmodel_default, TRY_ALL_MODELS_WITH, TRY_NONCLAW_MODELS_WITH,
-    TRY_CLAW_MODELS_WITH, TRY_BOUTON_MODELS_WITH, drop_binaries_mixdilutions_and_pfo,
-    drop_silent_model_cells, analyze_spatial_claws, model_pnkc_class, is_mix,
-    EXPECTED_MODEL_PNKC_CLASSES, REMY_KC_RESPONSE_THRESHOLD, NATMIX_ORN_RESPONSE_THRESH,
-    plot_means_and_counts, print_logistic_scaling_effect, CLASS_SIZE_FRAC_THRESH, CI
+    get_fly_color_series, KC_TYPE, count_flies_and_rois, get_fitmbmodel_default,
+    TRY_ALL_MODELS_WITH, TRY_NONCLAW_MODELS_WITH, TRY_CLAW_MODELS_WITH,
+    TRY_BOUTON_MODELS_WITH, drop_binaries_mixdilutions_and_pfo, drop_silent_model_cells,
+    analyze_spatial_claws, model_pnkc_class, is_mix, EXPECTED_MODEL_PNKC_CLASSES,
+    REMY_KC_RESPONSE_THRESHOLD, NATMIX_ORN_RESPONSE_THRESH, plot_means_and_counts,
+    print_logistic_scaling_effect, CLASS_SIZE_FRAC_THRESH, CI, plot_avg_mixsupp,
+    plot_response_class_summary
 )
 from al_analysis.al_analysis import fill_to_hemibrain
 
@@ -3972,7 +3973,9 @@ def plot_mixsupp_dists(df: pd.DataFrame, plot_dir: Path, palette: Palette,
             #
             # TODO like this? 0.3 was too much desat for kc_color='m', and OK for cyan
             # 0.5 was still similar.
-            binary_desat = 0.65
+            #binary_desat = 0.65
+            # 0.65 not enough
+            binary_desat = 0.55
             fullmix_desat = 1.0
 
             # TODO actually do something with mix order here or no?
@@ -6616,6 +6619,18 @@ def main():
         f'{unique_model_pnkc_classes=}'
     source_palette = pnkc_classes2source_palette(unique_model_pnkc_classes)
 
+    # TODO need to check if we actually load KC data? prob doesn't matter...
+    source_palette['KCs'] = kc_color
+
+    # TODO could use tab: red/purple/cyan/gray for one instead?
+    # TODO like cyan?
+    source_palette['ORNs'] = 'tab:cyan'
+    #source_palette['ORNs'] = 'tab:brown'
+    # TODO try for orn? didn't like cause ugly i think, but want something distinct from
+    # KC ='m', and not sure any of purple/brown/gray good for that
+    #source_palette['EAG'] = 'tab:olive'
+    source_palette['EAG'] = 'tab:gray'
+
     if model_ids is None:
         # will take a couple seconds as-is (when run w/ -f [the "full" model list])
         model_ids = model_roi_odor_df[model_cols + ['model_dirname']].drop_duplicates()
@@ -6670,18 +6685,6 @@ def main():
         'mean_num_spikes': KC_RESP_COL,
         'mean_logistic_scaled_num_spikes': KC_RESP_COL,
     }
-
-    # TODO need to check if we actually load KC data? prob doesn't matter...
-    source_palette['KCs'] = kc_color
-
-    # TODO could use tab: red/purple/cyan/gray for one instead?
-    # TODO like cyan?
-    source_palette['ORNs'] = 'tab:cyan'
-    #source_palette['ORNs'] = 'tab:brown'
-    # TODO try for orn? didn't like cause ugly i think, but want something distinct from
-    # KC ='m', and not sure any of purple/brown/gray good for that
-    #source_palette['EAG'] = 'tab:olive'
-    source_palette['EAG'] = 'tab:gray'
 
     assert 'roi' in id_cols
     assert 'connectome_apl' not in id_cols
@@ -8741,6 +8744,7 @@ def main():
         'fur', 'ms', 'va', 'EtOH', 'IAol', 'IaA'
     ]
     model_mean_mix_supp_sers = []
+    mean_mixsupp_list = []
     # TODO TODO is the change from 2026-05-10 outputs to those on 2026-05-20 just
     # the change in tuning convergence? or what else? is it only the wd20 and prat-claws
     # stuff moving? ignore LR cache and regen?
@@ -9101,6 +9105,7 @@ def main():
         kc_mix_supp = add_source_and_class_cols(kc_mix_supp, 'KCs')
 
         mix_supp_list = [model_mix_supp, kc_mix_supp]
+        orn_mix_supp = None
         if ANALYZE_ORN and kc_panel in panel2orn_mix_supp:
             orn_mix_supp = panel2orn_mix_supp[kc_panel]
             orn_mix_supp = add_source_and_class_cols(orn_mix_supp, 'ORNs')
@@ -9209,10 +9214,55 @@ def main():
             # factors (as concentrations are stripped at this point)
             kc_mix_supp = kc_mix_supp[kc_mix_supp.pair_dilution_factor == 0].copy()
 
+        # TODO TODO delete this (and replace w/ subsetting model from whatever overall
+        # mean mixsupp thing i create, after loop)?
+        model_nonroi_levels = [
+            x for x in model_mix_supp.columns if x not in ('roi', diff_col)
+        ]
+        # TODO (still an issue?) preserve model_dirname (prob not lost here. where
+        # above is it?) (or just add back below?)
+        model_mean_mix_supp = model_mix_supp.groupby(model_nonroi_levels, sort=False
+            )[diff_col].mean()
+        # NOTE: there is no 'mix' level here, as we are averaging over all the
+        # currently-still-analyzed model odors, which include 5comp odors as well as
+        # the undiluted binary mix. should be comparable to the KC mean response
+        # rate calculated above (the one used towards end, for part of response
+        # class plot titles)
+        model_mean_mix_supp = addlevel(model_mean_mix_supp, 'panel', panel)
+        model_mean_mix_supp_sers.append(model_mean_mix_supp)
+        #
+
+        if 'pair_dilution_factor' in mix_supp.columns:
+            warn('dropping pair_dilution_factor other than 0/NaN for all remaining '
+                'mixture suppression analysis in this panel (or across panels)'
+            )
+            mix_supp = mix_supp[~mix_supp.pair_dilution_factor.isin((1,2))].copy()
+            remaining_vals = set(mix_supp.pair_dilution_factor.dropna().unique())
+            assert remaining_vals == {0}, f'{remaining_vals=}'
+            mix_supp = mix_supp.drop(columns='pair_dilution_factor')
+
+        group_cols = [x for x in mix_supp.columns if x not in ('roi', diff_col)]
+
+        put_first = ['panel', 'mix', 'source_type', 'model_pnkc_class', 'source']
+        assert all(x in group_cols for x in put_first)
+        rest = [x for x in group_cols if x not in put_first]
+        group_cols = put_first + rest
+        del put_first, rest
+
+        # need dropna=False to not drop model data (where fly_cols=['date', 'fly_num']
+        # will be NaT / NaN)
+        panel_mean_mixsupp = mix_supp.groupby(group_cols, dropna=False)[diff_col].mean()
+        mean_mixsupp_list.append(panel_mean_mixsupp)
+        del group_cols
+
+        # in case i were to accidentally try to use below (for analyses that should
+        # exclude `pair_dilution_factor != 0`
+        del kc_mix_supp
+
         # TODO TODO factor this into a separate plotting fn too?
         facet_kws = dict()
         # TODO are there any panels where this isn't true? which?
-        # TODO TODO why is there NaN in mix here? add dropna flag to this?
+        # TODO why is there NaN in mix here? add dropna flag to this? (still?)
         multiple_mixes = has_multiple_mixes(mix_supp)
         if multiple_mixes:
             # TODO use row like above, or hue here?
@@ -9225,9 +9275,18 @@ def main():
                 hue='mix', palette='cubehelix' if panel in NATMIX_PANELS else 'husl'
             )
 
+        # need to redef kc_mix_supp like this now that we've dropped
+        # pair_dilution_factor != 0 in mix_supp, but not kc_mix_supp
+        kc_mix_supp = mix_supp[mix_supp.source == 'KCs']
         for data, fname_part in zip(
                 [kc_mix_supp, orn_mix_supp], ['kc-only', 'orn-only']
             ):
+            if data is None:
+                assert panel not in NATMIX_PANELS
+                assert fname_part == 'orn-only'
+                warn(f'{panel=}: skipping mixsupp_per-fly_dists_* plot b/c no ORN data')
+                continue
+
             # TODO refactor to share below w/ *_kc-only_pair-dilutions.pdf stuff above?
             # TODO say i'm dropping non-responders in all mixsupp plots somewhere
             g = sns.FacetGrid(data=data, col='panel', **facet_kws)
@@ -9255,63 +9314,27 @@ def main():
             savefig(g, model_root, f'mixsupp_per-fly_dists_{panel}_{fname_part}')
 
 
-        model_nonroi_levels = [
-            x for x in model_mix_supp.columns if x not in ('roi', diff_col)
-        ]
-        # TODO (still an issue?) preserve model_dirname (prob not lost here. where
-        # above is it?) (or just add back below?)
-        model_mean_mix_supp = model_mix_supp.groupby(model_nonroi_levels, sort=False
-            )[diff_col].mean()
-
-        # NOTE: there is no 'mix' level here, as we are averaging over all the
-        # currently-still-analyzed model odors, which include 5comp odors as well as
-        # the undiluted binary mix. should be comparable to the KC mean response
-        # rate calculated above (the one used towards end, for part of response
-        # class plot titles)
-        model_mean_mix_supp = addlevel(model_mean_mix_supp, 'panel', panel)
-        # TODO TODO TODO also append KC / ORN data, and use that to plot mean (per fly,
-        # for those), after loop. split out the model data still for the sorting +
-        # saving of model params plot (that this is currently used for)
-        model_mean_mix_supp_sers.append(model_mean_mix_supp)
-
-        # TODO delete?
-        # TODO use use prior def of model_mix_supp? does code below actually need
-        # anything added to mix_supp?
-        # TODO try to define + use before we skip ananlysis w/o kc panel (or compute
-        # directly from model_mean_mix_supp, also defined earlier)
-        #model_mix_supp = mix_supp[~from_kcs]
-
         # TODO in each facet title, say how many nonresponders were dropped
         # (or in suptitle/legend for KCs?) would probably need a CSV for models...
 
-        # TODO TODO try to define earlier (s.t. KC data can be passed in), so that
-        # model-only plot can run without any KC data present
         # TODO TODO figure out how to show num_spikes and KC computed data on same
         # scale (percentile? zscore?) (currently just not plotting those two against
         # each other, but removing col='stat' option from call plotting both model
         # and KC data)
+
         plot_all_comparisons_for(plot_mixsupp_dists, df=mix_supp,
             palette=source_palette
         )
+        # TODO TODO for diag-binaries KC-only case, make a version where it's a
+        # diff hue per mean line, rather than a separate row? (+ try to share palette
+        # with the per-fly version of the plot, where they are already on one facet)
+        #
         # this model vs KCs one is the only one we wanted to try with kde=True, so
         # handling outside of plot_all_comparisons_for
         plot_mixsupp_dists(mix_supp, plot_root, source_palette, kde=True,
             fname_suffix='_kde'
         )
 
-        # TODO TODO TODO also one [pointplot?] plot of means (+CI) diff_col values?
-        # (comparing across KCs/ORNs and KCs/models?)
-        # (w/ panel/mix combos all separate, but otherwise combining data)
-
-        # TODO TODO compare mix response amplitude across KCs and models? or
-        # how do i want to handle that? (already sufficiently captured between the
-        # mean response amplitude + mean sparsity plot?)
-        # TODO TODO maybe just add distributions of response amplitude for each
-        # odor, across all KCs? could have one hue (line) per odor, and one facet
-        # per KCs and for each model variant? or just have two linestyles (one for
-        # all components, one for 5component mix, and then use hue for KCs vs model
-        # variants? and normalize each KDE so component one doesn't swamp mix
-        # responders)
         analyze_resp_strengths_and_classes_within = []
         if panel in NATMIX_PANELS:
             # TODO define from something else in a dataframe we already have here,
@@ -9725,9 +9748,6 @@ def main():
             # (and move the model only calls up there too)
             model_mix_resps = all_model_mix_resps[all_model_mix_resps.mix == mix]
 
-            # TODO TODO TODO plot hists (one line per odor) for these
-            # TODO TODO TODO and versions w/ and w/o dropping non-responding
-            # (KC,odor) pairs
             model_mix_allodor_resps = model_allodor_resp_strengths[
                 model_allodor_resp_strengths.mix == mix
             ]
@@ -10003,7 +10023,8 @@ def main():
                 )
 
         # TODO TODO still regenerate for final thesis models, with -M models only, and
-        # no other CLI args
+        # no other CLI args (should be done again now on 2026-07-28. just need to check
+        # outputs)
         # TODO TODO (done, right? in outputs on /mnt/d0? was it using same
         # threshold?) + diagnostic(? meaning the claw dynamics and weights + other
         # KC/claw metadata, right?) plots for a few particular model variants?  (and
@@ -10082,18 +10103,61 @@ def main():
         verify_integrity=True
     )
 
-    # TODO TODO TODO actually analyze mean_mix_supp_sers besides just for model ordering
-    # below (rename to exclude model_ prefix, and subset model_mean_mix_supp out from
-    # concatenation below) (make plot like in natmix_data/analysis.py with mean mixture
-    # suppression per source (per panel/mix too)
-    # TODO delete
-    print('MAKE MEAN MIXSUPP PLOT COMPARING ALL SOURCES (after concatenating KC + ORN '
-        'stuff above, etc)'
+    mean_mixsupp = pd.concat(mean_mixsupp_list, verify_integrity=True).reset_index()
+    # TODO TODO serialize this to parquet too
+    to_pickle(mean_mixsupp, plot_root / 'mixsupp-avg.p', verbose=True)
+
+    def add_model_suffix(x: str) -> x:
+        if x in EXPECTED_NONMODEL_PNKC_VALS:
+            return x
+        else:
+            return f'{x} model'
+
+    for_avg_mixsupp_plot = mean_mixsupp.copy()
+
+    # TODO define this from data, if i have something other than that
+    pnkc_class_order = ['ORNs', 'uniform', 'claw', 'bouton', 'KCs']
+    for_avg_mixsupp_plot = for_avg_mixsupp_plot.sort_values(by=PNKC_CLASS_COL,
+        kind='stable', key=lambda x: x.map(pnkc_class_order.index)
     )
-    #
+
+    for_avg_mixsupp_plot[PNKC_CLASS_COL] = for_avg_mixsupp_plot[PNKC_CLASS_COL
+        ].map(add_model_suffix)
+
+    avg_mixsupp_palette = {add_model_suffix(k): v for k, v in source_palette.items()}
+
+    # TODO TODO want to plot the 'diag-binaries' stuff separately or nah? (and need to
+    # normalize (w/ panel2kc_panel, if so?)?
+    mean_mixsupp_natmix_only = for_avg_mixsupp_plot[
+        for_avg_mixsupp_plot.panel.isin(NATMIX_PANELS)
+    ]
+    # initially tried one version across mixes, w/ row='mix', but didn't like
+    # (would need work to get xticklabels right, and also would only want to sharey
+    # within mix anyway)
+    for mix in NATMIX_MIX_TYPES:
+        mix_mean_mixsupp = mean_mixsupp_natmix_only[mean_mixsupp_natmix_only.mix == mix]
+        for model_stat in MODEL_STAT_ORDER:
+            # TODO TODO or just skip model_stat == 'num_spikes'? (it is clear that, esp
+            # for claw model, that doesn't really make sense to use)
+            mix_mean_mixsupp_onemodelstat = mix_mean_mixsupp[
+                mix_mean_mixsupp.source.isin(('KCs', 'ORNs')) |
+                (mix_mean_mixsupp.stat == model_stat)
+            ]
+            fname_suffix = f'_{mix}_model-{stat2fname_part(model_stat)}'
+
+            title = f'{mix}'
+            if model_stat == 'num_spikes':
+                title += f'\n{model_stat=}'
+
+            plot_avg_mixsupp(mix_mean_mixsupp_onemodelstat, plot_root, title=title,
+                fname_suffix=fname_suffix, x=PNKC_CLASS_COL, hue=PNKC_CLASS_COL,
+                palette=avg_mixsupp_palette, legend=True
+            )
 
     # don't want to overwrite these outputs unless currently analyzing all models
     if unrestricted_full_model_params:
+        # TODO TODO define model_mean_mix_supp from mean_mixsupp (-> delete def of that
+        # above, after checking the two defs are equiv)
         model_mean_mix_supp = pd.concat(model_mean_mix_supp_sers, verify_integrity=True)
         assert (
             len(model_mean_mix_supp.shape) == 1 and model_mean_mix_supp.name == diff_col

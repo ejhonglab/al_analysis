@@ -76,6 +76,7 @@ if os.getenv('PYTHONMALLOC') != 'malloc':
     from sklearn.preprocessing import minmax_scale as sk_minmax_scale
     import statsmodels.api as sm
     import seaborn as sns
+    from seaborn.axisgrid import FacetGrid
     from rastermap import Rastermap
     # just for type hinting
     from statsmodels.regression.linear_model import RegressionResultsWrapper
@@ -96,7 +97,7 @@ from hong2p.xarray import (save_dataarray as _save_dataarray, load_dataarray,
 from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
     first_odor_level
 )
-from hong2p.types import Pathlike, DataFrameOrSeries, CMap, ParamDict
+from hong2p.types import Pathlike, DataFrameOrSeries, CMap, ParamDict, MplRotation
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
     reindex, is_scalar, pd_index_equal, equals, format_params, addlevel
 )
@@ -145,6 +146,10 @@ warnings.filterwarnings('error', message='FixedFormatter should only be used tog
 warnings.filterwarnings('error', category=FutureWarning)
 
 FitMBModelOutputs = Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, ParamDict]
+
+# TODO uppercase (and in natmix_data/analysis.py)
+CI: Union[int, float] = 95
+BOOTSTRAP_SEED: int = 0
 
 # TODO which specific warning? repro/delete
 # (doesn't work to catch numpy percentile interpolation= warning anyway,
@@ -29002,9 +29007,67 @@ def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
     return diff
 
 
-# TODO uppercase (and in natmix_data/analysis.py)
-CI: Union[int, float] = 95
-BOOTSTRAP_SEED: int = 0
+# TODO factor out the def of default lin_col (+ use in other places, like
+# model_yang_mixtures.py?)
+# TODO TODO check this also works w/ palette(+hue? assume hue is also 'source'?)
+# (-> use in version from model_yang_mixtures.py)
+def plot_avg_mixsupp(df: pd.DataFrame, plot_dir: Optional[Path] = None, *,
+    fname_suffix: str = '', lin_col: str = 'mix_minus_comp-max', x: str = 'source',
+    ci: float = CI, xtickrotation: MplRotation = 90, xlabel: Optional[str] = None,
+    title: Optional[str] = None, save: bool = True, **kwargs) -> FacetGrid:
+
+    if plot_dir is None:
+        assert not save, ('must pass either plot_dir=<directory-Path> or save=False. '
+            'you can save the returned FacetGrid yourself if you choose'
+        )
+
+    # TODO TODO abbreviate model "source" values, ideally in way consistent w/ yang
+    # modelling script (after stripping 'spike_counts_' prefix unique to this script
+    # here)
+    # TODO TODO rename 'Fc_zscore' -> 'KCs' and 'orn' -> 'ORNs' (still put note
+    # somewhere about what KC response calc [Fc_zscore] is?)
+    # TODO TODO include flies for KC/ORN (and model, if we run each fly thru?)
+
+    if df.index.names != [None]:
+        df = df.reset_index()
+
+    # TODO use hue + dodge to make a per-cluster version (don't need dodge if x=''
+    # already separates them along x, just if there are multiple hue level values for
+    # one value of the x level)
+    # (dodge defaults to False, but can be either True or a float value that is how much
+    # to separate the hue levels along x axis)
+    # TODO do i want that for the plot that also compares across sources, or
+    # just make one internal to analyze_by_panel call? (going to start w/ latter)
+    # TODO TODO rename 'mix_minus_comp-max' w/ some latex like
+    # $R_{mix} - max(R__{comp})$ or something), for ylabel at least
+    cg = sns.catplot(df, col='panel', x=x, y=lin_col, kind='point', linestyles='none',
+        # catplot errorbar default is ('ci', 95)
+        markerfacecolor='none', errorbar=('ci', ci), seed=BOOTSTRAP_SEED, **kwargs
+    )
+    cg.set_xticklabels(rotation=xtickrotation)
+    cg.set_titles(col_template='{col_name}')
+
+    if title is not None:
+        cg.fig.suptitle(title, y=1.07)
+
+    if xlabel is not None:
+        cg.set_axis_labels(x_var=f'{xlabel}')
+
+    # TODO happy with this format? put CI on second line now?
+    cg.set_axis_labels(
+        y_var=f'{diff_col2desc(lin_col)}\n(with {ci:.0f}% CI on the mean)'
+    )
+
+    if save:
+        # TODO delete (after fixing calling natmix_data/analysis.py code to pass in
+        # fname_suffix with leading '_'
+        if len(fname_suffix) > 0 and fname_suffix[0] != '_':
+            fname_suffix = f'_{fname_suffix}'
+        #
+        savefig(cg, plot_dir, f'mixsupp-avg{fname_suffix}', bbox_inches='tight')
+
+    return cg
+
 
 # TODO share w/ model_yang_mixtures.py i copied this from?
 perfly_stripplot_kws = dict(alpha=0.3, legend=False, size=5.0)
@@ -29026,6 +29089,20 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     """
     have_fly_cols = _have_fly_cols(class_fracs)
 
+    # TODO fix reason this is data format in some calls from natmix_data/analysis.py
+    # now, and remove handling for DataFrame?
+    if isinstance(class_fracs, pd.DataFrame):
+        # current input i'm fixing has this (as if already .reset_index(), and don't
+        # want to support more than i need to fix this)
+        names = class_fracs.index.names
+        assert names == [None], f'{names=}'
+        yc = 'frac_response_class'
+        assert yc in class_fracs.columns, f'{yc} not in {class_fracs.columns=}'
+        class_fracs = class_fracs.set_index([x for x in class_fracs.columns if x != yc],
+            verify_integrity=True
+        ).squeeze()
+    #
+
     if not log_yscale:
         log_scale = False
     else:
@@ -29038,11 +29115,18 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     frac_mix_only_responders.name = 'frac_mix-only_responders'
 
     y_col = class_fracs.name
-    assert y_col is not None
+    assert y_col is not None, f'class_fracs:\n{class_fracs}'
     class_fracs = class_fracs.reset_index()
 
     hue = kwargs.get('hue')
-    assert hue is not None
+    palette = kwargs.get('palette')
+    if hue is not None:
+        assert palette is not None, 'dict palette must be passed if hue is'
+    # TODO delete (or define in here / in calls from natmix_data/analysis.py)
+    #assert hue is not None
+    #assert palette is not None
+    #
+
     # TODO how come we don't need marker='o' here? add it?
     # (added for ax.plot calls putting puts on x-axis bottom (=0) in log_yscale case,
     # but seems to be default for sns.pointplot?)
@@ -29141,8 +29225,6 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
             xticklabels = [x.get_text() for x in xticklabels]
             assert len(xticklabels) == len(set(xticklabels))
 
-            palette = kwargs.get('palette')
-            assert palette is not None
             alpha = kwargs.get('alpha', 0.5)
 
             kc_kws = dict(pointplot_kws)
@@ -29168,7 +29250,7 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
 
                 empty_class_rows = df.frac_response_class == 0
                 empty_class_df = df.loc[empty_class_rows].drop_duplicates(
-                    subset=['response_class_str', hue]
+                    subset=['response_class_str'] + ([] if hue is None else [hue])
                 )
                 # TODO delete? put behind verbose= flag?
                 if len(empty_class_df) > 0:
@@ -29178,12 +29260,19 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
 
                 for index, cstr in empty_class_strs.items():
                     xdata = xticklabels.index(cstr)
-                    # TODO need to support more than dict palette? (prob not)
-                    hue_level = df.loc[index, hue]
-                    color = palette[hue_level]
-                    break_plot_fn([xdata], [0], transform=trans, color=color,
-                        clip_on=False, alpha=alpha, **kws
-                    )
+                    if hue is not None:
+                        hue_level = df.loc[index, hue]
+                        # TODO need to support more than dict palette? (prob not)
+                        color = palette[hue_level]
+                        break_plot_fn([xdata], [0], transform=trans, color=color,
+                            clip_on=False, alpha=alpha, **kws
+                        )
+                    else:
+                        # TODO work?
+                        level = df.loc[index]
+                        break_plot_fn([xdata], [0], transform=trans, clip_on=False,
+                            alpha=alpha, **kws
+                        )
 
     if facet_kws is None:
         facet_kws = dict()
@@ -29271,6 +29360,9 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
     # NOTE: can not have ymin=0 for log_yscale=True version, but it just warns and
     # ignores. do i still want to force a certain scale or no?
     if log_yscale:
+        assert hue is not None, ('log_yscale=True path currently only supported with '
+            'hue + palette'
+        )
         fname_suffix += '_logy'
         empty_classes = class_fracs[(class_fracs.frac_response_class == 0)
             ].drop_duplicates(subset=[hue, 'response_class_str'])
