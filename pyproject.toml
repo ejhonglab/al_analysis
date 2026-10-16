@@ -152,16 +152,25 @@ filterwarnings = [
 [tool.tox]
 requires = ["tox >= 4.21", "tox-uv"]
 env_list = ["py38", "current"]
+
+[tool.tox.env_run_base]
 # tox otherwise strips most env vars. QUICK/PLOT used by test_mb_model.py, HONG2P_* /
 # HONG_NAS used by hong2p to find data.
-#
+pass_env = [
+    "QUICK", "PLOT", "HONG2P_*", "HONG_NAS", "MB_MODEL_USE_LR_CACHE", "HARDCODE_LR",
+]
+
+[tool.tox.env_run_base.set_env]
 # breakpoint() calls are disabled by default (they would otherwise fail tests in
 # `tox -p` runs, which have no stdin, or end the whole session in some cases). set
 # TOX_PYTHONBREAKPOINT (e.g. =ipdb.set_trace) in calling environment to override.
 # PYTHONBREAKPOINT itself is not used for that, since ~/.bashrc sets it globally.
-env_run_base = { pass_env = [
-    "QUICK", "PLOT", "HONG2P_*", "HONG_NAS", "MB_MODEL_USE_LR_CACHE", "HARDCODE_LR",
-], set_env = { PYTHONBREAKPOINT = "{env:TOX_PYTHONBREAKPOINT:0}" } }
+PYTHONBREAKPOINT = "{env:TOX_PYTHONBREAKPOINT:0}"
+# separate pytest temp root for each env, so concurrent runs (with
+# tmp_path_retention_policy="none" above) don't delete each other's tmp_path dirs. not
+# using --basetemp for that, since pytest only deletes its own (numbered) basetemp dirs
+# at the end of each run, and some tests write tens of GB.
+PYTEST_DEBUG_TEMPROOT = "{env_tmp_dir}"
 
 # Oldest supported versions: python 3.8 + pins from exact-requirements-py38.txt (via
 # requirements-py38-test.txt, which excludes the local packages below).
@@ -186,10 +195,8 @@ commands_pre = [
         "-e", "{tox_root}",
     ],
 ]
-# separate --basetemp for each env, so concurrent runs (with
-# tmp_path_retention_policy="none" above) don't delete each other's tmp_path dirs
 commands = [
-    ["pytest", "--basetemp={env_tmp_dir}/pytest", { replace = "posargs", extend = true }],
+    ["pytest", { replace = "posargs", extend = true }],
 ]
 
 # The existing ./venv, as-is (tox does not install anything into it)
@@ -197,7 +204,7 @@ commands = [
 skip_install = true
 allowlist_externals = ["{tox_root}/venv/bin/python"]
 commands = [
-    ["{tox_root}/venv/bin/python", "-m", "pytest", "--basetemp={env_tmp_dir}/pytest",
+    ["{tox_root}/venv/bin/python", "-m", "pytest",
         { replace = "posargs", extend = true }
     ],
 ]
