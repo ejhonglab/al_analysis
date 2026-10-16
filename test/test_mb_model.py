@@ -27,7 +27,7 @@ from hong2p.xarray import (coords_equal, series2xarray_like, move_all_coords_to_
 import olfsysm as osm
 
 from al_analysis.al_util import (warn, diag_panel_str, fly_cols, load_natmix_dff,
-    data_root, paper_repro_kws
+    data_root, paper_repro_kws, remy_megamat_sparsity
 )
 from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectome_wPNKC,
     connectome_APL_weights, KC_ID, CLAW_ID, BOUTON_ID, KC_TYPE, step_around,
@@ -44,7 +44,10 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     NONCLAW_MODEL_KW_LIST, UNIFORM_MODEL_KWS, get_fitandplot_model_kw_list,
     model_mb_responses, assert_param_dicts_equal, assert_fit_outputs_equal,
     assert_fit_and_plot_outputs_equal, read_spike_counts, FitMBModelOutputs,
-    claw2bouton_from_wPNKC, paper_repro_kws, hemibrain_paper_repro_kws
+    claw2bouton_from_wPNKC, paper_repro_kws, hemibrain_paper_repro_kws,
+    make_fixed_param_kc_simulator, fixed_params_to_fit_mb_model_kws, make_kc_data_loss,
+    mean_response_rates, optimize_mb_model_params, remy_megamat_kc_targets,
+    drop_silent_model_cells
 )
 
 # TODO better way?
@@ -3765,4 +3768,248 @@ def test_claw2bouton_from_wPNKC(kws):
 # TODO commit some (dramatically subset, perhaps also compressed) example model
 # dynamics, and use to test all dynamics plotting fns (so might want test data with and
 # without boutons and/or claws)
+
+
+def test_kc_data_loss():
+    """Tests make_kc_data_loss is 0 when targets computed from same responses, and odor
+    matching (ignoring concentrations, subsets, reordering).
+    """
+    rng = np.random.default_rng(0)
+    odors = pd.Index([f'o{i} @ -3' for i in range(6)], name='odor')
+    responses = pd.DataFrame((rng.random((500, len(odors))) < 0.1).astype(float),
+        columns=odors
+    )
+    # some silent cells, which should be dropped before computing correlations
+    responses.iloc[:50] = 0.0
+
+    rates = responses.mean()
+    corr = drop_silent_model_cells(responses).corr()
+
+    stripped_odors = pd.Index([o.split(' @ ')[0] for o in odors])
+    loss_fn = make_kc_data_loss(target_response_rates=rates.set_axis(stripped_odors),
+        target_corr=corr
+    )
+    losses = loss_fn(responses, responses)
+    assert losses['loss'] == 0
+    assert losses['response_rate_loss'] == 0
+    assert losses['corr_loss'] == 0
+    assert np.isclose(losses['mean_response_rate'], rates.mean())
+
+    subset_loss_fn = make_kc_data_loss(target_response_rates=rates.iloc[[3, 1]],
+        target_corr=corr.iloc[[4, 0, 2], [4, 0, 2]]
+    )
+    assert subset_loss_fn(responses, responses)['loss'] == 0
+
+    shuffled = responses.sample(frac=1, axis='columns', random_state=0).set_axis(
+        odors, axis='columns'
+    )
+    losses = loss_fn(shuffled, shuffled)
+    assert losses['response_rate_loss'] > 0
+    assert losses['corr_loss'] > 0
+    assert np.isclose(losses['loss'],
+        losses['response_rate_loss'] + losses['corr_loss']
+    )
+
+    # no responses at all should still give finite loss (all model correlations
+    # undefined, treated as 0)
+    silent = responses * 0
+    assert all(np.isfinite(v) for v in loss_fn(silent, silent).values())
+
+    losses = make_kc_data_loss(target_response_rates=0.2)(responses, responses)
+    assert np.isclose(losses['loss'], abs(rates.mean() - 0.2) / 0.2)
+
+    with pytest.raises(ValueError):
+        make_kc_data_loss(target_response_rates=pd.Series({'missing': 0.1}))(
+            responses, responses
+        )
+
+    binary = pd.DataFrame({'a': [1, 1, 0, 0, 0, 0], 'b': [0, 0, 0, 0, 0, 1]},
+        index=pd.MultiIndex.from_tuples([(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (1, 3)],
+            names=['fly', 'cell']
+        )
+    )
+    assert mean_response_rates(binary).to_dict() == {'a': 2 / 6, 'b': 1 / 6}
+    # flies weighted equally
+    assert mean_response_rates(binary, fly_level='fly').to_dict() == {
+        'a': (1 + 0) / 2, 'b': (0 + 1 / 4) / 2
+    }
+
+
+def _kc_simulator_supported(kws: ParamDict) -> bool:
+    if kws.get('pn2kc_connections') in variable_n_claw_options:
+        return False
+
+    if kws.get('one_row_per_claw', False) and not kws.get(
+            'use_connectome_APL_weights', False):
+        return False
+
+    return True
+
+
+@pytest.mark.parametrize('kws', MODEL_KW_LIST, ids=format_model_params)
+def test_fixed_param_kc_simulator(orn_deltas, kws):
+    """Tests make_fixed_param_kc_simulator outputs equal fit_mb_model outputs, w/ same
+    fixed parameters.
+
+    make_fixed_param_kc_simulator also checks it reproduces outputs of the initial
+    (tuned) fit_mb_model call it makes.
+    """
+    if not _kc_simulator_supported(kws):
+        with pytest.raises(NotImplementedError):
+            make_fixed_param_kc_simulator(orn_deltas, **kws)
+        return
+
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas, **kws)
+
+    expected_params = {'fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale'}
+    if kws.get('prat_boutons', False) and not kws.get('per_claw_pn_apl_weights',
+            False):
+        expected_params |= {'wAPLPN_scale', 'wPNAPL_scale'}
+    assert set(initial_params) == expected_params
+
+    initial_responses, initial_spike_counts = simulate(dict())
+
+    # thr lower and APL weights higher, to change outputs w/o drastically changing
+    # response rate
+    params = {p: v * (0.9 if p == 'fixed_thr' else 1.3)
+        for p, v in initial_params.items()
+    }
+    responses, spike_counts = simulate(params)
+    assert not responses.equals(initial_responses)
+
+    responses2, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
+        **fixed_params_to_fit_mb_model_kws(params), **kws
+    )
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)
+
+    # each parameter should be able to change outputs separately
+    for p, v in initial_params.items():
+        changed_responses, _ = simulate({p: v * (0.5 if p == 'fixed_thr' else 2.0)})
+        assert not changed_responses.equals(initial_responses), p
+
+    # scaling APL input weights by some factor and APL output weights by its inverse
+    # should not change outputs (APL potential is linear in its inputs), which default
+    # params_to_optimize in optimize_mb_model_params relies on. factor of 2 so float
+    # outputs should also be exactly equal.
+    c = 2.0
+    rescaled = {p: v * c if p in ('wKCAPL_scale', 'wPNAPL_scale') else v / c
+        for p, v in initial_params.items() if p != 'fixed_thr'
+    }
+    rescaled_responses, rescaled_spike_counts = simulate(rescaled)
+    assert rescaled_responses.equals(initial_responses)
+    assert rescaled_spike_counts.equals(initial_spike_counts)
+
+
+@pytest.fixture(scope='module')
+def initial_params(orn_deltas) -> ParamDict:
+    """Tuned parameters for default (hemibrain) model, to skip tuning in later calls
+    """
+    _, initial_params = make_fixed_param_kc_simulator(orn_deltas)
+    return initial_params
+
+
+def test_optimize_mb_model_params_recovery(orn_deltas, initial_params):
+    """Tests optimize_mb_model_params can recover parameters, when targets are model
+    outputs at those parameters.
+    """
+    simulate, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params
+    )
+    factors = {'fixed_thr': 1.15, 'wAPLKC_scale': 0.6}
+    # wKCAPL_scale tied to wAPLKC_scale, as optimize_mb_model_params will do
+    factors['wKCAPL_scale'] = factors['wAPLKC_scale']
+    true_params = {p: initial_params[p] * f for p, f in factors.items()}
+
+    target_responses, _ = simulate(true_params)
+    target_rates = target_responses.mean()
+    target_corr = drop_silent_model_cells(target_responses).corr()
+
+    ret = optimize_mb_model_params(orn_deltas, target_response_rates=target_rates,
+        target_corr=target_corr, initial_params=initial_params,
+        params_to_optimize=['fixed_thr', 'wAPLKC_scale'], maxfev=80
+    )
+    history = ret['history']
+    assert len(history) <= 80
+    assert history.loss.min() == ret['loss']
+    assert ret['initial_losses']['loss'] == history.loss.iloc[0]
+
+    assert ret['loss'] < 0.1 * ret['initial_losses']['loss']
+    for p, v in true_params.items():
+        assert np.isclose(ret['params'][p], v, rtol=0.05), p
+
+    # tied
+    assert np.isclose(
+        ret['params']['wKCAPL_scale'] / ret['params']['wAPLKC_scale'],
+        initial_params['wKCAPL_scale'] / initial_params['wAPLKC_scale']
+    )
+
+    # verify=True (default) should have already checked these are equal to outputs
+    # of simulation used during optimization
+    responses = ret['responses']
+    assert np.isclose(make_kc_data_loss(target_response_rates=target_rates,
+        target_corr=target_corr)(responses, ret['spike_counts'])['loss'], ret['loss']
+    )
+
+
+@pytest.mark.parametrize('method', ['Nelder-Mead', 'Powell', 'differential_evolution',
+    'dual_annealing', 'direct'
+])
+def test_optimize_mb_model_params_methods(orn_deltas, initial_params, method):
+    """Tests each optimization method runs, within bounds and maxfev
+    """
+    maxfev = 8
+    bounds = {'fixed_thr': (initial_params['fixed_thr'] * 0.8,
+        initial_params['fixed_thr'] * 1.5
+    )}
+    ret = optimize_mb_model_params(orn_deltas, target_response_rates=0.08,
+        initial_params=initial_params, bounds=bounds, method=method, maxfev=maxfev,
+        verify=False
+    )
+    history = ret['history']
+    assert 1 < len(history) <= maxfev
+    assert ret['loss'] <= ret['initial_losses']['loss']
+
+    lower, upper = bounds['fixed_thr']
+    assert history.fixed_thr.between(lower, upper).all()
+
+    # default bounds
+    for p in ('wAPLKC_scale', 'wKCAPL_scale', 'wPNAPL_scale', 'wAPLPN_scale'):
+        if p not in initial_params:
+            continue
+        initial = initial_params[p]
+        assert history[p].between(initial / 10, initial * 10).all(), p
+
+
+def test_optimize_mb_model_params_tuning_kws(orn_deltas):
+    """Tests kwargs only used for tuning are used for initial tuning, but not for
+    fit_mb_model calls w/ fixed parameters (which target_sparsity_factor_pre_APL would
+    fail).
+    """
+    target_response_rate = 0.08
+    ret = optimize_mb_model_params(orn_deltas,
+        target_response_rates=target_response_rate, maxfev=2,
+        target_sparsity_factor_pre_APL=2.0
+    )
+    assert 'target_sparsity_factor_pre_APL' not in ret['fit_mb_model_kws']
+
+    # initial tuning should target mean of target_response_rates (rather than default
+    # target_sparsity of 0.1)
+    assert np.isclose(ret['initial_losses']['mean_response_rate'], target_response_rate,
+        rtol=0.15
+    )
+
+
+def test_remy_megamat_kc_targets(orn_deltas):
+    """Tests measured megamat KC targets match model odors, and give finite loss.
+    """
+    rates, corr = remy_megamat_kc_targets()
+    assert len(rates) == len(corr) == 17
+    assert np.isclose(rates.mean(), remy_megamat_sparsity())
+
+    responses, spike_counts, _, _ = _fit_mb_model(orn_deltas=orn_deltas)
+    loss_fn = make_kc_data_loss(target_response_rates=rates, target_corr=corr)
+    losses = loss_fn(responses, spike_counts)
+    assert all(np.isfinite(v) for v in losses.values())
+    assert losses['loss'] > 0
 

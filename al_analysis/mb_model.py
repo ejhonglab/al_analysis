@@ -65,7 +65,7 @@ mpl.use('Agg')
 if os.getenv('PYTHONMALLOC') != 'malloc':
     from scipy.cluster.hierarchy import leaves_list
     from scipy.interpolate import interp1d
-    from scipy.optimize import minimize
+    from scipy.optimize import minimize, differential_evolution, dual_annealing
     from scipy.spatial.distance import euclidean
     from scipy.stats import (spearmanr, pearsonr, f_oneway, percentileofscore,
         wasserstein_distance
@@ -15910,6 +15910,756 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         param_dict['rv'] = rv
 
     return responses, spike_counts, wPNKC, param_dict
+
+
+# parameters `make_fixed_param_kc_simulator` / `optimize_mb_model_params` can set, mapped
+# to the corresponding `fit_mb_model` kwarg
+optimizable_model_params: Dict[str, str] = {
+    'fixed_thr': 'fixed_thr',
+    'wAPLKC_scale': 'wAPLKC',
+    'wKCAPL_scale': 'wKCAPL',
+    'wAPLPN_scale': 'wAPLPN',
+    'wPNAPL_scale': 'wPNAPL',
+}
+
+# fit_mb_model kwargs that make_fixed_param_kc_simulator does not support (either
+# because they change how thresholds / APL weights are defined, or because they involve
+# simulating odors other than those in orn_deltas)
+_simulator_unsupported_kws: Tuple[str, ...] = (
+    'homeostatic_thrs', 'equalize_kc_type_sparsity', 'multiresponder_APL_boost',
+    'n_claws_active_to_spike', 'scale_pre_tuning', 'tune_on_hallem',
+    'repro_preprint_s1d', 'sim_odors',
+)
+
+# fit_mb_model kwargs only used for tuning thresholds / APL weights. dropped when
+# parameters are fixed (target_sparsity_factor_pre_APL would fail then).
+_tuning_only_kws: Tuple[str, ...] = (
+    'target_sparsity', 'target_sparsity_factor_pre_APL', 'max_iters', 'sp_acc',
+    'thr_sp_lr_coeff', 'sp_lr_coeff', 'linear_lr_falloff', 'binary_search_on_overshoot',
+    'hardcode_initial_sp',
+)
+
+def fixed_params_to_fit_mb_model_kws(params: ParamDict) -> ParamDict:
+    """Returns `fit_mb_model` kwargs to use parameters (from `optimizable_model_params`)
+
+    Output can also be passed to `fit_and_plot_mb_model`.
+    """
+    unknown = set(params) - set(optimizable_model_params)
+    if len(unknown) > 0:
+        raise ValueError(f'unknown parameters: {unknown}')
+
+    return {optimizable_model_params[k]: v for k, v in params.items()}
+
+
+def _fixed_param_model_kws(model_kws: ParamDict, params: ParamDict) -> ParamDict:
+    """Returns `model_kws` w/ `params` fixed, dropping kwargs only used for tuning.
+    """
+    return {**{k: v for k, v in model_kws.items() if k not in _tuning_only_kws},
+        **fixed_params_to_fit_mb_model_kws(params)
+    }
+
+
+def _get_fixed_params(param_dict: ParamDict) -> ParamDict:
+    """Returns `optimizable_model_params` values from `fit_mb_model` output `param_dict`
+    """
+    fixed_thr = param_dict['fixed_thr']
+    if not is_scalar(fixed_thr):
+        raise NotImplementedError('only scalar fixed_thr supported (not vector '
+            'thresholds)'
+        )
+    params = {'fixed_thr': float(fixed_thr)}
+
+    if 'wAPLKC_scale' in param_dict:
+        params['wAPLKC_scale'] = float(param_dict['wAPLKC_scale'])
+        params['wKCAPL_scale'] = float(param_dict['wKCAPL_scale'])
+    else:
+        wAPLKC = param_dict['wAPLKC']
+        wKCAPL = param_dict['wKCAPL']
+        if not (is_scalar(wAPLKC) and is_scalar(wKCAPL)):
+            raise NotImplementedError('non-scalar APL<->KC weights (e.g. from '
+                'one_row_per_claw=True without use_connectome_APL_weights=True) not '
+                'supported'
+            )
+        # (w/o connectome APL weights, these are the value of every element)
+        params['wAPLKC_scale'] = float(wAPLKC)
+        params['wKCAPL_scale'] = float(wKCAPL)
+
+    if 'wAPLPN_scale' in param_dict:
+        params['wAPLPN_scale'] = float(param_dict['wAPLPN_scale'])
+        params['wPNAPL_scale'] = float(param_dict['wPNAPL_scale'])
+
+    return params
+
+
+def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
+    initial_params: Optional[ParamDict] = None, **model_kws
+    ) -> Tuple[Callable[[ParamDict], Tuple[pd.DataFrame, pd.DataFrame]], ParamDict]:
+    """Returns function to re-simulate KCs with new KC thresholds / APL weight scales.
+
+    Calls `fit_mb_model` once, and then returned function only re-runs the `olfsysm` KC
+    layer (no ORN/PN simulation, or other `fit_mb_model` processing), which is much
+    faster than another `fit_mb_model` call. The ORN/PN layers do not depend on the
+    parameters this can change.
+
+    Args:
+        orn_deltas: passed to `fit_mb_model`
+
+        initial_params: values for `optimizable_model_params` keys (at least
+            'fixed_thr' and 'wAPLKC_scale') to use for initial `fit_mb_model` call.
+            Others defined from these as in `fit_mb_model`. If not passed, initial call
+            tunes thresholds and APL weights (e.g. to `target_sparsity`).
+
+        **model_kws: passed to `fit_mb_model`. Must not contain kwargs in
+            `optimizable_model_params` values (use `initial_params` instead). Kwargs
+            only used for tuning (e.g. `target_sparsity`) are ignored if
+            `initial_params` passed.
+
+    Returns:
+        simulate: function taking dict with any subset of keys of `initial_params`
+            (others are left at initial values), and returning `responses` and
+            `spike_counts` (with same format as `fit_mb_model` outputs). Output should
+            equal that of a `fit_mb_model` call with these parameters fixed (via
+            `fixed_params_to_fit_mb_model_kws`).
+
+        initial_params: values for all keys of `optimizable_model_params` that apply to
+            this model (PN<>APL weight scales only included if `prat_boutons=True` and
+            `per_claw_pn_apl_weights=False`).
+    """
+    if orn_deltas is None:
+        raise ValueError('orn_deltas must be passed (running on Hallem data not '
+            'supported)'
+        )
+
+    fixed_kws = set(optimizable_model_params.values()) & set(model_kws)
+    if len(fixed_kws) > 0:
+        raise ValueError(f'pass {fixed_kws} via initial_params, not as kwargs')
+
+    if 'return_olfsysm_vars' in model_kws:
+        raise ValueError('return_olfsysm_vars must not be passed')
+
+    unsupported = [k for k in _simulator_unsupported_kws
+        if model_kws.get(k) not in (None, False)
+    ]
+    if len(unsupported) > 0:
+        raise NotImplementedError(f'{unsupported} not supported')
+
+    if model_kws.get('pn2kc_connections') in variable_n_claw_options:
+        # would need one simulator per seed (each w/ a different wPNKC)
+        raise NotImplementedError(f'pn2kc_connections in {variable_n_claw_options} '
+            'not supported'
+        )
+
+    # APL<->KC weights are Series in this case (see _get_fixed_params). checking here
+    # just to fail before the fit_mb_model call.
+    if (model_kws.get('one_row_per_claw', False) and
+            not model_kws.get('use_connectome_APL_weights', False)):
+        raise NotImplementedError('one_row_per_claw=True only supported with '
+            'use_connectome_APL_weights=True'
+        )
+
+    if initial_params is not None:
+        model_kws = _fixed_param_model_kws(model_kws, initial_params)
+
+    responses, spike_counts, _, param_dict = fit_mb_model(orn_deltas,
+        return_olfsysm_vars=True, **model_kws
+    )
+    mp = param_dict.pop('mp')
+    rv = param_dict.pop('rv')
+
+    initial_params = _get_fixed_params(param_dict)
+
+    # columns of olfsysm outputs are in same order as orn_deltas columns, but
+    # fit_mb_model may have sorted them and dropped 'panel' level
+    model_odors = orn_deltas.columns
+    if 'panel' in model_odors.names:
+        model_odors = model_odors.droplevel('panel')
+    assert not model_odors.duplicated().any()
+    odor_order = model_odors.get_indexer(responses.columns)
+    assert (odor_order >= 0).all() and len(odor_order) == len(model_odors)
+
+    kc_index = responses.index
+    odor_index = responses.columns
+
+    spont_in = rv.kc.spont_in.copy()
+
+    if mp.kc.preset_wAPLKC:
+        assert mp.kc.preset_wKCAPL
+        wAPLKC_unscaled = rv.kc.wAPLKC_unscaled.copy()
+        wKCAPL_unscaled = rv.kc.wKCAPL_unscaled.copy()
+    else:
+        assert not mp.kc.preset_wKCAPL
+        wAPLKC_unscaled = np.ones((mp.kc.N, 1))
+        wKCAPL_unscaled = np.ones((1, mp.kc.N))
+
+    have_pn_apl_weights = 'wAPLPN_scale' in initial_params
+    assert have_pn_apl_weights == mp.pn.preset_wAPLPN == mp.pn.preset_wPNAPL
+    if have_pn_apl_weights:
+        wAPLPN_unscaled = rv.pn.wAPLPN_unscaled.copy()
+        wPNAPL_unscaled = rv.pn.wPNAPL_unscaled.copy()
+
+    # each simulation would otherwise add several lines to log (+ print them, if
+    # teeing), and not using log for anything after initial fit_mb_model call
+    rv.log.disable()
+    rv.verbose = False
+
+    def simulate(params: ParamDict) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        unknown = set(params) - set(initial_params)
+        if len(unknown) > 0:
+            raise ValueError(f'parameters {unknown} not in {set(initial_params)}')
+
+        params = {**initial_params, **params}
+
+        # olfsysm only checks weights in fit_sparseness, which is not called below
+        negative = {p: v for p, v in params.items() if p != 'fixed_thr' and v < 0}
+        if len(negative) > 0:
+            raise ValueError(f'APL weight scales must not be negative: {negative}')
+
+        # same as olfsysm.fit_sparseness does w/ fixed threshold (fit_mb_model always
+        # uses add_fixed_thr_to_spont=True when fixed_thr passed)
+        rv.kc.thr = params['fixed_thr'] + spont_in * 2.0
+
+        # same as olfsysm.fit_sparseness does w/ fixed APL weights (and same as
+        # fit_mb_model does w/o connectome APL weights, where unscaled weights are 1)
+        rv.kc.wAPLKC = params['wAPLKC_scale'] * wAPLKC_unscaled
+        rv.kc.wKCAPL = params['wKCAPL_scale'] * wKCAPL_unscaled
+        if mp.kc.preset_wAPLKC:
+            rv.kc.wAPLKC_scale = params['wAPLKC_scale']
+            rv.kc.wKCAPL_scale = params['wKCAPL_scale']
+
+        if have_pn_apl_weights:
+            rv.pn.wAPLPN = params['wAPLPN_scale'] * wAPLPN_unscaled
+            rv.pn.wPNAPL = params['wPNAPL_scale'] * wPNAPL_unscaled
+            rv.pn.wAPLPN_scale = params['wAPLPN_scale']
+            rv.pn.wPNAPL_scale = params['wPNAPL_scale']
+
+        # regen=False skips olfsysm build_wPNKC and fit_sparseness, just simulating KCs
+        osm.run_KC_sims(mp, rv, False)
+
+        sim_responses = pd.DataFrame(rv.kc.responses[:, odor_order], index=kc_index,
+            columns=odor_index
+        )
+        sim_spike_counts = pd.DataFrame(rv.kc.spike_counts[:, odor_order],
+            index=kc_index, columns=odor_index
+        )
+        return sim_responses, sim_spike_counts
+
+    responses2, spike_counts2 = simulate(initial_params)
+    if not (responses2.equals(responses) and spike_counts2.equals(spike_counts)):
+        raise RuntimeError('re-simulating with initial parameters did not reproduce '
+            'fit_mb_model outputs. some model_kws may not be supported.'
+        )
+
+    return simulate, dict(initial_params)
+
+
+def mean_response_rates(binary_responses: pd.DataFrame, *,
+    fly_level: Optional[str] = None) -> pd.Series:
+    """Returns fraction of cells responding to each odor.
+
+    Args:
+        binary_responses: of shape (# cells, # odors), True/1 where a cell responded
+
+        fly_level: if passed, rates are computed within each fly (grouping on this index
+            level), and then averaged across flies (weighting flies equally, regardless
+            of how many cells each has). Otherwise, all cells are pooled.
+    """
+    binary_responses = binary_responses.astype(float)
+    if fly_level is None:
+        return binary_responses.mean()
+
+    return binary_responses.groupby(level=fly_level, sort=False).mean().mean()
+
+
+def remy_megamat_kc_targets() -> Tuple[pd.Series, pd.DataFrame]:
+    """Returns measured KC per-odor response rates and correlations for megamat odors.
+
+    Response rates are from Remy's binarized responses, computed within each fly and
+    then averaged across flies (consistent with `remy_megamat_sparsity`). Correlations
+    are from `load_remy_megamat_mean_kc_corrs`. Outputs can be passed to
+    `make_kc_data_loss` / `optimize_mb_model_params`.
+    """
+    rates = mean_response_rates(load_remy_megamat_kc_binary_responses(),
+        fly_level=remy_fly_id
+    )
+    corr = load_remy_megamat_mean_kc_corrs()
+    return rates, corr
+
+
+def _match_odors(model_odors: pd.Index, target_odors: pd.Index) -> np.ndarray:
+    """Returns positions in `model_odors` for each of `target_odors`.
+
+    Odors are matched exactly if possible, otherwise after stripping concentrations
+    from both (e.g. 'eb @ -3' -> 'eb'). Raises ValueError if any target odor can not be
+    matched, or if matching would be ambiguous.
+    """
+    if target_odors.isin(model_odors).all():
+        assert not model_odors.duplicated().any()
+        return model_odors.get_indexer(target_odors)
+
+    def strip_concs(odors: pd.Index) -> pd.Index:
+        return pd.Index([olf.parse_odor_name(x, require_conc=False) for x in odors])
+
+    model_names = strip_concs(model_odors)
+    target_names = strip_concs(target_odors)
+    if model_names.duplicated().any() or target_names.duplicated().any():
+        raise ValueError('odors not unique after stripping concentrations')
+
+    missing = target_names[~target_names.isin(model_names)]
+    if len(missing) > 0:
+        raise ValueError(f'target odors missing from model outputs: {list(missing)}')
+
+    return model_names.get_indexer(target_names)
+
+
+def make_kc_data_loss(*, target_response_rates: Optional[Union[float, pd.Series]] = None,
+    target_corr: Optional[pd.DataFrame] = None, response_rate_weight: float = 1.0,
+    corr_weight: float = 1.0,
+    corr_from: Literal['responses', 'spike_counts'] = 'responses',
+    drop_silent_cells: bool = drop_silent_model_kcs
+    ) -> Callable[[pd.DataFrame, pd.DataFrame], Dict[str, float]]:
+    """Returns loss function comparing model KC outputs to measured KC data.
+
+    Model odors are matched to target odors by name (ignoring concentrations, if only
+    one has them). Model may have odors not in targets, which are ignored.
+
+    Args:
+        target_response_rates: measured fraction of KCs responding to each odor (e.g.
+            from `mean_response_rates`), or a single mean response rate. Loss component
+            is RMSE (across odors) between model and measured response rates, divided
+            by mean measured response rate (or absolute difference in mean response
+            rates, divided by measured rate, if a single rate is passed).
+
+        target_corr: measured odor X odor correlations of KC responses (e.g. from
+            `load_remy_megamat_mean_kc_corrs`). Loss component is RMSE between model and
+            measured correlations, across odor pairs (diagonal excluded). Model
+            correlations that are undefined (an odor no non-silent model KC responds to)
+            are treated as 0.
+
+        response_rate_weight: weight of response rate component in total loss
+
+        corr_weight: weight of correlation component in total loss
+
+        corr_from: which model output to compute correlations from. 'responses' is
+            consistent with `fit_and_plot_mb_model` correlation plots.
+
+        drop_silent_cells: whether to drop model KCs that do not respond to any odor,
+            before computing correlations (not used for response rates)
+
+    Returns:
+        loss_fn: takes `(responses, spike_counts)` (as output by `fit_mb_model`) and
+            returns dict with total 'loss', as well as 'response_rate_loss' /
+            'mean_response_rate' and/or 'corr_loss' (depending on which targets passed)
+    """
+    if target_response_rates is None and target_corr is None:
+        raise ValueError('must pass target_response_rates and/or target_corr')
+
+    if corr_from not in ('responses', 'spike_counts'):
+        raise ValueError(f"{corr_from=} not in ('responses', 'spike_counts')")
+
+    if isinstance(target_response_rates, pd.Series):
+        assert not target_response_rates.isna().any()
+    elif target_response_rates is not None:
+        assert is_scalar(target_response_rates) and target_response_rates > 0
+
+    if target_corr is not None:
+        assert target_corr.index.equals(target_corr.columns)
+        triu_indices = np.triu_indices(len(target_corr), k=1)
+        target_corr_values = target_corr.values[triu_indices]
+        assert not np.isnan(target_corr_values).any()
+
+    def loss_fn(responses: pd.DataFrame, spike_counts: pd.DataFrame
+        ) -> Dict[str, float]:
+
+        losses = dict()
+        total_loss = 0.0
+
+        if target_response_rates is not None:
+            model_rates = responses.mean()
+
+            if isinstance(target_response_rates, pd.Series):
+                model_rates = model_rates.iloc[
+                    _match_odors(model_rates.index, target_response_rates.index)
+                ]
+                rmse = np.sqrt(np.mean(
+                    (model_rates.values - target_response_rates.values)**2
+                ))
+                rate_loss = rmse / target_response_rates.mean()
+            else:
+                rate_loss = (abs(model_rates.mean() - target_response_rates) /
+                    target_response_rates
+                )
+
+            losses['response_rate_loss'] = float(rate_loss)
+            losses['mean_response_rate'] = float(model_rates.mean())
+            total_loss += response_rate_weight * rate_loss
+
+        if target_corr is not None:
+            if corr_from == 'responses':
+                model_data = responses
+            else:
+                model_data = spike_counts
+
+            if drop_silent_cells:
+                model_data = drop_silent_model_cells(model_data)
+
+            model_data = model_data.iloc[:,
+                _match_odors(model_data.columns, target_corr.index)
+            ]
+            model_corr_values = model_data.corr().values[triu_indices]
+            model_corr_values = np.nan_to_num(model_corr_values, nan=0.0)
+
+            corr_loss = np.sqrt(np.mean((model_corr_values - target_corr_values)**2))
+            losses['corr_loss'] = float(corr_loss)
+            total_loss += corr_weight * corr_loss
+
+        losses['loss'] = float(total_loss)
+        return losses
+
+    return loss_fn
+
+
+class _MaxEvalsReached(Exception):
+    pass
+
+
+def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
+    loss_fn: Optional[Callable[[pd.DataFrame, pd.DataFrame],
+        Union[float, Dict[str, float]]]] = None,
+    target_response_rates: Optional[Union[float, pd.Series]] = None,
+    target_corr: Optional[pd.DataFrame] = None,
+    params_to_optimize: Optional[Sequence[str]] = None,
+    initial_params: Optional[ParamDict] = None,
+    bounds: Optional[Dict[str, Tuple[float, float]]] = None, bound_factor: float = 10.0,
+    tie_apl_weights: bool = True, method: str = 'Nelder-Mead', maxfev: int = 200,
+    optimizer_kws: Optional[ParamDict] = None, verify: bool = True,
+    verbose: bool = True, **model_kws) -> ParamDict:
+    """Optimizes KC threshold / APL weight scales to minimize loss vs measured KC data.
+
+    Black-box (derivative-free) optimization, via `scipy.optimize`, of any subset of
+    `optimizable_model_params`, which are otherwise either tuned (by `olfsysm`, to hit a
+    target response rate) or set to fixed values. Each evaluation re-simulates only the
+    model KCs (via `make_fixed_param_kc_simulator`).
+
+    Optimization happens on parameters rescaled to [0, 1] within their bounds (in log
+    space, if lower bound is positive, otherwise linear).
+
+    Args:
+        orn_deltas: passed to `fit_mb_model`
+
+        loss_fn: takes `(responses, spike_counts)` (as output by `fit_mb_model`) and
+            returns either a float or a dict with a 'loss' key (other keys are added to
+            history). If not passed, defined via `make_kc_data_loss` with target kwargs.
+
+        target_response_rates|target_corr: passed to `make_kc_data_loss`, to define
+            `loss_fn`. Must not be passed with `loss_fn`.
+
+        params_to_optimize: subset of `optimizable_model_params` keys. Defaults to all
+            that apply to this model (PN<>APL weight scales only included if
+            `prat_boutons=True` and `per_claw_pn_apl_weights=False`), except
+            'wKCAPL_scale'. Scaling all APL input weights (wKCAPL, wPNAPL) by some
+            factor, and all APL output weights (wAPLKC, wAPLPN) by its inverse, does not
+            change model outputs, so optimizing all of them would be redundant. Others
+            are either fixed at initial values, or tied to wAPLKC_scale (see
+            `tie_apl_weights`).
+
+        initial_params: passed to `make_fixed_param_kc_simulator`. If not passed, initial
+            values are from a `fit_mb_model` call tuning the threshold and APL weights.
+            In that case (and if `target_sparsity` not in `model_kws`), the tuning target
+            is the mean of `target_response_rates`, if passed.
+
+        bounds: (lower, upper) bounds for any of `params_to_optimize`, in units of the
+            parameter. Defaults to (initial / bound_factor, initial * bound_factor),
+            which requires initial value to be positive.
+
+        bound_factor: see `bounds`
+
+        tie_apl_weights: if True and 'wAPLKC_scale' is optimized, any other APL weight
+            scales not optimized are multiplied by the same factor as wAPLKC_scale (as
+            `olfsysm` APL tuning does). Otherwise, they are fixed at initial values.
+
+        method: 'Nelder-Mead' or 'Powell' (local, starting from initial values, via
+            `scipy.optimize.minimize`), or 'differential_evolution', 'dual_annealing',
+            or 'direct' (global, within bounds, via `scipy.optimize` functions of those
+            names)
+
+        maxfev: maximum number of loss evaluations (including one at initial
+            parameters)
+
+        optimizer_kws: for 'Nelder-Mead' / 'Powell', merged into `minimize`
+            `options`. Otherwise, passed as kwargs to the `scipy.optimize` function.
+
+        verify: if True, calls `fit_mb_model` with best parameters fixed, checks outputs
+            are the same as from the faster simulation used during optimization, and
+            includes `fit_mb_model` outputs in returned dict.
+
+        **model_kws: passed to `fit_mb_model` (see `make_fixed_param_kc_simulator`)
+
+    Returns dict with:
+        'params': best parameters (including those not optimized)
+        'fit_mb_model_kws': all kwargs (other than `orn_deltas`) for `fit_mb_model` /
+            `fit_and_plot_mb_model` to reproduce best model: `model_kws` (without
+            kwargs only used for tuning) and 'params'
+        'loss': best total loss
+        'losses': all components returned by `loss_fn`, at best parameters
+        'initial_params'
+        'initial_losses'
+        'history': DataFrame with parameters and losses for each evaluation
+        'scipy_result': `scipy.optimize` result (None if `maxfev` reached first)
+        'model_kws': `model_kws`
+        If `verify=True`, also 'responses', 'spike_counts', 'wPNKC', and
+        'param_dict' (from `fit_mb_model` call w/ best parameters fixed).
+    """
+    if model_kws.get('plot_dir') is not None:
+        raise ValueError('plot_dir not supported. to make plots, call '
+            "fit_and_plot_mb_model with output 'fit_mb_model_kws'"
+        )
+
+    if maxfev < 1:
+        raise ValueError(f'{maxfev=} must be at least 1')
+
+    if loss_fn is None:
+        loss_fn = make_kc_data_loss(target_response_rates=target_response_rates,
+            target_corr=target_corr
+        )
+    elif target_response_rates is not None or target_corr is not None:
+        raise ValueError('pass either loss_fn or target_[response_rates|corr], not both')
+
+    simulator_kws = dict(model_kws)
+    if (initial_params is None and target_response_rates is not None and
+            'target_sparsity' not in model_kws):
+
+        if isinstance(target_response_rates, pd.Series):
+            simulator_kws['target_sparsity'] = float(target_response_rates.mean())
+        else:
+            simulator_kws['target_sparsity'] = float(target_response_rates)
+
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, **simulator_kws
+    )
+
+    if params_to_optimize is None:
+        params_to_optimize = [p for p in initial_params if p != 'wKCAPL_scale']
+    else:
+        params_to_optimize = list(params_to_optimize)
+        unknown = set(params_to_optimize) - set(initial_params)
+        if len(unknown) > 0:
+            raise ValueError(f'can not optimize {unknown} for this model. must be in '
+                f'{set(initial_params)}'
+            )
+        if len(params_to_optimize) == 0:
+            raise ValueError('params_to_optimize empty')
+
+    if bounds is None:
+        bounds = dict()
+
+    unknown = set(bounds) - set(params_to_optimize)
+    if len(unknown) > 0:
+        raise ValueError(f'bounds passed for {unknown}, not in {params_to_optimize=}')
+
+    param_bounds = dict()
+    for p in params_to_optimize:
+        initial = initial_params[p]
+        if p in bounds:
+            lower, upper = bounds[p]
+        else:
+            if initial <= 0:
+                raise ValueError(f'initial {p}={initial} not positive. must pass bounds '
+                    'for it'
+                )
+            lower, upper = initial / bound_factor, initial * bound_factor
+
+        if not lower <= initial <= upper:
+            raise ValueError(f'initial {p}={initial} not within bounds {(lower, upper)}')
+
+        param_bounds[p] = (lower, upper)
+
+    def transform(p: str, value: float) -> float:
+        lower = param_bounds[p][0]
+        return np.log(value) if lower > 0 else value
+
+    def to_unit(p: str, value: float) -> float:
+        lower, upper = param_bounds[p]
+        return ((transform(p, value) - transform(p, lower)) /
+            (transform(p, upper) - transform(p, lower))
+        )
+
+    def from_unit(p: str, u: float) -> float:
+        lower, upper = param_bounds[p]
+        t = transform(p, lower) + u * (transform(p, upper) - transform(p, lower))
+        return float(np.exp(t)) if lower > 0 else float(t)
+
+    tied = []
+    if tie_apl_weights and 'wAPLKC_scale' in params_to_optimize:
+        tied = [p for p in ('wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale')
+            if p in initial_params and p not in params_to_optimize
+        ]
+        if len(tied) > 0 and initial_params['wAPLKC_scale'] == 0:
+            raise ValueError('can not tie APL weights to initial wAPLKC_scale of 0. '
+                'set tie_apl_weights=False'
+            )
+
+    def unit_to_params(u: np.ndarray) -> ParamDict:
+        params = dict(initial_params)
+        params.update({p: from_unit(p, x) for p, x in zip(params_to_optimize, u)})
+
+        wAPLKC_factor = params['wAPLKC_scale'] / initial_params['wAPLKC_scale']
+        for p in tied:
+            params[p] = initial_params[p] * wAPLKC_factor
+
+        return params
+
+    history = []
+    best = dict()
+
+    def evaluate(params: ParamDict) -> float:
+        if len(history) >= maxfev:
+            raise _MaxEvalsReached
+
+        before = time.time()
+        responses, spike_counts = simulate(params)
+        losses = loss_fn(responses, spike_counts)
+        if not isinstance(losses, dict):
+            losses = {'loss': losses}
+
+        loss = float(losses['loss'])
+        if not np.isfinite(loss):
+            raise ValueError(f'loss not finite ({loss}) for {params=}')
+
+        history.append({**params, **losses, 'time_s': time.time() - before})
+
+        if len(best) == 0 or loss < best['loss']:
+            best.update(loss=loss, params=params, losses=losses, responses=responses,
+                spike_counts=spike_counts
+            )
+
+        if verbose:
+            param_str = ' '.join(f'{p}={params[p]:.5g}' for p in params_to_optimize)
+            print(f'eval {len(history)}/{maxfev}: loss={loss:.5g} ({param_str})')
+
+        return loss
+
+    # so repeated points (e.g. initial point, as first vertex of Nelder-Mead simplex)
+    # are not simulated again
+    unit2loss = dict()
+
+    def objective(u: np.ndarray) -> float:
+        # some optimizers can evaluate just outside bounds
+        u = np.clip(u, 0, 1)
+        key = tuple(u)
+        if key not in unit2loss:
+            unit2loss[key] = evaluate(unit_to_params(u))
+
+        return unit2loss[key]
+
+    evaluate(initial_params)
+    initial_losses = history[0]
+
+    u0 = np.array([to_unit(p, initial_params[p]) for p in params_to_optimize])
+    unit2loss[tuple(u0)] = initial_losses['loss']
+    unit_bounds = [(0.0, 1.0)] * len(params_to_optimize)
+
+    if optimizer_kws is None:
+        optimizer_kws = dict()
+
+    scipy_result = None
+    try:
+        if method == 'Nelder-Mead':
+            # scipy default initial simplex steps are 5% of each initial value, which
+            # would be uneven across parameters here
+            step = 0.1
+            initial_simplex = [u0]
+            for i in range(len(u0)):
+                vertex = u0.copy()
+                vertex[i] += step if u0[i] + step <= 1 else -step
+                initial_simplex.append(vertex)
+
+            options = {'maxfev': maxfev, 'xatol': 1e-3, 'fatol': 1e-4,
+                'initial_simplex': np.array(initial_simplex), **optimizer_kws
+            }
+            scipy_result = minimize(objective, u0, method=method, bounds=unit_bounds,
+                options=options
+            )
+        elif method == 'Powell':
+            options = {'maxfev': maxfev, 'xtol': 1e-3, 'ftol': 1e-4, **optimizer_kws}
+            scipy_result = minimize(objective, u0, method=method, bounds=unit_bounds,
+                options=options
+            )
+        elif method in ('differential_evolution', 'dual_annealing'):
+            optimizer = (differential_evolution if method == 'differential_evolution'
+                else dual_annealing
+            )
+            kws = {'x0': u0, **optimizer_kws}
+            # scipy >= 1.15 renamed seed= to rng=
+            seed_kwarg = ('rng' if 'rng' in inspect.signature(optimizer).parameters
+                else 'seed'
+            )
+            if 'seed' not in kws and 'rng' not in kws:
+                kws[seed_kwarg] = 0
+
+            if method == 'differential_evolution':
+                # polishing uses a gradient-based method, and loss is piecewise constant
+                kws = {'polish': False, **kws}
+            else:
+                kws = {'no_local_search': True, 'maxfun': maxfev, **kws}
+
+            scipy_result = optimizer(objective, unit_bounds, **kws)
+
+        elif method == 'direct':
+            from scipy.optimize import direct
+            scipy_result = direct(objective, unit_bounds,
+                **{'maxfun': maxfev, **optimizer_kws}
+            )
+        else:
+            raise ValueError(f'unrecognized {method=}')
+
+    # older scipy (e.g. 1.10) direct raises SystemError (w/ our exception as cause),
+    # rather than propagating exceptions from the objective
+    except (_MaxEvalsReached, SystemError) as err:
+        if not (isinstance(err, _MaxEvalsReached) or
+                isinstance(err.__cause__, _MaxEvalsReached)):
+            raise
+
+        warn(f'{method} stopped after {maxfev=} evaluations')
+
+    history = pd.DataFrame(history)
+    history.index.name = 'eval'
+
+    if verbose:
+        print(f'initial loss: {initial_losses["loss"]:.5g}')
+        print(f'best loss: {best["loss"]:.5g}')
+        print('best params:')
+        pprint(best['params'])
+
+    result = {
+        'params': best['params'],
+        'fit_mb_model_kws': _fixed_param_model_kws(model_kws, best['params']),
+        'loss': best['loss'],
+        'losses': best['losses'],
+        'initial_params': initial_params,
+        'initial_losses': {k: v for k, v in initial_losses.items()
+            if k not in initial_params and k != 'time_s'
+        },
+        'history': history,
+        'scipy_result': scipy_result,
+        'model_kws': model_kws,
+    }
+
+    if verify:
+        responses, spike_counts, wPNKC, param_dict = fit_mb_model(orn_deltas,
+            **result['fit_mb_model_kws']
+        )
+        if not (responses.equals(best['responses']) and
+                spike_counts.equals(best['spike_counts'])):
+
+            raise RuntimeError('fit_mb_model outputs with best parameters fixed did '
+                'not match those from simulation during optimization'
+            )
+
+        result.update(responses=responses, spike_counts=spike_counts, wPNKC=wPNKC,
+            param_dict=param_dict
+        )
+
+    return result
 
 
 # TODO TODO and re-run whole script once implemented for those 2 (to compare
