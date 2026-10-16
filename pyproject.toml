@@ -157,10 +157,11 @@ env_list = ["py38", "current"]
 #
 # breakpoint() calls are disabled by default (they would otherwise fail tests in
 # `tox -p` runs, which have no stdin, or end the whole session in some cases). set
-# PYTHONBREAKPOINT in calling environment to override.
+# TOX_PYTHONBREAKPOINT (e.g. =ipdb.set_trace) in calling environment to override.
+# PYTHONBREAKPOINT itself is not used for that, since ~/.bashrc sets it globally.
 env_run_base = { pass_env = [
     "QUICK", "PLOT", "HONG2P_*", "HONG_NAS", "MB_MODEL_USE_LR_CACHE", "HARDCODE_LR",
-], set_env = { PYTHONBREAKPOINT = "{env:PYTHONBREAKPOINT:0}" } }
+], set_env = { PYTHONBREAKPOINT = "{env:TOX_PYTHONBREAKPOINT:0}" } }
 
 # Oldest supported versions: python 3.8 + pins from exact-requirements-py38.txt (via
 # requirements-py38-test.txt, which excludes the local packages below).

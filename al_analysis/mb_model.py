@@ -7693,7 +7693,9 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     # without the str(...) squeeze output is a str-like np.ndarray,
                     # which can not be indexed w/ [0] to get a single str (it seemed)
                     # like: array('ab (3735)', dtype=object)
-                    KC_TYPE: lambda x: str(x.unique().squeeze())
+                    # (np.asarray b/c pandas >= 3 returns an ArrowStringArray for str
+                    # dtype, which has no .squeeze())
+                    KC_TYPE: lambda x: str(np.asarray(x.unique()).squeeze())
                 }
                 agg_fns = {k: v for k, v in agg_fns.items() if k in df.columns}
                 # adding other levels will typically just make the groupby return one
@@ -19972,8 +19974,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         # should be something that won't appear in actual computed values. NaN may
         # appear in computed values. after loop, we check that we no longer have any of
-        # these.
-        corr_placeholder = 10
+        # these. (float, as pandas >= 3 won't set float correlations into int columns)
+        corr_placeholder = 10.0
 
         # TODO delete
         #row_index = pd.MultiIndex.from_product([rel_fixed_thr_steps, wAPLKC_steps],
@@ -20186,7 +20188,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # trying to just use this to format last row/col index level (wAPLKC).
         # fixed_thr should be handled by group_text stuff, which i might want to change
         # handling of inside hong2p
-        format_wAPLKC = lambda x: f'{x[1]:.1f}'
+        # (.iloc, as pandas >= 3 Series [] no longer falls back to positional indexing)
+        format_wAPLKC = lambda x: f'{x.iloc[1]:.1f}'
         xticklabels = format_wAPLKC
         yticklabels = format_wAPLKC
 
@@ -21238,9 +21241,11 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     columns_before = fly_mean_df.columns
     for method in methods:
         # each of these calls adds a new column, with a scaled version of dff_col.
-        fly_mean_df = fly_mean_df.groupby('fly_id', sort=False, group_keys=False).apply(
-            lambda x: scale_one_fly(x, avg_flymax, method=method, avg_flymin=avg_flymin)
-        )
+        # (not using groupby.apply, as pandas >= 3 drops 'fly_id' from each group)
+        fly_mean_df = pd.concat([
+            scale_one_fly(gdf, avg_flymax, method=method, avg_flymin=avg_flymin)
+            for _, gdf in fly_mean_df.groupby('fly_id', sort=False)
+        ])
 
     # TODO assert no NaN in fly_mean_df? or at which step to we lose / drop them, if
     # it's earlier?
@@ -24603,10 +24608,7 @@ def load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool 
             # 305 good-XID-cells / 1634 cells (0.187)
             # responders? True
             # 2166 good-XID-cells / 2547 cells (0.850)
-            def _print_frac_good_xid(gdf):
-                responder_val_set = set(gdf.responder)
-                assert len(responder_val_set) == 1
-                responder_val = responder_val_set.pop()
+            def _print_frac_good_xid(responder_val, gdf):
                 assert responder_val in (False, True)
 
                 if responder_val:
@@ -24631,8 +24633,9 @@ def load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool 
                 )
 
             if verbose:
-                binary_responses['responder'] = binary_responses.any(axis='columns')
-                binary_responses.groupby('responder').apply(_print_frac_good_xid)
+                responder = binary_responses.any(axis='columns')
+                for responder_val, gdf in binary_responses.groupby(responder):
+                    _print_frac_good_xid(responder_val, gdf)
                 print()
 
         # another way to do the same thing:
@@ -25145,9 +25148,11 @@ def _2e_plot_model_corrs(g, df: pd.DataFrame, pair_order: np.ndarray,
 
         if n_first_seeds is not None and 'seed' in df.columns:
             # TODO test
-            df = df.groupby(hue, sort=False).apply(lambda x: x if x.seed.isna().all()
+            # (not using groupby.apply, as pandas >= 3 drops hue column from each group)
+            df = pd.concat([x if x.seed.isna().all()
                 else select_first_n_seeds(x, n_first_seeds=n_first_seeds)
-            )
+                for _, x in df.groupby(hue, sort=False)
+            ])
 
     # TODO what happens if some stuff in pair_order not in df? i suppose that's OK?
     # (must happen in some cases, where i have model data [i.e. ORN data] for less than

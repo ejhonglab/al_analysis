@@ -21,7 +21,9 @@ from al_analysis import al_util
 #
 from hong2p.types import ParamDict
 from hong2p.util import pd_allclose, equals, is_scalar, pd_indices_equal
-from hong2p.xarray import coords_equal, series2xarray_like, move_all_coords_to_index
+from hong2p.xarray import (coords_equal, series2xarray_like, move_all_coords_to_index,
+    drop_scalar_coords
+)
 import olfsysm as osm
 
 from al_analysis.al_util import (warn, diag_panel_str, fly_cols, load_natmix_dff,
@@ -1949,7 +1951,8 @@ def test_btn_expansion(tmp_path, orn_deltas, kws):
     # (use allclose since wPNKC1 have doubles and wPNKC2 have integers)
     assert np.allclose(wPNKC1.sum(axis='columns'), wPNKC2.sum(axis='columns'))
 
-    summed_wPNKC1 = wPNKC1.groupby(level='glomerulus', axis='columns').sum()
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    summed_wPNKC1 = wPNKC1.T.groupby(level='glomerulus').sum().T
     assert np.allclose(summed_wPNKC1, wPNKC2)
 
     # TODO TODO may need to update this, if i end up moving his bouton IDs to
@@ -3109,12 +3112,12 @@ def test_feedforward_indexing(orn_deltas, kws):
         odor_boutons = boutons.isel(stim=oi).squeeze(drop=True)
         odor_claws2 = wPNKC.dot(odor_boutons)
 
-        odor_claws = move_all_coords_to_index(
-            odor_claws.reset_index('claw').drop_vars(['glomerulus', 'stim'])
-        )
-        # TODO why does drop=True not remove this 'stim' var? call my fn to remove
-        # scalar coords?
-        odor_claws2 = odor_claws2.drop_vars('stim')
+        # isel(stim=oi) leaves a scalar 'stim' coord (squeeze(drop=True) doesn't remove
+        # it), and newer xarray also leaves scalar coords for its levels (panel/odor)
+        odor_claws = move_all_coords_to_index(drop_scalar_coords(
+            odor_claws.reset_index('claw').drop_vars('glomerulus')
+        ))
+        odor_claws2 = drop_scalar_coords(odor_claws2)
         # the coords check is pretty slow (~5-10s). allclose is faster.
         assert coords_equal(odor_claws2, odor_claws)
         assert np.allclose(odor_claws2, odor_claws)
@@ -3327,11 +3330,12 @@ def test_apl_indexing(orn_deltas, kws):
     # TODO try reverting to testing more than one odor?
     # i assume i ran out of memory? or was just really slow?
     #
-    # TODO why am i needing to manually drop 'stim' on all these?
-    pns = pns.isel(stim=0).squeeze(drop=True).drop_vars('stim')
-    boutons = boutons.isel(stim=0).squeeze(drop=True).drop_vars('stim')
-    claws = claws.isel(stim=0).squeeze(drop=True).drop_vars('stim')
-    inh = inh.isel(stim=0).squeeze(drop=True).drop_vars('stim')
+    # isel(stim=0) leaves a scalar 'stim' coord (squeeze(drop=True) doesn't remove
+    # it), and newer xarray also leaves scalar coords for its levels (panel/odor)
+    pns = drop_scalar_coords(pns.isel(stim=0).squeeze(drop=True))
+    boutons = drop_scalar_coords(boutons.isel(stim=0).squeeze(drop=True))
+    claws = drop_scalar_coords(claws.isel(stim=0).squeeze(drop=True))
+    inh = drop_scalar_coords(inh.isel(stim=0).squeeze(drop=True))
     #
 
     # ah, it's failing when we are not also analyzing just a single odor.
@@ -3340,21 +3344,15 @@ def test_apl_indexing(orn_deltas, kws):
     # ipdb> pns.dims
     # ('panel', 'glomerulus', 'time_s')
     assert pns.dims == ('glomerulus', 'time_s'), f'{pns.dims=}'
-    # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
-    # outside of the bouton index (first row in output below):
-    # Coordinates:
-    #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-    # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-    # * bouton      (bouton) MultiIndex
-    # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-    # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
-    # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
-    #
     # expanding each PN up to # of times it appears in boutons (and in same order as
-    # there)
-    boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
-        'glomerulus'
-    )
+    # there). indexing w/ plain glomerulus values (rather than the boutons.glomerulus
+    # DataArray), then dropping the leftover non-index 'glomerulus' coord and copying
+    # the bouton index coords, as `pns.loc[dict(glomerulus=boutons.glomerulus)]` +
+    # drop_vars('glomerulus') also drops the bouton index 'glomerulus' level in newer
+    # xarray (unlike 0.19)
+    boutons_no_inh = pns.sel(
+        glomerulus=xr.DataArray(boutons.glomerulus.values, dims='bouton')
+    ).drop_vars('glomerulus').assign_coords(boutons.bouton.coords)
     assert boutons_no_inh.dims == ('bouton', 'time_s')
     assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
 
