@@ -1528,8 +1528,12 @@ def test_hemibrain_paper_repro(tmp_path):
     assert output_dir.is_dir()
     assert output_dir.parent == plot_root
 
-    # TODO convert to loading the CSVs instead (to future proof this test). should also
-    # be committed.
+    # TODO convert to loading the CSVs (/parquets) instead (to future proof this test).
+    # should also be committed?
+    #
+    # 1837 cells (same as paper uniform outputs), 9 of which have no input, i.e.
+    # ipdb> (paper_wPNKC == 0).T.all().sum()
+    # 9
     paper_wPNKC = pd.read_pickle(paper_hemibrain_output_dir / 'wPNKC.p')
     wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
     #
@@ -1645,6 +1649,7 @@ def test_uniform_paper_repro(tmp_path):
     """
     orn_deltas = paper_megamat_orn_deltas()
 
+    # 1837 cells (checked first seed. should be same for all)
     pdf = paper_uniform_model_responses()
 
     params = read_param_csv(
@@ -2445,7 +2450,10 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
 # vectors initialized in params)
 # TODO separate fixture for just the weights later?
 def apl_weights(orn_deltas, request):
-    kws = request.param
+    # copying, since modified below, and same dict is shared across parametrizations of
+    # tests using this fixture (so 'sp_lr_coeff' would otherwise already be added, for
+    # second test using this fixture w/ same params)
+    kws = dict(request.param)
 
     # TODO TODO move this intial part (defining weights at least, probably not
     # initial rv? maybe it's fine as long as only one downstream test ever uses that

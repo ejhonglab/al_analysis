@@ -16,3 +16,6 @@ data/neural_remy/
 
 # my new figure output dir for step04...py
 fig4_repro/
+
+vcf-emb_corrdist.*
+ecfp_dist.*

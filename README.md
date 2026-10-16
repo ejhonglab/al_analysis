@@ -31,8 +31,57 @@ pip install .
 ```
 
 
-### For `al-analysis`
-Set the environment variables `HONG_NAS` and `HONG2P_FAST_DATA` appropriately:
+### For `al-analysis` (the CLI to analyze AL 2p data)
+
+`al-analysis` is a CLI program installed along other things when following the install
+instructions above. It looks for data under directories set by the environment variables
+discussed below. The data it expects is:
+
+- raw ThorImage and ThorSync outputs (named / organized how? doc!)
+
+- YAML files output by `olf` (under what subdir? doc!)
+  [olfactometer control CLI](https://github.com/tom-f-oconnell/olfactometer))
+
+  NOTE: each ThorImage experiment should have the name of the `olf` output YAML file
+  (which is copied to the clipboard by `olf`) pasted into the "Notes" ThorImage field
+  (and should be on a line by itself), as the analysis will use that to find the odor
+  metadata for an experiment.
+
+See environment variables section below for which subdirectories the above outputs are
+expected to be in. If doing multiple recordings for one experiment (in one fly), let
+ThorImage and ThorSync both increment the name of the recording automatically. ThorImage
+recording names should include `diag` if they are part of the ~24-odor panel to
+identify/segment glomeruli, and otherwise should include a shared string describing the
+odor panel in the prefix. ThorSync output names should not need to manually be changed,
+as long as they are auto-incrementing appropriately.
+
+It will also only analyze data also entered appropriately (with fly metadata, etc) in a
+Google Sheet, which is at a link set as described below. In the Google Sheet, each fly
+should have at least:
+
+- `Date`: should download in `YYYY-MM-DD` format. At least current date validation in my
+  Google Sheet enforces this.
+
+- `Fly`: fly number (numbered from 1 within each day)
+
+- `Driver`: abbreviation for the driver (Gal4/etc) (e.g. 'pebbled')
+
+- `Indicator`: abbreviation for the indicator (e.g. '6f')
+
+- `Side`: 'left'/'right'. all 'right' hemisphere data will be flipped into left
+  orientation, to keep analysis easy and outputs comparable.
+
+- (optional) `Exclude`: a column with checkbox data validation, which will download as
+  boolean. If checked, data from that fly will not be analyzed.
+
+
+#### TODO
+are there other columns currently used? `ImageJ ROIs done`?
+
+
+#### Environment variable setup
+Set the environment variables `HONG2P_DATA` and/or `HONG_NAS` and (optional)
+`HONG2P_FAST_DATA` appropriately:
 
 - `$HONG_NAS` should contain a directory `mb_team` directly under it.
 
@@ -54,13 +103,16 @@ mixture experiments/pair_grid_data`, open the sheet and copy the link to a file 
 `pair_grid_data_gsheet_link.txt` in the top-level of this repository.
 
 
-##### TODO
+#### TODO
 
-Document expectation on this Google Sheet? Make public read-only template and share
-link?
+- Document expectation on this Google Sheet? Make public read-only template and share
+  link? Or commit example export (XLSX?) from it?
+
+- Are `HONG_NAS` and `HONG2P_FAST_DATA` both actually required? isn't there a
+  `HONG2P_DATA` too? update above to reflect actual minimum set
 
 
-### Running
+#### Running
 
 ```
 # (or whatever else you named the environment for this project)
@@ -73,6 +125,12 @@ al-analysis -h
 ```
 
 Plots will be created under a directory such as `pdf`, under the current directory.
+
+
+#### Drawing ROIs
+
+TODO (+ explain how to setup ImageJ stuff and hotkeys for it, or link to repo that
+explains that)
 
 
 ### Installation notes

@@ -13,9 +13,9 @@ from hong2p.util import pd_allclose, shorten_path, addlevel
 from hong2p.viz import matshow, dff_latex
 
 from al_analysis import al_util
-from al_analysis.al_util import (mean_of_fly_corrs, corr_triangular,
-    invert_corr_triangular, warn, plot_corr, plot_responses, data_root, sort_odors,
-    savefig, diverging_cmap_kwargs
+from al_analysis.al_util import (mean_of_fly_corrs, corr_triangular, to_parquet,
+    to_csv, invert_corr_triangular, warn, plot_corr, plot_responses, data_root,
+    sort_odors, savefig, diverging_cmap_kwargs
 )
 from al_analysis.al_analysis import fill_to_hemibrain
 
@@ -426,6 +426,8 @@ def main():
     # TODO TODO + compare it's correlation against emb vcf to new PN vs emb vcf
     #import ipdb; ipdb.set_trace()
 
+    # TODO TODO TODO where did this get to? was i not able to commit it or something?
+    # not under current from_remy at all...
     vcf_emb_dir = data_root / 'from_remy' / '2025-07-07'
     vcf_emb_path = (vcf_emb_dir /
         # NOTE: this file is 158M, so can't commit, or else Github will block me from
@@ -433,6 +435,8 @@ def main():
         'VCFQuantHMDS_N0452_S2190_StandardScaler_pearson_MP05__ND030__lsf__shepard.tsv'
     )
 
+    # have a copy on tensor-archive under Tom/remy-paper/from_remy
+    warn(f'loading file {vcf_emb_path}, which is NOT committed due to file size')
     # has columns 'row_inchi', 'col_inchi', and then 10 seeds for each embedding of
     # dimensions on [2, 10]
     vcf = pd.read_csv(vcf_emb_path, sep='\t')
@@ -551,6 +555,27 @@ def main():
     rser.name = 'pn_dendrite_rect'
 
     plot_corr(vcorr, plot_dir, 'vcf-emb_corr')
+
+    vcorr_dist = 1 - vcorr
+    vmax = vcorr_dist.max().max()
+    print(f'{vmax=}')
+    # NOTE: intentionally passing vcorr and not vcorr_dist, as as_corr_dist=True will
+    # also define it as `1 - corr` internally
+    plot_corr(vcorr, plot_dir, f'vcf-emb_corr_as-fig4', cmap='Reds_r', vmin=0,
+        vmax=vmax, as_corr_dist=True
+    )
+
+    plot_corr(vcorr, plot_dir, f'vcf-emb_corr_as-fig4_viridis', cmap='viridis_r',
+        vmin=0, vmax=vmax, as_corr_dist=True
+    )
+
+    to_csv(vcorr_dist, 'vcorr_dist.csv')
+    to_parquet(vcorr_dist, 'vcorr_dist.parquet')
+    # TODO TODO TODO save to compare against inverted square version of corr in
+    # corr_minus_orn_vs_vcf_repro/step05b-run-resampling.py
+    # TODO delete
+    breakpoint()
+    #
 
     repro_remy_vcf_emb_lab_meeting_corr = False
     if repro_remy_vcf_emb_lab_meeting_corr:

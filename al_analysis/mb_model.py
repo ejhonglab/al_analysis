@@ -97,7 +97,9 @@ from hong2p.xarray import (save_dataarray as _save_dataarray, load_dataarray,
 from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
     first_odor_level
 )
-from hong2p.types import Pathlike, DataFrameOrSeries, CMap, ParamDict, MplRotation
+from hong2p.types import (Pathlike, DataFrameOrSeries, SeriesOrIndex, CMap, ParamDict,
+    MplRotation
+)
 from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
     reindex, is_scalar, pd_index_equal, equals, format_params, addlevel
 )
@@ -123,12 +125,17 @@ from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
     MultipleSavesPerRunException, print_curr_mem_usage, data_root, fly_cols,
     flyroi_cols, read_parquet, to_parquet, to_json, read_json, written_since_proc_start,
     format_mtime, response_calc_params_json_name, sent_to_remy, produces_output,
-    in_pytest, _have_fly_cols, paper_repro_kws, hemibrain_paper_repro_kws
+    in_pytest, _have_fly_cols, paper_repro_kws, hemibrain_paper_repro_kws,
+    stack_keep_na, stack_drop_na
 )
 from al_analysis import al_util
 
 
-warnings.filterwarnings('error', category=pd.errors.SettingWithCopyWarning)
+# removed in pandas 3 (where Copy-on-Write is always enabled)
+try:
+    warnings.filterwarnings('error', category=pd.errors.SettingWithCopyWarning)
+except AttributeError:
+    pass
 
 warnings.filterwarnings('error', message='FixedFormatter should only be used together '
     'with FixedLocator'
@@ -243,11 +250,6 @@ n_megamat_only_pairs: int = n_choose_2(n_megamat_odors)
 # calculation. All data should include glomerulus diagnostics.
 remypaper_dff2spiking_data_dir: Path = data_root / 'internal/for_dff_to_spiking_fn'
 
-# TODO rename this first one to include 'megamat_'? (since that's all it is)
-paper_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-18/'
-    'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
-    'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
-)
 paper_validation2_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-19/'
     'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
     'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
@@ -1177,10 +1179,17 @@ def validation2_orn_deltas(drop_diags: bool = True) -> pd.DataFrame:
     return orn_deltas
 
 
+# TODO rename paper_hemibrain... to include 'megamat_'? (since that's all it is)
+paper_hemibrain_output_dir: Path = sent_to_remy / ('2025-03-18/'
+    'dff_scale-to-avg-max__data_pebbled__hallem-tune_False__pn2kc_hemibrain__'
+    'weight-divisor_20__drop-plusgloms_False__target-sp_0.0915'
+)
 # TODO add test we can recalc these
 # these should have been computed using mean n_volumes=2 response calc. for paper repro
 # tests.
 def paper_megamat_orn_deltas() -> pd.DataFrame:
+    """Returns data in CSV from `mb_model.paper_hemibrain_output_dir / 'orn_deltas.csv'`
+    """
     orn_deltas = read_orn_deltas(paper_hemibrain_output_dir / 'orn_deltas.csv')
     # TODO subset down any other outputs (that might also have diags), for consistency?
     # (if loading a diff response calc)
@@ -1766,7 +1775,7 @@ def agg_synapses_to_claws(syns: pd.DataFrame, claw_cols: List[str],
             f'{set(check_unique_per_claw) - set(cols_unique_per_claw)=}'
         )
 
-        claws[cols_unique_per_claw] = claws[cols_unique_per_claw].applymap(
+        claws[cols_unique_per_claw] = util.df_map(claws[cols_unique_per_claw],
             lambda x: x[0]
         )
 
@@ -2343,7 +2352,7 @@ def claw2bouton_from_wPNKC(wPNKC: pd.DataFrame) -> pd.DataFrame:
         # claws, and grouping by glomerulus (assuming each claw essentially has same #
         # synapses, since i'm not currently tracking actual count of T-bars. that
         # assumption has seemed approximately true when i checked in the past)
-        df = wPNKC.replace(0, np.nan).stack(col_names).index.to_frame(index=False)
+        df = stack_drop_na(wPNKC.replace(0, np.nan), col_names).index.to_frame(index=False)
 
         old_index_names = list(wPNKC.index.names)
         try:
@@ -2673,7 +2682,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # TODO this actually unique? i assume not? make so?
             # (will trigger an assertion in reindex, if not, and it isn't doing that)
             glom_index = pd.Index(gloms, name=glomerulus_col)
-            recon = reindex(out.groupby(level=glomerulus_col, axis='columns').sum(),
+            # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+            recon = reindex(out.T.groupby(level=glomerulus_col).sum().T,
                 glom_index, axis='columns'
             )
             if not np.allclose(recon.to_numpy(), W, atol=1e-9):
@@ -2734,7 +2744,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             # TODO replace groupby->pivot w/ pivot_table (aggfunc='count'/'sum')?
             # seemed possible w/ pratyush input (but 'weight' input there was max 1...)
             # TODO factor out similar pivoting (w/ pivot_table) below -> share w/ here?
-            mcounts = mdf.groupby(['glom', 'bodyid']).sum('w').reset_index()
+            # (was previously `.sum('w')`, which pandas < 2 interpreted as truthy
+            # numeric_only positional arg)
+            mcounts = mdf.groupby(['glom', 'bodyid']).sum(numeric_only=True
+                ).reset_index()
             mdf_wide = mcounts.pivot(columns='glom', index='bodyid', values='w').fillna(
                 0).astype(int)
             # TODO uncomment
@@ -4818,7 +4831,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # stack() is to get a glomerulus index level from columns (which gives us a
         # Series with all 1 for values, that we don't need, so just use the index
         # from there)
-        claw2bouton = wPNKC.replace(0, np.nan).stack().index.to_frame(
+        claw2bouton = stack_drop_na(wPNKC.replace(0, np.nan)).index.to_frame(
             index=False).set_index(claw_cols).explode(BOUTON_ID).reset_index()
 
         # TODO maybe drop -1 (+ NaN, if any) BOUTON_ID first (from apl<>pn stuff!),
@@ -5914,7 +5927,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     # NaN row/columns
                     # TODO not sure we actually get anything out of the fillna(0), in
                     # terms of use of wPNKC in the remainder of this fn...
-                    wPNKC = wPNKC.replace(0, np.nan).stack(bouton_cols).fillna(0)
+                    wPNKC = stack_drop_na(wPNKC.replace(0, np.nan), bouton_cols).fillna(0)
 
                     # TODO delete
                     # TODO (no longer true) wish i could figure out how to make this not
@@ -5938,7 +5951,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                 # stack() is to get a glomerulus index level from columns (which gives
                 # us a Series with all 1 for values, that we don't need, so just use the
                 # index from there)
-                claw2bouton = wPNKC.replace(0, np.nan).stack().index.to_frame(
+                claw2bouton = stack_drop_na(wPNKC.replace(0, np.nan)).index.to_frame(
                     index=False).set_index(claw_cols).explode(BOUTON_ID).reset_index()
                 # TODO TODO should i use claw2bouton_from_wPNKC here?
                 # (oh well, this is a less important branch anyway.
@@ -7922,7 +7935,7 @@ def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = 
                     savefig(fig, plot_dir, 'wKCAPL_claw_vs_nonclaw_weight')
 
                 if prat_boutons and per_claw_pn_apl_weights:
-                    pn2glom = wPNKC.replace(0, np.nan).stack().index.to_frame(
+                    pn2glom = stack_drop_na(wPNKC.replace(0, np.nan)).index.to_frame(
                         index=False)[[PN_ID, glomerulus_col]].drop_duplicates(
                         ).set_index(PN_ID).squeeze()
 
@@ -13977,8 +13990,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # weights (by sorting, when wPNKC and PN<>APL weights previously had equal
             # indices, but accidentally not sorted)?
             # (it's not the important per_claw_pn_apl_weights=False case...)
-            wPNKC_for_model = wPNKC.groupby(level=glomerulus_col, axis='columns',
-                sort=False).sum()
+            wPNKC_for_model = wPNKC.T.groupby(level=glomerulus_col, sort=False
+                ).sum().T
 
             # TODO assert above doesn't change index/columns
             breakpoint()
@@ -14409,7 +14422,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # 0.19996785599485697
         # ipdb> (pks >= higher).mean().mean()
         # 0.19999999999999998
-        pks = pks.stack(pks.columns.names).squeeze()
+        pks = stack_drop_na(pks, pks.columns.names).squeeze()
         assert isinstance(pks, pd.Series)
 
         # olfsysm defaults: mp.kc.sp_target=0.1, mp.kc.sp_factor_pre_apl=2.0
@@ -15446,7 +15459,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         index_before = wPNKC.index.copy()
 
         # should have removed enough memory pressure that this should be fine now
-        claw_index = wPNKC.replace(0, np.nan).stack(glomerulus_col).index
+        claw_index = stack_drop_na(wPNKC.replace(0, np.nan), glomerulus_col).index
         assert claw_index.names == index_before.names + [glomerulus_col]
         assert not claw_index.get_level_values(glomerulus_col).isna().any()
         # TODO fix in test_spatial_wPNKC_equiv (-> delete try/except hack)
@@ -15705,11 +15718,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # hack to fix all iteams are single element data array
             if isinstance(orn_df.values[0,0], xr.DataArray):
                 orn_corr = plot_responses_and_corr(
-                    subset_fn(orn_df.applymap(lambda x: x.item())), plot_dir,
+                    subset_fn(util.df_map(orn_df, lambda x: x.item())), plot_dir,
                     f'orns{suffix}', title=title, **plot_kws
                 )
                 plot_responses_and_corr(
-                    subset_fn(pn_df.applymap(lambda x: x.item())), plot_dir,
+                    subset_fn(util.df_map(pn_df, lambda x: x.item())), plot_dir,
                     f'pns{suffix}', title=title, **plot_kws
                 )
             else:
@@ -16741,6 +16754,12 @@ def read_series_csv(csv: Pathlike, convert_dtypes: bool = False, **kwargs) -> pd
             # from here)?
             #
             # anything more we'd want to check?
+            #
+            # numpy >= 2 scalar repr includes type (e.g. 'np.False_'), so converting
+            # to python scalar first
+            if isinstance(v2, np.generic):
+                v2 = v2.item()
+
             assert repr(v2) == v, f'(converted) {repr(v2)=} != (initial str) {v=}'
 
         ser = ser2
@@ -16850,6 +16869,20 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
             warn('keys filtered before writing params to CSV (still written to '
                 f'pickle/json, unless also mentioned above):\n{pformat(filtered_keys)}'
             )
+
+        # numpy >= 2 scalar repr includes type (e.g. 'np.float64(1.5)'), which would
+        # otherwise end up in CSV for lists of numpy scalars. python scalar repr is the
+        # same as numpy < 2 repr for these types.
+        def _np_scalars_to_builtin(v):
+            if isinstance(v, (np.float64, np.integer, np.bool_)):
+                return v.item()
+            elif isinstance(v, (list, tuple)):
+                return type(v)(_np_scalars_to_builtin(x) for x in v)
+            return v
+
+        filtered_params = {
+            k: _np_scalars_to_builtin(v) for k, v in filtered_params.items()
+        }
 
         param_series = pd.Series(filtered_params)
         csv_cache = param_cache.with_suffix('.csv')
@@ -18671,7 +18704,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO TODO TODO has adding dropna=False broken anything? it was to fix odor
         # pairs not matching up in merge in comparison_orns code below
         # (only was triggered in hallem/uniform case)
-        seed_corr_ser = seed_corrs.stack(dropna=False)
+        seed_corr_ser = stack_keep_na(seed_corrs)
 
         # TODO can i convert below comment to an assertion / delete then (seems from
         # parenthetical below i felt i had figured it out)
@@ -19067,6 +19100,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             df = select_first_n_seeds(df)
 
         def _save_kc_vs_orn_corr_scatterplot(metric_name: str) -> None:
+            # TODO TODO TODO confirm it was actually only first 20 seeds used for
+            # version of this in modeling.svg (what is now in paper)
+            # TODO delete
+            breakpoint()
             # to recreate preprint fig 3B
 
             if metric_name == 'correlation distance':
@@ -21026,7 +21063,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     assert set(fly_mean_df.dtypes) == {np.dtype('float64')}
 
     # TODO delete? here and elsewhere? (was before fly_mean_df code)
-    mean_df = fly_mean_df.groupby(glomerulus_col, axis='columns').mean()
+    mean_df = fly_mean_df.T.groupby(level=glomerulus_col).mean().T
 
     # TODO factor out? rename?
     def melt_odor_by_glom_responses(df, value_name):
@@ -21380,7 +21417,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
 
         # TODO factor below to hallem portion above? (-> move all out into separate fn
         # to merge data w/ hallem)
-        tidy_hallem = hallem_delta_wide.T.stack()
+        tidy_hallem = stack_drop_na(hallem_delta_wide.T)
 
         # just to rename the second level from 'odor1'->'odor', to be consistent w/
         # above
@@ -22049,7 +22086,7 @@ def drop_binaries_mixdilutions_and_pfo(df: pd.DataFrame, *, drop_pfo: bool = Tru
         # based dropping to part behind keep_binary below
         odor_strs.str.contains('(air mix)', regex=False)
     )
-    if keep_binary:
+    if not keep_binary:
         # to remove 2 component mixtures (whether in-vial or air mixture).
         #
         # stripping '+' first (which only removes any start/end characters in passed
@@ -22743,9 +22780,11 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
     n_nondiag_panels = len(nondiag_panels)
     # TODO want to drop the panel column level? or want to use it inside calls to
     # fit_and_plot...? groupby kwarg for dropping, if i want former?
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
     for pi, (panel, panel_est_df) in enumerate(
-            mean_est_df.groupby('panel', axis='columns', sort=False)
+            mean_est_df.T.groupby(level='panel', sort=False)
         ):
+        panel_est_df = panel_est_df.T
 
         if panel == diag_panel_str:
             continue
@@ -22893,7 +22932,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
         # TODO just use one of the previous things that was already tidy? and already
         # had hallem data?
-        tidy_est = panel_est_df.droplevel('panel', axis='columns').stack()
+        tidy_est = stack_drop_na(panel_est_df.droplevel('panel', axis='columns'))
         tidy_est.name = est_spike_delta_col
         tidy_est = tidy_est.reset_index()
 
@@ -23796,7 +23835,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 '''
                 # removing the concentration part of each odor str, e.g.
                 # 'a @ -3' -> 'a' (since Remy and I format that part slightly diff)
-                pairs = pairs.applymap(olf.parse_odor_name)
+                pairs = util.df_map(pairs, olf.parse_odor_name)
                 # if any odor is presented at >1 conc, this 1st assertion would trip
                 assert not pairs.duplicated().any()
                 assert not pairs.isna().any().any()
@@ -24266,7 +24305,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 # TODO factor this index conc stripping to another olf fn? don't i
                 # already do something like this in model_yang_mixtures.py code?
                 merged_corrs_index_no_concs = pd.MultiIndex.from_frame(
-                    merged_corrs.index.to_frame(index=False).applymap(
+                    util.df_map(merged_corrs.index.to_frame(index=False),
                         olf.strip_concs_from_odor_str
                     )
                 )
@@ -24437,7 +24476,7 @@ assert len(megamat_odor_names) == n_megamat_odors
 remy_dates_with_little_megamat: Tuple[str] = ('2022-09-21', '2022-09-22', '2022-09-26')
 
 # TODO put in docstring which files we are loading from
-def _load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool = True,
+def load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool = True,
     drop_flies_with_little_megamat: bool = True) -> pd.DataFrame:
 
     fly_response_root = remy_data_dir / 'megamat17' / 'per_fly'
@@ -24776,11 +24815,11 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, *, drop_nonmegamat: bool 
         ordered_pairs: passed to each per-fly `corr_triangular` call
 
         drop_nonmegamat: used in `checks=True` code, and also passed to
-            `_load_remy_megamat_kc_responses`
+            `load_remy_megamat_kc_responses`
 
-        **kwargs: passed to `_load_remy_megamat_kc_responses`
+        **kwargs: passed to `load_remy_megamat_kc_responses`
     """
-    mean_responses = _load_remy_megamat_kc_responses(drop_nonmegamat=drop_nonmegamat,
+    mean_responses = load_remy_megamat_kc_responses(drop_nonmegamat=drop_nonmegamat,
         **kwargs
     )
 
@@ -24853,7 +24892,7 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, *, drop_nonmegamat: bool 
             # final 4 flies we had been using)
             corrs_to_compare_to_anoop_data = fly_corrs
         else:
-            megamat_pairs = fly_corrs.columns.to_frame().applymap(odor_is_megamat
+            megamat_pairs = util.df_map(fly_corrs.columns.to_frame(), odor_is_megamat
                 ).all(axis='columns')
             corrs_to_compare_to_anoop_data = fly_corrs.loc[:, megamat_pairs]
             assert len(corrs_to_compare_to_anoop_data.columns) == n_megamat_only_pairs
@@ -25499,7 +25538,7 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
         final_megamat_datefly = set(flymean_corrs.index.get_level_values('datefly'))
 
         flymean_corrs.columns = pd.MultiIndex.from_frame(
-            flymean_corrs.columns.to_frame(index=False).applymap(olf.parse_odor_name)
+            util.df_map(flymean_corrs.columns.to_frame(index=False), olf.parse_odor_name)
         )
         assert not flymean_corrs.columns.duplicated().any()
 
@@ -26027,22 +26066,31 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     # TODO expose as kwarg (+ default to False)
     allow_old_cache_name = True
     old_tuned_param_name = 'params_for_csv.p'
-    # NOTE: old name can only ever be in 1st output, and must not be in 2nd output
-    assert old_tuned_param_name not in output_dir2_pickles
-    if allow_old_cache_name and old_tuned_param_name in output_dir_pickles:
-        warn(f'{output_dir=} used old tuned param cache name (={old_tuned_param_name})')
+    # NOTE: old name can be in either output (e.g. reference outputs passed as 2nd
+    # output in test_fitandplot_repro), but not both (both would use `else` branch)
+    old_in_1 = old_tuned_param_name in output_dir_pickles
+    old_in_2 = old_tuned_param_name in output_dir2_pickles
+    if allow_old_cache_name and old_in_1 != old_in_2:
+        if old_in_1:
+            old_dir, old_pickles, new_pickles = (output_dir, output_dir_pickles,
+                output_dir2_pickles
+            )
+        else:
+            old_dir, old_pickles, new_pickles = (output_dir2, output_dir2_pickles,
+                output_dir_pickles
+            )
+
+        warn(f'{old_dir=} used old tuned param cache name (={old_tuned_param_name})')
         # new name for same thing (new 'params.p' is "all" params, not just the "tuned"
         # params)
         new_tuned_param_name = 'tuned_params.p'
-        assert new_tuned_param_name not in output_dir_pickles
+        assert new_tuned_param_name not in old_pickles
 
-        assert output_dir_pickles - output_dir2_pickles <= {old_tuned_param_name}
+        assert old_pickles - new_pickles <= {old_tuned_param_name}
         # params.p ("all" params, which should be more than "tuned" params) should now
         # also exist, in addition to params.csv (which still has the same name as it did
         # before)
-        assert output_dir2_pickles - output_dir_pickles <= {
-            new_tuned_param_name, 'params.p'
-        }
+        assert new_pickles - old_pickles <= {new_tuned_param_name, 'params.p'}
     else:
         # TODO TODO allow specifying expected missing ones via kwarg
         # (for b - a = {'wAPLKC.p', 'wKCAPL.p'} in boost_apl... script)
@@ -26617,6 +26665,7 @@ def print_spike_scaling_effect(scaling_fn: Callable, *, max_n_spikes: int = 5, *
 
 def print_logistic_scaling_effect(k: float, x0: float, L: float, *,
     midpoint_scaler: float = 1.75, **kwargs) -> None:
+    # TODO doc what midpoint_scalar is doing in plain english
     kwargs = dict(kwargs)
     if 'max_n_spikes' not in kwargs:
         kwargs['max_n_spikes'] = int(round(x0 * midpoint_scaler))
@@ -27397,9 +27446,11 @@ def format_n_components(n_comps: int, *, i: Optional[int] = None,
 
 def format_mix_responder(mix_resp: bool) -> str:
     if not mix_resp:
-        return 'mix NON-responders'
+        #return 'mix NON-responders'
+        return 'NO mix response'
     else:
-        return 'mix-responders'
+        #return 'mix-responders'
+        return 'mix response'
 
 
 def response_class_str2n_components_formatted(x: str, **kwargs) -> str:
@@ -27707,9 +27758,8 @@ def summarize_response_classes(df: pd.DataFrame, *,
     else:
         assert response_threshold is None
 
-    class_sizes = df.groupby(level='key', sort=False, axis='columns').apply(
-        lambda x: len(x.columns)
-    ).rename('n_rois')
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    class_sizes = df.T.groupby(level='key', sort=False).size().rename('n_rois')
     assert class_sizes.sum() == len(df.columns)
     assert isinstance(class_sizes, pd.Series)
 
@@ -27725,7 +27775,7 @@ def summarize_response_classes(df: pd.DataFrame, *,
         # TODO even compute this if have_fly cols? only gonna return that recomputed
         # (per-fly) version below in that case (although could use this in
         # sum_across_flies=True case ig)
-        class_means = responses.groupby(level='key', sort=False, axis='columns').mean()
+        class_means = responses.T.groupby(level='key', sort=False).mean().T
         assert class_means.columns.equals(class_sizes.index)
         assert class_means.index.equals(df.index)
         class_means.columns = new_index
@@ -27779,8 +27829,7 @@ def summarize_response_classes(df: pd.DataFrame, *,
     fly_class_means = None
     if have_fly_cols:
         by = ['key'] + fly_cols
-        fly_class_sizes = df.groupby(level=by, sort=False, axis='columns').apply(
-            lambda x: len(x.columns)).rename('n_rois')
+        fly_class_sizes = df.T.groupby(level=by, sort=False).size().rename('n_rois')
         assert fly_class_sizes.sum() == len(df.columns)
 
         for_index = pd.MultiIndex.from_tuples(
@@ -27793,8 +27842,7 @@ def summarize_response_classes(df: pd.DataFrame, *,
         del for_index
 
         if responses is not None:
-            fly_class_means = responses.groupby(level=by, sort=False, axis='columns'
-                ).mean()
+            fly_class_means = responses.T.groupby(level=by, sort=False).mean().T
             assert fly_class_sizes.index.equals(fly_class_means.columns)
             assert fly_class_means.index.equals(df.index)
             fly_class_means.columns = fly_class_index
@@ -27815,8 +27863,7 @@ def summarize_response_classes(df: pd.DataFrame, *,
             n_mix_only_responders_per_fly = fly_class_sizes.loc[True, 0
                 ].groupby(fly_cols).sum()
 
-            n_rois_per_fly = df.groupby(level=fly_cols, sort=False, axis='columns'
-                ).size().iloc[0]
+            n_rois_per_fly = df.T.groupby(level=fly_cols, sort=False).size()
             n_rois_per_fly.name = 'n_rois'
 
             frac_mix_only_responders_per_fly = (
@@ -27894,6 +27941,10 @@ def replace_index_response_vars_with_key_tuples(index: pd.Index) -> pd.MultiInde
         return pd.MultiIndex.from_frame(index_df)
 
 
+def key_tuples2response_var_index(keys: SeriesOrIndex) -> pd.MultiIndex:
+    return pd.MultiIndex.from_tuples(keys, names=RESPONSE_CLASS_VARS)
+
+
 # TODO delete? not always the only cols... ig it should always be the min now, except in
 # uniform case?
 model_cols: List[str] = [KC_ID, 'kc_type']
@@ -27941,7 +27992,14 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
     # TODO delete?
     wrote_multiresponder_mask: bool = False,
     #
-    odor_name_row_labels: bool = True, **kwargs) -> None:
+    odor_name_row_labels: bool = True, percentages_only: bool = False,
+    tick_fontsize: Optional[float] = None, title_fontsize: float = 10.0,
+    # TODO what is default suptitle fontsize? must be >10 i assume? set to 20 or so?
+    group_fontsize: Optional[float] = None, suptitle_fontsize: Optional[float] = None,
+    hgroup_label_offset: Optional[float] = None,
+    mixresp_group_fontsize: Optional[float] = None,
+    mixresp_group_linewidth: float = 2.0, extra_mixresp_group_offset: float = 0.3,
+    subplot_kws: Optional[ParamDict] = None, count_title: str = '', **kwargs) -> None:
     # TODO doc
     # TODO warn if plot_dir is None? or assert it isn't? (could skip this fn if we ever
     # did actually want that, right? not returning anything)
@@ -27961,6 +28019,8 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
             tuple, which represents index of component the class responded the
             strongest to, should be defined consistent w/ order odors currently are in
             `mean_df.index`, for `=True` to work correctly.
+
+        **kwargs: passed to `viz.matshow` used to plot means
     """
     # TODO warn + set class_size_frac_thresh=None if `group_level = 'cluster'`? maybe
     # just change default to =None (and pass in the model_yang_mixture.py calls that
@@ -28045,10 +28105,7 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
     hgroup_formatter = lambda x: format_n_components(x[1])
 
     # '$N_{{c}}=0$' -> '$N_{{c}}=$' + <explanation>
-    xlabel = format_n_components(0).replace('0', '') + (
-        # TODO remove 'unit'? say 'cell' if not group_level=='cluster'?
-        '# components unit responded to'
-    )
+    xlabel = format_n_components(0).replace('0', '') + '# component responses'
 
     col_names = mean_df.columns.names
     if 'key' not in col_names:
@@ -28071,8 +28128,8 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         show_yticklabels = True
         group_level = 'cluster'
         yticklabels = lambda x: x['cluster']
-        hgroup_label_offset = 0.16
-        group_fontsize = None
+        if hgroup_label_offset is None:
+            hgroup_label_offset = 0.16
     else:
         group_level = 'key'
 
@@ -28104,13 +28161,12 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
 
         # 0.3 was pretty good, but maybe slightly too much. 0.27 still slightly too
         # much.
-        if show_yticklabels:
-            hgroup_label_offset = 0.25
-        else:
-            # TODO good?
-            hgroup_label_offset = 0.05
-
-        group_fontsize = 10
+        if hgroup_label_offset is None:
+            if show_yticklabels:
+                hgroup_label_offset = 0.25
+            else:
+                # TODO good?
+                hgroup_label_offset = 0.05
 
     if have_fly_cols:
         counts_across_flies = counts.groupby(level=group_level, sort=False).sum()
@@ -28281,11 +28337,15 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
     # default linewidth=0.5
     n_comp_linewidth: float = 0.1
 
+    if group_fontsize is None:
+        group_fontsize = title_fontsize
+
     # transposing so clusters/response-classes are rows (and odors are columns), which
     # is more analagous to samples=rows
-    fig, _ = viz.matshow(mean_df.T, ax=mean_ax, xlabel=xlabel, bigtext_fontsize=10,
-        xticklabels=True, yticklabels=yticklabels, cmap=cmap, norm=norm, vmin=vmin,
-        vmax=vmax,
+    fig, _ = viz.matshow(mean_df.T, ax=mean_ax, xlabel=xlabel, title='odor',
+        xticklabels=True, yticklabels=yticklabels, cmap=cmap, norm=norm,
+        bigtext_fontsize=title_fontsize, fontsize=tick_fontsize,
+        vmin=vmin, vmax=vmax,
 
         # full keys are:
         # (<responded-to-mix?>, <#-components-responded-to>, <max-comp-resp-idx>)
@@ -28309,19 +28369,10 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
 
         linecolor='k', linewidth=n_comp_linewidth,
 
-        # TODO come up w/ something more elegant than this hardcode. just based on #
-        # rows?
-        # TODO want more in cluster case now? was 10 if ... else 8, but i didn't find 8
-        # to be enough anymore
-        fontsize=10 if group_level == 'cluster' else 10,
-
         **kwargs
     )
     if not show_yticklabels:
         mean_ax.set_yticks([])
-
-    # TODO TODO also put total frac (+ #) of segmenting cells somewhere in plot. xlabel?
-    # (and maybe some other stats? total frac (+ #) non-responders?)
 
     # e.g. 'mix=0 ncomps=0 n=1479 (85.4%)' -> 'n=1479 (85.4%)' or
     # 'mix=0 ncomps=1 max_comp=ea n=48 (2.8%)' -> 'n=48 (2.8%)'
@@ -28330,16 +28381,19 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         # NOTE: class_sizes will have to be passed in format_response_class in order for
         # the last two parts to be available. should always be defined in model case now
         # at least.
-        # TODO TODO is it also always defined (e.g. as ` = counts`, if needed) in fly
+        # TODO is it also always defined (e.g. as ` = counts`, if needed) in fly
         # case now? fix if not (also warn if doing that, as current model handling)
         assert len(parts) in (4, 5), (
             f'{len(parts)=}\n{parts=}\n{class_sizes=}\nneed to pass class_sizes?'
         )
+        if percentages_only:
+            # '(88.1%)' -> '88.1%'
+            return parts[-1].strip('()')
+
         return ' '.join(parts[-2:])
 
     def bar_labels_from_response_class_strs(xs: List[str]) -> List[str]:
         return [response_class_str2bar_label(x) for x in xs]
-
 
     def count_barh(counts: pd.Series, *, labels: Optional = None,
         label: Optional[str] = None, **kwargs) -> None:
@@ -28348,7 +28402,7 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         count_ax.barh(yticks, counts, label=label, **kwargs)
         if labels is not None:
             assert len(counts) == len(labels)
-            count_ax.set_yticks(yticks, labels)
+            count_ax.set_yticks(yticks, labels, fontsize=tick_fontsize)
 
         if break_axes_for_nonresponders:
             # omitting label= from this call, to not duplicate in legend
@@ -28648,18 +28702,26 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         if group_level == 'key':
             labels = bar_labels_from_response_class_strs(labels)
 
-        count_ax.set_yticks(yticks, labels)
+        # count_barh sets this in model case above
+        count_ax.set_yticks(yticks, labels=labels, fontsize=tick_fontsize)
 
-        fig.legend(loc='outside right upper')
+        fig.legend(title='fly', loc='outside right upper')
+
+    if mixresp_group_fontsize is None:
+        mixresp_group_fontsize = group_fontsize
 
     mix_resp_strs = [format_mix_responder(x[0]) for x in response_classes]
-    mix_resp_dividing_linewidth = 1.0
     add_group_labels_and_lines(mean_ax, y=mix_resp_strs, labels=True, lines=True,
         # thicker line here (0.1 above) (0.5 was not noticeably different)
         # 2.0 was a bit much maybe
-        label_offset=hgroup_label_offset + 0.3, rotation='vertical',
-        linewidth=mix_resp_dividing_linewidth
+        label_offset=hgroup_label_offset + extra_mixresp_group_offset,
+        rotation='vertical', linewidth=mixresp_group_linewidth,
+        size=mixresp_group_fontsize
     )
+
+    # TODO why this not seeming to change anything? (even w/ pad=0 or pad=-1 / =10)
+    #mean_ax.yaxis.set_tick_params(pad=10)
+    #
 
     # TODO delete. hline_level_fn/hgroup_formatter/etc above should handle this, right?
     #
@@ -28753,11 +28815,19 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         axs = (count_ax,)
 
     sns.despine(ax=count_ax)
+    # TODO try to align to center of combination of count_ax and count_ax_to_break_bar
+    # (if break_...)?
+    count_ax.set_xlabel('counts per response class', size=title_fontsize)
 
     n_comps = [x[1] for x in response_classes]
     line_artists = []
     for ax in axs:
         ax.set_ylim(-0.5, len(mean_df.columns) - 0.5)
+
+        # TODO TODO TODO size= seems to be changing tick length. how to change fontsize?
+        # i don't think fontsize= worked...
+        ax.xaxis.set_tick_params(labelsize=tick_fontsize)
+
         # default linecolor='k' for both of these
         _, lines = add_group_labels_and_lines(ax, y=n_comps[::-1], labels=False,
             lines=True, linewidth=n_comp_linewidth
@@ -28765,7 +28835,7 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         line_artists.extend(lines)
 
         _, lines = add_group_labels_and_lines(ax, y=mix_resp_strs[::-1], labels=False,
-            lines=True, linewidth=mix_resp_dividing_linewidth
+            lines=True, linewidth=mixresp_group_linewidth
         )
         line_artists.extend(lines)
 
@@ -28832,16 +28902,41 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
             f'({n_rois_in_classes_below_thresh} ROIs in classes below size thresh)'
         )
 
+    if count_title != '':
+        count_title += '\n'
+
+    # ideally this might be centered on bbox across both count ax and ax to
+    # break, in that case, but whatever
+    counts = counts.copy()
+    keys = counts.index.get_level_values('key')
+    index = key_tuples2response_var_index(keys)
+    counts.index = index
+
+    frac_segmenting = counts.loc[False, 1].sum() / n_total
+    count_title += f'{frac_segmenting:.2%} segmenting'
+
+    frac_mix_responsive = counts.loc[(True,)].sum() / n_total
+    count_title += f'\n{frac_mix_responsive:.2%} mix-responsive'
+    count_ax.set_title(count_title, fontsize=title_fontsize)
+
     if title is not None:
-        fig.suptitle(title)
+        fig.suptitle(title, fontsize=suptitle_fontsize)
 
     if plot_dir is not None:
         if group_level == 'key' and not MERGE_MAXCOMP_NCOMPS0:
             fname_prefix += NON_MERGE_MAXCOMP_SUFFIX
 
+        _subplot_kws = dict(left=0.16, right=0.95)
+        if subplot_kws is not None:
+            _subplot_kws.update(subplot_kws)
+
+        fig.subplots_adjust(**_subplot_kws)
+
         # TODO define fname_prefix from group_level (i.e. 'response-class' if
         # group_level='key') by default?
         savefig(fig, plot_dir, f'{fname_prefix}_means{fname_suffix}',
+            # TODO TODO why is bbox_inches='tight' not preventing stuff from getting
+            # cut off? (xlabel, in particular)
             bbox_inches='tight', normalize_fname=False
         )
 
@@ -29014,7 +29109,8 @@ def calc_mix_suppression(df: pd.DataFrame, *, comp_stat: str = COMP_STAT
 def plot_avg_mixsupp(df: pd.DataFrame, plot_dir: Optional[Path] = None, *,
     fname_suffix: str = '', lin_col: str = 'mix_minus_comp-max', x: str = 'source',
     ci: float = CI, xtickrotation: MplRotation = 90, xlabel: Optional[str] = None,
-    title: Optional[str] = None, save: bool = True, **kwargs) -> FacetGrid:
+    title: Optional[str] = None, save: bool = True, col: Optional[str] = 'panel',
+    ymin: Optional[float] = None, ymax: Optional[float] = None, **kwargs) -> FacetGrid:
 
     if plot_dir is None:
         assert not save, ('must pass either plot_dir=<directory-Path> or save=False. '
@@ -29040,11 +29136,12 @@ def plot_avg_mixsupp(df: pd.DataFrame, plot_dir: Optional[Path] = None, *,
     # just make one internal to analyze_by_panel call? (going to start w/ latter)
     # TODO TODO rename 'mix_minus_comp-max' w/ some latex like
     # $R_{mix} - max(R__{comp})$ or something), for ylabel at least
-    cg = sns.catplot(df, col='panel', x=x, y=lin_col, kind='point', linestyles='none',
+    cg = sns.catplot(df, col=col, x=x, y=lin_col, kind='point', linestyles='none',
         # catplot errorbar default is ('ci', 95)
         markerfacecolor='none', errorbar=('ci', ci), seed=BOOTSTRAP_SEED, **kwargs
     )
     cg.set_xticklabels(rotation=xtickrotation)
+    # TODO what about if row is there?
     cg.set_titles(col_template='{col_name}')
 
     if title is not None:
@@ -29057,6 +29154,10 @@ def plot_avg_mixsupp(df: pd.DataFrame, plot_dir: Optional[Path] = None, *,
     cg.set_axis_labels(
         y_var=f'{diff_col2desc(lin_col)}\n(with {ci:.0f}% CI on the mean)'
     )
+
+    if ymin is not None or ymax is not None:
+        # TODO TODO assert anything wrt data (and/or wrt error bars?)
+        cg.set(ylim=(ymin, ymax))
 
     if save:
         # TODO delete (after fixing calling natmix_data/analysis.py code to pass in
@@ -29321,6 +29422,7 @@ def plot_response_class_summary(class_fracs: pd.Series, plot_dir: Path, *,
         ax.set_xticks(range(len(new_labels)))
         # TODO also want some kind of alignment when showing these as group labels in
         # plot_means_and_counts?
+        # TODO delete horizontalalignment? what's this actually getting me?
         ax.set_xticklabels(new_labels, horizontalalignment='right')
         add_group_labels_and_lines(ax, x=mix_labels, linecolor=(0.8, 0.8, 0.8),
             label_offset=-1.15

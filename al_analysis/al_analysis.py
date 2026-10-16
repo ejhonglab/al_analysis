@@ -189,7 +189,6 @@ plt.rcParams['ps.fonttype'] = 42
 # add_norm_options / twoslopenorm [+ cbar ticks?] handling ?
 viz._debug = False
 
-
 orn_drivers = {'pebbled'}
 
 
@@ -1713,9 +1712,7 @@ def load_olf_input_yaml(yaml_name: str, olf_config_dir: Optional[Path] = None,
         olf_config_dir = Path.home() / 'src/tom_olfactometer_configs'
 
     input_yaml = olf_config_dir / yaml_name
-    assert input_yaml.exists()
-
-    yaml_data = yaml.safe_load(input_yaml.read_text())['odors']
+    data = olf.load_input_yaml(input_yaml)['odors']
 
     df = pd.DataFrame.from_records(yaml_data)
 
@@ -2406,6 +2403,11 @@ def trial_response_traces(raw_traces, bounding_frames, *, odor_index=None,
         raise
 
     zscored = scipy_zscore(raw_traces, axis=0)
+    # newer scipy returns ndarray, even for DataFrame input
+    if isinstance(raw_traces, pd.DataFrame) and not isinstance(zscored, pd.DataFrame):
+        zscored = pd.DataFrame(zscored, index=raw_traces.index,
+            columns=raw_traces.columns
+        )
 
     if _checks:
         first_roi_timeseries = raw_traces.iloc[:, 0]
@@ -2416,7 +2418,10 @@ def trial_response_traces(raw_traces, bounding_frames, *, odor_index=None,
         # there is a .index.name?
         #assert first_roi_timeseries.index.name == 'frame'
 
-        assert pd_allclose(zscored.iloc[:, 0], scipy_zscore(first_roi_timeseries))
+        # (np.asarray b/c newer scipy returns ndarray, even for Series input)
+        assert np.allclose(zscored.iloc[:, 0],
+            np.asarray(scipy_zscore(first_roi_timeseries))
+        )
 
     # TODO can i share any of this from delta_f_over_f (copied and adapted from there)
     for i, (start_frame, first_odor_frame, end_frame) in enumerate(bounding_frames):
@@ -6837,6 +6842,8 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
         )
         savefig(fig, corr_plot_root, f'{panel}_mean')
 
+        # TODO TODO TODO replace with stddev, to be consistent w/ error plot of response
+        # matrix
         # TODO TODO update error calculation to match whatever remy is using
         # (probably for everything, but at least for megamat stuff, as well as my
         # modeling in that context)
@@ -7527,7 +7534,7 @@ def competitive_binding_model(mean_df):
     #    conc_df.columns.to_frame().applymap(odor_str2conc)
     #)
 
-    concs_df = mean_df.columns.to_frame().applymap(odor_str2conc)
+    concs_df = util.df_map(mean_df.columns.to_frame(), odor_str2conc)
     concs_df.columns.name = 'odor'
     odor_col_names = concs_df.columns
     ests = []
@@ -8309,9 +8316,9 @@ def get_gh146_glomeruli() -> Optional[Set[str]]:
 
 
 def acrossfly_correlation_plots(output_root: Path, trial_df: pd.DataFrame, *,
-    certain_only=True) -> None:
+    certain_only: bool = True) -> None:
 
-    # TODO TODO TODO save CSVs of [hallem|gh146]-restricted / bouton-frequency-repeated
+    # TODO TODO save CSVs of [hallem|gh146]-restricted / bouton-frequency-repeated
     # version as well, so remy can compute and plot the corrs? (maybe outside of this
     # fn, around existing CSV saving? might just wanna call this fn w/ diff inputs,
     # in that case, rather than separately restricting/etc here)
@@ -8526,6 +8533,7 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
 
     # NOTE: n_per_odor_and_glom currently unused in rest of this fn. may want to
     # redefine n_flies (above) from it tho?
+    # TODO TODO can i move this one into plot_responses_and_scaled_versions too?
     fig, n_per_odor_and_glom = plot_n_per_odor_and_glom(certain_df, title_prefix=title)
     savefig(fig, plot_dir, f'{fname_prefix}certain_n')
 
@@ -8546,11 +8554,11 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     vmin = PAPER_ORN_VMIN
     vmax = PAPER_ORN_VMAX
     # TODO fail here if trying to repro paper outputs and we can't hardcode b/c
-    # vmin/vmax (pass in what is currently repro_paper_models=<bool>)?
+    # vmin/vmax (pass in what is currently repro_remy_paper=<bool>)?
     # (should never happen... already reproduced the paper outputs i care about)
     if vmin <= min_mean and max_mean <= vmax:
         cbar_kws = dict(PAPER_ORN_CBAR_KWS)
-        # TODO delete (after stopping hardcode)? or only do if repro_paper_models=True
+        # TODO delete (after stopping hardcode)? or only do if repro_remy_paper=True
         # passed it?
         warn(f'response_matrix_plots: hardcoding {vmin=} {vmax=} (paper values), '
             'as well as the particular cbar_kws=dict(ticks=...) to be shown'
@@ -8603,8 +8611,8 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     # appropriate, across all.)
 
 
-def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indicator
-    ) -> None:
+def acrossfly_response_matrix_plots(trial_df: pd.DataFrame, across_fly_ijroi_dir: Path,
+    driver: str, indicator: str, *, repro_remy_paper: bool = False) -> None:
 
     # TODO relabel <date>/<fly_num> to one letter for both. write a text key to the same
     # directory
@@ -8656,8 +8664,7 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
 
     for panel, panel_df in trial_df.groupby(level='panel', sort=False):
         _printed_any_flies = False
-
-        # TODO TODO switch all code to work w/ initial 2 index levels:
+        # TODO switch all code to work w/ initial 2 index levels:
         # ['panel', 'is_pair'] (-> replace all pdf w/ panel_df)
         # (was previously dropping for everything, but now that i want some plots with
         # diag panel as well, and odors might be same as some in panel, need that level
@@ -8680,6 +8687,32 @@ def acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver, indi
             pdf = dropna(pdf.loc[(panel, False), :])
 
         assert not pdf.columns.duplicated().any()
+
+        if repro_remy_paper and panel == 'validation2':
+            # at some point remy switched to only analyzing these odors, and Betty
+            # requested I remake plots with only them (2026-08-14) (17 instead of full
+            # 22):
+            validation2_odor_subset = ['geos', '2-mib', 'euc', '-aPine', '-bCar', 'sab',
+                'long', 'menth', '+pul', 'ger', 'B-myr', '1p3one', 'guai', 'mchav',
+                'PEA', 'paa', 'bbenz'
+            ]
+            odors = pdf.index.get_level_values('odor1')
+            n_validation_odors = odors.nunique()
+            assert len(validation2_odor_subset) < n_validation_odors
+            warn(f'subsetting {n_validation_odors} validation2 odors to the '
+                f'{len(validation2_odor_subset)} odors Remy ended up using, because '
+                'repro_remy_paper=True'
+            )
+            # NOTE: would need to separately define subset mask on each of these, if
+            # this assertion were to fail (not even sure why i still have and use both
+            # pdf and panel_df separately below... may be no good reason)
+            assert odors.equals(panel_df.index.get_level_values('odor1')), (
+                'need to subset separately'
+            )
+
+            in_subset = odors.map(olf.parse_odor_name).isin(set(validation2_odor_subset))
+            pdf = pdf[in_subset].copy()
+            panel_df = panel_df[in_subset].copy()
 
         # TODO maybe append the f' (n<={n_flies})' part later as appropriate
         # (could be diff for diff panels...)
@@ -9496,7 +9529,7 @@ def main():
     # true? and/or set of panel(s)?
     # TODO rename to repro-paper or something (since also special casing for repro-ing
     # ijroi plots)
-    parser.add_argument('-R', '--repro-paper-models', action='store_true',
+    parser.add_argument('-R', '--repro-remy-paper', action='store_true',
         # NOTE: doesn't actually change response calc statistic
         # (al_util.response_stat_fn), just asserts we are using the old one... changing
         # it would require a lot of refactoring of code back to here, so just using that
@@ -9577,8 +9610,8 @@ def main():
         )
     '''
 
-    repro_paper_models = args.repro_paper_models
-    if repro_paper_models:
+    repro_remy_paper = args.repro_remy_paper
+    if repro_remy_paper:
         warn('current al_util.response_stat_fn is old mean! should be changed back to '
             'newer sign_preserving_maxabs once done with -R/--repro-paper-models'
         )
@@ -10951,7 +10984,7 @@ def main():
                 print('FIX ME!')
                 print(f'{(start_date, end_date, fly_id)=}')
                 print(f'{(fly_df == 0).sum().sum()=}')
-                print(f'{(fly_df == 0).replace(False, np.nan).stack()=}')
+                print(f'{al_util.stack_drop_na((fly_df == 0).replace(False, np.nan))=}')
                 breakpoint()
                 print()
             #
@@ -11741,8 +11774,8 @@ def main():
         cbar_kws = dict(PAPER_ORN_CBAR_KWS)
     else:
         # TODO TODO ideally do somthing like this inside acrossfly_response_matrix_plots
-        # too (pass in repro_paper_models)
-        if repro_paper_models:
+        # too (pass in repro_remy_paper)
+        if repro_remy_paper:
             raise ValueError('could not set vmin/vmax as needed because current data '
                 'limits go out of those bounds'
             )
@@ -11840,7 +11873,7 @@ def main():
         # assuming same holds true for other 2 DataFrames (checked indexes equal above).
         assert not mean_df.droplevel('panel').index.duplicated().any()
 
-    if repro_paper_models:
+    if repro_remy_paper:
         # TODO drop diag '2h @ -3 and 'CO2 @ 0' from trial_df / consensus_df /
         # [mean|stddev]_df / n_per_odor_and_glom
 
@@ -12166,11 +12199,23 @@ def main():
             # product pages might be more accurate, but they can always go from CIDs
             # themselves at least)
 
-            df = df[[name_col, abbrev_col, cid_col]].rename(columns={
+            # TODO TODO also include InChI column, and MolecularWeight
+            rename_dict = {
                 name_col: 'name',
                 abbrev_col: 'abbrev',
                 cid_col: 'cid',
-            })
+                # NOTE: only megamat XLSX has InChI column. validation2 file seems to
+                # not have it in any sheet (nevermind, even megamat only has it in
+                # megamat17_2_strict_lotus sheet, which i'm not currently using)
+                #'InChI': 'inchi',
+                # TODO TODO clarify units of this, or at least check against pubchem
+                'MolecularWeight': 'molecular_weight',
+            }
+            keep_cols = [c for c in df.columns if c in rename_dict]
+            # TODO need to subset rename_dict here too?
+            df = df[keep_cols].rename(columns=rename_dict)
+            # where is inchi column going (oh, it was only in megamat XLSX, and only in
+            # megamat17_2_strict_lotus sheet, which is not what i was using)
 
             panel_odor_metadata = load_olf_input_yaml(f'{panel}.yaml')
 
@@ -12223,7 +12268,7 @@ def main():
                 assert data_abbrevs - yaml_abbrevs == set()
                 assert yaml_abbrevs - data_abbrevs == {'ms'}
             else:
-                # TODO TODO fix
+                # TODO fix
                 try:
                     assert data_abbrevs == yaml_abbrevs
                 # TODO delete
@@ -12268,13 +12313,20 @@ def main():
 
     odor_metadata['cid'] = odor_metadata.cid.replace(cid_corrections)
 
-    assert set(odor_metadata.columns) == set(chem_id_cols + ['solvent'])
+    assert (set(odor_metadata.columns) - set(chem_id_cols + ['solvent']) <=
+        {'molecular_weight', 'inchi'}
+    )
     n_unique_including_solvent = len(odor_metadata.drop_duplicates())
+    # TODO delete
+    #breakpoint()
+    #
     # assuming 'solvent' same for unique combination of preceding 3 cols.
     odor_metadata = odor_metadata.drop_duplicates(subset=chem_id_cols,
         ignore_index=True
     )
     assert not any(odor_metadata[c].duplicated().any() for c in chem_id_cols)
+    # NOTE: at one point this was failing just b/c NaN molecular_weight values (for
+    # diagnostic panel data, presumably)
     # to check that one odor doesn't have 2 diff solvents listed.
     assert len(odor_metadata) == n_unique_including_solvent
 
@@ -12283,6 +12335,9 @@ def main():
     # TODO also only compute above odor_metadata if this is true? not used below...
     if being_run_on_all_final_pebbled_data:
         to_csv(odor_metadata, output_root / 'odor_metadata.csv', index=False)
+        # TODO delete
+        breakpoint()
+        #
 
     # only have 14/54 hemibrain glomeruli that we never find via consensus:
     # ipdb> ( ~(mean_df.isna() | (mean_df == 0) ).all() ).sum()
@@ -12372,7 +12427,7 @@ def main():
         # set to that in the use_consensus_for_all_acrossfly==True case? assuming it was
         # a mistake...
         acrossfly_response_matrix_plots(trial_df, across_fly_ijroi_dir, driver,
-            indicator
+            indicator, repro_remy_paper=repro_remy_paper
         )
 
     # TODO if --verbose, print when we skip this
@@ -12389,7 +12444,7 @@ def main():
         # TODO drop mix dilutions here (now that i'm not doing to trial_df
         # unconditionally above, at least when it's not overwritten by consensus_df...)?
 
-        trial_ser = trial_df.stack(trial_df.columns.names)
+        trial_ser = al_util.stack_drop_na(trial_df, trial_df.columns.names)
         assert trial_df.notnull().sum().sum() == trial_ser.notnull().sum()
         tidy_trial_df = trial_ser.reset_index(name='mean_dff')
 
@@ -12459,7 +12514,7 @@ def main():
 
             # TODO (delete. i don't think it mattered) actually want to do this? seems
             # that this data is coming from the validation2 flies? delete?
-            #if repro_paper_models:
+            #if repro_remy_paper:
             #    to_drop = certain_df[
             #        (certain_df.index.get_level_values('panel') == diag_panel_str) &
             #        (certain_df.index.get_level_values('odor1') == '2h @ -3')
@@ -12488,7 +12543,7 @@ def main():
                 first_model_kws_only=first_model_kws_only,
                 copy_to_model_dirs=copy_to_model_dirs,
                 response_calc_params=response_calc_params,
-                repro_remy_paper=repro_paper_models,
+                repro_remy_paper=repro_remy_paper,
             )
         else:
             print(f'not running MB model(s), as driver not in {orn_drivers=}')

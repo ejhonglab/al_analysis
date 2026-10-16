@@ -3,7 +3,7 @@ TODO:
 
 - also talk about old kiwi/control data
   this work?
-  `./al_analysis.py -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model`
+  `al-analysis -d pebbled -n 6f -v -t 2022-02-07 -e 2022-04-03 -s model`
   (data in this range even of useable quality? still bad genetics?)
 
 - mention which data are good candidates for diagnostic examples
@@ -21,7 +21,7 @@ TODO:
 
 NOTE: add `-s` to any of the following to ensure no across-fly steps are skipped.
 The default skipped steps should be mentioned in the `-s` section of the
-`./al_analysis.py -h` output.
+`al-analysis -h` output.
 
 
 megamat:
@@ -46,7 +46,7 @@ megamat:
     weren't as good then (was still changing them?)? other data quality issues?
 
   ```
-  ./al_analysis.py -d pebbled -n 6f -t 2023-04-22 -e 2023-06-22
+  al-analysis -d pebbled -n 6f -t 2023-04-22 -e 2023-06-22
   ```
 
 
@@ -58,7 +58,7 @@ megamat:
     backcrossed, and some balancers may have slipped through).
 
   ```
-  ./al_analysis.py -d GH146 -n 6f -t 2023-06-22 -e 2023-07-28
+  al-analysis -d GH146 -n 6f -t 2023-06-22 -e 2023-07-28
   ```
 
 
@@ -72,14 +72,14 @@ validation2:
     - 2024-01-05/1
 
   ```
-  ./al_analysis.py -d pebbled -n 6f -t 2023-11-19 -e 2024-01-05
+  al-analysis -d pebbled -n 6f -t 2023-11-19 -e 2024-01-05
   ```
 
 
 - all pebbled data (including first 3 flies, after which some odor concs changed):
 
   ```
-  ./al_analysis.py -d pebbled -n 6f -t 2023-10-15 -e 2024-01-05
+  al-analysis -d pebbled -n 6f -t 2023-10-15 -e 2024-01-05
   ```
 
   NOTE: the 3 extra flies that would be analyzed here (2023-10-15/1, 10-19/1-2) are now
@@ -90,7 +90,7 @@ validation2:
 fitting dF/F -> spiking model (analyzing all pebbled data, including megamat and
 validation2 panels, as well as glomeruli diagnostics for those flies):
 ```
-./al_analysis.py -d pebbled -n 6f -t 2023-04-22 -e 2024-01-05
+al-analysis -d pebbled -n 6f -t 2023-04-22 -e 2024-01-05
 ```
 
 NOTE: above command (which analyzes both megamat and validation2 data) will currently
@@ -103,6 +103,6 @@ running this command to output one dF/F -> spiking model.
 newer kiwi/control data:
 to get model outputs for `natmix_data/analysis.py`
 ```
-./al_analysis.py -d pebbled -n 6f -t 2024-09-03 -e 2024-10-01
+al-analysis -d pebbled -n 6f -t 2024-09-03 -e 2024-10-01
 ```
 

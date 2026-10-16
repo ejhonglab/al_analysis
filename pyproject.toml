@@ -19,6 +19,15 @@ requires-python = ">= 3.8"
 dynamic = ["dependencies"]
 readme = "README.md"
 
+[project.optional-dependencies]
+dev = [
+    # NOTE: keep >= pytest minversion below
+    "pytest >= 8.3.5",
+    # for running tests across multiple python/dependency versions (`tox`)
+    "tox >= 4.21; python_version >= '3.9'",
+    "tox-uv; python_version >= '3.9'",
+]
+
 [tool.setuptools]
 packages = ["al_analysis"]
 # editable installs seem to work fine so far
@@ -36,6 +45,10 @@ include-package-data = true
 # NOTE: this can not use -r / -e in lines in those files, which would prevent some of
 # the old approaches I took (but could just have separate parallel files to install
 # certain sets of custom things, if I really want)
+# NOTE: these pins are now for a newer python (currently 3.14). the pins from the old
+# python 3.8.12 environment are in exact-requirements-py38.txt (+ only used via the tox
+# py38 env below, via requirements-py38-test.txt). to install with those deps under
+# python 3.8: `pip install -r exact-requirements-py38.txt` then `pip install --no-deps .`
 dependencies = {file = "exact-requirements.txt"}
 
 # TODO reference requirements.txt? how to consolidate? seems that might not let me
@@ -129,4 +142,61 @@ filterwarnings = [
     'ignore:distutils Version classes are deprecated. Use packaging.version instead.:DeprecationWarning',
     'ignore:pkg_resources is deprecated as an API.:DeprecationWarning',
     'ignore:Deprecated call to `pkg_resources.declare_namespace:DeprecationWarning',
+]
+
+# Plain `pytest` just runs in the current environment. `tox` runs the tests in all of
+# the envs below (`tox -e py38` / `tox -e current` for just one). Extra args after `--`
+# are passed to pytest, e.g. `QUICK=1 tox -e py38 -- -k test_vector_thr`.
+# Requires `pip install -e .[dev]` (for tox + tox-uv). tox-uv will download python 3.8
+# if needed.
+[tool.tox]
+requires = ["tox >= 4.21", "tox-uv"]
+env_list = ["py38", "current"]
+# tox otherwise strips most env vars. QUICK/PLOT used by test_mb_model.py, HONG2P_* /
+# HONG_NAS used by hong2p to find data.
+#
+# breakpoint() calls are disabled by default (they would otherwise fail tests in
+# `tox -p` runs, which have no stdin, or end the whole session in some cases). set
+# PYTHONBREAKPOINT in calling environment to override.
+env_run_base = { pass_env = [
+    "QUICK", "PLOT", "HONG2P_*", "HONG_NAS", "MB_MODEL_USE_LR_CACHE", "HARDCODE_LR",
+], set_env = { PYTHONBREAKPOINT = "{env:PYTHONBREAKPOINT:0}" } }
+
+# Oldest supported versions: python 3.8 + pins from exact-requirements-py38.txt (via
+# requirements-py38-test.txt, which excludes the local packages below).
+[tool.tox.env.py38]
+base_python = ["python3.8"]
+# installing this package normally would also install deps from exact-requirements.txt
+# (pinned for newer python), so it is instead installed w/o deps in commands_pre
+skip_install = true
+# so pip is available for commands_pre
+uv_seed = true
+deps = ["-r requirements-py38-test.txt"]
+# Local checkouts of my other packages (not in requirements-py38-test.txt), installed
+# w/o deps (all their deps should already be pinned above). Reinstalled each run, so
+# changes in those repos are tested. olfsysm not editable, as an editable install
+# would put the py3.8 compiled extension in the olfsysm source dir.
+commands_pre = [
+    ["python", "-m", "pip", "install", "-q", "--no-deps",
+        "-e", "{tox_root}/../hong2p",
+        "-e", "{tox_root}/../drosolf",
+        "-e", "{tox_root}/../natmix",
+        "{tox_root}/../olfsysm",
+        "-e", "{tox_root}",
+    ],
+]
+# separate --basetemp for each env, so concurrent runs (with
+# tmp_path_retention_policy="none" above) don't delete each other's tmp_path dirs
+commands = [
+    ["pytest", "--basetemp={env_tmp_dir}/pytest", { replace = "posargs", extend = true }],
+]
+
+# The existing ./venv, as-is (tox does not install anything into it)
+[tool.tox.env.current]
+skip_install = true
+allowlist_externals = ["{tox_root}/venv/bin/python"]
+commands = [
+    ["{tox_root}/venv/bin/python", "-m", "pytest", "--basetemp={env_tmp_dir}/pytest",
+        { replace = "posargs", extend = true }
+    ],
 ]

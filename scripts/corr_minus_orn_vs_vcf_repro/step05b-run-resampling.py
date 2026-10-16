@@ -34,6 +34,7 @@ import json
 import time
 from itertools import combinations, product
 from pathlib import Path
+from typing import Tuple
 
 import matplotlib_inline
 import numpy as np
@@ -41,10 +42,20 @@ import pandas as pd
 import xarray as xr
 import yaml
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
+from hong2p.olf import strip_concs_from_odor_str
 from hong2p.util import pd_allclose, pd_isclose
 
-from al_analysis.al_util import data_root, fly_cols, read_csv, read_parquet, n_choose_2
+from al_analysis import al_util
+from al_analysis.al_util import (data_root, fly_cols, read_csv, read_parquet,
+    n_choose_2, invert_corr_triangular, corr_triangular, mean_of_fly_corrs,
+    plot_corr, to_csv, to_parquet
+)
+from al_analysis.mb_model import (paper_hemibrain_output_dir,
+    paper_uniform_model_responses, drop_silent_model_cells
+)
+
 
 matplotlib_inline.backend_inline.set_matplotlib_formats('svg')
 
@@ -156,6 +167,7 @@ resampling_cols_128 = (column_groups['chem_cols'] +
                        column_groups['model_cols'] +
                        # column_groups['vcf5a_cols'] +
                        # column_groups['vcf5b_cols'] +
+                       # TODO TODO TODO is this the final VCF data version?
                        column_groups['vcf5q_D03_cols'] +
                        # column_groups['vcf5q_D04_cols'] +
                        ['vcf5q_dat']
@@ -241,12 +253,6 @@ col_with_nan = tidy_triu_abbrev_dists_136.loc[:, na136].columns[0]
 # raw VCF distance?
 assert col_with_nan == 'vcf5q_dat', f'{col_with_nan=}'
 
-from hong2p.olf import strip_concs_from_odor_str
-from al_analysis.al_util import corr_triangular, mean_of_fly_corrs
-from al_analysis.mb_model import (paper_hemibrain_output_dir,
-    paper_uniform_model_responses, drop_silent_model_cells
-)
-
 ur = paper_uniform_model_responses()
 # all other columns are odor names in this
 hr = pd.read_csv(paper_hemibrain_output_dir / 'responses.csv', index_col='model_kc')
@@ -284,14 +290,14 @@ du = 1 - u7corr
 dh = 1 - hbcorr
 
 # both contain pearson correlation *distances*
-d1 = tidy_triu_abbrev_dists_128.rename_axis(index=['odor1', 'odor2'])
-d2 = tidy_triu_abbrev_dists_136.rename_axis(index=['odor1', 'odor2'])
+d128 = tidy_triu_abbrev_dists_128.rename_axis(index=['odor1', 'odor2'])
+d136 = tidy_triu_abbrev_dists_136.rename_axis(index=['odor1', 'odor2'])
 
-assert d2.index.equals(du.index)
-assert d2.index.equals(dh.index)
+assert d136.index.equals(du.index)
+assert d136.index.equals(dh.index)
 
-rdu = d2['uniform_tom']
-rdh = d2['hemibrain_wd20_tom']
+rdu = d136['uniform_tom']
+rdh = d136['hemibrain_wd20_tom']
 
 assert rdh.equals(dh)
 # true now that i've fixed calculation, in same way i had to fix calculation for ORNs.
@@ -363,7 +369,7 @@ orn_corr = orn_corr_square.stack().rename_axis(index=hbcorr.index.names).loc[
 d_orn = 1 - orn_corr
 
 # TODO check the other orn_* columns, to see if any have a lower error?
-rd_orn = d2['orn_remy']
+rd_orn = d136['orn_remy']
 
 # true now that i've fixed calculation to actually compute corr per-fly and then average
 assert pd_allclose(d_orn, rd_orn)
@@ -385,11 +391,164 @@ kdists_square = read_parquet('kc_mean_megamat_corrdist.parquet')
 #
 d_kc = kdists_square.stack().rename_axis(index=d_orn.index.names).loc[d_orn.index]
 
-rd_kc = d2['kc_remy_combo']
+rd_kc = d136['kc_remy_combo']
 # after regenerating KC dists, dropping the 4 flies (on 3 dates) with too little pairs
 # from megamat panel (as are the only flies remy drops now for all megamat paper corr
 # analyses), this works
 assert pd_allclose(d_kc, rd_kc)
+
+
+# from note in fig 4 G (the <space> - ORN distributions, for KCs/models) indicate
+# the 136 (instead of 128) odor pair version of this column was used there:
+# vcf5q_ND030_D03_seed08 "(D=3, seed=8, ND=30)"
+vcf_col = 'vcf5q_ND030_D03_seed08'
+
+# TODO TODO TODO try to repro ECDF and VCF-HMDF stuff in paper (-> repro as viridis)
+# (think i got the VCF-HMDF done via changes to scripts/corr_orn_pn_vcf.py)
+vcorr_dist2 = read_parquet(Path.cwd().parent / 'vcorr_dist.parquet')
+
+sq1 = invert_corr_triangular(corr_triangular(vcorr_dist2), diag_value=0.0)
+sq2 = vcorr_dist2.sort_index().sort_index(axis='columns')
+assert sq1.equals(sq2)
+
+vd = d136[vcf_col]
+vd2 = vcorr_dist2.stack()
+assert vd.index.isin(vd2.index).all()
+# TODO TODO why does this differ from vd? remy confirmed vcf_col and 136-pair
+# dataset are correct ones. was my corr_orn_pn_vcf.py script using something else?
+# (some scaling that i don't think matters. just gonna use the versions in this tidy
+# thing to replot. does not appear different from plots produced w/ either version,
+# though max might be lower in version produced here)
+# ipdb> vd2.loc[vd.index]
+# odor1  odor1
+# 2h     IaA      1.350799
+#        pa       1.481082
+#        2-but    0.804971
+#        eb       1.526098
+#        ep       1.490119
+#                   ...
+# 1-5ol  benz     0.916365
+#        ms       0.991622
+# 1-6ol  benz     0.583367
+#        ms       1.176665
+# benz   ms       1.002449
+#
+# ipdb> vd
+# odor1  odor2
+# 2h     IaA      1.139641
+#        pa       1.249558
+#        2-but    0.679137
+#        eb       1.287537
+#        ep       1.257182
+#                   ...
+# 1-5ol  benz     0.773118
+#        ms       0.836611
+# 1-6ol  benz     0.492174
+#        ms       0.992727
+# benz   ms       0.845745
+
+# TODO also use diag_value = np.nan here?
+vcorr_dist = invert_corr_triangular(vd, diag_value=0.0)
+
+plot_dir = Path('.')
+
+quantile = None
+#quantile = 0.05
+if quantile is None:
+    fname_suffix = ''
+    # equiv to min/max
+    qs = [0, 1]
+else:
+    qs = [0 + quantile, 1 - quantile]
+    fname_suffix = f'_q{quantile:.2f}'
+
+cbar_kws = dict(extend='min')
+
+cmap = plt.get_cmap('Reds_r')
+#cmap.set_bad('gray')
+under = (0.8, 0.8, 0.8)
+#under = 'gray'
+cmap.set_under(under)
+
+cmap2 = plt.get_cmap('viridis_r')
+cmap2.set_under(under)
+
+def get_vlim(ser: pd.Series) -> Tuple[float, float]:
+    assert len(qs) == 2
+    qmin, qmax = qs
+    assert qmin < qmax
+    vmin, vmax = ser.quantile(qs).values
+    return vmin, vmax
+
+vmin, vmax = get_vlim(vd)
+# TODO TODO TODO or want to hardcode vmin=0 for this one?
+print(f'vcf-emb {vmin=}')
+print(f'vcf-emb {vmax=}')
+vcorr = 1 - vcorr_dist
+# NOTE: intentionally passing vcorr and not vcorr_dist, as as_corr_dist=True will
+# also define it as `1 - corr` internally
+al_util.verbose = True
+vcf_corr_kws = dict(
+    vmin=vmin, vmax=vmax, as_corr_dist=True, title=vcf_col, cbar_kws=cbar_kws
+)
+plot_corr(vcorr, plot_dir, f'vcf-emb_corrdist_as-fig4{fname_suffix}', cmap=cmap,
+    **vcf_corr_kws
+)
+plot_corr(vcorr, plot_dir, f'vcf-emb_corrdist_as-fig4_viridis{fname_suffix}',
+    cmap=cmap2, **vcf_corr_kws
+)
+to_csv(vcorr_dist, 'vcf-emb_corrdist.csv')
+to_parquet(vcorr_dist, 'vcf-emb_corrdist.parquet')
+
+# dividing by 2 to invert scaling which seemed to try to bring it to range of pearson
+# corr distance
+cd = d136['chem_ecfp'] / 2.0
+# would be >= 0 if included diagonal, but this series does not
+assert cd.min() > 0
+assert cd.max() <= 1.0
+ccorr_dist = invert_corr_triangular(cd, diag_value=0.0)
+#ccorr_dist = invert_corr_triangular(cd, diag_value=np.nan)
+
+#ecfp_vmax = cd.quantile(0.98)
+#ecfp_vmax = cd.quantile(0.95)
+#ecfp_vmax = ccorr_dist.max().max()
+# TODO TODO TODO how did remy justify this?
+# this doesn't work for me
+#ecfp_vmax = 1.0
+
+# ipdb> cd.min()
+# 0.4210526315789473
+#ecfp_vmin = cd.min()
+#
+#ipdb> cd.quantile(0.05)
+#0.6284461152882205
+# although colorbar seems to indicate this might be range, plot it produced is even more
+# compressed, with even more extreme seeming values (and it's not just diagonal below)
+#ecfp_vmin = cd.quantile(0.05)
+#
+#ecfp_vmin = cd.quantile(0.02)
+
+ecfp_vmin, ecfp_vmax = get_vlim(cd)
+print(f'{ecfp_vmin=}')
+print(f'{ecfp_vmax=}')
+
+ecfp_corr_kws = dict(
+    vmin=ecfp_vmin, vmax=ecfp_vmax, title='ECFP', cbar_label='Jaccard distance',
+    cbar_kws=cbar_kws
+)
+# not corr dist. jaccard dist actually
+plot_corr(ccorr_dist, plot_dir, f'ecfp_dist_as-fig4', cmap=cmap, **ecfp_corr_kws)
+
+plot_corr(ccorr_dist, plot_dir, f'ecfp_dist_as-fig4_viridis', cmap=cmap2,
+    **ecfp_corr_kws
+)
+to_csv(ccorr_dist, 'ecfp_dist.csv')
+to_parquet(ccorr_dist, 'ecfp_dist.parquet')
+
+# TODO delete
+breakpoint()
+import sys; sys.exit()
+#
 
 # %%
 

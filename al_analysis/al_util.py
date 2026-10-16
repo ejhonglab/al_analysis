@@ -30,6 +30,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import patches
 from matplotlib.axes import Axes
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.testing.exceptions import ImageComparisonFailure
 # TODO replace w/ conditional import of seaborn / scipy as needed?
@@ -51,9 +52,10 @@ import xarray as xr
 from hong2p import olf, util, viz
 from hong2p.olf import format_mix_from_strs, solvent_str
 from hong2p.roi import is_ijroi_named
-from hong2p.util import pd_allclose
+from hong2p.util import pd_allclose, read_json
+from hong2p.util import to_json as _to_json
 from hong2p.viz import (dff_latex, map_each_series_to_rgb, rgb_tuple_df_to_3d_array,
-    Ticklabels
+    Ticklabels, is_cmap_diverging
 )
 from hong2p.types import (Axis, Color, CMap, Pathlike, ParamDict, DataFrameOrSeries,
     MplRotation
@@ -71,6 +73,62 @@ fly_cols: List[str] = ['date', 'fly_num']
 flyroi_cols: List[str] = fly_cols + ['roi']
 
 diag_panel_str: str = 'glomeruli_diagnostics'
+
+# TODO replace this + use of warnings.warn w/ logging.warning (w/ logger probably
+# currently just configured to output to stdout/stderr)
+def formatwarning_msg_only(msg, category, *args, **kwargs):
+    """Format warning without line/lineno (which are often not the relevant line)
+    """
+    warn_type = category.__name__ if category.__name__ != 'UserWarning' else 'Warning'
+    return colored(f'{warn_type}: {msg}\n', 'yellow')
+
+# TODO do just in main? (/ after some call?)
+warnings.formatwarning = formatwarning_msg_only
+
+
+def in_pytest() -> bool:
+    """Returns whether code is currently being executed by pytest.
+    """
+    # https://docs.pytest.org/en/latest/example/simple.html#pytest-current-test-environment-variable
+    return 'PYTEST_CURRENT_TEST' in os.environ
+
+
+def is_pytest_capturing_stderr() -> bool:
+    """Returns whether pytest is capturing stderr (as can be disabled by -s).
+
+    There are probably other ways to disable capture other than `-s`, which disables all
+    capturing (stdout as well). This method will probably also work in that context.
+    """
+    # TODO does pytest directly expose it's capturing method in and env var or
+    # something? use that instead, if so?
+    # TODO maybe it also exposes whether it will show capture at end? use that too?
+
+    # from my testing (w/ pytest 8.3.5 and python 3.8.12), it seems .name on sys.stderr
+    # can distinguish whether pytest was called with `-s` or not.
+    #
+    # with -s (--capture=no), it's: '<stderr>'
+    #
+    # without -s, it's like: "<_io.FileIO name=8 mode='rb+' closefd=True>"
+    stderr = sys.stderr
+    # should work for --capture=fd  (default), =no (-s), and =sys , but get:
+    # `AttributeError: '_io.BytesIO' object has no attribute 'name'` if using
+    # --capture=sys-tee
+    if hasattr(stderr, 'name'):
+        return stderr.name != '<stderr>'
+
+    # assuming we are in --capture=sys-tee or --capture=sys case here
+    # (both currently hit this code path on my system)
+    #
+    # (not sure --capture=sys-tee works w/ rest of my system here... i.e. that prints
+    # and warnings are still interleaved as i want [and ideally printed in real time],
+    # and that debugger interface can still be used normally. sys-tee seems like it
+    # might interfere w/ debugger being used normally, tho it does also print in real
+    # time [in addition to capturing])
+    #
+    # TODO TODO need a test case w/ some interleaved prints and warnings before a
+    # breakpoint, then try all the capturing methods and see which are available
+    return True
+
 
 # TODO maybe log all warnings?
 def warn(msg) -> None:
@@ -531,62 +589,6 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
     return sorted_df
 
 
-# TODO replace this + use of warnings.warn w/ logging.warning (w/ logger probably
-# currently just configured to output to stdout/stderr)
-def formatwarning_msg_only(msg, category, *args, **kwargs):
-    """Format warning without line/lineno (which are often not the relevant line)
-    """
-    warn_type = category.__name__ if category.__name__ != 'UserWarning' else 'Warning'
-    return colored(f'{warn_type}: {msg}\n', 'yellow')
-
-# TODO do just in main? (/ after some call?)
-warnings.formatwarning = formatwarning_msg_only
-
-
-def in_pytest() -> bool:
-    """Returns whether code is currently being executed by pytest.
-    """
-    # https://docs.pytest.org/en/latest/example/simple.html#pytest-current-test-environment-variable
-    return 'PYTEST_CURRENT_TEST' in os.environ
-
-
-def is_pytest_capturing_stderr() -> bool:
-    """Returns whether pytest is capturing stderr (as can be disabled by -s).
-
-    There are probably other ways to disable capture other than `-s`, which disables all
-    capturing (stdout as well). This method will probably also work in that context.
-    """
-    # TODO does pytest directly expose it's capturing method in and env var or
-    # something? use that instead, if so?
-    # TODO maybe it also exposes whether it will show capture at end? use that too?
-
-    # from my testing (w/ pytest 8.3.5 and python 3.8.12), it seems .name on sys.stderr
-    # can distinguish whether pytest was called with `-s` or not.
-    #
-    # with -s (--capture=no), it's: '<stderr>'
-    #
-    # without -s, it's like: "<_io.FileIO name=8 mode='rb+' closefd=True>"
-    stderr = sys.stderr
-    # should work for --capture=fd  (default), =no (-s), and =sys , but get:
-    # `AttributeError: '_io.BytesIO' object has no attribute 'name'` if using
-    # --capture=sys-tee
-    if hasattr(stderr, 'name'):
-        return stderr.name != '<stderr>'
-
-    # assuming we are in --capture=sys-tee or --capture=sys case here
-    # (both currently hit this code path on my system)
-    #
-    # (not sure --capture=sys-tee works w/ rest of my system here... i.e. that prints
-    # and warnings are still interleaved as i want [and ideally printed in real time],
-    # and that debugger interface can still be used normally. sys-tee seems like it
-    # might interfere w/ debugger being used normally, tho it does also print in real
-    # time [in addition to capturing])
-    #
-    # TODO TODO need a test case w/ some interleaved prints and warnings before a
-    # breakpoint, then try all the capturing methods and see which are available
-    return True
-
-
 # TODO move to hong2p.util?
 def format_mtime(mtime_or_path: Union[float, Pathlike], *, year: bool = False,
     seconds: bool = False) -> str:
@@ -849,8 +851,9 @@ def caller_info() -> traceback.FrameSummary:
     assert len(stack) >= 4
     # NOTE: .name of each element is the function name of that element
     # of the stack. if at module level (not within a function), .name
-    # should be (literal, not w/ actual module name) '<module>'
-    assert stack[0].name == '<module>'
+    # should be (literal, not w/ actual module name) '<module>'. not necessarily the
+    # first element, as e.g. `python -m pytest` will have runpy frames before that.
+    assert any(x.name == '<module>' for x in stack)
     assert stack[-1].name == 'caller_info' and not any(
         x.name == 'caller_info' for x in stack[:-1]
     )
@@ -1089,24 +1092,11 @@ def read_pickle(path: Pathlike) -> Any:
     return pickle.loads(path.read_bytes())
 
 
-def read_json(path: Path) -> Dict[str, Any]:
-    """Returns dict contained within JSON at `path`
-    """
-    with open(path, 'r') as f:
-        return json.load(f)
-
-
 @produces_output
 def to_json(data: Dict[str, Any], path: Path, *, check: bool = True) -> None:
     """Write `data` to JSON at `path`, with default round trip check.
     """
-    assert path.suffix == '.json', f"{path.suffix} should be '.json'"
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=4)
-
-    if check:
-        round_trip = read_json(path)
-        assert data == round_trip, f'{data=}\n...!=...\n{round_trip=}'
+    _to_json(data, path, check=check)
 
 
 @produces_output(verbose=False)
@@ -1823,7 +1813,8 @@ _savefig_seen_paths = set()
 def savefig(fig_or_seaborngrid,
     fig_dir: Pathlike, desc: str, *, close: bool = True, normalize_fname: bool = True,
     debug: bool = False, multiple_saves_per_run_ok: bool = False,
-    fmt: Optional[str] = None, **kwargs) -> Path:
+    ignore_output_change_check: bool = False, fmt: Optional[str] = None, **kwargs
+    ) -> Path:
     """
     Args:
         fmt: if None, defaults to `al_util.plot_fmt` (typically 'pdf')
@@ -1923,7 +1914,9 @@ def savefig(fig_or_seaborngrid,
 
     _skip_saving = False
     # TODO delete if i manage to restore use of produces_output wrapper around savefig
-    if check_outputs_unchanged and fig_path.exists():
+    # TODO still warn at least, if ignore_output_change_check=True (just wrap this fn in
+    # produces_output finally, to not duplicate effort?)
+    if not ignore_output_change_check and check_outputs_unchanged and fig_path.exists():
         save_fn = fig_or_seaborngrid.savefig
         try:
             # TODO wrapper kwarg (that would be added to some/all decorations)
@@ -2089,6 +2082,39 @@ def n_multichoose_k(n: int, k: int) -> int:
 # be ok... kind of a hack though)
 # TODO TODO add option to pass sequence of odors, to generate something like ordered
 # pairs? (for convenience when averaging over groups w/ diff sets of odors/pairs)
+def stack_keep_na(df: pd.DataFrame, **kwargs) -> DataFrameOrSeries:
+    """Returns `df.stack(**kwargs)`, without dropping any NaN.
+
+    Equivalent to `df.stack(dropna=False, **kwargs)` in pandas < 3.0, where that kwarg
+    was removed (and the new stack implementation never drops NaN).
+    """
+    try:
+        return df.stack(dropna=False, **kwargs)
+    # pandas >= 3.0: "ValueError: dropna must be unspecified as the new implementation
+    # does not introduce rows of NA values..."
+    except ValueError:
+        return df.stack(**kwargs)
+
+
+def stack_drop_na(df: pd.DataFrame, *args, **kwargs) -> DataFrameOrSeries:
+    """Returns `df.stack(*args, **kwargs)`, dropping all-NaN rows like pandas < 3.0.
+
+    The default `dropna=True` behavior of `DataFrame.stack` in pandas < 3.0 dropped
+    rows that were all NaN in the output, and the new stack implementation (the only
+    one in pandas >= 3.0) never drops NaN.
+    """
+    try:
+        return df.stack(*args, dropna=True, **kwargs)
+    # pandas >= 3.0: "ValueError: dropna must be unspecified as the new implementation
+    # does not introduce rows of NA values..."
+    except ValueError:
+        stacked = df.stack(*args, **kwargs)
+        if isinstance(stacked, pd.DataFrame):
+            return stacked.dropna(how='all')
+
+        return stacked.dropna()
+
+
 def corr_triangular(corr_df: pd.DataFrame, *, sort: bool = True,
     # TODO also accept order of odors, if not pairs?
     # TODO TODO does this even work? did i break it? didn't seem to be working when i
@@ -2118,7 +2144,7 @@ def corr_triangular(corr_df: pd.DataFrame, *, sort: bool = True,
 
     # need to stack all levels, in case we also have 'panel' in index names
     # TODO why dropna=False? matter?
-    corr_ser = corr_df.stack(level=corr_df.columns.names, dropna=False)
+    corr_ser = stack_keep_na(corr_df, level=corr_df.columns.names)
 
     # TODO delete this branch? make sure it also supports panel level in index?
     if ordered_pairs is not None:
@@ -2349,7 +2375,9 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     first_row_index = None
     # TODO also want to  keep track of and append metadata?
     fly_corrs = []
-    for fly, fly_df in trialmean_df.groupby(level=id_cols, axis='columns', sort=False):
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    for fly, fly_df in trialmean_df.T.groupby(level=id_cols, sort=False):
+        fly_df = fly_df.T
         if first_row_index is None:
             first_row_index = fly_df.index.copy()
         else:
@@ -2437,7 +2465,7 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
 # generated was that...)
 #
 # actually, not switching to 'vlag', to not give Remy more work regenerating old figs
-diverging_cmap = plt.get_cmap('RdBu_r').copy()
+diverging_cmap: CMap = plt.get_cmap('RdBu_r').copy()
 
 # since default set_bad seems to be ~white, which was fine for 'plasma' (which doesn't
 # contain white), but now is not distinct from cmap midpoint (0.)
@@ -2446,6 +2474,23 @@ diverging_cmap = plt.get_cmap('RdBu_r').copy()
 #light_gray = (0.8, 0.8, 0.8)
 light_gray = (0.9, 0.9, 0.9)
 diverging_cmap.set_bad(light_gray)
+
+# .N is the # of colors in list (256)
+# making a new colormap that is just the top (red) half of the old one
+_colors = diverging_cmap(np.linspace(0.5, 1.0, diverging_cmap.N // 2))
+diverging_cmap_tophalf: CMap = LinearSegmentedColormap.from_list(
+    f'top_half_{diverging_cmap.name}', _colors
+)
+midpoint_before = diverging_cmap(0.5)
+top_before = diverging_cmap(1.0)
+bottom_after = diverging_cmap_tophalf(0.0)
+top_after = diverging_cmap_tophalf(1.0)
+assert midpoint_before == bottom_after, f'{midpoint_before=}\n{bottom_after=}'
+assert top_before == top_after, f'{top_before=}\n{top_after=}'
+del midpoint_before, bottom_after, top_before, top_after, _colors
+
+diverging_cmap_tophalf.set_bad(light_gray)
+
 
 # TODO actually set colors for stuff outside diverging_cmap range?
 # (just need cmap.set_[over|under] and extend='both' (or 'min'|'max', if only want
@@ -2477,6 +2522,9 @@ diverging_cmap_kwargs = dict(
 # TODO don't require prefix, and save to plot_dir / 'corr.<plot_fmt>' by default?
 def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
     as_corr_dist: bool = False, verbose: bool = False, method: str = 'pearson',
+    cmap: Optional[CMap] = None, vmax: Optional[float] = None,
+    vmin: Optional[float] = None, vcenter: Optional[float] = None,
+    cbar_label: Optional[str] = None, cbar_kws: Optional[ParamDict] =None,
     _save_kws=None, **kwargs) -> pd.DataFrame:
     """Saves odor-odor correlation plot under <plot_dir>/<fname>.<plot_fmt>
 
@@ -2492,6 +2540,9 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
 
         method: passed to `df.corr()`. assumed this is also the method for any
             precomputed corrs passed in (and cbar label should include it)
+
+        vmin/vmax: if not passed, will default to full range of the correlation
+            [distance]: [-1, 1] if `as_corr_dist=False`, and `[0, 2]` if True.
 
         **kwargs: passed to `hong2p.viz.matshow`
 
@@ -2545,20 +2596,55 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
         corr.columns = index
         ylabel = f'all odors at {shared_conc:g}'
 
-    cbar_label = f'{method.title()} correlation'
+    # TODO else warn we are using a non-standard cmap?
+    if cmap is None:
+        if not as_corr_dist:
+            cmap = diverging_cmap
+        else:
+            cmap = diverging_cmap.reversed()
+        assert is_cmap_diverging(cmap)
+
+    cmap_is_diverging = is_cmap_diverging(cmap)
+
+    # TODO warn if this is set?
+    # TODO or make method default to None too, and only set it to 'pearson' if this
+    # is None? (and err if both set?)
+    if cbar_label is None:
+        cbar_label = f'{method.title()} correlation'
+
     if not as_corr_dist:
-        vmin = -1.0
-        vmax = 1.0
-        vcenter = 0.0
-        cmap = diverging_cmap
+        if vmin is None:
+            vmin = -1.0
+        else:
+            assert vmin >= -1.0
+
+        if vmax is None:
+            vmax = 1.0
+        else:
+            assert vmax <= 1.0
+
+        if vcenter is None and cmap_is_diverging:
+            vcenter = 0.0
+            assert vmin <= vcenter <= vmax
+
         to_plot = corr
         # TODO have cbar ticks be [-1, -0.5, 0, 0.5, 1.0] in this case
         # (in both cases i just want multiples of 0.5)
     else:
-        vmin = 0.0
-        vcenter = 1.0
-        vmax = 2.0
-        cmap = diverging_cmap.reversed()
+        if vmin is None:
+            vmin = 0.0
+        else:
+            assert vmin >= 0
+
+        if vmax is None:
+            vmax = 2.0
+        else:
+            assert vmax <= 2.0
+
+        if vcenter is None and cmap_is_diverging:
+            vcenter = 1.0
+            assert vmin <= vcenter <= vmax
+
         corr_dist = 1 - corr
         # should be this on the diagonals
         assert (corr_dist.min() == 0).all()
@@ -2566,6 +2652,13 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
         cbar_label += ' distance'
         # TODO have cbar ticks be [0, 0.5, 1, 1.5, 2] in this case
         # (in both cases i just want multiples of 0.5)
+
+    norm = 'two-slope'
+    if vcenter is None:
+        if cmap_is_diverging:
+            warn('using diverging cmap without vcenter. probably a mistake.')
+
+        norm = None
 
     # TODO check that results w/ norm/vcenter not passed equiv to new results w/
     # norm='two-slope'+vcenter=0
@@ -2575,8 +2668,8 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
     fig, _ = viz.matshow(to_plot, cmap=cmap, vmin=vmin, vcenter=vcenter, vmax=vmax,
         # just using 'two-slope', since 'centered' norm code would require
         # modification to get it to work w/ vcenter != 0.
-        norm='two-slope', cbar_label=cbar_label, ylabel=ylabel, title=title, fontsize=9,
-        bigtext_fontsize_scaler=1.2, **kwargs
+        norm=norm, cbar_label=cbar_label, cbar_kws=cbar_kws, ylabel=ylabel, title=title,
+        fontsize=9, bigtext_fontsize_scaler=1.2, **kwargs
     )
 
     # TODO still used? delete? (so far seems ok to pass bbox_inches='tight', if this is
@@ -2593,17 +2686,14 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
     return corr
 
 
-# TODO use/delete (and maybe refactor to include much/all of the kwargs used in
-# plot_all...? see also mean_df/etc plotting in main, that recreates much of those
-# kwargs for use w/ viz.matshow)
-def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
+def _plot_responses_helper(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
     vmin: Optional[float] = None, vmax: Optional[float] = None, title: str = '',
     title_kws: Optional[ParamDict] = None, _save_kws: Optional[ParamDict] = None,
     **kwargs) -> None:
     # TODO accept subplot_kws for subplots?
 
     fig, ax = plt.subplots()
-    viz.matshow(df, ax=ax, vmin=vmin, vmax=vmax, **diverging_cmap_kwargs, **kwargs)
+    viz.matshow(df, ax=ax, vmin=vmin, vmax=vmax, **kwargs)
 
     if len(title) > 0:
         if title_kws is None:
@@ -2620,6 +2710,39 @@ def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
 
     # TODO any downside to hardcoding bbox_inches='tight'? was unspecified before
     savefig(fig, plot_dir, prefix, bbox_inches='tight', **_save_kws)
+
+
+
+# TODO use/delete (and maybe refactor to include much/all of the kwargs used in
+# plot_all...? see also mean_df/etc plotting in main, that recreates much of those
+# kwargs for use w/ viz.matshow)
+def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, **kwargs) -> None:
+    # TODO TODO allow overriding cmap (+ norm? those only two things in
+    # diverging_cmap_kwargs)
+    _plot_responses_helper(df, plot_dir, prefix, **diverging_cmap_kwargs, **kwargs)
+
+
+def plot_responses_err(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
+    vmin: Optional[float] = None, **kwargs) -> None:
+    assert ((df >= 0) | df.isna()).all().all(), (
+        'expected err to be all non-negative (or NaN)'
+    )
+    # TODO need to handle NaN?
+
+    if vmin is not None:
+        if vmin != 0:
+            warn(f'plot_responses_err: replacing input {vmin=:.2f} with 0')
+            vmin = 0
+
+    # TODO warn about two-slope norm (/ clear it?), or fix current min tick assertion
+    # error hong2p.viz.add_colorbar has in that case. anything else broken about that
+    # norm here?
+
+    # TODO allow overriding cmap? (prob not... would need to also construct top half,
+    # if diverging at least)
+    _plot_responses_helper(df, plot_dir, prefix, cmap=diverging_cmap_tophalf, vmin=vmin,
+        **kwargs
+    )
 
 
 # TODO also break out a plot_responses fn from first part (-> use here)?
@@ -2650,8 +2773,8 @@ cmap: CMap = 'magma'
 #@no_constrained_layout
 # TODO find where sns.ClusterGrid is actually defined and use that as return type?
 # shouldn't need any more generality (Grid was used above to include FacetGrid)
-def cluster_rois(df: pd.DataFrame, *, title: Optional[str] = None,
-    odor_sort: bool = True, cmap: CMap = cmap, return_linkages: bool = False, **kwargs):
+def cluster_rois(df: pd.DataFrame, *, odor_sort: bool = True, cmap: CMap = cmap,
+    return_linkages: bool = False, **kwargs):
     #return_linkages: bool = False, **kwargs) -> sns.axisgrid.Grid:
     # TODO update doc on row_colors. what are other ways? if i add features to
     # viz.clustermap, just reference that doc here?
@@ -2694,7 +2817,7 @@ def cluster_rois(df: pd.DataFrame, *, title: Optional[str] = None,
     # TODO TODO add option to cluster within each fly (would have to hide dendrogram, to
     # make it not too much extra work) (refactor to share code with within-cluster
     # hierarchichal clustering from natmix_data/analysis.py?)
-    ret = viz.clustermap(df, col_cluster=False, cmap=cmap,
+    ret = viz.clustermap(df, col_cluster=False, cmap=cmap, xlabel='odor',
         return_linkages=return_linkages, **kwargs
     )
     if not return_linkages:
@@ -2704,11 +2827,8 @@ def cluster_rois(df: pd.DataFrame, *, title: Optional[str] = None,
 
     ax = cg.ax_heatmap
     ax.set_yticks([])
-    ax.set_xlabel('odor')
-
-    if title is not None:
-        ax.set_title(title)
-        #cg.fig.suptitle(title)
+    # TODO also handle via clustermap xlabel?
+    #ax.set_xlabel('odor', xlabel_kws)
 
     return ret
 
@@ -3023,16 +3143,18 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, *, title: Optional[str] 
         if cmap not in kwargs:
             kwargs['cmap'] = cmap
 
-    # TODO detect (using viz.is_diverging_cmap?)?
+    # TODO detect (using viz.is_cmap_diverging?)?
     if use_diverging_cmap:
         kwargs = {**diverging_cmap_kwargs, **kwargs}
         # center of diverging cmap should be white, so we'll use black lines here
         kwargs['linecolor'] = 'k'
 
-    fig, _ = viz.matshow(mean_df, title=title, xticklabels=xticklabels,
-        yticklabels=yticklabels, hline_group_text=hline_group_text,
-        vline_group_text=vline_group_text, **kwargs
+    kws = dict(
+        xticklabels=xticklabels, yticklabels=yticklabels,
+        hline_group_text=hline_group_text, vline_group_text=vline_group_text,
     )
+    kwargs = {**kws, **kwargs}
+    fig, _ = viz.matshow(mean_df, title=title, **kwargs)
 
     if odor_glomerulus_combos_to_highlight is not None:
         # colorbar should be fig.axes[1] if it's there at all
@@ -3176,14 +3298,114 @@ def count_n_per_odor_and_glom(df: pd.DataFrame, *, count_zero: bool = True
     return n_per_odor_and_glom
 
 
+def get_n_glomeruli_per_fly(df: pd.DataFrame) -> pd.Series:
+    assert set(flyroi_cols) - set(df.columns.names) == set(), f'{df.columns.names=}'
+
+    # to remove all-NaN columns added by fill_to_hemibrain, which should not be counted
+    df = df.dropna(how='all', axis='columns')
+
+    def count_glom_per_fly(x: pd.DataFrame) -> int:
+        gloms = x.index.get_level_values('roi')
+        assert not gloms.duplicated().any()
+        return gloms.nunique()
+
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    return df.T.groupby(level=fly_cols, sort=False).apply(count_glom_per_fly)
+
+
+def glomeruli_per_fly_summary(df: pd.DataFrame) -> str:
+    n_glom_per_fly = get_n_glomeruli_per_fly(df)
+    gmin = n_glom_per_fly.min()
+    gmax = n_glom_per_fly.max()
+    gmean = n_glom_per_fly.mean()
+    return f'{gmin} to {gmax} (mean {gmean:.1f}) glomeruli per fly'
+
+
+# TODO share default cmap/zero_color w/ other fns that pass them in to this?
+def plot_n(counts: pd.DataFrame, *, cmap: CMap = 'cividis', zero_color: Color = 'white',
+    from1: bool = True, roi_sort: bool = False, **kwargs) -> Figure:
+
+    # TODO if from1=True especially, put min N in text somewhere? xlabel?
+    # (unless i change how cbar is displayed, to only start it from min n)
+
+    # TODO even allow NaN?
+    counts_0filled = counts.fillna(0)
+    assert pd_allclose(counts_0filled, counts_0filled.astype(int)), (
+        'input was not int-like'
+    )
+
+    # TODO allow passing in fixed max_n (as long as it's >= data max_n)?
+    max_n = counts.max().max()
+    assert max_n > 0, 'expected some non-zero counts'
+    # discrete colormap: https://stackoverflow.com/questions/14777066
+    cmap = plt.get_cmap(cmap, max_n)
+    # want to display 0 as distinct (white rather than dark blue)
+    cmap.set_under(zero_color)
+
+    n_roi_plot_kws = dict(roimean_plot_kws)
+    n_roi_plot_kws['cbar_label'] = 'number of flies (n)'
+
+    # TODO (delete? still relevant?) why isn't 0 in the bar tho? if the data had 0,
+    # would there be? vmin has to be > 0, so that zero_color set correctly via cmap's
+    # set_under
+    cbar_kws = kwargs.pop('cbar_kws', dict())
+    n_roi_plot_kws.update(kwargs)
+
+    min_n = counts.min().min()
+    if from1:
+        xlabel = n_roi_plot_kws.get('xlabel', None)
+        min_n_str = f'min n={min_n}'
+        if xlabel is not None:
+            xlabel += f'\n{min_n_str}'
+        else:
+            xlabel = min_n_str
+        n_roi_plot_kws['xlabel'] = xlabel
+
+        min_n = 1
+
+    # these three should override input
+    n_roi_plot_kws.update(cmap=cmap, vmin=(min_n - 0.5), vmax=(max_n + 0.5))
+    cbar_kws.update(ticks=np.arange(min_n, max_n + 1))
+
+    # TODO more elegant solution (than use_diverging_cmap=False flag) -> delete (detect
+    # whether cmap diverging inside plot_all*?)
+    fig, _ = plot_all_roi_mean_responses(counts, use_diverging_cmap=False,
+        cbar_kws=cbar_kws, roi_sort=roi_sort, **n_roi_plot_kws
+    )
+
+    return fig
+
+
+def plot_n_per_odor_pair(counts: pd.DataFrame, **kwargs) -> Figure:
+    # (nvm, currently just expecting precomputed square matrix of counts)
+    # TODO allow either datefly or date,fly_num input, and mean over everything
+    # else (if any other column levels)
+    # TODO should i allow single levels that just *seem* like datefly too, w/o
+    # explicitly being named as such? (as in current process_remy_tables.py code)
+
+    # code below currently assumes this
+    assert counts.index.name == 'odor'
+    assert counts.columns.name == 'odor'
+
+    assert counts.index.equals(counts.columns), 'expected square matrix'
+
+    fig = plot_n(counts, yticklabels=lambda x: x.odor, hline_level_fn=lambda x: x)
+    return fig
+
+
 # TODO rename (either this or others) to be consistent about "plot_*" fns either saving
 # outputs or not? use decorator to add save (option?) to plot fns that dont save
 # (having all either just return fig, or at least having fig as first var returned?)?
+# TODO TODO add arg to collapse over trials (+ also share that w/ odor-pair fn)
 def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = False,
-    count_zero: bool = True, cmap: CMap = 'cividis', zero_color: Color = 'white',
-    title: bool = True, title_prefix='', **kwargs) -> Tuple[Figure, pd.DataFrame]:
+    count_zero: bool = True, try_collapse_odors: bool = False, title: bool = True,
+    title_prefix: str = '', **kwargs) -> Tuple[Figure, pd.DataFrame]:
+    """
+    Args:
+        try_collapse_odors: if True, and if all odors have the same counts (across
+            glomeruli), will plot just one column instead of a full matrix
+    """
     # TODO doc. what is count_zero?
-
     if not input_already_counts:
         n_per_odor_and_glom = count_n_per_odor_and_glom(df, count_zero=count_zero)
     else:
@@ -3193,39 +3415,46 @@ def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = F
     # (maybe as a separate single-column matshow w/ it's own colorbar?)
     # (only relevant in plots that take mean across flies)
 
-    # TODO hong2p.viz tricks to set cmap max dynamically according to data?
-    # possible? clean enough to be worth? would also want to intercept vmin/vmax, and
-    # set the ticks in cbar_kws as i'm doing below...
-    max_n = n_per_odor_and_glom.max().max()
-    # discrete colormap: https://stackoverflow.com/questions/14777066
-    cmap = plt.get_cmap(cmap, max_n)
-    # want to display 0 as distinct (white rather than dark blue)
-    cmap.set_under(zero_color)
+    if len(title_prefix) > 0:
+        # TODO assert it doesn't already end in \n (or strip()?)
+        title_prefix = f'{title_prefix}\n'
 
-    n_roi_plot_kws = dict(roimean_plot_kws)
-    n_roi_plot_kws['cbar_label'] = 'number of flies (n)'
+    unit_str = '(glomerulus X odor)'
+    collapsed_odors = False
+    if try_collapse_odors:
+        first_row = n_per_odor_and_glom.iloc[0]
+        assert first_row.index.name == 'roi', f'{first_row.index.name=}'
+
+        if (first_row == n_per_odor_and_glom).all().all():
+            collapsed_odors = True
+            title_prefix += 'all odors had same # glomeruli\n'
+            unit_str = 'glomerulus'
+            n_per_odor_and_glom = first_row.to_frame(name='all_odors').T
+            # currently need this so plot_all_roi_mean_responses won't complain
+            n_per_odor_and_glom.index.name = 'odor1'
 
     if title:
-        if len(title_prefix) > 0:
-            title_prefix = f'{title_prefix}\n'
+        title = f'{title_prefix}sample size (n) per {unit_str}'
 
-        # TODO de-dupe w/ cbar_label? just title_prefix?
-        n_roi_plot_kws['title'] = \
-            f'{title_prefix}sample size (n) per (glomerulus X odor)'
+        # TODO try to fix this case? don't think we have what we need...
+        # (would prob need to change input to not pass in pre-computed counts, if i
+        # cared) (al_analysis.main all_final_pebbled_data...=True case has a plot_n...
+        # call that hits this)
+        if not input_already_counts:
+            title += f'\n{glomeruli_per_fly_summary(df)}'
+
+        # TODO de-dupe title w/ cbar_label? just title_prefix?
     else:
         assert len(title_prefix) == 0
+        title = None
 
-    n_roi_plot_kws.update(kwargs)
+    fig = plot_n(n_per_odor_and_glom, title=title, roi_sort=True, **kwargs)
 
-    fig, _ = plot_all_roi_mean_responses(n_per_odor_and_glom, cmap=cmap,
-        # TODO more elegant solution -> delete (detect whether cmap diverging inside
-        # plot_all*?)
-        use_diverging_cmap=False,
-        # TODO why isn't 0 in the bar tho? if the data had 0, would there be?
-        # vmin has to be > 0, so that zero_color set correctly via cmap's set_under
-        vmin=0.5, vmax=(max_n + 0.5),
-        cbar_kws=dict(ticks=np.arange(1, max_n + 1)), **n_roi_plot_kws
-    )
+    if collapsed_odors:
+        # there should be two axes, w/ second the colorbar axes w/ label='<colorbar>'
+        ax = fig.axes[0]
+        # TODO work?
+        ax.xaxis.set_visible(False)
 
     # TODO delete
     # (was to draw numbers over the center of each cell, with the count)
@@ -3388,6 +3617,11 @@ def load_natmix_dff(**kwargs) -> pd.DataFrame:
 # see hemibrain repro test, which i assume references some committed version, presumably
 # of the ORN deltas. oh nvm i have the paper_megamat_orn_deltas fn for that. still want
 # a corresponding fn / flag here, which should be able to reproduce those)
+# TODO TODO TODO presumably i have some output committed under data/ which is based to
+# point to as "the paper version" of the dF/F. what is that version? or should i just
+# recompute w/ mean stat? (again see scripts/repro_remy_paper_modeling.py, which was
+# never completely successful. i think
+# dasta/sent_to_remy/2023-10-29/pebbled_ij_certain-roi_stats.csv should do)
 def load_megamat_dff(**kwargs) -> pd.DataFrame:
     data_dir = signedmax_orn_dff_dir / 'megamat_signed-max'
     csv_path = data_dir / 'ij_certain-roi_stats.csv'

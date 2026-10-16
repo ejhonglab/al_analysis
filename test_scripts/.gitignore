@@ -1,3 +1,5 @@
 raw.tif
 # data used in test_sam_tiffs.py
 2025-01-21/
+# TODO remove from .gitignore?
+2025-03-17_thorimage_test_data/

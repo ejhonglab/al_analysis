@@ -92,7 +92,7 @@ log = logging.getLogger('plot_roi')
 
 def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
     # TODO return columns should always just be ['name1','name2'] or something
-    df = df.reset_index()[['odor1','odor2']].applymap(olf.parse_odor_name)
+    df = util.df_map(df.reset_index()[['odor1','odor2']], olf.parse_odor_name)
     df.columns = ['name1', 'name2']
     return df
 
