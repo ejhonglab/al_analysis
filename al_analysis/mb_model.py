@@ -23867,13 +23867,24 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                         'not in model_kws'
                     )
 
+            # TODO remove after supporting this case (sensitivity analysis in
+            # fit_and_plot_mb_model raises NotImplementedError, as wAPLKC is a vector)
+            sens_analysis_unsupported = one_row_per_claw and not model_kws.get(
+                'use_connectome_APL_weights', False
+            )
             if 'sensitivity_analysis' not in model_kws:
                 # TODO variable_n_claw cases really not supported? fix that (-> update
                 # code here)?
                 if pn2kc_connections not in variable_n_claw_options:
-                    # TODO warn we are defaulting to this (+ say you can disable by
-                    # setting False explicitly?)?
-                    model_kws['sensitivity_analysis'] = True
+                    if sens_analysis_unsupported:
+                        warn('not running sensitivity analysis b/c not yet supported '
+                            'for one_row_per_claw=True w/o '
+                            'use_connectome_APL_weights=True'
+                        )
+                    else:
+                        # TODO warn we are defaulting to this (+ say you can disable
+                        # by setting False explicitly?)?
+                        model_kws['sensitivity_analysis'] = True
 
             if model_kws.get('sensitivity_analysis', False):
                 if 'sens_analysis_kws' not in model_kws:
