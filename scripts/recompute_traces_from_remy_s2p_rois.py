@@ -15,6 +15,11 @@ from hong2p.suite2p import load, load_ops, load_stat, load_traces, load_s2p_mask
 
 
 def main():
+    """Checks traces re-extracted from Remy's suite2p ROIs match her suite2p traces.
+
+    For one example KC soma recording, sums each plane's (suite2p binary) movie within
+    each ROI mask, and checks against suite2p F traces (per plane, and combined).
+    """
     matrix = Path('/mnt/matrix')
     remy_data_dir = (
         matrix / 'Remy-Data/projects/odor_space_collab/processed_data'

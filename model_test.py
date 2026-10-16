@@ -51,6 +51,11 @@ remy_odors = [
 
 # TODO convert this to unit test(s)?
 def main():
+    """Checks `fit_mb_model` reproduces Matt's (hemibrain / uniform / hemidraw) outputs.
+
+    Hemibrain outputs are checked for a few ways of specifying the same Hallem inputs.
+    Matt's outputs are loaded from `../matt/matt-modeling/data`.
+    """
     # TODO commit relevant outputs in data and use those. already have them (not all,
     # only the hemibrain subdir)?
     matt_data_dir = Path('../matt/matt-modeling/data')

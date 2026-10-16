@@ -91,6 +91,10 @@ log = logging.getLogger('plot_roi')
 # plotting speed
 
 def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Returns odor names (w/o concentrations) of 'odor1'/'odor2' levels of `df` index.
+
+    Returned DataFrame has columns ['name1', 'name2'], and one row per row of `df`.
+    """
     # TODO return columns should always just be ['name1','name2'] or something
     df = util.df_map(df.reset_index()[['odor1','odor2']], olf.parse_odor_name)
     df.columns = ['name1', 'name2']
@@ -111,13 +115,19 @@ else:
 
 @lru_cache(maxsize=CACHE_MAX_SIZE)
 def cached_load_movie(*recording_keys):
+    """Returns motion corrected movie (via `al_analysis.load_movie`), w/ an LRU cache.
+    """
     return al.load_movie(*recording_keys, min_input='mocorr')
 
 
 @profile
 def extract_ij_responses(input_dir: Pathlike, roi_index: int,
     roiset_path: Optional[Pathlike] = None) -> pd.DataFrame:
-    """
+    """Returns trial responses of one ImageJ ROI, computed from motion corrected movies.
+
+    If the fly directory has a `mocorr_concat_tiff_basename` TIFF, all of the fly's
+    recordings are used. Otherwise, only the recording in `input_dir`.
+
     Args:
         input_dir: directory with either a single recording's TIFFs/ROIs, or a directory
             containing all such directories for a given fly
@@ -125,6 +135,10 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
         roi_index: index of ImageJ ROI to analyze (same as in ROI manager, 0-indexed)
 
         roiset_path: if passed, load ROIs from this, rather than from <input_dir>
+
+    Returns DataFrame of odor trials X ROI, with 'panel' and 'is_pair' row index levels
+    added, and column levels ['from_hallem', 'newly_analyzed', 'date', 'fly_num', 'roi']
+    (w/ False, True, None, None for the first 4).
     """
     # NOTE: this will also resolve symlinks (which I didn't want and complicated
     # match_str calculation, but can't figure out a pathlib way to resolve just relative
@@ -274,6 +288,10 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
 # TODO modify to also send ROI index (row clicked) (for ROIs that came from the current
 # data)
 def send_odor_index_to_imagej_script(odor_index):
+    """Sends int odor index to ImageJ script (overlay_rois_in_curr_z.py) via socket.
+
+    Returns without sending, if a connection can't be made (e.g. script not running).
+    """
     # TODO these the options i want (mostly unsure of socket.SOCK_STREAM)?
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # TODO this work for address? should i use 127.0.0.1? can i omit?
@@ -310,6 +328,8 @@ def send_odor_index_to_imagej_script(odor_index):
 
 
 def _get_fig_df(event):
+    """Returns figure of matplotlib `event`, and its `.df` DataFrame (or None).
+    """
     # NOTE: we also have access to the Axes through event.inaxes, but it was easier
     # to get the figure elsewhere, where the main Axes (along with the 2nd Axes in
     # the figure, for the colorbar) were created inside plot_all_...
@@ -328,6 +348,11 @@ def _get_fig_df(event):
 
 
 def on_click(event):
+    """Callback to send index of left-clicked odor (column) to ImageJ script.
+
+    Index is that of the odor presentation (in the 'odor_index' level of the DataFrame
+    attached to figure by `plot`), and sent via `send_odor_index_to_imagej_script`.
+    """
     # TODO log when this gets triggered? and/or when conditional below gets entered?
     # is that the issue, or is it (also?) not getting received properly on the imagej
     # side?
@@ -391,6 +416,10 @@ def on_click(event):
 # TODO does this interfere w/ default 's'->save? (don't want to, but nbd if it does)
 # NOTE: not working! no new plot is made (+ stuff freezes when i try to make one?)
 def on_key_press(event):
+    """Callback to plot figure's data with each ROI scaled to [0, 1], on 'r' key press.
+
+    Currently not connected in `plot` (see notes above).
+    """
     global most_recent_plot_proc
     global plotting_processes
     global _no_multiprocessing
@@ -423,6 +452,17 @@ def on_key_press(event):
 
 
 def plot(df, sort_rois=True, **kwargs):
+    """Plots ROI responses via `plot_all_roi_mean_responses`, and shows plot (blocking).
+
+    Attaches `df` to figure (as `fig.df`), and connects `on_click`, so clicking an odor
+    can send its index to ImageJ.
+
+    Args:
+        sort_rois: if True, sorts ROIs, w/ newly analyzed ROIs in the order they were
+            analyzed (and after cached data for the same ROI names)
+
+        **kwargs: passed to `plot_all_roi_mean_responses`
+    """
     # For sorting based on order ROIs added to new analysis, so if plot is updated to
     # include new data, the new data is always towards the bottom of each section.
     def roi_sort_index(col_index_vals):
@@ -562,6 +602,11 @@ _no_multiprocessing = False
 # TODO could add a start=True kwarg if that one case that currently assigns proc before
 # starting needs that order
 def plot_process(plot_fn, *args, **kwargs):
+    """Calls `plot_fn(*args, **kwargs)` in new `multiprocessing.Process`, returning it.
+
+    If `_no_multiprocessing` (set by `plot_roi.py -b/--debug`), calls `plot_fn` directly
+    (so a debugger can be used within it), and returns None.
+    """
     if not _no_multiprocessing:
         proc = Process(target=plot_fn, args=args, kwargs=kwargs)
         # TODO possible to also log when it dies? multiprocessing-logging work with more
@@ -588,6 +633,17 @@ plotting_processes = []
 # expecting?
 @profile
 def load_and_plot(args):
+    """Plots ROI responses, as requested by `plot_roi.py` CLI `args`.
+
+    Extracts responses for a newly drawn ImageJ ROI (if `args.analysis_dir`), and/or
+    loads cached responses of ROIs matching `args.roi_strs` (and new ROI names) from
+    `al_analysis.ij_roi_responses_cache` (which al_analysis.py no longer updates).
+    Plots in a separate process (see `plot_process`). Module-level state tracks newly
+    analyzed ROIs across calls, so `args.add` can add to the most recent plot.
+
+    Args:
+        args: `argparse.Namespace` with arguments defined in `plot_roi.main`
+    """
     global newly_analyzed_dfs
     global newly_analyzed_roi_names
     global newly_analyzed_roi_strs

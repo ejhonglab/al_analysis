@@ -38,6 +38,10 @@ inchi_order = list(megamat_abbrev2inchi.values())
 abbrev_order = list(megamat_abbrev2inchi.keys())
 
 def mordred_dists():
+    """Plots + saves clustered correlations of megamat odors' chemical descriptors.
+
+    Uses mordred / pubchem descriptors from Matt's `chemical-descriptors_8-7-20.csv`.
+    """
     # TODO how does new-descs_28-06-21.csv differ? it's just the same thing for a new
     # set of odors, right? are any of the new odors relevant? concatenate?
     #
@@ -96,6 +100,10 @@ def mordred_dists():
 
 
 def mendy_info_dists():
+    """Loads Mendy's chemical distances, and prints which megamat odors they include.
+
+    Unfinished (does not compute / plot anything with the distances).
+    """
     # TODO TODO add notes on where ChemDe_Info_dist.csv came from (Mendy, right?), how
     # it was generated, and which version it is (didn't Betty give me two somehow
     # different ones? only one good?)

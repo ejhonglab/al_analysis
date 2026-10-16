@@ -20,6 +20,12 @@ from al_analysis.mb_model import (plot_spike_rasters, summarize_isi, REFRACTORY_
 
 
 def main():
+    """Generates Poisson spikes from example model PN firing rates, and plots rasters.
+
+    Spikes are generated at the original time step, and by downsampling to the
+    refractory period then upsampling. Plots saved under `hh_output` (next to this
+    script).
+    """
     al_util.verbose = True
 
     script_path = Path(__file__).resolve().parent

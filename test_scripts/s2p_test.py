@@ -15,6 +15,8 @@ def load(npy_path):
 
 
 def main():
+    """Plots suite2p ROIs (from `stat.npy`) of one test recording, for inspection.
+    """
     s2p_output_dir = '/home/tom/2p_data/raw_data/2021-05-05/1/ehex_and_1-6ol/suite2p'
     combined_dir = join(s2p_output_dir, 'combined')
     plane0_dir = join(s2p_output_dir, 'plane0')

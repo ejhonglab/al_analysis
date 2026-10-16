@@ -23,6 +23,14 @@ MAX_LIFETIME_S = 60 * 60 * 2
 
 
 def main():
+    """Plots ROI responses (via `plot_roi_util.load_and_plot`), via a server process.
+
+    The first invocation starts a server (listening on `SERVER_HOST:SERVER_PORT`) that
+    plots for args sent by itself and later invocations (e.g. from ImageJ), until
+    `MAX_LIFETIME_S`. Later invocations just send their args to that server and exit,
+    avoiding slow imports. If the server's own args have no -d/--analysis-dir, it exits
+    after its first plot.
+    """
     # TODO too annoying (adds a message printing which file is being logged to)? revert?
     verbose = True
 

@@ -8,6 +8,8 @@ from al_analysis.al_util import read_csv
 
 
 def main():
+    """Prints mean responses to binary mixtures and their components, per panel.
+    """
     df = read_csv('2024_kiwi_control_roi_data.csv', verbose=True)
 
     # adds `hong2p.olf.mix_str` (currently 'odor') level, with str formatted from all

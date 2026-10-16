@@ -10,6 +10,8 @@ from al_analysis.al_util import read_csv
 
 
 def main():
+    """Checks glomeruli in data sent to Nikola (2025-02-25) are in his task table.
+    """
     data_dir = Path('~/src/al_analysis/data/sent_to_nikola/2025-02-25').expanduser()
 
     mdf = read_csv(data_dir / 'megamat_ij_certain-roi_stats.csv')

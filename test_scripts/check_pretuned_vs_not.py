@@ -8,6 +8,8 @@ from al_analysis import model_responses_cache_name, model_spikecounts_cache_name
 
 
 def main():
+    """Compares model responses with tuned vs pre-tuned (on megamat) parameters.
+    """
     root = Path('../pebbled_6f/pdf/ijroi/mb_modeling/megamat')
 
     h1 = (

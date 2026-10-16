@@ -86,7 +86,23 @@ STEPS = [10, 5, 1.0, 0.5, .1]
 def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
     corners_only: bool = False, corners_and_tuned: bool = False,
     scale_pre_tuning: bool = False) -> None:
-    # TODO doc
+    """Summarizes outputs of models with stepped PN<>APL weights, under `plot_dir`.
+
+    Each subdirectory of `plot_dir` should have outputs from one (wAPLPN, wPNAPL) step
+    (see `step_pn_apl_weights_around_tuned`). Summary stats (e.g. sparsity, # silent
+    cells, average lifetime sparsity, and panel-specific stats) are plotted as matrices
+    over the steps, and saved under `plot_dir.parent`.
+
+    Args:
+        plot_dynamics: if True, also plots dynamics of each model (with shared ranges
+            across models), and links plots of the same type into directories together
+
+        corners_only/corners_and_tuned: if True, only analyzes min / max steps (and the
+            tuned value, for `corners_and_tuned`)
+
+        scale_pre_tuning: if True, only analyzes outputs where weights were scaled
+            before tuning (subdirectory names starting with `SCALE_PRETUNING_PREFIX`)
+    """
 
     # TODO put behind verbose flag?
     print(f'analyzing outputs under: {plot_dir}')
@@ -546,9 +562,17 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
     save_dynamics: bool = False, plot_dynamics: bool = False, tuned_only: bool = False,
     corners_only: bool = False, corners_and_tuned: bool = False,
     scale_pre_tuning: bool = False) -> None:
-    # TODO doc
-    """Runs `orn_deltas`
+    """Runs tuned model, then models with PN<>APL weights stepped around tuned values.
+
+    Each of wAPLPN / wPNAPL are scaled by each factor in `STEPS` (all combinations),
+    with threshold and KC<>APL weights fixed at tuned values (unless
+    `scale_pre_tuning=True`). Stepped models are run on `orn_deltas` (with outputs in
+    subdirectories of `plot_dir`), as well as on kiwi / control data (under
+    `EXTRA_PANELS_DIRNAME`).
+
     Args:
+        plot_dir: output directory for tuned model
+
         orn_deltas: glomerulus (rows) X odors (columns) estimated spike delta DataFrame
 
         kws: passed to all `fit_and_plot_mb_model` calls, and passed thru
@@ -558,10 +582,17 @@ def step_pn_apl_weights_around_tuned(plot_dir: Path, orn_deltas: pd.DataFrame,
             directories that would be created), rather than re-running models. If True,
             will always re-run models.
 
+        ignore_existing_stepped: like `ignore_existing`, but only for stepped models
+            (always True if `ignore_existing=True`)
+
         try_lr_cache: passed to `fit_and_plot_mb_model`
 
         save_dynamics: if True, will save DataArray pickles of all model internal
             dynamic quantities (e.g. membrane potential of KCs over time, to each odor)
+
+        plot_dynamics: passed as `plot_example_dynamics` to `fit_and_plot_mb_model`
+
+        tuned_only: if True, only runs tuned model (no stepping)
 
         corners_only: if True, only analyzes combinations of min/max step for each
             parameter

@@ -132,6 +132,11 @@ def is_pytest_capturing_stderr() -> bool:
 
 # TODO maybe log all warnings?
 def warn(msg) -> None:
+    """Warns with `str(msg)` (via `warnings.warn`).
+
+    Also prints `msg` (in yellow) first, if running under pytest without stderr
+    capturing (e.g. `-s`), so warnings are shown before any debugger breakpoints.
+    """
     color = 'yellow'
 
     # since i couldn't otherwise figure out how to get pytest to show warnings before
@@ -155,7 +160,12 @@ def warn(msg) -> None:
 # TODO test
 # TODO type hint
 def sign_preserving_maxabs(x):
-    """Returns value with maximum absolute value.
+    """Returns value with maximum absolute value (keeping its sign), for each column.
+
+    Args:
+        x: DataFrame (e.g. timepoints X ROIs)
+
+    Returns 1D array with one value per column of `x`.
     """
     idxmax = np.abs(x).idxmax(axis=0)
     # TODO update w/ sam's version that should also work w/ >2D input?
@@ -267,12 +277,17 @@ hemibrain_paper_repro_kws = dict(
 # prob not)
 def add_check_outputs_unchanged_CLI_flag_and_parse_args(parser: argparse.ArgumentParser,
     *, check_nonmain_option: bool = False) -> argparse.Namespace:
-    """Adds -c CLI arg, parses args, and sets related `al_util` globals.
+    """Adds -c/-P (and optionally -C) CLI args, parses args, and sets `al_util` globals.
 
     Sets:
-    - `al_util.check_outputs_unchanged`
-    - `al_util.check_nonmain_outputs_unchanged`
+    - `al_util.check_outputs_unchanged` (True/False, or 'nonmain' if -C passed)
+    - `al_util.check_nonmain_outputs_unchanged` (only if `check_nonmain_option=True`)
     - `al_util.prompt_if_changed`
+
+    Args:
+        check_nonmain_option: if True, also adds -C/--check-nonmain-outputs-unchanged
+            (mutually exclusive w/ -c), which only checks outputs not saved under
+            `main()`
 
     Returns args as from `parser.parse_args()`
 
@@ -350,6 +365,11 @@ def add_check_outputs_unchanged_CLI_flag_and_parse_args(parser: argparse.Argumen
 # TODO type hint Mapping? can it be Series or Dict?
 # TODO define my own hong2p.types.DictOrSeries?
 def format_panel(x) -> str:
+    """Returns `x['panel']`, formatted for plot labels (e.g. as `vline_level_fn`).
+
+    Returns '' if `x` has no (or an empty) 'panel', and 'diagnostics' for
+    `diag_panel_str`.
+    """
     panel = x.get('panel')
     # TODO maybe return None if it'd make more consistent vline_level_fn usage
     # possible (across single/multi panel cases)? would prob need to handle in viz
@@ -367,6 +387,8 @@ def format_panel(x) -> str:
 
 # TODO also take series ever? share type hint w/ format_panel, if i add one?
 def roi_label(index_dict) -> str:
+    """Returns `index_dict['roi']` if it is a named ROI, otherwise '' (e.g. numbered).
+    """
     roi = index_dict['roi']
     if is_ijroi_named(roi):
         return roi
@@ -377,8 +399,13 @@ def roi_label(index_dict) -> str:
 
 # TODO rename now that i'm also allowing input w/o date/fly_num attributes?
 def fly_roi_id(row: pd.Series, *, fly_only: bool = False) -> str:
-    """
+    """Returns ID str for plot labels, e.g. '<m-dd>/<fly_num>/<roi>'.
+
+    Uses `row.fly_id` in place of date and fly_num, if `row` has a non-null 'fly_id'.
+
     Args:
+        row: should have 'roi', and either 'fly_id' or 'date' and 'fly_num'
+
         fly_only: if False, will include date, fly, and ROI information.
             If True, will exclude ROI information, so long as the ROI was given a name
             (and not autonamed/numbered).
@@ -425,6 +452,10 @@ def fly_roi_id(row: pd.Series, *, fly_only: bool = False) -> str:
 
 
 def _have_fly_cols(data: Union[pd.DataFrame, pd.Series]) -> bool:
+    """Returns whether `data` has all `fly_cols` as index level names.
+
+    For DataFrame input, also checks column level names and column labels.
+    """
     if isinstance(data, pd.DataFrame):
         names_lists = [data.columns.names, data.columns, data.index.names]
     else:
@@ -515,20 +546,22 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
     ) -> pd.DataFrame:
     # TODO delete key if i can do w/o it (by always just sorting a second time when i
     # want some outer level)
-    # TODO is doc for sort_first_on right (or is it maybe just describing one use case
-    # for it?)?
     """Sorts column MultiIndex with `flyroi_cols` levels.
 
+    Named ROIs (see `hong2p.roi.is_ijroi_named`) are sorted before numbered/autonamed
+    ROIs, within each group of any higher priority sort keys.
+
     Args:
-        df: data to sort by fly/ROI column values
+        df: data to sort by fly/ROI column values. NOTE: `df.columns` is modified (to
+            add temporary levels used for sorting), so don't use `df` after calling.
 
         flies_first: if True, sorts on `fly_cols` columns primarily, followed by 'roi'
-            ROI names.
+            ROI names. Otherwise, sorts on ROI names first.
 
-        sort_first_on: sequence of same length as df.columns, used to order ROIs.
-            Within each level of this key, will sort on the default date/fly_num ->
-            with higher priority than roi, but will then group all "named" ROIs before
-            all numbered/autonamed ROIs.
+        sort_first_on: sequence of same length as `df.columns` (or callable, called with
+            a dict of column level names -> values, for each column), used as the
+            highest priority sort key. Within each value of this key, sorts as without
+            it.
     """
     index_names = df.columns.names
     # TODO replace w/ def from flyroi_cols? or just also assert it's in flyroi_cols?
@@ -632,11 +665,33 @@ CodeContext = namedtuple('CodeContext', 'filename lineno fn_name')
 _saved_path2last_save_code_context: Dict[Path, CodeContext] = dict()
 # TODO what is _fn for again? keep?
 def produces_output(_fn=None, *, verbose: bool = True):
+    """Decorator for fns saving `data` to `path`, called as `fn(data, path, **kwargs)`
+
+    Can be used either as `@produces_output` or `@produces_output(verbose=False)`.
+
+    The wrapped fn:
+    - also accepts any `Pathlike` for `path`
+
+    - raises `MultipleSavesPerRunException` if the same (resolved) path is written more
+      than once in a run (by any wrapped fn), unless `multiple_saves_per_run_ok=True`
+
+    - if `al_util.check_outputs_unchanged` (set by -c/-C CLI flags) and `path` exists,
+      checks that the new output would not change it (not writing it, if unchanged).
+      See `ignore_output_change_check` for how changes are handled.
+
+    Args:
+        _fn: the fn to wrap, when used without parentheses (`@produces_output`)
+
+        verbose: default for `verbose` kwarg of wrapped fn (whether to print path before
+            writing)
+    """
     # for how to make a decorator with optional  arg:
     # https://realpython.com/primer-on-python-decorators
 
     # TODO what would be a good name for this?
     def wrapper_helper(fn):
+        """Returns `fn` wrapped as described in `produces_output` docstring.
+        """
         assert fn.__name__ not in _fn_name2seen_inputs, (
             f'{fn.__name__=} seen set would have been overwritten'
         )
@@ -652,10 +707,19 @@ def produces_output(_fn=None, *, verbose: bool = True):
             multiple_saves_per_run_ok: bool = False, **kwargs):
             """
             Args:
+                verbose: if True, prints `path` before writing it
+
+                ignore_output_change_check: only relevant if checking outputs are
+                    unchanged (-c/-C). if True, silently overwrites changed outputs. if
+                    'warn', warns before overwriting. if False, raises an error (or
+                    prompts, if -P was passed).
+
                 multiple_saves_per_run_ok: if False, will raise
                     MultipleSavesPerRunException if same absolute path is written to
                     twice in one run (which is assumed to usually be a programming
                     mistake)
+
+                **kwargs: passed to wrapped fn
             """
             # TODO delete (probably delete *args in sig above if so)
             assert len(args) == 0
@@ -799,6 +863,10 @@ def _output_change_prompt_or_err(err: RuntimeError, path: Path, *,
     If `al_util.prompt_if_changed = True`, prompts user to choose what to do with file
     (whether to overwrite/skip/exit). If `al_util.prompt_if_changed = False`, raises
     `err` passed in.
+
+    Args:
+        _warn_only: if True, just warns with message of `err` and returns True (no
+            prompt or error)
     """
     assert err is not None
     if not prompt_if_changed and not _warn_only:
@@ -842,7 +910,7 @@ def _output_change_prompt_or_err(err: RuntimeError, path: Path, *,
 
 
 def caller_info() -> traceback.FrameSummary:
-    """Returns FrameSummary from one stack level above.
+    """Returns FrameSummary for the caller of the fn that calls `caller_info`.
 
     FrameSummary objects have attributes: filename, lineno, name, line (as well as
     locals).
@@ -868,7 +936,8 @@ def caller_info() -> traceback.FrameSummary:
 @produces_output
 # input could be at least Series|DataFrame
 def to_csv(data: DataFrameOrSeries, path: Path, **kwargs) -> None:
-    """
+    """Writes `data` to CSV at `path` (which must end in '.csv'), via `data.to_csv`.
+
     NOTE: `produces_output` wrapper modifies fn to allow `Pathlike` for path arg
     """
     assert path.suffix == '.csv', f"{path.suffix} should be '.csv'"
@@ -881,6 +950,16 @@ _SERIES_NAME_PLACEHOLDER: str = '__UNNAMED-SERIES'
 # TODO some nice way to make a list of all these fns and then redef all of them w/
 # wrapper? or too meta-programmy (don't want to eval...)?
 def read_parquet(path: Path, *, squeeze: bool = True) -> DataFrameOrSeries:
+    """Reads parquet written by `to_parquet`, undoing its conversions.
+
+    Moves any sequence-valued first column (from a tuple-valued last index level, e.g.
+    bouton IDs) back to a final index level of tuples, and converts column MultiIndex
+    level values back to numeric / datetime, where possible.
+
+    Args:
+        squeeze: if True, returns a Series if data has only one column. Series written
+            without a name are returned as (unnamed) Series either way.
+    """
     # TODO try changing default engine (='fastparquet'? or ='pyarrow'? latter should be
     # default, if both installed [at least in pandas 3.0...])? that fix any of column
     # level type handling i add below?
@@ -953,6 +1032,15 @@ def read_parquet(path: Path, *, squeeze: bool = True) -> DataFrameOrSeries:
 @produces_output(verbose=True)
 def to_parquet(data: DataFrameOrSeries, path: Path, *, check: bool = True) -> None:
     """Write `data` to parquet at `path`, with default check loaded value matches input.
+
+    Supports some data parquet can't directly store, converting it in ways that
+    `read_parquet` undoes: Series (including those without a name), non-str column
+    MultiIndex level values (converted to str), and a tuple-valued last index level
+    (moved to first column).
+
+    Args:
+        check: if True, reads output back (via `read_parquet`) and checks it matches
+            `data`
     """
     assert path.suffix == '.parquet', f"{path.suffix} should be '.parquet'"
     # TODO make check=False the default eventually?
@@ -1121,7 +1209,16 @@ required_index_levels: List[str] = ['panel', 'is_pair', 'odor1', 'repeat']
 
 def drop_old_odor_index_levels(df: pd.DataFrame, *, warn_: bool = True
     ) -> pd.DataFrame:
-    # TODO doc
+    """Drops binary-mixture-experiment index levels, if they are uninformative.
+
+    Drops 'is_pair' level if it is all False, and 'odor2' level if it is all
+    `solvent_str`.
+
+    Args:
+        warn_: if True, warns if either level is present but can't be dropped
+
+    Returns `df`, which is also modified in place.
+    """
     # for dropping metadata intended for binary mixture experiments
     to_drop = []
 
@@ -1155,11 +1252,31 @@ def drop_old_odor_index_levels(df: pd.DataFrame, *, warn_: bool = True
 def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
     check_vs_pickle: bool = True, warn_: bool = True, verbose: bool = True
     ) -> pd.DataFrame:
-    """
+    """Loads CSV of responses (e.g. `ij_certain-roi_stats.csv`), of odor X fly-ROI shape
+
+    Returns DataFrame with row index levels like ['panel', 'is_pair', 'odor1', 'odor2',
+    'repeat'] ('odor<N>' levels after 'odor1' only for air-mixed components), and column
+    levels `flyroi_cols` ('date' parsed to datetime, 'fly_num' to int). E.g.:
+
+    date                                           2024-09-03
+    fly_num                                                 1
+    roi                                                     D    DA1    DA2
+    panel                 odor1     odor2   repeat
+    glomeruli_diagnostics 3mtp @ -5 solvent 0          -0.062 -0.025 -0.189
+                                            1           0.065 -0.003 -0.072
+
     Args:
+        drop_old_odor_levels: if True, drops 'is_pair' / 'odor2' levels when they are
+            uninformative (via `drop_old_odor_index_levels`)
+
+        check_vs_pickle: if True, and a pickle with the same name (but '.p' suffix)
+            exists alongside CSV, checks loaded data matches it
+
         warn_: passed to `drop_old_odor_index_levels`, if called
+
+        verbose: if True, prints path and modification time of CSV (and result of any
+            pickle check)
     """
-    # TODO doc output format (w/ example str repr)
     # TODO does this work on both ij_certain-roi_stats.csv and ij_roi_stats.csv outputs?
 
     csv = Path(csv)
@@ -1254,6 +1371,8 @@ def read_csv(csv: Pathlike, *, drop_old_odor_levels: bool = True,
 
 # TODO unit test this?
 def text_diff(f1: Path, f2: Path) -> str:
+    """Returns unified diff (w/o context lines) between text of files `f1` and `f2`.
+    """
     lines1 = f1.read_text().strip().splitlines(keepends=True)
     lines2 = f2.read_text().strip().splitlines(keepends=True)
 
@@ -1304,6 +1423,12 @@ _save_fn_name2diff_fn = {
 def _check_output_would_not_change(path: Path, save_fn: Callable,
     data: Optional[Any] = None, **kwargs) -> None:
     """Raises RuntimeError if output would change.
+
+    Saves new output to a temporary file (via `save_fn`), and compares that to existing
+    `path`: exact file comparison (falling back to comparing loaded data, for pickles),
+    or matplotlib image comparison, if `save_fn` is a `savefig`. If output would
+    change, temporary file is kept, and error message includes a diff (for CSVs) or
+    the temporary file path.
 
     Args:
         path: must already exist (raises IOError if not)
@@ -1696,7 +1821,14 @@ panel2name_order['validation2'] = [
 # TODO can input/output also be a series?
 def sort_odors(df: pd.DataFrame, *, add_panel: Optional[str] = None, **kwargs
     ) -> pd.DataFrame:
+    """Sorts odors by panel, using `al_util.panel_order` and `panel2name_order`.
 
+    Args:
+        add_panel: if passed, first adds a 'panel' row index level with this value
+            (only works if odors are in row index)
+
+        **kwargs: passed to `hong2p.olf.sort_odors`
+    """
     # TODO TODO check in here whether panel(s) are in panel2name_order (rather than
     # requiring that check many other places)
 
@@ -1738,13 +1870,17 @@ ignore_existing_options = (
 )
 
 def should_ignore_existing(name: str, explicit_only: bool = False) -> bool:
-    """
+    """Returns whether existing outputs of step `name` should be ignored (recomputed).
+
+    Based on `al_util.ignore_existing` (set by `-i` CLI arg in `al_analysis.py`). Steps
+    in `ignore_if_explicitly_requested` are only recomputed if explicitly requested
+    (i.e. not when `ignore_existing == True`).
+
     Args:
         name: step to check whether it should be recomputed.
             see `ignore_existing_options`.
 
-        explicit_only: will only ignore `name` if it is in `ignore_existing`, not if
-            `ignore_existing == True`
+        explicit_only: currently unused (see `ignore_if_explicitly_requested` instead)
     """
     if type(ignore_existing) is bool:
 
@@ -1815,11 +1951,31 @@ def savefig(fig_or_seaborngrid,
     debug: bool = False, multiple_saves_per_run_ok: bool = False,
     ignore_output_change_check: bool = False, fmt: Optional[str] = None, **kwargs
     ) -> Path:
-    """
+    """Saves figure (or seaborn grid) to `<fig_dir>/<desc>.<fmt>`, returning that path.
+
+    Creates `fig_dir` if needed. Only saves if `al_util.save_figs`. Exits after saving,
+    if path contains `al_util.exit_after_saving_fig_containing` (set by `al_analysis.py
+    -F` CLI arg).
+
     Args:
+        desc: name for plot. converted to a valid filename (via
+            `hong2p.util.to_filename`), unless `normalize_fname=False`.
+
+        close: if True, closes figure after saving
+
+        debug: if True, prints path to saved figure (otherwise only printed if
+            `al_util.verbose`)
+
+        multiple_saves_per_run_ok: if False, raises `MultipleSavesPerRunException` if
+            the same path is saved to twice in one run
+
+        ignore_output_change_check: if True, skips checking output would not change
+            (only checked if `al_util.check_outputs_unchanged`, set by -c/-C CLI args)
+
         fmt: if None, defaults to `al_util.plot_fmt` (typically 'pdf')
+
+        **kwargs: passed to `savefig` method of `fig_or_seaborngrid`
     """
-    # TODO doc what this is set by (al_analysis CLI args i assume?)
     global exit_after_saving_fig_containing
 
     if fmt is None:
@@ -1991,7 +2147,13 @@ def savefig(fig_or_seaborngrid,
 # TODO fn to combine this w/ loading of hallem data (-> only use that wrapper)?
 # TODO can input/output also be Series?
 def abbrev_hallem_odor_index(df: pd.DataFrame, axis: Axis = 'index') -> pd.DataFrame:
-    """Abbreviates Hallem odor names in single-level row index.
+    """Abbreviates Hallem odor names in single-level index (rows, by default).
+
+    First renames some Hallem odor names to the versions in `hong2p.olf.odor2abbrev`,
+    then abbreviates using that mapping.
+
+    Args:
+        axis: which index to rename ('index' or 'columns')
     """
     # TODO assert some got replaced (as a check axis was correct)
 
@@ -2122,7 +2284,25 @@ def corr_triangular(corr_df: pd.DataFrame, *, sort: bool = True,
     ordered_pairs: Optional[Sequence[Tuple[str, str]]] = None,
     # TODO delete check_index_names (and always don't, or only warn?)?
     check_index_names: bool = True) -> pd.Series:
+    """Returns Series w/ one triangle of symmetric `corr_df` (excluding diagonal).
 
+    Output is indexed by unique pairs of index values of `corr_df` (e.g. odor pairs).
+
+    Args:
+        corr_df: square DataFrame, with same row and column index (e.g. odor X odor
+            correlations)
+
+        sort: if True, sorts index before selecting pairs, so the order within each
+            pair is consistent across calls (and outputs of different calls can be
+            merged)
+
+        ordered_pairs: if passed, pairs whose reverse is in this sequence are reversed
+            to match it
+
+        check_index_names: if True, checks output index level names (expecting 'odor'
+            prefixed names, unless there is also a 'panel' level), and renames them to
+            ['odor1', 'odor2'] (or ['panel1', 'odor1', 'panel2', 'odor2'])
+    """
     index = corr_df.index
     assert index.equals(corr_df.columns)
 
@@ -2214,6 +2394,23 @@ def corr_triangular(corr_df: pd.DataFrame, *, sort: bool = True,
 # TODO remove "private" '_' prefix of _index kwarg?
 def invert_corr_triangular(corr_ser: pd.Series, diag_value: float = 1., *,
     _index: Optional[pd.Index] = None, name: str = 'odor') -> pd.DataFrame:
+    """Returns square DataFrame from one triangle Series, as from `corr_triangular`.
+
+    Expects each pair of distinct odors to be in `corr_ser` index exactly once (in
+    either order), with odors in the order output should have (as from
+    `itertools.combinations` on that order).
+
+    Args:
+        corr_ser: Series indexed by (odor1, odor2) pairs (or by 4 levels, w/ a
+            'panel'-prefixed level before each odor level)
+
+        diag_value: value for diagonal (e.g. 1 for correlations)
+
+        _index: index to get odor order from, if not `corr_ser.index`
+
+        name: name for output row and column index (or their odor level, if there are
+            panel levels)
+    """
     if _index is None:
         for_odor_index = corr_ser.index
     else:
@@ -2338,7 +2535,12 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
     square: bool = True, keep_panel: bool = False) -> DataFrameOrSeries:
     # TODO TODO also use this for uniform model w/ id_cols='seed'? how do i currently
     # handle that?
-    """
+    """Returns mean (across flies) of odor-odor correlations computed within each fly.
+
+    Responses are first averaged across trials of each odor. Then correlations are
+    computed within each fly (across its ROIs), and averaged across flies (ignoring
+    NaN).
+
     Args:
         df: DataFrame with odor level on row index, and levels from id_cols
             in column index.
@@ -2346,8 +2548,12 @@ def mean_of_fly_corrs(df: pd.DataFrame, *, id_cols: Optional[List[str]] = None,
         id_cols: column index levels, unique combinations of which identify individual
             flies (/ experimental units). if None, defaults to ['date', 'fly_num'].
 
-        square: if True, returns square correlation matrix as a DataFrame. otherwise,
-            returns one triangular (excluding diagonal) as a Series.
+        square: if True, returns square correlation matrix as a DataFrame (odors in
+            same order as input). otherwise, returns one triangular (excluding
+            diagonal) as a Series.
+
+        keep_panel: if True (and `df` has a 'panel' row index level), averages trials
+            within each (panel, odor) combination, rather than within each odor
     """
     # TODO add checks= kwarg to disable all the assertions?
 
@@ -2538,15 +2744,31 @@ def plot_corr(df: pd.DataFrame, plot_dir: Path, fname: str, *, title: str = '',
 
         fname: name of plot to save (excluding the '.<plot_fmt>' extension)
 
+        as_corr_dist: if True, plots correlation distance (`1 - corr`) instead (w/
+            reversed default cmap)
+
         method: passed to `df.corr()`. assumed this is also the method for any
             precomputed corrs passed in (and cbar label should include it)
+
+        cmap: defaults to `diverging_cmap`
 
         vmin/vmax: if not passed, will default to full range of the correlation
             [distance]: [-1, 1] if `as_corr_dist=False`, and `[0, 2]` if True.
 
+        vcenter: if not passed and `cmap` is diverging, defaults to 0 (or 1 if
+            `as_corr_dist=True`)
+
+        cbar_label: defaults to e.g. 'Pearson correlation' (from `method`, w/
+            ' distance' added if `as_corr_dist=True`)
+
+        verbose: if True, prints path of saved plot
+
+        _save_kws: passed to `savefig`
+
         **kwargs: passed to `hong2p.viz.matshow`
 
-    Returns DataFrame containing these odor-odor correlations.
+    Returns DataFrame containing these odor-odor correlations (with concentrations
+    removed from odor names, if all odors were at the same concentration).
     """
     # otherwise, we assume input is already a correlation (/ difference of correlations)
     if not df.columns.equals(df.index):
@@ -2690,6 +2912,15 @@ def _plot_responses_helper(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
     vmin: Optional[float] = None, vmax: Optional[float] = None, title: str = '',
     title_kws: Optional[ParamDict] = None, _save_kws: Optional[ParamDict] = None,
     **kwargs) -> None:
+    """Plots `df` via `hong2p.viz.matshow`, saving to `<plot_dir>/<prefix>.<plot_fmt>`.
+
+    Args:
+        title_kws: passed to `ax.set_title`, if `title` is passed
+
+        _save_kws: passed to `savefig`
+
+        **kwargs: passed to `hong2p.viz.matshow`
+    """
     # TODO accept subplot_kws for subplots?
 
     fig, ax = plt.subplots()
@@ -2717,6 +2948,8 @@ def _plot_responses_helper(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
 # plot_all...? see also mean_df/etc plotting in main, that recreates much of those
 # kwargs for use w/ viz.matshow)
 def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, **kwargs) -> None:
+    """Plots `df` w/ `diverging_cmap_kwargs`, via `_plot_responses_helper`.
+    """
     # TODO TODO allow overriding cmap (+ norm? those only two things in
     # diverging_cmap_kwargs)
     _plot_responses_helper(df, plot_dir, prefix, **diverging_cmap_kwargs, **kwargs)
@@ -2724,6 +2957,11 @@ def plot_responses(df: pd.DataFrame, plot_dir: Path, prefix: str, **kwargs) -> N
 
 def plot_responses_err(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
     vmin: Optional[float] = None, **kwargs) -> None:
+    """Plots non-negative errors (e.g. SEM) w/ top half of `diverging_cmap`.
+
+    Any `vmin` passed is replaced with 0. Other `kwargs` passed to
+    `_plot_responses_helper`.
+    """
     assert ((df >= 0) | df.isna()).all().all(), (
         'expected err to be all non-negative (or NaN)'
     )
@@ -2749,7 +2987,13 @@ def plot_responses_err(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
 def plot_responses_and_corr(df: pd.DataFrame, plot_dir: Path, prefix: str, *,
     vmin: Optional[float] = None, vmax: Optional[float] = None, title: str = '',
     **kwargs) -> pd.DataFrame:
+    """Plots `df` (via `plot_responses`) and correlations of its columns (`plot_corr`).
 
+    Correlation plot is saved with a '_corr' suffix added to `prefix`. `vmin` and `vmax`
+    are only used for the response plot.
+
+    Returns correlation DataFrame from `plot_corr`.
+    """
     # TODO expose bbox_inches (or remove kwarg in plot_[responses|corr], and just accept
     # the hardcode to bbox_inches='tight' in both of those, if no downside)? ever need
     # diff between the two calls?
@@ -2776,19 +3020,23 @@ cmap: CMap = 'magma'
 def cluster_rois(df: pd.DataFrame, *, odor_sort: bool = True, cmap: CMap = cmap,
     return_linkages: bool = False, **kwargs):
     #return_linkages: bool = False, **kwargs) -> sns.axisgrid.Grid:
-    # TODO update doc on row_colors. what are other ways? if i add features to
-    # viz.clustermap, just reference that doc here?
-    """
+    """Plots clustermap of ROIs (clustering ROIs, but not odors).
+
     Args:
+        df: odors X ROIs (transposed before plotting, so ROIs are rows)
+
+        odor_sort: if True, sorts odors (via `hong2p.olf.sort_odors`). otherwise, keeps
+            input odor order.
+
         return_linkages: passed to `hong2p.viz.clustermap`
 
-        **kwargs: passed to `hong2p.viz.clustermap`
+        **kwargs: passed to `hong2p.viz.clustermap` (and through that to
+            `seaborn.clustermap`). e.g. `row_colors` can be a `Series` with index
+            matching `df.columns`, where values are colors (e.g. RGB 3-tuples).
 
-    One way `row_colors` can be passed is as a `Series` with index matching
-    `df.columns`, where values are color (RGB?) 3-tuples.
+    Returns seaborn `ClusterGrid` (and row and column linkages, if
+    `return_linkages=True`).
     """
-    # TODO doc expectations on what rows / columns of input are
-
     # TODO why transposing? stop doing that (-> change all inputs). will just cause
     # confusion if i use [row/col]_colors...
     if odor_sort:
@@ -2911,6 +3159,10 @@ def get_gsheet_metadata() -> pd.DataFrame:
     My sheet is called 'tom_antennal_lobe_data' in the Hong lab Google Drive. Sam has
     his own. New users of the pipeline should probably start by copying one of ours, to
     get the right column names, data validation, etc.
+
+    Returns DataFrame indexed by ['date', 'fly'], with normalized (e.g. lowercase)
+    column names. Missing 'driver' / 'indicator' values are filled with 'pebbled' /
+    '6f'.
     """
     script_dir = Path(__file__).resolve().parent
 
@@ -2978,6 +3230,8 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, *, title: Optional[str] 
 
         sort_rois_first_on: passed to sort_fly_roi_cols's sort_first_on kwarg
 
+        odor_sort: whether to sort odors by concentration (via `sort_concs`)
+
         keep_panels_separate: if 'panel' is among trial_df index level names, and there
             are any odors shared by multiple panels, this will prevent data from
             different panels from being averaged together
@@ -2988,11 +3242,26 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, *, title: Optional[str] 
         odor_min_max_scale: if True, scales data within each odor to [0, 1].
             if `cbar_label` is in `kwargs`, will append '[0,1] scaled per odor'.
 
+        use_diverging_cmap: if True, uses `diverging_cmap_kwargs` (unless either
+            min-max scaling option is used, where `al_util.cmap` is used instead)
+
+        yticklabels: if None, ROI labels are from `fly_roi_id` (or just ROI names, if
+            `single_fly=True`)
+
+        avg_repeats: if False, keeps separate rows for each 'repeat' (rather than
+            averaging over trials)
+
+        single_fly: if True, labels rows with just ROI names (input should only have
+            data from one fly)
+
         odor_glomerulus_combos_to_highlight: list of dicts with 'odor' and 'glomerulus'
             keys. cells where `odor1` matches 'odor' (with no odor in `odor2`) and `roi`
-            matches 'glomerulus' will have a red box drawn around them.
+            matches 'glomerulus' will have a gray box drawn around them.
 
         **kwargs: passed thru to hong2p.viz.matshow
+
+    Returns figure and DataFrame of plotted (trial-averaged) data, with ROIs as rows
+    and odors as columns.
     """
     # TODO factor out this odor-index checking to hong2p.olf?
     # may also have 'panel', 'repeat', 'odor2', and arbitrary other metadata levels.
@@ -3273,8 +3542,16 @@ def plot_all_roi_mean_responses(trial_df: pd.DataFrame, *, title: Optional[str] 
 
 def count_n_per_odor_and_glom(df: pd.DataFrame, *, count_zero: bool = True
     ) -> pd.DataFrame:
-    # TODO doc
+    """Returns number of non-NaN values for each row and ROI (e.g. # of flies).
 
+    Args:
+        df: rows (e.g. odors) X columns with a 'roi' level (e.g. fly-ROIs)
+
+        count_zero: if False, exact 0.0 values are not counted (e.g. if they are just
+            fill values). if True, they are counted, but warns if there are any.
+
+    Returns DataFrame with same row index as `df`, and one column per ROI.
+    """
     if not count_zero:
         # TODO need to do anything special to keep rows for things that would then be
         # fully NaN?
@@ -3298,6 +3575,11 @@ def count_n_per_odor_and_glom(df: pd.DataFrame, *, count_zero: bool = True
 
 
 def get_n_glomeruli_per_fly(df: pd.DataFrame) -> pd.Series:
+    """Returns # of glomeruli (ROIs w/ any non-NaN data) per fly, indexed by `fly_cols`.
+
+    Args:
+        df: should have `flyroi_cols` column levels
+    """
     assert set(flyroi_cols) - set(df.columns.names) == set(), f'{df.columns.names=}'
 
     # to remove all-NaN columns added by fill_to_hemibrain, which should not be counted
@@ -3313,6 +3595,8 @@ def get_n_glomeruli_per_fly(df: pd.DataFrame) -> pd.Series:
 
 
 def glomeruli_per_fly_summary(df: pd.DataFrame) -> str:
+    """Returns str like '30 to 38 (mean 34.5) glomeruli per fly', for `df` data.
+    """
     n_glom_per_fly = get_n_glomeruli_per_fly(df)
     gmin = n_glom_per_fly.min()
     gmax = n_glom_per_fly.max()
@@ -3323,7 +3607,19 @@ def glomeruli_per_fly_summary(df: pd.DataFrame) -> str:
 # TODO share default cmap/zero_color w/ other fns that pass them in to this?
 def plot_n(counts: pd.DataFrame, *, cmap: CMap = 'cividis', zero_color: Color = 'white',
     from1: bool = True, roi_sort: bool = False, **kwargs) -> Figure:
+    """Plots matrix of integer counts (e.g. # of flies), w/ a discrete colormap.
 
+    Args:
+        counts: as input to `plot_all_roi_mean_responses` (e.g. odors X ROIs)
+
+        zero_color: color for counts below colormap range (e.g. 0)
+
+        from1: if True, colormap starts from 1 (rather than min count), and min count
+            is added to xlabel
+
+        **kwargs: passed to `plot_all_roi_mean_responses` (overriding defaults from
+            `roimean_plot_kws`)
+    """
     # TODO if from1=True especially, put min N in text somewhere? xlabel?
     # (unless i change how cbar is displayed, to only start it from min n)
 
@@ -3376,6 +3672,13 @@ def plot_n(counts: pd.DataFrame, *, cmap: CMap = 'cividis', zero_color: Color = 
 
 
 def plot_n_per_odor_pair(counts: pd.DataFrame, **kwargs) -> Figure:
+    """Plots square odor X odor matrix of counts (e.g. # of flies), via `plot_n`.
+
+    Args:
+        counts: row and column index should be equal, and both named 'odor'
+
+        **kwargs: currently unused
+    """
     # (nvm, currently just expecting precomputed square matrix of counts)
     # TODO allow either datefly or date,fly_num input, and mean over everything
     # else (if any other column levels)
@@ -3399,12 +3702,27 @@ def plot_n_per_odor_pair(counts: pd.DataFrame, **kwargs) -> Figure:
 def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = False,
     count_zero: bool = True, try_collapse_odors: bool = False, title: bool = True,
     title_prefix: str = '', **kwargs) -> Tuple[Figure, pd.DataFrame]:
-    """
+    """Plots number of non-NaN values (e.g. # of flies) for each odor and glomerulus.
+
     Args:
+        df: data to count (via `count_n_per_odor_and_glom`), w/ odors as rows and a
+            'roi' column level, or precomputed counts (if `input_already_counts=True`)
+
+        count_zero: passed to `count_n_per_odor_and_glom`. if False, exact 0.0 values
+            (e.g. fill values) are not counted.
+
         try_collapse_odors: if True, and if all odors have the same counts (across
             glomeruli), will plot just one column instead of a full matrix
+
+        title: if True, adds title like 'sample size (n) per (glomerulus X odor)'
+            (and a summary of glomeruli per fly, if counts not precomputed)
+
+        title_prefix: added before title (requires `title=True`)
+
+        **kwargs: passed to `plot_n`
+
+    Returns figure and DataFrame of counts that were plotted.
     """
-    # TODO doc. what is count_zero?
     if not input_already_counts:
         n_per_odor_and_glom = count_n_per_odor_and_glom(df, count_zero=count_zero)
     else:
@@ -3490,6 +3808,10 @@ def plot_n_per_odor_and_glom(df: pd.DataFrame, *, input_already_counts: bool = F
 # (was originally made in natmix_data/analysis.py, but then moved here to share w/
 # model_yang_mixtures.py)
 def add_legends_and_colorbars(*args, **kwargs) -> None:
+    """Calls `hong2p.viz.add_legends_and_colorbars`, w/ default `legend_locations`.
+
+    Default `legend_locations` are chosen for clustermaps with many `row_colors`.
+    """
     # 'upper center' / 'center' generally won't work, and 'lower right' may overlap w/
     # clustermap cbar. these locations in priority order, chosen with current clustermap
     # plots [the ones with many row_colors] in mind.
@@ -3505,7 +3827,8 @@ def add_legends_and_colorbars(*args, **kwargs) -> None:
 # TODO TODO try to move this (+ additional special casing above) into hong2p.viz
 def plot_cols_with_diff_colormaps(df: pd.DataFrame, fig_kws: Optional[Dict] = None,
     legend_and_cbar_kws: Optional[Dict] = None, **kwargs) -> Tuple[Figure, Axes]:
-    """
+    """Plots `df` as an image, with values in each column mapped to colors separately.
+
     Args:
         df: data to map columns to different colormaps (some of which can be shared).
             see `map_each_series_to_rgb` for options and more details, in particular
@@ -3591,8 +3914,12 @@ signedmax_orn_dff_dir: Path = sent_to_remy / '2025-09-30_tom_orn_data_signed-max
 # TODO use in tests to check we can repro mean_est_spike_deltas for all, and everything
 # downstream
 def load_natmix_dff(**kwargs) -> pd.DataFrame:
+    """Loads committed kiwi/control (+ diagnostic panel) ORN dF/F (signed max response).
+
+    Args:
+        **kwargs: passed to `read_csv`
+    """
     data_dir = signedmax_orn_dff_dir / 'kiwi_control_signed-max'
-    # TODO doc
 
     # TODO also load parquet (and prefer that, if we have it). need to regen and commit
     # new outputs first
@@ -3622,6 +3949,11 @@ def load_natmix_dff(**kwargs) -> pd.DataFrame:
 # never completely successful. i think
 # dasta/sent_to_remy/2023-10-29/pebbled_ij_certain-roi_stats.csv should do)
 def load_megamat_dff(**kwargs) -> pd.DataFrame:
+    """Loads committed megamat (+ diagnostic panel) ORN dF/F (signed max response).
+
+    Args:
+        **kwargs: passed to `read_csv`
+    """
     data_dir = signedmax_orn_dff_dir / 'megamat_signed-max'
     csv_path = data_dir / 'ij_certain-roi_stats.csv'
     df = read_csv(csv_path, **kwargs)
@@ -3635,6 +3967,11 @@ def load_megamat_dff(**kwargs) -> pd.DataFrame:
 # data/internal/for_dff_to_spiking_fn/ij_certain-roi_stats.parquet?
 # TODO use in tests
 def load_validation2_dff(**kwargs) -> pd.DataFrame:
+    """Loads committed validation2 (+ diagnostic panel) ORN dF/F (signed max response).
+
+    Args:
+        **kwargs: passed to `read_csv`
+    """
     data_dir = signedmax_orn_dff_dir / 'validation2_signed-max'
     csv_path = data_dir / 'ij_certain-roi_stats.csv'
     df = read_csv(csv_path, **kwargs)
@@ -3701,18 +4038,22 @@ remy_fly_binary_response_fname: str = 'df_stim_responders_from_peak.csv'
 def load_remy_fly_binary_responses(fly_sparsity_path: Path,
     acq_ledger: Optional[pd.DataFrame] = None, *, reset_index: bool = True,
     _seen_date_fly_combos=None) -> pd.DataFrame:
-    # TODO check row/col is correct
-    # TODO update doc? is it actually reading netcdf? loooks like i'm reading csvs...
-    """Loads single fly NetCDF file to boolean (cell row X odor column) DataFrame.
+    """Loads single fly (tab separated) CSV to boolean (cell X odor) DataFrame.
 
     Args:
+        fly_sparsity_path: CSV in a directory named like '<date>__fly<NN>__...'
+
         acq_ledger: if passed in, has `index.names == remy_fly_cols`, and has
             `remy_fly_id in df.columns`
 
-            maps ['date', 'fly_num'] to int 'acq' (`remy_fly_id`) (0-indexed).
+            maps ['date', 'fly_num'] to int 'acq' (`remy_fly_id`) (0-indexed), which is
+            added as a row index level.
 
         reset_index: if True, only return int 'cell' index. otherwise, retains all
-            metadata columns in source CVS (i.e. row index names in the DataFrame)
+            metadata columns in source CSV (i.e. row index names in the DataFrame)
+
+        _seen_date_fly_combos: internal use only (set of (date, fly_num) loaded so far,
+            to check no fly is loaded twice. updated in place.)
     """
     fly_dirname = fly_sparsity_path.parent.name
 
@@ -3823,8 +4164,14 @@ def load_remy_fly_binary_responses(fly_sparsity_path: Path,
 
 _remy_megamat_kc_binary_responses = None
 def load_remy_megamat_kc_binary_responses() -> pd.DataFrame:
-    # TODO doc
+    """Loads Remy's binarized megamat KC responses, for each fly.
 
+    Result is cached, so later calls return the same object (which should not be
+    modified).
+
+    Returns boolean DataFrame of cells X odors, with `remy_fly_id` ('acq') and 'cell'
+    row index levels, and megamat odor names (without concentrations) as columns.
+    """
     global _remy_megamat_kc_binary_responses
     if _remy_megamat_kc_binary_responses is not None:
         return _remy_megamat_kc_binary_responses

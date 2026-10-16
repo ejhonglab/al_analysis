@@ -17,6 +17,8 @@ from suite2p.io import compute_dydx
 
 
 def main():
+    """Loads and re-merges suite2p outputs of a test recording, for inspection.
+    """
     #thorimage_dir = '/home/tom/2p_data/raw_data/2021-05-05/1/ehex_and_1-6ol'
     #analysis_dir = thorimage_dir
     thorimage_dir = '/mnt/d1/2p_data/raw_data/2021-04-28/1/butanal_and_acetone'

@@ -10,6 +10,8 @@ import seaborn as sns
 # al_analysis sensitivity analysis plots
 
 def main():
+    """Tests how matplotlib log y-scale (w/ `nonpositive='mask'`) affects y-limits.
+    """
     #xs = np.linspace(-1, 3, num=5)
     #ys = [10**x for x in xs]
     #xs = [1, 2, 3]

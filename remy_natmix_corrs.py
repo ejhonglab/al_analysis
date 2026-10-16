@@ -8,6 +8,8 @@ from hong2p.viz import matshow
 
 
 def main():
+    """Plots mean (across flies) KC correlations from Remy's kiwi / control data.
+    """
     # TODO document (at least) when i got this data, which flies of hers it contains.
     # (probably in data/README.md)
     da = xr.load_dataarray('from_remy/natmix/da_corrs.nc')

@@ -12,6 +12,8 @@ from al_analysis.al_analysis import diverging_cmap, plot_corr
 
 
 def main():
+    """Plots correlations of Ann's model KC outputs (binarized) and Hallem ORN data.
+    """
     ann_output_dir = Path('data/ann_model_outputs')
     # was originally operating directly out of here
     #ann_output_dir = Path.home() / 'Documents/MATLAB'

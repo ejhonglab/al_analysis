@@ -11,6 +11,11 @@ from al_analysis.al_util import data_root, read_csv
 
 # TODO replace this whole script w/ test(s)?
 def main():
+    """Checks current ORN / PN response CSVs match those sent to Remy for the paper.
+
+    Only some pebbled (ORN) fly-ROIs are expected to differ (and are checked against a
+    hardcoded list).
+    """
     # the following files in this directory should be commited to this repo:
     # GH146_ij_certain-roi_stats.csv
     # GH146_ij_certain-roi_stats.p

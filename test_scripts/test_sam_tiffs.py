@@ -8,6 +8,8 @@ from al_analysis import analysis2thorimage_dir
 
 
 def main():
+    """Converts raw data of an OK and a problematic recording of Sam's to TIFFs.
+    """
     tensor_path = Path('/mnt/tensor')
     sam_dir = tensor_path / 'Sam/Hong2P_Data/analysis_intermediates'
 

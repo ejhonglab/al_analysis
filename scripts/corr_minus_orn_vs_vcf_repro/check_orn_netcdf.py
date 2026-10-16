@@ -7,6 +7,8 @@ import xarray as xr
 
 
 def main():
+    """Checks regenerated ORN RDM NetCDF matches the one in the current directory.
+    """
     nc_name = 'xrda_orn_stim_rdm_concat_mm.nc'
     # <xarray.DataArray (metric: 3, acq: 9, stim_row: 17, stim_col: 17)>
     # ...

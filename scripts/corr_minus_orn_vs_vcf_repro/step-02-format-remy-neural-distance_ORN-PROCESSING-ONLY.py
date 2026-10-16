@@ -54,6 +54,8 @@ label_map = {
 
 
 def preprocess_remy_distance_dataframe(df_distance):
+    """Returns copy of distance matrix, with concentrations and axis names removed.
+    """
     df_new = df_distance.rename(index=lambda x: x.split(" @ ")[0],
                                 columns=lambda x: x.split(" @ ")[0]
                                 )

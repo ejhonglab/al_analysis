@@ -158,14 +158,15 @@ al_util.verbose = True
 # the name of this function is the name of the variable made accessible to test using
 # this fixture. the name of the returned variable is not important.
 #
-# TODO rename to megamat_orn_deltas or something? (/ at least doc where this data came
-# from)
+# TODO rename to megamat_orn_deltas or something?
 # TODO add similar to load kiwi+control data (-> use [in tests that loop over
 # MODEL_KW_LIST, in additional to curr megamat orn_deltas?])
 # TODO do something to check output of this is never mutated (copy to module level, and
 # check against that? too expensive?) (check on completion of all tests, that this
 # fixture is still giving same value as if computed anew?)
 def orn_deltas() -> pd.DataFrame:
+    """Returns committed megamat ORN spike deltas (see `megamat_orn_deltas`).
+    """
     return megamat_orn_deltas()
 
 
@@ -495,6 +496,9 @@ def test_vector_thr(orn_deltas):
 
 
 def test_homeostatic_thrs(orn_deltas):
+    """Tests `homeostatic_thrs=True` gives per-KC thresholds, that can be fixed to
+    reproduce same outputs.
+    """
     ret = _fit_mb_model(orn_deltas=orn_deltas, homeostatic_thrs=True)
     responses, spike_counts, wPNKC, params = ret
 
@@ -735,7 +739,11 @@ def test_spatial_wPNKC_equiv(orn_deltas):
 # having to pass spike_counts in for that?)
 def get_pks_and_thr(params: ParamDict, spike_counts: pd.DataFrame
     ) -> Tuple[Optional[pd.DataFrame], pd.Series]:
-    """
+    """Returns KC peak responses (`rv.kc.pks`) and thresholds (`rv.kc.thr`).
+
+    `params` must have 'rv' (from `return_olfsysm_vars=True`). Outputs are indexed like
+    `spike_counts`.
+
     Returned pks will be None if model had fixed threshold pre-specified, rather than
     tuning to find threshold.
     """
@@ -756,13 +764,11 @@ def get_pks_and_thr(params: ParamDict, spike_counts: pd.DataFrame
 # parameterized version of these tests? (yes, pass -q/--quiet)
 @pytest.mark.parametrize('kws', MODEL_KW_LIST, ids=format_model_params)
 def test_fixed_inh_params(tmp_path, orn_deltas, kws):
-    # TODO regarding last part of doc: are we really only "typically" hardcoding thr for
-    # those calls, or always?
     """
     Tests that outputs of `fit_mb_model` calls, where KC thresholds and APL<->KC weights
     are tuned to a target response rate, can be recapitulated by similar calls that also
-    set the APL<->KC weight parameters (and typically also the KC threshold parameters,
-    either `mp.kc.fixed_thr` or `rv.kc.thr`).
+    set the APL<->KC weight parameters (and also the KC thresholds, via `fixed_thr`,
+    which sets either `mp.kc.fixed_thr` or `rv.kc.thr`).
 
     Only calls `fit_mb_model`
     """
@@ -887,7 +893,12 @@ def test_fixed_inh_params(tmp_path, orn_deltas, kws):
 # TODO TODO maybe it makes sense if only used to compare CSV to returned (but not CSV to
 # pickle)
 def get_expected_missing_csv_keys(model_kws: ParamDict) -> Tuple[str]:
-    # TODO doc (w/ explanation as to why each expected to be missing)
+    """Returns keys expected in returned params, but not in param CSV, for a model.
+
+    These are APL weights that are vectors (rather than scalars) for models with
+    `model_kws`, which are filtered by `filter_params_for_csv` (and saved to separate
+    files).
+    """
     # TODO go based on type of value for each? shouldn't need any other params. these
     # should all be np.arrays or series. probably all series?
     # TODO and assert all other values are simple types (that can be round tripped
@@ -921,10 +932,15 @@ def assert_param_csv_matches_returned(model_output_root: Path, param_dict: Param
     ) -> None:
     """Asserts 'params.csv' file contents matches dict `fit_and_plot_mb_model` returns
 
+    Saved params are loaded via `read_params` (so from JSON alongside CSV, if present).
+
     Args:
         model_output_root: as passed to `fit_and_plot_mb_model`
 
         param_dict: as returned from `fit_and_plot_mb_model`
+
+        expected_missing_csv_keys: keys allowed to be in `param_dict` but not saved
+            params (in addition to any with DataFrame / Series values)
     """
     assert model_output_root.is_dir()
 
@@ -1085,6 +1101,8 @@ def get_latest_reference_output_dir() -> Path:
         'was generate_reference_outputs_for_repro.py run?'
 
     def sort_key(path: Path) -> Tuple[str, int]:
+        """Returns (date, N) for dir named like 'YYYY-MM-DD[.N]' (N=-1 if absent).
+        """
         assert path.is_dir()
 
         name = path.name
@@ -1137,14 +1155,15 @@ def get_latest_reference_output_dir() -> Path:
 # TODO is request (magic variable w/ metadata about context test called from) name
 # available by default, or need to mark fn as a @pytest.fixture to get it?
 def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
-    """
+    """Tests `fit_and_plot_mb_model` outputs match reference outputs from a prior run.
+
     NOTE: input (reference prior outputs) for a given parametrization of this test
     should be a directory named the same as the part of the test ID within brackets (the
     part generated by `format_model_params`).
 
     All reference outputs are saved under a date-stamped (and numbered within-day, if
     needed, to avoid duplicates) subdirectory of `reference_output_root`, generated by a
-    prior run of `./.generate_reference_outputs_for_repro.py`. This test will use only
+    prior run of `test/generate_reference_outputs_for_repro.py`. This test will use only
     outputs from the latest subdirectory of `reference_output_root`.
     """
     plot_root = tmp_path
@@ -1228,9 +1247,19 @@ def test_fitandplot_repro(tmp_path, orn_deltas, kws, request):
     run=False
 )
 def test_connectome_APL_repro(orn_deltas):
-    # TODO doc purpose of test
-    # TODO doc how to generate test data for this (+ move to script, along w/ other test
-    # data generation)
+    """Tests `use_connectome_APL_weights=True` outputs match committed outputs.
+
+    Checks KC peak responses / thresholds (see `get_pks_and_thr`) and spike counts. Then
+    checks that setting all APL weights to 0 (via `_wAPLKC` / `_wKCAPL`) gives the same
+    peak responses / thresholds, but different spike counts.
+
+    Test data (under `test_data_dir / 'connectome_APL_repro'`) was saved by
+    `test_fixed_inh_params` (with `return_olfsysm_vars` and `save_pks_and_thr` set True
+    there), except for `unscaled_per-KC_w[APLKC|KCAPL].csv`, which were saved from a
+    `connectome_APL_weights` call with the same arguments.
+    """
+    # TODO move generation of test data for this to a script, along w/ other test data
+    # generation
 
     kws = dict(use_connectome_APL_weights=True)
 
@@ -1362,6 +1391,10 @@ def test_equalize_kc_type_sparsity(tmp_path, orn_deltas):
 # TODO TODO TODO fix (broken as of 2026-02-13)
 # assert (sc1[~mask.values] <= sc2[~mask.values]).all().all()
 def test_multiresponder_APL_boost(orn_deltas):
+    """Tests `multiresponder_APL_boost` scales wAPLKC of (only) masked KCs.
+
+    Other APL weights / scales should be unchanged.
+    """
     # ipdb> mask
     # kc_id
     # 300968622     False
@@ -1511,11 +1544,11 @@ def test_hemibrain_paper_repro(tmp_path):
     committed outputs).
 
     `tmp_path` is a pytest fixture for a temporary path. Will be saved under a subdir of
-    `/tmp` that pytest creates (currently under `/tmp/pytest-of-<user>` for me).
-    Contents would by default be preserved (until `/tmp` is cleared by restarting), but
-    I've configured pytest (via `pyproject.toml`) to remove each of these after each
-    test finishes (as contents can be quite large in total; enough to cause disk space
-    issues).
+    `/tmp` that pytest creates (currently under `/tmp/pytest-of-<user>` for me, or under
+    each tox env's tmp dir, when run via tox). Contents would by default be preserved
+    (for the last few runs), but I've configured pytest (via `pyproject.toml`) to remove
+    them at the end of each pytest run (as contents can be quite large in total; enough
+    to cause disk space issues).
     """
     orn_deltas = paper_megamat_orn_deltas()
 
@@ -1762,6 +1795,8 @@ def test_uniform_paper_repro(tmp_path):
 
 
 def test_hemibrain_matt_repro():
+    """Tests hemibrain model (tuned on Hallem) reproduces Matt's committed responses.
+    """
     # TODO delete (may want to commit some other things from here first tho)
     #matt_data_dir = Path('../matt/matt-modeling/data')
     #
@@ -1816,6 +1851,8 @@ def test_hemibrain_matt_repro():
 
 
 def test_step_around():
+    """Tests `step_around` recreates paper wAPLKC steps, and works w/ vector input.
+    """
     # TODO do i want absolute step size the same for each or (what i assume is current
     # behavior of) same relative step size? something else?  (prob happy enough w/
     # "relative" as it is)
@@ -1896,7 +1933,11 @@ def test_step_around():
 # tuning? or would that degrade test? or do i actually need that for test to work
 # (hopefully not?)?
 def test_btn_expansion(tmp_path, orn_deltas, kws):
-    # TODO doc
+    """Tests `Btn_separate=True` (splitting glomeruli into boutons) gives same outputs.
+
+    wPNKC should have `Btn_num_per_glom` times as many columns, summing (within each
+    glomerulus) to wPNKC without bouton expansion.
+    """
 
     # TODO delete this? should be default anyway
     connectome = 'hemibrain'
@@ -2033,7 +2074,13 @@ def test_btn_expansion(tmp_path, orn_deltas, kws):
 
 def _rerun_with_certain_apl_weights_0(mp: osm.ModelParams, rv: osm.RunVars,
     to_zero: Union[str, List[str]], *, regen: bool = False) -> float:
-    """
+    """Re-runs KC sims with APL weights in `to_zero` set to 0 (restored after).
+
+    Args:
+        to_zero: name(s) of weights (in `APL_WEIGHT_NAMES`), e.g. 'wAPLKC'
+
+        regen: passed to `osm.run_KC_sims` (also disables APL weight tuning, if True)
+
     Returns average (binarized) response rate.
     """
 
@@ -2082,6 +2129,13 @@ def _rerun_with_certain_apl_weights_0(mp: osm.ModelParams, rv: osm.RunVars,
 # stuff? wd20?
 @pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
 def test_preset_series_weights(tmp_path, orn_deltas, kws):
+    """Tests presetting vector APL weights (and scalar scales) reproduces outputs.
+
+    Weights are passed as Series (via `_wAPLKC` / `_wKCAPL` / `_wAPLPN` / `_wPNAPL`)
+    from `connectome_APL_weights` (normalized to mean 1). Also checks that zeroing /
+    scaling down KC<>APL or PN<>APL weights changes response rates in expected
+    directions.
+    """
     # NOTE: this test body originally copied from (non-working) precalc_weights=True
     # path of apl_weights fixture
 
@@ -2456,6 +2510,10 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
 # vectors initialized in params)
 # TODO separate fixture for just the weights later?
 def apl_weights(orn_deltas, request):
+    """Returns `(fit_mb_model outputs, model kwargs)`, for kwargs in `request.param`.
+
+    Outputs include olfsysm `rv` / `mp` in params (`return_olfsysm_vars=True`).
+    """
     # copying, since modified below, and same dict is shared across parametrizations of
     # tests using this fixture (so 'sp_lr_coeff' would otherwise already be added, for
     # second test using this fixture w/ same params)
@@ -2574,6 +2632,9 @@ def apl_weights(orn_deltas, request):
     indirect=['apl_weights']
 )
 def test_apl_weights_osm(apl_weights):
+    """Tests olfsysm APL weights (scaled / unscaled) match returned weights, and that
+    zeroing each set of APL weights (directly in olfsysm) increases response rate.
+    """
     # TODO make sure this test disables all plotting in calls it makes, or at least any
     # that uses sns/scipy, so we can remove that import (to the extent it remains
     # incompatible w/ setting PYTHONMALLOC=malloc for certain debug tools)
@@ -2786,6 +2847,11 @@ def test_apl_weights_osm(apl_weights):
     indirect=['apl_weights']
 )
 def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
+    """Tests fixing thresholds / APL weights (from tuned outputs) reproduces outputs.
+
+    Rest of test (setting PN<>APL weights to 0 via `fit_mb_model` kwargs) is unfinished,
+    and currently only prints response rates (after a `breakpoint()`).
+    """
     # NOTE: apl_weights fixture currently also returns kws, for the convenience of this
     # test
     # TODO otherwise, pass BOUTON_MODEL_KW_LIST twice in parametrize, for apl_weights
@@ -2952,6 +3018,13 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
 # TODO also one w/o claws?
 @pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
 def test_feedforward_indexing(orn_deltas, kws):
+    """Tests consistency of feedforward (ORN -> PN -> bouton -> claw -> KC) dynamics.
+
+    With no KC spiking or APL inhibition, checks PN dynamics differ across glomeruli
+    (where inputs differ), bouton / claw dynamics equal PN dynamics of their glomerulus,
+    claw dynamics equal wPNKC-weighted bouton dynamics, and KC Vm can be recreated from
+    claw dynamics summed within each KC.
+    """
     responses, _, wPNKC1, params = _fit_mb_model(orn_deltas=orn_deltas,
         return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
         # setting threshold high enough that no KCs should spike
@@ -3227,6 +3300,13 @@ def test_feedforward_indexing(orn_deltas, kws):
 
 @pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
 def test_apl_indexing(orn_deltas, kws):
+    """Tests consistency of APL input / output dynamics with weights and other dynamics.
+
+    Checks APL input currents from claws (`Is_from_kcs`) and boutons (`Is_from_pns`)
+    can be recreated from claw / bouton dynamics and APL input weights, APL dynamics
+    can be recreated from those currents, and that APL inhibition only decreases
+    bouton / claw activities (which are rectified at 0).
+    """
     _, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
         return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
         # no spikes at fixed_thr of 300. and 200... kc_spont_in.max() == 188
@@ -3462,6 +3542,11 @@ def test_apl_indexing(orn_deltas, kws):
 
 @pytest.mark.parametrize('scaling_method', ['to-avg-max', None])
 def test_scale_dff2spiking(tmp_path, scaling_method):
+    """Tests dF/F -> spiking model fit on committed data can be saved and re-used.
+
+    Estimated spike deltas (for megamat flies) from re-using saved model
+    (`use_cache=True`) should match those from the initial fit.
+    """
     # TODO also (/only) test under tmp_path? currently will write to dir of committed
     # outputs (prob don't want, especially in a test)
     # TODO actually check anything on output?
@@ -3636,6 +3721,8 @@ def test_scale_dff2spiking(tmp_path, scaling_method):
 
 # TODO mark slow
 def test_model_mb_responses(tmp_path):
+    """Tests `model_mb_responses` runs on kiwi/control dF/F data.
+    """
     # TODO delete here (but use in some other test. this one needs dF/F, not spike
     # delta input tho)
     #orn_deltas = natmix_orn_deltas()
@@ -3661,6 +3748,8 @@ def test_model_mb_responses(tmp_path):
 
 # TODO parametrize? over what? at least BOUTON_MODEL_KWS?
 def test_n_spikes_for_response(orn_deltas):
+    """Tests `n_spikes_for_response=2` defines responses, and gives lower threshold.
+    """
     n_spikes_for_response = 2
     ret = _fit_mb_model(orn_deltas=orn_deltas,
         # TODO fix so i can actually disable apl tuning by setting this flag
@@ -3716,6 +3805,10 @@ assert len(wPNKC_param_set) == len(kws_producing_diff_wPNKC), \
 # would also give tests more clear names.
 @pytest.mark.parametrize('kws', kws_producing_diff_wPNKC, ids=format_model_params)
 def test_claw2bouton_from_wPNKC(kws):
+    """Tests `claw2bouton_from_wPNKC` runs on wPNKC from each connectome config.
+
+    Does not currently check outputs.
+    """
     # TODO delete. handled by assertion above that pn2kc_connections is not specified
     #
     # currently, connectome_options={'hemibrain', 'fafb-left', 'fafb-right'}
@@ -3836,6 +3929,8 @@ def test_kc_data_loss():
 
 
 def _kc_simulator_supported(kws: ParamDict) -> bool:
+    """Returns whether `make_fixed_param_kc_simulator` supports model w/ `kws`.
+    """
     if kws.get('pn2kc_connections') in variable_n_claw_options:
         return False
 

@@ -68,6 +68,11 @@ def trace_data(odor_and_frame_metadata):
 # TODO actually test compute_trial_stats
 
 def test_trial_response_traces(trace_data):
+    """Tests frames / ROIs of `trial_response_traces` output for each trial.
+
+    Tested for all combinations of `zscore` and `keep_pre_odor`. Also checks output is
+    same as `delta_f_over_f`, when `zscore=False`.
+    """
     # trial_response_traces doesn't actually use odor_lists (and its current use of
     # optional odor_index= kwarg is limited)
     traces, odor_lists, bounding_frames = trace_data

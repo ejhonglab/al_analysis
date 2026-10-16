@@ -36,11 +36,13 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
 
     - # of flies, and their 'date' + 'fly_num' identifiers (numbers should be unique
       within each day), with a separate list of any flies that are now marked for
-      exclusion in metadata Google Sheet.
+      exclusion in metadata Google Sheet (and any flies not in that sheet).
 
     - # of unique odors per panel, and a list of odors in each
 
-    - # of trials (assumed to be same for each odor?)
+    - # of trials (asserted to be same for each odor)
+
+    - # of uncertain glomeruli (by name) per fly, if there are any
 
     Prints somewhat less if `verbose=False`.
     """
@@ -163,6 +165,11 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
 sep_line = '#' * 88
 
 def summarize_old_panel_csvs(*, verbose=True):
+    """Runs `summarize_antennal_data` on old per-panel megamat and validation2 CSVs.
+
+    CSVs are expected at `pebbled_6f/old/<panel>_ij_certain-roi_stats.csv` (relative to
+    current directory). al_analysis.py hasn't written CSVs with these names since ~2023.
+    """
     csv_dir = Path('pebbled_6f/old')
 
     for i, panel in enumerate(('megamat', 'validation2')):
@@ -188,9 +195,11 @@ def summarize_old_panel_csvs(*, verbose=True):
 
 
 def csvinfo_cli():
-    # TODO does editable install work? doc either way
-    """
-    CLI install specified via `pyproject.toml`
+    """Summarizes (and optionally plots) a CSV of responses, as loaded by `read_csv`.
+
+    Installed as `csvinfo` command (via `[project.scripts]` in `pyproject.toml`), which
+    should also be available with editable installs. If no CSV is passed, summarizes
+    old per-panel CSVs (see `summarize_old_panel_csvs`).
     """
     parser = argparse.ArgumentParser()
     # TODO include message about what happens by default if not passed
@@ -208,6 +217,8 @@ def csvinfo_cli():
     verbose = not args.quiet
 
     def parse_cli_plot_kw_str(plot_kw_str: str) -> Dict[str, Any]:
+        """Parses -p value like 'vmin=-0.5,vmax=1.5' into dict of name -> float.
+        """
         parts = plot.split(',')
 
         cli_plot_kws = dict()
@@ -345,6 +356,8 @@ def csvinfo_cli():
 # output of lines i don't care to see in the diff (e.g. 'loading data <x>', 'CSV data
 # matches <x>', etc)
 def csvdiff_cli():
+    """Compares two CSVs of responses (not yet implemented. drops into debugger).
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('csv1', type=Path, help='path to CSV to summarize')
     parser.add_argument('csv2', type=Path, help='path to CSV to summarize')

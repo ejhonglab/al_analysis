@@ -21,6 +21,10 @@ from al_analysis.mb_model import (fit_mb_model, MODEL_KW_LIST, megamat_orn_delta
 
 
 def main():
+    """Benchmarks NetCDF IO for model `claw_sims`, with several compression settings.
+
+    Writes a summary to `xarray_netcdf_io_bench.csv`, in current directory.
+    """
     parser = ArgumentParser(description='will save/load model claw_sims to NetCDF file '
         'in current path, to benchmark xarray IO, including with different compression '
         'options'
@@ -79,6 +83,11 @@ def main():
 
     final_pbar_position = 2
     def benchmark_write(arr: xr.DataArray, *, n_writes: int = 3, **kwargs) -> float:
+        """Returns mean time (in seconds) to write `arr` to `nc_path`.
+
+        Args:
+            **kwargs: passed to `save_dataarray`
+        """
         print(f'benchmarking writes {kwargs=}')
         last = time.time()
         write_times = []
@@ -98,6 +107,12 @@ def main():
 
     def benchmark_load(use_xr_load: bool = False, n_loads: int = 3,
         silent: bool = False) -> float:
+        """Returns mean time (in seconds) to load `nc_path`.
+
+        Args:
+            use_xr_load: if True, uses `xr.load_dataarray` (instead of `hong2p.xarray`
+                `load_dataarray`, which may defer loading)
+        """
         if not silent:
             if not use_xr_load:
                 print('benchmarking load with my hong2p.xarray.load_dataarray '

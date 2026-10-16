@@ -32,6 +32,12 @@ model_tune_kws = [
 
 
 def main():
+    """Runs megamat-tuned models on synthetic odors activating select glomeruli.
+
+    Synthetic odors activate one of several glomeruli (or VA6 mixed with another), and
+    diagnostic odors are also included. Saves and plots per-odor response stats for each
+    model.
+    """
     plot_root = Path('kai_grant_model_outputs').resolve()
     plot_root.mkdir(exist_ok=True)
 
@@ -357,6 +363,11 @@ def main():
 
     def plot_panel_stats_across_models(df: pd.DataFrame, panel: str, suffix: str = ''
         ) -> None:
+        """Plots + saves per-odor model response stats (one column per stat).
+
+        Args:
+            suffix: appended to plot name
+        """
         g = sns.catplot(data=df, col='stat', col_order=col_order, sharey=False,
             hue='model', x='odor', y='value', kind='point', linestyle='none', alpha=0.3
         )

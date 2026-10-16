@@ -19,6 +19,11 @@ from al_analysis.al_util import plot_n_per_odor_pair, sort_odors, read_json, to_
 
 
 def main():
+    """Processes Remy's tables of stimuli / odor panels, for paper tables.
+
+    Plots # of flies per odor and glomerulus (ORN data), and converts odor PubChem CIDs
+    to chemfig TeX (and molecule drawings), for odors in megamat / validation2 panels.
+    """
     parser = ArgumentParser()
     parser.add_argument('-i', '--ignore-cache', action='store_true', help='will ignore '
         'CID -> chemfig TeX cache'

@@ -53,6 +53,11 @@ def parse_name(odor_str):
 
 
 def compute_corr(df):
+    """Returns odor X odor correlation of `df`, with concentrations stripped from odors.
+
+    If `df` columns have `fly_cols` levels, correlations are averaged across flies (via
+    `mean_of_fly_corrs`).
+    """
     if all(x in df.columns.names for x in fly_cols):
         # TODO check computing mean first (across trials) produces same output of
         # mean_of_fly_corrs (move to unit test?)
@@ -79,6 +84,14 @@ def gloms(df):
 
 
 def plot_orn_vs_pn(mean_orn, mean_pn, plot_dir, *, title_suffix=''):
+    """Plots + saves mean ORN and PN responses side by side (by glomerulus and by odor).
+
+    Args:
+        mean_orn/mean_pn: mean responses of shape (# odors, # glomeruli). `mean_pn`
+            glomeruli must be a subset of `mean_orn` glomeruli.
+
+        title_suffix: appended to plot titles
+    """
     mean_pn_like_orn = mean_pn.reindex(columns=mean_orn.columns)
     assert mean_pn_like_orn.loc[:, mean_pn.columns].equals(mean_pn)
     assert mean_pn_like_orn.dropna(how='all', axis='columns').equals(mean_pn)
@@ -145,6 +158,18 @@ def plot_orn_vs_pn(mean_orn, mean_pn, plot_dir, *, title_suffix=''):
 
 def test_pearson_of_pearsons_are_equal(a: pd.DataFrame, b: pd.DataFrame,
     a_name: str, b_name: str, plot_dir: Path):
+    """Unfinished: computes per-fly odor-pair correlations of `a` / `b`, then `ipdb`.
+
+    Intended to test whether Pearson's R between mean correlations of `a` and `b`
+    differs from what would be expected by chance.
+
+    Args:
+        a/b: responses (odor rows X fly-ROI columns)
+
+        a_name/b_name: labels for `a` / `b`
+
+        plot_dir: currently unused
+    """
     # TODO TODO ever want to pass differences wrt vcf corr ser as input? or need to pass
     # that separately, so we can compute diff for each resample (which each has their
     # own mean corr ser)?
@@ -153,6 +178,8 @@ def test_pearson_of_pearsons_are_equal(a: pd.DataFrame, b: pd.DataFrame,
 
     sample_fly_corrs = []
     def _add_sample_fly_corrs(df: pd.DataFrame, label: str):
+        """Appends per-fly odor-pair correlations of `df` to `sample_fly_corrs`.
+        """
         # TODO assert we aren't averaging over any other variations in index metadata?
         #
         # should just be averaging over 'repeat' and maybe some levels that don't
@@ -233,6 +260,8 @@ def test_pearson_of_pearsons_are_equal(a: pd.DataFrame, b: pd.DataFrame,
 
 
 def main():
+    """Plots ORN / PN / VCF (chemical embedding) correlations, and compares them.
+    """
     # TODO refactor to share w/ al_analysis.py (or at least natmix_data/analysis.py)?
     # both use this machinery (tho each adds their own additional args)
     parser = argparse.ArgumentParser()

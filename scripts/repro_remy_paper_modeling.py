@@ -19,6 +19,10 @@ from al_analysis.mb_model import (model_mb_responses, paper_megamat_orn_deltas,
 
 
 def main():
+    """Checks paper dF/F inputs, spike deltas, and model outputs can be reproduced.
+
+    Work in progress (ends in `breakpoint()`). See CLI `--help` for options.
+    """
     parser = ArgumentParser()
     parser.add_argument('-i', '--ignore-existing', action='store_true', help='will '
         're-run all models, regardless of whether outputs exist for them'

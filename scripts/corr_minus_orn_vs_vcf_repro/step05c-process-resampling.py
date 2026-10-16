@@ -76,6 +76,11 @@ abbrev_pairs = list(combinations(kc_ord, 2))
 
 def get_resampling_filename(n_iter: int, n_odor_pairs: int, with_replacement: bool,
                             filetype: str) -> str:
+    """Returns filename of saved resampling outputs.
+
+    Args:
+        filetype: 'xarray' (for .nc) or 'pandas' (for .parquet)
+    """
     if filetype == 'xarray':
         filename = (f"xrds_resampled_{n_odor_pairs:d}_iter{n_iter:05d}_"
                     f"{'with_replacement' if with_replacement else 'no_replacement'}"

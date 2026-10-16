@@ -42,6 +42,14 @@ model_tune_kws = [
 #]
 
 def check_local_megamat_spike_deltas_match(df: pd.DataFrame) -> None:
+    """Checks megamat spike deltas match those in local `al_analysis.py` model outputs.
+
+    Only checks if the expected local megamat model output directory exists. Warns if
+    the most recent spike deltas did not include megamat data.
+
+    Args:
+        df: currently unused
+    """
     # TODO factor out this checking (-> share w/ other scripts, if i want)
     # TODO TODO also fix it first to take df and actually check that input against below
     repo_root = Path('~/src/al_analysis').expanduser().resolve()
@@ -104,6 +112,12 @@ def check_local_megamat_spike_deltas_match(df: pd.DataFrame) -> None:
 
 
 def main():
+    """Runs megamat-tuned models on George's valence panel ORN data, and plots results.
+
+    George's data is scaled to roughly match the range of my estimated spike deltas.
+    Saves per-odor mean response stats (overall, and by KC type) for each model, and
+    plots of those (for subsets of odors too).
+    """
     parser = ArgumentParser()
     parser.add_argument('-c', '--use-cache', action='store_true', help='uses cache for '
         'all model outputs, when available. this may mean no models are re-run.'
@@ -356,6 +370,10 @@ def main():
     stat_names = list(df.columns)
 
     def postprocess_and_tidy_df(df: pd.DataFrame) -> pd.DataFrame:
+        """Returns tidy per-odor model stats (`stat_names` columns melted into 'stat').
+
+        Also abbreviates model IDs, and strips concentrations from odors.
+        """
         df = df.reset_index()
         df.model = df.model.apply(abbrev_model_id)
 
@@ -456,6 +474,16 @@ def main():
     def plot_panel_stats_across_models(df: pd.DataFrame, panel: str, suffix: str = '',
         title_suffix: str = '', mean_num_spikes_max: float = 1.5,
         mean_response_rate_max: float = response_rate_plot_max) -> None:
+        """Plots + saves per-odor model response stats (one column per stat).
+
+        Args:
+            df: tidy stats (see `postprocess_and_tidy_df`). If it has a `KC_TYPE`
+                column, each KC type is plotted in a separate row.
+
+            suffix/title_suffix: appended to plot name / title
+
+            mean_num_spikes_max/mean_response_rate_max: y-axis max for those stats
+        """
 
         df = df.copy()
         df['connectome_apl'] = df.model.str.contains('_connectome-APL')

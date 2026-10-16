@@ -13,6 +13,8 @@ from hong2p import viz
 diverging_cmap = plt.get_cmap('RdBu_r')
 
 def main():
+    """Plots `s2.p` (sensitivity analysis correlations) via `viz.matshow` w/ group text.
+    """
     # TODO say what this is at least (+ maybe convert to another format and commit
     # that?)
     s2 = pd.read_pickle('s2.p')

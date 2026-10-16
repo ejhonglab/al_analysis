@@ -9,6 +9,11 @@ from shutil import copy2
 
 
 def main():
+    """Copies select plots from each sensitivity analysis subdirectory, grouped by plot.
+
+    Run from a `sensitivity_analysis` directory. Each plot (e.g. 'corr.pdf') is copied
+    to a directory named for the plot, prefixed with name of the parameter subdirectory.
+    """
     for d in Path('.').glob('thr*_wAPLKC*'):
         print(d)
         assert d.is_dir()

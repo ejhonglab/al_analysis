@@ -32,6 +32,8 @@ from .conftest import test_data_dir
 # TODO some builtin pytest way of monkey patching module-level variables like this?
 @contextmanager
 def temporarily_set_al_util_var(var_name: str, tmp_value: Any):
+    """Context manager setting `al_util.<var_name>` to `tmp_value`, then restoring it.
+    """
     # assuming we don't need to copy / deepcopy or anything
     orig_value = getattr(al_util, var_name)
     setattr(al_util, var_name, tmp_value)
@@ -95,6 +97,8 @@ save_fn_name2suffix: Dict[str, str] = {
 df: pd.DataFrame = load_natmix_dff(warn_=False, verbose=False)
 
 def test_mean_of_fly_corrs():
+    """Tests `mean_of_fly_corrs` runs, on data with and without a panel level.
+    """
     # TODO use some other fn to drop these?
     # TODO want to try adding support for these to corr fns? may not...
     no_mixtures = df.loc[df.index.get_level_values('odor2') == solvent_str]
@@ -248,6 +252,13 @@ save_fn_name2extra_kws = dict()
 wrapped_fns = get_produces_output_wrapped_fns()
 @pytest.mark.parametrize('save_fn', wrapped_fns)
 def test_produces_output(tmp_path, save_fn):
+    """Tests behavior added by `@produces_output` to each wrapped save function.
+
+    Checks saving code context is recorded, that a 2nd save to the same path raises
+    `MultipleSavesPerRunException` (unless `multiple_saves_per_run_ok=True`), and that
+    with `al_util.check_outputs_unchanged` set, saving changed data raises
+    `RuntimeError` (while saving same data does not).
+    """
     # NOTE: save_fn.__name__ is still 'to_csv'/etc, as needed for some of below to work
     assert_wrapped_by_produces_output(save_fn)
 
@@ -363,6 +374,8 @@ def test_produces_output(tmp_path, save_fn):
 # save_fn_name2suffix)
 @pytest.mark.parametrize('save_fn', [savefig])
 def test_savefig(tmp_path, save_fn):
+    """Tests `savefig` has same behavior as other save fns (see `test_produces_output`).
+    """
     fn_name = save_fn.__name__
 
     suffix = save_fn_name2suffix[fn_name]

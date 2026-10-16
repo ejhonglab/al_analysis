@@ -34,6 +34,8 @@ def drop_silent_cells(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def df_triu(df: pd.DataFrame) -> pd.Series:
+    """Returns upper triangle (excluding diagonal) of odor X odor `df`, as a Series.
+    """
     # NOTE: w/ k=1 (in contrast to default k=0) this excludes the diagonal.
     # diagonal and below will now have values replaced w/ NaN
     triu = df.where(np.triu(np.ones(df.shape), k=1).astype(bool))
@@ -48,6 +50,8 @@ def df_triu(df: pd.DataFrame) -> pd.Series:
 
 
 def main():
+    """Compares my hemibrain / uniform model correlation distances to those from Anoop.
+    """
     # seems that anoop did NOT do this, at least for computing the correlations i'm
     # loading below
     #DROP_SILENT_CELLS = False

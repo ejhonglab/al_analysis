@@ -6,6 +6,8 @@ from hong2p.roi import ijroi_masks
 
 
 def main():
+    """Loads ImageJ ROIs (and masks) from test recording, for interactive inspection.
+    """
     test_dir = ('/mnt/d1/2p_data/analysis_intermediates/2021-04-28/1/'
         'butanal_and_acetone/'
     )

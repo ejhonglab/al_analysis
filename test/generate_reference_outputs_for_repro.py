@@ -3,8 +3,9 @@
 `test_mb_model.FITANDPLOT_MODEL_KW_LIST`, to capture the current behavior of the model
 (for each of those sets of parameters).
 
-These reference outputs (saved under `test_mb_model.reference_output_dir`) will be used
-by `test_mb_model.test_fitandplot_repro` to detect whether model behavior has changed?
+These reference outputs (saved under a new date-stamped subdirectory of
+`test_mb_model.reference_output_root`) will be used by
+`test_mb_model.test_fitandplot_repro` to detect whether model behavior has changed.
 """
 
 import argparse
@@ -40,6 +41,8 @@ from test_mb_model import (FITANDPLOT_MODEL_KW_LIST, QUICK_FITANDPLOT_MODEL_KW_L
 # (more appropriate place to do that? prob not? could refactor and also do in
 # model_mb_responses)
 def main():
+    """Generates reference outputs (see module docstring and CLI `--help`).
+    """
     # TODO TODO add argument for substring to match against test ID (use -k, like
     # pytest?)
     parser = argparse.ArgumentParser()

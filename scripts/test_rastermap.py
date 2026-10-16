@@ -6,6 +6,8 @@ from rastermap import Rastermap
 
 
 def main():
+    """Plots Rastermap-sorted spikes (from `spks.npy`), with a few Rastermap settings.
+    """
     # ipdb> spks.shape
     # (1830, 5500)
     # ipdb> set(spks.flat)

@@ -50,6 +50,17 @@ matt_convergence_data_dir = Path('MB-Convergence-Data_01-14-23')
 
 # TODO rename if i actually wanna keep using pvalues directly (instead of z-scores)
 def load_pn2kc_overconvergence_zscores(data_str, data_desc) -> pd.DataFrame:
+    """Returns PN->KC convergence p-values for each pair of glomeruli, from Matt's data.
+
+    Despite name, currently returns p-values (z-score code is disabled). Also prints
+    glomerulus names not shared with Hallem data.
+
+    Args:
+        data_str: name of data subdirectory (and prefix of '-result.csv' file in it)
+
+        data_desc: description of data (e.g. 'Hemibrain'), used in column name and
+            prints
+    """
     data_dir = matt_convergence_data_dir / data_str
 
     # From README.txt:

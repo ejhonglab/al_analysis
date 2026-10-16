@@ -23,6 +23,26 @@ from al_analysis.mb_model import (fit_and_plot_mb_model, connectome_wPNKC,
 def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, orn_deltas: pd.DataFrame,
     name2weights: ParamDict, kws: ParamDict, *, try_cache: bool = True,
     ignore_lr_cache: bool = False, checks: bool = False) -> None:
+    """Runs tuned model, then versions with wAPLKC boosted (10x) for multiresponder KCs.
+
+    Multiresponders are KCs responding to >=2 odors in the tuned model. Boosted versions
+    are run both with the boost applied before tuning (re-tuning APL weights), and after
+    (keeping tuned threshold and APL weight scales), each saved under the tuned model's
+    output directory.
+
+    Args:
+        name2weights: APL weight kwarg names (e.g. '_wAPLKC') -> connectome weights
+            (normalized, not scaled by tuning), or None for weights not in this model
+
+        kws: passed to `fit_and_plot_mb_model`
+
+        try_cache: passed to `fit_and_plot_mb_model`
+
+        ignore_lr_cache: if True, `try_lr_cache=False` is passed to
+            `fit_and_plot_mb_model`
+
+        checks: if True, also checks outputs can be reproduced with preset weights
+    """
 
     # TODO delete. just to regen corr plots w/ different calculation
     kws = dict(kws)
@@ -303,6 +323,10 @@ def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, orn_deltas: pd.Dat
 
 
 def main():
+    """Runs tuned and multiresponder-APL-boosted megamat models, for several models.
+
+    See `run_tuned_and_multireponsder_apl_boosted`, and CLI `--help` for options.
+    """
     parser = ArgumentParser()
     parser.add_argument('-c', '--use-cache', action='store_true', help='uses cache for '
         'all model outputs, when available. this may mean no models are re-run.'

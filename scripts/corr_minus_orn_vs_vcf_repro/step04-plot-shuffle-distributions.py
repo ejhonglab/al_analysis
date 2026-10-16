@@ -72,6 +72,11 @@ figure_folder.mkdir(exist_ok=True)
 # TODO refactor to share w/ other definitions of these in other scripts
 def get_resampling_filename(n_iter: int, n_odor_pairs: int, with_replacement: bool,
                             filetype: str) -> str:
+    """Returns filename of saved resampling outputs.
+
+    Args:
+        filetype: 'xarray' (for .nc) or 'pandas' (for .parquet)
+    """
     if filetype == 'xarray':
         filename = (f"xrds_resampled_{n_odor_pairs:d}_iter{n_iter:05d}_"
                     f"{'with_replacement' if with_replacement else 'no_replacement'}"
@@ -195,6 +200,8 @@ class ResampledDiffPlotter:
     df_spearman_diff: pd.DataFrame = field(init=False, default=None)
 
     def __attrs_post_init__(self):
+        """Loads resampling outputs, and computes Pearson / Spearman correlation diffs.
+        """
         self.df_resampled = load_resampling(self.n_iter, self.n_odor_pairs, self.with_replacement)
 
         self.df_pearson_diff = compute_resampled_space_corr_diffs(self.df_resampled,
@@ -206,6 +213,19 @@ class ResampledDiffPlotter:
                                                                    'spearman')
 
     def plot(self, resampling_fraction, plot_rows, diff_col_to_plot, space_metric, ci=90):
+        """Returns (fig, ax) w/ distributions of resampled correlation differences.
+
+        Args:
+            resampling_fraction: which resampling fraction to plot
+
+            plot_rows: 'space_row' values to plot (in order)
+
+            diff_col_to_plot: column (a final space name from `diff_space_info`) to plot
+
+            space_metric: 'pearson' or 'spearman'
+
+            ci: boxplot whiskers span this central percent of the data
+        """
         if space_metric == 'pearson':
             df_diffs = self.df_pearson_diff
         elif space_metric == 'spearman':

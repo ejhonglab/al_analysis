@@ -55,6 +55,8 @@ kc_stim_ord = [f"{item} @ -3" for item in kc_odor_ord]
 # %%
 
 def make_dataframes_from_xlsx(file):
+    """Returns (ORN terminal, PN bouton) DataFrames from sheets of xlsx `file`.
+    """
     # file = (data_root / "Remy-Data/projects/odor_space_collab"
     #             "/analysis_outputs/from_tom/data_from_tom(4).xlsx")
 
@@ -69,6 +71,8 @@ def make_dataframes_from_xlsx(file):
 
 
 def df_ori_2_dataarray(df_ori):
+    """Returns 2D ('row' X 'col') DataArray from `df_ori`, with index levels as coords.
+    """
     # fixed_index = df_ori.index.to_frame().convert_dtypes()
     # mi_row = pd.MultiIndex.from_frame(fixed_index)
     #
@@ -87,6 +91,10 @@ def df_ori_2_dataarray(df_ori):
 
 
 def fix_da_ori(da_ori, panel_name):
+    """Returns `da_ori` subset to `panel_name`, with coords cast to simple types.
+
+    Also drops 'is_pair' and 'odor2' coords, and converts 'date' to str.
+    """
     da_fixed = da_ori.drop_vars(['is_pair', 'odor2'])
 
     da_fixed = da_fixed.where(da_fixed.panel == panel_name, drop=True)
@@ -101,6 +109,11 @@ def fix_da_ori(da_ori, panel_name):
 
 
 def convert_xlsx_to_netcdfs(file):
+    """Returns (ORN, PN) DataArrays converted from xlsx `file`.
+
+    Despite name, does not currently write NetCDF files. NOTE: currently fails, as
+    `fix_da_ori` is called without its required `panel_name` arg.
+    """
     df_orn_ori, df_pn_ori = make_dataframes_from_xlsx(file)
 
     da_orn_ori = df_ori_2_dataarray(df_orn_ori)
@@ -129,6 +142,18 @@ def convert_xlsx_to_netcdfs(file):
 
 # TODO try using this fn instead of current code processing megamat17 data?
 def compute_orn_rdms(da_orn_trials_, da_orn_stim_, metric_list=None):
+    """Returns per-fly ORN RDMs (each a Dataset w/ one variable per metric).
+
+    Returns tuple of (trial RDMs, stim RDMs, block-averaged trial RDMs), each
+    concatenated across flies (along 'acq').
+
+    Args:
+        da_orn_trials_: ORN responses for each trial, with 'datefly' coord
+
+        da_orn_stim_: ORN responses for each stim (averaged across trials)
+
+        metric_list: distance metrics. Defaults to correlation / cosine / euclidean.
+    """
     if metric_list is None:
         metric_list = ['correlation', 'cosine', 'euclidean']
 
@@ -172,6 +197,11 @@ def compute_orn_rdms(da_orn_trials_, da_orn_stim_, metric_list=None):
 
 
 def invert_euc_dist_abs(da_euc, inf_2_nan=True):
+    """Returns inverse of Euclidean distances (normalized by max within each 'acq').
+
+    Args:
+        inf_2_nan: if True, infinite values (from 0 distances) are replaced with NaN
+    """
     dims = [d for d in da_euc.dims if d != 'acq']
     da_inv = 1 / (da_euc / da_euc.max(dim=dims))
 

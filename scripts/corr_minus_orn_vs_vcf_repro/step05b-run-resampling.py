@@ -474,6 +474,8 @@ cmap2 = plt.get_cmap('viridis_r')
 cmap2.set_under(under)
 
 def get_vlim(ser: pd.Series) -> Tuple[float, float]:
+    """Returns (vmin, vmax) as quantiles `qs` (module-level) of `ser`.
+    """
     assert len(qs) == 2
     qmin, qmax = qs
     assert qmin < qmax

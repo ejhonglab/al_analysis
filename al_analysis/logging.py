@@ -35,11 +35,11 @@ from hong2p.types import Pathlike
 # TODO delete multiprocessing kwarg if i don't ever really benefit from disabling it
 def init_logger(module_name: Optional[str], script_path: Pathlike, *,
     multiprocessing: bool = True, verbose: bool = False) -> logging.Logger:
-    """Logs sys.argv and future uncaught exceptions to file + stderr.
+    """Logs sys.argv to file, and future uncaught exceptions to file + stderr.
 
     Logs are saved to a logs/ directory (created if needed) at the same level as
     `script_path`, named with the same prefix (i.e. without file extension) as the
-    script.
+    script. Python executable is also logged, as is a clean exit (if there is one).
 
     Currently returns logger to log to same file, though I'd like if I could change to
     allowing future `logging.` calls to work (and recursively, w/ logging calls in
@@ -47,7 +47,9 @@ def init_logger(module_name: Optional[str], script_path: Pathlike, *,
 
     >>> log = init_logger(__name__, __file__)
 
-    If `verbose=True`, will print to stdout which file we are logging to.
+    If `verbose=True`, will print to stderr which file we are logging to.
+
+    If `multiprocessing=True`, also installs `multiprocessing_logging` handler.
     """
     # TODO rename to logger_name or name if i'm also sometimes hardcoding it (as in
     # plot_roi.py now)
