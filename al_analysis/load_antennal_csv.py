@@ -75,7 +75,8 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
     # the Hallem and Carlson (2006) data you might be familiar with measured signals
     # from ~half of these receptor types, with a different type of measurement.
     def print_n_glom_per_fly(df, desc=''):
-        n_glom_per_fly = df.groupby(fly_cols, axis='columns').apply(
+        # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+        n_glom_per_fly = df.T.groupby(level=fly_cols).apply(
             # NOTE: using len(... .unique(...)) instead of nunique b/c at least in one
             # case it seems nunique can be diff, and not what i expected (MUCH larger).
             #
@@ -83,7 +84,7 @@ def summarize_antennal_data(df: pd.DataFrame, verbose: bool = True) -> None:
             # 192
             # ipdb> df.index.unique('panel')
             # Index(['glomeruli_diagnostics', 'megamat', 'validation2'], ...)
-            lambda x: len(x.columns.unique('roi'))
+            lambda x: len(x.index.unique('roi'))
         )
         avg_n_glom = n_glom_per_fly.mean()
         print(f'number of {desc}glomeruli per fly (avg: {avg_n_glom:.1f}):\n'
@@ -272,8 +273,7 @@ def csvinfo_cli():
             fig, _ = plot_all_roi_mean_responses(trialmean_df, **kws)
             savefig(fig)
 
-            mean_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
-                ).mean()
+            mean_df = trialmean_df.T.groupby(level='roi', sort=False).mean().T
 
             vmin = cli_plot_kws.pop('vmin', mean_df.min().min())
             vmax = cli_plot_kws.pop('vmax', mean_df.max().max())
@@ -305,8 +305,9 @@ def csvinfo_cli():
             # all Nan), and we didn't need to specify for .mean() above
             # TODO maybe some columns/rows have only 1-3 non-nan? still, i assume this
             # doesn't actually drop them w/ numeric_only=True...
-            stddev_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
-                ).std(numeric_only=True)
+            stddev_df = trialmean_df.T.groupby(level='roi', sort=False).std(
+                numeric_only=True
+            ).T
 
             # since i (for some reason) needed numeric_only=True only for the std() call
             assert stddev_df.index.equals(mean_df.index)

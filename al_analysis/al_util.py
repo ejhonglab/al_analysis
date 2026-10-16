@@ -3292,8 +3292,7 @@ def count_n_per_odor_and_glom(df: pd.DataFrame, *, count_zero: bool = True
 
     # TODO might need level= here, for sort=False to work as expected?
     # (didn't have it where i copied it from)
-    n_per_odor_and_glom = df.notna().groupby(level='roi', sort=False,
-        axis='columns').sum()
+    n_per_odor_and_glom = df.notna().T.groupby(level='roi', sort=False).sum().T
 
     return n_per_odor_and_glom
 
