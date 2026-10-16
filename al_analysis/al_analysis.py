@@ -1233,8 +1233,11 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
     def drop_single_fly_redone_odors(fly_df):
         fly_df = fly_df.copy()
 
-        recording_has_odor = fly_df.groupby('thorimage_id', axis='columns',
-            sort=False).apply(lambda x: x.notna().any(axis='columns'))
+        # (groupby axis= kwarg removed in pandas 3.0, hence the transposing. sort=True
+        # matches old behavior: pandas 1.5 sorted groups for a MultiIndex level name key,
+        # despite sort=False. order determines final_recording below.)
+        recording_has_odor = fly_df.notna().T.groupby(level='thorimage_id', sort=True
+            ).any().T
 
         redone_odors = fly_df[recording_has_odor.sum(axis='columns') > 1].index
 
@@ -1312,8 +1315,10 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
     #
     # group_keys=False to preserve old behavior (and silence FutureWarning, after
     # upgrading pandas to 1.5.0 from 1.3.?)
-    df = df.groupby(['date','fly_num'], axis='columns', sort=False, group_keys=False
-        ).apply(drop_single_fly_redone_odors)
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    df = df.T.groupby(level=['date','fly_num'], sort=False, group_keys=False).apply(
+        lambda x: drop_single_fly_redone_odors(x.T).T
+    ).T
 
     # TODO TODO does this check both columns (.columns) and rows (.index)?
     util.check_index_vals_unique(df)
@@ -1336,9 +1341,8 @@ def drop_nonconsensus_odors(df: pd.DataFrame, n_for_consensus: Optional[int] = N
     '''
     # if a fly has any glomeruli w/ non-NaN data an odor, that fly will
     # contribute one count in the sum.
-    odor_counts = df.groupby(fly_cols, axis='columns', sort=False).apply(
-        lambda x: x.notna().any(axis='columns')
-        ).sum(axis='columns')
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    odor_counts = df.notna().T.groupby(level=fly_cols, sort=False).any().sum()
 
     # TODO move warning back out (to where?)? (to retain `panel` part of msg)
     if verbose and (odor_counts < n_for_consensus).any():
@@ -1413,8 +1417,10 @@ def merge_rois_across_recordings(df: pd.DataFrame) -> pd.DataFrame:
     # (for a each combination of group keys), which is what we have when a fly has
     # multiple recordings (but the ROIs definitions for each recording are the same
     # / overlapping).
-    df = df.groupby(flyroi_cols, axis='columns', sort=False
-        ).apply(merge_single_flyroi_across_recordings)
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    df = df.T.groupby(level=flyroi_cols, sort=False).apply(
+        lambda x: merge_single_flyroi_across_recordings(x.T)
+    ).T
 
     assert df.notnull().sum().sum() == n_before
     assert recording_col not in df.columns.names
@@ -1478,13 +1484,15 @@ def drop_superfluous_uncertain_rois(df: pd.DataFrame) -> pd.DataFrame:
         # TODO need to handle dropna=False case (in fn above?)? just set to True?
         # if i did, couldn't plot stuff like 'VM2|VM3' later... not that i actually
         # have any of that in data i'm analyzing now...
-        return fly_df.groupby(group_fn, axis='columns', sort=False, dropna=False,
-            group_keys=False).apply(_single_flyroi_drop)
+        # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+        return fly_df.T.groupby(group_fn, sort=False, dropna=False, group_keys=False
+            ).apply(lambda x: _single_flyroi_drop(x.T).T).T
 
     # group_keys=False to preserve old behavior (and silence FutureWarning, after
     # upgrading pandas to 1.5.0 from 1.3.?)
-    df = df.groupby(['date','fly_num'], axis='columns', sort=False, group_keys=False
-        ).apply(single_fly_drop_uncertain_if_we_have_certain)
+    df = df.T.groupby(level=['date','fly_num'], sort=False, group_keys=False).apply(
+        lambda x: single_fly_drop_uncertain_if_we_have_certain(x.T).T
+    ).T
 
     # this is what will actually reduce the size along the column axis
     # (if any will be dropped)
@@ -2821,9 +2829,7 @@ def plot_responses_and_scaled_versions(df: pd.DataFrame, plot_dir: Path,
 
     # numeric_only=True shouldn't actually be doing anything, since all columns should
     # be numeric to begin with (just using to silence FutureWarning)
-    stddev = fly_means.groupby(level='roi', axis='columns', sort=False).std(
-        numeric_only=True
-    )
+    stddev = fly_means.T.groupby(level='roi', sort=False).std(numeric_only=True).T
 
     if not all(x in df.columns.names for x in fly_cols):
         # or either way, can't compute stddev across flies
@@ -6808,7 +6814,7 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
 
             # TODO TODO drop identity correlations (will have 1 avgd in, as implemented
             # now)
-            mdf = df.groupby('odor1').mean().groupby('odor1_b', axis='columns').mean()
+            mdf = df.groupby('odor1').mean().T.groupby(level='odor1_b').mean().T
 
             # TODO rename 'odor1' to just 'odor' in csv
             # TODO TODO TODO save a version w/ correlations for each fly separately
@@ -7542,7 +7548,9 @@ def competitive_binding_model(mean_df):
 
     odor_nums = []
     odor_dens = []
-    for odor, conc_df in concs_df.groupby('odor', axis='columns', sort=False):
+    # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+    for odor, conc_df in concs_df.T.groupby(level='odor', sort=False):
+        conc_df = conc_df.T
 
         odor_param_df = param_df.loc[:, odor]
         fmax_times_efficacy = odor_param_df['fmax_times_efficacy']
@@ -7597,7 +7605,7 @@ def analyze_onepair(trial_df):
     fly_str = f'n={n_flies} {{{fly_str}}}'
 
     mean_df = sort_concs(
-        trial_df.groupby(level=['odor1','odor2'], axis='columns').mean()
+        trial_df.T.groupby(level=['odor1','odor2']).mean().T
     )
 
     # TODO TODO TODO how to do fitting like in this fn, but also incorporating lateral
@@ -8114,8 +8122,8 @@ def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.Da
         assert df.columns.names == ['date', 'fly_num', 'roi']
         # TODO easier/cleaner way?
         fly_df_list = []
-        for fly, fly_df in df.groupby(level=['date', 'fly_num'], axis='columns'):
-            fly_df = fly_df.loc[:, fly].copy()
+        for fly, fly_df in df.T.groupby(level=['date', 'fly_num']):
+            fly_df = fly_df.T.loc[:, fly].copy()
 
             # TODO delete?
             fly_glomeruli = set(fly_df.columns.get_level_values('roi'))
@@ -8258,7 +8266,7 @@ def get_gh146_glomeruli() -> Optional[Set[str]]:
     gh146_df = pd.read_pickle(gh146_output)
 
     # no validation2 panel flies for GH146. just the 7 flies each w/ diagnostic+megamat
-    assert gh146_df.groupby(['date', 'fly_num'], axis='columns').ngroups == 7, \
+    assert gh146_df.T.groupby(level=['date', 'fly_num']).ngroups == 7, \
         'GH146 data did not have expected 7 flies (# in final megamat data)'
 
     assert set(gh146_df.index.get_level_values('panel')) == {
@@ -8275,8 +8283,7 @@ def get_gh146_glomeruli() -> Optional[Set[str]]:
     gh146_glom_counts.index.name = 'glomerulus'
     gh146_glom_counts.name = 'n_flies'
 
-    n_flies = certain_gh146_df.groupby(level=['date', 'fly_num'], axis='columns'
-        ).ngroups
+    n_flies = certain_gh146_df.T.groupby(level=['date', 'fly_num']).ngroups
 
     # TODO refactor to share dropping with subsetting in gh146 plot making?
     reliable_gh146_gloms = gh146_glom_counts >= (n_flies / 2)
@@ -8362,8 +8369,8 @@ def acrossfly_correlation_plots(output_root: Path, trial_df: pd.DataFrame, *,
     # (probably don't care for GH146?) -> save to separate output folder
 
     fly_panel_id = 0
-    for (date, fly_num), fly_df in trial_df.groupby(fly_cols, axis='columns',
-        sort=False):
+    for (date, fly_num), fly_df in trial_df.T.groupby(level=fly_cols, sort=False):
+        fly_df = fly_df.T
 
         # TODO TODO maybe modify plot_corrs so it accepts a list of length == # of flies
         # (i.e. doesn't need one entry for each (fly, panel) combination)).
@@ -8540,7 +8547,7 @@ def response_matrix_plots(plot_dir: Path, df: pd.DataFrame,
     # TODO should i be normalizing within fly or something before taking mean?
     # (maybe scaling to response to diagnostic panel? then remaking them in a timely
     # manner might be more important...)
-    mean_certain_df = certain_df.groupby(level='roi', sort=False, axis='columns').mean()
+    mean_certain_df = certain_df.T.groupby(level='roi', sort=False).mean().T
 
     # taking mean across repeats before getting min/max (should corresond to entries
     # in mean plots)
@@ -8724,8 +8731,10 @@ def acrossfly_response_matrix_plots(trial_df: pd.DataFrame, across_fly_ijroi_dir
         pdf_certain = pdf.loc[:,
             pdf.columns.get_level_values('roi').map(is_ijroi_certain)
         ]
+        # (sort=True matches old behavior: pandas 1.5 sorted groups for a MultiIndex
+        # level name key, despite sort=False)
         mean_certain = pdf_certain.groupby('odor1', sort=False).mean(
-            ).groupby('roi', sort=False, axis='columns').mean()
+            ).T.groupby(level='roi', sort=True).mean().T
 
         filled_mean_certain = fill_to_hemibrain(mean_certain)
         filled_mean_certain = sort_odors(filled_mean_certain, add_panel=panel)
@@ -9129,7 +9138,8 @@ def acrossfly_response_matrix_plots(trial_df: pd.DataFrame, across_fly_ijroi_dir
                 **roi_plot_kws
             )
 
-        for (date, fly_num), fly_df in certain_df.groupby(fly_cols, axis='columns'):
+        for (date, fly_num), fly_df in certain_df.T.groupby(level=fly_cols):
+            fly_df = fly_df.T
 
             # TODO refactor to share w/ other places
             date_str = format_date(date)
@@ -10501,10 +10511,10 @@ def main():
         #
         # TODO TODO this what i want for merging depths across recordings? can i change
         # to not take average, and use depth for each specific recording? good enough?
-        roi_best_plane_depths = roi_best_plane_depths.groupby(level=[
+        roi_best_plane_depths = roi_best_plane_depths.T.groupby(level=[
                 x for x in roi_best_plane_depths.columns.names if x != 'thorimage_id'
-            ], sort=False, axis='columns'
-        ).mean()
+            ], sort=False
+        ).mean().T
         util.check_index_vals_unique(roi_best_plane_depths)
     else:
         # TODO warning here saying we are throwing this away?
@@ -10922,7 +10932,8 @@ def main():
         _first_fly_cols = None
 
         filled_fly_dfs = []
-        for fly_id, fly_df in panel_df.groupby(level='fly_id', axis='columns'):
+        for fly_id, fly_df in panel_df.T.groupby(level='fly_id'):
+            fly_df = fly_df.T
             if verbose or only_report_missing_glomeruli:
                 date, fly_num = id2datenum.loc[fly_id]
                 date_str = format_date(date)
@@ -11090,16 +11101,16 @@ def main():
 
         trialmean_df = util.addlevel(trialmean_df, 'panel', panel)
 
-        mean_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
-            ).mean()
+        mean_df = trialmean_df.T.groupby(level='roi', sort=False).mean().T
 
         # numeric_only=True is only to silence a FutureWarning. all input columns are
         # float.
         #
         # NOTE: as configured now, this seems to be NaN if only 1 fly (for a given roi),
         # but defined for even 2 (or more) flies for a given roi.
-        stddev_df = trialmean_df.groupby(level='roi', sort=False, axis='columns'
-            ).std(numeric_only=True)
+        stddev_df = trialmean_df.T.groupby(level='roi', sort=False).std(
+            numeric_only=True
+        ).T
 
         n_per_odor_and_glom = count_n_per_odor_and_glom(trialmean_df,
             # NOTE: count_zero=False working correctly relies on assertion above that no
@@ -11119,8 +11130,9 @@ def main():
         # otherwise, our filling could be skewing the mean of some glomeruli we do
         # actually detect sometimes.
         assert zeromean_gloms.equals(
-            trialmean_df.groupby(level='roi', sort=False, axis='columns'
-                ).apply(lambda x: (x == 0).any().any())
+            trialmean_df.T.groupby(level='roi', sort=False).apply(
+                lambda x: (x == 0).any().any()
+            )
         )
         del zeromean_gloms
 
@@ -11172,9 +11184,10 @@ def main():
             filled_ser = fdf.bfill(axis='columns').iloc[:, 0]
             return filled_ser
 
-        df = df.groupby(df.columns.names, axis='columns', sort=False).apply(
-            merge_one_flyroi_across_nondiag_panels
-        )
+        # (groupby axis= kwarg removed in pandas 3.0, hence the transposing)
+        df = df.T.groupby(level=df.columns.names, sort=False).apply(
+            lambda x: merge_one_flyroi_across_nondiag_panels(x.T)
+        ).T
         n_nondiag_after = num_notnull(_nondiag_subset(df))
         assert n_nondiag_after == n_nondiag_before
         return df
@@ -11428,8 +11441,7 @@ def main():
 
     trialmean_consensus_df = consensus_df.groupby(level=['panel','odor1'], sort=False
         ).mean()
-    mean_consensus_df = trialmean_consensus_df.groupby(level='roi', axis='columns'
-        ).mean()
+    mean_consensus_df = trialmean_consensus_df.T.groupby(level='roi').mean().T
     # ipdb> mean_df.shape
     # (64, 54)
     # ipdb> mcdf.shape
