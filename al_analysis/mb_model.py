@@ -4860,7 +4860,10 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         kcs_with_type_and_nclaws = n_inputs_per_kc.reset_index(name='n_claws')
 
         # Now, use .fillna() on the 'kc_type' column to replace any NaNs
-        kcs_with_type_and_nclaws[KC_TYPE].fillna('unknown', inplace=True)
+        # (not using inplace=True on column, as that does nothing in pandas >= 3)
+        kcs_with_type_and_nclaws[KC_TYPE] = kcs_with_type_and_nclaws[KC_TYPE].fillna(
+            'unknown'
+        )
 
         # TODO label y-axis for two below (and *differently* for those above)?
 
@@ -8490,11 +8493,11 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
 
         label_order: if True, labels how rows were ordered (on right y-axis)
 
-        verbose: currently unused
+        verbose: passed to `cluster_timeseries`
 
         checks: if True, checks `fixed_order` has same elements as `df.index`
 
-        **kwargs: currently unused (NOT passed to `cluster_timeseries`)
+        **kwargs: passed to `cluster_timeseries` (only used if clustering)
 
     Returns image, and index of plotted rows (in order plotted).
     """
@@ -8545,7 +8548,9 @@ def cluster_timeseries_and_plot(df: pd.DataFrame,
 
     if fixed_order is None:
         # TODO rename order -> order_method or something?
-        clustered, order = cluster_timeseries(df)
+        # (kwargs were previously not passed here, so e.g. plot_spike_rasters' n_PCs /
+        # n_clusters were ignored)
+        clustered, order = cluster_timeseries(df, verbose=verbose, **kwargs)
 
         # errors/warnings will be handled inside cluster_timeseries, returning None in
         # all those cases (now that we are falling back to sorting by max, this won't
@@ -8640,8 +8645,8 @@ def plot_spike_rasters(spks: Union[pd.DataFrame, xr.DataArray], *, n_PCs: int = 
         spks: of shape (#-neurons, #-timepoints), with values all 0 or 1. if DataArray,
             will try converting via `.to_pandas()`
 
-        n_PCs / n_clusters: passed to `cluster_timeseries_and_plot` (which currently
-            ignores them, so `cluster_timeseries` defaults are used)
+        n_PCs / n_clusters: passed to `cluster_timeseries` (via
+            `cluster_timeseries_and_plot`), and through that to `Rastermap`
 
         **kwargs: passed to `cluster_timeseries_and_plot`
     """
@@ -9141,16 +9146,21 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
             # this is probably  only the case if we get it when `mp.kc.ves_p != 0`,
             # which i haven't tested, and not sure we care to
             #assert (nves_sims == 1).all()
+
+            nves_sims = xr.DataArray(data=nves_sims, dims=kc_dims, coords=kc_coords)
+            # TODO TODO assert all 1? or plot to get a sense of what's happening?
+            dynamics_dict['nves_sims'] = nves_sims
         else:
             # TODO also warn if not save_nves_sims? in fit_mb_model, rather than here?
             # TODO TODO assert that (nves_sims == 1).all() here. that variable does
             # seem to be used in C++ tho... is it just that the math works out to leave
             # it all 1? or is it maybe not properly returned?
-            warn('nves_sims are disabled, as has typically been the case for olfsysm')
-
-        nves_sims = xr.DataArray(data=nves_sims, dims=kc_dims, coords=kc_coords)
-        # TODO TODO assert all 1? or plot to get a sense of what's happening?
-        dynamics_dict['nves_sims'] = nves_sims
+            #
+            # (not returned in this case. previously raised NameError here, as
+            # nves_sims was not defined)
+            warn('nves_sims are disabled, as has typically been the case for olfsysm. '
+                'not returning them.'
+            )
 
     if mp.pn.n_total_boutons > 0:
         bouton_sims = get_sim_var(rv.pn, 'bouton_sims')
@@ -9272,103 +9282,65 @@ def calc_dt(arr: xr.DataArray, _warn: Optional[bool] = None, expected: float = 0
     """Returns timestep of `arr`, from difference of first two 'time_s' values.
 
     Args:
-        _warn: if True, warns if timestep is not close to 0.0005 (the olfsysm default).
-            NOTE: `expected` is currently not used for that comparison, and default
-            (None) currently never warns.
+        _warn: if True, warns if timestep is not close to `expected`. If False, never
+            warns. If None, only warns the first time timestep is not as expected.
+
+        expected: expected timestep (default is the olfsysm default)
     """
     global _calc_dt_warned
 
-    if _calc_dt_warned:
-        if _warn is None:
-            _warn = False
-        else:
-            _warn = True
-            _calc_dt_warned = True
+    # (logic here previously meant this never warned)
+    if _warn is None:
+        _warn = not _calc_dt_warned
 
     dt = np.diff(arr.get_index('time_s')[:2])[0]
-    if _warn and not np.isclose(dt, 0.0005):
+    if _warn and not np.isclose(dt, expected):
         warn(f'{dt=} was not np.isclose to expected dt={expected}! fix time index def?')
+        _calc_dt_warned = True
+
     return dt
 
 
-# TODO (delete) why is jit not speeding this up at all? is compilation happening on
-# first call? and ig the python code isn't that slow? lol takes even longer w/
-# parallel=True
-#@jit(nopython=True)
-def min_indices_between_spikes(spikes) -> Optional[int]:
-    """Returns min # of indices between spikes in 1D boolean `spikes` (None if < 2).
-
-    NOTE: currently measures each spike's distance from the first spike (`last_idx` is
-    never updated), so this is just the distance between the first two spikes.
+def _indices_between_spikes(spikes) -> np.ndarray:
+    """Returns # of indices between each pair of consecutive spikes in 1D `spikes`.
     """
     assert len(spikes.shape) == 1
-    # assuming spikes is a 1D vector of True/False
-    last_idx = None
-    # jit can't compile this
-    #min_dist = float('inf')
-    min_dist = -1
-    for i, x in enumerate(spikes):
-        if x:
-            if last_idx is None:
-                last_idx = i
-            else:
-                index_dist = i - last_idx
-                if index_dist < min_dist or min_dist == -1:
-                    min_dist = index_dist
+    # assuming spikes is a 1D vector of True/False (or 0/1)
+    #
+    # NOTE: functions using this previously (in loops) never updated the index of the
+    # last spike, so they measured distances from the first spike, rather than from
+    # the previous spike
+    return np.diff(np.flatnonzero(spikes))
 
-    if min_dist == -1:
+
+def min_indices_between_spikes(spikes) -> Optional[int]:
+    """Returns min # of indices between spikes in 1D boolean `spikes` (None if < 2).
+    """
+    isis = _indices_between_spikes(spikes)
+    if len(isis) == 0:
         # TODO TODO return NaN instead? will def need this for use on KC data
         return None
 
-    return min_dist
+    return int(isis.min())
 
 
 def mean_indices_between_spikes(spikes) -> Optional[float]:
     """Returns mean # of indices between spikes in 1D boolean `spikes` (None if < 2).
-
-    NOTE: currently averages each later spike's distance from the first spike
-    (`last_idx` is never updated), rather than distances between consecutive spikes.
     """
-    assert len(spikes.shape) == 1
-    # assuming spikes is a 1D vector of True/False
-    last_idx = None
-    isi_list = []
-    for i, x in enumerate(spikes):
-        if x:
-            if last_idx is None:
-                last_idx = i
-            else:
-                index_dist = i - last_idx
-                isi_list.append(index_dist)
-
-    if len(isi_list) == 0:
+    isis = _indices_between_spikes(spikes)
+    if len(isis) == 0:
         # TODO TODO return NaN instead? will def need this for use on KC data
         # (will xarray / numpy convert automatically?)
         return None
 
-    return np.mean(isi_list)
+    return np.mean(isis)
 
 
 def n_isi_less_than_n_indices(spikes, min_n_indices_between: int) -> int:
     """Returns # of spikes < `min_n_indices_between` indices after previous spike.
-
-    NOTE: currently counts spikes within that many indices of the first spike
-    (`last_idx` is never updated), rather than of the previous spike.
     """
-    assert len(spikes.shape) == 1
-    # assuming spikes is a 1D vector of True/False
-    last_idx = None
-    count = 0
-    for i, x in enumerate(spikes):
-        if x:
-            if last_idx is None:
-                last_idx = i
-            else:
-                index_dist = i - last_idx
-                if index_dist < min_n_indices_between:
-                    count += 1
-
-    return count
+    isis = _indices_between_spikes(spikes)
+    return int((isis < min_n_indices_between).sum())
 
 
 def apply_over_time(spikes: xr.DataArray, fn: Callable, **kwargs) -> Any:
@@ -11764,7 +11736,12 @@ def have_all_saved_dynamics(model_dir: Path, *, require_all: bool = False,
             warn(f'had no .nc files with names in {ALL_DYNAMICS_VARS=}')
         # returning before any warnings, if directory contains NONE of the expected
         # dynamics outputs
-        return False
+        #
+        # (previously returned bare False here, even if `_return_var2netcdf=True`)
+        if not _return_var2netcdf:
+            return False
+        else:
+            return False, None
 
     if warn_:
         unexpected = have_vars - ALL_DYNAMICS_VARS
@@ -12364,7 +12341,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO TODO move all things into ParamDict? would make handling of saving simpler in
     # fit_and_plot... could let the loop handle things, rather than having to manually
     # save responses/spike_counts/wPNKC
-    ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], ParamDict]:
+    ) -> FitMBModelOutputs:
     # TODO does matt's code support float wPNKC? can i just directly normalize wPNKC and
     # pass that in, rather than dealing w/ weight_divisor=<float>?
     # TODO TODO have responses [/spike_counts] returned w/ row indices using same
@@ -17523,7 +17500,8 @@ _spear_inputs2dfs = dict()
 def bootstrapped_corr(df: pd.DataFrame, x: str, y: str, *, n_resamples=1000,
     # TODO default to 95% ci?
     # TODO delete debug _plot_dir kwarg?
-    ci=90, method='spearman', _plot_dir=None) -> str:
+    ci=90, method='spearman', _plot_dir=None
+    ) -> Tuple[str, float, float, float, float]:
     """Returns correlation between columns `x` and `y`, with bootstrapped CI.
 
     CI is computed by resampling rows of `df` (e.g. odor pairs) with replacement, and
@@ -20261,7 +20239,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # have that currently does something like that?)?
             if made_param_dir:
                 # TODO err here if -c CLI arg passed?
-                print('deleting {param_dir}!')
+                print(f'deleting {param_dir}!')
                 shutil.rmtree(param_dir)
 
             return params_for_csv
@@ -20520,8 +20498,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             """
             # TODO TODO TODO confirm it was actually only first 20 seeds used for
             # version of this in modeling.svg (what is now in paper)
-            # TODO delete
-            breakpoint()
+
             # to recreate preprint fig 3B
 
             if metric_name == 'correlation distance':
@@ -21492,10 +21469,21 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             # for hemibrain + pebbled case currently.
             assert curr_params is not None
 
-            # (added only if wAPLKC/fixed_thr passed)
-            pearson = curr_params['pearson']
-
-            pearson_ser = corr_triangular(pearson)
+            # (added only if wAPLKC/fixed_thr passed, and only if the sub-call didn't
+            # return early, e.g. because there were no model responses at all)
+            pearson = curr_params.get('pearson')
+            if pearson is not None:
+                pearson_ser = corr_triangular(pearson)
+            else:
+                assert curr_params['sparsity'] == 0, ('sub-call returned without '
+                    "'pearson', despite having some model responses"
+                )
+                warn(f'{dirname}: no model responses, so correlations are undefined. '
+                    'using NaN for all of them.'
+                )
+                pearson_ser = pd.Series(index=pearson_at_each_param_combo.columns,
+                    data=np.nan
+                )
             assert pearson_ser.index.equals(pearson_at_each_param_combo.columns)
             # TODO need to assert this thr value is IN index already?
             if mean_fixed_thr is None:
@@ -21999,7 +21987,7 @@ def predict_spiking_from_dff(df: pd.DataFrame, model: RegressionResultsWrapper,
         assert len(model.params) == 2
         assert 'const' in model.params
         add_constant = True
-        col_to_fit == [x for x in model.params.keys() if x != 'const'][0]
+        col_to_fit = [x for x in model.params.keys() if x != 'const'][0]
     # TODO delete
     print()
     print(f'predict_spiking_from_dff: {col_to_fit=}')
@@ -23361,10 +23349,6 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     # outputs?)
     # TODO TODO TODO or maybe it's scaling that creates fly_mean_df above? maybe either
     # before/no we are (or are not) including diags when calculing fly maxes?
-    # TODO delete
-    print()
-    breakpoint()
-    #
     mean_est_df = predict_spiking_from_dff(fly_mean_df, model, inh_model)
 
     # TODO once again skip all below if use_cache=False? (and actually used cache) would
@@ -29851,8 +29835,8 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
 
         break_axes_for_nonresponders: if True, bar plot has a broken x-axis
 
-        title: suptitle. Must be passed if `class_size_frac_thresh` is not None (info
-            on any dropped classes is appended to it).
+        title: suptitle. If `class_size_frac_thresh` is not None, info on any dropped
+            classes is appended to it (or used as suptitle, if not passed).
 
         norm/cmap/vmin/vmax: passed to `viz.matshow` (vmin / vmax default to data
             range)
@@ -30753,7 +30737,7 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
         )
         n_rois_in_classes_below_thresh = int(n_rois_in_classes_below_thresh)
         #
-        title += ('\n\n'
+        thresh_text = (
             # TODO how to format this? (at least for 0.0025, as-is is fine. shows as
             # '0.0025')
             # TODO also say how many ROIs this corresponds to? (rounding appropriately)
@@ -30762,6 +30746,11 @@ def plot_means_and_counts(mean_df: pd.DataFrame, counts: pd.Series, plot_dir: Pa
             # TODO also phrase as a percentage?
             f'({n_rois_in_classes_below_thresh} ROIs in classes below size thresh)'
         )
+        # (would previously raise TypeError if title was None)
+        if title is None:
+            title = thresh_text
+        else:
+            title += f'\n\n{thresh_text}'
 
     if count_title != '':
         count_title += '\n'

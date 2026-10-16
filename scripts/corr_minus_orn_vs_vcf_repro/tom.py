@@ -108,19 +108,19 @@ def fix_da_ori(da_ori, panel_name):
     return da_fixed
 
 
-def convert_xlsx_to_netcdfs(file):
-    """Returns (ORN, PN) DataArrays converted from xlsx `file`.
+def convert_xlsx_to_netcdfs(file, panel_name):
+    """Returns (ORN, PN) DataArrays converted from xlsx `file`, subset to `panel_name`.
 
-    Despite name, does not currently write NetCDF files. NOTE: currently fails, as
-    `fix_da_ori` is called without its required `panel_name` arg.
+    Despite name, does not currently write NetCDF files.
     """
     df_orn_ori, df_pn_ori = make_dataframes_from_xlsx(file)
 
     da_orn_ori = df_ori_2_dataarray(df_orn_ori)
     da_pn_ori = df_ori_2_dataarray(df_pn_ori)
 
-    da_orn_fixed = fix_da_ori(da_orn_ori)
-    da_pn_fixed = fix_da_ori(da_pn_ori)
+    # (`panel_name` was previously not passed, which raised TypeError)
+    da_orn_fixed = fix_da_ori(da_orn_ori, panel_name)
+    da_pn_fixed = fix_da_ori(da_pn_ori, panel_name)
 
     da_orn_fixed.name = 'orn_terminals'
     da_pn_fixed.name = 'pn_dendrites'

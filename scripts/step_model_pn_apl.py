@@ -438,10 +438,10 @@ def analyze_outputs(plot_dir: Path, *, plot_dynamics: bool = False,
             # by checking min # spikes in elements considered as responses)
             # TODO TODO TODO condense down into # segmenting vs not?
             # TODO TODO also # mix-only responders?
+            # TODO use (currently unused. was followed by a breakpoint())
             classes = sort_rois_by_response_classes(
                 ss_nosilent[comps + [undiluted_5comp_mix]].T, 1.0
             )
-            breakpoint()
 
         assert panel_vals is not None, f'{panel=} not recognized'
 

@@ -18,7 +18,7 @@ from hong2p.viz import matshow
 from hong2p.xarray import get_example_orn_dynamics
 
 from al_analysis.al_util import (MultipleSavesPerRunException, read_json, plot_fmt,
-    load_natmix_dff, mean_of_fly_corrs, diverging_cmap, savefig
+    load_natmix_dff, mean_of_fly_corrs, diverging_cmap, savefig, sort_fly_roi_cols
 )
 from al_analysis import al_util
 from al_analysis.al_util import warn
@@ -103,7 +103,8 @@ def test_mean_of_fly_corrs():
     # TODO want to try adding support for these to corr fns? may not...
     no_mixtures = df.loc[df.index.get_level_values('odor2') == solvent_str]
 
-    one_panel_no_mixtures = df.loc['kiwi']
+    # (was `df.loc['kiwi']`, which still had mixtures)
+    one_panel_no_mixtures = no_mixtures.loc['kiwi']
     corr1 = mean_of_fly_corrs(one_panel_no_mixtures)
     # TODO delete
     #print()
@@ -456,4 +457,34 @@ def test_savefig(tmp_path, save_fn):
                 )
 
     assert al_util.check_outputs_unchanged == False
+
+
+def test_sort_fly_roi_cols():
+    """Tests `sort_fly_roi_cols` sorts named ROIs first, and does not modify input.
+    """
+    columns = pd.MultiIndex.from_tuples([
+            ('2023-01-02', 1, 'DM1'),
+            ('2023-01-01', 2, '3'),
+            ('2023-01-01', 1, 'VA2'),
+            ('2023-01-01', 1, 'DM1'),
+        ], names=['date', 'fly_num', 'roi']
+    )
+    df = pd.DataFrame(np.arange(8).reshape(2, 4), columns=columns)
+    df_before = df.copy()
+
+    sorted_df = sort_fly_roi_cols(df)
+    assert df.equals(df_before) and df.columns.equals(df_before.columns), \
+        'input was modified'
+    assert list(sorted_df.columns) == [
+        ('2023-01-01', 1, 'DM1'), ('2023-01-02', 1, 'DM1'), ('2023-01-01', 1, 'VA2'),
+        ('2023-01-01', 2, '3'),
+    ]
+    assert sorted_df[('2023-01-01', 2, '3')].equals(df[('2023-01-01', 2, '3')])
+
+    # (used to fail on a 2nd call w/ same input, as temporary levels added to input)
+    sorted_df2 = sort_fly_roi_cols(df, flies_first=True)
+    assert list(sorted_df2.columns) == [
+        ('2023-01-01', 1, 'DM1'), ('2023-01-01', 1, 'VA2'), ('2023-01-01', 2, '3'),
+        ('2023-01-02', 1, 'DM1'),
+    ]
 

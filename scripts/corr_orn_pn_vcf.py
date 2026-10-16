@@ -194,8 +194,10 @@ def test_pearson_of_pearsons_are_equal(a: pd.DataFrame, b: pd.DataFrame,
         corr_ser_list = []
         #for fly, fly_df in trialmean_df.groupby(fly_cols, axis='columns'):
         # TODO delete
-        for i, (fly, fly_df) in enumerate(trialmean_df.groupby(fly_cols,
-            axis='columns')):
+        # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+        for i, (fly, fly_df) in enumerate(
+                (k, x.T) for k, x in trialmean_df.T.groupby(level=fly_cols)
+            ):
         #
             if 'TEST' in label and i == 5:
                 break
@@ -406,7 +408,8 @@ def main():
     def mean_responses(df):
         # will need to re-order odors after groupby->mean.
         # sort=False still screws it up.
-        mean_df = df.groupby('odor1').mean().groupby('roi', axis='columns').mean()
+        # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+        mean_df = df.groupby('odor1').mean().T.groupby(level='roi').mean().T
 
         # this was just to get comparable to abbrev_order again (which does not have
         # ' @ -3' suffix)
@@ -821,7 +824,7 @@ def main():
         trialmean.index = trialmean.index.map(parse_name)
         trialmean = trialmean.loc[abbrev_order]
 
-        mean_df = trialmean.groupby('roi', axis='columns').mean()
+        mean_df = trialmean.T.groupby(level='roi').mean().T
         # TODO delete
         mean_df2 = mean_responses(df)
         assert mean_df.equals(mean_df2)
@@ -847,7 +850,7 @@ def main():
         # TODO use .sem() instead of .std()? (+ also change [/add] in section of
         # al_analysis.py that does the same).
         # https://stats.stackexchange.com/questions/32318
-        stddev = trialmean.groupby('roi', axis='columns').std()
+        stddev = trialmean.T.groupby(level='roi').std().T
         std_ser = stddev.stack()
         assert std_ser.index.equals(mean_ser.index)
         print(f'mean stddev > threshold: {std_ser.mask(~gt_thresh).mean():.3f}')

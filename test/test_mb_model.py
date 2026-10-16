@@ -47,7 +47,10 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     claw2bouton_from_wPNKC, paper_repro_kws, hemibrain_paper_repro_kws,
     make_fixed_param_kc_simulator, fixed_params_to_fit_mb_model_kws, make_kc_data_loss,
     mean_response_rates, optimize_mb_model_params, remy_megamat_kc_targets,
-    drop_silent_model_cells
+    drop_silent_model_cells, min_indices_between_spikes, mean_indices_between_spikes,
+    n_isi_less_than_n_indices, min_seconds_between_spikes, mean_seconds_between_spikes,
+    n_isi_less_than_time_seconds, fit_dff2spiking_model, predict_spiking_from_dff,
+    dff_col, spike_delta_col, est_spike_delta_col
 )
 
 # TODO better way?
@@ -2849,8 +2852,8 @@ def test_apl_weights_osm(apl_weights):
 def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     """Tests fixing thresholds / APL weights (from tuned outputs) reproduces outputs.
 
-    Rest of test (setting PN<>APL weights to 0 via `fit_mb_model` kwargs) is unfinished,
-    and currently only prints response rates (after a `breakpoint()`).
+    Also tests setting either PN<>APL weight (wAPLPN / wPNAPL) to 0 (via `fit_mb_model`
+    kwargs) increases response rate (but not past pre-APL target response rate).
     """
     # NOTE: apl_weights fixture currently also returns kws, for the convenience of this
     # test
@@ -2877,6 +2880,11 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     responses = ret[0]
     # ipdb> responses.mean().mean()
     #0.10728841190055699
+    sp0 = responses.mean().mean()
+
+    mp = params['mp']
+    # response rate tuning target before APL (default sp_factor_pre_apl=2.0)
+    sp_max = mp.kc.sp_factor_pre_apl * mp.kc.sp_target
 
     # TODO TODO well if both fns use apl_weights fixture are using these, not much point
     # in trying to precalc weights, right? can i remove use of this here?
@@ -2891,9 +2899,6 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
 
     wAPLPN_scale = thr_and_apl_kws['wAPLPN']
     wAPLKC_scale = thr_and_apl_kws['wAPLKC']
-    # TODO delete
-    breakpoint()
-    #
 
     no_APLPN = dict(thr_and_apl_kws)
     # TODO important this is actually a double? add some pybind11 magic to automatically
@@ -2951,14 +2956,15 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # avg_kc_inh: 580218
     # avg_bouton_inh: 0
     #
-    # TODO TODO TODO this also misbehaving like in other test? (yes) why???
+    # NOTE: response rates below were lower than with APL>PN weights, in some earlier
+    # version of the model. as of 2026-10-16, they increase as expected (0.091 ->
+    # 0.142 w/ pn_claw_to_apl=True, 0.091 -> 0.135 w/o), with KC thresholds and
+    # spont_in unchanged.
     # responses_no_APLPN.mean().mean()=0.06802744192365166 (pn_claw_to_apl=True)
     # responses_no_APLPN.mean().mean()=0.05077435131096319 (pn_claw_to_apl=False)
     print(f'{responses_no_APLPN.mean().mean()=}')
-    # TODO TODO add similar sparsity assertions to in other test (that would pass here,
-    # for reason i'm not clear on...)
-    # TODO delete
-    #
+    sp_no_APLPN = responses_no_APLPN.mean().mean()
+    assert sp0 < sp_no_APLPN < sp_max, f'{sp0=} {sp_no_APLPN=} {sp_max=}'
 
     # pn_claw_to_apl=True:
     # average (across odor) values in odor_stats:
@@ -2988,6 +2994,8 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     responses_no_PNAPL, spike_counts_no_PNAPL, _, params_no_PNAPL = \
         ret_no_PNAPL
     print(f'{responses_no_PNAPL.mean().mean()=}')
+    sp_no_PNAPL = responses_no_PNAPL.mean().mean()
+    assert sp0 < sp_no_PNAPL < sp_max, f'{sp0=} {sp_no_PNAPL=} {sp_max=}'
 
     # TODO restore?
     '''
@@ -3007,10 +3015,6 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
         ret_no_KCAPL
     print(f'{responses_no_KCAPL.mean().mean()=}')
     '''
-
-    # TODO delete
-    breakpoint()
-    #
 
 
 # TODO at at least one test case w/o boutons? i mean, if this works, that prob would
@@ -3805,9 +3809,7 @@ assert len(wPNKC_param_set) == len(kws_producing_diff_wPNKC), \
 # would also give tests more clear names.
 @pytest.mark.parametrize('kws', kws_producing_diff_wPNKC, ids=format_model_params)
 def test_claw2bouton_from_wPNKC(kws):
-    """Tests `claw2bouton_from_wPNKC` runs on wPNKC from each connectome config.
-
-    Does not currently check outputs.
+    """Tests `claw2bouton_from_wPNKC` output matches wPNKC, for each connectome config.
     """
     # TODO delete. handled by assertion above that pn2kc_connections is not specified
     #
@@ -3847,7 +3849,7 @@ def test_claw2bouton_from_wPNKC(kws):
         print()
     #
 
-    # letting assertions in this do the testing
+    # (also has assertions of its own)
     claw2bouton = claw2bouton_from_wPNKC(wPNKC)
     # TODO delete
     if debug:
@@ -3856,6 +3858,54 @@ def test_claw2bouton_from_wPNKC(kws):
         print(claw2bouton)
         print()
     #
+
+    # rows with no inputs are dropped (with a warning) in claw2bouton_from_wPNKC
+    wPNKC = wPNKC[(wPNKC != 0).T.any()]
+
+    col_names = list(wPNKC.columns.names)
+    assert list(claw2bouton.columns) == col_names
+
+    def as_list(index_or_df) -> list:
+        if isinstance(index_or_df, pd.DataFrame):
+            if len(index_or_df.columns) > 1:
+                return list(index_or_df.itertuples(index=False, name=None))
+            return list(index_or_df.iloc[:, 0])
+        return list(index_or_df)
+
+    if CLAW_ID in wPNKC.index.names:
+        # one row per claw, with the one glomerulus (and bouton) the claw gets input from
+        assert claw2bouton.index.equals(wPNKC.index)
+        assert ((wPNKC != 0).sum(axis='columns') == 1).all()
+        expected = wPNKC.columns[wPNKC.values.argmax(axis=1)]
+        assert as_list(claw2bouton) == as_list(expected)
+    else:
+        assert col_names == [glomerulus_col]
+        # one row per claw, with each KC repeated once for each claw (w/ # of claws from
+        # each glomerulus as in wPNKC)
+        index_names = list(wPNKC.index.names)
+        counts = claw2bouton.reset_index().groupby(index_names + [glomerulus_col]
+            ).size()
+        expected_counts = wPNKC.replace(0, np.nan).melt(ignore_index=False,
+            value_name='n').dropna().reset_index().set_index(
+            index_names + [glomerulus_col]
+        )['n'].astype(int)
+        assert counts.sort_index().to_dict() == expected_counts.sort_index().to_dict()
+
+        # KCs in same order as in wPNKC, w/ all of each KC's claws consecutive
+        kc_ids = claw2bouton.index.get_level_values(KC_ID).to_series()
+        assert pd.Index(kc_ids.drop_duplicates()).equals(
+            wPNKC.index.get_level_values(KC_ID)
+        )
+        assert kc_ids.ne(kc_ids.shift()).sum() == len(wPNKC)
+
+        # glomeruli w/ more claws come first, within each KC
+        n_claws = claw2bouton.reset_index().merge(expected_counts.reset_index(),
+            on=index_names + [glomerulus_col], how='left'
+        )
+        assert len(n_claws) == len(claw2bouton)
+        assert n_claws.groupby(KC_ID, sort=False)['n'].apply(
+            lambda x: x.is_monotonic_decreasing
+        ).all()
 
 
 # TODO commit some (dramatically subset, perhaps also compressed) example model
@@ -4108,3 +4158,95 @@ def test_remy_megamat_kc_targets(orn_deltas):
     assert all(np.isfinite(v) for v in losses.values())
     assert losses['loss'] > 0
 
+
+def test_isi_helpers():
+    """Tests ISI helpers use distances between consecutive spikes.
+
+    They previously measured distances from the first spike, as index of last spike was
+    never updated.
+    """
+    spikes = np.zeros(20, dtype=bool)
+    spikes[[2, 10, 12, 19]] = True
+    # ISIs (in # of indices): 8, 2, 7
+    assert min_indices_between_spikes(spikes) == 2
+    assert np.isclose(mean_indices_between_spikes(spikes), (8 + 2 + 7) / 3)
+    assert n_isi_less_than_n_indices(spikes, 3) == 1
+    assert n_isi_less_than_n_indices(spikes, 8) == 2
+    assert n_isi_less_than_n_indices(spikes, 2) == 0
+
+    one_spike = np.zeros(5, dtype=bool)
+    one_spike[1] = True
+    assert min_indices_between_spikes(one_spike) is None
+    assert mean_indices_between_spikes(one_spike) is None
+    assert n_isi_less_than_n_indices(one_spike, 3) == 0
+
+    # one cell w/ spikes above, and one w/ them shifted (wrapping around) by one index:
+    # spikes at 0, 3, 11, 13 (ISIs: 3, 8, 2)
+    dt = 0.0005
+    spikes2 = np.roll(spikes, 1)
+    da = xr.DataArray(np.stack([spikes, spikes2]).astype(float),
+        dims=['cell', 'time_s'], coords={'time_s': np.arange(len(spikes)) * dt}
+    )
+    assert np.isclose(min_seconds_between_spikes(da), 2 * dt)
+    assert np.isclose(mean_seconds_between_spikes(da),
+        np.mean([(8 + 2 + 7) / 3, (3 + 8 + 2) / 3]) * dt
+    )
+    assert n_isi_less_than_time_seconds(da, 3 * dt) == 2
+    assert n_isi_less_than_time_seconds(da, 4 * dt) == 3
+
+
+def test_predict_spiking_from_dff_add_constant():
+    """Tests predicting spike deltas from dF/F w/ a model w/ a constant term.
+
+    `predict_spiking_from_dff` previously raised NameError for such models.
+    """
+    rng = np.random.default_rng(0)
+    x = rng.uniform(-0.5, 2.0, size=200)
+    to_fit = pd.DataFrame({dff_col: x,
+        spike_delta_col: 50 * x + 10 + rng.normal(scale=1.0, size=len(x))
+    })
+    for add_constant in (False, True):
+        model, inh_model = fit_dff2spiking_model(to_fit, dff_col,
+            add_constant=add_constant
+        )
+        assert inh_model is None
+
+        pred = predict_spiking_from_dff(to_fit[[dff_col]], model)
+        ci_cols = [f'{est_spike_delta_col}_ci_lower', f'{est_spike_delta_col}_ci_upper']
+        assert all(c in pred.columns for c in [est_spike_delta_col] + ci_cols)
+        assert pred[dff_col].equals(to_fit[dff_col])
+
+        if add_constant:
+            assert np.isclose(model.params['const'], 10, atol=1)
+            assert np.allclose(pred[est_spike_delta_col], 50 * x + 10, atol=2)
+        else:
+            assert 'const' not in model.params
+
+        assert np.allclose(pred[est_spike_delta_col], model.predict(
+            to_fit[[dff_col]] if not add_constant else
+            pd.DataFrame({'const': 1.0, dff_col: x})
+        ))
+        assert (pred[ci_cols[0]] <= pred[est_spike_delta_col]).all()
+        assert (pred[est_spike_delta_col] <= pred[ci_cols[1]]).all()
+
+
+def test_sensitivity_analysis_no_responses(tmp_path, orn_deltas):
+    """Tests sensitivity analysis handles parameter steps with no model responses.
+
+    Previously raised KeyError ('pearson'), as `fit_and_plot_mb_model` sub-calls for
+    such steps return before computing correlations.
+    """
+    # steps will include fixed_thr at 21x tuned value, which should silence all KCs
+    sens_analysis_kws = dict(n_steps=3, fixed_thr_param_lim_factor=20.0,
+        wAPLKC_param_lim_factor=5.0
+    )
+    params = fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, try_cache=False,
+        sensitivity_analysis=True, sens_analysis_kws=sens_analysis_kws
+    )
+    sens_dir = tmp_path / params['output_dir'] / 'sensitivity_analysis'
+    tried = pd.read_csv(sens_dir / 'tried.csv')
+    # (fixed_thr steps: tuned / 21x tuned. wAPLKC steps: 0 / tuned / 6x tuned)
+    assert len(tried) == 6
+    assert (tried.sparsity == 0).any()
+    assert (tried.sparsity > 0).any()
+    assert (sens_dir / f'spearman_of_pearsons.{al_util.plot_fmt}').exists()

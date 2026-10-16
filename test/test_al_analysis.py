@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from al_analysis.al_analysis import (trial_response_traces, delta_f_over_f,
-    compute_trial_stats
+    compute_trial_stats, setnull_nonfinal_panel_odors
 )
 
 # TODO better way?
@@ -137,4 +137,55 @@ def test_trial_response_traces(trace_data):
 
             for x, y in zip(trial_traces_list, trace_list2):
                 assert x.equals(y)
+
+
+def test_setnull_nonfinal_panel_odors():
+    """Tests only odors not at final concentration (in non-diagnostic panels) are nulled.
+
+    Previously used chained assignment to null data, which does nothing in pandas >= 3
+    (where an assertion then failed).
+    """
+    rows = []
+    for panel in ('megamat', 'validation2', 'glomeruli_diagnostics', 'other'):
+        for odor in ('eb @ -3', 'eb @ -4', 'ms @ -3', '2h @ -5', '2h @ -6'):
+            for repeat in range(2):
+                rows.append((panel, False, odor, 'solvent', repeat))
+
+    index = pd.MultiIndex.from_tuples(rows,
+        names=['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
+    )
+    columns = pd.MultiIndex.from_tuples([
+            (pd.Timestamp('2023-01-01'), 1, 'DM1'),
+            (pd.Timestamp('2023-01-01'), 1, 'DM2'),
+            (pd.Timestamp('2023-01-02'), 2, 'DM1'),
+        ], names=['date', 'fly_num', 'roi']
+    )
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame(rng.normal(size=(len(index), len(columns))), index=index,
+        columns=columns
+    )
+    df.iloc[0, 2] = np.nan
+    df_before = df.copy()
+
+    panel2final_conc_dict = {
+        'megamat': {'ethyl butyrate': -3, 'methyl salicylate': -3},
+        'validation2': {'2-heptanone': -6},
+        # should be skipped, as diagnostic panel
+        'glomeruli_diagnostics': {'ethyl butyrate': -4},
+        # not in data
+        'kiwi': {'ethyl acetate': -4.2},
+    }
+    out = setnull_nonfinal_panel_odors(panel2final_conc_dict, df)
+
+    assert df.equals(df_before), 'input was modified'
+    assert out.index.equals(df.index) and out.columns.equals(df.columns)
+
+    panels = df.index.get_level_values('panel')
+    odors = df.index.get_level_values('odor1')
+    expected_null_rows = (
+        ((panels == 'megamat') & ~odors.isin(['eb @ -3', 'ms @ -3'])) |
+        ((panels == 'validation2') & (odors != '2h @ -6'))
+    )
+    assert out.loc[expected_null_rows].isna().all().all()
+    assert out.loc[~expected_null_rows].equals(df.loc[~expected_null_rows])
 

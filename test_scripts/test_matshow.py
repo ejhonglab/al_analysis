@@ -27,7 +27,7 @@ def main():
     # fixed_thr should be handled by group_text stuff, which i might want to change
     # handling of inside hong2p
     # TODO what is input to fn gonna be tho? prob need x[1]?
-    format_wAPLKC = lambda x: f'{x[1]:.1f}'
+    format_wAPLKC = lambda x: f'{x.iloc[1]:.1f}'
     xticklabels = format_wAPLKC
     yticklabels = format_wAPLKC
 

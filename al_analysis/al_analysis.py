@@ -794,7 +794,7 @@ def print_index_uniq(index: pd.Index, levels: Optional[List[str]] = None) -> Non
 
 
 def format_uniq(df: Union[pd.DataFrame, pd.Series], levels: Optional[List[str]] = None
-    ) -> None:
+    ) -> str:
 
     df = df.reset_index()
 
@@ -1803,7 +1803,7 @@ def load_olf_input_yaml(yaml_name: str, olf_config_dir: Optional[Path] = None,
     input_yaml = olf_config_dir / yaml_name
     data = olf.load_input_yaml(input_yaml)['odors']
 
-    df = pd.DataFrame.from_records(yaml_data)
+    df = pd.DataFrame.from_records(data)
 
     if default_solvent is not None:
         solvent_col = 'solvent'
@@ -2142,7 +2142,8 @@ def final_panel_concs(**paired_thor_dirs_kwargs):
                     warn('final_panel_concs: assuming shorter panel is incomplete. '
                         'ignoring.'
                     )
-                    return
+                    # (was `return`, which also skipped this fly's remaining panels)
+                    continue
                 #
                 panel2final_conc_dict[panel] = conc_dict
                 panel2final_conc_start_time[panel] = panel2start_time[panel]
@@ -2267,21 +2268,23 @@ def has_cached_frame_odor_assignments(analysis_dir: Pathlike) -> bool:
 # probably clear any previous fail indicators if called w/ ignore_cache=True
 # (or just always if not using cached output?)
 def assign_frames_to_odor_presentations(thorsync_dir, thorimage_dir, analysis_dir,
-    ignore_cache: bool = ignore_bounding_frame_cache):
+    ignore_cache: Optional[bool] = None):
     """Returns [start_frame, first_odor_frame, end_frame] for each trial in recording.
 
     Computed via `hong2p.thor.assign_frames_to_odor_presentations` (which may raise
     errors calling code should handle), and cached to a YAML file in `analysis_dir`.
-    Loads from that cache if it exists, unless module-level
-    `ignore_bounding_frame_cache` is True.
+    Loads from that cache if it exists, unless `ignore_cache` is True.
 
     Args:
-        ignore_cache: currently unused (module-level `ignore_bounding_frame_cache` is
-            checked instead)
+        ignore_cache: if True, recomputes even if cache exists. Defaults to value of
+            module-level `ignore_bounding_frame_cache` (at call time).
     """
+    if ignore_cache is None:
+        ignore_cache = ignore_bounding_frame_cache
+
     bounding_frame_yaml_cache = analysis_dir / bounding_frame_yaml_cache_basename
 
-    if ignore_bounding_frame_cache or not bounding_frame_yaml_cache.exists():
+    if ignore_cache or not bounding_frame_yaml_cache.exists():
         print('assigning frames to odor presentations for:\n'
             f'ThorImage: {shorten_path(thorimage_dir)}\n'
             f'ThorSync:  {shorten_path(thorsync_dir)}', flush=True
@@ -4006,7 +4009,6 @@ def suite2p_trace_plots(analysis_dir, bounding_frames, odor_lists, plot_dir):
 
     # TODO TODO are these traces also starting at odor onset, like ones calculated via
     # my delta_f_over_f fn (within ij_traces)?
-    breakpoint()
 
     # TODO also plot roi / outline of roi on corresponding [mean?] plane / maybe with
     # other planes for context?
@@ -7411,6 +7413,9 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
         # TODO tight_layout / whatever appropriate to not have cbar label cut off
         # and not have so much space on the left
 
+        # (previously used `panel_dir` left over from the per-panel loop above, so all
+        # per-fly plots went to the last panel's directory)
+        panel_dir = corr_plot_root / panel
         fig_path = savefig(fig, panel_dir, fly_plot_prefix)
 
 
@@ -8057,7 +8062,9 @@ def analyze_onepair(trial_df):
     #fig, _ = viz.matshow(sum_diff_df, title='Sum - obs', **matshow_diverging_kwargs)
     #fig, _ = viz.matshow(max_diff_df, title='Max - obs', **matshow_diverging_kwargs)
 
-    max_diff_fig, sum_diff_fig = plot_diffs_from_max_and_sum(mean_df,
+    # (this fn returns sum figure first. was previously unpacked in the opposite order,
+    # swapping contents of the max_diff/sum_diff outputs)
+    sum_diff_fig, max_diff_fig = plot_diffs_from_max_and_sum(mean_df,
         dpi=300, **matshow_diverging_kwargs
     )
     savefig(max_diff_fig, 'max_diff')
@@ -8401,18 +8408,20 @@ def setnull_nonfinal_panel_odors(panel2final_conc_dict: Dict[str, Dict[str, floa
         return df
 
     for panel, conc_dict in panel2final_conc_dict.items():
-        panel_index = (panel, False)
-
-        try:
-            panel_df = df.loc[panel_index]
+        # same rows `df.loc[(panel, False)]` would select (first two levels should be
+        # 'panel' and 'is_pair')
+        panel_mask = (
+            (df.index.get_level_values(0) == panel) &
+            (df.index.get_level_values(1) == False)
+        )
 
         # panel2final_conc_dict can currently have panels not in the data to be analyzed
         # (e.g. if a driver/indicator used to subset data, rather than date range, as in
         # `./al_analysis.py -d sam -n 6f`)
-        except KeyError:
+        if not panel_mask.any():
             continue
 
-        odor1 = panel_df.index.get_level_values('odor1')
+        odor1 = df.index[panel_mask].get_level_values('odor1')
 
         # TODO restore? delete?
         if panel == diag_panel_str:
@@ -8429,8 +8438,9 @@ def setnull_nonfinal_panel_odors(panel2final_conc_dict: Dict[str, Dict[str, floa
 
         n_before = num_notnull(df)
 
-        # TODO refactor to share w/ line below? possible?
-        to_null = df.loc[panel_index][~at_final_conc]
+        to_null_mask = panel_mask.copy()
+        to_null_mask[panel_mask] = ~at_final_conc
+        to_null = df.loc[to_null_mask]
 
         n_new_null = num_notnull(to_null)
         if n_new_null > 0:
@@ -8445,9 +8455,9 @@ def setnull_nonfinal_panel_odors(panel2final_conc_dict: Dict[str, Dict[str, floa
             ])
             warn(msg)
 
-        # TODO why does this work? still change to something perhaps less fragile?
-        # TODO try to break this
-        df.loc[panel_index][~at_final_conc] = np.nan
+        # (previously chained assignment, `df.loc[panel_index][~at_final_conc] = np.nan`,
+        # which does nothing under pandas >= 3 copy-on-write)
+        df.loc[to_null_mask, :] = np.nan
 
         assert num_notnull(df) == n_before - n_new_null
 
@@ -8506,7 +8516,7 @@ def plot_remy_drosolf_corr(df, for_filename, for_title, plot_root,
     fig = natmix.plot_corr(remy_corr_da, **remy_corr_matshow_kwargs)
     savefig(fig, plot_root, f'remy_{for_filename}_corr')
 
-    cg = cluster_rois(remy_df, f'{for_title} (megamat odors only)')
+    cg = cluster_rois(remy_df, title=f'{for_title} (megamat odors only)')
     savefig(cg, plot_root, f'remy_{for_filename}_clust')
 
 

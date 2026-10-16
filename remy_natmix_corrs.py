@@ -27,14 +27,15 @@ def main():
         drop=True
     )
     kdf = move_all_coords_to_index(kda.mean('fly_panel')).to_pandas()
-    mkdf = kdf.groupby('odor1').mean().groupby('odor1_b', axis='columns').mean()
+    # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+    mkdf = kdf.groupby('odor1').mean().T.groupby(level='odor1_b').mean().T
 
     cda = da[da.panel == 'control']
     cda = cda.where(cda.odor1.isin(codors), drop=True).where(cda.odor1_b.isin(codors),
         drop=True
     )
     cdf = move_all_coords_to_index(cda.mean('fly_panel')).to_pandas()
-    mcdf = cdf.groupby('odor1').mean().groupby('odor1_b', axis='columns').mean()
+    mcdf = cdf.groupby('odor1').mean().T.groupby(level='odor1_b').mean().T
 
 
     #kda.dropna('odor', how='all').dropna('fly_panel', how='all').dropna('odor_b', how='all')

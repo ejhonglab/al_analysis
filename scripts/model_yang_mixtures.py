@@ -2129,7 +2129,9 @@ def preprocess_yang_data(df: pd.DataFrame, *, verbose: bool = True,
     mix_mask = odors.str.contains(component_delim, regex=False)
     comps = odors[~mix_mask]
 
-    metadata = df.groupby('odor', axis='columns').mean().stack(
+    # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg, and
+    # stack_drop_na so NaN still dropped in pandas >= 3)
+    metadata = al_util.stack_drop_na(df.T.groupby(level='odor').mean().T
         ).droplevel(['roi']).index.to_frame(index=False)
     recordings_per_odor = metadata.drop_duplicates(['odor'] + recording_cols)
     assert metadata.drop_duplicates(['odor'] + fly_cols)[fly_cols].equals(
@@ -2187,8 +2189,9 @@ def preprocess_yang_data(df: pd.DataFrame, *, verbose: bool = True,
         ].reset_index(drop=True)
 
         # TODO delete
-        recordings_per_odor2 = df.loc[:, odors.isin(odors_at_multiple_concs.odor)
-            ].groupby('odor', axis='columns').mean().stack().droplevel(['roi']
+        recordings_per_odor2 = al_util.stack_drop_na(
+            df.loc[:, odors.isin(odors_at_multiple_concs.odor)
+            ].T.groupby(level='odor').mean().T).droplevel(['roi']
             ).index.to_frame(index=False).drop_duplicates(['odor'] + fly_cols
             ).reset_index(drop=True)
         assert recordings_per_odor2.equals(recordings_per_multipleconc_odor)
@@ -2517,7 +2520,8 @@ def load_yang_kc_data(*, drop_exp_type: bool = True, verbose: bool = True
 
     # averaging over repeats
     # NOTE: need level= (in current pandas) or else sort=False doesn't behave
-    df = df.groupby(level='odor', axis='columns', sort=False).mean()
+    # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+    df = df.T.groupby(level='odor', sort=False).mean().T
 
     assert (bdf.columns.get_level_values('repeat') == 0).all()
     bdf = bdf.droplevel('repeat', axis='columns')
@@ -3364,8 +3368,8 @@ def subset_second_to_odors_in_first(df1: pd.DataFrame, df2: pd.DataFrame, *,
     df2 = df2[df2.odor.isin(s1)]
     s2 = set(df2.odor.unique())
     # also implies df2 non-empty, obviously
-    assert s1 == s2, ('df2 did not have all odors in df1!\ndf1 odors: {s1}\ndf2 odors: '
-        f'{s2}'
+    assert s1 == s2, (f'df2 did not have all odors in df1!\ndf1 odors: {s1}\n'
+        f'df2 odors: {s2}'
     )
     if copy:
         df2 = df2.copy()
@@ -4168,9 +4172,10 @@ def response_class_means_and_perfly_counts(responded: pd.DataFrame,
     assert class_sizes_by_fly.sum() == len(responded.columns)
 
     # class_means should be weighting all ROIs equally, ignoring fly
-    class_means2 = perfly_class_means.groupby(level=class_means.columns.names,
-        axis='columns', sort=False
-    ).mean()
+    # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+    class_means2 = perfly_class_means.T.groupby(level=class_means.columns.names,
+        sort=False
+    ).mean().T
     assert pd_indices_equal(class_means, class_means2)
     assert all(x.notna().all().all() for x in [class_means, class_means2])
     assert not pd_allclose(class_means, class_means2)
@@ -4480,8 +4485,8 @@ def plot_one_dist_per_fly(data: pd.DataFrame, *, flies_share_bins: bool = True,
     For use with `sns.FacetGrid.map_dataframe`.
 
     Args:
-        flies_share_bins: currently has no effect (bin range is computed, but not passed
-            to `distplot`)
+        flies_share_bins: if True, histograms for all flies use the same bin range
+            (that of all `data`). Ignored if `_USE_KDEPLOT`.
 
         **kwargs: passed to `distplot`
     """
@@ -4497,9 +4502,9 @@ def plot_one_dist_per_fly(data: pd.DataFrame, *, flies_share_bins: bool = True,
         x = kwargs['x']
         values = data[x]
         binrange = (values.min(), values.max())
-        # TODO delete
-        #print(f'plot_one_dist_per_fly: {binrange=}')
-        #
+        # (was previously computed, but not used)
+        if 'binrange' not in kwargs:
+            kwargs = {**kwargs, 'binrange': binrange}
 
     assert all(x in data.columns for x in fly_cols), 'need level= kwarg for sort=False'
     # TODO or CI across flies? possible?
@@ -5960,10 +5965,9 @@ def get_nonnormed_stats(df: pd.DataFrame) -> Set[str]:
     return nonnormed_stats
 
 
-def drop_nonnormed_stats(df: pd.DataFrame, *, copy: bool = True) -> pd.DataFrame:
+# (was named drop_nonnormed_stats, despite dropping normalized stats)
+def drop_normed_stats(df: pd.DataFrame, *, copy: bool = True) -> pd.DataFrame:
     """Returns `df` with only rows for stats NOT normalized (see `get_nonnormed_stats`).
-
-    NOTE: despite name, this drops rows with *normalized* stats.
     """
     nonnormed_stats = get_nonnormed_stats(df)
     subset = df[df.stat.isin(nonnormed_stats)]
@@ -6003,7 +6007,7 @@ def add_singleunit_bounds(df: pd.DataFrame,
 
     source_type = get_single_unique(df.source_type)
 
-    df = drop_nonnormed_stats(df)
+    df = drop_normed_stats(df)
 
     # TODO TODO default to no suffix and not dropping? old KC single responding unit
     # bounds (as written to json) were from data w/ pair_dilutions (min of -1.48 instead
@@ -6117,7 +6121,7 @@ def add_odormean_bounds(df: pd.DataFrame,
         'compute one point per odor (and per model variant or fly)'
     )
 
-    df = drop_nonnormed_stats(df)
+    df = drop_normed_stats(df)
 
     unique_stats = set(df.stat.unique())
     assert 'mean_response_rate' in unique_stats, f'{unique_stats=}'
@@ -6914,8 +6918,9 @@ def main():
             '...since -L/--leave-concs not passed'
         )
         diag_subset.columns = pd.MultiIndex.from_frame(diag_odors)
-        diag_subset = diag_subset.groupby(level=['panel', 'name'], sort=False,
-            axis='columns').mean().droplevel('name', axis='columns')
+        # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+        diag_subset = diag_subset.T.groupby(level=['panel', 'name'], sort=False
+            ).mean().T.droplevel('name', axis='columns')
 
     DUMMY_CONC_FOR_MODEL: str = ' @ 0'
     # NOTE: going back to only removing the concentrations for mixtures (adding
@@ -7498,7 +7503,9 @@ def main():
                         [x for x in wPNKC.columns.names if x != 'glomerulus'],
                         axis='columns'
                     )
-                    wPNKC = wPNKC.groupby('glomerulus', axis='columns').sum()
+                    # (groupby on transposed df, as pandas >= 3 removed groupby
+                    # axis kwarg)
+                    wPNKC = wPNKC.T.groupby(level='glomerulus').sum().T
 
             kc_glom_combo_counts = wPNKC[gloms_to_mix].value_counts().sort_index()
             kc_glom_combo_counts.name = 'n_kcs'
@@ -9749,7 +9756,7 @@ def main():
 
     # TODO factor to module level? (would then also have to pass in dataframes from
     # load_* fn)
-    def get_yang_panel_means(panel: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def get_yang_panel_means(panel: str) -> pd.DataFrame:
         """Returns tidy per-fly mean (across ROIs) KC responses / response rates.
 
         For Yang's data for `panel`, with 'stat' values `KC_RESP_COL` and
@@ -10240,11 +10247,12 @@ def main():
         # TODO seems maybe we were relying on odors already being sorted in output
         # of load_natmix_dff? assert sorted or re-sort here, to ensure?
 
-        orn_mean = orn_df.groupby(level='roi', axis='columns').mean()
+        # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+        orn_mean = orn_df.T.groupby(level='roi').mean().T
 
         # this numeric_only=True  is just to silence a FutureWarning. all dtypes are
         # float64 anyway...
-        orn_stddev = orn_df.groupby(level='roi', axis='columns').std(numeric_only=True)
+        orn_stddev = orn_df.T.groupby(level='roi').std(numeric_only=True).T
         # min # of flies per glomerulus is currently 5:
         # ipdb> orn_df.groupby(level='roi', axis='columns').apply(
         #   lambda x: len(x.columns)).min()
@@ -10332,8 +10340,9 @@ def main():
         # names.
         orn_df = preprocess_natmix_df(orn_df)
 
-        raw_orn = orn_df.groupby(level=['panel'] + fly_cols, sort=False,
-            axis='columns').mean().unstack().dropna()
+        # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+        raw_orn = orn_df.T.groupby(level=['panel'] + fly_cols, sort=False
+            ).mean().T.unstack().dropna()
         raw_orn = raw_orn.rename('value').to_frame()
 
         names_before = list(raw_orn.index.names)
@@ -11184,8 +11193,11 @@ def main():
         # model_pnkc_class
         # claw       0.046849
         # uniform    0.059784
-        perodor_model_response_rate = model_responded.groupby(level=nonroi_pivot_cols,
-            axis='columns').mean().droplevel(other_pivot_levels, axis='columns')
+        # (groupby on transposed df, as pandas >= 3 removed groupby axis kwarg)
+        perodor_model_response_rate = model_responded.T.groupby(
+            level=nonroi_pivot_cols).mean().T.droplevel(other_pivot_levels,
+            axis='columns'
+        )
         # TODO say how many models we are averaging over to get the response rates
         # in title, for the cases where one_model_per_pnkc_class=True but
         # not just one model per PNKC_CLASS_COL value (e.g. `-m` or default without
@@ -11935,14 +11947,17 @@ def main():
             else:
                 model_id_cols = ['source', PNKC_CLASS_COL]
 
-            gb_model = curr_model_responded.groupby(level=model_id_cols,
-                axis='columns', sort=False
-            )
+            # list of (model ID, columns of that model), as pandas >= 3 removed
+            # groupby axis kwarg
+            gb_model = [(gn, x.T) for gn, x in curr_model_responded.T.groupby(
+                level=model_id_cols, sort=False
+            )]
 
             # partially as another check that we will have non-responders, in inputs
             # used to compute class_sizes
-            model2n_kcs = gb_model.apply(lambda x: len(x.columns)).rename('n_kc'
-                ).reset_index()
+            model2n_kcs = pd.Series({gn: len(x.columns) for gn, x in gb_model},
+                name='n_kc'
+            ).rename_axis(model_id_cols).reset_index()
             assert (len(model2n_kcs[[PNKC_CLASS_COL, 'n_kc']].drop_duplicates()) ==
                 model2n_kcs[PNKC_CLASS_COL].nunique()
             )
@@ -11955,7 +11970,7 @@ def main():
             # TODO assert sizes are all 1828 (for uniform or probably also
             # wd20) or 1732 for claw/bouton stuff?
 
-            assert gb_model.apply(lambda x: (x == False).all().any()).all(), (
+            assert all((x == False).all().any() for _, x in gb_model), (
                 'not every model had non-responders prior to response class '
                 'calculation'
             )
@@ -11965,9 +11980,11 @@ def main():
             unique_stats = curr_model_responses.columns.get_level_values('stat'
                 ).unique()
 
-            gb_stat = curr_model_responses.groupby(level='stat', sort=False,
-                axis='columns'
-            )
+            # list of (stat, columns for that stat), as pandas >= 3 removed groupby
+            # axis kwarg
+            gb_stat = [(stat, x.T) for stat, x in curr_model_responses.T.groupby(
+                level='stat', sort=False
+            )]
             if unrestricted_full_model_params:
                 warn('skipping response class mean+count plotting, since '
                     'unrestricted -f'
@@ -12092,11 +12109,13 @@ def main():
 
             # TODO replace this w/ something from calls below, that also pass
             # responses (to not compute twice)?
-            model_class_sizes = gb_model.apply(lambda x:
-                # not passing responses= to this call, and just selecting first
-                # returned value (second would be None w/o responses= anyway)
-                summarize_response_classes(x, verbose=False, warn_=False)[0
-                    ].to_frame()
+            model_class_sizes = pd.concat({gn:
+                    # not passing responses= to this call, and just selecting first
+                    # returned value (second would be None w/o responses= anyway)
+                    summarize_response_classes(x, verbose=False, warn_=False)[0
+                        ].to_frame()
+                    for gn, x in gb_model
+                }, axis='columns', names=model_id_cols
             )
             assert model_class_sizes.columns.names == model_id_cols + [None]
             assert (

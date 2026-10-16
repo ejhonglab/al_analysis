@@ -552,8 +552,7 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
     ROIs, within each group of any higher priority sort keys.
 
     Args:
-        df: data to sort by fly/ROI column values. NOTE: `df.columns` is modified (to
-            add temporary levels used for sorting), so don't use `df` after calling.
+        df: data to sort by fly/ROI column values
 
         flies_first: if True, sorts on `fly_cols` columns primarily, followed by 'roi'
             ROI names. Otherwise, sorts on ROI names first.
@@ -563,6 +562,10 @@ def sort_fly_roi_cols(df: pd.DataFrame, flies_first: bool = False, sort_first_on
             highest priority sort key. Within each value of this key, sorts as without
             it.
     """
+    # shallow copy, so setting temporary column levels below doesn't modify input
+    # (it previously did)
+    df = df.copy(deep=False)
+
     index_names = df.columns.names
     # TODO replace w/ def from flyroi_cols? or just also assert it's in flyroi_cols?
     assert 'roi' in index_names or 'roi' == df.columns.name
@@ -1166,11 +1169,8 @@ def to_pickle(data: Any, path: Path) -> None:
         path.write_bytes(pickle.dumps(data, protocol=-1))
         return
 
-    if hasattr(data, 'to_pickle'):
-        # TODO maybe do this if instance DataFrame/Series, but otherwise fall back to
-        # something like generic read_pickle?
-        data.to_pickle(path)
-
+    # NOTE: objects with a `to_pickle` method (e.g. DataFrame/Series) used to also be
+    # written via that method first, but that output was always overwritten here
     path.write_bytes(pickle.dumps(data))
 
 
