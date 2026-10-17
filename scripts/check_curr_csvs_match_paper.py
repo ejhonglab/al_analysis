@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from hong2p.util import pd_allclose, pd_isclose, pd_indices_equal, shorten_path
+from hong2p.pandas import pd_allclose, pd_isclose, pd_indices_equal
+from hong2p.util import shorten_path
 
 from al_analysis.al_util import data_root, read_csv
 

@@ -100,8 +100,9 @@ from hong2p.olf import (solvent_str, drop_solvent_odors, odor_level_values,
 from hong2p.types import (Pathlike, DataFrameOrSeries, SeriesOrIndex, CMap, ParamDict,
     MplRotation
 )
-from hong2p.util import (num_notnull, num_null, pd_allclose, format_date, date_fmt_str,
-    reindex, is_scalar, pd_index_equal, equals, format_params, addlevel
+from hong2p.util import format_date, date_fmt_str, is_scalar, equals, format_params
+from hong2p.pandas import (num_notnull, num_null, pd_allclose, reindex, pd_index_equal,
+    addlevel, df_map
 )
 from hong2p.viz import (dff_latex, no_constrained_layout, add_group_labels_and_lines,
     stripplot
@@ -1830,7 +1831,7 @@ def agg_synapses_to_claws(syns: pd.DataFrame, claw_cols: List[str],
             f'{set(check_unique_per_claw) - set(cols_unique_per_claw)=}'
         )
 
-        claws[cols_unique_per_claw] = util.df_map(claws[cols_unique_per_claw],
+        claws[cols_unique_per_claw] = df_map(claws[cols_unique_per_claw],
             lambda x: x[0]
         )
 
@@ -16122,11 +16123,11 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # hack to fix all iteams are single element data array
             if isinstance(orn_df.values[0,0], xr.DataArray):
                 orn_corr = plot_responses_and_corr(
-                    subset_fn(util.df_map(orn_df, lambda x: x.item())), plot_dir,
+                    subset_fn(df_map(orn_df, lambda x: x.item())), plot_dir,
                     f'orns{suffix}', title=title, **plot_kws
                 )
                 plot_responses_and_corr(
-                    subset_fn(util.df_map(pn_df, lambda x: x.item())), plot_dir,
+                    subset_fn(df_map(pn_df, lambda x: x.item())), plot_dir,
                     f'pns{suffix}', title=title, **plot_kws
                 )
             else:
@@ -25400,7 +25401,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 '''
                 # removing the concentration part of each odor str, e.g.
                 # 'a @ -3' -> 'a' (since Remy and I format that part slightly diff)
-                pairs = util.df_map(pairs, olf.parse_odor_name)
+                pairs = df_map(pairs, olf.parse_odor_name)
                 # if any odor is presented at >1 conc, this 1st assertion would trip
                 assert not pairs.duplicated().any()
                 assert not pairs.isna().any().any()
@@ -25870,7 +25871,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 # TODO factor this index conc stripping to another olf fn? don't i
                 # already do something like this in model_yang_mixtures.py code?
                 merged_corrs_index_no_concs = pd.MultiIndex.from_frame(
-                    util.df_map(merged_corrs.index.to_frame(index=False),
+                    df_map(merged_corrs.index.to_frame(index=False),
                         olf.strip_concs_from_odor_str
                     )
                 )
@@ -26483,7 +26484,7 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, *, drop_nonmegamat: bool 
             # final 4 flies we had been using)
             corrs_to_compare_to_anoop_data = fly_corrs
         else:
-            megamat_pairs = util.df_map(fly_corrs.columns.to_frame(), odor_is_megamat
+            megamat_pairs = df_map(fly_corrs.columns.to_frame(), odor_is_megamat
                 ).all(axis='columns')
             corrs_to_compare_to_anoop_data = fly_corrs.loc[:, megamat_pairs]
             assert len(corrs_to_compare_to_anoop_data.columns) == n_megamat_only_pairs
@@ -27181,7 +27182,7 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
         final_megamat_datefly = set(flymean_corrs.index.get_level_values('datefly'))
 
         flymean_corrs.columns = pd.MultiIndex.from_frame(
-            util.df_map(flymean_corrs.columns.to_frame(index=False), olf.parse_odor_name)
+            df_map(flymean_corrs.columns.to_frame(index=False), olf.parse_odor_name)
         )
         assert not flymean_corrs.columns.duplicated().any()
 

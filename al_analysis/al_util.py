@@ -52,7 +52,8 @@ import xarray as xr
 from hong2p import olf, util, viz
 from hong2p.olf import format_mix_from_strs, solvent_str
 from hong2p.roi import is_ijroi_named
-from hong2p.util import pd_allclose, read_json
+from hong2p.pandas import addlevel, pd_allclose
+from hong2p.util import read_json
 from hong2p.util import to_json as _to_json
 from hong2p.viz import (dff_latex, map_each_series_to_rgb, rgb_tuple_df_to_3d_array,
     Ticklabels, is_cmap_diverging
@@ -1838,7 +1839,7 @@ def sort_odors(df: pd.DataFrame, *, add_panel: Optional[str] = None, **kwargs
         assert type(add_panel) is str
         # TODO assert 'panel' not already in (relevant axis) index level names
         # (or just ignore if it is, at least if already there)
-        df = util.addlevel(df, 'panel', add_panel)
+        df = addlevel(df, 'panel', add_panel)
 
     return olf.sort_odors(df, panel_order=panel_order,
         # TODO what does if_panel_missing=None do? comment explaining (/ change code to
@@ -2236,7 +2237,7 @@ def n_multichoose_k(n: int, k: int) -> int:
     return int(ret)
 
 
-# TODO refactor to hong2p (replace util.melt_symmetric [used once in here])?
+# TODO refactor to hong2p (replace hong2p.pandas.melt_symmetric [used once in here])?
 # TODO TODO test that a given pair will always be returned in a fixed order, so that no
 # matter the set of odors we pass in here, we can average across outputs from diff calls
 # to this fn. relevant for now loading old megamat data. not sure current implementation
@@ -4143,7 +4144,7 @@ def load_remy_fly_binary_responses(fly_sparsity_path: Path,
 
     if acq_ledger is not None:
         curr_acq = acq_ledger.loc[(date, fly_num), remy_fly_id]
-        fly_df = util.addlevel(fly_df, remy_fly_id, curr_acq)
+        fly_df = addlevel(fly_df, remy_fly_id, curr_acq)
 
         msg = f'{fly_dirname} ({remy_fly_id}={curr_acq})'
     else:

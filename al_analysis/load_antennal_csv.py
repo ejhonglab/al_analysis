@@ -14,7 +14,7 @@ import pandas as pd
 from hong2p.olf import add_mix_str_index_level, solvent_str, mix_col
 from hong2p.roi import certain_roi_indices
 from hong2p.types import Pathlike
-from hong2p.util import pd_allclose
+from hong2p.pandas import pd_allclose
 
 from al_analysis.al_util import (format_mtime, warn, sort_odors, fly_cols, flyroi_cols,
     read_csv, roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,

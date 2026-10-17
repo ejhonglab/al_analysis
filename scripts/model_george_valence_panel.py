@@ -11,7 +11,7 @@ import pandas as pd
 import seaborn as sns
 from tqdm import tqdm
 
-from hong2p.util import pd_allclose, addlevel
+from hong2p.pandas import pd_allclose, addlevel
 from hong2p.olf import parse_odor_name
 
 from al_analysis import al_util

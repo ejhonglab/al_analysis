@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hong2p.util import pd_allclose, pd_indices_equal
+from hong2p.pandas import pd_allclose, pd_indices_equal
 
 from al_analysis import al_util
 from al_analysis.al_util import (data_root, read_csv, read_parquet, load_megamat_dff,

@@ -54,8 +54,12 @@ from hong2p.roi import (rois2best_planes_only, ijroi_filename, has_ijrois, ijroi
     select_certain_rois, is_ijroi_plane_outline
 )
 from hong2p.util import (shorten_path, shorten_stimfile_path, format_date, date_fmt_str,
+    add_fly_id
+)
+from hong2p.pandas import (addlevel, check_index_vals_unique, df_map, melt_symmetric,
+    pd_allclose, reindex,
     # TODO refactor current stuff to use these (num_[not]null)
-    num_notnull, add_fly_id, pd_allclose, reindex
+    num_notnull
 )
 from hong2p.olf import (format_mix_from_strs, format_odor_list, solvent_str,
     odor2abbrev, odor_lists_to_multiindex
@@ -1357,7 +1361,7 @@ def drop_redone_odors(df: pd.DataFrame) -> pd.DataFrame:
     ).T
 
     # TODO TODO does this check both columns (.columns) and rows (.index)?
-    util.check_index_vals_unique(df)
+    check_index_vals_unique(df)
 
     return df
 
@@ -1471,7 +1475,7 @@ def merge_rois_across_recordings(df: pd.DataFrame) -> pd.DataFrame:
     assert df.notnull().sum().sum() == n_before
     assert recording_col not in df.columns.names
 
-    util.check_index_vals_unique(df)
+    check_index_vals_unique(df)
 
     return df
 
@@ -1600,7 +1604,7 @@ def drop_superfluous_uncertain_rois(df: pd.DataFrame) -> pd.DataFrame:
     # first anyway)
     #assert not fly_rois.isna().any().any()
 
-    util.check_index_vals_unique(df)
+    check_index_vals_unique(df)
     return df
 
 
@@ -4676,8 +4680,8 @@ def process_recording(date_and_fly_num, thor_image_and_sync_dir, shared_state=No
         For DataArray input, metadata is added as coordinates.
         """
         if isinstance(data, pd.DataFrame):
-            df = util.addlevel(data, new_row_level_names, new_row_level_values)
-            return util.addlevel(df, new_col_level_names, new_col_level_values,
+            df = addlevel(data, new_row_level_names, new_row_level_values)
+            return addlevel(df, new_col_level_names, new_col_level_values,
                 axis='columns'
             )
         # Assuming DataArray here
@@ -6964,14 +6968,14 @@ def recompute_responses_from_traces_per_panel(keys_and_paired_dirs, *,
             #
             # NOTE: also adding panel level to columns, so no duplicate if trying to
             # merge across panels
-            df = util.addlevel(df, 'thorimage_id', panel, axis='columns')
+            df = addlevel(df, 'thorimage_id', panel, axis='columns')
             #
 
             # TODO TODO how to define this properly? (and need in columns too?)
-            df = util.addlevel(df, 'is_pair', False)
+            df = addlevel(df, 'is_pair', False)
 
-            df = util.addlevel(df, 'panel', panel)
-            df = util.addlevel(df, ['date', 'fly_num'], (date, fly_num), axis='columns')
+            df = addlevel(df, 'panel', panel)
+            df = addlevel(df, ['date', 'fly_num'], (date, fly_num), axis='columns')
 
             fly_panel_dfs.append(df)
 
@@ -7216,7 +7220,7 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
             # add comment explaining
             # TODO replace w/ corr_triangular (+ move [invert_]corr_triangular to
             # hong2p.util?)
-            ser = util.melt_symmetric(arr.to_pandas(), suffixes=('', '_b'),
+            ser = melt_symmetric(arr.to_pandas(), suffixes=('', '_b'),
                 keep_duplicate_values=True
             )
 
@@ -7235,7 +7239,7 @@ def plot_corrs(corr_list: List[xr.DataArray], output_root: Path, plot_relpath: P
 
             mean_ser = ser.groupby(['odor1', 'odor1_b']).mean()
 
-            mean_ser = util.addlevel(mean_ser, coord_dict.keys(), coord_dict.values())
+            mean_ser = addlevel(mean_ser, coord_dict.keys(), coord_dict.values())
             fly_panel_sers.append(mean_ser)
 
         panel_tidy_corrs = pd.concat(fly_panel_sers).reset_index(name='correlation')
@@ -7936,7 +7940,7 @@ def competitive_binding_model(mean_df):
     #    conc_df.columns.to_frame().applymap(odor_str2conc)
     #)
 
-    concs_df = util.df_map(mean_df.columns.to_frame(), odor_str2conc)
+    concs_df = df_map(mean_df.columns.to_frame(), odor_str2conc)
     concs_df.columns.name = 'odor'
     odor_col_names = concs_df.columns
     ests = []
@@ -8634,7 +8638,7 @@ def fill_to_hemibrain(df: pd.DataFrame, value=np.nan, *, verbose=False) -> pd.Da
 
             # NOTE: ROI names no longer sorted at this point
 
-            fly_df = util.addlevel(fly_df, ['date', 'fly_num'], fly, axis='columns')
+            fly_df = addlevel(fly_df, ['date', 'fly_num'], fly, axis='columns')
             fly_df_list.append(fly_df)
 
         # does not sort the column axis, and no options for that (only for non-concat
@@ -10423,7 +10427,7 @@ def main():
             # https://stackoverflow.com/questions/54677161
             # TODO delete (or check reindex argument is unique, or that output is still
             # as expected) (different issues w/ xarray stuff? i assume
-            # hong2p.util.reindex [which i added to bundle this uniqueness check] would
+            # hong2p.pandas.reindex [which i added to bundle this uniqueness check] would
             # not work here w/o heavy modifications)
             anat = anat.reindex(x=anat.x[::-1])
 
@@ -11044,7 +11048,7 @@ def main():
         roi_best_plane_depths = pd.concat(roi2best_plane_depth_list, axis='columns',
             verify_integrity=True
         )
-        util.check_index_vals_unique(roi_best_plane_depths)
+        check_index_vals_unique(roi_best_plane_depths)
 
         # TODO delete? did i ever actually need this for roi_best_plane_depths?
         # failing assertion (b/c depth defined for each recording, and not
@@ -11057,12 +11061,12 @@ def main():
                 x for x in roi_best_plane_depths.columns.names if x != 'thorimage_id'
             ], sort=False
         ).mean().T
-        util.check_index_vals_unique(roi_best_plane_depths)
+        check_index_vals_unique(roi_best_plane_depths)
     else:
         # TODO warning here saying we are throwing this away?
         roi_best_plane_depths = None
 
-    util.check_index_vals_unique(trial_df)
+    check_index_vals_unique(trial_df)
     assert num_notnull(trial_df) == n_before
     trial_df = drop_redone_odors(trial_df)
 
@@ -11570,7 +11574,7 @@ def main():
             # TODO warning message w/ fly_id and specific glomeruli in each fill
             # category
 
-            fly_df = util.addlevel(fly_df, 'fly_id', fly_id, axis='columns')
+            fly_df = addlevel(fly_df, 'fly_id', fly_id, axis='columns')
 
             filled_fly_dfs.append(fly_df)
 
@@ -11641,7 +11645,7 @@ def main():
             mean_df_diag_input = trialmean_df.copy()
         #
 
-        trialmean_df = util.addlevel(trialmean_df, 'panel', panel)
+        trialmean_df = addlevel(trialmean_df, 'panel', panel)
 
         mean_df = trialmean_df.T.groupby(level='roi', sort=False).mean().T
 

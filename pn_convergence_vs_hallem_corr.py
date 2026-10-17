@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from hong2p import olf
-from hong2p.util import melt_symmetric
+from hong2p.pandas import melt_symmetric
 from drosolf import orns
 
 # TODO refactor so we don't need to import from al_analysis (which still runs too much

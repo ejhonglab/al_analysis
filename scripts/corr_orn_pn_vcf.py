@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import permutation_test, pearsonr
 
 from hong2p.olf import parse_odor_name
-from hong2p.util import pd_allclose, shorten_path, addlevel
+from hong2p.pandas import pd_allclose, addlevel
+from hong2p.util import shorten_path
 from hong2p.viz import matshow, dff_latex
 
 from al_analysis import al_util

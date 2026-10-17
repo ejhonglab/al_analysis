@@ -27,9 +27,8 @@ from scipy.stats import percentileofscore
 import seaborn as sns
 from tqdm import tqdm
 
-from hong2p.util import (pd_allclose, pd_indices_equal, addlevel, add_group_id, reindex,
-    subset_same_in_all_dicts, format_params
-)
+from hong2p.pandas import pd_allclose, pd_indices_equal, addlevel, reindex
+from hong2p.util import add_group_id, subset_same_in_all_dicts, format_params
 from hong2p import olf
 from hong2p.olf import (parse_log10_conc, solvent_str, component_delim, format_odor,
     format_mix_from_strs

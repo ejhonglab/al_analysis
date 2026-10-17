@@ -45,7 +45,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from hong2p.olf import strip_concs_from_odor_str
-from hong2p.util import pd_allclose, pd_isclose
+from hong2p.pandas import pd_allclose, pd_isclose
 
 from al_analysis import al_util
 from al_analysis.al_util import (data_root, fly_cols, read_csv, read_parquet,

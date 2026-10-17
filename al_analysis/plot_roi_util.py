@@ -21,6 +21,7 @@ import psutil
 from matplotlib.backend_bases import MouseButton
 
 from hong2p import util, olf, viz
+from hong2p.pandas import addlevel, df_map
 from hong2p.roi import extract_traces_bool_masks, ijroi_masks
 from hong2p.types import Pathlike
 from drosolf import orns
@@ -96,7 +97,7 @@ def _get_odor_name_df(df: pd.DataFrame) -> pd.DataFrame:
     Returned DataFrame has columns ['name1', 'name2'], and one row per row of `df`.
     """
     # TODO return columns should always just be ['name1','name2'] or something
-    df = util.df_map(df.reset_index()[['odor1','odor2']], olf.parse_odor_name)
+    df = df_map(df.reset_index()[['odor1','odor2']], olf.parse_odor_name)
     df.columns = ['name1', 'name2']
     return df
 
@@ -260,10 +261,10 @@ def extract_ij_responses(input_dir: Pathlike, roi_index: int,
 
         new_level_names = ['panel', 'is_pair']
         new_level_vals = [panel, is_pair]
-        subset_df = util.addlevel(subset_df, new_level_names, new_level_vals)
+        subset_df = addlevel(subset_df, new_level_names, new_level_vals)
 
         subset_df.columns.name = 'roi'
-        subset_df = util.addlevel(subset_df,
+        subset_df = addlevel(subset_df,
             ['from_hallem', 'newly_analyzed', 'date', 'fly_num'],
             [False, True, None, None], axis='columns'
         )
@@ -858,7 +859,7 @@ def load_and_plot(args):
             # calling from imagej
             warn(f'no ROIs matching any of {roi_strs} in cached responses')
         else:
-            df = util.addlevel(df, ['from_hallem','newly_analyzed'], [False, False],
+            df = addlevel(df, ['from_hallem','newly_analyzed'], [False, False],
                 axis='columns'
             )
             cached_responses_df = dropna(df.loc[:, matching])
@@ -869,12 +870,12 @@ def load_and_plot(args):
     if hallem:
         new_level_names = ['panel', 'is_pair', 'odor2', 'repeat']
         new_level_vals = ['hallem', False, olf.solvent_str, 0]
-        hallem_overlap_df = util.addlevel(hallem_overlap_df, new_level_names,
+        hallem_overlap_df = addlevel(hallem_overlap_df, new_level_names,
             new_level_vals
         )
         hallem_overlap_df = hallem_overlap_df.reorder_levels(new_df.index.names)
 
-        hallem_overlap_df = util.addlevel(hallem_overlap_df,
+        hallem_overlap_df = addlevel(hallem_overlap_df,
             ['from_hallem','newly_analyzed','date','fly_num'],
             [True, False, None, None], axis='columns'
         )

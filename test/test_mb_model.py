@@ -20,7 +20,8 @@ import xarray as xr
 from al_analysis import al_util
 #
 from hong2p.types import ParamDict
-from hong2p.util import pd_allclose, equals, is_scalar, pd_indices_equal
+from hong2p.pandas import pd_allclose, pd_indices_equal
+from hong2p.util import equals, is_scalar
 from hong2p.xarray import (coords_equal, series2xarray_like, move_all_coords_to_index,
     drop_scalar_coords
 )
