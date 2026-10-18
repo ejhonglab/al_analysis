@@ -1482,8 +1482,8 @@ def test_multiresponder_APL_boost(orn_deltas):
 # parameters from a call invoked normally?)
 
 # TODO TODO move much/all of al_analysis/model_test.py into (separate) tests in here
-# (started to do that w/ test_hemibrain_matt_repro, but need to finish)
-# (anything i still care about in there?)
+# (anything i still care about in there? the Hallem-input parts are no longer
+# supported)
 
 # TODO test that the parameter i added to control what fraction of sparsity comes from
 # threshold vs APL limits work as expected
@@ -1769,62 +1769,6 @@ def test_uniform_paper_repro(tmp_path):
         print()
 
 
-def test_hemibrain_matt_repro():
-    """Tests hemibrain model (tuned on Hallem) reproduces Matt's committed responses.
-    """
-    # TODO delete (may want to commit some other things from here first tho)
-    #matt_data_dir = Path('../matt/matt-modeling/data')
-    #
-    matt_data_dir = data_root / 'from_matt'
-
-    # NOTE: was NOT also committed under data/from_matt (like
-    # hemibrain/halfmat/responses.csv below was)
-    # TODO either delete this or also commit this file?
-    #
-    # TODO fix code that generated hemimatrix.npy / delete
-    # (to remove effect of hc_data.csv methanoic acid bug that persisted in many copies
-    # of this csv) (won't be equal to `wide` until fixed)
-    # (what was hemimatrix.npy exactly tho? and why would odor responses matter for it?
-    # is it not just connectivity?)
-    #
-    # Still not sure which script of Matt's wrote this (couldn't find by grepping his
-    # code on hal), but we can compare it to the same matrix reformatted from
-    # responses.csv (which is written in hemimat-modeling.html)
-    #hemi = np.load(matt_data_dir / 'reference/hemimatrix.npy')
-
-    # I regenerated this, using Matt's account on hal, by manually running all the
-    # relevant code from matt-modeling/docs/hemimat-modeling.html, because it seemed the
-    # previous version was affected by the hc_data.csv methanoic acid error.
-    # After regenerating it, my outputs computed in this script are now equal.
-    df = pd.read_csv(matt_data_dir / 'hemibrain/halfmat/responses.csv')
-
-    # The Categoricals are just to keep order of odors and KC body IDs the same as in
-    # input. https://stackoverflow.com/questions/57177605/
-    df['ordered_odors'] = pd.Categorical(df.odor, categories=df.odor.unique(),
-        ordered=True
-    )
-    df['ordered_kcs'] = pd.Categorical(df.kc, categories=df.kc.unique(), ordered=True)
-    wide = df.pivot(columns='ordered_odors', index='ordered_kcs', values='r')
-    del df
-
-    # TODO delete? (has been commented basically since creation of this test)
-    #assert np.array_equal(hemi, wide.values)
-    #del hemi
-
-    # TODO rename to run_model? or have a separate fn for that? take `mp` (and `rv` too,
-    # or are even fit thresholds in mp?) as input (and return from fit_model?)?
-    # TODO modify so i don't need to return gkc_wide here (or at least be more clear
-    # about what it is, both in docs and in name)?
-    responses, _, gkc_wide, _ = _fit_mb_model(tune_on_hallem=True,
-        pn2kc_connections='hemibrain', _use_matt_wPNKC=True,
-        # TODO check we actually need hardcode_intial_sp=True
-        hardcode_initial_sp=True
-    )
-    assert gkc_wide.index.name == KC_ID
-    assert np.array_equal(wide.index, gkc_wide.index)
-    assert np.array_equal(responses, wide)
-
-
 def test_step_around():
     """Tests `step_around` recreates paper wAPLKC steps, and works w/ vector input.
     """
@@ -2032,9 +1976,6 @@ def test_btn_expansion(tmp_path, orn_deltas, kws):
 # if we set all of the preset weights to be either 1 or all uniform w/ mean of 1
 # (and which of those two options is correct?)
 
-# TODO add test we can manually pass in hallem inputs and get same results as using some
-# of the calls that don't pass in orn_deltas (may need to specify tune_on_hallem=True?
-# or not if orn_deltas not passed?)
 
 # TODO do variable_n_claws cases support sensitivity_analysis? is it just a matter of
 # tracking some of the metadata getting cumbersome, as to why i decided not to support

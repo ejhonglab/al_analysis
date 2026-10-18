@@ -9992,13 +9992,13 @@ def main():
     # TODO extend skip CLI arg to work on some of the steps referenced by -i flag?
     # (was nonroi one of the more time consuming ones?)
     skippable_steps = ('intensity', 'corr', 'model', 'model-sensitivity',
-        'model-seeds', 'model-hallem', 'model-dynamics', 'ijroi'
+        'model-seeds', 'model-dynamics', 'ijroi'
     )
     # NOTE: model-sensitivity (and others w/ 'model-' prefix) can only run as part of
     # model step
     default_steps_to_skip = ('intensity', 'corr', 'model')
     # TODO add options for sensitivity_analysis + any MB model fitting w/ n_seeds>1?
-    # + hallem fitting? or cache some of these (possibly adding to -i options)?
+    # or cache some of these (possibly adding to -i options)?
     parser.add_argument('-s', '--skip', nargs='?', const='',
         default=','.join(default_steps_to_skip),
         help='Comma separated list of steps to skip (default: %(default)s). '
@@ -13045,9 +13045,6 @@ def main():
         assert 'model-dynamics' in skippable_steps
         skip_model_dynamics_saving = 'model-dynamics' in steps_to_skip
 
-        assert 'model-hallem' in skippable_steps
-        skip_hallem_models = 'model-hallem' in steps_to_skip
-
         # TODO worth warning that model won't be run otherwise?
         if driver in orn_drivers:
             # TODO TODO may want to skip in general if we have trial responses redefined
@@ -13107,7 +13104,6 @@ def main():
                 skip_sensitivity_analysis=skip_sensitivity_analysis,
                 skip_models_with_seeds=skip_models_with_seeds,
                 skip_model_dynamics_saving= skip_model_dynamics_saving,
-                skip_hallem_models=skip_hallem_models,
                 first_model_kws_only=first_model_kws_only,
                 copy_to_model_dirs=copy_to_model_dirs,
                 response_calc_params=response_calc_params,

@@ -9067,7 +9067,7 @@ def get_dynamics(mp: osm.ModelParams, rv: osm.RunVars, odor_index: pd.Index,
     # TODO TODO or just go based on current mp.sim_only values, so i don't need to pass
     # anything extra in? assert that would have same effect as my previous slicing after
     # array creation
-    #if tune_on_hallem and not hallem_input:
+    #if tune_on_hallem:
     #    # TODO TODO update to work downstream of DataArray defs (so i can refactor that
     #    # code to group below w/ above) (or unsupport this case)
     #    orn_sims = orn_sims[n_hallem_odors:]
@@ -10619,7 +10619,7 @@ def plot_example_model_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     # TODO add units for these (firing rate in Hz?) (via y-axis label?)
     #
     # units seems to be firing rates (absolute i think. actually, there are some
-    # negative values, even in hallem_input=True [w/ matt config] case. that's not a
+    # negative values, even in Hallem input [w/ matt config] case. that's not a
     # mistake though, is it?)
     if glom != slice(None):
         orn_label = f'{glom_str} ORN'
@@ -12270,10 +12270,8 @@ _seen_olfsysm_logs = set()
 # TODO accept sparsities argument (or scalar avg probably?), for target when tuning
 # TODO delete _use_matt_wPNKC after resolving differences wrt Prat's? maybe won't be
 # possible though, and still want to be able to reproduce matt's stuff...
-# TODO actually, probably can delete sim_odors now? why even have it? to tune on a diff
-# set than to return responses for?
 # TODO check new default for tune_on_hallem didn't break any of my existing calling code
-def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
+def fit_mb_model(orn_deltas: pd.DataFrame, *,
     tune_on_hallem: bool = False, pn2kc_connections: str = 'hemibrain',
     use_connectome_APL_weights: bool = False, weight_divisor: Optional[float] = None,
     prat_claws: bool = False, prat_boutons: bool = False,
@@ -12302,7 +12300,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     Btn_separate: bool = False, Btn_num_per_glom: int = 10,
     _use_matt_wPNKC: bool = False,
     drop_kcs_with_no_input: bool = True, _drop_glom_with_plus: bool = True,
-    _add_back_methanoic_acid_mistake=False, equalize_kc_type_sparsity: bool = False,
+    equalize_kc_type_sparsity: bool = False,
     ab_prime_response_rate_target: Optional[float] = None,
     homeostatic_thrs: bool = False,
     fixed_thr: Optional[Union[float, np.ndarray]] = None,
@@ -12462,12 +12460,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             If 'only', will NOT boost `wAPLKC` and will only boost `wKCAPL` for these
             cells.
 
-        sim_odors: optional set of odor strs (e.g. 'eb @ -3'). only used when running on
-            Hallem data (`orn_deltas=None`), to subset returned responses to these odors
-            (matched by name, w/ concentrations in [-3, -1) matched to Hallem's -2), and
-            for internal plots. not typically needed.
-
-        tune_on_hallem: if True (and `orn_deltas` passed), tunes thresholds / APL
+        tune_on_hallem: if True, tunes thresholds / APL
             weights on Hallem odors, then runs model on `orn_deltas` w/ those values
 
         prat_claws / prat_boutons / dist_weight / Btn_separate / Btn_num_per_glom:
@@ -12508,9 +12501,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         binary_search_on_overshoot / hardcode_initial_sp / n_spikes_for_response: set
             corresponding `mp.kc` olfsysm (tuning) parameters (olfsysm defaults used for
             any that are None)
-
-        _add_back_methanoic_acid_mistake: (internal use only) recreates old bug in
-            Hallem methanoic acid data, to reproduce old outputs (Hallem input only)
 
         equalize_kc_type_sparsity: if True, picks separate threshold for each KC type,
             so pre-APL response rates are equal across types (before APL is tuned)
@@ -12650,48 +12640,42 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             'microglomeruli_apl_units=True'
         )
 
-    # TODO rename hallem_input to only_run_on_hallem (or something better)?
-    hallem_input = False
-    if orn_deltas is None:
-        hallem_input = True
-        # TODO just load orn_deltas here?
-    else:
-        # TODO delete
-        orn_deltas = orn_deltas.copy()
+    # TODO delete
+    orn_deltas = orn_deltas.copy()
+    #
+
+    # TODO switch to requiring glomerulus_col (and in the one test that passes
+    # hallem as input explicitly, process to convert to glomeruli before calling
+    # this fn)?
+    valid_orn_index_names = ('receptor', glomerulus_col)
+    if orn_deltas.index.name not in valid_orn_index_names:
+        raise ValueError(f"{orn_deltas.index.name=} not in {valid_orn_index_names}")
+
+    # TODO delete this path? shouldn't really be used...
+    if orn_deltas.index.name == 'receptor':
+        # TODO delete? (/ use to explain what is happening in case where
+        # verbose=True and we are dropping stuff below)
+        receptors = orn_deltas.index.copy()
         #
 
-        # TODO switch to requiring glomerulus_col (and in the one test that passes
-        # hallem as input explicitly, process to convert to glomeruli before calling
-        # this fn)?
-        valid_orn_index_names = ('receptor', glomerulus_col)
-        if orn_deltas.index.name not in valid_orn_index_names:
-            raise ValueError(f"{orn_deltas.index.name=} not in {valid_orn_index_names}")
+        glomeruli = [
+            orns.find_glomeruli(r, verbose=False) for r in orn_deltas.index
+        ]
+        assert not any('+' in g for gs in glomeruli for g in gs)
+        glomeruli = ['+'.join(gs) for gs in glomeruli]
 
-        # TODO delete this path? shouldn't really be used...
-        if orn_deltas.index.name == 'receptor':
-            # TODO delete? (/ use to explain what is happening in case where
-            # verbose=True and we are dropping stuff below)
-            receptors = orn_deltas.index.copy()
-            #
+        orn_deltas.index = glomeruli
+        orn_deltas.index.name = glomerulus_col
 
-            glomeruli = [
-                orns.find_glomeruli(r, verbose=False) for r in orn_deltas.index
-            ]
-            assert not any('+' in g for gs in glomeruli for g in gs)
-            glomeruli = ['+'.join(gs) for gs in glomeruli]
+        # should drop any input glomeruli w/ '+' in name (e.g. 'DM3+DM5')
+        orn_deltas = handle_multiglomerular_receptors(orn_deltas,
+            drop=drop_multiglomerular_receptors
+        )
+    #
 
-            orn_deltas.index = glomeruli
-            orn_deltas.index.name = glomerulus_col
-
-            # should drop any input glomeruli w/ '+' in name (e.g. 'DM3+DM5')
-            orn_deltas = handle_multiglomerular_receptors(orn_deltas,
-                drop=drop_multiglomerular_receptors
-            )
-        #
-
-        # TODO if orn_deltas.index.name == glomerulus_col, assert all input are in
-        # task/connectome glomerulus names
-        # TODO same check on hallem glomeruli names too (below)?
+    # TODO if orn_deltas.index.name == glomerulus_col, assert all input are in
+    # task/connectome glomerulus names
+    # TODO same check on hallem glomeruli names too (below)?
 
     mp = osm.ModelParams()
 
@@ -12950,43 +12934,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # TODO refactor
     hallem_orn_deltas = abbrev_hallem_odor_index(hallem_orn_deltas, axis='columns')
 
-    # TODO delete? still want to support?
-    # TODO add comment explaining purpose of this block
-    if hallem_input and sim_odors is not None:
-        sim_odors_names2concs = dict()
-        for odor_str in sim_odors:
-            name = olf.parse_odor_name(odor_str)
-            log10_conc = olf.parse_log10_conc(odor_str)
-
-            # If input has any odor at multiple concentrations, this will fail...
-            assert name not in sim_odors_names2concs
-            sim_odors_names2concs[name] = log10_conc
-
-        assert len(sim_odors_names2concs) == len(sim_odors)
-
-        # These should have any abbreviations applied, but should currently all be the
-        # main data (excluding lower concentration ramps + fruits), and not include
-        # concentration (via suffixes like '@ -3')
-        hallem_odors = hallem_orn_deltas.columns
-
-        # TODO would need to relax this if i ever add lower conc data to hallem input
-        assert all(olf.parse_log10_conc(x) is None for x in hallem_odors)
-
-        # TODO TODO replace w/ hope_hallem_minus2_is_our_minus3 code used elsewhere
-        # (refactoring to share), rather than overcomplicating here?
-        #
-        # TODO TODO warn about any fuzzy conc matching (maybe later, only if
-        # hallem_input=True?)
-        # (easier if i split this into ~2 steps?)
-        hallem_sim_odors = [n for n in hallem_odors
-            if n in sim_odors_names2concs and -3 <= sim_odors_names2concs[n] < -1
-        ]
-        # this may not be all i want to check
-        assert len(hallem_sim_odors) == len(sim_odors)
-
-        # since we are appending ' @ -2' to hallem_orn_deltas.columns below
-        hallem_sim_odors = [f'{n} @ -2' for n in hallem_sim_odors]
-
     # TODO factor to drosolf.orns?
     assert hallem_orn_deltas.columns.name == 'odor'
     hallem_orn_deltas.columns += ' @ -2'
@@ -13028,21 +12975,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert hallem_orn_deltas_for_csv.index.equals(deltas_from_csv.index)
         del hallem_orn_deltas_for_csv, sfr_for_csv
 
-    if hallem_input:
-        orn_deltas = hallem_orn_deltas.copy()
-
-        if _add_back_methanoic_acid_mistake:
-            warn('intentionally mangling Hallem methanoic acid responses, to recreate '
-                'old bug in Ann/Matt modeling analysis! do not use for any new '
-                'results!'
-            )
-            orn_deltas['methanoic acid @ -2'] = [
-                -2,-14,31,0,33,-8,-6,-9,8,-1,-20,3,25,2,5,12,-8,-9,14,7,0,4,14
-            ]
-
-    # TODO should tune_on_hallem be set True if input is already hallem? prob?
-    # (i.e. if orn_deltas not passed)
-
     # TODO (delete?) implement means of getting threshold from hallem input + hallem
     # glomeruli only -> somehow applying that threshold [+APL inh?] globally (and
     # running subsequent stuff w/ all glomeruli, including non-hallem ones) (even
@@ -13052,16 +12984,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # w/ all glomeruli (or does it still not make sense to use the same global params,
     # w/ new PNs w/ presumably new spontaneous input now there? think it might not make
     # sense...)
-    # TODO delete
-    '''
-    if not hallem_input and tune_on_hallem:
-        # (think i always have this True when tune_on_hallem=True, at the moment, but if
-        # i can do what i'm asking in comment above, could try letting this be False
-        # while tune_on_hallem=True, for input that has more glomeruli than in Hallem)
-        print(f'{drop_receptors_not_in_hallem=}')
-        import ipdb; ipdb.set_trace()
-    '''
-    #
 
     connectome = get_connectome(pn2kc_connections)
 
@@ -13256,106 +13178,105 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         assert not glomerulus_index.duplicated().any()
 
     orn_deltas_pre_filling = None
-    if not hallem_input:
-        zero_filling = (~ glomerulus_index.isin(orn_deltas.index))
-        if zero_filling.any():
-            msg = ('zero filling spike deltas for glomeruli not in data: '
-                f'{sorted(glomerulus_index[zero_filling])}'
-            )
-            warn(msg)
-
-        # TODO (?) if i add 'uniform' draw path, make sure zero filling is keeping
-        # glomeruli that would implicitly be dropped in hemibrain (/ hemidraw / caron)
-        # cases (as we don't need wPNKC info in 'uniform' case, as all glomeruli are
-        # sampled equally, without using any explicit connectivity / distribution)
-        # (don't warn there either)
-        #
-        # Any stuff w/ '+' in name (e.g. 'DM3+DM5' in Hallem) should already have been
-        # dropped.
-        input_glomeruli = set(orn_deltas.index)
-        glomeruli_missing_in_wPNKC = input_glomeruli - set(glomerulus_index)
-        if len(glomeruli_missing_in_wPNKC) > 0:
-            # TODO assert False? seems we could do that at least for megamat data...
-            warn('dropping glomeruli not in wPNKC (while zero-filling): '
-                f'{glomeruli_missing_in_wPNKC}'
-            )
-
-        if tune_on_hallem:
-            # TODO make sure we aren't writing wPNKC in this case (and maybe not other
-            # hallem CSVs? they are probably fine either way...)
-            hallem_not_in_wPNKC = (
-                set(hallem_orn_deltas.index) - set(glomerulus_index)
-            )
-            assert len(hallem_not_in_wPNKC) == 0 or hallem_not_in_wPNKC == {'DA4m'}, \
-                f'unexpected {hallem_not_in_wPNKC=}'
-
-            if len(hallem_not_in_wPNKC) > 0:
-                warn(f'dropping glomeruli not in wPNKC {hallem_not_in_wPNKC} from '
-                    'Hallem data to be used for tuning'
-                )
-
-            # TODO replace w/ reindex?
-            # this will be concatenated with orn_deltas below, and we don't want to add
-            # back the glomeruli not in wPNKC
-            hallem_orn_deltas = hallem_orn_deltas.loc[
-                [c for c in hallem_orn_deltas.index if c in glomerulus_index]
-            ].copy()
-
-        # TODO delete after enough tests pass
-        if not sep_boutons:
-            orn_deltas2 = pd.DataFrame([
-                    orn_deltas.loc[x].values if x in orn_deltas.index
-                    # TODO correct? after concat across odors in tune_on_hallem=True
-                    # case?
-                    else np.zeros(len(orn_deltas.columns))
-                    # TODO also use glomerulus_index here (instead of
-                    # wPNKC.columns) for consistency w/ above?
-                    for x in wPNKC.columns
-                ], index=glomerulus_index, columns=orn_deltas.columns
-            )
-        #
-
-        orn_delta_gloms = set(orn_deltas.index)
-        wPNKC_gloms = set(glomerulus_index.get_level_values(glomerulus_col))
-        # TODO true? in all cases scripts/model_private_odors_for_kai_grant.py hits?
-        # (seems so, yea)
-        assert orn_delta_gloms - wPNKC_gloms == set(), \
-            f'{orn_delta_gloms - wPNKC_gloms=}'
-
-        orn_deltas_pre_filling = orn_deltas.copy()
-        # adding glomeruli (rows) missing in input orn_deltas
-        orn_deltas = reindex(orn_deltas, glomerulus_index, fill_value=0)
-        assert orn_deltas.columns.equals(orn_deltas_pre_filling.columns)
-        # TODO delete after enough tests pass
-        if not sep_boutons:
-            assert orn_deltas.equals(orn_deltas2)
-        #
-        if len(orn_deltas) == len(orn_deltas_pre_filling):
-            orn_deltas_pre_filling = None
-
-        # sfr dtype is int before this is used to fill, but that's just b/c it's how it
-        # was reported in Hallem, not for any other reason. doesn't need to be int in
-        # model (prob cast to float anyway, when put in model?).
-        mean_sfr = sfr.mean()
-
-        non_hallem_gloms = sorted(set(glomerulus_index) - set(sfr.index))
-        if len(non_hallem_gloms) > 0:
-            warn(f'imputing mean Hallem SFR ({mean_sfr:.2f}) for non-Hallem glomeruli:'
-                f' {non_hallem_gloms}'
-            )
-        # TODO delete after enough tests pass
-        sfr2 = pd.Series(index=glomerulus_index,
-            data=[(sfr.loc[g] if g in sfr else mean_sfr) for g in glomerulus_index]
+    zero_filling = (~ glomerulus_index.isin(orn_deltas.index))
+    if zero_filling.any():
+        msg = ('zero filling spike deltas for glomeruli not in data: '
+            f'{sorted(glomerulus_index[zero_filling])}'
         )
-        sfr2 = sfr2[~sfr2.index.duplicated(keep='first')]
-        sfr2.index.name = glomerulus_col
-        assert sfr2.index.equals(orn_deltas.index)
-        #
-        sfr = reindex(sfr, glomerulus_index, fill_value=mean_sfr)
-        assert sfr.index.equals(orn_deltas.index)
-        # TODO delete after enough tests pass
-        assert sfr.equals(sfr2)
-        #
+        warn(msg)
+
+    # TODO (?) if i add 'uniform' draw path, make sure zero filling is keeping
+    # glomeruli that would implicitly be dropped in hemibrain (/ hemidraw / caron)
+    # cases (as we don't need wPNKC info in 'uniform' case, as all glomeruli are
+    # sampled equally, without using any explicit connectivity / distribution)
+    # (don't warn there either)
+    #
+    # Any stuff w/ '+' in name (e.g. 'DM3+DM5' in Hallem) should already have been
+    # dropped.
+    input_glomeruli = set(orn_deltas.index)
+    glomeruli_missing_in_wPNKC = input_glomeruli - set(glomerulus_index)
+    if len(glomeruli_missing_in_wPNKC) > 0:
+        # TODO assert False? seems we could do that at least for megamat data...
+        warn('dropping glomeruli not in wPNKC (while zero-filling): '
+            f'{glomeruli_missing_in_wPNKC}'
+        )
+
+    if tune_on_hallem:
+        # TODO make sure we aren't writing wPNKC in this case (and maybe not other
+        # hallem CSVs? they are probably fine either way...)
+        hallem_not_in_wPNKC = (
+            set(hallem_orn_deltas.index) - set(glomerulus_index)
+        )
+        assert len(hallem_not_in_wPNKC) == 0 or hallem_not_in_wPNKC == {'DA4m'}, \
+            f'unexpected {hallem_not_in_wPNKC=}'
+
+        if len(hallem_not_in_wPNKC) > 0:
+            warn(f'dropping glomeruli not in wPNKC {hallem_not_in_wPNKC} from '
+                'Hallem data to be used for tuning'
+            )
+
+        # TODO replace w/ reindex?
+        # this will be concatenated with orn_deltas below, and we don't want to add
+        # back the glomeruli not in wPNKC
+        hallem_orn_deltas = hallem_orn_deltas.loc[
+            [c for c in hallem_orn_deltas.index if c in glomerulus_index]
+        ].copy()
+
+    # TODO delete after enough tests pass
+    if not sep_boutons:
+        orn_deltas2 = pd.DataFrame([
+                orn_deltas.loc[x].values if x in orn_deltas.index
+                # TODO correct? after concat across odors in tune_on_hallem=True
+                # case?
+                else np.zeros(len(orn_deltas.columns))
+                # TODO also use glomerulus_index here (instead of
+                # wPNKC.columns) for consistency w/ above?
+                for x in wPNKC.columns
+            ], index=glomerulus_index, columns=orn_deltas.columns
+        )
+    #
+
+    orn_delta_gloms = set(orn_deltas.index)
+    wPNKC_gloms = set(glomerulus_index.get_level_values(glomerulus_col))
+    # TODO true? in all cases scripts/model_private_odors_for_kai_grant.py hits?
+    # (seems so, yea)
+    assert orn_delta_gloms - wPNKC_gloms == set(), \
+        f'{orn_delta_gloms - wPNKC_gloms=}'
+
+    orn_deltas_pre_filling = orn_deltas.copy()
+    # adding glomeruli (rows) missing in input orn_deltas
+    orn_deltas = reindex(orn_deltas, glomerulus_index, fill_value=0)
+    assert orn_deltas.columns.equals(orn_deltas_pre_filling.columns)
+    # TODO delete after enough tests pass
+    if not sep_boutons:
+        assert orn_deltas.equals(orn_deltas2)
+    #
+    if len(orn_deltas) == len(orn_deltas_pre_filling):
+        orn_deltas_pre_filling = None
+
+    # sfr dtype is int before this is used to fill, but that's just b/c it's how it
+    # was reported in Hallem, not for any other reason. doesn't need to be int in
+    # model (prob cast to float anyway, when put in model?).
+    mean_sfr = sfr.mean()
+
+    non_hallem_gloms = sorted(set(glomerulus_index) - set(sfr.index))
+    if len(non_hallem_gloms) > 0:
+        warn(f'imputing mean Hallem SFR ({mean_sfr:.2f}) for non-Hallem glomeruli:'
+            f' {non_hallem_gloms}'
+        )
+    # TODO delete after enough tests pass
+    sfr2 = pd.Series(index=glomerulus_index,
+        data=[(sfr.loc[g] if g in sfr else mean_sfr) for g in glomerulus_index]
+    )
+    sfr2 = sfr2[~sfr2.index.duplicated(keep='first')]
+    sfr2.index.name = glomerulus_col
+    assert sfr2.index.equals(orn_deltas.index)
+    #
+    sfr = reindex(sfr, glomerulus_index, fill_value=mean_sfr)
+    assert sfr.index.equals(orn_deltas.index)
+    # TODO delete after enough tests pass
+    assert sfr.equals(sfr2)
+    #
 
     odor_index = orn_deltas.columns
     n_input_odors = orn_deltas.shape[1]
@@ -13413,18 +13334,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # eb_deltas.name will be like 'eb @ -3' (previous odor columns level value)
         extra_orn_deltas[eb_deltas.name] = eb_deltas
-
-        if sim_odors is not None:
-            assert hallem_input
-            # sim_odors contents not used for anything other than internal plots below,
-            # so sufficient to only grow hallem_sim_odors here (which is used to subset
-            # responses right before returning, and for nothing else [past this point at
-            # least])
-            #
-            # not also growing by extra `eb_deltas.name`, because that gets removed
-            # before hallem_sim_odors used (extra eb is not returned in hallem or any
-            # other case. only checked against responses to existing eb col)
-            hallem_sim_odors.extend(fake_odors)
     #'''
 
     # TODO can i remove need for this (and just use odor_index), if i remove the extra
@@ -13462,7 +13371,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
 
     # TODO maybe set tune_on_hallem=False (early on) if orn_deltas is None?
-    if tune_on_hallem and not hallem_input:
+    if tune_on_hallem:
         # TODO maybe make a list (largely just so i can access it more than once)?
         # TODO where is default defined for this? not seeing it... behave same as if not
         # passed (e.g. if only have hallem odors)
@@ -13498,74 +13407,55 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         orn_deltas = orn_deltas.loc[sfr.index].copy()
 
-        # TODO delete? not sure if it's triggered outside of case where i accidentally
-        # passed input where all va/aa stuff was dropped (by calling script w/
-        # 2023-04-22 as end of date range, rather than start)
-        try:
-            # TODO (if i want to keep this) do i want to use odor_index or
-            # tuning_odor_index (the former also includes "odors" from extra_orn_deltas,
-            # if that's not None)?
-            #
-            # TODO if i wanna keep this, move earlier (or at least have another version
-            # of this earlier? maybe in one of first lines in fit_mb_model, or in
-            # whatever is processing orn_deltas before it's passed to fit_mb_model?)
-            # (the issue seems to be created before we get into fit_mb_model)
-            assert sim_odors is None or sim_odors == set(
-                odor_index.get_level_values('odor')
-            ), 'why'
-        except AssertionError:
-            import ipdb; ipdb.set_trace()
+    # TODO maybe i should still have an option here to tune on more data than what i
+    # ultimately return (perhaps including diagnostic data? though they prob don't
+    # have representative KC sparsities either...)
 
-    if not hallem_input:
-        # TODO maybe i should still have an option here to tune on more data than what i
-        # ultimately return (perhaps including diagnostic data? though they prob don't
-        # have representative KC sparsities either...)
+    # TODO TODO try to implement other strategies where we don't need to throw
+    # away input glomeruli/receptors
+    # (might need to make my own gkc_wide csv equivalent, assuming it only contains
+    # the connections involving the hallem glomeruli)
+    # (also, could probably not work in the tune_on_hallem case...)
 
-        # TODO TODO try to implement other strategies where we don't need to throw
-        # away input glomeruli/receptors
-        # (might need to make my own gkc_wide csv equivalent, assuming it only contains
-        # the connections involving the hallem glomeruli)
-        # (also, could probably not work in the tune_on_hallem case...)
+    # TODO raise NotImplementedError/similar if tune_on_hallem=True and not
+    # drop_receptors_not_in_hallem?
 
-        # TODO raise NotImplementedError/similar if tune_on_hallem=True,
-        # not hallem_input, and not drop_receptors_not_in_hallem?
+    # TODO TODO maybe this needs to be True if tune_on_hallem=True? at least as
+    # implemented now?
+    # TODO rename to drop_glomeruli_not_in_hallem?
+    if drop_receptors_not_in_hallem:
+        # NOTE: this should already have had 'DM3+DM5' (Or33b) removed above
+        hallem_glomeruli = hallem_orn_deltas.index
 
-        # TODO TODO maybe this needs to be True if tune_on_hallem=True? at least as
-        # implemented now?
-        # TODO rename to drop_glomeruli_not_in_hallem?
-        if drop_receptors_not_in_hallem:
-            # NOTE: this should already have had 'DM3+DM5' (Or33b) removed above
-            hallem_glomeruli = hallem_orn_deltas.index
+        glomerulus2receptors = orns.task_glomerulus2receptors()
+        receptors = np.array(
+            ['+'.join(glomerulus2receptors[g]) for g in orn_deltas.index]
+        )
+        # technically this would also throw away 33b, but that is currently getting
+        # thrown out above w/ the drop_multiglomerular_receptors path
+        receptors_not_in_hallem = ~orn_deltas.index.isin(hallem_glomeruli)
+        if receptors_not_in_hallem.sum() > 0:
+            # TODO warn differently (/only?) for stuff that was actually in our
+            # input data, and not just zero filled above?
+            msg = 'dropping glomeruli not in Hallem:'
+            # TODO sort on glomeruli names (seems it already is. just from hallem
+            # order? still may want to sort here to ensure)
+            msg += '\n- '.join([''] + [f'{g} ({r})' for g, r in
+                zip(orn_deltas.index[receptors_not_in_hallem],
+                    receptors[receptors_not_in_hallem])
+            ])
+            msg += '\n'
+            warn(msg)
 
-            glomerulus2receptors = orns.task_glomerulus2receptors()
-            receptors = np.array(
-                ['+'.join(glomerulus2receptors[g]) for g in orn_deltas.index]
-            )
-            # technically this would also throw away 33b, but that is currently getting
-            # thrown out above w/ the drop_multiglomerular_receptors path
-            receptors_not_in_hallem = ~orn_deltas.index.isin(hallem_glomeruli)
-            if receptors_not_in_hallem.sum() > 0:
-                # TODO warn differently (/only?) for stuff that was actually in our
-                # input data, and not just zero filled above?
-                msg = 'dropping glomeruli not in Hallem:'
-                # TODO sort on glomeruli names (seems it already is. just from hallem
-                # order? still may want to sort here to ensure)
-                msg += '\n- '.join([''] + [f'{g} ({r})' for g, r in
-                    zip(orn_deltas.index[receptors_not_in_hallem],
-                        receptors[receptors_not_in_hallem])
-                ])
-                msg += '\n'
-                warn(msg)
+        orn_deltas = orn_deltas[~receptors_not_in_hallem].copy()
+        sfr = sfr[~receptors_not_in_hallem].copy()
 
-            orn_deltas = orn_deltas[~receptors_not_in_hallem].copy()
-            sfr = sfr[~receptors_not_in_hallem].copy()
-
-            # TODO refactor to not use glomerulus index, and just always use
-            # wPNKC.columns, to not have to deal w/ the two separately? (here and
-            # elsewhere...)
-            assert glomerulus_index.equals(wPNKC.columns)
-            glomerulus_index = glomerulus_index[~receptors_not_in_hallem].copy()
-            wPNKC = wPNKC.loc[:, ~receptors_not_in_hallem].copy()
+        # TODO refactor to not use glomerulus index, and just always use
+        # wPNKC.columns, to not have to deal w/ the two separately? (here and
+        # elsewhere...)
+        assert glomerulus_index.equals(wPNKC.columns)
+        glomerulus_index = glomerulus_index[~receptors_not_in_hallem].copy()
+        wPNKC = wPNKC.loc[:, ~receptors_not_in_hallem].copy()
 
     # TODO TODO probably still support just one .name == 'odor' tho...
     # (esp for calls w/ just hallem input, either old ones here or model_test.py?)
@@ -13584,9 +13474,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     # w/ using have_DA4m below? can i assert here this index matches sfr.index?
     if 'DA4m' in hallem_orn_deltas.index:
         assert np.array_equal(hallem_orn_deltas, mp.orn.data.delta)
-        if hallem_input:
-            # TODO just do this before we would modify sfr (in that one branch above)?
-            assert np.array_equal(sfr, mp.orn.data.spont[:, 0])
 
     # TODO merge da4m/l hallem data (pretty sure they are both in my own wPNKC?)?
     # TODO TODO do same w/ 33b (adding it into 47a and 85a Hallem data, for DM3 and DM5,
@@ -13607,8 +13494,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     assert sfr.index.equals(orn_deltas.index)
     # TODO if this fails, my rewrite of have_DA4m def above would be incorrect, and need
     # to revert
-    # TODO TODO fix this (and probably other similar stuff) in hallem case
-    # (can just add `-s model-hallem` for now, if being run from `al-analysis`)
     assert sfr.index.equals(glomerulus_index)
 
     # TODO delete
@@ -13618,7 +13503,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     #
     # TODO delete
     # TODO also only do if _use_matt_wPNKC=True (prat's seems to have DA4m...)?
-    #if (hallem_input or tune_on_hallem) and have_DA4m:
     if 'DA4m' not in glomerulus_index and have_DA4m:
         # TODO why was he dropping it tho? was it really just b/c it wasn't in (his
         # version of) hemibrain?
@@ -13808,13 +13692,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # should be normalized (to mean of 1? check) inside olfsysm
         cxn_distrib = wPNKC.sum()
 
-        # TODO delete?
-        if hallem_input:
-            # TODO compute this from something?
-            n_hallem_glomeruli = 23
-            assert mp.kc.cxn_distrib.shape == (1, n_hallem_glomeruli)
-        #
-
         # TODO TODO what currently happens if using # glomeruli other > hallem?
         # seems like it may already be broken? (and also in uniform case. not sure if
         # this is why tho) (? delete?)
@@ -13856,11 +13733,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
     if return_dynamics or plot_example_dynamics:
         # TODO also warn if input odor size is above some threshold? make a formula to
         # roughly calculate memory usage we'd expect?
-        if hallem_input:
-            # will probably be killed by system OOM killer
-            warn('plotting/returning model dynamics likely to crash with hallem input, '
-                'b/c many odors'
-            )
 
         # NOTE: if these are left to default of False, seems the rv.kc.vm_sims (or
         # whatever cognate output variable) will seem like an empty list here.
@@ -15193,12 +15065,8 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             responses_after_tuning[:, :n_input_odors], responses[:, :n_input_odors]
         )
 
-    if tune_on_hallem and not hallem_input:
+    if tune_on_hallem:
         assert (responses[:, n_hallem_odors:] == 0).all()
-
-        # TODO also assert in here that sim_odors is None or sim_odors == odor_index?
-        # (or move that assertion, which should be somewhere above, outside other
-        # conditionals)
 
         mp.sim_only = range(n_hallem_odors,
             n_hallem_odors + n_input_odors + n_extra_odors
@@ -15935,7 +15803,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
 
         # TODO delete? may be able to handle via checking sim_only in get_dynamics now
         # (and this path has not been run in a while now...)
-        if tune_on_hallem and not hallem_input:
+        if tune_on_hallem:
             # TODO delete? would probably already have failed by here if we tried saving
             # sims for hallem (claw_sims, at least...)
             raise NotImplementedError('prob need to subset those vars below')
@@ -15986,7 +15854,6 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         data=slice_to_odor_pulse(orn_sims, mp).mean(axis=-1)
     )
     # TODO add test that hits extra_orn_deltas path?
-    # TODO add test w/ hallem_input?
     if extra_orn_deltas is not None:
         orn_df = orn_df.drop(index=extra_orn_deltas.columns)
         pn_df = pn_df.drop(index=extra_orn_deltas.columns)
@@ -15996,20 +15863,15 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # plotting, if important)
 
     # TODO delete from here to end of `if megamat` block?
-    if sim_odors is not None:
-        input_odor_names = {
-            olf.parse_odor_name(x, require_conc=False) for x in sim_odors
-        }
-    else:
-        # TODO need to exclude extra_orn_deltas from this?
-        # (given i'm checking subset below, prob fine. but COULD also prob exclude extra
-        # odors, if that helps simplify code)
-        input_odor_names = {
-            # TODO maybe just check that if some have conc delimiter, all do?
-            # not sure even that matters
-            olf.parse_odor_name(x, require_conc=False)
-            for x in odor_index.get_level_values('odor')
-        }
+    # TODO need to exclude extra_orn_deltas from this?
+    # (given i'm checking subset below, prob fine. but COULD also prob exclude extra
+    # odors, if that helps simplify code)
+    input_odor_names = {
+        # TODO maybe just check that if some have conc delimiter, all do?
+        # not sure even that matters
+        olf.parse_odor_name(x, require_conc=False)
+        for x in odor_index.get_level_values('odor')
+    }
     # TODO may want to discard some for some plots (e.g. in cases when input is not
     # hallem, but also has diagnostics / fake odors added in addition to megamat odors)?
     # (kinda like plots as is there actually, but may want to add lines to separate
@@ -16037,27 +15899,21 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
                 warn=False
             )
 
-        if not hallem_input:
-            # TODO how would these calls even behave if panel was None (as it seems it
-            # could be from above)? change above to assertion it's not? and why fixing
-            # panel to 'megamat', instead of leaving whatever panels there are in each
-            # of these? could be 'megamat' + diag_panel_str input, for example
-            # TODO add test that runs megamat + diag through model?
+        # TODO how would these calls even behave if panel was None (as it seems it
+        # could be from above)? change above to assertion it's not? and why fixing
+        # panel to 'megamat', instead of leaving whatever panels there are in each
+        # of these? could be 'megamat' + diag_panel_str input, for example
+        # TODO add test that runs megamat + diag through model?
+        orn_deltas = sort_odors(orn_deltas, panel=panel, warn=False)
 
-            # TODO is it a problem that i'm now also only are only doing all below if
-            # `not hallem_input`? (change any outputs in my main al_analysis.py
-            # remy-paper analyses?) changed to fix impact of sorting on check in
-            # model_test.py, but could also add kwarg to disable this sorting...
-            orn_deltas = sort_odors(orn_deltas, panel=panel, warn=False)
+        # TODO maybe only do this one on a copy we don't return? probably don't
+        # really care if it's already sorted tho...
+        # TODO even care to do this? if just for a corr diff thing, even need?
+        responses = sort_odors(responses, panel=panel, warn=False)
+        spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
 
-            # TODO maybe only do this one on a copy we don't return? probably don't
-            # really care if it's already sorted tho...
-            # TODO even care to do this? if just for a corr diff thing, even need?
-            responses = sort_odors(responses, panel=panel, warn=False)
-            spike_counts = sort_odors(spike_counts, panel=panel, warn=False)
-
-            orn_df = sort_odors(orn_df, panel=panel, warn=False)
-            pn_df = sort_odors(pn_df, panel=panel, warn=False)
+        orn_df = sort_odors(orn_df, panel=panel, warn=False)
+        pn_df = sort_odors(pn_df, panel=panel, warn=False)
     #
 
     # TODO try to fix below (assuming anything breaks w/o this) -> delete
@@ -16159,52 +16015,10 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # differently there too, clustering after dropping silent cells.
             return orn_delta_prefill_corr, orn_delta_corr, orn_corr
 
-        # TODO why in hallem_input cases do orn-deltas* outputs seem to be pre-filling
-        # (and we have no separate orn-deltas_prefill* outputs). fix for consistency?
-
-        if hallem_input:
-            def subset_sim_odors(df):
-                # TODO delete? still necessary? seems we currently do this earlier
-                if megamat:
-                    df = sort_odors(df, panel='megamat', warn=False)
-                #
-
-                if sim_odors is None:
-                    return df
-                else:
-                    return df.loc[:, [x in sim_odors for x in df.columns]]
-
-            # assuming we won't be passing sim_odors for other cases (other than what?
-            # which case is this? elaborate in comment), for now
-            if sim_odors is not None:
-                _plot_internal_responses_and_corrs(subset_fn=subset_sim_odors)
-
-            # to compare to figures in ann's paper, where 110 odors are in hallem order
-            def resort_into_hallem_order(df):
-                # don't need to worry about panel level being present on odor_index, as
-                # it never is in hallem_input case (only place this is used)
-                return df.loc[:, odor_index]
-
-            # TODO are these not being generated in latest hallem_input call
-            # (restoring hemibrain path)?
-            orn_delta_prefill_corr, orn_delta_corr, orn_corr = \
-                _plot_internal_responses_and_corrs(suffix='_all-hallem',
-                    subset_fn=resort_into_hallem_order
-                )
-
-            if megamat:
-                responses = resort_into_hallem_order(responses).copy()
-                spike_counts = resort_into_hallem_order(spike_counts).copy()
-        else:
-            orn_delta_prefill_corr, orn_delta_corr, orn_corr = \
-                _plot_internal_responses_and_corrs()
+        orn_delta_prefill_corr, orn_delta_corr, orn_corr = \
+            _plot_internal_responses_and_corrs()
 
         # TODO plot distribution of spike counts -> compare to w/ ann's outputs
-
-        if hallem_input:
-            suffix = '_all-hallem'
-        else:
-            suffix = ''
 
         # NOTE: this should be the only time the model KC responses are used inside the
         # plotting this fn does (and thus, the only time this flag is relevant here).
@@ -16239,81 +16053,34 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
             # TODO also need to drop from orn_delta_corr? anything else?
 
         # for sanity checking some of the diffs. should also be saving this outside.
-        plot_corr(model_kc_corr, plot_dir, f'kcs_corr{suffix}', title=title)
+        plot_corr(model_kc_corr, plot_dir, 'kcs_corr', title=title)
         #
         # TODO also sanity check by extra plot_corr calls w/ orn_[delta_]corr
         # inputs (to check i'm using the right ones, etc)? should be exactly same as
         # orn-deltas_corr.pdf / orns_corr.pdf generated above.
 
-        plot_corr(spike_count_corr, plot_dir, f'kcs_spike-count_corr{suffix}',
-            title=title
-        )
+        plot_corr(spike_count_corr, plot_dir, 'kcs_spike-count_corr', title=title)
 
         if orn_delta_prefill_corr is not None:
             corr_diff_from_prefill_deltas = model_kc_corr - orn_delta_prefill_corr
             plot_corr(corr_diff_from_prefill_deltas, plot_dir,
-                f'model_vs_orn-deltas-prefill_corr_diff{suffix}',
+                'model_vs_orn-deltas-prefill_corr_diff',
                 title=title, xlabel=f'model KC - model ORN (deltas, pre-filling) corr'
             )
 
         # TODO keep the seperate versions comparing against orn-deltas vs average
         # of dynamic internal orns? actually ever diff?
         corr_diff_from_deltas = model_kc_corr - orn_delta_corr
-        plot_corr(corr_diff_from_deltas, plot_dir,
-            f'model_vs_orn-deltas_corr_diff{suffix}',
+        plot_corr(corr_diff_from_deltas, plot_dir, 'model_vs_orn-deltas_corr_diff',
             title=title, xlabel=f'model KC - model ORN (deltas) corr'
         )
 
         corr_diff = model_kc_corr - orn_corr
         # the 'dyn' prefix is to differentiate from a plot saved in parent of plot_dir,
         # by other code.
-        plot_corr(corr_diff, plot_dir, f'model_vs_dyn-orn_corr_diff{suffix}',
+        plot_corr(corr_diff, plot_dir, 'model_vs_dyn-orn_corr_diff',
             title=title, xlabel=f'model KC - model ORN (avg of dynamics) corr'
         )
-
-        if hallem_input:
-            # TODO delete?
-            #
-            # for sanity checking some of the diffs. should also be saving this outside.
-            model_kc_corr_only_megamat = subset_sim_odors(
-                subset_sim_odors(model_kc_corr).T
-            )
-            plot_corr(model_kc_corr_only_megamat, plot_dir, 'kcs_corr', title=title)
-            #
-
-            spike_count_corr_only_megamat = subset_sim_odors(
-                subset_sim_odors(spike_count_corr).T
-            )
-            plot_corr(spike_count_corr_only_megamat, plot_dir, 'kcs_spike-count_corr',
-                title=title
-            )
-
-            # TODO also support subset_fn for plot_corr, rather than this kind of
-            # subsetting?
-            corr_diff_from_deltas_only_megamat = subset_sim_odors(
-                subset_sim_odors(corr_diff_from_deltas).T
-            )
-            plot_corr(corr_diff_from_deltas_only_megamat, plot_dir,
-                'model_vs_orn-deltas_corr_diff', title=title,
-                xlabel=f'model KC - model ORN (deltas) corr'
-            )
-
-            corr_diff_only_megamat = subset_sim_odors(subset_sim_odors(corr_diff).T)
-            plot_corr(corr_diff_only_megamat, plot_dir, 'model_vs_dyn-orn_corr_diff',
-                title=title, xlabel=f'model KC - model ORN (avg of dynamics) corr'
-            )
-
-    # NOTE: currently doing after simulation, because i haven't yet implemented support
-    # for tuning running on the full set of (hallem) odors, with subsequent simulation
-    # running on a different set of stuff
-    # TODO why checking sim_odors is not None if i'm just using hallem_sim_odors here?
-    # this a mistake?
-    if hallem_input and sim_odors is not None:
-        assert all(x in responses.columns for x in hallem_sim_odors)
-        # TODO delete (replace w/ setting up sim_only s.t. only hallem_sim_odors are
-        # simulated)
-        responses = responses[hallem_sim_odors].copy()
-        spike_counts = spike_counts[hallem_sim_odors].copy()
 
     if return_olfsysm_vars:
         # NOTE: these objects not currently pickleable, and may (or may not) use a lot
@@ -16346,7 +16113,7 @@ optimizable_model_params: Dict[str, str] = {
 _simulator_unsupported_kws: Tuple[str, ...] = (
     'homeostatic_thrs', 'equalize_kc_type_sparsity', 'multiresponder_APL_boost',
     'n_claws_active_to_spike', 'scale_pre_tuning', 'tune_on_hallem',
-    'repro_preprint_s1d', 'sim_odors',
+    'repro_preprint_s1d',
 )
 
 # fit_mb_model kwargs only used for tuning thresholds / APL weights. dropped when
@@ -18466,9 +18233,6 @@ class NoCachedModelOutputsError(Exception):
 
 
 _fit_and_plot_seen_param_dirs = set()
-# TODO why is sim_odors an explicit kwarg? just to not have included in strs describing
-# model params? i already special case orn_deltas to exclude it. why not do something
-# like that (if i keep the param at all)?
 # TODO try to get [h|v]lines between components, 2-component mixes, and 5-component
 # mix for new kiwi/control data (at least for responses and correlation matrices)
 # (could just check for '+' character, to handle all cases)
@@ -18500,7 +18264,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     wAPLKC: Optional[Union[float, List[float]]] = None,
     wAPLPN: Optional[Union[float, List[float]]] = None,
     drop_silent_cells_before_analyses: bool = drop_silent_model_kcs,
-    _add_combined_plot_legend=False, sim_odors=None, comparison_orns=None,
+    _add_combined_plot_legend=False, comparison_orns=None,
     comparison_kc_corrs=None, _strip_concs_comparison_kc_corrs=False,
     # TODO rename param_dir_prefix -> model_id_prefix?
     # (since it's still used as part of model ID, even when plot_dirname passed)
@@ -18572,8 +18336,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             e.g. # odors per cell)
 
         _add_combined_plot_legend: internal use only
-
-        sim_odors: passed to `fit_mb_model`
 
         comparison_orns: ORN data of shape (# odors, # glomeruli), or of shape
             (# odors, # fly-ROIs) with `flyroi_cols` column levels (correlations then
@@ -18654,13 +18416,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     # might this ever be 'Z-scored F' instead of dF/F?
     my_data = f'pebbled {dff_latex}'
 
-    if 'orn_deltas' in model_kws:
-        # TODO fix how this might misrepresent stuff if i pass hallem data in manually?
-        # (allow passing in description of the data, overriding this?)
-        responses_to = my_data
-    else:
-        responses_to = 'hallem'
-    #
+    assert 'orn_deltas' in model_kws, 'orn_deltas required (passed to fit_mb_model)'
+    responses_to = my_data
 
     # TODO also try tuning on remy's subset of hallem odors?
     # (did i already? is it clear that what's in preprint was not done this way?)
@@ -18773,16 +18530,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO need to pass thru util.to_filename / simliar normalization myself now
         # (since i'm putting this in a dirname now, not the final filename of the plot)
         for_dirname = ''
-        # NOTE: responses_to set to 'pebbled' above if orn_deltas is passed, so could be
-        # confusing if hallem data passed in as orn_deltas
-        if responses_to != 'pebbled':
-            for_dirname = f'data_{responses_to}'
-
         if len(param_str) > 0:
-            if len(for_dirname) > 0:
-                for_dirname += '__'
-
-            for_dirname += normalize_param_str(param_str)
+            for_dirname = normalize_param_str(param_str)
 
         # also used as key for some caches that give value per model instantiation
         model_id = f'{param_dir_prefix}{for_dirname}'
@@ -19279,7 +19028,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                     # (maybe i will soon be able to, if i'm gonna replace some of their
                     # usage with a flag to indicate whether we are in a sensitivity
                     # analysis subcall...)
-                    sim_odors=sim_odors, fixed_thr=_fixed_thr, wAPLKC=_wAPLKC,
+                    fixed_thr=_fixed_thr, wAPLKC=_wAPLKC,
                     wAPLPN=wAPLPN, seed=seed, sp_lr_coeff=_sp_lr_coeff,
                     # ORN/PN plots would be redundant, and overwrite each other.
                     # currently those are the only plots I'm making in here (no longer
@@ -19378,26 +19127,14 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
             # TODO rename param_dict everywhere -> tuned_params?
             responses, spike_counts, wPNKC, param_dict = fit_mb_model(
-                sim_odors=sim_odors, fixed_thr=fixed_thr, wAPLKC=wAPLKC, wAPLPN=wAPLPN,
+                fixed_thr=fixed_thr, wAPLKC=wAPLKC, wAPLPN=wAPLPN,
                 make_plots=make_plots, return_dynamics=return_dynamics, **model_kws
             )
 
         print('done', flush=True)
 
-        orn_deltas = None
-        if responses_to != 'hallem':
-            orn_deltas = model_kws['orn_deltas']
-            input_odors = orn_deltas.columns
-        else:
-            # NOTE: not saving model input (the Hallem ORN deltas) here, b/c it's added
-            # by fit_mb_model internally, and it should be safe to assume this will not
-            # change across runs. If it does change, hopefully the history of that is
-            # accurately reflected in commit history of my drosolf repo.
-            # TODO maybe refactor so i can define orn_deltas for this case too (and thus
-            # so it's also saved below in that case)?
-            n_hallem_odors = 110
-            assert responses.shape[1] >= n_hallem_odors
-            input_odors = responses.columns[:n_hallem_odors]
+        orn_deltas = model_kws['orn_deltas']
+        input_odors = orn_deltas.columns
 
         # remove any odors added by `extra_orn_deltas` code (internal to fit_mb_model)
         if len(input_odors) < responses.shape[1]:
@@ -19431,22 +19168,22 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # (already copy2-ing it in model_mb_responses, but may want to do in here too?
         # or move all the copying model_mb_responses does to a slimmer wrapper, and
         # generally use that instead of this? prob easier to move to this fn?)
-        if orn_deltas is not None:
-            # just saving these for manual reference, or for use in -c check.
-            # not loaded elsewhere in the code.
-            to_parquet(orn_deltas, param_dir / 'orn_deltas.parquet')
-            to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
+        #
+        # just saving these for manual reference, or for use in -c check.
+        # not loaded elsewhere in the code.
+        to_parquet(orn_deltas, param_dir / 'orn_deltas.parquet')
+        to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
 
-            # TODO also save a hemibrain-filled version of this?
-            #
-            # current format like:
-            # panel	megamat	         megamat          ...
-            # odor	2h @ -3	         IaA @ -3         ...
-            # glomerulus
-            # D	40.845711426286  37.2453183810278 ...
-            # DA2	15.325702916103	 11.4666387062239 ...
-            # ...
-            to_csv(orn_deltas, param_dir / 'orn_deltas.csv')
+        # TODO also save a hemibrain-filled version of this?
+        #
+        # current format like:
+        # panel	megamat	         megamat          ...
+        # odor	2h @ -3	         IaA @ -3         ...
+        # glomerulus
+        # D	40.845711426286  37.2453183810278 ...
+        # DA2	15.325702916103	 11.4666387062239 ...
+        # ...
+        to_csv(orn_deltas, param_dir / 'orn_deltas.csv')
 
         # NOTE: saving raw (unsorted, etc) responses to cache for now, so i can modify
         # that bit. CSV saving is currently after all sorting / post-processing.
@@ -19776,26 +19513,20 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     #spike_counts = spike_counts.rename_axis(columns={'odor': 'odor1'})
     #
 
-    panel = None
-    if responses_to == 'hallem':
-        assert have_megamat
-        # the non-megamat odors will just be sorted to end
-        panel = 'megamat'
+    orn_deltas = model_kws['orn_deltas']
+    assert 'panel' in orn_deltas.columns.names
+
+    panels = set(orn_deltas.columns.get_level_values('panel'))
+    del orn_deltas
+
+    if len(panels) == 1:
+        panel = panels.pop()
+        assert type(panel) is str
     else:
-        orn_deltas = model_kws['orn_deltas']
-        assert 'panel' in orn_deltas.columns.names
-
-        panels = set(orn_deltas.columns.get_level_values('panel'))
-        del orn_deltas
-
-        if len(panels) == 1:
-            panel = panels.pop()
-            assert type(panel) is str
-        else:
-            # should currently only be true in the calls w/ multiple panel inputs (e.g.
-            # for pre-tuning on kiwi+control, to then run this fn w/ just kiwi input).
-            # just gonna return early w/ params, skipping this stuff, fow now.
-            panel = None
+        # should currently only be true in the calls w/ multiple panel inputs (e.g.
+        # for pre-tuning on kiwi+control, to then run this fn w/ just kiwi input).
+        # just gonna return early w/ params, skipping this stuff, fow now.
+        panel = None
 
     # TODO warn if `panel is not None`, but `panel not in panel2name_order`?
     if panel is not None and panel in panel2name_order:
@@ -20118,13 +19849,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         odor_levels = ['odor1', 'odor2']
         mean_pearson_ser = seed_corr_ser.groupby(level=odor_levels, sort=False).mean()
 
-        # TODO below 2 comments still an issue?
-        # TODO TODO fix! (only in hallem/uniform, after no longer only passing
-        # megamat odors as sim_odors)
-        # TODO TODO check at input of this what is reducing length of
-        # triangular series below expected shape. missing at least (in either order):
-        # a='g-decalactone @ -2'
-        # b='glycerol @ -2'
         try:
             # TODO rename _index kwarg?
             # TODO TODO +fix so i don't need to pass it (what was the purpose of
@@ -20153,9 +19877,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO TODO still needed? try to change other code to not need this? plot_corr
         # need something like this to avoid re-ordering, when responses (/whatever
         # non-corr input) passed in? (if not, prob don't need here, right?)
-        pearson = _resort_corr(pearson, panel,
-            warn=False if responses_to == 'hallem' else True
-        )
+        pearson = _resort_corr(pearson, panel, warn=True)
 
     # TODO TODO try deleting this and checking i can remake all the same
     # megamat/validation plots? feel like i might not need this anymore (or maybe i want
@@ -20406,14 +20128,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         plot_corr(spike_counts, param_dir, 'corr_spike-counts_including-silent',
             title=title_including_silent_cells, xlabel=xlabel
         )
-
-    if responses_to == 'hallem':
-        # TODO factor to use len(megamat_odor_names) / something instead of 17...
-        #
-        # all megamat odors should have been sorted before other hallem odors, so we
-        # should be able to get the megamat17 subset by indexing this way
-        plot_corr(pearson.iloc[:17, :17], param_dir, 'corr_megamat', xlabel=title)
-    #
 
     def _compare_model_kc_to_orn_data(comparison_orns, desc=None):
         """Plots model KC vs ORN correlations, and their difference.
@@ -20678,7 +20392,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # work.... (doesn't seem like we've been failing w/ same AssertionError i had
         # needed to catch in other place...)
         square_mean_orn_corrs = _resort_corr(invert_corr_triangular(mean_orn_corrs),
-            panel, warn=False if responses_to == 'hallem' else True
+            panel, warn=True
         )
 
         # stripping conc to match processing of `pearson` above
@@ -20970,18 +20684,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             sparsity_per_odor[odor_col]
         )
 
-    if responses_to == 'hallem':
-        # assuming megamat for now (otherwise this would be empty)
-        megamat_sparsity_per_odor = sparsity_per_odor.loc[
-            sparsity_per_odor[odor_col].isin(panel2name_order['megamat'])
-        ]
-        # this is only used in sensitivity analysis now anyway. would need to also
-        # subset this if not.
-        assert comparison_sparsity_per_odor is None
-        plot_sparsity_per_odor(megamat_sparsity_per_odor, comparison_sparsity_per_odor,
-            '_megamat'
-        )
-
     if response_rate_plot_max is None:
         panel2sparsity_ylims = {
             # TODO add one for megamat? (only sensitivity analysis currently has these
@@ -21039,27 +20741,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         )
 
     savefig(fig, param_dir, 'n_odors_per_cell')
-
-    if responses_to == 'hallem':
-        fig, ax = plt.subplots()
-        # TODO assert this is getting just megamat odors (/reimplement so it only could)
-        # (b/c prior sorting, that should have put all them before rest of hallem odors,
-        # they should be)
-        # TODO factor out + use megamat subsetting fn here
-        plot_n_odors_per_cell(responses_including_silent.iloc[:, :17], ax,
-            title=title_including_silent_cells
-        )
-
-        assert comparison_responses is None
-        # TODO delete?
-        # if assertion fails, will also need to subset comparison_responses to megamat
-        # odors (in commented code below)
-        #if comparison_responses is not None:
-        #    plot_n_odors_per_cell(comparison_responses, ax, label_suffix=' (tuned)',
-        #        color='gray', title=title_including_silent_cells
-        #    )
-
-        savefig(fig, param_dir, 'n_odors_per_cell_megamat')
 
     # only currently running sensitivity analysis in pebbled/hemibrain case.
     # some of code below (all of which should deal with sensitivity analysis in some
@@ -21178,8 +20859,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             #
             # TODO silence output here? makes surrounding prints hard to follow
             # TODO also check spike_counts (2nd / 4 returned values)?
-            responses2, _, _, _ = fit_mb_model(sim_odors=sim_odors,
-                fixed_thr=tuned_fixed_thr, wAPLKC=tuned_wAPLKC, **shared_model_kws
+            responses2, _, _, _ = fit_mb_model(fixed_thr=tuned_fixed_thr,
+                wAPLKC=tuned_wAPLKC, **shared_model_kws
             )
             # NOTE: this can fail if loading responses from cache (where values are the
             # same, but new output also has KC_TYPE in index)
@@ -21465,7 +21146,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
             curr_params = fit_and_plot_mb_model(output_dir,
                 comparison_responses=responses_including_silent,
-                sim_odors=sim_odors, sensitivity_analysis=False, _in_sens_analysis=True,
+                sensitivity_analysis=False, _in_sens_analysis=True,
                 # this should be the only place we use fixed_thr instead of
                 # [rel|mean]_fixed_thr, inside this loop (b/c fixed_thr can now
                 # sometimes be a vector of length equal to # of KCs, which makes it
@@ -23737,7 +23418,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
     model_kw_list: Optional[List[ParamDict]] = None, quick: bool = True,
     roi_depths: Optional[pd.DataFrame] = None, skip_sensitivity_analysis: bool = False,
     skip_models_with_seeds: bool = False, skip_model_dynamics_saving: bool = False,
-    skip_hallem_models: bool = False, first_model_kws_only: bool = False,
+    first_model_kws_only: bool = False,
     copy_to_model_dirs: Optional[List[Path]] = None, try_cache: bool = False,
     input_is_already_est_spike_deltas: bool = False,
     dff2spiking_cache_dir: Optional[Path] = None,
@@ -23794,10 +23475,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
         skip_model_dynamics_saving: if False, model dynamics are saved for
             `one_row_per_claw=True` models
-
-        skip_hallem_models: if True, skips models run on Hallem data (only run if
-            `repro_remy_paper=True`, for megamat panel). Always True if
-            `input_is_already_est_spike_deltas=True`.
 
         first_model_kws_only: only runs the model with the first set of parameters (in
             `model_kw_list`), to more quickly test changes to model.
@@ -24660,10 +24337,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
             one_row_per_claw = model_kws.get('one_row_per_claw', False)
             if one_row_per_claw:
-                # NOTE: hallem cases should be all added below (preprint repro stuff),
-                # so shouldn't have to worry about dynamics trying to be saved for them
-                # (would require way too much memory + space)
-                #
                 # if could be specified per-element in fitandplot_model_kw_list, would
                 # need to del here if skip flag set
                 assert 'return_dynamics' not in model_kws
@@ -24707,87 +24380,8 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
             model_kw_list.append(model_kws)
 
-
-        if input_is_already_est_spike_deltas:
-            if not skip_hallem_models:
-                skip_hallem_models = True
-                warn(f'setting {skip_hallem_models=} since not supported in '
-                    f'{input_is_already_est_spike_deltas=} case'
-                )
-
-        # TODO do in separate script, regardless of panel? not even using that panel's
-        # data, right? (i suppose for KC comparison i still am, and using remy's data
-        # there?)
-        if skip_hallem_models:
-            warn('skipping all models using Hallem data (rather than our measured '
-                'ORN data) as input (because `-s model-hallem` CLI option)'
-            )
-
-        if not skip_hallem_models and repro_remy_paper and panel == 'megamat':
-            hallem_for_comparison = hallem_delta_wide.copy()
-            assert hallem_for_comparison.index.str.contains(' @ -3').all()
-            # so things line up in comparison_orns path (fit_mb_model hallem data has '@
-            # -2' for each conc)
-            hallem_for_comparison.index = hallem_for_comparison.index.str.replace(
-                ' @ -3', ' @ -2'
-            )
-            # TODO delete? actually needed by anything?
-            hallem_for_comparison.index.name = 'odor1'
-
-            # parameter combinations to recreate preprint figures, using same Hallem
-            # data as input (that Matt did when making those figures, before we had our
-            # own ORN outputs)
-            preprint_repro_model_kw_list = [
-                dict(
-                    pn2kc_connections='hemibrain',
-
-                    # TODO delete/comment
-                    # need to fix breakpoint hit in fit_mb_model (currently just
-                    # commented it...)
-                    _use_matt_wPNKC=True,
-
-                    comparison_orns=hallem_for_comparison,
-
-                    # TODO don't require this passed in! (do unconditionally)
-                    # TODO or move to model_kws postprocesing in tune_on_hallem=True
-                    # case
-                    _strip_concs_comparison_kc_corrs=True,
-                ),
-                dict(
-                    pn2kc_connections='uniform', n_claws=7, n_seeds=N_SEEDS,
-
-                    # TODO delete/comment
-                    # need to fix breakpoint hit in fit_mb_model
-                    _use_matt_wPNKC=True,
-
-                    # TODO probably also _add_back_methanoic_acid_mistake=True?
-                    # shouldn't matter...
-                    #_add_back_methanoic_acid_mistake=True,
-
-                    comparison_orns=hallem_for_comparison,
-
-                    # TODO don't require this passed in! (do unconditionally)
-                    #
-                    # since outputs of model will have ' @ -2' when using Hallem input,
-                    # but KC comparison data has ' @ -3'. this will strip conc from all
-                    # odor strings, when comparing data from these variables.
-                    # NOTE: comparison_orns path currently strips unconditionally...
-                    _strip_concs_comparison_kc_corrs=True,
-                ),
-                dict(
-                    pn2kc_connections='hemidraw', n_claws=7, n_seeds=N_SEEDS,
-                    _use_matt_wPNKC=True,
-                    comparison_orns=hallem_for_comparison,
-                    _strip_concs_comparison_kc_corrs=True,
-                ),
-            ]
-            # all entries in preprint_repro_model_kw_list use hallem data, and all
-            # entries in model_kw_list (before line below) should not use hallem
-            # data
-            model_kw_list = model_kw_list + preprint_repro_model_kw_list
-
-        # hack to skip long running models, if I want to test something on pebbled and
-        # hallem cases w/o re-running many seeds before getting an answer on the test.
+        # hack to skip long running models, if I want to test something w/o re-running
+        # many seeds before getting an answer on the test.
         if skip_models_with_seeds:
             old_len = len(model_kw_list)
             model_kw_list = [x for x in model_kw_list if 'n_seeds' not in x]
@@ -24869,10 +24463,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
             wAPLKC = None
             _extra_params = dict(extra_params)
 
-            # checking for orn_deltas because we don't want to ever do this
-            # pre-tuning for hallem data (where the ORN data isn't passed here, but
-            # loaded inside fit_mb_model)
-            if 'orn_deltas' in model_kws and panel in panel2tuning_panels:
+            if panel in panel2tuning_panels:
                 tuning_panels = panel2tuning_panels[panel]
                 tuning_panels_str = tuning_panel_delim.join(tuning_panels)
 
@@ -24902,10 +24493,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     )
                 }
 
-                # NOTE: if i wanted to do this pre-tuning on hallem data (which is
-                # loaded in fit_mb_model if orn_deltas not passed here), i'd need to
-                # not pass this. no real need to use this on hallem data tho.
-                #
                 # TODO (delete) need to drop panel level on tuning_df first
                 # (doesn't seem so...)? (if so, prob also want to prefix panel
                 # to odor names, or otherwise ensure no dupes?)
@@ -25227,7 +24814,8 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
         # constructed plots from being saved)
 
         # TODO comment explaining what all is done in this loop (/ below)?
-        for desc, mask in (('pebbled', pebbled_mask), ('hallem', ~ pebbled_mask)):
+        # (single iteration, so `continue` can skip the rest of these plots)
+        for desc, mask in (('pebbled', pebbled_mask),):
 
             if mask.sum() == 0:
                 warn(f'no {desc} data in current model runs. skipping {desc} '
@@ -25300,55 +24888,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 assert not responses.columns.isna().any()
                 assert not responses.columns.duplicated().any()
 
-                # at least for now, doing this here so that i don't need to re-run
-                # model after abbrev_hallem_odor_index change (currently commented).
-                # would also need to figure out how to deal w/ 'moct' if i wanted to
-                # remove this (was thinking of changing 'MethOct' -> 'moct' in
-                # load_remy_2e...)
-                # thought I needed to do before corr_triangular, in order to get same
-                # order as remy has for all the pairs, but moving this here didn't fix
-                # all of that issue.
-                my2remy_odor_names = {
-                    'eugenol': 'eug',
-                    'ethyl cinnamate': 'ECin',
-                    'propyl acetate': 'PropAc',
-                    'g-hexalactone': 'g-6lac',
-                    'd-decalactone': 'd-dlac',
-                    'moct': 'MethOct',
-                    # I already had an abbreviation for the 7th
-                    # ('1-penten-3-ol' -> '1p3ol'), which is consistent w/ hers.
-                }
-                ordered_pairs = None
-                # thought I needed to do before corr_triangular, in order to get same
-                # order as remy has for all the pairs, but moving this here didn't fix
-                # all of that issue. still doing before corr_triangular, so my odor
-                # names will line up with Remy's when I now pass in new ordered_pairs
-                # kwarg to corr_triangular, which I added to manually fix this issue.
-                if desc == 'hallem':
-                    odor_strs = responses.columns
-
-                    for old, new in my2remy_odor_names.items():
-                        assert (odor_strs == new).sum() == 0
-                        assert (odor_strs == old).sum() == 1
-                        # TODO delete
-                        #assert odor_strs.str.contains(f'{new} @').sum() == 0
-                        #assert odor_strs.str.contains(f'{old} @').sum() == 1
-
-                        odor_strs = odor_strs.str.replace(old, new)
-
-                        # TODO delete
-                        #assert odor_strs.str.contains(f'{new} @').sum() == 1
-                        assert (odor_strs == new).sum() == 1
-
-                    responses.columns = odor_strs
-
-                    # any pairs (a, b) seen here will be used over any (b, a)
-                    # corr_triangular would otherwise use. OK if not all pairs
-                    # represented here (e.g. like how Remy's pairs are not all of the
-                    # possible Hallem pairs, but this will at least make sure the
-                    # overlap is consistent)
-                    ordered_pairs = remy_pairs
-
                 responses_including_silent = responses.copy()
 
                 # TODO or factor corr calc + dropping into one fn, and call that in the
@@ -25361,18 +24900,14 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     # TODO refactor to share w/ internals of mean_of_fly_corrs?
                     # (use new square=False kwarg?)
                     corrs = responses.groupby(level='seed').apply(
-                        lambda x: corr_triangular(x.corr(), ordered_pairs=ordered_pairs)
+                        lambda x: corr_triangular(x.corr())
                     )
                     assert len(corrs) == N_SEEDS
                 else:
-                    corrs = corr_triangular(responses.corr(),
-                        ordered_pairs=ordered_pairs
-                    )
+                    corrs = corr_triangular(responses.corr())
                     # so shape/type is same as in seed case above.
                     # name shouldn't be important.
                     corrs = corrs.to_frame(name='correlation').T
-
-                del ordered_pairs
 
                 # TODO where are NaN coming from in here?
                 # ipdb> corrs.isna().sum().sum()
@@ -25422,9 +24957,6 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 assert not pairs.isna().any().any()
                 '''
 
-                # TODO delete. doing before corr_triangular now.
-                #pairs = pairs.replace(my2remy_odor_names)
-
                 corrs.columns = pd.MultiIndex.from_frame(pairs)
 
                 model_odors = set(pairs.odor1) | set(pairs.odor2)
@@ -25441,97 +24973,77 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 n_odors = responses.shape[1]
                 assert corrs.shape[1] == n_choose_2(n_odors)
 
-                if desc == 'hallem':
-                    assert n_odors == 110
-                    # NOTE: unlike in pebbled cases below, we do sometimes have some
-                    # odors without cells responding to them in here, and thus some
-                    # NaN correlations
-
-                    assert len(remy_2e_odors - model_odors) == 0
-
-                    # TODO any other assertions in here? maybe something to complement
-                    # currently-failing one above? (re: (a,b) vs (b,a))
-                    # or will renaming those few odors fix that?
-                    #breakpoint()
-
                 # true as long as we don't also want to use this to plot
                 # megamat+validation2 data (or validation2 alone)
                 # (currently this code all only runs for megamat panel)
-                elif desc == 'pebbled':
-                    assert n_odors == len(megamat_odor_names) == len(model_odors)
+                assert n_odors == len(megamat_odor_names) == len(model_odors)
 
-                    # might also not be true in cases other than megamat
-                    assert not corrs.isna().any().any()
+                # might also not be true in cases other than megamat
+                assert not corrs.isna().any().any()
 
-                    assert len(model_odors - remy_2e_odors) == 0
+                assert len(model_odors - remy_2e_odors) == 0
 
-                    remy_2e_odors_not_in_model = remy_2e_odors - model_odors
-                    if i == 0 and len(remy_2e_odors_not_in_model) > 0:
-                        # we are already checking model_odors doesn't change across
-                        # iterations of this inner loop, so it's OK to only warn on
-                        # first iteration.
-                        warn(f'Remy 2e odors not in current ({desc}) model outputs: '
-                            f'{remy_2e_odors_not_in_model}'
-                        )
-                    #
+                remy_2e_odors_not_in_model = remy_2e_odors - model_odors
+                if i == 0 and len(remy_2e_odors_not_in_model) > 0:
+                    # we are already checking model_odors doesn't change across
+                    # iterations of this inner loop, so it's OK to only warn on
+                    # first iteration.
+                    warn(f'Remy 2e odors not in current ({desc}) model outputs: '
+                        f'{remy_2e_odors_not_in_model}'
+                    )
+                #
 
-                    # TODO also want something like this in desc='hallem' case?
-                    #
-                    # seems Remy and I are constructing our pairs in the same way
-                    # (so that I don't need to re-construct one or the other to make
-                    # sure we never have (a, b) in one and (b, a) in the other)
-                    assert len(model_pairs - remy_pairs) == 0
+                # seems Remy and I are constructing our pairs in the same way
+                # (so that I don't need to re-construct one or the other to make
+                # sure we never have (a, b) in one and (b, a) in the other)
+                assert len(model_pairs - remy_pairs) == 0
 
-                    # all the other pairs Remy has include at least one non-megamat
-                    # odor
-                    assert not any([
-                        (a in megamat_odor_names) and (b in megamat_odor_names)
-                        for a, b in remy_pairs - model_pairs
-                    ])
+                # all the other pairs Remy has include at least one non-megamat
+                # odor
+                assert not any([
+                    (a in megamat_odor_names) and (b in megamat_odor_names)
+                    for a, b in remy_pairs - model_pairs
+                ])
 
                 if i == 0:
                     assert first_model_pairs is None
                     first_model_pairs = model_pairs
 
-                    if desc != 'hallem':
-                        remy_2e_corrs_in_model_mask = remy_2e_corrs.apply(lambda x:
-                            (x.abbrev_row, x.abbrev_col) in model_pairs, axis=1
-                        )
-                        # TODO reset_index(drop=True)? prob no real effect on plots...
-                        remy_2e_corrs_in_model = remy_2e_corrs[
-                            remy_2e_corrs_in_model_mask
-                        ]
-                        assert 0 == len(
-                            # in pebbled+megamat case, the two sets should also be
-                            # equal. in hallem case, model_pairs will have many pairs
-                            # not in what Remy gave me (but all of Remy's pairs should
-                            # have both odors in Hallem).
-                            set(list(zip(
-                                remy_2e_corrs_in_model.abbrev_row,
-                                remy_2e_corrs_in_model.abbrev_col
-                            ))) - model_pairs
-                        )
+                    remy_2e_corrs_in_model_mask = remy_2e_corrs.apply(lambda x:
+                        (x.abbrev_row, x.abbrev_col) in model_pairs, axis=1
+                    )
+                    # TODO reset_index(drop=True)? prob no real effect on plots...
+                    remy_2e_corrs_in_model = remy_2e_corrs[
+                        remy_2e_corrs_in_model_mask
+                    ]
+                    assert 0 == len(
+                        # in megamat case, the two sets should also be equal
+                        set(list(zip(
+                            remy_2e_corrs_in_model.abbrev_row,
+                            remy_2e_corrs_in_model.abbrev_col
+                        ))) - model_pairs
+                    )
 
-                        # unlike pair sets, elements here are str (e.g. 'a, b')
-                        # TODO assert this is same on all iterations? it should be,
-                        # right? and if not, odors should still be ordered according to
-                        # this on each call, not just subset to this, right?
-                        remy_2e_pair_order_in_model = np.array([
-                            x for x in remy_2e_pair_order
-                            if tuple(x.split(', ')) in model_pairs
-                        ])
-                        assert (
-                            set(remy_2e_corrs_in_model.odor_pair_str) ==
-                            set(remy_2e_pair_order_in_model)
-                        )
+                    # unlike pair sets, elements here are str (e.g. 'a, b')
+                    # TODO assert this is same on all iterations? it should be,
+                    # right? and if not, odors should still be ordered according to
+                    # this on each call, not just subset to this, right?
+                    remy_2e_pair_order_in_model = np.array([
+                        x for x in remy_2e_pair_order
+                        if tuple(x.split(', ')) in model_pairs
+                    ])
+                    assert (
+                        set(remy_2e_corrs_in_model.odor_pair_str) ==
+                        set(remy_2e_pair_order_in_model)
+                    )
 
-                        # we also make a version of this where we show all KC pairs (and
-                        # only model data when we can) before this loop.
-                        remy_2e_modelsubset_facetgrid = \
-                            _create_2e_plot_with_obs_kc_corrs(
-                                remy_2e_corrs_in_model, remy_2e_pair_order_in_model,
-                                fill_markers=False
-                        )
+                    # we also make a version of this where we show all KC pairs (and
+                    # only model data when we can) before this loop.
+                    remy_2e_modelsubset_facetgrid = \
+                        _create_2e_plot_with_obs_kc_corrs(
+                            remy_2e_corrs_in_model, remy_2e_pair_order_in_model,
+                            fill_markers=False
+                    )
                 else:
                     assert first_model_pairs is not None
                     # checking each iteration of this loop would be plotting the same
@@ -25564,31 +25076,17 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     corr_dists.abbrev_row + ', ' + corr_dists.abbrev_col
                 )
 
-                if desc != 'hallem':
-                    # TODO why does the hemibrain line on this seem more like ~0.6 than
-                    # the ~0.5 in preprint? matter (remy wasn't concerned enough to
-                    # track down which outputs she originally made plot from)?
-                    # TODO also, why does tail seem different in pebbled plot?
-                    # meaningful?
-                    if desc == 'hallem':
-                        responses_including_silent = responses_including_silent.loc[:,
-                            # TODO delete (or revert, if plot_n_odors_per_cell doesn't
-                            # work w/ concs stripped from responses...)
-                            #responses_including_silent.columns.map(odor_is_megamat)
-                            #
-                            # responses.columns now have concentrations stripped, so
-                            # checking this way rather than .map(odor_is_megamat)
-                            responses_including_silent.columns.isin(megamat_odor_names)
-                        ]
-
-                    assert (
-                        len(responses_including_silent.columns) ==
-                        len(megamat_odor_names)
-                    )
-                    plot_n_odors_per_cell(responses_including_silent, s1c_ax,
-                        label=label, color=color
-                    )
-                #
+                # TODO why does the hemibrain line on this seem more like ~0.6 than
+                # the ~0.5 in preprint? matter (remy wasn't concerned enough to
+                # track down which outputs she originally made plot from)?
+                # TODO also, why does tail seem different in pebbled plot?
+                # meaningful?
+                assert (
+                    len(responses_including_silent.columns) == len(megamat_odor_names)
+                )
+                plot_n_odors_per_cell(responses_including_silent, s1c_ax,
+                    label=label, color=color
+                )
 
                 # TODO (maybe done?) replace w/ concatenating corr_dists/whatever else
                 # needed in loop, and plotting at end
@@ -25596,11 +25094,10 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     remy_2e_pair_order, color=color, label=label,
                     n_first_seeds=fig2e_n_first_seeds
                 )
-                if desc != 'hallem':
-                    _2e_plot_model_corrs(remy_2e_modelsubset_facetgrid, corr_dists,
-                        remy_2e_pair_order_in_model, color=color, label=label,
-                        n_first_seeds=fig2e_n_first_seeds
-                    )
+                _2e_plot_model_corrs(remy_2e_modelsubset_facetgrid, corr_dists,
+                    remy_2e_pair_order_in_model, color=color, label=label,
+                    n_first_seeds=fig2e_n_first_seeds
+                )
                 #
                 corr_dists['model'] = label
                 corr_dists_list.append(corr_dists)
@@ -25740,31 +25237,28 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 f'2e_{desc}{fig2e_seed_err_fname_suffix}'
             )
 
-            if desc != 'hallem':
-                assert remy_2e_modelsubset_facetgrid is not None
-                _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid,
-                    n_first_seeds=fig2e_n_first_seeds
-                )
-                savefig(remy_2e_modelsubset_facetgrid, panel_plot_dir,
+            assert remy_2e_modelsubset_facetgrid is not None
+            _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid,
+                n_first_seeds=fig2e_n_first_seeds
+            )
+            savefig(remy_2e_modelsubset_facetgrid, panel_plot_dir,
+                f'2e_{desc}_model-subset{fig2e_seed_err_fname_suffix}'
+            )
+
+            # TODO delete
+            '''
+            _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid_difforder,
+                n_first_seeds=fig2e_n_first_seeds
+            )
+            savefig(remy_2e_modelsubset_facetgrid_difforder, panel_plot_dir,
+                (
                     f'2e_{desc}_model-subset{fig2e_seed_err_fname_suffix}'
+                    '_model-diff-order'
                 )
+            )
+            '''
 
-                # TODO delete
-                '''
-                _finish_remy_2e_plot(remy_2e_modelsubset_facetgrid_difforder,
-                    n_first_seeds=fig2e_n_first_seeds
-                )
-                savefig(remy_2e_modelsubset_facetgrid_difforder, panel_plot_dir,
-                    (
-                        f'2e_{desc}_model-subset{fig2e_seed_err_fname_suffix}'
-                        '_model-diff-order'
-                    )
-                )
-                '''
-            else:
-                assert remy_2e_modelsubset_facetgrid is None
-
-            if not input_is_already_est_spike_deltas and desc != 'hallem':
+            if not input_is_already_est_spike_deltas:
                 # TODO TODO delete this (and all _spear_inputs2dfs stuff)
                 # TODO delete
                 '''

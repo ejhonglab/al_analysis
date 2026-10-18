@@ -341,8 +341,8 @@ def main():
     # TODO even work?
     model_mb_responses(paper_deltas, plot_root, input_is_already_est_spike_deltas=True,
         repro_remy_paper=True, dff2spiking_cache_dir=dff2spiking_committed_dir,
-        try_cache=not ignore_existing, skip_hallem_models=True,
-        skip_sensitivity_analysis=True, skip_model_dynamics_saving=True
+        try_cache=not ignore_existing, skip_sensitivity_analysis=True,
+        skip_model_dynamics_saving=True
     )
 
     hemibrain_dirname = ('weight-divisor_20__drop-plusgloms_False__target-sp_0.09__'
