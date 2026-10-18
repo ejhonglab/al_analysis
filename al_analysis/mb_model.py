@@ -15328,9 +15328,13 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         )
 
         # TODO actually necessary? (since False on 3rd arg next call)
+        tune_apl_weights_before_boost = mp.kc.tune_apl_weights
         mp.kc.tune_apl_weights = False
 
         osm.run_KC_sims(mp, rv, False)
+
+        # so later checks / outputs still reflect any APL tuning done before boosting
+        mp.kc.tune_apl_weights = tune_apl_weights_before_boost
 
         spike_counts_before = spike_counts.copy()
 
@@ -15598,10 +15602,21 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         # TODO TODO fix + restore (at least enable if not in the case that was the
         # issue?)
         #'''
+        recheck_wAPLKC = (input_wAPLKC > 0).values
+        recheck_wKCAPL = (input_wKCAPL > 0).values
+        # multiresponder weights boosted above are no longer just the input weights
+        # times the one shared scale, so they are left out of these checks
+        if multiresponder_APL_boost is not None:
+            if boost_wKCAPL in (False, True):
+                recheck_wAPLKC = recheck_wAPLKC & ~mask.values
+
+            if boost_wKCAPL in (True, 'only'):
+                recheck_wKCAPL = recheck_wKCAPL & ~mask.values
+
         # do need exact=False on both of these calls (first call doesn't always trip w/o
         # it, but there still are cases where it does)
         wAPLKC_scale_recomputed = _single_unique_val(
-            wAPLKC[input_wAPLKC > 0] / input_wAPLKC[input_wAPLKC > 0], exact=False
+            wAPLKC[recheck_wAPLKC] / input_wAPLKC[recheck_wAPLKC], exact=False
         )
         try:
             assert np.isclose(wAPLKC_scale, wAPLKC_scale_recomputed)
@@ -15616,7 +15631,7 @@ def fit_mb_model(orn_deltas: Optional[pd.DataFrame] = None, sim_odors=None, *,
         #
 
         wKCAPL_scale_recomputed = _single_unique_val(
-            wKCAPL[input_wKCAPL > 0] / input_wKCAPL[input_wKCAPL > 0], exact=False
+            wKCAPL[recheck_wKCAPL] / input_wKCAPL[recheck_wKCAPL], exact=False
         )
         assert np.isclose(wKCAPL_scale, wKCAPL_scale_recomputed)
 
