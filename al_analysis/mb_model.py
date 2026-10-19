@@ -16569,8 +16569,10 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             or 'direct' (global, within bounds, via `scipy.optimize` functions of those
             names)
 
-        maxfev: maximum number of loss evaluations (including one at initial
-            parameters)
+        maxfev: maximum number of function evaluations (name as in `scipy.optimize`),
+            i.e. KC simulations + loss calculations. Includes one at initial
+            parameters, but not repeat evaluations of the same parameters (cached).
+            Enforced for all methods, even where scipy would overshoot it.
 
         optimizer_kws: for 'Nelder-Mead' / 'Powell', merged into `minimize`
             `options`. Otherwise, passed as kwargs to the `scipy.optimize` function.
