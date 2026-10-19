@@ -12,3 +12,9 @@ repo, under the test/test_mb_model.py file. Any changes to the model should pres
 existing behavior, and write additional tests to verify this unless there seems to be
 some bug or misunderstanding in the current implementation. Bring my attention to any
 such cases when evaluating current tests or implementing new ones.
+
+For now, try to preserve support for Python 3.8 (with last pandas 1.5), as well as the
+current ./venv/ python (should be 3.14 with pandas 3). Do this by either
+asking-for-forgiveness-not-permission (e.g. try/except handling), or explicit checking
+of versions if necessary. If code only exists to support old pandas 1.5 (or other old py
+thon 3.8 stuff), add a comment saying which old thing that part of the code is for.
