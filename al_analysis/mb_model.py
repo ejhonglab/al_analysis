@@ -11126,7 +11126,13 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
     if have_boutons and wAPLPN is None:
         wAPLPN = read_parquet(model_output_dir / 'wAPLPN.parquet')
 
-    params = read_params(model_output_dir)
+    # only read if needed below, since these also won't exist yet if called from within
+    # fit_mb_model (which passes in weights and mp)
+    params = None
+    if (wAPLKC is None or (have_boutons and wAPLPN is None) or
+            (have_claws and mp is None)):
+        params = read_params(model_output_dir)
+
     if wAPLKC is None:
         connectome_apl = params.get('use_connectome_APL_weights', False)
         if not connectome_apl:
@@ -11256,21 +11262,14 @@ def plot_apl_dynamics(plot_dir: Path, dynamics_dict: DynamicsDict,
         _plot(apl2kc_ax, kc2apl_input_no_inh, label=f'{prefix} (before inh)')
 
     if have_boutons:
-        # drop_vars('glomerulus') is just to remove this leftover 'glomerulus' level
-        # outside of the bouton index (first row in output below):
-        # Coordinates:
-        #   glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-        # * time_s      (time_s) float64 -0.4995 -0.499 -0.4985 ... 0.749 0.7495 0.75
-        # * bouton      (bouton) MultiIndex
-        # - glomerulus  (bouton) object 'D' 'D' 'D' 'D' 'D' ... 'VP2' 'VP2' 'VP2' 'VP4'
-        # - pn_id       (bouton) int64 1536947502 5813055184 ... 1975878958 634759240
-        # - bouton_id   (bouton) int64 1 3 1 0 0 0 1 1 0 2 1 0 ... 1 3 3 0 2 9 6 8 5 1 0
-        #
+        assert boutons.dims == ('bouton', 'time_s')
+        assert pns.get_index('time_s').equals(boutons.get_index('time_s'))
+
         # expanding each PN up to # of times it appears in boutons (and in same order as
-        # there)
-        boutons_no_inh = pns.loc[dict(glomerulus=boutons.glomerulus)].drop_vars(
-            'glomerulus'
-        )
+        # there). not using `pns.loc[dict(glomerulus=boutons.glomerulus)]`, since newer
+        # xarray drops 'glomerulus' level from the resulting 'bouton' MultiIndex.
+        bouton_gloms = boutons.get_index('bouton').get_level_values(glomerulus_col)
+        boutons_no_inh = boutons.copy(data=pns.sel(glomerulus=bouton_gloms.values).values)
         # TODO assert len is that of boutons (and greater than that of pns)
         assert boutons_no_inh.dims == ('bouton', 'time_s')
         assert boutons_no_inh.groupby('glomerulus').min().equals(pns)
@@ -27475,11 +27474,22 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
         assert 'wKCAPL' in params
         assert params['wAPLKC'] is not None
         assert params['wKCAPL'] is not None
-        # TODO correct? and if so, can i remove the None checks above (this also catch
-        # that?)
-        assert is_scalar(params['wAPLKC'])
-        assert is_scalar(params['wKCAPL'])
-        #
+        for k in ('wAPLKC', 'wKCAPL'):
+            weights = params[k]
+            # one per seed (only when n_seeds > 1)
+            if isinstance(weights, list):
+                assert params.get('pn2kc_connections') in variable_n_claw_options
+                assert all(is_scalar(x) for x in weights)
+
+            # fit_and_plot_mb_model also keeps these in params in this case (see
+            # keys_not_to_remove there), in addition to saving them to parquet
+            elif (params.get('one_row_per_claw', False) and
+                    not params.get('use_connectome_APL_weights', False)):
+                assert isinstance(weights, pd.Series)
+                assert not weights.isna().any()
+            else:
+                assert is_scalar(weights)
+
         if check_pn_apl_weights:
             assert params['wPNAPL'] is not None
             assert params['wAPLPN'] is not None

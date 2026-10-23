@@ -6,6 +6,10 @@
 These reference outputs (saved under a new date-stamped subdirectory of
 `test_mb_model.reference_output_root`) will be used by
 `test_mb_model.test_fitandplot_repro` to detect whether model behavior has changed.
+
+The APL tuning learning rate cache (`mb_model.onestep_lr_cache_path`) is not used here
+(nor in `test_fitandplot_repro`), so reference outputs reflect tuning from the default
+`sp_lr_coeff`.
 """
 
 import argparse
@@ -13,6 +17,7 @@ from pathlib import Path
 from datetime import datetime
 from pprint import pformat
 import shutil
+import sys
 import traceback
 
 from tqdm import tqdm
@@ -21,15 +26,17 @@ from termcolor import cprint
 from hong2p.util import format_date, symlink
 from al_analysis.al_util import warn
 from al_analysis.mb_model import (read_param_csv, format_model_params,
-    fitandplot_finished_writing, megamat_orn_deltas, fit_and_plot_mb_model
+    fitandplot_finished_writing, megamat_orn_deltas, fit_and_plot_mb_model,
+    get_fitandplot_model_kw_list, QUICK_MODEL_KW_LIST
 )
 
-# how to import this? (couldn't quickly figure it out when this script was originally in
-# a test/scripts subdir, but don't see huge issues w/ having directly under test/ dir)
-from test_mb_model import (FITANDPLOT_MODEL_KW_LIST, QUICK_FITANDPLOT_MODEL_KW_LIST,
-    reference_output_root, assert_param_csv_matches_returned,
-    assert_fit_and_plot_outputs_equal, get_expected_missing_csv_keys,
-    get_latest_reference_output_dir
+# so test_mb_model (which imports conftest relatively) can be imported as part of the
+# `test` package, however this script is run
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from test.test_mb_model import (FITANDPLOT_MODEL_KW_LIST, N_TEST_SEEDS,
+    mark_kw_list_entries_xfail, reference_output_root,
+    assert_param_csv_matches_returned, assert_fit_and_plot_outputs_equal,
+    get_expected_missing_csv_keys, get_latest_reference_output_dir
 )
 
 
@@ -66,8 +73,8 @@ def main():
         'summary at  the end.'
     )
     parser.add_argument('-q', '--quick', action='store_true',
-        help='uses shorter QUICK_FITANDPLOT_MODEL_KW_LIST, instead of '
-        'FITANDPLOT_MODEL_KW_LIST'
+        help='uses the shorter list of model parameters test_mb_model uses with '
+        'QUICK=1 (from QUICK_MODEL_KW_LIST), instead of FITANDPLOT_MODEL_KW_LIST'
     )
     parser.add_argument('-k', '--substring', action='store', default=None,
         help='only param combos with test IDs containing this substring will be run'
@@ -76,10 +83,10 @@ def main():
         help='will also save dynamics (currently into pickles) in each model output dir'
     )
     parser.add_argument('-c', '--check-against-last', action='store_true',
-        help='if True, will check against last output directory, and make symlinks from'
-        ' new output directory to old one, for all directories where old output was '
-        'preserved. any non-matching directories will be written anew in new output '
-        'reference output directory.'
+        help='if True, will check each output against the latest prior output for the '
+        'same parameters (from the most recent output directory that has them), and '
+        'replace matching new outputs with symlinks to the old ones. any non-matching '
+        'directories will be written anew in new output reference output directory.'
     )
     args = parser.parse_args()
     write_into_last = args.write_into_last
@@ -144,7 +151,9 @@ def main():
     if not check_against_last:
         print(f'saving outputs under:\n{reference_output_dir}\n')
     else:
-        print(f'checking against old outputs under:\n{last_reference_output_dir}')
+        print(f'checking against old outputs under:\n{last_reference_output_dir}\n'
+            '(or older output directories, for parameters without outputs there)'
+        )
         print('saving non-matching outputs (and making symlinks to matching old outputs'
             f') under:\n{reference_output_dir}\n'
         )
@@ -157,7 +166,10 @@ def main():
     if not quick:
         model_kw_list = FITANDPLOT_MODEL_KW_LIST
     else:
-        model_kw_list = QUICK_FITANDPLOT_MODEL_KW_LIST
+        # same as FITANDPLOT_MODEL_KW_LIST, when test_mb_model is imported with QUICK=1
+        model_kw_list = mark_kw_list_entries_xfail(
+            get_fitandplot_model_kw_list(QUICK_MODEL_KW_LIST, N_TEST_SEEDS)
+        )
 
     skipped_xfail_model_kws = []
     skipped_because_existing = []
@@ -264,7 +276,7 @@ def main():
         nonskipped_kws_and_dirs.append((model_kws, model_output_dir))
 
 
-    if substring is not None and nonskipped_kws_and_dirs:
+    if substring is not None and not nonskipped_kws_and_dirs:
         raise RuntimeError(f'{substring=} did not match any model parameters!')
 
     # TODO better name than curr_dirnames (+ do i really need two diff defs across these
@@ -279,6 +291,15 @@ def main():
         assert len(skipped_because_existing) == 0
         curr_dirnames = {d.name for _, d in nonskipped_kws_and_dirs}
 
+    # latest prior output for each test case, which may be in an older directory than
+    # last_reference_output_dir (e.g. if that was generated with -q). computed before any
+    # outputs are written, so these can't be under the new reference_output_dir.
+    name2last_output_dir = dict()
+    if check_against_last:
+        for _, model_output_dir in nonskipped_kws_and_dirs:
+            name = model_output_dir.name
+            name2last_output_dir[name] = get_latest_reference_output_dir(name) / name
+
     failed_model_kws = []
     failed_test_ids = []
     failed_tracebacks = []
@@ -291,9 +312,7 @@ def main():
         print(f'{model_kws=}')
         expected_model_output_dir_name = model_output_dir.name
 
-        last_output_dir = None
-        if last_reference_output_dir is not None:
-            last_output_dir = last_reference_output_dir / expected_model_output_dir_name
+        last_output_dir = name2last_output_dir.get(expected_model_output_dir_name)
 
         curr_tb = None
         try:
@@ -310,7 +329,8 @@ def main():
             # another? don't want to *have* to save+check those (at least, w/o some
             # separate test or flag)
             params = fit_and_plot_mb_model(reference_output_dir, orn_deltas=orn_df,
-                try_cache=False, return_dynamics=save_dynamics, make_plots=True,
+                try_cache=False, try_lr_cache=False, return_dynamics=save_dynamics,
+                make_plots=True,
                 plot_example_dynamics=True, connectome_weight_plots=True, **model_kws
             )
             assert fitandplot_finished_writing(model_output_dir)
@@ -368,7 +388,7 @@ def main():
                 # this should be only part of this try block that might raise
                 # AssertionError
                 # TODO move rest of block to end up loop, and continue in except block?
-                assert_fit_and_plot_outputs_equal(last_reference_output_dir, params,
+                assert_fit_and_plot_outputs_equal(last_output_dir.parent, params,
                     plot_root2=reference_output_dir
                 )
 
@@ -378,10 +398,10 @@ def main():
                 # TODO if we end up deleting all new outputs this way, delete empty root
                 # dir at end? (+ allow both write_into_last and check_against_last?)
                 shutil.rmtree(model_output_dir)
-                # TODO test case where target is already a symlink? that fine, or
-                # need to reference original file?
                 print('creating symlink to matching old output')
-                symlink(last_output_dir, model_output_dir, relative=True)
+                # resolving, so links point to actual outputs, rather than chaining
+                # through links in each intermediate output directory
+                symlink(last_output_dir.resolve(), model_output_dir, relative=True)
                 matched_last.append(model_output_dir.name)
 
             except AssertionError as err:
@@ -443,10 +463,11 @@ def main():
         print()
         cprint('failed model params and tracebacks:', 'red')
         for kws, tid, tb in zip(failed_model_kws, failed_test_ids, failed_tracebacks):
-            cprint(f'{tid}\nfailed with:\n{curr_tb}', 'red')
+            cprint(f'{tid}\nfailed with:\n{tb}', 'red')
 
-        cprint('failed test IDs (again, without tracebacks):\n'
-            f'{format_kw_list(failed_test_ids)}', 'red'
+        failed_test_id_str = '\n'.join(failed_test_ids)
+        cprint(f'failed test IDs (again, without tracebacks):\n{failed_test_id_str}',
+            'red'
         )
         print('')
 
