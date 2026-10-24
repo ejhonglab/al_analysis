@@ -7,12 +7,24 @@ hit a target mean response rate. Here, those tuned values are the starting point
 response rates and odor-odor correlations. Both models are run through
 `fit_and_plot_mb_model` (for the usual outputs and plots), and their parameters,
 losses, response rates, and correlations are compared.
+
+This is done for each of these cases (see `CASES`):
+- 'claw': claw model, optimizing threshold and wAPLKC_scale, with wKCAPL_scale tied to
+  wAPLKC_scale (`optimize_mb_model_params` default)
+- 'claw_separate': claw model, optimizing threshold and each APL weight scale
+  separately
+- 'bouton_separate': claw model with PN boutons (and PN<>APL weights), optimizing
+  threshold and each of the 4 APL weight scales separately
+
+Model outputs only depend on products of APL input and output weight scales (e.g.
+wKCAPL_scale * wAPLKC_scale), so individual scales from separate optimization are not
+unique, but these products are (and are included in parameter comparisons).
 """
 
 from argparse import ArgumentParser
 from pathlib import Path
 from pprint import pprint
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
@@ -33,9 +45,29 @@ from al_analysis.mb_model import (fit_and_plot_mb_model, optimize_mb_model_param
 
 # claw model, w/ connectome APL<>KC weights (required for one_row_per_claw=True by
 # make_fixed_param_kc_simulator, which optimize_mb_model_params uses)
-MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True,
+CLAW_MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True,
     use_connectome_APL_weights=True
 )
+# as above, but also w/ PN boutons, and connectome PN<>APL weights
+BOUTON_MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True,
+    prat_boutons=True, use_connectome_APL_weights=True
+)
+
+# case name -> (model kwargs, `params_to_optimize` for optimize_mb_model_params)
+CASES: Dict[str, Tuple[ParamDict, Optional[str]]] = {
+    'claw': (CLAW_MODEL_KWS, None),
+    'claw_separate': (CLAW_MODEL_KWS, 'all'),
+    'bouton_separate': (BOUTON_MODEL_KWS, 'all'),
+}
+
+# (APL input weight scale, APL output weight scale), for each path through the APL.
+# products of these (and the threshold) determine model outputs.
+APL_PATH2SCALES: Dict[str, Tuple[str, str]] = {
+    'KC>APL>KC': ('wKCAPL_scale', 'wAPLKC_scale'),
+    'KC>APL>PN': ('wKCAPL_scale', 'wAPLPN_scale'),
+    'PN>APL>KC': ('wPNAPL_scale', 'wAPLKC_scale'),
+    'PN>APL>PN': ('wPNAPL_scale', 'wAPLPN_scale'),
+}
 
 methods = ('Nelder-Mead', 'Powell', 'differential_evolution', 'dual_annealing',
     'direct'
@@ -65,8 +97,42 @@ def model_corr(responses: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def param_table(ret: ParamDict) -> pd.DataFrame:
+    """Returns tuned and optimized parameters, and products of APL weight scales.
+
+    Args:
+        ret: output of `optimize_mb_model_params`, with tuned parameters as initial
+            parameters
+
+    Returns DataFrame with columns 'tuned', 'optimized', 'optimized/tuned', and 'fit'
+    (whether each parameter was optimized, tied to wAPLKC_scale, or fixed, or 'product'
+    for rows with products of APL input and output weight scales).
+    """
+    params = pd.DataFrame({'tuned': ret['initial_params'], 'optimized': ret['params']})
+    for path, (input_scale, output_scale) in APL_PATH2SCALES.items():
+        if input_scale in params.index and output_scale in params.index:
+            params.loc[f'{input_scale}*{output_scale} ({path})'] = (
+                params.loc[input_scale] * params.loc[output_scale]
+            )
+
+    params.index.name = 'param'
+    params['optimized/tuned'] = params['optimized'] / params['tuned']
+
+    def fit_type(param: str) -> str:
+        if param in ret['params_to_optimize']:
+            return 'optimized'
+        elif param in ret['tied_params']:
+            return 'tied to wAPLKC_scale'
+        elif param in ret['params']:
+            return 'fixed'
+        return 'product'
+
+    params['fit'] = [fit_type(p) for p in params.index]
+    return params
+
+
 def plot_response_rates(plot_dir: Path, rates: pd.DataFrame,
-    losses: Dict[str, Dict[str, float]]) -> None:
+    losses: Dict[str, Dict[str, float]], case: str) -> None:
     """Plots per-odor response rates of Remy's data and each model.
 
     Args:
@@ -74,6 +140,8 @@ def plot_response_rates(plot_dir: Path, rates: pd.DataFrame,
             'optimized'
 
         losses: model name -> dict of losses (from `make_kc_data_loss` loss function)
+
+        case: name of case (key of `CASES`), for title
     """
     rates = rates.sort_values('remy')
     x = np.arange(len(rates))
@@ -97,14 +165,15 @@ def plot_response_rates(plot_dir: Path, rates: pd.DataFrame,
     ax.set_xticklabels(rates.index, rotation=90)
     ax.set_ylim(bottom=0)
     ax.set_ylabel('response rate')
-    ax.set_title('per-odor response rates')
+    ax.set_title(f'{case}: per-odor response rates')
     ax.legend(frameon=False)
     ax.grid(axis='y', alpha=0.3)
     savefig(fig, plot_dir, 'response_rates_per_odor')
 
 
 def plot_corrs_vs_remy(plot_dir: Path, remy_corr: pd.DataFrame,
-    corrs: Dict[str, pd.DataFrame], losses: Dict[str, Dict[str, float]]) -> None:
+    corrs: Dict[str, pd.DataFrame], losses: Dict[str, Dict[str, float]], case: str
+    ) -> None:
     """Plots model vs Remy odor-odor correlations, one panel per model.
 
     Args:
@@ -114,6 +183,8 @@ def plot_corrs_vs_remy(plot_dir: Path, remy_corr: pd.DataFrame,
             odors as `remy_corr`)
 
         losses: model name -> dict of losses (from `make_kc_data_loss` loss function)
+
+        case: name of case (key of `CASES`), for title
     """
     triu = np.triu_indices(len(remy_corr), k=1)
     remy_values = remy_corr.values[triu]
@@ -142,10 +213,11 @@ def plot_corrs_vs_remy(plot_dir: Path, remy_corr: pd.DataFrame,
         ax.set_ylim(lims)
 
     axs[0].set_ylabel('model KC correlation')
+    fig.suptitle(case)
     savefig(fig, plot_dir, 'corrs_vs_remy')
 
 
-def plot_loss_history(plot_dir: Path, history: pd.DataFrame) -> None:
+def plot_loss_history(plot_dir: Path, history: pd.DataFrame, case: str) -> None:
     """Plots each loss evaluated during optimization, and the best loss so far.
     """
     fig, ax = plt.subplots(figsize=(7, 4), layout='constrained')
@@ -158,58 +230,38 @@ def plot_loss_history(plot_dir: Path, history: pd.DataFrame) -> None:
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.set_xlabel('evaluation')
     ax.set_ylabel('loss (response rate + correlation)')
-    ax.set_title('optimization loss history')
+    ax.set_title(f'{case}: optimization loss history')
     ax.legend(frameon=False)
     savefig(fig, plot_dir, 'loss_history')
 
 
-def main():
-    """Tunes claw model as usual, then optimizes threshold / APL weights vs Remy's data.
+def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
+    remy_rates: pd.Series, remy_corr: pd.DataFrame, *, method: str, maxfev: int,
+    target_sparsity: float, ignore_cache: bool) -> Dict[str, Dict[str, float]]:
+    """Tunes model for `case` as usual, optimizes from there, and compares the two.
 
-    See module docstring, and CLI `--help` for options.
+    Saves comparison CSVs and plots under `<plot_root>/tuned_vs_optimized_<case>_
+    <method>`, alongside `fit_and_plot_mb_model` outputs for both models.
+
+    Args:
+        case: key of `CASES`
+
+        remy_rates/remy_corr: from `remy_megamat_kc_targets` (correlations with odors
+            in same order as `orn_deltas`)
+
+    Returns dict with 'tuned' and 'optimized' losses (each a dict, from
+    `make_kc_data_loss` loss function).
     """
-    parser = ArgumentParser()
-    parser.add_argument('-m', '--method', default='Nelder-Mead', choices=methods,
-        help='optimization method (see optimize_mb_model_params). default: '
-        '%(default)s'
-    )
-    parser.add_argument('-n', '--maxfev', default=200, type=int, help='maximum number '
-        'of loss evaluations (each one KC simulation). default: %(default)s'
-    )
-    parser.add_argument('-t', '--target-sparsity', default=0.1, type=float,
-        help='target mean response rate for standard tuning (default: %(default)s, as '
-        'in model_mb_responses)'
-    )
-    parser.add_argument('-i', '--ignore-cache', action='store_true', help='re-runs '
-        'standard tuned model, even if cached outputs exist (optimized model is always '
-        're-run)'
-    )
-    args = parser.parse_args()
-    method = args.method
-    maxfev = args.maxfev
-    target_sparsity = args.target_sparsity
-    ignore_cache = args.ignore_cache
-
-    plot_root = Path('optimize_megamat_claw_model')
-    plot_root.mkdir(exist_ok=True)
-
-    al_util.verbose = True
-
-    orn_deltas = megamat_orn_deltas()
-    odors = orn_deltas.columns.get_level_values('odor')
-
-    remy_rates, remy_corr = remy_megamat_kc_targets()
-    # same order as model odors, as model_mb_responses does
-    remy_corr = remy_corr.loc[odors, odors]
+    model_kws, params_to_optimize = CASES[case]
 
     loss_fn = make_kc_data_loss(target_response_rates=remy_rates,
         target_corr=remy_corr
     )
 
-    print('standard tuning:')
+    print(f'{case}: standard tuning:')
     tuned = fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas,
         target_sparsity=target_sparsity, comparison_kc_corrs=remy_corr,
-        try_cache=not ignore_cache, **MODEL_KWS
+        try_cache=not ignore_cache, **model_kws
     )
     tuned_dir = plot_root / tuned['output_dir']
     tuned_params = {p: float(tuned[p]) for p in optimizable_model_params if p in tuned}
@@ -219,9 +271,10 @@ def main():
     tuned_responses = pd.read_pickle(tuned_dir / model_responses_cache_name)
     tuned_spike_counts = pd.read_pickle(tuned_dir / model_spikecounts_cache_name)
 
-    print(f'\noptimizing with {method=}, {maxfev=}:')
+    print(f'\n{case}: optimizing with {method=}, {maxfev=}, {params_to_optimize=}:')
     ret = optimize_mb_model_params(orn_deltas, loss_fn=loss_fn,
-        initial_params=tuned_params, method=method, maxfev=maxfev, **MODEL_KWS
+        initial_params=tuned_params, params_to_optimize=params_to_optimize,
+        method=method, maxfev=maxfev, **model_kws
     )
     if not ret['initial_params'] == tuned_params:
         warn('initial parameters of optimization did not match tuned parameters')
@@ -237,21 +290,17 @@ def main():
             f"optimization ({ret['initial_losses']['loss']:.5g})"
         )
 
-    optimized_dirname = f'optimized_{method}'
-    print(f'\noptimized model outputs ({optimized_dirname}):')
+    optimized_dirname = f'optimized_{case}_{method}'
+    print(f'\n{case}: optimized model outputs ({optimized_dirname}):')
     fit_and_plot_mb_model(plot_root, plot_dirname=optimized_dirname,
         orn_deltas=orn_deltas, comparison_kc_corrs=remy_corr, try_cache=False,
         **ret['fit_mb_model_kws']
     )
 
-    comparison_dir = plot_root / f'tuned_vs_optimized_{method}'
+    comparison_dir = plot_root / f'tuned_vs_optimized_{case}_{method}'
     comparison_dir.mkdir(exist_ok=True)
 
-    params = pd.DataFrame({'tuned': ret['initial_params'],
-        'optimized': ret['params']
-    })
-    params.index.name = 'param'
-    params['optimized/tuned'] = params['optimized'] / params['tuned']
+    params = param_table(ret)
 
     loss_df = pd.DataFrame(losses)
     loss_df.index.name = 'loss'
@@ -278,15 +327,77 @@ def main():
         'tuned': model_corr(tuned_responses),
         'optimized': model_corr(ret['responses']),
     }
-    plot_response_rates(comparison_dir, rates, losses)
-    plot_corrs_vs_remy(comparison_dir, remy_corr_stripped, corrs, losses)
-    plot_loss_history(comparison_dir, ret['history'])
+    plot_response_rates(comparison_dir, rates, losses, case)
+    plot_corrs_vs_remy(comparison_dir, remy_corr_stripped, corrs, losses, case)
+    plot_loss_history(comparison_dir, ret['history'], case)
 
-    print(f'\ntuned ({tuned_dir.name}) vs optimized ({optimized_dirname}):')
+    print(f'\n{case}: tuned ({tuned_dir.name}) vs optimized ({optimized_dirname}):')
     print(params.to_string(float_format='{:.5g}'.format))
     print()
     print(loss_df.to_string(float_format='{:.5g}'.format))
-    print(f'\ncomparison outputs saved under {comparison_dir}')
+    print(f'\ncomparison outputs saved under {comparison_dir}\n')
+
+    return losses
+
+
+def main():
+    """Tunes models as usual, then optimizes threshold / APL weights vs Remy's data.
+
+    See module docstring, and CLI `--help` for options.
+    """
+    parser = ArgumentParser()
+    parser.add_argument('-c', '--cases', nargs='+', default=list(CASES),
+        choices=list(CASES), help='which cases to run (see module docstring). default: '
+        'all'
+    )
+    parser.add_argument('-m', '--method', default='Nelder-Mead', choices=methods,
+        help='optimization method (see optimize_mb_model_params). default: '
+        '%(default)s'
+    )
+    parser.add_argument('-n', '--maxfev', default=200, type=int, help='maximum number '
+        'of loss evaluations (each one KC simulation), per case. default: %(default)s'
+    )
+    parser.add_argument('-t', '--target-sparsity', default=0.1, type=float,
+        help='target mean response rate for standard tuning (default: %(default)s, as '
+        'in model_mb_responses)'
+    )
+    parser.add_argument('-i', '--ignore-cache', action='store_true', help='re-runs '
+        'standard tuned models, even if cached outputs exist (optimized models are '
+        'always re-run)'
+    )
+    args = parser.parse_args()
+    cases = args.cases
+    method = args.method
+    maxfev = args.maxfev
+    target_sparsity = args.target_sparsity
+    ignore_cache = args.ignore_cache
+
+    plot_root = Path('optimize_megamat_claw_model')
+    plot_root.mkdir(exist_ok=True)
+
+    al_util.verbose = True
+
+    orn_deltas = megamat_orn_deltas()
+    odors = orn_deltas.columns.get_level_values('odor')
+
+    remy_rates, remy_corr = remy_megamat_kc_targets()
+    # same order as model odors, as model_mb_responses does
+    remy_corr = remy_corr.loc[odors, odors]
+
+    case2losses = dict()
+    for case in cases:
+        case2losses[case] = run_case(plot_root, case, orn_deltas, remy_rates,
+            remy_corr, method=method, maxfev=maxfev, target_sparsity=target_sparsity,
+            ignore_cache=ignore_cache
+        )
+
+    summary = pd.concat(
+        {case: pd.DataFrame(losses).T for case, losses in case2losses.items()},
+        names=['case', 'model']
+    )
+    to_csv(summary, plot_root / f'summary_{method}.csv')
+    print('losses for each case:')
+    print(summary.to_string(float_format='{:.5g}'.format))
 
 
 if __name__ == '__main__':

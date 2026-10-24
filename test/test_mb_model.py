@@ -4237,6 +4237,8 @@ def test_optimize_mb_model_params_recovery(orn_deltas, initial_params):
         assert np.isclose(ret['params'][p], v, rtol=0.05), p
 
     # tied
+    assert ret['params_to_optimize'] == ['fixed_thr', 'wAPLKC_scale']
+    assert ret['tied_params'] == ['wKCAPL_scale']
     assert np.isclose(
         ret['params']['wKCAPL_scale'] / ret['params']['wAPLKC_scale'],
         initial_params['wKCAPL_scale'] / initial_params['wAPLKC_scale']
@@ -4248,6 +4250,87 @@ def test_optimize_mb_model_params_recovery(orn_deltas, initial_params):
     assert np.isclose(make_kc_data_loss(target_response_rates=target_rates,
         target_corr=target_corr)(responses, ret['spike_counts'])['loss'], ret['loss']
     )
+
+
+def test_optimize_mb_model_params_all_separately_recovery(orn_deltas, initial_params):
+    """Tests optimizing all parameters separately (params_to_optimize='all') recovers
+    the threshold and product of APL<>KC weight scales, when targets are model outputs
+    at those parameters.
+
+    Individual APL weight scales can not be recovered, since outputs only depend on
+    their product (see test_fixed_param_kc_simulator).
+    """
+    simulate, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params
+    )
+    # APL weight scales changed by different factors (unlike tied optimization)
+    factors = {'fixed_thr': 1.15, 'wAPLKC_scale': 0.5, 'wKCAPL_scale': 1.4}
+    true_params = {p: initial_params[p] * f for p, f in factors.items()}
+
+    target_responses, _ = simulate(true_params)
+    target_rates = target_responses.mean()
+    target_corr = drop_silent_model_cells(target_responses).corr()
+
+    maxfev = 120
+    ret = optimize_mb_model_params(orn_deltas, target_response_rates=target_rates,
+        target_corr=target_corr, initial_params=initial_params,
+        params_to_optimize='all', maxfev=maxfev
+    )
+    assert ret['params_to_optimize'] == list(initial_params)
+    assert ret['tied_params'] == []
+    assert len(ret['history']) <= maxfev
+
+    assert ret['loss'] < 0.1 * ret['initial_losses']['loss']
+    params = ret['params']
+    assert np.isclose(params['fixed_thr'], true_params['fixed_thr'], rtol=0.05)
+    assert np.isclose(params['wAPLKC_scale'] * params['wKCAPL_scale'],
+        true_params['wAPLKC_scale'] * true_params['wKCAPL_scale'], rtol=0.1
+    )
+
+
+@pytest.mark.parametrize('kws', [
+        dict(),
+        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+            use_connectome_APL_weights=True
+        ),
+    ], ids=format_model_params
+)
+def test_optimize_mb_model_params_all_separately(orn_deltas, kws):
+    """Tests params_to_optimize='all' optimizes each APL weight scale separately
+    (including wKCAPL_scale, and all 4 APL weight scales for bouton models).
+    """
+    expected_params = ['fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale']
+    if kws.get('prat_boutons', False):
+        expected_params += ['wAPLPN_scale', 'wPNAPL_scale']
+
+    # enough for initial point, each other vertex of initial Nelder-Mead simplex (each
+    # changing one parameter), and one more
+    maxfev = len(expected_params) + 2
+    ret = optimize_mb_model_params(orn_deltas, target_response_rates=0.08,
+        params_to_optimize='all', maxfev=maxfev, verify=False, **kws
+    )
+    assert sorted(ret['params_to_optimize']) == sorted(expected_params)
+    assert ret['tied_params'] == []
+
+    history = ret['history']
+    assert len(history) == maxfev
+    assert ret['loss'] <= ret['initial_losses']['loss']
+
+    initial_params = ret['initial_params']
+    changed = pd.DataFrame({
+        p: ~np.isclose(history[p], initial_params[p], rtol=1e-9, atol=0)
+        for p in expected_params
+    })
+    # each parameter should have been changed alone (rather than only along with
+    # others, as tied parameters are)
+    changed_alone = changed[changed.sum(axis='columns') == 1]
+    assert set(changed_alone.columns[changed_alone.any()]) == set(expected_params)
+
+    with pytest.raises(ValueError):
+        optimize_mb_model_params(orn_deltas, target_response_rates=0.08,
+            initial_params=initial_params, params_to_optimize='not-all', maxfev=1,
+            verify=False, **kws
+        )
 
 
 @pytest.mark.parametrize('method', ['Nelder-Mead', 'Powell', 'differential_evolution',

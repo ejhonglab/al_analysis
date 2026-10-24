@@ -15682,7 +15682,7 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         Union[float, Dict[str, float]]]] = None,
     target_response_rates: Optional[Union[float, pd.Series]] = None,
     target_corr: Optional[pd.DataFrame] = None,
-    params_to_optimize: Optional[Sequence[str]] = None,
+    params_to_optimize: Optional[Union[Sequence[str], Literal['all']]] = None,
     initial_params: Optional[ParamDict] = None,
     bounds: Optional[Dict[str, Tuple[float, float]]] = None, bound_factor: float = 10.0,
     tie_apl_weights: bool = True, method: str = 'Nelder-Mead', maxfev: int = 200,
@@ -15716,6 +15716,11 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             change model outputs, so optimizing all of them would be redundant. Others
             are either fixed at initial values, or tied to wAPLKC_scale (see
             `tie_apl_weights`).
+
+            If 'all', optimizes all that apply to this model, each separately
+            (including 'wKCAPL_scale'). Because of the redundancy above, outputs then
+            only depend on products of APL input and output weight scales (e.g.
+            wAPLKC_scale * wKCAPL_scale), so best individual scales are not unique.
 
         initial_params: passed to `make_fixed_param_kc_simulator`. If not passed, initial
             values are from a `fit_mb_model` call tuning the threshold and APL weights.
@@ -15763,6 +15768,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         'history': DataFrame with parameters and losses for each evaluation
         'scipy_result': `scipy.optimize` result (None if `maxfev` reached first)
         'model_kws': `model_kws`
+        'params_to_optimize': list of parameters optimized
+        'tied_params': list of parameters tied to wAPLKC_scale (see `tie_apl_weights`)
         If `verify=True`, also 'responses', 'spike_counts', 'wPNKC', and
         'param_dict' (from `fit_mb_model` call w/ best parameters fixed).
     """
@@ -15773,6 +15780,9 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
     if maxfev < 1:
         raise ValueError(f'{maxfev=} must be at least 1')
+
+    if isinstance(params_to_optimize, str) and params_to_optimize != 'all':
+        raise ValueError(f"{params_to_optimize=} must be 'all' if a str")
 
     if loss_fn is None:
         loss_fn = make_kc_data_loss(target_response_rates=target_response_rates,
@@ -15796,6 +15806,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
     if params_to_optimize is None:
         params_to_optimize = [p for p in initial_params if p != 'wKCAPL_scale']
+    elif isinstance(params_to_optimize, str):
+        params_to_optimize = list(initial_params)
     else:
         params_to_optimize = list(params_to_optimize)
         unknown = set(params_to_optimize) - set(initial_params)
@@ -16003,6 +16015,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         'history': history,
         'scipy_result': scipy_result,
         'model_kws': model_kws,
+        'params_to_optimize': params_to_optimize,
+        'tied_params': tied,
     }
 
     if verify:
