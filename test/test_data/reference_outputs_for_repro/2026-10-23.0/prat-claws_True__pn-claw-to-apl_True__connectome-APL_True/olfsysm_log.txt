@@ -1,0 +1,92 @@
+EIGEN_WORLD_VERSION: 3 EIGEN_MAJOR_VERSION: 4 EIGEN_MINOR_VERSION: 1
+using OpenMP multithreading
+get_nodors(p)=17
+get_ngloms(p)=54
+p.kc.preset_wAPLKC=1
+p.kc.preset_wKCAPL=1
+p.kc.normalize_apl_weights=1
+p.kc.apl_weights_kc_mean=0
+p.kc.w[APLKC|KCAPL]_pretune_scale=1, 1
+p.kc.n_apl_units=1
+p.kc.wPNKC_one_row_per_claw=1
+p.kc.allow_net_inh_per_claw=0
+p.kc.pn_claw_to_apl=1
+p.kc.claw_dynamics=0
+p.kc.N=1732
+rv.kc.wPNKC.rows()=9867
+rv.kc.wPNKC.cols()=54
+p.pn.n_total_boutons=0
+rv.kc.nclaws_total=9867
+p.kc.use_fixed_thr=0
+p.kc.n_spikes_for_response=1
+p.kc.tune_apl_weights=1
+
+generating new KC replicate
+fitting sparseness
+fit_sparseness input APL weights (before normalization):
+rv.kc.wAPLKC mean: 1.50076
+rv.kc.wKCAPL mean: 0.929867
+rv.kc.wAPLKC_scale: 1
+rv.kc.wKCAPL_scale: 1
+setting spont_in w/ sum_across...
+setting threshold higher than should ever be reached, to disable KC spiking for threshold-setting phase
+choosing thresholds from spontaneous input (thrtype=4 [=uniform])
+thr min=240.765 max=600.687 mean=387.07
+spont_in min=8.29736 max=188.258 mean=81.4494
+fixed_thr: 224.171
+tuning APL<->KC weights; tuning begin (target=0.1 acc=0.1 sp_lr_coeff=10 thr=387.07)
+fit_sparseness INITIAL APL weights:
+rv.kc.wAPLKC mean: 6
+rv.kc.wKCAPL mean: 0.0034642
+rv.kc.wAPLKC_scale: 6
+rv.kc.wKCAPL_scale: 0.0034642
+incrementing tuning_iters=1 to get lower step size (to keep wAPLKC_scale positive)
+i=1 sp=0.00940769 target=0.1 rel_sp_diff=-0.905923 acc=0.1 wAPLKC_scale=6 delta(wAPLKC)=-4.52962 lr=5
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 1.47038
+rv.kc.wKCAPL mean: 0.000848952
+rv.kc.wAPLKC_scale: 1.47038
+rv.kc.wKCAPL_scale: 0.000848952
+incrementing tuning_iters=3 to get lower step size (to keep wAPLKC_scale positive)
+incrementing tuning_iters=4 to get lower step size (to keep wAPLKC_scale positive)
+incrementing tuning_iters=5 to get lower step size (to keep wAPLKC_scale positive)
+i=5 sp=0.0175248 target=0.1 rel_sp_diff=-0.824752 acc=0.1 wAPLKC_scale=1.47038 delta(wAPLKC)=-1.37459 lr=1.66667
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.0957977
+rv.kc.wKCAPL mean: 5.53104e-05
+rv.kc.wAPLKC_scale: 0.0957977
+rv.kc.wKCAPL_scale: 5.53104e-05
+binary searching between too_low_wAPLKC_scale=0.0957977 and too_high_wAPLKC_scale=1.47038
+i=6 sp=0.184554 target=0.1 rel_sp_diff=0.845537 acc=0.1 wAPLKC_scale=0.0957977 delta(wAPLKC)=0.687293 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.783091
+rv.kc.wKCAPL mean: 0.000452131
+rv.kc.wAPLKC_scale: 0.783091
+rv.kc.wKCAPL_scale: 0.000452131
+binary searching between too_low_wAPLKC_scale=0.0957977 and too_high_wAPLKC_scale=0.783091
+i=7 sp=0.0393968 target=0.1 rel_sp_diff=-0.606032 acc=0.1 wAPLKC_scale=0.783091 delta(wAPLKC)=-0.343647 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.439444
+rv.kc.wKCAPL mean: 0.000253721
+rv.kc.wAPLKC_scale: 0.439444
+rv.kc.wKCAPL_scale: 0.000253721
+binary searching between too_low_wAPLKC_scale=0.0957977 and too_high_wAPLKC_scale=0.439444
+i=8 sp=0.0787257 target=0.1 rel_sp_diff=-0.212743 acc=0.1 wAPLKC_scale=0.439444 delta(wAPLKC)=-0.171823 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.267621
+rv.kc.wKCAPL mean: 0.000154516
+rv.kc.wAPLKC_scale: 0.267621
+rv.kc.wKCAPL_scale: 0.000154516
+binary searching between too_low_wAPLKC_scale=0.267621 and too_high_wAPLKC_scale=0.439444
+i=9 sp=0.123794 target=0.1 rel_sp_diff=0.237943 acc=0.1 wAPLKC_scale=0.267621 delta(wAPLKC)=0.0859117 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.353533
+rv.kc.wKCAPL mean: 0.000204118
+rv.kc.wAPLKC_scale: 0.353533
+rv.kc.wKCAPL_scale: 0.000204118
+sp_lr_coeff to tune in one step: 6.23283
+FINAL TUNING_ITERS=10
+done fitting sparseness
+
+using 12 threads
+average sparsity (response rate): 0.0990355

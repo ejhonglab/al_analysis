@@ -1,0 +1,65 @@
+EIGEN_WORLD_VERSION: 3 EIGEN_MAJOR_VERSION: 4 EIGEN_MINOR_VERSION: 1
+using OpenMP multithreading
+get_nodors(p)=17
+get_ngloms(p)=54
+p.kc.preset_wAPLKC=0
+p.kc.preset_wKCAPL=0
+p.kc.normalize_apl_weights=1
+p.kc.apl_weights_kc_mean=0
+p.kc.w[APLKC|KCAPL]_pretune_scale=1, 1
+p.kc.n_apl_units=1
+p.kc.wPNKC_one_row_per_claw=0
+p.kc.N=1828
+rv.kc.wPNKC.rows()=1828
+rv.kc.wPNKC.cols()=54
+p.pn.n_total_boutons=0
+rv.kc.nclaws_total=0
+p.kc.use_fixed_thr=0
+p.kc.n_spikes_for_response=1
+p.kc.tune_apl_weights=1
+
+generating new KC replicate
+build_wPNKC: g_randgen seed=94895
+building UNIFORM connectivity matrix
+get_ngloms: 54
+wPNKC.rows(): 1828
+wPNKC.cols(): 54
+fitting sparseness
+setting spont_in to spont_in_ini...
+setting threshold higher than should ever be reached, to disable KC spiking for threshold-setting phase
+choosing thresholds from spontaneous input (thrtype=4 [=uniform])
+thr min=339.26 max=470.708 mean=389.682
+spont_in min=74.9789 max=140.703 mean=100.19
+fixed_thr: 189.303
+tuning APL<->KC weights; tuning begin (target=0.1 acc=0.1 sp_lr_coeff=10 thr=389.682)
+fit_sparseness INITIAL APL weights:
+rv.kc.wAPLKC mean: 6
+rv.kc.wKCAPL mean: 0.00328228
+rv.kc.wAPLKC_scale: 6
+rv.kc.wKCAPL_scale: 0.00328228
+i=0 sp=0.072564 target=0.1 rel_sp_diff=-0.27436 acc=0.1 wAPLKC_scale=6 delta(wAPLKC)=-2.7436 lr=10
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 3.2564
+rv.kc.wKCAPL mean: 0.0017814
+rv.kc.wAPLKC_scale: 3.2564
+rv.kc.wKCAPL_scale: 0.0017814
+binary searching between too_low_wAPLKC_scale=3.2564 and too_high_wAPLKC_scale=6
+i=1 sp=0.11562 target=0.1 rel_sp_diff=0.156198 acc=0.1 wAPLKC_scale=3.2564 delta(wAPLKC)=1.3718 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 4.6282
+rv.kc.wKCAPL mean: 0.00253184
+rv.kc.wAPLKC_scale: 4.6282
+rv.kc.wKCAPL_scale: 0.00253184
+binary searching between too_low_wAPLKC_scale=3.2564 and too_high_wAPLKC_scale=4.6282
+i=2 sp=0.0882675 target=0.1 rel_sp_diff=-0.117325 acc=0.1 wAPLKC_scale=4.6282 delta(wAPLKC)=-0.685899 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 3.9423
+rv.kc.wKCAPL mean: 0.00215662
+rv.kc.wAPLKC_scale: 3.9423
+rv.kc.wKCAPL_scale: 0.00215662
+sp_lr_coeff to tune in one step: 7.5
+FINAL TUNING_ITERS=3
+done fitting sparseness
+
+using 12 threads
+average sparsity (response rate): 0.100077

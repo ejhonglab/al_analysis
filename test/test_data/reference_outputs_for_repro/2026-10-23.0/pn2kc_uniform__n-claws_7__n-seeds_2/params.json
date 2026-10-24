@@ -1,0 +1,58 @@
+{
+    "responses_to": "pebbled",
+    "tune_from": "pebbled",
+    "pn2kc_connections": "uniform",
+    "n_claws": 7,
+    "output_dir": "pn2kc_uniform__n-claws_7__n-seeds_2",
+    "used_model_cache": false,
+    "fixed_thr": [
+        189.30259056603902,
+        187.39735047431594
+    ],
+    "wAPLKC": [
+        3.942302741665593,
+        3.741987385763934
+    ],
+    "wKCAPL": [
+        0.0021566207558345696,
+        0.0020470390512931803
+    ],
+    "sp_acc": [
+        0.1,
+        0.1
+    ],
+    "max_iters": [
+        100,
+        100
+    ],
+    "sp_lr_coeff": [
+        10.0,
+        10.0
+    ],
+    "apltune_subsample": [
+        1,
+        1
+    ],
+    "tuning_iters": [
+        3,
+        3
+    ],
+    "scale_pre_tuning": [
+        false,
+        false
+    ],
+    "sp_lr_coeff_to_tune_in_one_iter": [
+        7.500000000000001,
+        7.499999999999998
+    ],
+    "linear_lr_falloff": [
+        true,
+        true
+    ],
+    "binary_search_on_overshoot": [
+        true,
+        true
+    ],
+    "sparsity": 0.10192753250096538,
+    "megamat_sparsity": 0.10192753250096538
+}

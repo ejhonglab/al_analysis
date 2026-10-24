@@ -1,0 +1,21 @@
+{
+    "responses_to": "pebbled",
+    "tune_from": "pebbled",
+    "weight_divisor": 20,
+    "output_dir": "weight-divisor_20",
+    "used_model_cache": false,
+    "fixed_thr": 279.4420877762393,
+    "wAPLKC": 4.4953018406487315,
+    "wKCAPL": 0.0024591366743154986,
+    "sp_acc": 0.1,
+    "max_iters": 100,
+    "sp_lr_coeff": 10.0,
+    "apltune_subsample": 1,
+    "tuning_iters": 1,
+    "scale_pre_tuning": false,
+    "sp_lr_coeff_to_tune_in_one_iter": 10.0,
+    "linear_lr_falloff": true,
+    "binary_search_on_overshoot": true,
+    "sparsity": 0.10541897284077745,
+    "megamat_sparsity": 0.10541897284077745
+}

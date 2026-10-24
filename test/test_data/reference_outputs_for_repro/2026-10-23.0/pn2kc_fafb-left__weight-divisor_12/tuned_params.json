@@ -1,0 +1,14 @@
+{
+    "fixed_thr": 314.47601384148277,
+    "wAPLKC": 6.0,
+    "wKCAPL": 0.002425222312045271,
+    "sp_acc": 0.1,
+    "max_iters": 100,
+    "sp_lr_coeff": 10.0,
+    "apltune_subsample": 1,
+    "tuning_iters": 1,
+    "scale_pre_tuning": false,
+    "sp_lr_coeff_to_tune_in_one_iter": 10.0,
+    "linear_lr_falloff": true,
+    "binary_search_on_overshoot": true
+}

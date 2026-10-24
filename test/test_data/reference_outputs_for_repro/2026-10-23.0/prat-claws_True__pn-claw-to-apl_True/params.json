@@ -1,0 +1,21 @@
+{
+    "responses_to": "pebbled",
+    "tune_from": "pebbled",
+    "one_row_per_claw": true,
+    "prat_claws": true,
+    "pn_claw_to_apl": true,
+    "output_dir": "prat-claws_True__pn-claw-to-apl_True",
+    "used_model_cache": false,
+    "fixed_thr": 224.17069166646667,
+    "sp_acc": 0.1,
+    "max_iters": 100,
+    "sp_lr_coeff": 10.0,
+    "apltune_subsample": 1,
+    "tuning_iters": 5,
+    "scale_pre_tuning": false,
+    "sp_lr_coeff_to_tune_in_one_iter": 4.375,
+    "linear_lr_falloff": true,
+    "binary_search_on_overshoot": true,
+    "sparsity": 0.0946542589322103,
+    "megamat_sparsity": 0.0946542589322103
+}

@@ -1,0 +1,108 @@
+EIGEN_WORLD_VERSION: 3 EIGEN_MAJOR_VERSION: 4 EIGEN_MINOR_VERSION: 1
+using OpenMP multithreading
+get_nodors(p)=17
+get_ngloms(p)=54
+p.kc.preset_wAPLKC=1
+p.kc.preset_wKCAPL=1
+p.pn.preset_wAPLPN=1
+p.pn.preset_wPNAPL=1
+p.kc.normalize_apl_weights=1
+p.kc.apl_weights_kc_mean=0
+p.kc.w[APLKC|KCAPL]_pretune_scale=1, 1
+p.pn.w[APLPN|PNAPL]_pretune_scale=1, 1
+p.kc.n_apl_units=1
+p.kc.wPNKC_one_row_per_claw=1
+p.kc.allow_net_inh_per_claw=0
+p.kc.pn_claw_to_apl=0
+p.kc.claw_dynamics=0
+p.kc.N=1732
+rv.kc.wPNKC.rows()=9867
+rv.kc.wPNKC.cols()=389
+p.pn.n_total_boutons=389
+rv.kc.nclaws_total=9867
+p.kc.use_fixed_thr=0
+p.kc.n_spikes_for_response=1
+p.kc.tune_apl_weights=1
+
+generating new KC replicate
+fitting sparseness
+fit_sparseness input APL weights (before normalization):
+rv.kc.wAPLKC mean: 1.50076
+rv.kc.wKCAPL mean: 0.929867
+rv.pn.wAPLPN mean: 5.57841
+rv.pn.wPNAPL mean: 6.03856
+rv.kc.wAPLKC_scale: 1
+rv.kc.wKCAPL_scale: 1
+rv.pn.wAPLPN_scale: 1
+rv.pn.wPNAPL_scale: 1
+setting spont_in w/ sum_across...
+setting threshold higher than should ever be reached, to disable KC spiking for threshold-setting phase
+choosing thresholds from spontaneous input (thrtype=4 [=uniform])
+thr min=240.765 max=600.687 mean=387.07
+spont_in min=8.29736 max=188.258 mean=81.4494
+fixed_thr: 224.171
+tuning APL<->KC weights; tuning begin (target=0.1 acc=0.1 sp_lr_coeff=10 thr=387.07)
+fit_sparseness INITIAL APL weights:
+rv.kc.wAPLKC mean: 6
+rv.kc.wKCAPL mean: 0.0034642
+rv.pn.wAPLPN mean: 6
+rv.pn.wPNAPL mean: 0.0154242
+rv.kc.wAPLKC_scale: 6
+rv.kc.wKCAPL_scale: 0.0034642
+rv.pn.wAPLPN_scale: 6
+rv.pn.wPNAPL_scale: 0.0154242
+incrementing tuning_iters=1 to get lower step size (to keep wAPLKC_scale positive)
+i=1 sp=3.39628e-05 target=0.1 rel_sp_diff=-0.99966 acc=0.1 wAPLKC_scale=6 delta(wAPLKC)=-4.9983 lr=5
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 1.0017
+rv.kc.wKCAPL mean: 0.000578348
+rv.pn.wAPLPN mean: 1.0017
+rv.pn.wPNAPL mean: 0.00257506
+rv.kc.wAPLKC_scale: 1.0017
+rv.kc.wKCAPL_scale: 0.000578348
+rv.pn.wAPLPN_scale: 1.0017
+rv.pn.wPNAPL_scale: 0.00257506
+incrementing tuning_iters=3 to get lower step size (to keep wAPLKC_scale positive)
+incrementing tuning_iters=4 to get lower step size (to keep wAPLKC_scale positive)
+incrementing tuning_iters=5 to get lower step size (to keep wAPLKC_scale positive)
+incrementing tuning_iters=6 to get lower step size (to keep wAPLKC_scale positive)
+incrementing tuning_iters=7 to get lower step size (to keep wAPLKC_scale positive)
+incrementing tuning_iters=8 to get lower step size (to keep wAPLKC_scale positive)
+i=8 sp=0.0142304 target=0.1 rel_sp_diff=-0.857696 acc=0.1 wAPLKC_scale=1.0017 delta(wAPLKC)=-0.952996 lr=1.11111
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.0487026
+rv.kc.wKCAPL mean: 2.81193e-05
+rv.pn.wAPLPN mean: 0.0487026
+rv.pn.wPNAPL mean: 0.0001252
+rv.kc.wAPLKC_scale: 0.0487026
+rv.kc.wKCAPL_scale: 2.81193e-05
+rv.pn.wAPLPN_scale: 0.0487026
+rv.pn.wPNAPL_scale: 0.0001252
+binary searching between too_low_wAPLKC_scale=0.0487026 and too_high_wAPLKC_scale=1.0017
+i=9 sp=0.193486 target=0.1 rel_sp_diff=0.934859 acc=0.1 wAPLKC_scale=0.0487026 delta(wAPLKC)=0.476498 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.5252
+rv.kc.wKCAPL mean: 0.000303233
+rv.pn.wAPLPN mean: 0.5252
+rv.pn.wPNAPL mean: 0.00135013
+rv.kc.wAPLKC_scale: 0.5252
+rv.kc.wKCAPL_scale: 0.000303233
+rv.pn.wAPLPN_scale: 0.5252
+rv.pn.wPNAPL_scale: 0.00135013
+binary searching between too_low_wAPLKC_scale=0.0487026 and too_high_wAPLKC_scale=0.5252
+i=10 sp=0.0522008 target=0.1 rel_sp_diff=-0.477992 acc=0.1 wAPLKC_scale=0.5252 delta(wAPLKC)=-0.238249 (binary search)
+at end of scale_APL_weights:
+rv.kc.wAPLKC mean: 0.286952
+rv.kc.wKCAPL mean: 0.000165676
+rv.pn.wAPLPN mean: 0.286952
+rv.pn.wPNAPL mean: 0.000737665
+rv.kc.wAPLKC_scale: 0.286952
+rv.kc.wKCAPL_scale: 0.000165676
+rv.pn.wAPLPN_scale: 0.286952
+rv.pn.wPNAPL_scale: 0.000737665
+sp_lr_coeff to tune in one step: 5.71499
+FINAL TUNING_ITERS=11
+done fitting sparseness
+
+using 12 threads
+average sparsity (response rate): 0.106405
