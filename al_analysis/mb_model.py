@@ -16808,11 +16808,11 @@ def filter_params_for_csv(params: ParamDict) -> ParamDict:
     return {k: v for k, v in params.items() if include_in_csv(v)}
 
 
-# TODO use parquet instead (more portable?) something else (other than CSV)?
-# (for most pickles, except params maybe. something else for that? json? leave as
-# pickle?)
-model_responses_cache_name = 'responses.p'
-model_spikecounts_cache_name = 'spike_counts.p'
+# Older outputs (before 2026-10-24) also have a pickle ('.p') version of each parquet
+# file, and of each params JSON. Some even older outputs only have the pickles. Use
+# `read_model_output` / `read_tuned_params` to read either.
+model_responses_cache_name = 'responses.parquet'
+model_spikecounts_cache_name = 'spike_counts.parquet'
 
 # TODO refactor to use these in test code + natmix
 # (or to use fns that load these w/ dir as input, not needing to use name
@@ -16826,13 +16826,52 @@ model_spikecounts_cache_name = 'spike_counts.p'
 # if we can?
 # CSV should include all things in this as well, except any key/value pairs excluded by
 # filter_params_for_csv
-tuned_param_cache_name = 'tuned_params.p'
+tuned_param_cache_name = 'tuned_params.json'
 param_cache_name = 'params.csv'
 # TODO delete these, and just save to name of the variable?
-wPNKC_cache_name = 'wPNKC.p'
-extra_responses_cache_name = 'extra_responses.p'
-extra_spikecounts_cache_name = 'extra_spikecounts.p'
+wPNKC_cache_name = 'wPNKC.parquet'
+extra_responses_cache_name = 'extra_responses.parquet'
+extra_spikecounts_cache_name = 'extra_spikecounts.parquet'
 #
+
+# key in tuned param JSON, listing keys whose (non-JSON-serializable) values are instead
+# saved to '<key>.parquet' (see `_write_params` and `read_tuned_params`)
+parquet_param_keys_key = '_parquet_keys'
+
+
+def _find_model_output(path: Path) -> Optional[Path]:
+    """Returns parquet (or older pickle) version of `path`, or None if neither exists.
+    """
+    for suffix in ('.parquet', '.p'):
+        suffixed = path.with_suffix(suffix)
+        if suffixed.exists():
+            return suffixed
+    return None
+
+
+def model_output_exists(path: Path) -> bool:
+    """Returns whether `read_model_output(path)` has a file to read.
+    """
+    return _find_model_output(path) is not None
+
+
+def read_model_output(path: Path) -> Union[pd.DataFrame, pd.Series]:
+    """Returns DataFrame / Series saved by `fit_and_plot_mb_model` (or `fit_mb_model`).
+
+    Args:
+        path: path to output, with any (or no) suffix (e.g. `<model_output_dir> /
+            'responses'`). Reads '.parquet' version, or '.p' (pickle) version if there
+            is no parquet (for older outputs, which may only have pickles).
+    """
+    found = _find_model_output(path)
+    if found is None:
+        raise FileNotFoundError(f'no parquet / pickle version of {path}')
+
+    if found.suffix == '.parquet':
+        return read_parquet(found)
+
+    # pickles in some very old outputs (e.g. kc_spont_in.p) are np.ndarrays
+    return pd.read_pickle(found)
 
 def is_json_serializable(v: Any) -> bool:
     """Returns whether `v` can be serialized via `json.dumps` (warning if not).
@@ -17014,9 +17053,9 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
     csv: bool = False, verbose: bool = False,
     # TODO delete keys_not_to_remove hack (/need to add to write_params in meantime?)
     keys_not_to_remove: Iterable[str] = tuple()) -> None:
-    """Writes `param_dict` to JSON and pickle (and optionally CSV) in `model_output_dir`
+    """Writes `param_dict` to JSON (and optionally CSV) in `model_output_dir`
 
-    Files are named `name`, with suffix replaced by '.json' / '.p' / '.csv'. Only
+    Files are named `name`, with suffix replaced by '.json' / '.csv'. Only
     JSON-serializable values are written (warning about others, which should be saved
     to separate files, e.g. via `save_and_remove_from_param_dict`).
 
@@ -17026,53 +17065,45 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
 
         verbose: passed to `to_csv`
 
-        keys_not_to_remove: values for these keys are also written to pickle, even if
-            not JSON serializable (hack, see `save_and_remove_from_param_dict`)
+        keys_not_to_remove: non-JSON-serializable values for these keys are listed
+            (under `parquet_param_keys_key`) in JSON, so `read_tuned_params` can load
+            them from the '<key>.parquet' files `save_and_remove_from_param_dict` writes
+            (hack, see that function)
     """
     # .with_suffix(<x>) works whether name has existing suffix or not
-    param_cache = (model_output_dir / name).with_suffix('.p')
-
-    # TODO eventually replace pickle this w/ this?
-    # (should be guaranteed that all types saveable as json now [at least, when called
-    # w/ tuned_param input. not sure about extended param case), unless some other
-    # test cases [vector thr? will prob stay unused...] hits currently unhandled
-    # ndarray case in param_dict saving+popping. could just convert it to Series to
-    # have it handled there.)
-    json_cache = param_cache.with_suffix('.json')
+    json_cache = (model_output_dir / name).with_suffix('.json')
 
     for k, v in param_dict.items():
         if include_in_csv(v):
-            # generally i expect all things in CSV to also be in JSON/pickle
+            # generally i expect all things in CSV to also be in JSON
             assert is_json_serializable(v), (f'{k=}: include_in_csv was True but not '
                 'JSON serializable!'
             )
 
+    assert parquet_param_keys_key not in param_dict
     json_dict = {k: v for k, v in param_dict.items() if is_json_serializable(v)}
-    # TODO TODO assert we have already written some other output file for each of these?
-    # (or just check manually? may be too annoying/ugly to make check programmatic)
-    if len(json_dict) < len(param_dict):
-        non_json_keys = set(param_dict.keys()) - set(json_dict.keys())
-        # should be saved to separate files via save_and_remove_from_param_dict
-        warn(f'could not save keys {non_json_keys} to JSON! check these are saved to '
-            'their own separate files! will not be in pickle either!'
-        )
-    to_json(json_dict, json_cache)
+    non_json_keys = set(param_dict.keys()) - set(json_dict.keys())
 
     # TODO delete hack
-    if any(x in keys_not_to_remove and x not in json_dict for x in param_dict.keys()):
-        warn(f'not removing non-json serializable values for {keys_not_to_remove=} '
-            'when saving params to piclke! (hack to preserve way to get APL weights in '
-            'fit_and_plot_mb_model output, in this specific case)'
+    parquet_keys = sorted(k for k in non_json_keys if k in keys_not_to_remove)
+    if len(parquet_keys) > 0:
+        warn(f'listing {parquet_keys} in params JSON, to be loaded from their parquet '
+            'files (hack to preserve way to get APL weights in fit_and_plot_mb_model '
+            'output, in this specific case)'
         )
-        pickle_dict = {k: v for k,v in param_dict.items()
-            if k in json_dict or k in keys_not_to_remove
-        }
-        to_pickle(pickle_dict, param_cache)
-    else:
+        assert all((model_output_dir / f'{k}.parquet').exists() for k in parquet_keys)
+        json_dict[parquet_param_keys_key] = parquet_keys
+        non_json_keys -= set(parquet_keys)
     #
-        # TODO make this unconditional after deleting hack above
-        # NOTE: also filtering non-JSON serializable keys from this
-        to_pickle(json_dict, param_cache)
+
+    # TODO TODO assert we have already written some other output file for each of these?
+    # (or just check manually? may be too annoying/ugly to make check programmatic)
+    if len(non_json_keys) > 0:
+        # should be saved to separate files via save_and_remove_from_param_dict
+        warn(f'could not save keys {non_json_keys} to JSON! check these are saved to '
+            'their own separate files!'
+        )
+    to_json(json_dict, json_cache)
 
     # TODO delete eventually
     from_json = read_json(json_cache)
@@ -17093,11 +17124,10 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
             # which currently doesn't use _write_params? (tho it is saving a df, not a
             # series)
             filtered_keys = set(param_dict.keys()) - set(filtered_params.keys())
-            # TODO update message if i ever fully replace pickle w/ json
             # TODO also print types of values for filtered keys?
             # TODO TODO err instead?
             warn('keys filtered before writing params to CSV (still written to '
-                f'pickle/json, unless also mentioned above):\n{pformat(filtered_keys)}'
+                f'JSON, unless also mentioned above):\n{pformat(filtered_keys)}'
             )
 
         # numpy >= 2 scalar repr includes type (e.g. 'np.float64(1.5)'), which would
@@ -17115,7 +17145,7 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
         }
 
         param_series = pd.Series(filtered_params)
-        csv_cache = param_cache.with_suffix('.csv')
+        csv_cache = json_cache.with_suffix('.csv')
         # header=False to not write an empty header (for param_series.name, which is
         # None)
         to_csv(param_series, csv_cache, header=False,
@@ -17132,7 +17162,7 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
 
 
 def write_params(param_dict: ParamDict, model_output_dir: Path, **kwargs) -> None:
-    """Writes `param_dict` to `param_cache_name` CSV, and JSON / pickle w/ same stem.
+    """Writes `param_dict` to `param_cache_name` CSV, and JSON w/ same stem.
 
     Args:
         **kwargs: passed to `_write_params`
@@ -17143,7 +17173,7 @@ def write_params(param_dict: ParamDict, model_output_dir: Path, **kwargs) -> Non
 def write_tuned_params(param_dict: ParamDict, model_output_dir: Path,
     # TODO delete keys_not_to_remove hack (/need to add to write_params in meantime?)
     keys_not_to_remove: Iterable[str] = tuple()) -> None:
-    """Writes `param_dict` to `tuned_param_cache_name` pickle, and JSON w/ same stem.
+    """Writes `param_dict` to `tuned_param_cache_name` JSON.
 
     See `_write_params` for `keys_not_to_remove`.
     """
@@ -17181,13 +17211,9 @@ def read_params(model_output_dir: Path) -> ParamDict:
 
     json_path = csv_path.with_suffix('.json')
     if json_path.exists():
-        # TODO also check json against pickle, by factoring code from read_tuned_params
-        # to _read_pickle, and then calling it both there and here
         from_json = read_json(json_path)
 
         csv_keys = set(from_csv.keys())
-        # TODO replace w/ loading + checking against pickle instead (will only have
-        # anything but this CSV for now outputs tho)
         json_keys = set(from_json.keys())
         assert csv_keys - json_keys == set(), f'{csv_keys - json_keys}'
         json_only_keys = json_keys - csv_keys
@@ -17215,30 +17241,23 @@ def read_tuned_params(model_output_dir: Path) -> ParamDict:
     `read_params`), does not include other `fit_and_plot_mb_model` inputs (e.g. model
     kwargs) or outputs (e.g. 'sparsity').
 
-    Returns pickle contents (`tuned_param_cache_name`), after checking they match JSON
-    contents (if JSON exists, for keys it has). For older outputs without JSON, returns
-    contents of 'params_for_csv.p' instead.
+    Returns `tuned_param_cache_name` JSON contents, with values of any keys listed under
+    `parquet_param_keys_key` loaded from their parquet files. For older outputs, which
+    also have a pickle ('tuned_params.p'), returns pickle contents, after checking they
+    match JSON contents (for keys JSON has). For even older outputs without JSON,
+    returns contents of 'params_for_csv.p' instead.
     """
-    json_path = (model_output_dir / tuned_param_cache_name).with_suffix('.json')
-    if json_path.exists():
-        # TODO also assert (/warn) about any mismatch between pickle/json keys, if have
-        # both?
+    json_path = model_output_dir / tuned_param_cache_name
+    pickle_path = json_path.with_suffix('.p')
+    if pickle_path.exists():
         from_json = read_json(json_path)
-
-        # TODO change global tuned_param_cache_name to '.json' suffix after json ==
-        # pickle contents, in all tests (-> delete check below loading pickle)
-        assert tuned_param_cache_name.endswith('.p')
-        pickle_path = (model_output_dir / tuned_param_cache_name)
         from_pickle = read_pickle(pickle_path)
 
         json_keys = set(from_json.keys())
         pickle_keys = set(from_pickle.keys())
         assert json_keys - pickle_keys == set(), f'{json_keys - pickle_keys=}'
         only_pickle = pickle_keys - json_keys
-        # TODO TODO dupe this logic to read_params too (via factoring to _read_params)
         if len(only_pickle) > 0:
-            # TODO TODO assert all of these have their own files, and also filter
-            # to prevent their writing as part of param pickle (in _write_params)
             warn(f'keys in param pickle, but not JSON: {only_pickle}')
             from_pickle_json_keys = {
                 k: v for k, v in from_pickle.items() if k in from_json
@@ -17246,8 +17265,16 @@ def read_tuned_params(model_output_dir: Path) -> ParamDict:
             assert from_pickle_json_keys == from_json
         else:
             assert from_pickle == from_json
-        #
+
         return from_pickle
+
+    elif json_path.exists():
+        params = read_json(json_path)
+        for k in params.pop(parquet_param_keys_key, []):
+            assert k not in params
+            params[k] = read_parquet(model_output_dir / f'{k}.parquet')
+
+        return params
     else:
         # this was the old name (pre 2026-03-04), and only a pickle was saved then, for
         # this variable
@@ -17261,13 +17288,13 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
     """Removes keys from param_dict, saving most corresponding values to single files.
 
     `xr.DataArray` values (dynamics) are saved to `<key>.nc`, and `pd.DataFrame` /
-    `pd.Series` values to `<key>.parquet` and `<key>.p`, all in `param_dir`. Other
-    values are not removed.
+    `pd.Series` values to `<key>.parquet`, all in `param_dir`. Other values are not
+    removed.
 
-    Also writes pickle+JSON `tuned_param_cache_name` (via `write_tuned_params`), for all
-    keys in input that are JSON serializable (which should be everything not saved to a
-    separate file, except any `olfsysm` `ModelParams` / `RunVars` objects from
-    `return_olfsysm_vars=True`). Saves pickle to `param_dir / tuned_param_cache_name`.
+    Also writes JSON `tuned_param_cache_name` (via `write_tuned_params`), for all keys in
+    input that are JSON serializable (which should be everything not saved to a separate
+    file, except any `olfsysm` `ModelParams` / `RunVars` objects from
+    `return_olfsysm_vars=True`), to `param_dir / tuned_param_cache_name`.
 
     Modifies input inplace.
 
@@ -17276,7 +17303,8 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
             (warning). If True, also asserts all dynamics are saved, after saving.
 
         keys_not_to_remove: `pd.DataFrame` / `pd.Series` values for these keys are
-            saved but not removed (and are also included in the param pickle)
+            saved but not removed (and are also listed in the tuned param JSON, so
+            `read_tuned_params` can load them)
 
         remove: if False, values are saved but not removed from `param_dict`
     """
@@ -17285,16 +17313,7 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
     # in param_cache_name/similar there)
     for k in list(param_dict.keys()):
         v = param_dict[k]
-        # TODO also do for np.ndarray / Series / DataFrame?
-        # TODO TODO especially if trying to get all serialized formats somewhat more
-        # portable (and/or backwards compatible). may want all pandas objects as
-        # parquet, all xarray either netcdf (or OK being not portable), and
-        # everything else [mainly, parameter outputs, including the pickle, to the
-        # extent that the CSV isn't enough] either using as simple types as possible
-        # w/ pickle (to improve chances for portability / etc) (or json/similar for
-        # params currently in pickle, but still that probably can't do
-        # numpy/pandas/etc)
-        pickle_path = param_dir / f'{k}.p'
+        # TODO also do for np.ndarray?
         if isinstance(v, xr.DataArray):
             if save_dynamics:
                 # TODO move saving of all/most of these into fit_mb_model, so
@@ -17320,11 +17339,7 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
         elif isinstance(v, (pd.DataFrame, pd.Series)):
             # TODO + CSV (alongside parquet) just for posterity, and a backup option
             # for people who may not want to use parquet?
-            parquet_path = pickle_path.with_suffix('.parquet')
-            to_parquet(v, parquet_path)
-
-            # TODO delete?
-            to_pickle(v, pickle_path, verbose=True)
+            to_parquet(v, param_dir / f'{k}.parquet')
 
             # TODO delete hack eventually
             if k in keys_not_to_remove:
@@ -17373,8 +17388,8 @@ def save_and_remove_from_param_dict(param_dict: ParamDict, param_dir: Path, *,
     #    that were used to scale wAPLKC/wKCAPL during APL tuning.
     #
     # 2. wAPLKC/wKCAPL are scaled connectome weight vectors now, which will be
-    #    popped from params below (before params saved to CSV/pickle), and pickled
-    #    separately.
+    #    popped from params above (before params saved to CSV/JSON), and saved to
+    #    parquet separately.
     #
     # in n_seeds > 1 case, should be same keys, but list values (of length equal to
     # n_seeds)
@@ -17823,7 +17838,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     cached_responses_exist = (
         # checking both since i had previously only been returning+saving the 1st
         # TODO also test wPNKC existance here? params? anything else?
-        model_responses_cache.exists() and model_spikecounts_cache.exists()
+        model_output_exists(model_responses_cache) and
+        model_output_exists(model_spikecounts_cache)
     )
     if cache_only and not cached_responses_exist:
         # TODO shorten path?
@@ -17862,17 +17878,20 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         tuning_output_dir = tuning_panel_dir / extra_params['tuning_output_dir']
         assert tuning_output_dir.is_dir()
 
-        tuning_responses_cache = tuning_output_dir / model_responses_cache_name
-        assert tuning_responses_cache.exists()
+        tuning_responses_cache = _find_model_output(
+            tuning_output_dir / model_responses_cache_name
+        )
+        assert tuning_responses_cache is not None
 
         # TODO delete? doesn't really matter unless fixed_thr/wAPLKC actually changed,
         # right? isn't that what i should be testing?
-        if model_responses_cache.exists():
-            curr_cache_mtime = getmtime(model_responses_cache)
+        curr_responses_cache = _find_model_output(model_responses_cache)
+        if curr_responses_cache is not None:
+            curr_cache_mtime = getmtime(curr_responses_cache)
             tuning_cache_mtime = getmtime(tuning_responses_cache)
 
             if tuning_cache_mtime >= curr_cache_mtime:
-                warn(f'{tuning_responses_cache} was newer than {model_responses_cache}'
+                warn(f'{tuning_responses_cache} was newer than {curr_responses_cache}'
                     '! setting use_cache=False!'
                 )
                 use_cache = False
@@ -17980,11 +17999,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             if not quiet:
                 print(f'loading model responses (+params) from cache: {param_dir}')
 
-        # TODO why using my read_pickle wrapper for only some of these?
         # TODO TODO are these actually returned? delete? (esp for
         # only_return_params=True case i want to be more the default now)
-        responses = pd.read_pickle(model_responses_cache)
-        spike_counts = pd.read_pickle(model_spikecounts_cache)
+        responses = read_model_output(model_responses_cache)
+        spike_counts = read_model_output(model_spikecounts_cache)
         #
 
         # TODO also load wPNKC? (but, not in params actually right? why am i
@@ -17997,11 +18015,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO load any dynamics? (into param_dict) (prob best to leave these and
         # manually load when needed...)
 
-        if extra_responses_cache.exists():
-            extra_responses = pd.read_pickle(extra_responses_cache)
+        if model_output_exists(extra_responses_cache):
+            extra_responses = read_model_output(extra_responses_cache)
 
-        if extra_spikecounts_cache.exists():
-            extra_spikecounts = pd.read_pickle(extra_spikecounts_cache)
+        if model_output_exists(extra_spikecounts_cache):
+            extra_spikecounts = read_model_output(extra_spikecounts_cache)
     else:
         # doesn't necessarily matter if it already existed. will be deleted if sparsity
         # outside bounds (and inside a sensitivity analysis call)
@@ -18159,10 +18177,9 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 #assert tuning_output_dir is not None
                 if tuning_output_dir is not None:
                     # TODO what is this?
-                    tuning_wPNKC_cache = tuning_output_dir / wPNKC_cache_name
-                    assert tuning_wPNKC_cache.exists()
-
-                    tuning_wPNKC = read_pickle(tuning_wPNKC_cache)
+                    tuning_wPNKC = read_model_output(
+                        tuning_output_dir / wPNKC_cache_name
+                    )
                     # assuming all entries of a given seed are at adjacent indices in
                     # the seed level values (should never be False given how i'm
                     # implementing things)
@@ -18355,7 +18372,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # just saving these for manual reference, or for use in -c check.
         # not loaded elsewhere in the code.
         to_parquet(orn_deltas, param_dir / 'orn_deltas.parquet')
-        to_pickle(orn_deltas, param_dir / 'orn_deltas.p')
 
         # TODO also save a hemibrain-filled version of this?
         #
@@ -18370,17 +18386,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         # NOTE: saving raw (unsorted, etc) responses to cache for now, so i can modify
         # that bit. CSV saving is currently after all sorting / post-processing.
-        to_parquet(responses, model_responses_cache.with_suffix('.parquet'))
-        to_parquet(spike_counts, model_spikecounts_cache.with_suffix('.parquet'))
+        to_parquet(responses, model_responses_cache)
+        to_parquet(spike_counts, model_spikecounts_cache)
 
-        # TODO delete pickle versions eventually (-> change model_responses_cache[_name]
-        # to use '.parquet' instead of '.p')
-        to_pickle(responses, model_responses_cache)
-        to_pickle(spike_counts, model_spikecounts_cache)
-
-        wPNKC_cache = param_dir / wPNKC_cache_name
-        to_parquet(wPNKC, wPNKC_cache.with_suffix('.parquet'))
-        to_pickle(wPNKC, wPNKC_cache)
+        to_parquet(wPNKC, param_dir / wPNKC_cache_name)
 
         # currently just assuming that both will be in same format
         # (both either np.arrays/pd.Series [depending on which i end up settling on
@@ -18558,24 +18567,17 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # written
         if extra_responses is not None:
             assert extra_spikecounts is not None
-            to_parquet(extra_responses, extra_responses_cache.with_suffix('.parquet'))
-            to_parquet(extra_spikecounts,
-                extra_spikecounts_cache.with_suffix('.parquet')
-            )
-            # TODO delete eventually
-            to_pickle(extra_responses, extra_responses_cache)
-            to_pickle(extra_spikecounts, extra_spikecounts_cache)
+            to_parquet(extra_responses, extra_responses_cache)
+            to_parquet(extra_spikecounts, extra_spikecounts_cache)
         else:
             assert extra_spikecounts is None
 
-            # delete any existing extra_responses pickles
-            # (don't want stale versions of these being loaded alongside newer
-            # responses.p data)
-            if extra_responses_cache.exists():
-                extra_responses_cache.unlink()
-
-            if extra_spikecounts_cache.exists():
-                extra_spikecounts_cache.unlink()
+            # delete any existing extra_responses outputs (incl. pickles from older
+            # versions) (don't want stale versions of these being loaded alongside newer
+            # responses data)
+            for cache in (extra_responses_cache, extra_spikecounts_cache):
+                for suffix in ('.parquet', '.p'):
+                    cache.with_suffix(suffix).unlink(missing_ok=True)
 
     # param_dict should include 'fixed_thr', 'wAPLKC' and 'wKCAPL' parameters, as they
     # are at the end of the model run (either tuned or hardcoded-from-the-beginning).
@@ -23734,8 +23736,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                     # param_dict has it, and vector things in there tend to screw up
                     # some outputs, as currently implemented [e.g. the CSVs
                     # summarizing parameters for different runs])
-                    # TODO update to parquet
-                    wPNKC = pd.read_pickle(tuning_output_dir / 'wPNKC.p')
+                    wPNKC = read_model_output(tuning_output_dir / wPNKC_cache_name)
 
                     # TODO (delete/) refactor this part to share w/
                     # test_fixed_inh_params2 (copied this there)?
@@ -24049,8 +24050,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 output_dirname = row.output_dir
                 output_dir = panel_plot_dir / output_dirname
                 responses_cache = output_dir / model_responses_cache_name
-                # TODO replace w/ reading parquet?
-                responses = pd.read_pickle(responses_cache)
+                responses = read_model_output(responses_cache)
 
                 label = row.pn2kc_connections
 
@@ -26375,16 +26375,7 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     def check_pickle_and_parquet_outputs(name):
         """Asserts pickle / parquet file `name` has equal contents in both dirs.
         """
-        # TODO this even possible? shouldn't be if we define set of filenames to check
-        # from intersection instead of union. any reason to not change def like that?
-        if name in exclude_pickles:
-            return
-
-        # TODO use something other than pd.read_pickle? may want if i ever pickle
-        # xarray, but it does work w/ np.ndarray, which is only other thing i think i
-        # currently have in pickles (except for dict in params_for_csv.p, which should
-        # be excluded anyway)
-        # TODO delete teh pickle ones eventually? now?
+        # (pickles only in older outputs)
         if name.endswith('.p'):
             p1 = pd.read_pickle(output_dir / name)
             p2 = pd.read_pickle(output_dir2 / name)
@@ -26412,12 +26403,6 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
             if not x.stem in file_stems_to_ignore
         }
 
-    # TODO allow some mismatch here? kwarg for that? e.g. odor_stats or claw_sims_sums.p
-    # (/other dynamics outputs?)
-    # TODO assert pickles has at least some minimum set of pickles?
-    output_dir_pickles = filenames_with_ext(output_dir, 'p')
-    output_dir2_pickles = filenames_with_ext(output_dir2, 'p')
-
     # TODO factor out?
     def filter_dynamics(fnames: Set[str]) -> Set[str]:
         # filters e.g. {'pn_sims.p', 'spike_recordings.p', 'Is_sims.p', 'vm_sims.p',
@@ -26428,60 +26413,31 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
             ))
         }
 
-    # TODO option to also compare these? (default to False tho)
-    output_dir_pickles = filter_dynamics(output_dir_pickles)
-    output_dir2_pickles = filter_dynamics(output_dir2_pickles)
-
-    # TODO expose as kwarg (+ default to False)
-    allow_old_cache_name = True
-    old_tuned_param_name = 'params_for_csv.p'
-    # NOTE: old name can be in either output (e.g. reference outputs passed as 2nd
-    # output in test_fitandplot_repro), but not both (both would use `else` branch)
-    old_in_1 = old_tuned_param_name in output_dir_pickles
-    old_in_2 = old_tuned_param_name in output_dir2_pickles
-    if allow_old_cache_name and old_in_1 != old_in_2:
-        if old_in_1:
-            old_dir, old_pickles, new_pickles = (output_dir, output_dir_pickles,
-                output_dir2_pickles
-            )
-        else:
-            old_dir, old_pickles, new_pickles = (output_dir2, output_dir2_pickles,
-                output_dir_pickles
-            )
-
-        warn(f'{old_dir=} used old tuned param cache name (={old_tuned_param_name})')
-        # new name for same thing (new 'params.p' is "all" params, not just the "tuned"
-        # params)
-        new_tuned_param_name = 'tuned_params.p'
-        assert new_tuned_param_name not in old_pickles
-
-        assert old_pickles - new_pickles <= {old_tuned_param_name}
-        # params.p ("all" params, which should be more than "tuned" params) should now
-        # also exist, in addition to params.csv (which still has the same name as it did
-        # before)
-        assert new_pickles - old_pickles <= {new_tuned_param_name, 'params.p'}
-    else:
-        # TODO TODO allow specifying expected missing ones via kwarg
-        # (for b - a = {'wAPLKC.p', 'wKCAPL.p'} in boost_apl... script)
-        # (should they be prefixes to filenames, and then all extensions checked? or
-        # what? don't really want to have a separate one for each filetype
-        # [extension]...)
-        # TODO is kc_spont_in.p still getting saved? still want it to be?
-        assert output_dir_pickles == output_dir2_pickles, \
-            f'{diff_sets(output_dir_pickles, output_dir2_pickles)}'
+    # pickles are only in older outputs (see `read_model_output`)
+    # TODO option to also compare dynamics? (default to False tho)
+    output_dir_pickles = filter_dynamics(filenames_with_ext(output_dir, 'p'))
+    output_dir2_pickles = filter_dynamics(filenames_with_ext(output_dir2, 'p'))
 
     output_dir_parquets = filenames_with_ext(output_dir, 'parquet')
     output_dir2_parquets = filenames_with_ext(output_dir2, 'parquet')
     assert output_dir_parquets == output_dir2_parquets, \
         f'{diff_sets(output_dir_parquets, output_dir2_parquets)}'
 
-    # TODO delete eventually
-    parquet_names = {x[:-len('.parquet')] for x in output_dir_parquets}
-    pickle_names = {x[:-len('.p')] for x in output_dir_pickles}
-    # TODO update to remove params_for_csv, after updating/renaming all old outputs to
-    # have that one as 'tuned_params.p' instead
-    assert pickle_names - parquet_names <= {'params_for_csv', 'params', 'tuned_params'}
-    #
+    # param pickles are compared via read_tuned_params below ('params_for_csv.p' was
+    # the name of 'tuned_params.p' before 2026-03-04)
+    param_pickles = {'params_for_csv.p', 'params.p', 'tuned_params.p'}
+    shared_pickles = (output_dir_pickles & output_dir2_pickles) - param_pickles
+
+    # other pickles only in one output should have a parquet version (in both outputs,
+    # given check above), with the same contents
+    unshared_pickles = (output_dir_pickles ^ output_dir2_pickles) - param_pickles
+    parquet_stems = {x[:-len('.parquet')] for x in output_dir_parquets}
+    unshared_without_parquet = {x for x in unshared_pickles
+        if x[:-len('.p')] not in parquet_stems
+    }
+    assert len(unshared_without_parquet) == 0, (f'{unshared_without_parquet=} only in '
+        'one output, without parquet versions'
+    )
 
     # TODO assert some minimum set of CSVs?
     output_dir_csvs = filenames_with_ext(output_dir, 'csv')
@@ -26489,27 +26445,18 @@ def assert_fit_and_plot_outputs_equal(plot_root: Path, params: ParamDict,
     assert output_dir_csvs == output_dir2_csvs
     # TODO TODO also check contents of CSVs, like pickles?
 
-    # TODO move check on wPNKC (currently done in loop below only, right?) before
-    # assert_param_dicts_equal? (unless i'm going to break out the part of
-    # assert_param_dicts_equal that tests wAPLKC/fixed_thr/etc [anything that depends on
-    # olfsysm tuning process], and do that after wPNKC check)
-    #
-    # params_for_csv.p is loaded and checked above (we need to ignore a subset and
-    # may need to special case allclose checking on some there)
-    # TODO TODO just define from what is only in pickle (not parquet)
-    # (or update to remove params_for_csv, after updating/renaming all old outputs to
-    # have that one as 'tuned_params.p' instead, as above)
-    exclude_pickles = ('params_for_csv.p', 'params.p', 'tuned_params.p')
-
-    output_file_names_to_check = output_dir_pickles | output_dir_parquets
+    output_file_names_to_check = shared_pickles | output_dir_parquets
 
     # TODO could move back below param check, if i break out the part of
     # assert_param_dicts_equal that tests wAPLKC/fixed_thr/etc [anything that depends on
     # olfsysm tuning process], and do that after wPNKC check
     check_before_params = ('wPNKC',)
     for name in check_before_params:
-        for path in (f'{name}.p', f'{name}.parquet'):
-            assert path in output_file_names_to_check
+        paths = [x for x in (f'{name}.p', f'{name}.parquet')
+            if x in output_file_names_to_check
+        ]
+        assert len(paths) > 0, f'no {name} output in both directories'
+        for path in paths:
             check_pickle_and_parquet_outputs(path)
             output_file_names_to_check.remove(path)
 

@@ -14,7 +14,7 @@ from al_analysis import al_util
 from al_analysis.al_util import warn, savefig, read_csv
 from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
     megamat_orn_deltas, get_thr_and_APL_weights, format_model_params, read_orn_deltas,
-    scale_dff_to_est_spike_deltas_using_hallem
+    scale_dff_to_est_spike_deltas_using_hallem, read_model_output
 )
 
 
@@ -236,8 +236,8 @@ def main():
         model_str = format_model_params(kws)
 
         tuned_model_output_dir = plot_root / tuned_params['output_dir']
-        trs = pd.read_pickle(tuned_model_output_dir / 'responses.p')
-        tss = pd.read_pickle(tuned_model_output_dir / 'spike_counts.p')
+        trs = read_model_output(tuned_model_output_dir / 'responses')
+        tss = read_model_output(tuned_model_output_dir / 'spike_counts')
 
         mean_num_spikes = addlevel(tss.mean(), 'model', model_str)
         mean_num_spikes.name = 'mean_num_spikes'
@@ -278,8 +278,8 @@ def main():
                 **thr_and_apl_kws
             )
             model_output_dir = panel_dir / params['output_dir']
-            rs = pd.read_pickle(model_output_dir / 'responses.p')
-            ss = pd.read_pickle(model_output_dir / 'spike_counts.p')
+            rs = read_model_output(model_output_dir / 'responses')
+            ss = read_model_output(model_output_dir / 'spike_counts')
 
             def add_metadata(series):
                 series = addlevel(series, 'model', model_str)

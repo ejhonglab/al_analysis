@@ -18,7 +18,7 @@ from al_analysis import al_util
 from al_analysis.al_util import warn, savefig, read_csv, read_parquet, to_csv, data_root
 from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
     megamat_orn_deltas, get_thr_and_APL_weights, format_model_params, abbrev_model_id,
-    dict_seq_product, KC_TYPE
+    dict_seq_product, read_model_output, KC_TYPE
 )
 
 
@@ -305,8 +305,8 @@ def main():
                 **kws, **thr_and_apl_kws
             )
             model_output_dir = panel_dir / params['output_dir']
-            rs = pd.read_pickle(model_output_dir / 'responses.p')
-            ss = pd.read_pickle(model_output_dir / 'spike_counts.p')
+            rs = read_model_output(model_output_dir / 'responses')
+            ss = read_model_output(model_output_dir / 'spike_counts')
 
             def add_metadata(series):
                 series = addlevel(series, 'model', model_str)

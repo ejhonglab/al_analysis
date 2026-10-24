@@ -54,7 +54,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     n_isi_less_than_n_indices, min_seconds_between_spikes, mean_seconds_between_spikes,
     n_isi_less_than_time_seconds, fit_dff2spiking_model, predict_spiking_from_dff,
     dff_col, spike_delta_col, est_spike_delta_col, APL_UNIT, load_apl_unit_distances,
-    get_apl_unit_coupling, get_param_subset
+    get_apl_unit_coupling, get_param_subset, read_model_output
 )
 
 # TODO better way?
@@ -1387,7 +1387,7 @@ def test_equalize_kc_type_sparsity(tmp_path, orn_deltas):
     # this must be in param_dict if equalize_kc_type_sparsity=True
     type2thr = param_dict['type2thr']
 
-    wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
+    wPNKC = read_model_output(output_dir / 'wPNKC')
     kc_types = wPNKC.index.get_level_values(KC_TYPE)
     assert not kc_types.isna().any()
     assert set(kc_types) == set(type2thr.keys())
@@ -1574,8 +1574,8 @@ def test_hemibrain_paper_repro(tmp_path):
     # 1837 cells (same as paper uniform outputs), 9 of which have no input, i.e.
     # ipdb> (paper_wPNKC == 0).T.all().sum()
     # 9
-    paper_wPNKC = pd.read_pickle(paper_hemibrain_output_dir / 'wPNKC.p')
-    wPNKC = pd.read_pickle(output_dir / 'wPNKC.p')
+    paper_wPNKC = read_model_output(paper_hemibrain_output_dir / 'wPNKC')
+    wPNKC = read_model_output(output_dir / 'wPNKC')
     #
 
     paper_wPNKC = paper_wPNKC.rename_axis(index={'bodyid': KC_ID})
@@ -1634,11 +1634,11 @@ def test_hemibrain_paper_repro(tmp_path):
         check_with_allclose=check_with_allclose
     )
 
-    # NOTE: despite using read_pickle, this is a np.ndarray (shape (1837, 1))
-    spont1 = pd.read_pickle(paper_hemibrain_output_dir / 'kc_spont_in.p')
+    # NOTE: this is a np.ndarray (shape (1837, 1)), from a pickle in these old outputs
+    spont1 = read_model_output(paper_hemibrain_output_dir / 'kc_spont_in')
 
     # this one is now a pd.Series, w/ similar KC index to new wPNKC
-    spont2 = pd.read_pickle(output_dir / 'kc_spont_in.p')
+    spont2 = read_model_output(output_dir / 'kc_spont_in')
 
     assert np.allclose(spont1.squeeze(), spont2)
 
