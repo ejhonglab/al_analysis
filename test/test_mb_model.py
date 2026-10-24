@@ -12,6 +12,8 @@ from typing import Iterable, List, Mapping, Optional, Set, Tuple, Union
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.sparse import csc_matrix
+from scipy.sparse.csgraph import connected_components
 import xarray as xr
 
 # TODO does importing this before hong2p.equals allow that warning (optional from within
@@ -51,7 +53,8 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     drop_silent_model_cells, min_indices_between_spikes, mean_indices_between_spikes,
     n_isi_less_than_n_indices, min_seconds_between_spikes, mean_seconds_between_spikes,
     n_isi_less_than_time_seconds, fit_dff2spiking_model, predict_spiking_from_dff,
-    dff_col, spike_delta_col, est_spike_delta_col
+    dff_col, spike_delta_col, est_spike_delta_col, APL_UNIT, load_apl_unit_distances,
+    get_apl_unit_coupling, get_param_subset
 )
 
 # TODO better way?
@@ -922,7 +925,7 @@ def get_expected_missing_csv_keys(model_kws: ParamDict) -> Tuple[str]:
         expected_missing_csv_keys += ('wAPLKC', 'wKCAPL')
 
     # TODO move into conditional above?
-    if model_kws.get('prat_boutons') and not model_kws.get('per_claw_pn_apl_weights'):
+    if model_kws.get('prat_boutons'):
         expected_missing_csv_keys += ('wAPLPN', 'wPNAPL')
 
     # TODO put all dataframe/series in here? (oh, don't have output params, just input)
@@ -2065,16 +2068,215 @@ def _rerun_with_certain_apl_weights_0(mp: osm.ModelParams, rv: osm.RunVars,
     return np.mean(rv.kc.responses)
 
 
+APL_WEIGHT_NORM_KW_LIST: List[ParamDict] = [
+    dict(weight_divisor=20, use_connectome_APL_weights=True),
+    dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True),
+    dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True,
+        apl_weights_kc_mean=True
+    ),
+    dict(one_row_per_claw=True, prat_claws=True),
+]
+@pytest.mark.parametrize('kws', APL_WEIGHT_NORM_KW_LIST, ids=format_model_params)
+def test_apl_weight_normalization(orn_deltas, kws):
+    """Tests olfsysm normalizes KC<>APL weights as documented (`init_apl_weights`).
+
+    Connectome weights should be proportional to `connectome_APL_weights` synapse
+    counts, with a mean of 1 per entry (KC or claw), or a mean of 1 for each KC's total
+    (summed over its claws) if `apl_weights_kc_mean=True`. Uniform (non-connectome)
+    weights should have each KC's total equal to 1. Tuned weights should be these times
+    the tuned scales.
+    """
+    responses, spike_counts, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, **kws
+    )
+    mp = params['mp']
+    rv = params['rv']
+
+    if kws.get('one_row_per_claw', False):
+        kc_of_entry = np.array(rv.kc.claw_to_kc)
+    else:
+        kc_of_entry = np.arange(mp.kc.N)
+
+    use_connectome_APL_weights = kws.get('use_connectome_APL_weights', False)
+    if use_connectome_APL_weights:
+        wPNKC_params = get_connectome_wPNKC_params(kws)
+        # synapse counts, in same order as model weights
+        name2raw_weights = dict(zip(('wAPLKC', 'wKCAPL'), connectome_APL_weights(
+            wPNKC=connectome_wPNKC(**wPNKC_params),
+            **get_param_subset(wPNKC_params, connectome_APL_weights)
+        )))
+
+    for n in ('wAPLKC', 'wKCAPL'):
+        unscaled = getattr(rv.kc, f'{n}_unscaled').squeeze()
+        per_kc_totals = pd.Series(unscaled).groupby(kc_of_entry).sum()
+        assert len(per_kc_totals) == mp.kc.N
+
+        if not use_connectome_APL_weights:
+            assert np.allclose(per_kc_totals, 1), n
+        else:
+            raw_weights = name2raw_weights[n].values
+            assert np.allclose(unscaled,
+                raw_weights * (unscaled.sum() / raw_weights.sum())
+            ), n
+
+            if kws.get('apl_weights_kc_mean', False):
+                assert np.isclose(per_kc_totals.mean(), 1), n
+            else:
+                assert np.isclose(unscaled.mean(), 1), n
+
+        assert np.allclose(getattr(rv.kc, n).squeeze(),
+            getattr(rv.kc, f'{n}_scale') * unscaled
+        ), n
+
+    # (see `add_to_apl_weight_scales` in olfsysm.cpp)
+    assert np.isclose(rv.kc.wKCAPL_scale, rv.kc.wAPLKC_scale / mp.kc.N)
+
+
+def test_get_apl_unit_coupling():
+    """Tests APL unit coupling matrices are symmetric, and connect expected neighbors.
+    """
+    dists = load_apl_unit_distances()
+    n_units = len(dists)
+    d = dists.values
+    d_no_self = d + np.diag(np.full(n_units, np.inf))
+    d_ref = np.median(d_no_self.min(axis=1))
+
+    for n_neighbors in (None, 1, 3):
+        coupling = get_apl_unit_coupling(2.0, n_neighbors=n_neighbors)
+        assert coupling.index.equals(dists.index)
+        assert coupling.columns.equals(dists.columns)
+
+        g = coupling.values
+        assert np.array_equal(g, g.T)
+        assert (np.diag(g) == 0).all()
+        assert (g >= 0).all()
+
+        neighbors = g > 0
+        assert np.allclose(g[neighbors], 2.0 * d_ref / d[neighbors])
+
+        n_components, _ = connected_components(csc_matrix(g))
+        if n_neighbors is None:
+            # minimum spanning tree
+            assert neighbors.sum() == 2 * (n_units - 1)
+            assert n_components == 1
+        else:
+            assert (neighbors.sum(axis=1) >= n_neighbors).all()
+            nearest = d_no_self.argmin(axis=1)
+            assert neighbors[np.arange(n_units), nearest].all()
+
+    assert (get_apl_unit_coupling(0.0).values == 0).all()
+
+
+def test_connectome_apl_unit_fracs():
+    """Tests `connectome_APL_weights(apl_units=True)` fractions of synapses per APL unit.
+    """
+    kws = dict(prat_claws=True, prat_boutons=True)
+    wPNKC = connectome_wPNKC(**kws)
+    *weights, name2unit_fracs = connectome_APL_weights(wPNKC=wPNKC, apl_units=True,
+        **kws
+    )
+    # weights are same as without apl_units=True
+    for w1, w2 in zip(weights, connectome_APL_weights(wPNKC=wPNKC, **kws)):
+        assert w1.equals(w2)
+
+    units = load_apl_unit_distances().index
+    name2weights = dict(zip(APL_WEIGHT_NAMES, weights))
+    assert set(name2unit_fracs.keys()) == set(APL_WEIGHT_NAMES)
+    for name, unit_fracs in name2unit_fracs.items():
+        weights = name2weights[name]
+        assert unit_fracs.index.equals(weights.index), name
+        assert unit_fracs.columns.equals(units), name
+        assert (unit_fracs.values >= 0).all(), name
+
+        frac_sums = unit_fracs.sum(axis=1)
+        assert np.allclose(frac_sums[weights > 0], 1), name
+        assert (frac_sums[weights == 0] == 0).all(), name
+        # synapses should be spread across most units
+        assert (unit_fracs.sum() > 0).mean() > 0.7, name
+
+
+# TODO also test w/ prat_boutons=True (slow to tune, and _fit_mb_model can't use LR
+# cache)
+@pytest.mark.parametrize('kws', [
+        dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True),
+        dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True,
+            pn_claw_to_apl=True
+        ),
+    ], ids=format_model_params
+)
+def test_apl_units_equiv_single(orn_deltas, kws):
+    """Tests 2 uncoupled APL units, each w/ half of every synapse, match a single APL.
+
+    Each unit then has the same potential as the single APL (input to each unit is
+    scaled by the number of units), so outputs (including tuned APL weight scales)
+    should be the same, up to floating point differences.
+    """
+    _, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, **kws
+    )
+    mp = params['mp']
+    rv = params['rv']
+    responses = rv.kc.responses.copy()
+    spike_counts = rv.kc.spike_counts.copy()
+    wAPLKC_scale = rv.kc.wAPLKC_scale
+
+    n_claws = rv.kc.wAPLKC.shape[0]
+    halves = np.full((n_claws, 2), 0.5)
+    mp.kc.n_apl_units = 2
+    rv.kc.wAPLKC_units = csc_matrix(halves)
+    rv.kc.wKCAPL_units = csc_matrix(halves.T)
+    rv.kc.apl_unit_coupling = csc_matrix((2, 2))
+
+    # re-tunes thresholds and APL weights (normalizing tuned weights from above again)
+    osm.run_KC_sims(mp, rv, True)
+
+    assert np.array_equal(rv.kc.spike_counts, spike_counts)
+    assert np.array_equal(rv.kc.responses, responses)
+    assert np.isclose(rv.kc.wAPLKC_scale, wAPLKC_scale)
+
+
+def test_apl_unit_coupling(orn_deltas):
+    """Tests coupling APL units makes their potentials more similar.
+
+    Also checks uncoupled units have spatially varying potentials, and that 'inh_sims'
+    is the mean of 'apl_unit_inh_sims'.
+    """
+    # few odors, to limit memory used for dynamics
+    orn_deltas = orn_deltas.iloc[:, :2]
+    kws = dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True)
+
+    coupling2spread = dict()
+    for coupling in (0.0, 10.0):
+        _, _, _, params = _fit_mb_model(orn_deltas=orn_deltas, return_dynamics=True,
+            plot_example_dynamics=False, apl_unit_coupling=coupling, **kws
+        )
+        unit_inh = params['apl_unit_inh_sims']
+        assert unit_inh.sizes[APL_UNIT] == len(load_apl_unit_distances())
+
+        inh = params['inh_sims']
+        mean_inh = unit_inh.mean(APL_UNIT)
+        assert np.allclose(mean_inh.values, inh.values)
+
+        # spread of unit potentials (relative to mean), where APL is active
+        active = mean_inh > 0.1 * mean_inh.max()
+        rel_spread = (unit_inh.std(APL_UNIT) / mean_inh).where(active)
+        coupling2spread[coupling] = rel_spread.mean().item()
+
+    assert coupling2spread[0.0] > 0.5, f'{coupling2spread=}'
+    assert coupling2spread[10.0] < 0.5 * coupling2spread[0.0], f'{coupling2spread=}'
+
+
 # TODO TODO do w/ more than BOUTON_MODEL_KW_LIST? at least some claw-but-not-bouton
 # stuff? wd20?
 @pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
 def test_preset_series_weights(tmp_path, orn_deltas, kws):
     """Tests presetting vector APL weights (and scalar scales) reproduces outputs.
 
-    Weights are passed as Series (via `_wAPLKC` / `_wKCAPL` / `_wAPLPN` / `_wPNAPL`)
-    from `connectome_APL_weights` (normalized to mean 1). Also checks that zeroing /
-    scaling down KC<>APL or PN<>APL weights changes response rates in expected
-    directions.
+    Weights are passed as Series (via `_wAPLKC` / `_wKCAPL` / `_wAPLPN` / `_wPNAPL`),
+    with values from olfsysm's normalized (`rv.*.w*_unscaled`) versions of the
+    `connectome_APL_weights` outputs (which are checked to have a mean of 1). Also
+    checks that zeroing / scaling down KC<>APL or PN<>APL weights changes response rates
+    in expected directions.
     """
     # NOTE: this test body originally copied from (non-working) precalc_weights=True
     # path of apl_weights fixture
@@ -2107,15 +2309,11 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     # certain fixed weight, and then later i can provide other means of the other two
     # things? (former is trivial, and can be derived from this. pre-tuning stuff can
     # probably also be derived from that?)
-    weights = connectome_APL_weights(wPNKC=wPNKC, **wPNKC_params)
-    # True as of 2026-04-14 (and maybe not always after), when scaling (in python)
-    # each weight vector by `len(weights) / weights.sum()`
-    assert all(np.isclose(ws.mean(), 1) for ws in weights), ('still scaling (in python)'
-        ' each weight vector to mean of 1?'
+    # synapse counts (normalized in olfsysm)
+    wAPLKC, wKCAPL, wAPLPN, wPNAPL = connectome_APL_weights(wPNKC=wPNKC,
+        **wPNKC_params
     )
-    # not yet scaled by tuning in olfsysm, just "normalization" in python
-    wAPLKC, wKCAPL, wAPLPN, wPNAPL = weights
-    name2weights = {
+    name2raw_weights = {
         'wAPLKC': wAPLKC,
         'wKCAPL': wKCAPL,
         'wAPLPN': wAPLPN,
@@ -2144,6 +2342,19 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     # (along w/ return_olfsysm_vars=True above)
     mp = ret['mp']
     rv = ret['rv']
+
+    # normalized by olfsysm, but not yet scaled by tuning
+    name2weights = dict()
+    for n, raw_weights in name2raw_weights.items():
+        rv_obj = rv.pn if 'PN' in n else rv.kc
+        normed = pd.Series(index=raw_weights.index,
+            data=getattr(rv_obj, f'{n}_unscaled').squeeze()
+        )
+        # one entry per claw (or bouton, for PN<>APL weights), each vector normalized
+        # to a mean of 1 (with default apl_weights_kc_mean=False)
+        assert pd_allclose(raw_weights / raw_weights.mean(), normed), n
+        name2weights[n] = normed
+
     sp0_no_APLPN = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLPN')
     sp0_no_APLKC = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLKC')
     assert sp0 < sp0_no_APLKC < sp_max, f'{sp0_no_APLKC=} out of range'
@@ -2217,9 +2428,13 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
 
     # TODO fix so fixed_thr can be specified without causing some assertion errors?
     # (tune_apl_weights=True even working correctly here?)
+    # same sp_lr_coeff as ret, which (under QUICK=1) may have come from onestep LR cache.
+    # otherwise, the cache entry for this model ID can differ, and still tune within
+    # tolerance in one step, but to a different sparsity.
     ret3 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, #fixed_thr=fixed_thr,
         param_dir_prefix='fixed-series-weights_normed-only_retuned_',
-        tune_apl_weights=True, **normed_series_no_fixed_scalars_kws, **kws
+        tune_apl_weights=True, sp_lr_coeff=ret['sp_lr_coeff'],
+        **normed_series_no_fixed_scalars_kws, **kws
     )
     output_dir3 = ret3['output_dir']
     assert output_dir3 not in output_dirs, f'{output_dir3=} already seen'
@@ -2342,9 +2557,11 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
         for_scaling_pre_tuning[k] = 1.0
 
     # TODO test w/ all None instead of 1? maybe not for all parametrizations?
+    # (see comment above ret3 call about sp_lr_coeff)
     ret6 = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, #fixed_thr=fixed_thr,
         param_dir_prefix='normed-only_pre-tuning-scales-all-1_',
-        scale_pre_tuning=True, **for_scaling_pre_tuning, **kws
+        scale_pre_tuning=True, sp_lr_coeff=ret['sp_lr_coeff'], **for_scaling_pre_tuning,
+        **kws
     )
     output_dir6 = ret6['output_dir']
     assert output_dir6 not in output_dirs, f'{output_dir6=} already seen'
@@ -3944,8 +4161,7 @@ def test_fixed_param_kc_simulator(orn_deltas, kws):
     simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas, **kws)
 
     expected_params = {'fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale'}
-    if kws.get('prat_boutons', False) and not kws.get('per_claw_pn_apl_weights',
-            False):
+    if kws.get('prat_boutons', False):
         expected_params |= {'wAPLPN_scale', 'wPNAPL_scale'}
     assert set(initial_params) == expected_params
 

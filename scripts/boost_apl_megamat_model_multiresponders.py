@@ -5,7 +5,6 @@ from pathlib import Path
 from pprint import pprint, pformat
 from typing import Set
 
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -14,7 +13,7 @@ from hong2p.types import ParamDict
 from al_analysis import al_util
 from al_analysis.al_util import warn
 from al_analysis.mb_model import (fit_and_plot_mb_model, connectome_wPNKC,
-    connectome_APL_weights, read_parquet, megamat_orn_deltas, pd_allclose,
+    connectome_APL_weights, read_parquet, megamat_orn_deltas,
     get_connectome_wPNKC_params, BOUTON_MODEL_KW_LIST, NONCLAW_MODEL_KW_LIST,
     dict_seq_product, check_model_kws_unique, assert_fit_and_plot_outputs_equal
 )
@@ -31,8 +30,9 @@ def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, orn_deltas: pd.Dat
     output directory.
 
     Args:
-        name2weights: APL weight kwarg names (e.g. '_wAPLKC') -> connectome weights
-            (normalized, not scaled by tuning), or None for weights not in this model
+        name2weights: APL weight names (e.g. 'wAPLKC') -> connectome weights (synapse
+            counts, from `connectome_APL_weights`), or None for weights not in this
+            model. Only the index is used for non-connectome models.
 
         kws: passed to `fit_and_plot_mb_model`
 
@@ -87,9 +87,6 @@ def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, orn_deltas: pd.Dat
     # TODO more than that? assert some minimum set?
     assert len(scale_param_names) >= 2, f'only had {scale_param_names=}'
 
-    # this is only case where fit_mb_model currently scales weights to mean of 1 (which
-    # does NOT currently happen in the `_wAPLKC is not None` case, so we need to
-    # replicate that here)
     one_row_per_claw = kws.get('one_row_per_claw', False)
 
     # will need to replace values for weight vectors with all ones here
@@ -126,30 +123,17 @@ def run_tuned_and_multireponsder_apl_boosted(plot_root: Path, orn_deltas: pd.Dat
         else:
             n = k
 
-        normed_but_not_tuning_scaled = name2weights[n]
-        # TODO is this the case (and the only one) that is not already scaled
-        # to mean of 1 before fitting starts (seems so)? fix that?
-        # TODO if fixed_inh_params* tests are currently passing in the
-        # weight-divisor_20__connectome-APL_True case, then maybe it shouldn't be scaled
-        # first? (no, probably should be, but not sure whether i can easily add a test
-        # in here that we can recreate same output from this?)
-        if not one_row_per_claw:
-            # see comment by one_row_per_claw def above for why we need to do this here
-            normed_but_not_tuning_scaled = (
-                normed_but_not_tuning_scaled / normed_but_not_tuning_scaled.mean()
-            )
-
         weight_parquet = plot_root / output_dir / f'{n}.parquet'
         if weight_parquet.exists():
             scaled = read_parquet(weight_parquet)
-
-            # TODO assert here that normed_but_not_tuning_scaled has mean close to 1
-            # now? (now that i've fixed the one_row_per_claw case, but duplicating what
-            # fit_mb_model currently does in that case)
-            assert pd_allclose(normed_but_not_tuning_scaled * scale, scaled), f'{k=}'
+            # tuned weights are olfsysm-normalized connectome weights times the scale.
+            # `_<n>` weights passed below are not normalized again by olfsysm.
+            normed_but_not_tuning_scaled = scaled / scale
         else:
             assert not use_connectome_APL_weights, \
                 f'{weight_parquet} should exist otherwise'
+            # (all 1, from above)
+            normed_but_not_tuning_scaled = name2weights[n]
             # TODO this what i want?
             scaled = normed_but_not_tuning_scaled * scale
 
@@ -419,24 +403,10 @@ def main():
         apl_weight_params = {
             k: v for k, v in wPNKC_params.items() if k not in wPNKC_only_params
         }
-        weights = connectome_APL_weights(wPNKC=wPNKC, **apl_weight_params)
-        # TODO delete
-        # True as of 2026-04-14 (and maybe not always after), when scaling (in
-        # python) each weight vector by `len(weights) / weights.sum()`
-        #assert all(np.isclose(ws.mean(), 1) for ws in weights if ws is not None), (
-        #    'still scaling (in python) each weight vector to mean of 1?'
-        #)
-        # TODO update connectome_APL_weights to also scale in the
-        # one_row_per_claw=False case, then restore assertion here (+ remove
-        # separate handling for that in run_tuned_...)?
-        if not all(np.isclose(ws.mean(), 1) for ws in weights if ws is not None):
-            # at least (and maybe only) default cases (like wd20) will hit this
-            warn('some/all APL weight vectors had mean not close to 1. '
-                'may be fine.'
-            )
-
-        # not yet scaled by tuning in olfsysm, just "normalization" in python
-        wAPLKC, wKCAPL, wAPLPN, wPNAPL = weights
+        # synapse counts (normalized in olfsysm)
+        wAPLKC, wKCAPL, wAPLPN, wPNAPL = connectome_APL_weights(wPNKC=wPNKC,
+            **apl_weight_params
+        )
 
         name2weights = {
             'wAPLKC': wAPLKC,
