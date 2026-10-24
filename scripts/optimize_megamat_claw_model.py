@@ -22,6 +22,7 @@ unique, but these products are (and are included in parameter comparisons).
 """
 
 from argparse import ArgumentParser
+import inspect
 from pathlib import Path
 from pprint import pprint
 from typing import Dict, Optional, Tuple
@@ -38,8 +39,7 @@ from al_analysis import al_util
 from al_analysis.al_util import savefig, to_csv, warn
 from al_analysis.mb_model import (fit_and_plot_mb_model, optimize_mb_model_params,
     make_kc_data_loss, remy_megamat_kc_targets, megamat_orn_deltas,
-    optimizable_model_params, drop_silent_model_cells, model_responses_cache_name,
-    model_spikecounts_cache_name
+    optimizable_model_params, drop_silent_model_cells, read_model_output
 )
 
 
@@ -72,6 +72,8 @@ APL_PATH2SCALES: Dict[str, Tuple[str, str]] = {
 methods = ('Nelder-Mead', 'Powell', 'differential_evolution', 'dual_annealing',
     'direct'
 )
+default_bound_factor: float = inspect.signature(optimize_mb_model_params).parameters[
+    'bound_factor'].default
 
 remy_color = 'black'
 tuned_color = '#2a78d6'
@@ -237,17 +239,23 @@ def plot_loss_history(plot_dir: Path, history: pd.DataFrame, case: str) -> None:
 
 def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
     remy_rates: pd.Series, remy_corr: pd.DataFrame, *, method: str, maxfev: int,
-    target_sparsity: float, ignore_cache: bool) -> Dict[str, Dict[str, float]]:
+    bound_factor: float, target_sparsity: float, ignore_cache: bool,
+    output_suffix: str) -> Dict[str, Dict[str, float]]:
     """Tunes model for `case` as usual, optimizes from there, and compares the two.
 
     Saves comparison CSVs and plots under `<plot_root>/tuned_vs_optimized_<case>_
-    <method>`, alongside `fit_and_plot_mb_model` outputs for both models.
+    <output_suffix>`, alongside `fit_and_plot_mb_model` outputs for both models.
 
     Args:
         case: key of `CASES`
 
         remy_rates/remy_corr: from `remy_megamat_kc_targets` (correlations with odors
             in same order as `orn_deltas`)
+
+        method/maxfev/bound_factor: passed to `optimize_mb_model_params`
+
+        output_suffix: appended to names of optimized model and comparison output
+            directories
 
     Returns dict with 'tuned' and 'optimized' losses (each a dict, from
     `make_kc_data_loss` loss function).
@@ -268,13 +276,13 @@ def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
     print('tuned params:')
     pprint(tuned_params)
 
-    tuned_responses = pd.read_pickle(tuned_dir / model_responses_cache_name)
-    tuned_spike_counts = pd.read_pickle(tuned_dir / model_spikecounts_cache_name)
+    tuned_responses = read_model_output(tuned_dir / 'responses')
+    tuned_spike_counts = read_model_output(tuned_dir / 'spike_counts')
 
     print(f'\n{case}: optimizing with {method=}, {maxfev=}, {params_to_optimize=}:')
     ret = optimize_mb_model_params(orn_deltas, loss_fn=loss_fn,
         initial_params=tuned_params, params_to_optimize=params_to_optimize,
-        method=method, maxfev=maxfev, **model_kws
+        method=method, maxfev=maxfev, bound_factor=bound_factor, **model_kws
     )
     if not ret['initial_params'] == tuned_params:
         warn('initial parameters of optimization did not match tuned parameters')
@@ -290,14 +298,14 @@ def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
             f"optimization ({ret['initial_losses']['loss']:.5g})"
         )
 
-    optimized_dirname = f'optimized_{case}_{method}'
+    optimized_dirname = f'optimized_{case}_{output_suffix}'
     print(f'\n{case}: optimized model outputs ({optimized_dirname}):')
     fit_and_plot_mb_model(plot_root, plot_dirname=optimized_dirname,
         orn_deltas=orn_deltas, comparison_kc_corrs=remy_corr, try_cache=False,
         **ret['fit_mb_model_kws']
     )
 
-    comparison_dir = plot_root / f'tuned_vs_optimized_{case}_{method}'
+    comparison_dir = plot_root / f'tuned_vs_optimized_{case}_{output_suffix}'
     comparison_dir.mkdir(exist_ok=True)
 
     params = param_table(ret)
@@ -357,6 +365,11 @@ def main():
     parser.add_argument('-n', '--maxfev', default=200, type=int, help='maximum number '
         'of loss evaluations (each one KC simulation), per case. default: %(default)s'
     )
+    parser.add_argument('-b', '--bound-factor', default=default_bound_factor,
+        type=float, help='each optimized parameter is searched between its tuned value '
+        'divided and multiplied by this (see optimize_mb_model_params). default: '
+        '%(default)s'
+    )
     parser.add_argument('-t', '--target-sparsity', default=0.1, type=float,
         help='target mean response rate for standard tuning (default: %(default)s, as '
         'in model_mb_responses)'
@@ -369,8 +382,13 @@ def main():
     cases = args.cases
     method = args.method
     maxfev = args.maxfev
+    bound_factor = args.bound_factor
     target_sparsity = args.target_sparsity
     ignore_cache = args.ignore_cache
+
+    output_suffix = method
+    if bound_factor != default_bound_factor:
+        output_suffix += f'_bound-factor-{bound_factor:g}'
 
     plot_root = Path('optimize_megamat_claw_model')
     plot_root.mkdir(exist_ok=True)
@@ -387,15 +405,16 @@ def main():
     case2losses = dict()
     for case in cases:
         case2losses[case] = run_case(plot_root, case, orn_deltas, remy_rates,
-            remy_corr, method=method, maxfev=maxfev, target_sparsity=target_sparsity,
-            ignore_cache=ignore_cache
+            remy_corr, method=method, maxfev=maxfev, bound_factor=bound_factor,
+            target_sparsity=target_sparsity, ignore_cache=ignore_cache,
+            output_suffix=output_suffix
         )
 
     summary = pd.concat(
         {case: pd.DataFrame(losses).T for case, losses in case2losses.items()},
         names=['case', 'model']
     )
-    to_csv(summary, plot_root / f'summary_{method}.csv')
+    to_csv(summary, plot_root / f'summary_{output_suffix}.csv')
     print('losses for each case:')
     print(summary.to_string(float_format='{:.5g}'.format))
 
