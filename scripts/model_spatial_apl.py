@@ -9,7 +9,7 @@ each unit in proportion to its # of synapses with that unit.
 This tunes claw and bouton models (with options as used in `model_yang_mixtures.py`)
 with a single APL compartment, and with APL units at a few coupling strengths, and then:
 - compares response rates (overall and by KC type), mean correlation between odors, and
-  the fraction of KC responses that differ from the single APL model
+  how binarized KC responses differ from the single APL model (see `response_changes`)
 - plots the spatial pattern of APL unit potentials during a few example odors, and how
   much they vary across units, for each coupling strength
 """
@@ -91,6 +91,31 @@ def summarize_responses(responses: pd.DataFrame, spike_counts: pd.DataFrame
         'mean_odor_corr': np.nanmean(off_diagonal),
         **{f'response_rate_{t}': r for t, r in type_response_rates.items()},
     })
+
+
+def response_changes(responses: pd.DataFrame, single_apl_responses: pd.DataFrame
+    ) -> Dict[str, float]:
+    """Returns how binarized KC responses differ from those of single APL model.
+
+    Returns dict with:
+        'frac_kc_odor_pairs_changed': fraction of all KC-odor pairs with a different
+            response. Small even for large changes in which KCs respond, as most pairs
+            are non-responses in both models.
+        'jaccard_distance': # of changed pairs / # of pairs responding in either model
+        'frac_lost' / 'frac_gained': # of single APL model responses lost / # of new
+            responses, each divided by # of single APL model responses
+    """
+    assert responses.index.equals(single_apl_responses.index)
+    assert responses.columns.equals(single_apl_responses.columns)
+    single = single_apl_responses.values.astype(bool)
+    units = responses.values.astype(bool)
+    n_single = single.sum()
+    return {
+        'frac_kc_odor_pairs_changed': (single != units).mean(),
+        'jaccard_distance': (single != units).sum() / (single | units).sum(),
+        'frac_lost': (single & ~units).sum() / n_single,
+        'frac_gained': (~single & units).sum() / n_single,
+    }
 
 
 def mean_unit_potentials(orn_deltas: pd.DataFrame, kws: ParamDict,
@@ -284,14 +309,11 @@ def main():
 
         if coupling is None:
             base2responses[base] = responses
-            summary['frac_responses_changed'] = 0.0
-        else:
-            single_apl_responses = base2responses[base]
-            assert responses.index.equals(single_apl_responses.index)
-            summary['frac_responses_changed'] = (
-                responses != single_apl_responses
-            ).mean().mean()
 
+        for k, v in response_changes(responses, base2responses[base]).items():
+            summary[k] = v
+
+        if coupling is not None:
             potentials = mean_unit_potentials(dynamics_orn_deltas, kws, params)
             base2coupling2potentials[base][coupling] = potentials
             unit_cv = potentials.std(axis='columns') / potentials.mean(axis='columns')

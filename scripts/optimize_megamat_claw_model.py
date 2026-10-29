@@ -15,6 +15,14 @@ This is done for each of these cases (see `CASES`):
   separately
 - 'bouton_separate': claw model with PN boutons (and PN<>APL weights), optimizing
   threshold and each of the 4 APL weight scales separately
+- 'claw_units': as 'claw', but with the APL split into coupled spatial units (see
+  `apl_unit_coupling` in `fit_mb_model`), also optimizing the coupling between units
+- 'bouton_units_separate': as 'bouton_separate', but with APL units, also optimizing
+  the coupling between units
+
+Models with APL units are tuned with `apl_unit_coupling=1` (`INITIAL_APL_UNIT_COUPLING`),
+and coupling is optimized within `-k/--coupling-bounds` (by default, from nearly
+uncoupled to the strongest coupling olfsysm can simulate).
 
 Model outputs only depend on products of APL input and output weight scales (e.g.
 wKCAPL_scale * wAPLKC_scale), so individual scales from separate optimization are not
@@ -39,7 +47,8 @@ from al_analysis import al_util
 from al_analysis.al_util import savefig, to_csv, warn
 from al_analysis.mb_model import (fit_and_plot_mb_model, optimize_mb_model_params,
     make_kc_data_loss, remy_megamat_kc_targets, megamat_orn_deltas,
-    optimizable_model_params, drop_silent_model_cells, read_model_output
+    optimizable_model_params, drop_silent_model_cells, read_model_output,
+    max_apl_unit_coupling
 )
 
 
@@ -53,11 +62,22 @@ BOUTON_MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True,
     prat_boutons=True, use_connectome_APL_weights=True
 )
 
-# case name -> (model kwargs, `params_to_optimize` for optimize_mb_model_params)
+# apl_unit_coupling for standard tuning of models w/ APL units (as in the MODEL_KW_LIST
+# entries w/ APL units), which optimization of coupling starts from
+INITIAL_APL_UNIT_COUPLING: float = 1.0
+
+# case name -> (model kwargs, `params_to_optimize` for optimize_mb_model_params). with
+# APL units, apl_unit_coupling is optimized in both cases (None and 'all').
 CASES: Dict[str, Tuple[ParamDict, Optional[str]]] = {
     'claw': (CLAW_MODEL_KWS, None),
     'claw_separate': (CLAW_MODEL_KWS, 'all'),
     'bouton_separate': (BOUTON_MODEL_KWS, 'all'),
+    'claw_units': (
+        dict(CLAW_MODEL_KWS, apl_unit_coupling=INITIAL_APL_UNIT_COUPLING), None
+    ),
+    'bouton_units_separate': (
+        dict(BOUTON_MODEL_KWS, apl_unit_coupling=INITIAL_APL_UNIT_COUPLING), 'all'
+    ),
 }
 
 # (APL input weight scale, APL output weight scale), for each path through the APL.
@@ -239,8 +259,8 @@ def plot_loss_history(plot_dir: Path, history: pd.DataFrame, case: str) -> None:
 
 def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
     remy_rates: pd.Series, remy_corr: pd.DataFrame, *, method: str, maxfev: int,
-    bound_factor: float, target_sparsity: float, ignore_cache: bool,
-    output_suffix: str) -> Dict[str, Dict[str, float]]:
+    bound_factor: float, coupling_bounds: Tuple[float, float], target_sparsity: float,
+    ignore_cache: bool, output_suffix: str) -> Dict[str, Dict[str, float]]:
     """Tunes model for `case` as usual, optimizes from there, and compares the two.
 
     Saves comparison CSVs and plots under `<plot_root>/tuned_vs_optimized_<case>_
@@ -253,6 +273,9 @@ def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
             in same order as `orn_deltas`)
 
         method/maxfev/bound_factor: passed to `optimize_mb_model_params`
+
+        coupling_bounds: (lower, upper) bounds for `apl_unit_coupling` (only used for
+            cases w/ APL units)
 
         output_suffix: appended to names of optimized model and comparison output
             directories
@@ -273,6 +296,11 @@ def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
     )
     tuned_dir = plot_root / tuned['output_dir']
     tuned_params = {p: float(tuned[p]) for p in optimizable_model_params if p in tuned}
+    bounds = None
+    if 'apl_unit_coupling' in model_kws:
+        tuned_params['apl_unit_coupling'] = float(model_kws['apl_unit_coupling'])
+        bounds = {'apl_unit_coupling': coupling_bounds}
+
     print('tuned params:')
     pprint(tuned_params)
 
@@ -282,7 +310,8 @@ def run_case(plot_root: Path, case: str, orn_deltas: pd.DataFrame,
     print(f'\n{case}: optimizing with {method=}, {maxfev=}, {params_to_optimize=}:')
     ret = optimize_mb_model_params(orn_deltas, loss_fn=loss_fn,
         initial_params=tuned_params, params_to_optimize=params_to_optimize,
-        method=method, maxfev=maxfev, bound_factor=bound_factor, **model_kws
+        method=method, maxfev=maxfev, bounds=bounds, bound_factor=bound_factor,
+        **model_kws
     )
     if not ret['initial_params'] == tuned_params:
         warn('initial parameters of optimization did not match tuned parameters')
@@ -370,6 +399,11 @@ def main():
         'divided and multiplied by this (see optimize_mb_model_params). default: '
         '%(default)s'
     )
+    parser.add_argument('-k', '--coupling-bounds', nargs=2, type=float,
+        default=None, metavar=('LOWER', 'UPPER'), help='bounds for apl_unit_coupling, '
+        'for cases with APL units. default: 0.01 to the strongest coupling olfsysm can '
+        'simulate (see max_apl_unit_coupling)'
+    )
     parser.add_argument('-t', '--target-sparsity', default=0.1, type=float,
         help='target mean response rate for standard tuning (default: %(default)s, as '
         'in model_mb_responses)'
@@ -390,6 +424,12 @@ def main():
     if bound_factor != default_bound_factor:
         output_suffix += f'_bound-factor-{bound_factor:g}'
 
+    if args.coupling_bounds is None:
+        coupling_bounds = (0.01, max_apl_unit_coupling())
+    else:
+        coupling_bounds = tuple(args.coupling_bounds)
+        output_suffix += '_coupling-bounds-{:g}-{:g}'.format(*coupling_bounds)
+
     plot_root = Path('optimize_megamat_claw_model')
     plot_root.mkdir(exist_ok=True)
 
@@ -406,8 +446,8 @@ def main():
     for case in cases:
         case2losses[case] = run_case(plot_root, case, orn_deltas, remy_rates,
             remy_corr, method=method, maxfev=maxfev, bound_factor=bound_factor,
-            target_sparsity=target_sparsity, ignore_cache=ignore_cache,
-            output_suffix=output_suffix
+            coupling_bounds=coupling_bounds, target_sparsity=target_sparsity,
+            ignore_cache=ignore_cache, output_suffix=output_suffix
         )
 
     summary = pd.concat(

@@ -5780,8 +5780,8 @@ def load_apl_unit_centroids() -> pd.DataFrame:
     return centroids
 
 
-def get_apl_unit_coupling(coupling: float, *, n_neighbors: Optional[int] = None
-    ) -> pd.DataFrame:
+def get_apl_unit_coupling(coupling: float, *, n_neighbors: Optional[int] = None,
+    dists: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Returns coupling conductances between APL units, relative to each unit's leak.
 
     Each unit is coupled to its neighbors along the APL arbor, with conductance inversely
@@ -5803,13 +5803,17 @@ def get_apl_unit_coupling(coupling: float, *, n_neighbors: Optional[int] = None
             arbor). Otherwise, each unit is coupled to its `n_neighbors` nearest units
             (and to any other units it is one of the nearest units of).
 
+        dists: output of `load_apl_unit_distances` (loaded if not passed)
+
     Returns square DataFrame (index and columns `APL_UNIT`, as in
     `load_apl_unit_distances`), symmetric and 0 on the diagonal.
     """
     if coupling < 0:
         raise ValueError(f'{coupling=} must be >= 0')
 
-    dists = load_apl_unit_distances()
+    if dists is None:
+        dists = load_apl_unit_distances()
+
     d = dists.values
     d_no_self = d + np.diag(np.full(len(d), np.inf))
     d_ref = np.median(d_no_self.min(axis=1))
@@ -5830,6 +5834,343 @@ def get_apl_unit_coupling(coupling: float, *, n_neighbors: Optional[int] = None
     conductances = np.zeros(d.shape)
     conductances[neighbors] = coupling * d_ref / d[neighbors]
     return pd.DataFrame(conductances, index=dists.index, columns=dists.columns)
+
+
+def max_apl_unit_coupling(*, n_neighbors: Optional[int] = None,
+    dists: Optional[pd.DataFrame] = None) -> float:
+    """Returns largest `apl_unit_coupling` olfsysm can simulate (w/ default time steps).
+
+    olfsysm requires `mp.time_dt / mp.kc.apl_taum * (1 + <max total coupling of one
+    unit>) <= 1` (see `get_apl_unit_coupling`).
+
+    Args:
+        n_neighbors / dists: passed to `get_apl_unit_coupling`
+    """
+    mp = osm.ModelParams()
+    max_total = get_apl_unit_coupling(1.0, n_neighbors=n_neighbors, dists=dists
+        ).sum(axis='columns').max()
+    return float((mp.kc.apl_taum / mp.time_dt - 1) / max_total)
+
+
+# size of hemibrain voxels, in which synapse coordinates are
+hemibrain_voxel_um: float = 0.008
+
+# anatomical coordinates (um) of `load_apl_points` output
+apl_point_coord_cols: List[str] = ['right_um', 'anterior_um', 'dorsal_um']
+
+def load_apl_points() -> pd.DataFrame:
+    """Returns location and APL unit of each APL skeleton node with synapses.
+
+    Nodes without an APL unit (~1% of synapses) are dropped.
+
+    Returns DataFrame indexed by 'node_id', with `apl_point_coord_cols` (um, from the
+    minimum across nodes) and `APL_UNIT` columns. Coordinates increase toward the fly's
+    right, anterior, and dorsal. Hemibrain voxel coordinates have +x toward the fly's
+    left (b' lobe in left hemisphere has larger x than right b' lobe), +y anterior (MB
+    lobes > peduncle > calyx), and +z ventral (vertical MB lobes < medial lobes).
+    """
+    syns = pd.read_parquet(apl_synapses_path)
+    syns = syns[syns.anatomical_unit >= 0]
+    assert (syns.groupby('node_id').anatomical_unit.nunique() == 1).all()
+    nodes = syns.drop_duplicates('node_id')
+
+    # (negating 2 axes, so handedness is unchanged)
+    coords = nodes[['x', 'y', 'z']].values * hemibrain_voxel_um * np.array([-1, 1, -1])
+    coords = coords - coords.min(axis=0)
+
+    points = pd.DataFrame(coords, columns=apl_point_coord_cols,
+        index=pd.Index(nodes.node_id.values, name='node_id')
+    )
+    points[APL_UNIT] = nodes.anatomical_unit.values
+    return points
+
+
+def _apl_point_values(unit_inh: xr.DataArray, points: pd.DataFrame) -> np.ndarray:
+    """Returns potential of each point's APL unit, w/ `APL_UNIT` dim replaced by points.
+
+    Other dimensions of `unit_inh` are kept in the same order, with points first.
+    """
+    unit_index = unit_inh.get_index(APL_UNIT)
+    unit_positions = unit_index.get_indexer(points[APL_UNIT])
+    assert (unit_positions >= 0).all(), 'unit_inh missing some APL units'
+
+    other_dims = [d for d in unit_inh.dims if d != APL_UNIT]
+    return unit_inh.transpose(APL_UNIT, *other_dims).values[unit_positions]
+
+
+def _relative_to_unit_mean(unit_inh: xr.DataArray) -> xr.DataArray:
+    """Returns APL unit potentials divided by their mean across units (NaN if mean 0).
+    """
+    unit_mean = unit_inh.mean(APL_UNIT)
+    return unit_inh / unit_mean.where(unit_mean > 0)
+
+
+def _apl_active_times(unit_inh: xr.DataArray, n_times: int) -> np.ndarray:
+    """Returns `n_times` evenly spaced times, while APL is active.
+
+    Active is while mean potential (across units, and any other dimensions besides
+    'time_s') is at least 10% of its max.
+    """
+    mean = unit_inh.mean([d for d in unit_inh.dims if d != 'time_s'])
+    if not mean.max() > 0:
+        raise ValueError('APL potentials all 0. pass times explicitly.')
+
+    active_times = mean['time_s'].values[(mean >= 0.1 * mean.max()).values]
+    return np.linspace(active_times.min(), active_times.max(), n_times)
+
+
+def plot_apl_activity_sections(unit_inh: xr.DataArray, *, n_sections: int = 4,
+    times: Optional[Sequence[float]] = None, n_times: int = 5,
+    projection: Literal['mean', 'max'] = 'mean', pixel_um: float = 2.0,
+    relative: bool = False, vmax: Optional[float] = None, title: Optional[str] = None
+    ) -> Figure:
+    """Plots APL activity in sections along the anterior-posterior axis, from posterior.
+
+    APL nodes (from `load_apl_points`, each with the potential of its APL unit) are split
+    into `n_sections` sections of equal thickness along the anterior-posterior axis.
+    Each section is projected onto the plane perpendicular to that axis, as viewed from
+    posterior (fly's right on the right, dorsal up), with each pixel showing the mean
+    (or max) potential of nodes in it (gray where there are none). One row per section
+    (most posterior first), and one column per time.
+
+    Args:
+        unit_inh: APL unit potentials (`APL_UNIT` X 'time_s'), e.g. `apl_unit_inh_sims`
+            from `get_dynamics` for one odor (`.sel(stim=odor)`)
+
+        n_sections: number of sections along the anterior-posterior axis
+
+        times: times (s) to show (nearest time in `unit_inh`). Defaults to `n_times`
+            evenly spaced across the time the APL is active (mean potential across
+            units at least 10% of its max)
+
+        n_times: see `times`
+
+        projection: how potentials of nodes within a pixel are combined
+
+        pixel_um: pixel size (um)
+
+        relative: if True, potentials are divided by their mean across units (at each
+            time), to compare spatial patterns across times
+
+        vmax: max of color scale (min is 0). Defaults to 99th percentile of node
+            potentials across `times`.
+
+        title: figure title
+    """
+    if n_sections < 1:
+        raise ValueError(f'{n_sections=} must be >= 1')
+
+    if projection not in ('mean', 'max'):
+        raise ValueError(f"{projection=} must be 'mean' or 'max'")
+
+    if set(unit_inh.dims) != {APL_UNIT, 'time_s'}:
+        raise ValueError(f"unit_inh dims must be {APL_UNIT} and 'time_s' (select one "
+            f'odor first). got {unit_inh.dims}'
+        )
+
+    if times is None:
+        times = _apl_active_times(unit_inh, n_times)
+
+    unit_inh = unit_inh.sel(time_s=list(times), method='nearest')
+    times = unit_inh['time_s'].values
+    if relative:
+        unit_inh = _relative_to_unit_mean(unit_inh)
+
+    points = load_apl_points()
+    # (#-points, #-times)
+    values = _apl_point_values(unit_inh, points)
+    if vmax is None:
+        vmax = np.nanpercentile(values, 99)
+
+    right, anterior, dorsal = points[apl_point_coord_cols].values.T
+    pixel_col = np.floor(right / pixel_um).astype(int)
+    pixel_row = np.floor(dorsal / pixel_um).astype(int)
+    n_cols = pixel_col.max() + 1
+    n_rows = pixel_row.max() + 1
+    n_pixels = n_rows * n_cols
+    pixel = pixel_row * n_cols + pixel_col
+    extent = [0, n_cols * pixel_um, 0, n_rows * pixel_um]
+
+    edges = np.linspace(anterior.min(), anterior.max(), n_sections + 1)
+    section = np.clip(np.searchsorted(edges, anterior, side='right') - 1, 0,
+        n_sections - 1
+    )
+
+    panel_size = 1.8
+    fig, axs = plt.subplots(n_sections, len(times), squeeze=False, sharex=True,
+        sharey=True, layout='constrained', figsize=(panel_size * len(times) + 1.2,
+            panel_size * n_sections * n_rows / n_cols + 0.8
+        )
+    )
+    for i in range(n_sections):
+        in_section = section == i
+        section_pixels = pixel[in_section]
+        counts = np.bincount(section_pixels, minlength=n_pixels)
+
+        for j, t in enumerate(times):
+            section_values = values[in_section, j]
+            if projection == 'mean':
+                sums = np.bincount(section_pixels, weights=section_values,
+                    minlength=n_pixels
+                )
+                image = np.full(n_pixels, np.nan)
+                image[counts > 0] = sums[counts > 0] / counts[counts > 0]
+            else:
+                image = np.full(n_pixels, np.nan)
+                np.fmax.at(image, section_pixels, section_values)
+
+            ax = axs[i, j]
+            im = ax.imshow(image.reshape(n_rows, n_cols), origin='lower', extent=extent,
+                vmin=0, vmax=vmax, cmap='magma', interpolation='nearest'
+            )
+            ax.set_facecolor('0.8')
+            if i == 0:
+                ax.set_title(f'{t * 1e3:.0f} ms')
+            if j == 0:
+                ax.set_ylabel(f'anterior\n{edges[i]:.0f}-{edges[i + 1]:.0f} um')
+
+    for ax in axs[-1]:
+        ax.set_xlabel('right (um)')
+
+    label = 'APL unit potential'
+    if relative:
+        label += '\n(relative to mean across units)'
+    fig.colorbar(im, ax=axs, shrink=0.6, label=f'{label}\n({projection} within pixel)',
+        extend='max'
+    )
+    fig.supylabel('section (posterior to anterior); dorsal up', fontsize='medium')
+    if title is not None:
+        fig.suptitle(title)
+
+    return fig
+
+
+def view_apl_activity_3d(unit_inh: xr.DataArray, *, time_s: Optional[float] = None,
+    relative: bool = False, vmax: Optional[float] = None,
+    max_points: Optional[int] = None, point_size: float = 2.0,
+    elev: float = 15.0, azim: float = -70.0, title: Optional[str] = None,
+    show: bool = True) -> Figure:
+    """Shows APL activity in 3D, with sliders to change time (and odor).
+
+    Each APL node (from `load_apl_points`) is colored by the potential of its APL unit.
+    With an interactive matplotlib backend, drag to rotate. Axes increase toward the
+    fly's right, anterior, and dorsal.
+
+    Args:
+        unit_inh: APL unit potentials ([`'stim'` X] `APL_UNIT` X 'time_s'), e.g.
+            `apl_unit_inh_sims` from `get_dynamics`. An odor slider is added if there
+            are multiple odors.
+
+        time_s: initial time. Defaults to time of max mean potential across units (for
+            first odor).
+
+        relative: if True, potentials are divided by their mean across units (at each
+            time), to compare spatial patterns across times. Nodes are not shown where
+            all units have potential 0.
+
+        vmax: max of color scale (min is 0). Defaults to 99th percentile of node
+            potentials (across all times and odors).
+
+        max_points: if passed, only plots a random subset of this many nodes (faster to
+            redraw)
+
+        point_size: passed to `Axes3D.scatter` as `s`
+
+        elev / azim: initial view angles (passed to `Axes3D.view_init`). Defaults are
+            from posterior, slightly to the right and dorsal. `elev=0, azim=-90` is
+            directly from posterior, as in `plot_apl_activity_sections`.
+
+        title: figure title
+
+        show: whether to call `plt.show()` (which blocks until the figure is closed, w/
+            interactive backends)
+
+    Returns figure. Its sliders are stored in `fig.apl_sliders` (they only respond while
+    references to them exist).
+    """
+    from matplotlib.widgets import Slider
+
+    if 'stim' not in unit_inh.dims:
+        unit_inh = unit_inh.expand_dims(stim=[''])
+
+    unit_inh = unit_inh.transpose('stim', APL_UNIT, 'time_s')
+    odors = unit_inh.get_index('stim')
+    times = unit_inh['time_s'].values
+
+    if time_s is None:
+        time_s = float(unit_inh.isel(stim=0).mean(APL_UNIT).idxmax('time_s'))
+
+    if relative:
+        unit_inh = _relative_to_unit_mean(unit_inh)
+
+    points = load_apl_points()
+    if max_points is not None and max_points < len(points):
+        points = points.sample(max_points, random_state=0)
+
+    # (#-points, #-odors, #-times)
+    values = _apl_point_values(unit_inh, points)
+    if vmax is None:
+        vmax = np.nanpercentile(values, 99)
+
+    def time_index(t: float) -> int:
+        return int(np.argmin(np.abs(times - t)))
+
+    def odor_str(i: int) -> str:
+        odor = odors[i]
+        return str(odor[-1] if isinstance(odor, tuple) else odor)
+
+    fig = plt.figure(figsize=(8, 8))
+    ax = fig.add_axes([0.0, 0.15, 0.85, 0.72], projection='3d')
+    xyz = points[apl_point_coord_cols].values
+    t0 = time_index(time_s)
+    scatter = ax.scatter(*xyz.T, c=values[:, 0, t0], cmap='magma', vmin=0, vmax=vmax,
+        s=point_size, depthshade=False
+    )
+    label = 'APL unit potential'
+    if relative:
+        label += '\n(relative to mean across units)'
+    fig.colorbar(scatter, cax=fig.add_axes([0.86, 0.35, 0.02, 0.45]), label=label,
+        extend='max'
+    )
+    ax.set_xlabel('right (um)')
+    ax.set_ylabel('anterior (um)')
+    ax.set_zlabel('dorsal (um)')
+    ax.set_box_aspect(np.ptp(xyz, axis=0))
+    ax.view_init(elev=elev, azim=azim)
+    if title is not None:
+        fig.suptitle(title, fontsize='small')
+
+    time_slider = Slider(fig.add_axes([0.2, 0.09, 0.55, 0.03]), 'time (s)', times[0],
+        times[-1], valinit=times[t0], valstep=times
+    )
+    sliders = [time_slider]
+    odor_slider = None
+    if len(odors) > 1:
+        odor_slider = Slider(fig.add_axes([0.2, 0.04, 0.55, 0.03]), 'odor', 0,
+            len(odors) - 1, valinit=0, valstep=1
+        )
+        sliders.append(odor_slider)
+
+    def update(_=None) -> None:
+        i = 0 if odor_slider is None else int(odor_slider.val)
+        t = time_index(time_slider.val)
+        scatter.set_array(values[:, i, t])
+        if odor_slider is not None:
+            odor_slider.valtext.set_text(odor_str(i))
+
+        ax.set_title('\n'.join(x for x in (odor_str(i), f't={times[t]:.3f} s') if x))
+        fig.canvas.draw_idle()
+
+    for slider in sliders:
+        slider.on_changed(update)
+
+    update()
+    fig.apl_sliders = sliders
+
+    if show:
+        plt.show()
+
+    return fig
 
 
 def _apl_unit_fracs(syns: pd.DataFrame, entry_cols: List[str], apl_unit_col: str,
@@ -15435,6 +15776,8 @@ optimizable_model_params: Dict[str, str] = {
     'wKCAPL_scale': 'wKCAPL',
     'wAPLPN_scale': 'wAPLPN',
     'wPNAPL_scale': 'wPNAPL',
+    # only for models w/ APL split into units (also a model kwarg, setting that)
+    'apl_unit_coupling': 'apl_unit_coupling',
 }
 
 # fit_mb_model kwargs that make_fixed_param_kc_simulator does not support (either
@@ -15525,9 +15868,10 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             tunes thresholds and APL weights (e.g. to `target_sparsity`).
 
         **model_kws: passed to `fit_mb_model`. Must not contain kwargs in
-            `optimizable_model_params` values (use `initial_params` instead). Kwargs
-            only used for tuning (e.g. `target_sparsity`) are ignored if
-            `initial_params` passed.
+            `optimizable_model_params` values (use `initial_params` instead), except
+            `apl_unit_coupling` (which also determines whether the APL is split into
+            units, and is overridden by any value in `initial_params`). Kwargs only used
+            for tuning (e.g. `target_sparsity`) are ignored if `initial_params` passed.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -15535,14 +15879,16 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     outputs). Output should equal that of a `fit_mb_model` call with these parameters
     fixed (via `fixed_params_to_fit_mb_model_kws`). Initial parameters have values for
     all keys of `optimizable_model_params` that apply to this model (PN<>APL weight
-    scales only included if `prat_boutons=True`).
+    scales only included if `prat_boutons=True`, and 'apl_unit_coupling' only if the
+    APL is split into units).
     """
     if orn_deltas is None:
         raise ValueError('orn_deltas must be passed (running on Hallem data not '
             'supported)'
         )
 
-    fixed_kws = set(optimizable_model_params.values()) & set(model_kws)
+    fixed_kws = (set(optimizable_model_params.values()) - {'apl_unit_coupling'}
+        ) & set(model_kws)
     if len(fixed_kws) > 0:
         raise ValueError(f'pass {fixed_kws} via initial_params, not as kwargs')
 
@@ -15579,6 +15925,13 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     rv = param_dict.pop('rv')
 
     initial_params = _get_fixed_params(param_dict)
+
+    apl_unit_coupling = model_kws.get('apl_unit_coupling')
+    if apl_unit_coupling is not None:
+        assert mp.kc.n_apl_units > 1
+        initial_params['apl_unit_coupling'] = float(apl_unit_coupling)
+        apl_unit_n_neighbors = model_kws.get('apl_unit_n_neighbors')
+        apl_unit_dists = load_apl_unit_distances()
 
     # columns of olfsysm outputs are in same order as orn_deltas columns, but
     # fit_mb_model may have sorted them and dropped 'panel' level
@@ -15626,7 +15979,9 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
         # olfsysm only checks weights in fit_sparseness, which is not called below
         negative = {p: v for p, v in params.items() if p != 'fixed_thr' and v < 0}
         if len(negative) > 0:
-            raise ValueError(f'APL weight scales must not be negative: {negative}')
+            raise ValueError('APL weight scales / apl_unit_coupling must not be '
+                f'negative: {negative}'
+            )
 
         # same as olfsysm.fit_sparseness does w/ fixed threshold (fit_mb_model always
         # uses add_fixed_thr_to_spont=True when fixed_thr passed)
@@ -15645,6 +16000,13 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             rv.pn.wPNAPL = params['wPNAPL_scale'] * wPNAPL_unscaled
             rv.pn.wAPLPN_scale = params['wAPLPN_scale']
             rv.pn.wPNAPL_scale = params['wPNAPL_scale']
+
+        if apl_unit_coupling is not None:
+            # same as fit_mb_model (olfsysm checks coupling can be simulated)
+            rv.kc.apl_unit_coupling = csc_matrix(get_apl_unit_coupling(
+                params['apl_unit_coupling'], n_neighbors=apl_unit_n_neighbors,
+                dists=apl_unit_dists
+            ).values)
 
         # regen=False skips olfsysm build_wPNKC and fit_sparseness, just simulating KCs
         osm.run_KC_sims(mp, rv, False)
@@ -15852,6 +16214,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
     verbose: bool = True, **model_kws) -> ParamDict:
     """Optimizes KC threshold / APL weight scales to minimize loss vs measured KC data.
 
+    For models w/ the APL split into units, can also optimize `apl_unit_coupling`.
+
     Black-box (derivative-free) optimization, via `scipy.optimize`, of any subset of
     `optimizable_model_params`, which are otherwise either tuned (by `olfsysm`, to hit a
     target response rate) or set to fixed values. Each evaluation re-simulates only the
@@ -15872,7 +16236,7 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
         params_to_optimize: subset of `optimizable_model_params` keys. Defaults to all
             that apply to this model (PN<>APL weight scales only included if
-            `prat_boutons=True`), except
+            `prat_boutons=True`, and 'apl_unit_coupling' only if passed), except
             'wKCAPL_scale'. Scaling all APL input weights (wKCAPL, wPNAPL) by some
             factor, and all APL output weights (wAPLKC, wAPLPN) by its inverse, does not
             change model outputs, so optimizing all of them would be redundant. Others
@@ -15891,7 +16255,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
         bounds: (lower, upper) bounds for any of `params_to_optimize`, in units of the
             parameter. Defaults to (initial / bound_factor, initial * bound_factor),
-            which requires initial value to be positive.
+            which requires initial value to be positive. For 'apl_unit_coupling', upper
+            bound can be at most (and defaults to at most) `max_apl_unit_coupling`.
 
         bound_factor: see `bounds`
 
@@ -15987,6 +16352,11 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
     if len(unknown) > 0:
         raise ValueError(f'bounds passed for {unknown}, not in {params_to_optimize=}')
 
+    if 'apl_unit_coupling' in params_to_optimize:
+        max_coupling = max_apl_unit_coupling(
+            n_neighbors=model_kws.get('apl_unit_n_neighbors')
+        )
+
     param_bounds = dict()
     for p in params_to_optimize:
         initial = initial_params[p]
@@ -15998,6 +16368,13 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
                     'for it'
                 )
             lower, upper = initial / bound_factor, initial * bound_factor
+            if p == 'apl_unit_coupling':
+                upper = min(upper, max_coupling)
+
+        if p == 'apl_unit_coupling' and upper > max_coupling:
+            raise ValueError(f'upper bound for {p} ({upper}) > {max_coupling=} (see '
+                'max_apl_unit_coupling)'
+            )
 
         if not lower <= initial <= upper:
             raise ValueError(f'initial {p}={initial} not within bounds {(lower, upper)}')

@@ -7,8 +7,9 @@ from pprint import pformat
 # TODO delete?
 import traceback
 #
-from typing import Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -55,8 +56,10 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     n_isi_less_than_n_indices, min_seconds_between_spikes, mean_seconds_between_spikes,
     n_isi_less_than_time_seconds, fit_dff2spiking_model, predict_spiking_from_dff,
     dff_col, spike_delta_col, est_spike_delta_col, APL_UNIT, load_apl_unit_distances,
-    get_apl_unit_coupling, get_param_subset, read_model_output, uniform_bouton_wPNKC,
-    bouton_glomerulus_probs, claw_coord_cols, get_fitmbmodel_default
+    get_apl_unit_coupling, max_apl_unit_coupling, get_param_subset, read_model_output,
+    uniform_bouton_wPNKC, bouton_glomerulus_probs, claw_coord_cols,
+    get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
+    plot_apl_activity_sections, view_apl_activity_3d
 )
 
 # TODO better way?
@@ -2197,12 +2200,40 @@ def test_connectome_apl_unit_fracs():
         assert (unit_fracs.sum() > 0).mean() > 0.7, name
 
 
-# TODO also test w/ prat_boutons=True (slow to tune, and _fit_mb_model can't use LR
-# cache)
+def reduced_bouton_system(orn_deltas: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns subsets of `orn_deltas` and hemibrain claw+bouton wPNKC, for faster tests.
+
+    wPNKC has the boutons of every 3rd glomerulus, and the claws (from those boutons) of
+    every 4th KC with any such claws: ~360 KCs, ~780 claws and ~120 boutons, vs ~1730,
+    ~9870 and 389 in `connectome_wPNKC(prat_claws=True, prat_boutons=True)`. Tuning a
+    bouton model on megamat odors takes ~5s with this, vs ~2min with the full wPNKC.
+
+    Returns `orn_deltas` with only glomeruli in wPNKC (as `fit_mb_model` requires), and
+    wPNKC (to pass to `fit_mb_model` as `_wPNKC`, w/ `prat_claws=True` and
+    `prat_boutons=True`).
+    """
+    wPNKC = connectome_wPNKC(prat_claws=True, prat_boutons=True)
+    gloms = wPNKC.columns.get_level_values(glomerulus_col)
+    wPNKC = wPNKC.loc[:, gloms.isin(gloms.unique()[::3])]
+    wPNKC = wPNKC[(wPNKC != 0).any(axis='columns')]
+    kc_ids = wPNKC.index.get_level_values(KC_ID)
+    wPNKC = wPNKC[kc_ids.isin(kc_ids.unique()[::4])]
+
+    gloms = wPNKC.columns.get_level_values(glomerulus_col)
+    return orn_deltas[orn_deltas.index.isin(gloms)], wPNKC
+
+
 @pytest.mark.parametrize('kws', [
         dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True),
         dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True,
             pn_claw_to_apl=True
+        ),
+        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+            use_connectome_APL_weights=True
+        ),
+        dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+            use_connectome_APL_weights=True, pn_claw_to_apl=True
         ),
     ], ids=format_model_params
 )
@@ -2212,9 +2243,16 @@ def test_apl_units_equiv_single(orn_deltas, kws):
     Each unit then has the same potential as the single APL (input to each unit is
     scaled by the number of units), so outputs (including tuned APL weight scales)
     should be the same, up to floating point differences.
+
+    Bouton models use a subset of the hemibrain claws and boutons (see
+    `reduced_bouton_system`), as tuning them on the full wPNKC is slow.
     """
+    fit_kws = dict()
+    if kws.get('prat_boutons'):
+        orn_deltas, fit_kws['_wPNKC'] = reduced_bouton_system(orn_deltas)
+
     _, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
-        return_olfsysm_vars=True, **kws
+        return_olfsysm_vars=True, **kws, **fit_kws
     )
     mp = params['mp']
     rv = params['rv']
@@ -2229,12 +2267,21 @@ def test_apl_units_equiv_single(orn_deltas, kws):
     rv.kc.wKCAPL_units = csc_matrix(halves.T)
     rv.kc.apl_unit_coupling = csc_matrix((2, 2))
 
+    if kws.get('prat_boutons'):
+        assert mp.pn.preset_wAPLPN and mp.pn.preset_wPNAPL
+        wAPLPN_scale = rv.pn.wAPLPN_scale
+        bouton_halves = np.full((mp.pn.n_total_boutons, 2), 0.5)
+        rv.pn.wAPLPN_units = csc_matrix(bouton_halves)
+        rv.pn.wPNAPL_units = csc_matrix(bouton_halves.T)
+
     # re-tunes thresholds and APL weights (normalizing tuned weights from above again)
     osm.run_KC_sims(mp, rv, True)
 
     assert np.array_equal(rv.kc.spike_counts, spike_counts)
     assert np.array_equal(rv.kc.responses, responses)
     assert np.isclose(rv.kc.wAPLKC_scale, wAPLKC_scale)
+    if kws.get('prat_boutons'):
+        assert np.isclose(rv.pn.wAPLPN_scale, wAPLPN_scale)
 
 
 def test_apl_unit_coupling(orn_deltas):
@@ -2266,6 +2313,101 @@ def test_apl_unit_coupling(orn_deltas):
 
     assert coupling2spread[0.0] > 0.5, f'{coupling2spread=}'
     assert coupling2spread[10.0] < 0.5 * coupling2spread[0.0], f'{coupling2spread=}'
+
+
+def _unit_potentials(values: np.ndarray, times: Sequence[float]) -> xr.DataArray:
+    """Returns `APL_UNIT` X 'time_s' DataArray, w/ `values` (one per unit) at all times.
+    """
+    units = load_apl_unit_distances().index
+    return xr.DataArray(np.tile(values[:, None], (1, len(times))),
+        dims=[APL_UNIT, 'time_s'], coords={APL_UNIT: units, 'time_s': list(times)}
+    )
+
+
+def test_plot_apl_activity_sections():
+    """Tests orientation of APL section projections, and their pixel values.
+
+    Sections should go from posterior to anterior, with fly's right on the right and
+    dorsal up (hemibrain +x is toward fly's left, +y anterior, +z ventral).
+    """
+    centroids = load_apl_unit_centroids().reindex(load_apl_unit_distances().index)
+    times = [0.0, 0.1]
+
+    def images(values: np.ndarray, **kws) -> List[np.ndarray]:
+        fig = plot_apl_activity_sections(_unit_potentials(values, times),
+            times=times, **kws
+        )
+        arrays = [im.get_array() for ax in fig.axes for im in ax.get_images()]
+        plt.close(fig)
+        return arrays
+
+    n_sections = 3
+    for projection in ('mean', 'max'):
+        arrays = images(np.full(len(centroids), 2.5), n_sections=n_sections,
+            projection=projection
+        )
+        assert len(arrays) == n_sections * len(times)
+        for arr in arrays:
+            assert np.ma.getdata(arr)[~np.ma.getmaskarray(arr)].size > 0
+            # constant potential, so any pixel w/ APL nodes should have that value
+            values = np.asarray(arr, dtype=float)
+            assert np.allclose(values[np.isfinite(values)], 2.5)
+
+    # 1 for units on fly's right / dorsal / posterior side, 0 otherwise
+    for coord in ('x', 'y', 'z'):
+        values = (centroids[coord] < centroids[coord].median()).astype(float).values
+        arrays = images(values, n_sections=n_sections)
+        image = np.asarray(arrays[0], dtype=float)
+        if coord == 'x':
+            # (columns increase to fly's right)
+            half = image.shape[1] // 2
+            assert np.nanmean(image[:, half:]) > np.nanmean(image[:, :half]) + 0.5
+        elif coord == 'z':
+            # (rows increase dorsally, w/ origin='lower')
+            half = image.shape[0] // 2
+            assert np.nanmean(image[half:]) > np.nanmean(image[:half]) + 0.5
+        else:
+            # (first row of panels most posterior)
+            first = np.asarray(arrays[0], dtype=float)
+            last = np.asarray(arrays[-len(times)], dtype=float)
+            assert np.nanmean(first) > np.nanmean(last) + 0.5
+
+    rel_arrays = images(np.arange(len(centroids), dtype=float) + 1, n_sections=1,
+        relative=True
+    )
+    abs_arrays = images(np.arange(len(centroids), dtype=float) + 1, n_sections=1)
+    unit_mean = (len(centroids) + 1) / 2
+    assert np.allclose(np.asarray(rel_arrays[0], dtype=float) * unit_mean,
+        np.asarray(abs_arrays[0], dtype=float), equal_nan=True
+    )
+
+
+def test_view_apl_activity_3d():
+    """Tests 3D APL view colors points by their unit's potential, for slider values.
+    """
+    units = load_apl_unit_distances().index
+    times = [0.0, 0.05, 0.1]
+    # odor X unit X time, w/ max mean potential at 0.05 for first odor
+    values = np.stack([
+        np.stack([np.arange(len(units)) * f for f in (1.0, 3.0, 2.0)], axis=1),
+        np.stack([np.arange(len(units))[::-1] * f for f in (1.0, 1.0, 1.0)], axis=1),
+    ])
+    unit_inh = xr.DataArray(values, dims=['stim', APL_UNIT, 'time_s'],
+        coords={'stim': ['a', 'b'], APL_UNIT: units, 'time_s': times}
+    )
+    fig = view_apl_activity_3d(unit_inh, show=False)
+    time_slider, odor_slider = fig.apl_sliders
+    scatter = fig.axes[0].collections[0]
+
+    point_units = load_apl_points()[APL_UNIT]
+    unit_pos = units.get_indexer(point_units)
+    assert np.array_equal(scatter.get_array(), values[0, unit_pos, 1])
+
+    odor_slider.set_val(1)
+    time_slider.set_val(0.1)
+    assert np.array_equal(scatter.get_array(), values[1, unit_pos, 2])
+    assert 'b' in fig.axes[0].get_title()
+    plt.close(fig)
 
 
 # TODO TODO do w/ more than BOUTON_MODEL_KW_LIST? at least some claw-but-not-bouton
@@ -4256,6 +4398,8 @@ def test_fixed_param_kc_simulator(orn_deltas, kws):
     expected_params = {'fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale'}
     if kws.get('prat_boutons', False):
         expected_params |= {'wAPLPN_scale', 'wPNAPL_scale'}
+    if kws.get('apl_unit_coupling') is not None:
+        expected_params |= {'apl_unit_coupling'}
     assert set(initial_params) == expected_params
 
     initial_responses, initial_spike_counts = simulate(dict())
@@ -4268,8 +4412,9 @@ def test_fixed_param_kc_simulator(orn_deltas, kws):
     responses, spike_counts = simulate(params)
     assert not responses.equals(initial_responses)
 
+    # (apl_unit_coupling can be in both)
     responses2, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
-        **fixed_params_to_fit_mb_model_kws(params), **kws
+        **{**kws, **fixed_params_to_fit_mb_model_kws(params)}
     )
     assert responses.equals(responses2)
     assert spike_counts.equals(spike_counts2)
@@ -4285,11 +4430,70 @@ def test_fixed_param_kc_simulator(orn_deltas, kws):
     # outputs should also be exactly equal.
     c = 2.0
     rescaled = {p: v * c if p in ('wKCAPL_scale', 'wPNAPL_scale') else v / c
-        for p, v in initial_params.items() if p != 'fixed_thr'
+        for p, v in initial_params.items()
+        if p not in ('fixed_thr', 'apl_unit_coupling')
     }
     rescaled_responses, rescaled_spike_counts = simulate(rescaled)
     assert rescaled_responses.equals(initial_responses)
     assert rescaled_spike_counts.equals(initial_spike_counts)
+
+
+def test_apl_unit_coupling_optimization(orn_deltas):
+    """Tests changing / optimizing apl_unit_coupling via the fast KC simulator.
+
+    Simulator outputs w/ changed coupling should equal `fit_mb_model` outputs w/ the
+    same (fixed) parameters, and `optimize_mb_model_params` should keep coupling within
+    what olfsysm can simulate. Uses a reduced bouton model (see
+    `reduced_bouton_system`), for speed.
+    """
+    orn_deltas, wPNKC = reduced_bouton_system(orn_deltas)
+    kws = dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+        use_connectome_APL_weights=True, _wPNKC=wPNKC
+    )
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        apl_unit_coupling=1.0, **kws
+    )
+    assert initial_params['apl_unit_coupling'] == 1.0
+
+    coupling2responses = dict()
+    for coupling in (0.0, 10.0):
+        params = {**initial_params, 'apl_unit_coupling': coupling}
+        responses, spike_counts = simulate(params)
+        coupling2responses[coupling] = responses
+
+        responses2, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
+            **fixed_params_to_fit_mb_model_kws(params), **kws
+        )
+        assert responses.equals(responses2)
+        assert spike_counts.equals(spike_counts2)
+
+    assert not coupling2responses[0.0].equals(coupling2responses[10.0])
+
+    max_coupling = max_apl_unit_coupling()
+    # olfsysm can not stably simulate stronger coupling
+    with pytest.raises(ValueError):
+        simulate({'apl_unit_coupling': 1.01 * max_coupling})
+
+    with pytest.raises(ValueError, match='max_apl_unit_coupling'):
+        optimize_mb_model_params(orn_deltas, target_response_rates=0.1,
+            initial_params=initial_params, params_to_optimize=['apl_unit_coupling'],
+            bounds={'apl_unit_coupling': (0.1, 2 * max_coupling)}, maxfev=2,
+            verbose=False, **kws
+        )
+
+    # default upper bound (initial * bound_factor) limited to max_coupling. coupling is
+    # optimized by default for models w/ APL units.
+    ret = optimize_mb_model_params(orn_deltas, target_response_rates=0.1,
+        initial_params=initial_params, bound_factor=100, maxfev=10,
+        method='differential_evolution', verbose=False, **kws
+    )
+    assert 'apl_unit_coupling' in ret['params_to_optimize']
+    history = ret['history']
+    assert history['apl_unit_coupling'].between(0.01, max_coupling).all()
+    assert history['apl_unit_coupling'].nunique() > 1
+    assert ret['fit_mb_model_kws']['apl_unit_coupling'] == (
+        ret['params']['apl_unit_coupling']
+    )
 
 
 @pytest.fixture(scope='module')
