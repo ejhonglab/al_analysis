@@ -543,7 +543,8 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     else:
         exclude = exclude_params | set(exclude)
 
-    if model_kws.get('prat_claws', False):
+    if (model_kws.get('prat_claws', False) or
+            model_kws.get('pn2kc_connections') == 'uniform-boutons'):
         exclude.add('one_row_per_claw')
 
     # TODO add option to wrap (along logical boundaries) at certain line length?
@@ -653,13 +654,15 @@ def model_id2title(model_id: str) -> str:
     return '\n'.join(parts).replace('_', ': ').replace('-', '_')
 
 
-EXPECTED_MODEL_PNKC_CLASSES: Tuple[str] = ('uniform', 'nonclaw', 'claw', 'bouton')
+EXPECTED_MODEL_PNKC_CLASSES: Tuple[str] = ('uniform', 'nonclaw', 'claw', 'bouton',
+    'uniform-bouton'
+)
 
 def model_pnkc_class(model_str: str, *,
     # TODO it's actually a Counter (not dict), so use Mapping?
     pnkc2n_models: Optional[Dict[str, int]] = None) -> str:
     # TODO rename nonclaw?
-    """Groups models into 'uniform'/'nonclaw'/'claw'/'bouton'
+    """Groups models into 'uniform'/'nonclaw'/'claw'/'bouton'/'uniform-bouton'
 
     Args:
         model_str: should be full name of model output directory, not 'source'
@@ -671,6 +674,7 @@ def model_pnkc_class(model_str: str, *,
 
     Returns class str (with any suffix from `pnkc2n_models`).
     """
+    uniform_bouton_substr = 'pn2kc_uniform-boutons'
     uniform_substr = 'pn2kc_uniform'
     wd20_substr = 'weight-divisor_20'
     # TODO also accept abbreviations that go into 'source' column, so i can accept
@@ -679,7 +683,11 @@ def model_pnkc_class(model_str: str, *,
     claw_substr = 'prat-claws_True'
     bouton_substr = 'prat-boutons_True'
 
-    if uniform_substr in model_str:
+    if uniform_bouton_substr in model_str:
+        assert not any(x in model_str for x in [wd20_substr, claw_substr])
+        pnkc = 'uniform-bouton'
+
+    elif uniform_substr in model_str:
         assert not any(
             x in model_str for x in [wd20_substr, claw_substr, bouton_substr]
         )
@@ -881,6 +889,11 @@ MODEL_KW_LIST: List[ParamDict] = (
     dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
         use_connectome_APL_weights=True, apl_unit_coupling=1.0
     ),
+    # same KCs and boutons as prat_boutons=True models above, but each claw (7 per KC)
+    # receives input from a random bouton
+    dict(pn2kc_connections='uniform-boutons', one_row_per_claw=True, prat_boutons=True,
+        use_connectome_APL_weights=True
+    ),
     # TODO (still an issue?) drop multiglomerular PNs are re-run all
     # prat_claws=True variants (hardcode inside that branch of connectome_wPNKC.
     # never want them)
@@ -939,6 +952,8 @@ connectome_options: Set[str] = {'hemibrain', 'fafb-left', 'fafb-right'}
 
 pn2kc_connections_options: Set[str] = set(variable_n_claw_options)
 pn2kc_connections_options.update(connectome_options)
+# each KC claw draws a random hemibrain bouton (see `uniform_bouton_wPNKC`)
+pn2kc_connections_options.add('uniform-boutons')
 
 # TODO change type hint of output, now that we sometimes have pytest.param wrappers
 # (if keeping...) (ParameterSet, but not sure best way to get that type. type(...)
@@ -5416,6 +5431,98 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # comparing old + new hemibrain version, as i'm currently doing w/ sloppy code
     # above?
     return wPNKC
+
+
+def bouton_glomerulus_probs(boutons: pd.Index) -> pd.Series:
+    """Returns probability of each glomerulus, proportional to its # of boutons.
+
+    Args:
+        boutons: bouton index with a `glomerulus_col` level (e.g. `wPNKC.columns`, for
+            `wPNKC` from `connectome_wPNKC(prat_claws=True, prat_boutons=True)`)
+
+    Returns Series indexed by glomerulus (in order of first appearance in `boutons`),
+    with the # of boutons of each glomerulus divided by the total # of boutons.
+    """
+    gloms = boutons.get_level_values(glomerulus_col)
+    n_boutons = pd.Series(gloms).groupby(gloms, sort=False).size()
+    return (n_boutons / n_boutons.sum()).rename('p_glomerulus')
+
+
+def uniform_bouton_wPNKC(bouton_wPNKC: pd.DataFrame, *, n_claws: int = 7,
+    seed: Optional[int] = None) -> pd.DataFrame:
+    """Returns one-row-per-claw wPNKC, where each KC claw is from a random bouton.
+
+    For `pn2kc_connections='uniform-boutons'`. As for `pn2kc_connections='uniform'`,
+    each KC has `n_claws` claws, each drawn independently (so a KC can draw the same
+    input more than once), but here each claw receives input from a bouton (rather than
+    a glomerulus). Each claw draws a glomerulus with probability `p(glom)` (the # of
+    boutons of that glomerulus divided by the total # of boutons; see
+    `bouton_glomerulus_probs`), and then one of that glomerulus' boutons, uniformly.
+    This is equivalent to drawing each claw's bouton uniformly from all boutons.
+
+    Args:
+        bouton_wPNKC: from `connectome_wPNKC(prat_claws=True, prat_boutons=True)`. Its
+            boutons (columns) and KCs (`KC_ID` and `KC_TYPE` index levels) are used for
+            the output, and its claw coordinates (`claw_coord_cols` index levels) are
+            used to compute bouton coordinates. Its connectivity is not otherwise used.
+
+        n_claws: # of claws per KC
+
+        seed: seeds `np.random.default_rng`
+
+    Returns DataFrame of shape (# KCs * `n_claws`, # boutons), with columns equal to
+    `bouton_wPNKC.columns`, and values of 1 for the bouton each claw receives input from
+    (0 otherwise). Row index levels are `[KC_ID, CLAW_ID, KC_TYPE] + claw_coord_cols`,
+    with `CLAW_ID` from 0 to `n_claws - 1` within each KC. Claw coordinates are those of
+    the claw's bouton (mean coordinates of `bouton_wPNKC` claws with input from it).
+    """
+    if n_claws < 1:
+        raise ValueError(f'{n_claws=} must be >= 1')
+
+    boutons = bouton_wPNKC.columns
+    gloms = boutons.get_level_values(glomerulus_col)
+    # boutons of each glomerulus must be consecutive, for indexing via glom_first_bouton
+    assert gloms.is_monotonic_increasing
+
+    p_glom = bouton_glomerulus_probs(boutons)
+    glom_codes, unique_gloms = pd.factorize(gloms)
+    assert p_glom.index.equals(unique_gloms)
+    glom_n_boutons = np.bincount(glom_codes)
+    glom_first_bouton = np.concatenate([[0], np.cumsum(glom_n_boutons)[:-1]])
+
+    claw_weights = bouton_wPNKC.values
+    claw_info = bouton_wPNKC.index.to_frame(index=False)
+    n_claws_per_bouton = claw_weights.sum(axis=0)
+    assert (n_claws_per_bouton > 0).all()
+    bouton_coords = (
+        claw_weights.T @ claw_info[claw_coord_cols].values
+    ) / n_claws_per_bouton[:, np.newaxis]
+
+    kcs = claw_info[[KC_ID, KC_TYPE]].drop_duplicates()
+    assert not kcs[KC_ID].duplicated().any()
+    n_kcs = len(kcs)
+
+    rng = np.random.default_rng(seed)
+    n_total_claws = n_kcs * n_claws
+    glom_draws = rng.choice(len(p_glom), size=n_total_claws, p=p_glom.values)
+    bouton_draws = (glom_first_bouton[glom_draws] +
+        rng.integers(glom_n_boutons[glom_draws])
+    )
+
+    index = pd.DataFrame({
+        KC_ID: np.repeat(kcs[KC_ID].values, n_claws),
+        CLAW_ID: np.tile(np.arange(n_claws), n_kcs),
+        KC_TYPE: np.repeat(kcs[KC_TYPE].values, n_claws),
+    })
+    for col, coords in zip(claw_coord_cols, bouton_coords[bouton_draws].T):
+        index[col] = coords
+
+    values = np.zeros((n_total_claws, len(boutons)))
+    values[np.arange(n_total_claws), bouton_draws] = 1.0
+
+    return pd.DataFrame(values, index=pd.MultiIndex.from_frame(index),
+        columns=boutons.copy()
+    )
 
 
 # TODO move to hong2p.util
@@ -11595,7 +11702,10 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             glomerulus), so KCs with more claws (or glomeruli with more boutons) keep
             proportionally more total weight. Tuning then scales all of these weights
             together, with KC>APL (PN>APL) scales also divided by # of KCs (boutons).
-            See `apl_weights_kc_mean` and `init_apl_weights` in olfsysm.cpp.
+            See `apl_weights_kc_mean` and `init_apl_weights` in olfsysm.cpp. For
+            `pn2kc_connections='uniform-boutons'` (where claws are random), KC<>APL
+            weights are the same for every claw, and only PN<>APL weights are from the
+            connectome.
 
         apl_weights_kc_mean: if True, normalizes per-claw KC<>APL weights so each KC's
             total (summed over its claws) has a mean of 1 across KCs (as for
@@ -11605,10 +11715,21 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `use_connectome_APL_weights=True` and `one_row_per_claw=True`.
 
         pn2kc_connections: string specifying method for forming PN->KC connection
-            matrix. Must be one of `connectome_options` or `variable_n_claw_options`.
+            matrix. Must be one of `pn2kc_connections_options` (`connectome_options`,
+            `variable_n_claw_options`, or 'uniform-boutons').
 
-            If among the former, passed directly to `connectome_wPNKC` `connectome=`,
-            otherwise `connectome_wPNKC` called with `connectome='hemibrain'`.
+            If among `connectome_options`, passed directly to `connectome_wPNKC`
+            `connectome=`, otherwise `connectome_wPNKC` called with
+            `connectome='hemibrain'`.
+
+            'uniform-boutons' uses the KCs and boutons of the hemibrain claw+bouton
+            model (`prat_claws=True, prat_boutons=True`), but each KC instead has
+            `n_claws` claws, each from a random bouton (drawn with probability
+            proportional to each glomerulus' # of boutons; see `uniform_bouton_wPNKC`).
+            Requires `one_row_per_claw=True`, `prat_boutons=True` and
+            `use_connectome_APL_weights=True` (and `prat_claws=False`), so boutons and
+            claws are separate (and PN<>APL weights, `pn_claw_to_apl`, and
+            `claw_dynamics` are all available).
 
         weight_divisor: passed to `connectome_wPNKC` (only relevant for connectome
             `pn2kc_connections` options)
@@ -11618,13 +11739,15 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         _drop_glom_with_plus: passed to `connectome_wPNKC` and `connectome_APL_weights`
 
         seed: if using one of `pn2kc_connections` options that uses RNG to generate the
-            PN->KC weight matrix (e.g. 'uniform', 'hemidraw', NOT 'hemibrain'), this
-            seeds that RNG. The model (as configured by default, and as presented by
-            this wrapper) is otherwise deterministic. NOTE: seeded by default.
+            PN->KC weight matrix (e.g. 'uniform', 'hemidraw', 'uniform-boutons', NOT
+            'hemibrain'), this seeds that RNG. The model (as configured by default, and
+            as presented by this wrapper) is otherwise deterministic. NOTE: seeded by
+            default.
 
-        n_claws: for relevant `pn2kc_connections` (e.g. 'uniform', 'hemidraw', NOT
-            'hemibrain') this sets that number of PNs each KC draws (i.e. # of claws for
-            each KC)
+        n_claws: for relevant `pn2kc_connections` (e.g. 'uniform', 'hemidraw',
+            'uniform-boutons', NOT 'hemibrain') this sets that number of PNs (or
+            boutons) each KC draws (i.e. # of claws for each KC). Defaults to 7 for
+            'uniform-boutons' (must be passed for the others).
 
         return_dynamics: if True, returns all available model internals, all as new
             elements of already-returned `param_dict`. This includes model ORN & PN
@@ -11804,13 +11927,29 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         # RNG wPNKC in Matt's code vs hers...)?
         raise NotImplementedError
 
+    uniform_boutons = pn2kc_connections == 'uniform-boutons'
+    if uniform_boutons:
+        if not (one_row_per_claw and prat_boutons and use_connectome_APL_weights):
+            raise ValueError("pn2kc_connections='uniform-boutons' requires "
+                'one_row_per_claw=True, prat_boutons=True, and '
+                'use_connectome_APL_weights=True'
+            )
+        if prat_claws or dist_weight is not None:
+            raise ValueError("pn2kc_connections='uniform-boutons' draws claws randomly, "
+                'so prat_claws and dist_weight must not be set'
+            )
+        if n_claws is None:
+            n_claws = 7
+
     # TODO rename? there is a fixed number of claws, just that we can set them w/
     # n_claws for these models, as opposed to wPNKC determining it (from whatever
     # connectome) in other cases.
     variable_n_claws = False
     if pn2kc_connections not in variable_n_claw_options:
-        if n_claws is not None:
-            raise ValueError(f'n_claws only supported for {variable_n_claw_options}')
+        if n_claws is not None and not uniform_boutons:
+            raise ValueError(f'n_claws only supported for {variable_n_claw_options} '
+                "and 'uniform-boutons'"
+            )
     else:
         # TODO also default to averaging over at least a few seeds in all these cases?
         # how much do things actually tend to vary, seed to seed?
@@ -11837,7 +11976,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         assert use_connectome_APL_weights, 'not supported. code below may not work.'
         # probably will need this too, but asserting now for simplicity (should also
         # imply one_row_per_claw)
-        assert prat_claws
+        assert prat_claws or uniform_boutons
         assert one_row_per_claw
     else:
         assert wPNAPL is None
@@ -12210,6 +12349,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     connectome = get_connectome(pn2kc_connections)
 
     kc_types = None
+    # hemibrain claw+bouton wPNKC, whose KCs and boutons are used for random claws
+    bouton_wPNKC = None
     if _wPNKC is None:
         # TODO check that nothing else depends on order of columns (glomeruli) in these
         # (add a unit test permuting columns via _wPNKC kwarg, and delete this comment?)
@@ -12220,7 +12361,13 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             _drop_glom_with_plus=_drop_glom_with_plus,
         )
 
-        if one_row_per_claw:
+        if uniform_boutons:
+            bouton_wPNKC = connectome_wPNKC(prat_claws=True, prat_boutons=True,
+                **shared_wPNKC_kws
+            )
+            wPNKC = uniform_bouton_wPNKC(bouton_wPNKC, n_claws=n_claws, seed=seed)
+
+        elif one_row_per_claw:
             # these are only used for Tianpei's outputs that had grouped synapses into
             # KC claws. not used for (more typical) case, where we are loading Prat's
             # outputs where he did the same.
@@ -12884,7 +13031,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         # Same thing if I want to keep the test test_btn_expansion)
         mp.pn.n_total_boutons = len(bouton_index)
 
-    if pn2kc_connections in connectome_options:
+    if pn2kc_connections in connectome_options or uniform_boutons:
         mp.kc.preset_wPNKC = True
 
     elif pn2kc_connections == 'hemidraw':
@@ -13264,14 +13411,29 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             # above], if needed)
             # synapse counts. olfsysm normalizes these (see `init_apl_weights` in
             # olfsysm.cpp)
-            apl_weights = connectome_APL_weights(
-                connectome=connectome, wPNKC=wPNKC, prat_claws=prat_claws,
-                prat_boutons=prat_boutons, apl_units=apl_unit_coupling is not None,
-                kc_types=for_kc_types, kc_to_claws=kc_to_claws,
-                _drop_glom_with_plus=_drop_glom_with_plus,
-                plot_dir=(plot_dir if make_plots and connectome_weight_plots else None),
-            )
-            wAPLKC, wKCAPL, wAPLPN, wPNAPL = apl_weights[:4]
+            if uniform_boutons:
+                # random claws have no connectome KC<>APL weights, so using the same
+                # weight for each claw. PN<>APL weights are from the connectome, for the
+                # same boutons as in bouton_wPNKC.
+                _, _, wAPLPN, wPNAPL = connectome_APL_weights(connectome=connectome,
+                    wPNKC=bouton_wPNKC, prat_claws=True, prat_boutons=True,
+                    _drop_glom_with_plus=_drop_glom_with_plus
+                )
+                assert wAPLPN.index.equals(wPNKC.columns)
+                assert wPNAPL.index.equals(wPNKC.columns)
+                wAPLKC = pd.Series(1.0, index=wPNKC.index, name='weight')
+                wKCAPL = wAPLKC.copy()
+            else:
+                apl_weights = connectome_APL_weights(
+                    connectome=connectome, wPNKC=wPNKC, prat_claws=prat_claws,
+                    prat_boutons=prat_boutons,
+                    apl_units=apl_unit_coupling is not None, kc_types=for_kc_types,
+                    kc_to_claws=kc_to_claws, _drop_glom_with_plus=_drop_glom_with_plus,
+                    plot_dir=(plot_dir if make_plots and connectome_weight_plots
+                        else None
+                    ),
+                )
+                wAPLKC, wKCAPL, wAPLPN, wPNAPL = apl_weights[:4]
             if apl_unit_coupling is not None:
                 # weight name -> fraction of each claw's (or bouton's) synapses in
                 # each APL unit
@@ -13434,7 +13596,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         assert multiresponder_APL_boost is None, 'not supported'
     """
 
-    if pn2kc_connections in connectome_options or _wPNKC is not None:
+    if pn2kc_connections in connectome_options or uniform_boutons or _wPNKC is not None:
         # if `_wPNKC is not None`, its contents were already copied into wPNKC above
         rv.kc.wPNKC = wPNKC
 
@@ -17590,6 +17752,10 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
     #print(', at start of fit_mb_model')
     #
     assert n_seeds >= 1
+    if n_seeds > 1 and model_kws.get('pn2kc_connections') == 'uniform-boutons':
+        raise NotImplementedError("n_seeds > 1 not supported for pn2kc_connections="
+            "'uniform-boutons'. make separate calls with different seed= instead."
+        )
 
     # TODO TODO have it be standard to have tune_dir passed in with path to tuning
     # directory, for pre-tuned models (or use tune_from for that? prob want to clear

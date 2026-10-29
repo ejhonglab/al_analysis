@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from scipy.sparse import csc_matrix
 from scipy.sparse.csgraph import connected_components
+from scipy.stats import chisquare
 import xarray as xr
 
 # TODO does importing this before hong2p.equals allow that warning (optional from within
@@ -54,7 +55,8 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     n_isi_less_than_n_indices, min_seconds_between_spikes, mean_seconds_between_spikes,
     n_isi_less_than_time_seconds, fit_dff2spiking_model, predict_spiking_from_dff,
     dff_col, spike_delta_col, est_spike_delta_col, APL_UNIT, load_apl_unit_distances,
-    get_apl_unit_coupling, get_param_subset, read_model_output
+    get_apl_unit_coupling, get_param_subset, read_model_output, uniform_bouton_wPNKC,
+    bouton_glomerulus_probs, claw_coord_cols, get_fitmbmodel_default
 )
 
 # TODO better way?
@@ -4060,6 +4062,97 @@ def test_claw2bouton_from_wPNKC(kws):
         assert n_claws.groupby(KC_ID, sort=False)['n'].apply(
             lambda x: x.is_monotonic_decreasing
         ).all()
+
+
+def test_uniform_bouton_wPNKC():
+    """Tests `uniform_bouton_wPNKC` (for pn2kc_connections='uniform-boutons') output.
+
+    Checks it has the KCs and boutons of the hemibrain claw+bouton wPNKC, `n_claws`
+    claws per KC (each from one bouton, with that bouton's coordinates), and that
+    glomeruli are drawn in proportion to their # of boutons (uniformly across boutons).
+    """
+    bouton_wPNKC = connectome_wPNKC(prat_claws=True, prat_boutons=True)
+    n_claws = 7
+    wPNKC = uniform_bouton_wPNKC(bouton_wPNKC, n_claws=n_claws, seed=0)
+
+    assert wPNKC.columns.equals(bouton_wPNKC.columns)
+    # (fit_mb_model requires this)
+    assert wPNKC.index.is_monotonic_increasing
+
+    kcs = bouton_wPNKC.index.to_frame(index=False)[[KC_ID, KC_TYPE]].drop_duplicates()
+    claws = wPNKC.index.to_frame(index=False)
+    assert list(claws.columns) == [KC_ID, CLAW_ID, KC_TYPE] + claw_coord_cols
+    for col in (KC_ID, KC_TYPE):
+        assert np.array_equal(claws[col], np.repeat(kcs[col].values, n_claws))
+    assert np.array_equal(claws[CLAW_ID], np.tile(np.arange(n_claws), len(kcs)))
+
+    # each claw has input from exactly one bouton
+    assert set(np.unique(wPNKC.values)) == {0, 1}
+    assert (wPNKC.sum(axis='columns') == 1).all()
+
+    # claw coordinates should be those of the bouton (mean of coordinates of hemibrain
+    # claws with input from that bouton)
+    assert (bouton_wPNKC.sum(axis='columns') == 1).all()
+    bouton_coords = bouton_wPNKC.index.to_frame(index=False)[claw_coord_cols].groupby(
+        bouton_wPNKC.values.argmax(axis=1)
+    ).mean()
+    assert np.allclose(claws[claw_coord_cols],
+        bouton_coords.loc[wPNKC.values.argmax(axis=1)]
+    )
+
+    n_boutons = bouton_wPNKC.columns.to_frame(index=False).groupby(glomerulus_col,
+        sort=False
+    ).size()
+    p_glom = bouton_glomerulus_probs(bouton_wPNKC.columns)
+    assert np.isclose(p_glom.sum(), 1)
+    assert np.allclose(p_glom, n_boutons / n_boutons.sum())
+    assert p_glom.index.equals(n_boutons.index)
+
+    n_claws_per_glom = wPNKC.sum().groupby(level=glomerulus_col, sort=False).sum()
+    assert n_claws_per_glom.index.equals(p_glom.index)
+    # deterministic w/ seed above. ~0.5 p-values for both.
+    assert chisquare(n_claws_per_glom, len(wPNKC) * p_glom).pvalue > 0.01
+    assert chisquare(wPNKC.sum()).pvalue > 0.01
+
+    assert uniform_bouton_wPNKC(bouton_wPNKC, n_claws=n_claws, seed=0).equals(wPNKC)
+    assert not uniform_bouton_wPNKC(bouton_wPNKC, n_claws=n_claws, seed=1).equals(wPNKC)
+    assert len(uniform_bouton_wPNKC(bouton_wPNKC, n_claws=3, seed=0)) == 3 * len(kcs)
+
+
+def test_uniform_boutons_model(orn_deltas):
+    """Tests `fit_mb_model` w/ pn2kc_connections='uniform-boutons' wPNKC / APL weights.
+
+    wPNKC should be from `uniform_bouton_wPNKC` (w/ default `n_claws=7` and `seed`),
+    KC<>APL weights should be the same for each claw, and PN<>APL weights should be
+    from the connectome (normalized as for prat_boutons=True models).
+    """
+    kws = dict(pn2kc_connections='uniform-boutons', one_row_per_claw=True,
+        prat_boutons=True, use_connectome_APL_weights=True
+    )
+    # fewer odors, to tune faster
+    responses, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas.iloc[:, :4],
+        return_olfsysm_vars=True, **kws
+    )
+    rv = params['rv']
+
+    bouton_wPNKC = connectome_wPNKC(prat_claws=True, prat_boutons=True)
+    expected_wPNKC = uniform_bouton_wPNKC(bouton_wPNKC, n_claws=7,
+        seed=get_fitmbmodel_default('seed')
+    )
+    assert wPNKC.equals(expected_wPNKC)
+    assert np.array_equal(rv.kc.wPNKC, expected_wPNKC.values)
+    assert responses.index.get_level_values(KC_ID).equals(
+        bouton_wPNKC.index.get_level_values(KC_ID).unique()
+    )
+
+    assert (rv.kc.wAPLKC_unscaled == 1).all()
+    assert (rv.kc.wKCAPL_unscaled == 1).all()
+
+    _, _, wAPLPN, wPNAPL = connectome_APL_weights(wPNKC=bouton_wPNKC, prat_claws=True,
+        prat_boutons=True
+    )
+    assert np.allclose(rv.pn.wAPLPN_unscaled.squeeze(), wAPLPN / wAPLPN.mean())
+    assert np.allclose(rv.pn.wPNAPL_unscaled.squeeze(), wPNAPL / wPNAPL.mean())
 
 
 # TODO commit some (dramatically subset, perhaps also compressed) example model

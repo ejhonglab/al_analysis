@@ -2759,7 +2759,9 @@ def mixsupp_order_fname2shared_prefix(mixsupp_order_fname: str) -> str:
     return shared_prefix
 
 
-pnkc_class_order = ['ORNs', 'uniform', 'claw', 'nonclaw', 'bouton', 'KCs']
+pnkc_class_order = ['ORNs', 'uniform', 'claw', 'nonclaw', 'bouton', 'uniform-bouton',
+    'KCs'
+]
 def sort_pnkc_classes(unique_model_pnkc_classes: Sequence[str]) -> np.ndarray:
     # TODO use other <hardcoded-list>.index based sorting i defined elsewhere?
     return np.array(sorted(unique_model_pnkc_classes,
