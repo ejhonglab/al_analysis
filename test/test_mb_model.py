@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from functools import lru_cache
 from itertools import product
 import os
 from pathlib import Path
@@ -218,6 +219,52 @@ def _fit_mb_model(*args, **kwargs) -> FitMBModelOutputs:
 # also do that here?
 def _fit_and_plot_mb_model(*args, **kwargs) -> ParamDict:
     return fit_and_plot_mb_model(*args, try_cache=False, **kwargs, **PLOT_KWS)
+
+
+@lru_cache(maxsize=None)
+def _reduced_bouton_wPNKC() -> pd.DataFrame:
+    """Returns wPNKC for `reduced_bouton_system` (cached, so do not modify)
+    """
+    wPNKC = connectome_wPNKC(prat_claws=True, prat_boutons=True)
+    gloms = wPNKC.columns.get_level_values(glomerulus_col)
+    wPNKC = wPNKC.loc[:, gloms.isin(gloms.unique()[::3])]
+    wPNKC = wPNKC[(wPNKC != 0).any(axis='columns')]
+    kc_ids = wPNKC.index.get_level_values(KC_ID)
+    return wPNKC[kc_ids.isin(kc_ids.unique()[::4])]
+
+
+def reduced_bouton_system(orn_deltas: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns subsets of `orn_deltas` and hemibrain claw+bouton wPNKC, for faster tests.
+
+    wPNKC has the boutons of every 3rd glomerulus, and the claws (from those boutons) of
+    every 4th KC with any such claws: ~360 KCs, ~780 claws and ~120 boutons, vs ~1730,
+    ~9870 and 389 in `connectome_wPNKC(prat_claws=True, prat_boutons=True)`. Tuning a
+    bouton model on megamat odors takes ~5s with this, vs ~2min with the full wPNKC.
+
+    Returns `orn_deltas` with only glomeruli in wPNKC (as `fit_mb_model` requires), and
+    wPNKC (to pass to `fit_mb_model` as `_wPNKC`, w/ `prat_claws=True` and
+    `prat_boutons=True`).
+    """
+    wPNKC = _reduced_bouton_wPNKC().copy()
+    gloms = wPNKC.columns.get_level_values(glomerulus_col)
+    return orn_deltas[orn_deltas.index.isin(gloms)], wPNKC
+
+
+def maybe_reduce_bouton_system(orn_deltas: pd.DataFrame, kws: ParamDict
+    ) -> Tuple[pd.DataFrame, ParamDict]:
+    """Returns `orn_deltas` and model `kws` for `reduced_bouton_system`, if bouton model.
+
+    For tests not specific to the full hemibrain connectivity. Inputs are returned
+    unchanged for models without hemibrain claws and boutons (`prat_boutons=True`).
+    """
+    if not kws.get('prat_boutons', False) or kws.get('pn2kc_connections',
+            'hemibrain') != 'hemibrain':
+        return orn_deltas, kws
+
+    assert '_wPNKC' not in kws
+    orn_deltas, wPNKC = reduced_bouton_system(orn_deltas)
+    return orn_deltas, {**kws, '_wPNKC': wPNKC}
 
 
 @pytest.mark.xfail(
@@ -782,8 +829,10 @@ def test_fixed_inh_params(tmp_path, orn_deltas, kws):
     set the APL<->KC weight parameters (and also the KC thresholds, via `fixed_thr`,
     which sets either `mp.kc.fixed_thr` or `rv.kc.thr`).
 
-    Only calls `fit_mb_model`
+    Only calls `fit_mb_model`. Bouton models use `reduced_bouton_system`.
     """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
+
     # TODO (? delete?) move some/all of the commented stuff in mb_model regarding
     # picking which (of slightly numerically different) thr values for fixed_thr into
     # here? (or a sep test)
@@ -1028,8 +1077,10 @@ def assert_param_csv_matches_returned(model_output_root: Path, param_dict: Param
 def test_fixed_inh_params_fitandplot(tmp_path, orn_deltas, kws):
     """
     Like test_fixed_inh_params, but calling (+ checking outputs of)
-    fit_and_plot_mb_model instead of fit_mb_model.
+    fit_and_plot_mb_model instead of fit_mb_model. Bouton models use
+    `reduced_bouton_system`.
     """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
     plot_root = tmp_path
 
     params = _fit_and_plot_mb_model(plot_root, orn_deltas=orn_deltas, **kws)
@@ -2200,30 +2251,6 @@ def test_connectome_apl_unit_fracs():
         assert (unit_fracs.sum() > 0).mean() > 0.7, name
 
 
-def reduced_bouton_system(orn_deltas: pd.DataFrame
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Returns subsets of `orn_deltas` and hemibrain claw+bouton wPNKC, for faster tests.
-
-    wPNKC has the boutons of every 3rd glomerulus, and the claws (from those boutons) of
-    every 4th KC with any such claws: ~360 KCs, ~780 claws and ~120 boutons, vs ~1730,
-    ~9870 and 389 in `connectome_wPNKC(prat_claws=True, prat_boutons=True)`. Tuning a
-    bouton model on megamat odors takes ~5s with this, vs ~2min with the full wPNKC.
-
-    Returns `orn_deltas` with only glomeruli in wPNKC (as `fit_mb_model` requires), and
-    wPNKC (to pass to `fit_mb_model` as `_wPNKC`, w/ `prat_claws=True` and
-    `prat_boutons=True`).
-    """
-    wPNKC = connectome_wPNKC(prat_claws=True, prat_boutons=True)
-    gloms = wPNKC.columns.get_level_values(glomerulus_col)
-    wPNKC = wPNKC.loc[:, gloms.isin(gloms.unique()[::3])]
-    wPNKC = wPNKC[(wPNKC != 0).any(axis='columns')]
-    kc_ids = wPNKC.index.get_level_values(KC_ID)
-    wPNKC = wPNKC[kc_ids.isin(kc_ids.unique()[::4])]
-
-    gloms = wPNKC.columns.get_level_values(glomerulus_col)
-    return orn_deltas[orn_deltas.index.isin(gloms)], wPNKC
-
-
 @pytest.mark.parametrize('kws', [
         dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True),
         dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True,
@@ -2247,12 +2274,9 @@ def test_apl_units_equiv_single(orn_deltas, kws):
     Bouton models use a subset of the hemibrain claws and boutons (see
     `reduced_bouton_system`), as tuning them on the full wPNKC is slow.
     """
-    fit_kws = dict()
-    if kws.get('prat_boutons'):
-        orn_deltas, fit_kws['_wPNKC'] = reduced_bouton_system(orn_deltas)
-
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
     _, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
-        return_olfsysm_vars=True, **kws, **fit_kws
+        return_olfsysm_vars=True, **kws
     )
     mp = params['mp']
     rv = params['rv']
@@ -2420,11 +2444,13 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     with values from olfsysm's normalized (`rv.*.w*_unscaled`) versions of the
     `connectome_APL_weights` outputs (which are checked to have a mean of 1). Also
     checks that zeroing / scaling down KC<>APL or PN<>APL weights changes response rates
-    in expected directions.
+    in expected directions. Uses `reduced_bouton_system`.
     """
     # NOTE: this test body originally copied from (non-working) precalc_weights=True
     # path of apl_weights fixture
 
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
+    wPNKC = kws['_wPNKC']
     wPNKC_params = get_connectome_wPNKC_params(kws)
     # NOTE: one_row_per_claw is not an argument to connectome_wPNKC, nor is
     # use_connectome_APL_weights
@@ -2433,7 +2459,6 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
     # currently depend on that? just check no tests fail after removing [once less
     # tests in general are failing...])
     #assert all(x in kws for x in wPNKC_params)
-    wPNKC = connectome_wPNKC(**wPNKC_params)
 
     assert kws['use_connectome_APL_weights']
 
@@ -2811,14 +2836,16 @@ def test_preset_series_weights(tmp_path, orn_deltas, kws):
 # vectors initialized in params)
 # TODO separate fixture for just the weights later?
 def apl_weights(orn_deltas, request):
-    """Returns `(fit_mb_model outputs, model kwargs)`, for kwargs in `request.param`.
+    """Returns `(fit_mb_model outputs, model kwargs, orn_deltas)`, for `request.param`.
 
-    Outputs include olfsysm `rv` / `mp` in params (`return_olfsysm_vars=True`).
+    Outputs include olfsysm `rv` / `mp` in params (`return_olfsysm_vars=True`). Bouton
+    models use `reduced_bouton_system` (reflected in returned kwargs and `orn_deltas`).
     """
     # copying, since modified below, and same dict is shared across parametrizations of
     # tests using this fixture (so 'sp_lr_coeff' would otherwise already be added, for
     # second test using this fixture w/ same params)
     kws = dict(request.param)
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
 
     # TODO TODO move this intial part (defining weights at least, probably not
     # initial rv? maybe it's fine as long as only one downstream test ever uses that
@@ -2912,7 +2939,7 @@ def apl_weights(orn_deltas, request):
             **kws
         )
 
-    return ret, kws
+    return ret, kws, orn_deltas
 
 
 # TODO TODO did my change to mb_model weight normalization break being able to tune
@@ -2939,7 +2966,7 @@ def test_apl_weights_osm(apl_weights):
     # TODO make sure this test disables all plotting in calls it makes, or at least any
     # that uses sns/scipy, so we can remove that import (to the extent it remains
     # incompatible w/ setting PYTHONMALLOC=malloc for certain debug tools)
-    ret, kws = apl_weights
+    ret, kws, _ = apl_weights
 
     params = ret[-1]
     wAPLKC = params['wAPLKC']
@@ -3106,13 +3133,12 @@ def test_apl_weights_osm(apl_weights):
     assert sp_no_APL == sp_no_APL2, (f'{sp_no_APL=} (0 weights FROM APL) != '
         f'{sp_no_APL2=} (0 weights TO APL)'
     )
-    # these two numbers need atol=1e-4 for isclose to work (1e-5 doesn't)
-    # ipdb> sp_no_APL
-    # 0.1999728297785627
-    # ipdb> sp_max
-    # 0.2
-    assert np.isclose(sp_no_APL, sp_max, atol=1e-4), \
-        f'{sp_no_APL=} not close to {sp_max=}'
+    # pre-APL thresholds can only hit sp_max to within ~1 KC-odor pair (~1.6e-4 for
+    # reduced_bouton_system). w/ full wPNKC, needed atol=1e-4 (1e-5 not enough), w/
+    # sp_no_APL=0.1999728297785627.
+    atol = max(1e-4, 1 / rv.kc.responses.size)
+    assert np.isclose(sp_no_APL, sp_max, atol=atol), \
+        f'{sp_no_APL=} not close to {sp_max=} ({atol=})'
 
     sp_no_APLKC = _rerun_with_certain_apl_weights_0(mp, rv, 'wAPLKC')
     print(f'{sp_no_APLKC=}')
@@ -3147,7 +3173,7 @@ def test_apl_weights_osm(apl_weights):
 @pytest.mark.parametrize('apl_weights', BOUTON_MODEL_KW_LIST, ids=format_model_params,
     indirect=['apl_weights']
 )
-def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
+def test_apl_weights_fitmbmodel(apl_weights):
     """Tests fixing thresholds / APL weights (from tuned outputs) reproduces outputs.
 
     Also tests setting either PN<>APL weight (wAPLPN / wPNAPL) to 0 (via `fit_mb_model`
@@ -3157,7 +3183,7 @@ def test_apl_weights_fitmbmodel(apl_weights, orn_deltas):
     # test
     # TODO otherwise, pass BOUTON_MODEL_KW_LIST twice in parametrize, for apl_weights
     # and kws? or better way to have a param be both direct and indirect?
-    ret, kws = apl_weights
+    ret, kws, orn_deltas = apl_weights
     params = ret[-1]
 
     thr_and_apl_kws = get_thr_and_APL_weights(params, kws)
@@ -3325,8 +3351,9 @@ def test_feedforward_indexing(orn_deltas, kws):
     With no KC spiking or APL inhibition, checks PN dynamics differ across glomeruli
     (where inputs differ), bouton / claw dynamics equal PN dynamics of their glomerulus,
     claw dynamics equal wPNKC-weighted bouton dynamics, and KC Vm can be recreated from
-    claw dynamics summed within each KC.
+    claw dynamics summed within each KC. Uses `reduced_bouton_system`.
     """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
     responses, _, wPNKC1, params = _fit_mb_model(orn_deltas=orn_deltas,
         return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
         # setting threshold high enough that no KCs should spike
@@ -3607,8 +3634,10 @@ def test_apl_indexing(orn_deltas, kws):
     Checks APL input currents from claws (`Is_from_kcs`) and boutons (`Is_from_pns`)
     can be recreated from claw / bouton dynamics and APL input weights, APL dynamics
     can be recreated from those currents, and that APL inhibition only decreases
-    bouton / claw activities (which are rectified at 0).
+    bouton / claw activities (which are rectified at 0), using APL potential from the
+    previous time step. Uses `reduced_bouton_system`.
     """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
     _, _, wPNKC, params = _fit_mb_model(orn_deltas=orn_deltas,
         return_olfsysm_vars=True, delete_pretime=True, return_dynamics=True,
         # no spikes at fixed_thr of 300. and 200... kc_spont_in.max() == 188
@@ -3778,62 +3807,35 @@ def test_apl_indexing(orn_deltas, kws):
     assert (boutons_no_inh >= boutons).all()
     assert (claws_no_inh >= claws).all()
 
+    # olfsysm inhibits claws and boutons w/ APL potential from the previous time step
+    # (dropping first time step, which has no previous potential). w/ full wPNKC,
+    # inhibition pushes almost all claws / boutons to 0, so comparing w/ potential from
+    # the same time step also mostly matched.
+    inh_prev = inh.shift(time_s=1).dropna('time_s')
+
     wAPLKC = series2xarray_like(params['wAPLKC'], claws)
-    claws_with_inh2 = (claws_no_inh - wAPLKC.dot(inh))
+    claws_with_inh2 = (
+        claws_no_inh.sel(time_s=inh_prev.time_s) - wAPLKC.dot(inh_prev)
+    )
     assert claws_with_inh2.min() < 0, 'some claws should have been pushed below 0'
     # set any values below 0 to 0
     claws2 = claws_with_inh2.where(claws_with_inh2 >= 0, 0)
     assert claws2.min() == 0
-    # TODO why mismatch between claws2 and claws?  even in first timepoint, some values
-    # are 0 in claws2 but claws doesn't seem to have any 0 values in first timepoint
-    # (mismatch is actually *only* in first timepoint)
-    assert coords_equal(
-        claws2.isel(time_s=slice(1, None)), claws.isel(time_s=slice(1, None))
-    )
-    # TODO TODO why not true on first timepoint? matter?
-    assert np.allclose(
-        claws2.isel(time_s=slice(1, None)), claws.isel(time_s=slice(1, None))
-    )
-    # TODO TODO why does claws have all non-zero values for first element, but then all
-    # 0 after there? just b/c strength of inhibition?
-    # ipdb> (claws.isel(time_s=0) == 0).sum()
-    # <xarray.DataArray ()>
-    # array(0)
-    # Coordinates:
-    #     time_s   float64 -0.4995
-    # ipdb> (claws2.isel(time_s=0) == 0).sum()
-    # <xarray.DataArray ()>
-    # array(6879)
+    claws = claws.sel(time_s=claws2.time_s)
+    assert coords_equal(claws2, claws)
+    assert np.allclose(claws2, claws)
 
     wAPLPN = series2xarray_like(params['wAPLPN'], boutons)
-    if mp.kc.pn_claw_to_apl:
-        boutons_with_inh2 = (boutons_no_inh - wAPLPN.dot(inh))
-    else:
-        boutons_with_inh2 = (boutons_no_inh - wAPLPN.dot(inh).shift(time_s=1)).dropna(
-            'time_s'
-        )
-
+    boutons_with_inh2 = (
+        boutons_no_inh.sel(time_s=inh_prev.time_s) - wAPLPN.dot(inh_prev)
+    )
     assert boutons_with_inh2.min() < 0, 'some boutons should have been pushed below 0'
     # set any values below 0 to 0
     boutons2 = boutons_with_inh2.where(boutons_with_inh2 >= 0, 0)
     assert boutons2.min() == 0
-
-    # NOTE: need to shift by one in pn_claw_to_apl=false case
-    if mp.kc.pn_claw_to_apl:
-        # TODO same issue as above (first timepoint doesn't match. none 0 in real
-        # thing, many 0s here. why?)
-        assert coords_equal(
-            boutons.isel(time_s=slice(1, None)), boutons2.isel(time_s=slice(1, None))
-        )
-        assert np.allclose(
-            boutons.isel(time_s=slice(1, None)), boutons2.isel(time_s=slice(1, None))
-        )
-    else:
-        # TODO some coords_equal here? or delete from above?
-
-        # NOTE: need to use .values here, b/c after shifting and everything, the
-        # time indices are currently off by one from each other
-        assert np.allclose(boutons.sel(time_s=boutons2.time_s), boutons2)
+    boutons = boutons.sel(time_s=boutons2.time_s)
+    assert coords_equal(boutons2, boutons)
+    assert np.allclose(boutons2, boutons)
 
 
 # TODO TODO test orn deltas can't actually ever go negative (+ fix if so), since scaling
@@ -4386,12 +4388,14 @@ def test_fixed_param_kc_simulator(orn_deltas, kws):
     fixed parameters.
 
     make_fixed_param_kc_simulator also checks it reproduces outputs of the initial
-    (tuned) fit_mb_model call it makes.
+    (tuned) fit_mb_model call it makes. Bouton models use `reduced_bouton_system`.
     """
     if not _kc_simulator_supported(kws):
         with pytest.raises(NotImplementedError):
             make_fixed_param_kc_simulator(orn_deltas, **kws)
         return
+
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
 
     simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas, **kws)
 
@@ -4594,8 +4598,10 @@ def test_optimize_mb_model_params_all_separately_recovery(orn_deltas, initial_pa
 )
 def test_optimize_mb_model_params_all_separately(orn_deltas, kws):
     """Tests params_to_optimize='all' optimizes each APL weight scale separately
-    (including wKCAPL_scale, and all 4 APL weight scales for bouton models).
+    (including wKCAPL_scale, and all 4 APL weight scales for bouton models). Bouton
+    models use `reduced_bouton_system`.
     """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
     expected_params = ['fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale']
     if kws.get('prat_boutons', False):
         expected_params += ['wAPLPN_scale', 'wPNAPL_scale']

@@ -18604,6 +18604,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         if model_kws.get('sp_lr_coeff') is not None:
             try_lr_cache = False
 
+        # model IDs do not reflect hardcoded wPNKC (e.g. a subset of the connectome, in
+        # tests), so would otherwise share (and overwrite) cache entries of other models
+        if model_kws.get('_wPNKC') is not None:
+            try_lr_cache = False
+
         # this is aiming to detect all (and only the) cases where APL tuning will be
         # skipped, to avoid bothering with this cache unless tuning will happen
         # TODO how to handle <weight> (or _<weight>) = Series? fine as-is?
@@ -19044,7 +19049,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         )
 
         update_lr_cache = False
-        if ONESTEP_LR_KEY in param_dict:
+        # (see comment on _wPNKC where cache is read)
+        if ONESTEP_LR_KEY in param_dict and model_kws.get('_wPNKC') is None:
             tuning_iters = param_dict['tuning_iters']
             # TODO TODO handle seeds separately (append to dict key?) or unsupport
             # uniform model case here
