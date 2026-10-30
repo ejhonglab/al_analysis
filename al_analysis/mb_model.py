@@ -22,6 +22,7 @@ from argparse import ArgumentParser
 from ast import literal_eval
 from collections import Counter
 import filecmp
+import hashlib
 import itertools
 from io import StringIO
 import inspect
@@ -293,6 +294,119 @@ def paper_uniform_model_responses() -> pd.DataFrame:
 # TODO use more canonical user data dir for this?
 onestep_lr_cache_path: Path = Path('~/.mb_model_onestep_lr_cache.json').expanduser()
 ONESTEP_LR_KEY: str = 'sp_lr_coeff_to_tune_in_one_iter'
+
+# fit_mb_model kwargs that can not affect the APL tuning learning rate that would tune in
+# one iteration (plotting / output options, and the learning rate / iteration parameters
+# themselves), so are excluded from `onestep_lr_cache_key`
+_lr_cache_key_exclude: Tuple[str, ...] = (
+    'sp_lr_coeff', 'linear_lr_falloff', 'binary_search_on_overshoot', 'max_iters',
+    'print_olfsysm_log', 'return_dynamics', 'delete_pretime', 'plot_dir', 'make_plots',
+    'connectome_weight_plots', 'plot_example_dynamics', 'title',
+    'drop_silent_cells_before_analyses', 'return_olfsysm_vars', 'verbose', 'silent',
+    'checks',
+)
+
+def _lr_cache_key_value(x: Any) -> Any:
+    """Returns JSON serializable representation of `fit_mb_model` kwarg value, to hash.
+
+    pandas / numpy objects are represented by a hash of their contents (including index,
+    columns, and their names), and floats are kept at full precision.
+    """
+    if isinstance(x, (pd.Series, pd.DataFrame)):
+        hashes = [pd.util.hash_pandas_object(x, index=True).values]
+        names = [list(x.index.names)]
+        if isinstance(x, pd.DataFrame):
+            hashes.append(pd.util.hash_pandas_object(x.columns).values)
+            names.append(list(x.columns.names))
+        else:
+            names.append(x.name)
+
+        digest = hashlib.sha256(b''.join(h.tobytes() for h in hashes)).hexdigest()
+        return {'type': type(x).__name__, 'shape': list(x.shape),
+            'names': _lr_cache_key_value(names), 'sha256': digest
+        }
+
+    if isinstance(x, np.ndarray):
+        digest = hashlib.sha256(pd.util.hash_array(x.ravel()).tobytes()).hexdigest()
+        return {'type': 'ndarray', 'shape': list(x.shape), 'sha256': digest}
+
+    if isinstance(x, np.generic):
+        x = x.item()
+
+    if x is None or isinstance(x, (bool, int, float, str)):
+        return x
+
+    if isinstance(x, Path):
+        return str(x)
+
+    if isinstance(x, (list, tuple)):
+        return [_lr_cache_key_value(v) for v in x]
+
+    if isinstance(x, dict):
+        return {str(k): _lr_cache_key_value(v) for k, v in x.items()}
+
+    raise TypeError(f'onestep_lr_cache_key does not support values of type {type(x)}')
+
+
+def onestep_lr_cache_key(fit_mb_model_kws: ParamDict) -> str:
+    """Returns `onestep_lr_cache_path` key for a `fit_mb_model` call with these kwargs.
+
+    Key is a hash of all kwargs that might affect APL tuning, with pandas / numpy values
+    (e.g. `orn_deltas`, `_wPNKC`) hashed by content, so models only share a key if they
+    would tune the same way (as long as inputs loaded within `fit_mb_model`, such as
+    connectome data, do not change).
+
+    Kwargs equal to their `fit_mb_model` default are dropped before hashing, so passing a
+    default explicitly does not change the key, nor does adding a new kwarg to
+    `fit_mb_model` (with a default preserving old behavior).
+    """
+    defaults = {k: p.default
+        for k, p in inspect.signature(fit_mb_model).parameters.items()
+        if p.default is not inspect.Parameter.empty
+    }
+    to_hash = dict()
+    for k, v in fit_mb_model_kws.items():
+        if k in _lr_cache_key_exclude:
+            continue
+
+        v = _lr_cache_key_value(v)
+        if k in defaults and v == _lr_cache_key_value(defaults[k]):
+            continue
+
+        to_hash[k] = v
+
+    key_json = json.dumps(to_hash, sort_keys=True)
+    return hashlib.sha256(key_json.encode()).hexdigest()[:16]
+
+
+def read_onestep_lr_cache() -> Dict[str, Dict[str, Any]]:
+    """Returns `onestep_lr_cache_path` contents (empty if it does not exist).
+
+    Keys are from `onestep_lr_cache_key`, and values are dicts with 'sp_lr_coeff' and
+    (for readability) 'model_id' (see `fit_and_plot_mb_model`).
+
+    A cache in the old format (model ID -> learning rate) is moved to a backup path
+    ('.v1.json' suffix), and an empty dict returned.
+    """
+    if not onestep_lr_cache_path.exists():
+        return dict()
+
+    cache = read_json(onestep_lr_cache_path)
+    if all(isinstance(v, dict) for v in cache.values()):
+        return cache
+
+    backup_path = onestep_lr_cache_path.with_suffix('.v1.json')
+    if backup_path.exists():
+        warn(f'{onestep_lr_cache_path} is in old format (keyed by model ID), and '
+            f'{backup_path} already exists. old entries will be overwritten!'
+        )
+    else:
+        warn(f'{onestep_lr_cache_path} is in old format (keyed by model ID). moving to '
+            f'{backup_path}'
+        )
+        onestep_lr_cache_path.rename(backup_path)
+
+    return dict()
 
 # TODO move to hong2p.util?
 # Can not specifiy keyword-only after *args. *args should imply all following are
@@ -18046,8 +18160,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         plot_dirname: name of directory to be created to save plots. If not passed, a
             model ID is generated from parameters, and that is used instead.
 
-            `plot_dirname` is NOT used as model ID, for things like `onestep_lr_cache`.
-
         comparison_responses: responses (including silent cells) from another model
             (e.g. tuned model, for sensitivity analysis sub-calls). Sparsity per odor
             and # odors per cell plots will also show these, with odors sorted by
@@ -18089,9 +18201,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         _strip_concs_comparison_kc_corrs: if True, concentrations are stripped from odor
             names of `comparison_kc_corrs` and model correlations before matching them
 
-        param_dir_prefix: this IS prepended to model ID (so will be used for
-            `onestep_lr_cache`, etc), as well as (if `plot_dirname` not specified) the
-            output plot dir name.
+        param_dir_prefix: prepended to model ID (and so, if `plot_dirname` not
+            specified, to the output plot dir name).
 
         title_prefix: prepended to plot titles
 
@@ -18107,9 +18218,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         try_lr_cache: if True (and if not disabled via `MB_MODEL_USE_LR_CACHE=0` env
             var, or by running under pytest without `QUICK=1`), uses an APL tuning
-            `sp_lr_coeff` cached (in `onestep_lr_cache`) from previous runs of the same
-            model ID, to tune APL in one iteration. Not used if `sp_lr_coeff` is passed,
-            or if APL tuning will be skipped.
+            `sp_lr_coeff` cached (in `onestep_lr_cache_path`) from previous runs with the
+            same `fit_mb_model` inputs (see `onestep_lr_cache_key`), to tune APL in one
+            iteration. Not used if `sp_lr_coeff` is passed, or if APL tuning will be
+            skipped. Learning rates from any APL tuning are saved to this cache
+            regardless.
 
         **model_kws: passed to `fit_mb_model` (see its docstring, particularly for key
             inputs, such as `orn_deltas`)
@@ -18274,7 +18387,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         if len(param_str) > 0:
             for_dirname = normalize_param_str(param_str)
 
-        # also used as key for some caches that give value per model instantiation
+        # (also saved alongside onestep_lr_cache entries, for readability)
         model_id = f'{param_dir_prefix}{for_dirname}'
 
         # TODO rename plot_dir + this to be more clear?
@@ -18571,11 +18684,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
 
         print(f'fitting model ({responses_to=}, {param_str})...', flush=True)
 
-        used_lr_cache = False
-        onestep_lr_cache = dict()
-        if onestep_lr_cache_path.exists():
-            onestep_lr_cache = read_json(onestep_lr_cache_path)
-
         # TODO remove this env var, and change so there is a test that explicitly
         # checks the cases this checks (maybe just w/ weight-divisor_20 no connectome
         # APL case?) (want to check cases where no APL update is necessary [even
@@ -18595,18 +18703,33 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             model_kws['sp_lr_coeff'] = hardcode_lr
         #
 
+        # TODO make kwarg
+        # same seed Matt starts at in
+        # matt-modeling/docs/independent-draw-reference.html
+        initial_seed = 94894 + 1
+
+        # kwargs (relevant to onestep_lr_cache_key) of fit_mb_model call(s) below, one
+        # per seed
+        if n_seeds > 1:
+            lr_cache_fit_kws = [{**model_kws, 'seed': initial_seed + i,
+                    'fixed_thr': None if fixed_thr is None else fixed_thr[i],
+                    'wAPLKC': None if fixed_thr is None else wAPLKC[i], 'wAPLPN': wAPLPN,
+                } for i in range(n_seeds)
+            ]
+        else:
+            lr_cache_fit_kws = [{**model_kws,
+                'fixed_thr': fixed_thr, 'wAPLKC': wAPLKC, 'wAPLPN': wAPLPN
+            }]
+        lr_cache_keys = [onestep_lr_cache_key(x) for x in lr_cache_fit_kws]
+        del lr_cache_fit_kws
+
         # TODO ideally share cache key/values if that fixed_thr matches what would be
         # the tuned value (might be hard / cumbersome to do...). add separate cache of
-        # model_id -> fixed_thr, and use that to tell when fixed_thr would match the
+        # inputs -> fixed_thr, and use that to tell when fixed_thr would match the
         # tuned value?
         # TODO TODO implement similar cache for threshold tuning (for
         # `n_spikes_for_response > 1` case)
         if model_kws.get('sp_lr_coeff') is not None:
-            try_lr_cache = False
-
-        # model IDs do not reflect hardcoded wPNKC (e.g. a subset of the connectome, in
-        # tests), so would otherwise share (and overwrite) cache entries of other models
-        if model_kws.get('_wPNKC') is not None:
             try_lr_cache = False
 
         # this is aiming to detect all (and only the) cases where APL tuning will be
@@ -18614,8 +18737,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
         # TODO how to handle <weight> (or _<weight>) = Series? fine as-is?
         if not model_kws.get('scale_pre_tuning') and wAPLKC is not None:
             try_lr_cache = False
-
-        # TODO TODO + process existing cache to remove linear_lr_falloff those from keys
 
         if try_lr_cache:
             # set as `export MB_MODEL_USE_LR_CACHE=0` in your ~/.bashrc or whatever,
@@ -18635,39 +18756,27 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 warn('disabling onestep_lr_cache because in pytest (and not QUICK=1)')
                 try_lr_cache = False
 
+        # one per seed. None where cached learning rate not used.
+        cached_lrs = [None] * len(lr_cache_keys)
         if try_lr_cache:
-            # TODO fix hack + delete (these two cases should be getting same model
-            # ID anyway, since that suffix is for a default value of the param)
-            fix_model_id = 'prat-claws_True__prat-boutons_True__connectome-APL_True'
-            if model_id == fix_model_id:
-                # TODO delete this hack (or at least warn we are doing it?)
-                # TODO TODO should i be setting model_id to this (rather than just
-                # _model_id) (so it gets written into cache this way too)?
-                _model_id = f'{fix_model_id}__pn-claw-to-apl_False'
-                assert _model_id in onestep_lr_cache
-            else:
-                _model_id = model_id
-            #
-            if _model_id in onestep_lr_cache:
-                sp_lr_coeff = onestep_lr_cache[_model_id]
-
-                if not variable_n_claws:
-                    cached_coeff_str = f'{sp_lr_coeff=:.3f}'
+            onestep_lr_cache = read_onestep_lr_cache()
+            cached_lrs = [onestep_lr_cache[k]['sp_lr_coeff']
+                if k in onestep_lr_cache else None for k in lr_cache_keys
+            ]
+            n_cached = sum(x is not None for x in cached_lrs)
+            if n_cached > 0:
+                if n_seeds == 1:
+                    cached_coeff_str = f'sp_lr_coeff={cached_lrs[0]:.3f}'
+                    model_kws['sp_lr_coeff'] = cached_lrs[0]
                 else:
-                    # TODO oh, did i already plan for support for this? i think
-                    # elsewhere i was assuming this wouldn't work in this case, or maybe
-                    # not even setting into / using cache there?
-                    # does it work after all? test?
-                    cached_coeff_str = 'sp_lr_coeff list (one per seed)'
+                    cached_coeff_str = f'sp_lr_coeff for {n_cached}/{n_seeds} seeds'
+                    # (None -> default olfsysm sp_lr_coeff, for seeds w/o cached value)
+                    model_kws['sp_lr_coeff'] = cached_lrs
 
                 warn(f'using {cached_coeff_str} from onestep_lr_cache '
                     f'({onestep_lr_cache_path}), to tune in one iteration. '
                     'set try_lr_cache=False to disable.'
                 )
-                model_kws['sp_lr_coeff'] = sp_lr_coeff
-
-                used_lr_cache = True
-        #
 
         dynamics_dict = dict()
         # TODO check i can replace model_test.py portion like this w/ this
@@ -18687,11 +18796,6 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 # first_seed_only=True only intended for regenerating these internal
                 # plots. probably a mistake if it's True any other time.
                 assert 'plot_dir' in model_kws
-
-            # TODO make kwarg
-            # same seed Matt starts at in
-            # matt-modeling/docs/independent-draw-reference.html
-            initial_seed = 94894 + 1
 
             # TODO get good desc for tqdm
             #desc=f'{draw_type} ({n_claws=})'
@@ -19048,56 +19152,36 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             save_dynamics=return_dynamics, keys_not_to_remove=keys_not_to_remove
         )
 
-        update_lr_cache = False
-        # (see comment on _wPNKC where cache is read)
-        if ONESTEP_LR_KEY in param_dict and model_kws.get('_wPNKC') is None:
+        if ONESTEP_LR_KEY in param_dict:
+            onestep_lrs = param_dict[ONESTEP_LR_KEY]
             tuning_iters = param_dict['tuning_iters']
-            # TODO TODO handle seeds separately (append to dict key?) or unsupport
-            # uniform model case here
-            if isinstance(tuning_iters, list):
-                warn('onestep_lr_cache not currently supported in variable_n_claws '
-                    'cases (such as uniform wPNKC model)'
-                )
-            else:
-                update_lr_cache = True
+            if n_seeds == 1:
+                onestep_lrs = [onestep_lrs]
+                tuning_iters = [tuning_iters]
 
-        if update_lr_cache:
-            assert tuning_iters >= 1, ('expect this to start on 1 when any APL tuning '
-                'happens'
-            )
-            onestep_sp_lr_coeff = param_dict[ONESTEP_LR_KEY]
-            # would be hit, if we didn't avoid adding ONESTEP_LR_KEY to param_dict
-            # (in fit_mb_model) when tune_apl_weights=False
-            assert onestep_sp_lr_coeff != 0
+            assert len(onestep_lrs) == len(tuning_iters) == len(lr_cache_keys)
 
-            if onestep_lr_cache_path.exists():
-                # TODO share reading with above?
-                onestep_lr_cache = read_json(onestep_lr_cache_path)
-            else:
-                onestep_lr_cache = dict()
+            onestep_lr_cache = read_onestep_lr_cache()
+            for key, onestep_lr, iters, cached_lr in zip(lr_cache_keys, onestep_lrs,
+                tuning_iters, cached_lrs):
 
-            cache_error = False
-            if used_lr_cache:
-                remove_suffix = f' removing this model ID ({_model_id}) from cache!'
+                assert iters >= 1, 'expect this to start on 1 when any APL tuning happens'
+                # would be hit, if we didn't avoid adding ONESTEP_LR_KEY to param_dict
+                # (in fit_mb_model) when tune_apl_weights=False
+                assert onestep_lr != 0
 
-                cached_lr_coeff = onestep_lr_cache[_model_id]
-                if not np.isclose(onestep_sp_lr_coeff, cached_lr_coeff):
-                    warn(f'{cached_lr_coeff=} does not match current '
-                        f'{onestep_sp_lr_coeff=}, but they should be the same since we '
-                        'used cached onstep sp_lr_coeff!' + remove_suffix
+                if cached_lr is not None:
+                    if iters == 1 and np.isclose(onestep_lr, cached_lr):
+                        continue
+
+                    warn(f'cached onestep {cached_lr=} did not tune in one iteration '
+                        f'({iters=}, {onestep_lr=}). replacing cache entry {key} with '
+                        'new onestep_lr!'
                     )
-                    cache_error = True
 
-                if tuning_iters != 1:
-                    warn('should have converged in one step because used cached onestep'
-                        ' sp_lr_coeff, but did not!' + remove_suffix
-                    )
-                    cache_error = True
-
-                if cache_error:
-                    del onestep_lr_cache[_model_id]
-            else:
-                onestep_lr_cache[model_id] = onestep_sp_lr_coeff
+                onestep_lr_cache[key] = {
+                    'sp_lr_coeff': float(onestep_lr), 'model_id': model_id
+                }
 
             to_json(onestep_lr_cache, onestep_lr_cache_path,
                 multiple_saves_per_run_ok=True

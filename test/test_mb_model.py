@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from itertools import product
+import json
 import os
 from pathlib import Path
 from pprint import pformat
@@ -60,7 +61,8 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     get_apl_unit_coupling, max_apl_unit_coupling, get_param_subset, read_model_output,
     uniform_bouton_wPNKC, bouton_glomerulus_probs, claw_coord_cols,
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
-    plot_apl_activity_sections, view_apl_activity_3d
+    plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
+    read_onestep_lr_cache
 )
 
 # TODO better way?
@@ -4498,6 +4500,89 @@ def test_apl_unit_coupling_optimization(orn_deltas):
     assert ret['fit_mb_model_kws']['apl_unit_coupling'] == (
         ret['params']['apl_unit_coupling']
     )
+
+
+def test_onestep_lr_cache_key(orn_deltas):
+    """Tests onestep LR cache keys only depend on (all) inputs that might affect tuning.
+    """
+    kws = dict(orn_deltas=orn_deltas, prat_claws=True, use_connectome_APL_weights=True,
+        target_sparsity=0.05
+    )
+    key = onestep_lr_cache_key(kws)
+
+    # not affected by order, defaults passed explicitly, output-only kwargs, or
+    # learning rate kwargs
+    assert onestep_lr_cache_key(dict(reversed(list(kws.items())))) == key
+    assert onestep_lr_cache_key(
+        {**kws, 'prat_boutons': False, 'seed': 12345, 'wAPLKC': None}
+    ) == key
+    assert onestep_lr_cache_key({**kws, 'make_plots': False, 'plot_dir': Path('x'),
+        'return_dynamics': True, 'sp_lr_coeff': 3.0, 'max_iters': 5
+    }) == key
+
+    changed_value = orn_deltas.copy()
+    changed_value.iloc[0, 0] += 1
+    first_odor = orn_deltas.columns.get_level_values('odor')[0]
+    renamed_odor = orn_deltas.rename(columns={first_odor: 'x'}, level='odor')
+    assert not renamed_odor.columns.equals(orn_deltas.columns)
+
+    wPNKC = pd.DataFrame(np.eye(3), columns=pd.Index(list('abc'), name=glomerulus_col),
+        index=pd.Index([1, 2, 3], name=KC_ID)
+    )
+    wAPLKC = pd.Series([1.0, 2.0, 3.0], index=wPNKC.index)
+    different_kws = [
+        # format_model_params (used for model IDs) rounds this to 0.05
+        {**kws, 'target_sparsity': 0.0501},
+        {**kws, 'seed': 1},
+        {**kws, 'orn_deltas': orn_deltas.iloc[:-1]},
+        {**kws, 'orn_deltas': changed_value},
+        {**kws, 'orn_deltas': renamed_odor},
+        {**kws, '_wPNKC': wPNKC},
+        {**kws, '_wPNKC': wPNKC.iloc[1:]},
+        {**kws, '_wPNKC': wPNKC.rename(columns={'a': 'd'})},
+        {**kws, '_wAPLKC': wAPLKC},
+        {**kws, '_wAPLKC': wAPLKC * 2},
+        {**kws, 'fixed_thr': np.array([1.0, 2.0, 3.0])},
+        {**kws, 'fixed_thr': np.array([1.0, 2.0, 4.0])},
+    ]
+    keys = [key] + [onestep_lr_cache_key(x) for x in different_kws]
+    assert len(set(keys)) == len(keys)
+
+
+def test_onestep_lr_cache(tmp_path, monkeypatch, orn_deltas):
+    """Tests onestep LR cache is written, and used to tune in one iteration after.
+
+    Uses reduced bouton model (with `_wPNKC`, which old model ID keys did not reflect),
+    and starts from a cache in the old format, which should be moved to a backup.
+    """
+    cache_path = tmp_path / 'lr_cache.json'
+    monkeypatch.setattr('al_analysis.mb_model.onestep_lr_cache_path', cache_path)
+    # cache otherwise only used under pytest if QUICK=1
+    monkeypatch.setenv('QUICK', '1')
+
+    old_cache = {'prat-claws_True': 5.0}
+    cache_path.write_text(json.dumps(old_cache))
+
+    kws = dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+        use_connectome_APL_weights=True
+    )
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, kws)
+
+    params = _fit_and_plot_mb_model(tmp_path, orn_deltas=orn_deltas, **kws)
+    assert json.loads(cache_path.with_suffix('.v1.json').read_text()) == old_cache
+    assert params['tuning_iters'] > 1
+
+    cache = read_onestep_lr_cache()
+    assert len(cache) == 1
+    entry = list(cache.values())[0]
+    assert np.isclose(entry['sp_lr_coeff'], params[ONESTEP_LR_KEY])
+    assert entry['model_id'] == params['output_dir']
+
+    # (outputs written earlier in same process would be loaded, despite try_cache=False)
+    params2 = _fit_and_plot_mb_model(tmp_path / 'refit', orn_deltas=orn_deltas, **kws)
+    assert params2['tuning_iters'] == 1
+    assert params2['sp_lr_coeff'] == entry['sp_lr_coeff']
+    assert read_onestep_lr_cache() == cache
 
 
 @pytest.fixture(scope='module')
