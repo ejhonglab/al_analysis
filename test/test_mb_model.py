@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 
 from functools import lru_cache
+import importlib.util
 from itertools import product
 import json
 import os
 from pathlib import Path
 from pprint import pformat
+import subprocess
+import sys
 # TODO delete?
 import traceback
 #
-from typing import Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import (Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple,
+    Union
+)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -2434,6 +2439,141 @@ def test_view_apl_activity_3d():
     assert np.array_equal(scatter.get_array(), values[1, unit_pos, 2])
     assert 'b' in fig.axes[0].get_title()
     plt.close(fig)
+
+
+view_apl_activity_script: Path = (Path(__file__).resolve().parent.parent / 'scripts' /
+    'view_apl_activity.py'
+)
+
+@pytest.fixture
+def view_apl_activity(monkeypatch, tmp_path):
+    """Returns `scripts/view_apl_activity.py` module, with no real model fitting.
+
+    Its `fit_unit_dynamics` just returns placeholder potentials, and appends to
+    `fit_calls` module attribute. `run` module attribute calls script's `main` with
+    passed CLI args.
+    """
+    spec = importlib.util.spec_from_file_location('view_apl_activity',
+        view_apl_activity_script
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    units = load_apl_unit_distances().index
+    unit_inh = xr.DataArray(np.ones((2, len(units), 3)),
+        dims=['stim', APL_UNIT, 'time_s'],
+        coords={'stim': ['a', 'b'], APL_UNIT: units, 'time_s': [0.0, 0.05, 0.1]}
+    )
+    module.fit_calls = []
+
+    def fit_unit_dynamics(*args, **kwargs):
+        module.fit_calls.append(args)
+        return unit_inh
+
+    monkeypatch.setattr(module, 'fit_unit_dynamics', fit_unit_dynamics)
+    # (script sets this to True)
+    monkeypatch.setattr(al_util, 'verbose', al_util.verbose)
+
+    def run(*args: str) -> None:
+        monkeypatch.setattr(sys, 'argv', [view_apl_activity_script.name,
+            '-o', str(tmp_path), *args
+        ])
+        module.main()
+
+    module.run = run
+    return module
+
+
+def test_view_apl_activity_script_no_show(view_apl_activity, tmp_path):
+    """Tests script saves plots for each odor (w/o interactive backend), if --no-show.
+    """
+    view_apl_activity.run('--no-show')
+    assert len(view_apl_activity.fit_calls) == 1
+    names = {p.stem for p in (tmp_path / 'apl_activity').glob('*/*') if p.is_file()}
+    assert names == {'sections_a', 'sections_b', '3d_a', '3d_b'}
+    assert plt.get_fignums() == []
+
+
+def test_view_apl_activity_script_show(view_apl_activity, monkeypatch):
+    """Tests script shows all odors after fitting, once interactive backend is selected.
+    """
+    shown = []
+    def show():
+        shown.append((len(view_apl_activity.fit_calls), plt.gcf()))
+
+    monkeypatch.setattr(plt, 'show', show)
+    monkeypatch.setattr(view_apl_activity, 'find_interactive_backend', lambda: 'agg')
+    view_apl_activity.run()
+    assert len(shown) == 1
+    n_fits_before_show, fig = shown[0]
+    assert n_fits_before_show == 1
+    # time and odor sliders (per-odor figures saved earlier only have the time slider)
+    assert len(fig.apl_sliders) == 2
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('args', [
+    ('-s', '0'), ('-t', '0'), ('--pixel-um', '0'), ('--max-points', '-1')
+], ids=' '.join)
+def test_view_apl_activity_script_bad_plot_args(view_apl_activity, args):
+    """Tests script does not fit model, if plotting would fail after fitting.
+    """
+    with pytest.raises(ValueError):
+        view_apl_activity.run('--no-show', *args)
+
+    assert len(view_apl_activity.fit_calls) == 0
+    plt.close('all')
+
+
+def _env_without_display(**kwargs) -> Dict[str, str]:
+    """Returns current environment, without variables matplotlib backend selection uses.
+    """
+    env = {k: v for k, v in os.environ.items()
+        if k not in ('DISPLAY', 'WAYLAND_DISPLAY', 'MPLBACKEND')
+    }
+    return {**env, **kwargs}
+
+
+# (subprocess, so the real `main`, and so auto backend selection is not affected by [and
+# does not change] state in this process)
+@pytest.mark.parametrize('env', [dict(), dict(MPLBACKEND='agg')],
+    ids=['no_display', 'non_interactive_backend']
+)
+def test_view_apl_activity_script_cannot_show(tmp_path, env):
+    """Tests script exits with error, before fitting model, if figures can't be shown.
+    """
+    output_dir = tmp_path / 'outputs'
+    # (timeout, in case this regresses to fitting the model)
+    proc = subprocess.run(
+        [sys.executable, str(view_apl_activity_script), '-o', str(output_dir)],
+        env=_env_without_display(**env), capture_output=True, text=True, timeout=300
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert '--no-show' in proc.stderr
+    assert not output_dir.exists()
+
+
+def test_view_apl_activity_script_find_interactive_backend():
+    """Tests interactive backend is found, even though `mb_model` import selects Agg.
+
+    Skipped if no display or GUI toolkit is available.
+    """
+    code = ('import runpy; import matplotlib as mpl; '
+        f"find = runpy.run_path({str(view_apl_activity_script)!r})"
+        "['find_interactive_backend']; print(find(), mpl.get_backend())"
+    )
+    env = {**os.environ, 'QT_QPA_PLATFORM': 'offscreen'}
+    env.pop('MPLBACKEND', None)
+    proc = subprocess.run([sys.executable, '-c', code], env=env, capture_output=True,
+        text=True, timeout=300
+    )
+    if 'is not interactive' in proc.stderr:
+        pytest.skip('no display or GUI toolkit')
+
+    assert proc.returncode == 0, proc.stderr
+    backend, selected_after = proc.stdout.split()[-2:]
+    assert backend.lower() != 'agg'
+    assert selected_after.lower() == 'agg'
 
 
 # TODO TODO do w/ more than BOUTON_MODEL_KW_LIST? at least some claw-but-not-bouton
