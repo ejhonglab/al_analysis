@@ -2576,6 +2576,42 @@ def test_view_apl_activity_script_find_interactive_backend():
     assert selected_after.lower() == 'agg'
 
 
+@pytest.mark.parametrize('initial_factor', [0.2, 1.0, 5.0])
+@pytest.mark.parametrize('n_target', [150, 1000, 4000])
+def test_match_response_count(monkeypatch, initial_factor, n_target):
+    """Tests `scripts/apl_coupling_sweep.py` search for target # of responses.
+
+    Target should be reached from either side, scaling only APL weights (all of them).
+    """
+    scripts_dir = view_apl_activity_script.parent
+    # (script imports from another script in same directory)
+    monkeypatch.syspath_prepend(str(scripts_dir))
+    spec = importlib.util.spec_from_file_location('apl_coupling_sweep',
+        scripts_dir / 'apl_coupling_sweep.py'
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    params = {'fixed_thr': 3.0, 'wAPLKC_scale': 1.0, 'wKCAPL_scale': 2.0}
+
+    def simulate(scaled_params):
+        assert scaled_params['fixed_thr'] == params['fixed_thr']
+        assert np.isclose(scaled_params['wKCAPL_scale'],
+            2 * scaled_params['wAPLKC_scale']
+        )
+        responses = pd.DataFrame(np.zeros((5000, 1)))
+        responses.iloc[:int(1000 / scaled_params['wAPLKC_scale'])] = 1.0
+        return responses, responses
+
+    factor, responses, spike_counts, n_evals = module.match_response_count(simulate,
+        params, n_target, initial_factor=initial_factor
+    )
+    assert abs(responses.values.sum() - n_target) <= 1
+    assert spike_counts is responses
+    assert simulate(module.scale_apl_weights(params, factor))[0].equals(responses)
+    assert n_evals <= 30
+
+
 # TODO TODO do w/ more than BOUTON_MODEL_KW_LIST? at least some claw-but-not-bouton
 # stuff? wd20?
 @pytest.mark.parametrize('kws', BOUTON_MODEL_KW_LIST, ids=format_model_params)
