@@ -223,6 +223,6 @@ suite2p @ git+https://github.com/tom-f-oconnell/suite2p
 # there default to hong2p==0.0.0? is that b/c hong2p already importable (+ hack in
 # current setup.py there)? try using
 # pyproject.toml for natmix?)
-hong2p @ git+https://github.com/ejhonglab/hong2p
+hong2p[all] @ git+https://github.com/ejhonglab/hong2p
 
 olfsysm @ git+https://github.com/ejhonglab/olfsysm
