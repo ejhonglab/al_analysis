@@ -13,6 +13,16 @@ conda env create -f environment.yml
 conda activate al_analysis
 ```
 
+If instead using a venv made from the system Python, first install a C++ compiler and
+the Python headers (needed to build the olfsysm C++ extension), with the `-dev` package
+matching the Python version the venv is made with:
+```
+sudo apt install build-essential python3.14-dev
+python3.14 -m venv venv
+source venv/bin/activate
+pip install -e .
+```
+
 
 ### Updating
 
