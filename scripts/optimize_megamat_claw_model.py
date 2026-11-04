@@ -24,6 +24,12 @@ Models with APL units are tuned with `apl_unit_coupling=1` (`INITIAL_APL_UNIT_CO
 and coupling is optimized within `-k/--coupling-bounds` (by default, from nearly
 uncoupled to the strongest coupling olfsysm can simulate).
 
+The default (Nelder-Mead) is a local search near the tuned parameters. To compare single
+APL and APL unit models with a global search over a wider range, e.g.:
+`-m differential_evolution -b 100 -n 750 -c claw claw_units bouton_separate
+bouton_units_separate` (bouton cases take several hours each, so may be worth running
+as separate processes, with separate `-o/--output-dir`).
+
 Model outputs only depend on products of APL input and output weight scales (e.g.
 wKCAPL_scale * wAPLKC_scale), so individual scales from separate optimization are not
 unique, but these products are (and are included in parameter comparisons).
@@ -408,6 +414,11 @@ def main():
         help='target mean response rate for standard tuning (default: %(default)s, as '
         'in model_mb_responses)'
     )
+    parser.add_argument('-o', '--output-dir', type=Path,
+        default=Path('optimize_megamat_claw_model'), help='where to save outputs. '
+        'summary CSVs are only named by method / bounds, so concurrent runs should use '
+        'different directories. default: ./%(default)s'
+    )
     parser.add_argument('-i', '--ignore-cache', action='store_true', help='re-runs '
         'standard tuned models, even if cached outputs exist (optimized models are '
         'always re-run)'
@@ -430,8 +441,8 @@ def main():
         coupling_bounds = tuple(args.coupling_bounds)
         output_suffix += '_coupling-bounds-{:g}-{:g}'.format(*coupling_bounds)
 
-    plot_root = Path('optimize_megamat_claw_model')
-    plot_root.mkdir(exist_ok=True)
+    plot_root = args.output_dir
+    plot_root.mkdir(exist_ok=True, parents=True)
 
     al_util.verbose = True
 
