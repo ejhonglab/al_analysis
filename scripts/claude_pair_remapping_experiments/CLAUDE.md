@@ -262,6 +262,9 @@ Remy's panel 1 (megamat) and 2 (validation2) panels, she said:
 "Actually, no. the 4 overlapping w/ valid 2 are not. the conc for PAA is -3 instead of -4, other 3 are all at -2 instead of things like -1.75 etc in valid2."
 That is, paa was at 10^-3 (not -4), and -aPine, euc and B-myr were all at 10^-2 (vs
 -1.5, -1.75 and -2 in the lab's validation2 ORN data), while the 12 megamat odors were at
-the same concentrations as Remy's. Check whether the lab has ORN data at Yang's
-concentrations before using the validation2 ORN responses as model input for those four
-odors, and if not, say which approximation you used in the experiment notes.
+the same concentrations as Remy's. No ORN data exist at paa -3, euc -2 or -aPine -2.
+Rule: when no exact concentration match is available, ORN data within 1 log10 v/v unit
+(inclusive, so -4 may stand in for -3) may be used, and likewise when comparing across
+datasets (e.g. Remy's vs Yang's KC data). Every time outputs affected by such a
+substitution are discussed, note which results are affected (here: anything involving
+paa, euc or -aPine model input).
