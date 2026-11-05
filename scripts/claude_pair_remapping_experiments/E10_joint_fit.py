@@ -23,10 +23,15 @@ Loss (each term ~1 when bad, 0 when matched; weights in LOSS_WEIGHTS):
   po_off    1 - Spearman(per-odor APL-off rates, TNT per-odor fractions)
 Reported but not fitted: E7's density-null excess profile and E4's full score of each best fit.
 
+Round 2 (--claw-thr T): the same on E16 / E19's bouton base with the rectified per-claw
+offset T (olfsysm `claw_thr`, hal's replacement for the coincidence rule), starting from
+E19's grid point (thr<T>_k<k>_kckc<kckc0>) when it exists; breadth then comes from hal's E16
+APL-off run of that base (data/hal_outputs/E16_claw_saturation/, else regenerated here).
+
 Outputs: <shared>/results/E10_joint_fit/ (fits.csv, history_k<k>.csv, best-fit score rows,
 figure) and ./outputs/E10_joint_fit/ (responses / spike counts of each best fit).
 Usage: OMP_NUM_THREADS=6 nice -n 10 ./venv/bin/python E10_joint_fit.py -k 3 1 [--maxfev 150]
-       [--kckc0 60] [--method Nelder-Mead|direct|differential_evolution] [--smoke]
+       [--kckc0 60] [--claw-thr 40] [--method Nelder-Mead|direct|differential_evolution] [--smoke]
 """
 from __future__ import annotations
 
@@ -58,24 +63,53 @@ LOSS_WEIGHTS = dict(on_mat=1.0, off_mat=1.0, block=1.0, rate_on=1.0, ratio=0.5, 
 # E12's KC<->APL factor matching the breadth-weighted model's response count to k = 0's
 # (spikes_k<k> rows of its stats): used only as the initial wAPLKC_scale per k
 E12_FACTORS = {0.0: 1.0, 0.5: 0.82, 1.0: 0.65, 2.0: 0.36, 3.0: 0.18, 4.0: 0.085}
+PARAM_KEYS = ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale')
 
 
-def bouton_base(orn: pd.DataFrame, out_dir: Path):
-    """E3's bouton base at its tuned parameters: normalized APL weights, wPNKC, and the
-    per-KC APL-off breadth (total spike count), regenerated here if not saved."""
+def e19_stats() -> pd.DataFrame:
+    return pd.read_csv(H.shared_dir() / 'results' / 'E19_thr_breadth_kckc' / 'stats_variants.csv')
+
+
+def e19_row(claw_thr: float, k: float, kckc: float):
+    """E19's grid point (claw_thr, k, KC-KC scale), or None."""
+    s = e19_stats()
+    m = s[s.tag == f'thr{claw_thr:g}_k{k:g}_kckc{kckc:g}']
+    return None if len(m) == 0 else m.iloc[0]
+
+
+def base_kws(claw_thr) -> dict:
+    kws = dict(BOUTON, make_plots=False, silent=True)
+    if claw_thr is not None:
+        kws['claw_thr'] = float(claw_thr)
+    return kws
+
+
+def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None):
+    """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
+    E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
+    breadth (total spike count; hal's saved run if copied to the shared directory, else
+    regenerated here)."""
     from al_analysis.mb_model import fit_mb_model
-    initial = e3_bouton_params()
+    hal_out = H.shared_dir() / 'data' / 'hal_outputs'
+    if claw_thr is None:
+        initial = e3_bouton_params()
+        # hal's E3 APL-off run (the breadth E12 / E8 used)
+        hal_path = hal_out / 'E3_drive_dependent_gain' / 'bouton_pnapl_x1_acute_off_spike_counts.parquet'
+        off_path = out_dir / 'base_acute_off_spike_counts.parquet'
+    else:
+        r = e19_row(claw_thr, 0.0, 0.0)
+        if r is None:
+            raise ValueError(f'no E19 base row for claw_thr {claw_thr}')
+        initial = {k: float(r[k]) for k in PARAM_KEYS}
+        # hal's E16 APL-off run of this base (the breadth E19 used)
+        hal_path = hal_out / 'E16_claw_saturation' / f'bouton_thr{claw_thr:g}_acute_off_spike_counts.parquet'
+        off_path = out_dir / f'thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
+    kws = base_kws(claw_thr)
     _, _, wPNKC, pd0 = fit_mb_model(orn, fixed_thr=initial['fixed_thr'],
         wAPLKC=initial['wAPLKC_scale'], wKCAPL=initial['wKCAPL_scale'],
-        wAPLPN=initial['wAPLPN_scale'], wPNAPL=initial['wPNAPL_scale'], **BOUTON,
-        make_plots=False, silent=True
+        wAPLPN=initial['wAPLPN_scale'], wPNAPL=initial['wPNAPL_scale'], **kws
     )
     wnorm = {k: pd0[k] / pd0[f'{k}_scale'] for k in ('wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL')}
-    # hal's E3 APL-off run (the breadth E12 / E8 used), copied to the shared directory;
-    # regenerated locally only if it is not there
-    hal_path = (H.shared_dir() / 'data' / 'hal_outputs' / 'E3_drive_dependent_gain' /
-        'bouton_pnapl_x1_acute_off_spike_counts.parquet')
-    off_path = out_dir / 'base_acute_off_spike_counts.parquet'
     if hal_path.exists():
         off_spk = pd.read_parquet(hal_path)
         print(f'breadth from {hal_path}', flush=True)
@@ -83,12 +117,11 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path):
         off_spk = pd.read_parquet(off_path)
     else:
         r_off, off_spk, _, _ = fit_mb_model(orn, fixed_thr=initial['fixed_thr'], wAPLKC=0.0,
-            wKCAPL=initial['wKCAPL_scale'], wAPLPN=0.0, wPNAPL=initial['wPNAPL_scale'],
-            **BOUTON, make_plots=False, silent=True
+            wKCAPL=initial['wKCAPL_scale'], wAPLPN=0.0, wPNAPL=initial['wPNAPL_scale'], **kws
         )
         off_spk.to_parquet(off_path)
-        r_off.to_parquet(out_dir / 'base_acute_off_responses.parquet')
-        print(f'base APL-off rate {rate(r_off):.4f} (E3: 0.0978)', flush=True)
+        r_off.to_parquet(off_path.with_name(off_path.name.replace('spike_counts', 'responses')))
+        print(f'base APL-off rate {rate(r_off):.4f} (E3 / E19 bases: 0.098)', flush=True)
     breadth = pd.Series(off_spk.astype(float).sum(axis='columns').to_numpy(),
         index=off_spk.index.get_level_values(H.KC_ID_LEVEL)
     )
@@ -153,16 +186,24 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
 
 
 def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, maxfev: int,
-    method: str, thr0_factor: float, verbose: bool = True):
+    method: str, thr0_factor: float, claw_thr=None, verbose: bool = True):
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
-    f0 = E12_FACTORS.get(k, float(np.exp(np.interp(k, sorted(E12_FACTORS),
-        np.log([E12_FACTORS[x] for x in sorted(E12_FACTORS)])))))
-    init = dict(fixed_thr=initial['fixed_thr'] * thr0_factor,
-        wAPLKC_scale=initial['wAPLKC_scale'] * f0, wKCAPL_scale=initial['wKCAPL_scale'] * f0,
-        wAPLPN_scale=initial['wAPLPN_scale'], wPNAPL_scale=initial['wPNAPL_scale'],
-        wKCKC_scale=kckc0,
-    )
+    r19 = None if claw_thr is None else e19_row(claw_thr, k, kckc0)
+    if r19 is not None:
+        # start at E19's grid point (APL scales matched to the k = 0 count, threshold
+        # re-tuned to 5 % with this KC-KC scale)
+        init = {kk: float(r19[kk]) for kk in PARAM_KEYS}
+        init['wKCKC_scale'] = kckc0
+        print(f'starting from E19 row {r19.tag}', flush=True)
+    else:
+        f0 = E12_FACTORS.get(k, float(np.exp(np.interp(k, sorted(E12_FACTORS),
+            np.log([E12_FACTORS[x] for x in sorted(E12_FACTORS)])))))
+        init = dict(fixed_thr=initial['fixed_thr'] * thr0_factor,
+            wAPLKC_scale=initial['wAPLKC_scale'] * f0, wKCAPL_scale=initial['wKCAPL_scale'] * f0,
+            wAPLPN_scale=initial['wAPLPN_scale'], wPNAPL_scale=initial['wPNAPL_scale'],
+            wKCKC_scale=kckc0,
+        )
     bounds = {
         'fixed_thr': (initial['fixed_thr'] / 4, initial['fixed_thr'] * 4),
         'wAPLKC_scale': (init['wAPLKC_scale'] / 30, init['wAPLKC_scale'] * 30),
@@ -176,10 +217,9 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         condition_param_overrides={'on': {}, 'off': {'wAPLKC_scale': 0.0, 'wAPLPN_scale': 0.0}},
         params_to_optimize=['fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'wKCKC_scale'],
         initial_params=init, bounds=bounds, tie_apl_weights=True, method=method,
-        maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose, **BOUTON,
-        _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'],
-        _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU, make_plots=False,
-        silent=True
+        maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
+        **base_kws(claw_thr), _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
+        _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU
     )
     return res, init, bounds
 
@@ -204,8 +244,11 @@ def make_figure(res_dir: Path, data: dict) -> None:
         ('kc_kc_inh', 'fitted KC-KC scale (kc_kc_inh)', None, None),
     ]
     for ax, (col, title, target, band) in zip(axes.flat[1:], panels):
-        for tag, sub in fits.groupby(fits.tag.str.contains('start2').map({False: 'start 1', True: 'start 2'})):
-            ax.plot(sub.k, sub[col], 'o-', label=tag)
+        grp = (fits.get('claw_thr', pd.Series(np.nan, index=fits.index)).fillna(0).map(
+            lambda t: 'no claw_thr' if t == 0 else f'claw_thr {t:g}') + ', ' +
+            fits.tag.str.contains('start2').map({False: 'start 1', True: 'start 2'}))
+        for name, sub in fits.groupby(grp):
+            ax.plot(sub.k, sub[col], 'o-', label=name)
         if target is not None:
             ax.axhline(target, color='k', ls='--', lw=1, label='data')
         if band is not None:
@@ -243,6 +286,8 @@ def main() -> None:
     ap.add_argument('--kckc0', type=float, default=60.0, help='initial KC-KC scale')
     ap.add_argument('--thr0-factor', type=float, default=0.7,
         help='initial threshold as a factor of E3 bouton threshold (E8: 0.6-0.77 at KC-KC 30-100)')
+    ap.add_argument('--claw-thr', type=float, default=None,
+        help='round 2: rectified per-claw offset (olfsysm claw_thr; E16 / E19), e.g. 40 or 70')
     ap.add_argument('--method', default='Nelder-Mead')
     ap.add_argument('--tag', default='', help='suffix for this run (e.g. a second start)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
@@ -268,16 +313,18 @@ def main() -> None:
     print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}', flush=True)
 
     t0 = time.time()
-    initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir)
-    print(f'bouton base ready ({time.time() - t0:.0f}s); E3 params {initial}', flush=True)
+    initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr)
+    print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}); tuned params '
+        f'{initial}', flush=True)
+    prefix = '' if args.claw_thr is None else f'thr{args.claw_thr:g}_'
 
     fits_path = res_dir / 'fits.csv'
     for k in args.exponents:
-        tag = f'k{k:g}{args.tag}'
+        tag = f'{prefix}k{k:g}{args.tag}'
         t0 = time.time()
         res, init, bounds = fit_one(k, orn, initial, wnorm, breadth, loss_fn, kckc0=args.kckc0,
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
-            thr0_factor=args.thr0_factor
+            thr0_factor=args.thr0_factor, claw_thr=args.claw_thr
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -291,7 +338,8 @@ def main() -> None:
             r.to_parquet(out_dir / f'{tag}_{cond}_responses.parquet')
             sp.to_parquet(out_dir / f'{tag}_{cond}_spike_counts.parquet')
         p = res['params']
-        meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, method=args.method,
+        meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
+            method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
@@ -341,7 +389,8 @@ def main() -> None:
                 capture_output=True, text=True).stdout.strip(),
             olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
                 cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
-            base=BOUTON, e3_params=initial, loss_weights=LOSS_WEIGHTS, block_target=BLOCK_TARGET,
+            base=BOUTON, claw_thr=args.claw_thr, base_params=initial, loss_weights=LOSS_WEIGHTS,
+            block_target=BLOCK_TARGET,
             block_scale=BLOCK_SCALE, rate_target=RATE_TARGET, ratio_target=loss_fn.ratio_target,
             ratio_log_scale=RATIO_LOG_SCALE, iso_target=ISO_TARGET, iso_scale=ISO_SCALE,
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
