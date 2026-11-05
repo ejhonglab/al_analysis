@@ -59,7 +59,7 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
         ('fruity x small-ester block (data +0.055)', [(p + 'block_fruity_small_iso', '')], 0.055),
         ('APL-off residual vs VCF (data 0.36)', [(p + 'off_spearman_resid_vs_vcf_hyp', '')], 0.36),
         ('excess sharing, block pairs (APL on)', [('on_excess_block', '')], data_ctrl),
-        ('isotonic R2 on vs off (data 0.75)', [(p + 'iso_r2', '')], 0.75),
+        ('isotonic R2 on vs off (data 0.94)', [(p + 'iso_r2', '')], 0.94),
         ('APL-off / APL-on response rate (data 1.9)', [('rate_ratio_off_over_on', '')], 1.9),
     ]
     colors = {'plain': '#2b6cb0', 'breadth3': '#d9480f'}
