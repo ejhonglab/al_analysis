@@ -67,7 +67,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     uniform_bouton_wPNKC, bouton_glomerulus_probs, claw_coord_cols,
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
     plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
-    read_onestep_lr_cache, connectome_KCKC_weights
+    read_onestep_lr_cache, connectome_KCKC_weights, CLAW_SAT_PARAMS
 )
 
 # TODO better way?
@@ -5267,3 +5267,170 @@ def test_kc_kc_inh_simulator(kc_kc_inh_model):
         initial_params={**initial_params2, 'wKCKC_scale': 50.0}, **kws
     )
     assert initial_params3['wKCKC_scale'] == 50.0
+
+
+# one-row-per-claw models (which `claw_sat` requires), w/ connectome APL weights (so
+# `make_fixed_param_kc_simulator` supports them): hemibrain claws, and a (reduced, for
+# speed) claw + bouton model
+CLAW_SAT_MODEL_KWS: List[ParamDict] = [
+    dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True),
+    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+        use_connectome_APL_weights=True
+    ),
+]
+
+@pytest.fixture(scope='module', params=CLAW_SAT_MODEL_KWS, ids=format_model_params)
+def claw_sat_model(request, orn_deltas
+    ) -> Tuple[pd.DataFrame, ParamDict, FitMBModelOutputs]:
+    """Returns `orn_deltas`, model kwargs, and tuned outputs w/o `claw_sat`.
+
+    Bouton model uses `reduced_bouton_system` (so the returned `orn_deltas` and kwargs
+    should be used). Do not modify outputs.
+    """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, request.param)
+    return orn_deltas, kws, _fit_mb_model(orn_deltas=orn_deltas, **kws)
+
+
+def test_claw_sat_huge_equals_default(claw_sat_model):
+    """Tests `claw_sat` far above any claw drive does not change tuned outputs.
+    """
+    orn_deltas, kws, ret = claw_sat_model
+    assert not any(k in ret[3] for k in CLAW_SAT_PARAMS)
+
+    claw_sat = 1e9
+    # min(x, claw_sat) = x exactly
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, claw_sat=claw_sat, claw_sat_hard=True,
+        **kws
+    )
+    assert type(ret2[3]['claw_sat']) is float
+    assert_fit_outputs_equal(ret,
+        _pop_param(_pop_param(ret2, 'claw_sat_hard', True), 'claw_sat', claw_sat)
+    )
+
+    # claw_sat * tanh(x / claw_sat) = x, up to float rounding (params, e.g. 'fixed_thr'
+    # and 'kc_spont_in', are compared w/ allclose)
+    ret3 = _fit_mb_model(orn_deltas=orn_deltas, claw_sat=claw_sat, **kws)
+    assert 'claw_sat_hard' not in ret3[3]
+    assert_fit_outputs_equal(ret, _pop_param(ret3, 'claw_sat', claw_sat))
+
+
+def test_claw_sat_lowers_response_rate(claw_sat_model):
+    """Tests decreasing `claw_sat` (w/ threshold and APL weights fixed at tuned values)
+    lowers response rate, and that `claw_sat_hard=True` clips claw drive instead.
+    """
+    orn_deltas, kws, ret = claw_sat_model
+    responses, spike_counts, _, params = ret
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+
+    # (per-claw drive is up to ~180-220 Hz in these models)
+    rates = [responses.mean().mean()]
+    n_spikes = [spike_counts.values.sum()]
+    for claw_sat in (1000.0, 500.0, 250.0):
+        responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+            claw_sat=claw_sat, **fixed_kws, **kws
+        )
+        assert params2['claw_sat'] == claw_sat
+        rates.append(responses2.mean().mean())
+        n_spikes.append(spike_counts2.values.sum())
+
+    print(f'response rates (no claw_sat, then 1000 / 500 / 250): {rates}')
+    assert all(r2 < r for r, r2 in zip(rates, rates[1:]))
+    assert all(n2 < n for n, n2 in zip(n_spikes, n_spikes[1:]))
+    # (should still be some responses at smallest claw_sat)
+    assert rates[-1] > 0
+
+    # below max claw drive, so some claws are clipped
+    claw_sat = 150.0
+    tanh_responses, _, _, _ = _fit_mb_model(orn_deltas=orn_deltas, claw_sat=claw_sat,
+        **fixed_kws, **kws
+    )
+    hard_responses, _, _, hard_params = _fit_mb_model(orn_deltas=orn_deltas,
+        claw_sat=claw_sat, claw_sat_hard=True, **fixed_kws, **kws
+    )
+    assert hard_params['claw_sat_hard'] is True
+    hard_rate = hard_responses.mean().mean()
+    print(f'claw_sat={claw_sat}: response rate {rates[0]:.4f} -> '
+        f'{tanh_responses.mean().mean():.4f} (tanh) / {hard_rate:.4f} (hard)'
+    )
+    assert 0 < hard_rate < rates[0]
+    assert not hard_responses.equals(tanh_responses)
+
+
+def test_claw_sat_invalid(orn_deltas):
+    """Tests invalid `claw_sat` / `claw_sat_hard` kwargs raise ValueError.
+    """
+    nonclaw_kws = dict(weight_divisor=20)
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True)
+    for kws, bad_kws in (
+            (claw_kws, dict(claw_sat=0.0)),
+            (claw_kws, dict(claw_sat=-1.0)),
+            (claw_kws, dict(claw_sat=np.inf)),
+            (claw_kws, dict(claw_sat=np.nan)),
+            (claw_kws, dict(claw_sat_hard=True)),
+            (claw_kws, dict(claw_sat_hard=False)),
+            # default hemibrain model has one row per KC, not per claw
+            (nonclaw_kws, dict(claw_sat=50.0)),
+            (dict(), dict(claw_sat=50.0)),
+            (claw_kws, dict(claw_sat=50.0, n_claws_active_to_spike=2)),
+        ):
+
+        with pytest.raises(ValueError, match='claw_sat'):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+
+def test_claw_sat_model_id():
+    """Tests model IDs / LR cache keys only change when `claw_sat` (or `claw_sat_hard`)
+    passed, and that small values are distinguishable.
+    """
+    kws = dict(one_row_per_claw=True, prat_claws=True)
+    none_kws = {**kws, 'claw_sat': None, 'claw_sat_hard': None}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(claw_sat=0.004), dict(claw_sat=0.005),
+        dict(claw_sat=50.0), dict(claw_sat=50.0, claw_sat_hard=True)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_claw_sat_simulator(claw_sat_model):
+    """Tests `make_fixed_param_kc_simulator` forwards `claw_sat` to its `fit_mb_model`
+    calls and KC simulations (e.g. to tune w/ `claw_sat`, then simulate an acute APL
+    knockout at fixed thresholds), matching `fit_mb_model`.
+    """
+    orn_deltas, kws, ret = claw_sat_model
+    claw_sat = 150.0
+
+    # initial call tunes threshold / APL weights w/ claw_sat (simulator checks it
+    # reproduces those tuned outputs)
+    simulate_sat, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        claw_sat=claw_sat, **kws
+    )
+    # (not a parameter of the simulator)
+    assert not any(k in initial_params for k in CLAW_SAT_PARAMS)
+    tuned_responses, _ = simulate_sat(dict())
+    assert abs(tuned_responses.mean().mean() - ret[0].mean().mean()) < 0.02
+
+    # same thresholds / APL weights, w/o claw_sat
+    simulate, initial_params2 = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, **kws
+    )
+    assert initial_params2 == initial_params
+
+    # acute APL knockout (all APL weight scales 0)
+    apl_off = {k: 0.0 for k in initial_params if k != 'fixed_thr'}
+    responses, spike_counts = simulate_sat(apl_off)
+    responses_nosat, _ = simulate(apl_off)
+    assert responses.mean().mean() > tuned_responses.mean().mean()
+    assert responses.mean().mean() < responses_nosat.mean().mean()
+
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        claw_sat=claw_sat,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
+    )
+    assert params2['claw_sat'] == claw_sat
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)

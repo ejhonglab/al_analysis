@@ -586,6 +586,10 @@ AL_INH_PARAMS: Tuple[str, ...] = ('pn_inhsc', 'pn_inhadd', 'ln_inhsc', 'ln_inhad
 # Disabled if `kc_kc_inh` is None.
 KC_KC_INH_PARAMS: Tuple[str, ...] = ('kc_kc_inh', 'kc_kc_tau')
 
+# `fit_mb_model` kwargs for per-claw saturation of claw>KC input (olfsysm
+# `mp.kc.claw_sat`). Disabled if `claw_sat` is None.
+CLAW_SAT_PARAMS: Tuple[str, ...] = ('claw_sat', 'claw_sat_hard')
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -658,11 +662,11 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # names, not the abbreviated values in param_abbrevs.
     exclude_if_value_matches = {
         'tune_on_hallem': False,
-        **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS},
+        **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS},
     }
 
     # float formats for params where default '.2f' would lose too much precision
-    param_float_formats = {k: '.3g' for k in KC_KC_INH_PARAMS}
+    param_float_formats = {k: '.3g' for k in KC_KC_INH_PARAMS + ('claw_sat',)}
 
     if exclude is None:
         exclude = set(exclude_params)
@@ -12153,6 +12157,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     pn_inhsc: Optional[float] = None, pn_inhadd: Optional[float] = None,
     ln_inhsc: Optional[float] = None, ln_inhadd: Optional[float] = None,
     kc_kc_inh: Optional[float] = None, kc_kc_tau: Optional[float] = None,
+    claw_sat: Optional[float] = None, claw_sat_hard: Optional[bool] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12398,6 +12403,25 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             inhibition (`mp.kc.kc_kc_tau`, olfsysm default of 0.05 if None). Requires
             `kc_kc_inh`.
 
+        claw_sat: if not None, saturates each claw's input to its KC (olfsysm
+            `mp.kc.claw_sat`): each claw's drive `x` (PN input minus APL inhibition,
+            clipped at 0) enters the sum across the KC's claws as
+            `claw_sat * tanh(x / claw_sat)` (or `min(x, claw_sat)`, if
+            `claw_sat_hard=True`), bounding how much any one claw can contribute to its
+            KC (the linear-summation form of the `n_claws_active_to_spike` coincidence
+            rule). Also applied to spontaneous input (`kc_spont_in`, which thresholds
+            are relative to), and active during threshold / APL tuning. Claw>APL input
+            (`pn_claw_to_apl=True`) is left unsaturated. Per-claw drive is in PN spike
+            rate units (with default parameters and megamat inputs, ~20-45 Hz
+            spontaneous and up to ~180-220 Hz during odors), so values of a few hundred
+            or less noticeably compress strong claw input. Requires
+            `one_row_per_claw=True`, and not supported with `n_claws_active_to_spike`.
+            Must be positive.
+
+        claw_sat_hard: if True, `claw_sat` clips claw drive (`min(x, claw_sat)`)
+            instead of saturating it smoothly (`mp.kc.claw_sat_hard`, olfsysm default of
+            False if None). Requires `claw_sat`.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -12482,7 +12506,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         param_dict: dict containing tuned parameters (e.g. 'fixed_thr', 'wAPLKC'),
             certain model intermediates (e.g. 'kc_spont_in'), and certain parameters
             relevant for reproducibility (e.g. 'sp_acc', 'max_iters', and any of
-            `AL_INH_PARAMS` that were passed, e.g. 'pn_inhsc').
+            `AL_INH_PARAMS`, `KC_KC_INH_PARAMS` or `CLAW_SAT_PARAMS` that were passed,
+            e.g. 'pn_inhsc').
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -12694,6 +12719,27 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         mp.kc.use_kc_kc_inh = True
         if kc_kc_tau is not None:
             mp.kc.kc_kc_tau = float(kc_kc_tau)
+
+    # (only those passed, to also add to param_dict below)
+    claw_sat_params = dict()
+    if claw_sat is None:
+        if claw_sat_hard is not None:
+            raise ValueError('claw_sat_hard requires claw_sat')
+    else:
+        claw_sat = float(claw_sat)
+        if not (np.isfinite(claw_sat) and claw_sat > 0):
+            raise ValueError(f'claw_sat must be finite and positive (got {claw_sat})')
+        if not one_row_per_claw:
+            raise ValueError('claw_sat requires one_row_per_claw=True')
+        if n_claws_active_to_spike is not None:
+            raise ValueError('claw_sat not supported with n_claws_active_to_spike '
+                '(spiking would not depend on the summed, saturated, claw drive)'
+            )
+        mp.kc.claw_sat = claw_sat
+        claw_sat_params['claw_sat'] = claw_sat
+        if claw_sat_hard is not None:
+            mp.kc.claw_sat_hard = bool(claw_sat_hard)
+            claw_sat_params['claw_sat_hard'] = bool(claw_sat_hard)
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
@@ -15582,6 +15628,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     # only those passed, so outputs (and saved params) of other models do not change
     param_dict.update(al_inh_params)
     param_dict.update(kc_kc_inh_params)
+    param_dict.update(claw_sat_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -16214,7 +16261,9 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             (which also determine whether the APL is split into units / whether
             there is KC-KC inhibition, and are overridden by any value in
             `initial_params`). Kwargs only used for tuning (e.g. `target_sparsity`)
-            are ignored if `initial_params` passed.
+            are ignored if `initial_params` passed. Other KC-layer kwargs that do not
+            change how thresholds / APL weights are defined (e.g. `claw_sat`) apply to
+            the initial call and to all simulations.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -19381,7 +19430,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 k: [x[k] for x in param_dict_list] for k in param_dict_keys
             }
             # inputs (same for all seeds), so they still match model_kws values below
-            for k in AL_INH_PARAMS + KC_KC_INH_PARAMS:
+            for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS:
                 if k in param_dict:
                     assert len(set(param_dict[k])) == 1
                     param_dict[k] = param_dict[k][0]
