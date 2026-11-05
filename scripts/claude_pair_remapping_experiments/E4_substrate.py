@@ -39,14 +39,17 @@ import pandas as pd
 import kc_remapping_harness as H
 
 EXPERIMENT = 'E4_substrate'
+UNIFORM_N_CLAWS = 7
 
 CLAWS = dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True,
     n_spikes_for_response=2
 )
 # name -> (fit_mb_model kwargs, uses random seed)
 VARIANTS: Dict[str, tuple] = {
-    'uniform': (dict(pn2kc_connections='uniform'), True),
-    'hemidraw': (dict(pn2kc_connections='hemidraw'), True),
+    # n_claws: hemibrain claws per KC average 5.7 (Pratyush's segmentation) and 6-7 in
+    # the literature; 7 as in the lab's uniform model
+    'uniform': (dict(pn2kc_connections='uniform', n_claws=UNIFORM_N_CLAWS), True),
+    'hemidraw': (dict(pn2kc_connections='hemidraw', n_claws=UNIFORM_N_CLAWS), True),
     'hemibrain-wdNone': (dict(pn2kc_connections='hemibrain', weight_divisor=None,
         _drop_glom_with_plus=False), False),
     'hemibrain-wd10': (dict(pn2kc_connections='hemibrain', weight_divisor=10,
@@ -61,6 +64,14 @@ VARIANTS: Dict[str, tuple] = {
     'hemibrain-claws-distw-raw': (dict(CLAWS, dist_weight='raw'), False),
     'fafb-left-wd12': (dict(pn2kc_connections='fafb-left', weight_divisor=12), False),
     'fafb-right-wd12': (dict(pn2kc_connections='fafb-right', weight_divisor=12), False),
+    # APL weight type crossed with wiring: do heterogeneous per-claw connectome APL
+    # weights (used by the claw models) remove pair structure the wd models keep?
+    'hemibrain-wdNone-cAPL': (dict(pn2kc_connections='hemibrain', weight_divisor=None,
+        _drop_glom_with_plus=False, use_connectome_APL_weights=True), False),
+    'hemibrain-wd20-cAPL': (dict(pn2kc_connections='hemibrain', weight_divisor=20,
+        _drop_glom_with_plus=False, use_connectome_APL_weights=True), False),
+    'hemibrain-claws-uAPL': (dict(CLAWS, use_connectome_APL_weights=False), False),
+    'hemibrain-claws-1spk': (dict(CLAWS, n_spikes_for_response=None), False),
 }
 
 
@@ -214,6 +225,8 @@ def main() -> None:
     }
     stats_path = res_dir / 'stats_variants.csv'
     rows = list(pd.read_csv(stats_path).to_dict('records')) if stats_path.exists() else []
+    # failed runs (rows with an error) are retried
+    rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
     done = {r['tag'] for r in rows}
     pairs = {}
 
