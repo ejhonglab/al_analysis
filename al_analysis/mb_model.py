@@ -18380,6 +18380,59 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
         )
 
 
+# ---------------------------------------------------------------------------
+# model provenance: which olfsysm build and which commits of our code produced an output
+#
+# olfsysm bakes its git hash, a clean / dirty flag, the diff of a dirty build, a hash of the
+# compiled sources and the build time / flags into the extension (olfsysm/setup.py); the
+# functions below read those, compare them with the checkout the package was installed
+# from, and collect the same for al_analysis and hong2p, so every model output can be tied
+# to the exact code that made it.
+
+ALLOW_DIRTY_OLFSYSM_ENV_VAR = 'AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM'
+model_provenance_name = 'model_provenance.json'
+
+
+class OlfsysmBuildError(RuntimeError):
+    """The installed olfsysm extension is not a clean build of a known commit."""
+
+
+def olfsysm_build_info() -> Dict[str, Any]:
+    """Returns the build information baked into the installed olfsysm extension."""
+    raise NotImplementedError
+
+
+def olfsysm_checkout_info() -> Dict[str, Any]:
+    """Returns git information on the olfsysm checkout the extension was installed from."""
+    raise NotImplementedError
+
+
+def olfsysm_is_clean() -> bool:
+    """Whether the installed olfsysm is a clean build matching its checkout's HEAD."""
+    raise NotImplementedError
+
+
+def require_clean_olfsysm(*, allow_env_override: bool = True) -> None:
+    """Raises OlfsysmBuildError unless `olfsysm_is_clean()` (see ALLOW_DIRTY_OLFSYSM_ENV_VAR)."""
+    raise NotImplementedError
+
+
+def repo_info(path_or_module) -> Dict[str, Any]:
+    """Git hash, dirty flag and diff digest of the repository containing a path / module."""
+    raise NotImplementedError
+
+
+def model_provenance(**inputs) -> Dict[str, Any]:
+    """Everything needed to tie a model output to the code and inputs that produced it."""
+    raise NotImplementedError
+
+
+def write_model_provenance(model_output_dir: Path, provenance: Optional[Dict[str, Any]] = None
+    ) -> Path:
+    """Writes `model_provenance()` (or `provenance`) to `model_provenance_name` in the dir."""
+    raise NotImplementedError
+
+
 def write_params(param_dict: ParamDict, model_output_dir: Path, **kwargs) -> None:
     """Writes `param_dict` to `param_cache_name` CSV, and JSON w/ same stem.
 
