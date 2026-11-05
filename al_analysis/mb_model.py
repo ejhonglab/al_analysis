@@ -14158,13 +14158,17 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             # test)
             if Btn_separate:
                 assert set(wPNKC.values.flat) == {1 / Btn_num_per_glom, 0}
-            elif _wPNKC is not None and set(wPNKC.values.flat) != {1, 0}:
+            elif (_wPNKC is not None or claw_weight != 'presence'
+                    or multibouton_claws == 'split') and set(wPNKC.values.flat) != {1, 0}:
                 # a hardcoded override may carry per-claw gains (e.g. a per-glomerulus
-                # scaling of the PN->claw transfer): keep the one-input-per-claw
-                # structure, but allow any non-negative finite weight
+                # scaling of the PN->claw transfer), claw_weight='synapses' carries the
+                # per-claw synapse counts and multibouton_claws='split' the synapse shares
+                # of a claw's boutons: allow any non-negative finite weight, and keep the
+                # one-input-per-claw structure unless the claw's input is split
                 _vals = wPNKC.to_numpy(dtype=float)
                 assert np.isfinite(_vals).all() and (_vals >= 0).all()
-                assert ((_vals > 0).sum(axis=1) <= 1).all()
+                if multibouton_claws != 'split':
+                    assert ((_vals > 0).sum(axis=1) <= 1).all()
                 del _vals
             else:
                 # TODO if this assertion moved outside `one_row_per_claw` case, still
