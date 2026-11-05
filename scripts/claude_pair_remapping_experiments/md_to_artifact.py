@@ -12,8 +12,9 @@ closed by `%%%`, each line `term: definition`; every whole-word occurrence of th
 paragraphs, list items and table cells gets a dotted underline and shows the definition on
 hover; headings and captions are left alone), heading anchors (a heading ending in `{#id}` gets
 that id; others get a slug of their text) and internal links `[text](#id)` besides http links,
-and inline `code`, **bold**, *italic*. The first paragraph after the
-title is styled as the byline. After converting, `lint` fails on anything that still looks
+a table of contents (a line `[TOC]` is replaced by a two-level nested list of the page's
+`##` and `###` headings, linked to their anchors), and inline `code`, **bold**, *italic*. The
+first paragraph after the title is styled as the byline. After converting, `lint` fails on anything that still looks
 like markdown (leftover `#`, `**`, backticks, `](`), which is how the "### heading" and
 split-sentence defects of hand-converted pages are caught.
 
@@ -55,6 +56,9 @@ CSS = """
   details.fold ul { margin: 8px 0 4px; }
   a { color: var(--accent); }
   span.def { border-bottom: 1px dotted var(--muted); cursor: help; text-decoration: none; }
+  nav.toc { margin: 10px 0 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); font-size: 0.92em; }
+  nav.toc ol { margin: 0; padding-left: 20px; } nav.toc li { margin: 2px 0; } nav.toc > ol > li { margin: 4px 0; }
+  nav.toc a { text-decoration: none; } nav.toc a:hover { text-decoration: underline; }
 """
 
 _ITEM_RE = re.compile(r'^(\d+)\. (.*)')
@@ -73,7 +77,33 @@ def inline(s: str) -> str:
 
 
 def _is_block_start(ln: str) -> bool:
-    return bool(re.match(r'^(#{1,3} |\||\d+\. |[-*] |---\s*$|!\[|\?\?\?|%%%)', ln))
+    return bool(re.match(r'^(#{1,3} |\||\d+\. |[-*] |---\s*$|!\[|\?\?\?|%%%|\[TOC\]\s*$)', ln))
+
+
+def build_toc(body: str) -> str:
+    """A two-level nested list (h2 > h3) of the body's headings, linked to their ids."""
+    heads = [(int(l), i, re.sub(r'<[^>]+>', '', t)) for l, i, t in re.findall(r'<h([23]) id="([^"]+)">(.*?)</h[23]>', body, flags=re.S)]
+    if not heads:
+        return ''
+    out = ['<nav class="toc"><ol>']
+    open_sub = False
+    for level, hid, text in heads:
+        if level == 2:
+            if open_sub:
+                out.append('</ol>'); open_sub = False
+            if len(out) > 1:
+                out.append('</li>')
+            out.append(f'<li><a href="#{hid}">{text}</a>')
+        else:
+            if len(out) == 1:
+                out.append('<li>')
+            if not open_sub:
+                out.append('<ol>'); open_sub = True
+            out.append(f'<li><a href="#{hid}">{text}</a></li>')
+    if open_sub:
+        out.append('</ol>')
+    out.append('</li></ol></nav>')
+    return ''.join(out)
 
 
 def _slug(text: str) -> str:
@@ -157,6 +187,8 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
             i += 1; continue
         if re.match(r'^---\s*$', s):
             out.append('<hr>'); i += 1; continue
+        if re.match(r'^\[TOC\]\s*$', s):
+            out.append('@@TOC@@'); i += 1; continue
         if s.startswith('??? '):
             title_txt = s[4:].strip(); inner = []; i += 1
             while i < len(lines) and lines[i].strip() != '???':
@@ -222,6 +254,8 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
 
 def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str] = None) -> str:
     body = convert_body(md, figdir)
+    if '@@TOC@@' in body:
+        body = body.replace('@@TOC@@', build_toc(body.replace('@@TOC@@', '')))
     if title is None:
         mt = re.search(r'<h1[^>]*>(.*?)</h1>', body)
         title = re.sub(r'<[^>]+>', '', mt.group(1)) if mt else 'page'
@@ -255,6 +289,8 @@ def lint(page: str) -> List[str]:
             probs.append(f'collapsible-block marker left in text: {t[:70]!r}')
         if t.startswith('%%%'):
             probs.append(f'hover-block marker left in text: {t[:70]!r}')
+        if t == '[TOC]' or t == '@@TOC@@':
+            probs.append('table-of-contents marker left in text')
         if re.search(r'\{#[A-Za-z0-9_-]+\}', t):
             probs.append(f'heading id marker left in text: {t[:70]!r}')
         if re.match(r'^(\d+\. |[-*] )', t) and len(t) > 3:

@@ -352,6 +352,9 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   pairs move, how much, rank agreement with the ORN input); and what blocking APL output
   changes (mean distance, response fractions, the monotone on-vs-off relation and its one
   pair-specific exception). Only then the model baseline and the mechanisms.
+- **Table of contents.** Every summary report starts with a two-level table of contents (its
+  `##` and `###` headings, linked): a `[TOC]` line right after the title, which
+  `md_to_artifact.py` expands.
 - **Pages are generated, not hand-converted.** Write the summary as markdown, convert it with
   `md_to_artifact.py` (handles `###`, list items and paragraphs wrapped over several lines,
   tables, figures embedded from `![caption](path)`), and do not publish while its lint
