@@ -68,7 +68,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
     plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
     read_onestep_lr_cache, connectome_KCKC_weights, CLAW_SAT_PARAMS,
-    BOUTON_DEPLETION_PARAMS
+    BOUTON_DEPLETION_PARAMS, EXT_INH_RECORDED_PARAMS
 )
 
 # TODO better way?
@@ -6071,5 +6071,288 @@ def test_bouton_ves_p_simulator(bouton_depletion_model):
         **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
     )
     assert params2['bouton_ves_p'] == 0.3 and params2['bouton_tau_r'] == 0.2
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)
+
+
+# one-row-per-KC hemibrain model (the olfsysm `sim_KC_layer` branch w/o claws), and a
+# (reduced, for speed) claw + bouton model (the claw branch, and the bouton path
+# `ext_inh_bouton` requires), as for KC-KC inhibition
+EXT_INH_MODEL_KWS: List[ParamDict] = KC_KC_INH_MODEL_KWS
+
+@pytest.fixture(scope='module', params=EXT_INH_MODEL_KWS, ids=format_model_params)
+def ext_inh_model(request, orn_deltas
+    ) -> Tuple[pd.DataFrame, ParamDict, FitMBModelOutputs]:
+    """Returns `orn_deltas`, model kwargs, and tuned outputs w/o external inhibition.
+
+    Bouton model uses `reduced_bouton_system` (so the returned `orn_deltas` and kwargs
+    should be used). Do not modify outputs.
+    """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, request.param)
+    return orn_deltas, kws, _fit_mb_model(orn_deltas=orn_deltas, **kws)
+
+
+def _ext_inh_odor0(index: pd.Index, odors: pd.Index, value: float) -> pd.DataFrame:
+    """Returns `fit_mb_model` `ext_inh_*` input w/ `value` for the first odor only.
+    """
+    df = pd.DataFrame(0.0, index=index, columns=odors)
+    df.iloc[:, 0] = value
+    return df
+
+
+def test_ext_inh_zero_equals_default(ext_inh_model):
+    """Tests all-zero `ext_inh_kc` (and `ext_inh_bouton`, in the bouton model) do not
+    change tuned outputs, and that their maxima (0) are recorded.
+    """
+    orn_deltas, kws, ret = ext_inh_model
+    responses, _, wPNKC, params = ret
+    assert not any(k in params for k in EXT_INH_RECORDED_PARAMS)
+
+    # (every other KC, as plain KC IDs, w/ `orn_deltas` columns. missing KCs get 0.)
+    ext_kws = dict(ext_inh_kc=pd.DataFrame(0.0, index=_model_kc_ids(responses)[::2],
+        columns=orn_deltas.columns
+    ))
+    if kws.get('prat_boutons', False):
+        # (boutons are wPNKC columns in this model. odors w/o 'panel' level, and
+        # reversed, as `fit_mb_model` output columns may be in another order)
+        ext_kws['ext_inh_bouton'] = pd.DataFrame(0.0, index=wPNKC.columns,
+            columns=responses.columns[::-1]
+        )
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, **ext_kws, **kws)
+    assert 'ext_inh_scale' not in ret2[3]
+    for k in ext_kws:
+        assert type(ret2[3][f'{k}_max']) is float
+        ret2 = _pop_param(ret2, f'{k}_max', 0.0)
+    assert_fit_outputs_equal(ret, ret2)
+
+
+def test_ext_inh_lowers_odor_responses(ext_inh_model):
+    """Tests external inhibition of one odor (w/ thresholds and APL weights fixed at
+    tuned values) lowers that odor's responses only, at KCs and at boutons, and that
+    `ext_inh_scale` multiplies it (0 giving default outputs).
+    """
+    orn_deltas, kws, ret = ext_inh_model
+    # (fixed params should reproduce tuned outputs)
+    responses, spike_counts, wPNKC, params = ret
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+    odor0 = responses.columns[0]
+    assert responses[odor0].sum() > 0
+
+    # (KC index w/ kc_id level, as in outputs. values well below what would silence the
+    # odor: ~5-20% of the per-KC spontaneous input / tuned threshold here)
+    inputs = [('ext_inh_kc', responses.index, 50.0)]
+    if kws.get('prat_boutons', False):
+        # (bouton rates are ~20-65 Hz spontaneous, up to ~220 Hz during odors)
+        inputs.append(('ext_inh_bouton', wPNKC.columns, 20.0))
+
+    for k, index, value in inputs:
+        ext_inh = _ext_inh_odor0(index, responses.columns, value)
+        responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+            **{k: ext_inh}, **fixed_kws, **kws
+        )
+        assert params2[f'{k}_max'] == value
+        assert 'ext_inh_scale' not in params2
+
+        assert responses2.index.equals(responses.index)
+        assert responses2.columns.equals(responses.columns)
+        print(f'{k}={value} on {odor0}: # responders {responses[odor0].sum()} -> '
+            f'{responses2[odor0].sum()}'
+        )
+        assert responses2[odor0].sum() < responses[odor0].sum()
+        assert spike_counts2[odor0].sum() < spike_counts[odor0].sum()
+        assert responses2.drop(columns=odor0).equals(responses.drop(columns=odor0))
+        assert spike_counts2.drop(columns=odor0).equals(
+            spike_counts.drop(columns=odor0)
+        )
+
+        _, spike_counts3, _, params3 = _fit_mb_model(orn_deltas=orn_deltas,
+            **{k: ext_inh}, ext_inh_scale=0.0, **fixed_kws, **kws
+        )
+        assert params3['ext_inh_scale'] == 0.0
+        assert spike_counts3.equals(spike_counts)
+
+        # (scale * values, so exactly equal to doubling the values)
+        _, spike_counts4, _, params4 = _fit_mb_model(orn_deltas=orn_deltas,
+            **{k: ext_inh}, ext_inh_scale=2.0, **fixed_kws, **kws
+        )
+        assert params4['ext_inh_scale'] == 2.0
+        _, spike_counts5, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
+            **{k: 2 * ext_inh}, **fixed_kws, **kws
+        )
+        assert spike_counts4.equals(spike_counts5)
+        assert spike_counts4[odor0].sum() < spike_counts2[odor0].sum()
+
+
+def test_ext_inh_bouton_window(bouton_depletion_model):
+    """Tests `ext_inh_bouton` lowers bouton rates (`rv.pn.bouton_sims`) by exactly its
+    value, clipped at 0, only while the odor is on.
+
+    APL weights are 0 (thresholds fixed at tuned values), so bouton rates before the
+    external inhibition do not depend on the KCs, and are the bouton outputs of the
+    model w/o it.
+    """
+    # (reduced claw + bouton model, w/o bouton depletion)
+    orn_deltas, kws, ret = bouton_depletion_model
+    responses, _, wPNKC, params = ret
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+    apl_off_kws = {k: v if k == 'fixed_thr' else 0.0 for k, v in fixed_kws.items()}
+
+    _, _, _, params = _fit_mb_model(orn_deltas=orn_deltas, return_olfsysm_vars=True,
+        **apl_off_kws, **kws
+    )
+    mp = params['mp']
+    rates = np.stack(params['rv'].pn.bouton_sims)
+
+    # (some boutons go below 0 before clipping, during the odor)
+    value = 50.0
+    ext_inh = _ext_inh_odor0(wPNKC.columns, responses.columns, value)
+    _, _, _, params2 = _fit_mb_model(orn_deltas=orn_deltas, return_olfsysm_vars=True,
+        ext_inh_bouton=ext_inh, **apl_off_kws, **kws
+    )
+    outputs = np.stack(params2['rv'].pn.bouton_sims)
+    # (odors, boutons, time steps)
+    assert outputs.shape == rates.shape
+    assert outputs.shape[1] == mp.pn.n_total_boutons
+    assert np.array_equal(params2['rv'].pn.bouton_ext_inh, ext_inh.values)
+
+    # same steps as olfsysm ModelParams::Time::Stim::[start|end]_step (where the ORN
+    # input is on)
+    dt = mp.time_dt
+    stim_start = int((mp.time_stim_start - mp.time_pre_start) / dt)
+    stim_end = int((mp.time_stim_end - mp.time_pre_start) / dt)
+
+    expected = rates.copy()
+    expected[0, :, stim_start:stim_end] = np.maximum(
+        rates[0, :, stim_start:stim_end] - value, 0
+    )
+    assert np.array_equal(outputs, expected, equal_nan=True)
+    assert (rates[0, :, stim_start:stim_end] < value).any()
+    assert (rates[0, :, stim_start:stim_end] > value).any()
+    # (and nothing else changed, as above)
+    assert not np.array_equal(outputs[0], rates[0], equal_nan=True)
+    assert np.array_equal(outputs[1:], rates[1:], equal_nan=True)
+
+
+def test_ext_inh_invalid(orn_deltas):
+    """Tests invalid `ext_inh_kc` / `ext_inh_bouton` / `ext_inh_scale` kwargs raise
+    ValueError.
+    """
+    nonclaw_kws = dict(weight_divisor=20)
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True)
+    kc_ids = pd.Index([1, 2], name=KC_ID)
+    ext_inh = pd.DataFrame(1.0, index=kc_ids, columns=orn_deltas.columns)
+    renamed = ext_inh.rename(columns={orn_deltas.columns[0][-1]: 'not an odor'},
+        level='odor'
+    )
+    negative = ext_inh.copy()
+    negative.iloc[0, 0] = -1.0
+    for kws, bad_kws in (
+            # wrong odor sets
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh.iloc[:, 1:])),
+            (nonclaw_kws, dict(ext_inh_kc=renamed)),
+            (nonclaw_kws, dict(ext_inh_kc=pd.concat([ext_inh, ext_inh.iloc[:, :1]],
+                axis='columns'
+            ))),
+            # bad values
+            (nonclaw_kws, dict(ext_inh_kc=negative)),
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh * np.nan)),
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh * np.inf)),
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh.values)),
+            (BOUTON_DEPLETION_MODEL_KWS, dict(ext_inh_bouton=negative)),
+            # bouton input w/o the bouton model
+            (claw_kws, dict(ext_inh_bouton=ext_inh)),
+            (nonclaw_kws, dict(ext_inh_bouton=ext_inh)),
+            # bad scale, or scale w/o input
+            (nonclaw_kws, dict(ext_inh_scale=1.0)),
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh, ext_inh_scale=-1.0)),
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh, ext_inh_scale=np.nan)),
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh, ext_inh_scale=np.inf)),
+            (claw_kws, dict(ext_inh_kc=ext_inh, n_claws_active_to_spike=2)),
+            # (index checked after wPNKC is loaded) no model KCs
+            (nonclaw_kws, dict(ext_inh_kc=ext_inh)),
+        ):
+
+        with pytest.raises(ValueError, match='ext_inh'):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+    # bouton index w/o the model's bouton levels
+    reduced_orn_deltas, bouton_kws = maybe_reduce_bouton_system(orn_deltas,
+        BOUTON_DEPLETION_MODEL_KWS
+    )
+    with pytest.raises(ValueError, match='ext_inh_bouton index'):
+        fit_mb_model(reduced_orn_deltas, ext_inh_bouton=ext_inh, **bouton_kws)
+
+
+def test_ext_inh_model_id():
+    """Tests model IDs / LR cache keys only change when `ext_inh_*` passed, and differ
+    between matrices and scales.
+    """
+    kws = dict(weight_divisor=20)
+    none_kws = {**kws, 'ext_inh_kc': None, 'ext_inh_bouton': None,
+        'ext_inh_scale': None
+    }
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    ext_inh = pd.DataFrame(1.0, index=pd.Index([1, 2], name=KC_ID),
+        columns=['a', 'b']
+    )
+    ext_inh2 = ext_inh.copy()
+    ext_inh2.iloc[0, 0] = 2.0
+    variants = (dict(), dict(ext_inh_kc=ext_inh), dict(ext_inh_kc=ext_inh2),
+        dict(ext_inh_bouton=ext_inh), dict(ext_inh_kc=ext_inh, ext_inh_scale=0.0),
+        dict(ext_inh_kc=ext_inh, ext_inh_scale=0.5)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    # (contents hashed, not formatted)
+    assert all(len(x) < 200 for x in ids)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_ext_inh_simulator(ext_inh_model):
+    """Tests `make_fixed_param_kc_simulator` keeps `ext_inh_*` in its KC simulations
+    (matching `fit_mb_model`), including in the initial (tuning) call.
+    """
+    orn_deltas, kws, ret = ext_inh_model
+    responses, _, wPNKC, _ = ret
+    odor0 = responses.columns[0]
+    ext_kws = dict(ext_inh_kc=_ext_inh_odor0(responses.index, responses.columns, 50.0))
+    if kws.get('prat_boutons', False):
+        ext_kws['ext_inh_bouton'] = _ext_inh_odor0(wPNKC.columns, responses.columns,
+            20.0
+        )
+
+    # initial call tunes threshold / APL weights w/ the external inhibition (simulator
+    # checks re-simulation reproduces those tuned outputs)
+    target = 0.1
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        target_sparsity=target, **ext_kws, **kws
+    )
+    assert not any(k in initial_params for k in EXT_INH_RECORDED_PARAMS)
+    tuned_responses, _ = simulate(dict())
+    assert abs(tuned_responses.mean().mean() - target) <= 0.1 * target + 1e-9
+
+    # same thresholds / APL weights, w/o external inhibition
+    simulate_noext, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, **kws
+    )
+
+    # acute APL knockout (all APL weight scales 0)
+    apl_off = {k: 0.0 for k in initial_params if k != 'fixed_thr'}
+    responses, spike_counts = simulate(apl_off)
+    responses_noext, spike_counts_noext = simulate_noext(apl_off)
+    assert responses[odor0].sum() < responses_noext[odor0].sum()
+    assert spike_counts.drop(columns=odor0).equals(
+        spike_counts_noext.drop(columns=odor0)
+    )
+
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **ext_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
+    )
+    assert params2['ext_inh_kc_max'] == 50.0
     assert responses.equals(responses2)
     assert spike_counts.equals(spike_counts2)

@@ -598,6 +598,17 @@ CLAW_SAT_PARAMS: Tuple[str, ...] = ('claw_sat', 'claw_sat_hard', 'claw_thr',
 # `mp.pn.bouton_ves_p` / `mp.pn.bouton_tau_r`). Disabled if `bouton_ves_p` is None.
 BOUTON_DEPLETION_PARAMS: Tuple[str, ...] = ('bouton_ves_p', 'bouton_tau_r')
 
+# `fit_mb_model` kwargs for odor-specific external inhibition of KCs / PN boutons
+# (olfsysm `rv.kc.ext_inh` / `rv.pn.bouton_ext_inh`, both scaled by
+# `mp.kc.ext_inh_scale`), e.g. centrifugal input to the calyx. Each disabled if None.
+EXT_INH_PARAMS: Tuple[str, ...] = ('ext_inh_kc', 'ext_inh_bouton', 'ext_inh_scale')
+
+# what `fit_mb_model` records in its output params for `EXT_INH_PARAMS` passed: the max
+# of each matrix passed (rather than the matrix), and `ext_inh_scale`
+EXT_INH_RECORDED_PARAMS: Tuple[str, ...] = ('ext_inh_kc_max', 'ext_inh_bouton_max',
+    'ext_inh_scale'
+)
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -671,15 +682,34 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     exclude_if_value_matches = {
         'tune_on_hallem': False,
         **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
-            BOUTON_DEPLETION_PARAMS
+            BOUTON_DEPLETION_PARAMS + EXT_INH_PARAMS + EXT_INH_RECORDED_PARAMS
         },
     }
 
     # float formats for params where default '.2f' would lose too much precision
     param_float_formats = {k: '.3g'
         for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr', 'claw_thr_width',
-            'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS
+            'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS +
+            EXT_INH_RECORDED_PARAMS
     }
+
+    def is_excluded_value(k: str, v: Any) -> bool:
+        if k not in exclude_if_value_matches:
+            return False
+        x = exclude_if_value_matches[k]
+        # (`v == None` would be elementwise for DataFrame values, e.g. `ext_inh_kc`)
+        if x is None:
+            return v is None
+        return v == x
+
+    def format_value(k: str, v: Any) -> str:
+        if isinstance(v, float):
+            return format(v, param_float_formats.get(k, '.2f'))
+        # (e.g. `ext_inh_kc`) short hash of contents, so different inputs give
+        # different IDs, without the values themselves in the ID
+        if isinstance(v, (pd.Series, pd.DataFrame)):
+            return _lr_cache_key_value(v)['sha256'][:8]
+        return f'{v}'
 
     if exclude is None:
         exclude = set(exclude_params)
@@ -699,11 +729,9 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # cache miss...)
     # TODO share this (or some) float format specifier w/ other places?
     param_str = sep.join([(f'{param_abbrevs[k] if k in param_abbrevs else k}=' +
-            (format(v, param_float_formats.get(k, '.2f')) if isinstance(v, float)
-                else f'{v}'
-            )
+            format_value(k, v)
         ) for k, v in model_kws.items() if k not in exclude and
-        (k not in exclude_if_value_matches or v != exclude_if_value_matches[k])
+        not is_excluded_value(k, v)
     ])
     if n_seeds > 1:
         param_str += f'{sep}n_seeds={n_seeds}'
@@ -12103,6 +12131,97 @@ def load_and_plot_dynamics_cli() -> None:
     pprint(var2range)
 
 
+def _ext_inh_odor_columns(name: str, df: pd.DataFrame, odors: pd.Index
+    ) -> pd.DataFrame:
+    """Returns `fit_mb_model` `ext_inh_*` input w/ columns in `odors` order.
+
+    Columns must be the same set as `odors` (`orn_deltas.columns`), or as `odors` w/o
+    its 'panel' level (as in `fit_mb_model` outputs). Returned columns are `odors`.
+    Raises `ValueError` if they are not, or if values are not finite and non-negative.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError(f'{name} must be a DataFrame (got {type(df)})')
+
+    if df.columns.duplicated().any():
+        raise ValueError(f'{name} has duplicate columns')
+
+    candidates = [odors]
+    if isinstance(odors, pd.MultiIndex) and 'panel' in odors.names:
+        odors_no_panel = odors.droplevel('panel')
+        if not odors_no_panel.duplicated().any():
+            candidates.append(odors_no_panel)
+
+    for cols in candidates:
+        if len(df.columns) == len(cols) and set(df.columns) == set(cols):
+            df = df.reindex(columns=cols)
+            break
+    else:
+        raise ValueError(f'{name} columns must be the odors of orn_deltas (w/ or w/o '
+            f"its 'panel' level, in any order). got:\n{list(df.columns)}\nexpected:"
+            f'\n{list(candidates[-1])}'
+        )
+
+    try:
+        values = df.to_numpy(dtype=float)
+    except (TypeError, ValueError) as err:
+        raise ValueError(f'{name} values must be numeric ({err})')
+
+    if not np.isfinite(values).all() or (values < 0).any():
+        raise ValueError(f'{name} values must be finite and not negative')
+
+    return pd.DataFrame(values, index=df.index, columns=odors)
+
+
+def _ext_inh_model_rows(name: str, df: pd.DataFrame, model_index: pd.Index,
+    desc: str) -> np.ndarray:
+    """Returns `fit_mb_model` `ext_inh_*` input as an array, w/ rows in model order.
+
+    Args:
+        name: kwarg name, for messages
+
+        df: output of `_ext_inh_odor_columns`
+
+        model_index: the model's KC IDs (a plain index), or its boutons (MultiIndex). If
+            the former, `df` may also have an index w/ a `KC_ID` level. If the latter,
+            `df` index must have the same levels (in any order).
+
+        desc: description of rows, for messages (e.g. 'KCs')
+
+    Rows of the model missing from `df` are 0. Rows of `df` not in the model are
+    dropped (w/ a warning), but `ValueError` is raised if none of them are in the model
+    (or if the index is not unique).
+    """
+    index = df.index
+    if isinstance(model_index, pd.MultiIndex):
+        if (not isinstance(index, pd.MultiIndex) or
+                set(index.names) != set(model_index.names)):
+            raise ValueError(f'{name} index levels ({list(index.names)}) must be those '
+                f'of the model {desc} ({list(model_index.names)})'
+            )
+        index = index.reorder_levels(model_index.names)
+
+    elif isinstance(index, pd.MultiIndex):
+        if KC_ID not in index.names:
+            raise ValueError(f'{name} index must be {KC_ID} values, or have a {KC_ID} '
+                f'level (got levels {list(index.names)})'
+            )
+        index = index.get_level_values(KC_ID)
+
+    if index.duplicated().any():
+        raise ValueError(f'{name} index has duplicate {desc}')
+
+    in_model = index.isin(model_index)
+    if len(index) > 0 and not in_model.any():
+        raise ValueError(f'none of the {len(index)} {name} index values are model '
+            f'{desc}'
+        )
+    if not in_model.all():
+        warn(f'{name}: dropping {(~ in_model).sum()} {desc} not in the model')
+
+    df = df.set_axis(index, axis='index')
+    return df.reindex(index=model_index, fill_value=0.0).to_numpy(dtype=float)
+
+
 # TODO delete? the series is just a hack to support one case i believe (one-row +
 # no-connectome-apl)
 #
@@ -12174,6 +12293,9 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     claw_thr: Optional[float] = None, claw_thr_width: Optional[float] = None,
     claw_pow: Optional[float] = None, claw_pow_ref: Optional[float] = None,
     bouton_ves_p: Optional[float] = None, bouton_tau_r: Optional[float] = None,
+    ext_inh_kc: Optional[pd.DataFrame] = None,
+    ext_inh_bouton: Optional[pd.DataFrame] = None,
+    ext_inh_scale: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12510,6 +12632,51 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             (`mp.pn.bouton_tau_r`, olfsysm default of 0.2 if None). Requires
             `bouton_ves_p`. Must be finite and positive.
 
+        ext_inh_kc: if not None, odor-specific external inhibition of each KC (olfsysm
+            `rv.kc.ext_inh`), e.g. from centrifugal neurons (LHCENT / MB-C1) in the
+            calyx, w/ their odor responses computed outside of the model (E9 of the
+            KC-remapping experiments). KC x odor
+            DataFrame: index KC IDs (the `kc_id` level of the wPNKC index, so either
+            just those IDs, or an index w/ a `kc_id` level, e.g. that of the output
+            `responses`), in any order; KCs of the model missing from the index get 0
+            (and index values not among the model KCs are dropped, w/ a warning).
+            Columns the odors of `orn_deltas` (also accepted w/o its 'panel' level, as
+            in the output `responses`), in any order. Values must be finite and not
+            negative. For each odor, `ext_inh_scale * ext_inh_kc[odor]` is subtracted
+            from each KC's input at the soma (`dVm/dt`, i.e. after the sum across claws
+            and any per-claw transfer [`claw_thr` / `claw_pow` / `claw_sat`], where the
+            KC-KC inhibition of `kc_kc_inh` also acts; not clipped, as for that
+            inhibition, and in the same units as the PN>KC drive), as a step while
+            the odor is on (olfsysm `mp.time_stim_start` to `mp.time_stim_end`, the
+            same steps as the ORN input step). In one-row-per-claw models, APL>KC
+            inhibition instead acts on each claw, before the claw sum. It does not enter
+            the spontaneous input (`kc_spont_in`, which thresholds are relative to),
+            but is active in every odor simulation, including those used to pick
+            thresholds and tune APL weights, so tuned thresholds account for it.
+            Not supported w/ `n_claws_active_to_spike` (spiking would not depend on
+            somatic Vm), `tune_on_hallem=True`, `repro_preprint_s1d=True`, or
+            `pn2kc_connections` in `variable_n_claw_options`. Recorded in output params
+            as 'ext_inh_kc_max' (the max of the matrix olfsysm uses), not the matrix.
+
+        ext_inh_bouton: as `ext_inh_kc`, but onto each PN bouton's output (olfsysm
+            `rv.pn.bouton_ext_inh`). Index the model's boutons (the columns of the
+            bouton model's wPNKC, levels 'glomerulus', 'pn_id', 'bouton_id', in any
+            order); boutons missing get 0. For each odor, `ext_inh_scale *
+            ext_inh_bouton[odor]` is subtracted from each bouton's rate (its
+            glomerulus's PN rate, Hz), clipped at 0, while the odor is on (same steps).
+            This is before APL>bouton inhibition (`prat_boutons=True` w/ PN<>APL
+            weights; combined, the bouton rate is `max(r - ext - apl, 0)`), before any
+            bouton vesicle depletion (`bouton_ves_p`, whose release-driving rate
+            includes it), and before the bouton>claw transfer and any per-claw transfer,
+            so the claw drive and the bouton>APL drive both see it. Also not in the
+            spontaneous input, but active during tuning. Requires the bouton model
+            (`prat_boutons=True` or `Btn_separate=True`). Recorded as
+            'ext_inh_bouton_max'.
+
+        ext_inh_scale: scale (olfsysm `mp.kc.ext_inh_scale`, olfsysm default of 1 if
+            None) multiplying both `ext_inh_kc` and `ext_inh_bouton`. Requires either.
+            0.0 has no effect (but is recorded). Must be finite and not negative.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -12595,7 +12762,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             certain model intermediates (e.g. 'kc_spont_in'), and certain parameters
             relevant for reproducibility (e.g. 'sp_acc', 'max_iters', and any of
             `AL_INH_PARAMS`, `KC_KC_INH_PARAMS`, `CLAW_SAT_PARAMS` or
-            `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc').
+            `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc', and
+            `EXT_INH_RECORDED_PARAMS` for `EXT_INH_PARAMS` passed).
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -12894,6 +13062,49 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
 
         for k, v in bouton_depletion_params.items():
             setattr(mp.pn, k, v)
+
+    # (KC / bouton x odor DataFrames w/ columns in orn_deltas order. rows are aligned to
+    # the model's KCs / boutons, and the matrices set into rv, below, after rv is
+    # created)
+    ext_inh_dfs = dict()
+    for k, df in (('ext_inh_kc', ext_inh_kc), ('ext_inh_bouton', ext_inh_bouton)):
+        if df is not None:
+            ext_inh_dfs[k] = _ext_inh_odor_columns(k, df, orn_deltas.columns)
+
+    if ext_inh_scale is not None:
+        if len(ext_inh_dfs) == 0:
+            raise ValueError('ext_inh_scale requires ext_inh_kc or ext_inh_bouton')
+        ext_inh_scale = float(ext_inh_scale)
+        if not (np.isfinite(ext_inh_scale) and ext_inh_scale >= 0):
+            raise ValueError('ext_inh_scale must be finite and not negative (got '
+                f'{ext_inh_scale})'
+            )
+        mp.kc.ext_inh_scale = ext_inh_scale
+
+    if len(ext_inh_dfs) > 0:
+        passed = ' / '.join(ext_inh_dfs)
+        if tune_on_hallem or repro_preprint_s1d:
+            # (would also need external inhibition for the Hallem / extra odors
+            # simulated, and thresholds tuned on the Hallem odors would not account
+            # for it)
+            raise NotImplementedError(f'{passed} not supported with '
+                'tune_on_hallem=True or repro_preprint_s1d=True'
+            )
+        if 'ext_inh_kc' in ext_inh_dfs:
+            if pn2kc_connections in variable_n_claw_options:
+                # (wPNKC is generated in olfsysm, w/o connectome KC IDs)
+                raise NotImplementedError('ext_inh_kc not supported with '
+                    f'pn2kc_connections in {variable_n_claw_options}'
+                )
+            if n_claws_active_to_spike is not None:
+                raise ValueError('ext_inh_kc not supported with '
+                    'n_claws_active_to_spike (inhibition acts on somatic Vm, which '
+                    'then does not determine spiking)'
+                )
+        if 'ext_inh_bouton' in ext_inh_dfs and not (prat_boutons or Btn_separate):
+            raise ValueError('ext_inh_bouton requires the bouton model '
+                '(prat_boutons=True or Btn_separate=True)'
+            )
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
@@ -13754,6 +13965,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     # TODO try removing .copy()?
     mp.orn.data.spont = sfr.copy()
     mp.orn.data.delta = orn_deltas.copy()
+    # (olfsysm odor columns, which ext_inh_* columns were put in the order of above)
+    assert all(df.columns.equals(orn_deltas.columns) for df in ext_inh_dfs.values())
     # TODO need to remove DA4m (2a) from wPNKC first too (already out, it seems)?
     # don't see matt doing it in hemimat-modeling... (i don't think i need to.
     # rv.pn.pn_sims below had receptor-dim length of 22)
@@ -14011,6 +14224,37 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         wKCKC_unscaled = csc_matrix(wKCKC_unscaled)
         rv.kc.wKCKC = float(kc_kc_inh) * wKCKC_unscaled
         del wKCKC_df, model_kc_ids
+
+    # (only those passed, to also add to param_dict below)
+    ext_inh_params = dict()
+    if 'ext_inh_kc' in ext_inh_dfs:
+        # olfsysm KCs are in kc_index order (in both one_row_per_claw cases or not)
+        assert len(kc_index) == mp.kc.N
+        ext_inh_kc_arr = _ext_inh_model_rows('ext_inh_kc', ext_inh_dfs['ext_inh_kc'],
+            pd.Index(kc_index.get_level_values(KC_ID)), 'KCs'
+        )
+        # (# KCs, # odors). olfsysm also checks shape / values.
+        rv.kc.ext_inh = ext_inh_kc_arr
+        ext_inh_params['ext_inh_kc_max'] = (
+            float(ext_inh_kc_arr.max()) if ext_inh_kc_arr.size > 0 else 0.0
+        )
+        del ext_inh_kc_arr
+
+    if 'ext_inh_bouton' in ext_inh_dfs:
+        # olfsysm boutons are in bouton_index (wPNKC column) order
+        assert bouton_dynamics and bouton_index is not None
+        assert len(bouton_index) == mp.pn.n_total_boutons
+        ext_inh_bouton_arr = _ext_inh_model_rows('ext_inh_bouton',
+            ext_inh_dfs['ext_inh_bouton'], bouton_index, 'boutons'
+        )
+        rv.pn.bouton_ext_inh = ext_inh_bouton_arr
+        ext_inh_params['ext_inh_bouton_max'] = (
+            float(ext_inh_bouton_arr.max()) if ext_inh_bouton_arr.size > 0 else 0.0
+        )
+        del ext_inh_bouton_arr
+
+    if ext_inh_scale is not None:
+        ext_inh_params['ext_inh_scale'] = ext_inh_scale
 
     kc_to_claws = None
     if one_row_per_claw:
@@ -15792,6 +16036,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     param_dict.update(kc_kc_inh_params)
     param_dict.update(claw_sat_params)
     param_dict.update(bouton_depletion_params)
+    param_dict.update(ext_inh_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -16427,7 +16672,9 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             are ignored if `initial_params` passed. Other KC-layer kwargs that do not
             change how thresholds / APL weights are defined (e.g. `claw_sat` /
             `claw_thr` / `claw_thr_width` / `claw_pow` / `claw_pow_ref` /
-            `bouton_ves_p`) apply to the initial call and to all simulations.
+            `bouton_ves_p` / `ext_inh_kc` / `ext_inh_bouton` / `ext_inh_scale`)
+            apply to the initial call and to all simulations (the external inhibition
+            matrices stay set in the olfsysm variables the simulations reuse).
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -19871,7 +20118,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             }
             # inputs (same for all seeds), so they still match model_kws values below
             for k in (AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
-                    BOUTON_DEPLETION_PARAMS):
+                    BOUTON_DEPLETION_PARAMS + EXT_INH_RECORDED_PARAMS):
                 if k in param_dict:
                     assert len(set(param_dict[k])) == 1
                     param_dict[k] = param_dict[k][0]
