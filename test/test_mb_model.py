@@ -5706,6 +5706,106 @@ def test_claw_thr_width_simulator(claw_sat_model):
     assert spike_counts.equals(spike_counts2)
 
 
+def test_claw_pow_one_equals_default(claw_thr_model):
+    """Tests `claw_pow=1.0` (recorded, but no power transfer) does not change tuned
+    outputs of a `claw_thr` model.
+    """
+    orn_deltas, kws, ret = claw_thr_model
+    assert not any(k in ret[3] for k in ('claw_pow', 'claw_pow_ref'))
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, claw_pow=1.0, **kws)
+    assert type(ret2[3]['claw_pow']) is float
+    assert 'claw_pow_ref' not in ret2[3]
+    assert_fit_outputs_equal(ret, _pop_param(ret2, 'claw_pow', 1.0))
+
+
+def test_claw_pow_supralinear(claw_sat_model, claw_thr_model):
+    """Tests `claw_pow > 1` (w/ threshold and APL weights fixed at values tuned w/o it)
+    changes outputs, w/ and w/o `claw_thr`, and that w/o `claw_thr` and w/
+    `claw_pow_ref` above all spontaneous claw drive, it lowers spontaneous input.
+    """
+    for (orn_deltas, kws, ret), pow_kws in (
+            (claw_thr_model, dict(claw_pow=2.0)),
+            # (spontaneous claw drive is up to ~45-70 Hz in these models)
+            (claw_sat_model, dict(claw_pow=2.0, claw_pow_ref=200.0)),
+        ):
+
+        # (fixed params should reproduce tuned outputs)
+        responses, _, _, params = ret
+        fixed_kws = get_thr_and_APL_weights(params, kws)
+
+        responses2, _, _, params2 = _fit_mb_model(orn_deltas=orn_deltas, **pow_kws,
+            **fixed_kws, **kws
+        )
+        for k, v in pow_kws.items():
+            assert type(params2[k]) is float
+            assert params2[k] == v
+        if 'claw_pow_ref' not in pow_kws:
+            assert 'claw_pow_ref' not in params2
+
+        assert responses2.index.equals(responses.index)
+        assert responses2.columns.equals(responses.columns)
+        assert np.isin(responses2.values, (0, 1)).all()
+
+        n_changed = (responses2 != responses).values.sum()
+        print(f'{kws.get("claw_thr")=}, {pow_kws}: response rate '
+            f'{responses.values.mean():.4f} -> {responses2.values.mean():.4f} '
+            f'({n_changed} KC-odor responses changed)'
+        )
+        assert n_changed > 0
+
+        if 'claw_pow_ref' in pow_kws:
+            # (y / ref)**2 * ref < y, for each claw w/ 0 < y < ref
+            spont_in = params['kc_spont_in'].values
+            spont_in2 = params2['kc_spont_in'].values
+            assert (spont_in2 <= spont_in).all()
+            assert spont_in2.sum() < spont_in.sum()
+
+
+def test_claw_pow_invalid(orn_deltas):
+    """Tests invalid `claw_pow` / `claw_pow_ref` kwargs raise ValueError.
+    """
+    nonclaw_kws = dict(weight_divisor=20)
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True)
+    for kws, bad_kws in (
+            (claw_kws, dict(claw_pow=0.0)),
+            (claw_kws, dict(claw_pow=-1.0)),
+            (claw_kws, dict(claw_pow=np.inf)),
+            (claw_kws, dict(claw_pow=np.nan)),
+            (claw_kws, dict(claw_pow_ref=50.0)),
+            (claw_kws, dict(claw_thr=70.0, claw_pow_ref=50.0)),
+            (claw_kws, dict(claw_pow=2.0, claw_pow_ref=0.0)),
+            (claw_kws, dict(claw_pow=2.0, claw_pow_ref=-1.0)),
+            (claw_kws, dict(claw_pow=2.0, claw_pow_ref=np.inf)),
+            (claw_kws, dict(claw_pow=2.0, claw_pow_ref=np.nan)),
+            (nonclaw_kws, dict(claw_pow=2.0)),
+            (nonclaw_kws, dict(claw_pow=1.0)),
+            (claw_kws, dict(claw_pow=2.0, n_claws_active_to_spike=2)),
+        ):
+
+        with pytest.raises(ValueError, match='claw_pow'):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+
+def test_claw_pow_model_id():
+    """Tests model IDs / LR cache keys only change when `claw_pow` (or `claw_pow_ref`)
+    passed (including 1.0), and that small values are distinguishable.
+    """
+    kws = dict(one_row_per_claw=True, prat_claws=True, claw_thr=70.0)
+    none_kws = {**kws, 'claw_pow': None, 'claw_pow_ref': None}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(claw_pow=1.0), dict(claw_pow=0.004), dict(claw_pow=0.005),
+        dict(claw_pow=2.0), dict(claw_pow=2.0, claw_pow_ref=50.0),
+        dict(claw_pow=2.0, claw_pow_ref=0.004), dict(claw_pow=2.0, claw_pow_ref=0.005)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
 # reduced claw + bouton model (as in CLAW_SAT_MODEL_KWS), which `bouton_ves_p` requires
 # (prat_boutons=True)
 BOUTON_DEPLETION_MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True,

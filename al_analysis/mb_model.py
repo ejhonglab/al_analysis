@@ -587,10 +587,11 @@ AL_INH_PARAMS: Tuple[str, ...] = ('pn_inhsc', 'pn_inhadd', 'ln_inhsc', 'ln_inhad
 KC_KC_INH_PARAMS: Tuple[str, ...] = ('kc_kc_inh', 'kc_kc_tau')
 
 # `fit_mb_model` kwargs for the per-claw transfer of claw>KC input: saturation (olfsysm
-# `mp.kc.claw_sat`) and a rectified offset (`mp.kc.claw_thr`, w/ an optional soft knee
-# of width `mp.kc.claw_thr_width`). Each disabled if None.
+# `mp.kc.claw_sat`), a rectified offset (`mp.kc.claw_thr`, w/ an optional soft knee
+# of width `mp.kc.claw_thr_width`) and a power transfer (`mp.kc.claw_pow`, about
+# `mp.kc.claw_pow_ref`). Each disabled if None.
 CLAW_SAT_PARAMS: Tuple[str, ...] = ('claw_sat', 'claw_sat_hard', 'claw_thr',
-    'claw_thr_width'
+    'claw_thr_width', 'claw_pow', 'claw_pow_ref'
 )
 
 # `fit_mb_model` kwargs for rate-based vesicle depletion at PN boutons (olfsysm
@@ -676,8 +677,8 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
 
     # float formats for params where default '.2f' would lose too much precision
     param_float_formats = {k: '.3g'
-        for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr', 'claw_thr_width') +
-            BOUTON_DEPLETION_PARAMS
+        for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr', 'claw_thr_width',
+            'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS
     }
 
     if exclude is None:
@@ -12171,6 +12172,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     kc_kc_inh: Optional[float] = None, kc_kc_tau: Optional[float] = None,
     claw_sat: Optional[float] = None, claw_sat_hard: Optional[bool] = None,
     claw_thr: Optional[float] = None, claw_thr_width: Optional[float] = None,
+    claw_pow: Optional[float] = None, claw_pow_ref: Optional[float] = None,
     bouton_ves_p: Optional[float] = None, bouton_tau_r: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
@@ -12462,6 +12464,25 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             can lower response rates. 0.0 gives the hard knee (but is recorded).
             Requires `claw_thr` (no effect if it is 0). Must be finite and not
             negative.
+
+        claw_pow: if not None (and != 1), a power-law (supralinear for > 1) per-claw
+            transfer (olfsysm `mp.kc.claw_pow`): each claw's rectified drive
+            `y = max(x, 0)` enters the sum across the KC's claws as
+            `claw_pow_ref * (y / claw_pow_ref)**claw_pow`. Acts on the claw input after
+            `claw_thr` (so `y = max(x - claw_thr, 0)`, or the soft knee, if that is
+            set), and before any `claw_sat`, for spontaneous input (`kc_spont_in`,
+            which thresholds are relative to) and during odors (same scope and
+            requirements as `claw_sat`, with or without `claw_thr`). A claw driven at
+            `claw_pow_ref` keeps its value; for `claw_pow > 1` stronger claws are
+            amplified and weaker ones shrunk, so one strongly driven claw can carry a
+            KC on its own while moderately driven claws still need coincidence (E26 of
+            the KC-remapping experiments). 1.0 has no effect (but is recorded). Must
+            be finite and positive.
+
+        claw_pow_ref: reference drive (Hz) of `claw_pow` (olfsysm `mp.kc.claw_pow_ref`,
+            olfsysm default of 50 if None): claws with (post-`claw_thr`) input equal to
+            this are unchanged by the power transfer. Requires `claw_pow`. Must be
+            finite and positive.
 
         bouton_ves_p: if not None, rate-based (Tsodyks-Markram mean-field) vesicle
             depletion of the PN>KC bouton (olfsysm `mp.pn.bouton_ves_p`): each bouton
@@ -12823,8 +12844,26 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     elif claw_thr_width is not None:
         raise ValueError('claw_thr_width requires claw_thr')
 
+    if claw_pow is not None:
+        claw_pow = float(claw_pow)
+        if not (np.isfinite(claw_pow) and claw_pow > 0):
+            raise ValueError(f'claw_pow must be finite and positive (got {claw_pow})')
+        claw_sat_params['claw_pow'] = claw_pow
+        if claw_pow_ref is not None:
+            claw_pow_ref = float(claw_pow_ref)
+            if not (np.isfinite(claw_pow_ref) and claw_pow_ref > 0):
+                raise ValueError('claw_pow_ref must be finite and positive (got '
+                    f'{claw_pow_ref})'
+                )
+            claw_sat_params['claw_pow_ref'] = claw_pow_ref
+
+    elif claw_pow_ref is not None:
+        raise ValueError('claw_pow_ref requires claw_pow')
+
     if len(claw_sat_params) > 0:
-        passed = ' / '.join(k for k in ('claw_sat', 'claw_thr') if k in claw_sat_params)
+        passed = ' / '.join(k for k in ('claw_sat', 'claw_thr', 'claw_pow')
+            if k in claw_sat_params
+        )
         if not one_row_per_claw:
             raise ValueError(f'{passed} requires one_row_per_claw=True')
         if n_claws_active_to_spike is not None:
@@ -16387,8 +16426,8 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             `initial_params`). Kwargs only used for tuning (e.g. `target_sparsity`)
             are ignored if `initial_params` passed. Other KC-layer kwargs that do not
             change how thresholds / APL weights are defined (e.g. `claw_sat` /
-            `claw_thr` / `claw_thr_width` / `bouton_ves_p`) apply to the initial call and to all
-            simulations.
+            `claw_thr` / `claw_thr_width` / `claw_pow` / `claw_pow_ref` /
+            `bouton_ves_p`) apply to the initial call and to all simulations.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
