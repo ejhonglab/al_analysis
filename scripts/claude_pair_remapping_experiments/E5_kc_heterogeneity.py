@@ -5,9 +5,11 @@
 For each base model (chapter-3 claw model with and without claw dynamics; optionally the
 hemibrain wd20 model) tuned with APL on to a target mean response rate, the variants:
 - base: one threshold for all KCs (as E1)
-- homeostatic: olfsysm homeostatic thresholds (one per KC; `homeostatic_thrs=True`)
+- homeostatic: olfsysm homeostatic thresholds (one per KC; `homeostatic_thrs=True`; needs
+  the 1-spike response criterion, so this variant also changes that)
 - type_equal: one threshold per KC type so pre-APL rates are equal across types
-  (`equalize_kc_type_sparsity=True`)
+  (`equalize_kc_type_sparsity=True`, with `target_sparsity_factor_pre_APL=4` so the
+  pre-APL rate is ~2x target under the 2-spike criterion; see note at `VARIANTS`)
 - type_abprime_x2: as type_equal, but a'b' KCs at twice the target (Inada et al. 2017:
   a'b' most excitable)
 - coincidence_2 / coincidence_3: a KC spikes only if >= n claws are active
@@ -68,11 +70,20 @@ BASES: Dict[str, dict] = {
 }
 CLAW_BASES = ('claw-dynamics', 'claw')
 # variant -> extra fit_mb_model kwargs ('special' variants are built at run time)
+# NOTE: olfsysm's homeostatic thresholds require n_spikes_for_response=1 (it raises
+# otherwise; before olfsysm 9d24bda this was a hard crash), so that variant also changes the
+# response criterion (1 spike instead of the claw bases' 2).
+# NOTE: equalize_kc_type_sparsity picks each type's threshold as the quantile of peak KC
+# input giving target x target_sparsity_factor_pre_APL cells *crossing threshold*, which
+# with n_spikes_for_response=2 leaves the pre-APL response rate at about the target itself
+# (so the APL is then tuned to ~0; first run: claw type_equal wAPLKC 0.017, rate_off =
+# rate_on). target_sparsity_factor_pre_APL=4 restores a pre-APL rate of ~2x target.
 VARIANTS: Dict[str, Optional[dict]] = {
     'base': {},
-    'homeostatic': dict(homeostatic_thrs=True),
-    'type_equal': dict(equalize_kc_type_sparsity=True),
-    'type_abprime_x2': dict(equalize_kc_type_sparsity=True),  # ab' target set at run time
+    'homeostatic': dict(homeostatic_thrs=True, n_spikes_for_response=1),
+    'type_equal': dict(equalize_kc_type_sparsity=True, target_sparsity_factor_pre_APL=4.0),
+    'type_abprime_x2': dict(equalize_kc_type_sparsity=True,
+        target_sparsity_factor_pre_APL=4.0),  # ab' target set at run time
     'coincidence_2': dict(n_claws_active_to_spike=2),
     'coincidence_3': dict(n_claws_active_to_spike=3),
     'thr_nclaws_0.5': None,
@@ -83,7 +94,7 @@ CLAW_ONLY_VARIANTS = ('coincidence_2', 'coincidence_3', 'apl_type_scaled')
 # fit_mb_model kwargs that are only meaningful while tuning (dropped for the fixed-param
 # APL-off re-fit)
 TUNING_VARIANT_KWS = ('homeostatic_thrs', 'equalize_kc_type_sparsity',
-    'ab_prime_response_rate_target')
+    'ab_prime_response_rate_target', 'target_sparsity_factor_pre_APL')
 APL_TYPE_FACTORS: Dict[str, float] = {"a'b'": 1.6, 'ab': 1.0, 'g': 0.6, 'unknown': 1.0}
 KC_TYPE = 'kc_type'
 KC_ID = 'kc_id'
@@ -168,7 +179,9 @@ def run_variant(base: str, variant: str, target: float, out_dir: Path) -> dict:
     if variant in ('base', 'thr_nclaws_0.5', 'thr_nclaws_1', 'apl_type_scaled'):
         if variant == 'apl_type_scaled':
             wAPLKC, wKCAPL = type_scaled_apl_weights(kws)
-            kws.update(_wAPLKC=wAPLKC, _wKCAPL=wKCAPL)
+            # preset weights are not tuned unless asked (first run: scale stayed 1.0,
+            # APL-on rate 0.003)
+            kws.update(_wAPLKC=wAPLKC, _wKCAPL=wKCAPL, tune_apl_weights=True)
             info['apl_type_factors'] = APL_TYPE_FACTORS
         sim, params = make_fixed_param_kc_simulator(orn, **kws, target_sparsity=target,
             **common)
