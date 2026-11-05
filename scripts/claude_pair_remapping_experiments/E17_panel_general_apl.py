@@ -187,8 +187,21 @@ def run_variant(variant: str, out_dir: Path) -> dict:
 
 
 def make_figure(res_dir: Path, tab: pd.DataFrame) -> None:
-    E15.make_figure(res_dir, tab)
-    # retitle: E15.make_figure wrote E15_summary.*; rename to E17 names
+    """E15's dot plot with E17's title and file names."""
+    import matplotlib.pyplot as plt
+    orig = plt.Figure.suptitle
+
+    def retitle(self, t, *a, **k):
+        return orig(self, 'E17: per-KC APL weight = (1 + breadth)^k (1 + summed glomerulus '
+            'score of claws)^m; scores: all-pairs co-drive, glomerulus breadth, permuted '
+            'control, block-specific set (= E15); coincidence-3 base (circled); red dashed = '
+            'control data, dotted = TNT (excess)', *a, **k)
+
+    plt.Figure.suptitle = retitle
+    try:
+        E15.make_figure(res_dir, tab)
+    finally:
+        plt.Figure.suptitle = orig
     for ext in ('png', 'pdf'):
         src = res_dir / f'E15_summary.{ext}'
         if src.exists():
