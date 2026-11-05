@@ -98,7 +98,7 @@ def make_figure(stats: pd.DataFrame, fracs: pd.DataFrame, res_dir, thr: float) -
         ('rate rank agreement with the data (ceiling 0.98 / 0.97)', ['spearman_rate_on_vs_data', 'spearman_rate_off_vs_data'], None, ['APL on', 'APL off']),
         ('rank agreement with control (on) / TNT (off)', [p + 'on_spearman', p + 'off_spearman'], None, ['APL on vs control', 'APL off vs TNT']),
         ('mean pair distance (data 0.84 on / 0.66 off)', [p + 'on_mean_model', p + 'off_mean_model'], 0.840, ['APL on', 'APL off']),
-        ('fruity x small-ester block (data +0.055) / APL-on block excess (data -0.08)', [p + 'block_fruity_small_iso', 'on_excess_block'], 0.055, ['block', 'APL-on block-pair excess'])]
+        ('block (data +0.055) and APL-on block-pair excess (data -0.08)', [p + 'block_fruity_small_iso', 'on_excess_block'], 0.055, ['fruity x small-ester block', 'APL-on block-pair excess'])]
     for ax, (title, cols, ref, labels) in zip(list(axes.ravel())[1:], panels):
         for i, col in enumerate(cols):
             ax.plot(stats.claw_pow, stats[col], ['-o', '--s', ':^', '-.d'][i], color=['#2b6cb0', '#2b6cb0', '#d9480f', '#2f855a'][i], ms=5, lw=1.3, label=labels[i])
