@@ -152,6 +152,15 @@ def gcamp_peak(spk: np.ndarray, ts: np.ndarray, *, rise: float = GCAMP_RISE_S,
     return out
 
 
+def safe_compare(on: pd.Series, off: pd.Series, **kws) -> Optional[dict]:
+    """`compare_on_off`, or None if fewer than 10 pairs are defined in both."""
+    a, b = H.align_pairs(on, off)
+    if len(a) < 10:
+        return None
+    st, _ = H.compare_on_off(on, off, **kws)
+    return st
+
+
 def rdm_from_counts(counts: np.ndarray, odors: List[str], kc_index: pd.Index,
     measure: str = 'cosine') -> pd.Series:
     df = pd.DataFrame(counts.T, index=kc_index, columns=odors)
@@ -270,6 +279,10 @@ def main() -> None:
                     rdms[(cond, w, recipe)] = d
                     geno = CTRL if cond == 'on' else TNT
                     tgt = data[geno] if recipe == 'cosine_counts' else data_bin[geno]
+                    if d.notna().sum() < 10:
+                        win_rows.append(dict(base=base, condition=cond, window=w, recipe=recipe,
+                            rate=float((c >= sim.n_spikes).mean()), n_nan_pairs=int(d.isna().sum())))
+                        continue
                     mvd = H.compare_model_to_data(d, tgt, orn=orn_pairs)
                     rr = H.compare_to_references(d, ref)
                     win_rows.append(dict(base=base, condition=cond, window=w, recipe=recipe,
@@ -295,7 +308,9 @@ def main() -> None:
                         ('pulse', 'post'), ('whole', 'gcamp_peak')):
                     if (cond, wa, recipe) not in rdms or (cond, wb, recipe) not in rdms:
                         continue
-                    st, _ = H.compare_on_off(rdms[(cond, wb, recipe)], rdms[(cond, wa, recipe)])
+                    st = safe_compare(rdms[(cond, wb, recipe)], rdms[(cond, wa, recipe)])
+                    if st is None:
+                        continue
                     pairwin_rows.append(dict(base=base, condition=cond, recipe=recipe,
                         comparison=f'{wa}_vs_{wb}', spearman=st['spearman_on_off'],
                         iso_r2=st['iso_r2'], lin_r2=st['lin_r2'],
@@ -305,8 +320,10 @@ def main() -> None:
             for recipe in ('cosine_counts', 'cosine_binary'):
                 if ('on', w, recipe) not in rdms:
                     continue
-                st, _ = H.compare_on_off(rdms[('on', w, recipe)], rdms[('acute_off', w, recipe)],
+                st = safe_compare(rdms[('on', w, recipe)], rdms[('acute_off', w, recipe)],
                     orn=orn_pairs, drive=drive)
+                if st is None:
+                    continue
                 pairwin_rows.append(dict(base=base, condition='on_vs_off', recipe=recipe,
                     comparison=f'window_{w}', spearman=st['spearman_on_off'],
                     iso_r2=st['iso_r2'], lin_r2=st['lin_r2'],
@@ -330,7 +347,8 @@ def main() -> None:
                         cur = between_level_and_stability(spk, ts, odors, kc_index, whole,
                             bin_s=0.05, t_start=0.0, t_end=0.75)
                         b = cur[cur.kind == 'bin']
-                        st, _ = H.compare_on_off(late, early)
+                        st = safe_compare(late, early) or dict(spearman_on_off=np.nan,
+                            iso_r2=np.nan)
                         geno = CTRL if cond == 'on' else TNT
                         mvd = H.compare_model_to_data(whole, data[geno], orn=orn_pairs)
                         sweep_rows.append(dict(base=base, claw_tau=claw_tau, apl_taum=apl_taum,
