@@ -8,12 +8,14 @@ TNT_dist_apl16.csv [APL output blocked], both from Yang) are not currently in
 apl_pair_analysis/. Until they are added, reconstruct them from the `ctrl` and `tnt`
 columns of apl_pair_analysis/all120_pairs.csv.
 
-An earlier, related Claude analysis (done with Yang, Oct 2026) is on tensor under
-Tom/claude_APL_modeling_YZ4TC/Claude_APL_analysis/. It has APL synapse tables from four
-connectomes, a connectome-APL model of the TNT vs TNT3c change, and checks on Yang's
+Yang had her own Claude develop an independent static MB (KC+APL) model. That work (Oct
+2026) is on tensor under Tom/claude_APL_modeling_YZ4TC/Claude_APL_analysis/, with APL
+synapse tables from four connectomes and a comparison of her model against her
 per-recording TNT / TNT3c KC data (8 TNT recordings from 7 flies, 11 TNT3c recordings
-from 8 flies). Read apl_synapses_markdown_combined_2026-10-23.md there before
-duplicating any of that work. The per-recording data itself is not in that folder.
+from 8 flies). It is separate work and still in progress, and it is unclear how much we
+gain from the model itself, but the reports may be worth reading (start with
+apl_synapses_markdown_combined_2026-10-23.md). The per-recording data itself is not in
+that folder.
 
 A local copy of my thesis is at ~/src/oconnell_thomas_2026_thesis (clone it from
 github.com/tom-f-oconnell/oconnell_thomas_2026_thesis if missing). The .tex source is
@@ -24,10 +26,12 @@ easier to search than the PDF.
 
 When implementing experiments, modify ~/src/olfsysm (the model) or the library code in
 this repo or ~/src/hong2p, and then make scripts in this folder as needed. If either is
-not on this machine, clone it to that location from the ejhonglab Github. The
-al_analysis venv normally installs both from Github (non-editable), so for changes to
-either to take effect, install them editable into ./venv (after `git pull`-ing those
-repos first, as the venv copy may be newer than a stale checkout):
+not on this machine, clone it to that location from the ejhonglab Github. Changes to
+either only take effect if the al_analysis venv has it installed editable from that
+checkout, which is not guaranteed (on hal, olfsysm is editable from ~/src/olfsysm, but
+hong2p is a plain install from Github). Check with `./venv/bin/pip show <pkg>` (an
+editable install reports "Editable project location") and, if needed, after
+`git pull`-ing the checkout (the venv copy may be newer than a stale checkout), run:
 ```
 ./venv/bin/pip install -e ~/src/hong2p[all]
 ./venv/bin/pip install -e ~/src/olfsysm
@@ -37,10 +41,11 @@ tests (with QUICK=1, see the al_analysis CLAUDE.md) before committing model chan
 
 If multiple experiments would benefit from an overlapping set of changes to any library
 code, start with some of those code changes, regardless of which experiments you are
-running first. You may spawn up to 3 subagents (Opus 5.5 extra) to work on code changes
-necessary for any future experiments (prioritize code changes for experiments with
-higher priority), so they can work in parallel with ongoing experiments (which may take
-a non-negligible amount of simulation time). Commit and push as code changes are done,
+running first. You may spawn up to 3 subagents (Opus 5.5, at xhigh effort) to work on
+code changes necessary for any future experiments (prioritize code changes for
+experiments with higher priority), so they can work in parallel with ongoing experiments
+(which may take a non-negligible amount of simulation time). Commit and push as code
+changes are done,
 so another instance of claude working on another computer may benefit from the changes
 too. If the remote has commits you do not (for this repo, olfsysm or hong2p), rebase
 your commits on top of them (`git pull --rebase`), make sure nothing broke, and then
@@ -55,10 +60,15 @@ summary CSVs) go to the shared directory, see below.
 
 Run as many parallel experiments / simulations as you can to utilize the system's
 resources (CPU cores / memory), stopping just short of loading the system to the point
-of causing major problems. These machines are shared with other lab members: check
-`uptime`, `nproc` and `free -g` before launching anything big, keep the total CPU use of
-your simulations to roughly half the cores unless the machine is otherwise idle, and run
-simulations under `nice -n 10`.
+of causing major problems. These machines are shared with other lab members, so check
+`uptime`, `nproc` and `free -g` before launching anything big, run simulations under
+`nice -n 10`, and aim for roughly half the cores unless the machine is otherwise idle.
+olfsysm is compiled with OpenMP (so OMP_NUM_THREADS sets its thread count, and it uses
+all cores by default) and parallelizes over odors, so give each job as many threads as
+it has odors (16 for the APL panel, 17 for megamat) and pick the number of concurrent
+jobs from that: on hal (48 cores), two 17-odor jobs (34 threads) at once is fine. On
+machines with fewer cores (atlas), run fewer jobs at once rather than fewer threads per
+job, and run one at a time if the machine is busy.
 
 
 ## Shared directory on tensor
