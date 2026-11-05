@@ -99,6 +99,8 @@ def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str
             out.append(f'<h{level}>{inline(m.group(2))}</h{level}>')
             if level == 1:
                 seen_h1 = True
+            else:
+                byline_done = True   # a byline is only a paragraph directly under the title
             i += 1; continue
         if re.match(r'^---\s*$', s):
             out.append('<hr>'); i += 1; continue

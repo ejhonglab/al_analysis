@@ -317,6 +317,19 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   publishing; the artifact renders exactly that file.
 - Numbers in tables with the data value and the model baseline alongside (see above); prose
   says what moved and whether it reached the data.
+- **No provenance chatter.** Summary reports never mention which host or which model / agent
+  ran, wrote or requested anything, do not open with a status list of what is completed,
+  running or started, and have no byline or "Artifact: ..." line: the page starts with the
+  title and the first content section.
+- **Pending work goes at the bottom, with context.** Experiments still running or not yet run
+  are described near the end, each with what it tests, the possible outcomes and what each
+  outcome would mean for the picture, not as a bare list.
+- **Every statistic in plain English.** Say what a number is of (e.g. "the distance between
+  two odors' KC population responses, one minus their cosine similarity, averaged over the
+  120 odor pairs"), define each statistic once in plain words where it first appears (a
+  short definitions list after the first figure works), and avoid shorthand such as
+  "split-half ceiling" or "iso R2" without that explanation; "the agreement between two halves
+  of the recordings, the most any model could reach" is the register to use.
 
 Canonical experiment names for summary reports:
 
