@@ -41,7 +41,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -185,12 +185,34 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     return loss_fn
 
 
+def init_from_fit(tag: str, base: Dict[str, float]) -> Dict[str, float]:
+    """Starting point taken from an earlier fit's row in fits.csv: its threshold, APL and
+    APL->bouton factors relative to its own base are applied to `base` (so a solution found
+    without a per-claw threshold can seed a fit with one), with its KC-KC scale."""
+    f = pd.read_csv(H.results_dir(EXPERIMENT) / 'fits.csv')
+    r = f[f.tag == tag]
+    if len(r) == 0:
+        raise ValueError(f'no fit {tag!r} in fits.csv')
+    r = r.iloc[0]
+    return dict(fixed_thr=base['fixed_thr'] * float(r['thr_factor']),
+        wAPLKC_scale=base['wAPLKC_scale'] * float(r['apl_factor_vs_e3']),
+        wKCAPL_scale=base['wKCAPL_scale'] * float(r['apl_factor_vs_e3']),
+        wAPLPN_scale=base['wAPLPN_scale'] * float(r['aplpn_factor_vs_e3']),
+        wPNAPL_scale=base['wPNAPL_scale'], wKCKC_scale=float(r['kc_kc_inh']),
+    )
+
+
 def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, maxfev: int,
-    method: str, thr0_factor: float, claw_thr=None, verbose: bool = True):
+    method: str, thr0_factor: float, claw_thr=None, init_from: Optional[str] = None,
+    verbose: bool = True):
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if claw_thr is None else e19_row(claw_thr, k, kckc0)
-    if r19 is not None:
+    if init_from is not None:
+        init = init_from_fit(init_from, initial)
+        kckc0 = init['wKCKC_scale']
+        print(f'starting from fit {init_from}: {init}', flush=True)
+    elif r19 is not None:
         # start at E19's grid point (APL scales matched to the k = 0 count, threshold
         # re-tuned to 5 % with this KC-KC scale)
         init = {kk: float(r19[kk]) for kk in PARAM_KEYS}
@@ -290,6 +312,8 @@ def main() -> None:
         help='round 2: rectified per-claw offset (olfsysm claw_thr; E16 / E19), e.g. 40 or 70')
     ap.add_argument('--method', default='Nelder-Mead')
     ap.add_argument('--tag', default='', help='suffix for this run (e.g. a second start)')
+    ap.add_argument('--init-from', default=None, metavar='TAG',
+        help='start from an earlier fit (row TAG of fits.csv): its relative threshold / APL factors on this base, its KC-KC scale')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -324,7 +348,7 @@ def main() -> None:
         t0 = time.time()
         res, init, bounds = fit_one(k, orn, initial, wnorm, breadth, loss_fn, kckc0=args.kckc0,
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
-            thr0_factor=args.thr0_factor, claw_thr=args.claw_thr
+            thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -341,6 +365,7 @@ def main() -> None:
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
             method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
+            init_from=args.init_from,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
