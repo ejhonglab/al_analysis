@@ -640,15 +640,44 @@ def compare_model_to_data(model: pd.Series, data: pd.Series, *,
     return out
 
 
+def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,
+    *, unit: str = 'recording') -> Dict[str, pd.Series]:
+    """One bootstrap replicate of {genotype: mean pair Series}.
+
+    Args:
+        rec_rdms: {genotype: per-recording pair DataFrame} (rows (date, fly_num,
+            hemibrain), as `yang_recording_rdms`)
+        unit: 'recording' draws recordings with replacement within each genotype;
+            'fly' draws flies (date, fly_num) with replacement, keeping all hemispheres
+            of each drawn fly (the two hemispheres of a fly are not independent)
+
+    Recordings are then averaged with equal weight, as in the report's recipe.
+    """
+    means = {}
+    for g, df in rec_rdms.items():
+        if unit == 'recording':
+            idx = rng.integers(0, len(df), len(df))
+            means[g] = df.iloc[idx].mean()
+        elif unit == 'fly':
+            flies = df.index.droplevel('hemibrain').unique()
+            drawn = flies[rng.integers(0, len(flies), len(flies))]
+            parts = [df.xs(f, level=('date', 'fly_num'), drop_level=False) for f in drawn]
+            means[g] = pd.concat(parts).mean()
+        else:
+            raise ValueError(unit)
+    return means
+
+
 def bootstrap_recordings(fn: Callable[[Dict[str, pd.Series]], Dict[str, float]],
     rec_rdms: Dict[str, pd.DataFrame], *, n_boot: int = 1000, seed: int = 0,
-    ci: Tuple[float, float] = (5, 95)) -> pd.DataFrame:
-    """Bootstraps statistics over recordings.
+    ci: Tuple[float, float] = (5, 95), unit: str = 'recording') -> pd.DataFrame:
+    """Bootstraps statistics over recordings (or flies).
 
     Args:
         fn: maps {genotype: mean pair Series} -> {stat: value}
         rec_rdms: {genotype: per-recording pair DataFrame} (`yang_recording_rdms`)
-        n_boot: resamples (recordings drawn with replacement within each genotype)
+        n_boot: resamples (drawn with replacement within each genotype)
+        unit: 'recording' or 'fly' (see `resample_recording_means`)
 
     Returns DataFrame indexed by stat: observed, boot_mean, boot_sd, lo, hi.
     """
@@ -656,10 +685,7 @@ def bootstrap_recordings(fn: Callable[[Dict[str, pd.Series]], Dict[str, float]],
     observed = fn({g: df.mean() for g, df in rec_rdms.items()})
     draws = {k: [] for k in observed}
     for _ in range(n_boot):
-        means = {}
-        for g, df in rec_rdms.items():
-            idx = rng.integers(0, len(df), len(df))
-            means[g] = df.iloc[idx].mean()
+        means = resample_recording_means(rec_rdms, rng, unit=unit)
         for k, v in fn(means).items():
             draws[k].append(v)
     rows = {}
@@ -696,6 +722,138 @@ def split_half_reliability(rec_rdms: pd.DataFrame, *, n_splits: int = 200, seed:
         split_half_hi=float(np.nanpercentile(vals, 95)), spearman_brown_full=full,
         ceiling=float(np.sqrt(full)),
     )
+
+
+# ---------------------------------------------------------------------------
+# per-recording KC x odor matrices and RDM pipeline variants (E7; atlas)
+RECORDING_KEYS: List[str] = ['date', 'fly_num', 'hemibrain']
+
+
+def yang_recording_matrices(genotype: str, with_pfo: bool = False
+    ) -> Dict[Tuple[str, int, str], pd.DataFrame]:
+    """{(date, fly_num, hemibrain): KCs x odors trial-mean matrix} for one genotype.
+
+    Odor columns are in `APL16_ODORS` order (plus `SOLVENT` last if `with_pfo`). Values
+    are Yang's z-scored fluorescence trial means (negatives included).
+    """
+    tm = yang_trialmeans()
+    tm = tm[tm.genotype == genotype]
+    odors = list(APL16_ODORS) + ([SOLVENT] if with_pfo else [])
+    mats = {}
+    for rec, sub in tm.groupby(RECORDING_KEYS, sort=True):
+        mat = sub.pivot(index='roi', columns='odor', values='value')[odors]
+        assert not mat.isna().any().any(), rec
+        mats[(str(rec[0]), int(rec[1]), str(rec[2]))] = mat
+    return mats
+
+
+def transform_matrix(mat: pd.DataFrame, *, values: str = 'graded', cells: str = 'all',
+    thresh: float = 1.0) -> pd.DataFrame:
+    """One RDM pipeline variant applied to a KCs x odors matrix.
+
+    Args:
+        values: 'graded' (as is), 'binary' (response > thresh -> 1.0 else 0.0), or
+            'thresholded' (graded values kept where > thresh, else 0)
+        cells: 'all' KCs, or 'responsive' (KCs with a response > thresh to at least one
+            odor column of `mat`)
+        thresh: response threshold (Yang's data are z-scores; she has used 0.75 and 1)
+    """
+    m = mat.astype(float)
+    if cells == 'responsive':
+        m = m.loc[(m > thresh).any(axis='columns')]
+    elif cells != 'all':
+        raise ValueError(cells)
+    if values == 'binary':
+        m = (m > thresh).astype(float)
+    elif values == 'thresholded':
+        m = m.where(m > thresh, 0.0)
+    elif values != 'graded':
+        raise ValueError(values)
+    return m
+
+
+def _stack_recordings(rows: Dict[tuple, pd.Series]) -> pd.DataFrame:
+    df = pd.DataFrame(rows).T
+    df.index = pd.MultiIndex.from_tuples(df.index, names=RECORDING_KEYS)
+    return df
+
+
+def recording_rdms_from_matrices(mats: Dict[tuple, pd.DataFrame], *,
+    measure: str = 'cosine', drop_silent: bool = False, **transform_kws) -> pd.DataFrame:
+    """Per-recording pair distances (rows recordings, columns canonical pairs) for one
+    pipeline variant (`transform_kws` -> `transform_matrix`; `measure`, `drop_silent` ->
+    `pair_distances`). Defaults reproduce `yang_recording_rdms(genotype)`.
+    """
+    return _stack_recordings({rec: pair_distances(transform_matrix(m, **transform_kws),
+        measure=measure, drop_silent=drop_silent) for rec, m in mats.items()
+    })
+
+
+def recording_response_fractions(mats: Dict[tuple, pd.DataFrame], thresh: float = 1.0
+    ) -> pd.DataFrame:
+    """Rows recordings, columns odors: fraction of KCs with response > thresh."""
+    return _stack_recordings({rec: (m > thresh).mean(axis='index') for rec, m in mats.items()})
+
+
+def match_threshold(mats: Dict[tuple, pd.DataFrame], target_frac: float, *,
+    lo: float = -1.0, hi: float = 8.0, tol: float = 1e-4) -> float:
+    """Threshold at which the recording-mean response fraction (mean over odors) equals
+    `target_frac`, by bisection. Pass a single-recording dict to match one recording.
+    """
+    def frac(th: float) -> float:
+        return float(recording_response_fractions(mats, th).mean(axis='columns').mean())
+
+    assert frac(lo) > target_frac > frac(hi), (frac(lo), target_frac, frac(hi))
+    while hi - lo > tol:
+        mid = (lo + hi) / 2
+        if frac(mid) > target_frac:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def density_null_similarity(mat: pd.DataFrame) -> pd.Series:
+    """Expected cosine similarity between odor columns of a KCs x odors matrix if KC
+    identities were shuffled independently within each odor (per-odor response
+    distributions, hence response counts, kept).
+
+    Exact permutation expectation: E[a . b] = N mean(a) mean(b), so
+    E[cos] = N mean(a) mean(b) / (|a| |b|); for binary columns this is sqrt(p_a p_b).
+    Returned as a canonical pair Series of similarities (not distances).
+    """
+    m = abbrev_columns(mat).astype(float)
+    odors = odor_order(m.columns)
+    X = m[odors].to_numpy().T
+    n = X.shape[1]
+    means = X.mean(axis=1)
+    norms = np.linalg.norm(X, axis=1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        S = n * np.outer(means, means) / np.outer(norms, norms)
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    return pd.Series([S[idx[a], idx[b]] for a, b in pl],
+        index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b'])
+    )
+
+
+def recording_density_null_rdms(mats: Dict[tuple, pd.DataFrame], **transform_kws
+    ) -> pd.DataFrame:
+    """Per-recording expected 1 - cosine under the within-odor KC-identity shuffle null."""
+    return _stack_recordings({rec: 1 - density_null_similarity(
+        transform_matrix(m, **transform_kws)) for rec, m in mats.items()
+    })
+
+
+def shuffled_pair_distances(mat: pd.DataFrame, rng: np.random.Generator, *,
+    measure: str = 'cosine', **transform_kws) -> pd.Series:
+    """Pair distances after independently permuting KC identities within each odor
+    column (one draw from the density null; `density_null_similarity` is its mean)."""
+    m = transform_matrix(mat, **transform_kws)
+    X = m.to_numpy().copy()
+    for j in range(X.shape[1]):
+        X[:, j] = X[rng.permutation(X.shape[0]), j]
+    return pair_distances(pd.DataFrame(X, index=m.index, columns=m.columns), measure=measure)
 
 
 # ---------------------------------------------------------------------------
