@@ -245,6 +245,22 @@ table and the experiment statuses) and chat.md in the shared directory to see if
 priorities or claims have changed.
 
 
+## Report artifact
+
+The report markdown in this folder ("APL and the ORN→KC remapping of odor–odor
+correlations.md") doubles as the running list of in silico experiments. Whenever new
+experiments are added to experiment_priorities.md (E11 onwards), also:
+1. append them to the report's "In silico experiments" numbered list, in the same style as
+   E1–E10 (bold `E<n>, title (mechanism)` then goal / design / readout / prediction in one
+   paragraph), after the `*Added ...*` note (extend that note with when and from what the
+   new ones were conceived; keep E1–E10 unchanged);
+2. rebuild the page with `./venv/bin/python build_report_artifact.py` and republish it to the
+   existing report artifact (same slug, so the link stays valid; the slug and the URL are
+   recorded at the top of experiment_priorities.md), then commit and push the markdown;
+3. mention the republish in chat.md.
+Only the experiment list changes this way; findings go in the per-experiment markdown
+files, not in the report.
+
 ## Naming and choosing experiments
 
 When naming markdown notes relevant to a single experiment only, or naming scripts to
