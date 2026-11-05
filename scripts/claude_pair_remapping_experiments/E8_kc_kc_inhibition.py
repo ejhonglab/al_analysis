@@ -46,11 +46,60 @@ TAU_FAST, TAU_SLOW = 0.05, 0.3
 BREADTH_K = 3.0
 
 
+def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
+    """Statistics vs KC-KC scale, per config (hue) and tau (marker fill)."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    p = H.PRIMARY_MODEL_RDM + '__'
+    stats = stats[~stats.get('error', pd.Series(index=stats.index, dtype=object)).notna()]
+    data_ctrl, data_tnt = -0.080, -0.239   # E7 excess (block) in the data, control / TNT
+    panels = [
+        ('Spearman with data', [(p + 'on_spearman', 'APL on vs control'), (p + 'off_spearman', 'APL off vs TNT')], None),
+        ('fruity x small-ester block (data +0.055)', [(p + 'block_fruity_small_iso', '')], 0.055),
+        ('APL-off residual vs VCF (data 0.36)', [(p + 'off_spearman_resid_vs_vcf_hyp', '')], 0.36),
+        ('excess sharing, block pairs (APL on)', [('on_excess_block', '')], data_ctrl),
+        ('isotonic R2 on vs off (data 0.75)', [(p + 'iso_r2', '')], 0.75),
+        ('APL-off / APL-on response rate (data 1.9)', [('rate_ratio_off_over_on', '')], 1.9),
+    ]
+    colors = {'plain': '#2b6cb0', 'breadth3': '#d9480f'}
+    fig, axes = plt.subplots(2, 3, figsize=(12, 6.4))
+    for ax, (title, series, ref) in zip(axes.ravel(), panels):
+        for cfg, sub in stats.groupby('config'):
+            for tau, ss in sub.groupby('kc_kc_tau'):
+                ss = ss.sort_values('kc_kc_inh')
+                x = ss['kc_kc_inh'].to_numpy()
+                for i, (col, label) in enumerate(series):
+                    if col not in ss:
+                        continue
+                    ls = '-' if i == 0 else '--'
+                    mfc = colors[cfg] if tau < 0.1 else 'white'
+                    lab = f"{cfg}, tau {tau:g}" + (f" ({label})" if label else '')
+                    ax.plot(x, ss[col].to_numpy(), ls, color=colors[cfg], marker='o', ms=5,
+                        mfc=mfc, lw=1.5, label=lab)
+        if ref is not None:
+            ax.axhline(ref, color='0.4', lw=1, ls=':')
+        ax.set_xscale('symlog', linthresh=10)
+        ax.set_xticks([0, 10, 30, 100, 300])
+        ax.set_xticklabels(['0', '10', '30', '100', '300'])
+        ax.set_xlim(-3, 420)
+        ax.set_xlabel('KC-KC inhibition scale (0 = off)')
+        ax.set_title(title, fontsize=10)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.grid(True, color='0.9', lw=0.6)
+    axes[0, 0].legend(fontsize=7, frameon=False)
+    fig.suptitle('E8: KC-KC lateral inhibition on the bouton base (threshold re-tuned to 5 %)', fontsize=11)
+    fig.tight_layout()
+    fig.savefig(res_dir / 'E8_kc_kc_inhibition.png', dpi=130)
+    plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--scales', nargs='+', type=float, default=[0.0, 10.0, 30.0, 100.0, 300.0])
     ap.add_argument('--slow-scales', nargs='+', type=float, default=[30.0, 100.0])
     ap.add_argument('--configs', nargs='+', choices=['plain', 'breadth3'], default=['plain', 'breadth3'])
+    ap.add_argument('--figure-only', action='store_true', help='only redraw the figure from the saved stats')
     args = ap.parse_args()
     from al_analysis.mb_model import fit_mb_model, make_fixed_param_kc_simulator
 
@@ -68,6 +117,9 @@ def main() -> None:
     data_rates = {g: H.yang_response_fractions(g).mean() for g in ('TNT3c', 'TNT')}
     stats_path = res_dir / 'stats_variants.csv'
     rows = list(pd.read_csv(stats_path).to_dict('records')) if stats_path.exists() else []
+    if args.figure_only:
+        make_figure(pd.read_csv(stats_path), res_dir)
+        return
     rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
     done = {r['tag'] for r in rows}
     pairs = {}
@@ -88,6 +140,14 @@ def main() -> None:
     bp1 = breadth + 1.0
     f3 = ((bp1 / bp1.mean()) ** BREADTH_K).reindex(claw_kc).fillna(1.0).to_numpy()
     configs = {'plain': wnorm['wAPLKC'], 'breadth3': wnorm['wAPLKC'] * f3}
+    # E12 matched the k = 3 model's response count to the plain model's by scaling the
+    # KC<->APL weights (kc_apl_factor, 0.18 for spikes_k3; the breadth factors raise the
+    # mean APL weight); with the plain scales the breadth config runs at ~1 % instead of
+    # 5 %. Apply that factor so the breadth3, no-KC-KC model is E12's spikes_k3 model.
+    e12 = pd.read_csv(H.shared_dir() / 'results' / 'E12_breadth_apl' / 'stats_variants.csv')
+    f12 = float(e12.loc[e12.tag == f'spikes_k{BREADTH_K:g}', 'kc_apl_factor'].iloc[0])
+    inits = {'plain': dict(initial), 'breadth3': dict(initial,
+        wAPLKC_scale=initial['wAPLKC_scale'] * f12, wKCAPL_scale=initial['wKCAPL_scale'] * f12)}
 
     jobs = []
     for cfg in args.configs:
@@ -104,23 +164,24 @@ def main() -> None:
         t0 = time.time()
         try:
             key = (cfg, tau)
+            init = inits[cfg]
             if key not in sims:
-                sims[key], _ = make_fixed_param_kc_simulator(orn, initial_params=initial,
+                sims[key], _ = make_fixed_param_kc_simulator(orn, initial_params=init,
                     **BOUTON, _wAPLKC=configs[cfg], _wKCAPL=wnorm['wKCAPL'],
                     _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=0.0,
                     kc_kc_tau=tau, make_plots=False, silent=True
                 )
                 # APL-on reference (no KC-KC term, APL weights as given) sets the target count
                 # for the plain config; the breadth config matches its own k = 3, no-KC-KC model
-                r_ref, _ = sims[key](dict(initial, wKCKC_scale=0.0))
+                r_ref, _ = sims[key](dict(init, wKCKC_scale=0.0))
                 rate_target[key] = rate(r_ref)
             sim = sims[key]
-            p = dict(initial, wKCKC_scale=s)
+            p = dict(init, wKCKC_scale=s)
             # the KC-KC term lowers the rate at fixed thresholds (for scales >= 30 below
             # the target even with the KC<->APL scales at 0.002x), so match the APL-on
             # rate by re-tuning the threshold with APL at its base scale: the term is
             # present in both genotypes and thresholds adapt
-            thr, f, r_on, s_on = bisect_threshold(sim, initial['fixed_thr'], rate_target[key],
+            thr, f, r_on, s_on = bisect_threshold(sim, init['fixed_thr'], rate_target[key],
                 extra={'wKCKC_scale': s}
             )
             p_on = dict(p, fixed_thr=thr)
@@ -177,6 +238,7 @@ def main() -> None:
         taus=[TAU_FAST, TAU_SLOW], breadth_k=BREADTH_K, approx_conc_note=H.APPROX_CONC_NOTE,
     )
     (res_dir / 'provenance.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
+    make_figure(pd.read_csv(stats_path), res_dir)
     print('done ->', res_dir)
 
 
