@@ -339,10 +339,13 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
 
 ### Summary reports (the all-experiments summary and the final report)
 
-- **No experiment IDs at all**, not even in parentheses: refer to experiments by the
-  canonical short names below (same wording every time, so a reader can match the page to
-  the per-experiment notes through the Completed list). Per-experiment notes and chat keep
-  "plain-English name (E<n>)".
+- **No experiment IDs in the text**, not even in parentheses: refer to experiments by the
+  canonical short names below (same wording every time). The one place IDs appear is a
+  collapsed "Experiment key" right under the title (a `??? Experiment key ...` / `???`
+  block in the markdown, which md_to_artifact.py renders as a details element, collapsed by
+  default): one bullet per experiment, `E<n>: <canonical name> (completed / running / not
+  started)`, so a reader can match the page to the per-experiment notes. Per-experiment
+  notes and chat keep "plain-English name (E<n>)".
 - **Background first.** Before any model number, a section with a figure and a table that
   shows what the data are: the ORN input matrix, the control KC matrix and the APL-blocked
   KC matrix for the 16 odors; what the ORN->KC remapping looks like in control flies (which

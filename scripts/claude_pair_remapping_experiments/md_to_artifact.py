@@ -6,7 +6,8 @@ wrapped over several lines (joined, so no line breaks mid-sentence), numbered an
 lists (continuation lines indented or simply following the item until a blank line or the
 next item), pipe tables (numeric cells right-aligned), figures written as
 `![caption](path.png)` on their own line (embedded as data URIs, so the page is one file),
-`---` rules, and inline `code`, **bold**, *italic* and links. The first paragraph after the
+`---` rules, collapsible blocks (a line `??? Title` opens one, a line `???` closes it; rendered
+as <details>, collapsed by default), and inline `code`, **bold**, *italic* and links. The first paragraph after the
 title is styled as the byline. After converting, `lint` fails on anything that still looks
 like markdown (leftover `#`, `**`, backticks, `](`), which is how the "### heading" and
 split-sentence defects of hand-converted pages are caught.
@@ -44,6 +45,9 @@ CSS = """
   figure img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
   figcaption { color: var(--muted); font-size: 0.86em; margin-top: 6px; }
   hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+  details.fold { margin: 10px 0 18px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; background: var(--soft); }
+  details.fold summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+  details.fold ul { margin: 8px 0 4px; }
   a { color: var(--accent); }
 """
 
@@ -63,7 +67,7 @@ def inline(s: str) -> str:
 
 
 def _is_block_start(ln: str) -> bool:
-    return bool(re.match(r'^(#{1,3} |\||\d+\. |[-*] |---\s*$|!\[)', ln))
+    return bool(re.match(r'^(#{1,3} |\||\d+\. |[-*] |---\s*$|!\[|\?\?\?)', ln))
 
 
 def _data_uri(path: Path) -> str:
@@ -71,12 +75,13 @@ def _data_uri(path: Path) -> str:
     return f'data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}'
 
 
-def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str] = None) -> str:
+def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True) -> str:
+    """Converts markdown to the body HTML (no page wrapper)."""
     lines = md.split('\n')
     out: List[str] = []
     i = 0
     seen_h1 = False
-    byline_done = False
+    byline_done = not byline
 
     def take_item(first: str) -> str:
         """Returns the item text with its continuation lines joined."""
@@ -104,6 +109,14 @@ def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str
             i += 1; continue
         if re.match(r'^---\s*$', s):
             out.append('<hr>'); i += 1; continue
+        if s.startswith('??? '):
+            title_txt = s[4:].strip(); inner = []; i += 1
+            while i < len(lines) and lines[i].strip() != '???':
+                inner.append(lines[i]); i += 1
+            i += 1   # the closing ???
+            out.append(f'<details class="fold"><summary>{inline(title_txt)}</summary>'
+                + convert_body('\n'.join(inner), figdir, byline=False) + '</details>')
+            continue
         fm = _FIG_RE.match(s)
         if fm:
             cap, src = fm.group(1), fm.group(2)
@@ -156,7 +169,11 @@ def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str
             out.append(f'<p class="meta">{inline(text)}</p>'); byline_done = True
         else:
             out.append(f'<p>{inline(text)}</p>')
-    body = '\n'.join(out)
+    return '\n'.join(out)
+
+
+def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str] = None) -> str:
+    body = convert_body(md, figdir)
     if title is None:
         mt = re.search(r'<h1>(.*?)</h1>', body)
         title = re.sub(r'<[^>]+>', '', mt.group(1)) if mt else 'page'
@@ -186,6 +203,8 @@ def lint(page: str) -> List[str]:
             probs.append(f'backtick left in text: {t[:70]!r}')
         if re.search(r'\]\(', t):
             probs.append(f'link syntax left in text: {t[:70]!r}')
+        if t.startswith('???'):
+            probs.append(f'collapsible-block marker left in text: {t[:70]!r}')
         if re.match(r'^(\d+\. |[-*] )', t) and len(t) > 3:
             probs.append(f'list marker left in text: {t[:70]!r}')
     if re.search(r'<li>[^<]*<br', page):
