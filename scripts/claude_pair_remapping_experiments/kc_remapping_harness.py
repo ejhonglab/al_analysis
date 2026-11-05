@@ -668,6 +668,33 @@ def bootstrap_recordings(fn: Callable[[Dict[str, pd.Series]], Dict[str, float]],
     return pd.DataFrame(rows).T
 
 
+def split_half_reliability(rec_rdms: pd.DataFrame, *, n_splits: int = 200, seed: int = 0,
+    method: str = 'spearman') -> Dict[str, float]:
+    """Reliability of a mean pair-distance matrix, from random split halves of recordings.
+
+    Returns split-half correlation (mean over splits, 5th / 95th percentiles), the
+    Spearman-Brown estimate for the full set of recordings (2r / (1 + r)), and
+    `ceiling`: sqrt of that, the expected correlation of a noise-free model that matched
+    the true mean matrix perfectly with the observed mean.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(rec_rdms)
+    corr = stats.spearmanr if method == 'spearman' else stats.pearsonr
+    vals = []
+    for _ in range(n_splits):
+        idx = rng.permutation(n)
+        a = rec_rdms.iloc[idx[:n // 2]].mean()
+        b = rec_rdms.iloc[idx[n // 2:]].mean()
+        vals.append(corr(a, b)[0])
+    vals = np.asarray(vals)
+    r = float(np.nanmean(vals))
+    full = 2 * r / (1 + r)
+    return dict(n_recordings=n, split_half=r, split_half_lo=float(np.nanpercentile(vals, 5)),
+        split_half_hi=float(np.nanpercentile(vals, 95)), spearman_brown_full=full,
+        ceiling=float(np.sqrt(full)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # plots (matplotlib; sequential single-hue maps for distances, diverging for residuals)
 def _plt():
@@ -809,6 +836,13 @@ def selftest(n_boot: int = 500) -> None:
 
     print(f'\nbootstrap over recordings ({n_boot} draws; 90% CI):')
     print(bootstrap_recordings(fn, recs, n_boot=n_boot).round(3).to_string())
+    print('\nsplit-half reliability of the mean matrices (Spearman; ceiling for a model):')
+    for g in ('TNT3c', 'TNT'):
+        for bz in (None, 1.0):
+            r = split_half_reliability(yang_recording_rdms(g, 'cosine', binarize=bz))
+            print(f"  {g} {'binarized' if bz else 'raw':9s}: split-half {r['split_half']:.3f} "
+                f"[{r['split_half_lo']:.3f}, {r['split_half_hi']:.3f}], full-sample "
+                f"{r['spearman_brown_full']:.3f}, model ceiling {r['ceiling']:.3f}")
     print('\nbinarized data (trial-mean > 1), recording-mean 1 - cosine: '
         + ', '.join(f'{g} {yang_mean_rdm(g, binarize=1.0).mean():.3f}' for g in ('TNT3c', 'TNT'))
         + ' (raw: ' + ', '.join(f'{g} {rep[g].mean():.3f}' for g in ('TNT3c', 'TNT')) + ')'
