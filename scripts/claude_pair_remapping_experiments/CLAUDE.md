@@ -314,6 +314,25 @@ idle host under the exception above), also:
 Only the experiment list changes this way; findings go in the per-experiment markdown
 files, not in the report.
 
+## Report copies (reports/ in the shared directory)
+
+Every artifact page we publish (per-experiment summaries, the report page, summary and
+add_to_reports pages) must also exist as a self-contained file under
+`<shared>/reports/`, the same document the artifact's share > export download gives. The
+artifact server serves the HTML we upload unchanged, so:
+1. build every artifact page as a local file (an `index.html` with figures embedded as data
+   URIs; a directory with `index.html` plus other files for a multi-file artifact) and publish
+   it with `publish_files` from that file, never from inline content;
+2. after every publish or republish, run (from this folder)
+   `./venv/bin/python save_report_copy.py <index.html or directory> <name> <artifact url>`,
+   which copies the file to `<shared>/reports/<name>.html` (a zip for a directory) and upserts
+   its row in `reports/README.md` (name, page title, URL, when and from which host). Use the
+   same `<name>` on republish so the folder holds the latest version only: `E<n>_<short>` for
+   experiment pages, `report_<short>` for the report, `summary_<date>` for summaries,
+   `note_<short>` for add_to_reports pages.
+Record the artifact URL where the scheme already asks for it (the experiment markdown, the
+Completed entry, the add_to_reports README); the reports/ copy is in addition, not instead.
+
 ## Naming and choosing experiments
 
 When naming markdown notes relevant to a single experiment only, or naming scripts to
