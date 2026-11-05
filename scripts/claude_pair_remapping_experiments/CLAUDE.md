@@ -287,6 +287,14 @@ When you complete an experiment and its interpretation:
    lightly processed from your markdown from #1). Record the artifact URL in the
    markdown from #1 and in the Completed entry.
 
+4. regenerate the summary artifact (the all-experiments summary in `add_to_reports/`, see
+   "Summary reports" below): fold the experiment's result into the section it belongs to
+   (its row in the relevant table, a sentence on what moved and whether it reached the
+   data), move it out of the pending list, update the experiment key, rebuild the page with
+   `md_to_artifact.py`, republish it to the same slug, run `save_report_copy.py`, update the
+   add_to_reports README row and say so in chat.md. Every completed experiment appears in the
+   summary before the host moves on.
+
 Before starting any task that will take more than a couple of minutes (an experiment,
 a shared-code change, a data pull), re-read experiment_priorities.md (the work claims
 table and the experiment statuses) and chat.md in the shared directory to see if
