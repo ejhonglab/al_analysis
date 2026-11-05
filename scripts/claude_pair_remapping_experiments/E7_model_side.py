@@ -173,10 +173,11 @@ def plot_m1(out: Path, tab: pd.DataFrame) -> None:
                 ax.add_patch(plt.Rectangle((c - 0.5, k - 0.5), 1, 1, fill=False, lw=1.6,
                     edgecolor='black'))
             ax.set_xticks(range(len(grid.columns)))
-            ax.set_xticklabels(grid.columns, rotation=60, ha='right')
+            ax.set_xticklabels(grid.columns if i == 1 else [], rotation=60, ha='right')
             ax.set_yticks(range(len(grid.index)))
             ax.set_yticklabels(grid.index if j == 0 else [])
             ax.set_title(f'{tag}, {cond} vs {g}')
+    fig.subplots_adjust(hspace=0.25, wspace=0.35)
     fig.colorbar(im, ax=axs, fraction=0.02, pad=0.02,
         label='Spearman: model vs data deviations from the ORN prediction (120 pairs)')
     fig.suptitle('E7 model side: recipe dependence of the deviation statistic '
