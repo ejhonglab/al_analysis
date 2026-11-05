@@ -266,7 +266,7 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
     panels = [
         ('per-odor rate rank agreement, APL on (ceiling 0.98)', 'spearman_rate_on_vs_data', 0.98),
         ('per-odor rate rank agreement, APL off (ceiling 0.97)', 'spearman_rate_off_vs_data', 0.97),
-        ('mean pair distance, APL on (data 0.86)', p + 'on_mean_model', 0.855),
+        ('mean pair distance, APL on (data 0.84, graded cosine)', p + 'on_mean_model', 0.840),
         ('excess sharing, block pairs, APL on (data -0.08)', 'on_excess_block', -0.080),
         ('rank agreement with control (APL on)', p + 'on_spearman', None),
         ('rank agreement with TNT (APL off)', p + 'off_spearman', None),

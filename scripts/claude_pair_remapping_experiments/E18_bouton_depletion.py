@@ -58,7 +58,7 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
     panels = [
         ('Spearman with coincidence-3 (APL on)', 'spearman_vs_coinc3_on', None),
         ('Spearman with claw_thr 70 (APL on)', 'spearman_vs_thr70_on', None),
-        ('mean pair distance, APL on (data 0.86)', pre + 'on_mean_model', 0.855),
+        ('mean pair distance, APL on (data 0.84, graded cosine)', pre + 'on_mean_model', 0.840),
         ('excess sharing, block pairs, APL on (data -0.08)', 'on_excess_block', -0.080),
         ('Spearman with control (APL on)', pre + 'on_spearman', None),
         ('Spearman with TNT (APL off)', pre + 'off_spearman', None),

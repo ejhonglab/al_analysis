@@ -54,7 +54,7 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
         ('Spearman with TNT (APL off)', p + 'off_spearman', None),
         ('excess sharing, block pairs, APL on (data -0.08)', 'on_excess_block', -0.080),
         ('excess sharing, block pairs, APL off (data -0.24)', 'off_excess_block', -0.239),
-        ('mean pair distance, APL on (data 0.86)', p + 'on_mean_model', 0.855),
+        ('mean pair distance, APL on (data 0.84, graded cosine)', p + 'on_mean_model', 0.840),
         ('APL-off / APL-on response rate (data 1.9)', 'rate_ratio_off_over_on', 1.9),
         ('per-odor rate vs data, APL on', 'spearman_rate_on_vs_data', None),
         ('isotonic R2 on vs off (data 0.94)', p + 'iso_r2', 0.94),

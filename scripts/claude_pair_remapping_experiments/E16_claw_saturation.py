@@ -112,7 +112,7 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
     stats = stats[stats.get('breadth_k', pd.Series(index=stats.index, dtype=float)).isna()]
     panels = [
         ('Spearman with the coincidence-3 model (APL on)', 'spearman_vs_coinc3_on', None),
-        ('mean pair distance, APL on (data ctrl 0.86)', p + 'on_mean_model', 0.855),
+        ('mean pair distance, APL on (data ctrl 0.84, graded cosine)', p + 'on_mean_model', 0.840),
         ('excess sharing, block pairs, APL on (data -0.08)', 'on_excess_block', -0.080),
         ('Spearman with control (APL on)', p + 'on_spearman', None),
         ('Spearman with TNT (APL off)', p + 'off_spearman', None),
