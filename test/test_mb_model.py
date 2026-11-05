@@ -67,7 +67,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     uniform_bouton_wPNKC, bouton_glomerulus_probs, claw_coord_cols,
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
     plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
-    read_onestep_lr_cache
+    read_onestep_lr_cache, connectome_KCKC_weights
 )
 
 # TODO better way?
@@ -5063,3 +5063,207 @@ def test_sensitivity_analysis_no_responses(tmp_path, orn_deltas):
     assert (tried.sparsity == 0).any()
     assert (tried.sparsity > 0).any()
     assert (sens_dir / f'spearman_of_pearsons.{al_util.plot_fmt}').exists()
+
+
+# one-row-per-KC hemibrain model, and a (reduced, for speed) claw + bouton model, to
+# test both branches computing KC drive in olfsysm `sim_KC_layer`
+KC_KC_INH_MODEL_KWS: List[ParamDict] = [
+    dict(weight_divisor=20),
+    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+        use_connectome_APL_weights=True
+    ),
+]
+
+@pytest.fixture(scope='module', params=KC_KC_INH_MODEL_KWS, ids=format_model_params)
+def kc_kc_inh_model(request, orn_deltas
+    ) -> Tuple[pd.DataFrame, ParamDict, FitMBModelOutputs]:
+    """Returns `orn_deltas`, model kwargs, and tuned outputs w/o `kc_kc_inh`.
+
+    Bouton model uses `reduced_bouton_system` (so the returned `orn_deltas` and kwargs
+    should be used). Do not modify outputs.
+    """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, request.param)
+    return orn_deltas, kws, _fit_mb_model(orn_deltas=orn_deltas, **kws)
+
+
+def _pop_param(ret: FitMBModelOutputs, key: str, expected: float) -> FitMBModelOutputs:
+    """Returns `fit_mb_model` outputs without `key` in param dict (checking its value).
+    """
+    responses, spike_counts, wPNKC, params = ret
+    params = dict(params)
+    assert params.pop(key) == expected
+    return responses, spike_counts, wPNKC, params
+
+
+def _model_kc_ids(responses: pd.DataFrame) -> pd.Index:
+    return responses.index.get_level_values(KC_ID)
+
+
+def test_connectome_KCKC_weights():
+    """Tests `connectome_KCKC_weights` counts / normalization / KC subsetting.
+    """
+    counts = connectome_KCKC_weights(normalize=False)
+    assert counts.index.equals(counts.columns)
+    assert counts.values.sum() == 33808
+    assert (counts.values >= 0).all()
+    assert (np.diag(counts.values) == 0).all()
+
+    weights = connectome_KCKC_weights()
+    assert np.isclose(weights.sum(axis='columns').mean(), 1)
+    assert np.allclose(weights.values * (counts.values.sum() / len(counts)),
+        counts.values
+    )
+
+    # (post, pre) order and subsetting
+    kc_ids = counts.index[::-3]
+    sub = connectome_KCKC_weights(kc_ids, normalize=False)
+    assert sub.index.equals(pd.Index(kc_ids)) and sub.columns.equals(pd.Index(kc_ids))
+    assert np.array_equal(sub.values, counts.loc[kc_ids, kc_ids].values)
+
+    sub_norm = connectome_KCKC_weights(kc_ids)
+    assert np.isclose(sub_norm.sum(axis='columns').mean(), 1)
+
+    with pytest.raises(ValueError):
+        connectome_KCKC_weights(np.arange(100))
+
+
+def test_kc_kc_inh_zero_equals_default(kc_kc_inh_model):
+    """Tests `kc_kc_inh=0.0` (code path enabled, w/ zero weights) does not change tuned
+    outputs.
+    """
+    orn_deltas, kws, ret = kc_kc_inh_model
+    assert not any(k in ret[3] for k in ('kc_kc_inh', 'kc_kc_tau'))
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, kc_kc_inh=0.0, **kws)
+    assert_fit_outputs_equal(ret, _pop_param(ret2, 'kc_kc_inh', 0.0))
+
+
+def test_kc_kc_inh_zero_wKCKC_equals_default(kc_kc_inh_model):
+    """Tests a `_wKCKC` override with all zero weights does not change tuned outputs.
+    """
+    orn_deltas, kws, ret = kc_kc_inh_model
+    kc_ids = _model_kc_ids(ret[0])
+    zeros = pd.DataFrame(0.0, index=kc_ids, columns=kc_ids)
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, kc_kc_inh=1.0, _wKCKC=zeros, **kws)
+    assert_fit_outputs_equal(ret, _pop_param(ret2, 'kc_kc_inh', 1.0))
+
+
+def test_kc_kc_inh_lowers_response_rate(kc_kc_inh_model):
+    """Tests `kc_kc_inh > 0` (w/ threshold and APL weights fixed at tuned values, w/ and
+    w/o APL) lowers response rate, and that `_wKCKC` / `kc_kc_tau` work as expected.
+    """
+    orn_deltas, kws, ret = kc_kc_inh_model
+    responses, spike_counts, _, params = ret
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+    scale = 50.0
+
+    for apl_kws in (dict(), dict(wAPLKC=0.0)):
+        fixed_apl_kws = {**fixed_kws, **apl_kws}
+        if len(apl_kws) == 0:
+            # (fixed params should reproduce tuned outputs)
+            base_responses = responses
+            base_spike_counts = spike_counts
+        else:
+            base_responses, base_spike_counts, _, _ = _fit_mb_model(
+                orn_deltas=orn_deltas, **fixed_apl_kws, **kws
+            )
+
+        responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+            kc_kc_inh=scale, **fixed_apl_kws, **kws
+        )
+        assert params2['kc_kc_inh'] == scale
+        assert 'kc_kc_tau' not in params2
+
+        rate = base_responses.mean().mean()
+        rate2 = responses2.mean().mean()
+        print(f'{apl_kws=}: response rate {rate:.4f} -> {rate2:.4f} '
+            f'(kc_kc_inh={scale})'
+        )
+        assert rate2 < rate
+        assert spike_counts2.values.sum() < base_spike_counts.values.sum()
+        assert (responses2 != base_responses).values.sum() > 0
+
+    # default (connectome) weights, passed explicitly, in a different order, should give
+    # the same outputs (comparing to last loop iteration, w/o APL)
+    kc_ids = _model_kc_ids(responses)
+    wKCKC = connectome_KCKC_weights(kc_ids).iloc[::-1, ::-1]
+    responses3, spike_counts3, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
+        kc_kc_inh=scale, _wKCKC=wKCKC, **fixed_apl_kws, **kws
+    )
+    assert responses3.equals(responses2)
+    assert spike_counts3.equals(spike_counts2)
+
+    # slower filtered KC activity -> longer inhibition after each spike
+    responses4, spike_counts4, _, params4 = _fit_mb_model(orn_deltas=orn_deltas,
+        kc_kc_inh=scale, kc_kc_tau=0.2, **fixed_apl_kws, **kws
+    )
+    assert params4['kc_kc_tau'] == 0.2
+    assert not spike_counts4.equals(spike_counts2)
+
+
+def test_kc_kc_inh_invalid(orn_deltas):
+    """Tests invalid KC-KC inhibition kwargs raise ValueError.
+    """
+    kws = dict(weight_divisor=20)
+    for bad_kws in (dict(kc_kc_tau=0.1), dict(kc_kc_inh=-1.0),
+            dict(kc_kc_inh=1.0, kc_kc_tau=0.0),
+            dict(_wKCKC=pd.DataFrame([[0.0]], index=[1], columns=[1]))):
+
+        with pytest.raises(ValueError):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+
+def test_kc_kc_inh_model_id():
+    """Tests model IDs / LR cache keys only change when `kc_kc_inh` (or `kc_kc_tau`)
+    passed, and that small values are distinguishable.
+    """
+    kws = dict(weight_divisor=20)
+    none_kws = {**kws, 'kc_kc_inh': None, 'kc_kc_tau': None}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    ids = {format_model_params({**kws, **x}) for x in (dict(), dict(kc_kc_inh=0.0),
+        dict(kc_kc_inh=0.004), dict(kc_kc_inh=0.005),
+        dict(kc_kc_inh=0.005, kc_kc_tau=0.1)
+    )}
+    assert len(ids) == 5
+    assert onestep_lr_cache_key({**kws, 'kc_kc_inh': 0.0}) != onestep_lr_cache_key(kws)
+
+
+def test_kc_kc_inh_simulator(kc_kc_inh_model):
+    """Tests `make_fixed_param_kc_simulator` w/ 'wKCKC_scale' (= `kc_kc_inh`) matches
+    `fit_mb_model`, and that the initial call can tune w/ KC-KC inhibition on.
+    """
+    orn_deltas, kws, ret = kc_kc_inh_model
+
+    # initial call tunes threshold / APL weights w/ KC-KC inhibition on (simulator
+    # checks it reproduces those tuned outputs)
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        kc_kc_inh=10.0, **kws
+    )
+    assert initial_params['wKCKC_scale'] == 10.0
+
+    scale2responses = dict()
+    for scale in (0.0, 50.0):
+        params = {**initial_params, 'wKCKC_scale': scale}
+        responses, spike_counts = simulate(params)
+        scale2responses[scale] = responses
+
+        responses2, spike_counts2, _, _ = _fit_mb_model(orn_deltas=orn_deltas,
+            **{**kws, **fixed_params_to_fit_mb_model_kws(params)}
+        )
+        assert responses.equals(responses2)
+        assert spike_counts.equals(spike_counts2)
+
+    assert (scale2responses[50.0].mean().mean() < scale2responses[0.0].mean().mean())
+
+    with pytest.raises(ValueError):
+        simulate({'wKCKC_scale': -1.0})
+
+    # can also be enabled via initial_params alone
+    initial_params2 = {k: v for k, v in initial_params.items() if k != 'wKCKC_scale'}
+    _, initial_params3 = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params={**initial_params2, 'wKCKC_scale': 50.0}, **kws
+    )
+    assert initial_params3['wKCKC_scale'] == 50.0

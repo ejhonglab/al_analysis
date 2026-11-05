@@ -536,6 +536,7 @@ exclude_params = {
     '_wKCAPL',
     '_wAPLPN',
     '_wPNAPL',
+    '_wKCKC',
 
     'responses_to',
     'tune_from',
@@ -580,6 +581,10 @@ exclude_params = {
 # `fit_mb_model` kwargs setting olfsysm antennal lobe (PN / LN) inhibition parameters
 # (`mp.pn.inhsc`, etc). olfsysm defaults used if None.
 AL_INH_PARAMS: Tuple[str, ...] = ('pn_inhsc', 'pn_inhadd', 'ln_inhsc', 'ln_inhadd')
+
+# `fit_mb_model` kwargs for KC-KC lateral inhibition (olfsysm `mp.kc.use_kc_kc_inh`).
+# Disabled if `kc_kc_inh` is None.
+KC_KC_INH_PARAMS: Tuple[str, ...] = ('kc_kc_inh', 'kc_kc_tau')
 
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
@@ -653,8 +658,11 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # names, not the abbreviated values in param_abbrevs.
     exclude_if_value_matches = {
         'tune_on_hallem': False,
-        **{k: None for k in AL_INH_PARAMS},
+        **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS},
     }
+
+    # float formats for params where default '.2f' would lose too much precision
+    param_float_formats = {k: '.3g' for k in KC_KC_INH_PARAMS}
 
     if exclude is None:
         exclude = set(exclude_params)
@@ -674,7 +682,9 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # cache miss...)
     # TODO share this (or some) float format specifier w/ other places?
     param_str = sep.join([(f'{param_abbrevs[k] if k in param_abbrevs else k}=' +
-            (f'{v:.2f}' if isinstance(v, float) else f'{v}')
+            (format(v, param_float_formats.get(k, '.2f')) if isinstance(v, float)
+                else f'{v}'
+            )
         ) for k, v in model_kws.items() if k not in exclude and
         (k not in exclude_if_value_matches or v != exclude_if_value_matches[k])
     ])
@@ -2094,6 +2104,12 @@ apl_unit_distances_path: Path = (prat_hemibrain_seg_dir /
 # all APL synapses, with their locations and APL units
 apl_synapses_path: Path = (prat_hemibrain_seg_dir /
     'APL_Assignments_2025-12-05-13-39-22.parquet'
+)
+
+# hemibrain KC->KC synapses (one row per synapse, all w/ presynapse in the calyx), with
+# claw assignments of each side. See `connectome_KCKC_weights`.
+kckc_synapses_path: Path = (prat_hemibrain_seg_dir /
+    'KCclaw-to-KCclaw_Connectivity_2025-12-05-13-39-22.parquet'
 )
 
 claw_coord_cols: List[str] = [f'claw_{d}' for d in ('x', 'y', 'z')]
@@ -6323,6 +6339,77 @@ def _apl_unit_fracs(syns: pd.DataFrame, entry_cols: List[str], apl_unit_col: str
 
     counts = counts.reindex(columns=units, fill_value=0)
     return counts.div(counts.sum(axis=1), axis=0)
+
+
+def connectome_KCKC_weights(kc_ids: Optional[Sequence[int]] = None, *,
+    connectome: str = 'hemibrain', normalize: bool = True) -> pd.DataFrame:
+    """Returns KC x KC weights, from hemibrain KC->KC synapse counts.
+
+    Synapses are from Pratyush's KC claw -> KC claw connectivity (`kckc_synapses_path`;
+    33,808 synapses, all with presynapses in the calyx), counted per (presynaptic,
+    postsynaptic) KC body ID pair, ignoring claw assignments. There are no KC->KC
+    autapses in this data (diagonal is 0).
+
+    Args:
+        kc_ids: hemibrain KC body IDs (e.g. `KC_ID` level of `fit_mb_model` wPNKC
+            index) to restrict output to (in this order, on both axes). Synapses to or
+            from other KCs are dropped, and KCs without any KC->KC synapses (with these
+            KCs) have all-zero rows / columns. If None, all KCs in the data (sorted).
+
+        connectome: only 'hemibrain' currently supported
+
+        normalize: if True, weights are divided by the mean (over all output KCs,
+            including any without KC->KC input) of the total incoming weight onto each
+            KC, so the mean row sum is 1. Otherwise, values are synapse counts.
+
+    Returns DataFrame of shape (# KCs, # KCs), with element (post, pre) the weight
+    from KC `pre` onto KC `post` (index named `f'{KC_ID}_post'`, columns
+    `f'{KC_ID}_pre'`), as `olfsysm` `rv.kc.wKCKC` expects.
+
+    Raises `ValueError` if less than half of `kc_ids` are KCs in the KC->KC data (e.g.
+    if they are not hemibrain body IDs).
+    """
+    if connectome != 'hemibrain':
+        raise NotImplementedError('KC->KC synapses only available for '
+            "connectome='hemibrain'"
+        )
+
+    df = pd.read_parquet(kckc_synapses_path, columns=['bodyId_pre', 'bodyId_post'])
+    counts = df.groupby(['bodyId_post', 'bodyId_pre']).size()
+    data_kc_ids = set(df.bodyId_pre) | set(df.bodyId_post)
+
+    if kc_ids is None:
+        kc_ids = pd.Index(sorted(data_kc_ids))
+    else:
+        kc_ids = pd.Index(kc_ids)
+        if kc_ids.duplicated().any():
+            raise ValueError('kc_ids must not have duplicates')
+
+        n_in_data = kc_ids.isin(list(data_kc_ids)).sum()
+        if n_in_data < len(kc_ids) / 2:
+            raise ValueError(f'only {n_in_data}/{len(kc_ids)} kc_ids in KC->KC data '
+                f'({kckc_synapses_path.name}). should be hemibrain body IDs.'
+            )
+
+    post = counts.index.get_level_values('bodyId_post')
+    pre = counts.index.get_level_values('bodyId_pre')
+    counts = counts[post.isin(kc_ids) & pre.isin(kc_ids)]
+
+    weights = np.zeros((len(kc_ids), len(kc_ids)))
+    weights[
+        kc_ids.get_indexer(counts.index.get_level_values('bodyId_post')),
+        kc_ids.get_indexer(counts.index.get_level_values('bodyId_pre'))
+    ] = counts.values
+
+    if normalize:
+        total = weights.sum()
+        assert total > 0
+        weights = weights / (total / len(kc_ids))
+
+    return pd.DataFrame(weights,
+        index=pd.Index(kc_ids, name=f'{KC_ID}_post'),
+        columns=pd.Index(kc_ids, name=f'{KC_ID}_pre')
+    )
 
 
 def connectome_APL_weights(connectome: str = 'hemibrain', *, prat_claws: bool = False,
@@ -12364,7 +12451,9 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `plot_dir / 'dynamics'`
 
         return_olfsysm_vars: if True, also returns olfsysm `mp` and `rv` objects in
-            `param_dict` (not supported by `fit_and_plot_mb_model`)
+            `param_dict` (not supported by `fit_and_plot_mb_model`), as well as
+            'wKCKC_unscaled' (sparse KC-KC weights before multiplying by `kc_kc_inh`),
+            if `kc_kc_inh` passed
 
         multiresponder_APL_boost: if passed, APL weights of "multiresponder" KCs (from
             `_multiresponder_mask`, or masks saved by natmix_data analysis, if not
@@ -12426,11 +12515,6 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         assert tune_apl_weights != False
         if tune_apl_weights is None:
             tune_apl_weights = True
-
-    # TODO implement (KC-KC lateral inhibition, olfsysm p.kc.use_kc_kc_inh /
-    # rv.kc.wKCKC)
-    if kc_kc_inh is not None or kc_kc_tau is not None or _wKCKC is not None:
-        raise NotImplementedError('kc_kc_inh / kc_kc_tau / _wKCKC not yet implemented')
 
     if pn2kc_connections not in pn2kc_connections_options:
         raise ValueError(f'{pn2kc_connections=} not in {pn2kc_connections_options}')
@@ -12583,6 +12667,33 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         # below (including on Hallem odors, if tune_on_hallem=True).
         layer, param = k.split('_')
         setattr(getattr(mp, layer), param, v)
+
+    # (only those passed, to also add to param_dict below)
+    kc_kc_inh_params = {k: float(v) for k, v in
+        zip(KC_KC_INH_PARAMS, (kc_kc_inh, kc_kc_tau)) if v is not None
+    }
+    if kc_kc_inh is None:
+        if kc_kc_tau is not None or _wKCKC is not None:
+            raise ValueError('kc_kc_tau / _wKCKC require kc_kc_inh')
+    else:
+        for k, v in kc_kc_inh_params.items():
+            if not np.isfinite(v) or v < 0 or (k == 'kc_kc_tau' and v == 0):
+                raise ValueError(f'{k} must be finite and not negative (and kc_kc_tau '
+                    f'must be positive) (got {v})'
+                )
+        if pn2kc_connections in variable_n_claw_options:
+            # (wPNKC is generated in olfsysm, w/o connectome KC IDs)
+            raise NotImplementedError('kc_kc_inh not supported with '
+                f'pn2kc_connections in {variable_n_claw_options}'
+            )
+        if n_claws_active_to_spike is not None:
+            raise ValueError('kc_kc_inh not supported with n_claws_active_to_spike '
+                '(inhibition acts on somatic Vm, which then does not determine spiking)'
+            )
+        # weights (rv.kc.wKCKC) set below, after rv is created
+        mp.kc.use_kc_kc_inh = True
+        if kc_kc_tau is not None:
+            mp.kc.kc_kc_tau = float(kc_kc_tau)
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
@@ -13666,6 +13777,32 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     # has happened before, and getting again after adding pn_id (int ID) and BOUTON_ID
     # (tuple of ID) levels
     rv = osm.RunVars(mp)
+
+    wKCKC_unscaled = None
+    if kc_kc_inh is not None:
+        # olfsysm KCs are in kc_index order (in both one_row_per_claw cases or not)
+        model_kc_ids = kc_index.get_level_values(KC_ID)
+        if _wKCKC is None:
+            wKCKC_df = connectome_KCKC_weights(model_kc_ids, connectome=connectome)
+        else:
+            wKCKC_df = _wKCKC
+            missing = (set(model_kc_ids) - set(wKCKC_df.index)) | (
+                set(model_kc_ids) - set(wKCKC_df.columns)
+            )
+            if len(missing) > 0:
+                raise ValueError(f'_wKCKC missing {len(missing)} model KC IDs (on '
+                    'index and/or columns)'
+                )
+            wKCKC_df = wKCKC_df.loc[model_kc_ids, model_kc_ids]
+
+        wKCKC_unscaled = wKCKC_df.to_numpy(dtype=float)
+        if not np.isfinite(wKCKC_unscaled).all() or (wKCKC_unscaled < 0).any():
+            raise ValueError('KC-KC weights must be finite and non-negative')
+
+        # (post, pre), as olfsysm expects. olfsysm checks shape / values.
+        wKCKC_unscaled = csc_matrix(wKCKC_unscaled)
+        rv.kc.wKCKC = float(kc_kc_inh) * wKCKC_unscaled
+        del wKCKC_df, model_kc_ids
 
     kc_to_claws = None
     if one_row_per_claw:
@@ -15444,6 +15581,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     }
     # only those passed, so outputs (and saved params) of other models do not change
     param_dict.update(al_inh_params)
+    param_dict.update(kc_kc_inh_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -15954,6 +16092,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         )
         param_dict['mp'] = mp
         param_dict['rv'] = rv
+        if wKCKC_unscaled is not None:
+            param_dict['wKCKC_unscaled'] = wKCKC_unscaled
 
     return responses, spike_counts, wPNKC, param_dict
 
@@ -15968,7 +16108,14 @@ optimizable_model_params: Dict[str, str] = {
     'wPNAPL_scale': 'wPNAPL',
     # only for models w/ APL split into units (also a model kwarg, setting that)
     'apl_unit_coupling': 'apl_unit_coupling',
+    # only for models w/ KC-KC inhibition (kwarg also enables it). scale multiplying
+    # (unscaled) KC-KC weights.
+    'wKCKC_scale': 'kc_kc_inh',
 }
+
+# `optimizable_model_params` values that are also passed as `fit_mb_model` kwargs to
+# `make_fixed_param_kc_simulator`, to enable the model feature they parameterize
+_simulator_enabling_kws: Set[str] = {'apl_unit_coupling', 'kc_kc_inh'}
 
 # fit_mb_model kwargs that make_fixed_param_kc_simulator does not support (either
 # because they change how thresholds / APL weights are defined, or because they involve
@@ -16036,6 +16183,9 @@ def _get_fixed_params(param_dict: ParamDict) -> ParamDict:
         params['wAPLPN_scale'] = float(param_dict['wAPLPN_scale'])
         params['wPNAPL_scale'] = float(param_dict['wPNAPL_scale'])
 
+    if 'kc_kc_inh' in param_dict:
+        params['wKCKC_scale'] = float(param_dict['kc_kc_inh'])
+
     return params
 
 
@@ -16060,10 +16210,11 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
         **model_kws: passed to `fit_mb_model` (including any affecting the ORN/LN/PN
             layers, e.g. `pn_inhsc`, which are only simulated in that initial call).
             Must not contain kwargs in `optimizable_model_params` values (use
-            `initial_params` instead), except `apl_unit_coupling` (which also
-            determines whether the APL is split into units, and is overridden by any
-            value in `initial_params`). Kwargs only used for tuning (e.g.
-            `target_sparsity`) are ignored if `initial_params` passed.
+            `initial_params` instead), except `apl_unit_coupling` and `kc_kc_inh`
+            (which also determine whether the APL is split into units / whether
+            there is KC-KC inhibition, and are overridden by any value in
+            `initial_params`). Kwargs only used for tuning (e.g. `target_sparsity`)
+            are ignored if `initial_params` passed.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -16071,15 +16222,16 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     outputs). Output should equal that of a `fit_mb_model` call with these parameters
     fixed (via `fixed_params_to_fit_mb_model_kws`). Initial parameters have values for
     all keys of `optimizable_model_params` that apply to this model (PN<>APL weight
-    scales only included if `prat_boutons=True`, and 'apl_unit_coupling' only if the
-    APL is split into units).
+    scales only included if `prat_boutons=True`, 'apl_unit_coupling' only if the APL is
+    split into units, and 'wKCKC_scale' [= `kc_kc_inh`] only if there is KC-KC
+    inhibition).
     """
     if orn_deltas is None:
         raise ValueError('orn_deltas must be passed (running on Hallem data not '
             'supported)'
         )
 
-    fixed_kws = (set(optimizable_model_params.values()) - {'apl_unit_coupling'}
+    fixed_kws = (set(optimizable_model_params.values()) - _simulator_enabling_kws
         ) & set(model_kws)
     if len(fixed_kws) > 0:
         raise ValueError(f'pass {fixed_kws} via initial_params, not as kwargs')
@@ -16115,8 +16267,11 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     )
     mp = param_dict.pop('mp')
     rv = param_dict.pop('rv')
+    # (only present if kc_kc_inh passed)
+    wKCKC_unscaled = param_dict.pop('wKCKC_unscaled', None)
 
     initial_params = _get_fixed_params(param_dict)
+    assert ('wKCKC_scale' in initial_params) == (wKCKC_unscaled is not None)
 
     apl_unit_coupling = model_kws.get('apl_unit_coupling')
     if apl_unit_coupling is not None:
@@ -16171,8 +16326,8 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
         # olfsysm only checks weights in fit_sparseness, which is not called below
         negative = {p: v for p, v in params.items() if p != 'fixed_thr' and v < 0}
         if len(negative) > 0:
-            raise ValueError('APL weight scales / apl_unit_coupling must not be '
-                f'negative: {negative}'
+            raise ValueError('APL / KC-KC weight scales and apl_unit_coupling must '
+                f'not be negative: {negative}'
             )
 
         # same as olfsysm.fit_sparseness does w/ fixed threshold (fit_mb_model always
@@ -16199,6 +16354,10 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
                 params['apl_unit_coupling'], n_neighbors=apl_unit_n_neighbors,
                 dists=apl_unit_dists
             ).values)
+
+        if wKCKC_unscaled is not None:
+            # same as fit_mb_model
+            rv.kc.wKCKC = float(params['wKCKC_scale']) * wKCKC_unscaled
 
         # regen=False skips olfsysm build_wPNKC and fit_sparseness, just simulating KCs
         osm.run_KC_sims(mp, rv, False)
@@ -16531,10 +16690,11 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
         params_to_optimize: subset of `optimizable_model_params` keys. Defaults to all
             that apply to this model (PN<>APL weight scales only included if
-            `prat_boutons=True`, and 'apl_unit_coupling' only if passed), except
-            'wKCAPL_scale'. Scaling all APL input weights (wKCAPL, wPNAPL) by some
-            factor, and all APL output weights (wAPLKC, wAPLPN) by its inverse, does not
-            change model outputs, so optimizing all of them would be redundant. Others
+            `prat_boutons=True`, 'apl_unit_coupling' only if passed, and 'wKCKC_scale'
+            only if `kc_kc_inh` passed), except 'wKCAPL_scale'. Scaling all APL input
+            weights (wKCAPL, wPNAPL) by some factor, and all APL output weights (wAPLKC,
+            wAPLPN) by its inverse, does not change model outputs, so optimizing all of
+            them would be redundant. Others
             are either fixed at initial values, or tied to wAPLKC_scale (see
             `tie_apl_weights`).
 
@@ -19221,7 +19381,7 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 k: [x[k] for x in param_dict_list] for k in param_dict_keys
             }
             # inputs (same for all seeds), so they still match model_kws values below
-            for k in AL_INH_PARAMS:
+            for k in AL_INH_PARAMS + KC_KC_INH_PARAMS:
                 if k in param_dict:
                     assert len(set(param_dict[k])) == 1
                     param_dict[k] = param_dict[k][0]
