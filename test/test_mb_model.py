@@ -5573,6 +5573,139 @@ def test_claw_thr_simulator(claw_sat_model):
     assert spike_counts.equals(spike_counts2)
 
 
+@pytest.fixture(scope='module')
+def claw_thr_model(claw_sat_model
+    ) -> Tuple[pd.DataFrame, ParamDict, FitMBModelOutputs]:
+    """Returns `orn_deltas`, model kwargs (w/ `claw_thr=70.0`), and tuned outputs, for
+    each `claw_sat_model` model.
+
+    Do not modify outputs.
+    """
+    orn_deltas, kws, _ = claw_sat_model
+    kws = {**kws, 'claw_thr': 70.0}
+    return orn_deltas, kws, _fit_mb_model(orn_deltas=orn_deltas, **kws)
+
+
+def test_claw_thr_width_zero_equals_hard_knee(claw_thr_model):
+    """Tests `claw_thr_width=0.0` (recorded, but hard knee) does not change tuned outputs
+    of a `claw_thr` model.
+    """
+    orn_deltas, kws, ret = claw_thr_model
+    assert 'claw_thr_width' not in ret[3]
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, claw_thr_width=0.0, **kws)
+    assert type(ret2[3]['claw_thr_width']) is float
+    assert_fit_outputs_equal(ret, _pop_param(ret2, 'claw_thr_width', 0.0))
+
+
+def test_claw_thr_width_soft_knee(claw_thr_model):
+    """Tests `claw_thr_width > 0` (w/ threshold and APL weights fixed at values tuned w/
+    the hard knee) adds input, and changes outputs more for a wider knee.
+
+    Total spikes are not compared, as the added input includes spontaneous input
+    (`kc_spont_in`), and thus thresholds (`fixed_thr + 2 * kc_spont_in`), which here
+    lowers the response rate in the bouton model (e.g. ~0.096 -> ~0.071 for width 20).
+    """
+    orn_deltas, kws, ret = claw_thr_model
+    # (fixed params should reproduce tuned outputs)
+    responses, _, _, params = ret
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+    spont_in = params['kc_spont_in'].values
+
+    width2n_changed = dict()
+    for width in (5.0, 20.0):
+        responses2, _, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+            claw_thr_width=width, **fixed_kws, **kws
+        )
+        assert params2['claw_thr_width'] == width
+
+        # softplus >= rectifier, for each claw
+        spont_in2 = params2['kc_spont_in'].values
+        assert (spont_in2 >= spont_in).all()
+        assert spont_in2.sum() > spont_in.sum()
+
+        width2n_changed[width] = (responses2 != responses).values.sum()
+
+    print(f'# of KC-odor responses changed from hard knee, by width: {width2n_changed}')
+    assert 0 < width2n_changed[5.0] < width2n_changed[20.0]
+
+
+def test_claw_thr_width_invalid(orn_deltas):
+    """Tests invalid `claw_thr_width` kwargs raise ValueError.
+    """
+    nonclaw_kws = dict(weight_divisor=20)
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True)
+    for kws, bad_kws in (
+            (claw_kws, dict(claw_thr_width=20.0)),
+            (claw_kws, dict(claw_thr_width=0.0)),
+            (claw_kws, dict(claw_sat=50.0, claw_thr_width=20.0)),
+            (claw_kws, dict(claw_thr=70.0, claw_thr_width=-1.0)),
+            (claw_kws, dict(claw_thr=70.0, claw_thr_width=np.inf)),
+            (claw_kws, dict(claw_thr=70.0, claw_thr_width=np.nan)),
+            (nonclaw_kws, dict(claw_thr=70.0, claw_thr_width=20.0)),
+        ):
+
+        with pytest.raises(ValueError, match='claw_(sat|thr)'):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+
+def test_claw_thr_width_model_id():
+    """Tests model IDs / LR cache keys only change when `claw_thr_width` passed
+    (including 0.0), and that small values are distinguishable.
+    """
+    kws = dict(one_row_per_claw=True, prat_claws=True, claw_thr=70.0)
+    none_kws = {**kws, 'claw_thr_width': None}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(claw_thr_width=0.0), dict(claw_thr_width=0.004),
+        dict(claw_thr_width=0.005), dict(claw_thr_width=20.0)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_claw_thr_width_simulator(claw_sat_model):
+    """Tests `make_fixed_param_kc_simulator` forwards `claw_thr_width` (matching
+    `fit_mb_model`), including in the initial (tuning) call.
+    """
+    orn_deltas, kws, _ = claw_sat_model
+    target = 0.1
+    claw_kws = dict(claw_thr=70.0, claw_thr_width=20.0)
+
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        target_sparsity=target, **claw_kws, **kws
+    )
+    assert not any(k in initial_params for k in CLAW_SAT_PARAMS)
+    tuned_responses, _ = simulate(dict())
+    tuned_rate = tuned_responses.mean().mean()
+    print(f'tuned response rate w/ {claw_kws}: {tuned_rate:.4f}')
+    # (olfsysm default mp.kc.sp_acc=0.1 is relative to target)
+    assert abs(tuned_rate - target) <= 0.1 * target + 1e-9
+
+    # same thresholds / APL weights, w/ hard knee
+    simulate_hard, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, claw_thr=claw_kws['claw_thr'], **kws
+    )
+
+    # acute APL knockout (all APL weight scales 0)
+    apl_off = {k: 0.0 for k in initial_params if k != 'fixed_thr'}
+    responses, spike_counts = simulate(apl_off)
+    responses_hard, _ = simulate_hard(apl_off)
+    assert responses.mean().mean() > tuned_rate
+    assert not responses.equals(responses_hard)
+
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **claw_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
+    )
+    assert params2['claw_thr_width'] == claw_kws['claw_thr_width']
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)
+
+
 # reduced claw + bouton model (as in CLAW_SAT_MODEL_KWS), which `bouton_ves_p` requires
 # (prat_boutons=True)
 BOUTON_DEPLETION_MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True,
