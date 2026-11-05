@@ -390,6 +390,14 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   in prose, tables and figures alike, with no full names anywhere, not even a key. If an odor
   has no abbreviation on hand, look it up in olfdb's odors table (http://hal:8080, see its
   design.md for the API) rather than writing the full name.
+- **Tables.** A column whose cells are mostly numbers is right-aligned as a whole (header
+  included; ranges, "a / b" pairs and dashes count as numbers) and kept narrow so the values
+  of neighbouring columns sit close together; `md_to_artifact.py` does this from the cell
+  contents. Columns that belong together get a spanning header row: every row before the
+  `|---|` separator is a header row and a cell ending in `{span=N}` spans N columns, centered
+  (e.g. `| | ORNs | KCs {span=2} |` over `| | | control flies | APL output blocked (TNT) |`).
+  The data columns are labelled "ORNs" and "KCs" (parallel and short), never "ORN input", in
+  tables and figure panels alike; prose may still say "the ORN input".
 - **Genotype labels.** In every figure title, axis label, legend entry, table header and
   row label the two genotypes are "control flies" and "APL output blocked (TNT)", never "APL
   blocked" or "TNT" alone (prose may say "with APL output blocked" once the label has been

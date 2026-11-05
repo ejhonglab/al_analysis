@@ -55,7 +55,7 @@ def main() -> None:
     old.update(nums); jp.write_text(json.dumps(old, indent=1) + '\n')
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 10.2))
-    mats = [(square(orn, odors), 'ORN input', 'cosine distance across glomerular responses'),
+    mats = [(square(orn, odors), 'ORNs', 'cosine distance across glomerular responses'),
         (square(ctrl, odors), 'KCs, control flies', 'cosine distance across KC responses'),
         (square(tnt, odors), 'KCs, APL output blocked (TNT)', 'cosine distance across KC responses')]
     for ax, (m, title, cbar) in zip(axes[0], mats):
@@ -70,10 +70,10 @@ def main() -> None:
         ax.scatter(x[block], y[block], s=42, facecolors='none', edgecolors='#d9480f', lw=1.4, label='fruity x small-ester pairs')
         ax.set_xlim(0, 1.03); ax.set_ylim(0, 1.03); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel); ax.set_title(title, fontsize=11); ax.legend(fontsize=8, loc='lower right')
         ax.spines[['top', 'right']].set_visible(False)
-    scatter(axes[1, 0], orn, ctrl, 'ORN input: cosine distance', 'KCs, control flies: cosine distance',
-        f"KCs, control flies vs ORN input\n(rank agreement {nums['spearman_ctrl_orn']:.2f})")
-    scatter(axes[1, 1], orn, tnt, 'ORN input: cosine distance', 'KCs, APL output blocked (TNT): cosine distance',
-        f"KCs, APL output blocked (TNT) vs ORN input\n(rank agreement {nums['spearman_tnt_orn']:.2f})")
+    scatter(axes[1, 0], orn, ctrl, 'ORNs: cosine distance', 'KCs, control flies: cosine distance',
+        f"KCs, control flies vs ORNs\n(rank agreement {nums['spearman_ctrl_orn']:.2f})")
+    scatter(axes[1, 1], orn, tnt, 'ORNs: cosine distance', 'KCs, APL output blocked (TNT): cosine distance',
+        f"KCs, APL output blocked (TNT) vs ORNs\n(rank agreement {nums['spearman_tnt_orn']:.2f})")
     ax = axes[1, 2]
     ax.plot([0, 1], [0, 1], ls='--', color='0.8', lw=1, zorder=0)
     ax.scatter(tnt[~block], ctrl[~block], s=12, color='#5c6370', label='pairs')

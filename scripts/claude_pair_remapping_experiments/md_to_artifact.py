@@ -4,7 +4,10 @@
 Handles the markdown our notes use: `#` / `##` / `###` headings, paragraphs and list items
 wrapped over several lines (joined, so no line breaks mid-sentence), numbered and bulleted
 lists (continuation lines indented or simply following the item until a blank line or the
-next item), pipe tables (numeric cells right-aligned), figures written as
+next item), pipe tables (every row before the `|---|` separator is a header row, a header
+cell ending in `{span=N}` spans N columns centered; a column whose body cells are mostly
+numbers is right-aligned as a whole, header included, and kept narrow so values sit close
+together), figures written as
 `![caption](path.png)` on their own line (embedded as data URIs, so the page is one file),
 `---` rules, collapsible blocks (a line `??? Title` opens one, a line `???` closes it; rendered
 as <details>, collapsed by default), hover definitions (a block opened by a line `%%% hover` and
@@ -42,9 +45,11 @@ CSS = """
   p { margin: 9px 0; }
   p.meta { color: var(--muted); font-size: 0.9em; }
   table { border-collapse: collapse; width: 100%; font-size: 0.84em; margin: 12px 0 16px; }
-  th, td { border-bottom: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: top; }
+  th, td { border-bottom: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: bottom; }
   th { color: var(--muted); font-weight: 600; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; padding-left: 14px; }
+  th.span { text-align: center; border-bottom: 1px solid var(--line); }
+  tr.subhead th { border-top: 0; }
   ol, ul { padding-left: 24px; } li { margin: 5px 0; }
   code { font-size: 0.9em; background: var(--soft); padding: 1px 4px; border-radius: 4px; }
   figure { margin: 18px 0; }
@@ -104,6 +109,12 @@ def build_toc(body: str) -> str:
         out.append('</ol>')
     out.append('</li></ol></nav>')
     return ''.join(out)
+
+
+def _span_of(cell: str):
+    """('text', N) for a header cell ending in {span=N}; ('text', 1) otherwise."""
+    m = re.search(r'\s*\{span=(\d+)\}\s*$', cell)
+    return (cell[:m.start()], int(m.group(1))) if m else (cell, 1)
 
 
 def _slug(text: str) -> str:
@@ -213,12 +224,31 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
             while i < len(lines) and lines[i].strip().startswith('|'):
                 rows.append(lines[i].strip()); i += 1
             cells = [[c.strip() for c in r.strip('|').split('|')] for r in rows]
-            body_rows = [r for r in cells[1:] if not all(re.fullmatch(r':?-{2,}:?', c) for c in r)]
-            t = ['<table>', '<tr>' + ''.join(f'<th>{text_html(c)}</th>' for c in cells[0]) + '</tr>']
+            is_sep = [all(re.fullmatch(r':?-{2,}:?', c) for c in r) for r in cells]
+            sep_at = is_sep.index(True) if True in is_sep else 0
+            head_rows = cells[:sep_at] if sep_at > 0 else cells[:1]
+            body_rows = [r for k, r in enumerate(cells) if k > sep_at or (sep_at == 0 and k > 0)]
+            body_rows = [r for r in body_rows if not all(re.fullmatch(r':?-{2,}:?', c) for c in r)]
+            ncol = max([len(r) for r in body_rows] + [sum(_span_of(c)[1] for c in r) for r in head_rows])
+            numeric_like = re.compile(r'^([−+\-]?\d|[—–-]$|undefined$|n/?a$)')
+            col_num = []
+            for c in range(ncol):
+                vals = [r[c] for r in body_rows if c < len(r) and r[c] != '']
+                col_num.append(bool(vals) and sum(bool(numeric_like.match(v)) for v in vals) >= 0.5 * len(vals))
+            t = ['<table>']
+            for hk, hr in enumerate(head_rows):
+                cells_html, c = [], 0
+                for cell in hr:
+                    text, span = _span_of(cell)
+                    if span > 1:
+                        cells_html.append(f'<th class="span" colspan="{span}">{text_html(text)}</th>')
+                    else:
+                        cells_html.append(f'<th class="{"num" if c < ncol and col_num[c] else "txt"}">{text_html(text)}</th>')
+                    c += span
+                t.append(f'<tr class="{"subhead" if hk else "head"}">' + ''.join(cells_html) + '</tr>')
             for r in body_rows:
                 t.append('<tr>' + ''.join(
-                    f'<td class="{"num" if re.fullmatch(r"[−+\-]?\d[\d.,]*(\s*[\[(].*)?|—|-", c) else "txt"}">'
-                    f'{text_html(c)}</td>' for c in r) + '</tr>')
+                    f'<td class="{"num" if c < ncol and col_num[c] else "txt"}">{text_html(cell)}</td>' for c, cell in enumerate(r)) + '</tr>')
             t.append('</table>')
             out.append('\n'.join(t)); continue
         m = _ITEM_RE.match(s)
@@ -293,6 +323,8 @@ def lint(page: str) -> List[str]:
             probs.append('table-of-contents marker left in text')
         if re.search(r'\{#[A-Za-z0-9_-]+\}', t):
             probs.append(f'heading id marker left in text: {t[:70]!r}')
+        if re.search(r'\{span=\d+\}', t):
+            probs.append(f'column-span marker left in text: {t[:70]!r}')
         if re.match(r'^(\d+\. |[-*] )', t) and len(t) > 3:
             probs.append(f'list marker left in text: {t[:70]!r}')
     if re.search(r'<li>[^<]*<br', page):
