@@ -8,7 +8,9 @@ little drive. Here their ORN responses (all glomeruli) are scaled by a common fa
 {1, 1.5, 2, 3} on the bouton base with the 70 Hz per-claw threshold (E16), thresholds tuned
 at 5 % with APL on, acute APL off; methyl salicylate and phenylacetaldehyde are unchanged.
 Scored as E22 (E13 statistics, E7 excess by block, per-odor response fractions, E21's
-APL-off sharing deficit split into the pairs that involve a scaled odor and the rest).
+APL-off sharing deficit split into the pairs that involve a scaled odor and the rest), plus
+a decomposition of the deficit (among the scaled odors, scaled x unscaled, by partner odor
+group, per scaled odor; --decompose rewrites it from saved outputs).
 
 Outputs: <shared>/results/E24_input_scaling/ and ./outputs/E24_input_scaling/.
 Usage: OMP_NUM_THREADS=16 nice -n 10 ./venv/bin/python E24_input_scaling.py [--factors 1 1.5 2 3]
@@ -49,6 +51,44 @@ def sharing_deficit(spk_off: pd.DataFrame, data_pairs: pd.DataFrame) -> dict:
         deficit_other_pairs=float(d[(d.scaled == 0) & (d.msp == 0)].deficit.mean()))
 
 
+def decompose(out_dir, res_dir, data_pairs: pd.DataFrame, tags) -> None:
+    """Splits each variant's APL-off sharing deficit (model excess - TNT excess; positive =
+    model shares less than the fly) into pairs among the scaled odors, scaled x unscaled
+    (ms / paa pairs apart) and the rest, per scaled odor, and by the unscaled partner's
+    odor group; written to res_dir as deficit_decomposition.csv, deficit_per_scaled_odor.csv
+    and deficit_by_partner_group.csv.
+    """
+    MSP = ('ms', 'paa')
+    def tnt(a, b):
+        return data_pairs['TNT_excess'].get((a, b), data_pairs['TNT_excess'].get((b, a), np.nan))
+    rows, per_odor, by_grp = [], {}, []
+    for tag in tags:
+        f = out_dir / f'{tag}_acute_off_spike_counts.parquet'
+        if not f.exists():
+            continue
+        ex = pair_excess(pd.read_parquet(f))
+        d = pd.DataFrame([dict(a=a, b=b, model=v, data=tnt(a, b)) for (a, b), v in ex.items()])
+        d['deficit'] = d.model - d.data
+        sc_a, sc_b = d.a.isin(SCALED), d.b.isin(SCALED)
+        msp = d.a.isin(MSP) | d.b.isin(MSP)
+        parts = {'among_scaled': sc_a & sc_b, 'scaled_x_unscaled': (sc_a ^ sc_b) & ~msp,
+            'scaled_x_ms_paa': (sc_a ^ sc_b) & msp, 'unscaled_x_unscaled': ~sc_a & ~sc_b & ~msp,
+            'ms_paa_x_unscaled': ~sc_a & ~sc_b & msp}
+        for name, m in parts.items():
+            rows.append(dict(tag=tag, pairs=name, n_pairs=int(m.sum()), model_excess=d[m].model.mean(),
+                data_TNT_excess=d[m].data.mean(), deficit=d[m].deficit.mean()))
+        per_odor[tag] = {o: d[((d.a == o) | (d.b == o)) & ~msp].deficit.mean() for o in SCALED}
+        one = d[(sc_a ^ sc_b) & ~msp].copy()
+        one['partner_group'] = [H.ODOR_GROUPS.get(b if a in SCALED else a, b if a in SCALED else a)
+            for a, b in zip(one.a, one.b)]
+        g = one.groupby('partner_group')[['model', 'data', 'deficit']].mean()
+        g.insert(0, 'tag', tag); by_grp.append(g.reset_index())
+    pd.DataFrame(rows).to_csv(res_dir / 'deficit_decomposition.csv', index=False)
+    pd.DataFrame(per_odor).rename_axis('odor').to_csv(res_dir / 'deficit_per_scaled_odor.csv')
+    pd.concat(by_grp).rename(columns={'model': 'model_excess', 'data': 'data_TNT_excess'}).to_csv(
+        res_dir / 'deficit_by_partner_group.csv', index=False)
+
+
 def make_figure(stats: pd.DataFrame, fracs: pd.DataFrame, res_dir) -> None:
     import matplotlib
     matplotlib.use('Agg')
@@ -63,14 +103,14 @@ def make_figure(stats: pd.DataFrame, fracs: pd.DataFrame, res_dir) -> None:
         ys = [fracs.loc[o, f"f{f:g}_acute_off"] for f in stats.factor]
         ax.plot(stats.factor, ys, '-o', color=c, ms=5, label=o); ax.axhline(fracs.loc[o, 'data_TNT'], color=c, lw=1, ls=':')
     ax.set_title('scaled odors: APL-off response fraction (dotted = data)', fontsize=9); ax.set_xlabel('input factor f'); ax.legend(fontsize=7, frameon=False)
-    panels = [('APL-off sharing deficit: scaled-odor pairs / ms-paa pairs / other', ['deficit_scaled_pairs', 'deficit_ms_paa_pairs', 'deficit_other_pairs'], 0.0),
-        ('rate rank agreement on / off (ceiling 0.98 / 0.97)', ['spearman_rate_on_vs_data', 'spearman_rate_off_vs_data'], None),
-        ('rank agreement with control (on) / TNT (off)', [p + 'on_spearman', p + 'off_spearman'], None),
-        ('mean pair distance on / off (data 0.84 / 0.66)', [p + 'on_mean_model', p + 'off_mean_model'], 0.840),
-        ('fruity x small-ester block (data +0.055)', [p + 'block_fruity_small_iso'], 0.055)]
-    for ax, (title, cols, ref) in zip(list(axes.ravel())[1:], panels):
+    panels = [('APL-off sharing deficit (model excess - TNT excess; 0 = data)', ['deficit_scaled_pairs', 'deficit_ms_paa_pairs', 'deficit_other_pairs'], 0.0, ['pairs with a scaled odor', 'pairs with ms / paa', 'other pairs']),
+        ('rate rank agreement with the data (ceiling 0.98 / 0.97)', ['spearman_rate_on_vs_data', 'spearman_rate_off_vs_data'], None, ['APL on', 'APL off']),
+        ('rank agreement with control (on) / TNT (off)', [p + 'on_spearman', p + 'off_spearman'], None, ['APL on vs control', 'APL off vs TNT']),
+        ('mean pair distance (data 0.84 on / 0.66 off)', [p + 'on_mean_model', p + 'off_mean_model'], 0.840, ['APL on', 'APL off']),
+        ('fruity x small-ester block (data +0.055)', [p + 'block_fruity_small_iso'], 0.055, ['APL on'])]
+    for ax, (title, cols, ref, labels) in zip(list(axes.ravel())[1:], panels):
         for i, col in enumerate(cols):
-            ax.plot(stats.factor, stats[col], ['-o', '--s', ':^'][i], color='#2b6cb0', ms=5, lw=1.3, label=col.replace(p, ''))
+            ax.plot(stats.factor, stats[col], ['-o', '--s', ':^'][i], color='#2b6cb0', ms=5, lw=1.3, label=labels[i])
         if ref is not None:
             ax.axhline(ref, color='0.45', lw=1, ls=':')
         ax.set_title(title, fontsize=9); ax.set_xlabel('input factor f'); ax.legend(fontsize=7, frameon=False)
@@ -85,6 +125,7 @@ def main() -> None:
     ap.add_argument('--factors', nargs='+', type=float, default=[1.0, 1.5, 2.0, 3.0])
     ap.add_argument('--thr', type=float, default=70.0)
     ap.add_argument('--figure-only', action='store_true')
+    ap.add_argument('--decompose', action='store_true', help='only (re)write the deficit decomposition CSVs from saved outputs')
     args = ap.parse_args()
     res_dir = H.results_dir(EXPERIMENT); out_dir = H.outputs_dir(EXPERIMENT)
     stats_path = res_dir / 'stats_variants.csv'; fracs_path = res_dir / 'per_odor_response_fractions.csv'
@@ -92,6 +133,8 @@ def main() -> None:
     rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
     if args.figure_only:
         make_figure(pd.DataFrame(rows), pd.read_csv(fracs_path, index_col=0), res_dir); return
+    if args.decompose:
+        decompose(out_dir, res_dir, pd.read_csv(H.shared_dir() / 'results' / 'E7_confound_controls' / 'B_pairs_graded.csv').set_index(['odor_a', 'odor_b']), [f'f{f:g}' for f in args.factors]); return
     done = {r['tag'] for r in rows}
     orn0 = H.apl16_orn_deltas()
     abbr = {c: H.odor_abbrev(c) for c in orn0.columns}
@@ -154,6 +197,7 @@ def main() -> None:
         olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=(H.HERE / '../../../olfsysm').resolve(), capture_output=True, text=True).stdout.strip(),
         base=BOUTON, claw_thr=args.thr, factors=args.factors, scaled_odors=SCALED, approx_conc_note=H.APPROX_CONC_NOTE)
     (res_dir / 'provenance.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
+    decompose(out_dir, res_dir, data_pairs, [f'f{f:g}' for f in args.factors])
     make_figure(pd.DataFrame(rows), fracs, res_dir)
     print('done ->', res_dir)
 
