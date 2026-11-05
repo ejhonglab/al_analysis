@@ -158,6 +158,20 @@ in the shared directory (atomic on NFS) and `rmdir` it right after; a lock older
 "running from <host>" status line (see below) BEFORE starting it, so two hosts do not
 run the same experiment.
 
+### How the queue works (and what not to ask Tom)
+
+The priority list is a queue. An idle host takes the next unclaimed item that it can run
+(claims it with its Status line and index row, then starts it); if nothing runnable is
+unclaimed, it moves a proposal into the list under the idle-host rule and starts that. A
+blocked item (data not on hand, code missing) says in its Status line exactly what unblocks
+it, and an idle host may take the unblocking itself as a work claim (a data pull, a
+connectome query, a code change); items whose unblocking needs something only Tom can
+provide (an access token, a dataset, a decision between proposals that displace other
+hosts' work) say so, and that is what gets raised with him. Consequently, do not end replies
+to Tom with offers or choices about queued work ("E9 or the coverage check?"): what runs next
+is determined by the list and these rules, and the interface turns such closing lines into
+suggestions he does not need to see. Raise only decisions that are genuinely his.
+
 ### Claims, probes and status
 
 Experiments are claimed with their Status line, but on the first day shared code (the
