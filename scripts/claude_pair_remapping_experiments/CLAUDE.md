@@ -357,6 +357,29 @@ Canonical experiment names for summary reports:
 | E20 | per-glomerulus drive normalization |
 | E21 | the APL-blocked sharing diagnostic |
 
+## Model-output archive (data/model_outputs/ in the shared directory)
+
+Every experiment's model outputs are copied to the shared directory under
+`data/model_outputs/E<n>_<short-description>/` (the experiment's results / outputs folder
+name), organized by experiment and not by host: the KC x odor spike-count and response
+matrices of every variant and condition, the variants' parameters (`params.csv` built from
+the stats tables, plus `tuned_params.json` or equivalent where the run wrote one), the
+`provenance.json` from results/ (script, commit hashes, base kwargs, sweep settings), the run
+logs, and any wiring or gain matrices the run saved; `data/model_outputs/inputs/` holds what
+all experiments share (the ORN input matrix, the standard PN->KC wiring matrices). Run
+`./venv/bin/python archive_model_outputs.py E<n>_<desc>` from the repo folder when an
+experiment completes (and again if more variants are added); it also upserts the row in
+`data/model_outputs/README.md`. Record in every new script the parameters needed to
+regenerate each variant (tuned threshold and APL scales as absolute values, not only factors,
+in the stats table) and the olfsysm commit in the provenance.
+
+## File and folder names
+
+Everything we produce (files, folders, figure names, archive and report names) uses ASCII
+characters only: letters, digits, `_`, `-`, `.`; no en or em dashes, arrows, multiplication
+signs or other characters that need a Unicode input method. This applies to names only;
+the contents of notes keep normal typography.
+
 ## Report artifact
 
 The report markdown in this folder ("APL and the ORN→KC remapping of odor–odor
