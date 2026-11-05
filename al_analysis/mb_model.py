@@ -576,6 +576,11 @@ exclude_params = {
     # TODO i assume i'll want to remove this one too?
     'wPNAPL',
 }
+
+# `fit_mb_model` kwargs setting olfsysm antennal lobe (PN / LN) inhibition parameters
+# (`mp.pn.inhsc`, etc). olfsysm defaults used if None.
+AL_INH_PARAMS: Tuple[str, ...] = ('pn_inhsc', 'pn_inhadd', 'ln_inhsc', 'ln_inhadd')
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -648,6 +653,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # names, not the abbreviated values in param_abbrevs.
     exclude_if_value_matches = {
         'tune_on_hallem': False,
+        **{k: None for k in AL_INH_PARAMS},
     }
 
     if exclude is None:
@@ -12056,6 +12062,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     # spiking_required_for_kc_apl_input [with inverted logic]). just regen all?
     pn_claw_to_apl: bool = False, claw_dynamics: bool = False,
     n_claws_active_to_spike: Optional[int] = None,
+    pn_inhsc: Optional[float] = None, pn_inhadd: Optional[float] = None,
+    ln_inhsc: Optional[float] = None, ln_inhadd: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12262,6 +12270,30 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             minimum spanning tree of path distances between units). Only relevant if
             `apl_unit_coupling` is passed.
 
+        pn_inhsc / pn_inhadd / ln_inhsc / ln_inhadd: set corresponding `mp.pn` /
+            `mp.ln` olfsysm antennal lobe inhibition parameters (olfsysm defaults of
+            368.6631 / 31.4088 / 500 / 200 used for any that are None). ORN spike rate
+            deltas are multiplied by a PN input gain of
+            `pn_inhsc / (pn_inhadd + 0.25 * inhA + 0.75 * inhB)` (inside the PN tanh
+            nonlinearity), where `inhA` / `inhB` are LN activity low-pass filtered with
+            fast / slow (0.1s / 0.4s) time constants, so PN drive is divisively
+            normalized by overall ORN activity (via the LNs). `pn_inhsc` scales this
+            gain equally for all odors, while increasing `pn_inhadd` lowers the gain
+            but makes it depend less on LN activity (less flattening of PN drive
+            across odors of different strengths). With default parameters (and
+            megamat inputs), `inhA` / `inhB` are ~700 before odor onset and ~1300-5600
+            during odors, so the default `pn_inhadd` is negligible (normalization is
+            almost purely divisive), and it must be comparable to these to
+            substantially weaken normalization (likely with `pn_inhsc` increased, to
+            restore some gain). Both PN parameters also change PN spontaneous rates
+            (which include a `orn_spont * pn_inhsc / (sum(orn_spont) + pn_inhadd)`
+            term), and thus KC spontaneous input and thresholds. LN potential is
+            driven by the cube of the mean ORN rate, times an LN gain of
+            `ln_inhsc / (ln_inhadd + inhA)` (LN self-inhibition), so increasing
+            `ln_inhsc` (or decreasing `ln_inhadd`) increases LN activity, and thus PN
+            normalization. See `sim_LN_layer` and `sim_PN_layer` in olfsysm.cpp. Must
+            not be negative.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -12338,7 +12370,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
 
         param_dict: dict containing tuned parameters (e.g. 'fixed_thr', 'wAPLKC'),
             certain model intermediates (e.g. 'kc_spont_in'), and certain parameters
-            relevant for reproducibility (e.g. 'sp_acc', 'max_iters').
+            relevant for reproducibility (e.g. 'sp_acc', 'max_iters', and any of
+            `AL_INH_PARAMS` that were passed, e.g. 'pn_inhsc').
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -12510,6 +12543,19 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     # TODO also warn in python, if this is true (similar to what is logged in olfsysm
     # now)
     mp.kc.hardcode_initial_sp = hardcode_initial_sp
+
+    # (only those passed, to also add to param_dict below)
+    al_inh_params = {k: float(v) for k, v in
+        zip(AL_INH_PARAMS, (pn_inhsc, pn_inhadd, ln_inhsc, ln_inhadd)) if v is not None
+    }
+    for k, v in al_inh_params.items():
+        if v < 0:
+            raise ValueError(f'{k} must not be negative (got {v})')
+
+        # e.g. 'pn_inhsc' -> mp.pn.inhsc. same mp used for all ORN/LN/PN simulations
+        # below (including on Hallem odors, if tune_on_hallem=True).
+        layer, param = k.split('_')
+        setattr(getattr(mp, layer), param, v)
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
@@ -15369,6 +15415,9 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         # claws now, rather than just # KCs)
         'kc_spont_in': spont_in,
     }
+    # only those passed, so outputs (and saved params) of other models do not change
+    param_dict.update(al_inh_params)
+
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
         assert wAPLKC_scale is not None and wKCAPL_scale is not None
@@ -15981,11 +16030,13 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             Others defined from these as in `fit_mb_model`. If not passed, initial call
             tunes thresholds and APL weights (e.g. to `target_sparsity`).
 
-        **model_kws: passed to `fit_mb_model`. Must not contain kwargs in
-            `optimizable_model_params` values (use `initial_params` instead), except
-            `apl_unit_coupling` (which also determines whether the APL is split into
-            units, and is overridden by any value in `initial_params`). Kwargs only used
-            for tuning (e.g. `target_sparsity`) are ignored if `initial_params` passed.
+        **model_kws: passed to `fit_mb_model` (including any affecting the ORN/LN/PN
+            layers, e.g. `pn_inhsc`, which are only simulated in that initial call).
+            Must not contain kwargs in `optimizable_model_params` values (use
+            `initial_params` instead), except `apl_unit_coupling` (which also
+            determines whether the APL is split into units, and is overridden by any
+            value in `initial_params`). Kwargs only used for tuning (e.g.
+            `target_sparsity`) are ignored if `initial_params` passed.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -19142,6 +19193,11 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             param_dict = {
                 k: [x[k] for x in param_dict_list] for k in param_dict_keys
             }
+            # inputs (same for all seeds), so they still match model_kws values below
+            for k in AL_INH_PARAMS:
+                if k in param_dict:
+                    assert len(set(param_dict[k])) == 1
+                    param_dict[k] = param_dict[k][0]
 
             assert not any(k in param_dict for k in dynamics_dict)
             param_dict.update(dynamics_dict)
