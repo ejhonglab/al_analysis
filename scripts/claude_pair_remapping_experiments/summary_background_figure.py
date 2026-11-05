@@ -55,9 +55,9 @@ def main() -> None:
     old.update(nums); jp.write_text(json.dumps(old, indent=1) + '\n')
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 10.2))
-    mats = [(square(orn, odors), 'ORN input', 'cosine distance (1 - cosine similarity) across glomerular responses'),
-        (square(ctrl, odors), 'KCs, control flies', 'cosine distance (1 - cosine similarity) across KC responses'),
-        (square(tnt, odors), 'KCs, APL output blocked (TNT)', 'cosine distance (1 - cosine similarity) across KC responses')]
+    mats = [(square(orn, odors), 'ORN input', 'cosine distance across glomerular responses'),
+        (square(ctrl, odors), 'KCs, control flies', 'cosine distance across KC responses'),
+        (square(tnt, odors), 'KCs, APL output blocked (TNT)', 'cosine distance across KC responses')]
     for ax, (m, title, cbar) in zip(axes[0], mats):
         im = ax.imshow(m.to_numpy(), cmap='Blues', vmin=0, vmax=1)
         ax.set_xticks(range(16)); ax.set_xticklabels(odors, rotation=90, fontsize=8); ax.set_yticks(range(16)); ax.set_yticklabels(odors, fontsize=8)

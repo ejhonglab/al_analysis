@@ -385,8 +385,9 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   introduced). Model conditions stay "APL on" / "APL off".
 - **Distance-matrix figures.** Panel titles name only what is shown ("ORN input", "KCs,
   control flies", "KCs, APL output blocked (TNT)"); the distance function appears once per
-  panel, in the colorbar label, by its name ("cosine distance (1 - cosine similarity) across
-  glomerular responses"), never as a bare "similarity"; scatter axes say "...: cosine distance".
+  panel, in the colorbar label, by its name alone ("cosine distance across glomerular
+  responses": no "(1 - cosine similarity)" gloss, never a bare "similarity"); scatter axes say
+  "...: cosine distance". The definition in words belongs in the text, once.
   Long subplot titles are split over two lines, the statistic in parentheses on the second.
 - **Opaque terms and methods.** A technical term the main text needs but should not stop to
   explain (isotonic, ...) gets a hover definition: put a `%%% hover` block (lines
