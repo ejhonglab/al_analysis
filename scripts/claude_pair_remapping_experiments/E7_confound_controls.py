@@ -441,7 +441,7 @@ def fig_density_null(plt, obs_mean: Dict[str, pd.Series], null_mean: Dict[str, p
     ax.axvline(0, color='#888888', lw=0.8)
     ax.set_xlabel('mean excess distance of block')
     ax.set_title('excess distance by between-group block')
-    ax.legend(frameon=False, loc='lower right')
+    ax.legend(frameon=False, loc='upper left')
     fig.suptitle(f'B. within-odor KC-identity shuffle (density) null, {tag}', y=1.03)
     savefig(fig, out_dir, f'B1_density_null_{tag}')
     plt.close(fig)
@@ -500,7 +500,10 @@ def main() -> None:
     ap.add_argument('--n-boot', type=int, default=2000)
     ap.add_argument('--n-split', type=int, default=1000)
     ap.add_argument('--quick', action='store_true', help='few resamples, for testing')
+    ap.add_argument('--parts', default='ABCD', help='which parts to run (subset of ABCD); '
+        'summary.json is merged into an existing one when not all parts run')
     args = ap.parse_args()
+    parts = set(args.parts.upper())
     n_boot, n_split = (100, 50) if args.quick else (args.n_boot, args.n_split)
     n_boot_var = max(100, n_boot // 4)
 
@@ -509,6 +512,10 @@ def main() -> None:
     pd.set_option('display.width', 200)
     plt = _setup_plt()
     summary: Dict[str, object] = {'n_boot': n_boot, 'n_split': n_split}
+    if parts != set('ABCD') and (out / 'summary.json').exists():
+        with open(out / 'summary.json') as f:
+            summary = json.load(f)
+        summary.update(n_boot=n_boot, n_split=n_split)
 
     orn = H.orn16_consensus_pairs()
     drive = H.consensus_orn_drive()
@@ -532,6 +539,24 @@ def main() -> None:
     }
 
     # ---------------- A. noise floor
+    if 'A' in parts:
+        run_a(out, plt, fn, recs, report, orn, drive, n_boot, n_split, summary)
+    if 'B' in parts:
+        run_b(out, plt, fn_noref, mats, recs, report, fracs, orn, drive, n_boot, n_boot_var,
+            summary)
+    if 'C' in parts:
+        run_c(out, plt, fn, mats, fracs, n_boot_var, summary)
+    if 'D' in parts:
+        run_d(out, plt, fn, mats, n_boot_var, summary)
+
+    summary['runtime_s'] = time.time() - t0
+    summary['approx_conc_note'] = H.APPROX_CONC_NOTE
+    with open(out / 'summary.json', 'w') as f:
+        json.dump(summary, f, indent=1, default=float)
+    print(f'done in {time.time() - t0:.0f} s; outputs in {out}')
+
+
+def run_a(out, plt, fn, recs, report, orn, drive, n_boot, n_split, summary) -> None:
     print('A. bootstrap of all statistics (recording and fly units)')
     bootA = {u: boot_table(fn, recs, n_boot=n_boot, seed=i, unit=u)
         for i, u in enumerate(('recording', 'fly'))
@@ -595,7 +620,10 @@ def main() -> None:
         'block_fruity_small_iso_lo', 'block_fruity_small_iso_hi']].round(3).to_string())
     summary['A_split_half'] = json.loads(shs.reset_index().to_json(orient='records'))
 
-    # ---------------- B. density null
+
+
+def run_b(out, plt, fn_noref, mats, recs, report, fracs, orn, drive, n_boot, n_boot_var,
+    summary) -> None:
     print('B. density null')
     # check the analytic expectation against shuffles for one recording
     rec0 = next(iter(mats[TNT]))
@@ -677,7 +705,9 @@ def main() -> None:
     summary['B']['per_odor'] = json.loads(pst.to_json(orient='index'))
     fig_per_odor(plt, po, pst, out)
 
-    # ---------------- C. density-matched thresholds
+
+
+def run_c(out, plt, fn, mats, fracs, n_boot_var, summary) -> None:
     print('C. density-matched thresholds')
     f_ctrl = float(fracs[CTRL].mean().mean())
     f_tnt = float(fracs[TNT].mean().mean())
@@ -741,7 +771,9 @@ def main() -> None:
         'C1_density_matched', 'C. density-matched thresholds (90% CI, recording bootstrap)'
     )
 
-    # ---------------- D. pipeline variants
+
+
+def run_d(out, plt, fn, mats, n_boot_var, summary) -> None:
     print('D. pipeline variants')
     rowsD = []
     for values in ('graded', 'binary', 'thresholded'):
@@ -774,12 +806,6 @@ def main() -> None:
         (f'{TNT}_spearman_resid_vs_vcf_hyp', 'resid vs VCF, TNT')], out,
         'D1_pipeline_variants', 'D. RDM pipeline variants (90% CI, recording bootstrap)'
     )
-
-    summary['runtime_s'] = time.time() - t0
-    summary['approx_conc_note'] = H.APPROX_CONC_NOTE
-    with open(out / 'summary.json', 'w') as f:
-        json.dump(summary, f, indent=1, default=float)
-    print(f'done in {time.time() - t0:.0f} s; outputs in {out}')
 
 
 if __name__ == '__main__':
