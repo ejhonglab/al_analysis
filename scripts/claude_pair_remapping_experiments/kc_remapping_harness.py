@@ -44,6 +44,9 @@ APL16_ODORS: List[str] = ['2h', 'IaA', 'pa', '2-but', 'eb', 'ep', '6al', 't2h', 
 MEGAMAT12: List[str] = APL16_ODORS[:12]
 VALIDATION2_4: List[str] = APL16_ODORS[12:]
 SOLVENT = 'pfo'
+# index level names of fit_mb_model outputs
+KC_ID_LEVEL = 'kc_id'
+KC_TYPE_LEVEL = 'kc_type'
 
 # chemical groups used for the report's block analysis (null_models.py)
 ODOR_GROUPS: Dict[str, str] = {'2h': 'fruity', 'IaA': 'fruity', 'pa': 'fruity',
