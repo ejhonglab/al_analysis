@@ -13,8 +13,8 @@ weighting removed (E12 / E14 / E15).
 Design: bouton base at E3's tuned parameters, (a) plain and (b) with E12's k = 3 breadth
 weighting of the APL->KC weights (the most data-like bouton model); KC-KC scale in
 {0, 10, 30, 100, 300} with tau 0.05 s, and {30, 100} with tau 0.3 s (GPCR-like, Manoim et
-al. 2022). For each: APL on with the KC<->APL scales re-matched to the no-KC-KC model's
-response count; APL off (both APL output weights zero) with the KC-KC term kept. Scored as
+al. 2022). For each: APL on with the threshold re-tuned (APL at its base scale) to the no-KC-KC model's
+response rate; APL off (both APL output weights zero) with the KC-KC term kept. Scored as
 E12 (E4 statistics, per-odor drive / density readouts, E7's density-null excess by block),
 plus the APL-off / APL-on rate ratio (data 2.2; KC-KC inhibition can only lower it).
 
@@ -35,7 +35,8 @@ import numpy as np
 import pandas as pd
 
 import kc_remapping_harness as H
-from E3_drive_dependent_gain import BOUTON, match_kc_apl_scale, per_odor_extras, rate
+from E1_apl_knockout import bisect_threshold
+from E3_drive_dependent_gain import BOUTON, per_odor_extras, rate
 from E4_substrate import score, kc_by_glomerulus
 from E12_breadth_apl import e3_bouton_params, density_excess
 
@@ -95,7 +96,7 @@ def main() -> None:
         for s in args.slow_scales:
             jobs.append((cfg, TAU_SLOW, s))
     sims = {}
-    n_target = {}
+    rate_target = {}
     for cfg, tau, s in jobs:
         tag = f'{cfg}_tau{tau:g}_kckc{s:g}'
         if tag in done:
@@ -112,19 +113,17 @@ def main() -> None:
                 # APL-on reference (no KC-KC term, APL weights as given) sets the target count
                 # for the plain config; the breadth config matches its own k = 3, no-KC-KC model
                 r_ref, _ = sims[key](dict(initial, wKCKC_scale=0.0))
-                if cfg == 'breadth3':
-                    # rescale KC<->APL so the breadth model has the plain model's count
-                    if ('plain', tau) in n_target:
-                        tgt = n_target[('plain', tau)]
-                    else:
-                        tgt = int((r_ref.astype(float) != 0).to_numpy().sum())
-                    n_target[key] = tgt
-                else:
-                    n_target[key] = int((r_ref.astype(float) != 0).to_numpy().sum())
+                rate_target[key] = rate(r_ref)
             sim = sims[key]
             p = dict(initial, wKCKC_scale=s)
-            f, r_on, s_on = match_kc_apl_scale(sim, p, n_target[key])
-            p_on = dict(p, wAPLKC_scale=p['wAPLKC_scale'] * f, wKCAPL_scale=p['wKCAPL_scale'] * f)
+            # the KC-KC term lowers the rate at fixed thresholds (for scales >= 30 below
+            # the target even with the KC<->APL scales at 0.002x), so match the APL-on
+            # rate by re-tuning the threshold with APL at its base scale: the term is
+            # present in both genotypes and thresholds adapt
+            thr, f, r_on, s_on = bisect_threshold(sim, initial['fixed_thr'], rate_target[key],
+                extra={'wKCKC_scale': s}
+            )
+            p_on = dict(p, fixed_thr=thr)
             r_off, s_off = sim(dict(p_on, wAPLKC_scale=0.0, wAPLPN_scale=0.0))
         except Exception as e:
             print(f'{tag} FAILED: {e!r}'[:300], flush=True)
@@ -135,7 +134,7 @@ def main() -> None:
             r.to_parquet(out_dir / f'{tag}_{cond}_responses.parquet')
             sp.to_parquet(out_dir / f'{tag}_{cond}_spike_counts.parquet')
         meta = dict(variant=tag, base='bouton', seed=None, target_rate=0.05, tag=tag, config=cfg,
-            kc_kc_tau=tau, kc_kc_inh=s, kc_apl_factor=f, n_kcs=len(r_on),
+            kc_kc_tau=tau, kc_kc_inh=s, thr_factor=f, n_kcs=len(r_on),
             n_glomeruli=wPNKC.shape[1], rate_on=rate(r_on), rate_off=rate(r_off),
             rate_ratio_off_over_on=rate(r_off) / max(rate(r_on), 1e-9), seconds=time.time() - t0,
             mean_claws_per_kc=float(kc_by_glomerulus(wPNKC).sum(axis='columns').mean()),
@@ -153,7 +152,7 @@ def main() -> None:
         pairs[(tag, 'acute_off')] = off[H.PRIMARY_MODEL_RDM]
         pd.DataFrame(rows).to_csv(stats_path, index=False)
         v = H.PRIMARY_MODEL_RDM
-        print(f"{tag}: f {f:.3f}, rates on {meta['rate_on']:.4f} off {meta['rate_off']:.4f} "
+        print(f"{tag}: thr x{f:.3f}, rates on {meta['rate_on']:.4f} off {meta['rate_off']:.4f} "
             f"(x{meta['rate_ratio_off_over_on']:.2f}); block {row[v + '__block_fruity_small_iso']:+.3f}; "
             f"excess on {row['on_excess_block']:+.3f}/{row['on_excess_other_between']:+.3f} off "
             f"{row['off_excess_block']:+.3f}/{row['off_excess_other_between']:+.3f}; vs ctrl "
