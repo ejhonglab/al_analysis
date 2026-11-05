@@ -265,6 +265,26 @@ When I later ask you to summarize all findings (the final report over all experi
 include every file in `add_to_reports/`, together with the per-experiment `E<n>_*.md`
 files and the Completed list in experiment_priorities.md.
 
+## Writing results (notes, chat, reports, replies to me)
+
+Every statistic quoted in prose must carry its context: the baseline it is compared with,
+the direction of the change and whether that direction is an improvement, and the value in
+the KC data (the target) or the noise ceiling. "Per-odor rate agreement 0.68 to 0.57" is
+ambiguous (range or change? which is the baseline? better or worse? how far from the data?);
+write "per-odor rate agreement fell from 0.68 in the base model to 0.57 with the per-claw
+threshold (worse; the model-to-data ceiling is ~0.95)".
+
+In reports, prefer tables or plots that show the baseline, each variant and the KC data side
+by side, and keep most numbers out of the text: the text should say what moved, which way,
+and whether it reached the data. Spelling out the full context for every number in prose is
+too verbose, so put the numbers in the table and the judgement in the sentence.
+
+Describe experiments in plain English ("the per-claw threshold sweep", "the KC-KC lateral
+inhibition experiment"), not by ID. Polished reports (the summary artifact, the final report)
+use no IDs in prose. Preliminary and experiment-specific notes (the per-experiment markdown,
+chat.md, replies to me) use the plain-English description first and then the ID in
+parentheses: "the per-claw threshold sweep (E16)".
+
 ## Report artifact
 
 The report markdown in this folder ("APL and the ORN→KC remapping of odor–odor
