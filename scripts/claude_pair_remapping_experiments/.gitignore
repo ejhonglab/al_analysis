@@ -1,2 +1,6 @@
 # Yang's slide packs, too large for GitHub (>100MB each)
 from_yang/
+
+# Large outputs of the experiment scripts in this folder. Compact results go to the
+# shared NAS directory instead (see CLAUDE.md).
+outputs/
