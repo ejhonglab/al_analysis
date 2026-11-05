@@ -277,8 +277,9 @@ worse? how far from the data?); write "per-odor rate agreement fell from 0.68 fo
 model with connectome APL weights and no per-claw threshold to 0.57 once each claw's input
 was thresholded at 70 Hz (worse; the model-to-data ceiling is ~0.95)".
 
-In reports, prefer tables or plots that show the baseline, each variant and the KC data side
-by side, and keep most numbers out of the text: the text should say what moved, which way,
+In reports, and also in replies to me in the terminal chat, prefer tables (or plots) that
+show the baseline, each variant and the KC data side by side, and keep most numbers out of
+the text: the text should say what moved, which way,
 and whether it reached the data. Spelling out the full context for every number in prose is
 too verbose, so put the numbers in the table and the judgement in the sentence.
 
