@@ -592,6 +592,19 @@ def test_homeostatic_thrs(orn_deltas):
     assert_fit_outputs_equal(ret, ret2, ignore_tuning_params=True)
 
 
+def test_cpp_error_inside_parallel_region_raises(orn_deltas):
+    """Tests olfsysm `check` failures inside OpenMP parallel regions raise ValueError.
+
+    `homeostatic_thrs=True` with `n_spikes_for_response=2` fails a `check` inside an
+    `omp single` block of `fit_sparseness`. Before 2026-11-04, an exception thrown inside
+    a parallel region called std::terminate, killing the Python process with no message.
+    """
+    with pytest.raises(ValueError, match='n_spikes_for_response'):
+        _fit_mb_model(orn_deltas=orn_deltas, homeostatic_thrs=True,
+            n_spikes_for_response=2
+        )
+
+
 # TODO add test that allow_net_inh_per_claw=True (the default) produces some
 # negative claw activities (and that there are none w/ =False)
 # TODO + test that orn activities (after adding spont) can't be negative (but seems like
