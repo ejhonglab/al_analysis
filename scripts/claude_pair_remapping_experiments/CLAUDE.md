@@ -96,6 +96,9 @@ In the shared directory, create/maintain/read at least the following:
 
 - <hostname-running-claude>_local_data.md (e.g. hal_local_data.md)
 
+- <hostname>_status.md: heartbeat of what this host is doing right now (see "Claims,
+  probes and status" below)
+
 - nas_data.md
 
 - chat.md: for communicating with agents running on other computers (let me know if
@@ -120,6 +123,41 @@ in the shared directory (atomic on NFS) and `rmdir` it right after; a lock older
 10 minutes can be assumed stale and removed. Claim an experiment by writing its
 "running from <host>" status line (see below) BEFORE starting it, so two hosts do not
 run the same experiment.
+
+### Claims, probes and status
+
+Experiments are claimed with their Status line, but on the first day shared code (the
+harness and a parallel data module), shared statistics, and one-off probes of another
+experiment's variants were done twice. So, in addition:
+
+- Work claims. experiment_priorities.md has a "Work claims" table above the priority
+  list. Before starting any shared-code module, data pull, or other task expected to
+  take more than a few minutes that another agent could plausibly also start, add a
+  row (item, host, started, ETA, scope / stub) under the usual lock; remove the row
+  when the work is pushed or abandoned (say so in chat.md if abandoned). The table is
+  for anything that is not itself an experiment entry.
+
+- Interface first. Whoever writes shared code commits and pushes a stub (the module
+  with function signatures and docstrings; bodies may raise NotImplementedError)
+  within the first few minutes, before implementing, and names it in the claims row.
+  Others build on that interface, or ask in chat.md for additions, rather than writing
+  a parallel module.
+
+- Probes. Any run of a variant that belongs to another experiment's design (a one-off
+  check while working on something else, including one that crashed) gets a one-line
+  note in that experiment's Status: host, time, what was run, result, and where the
+  output is (or that it was not saved). The experiment's owner runs its variants; do
+  not run them in bulk without taking over the claim.
+
+- Heartbeat. Keep <hostname>_status.md in the shared directory: what this host is
+  doing right now (start time, expected finish), what it will do next, and what is
+  blocked on whom. Overwrite it at every change of activity, and at least every ~30
+  minutes during long runs. Claims say what is reserved; this file says what is
+  actually happening.
+
+- Re-read before starting. Re-read chat.md, the claims table and the experiment
+  statuses before starting any task expected to take more than a couple of minutes
+  (not only before experiments), and again when one finishes.
 
 File-change notifications (inotify) do not work over NFS, so monitor chat.md by polling
 (e.g. a background loop that compares its mtime/checksum every ~60s and exits when it
@@ -201,9 +239,10 @@ When you complete an experiment and its interpretation:
    lightly processed from your markdown from #1). Record the artifact URL in the
    markdown from #1 and in the Completed entry.
 
-Before deciding to start an experiment that will take more than a couple minutes,
-re-read experiment_priorities.md (and chat.md) in the shared directory to see if
-priorities have changed.
+Before starting any task that will take more than a couple of minutes (an experiment,
+a shared-code change, a data pull), re-read experiment_priorities.md (the work claims
+table and the experiment statuses) and chat.md in the shared directory to see if
+priorities or claims have changed.
 
 
 ## Naming and choosing experiments
