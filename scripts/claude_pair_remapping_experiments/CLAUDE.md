@@ -398,6 +398,10 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   end of the page (`## Footnotes {#footnotes}`, one `### ... {#fn-<id>}` per note) and the
   phrase in the text that uses it is linked there with `[phrase](#fn-<id>)`. Headings take an
   explicit `{#id}`; without one they get a slug of their text.
+  Standing footnotes every summary report carries: the monotone (isotonic) fit (how, why,
+  alternatives) and the odor concentrations per dataset (a table of Yang's APL16 KC
+  concentrations against the ORN data used, with the substitution rule), linked from the
+  concentration caveat in the data section.
 
 Canonical experiment names for summary reports:
 
