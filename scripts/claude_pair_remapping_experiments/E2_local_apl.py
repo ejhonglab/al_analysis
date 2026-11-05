@@ -15,7 +15,9 @@ share glomerular input (fruity vs small esters) more than groups that do not, gi
 positive block residual and a stronger per-odor drive dependence, up to the point where
 self-inhibition dominates.
 
-Outputs: run_base's outputs (sweep.csv, responses) under ./outputs/E2_local_apl/<base>/;
+Outputs: run_base's outputs regularized to the archive layout under ./outputs/E2_local_apl/
+(`<base>_<variant>_<cond>_{responses,spike_counts}.parquet`, `<base>_sweep.csv`, merged `sweep.csv`;
+bases whose runs exist are skipped on re-run);
 stats, figures and provenance to <shared>/results/E2_local_apl/.
 
 Usage: OMP_NUM_THREADS=16 nice -n 10 ./venv/bin/python E2_local_apl.py [-b BASE ...]
@@ -63,9 +65,53 @@ def yang_loss_fn():
     return make_kc_data_loss(target_response_rates=rates, target_corr=corr)
 
 
-def load_run(responses_dir: Path, name: str):
-    return (pd.read_parquet(responses_dir / f'responses_{name}.parquet'),
-        pd.read_parquet(responses_dir / f'spike_counts_{name}.parquet'))
+def flat_name(base: str, mode: str, coupling, cond: str = 'on') -> str:
+    """Variant name in the archive layout: `<base>_single`, `<base>_fixed_coupling<c>` or
+    `<base>_matched_coupling<c>` (file: `<variant>_<cond>_{responses,spike_counts}.parquet`)."""
+    variant = 'single' if mode == 'single' else f'{mode}_coupling{coupling:g}'
+    return f'{base}_{variant}_{cond}'
+
+
+def regularize_layout(out_root: Path, base: str) -> None:
+    """Moves `apl_coupling_sweep.run_base`'s outputs for `base` (`<base>/responses/
+    {responses,spike_counts}_<name>.parquet`, `<base>/sweep.csv`) into the flat archive
+    layout `<base>_<variant>_<cond>_<kind>.parquet` and `<base>_sweep.csv`, and merges the
+    per-base sweep tables into `sweep.csv` (tag column = variant name). No-op once done."""
+    import re
+    import shutil
+    bdir = out_root / base
+    rdir = bdir / 'responses'
+    if rdir.exists():
+        for f in sorted(rdir.glob('*.parquet')):
+            m = re.fullmatch(r'(responses|spike_counts)_(.+)\.parquet', f.name)
+            kind, name = m.group(1), m.group(2)
+            if name == 'acute_off':
+                target = f'{flat_name(base, "single", None, "acute_off")}_{kind}.parquet'
+            elif name == 'single':
+                target = f'{flat_name(base, "single", None)}_{kind}.parquet'
+            else:
+                mm = re.fullmatch(r'(fixed|matched)_coupling_([0-9.]+)', name)
+                target = f'{flat_name(base, mm.group(1), float(mm.group(2)))}_{kind}.parquet'
+            shutil.move(str(f), str(out_root / target))
+        rdir.rmdir()
+    if (bdir / 'sweep.csv').exists():
+        shutil.move(str(bdir / 'sweep.csv'), str(out_root / f'{base}_sweep.csv'))
+    if bdir.exists() and not any(bdir.iterdir()):
+        bdir.rmdir()
+    sweeps = []
+    for sp in sorted(out_root.glob('*_sweep.csv')):
+        sw = pd.read_csv(sp)
+        if 'tag' not in sw:
+            sw.insert(0, 'tag', [flat_name(r['base'], r['mode'], r['coupling'])[:-3] for _, r in sw.iterrows()])
+        sweeps.append(sw)
+    if sweeps:
+        pd.concat(sweeps, ignore_index=True).to_csv(out_root / 'sweep.csv', index=False)
+
+
+def load_run(out_root: Path, base: str, mode: str, coupling=None, cond: str = 'on'):
+    stem = flat_name(base, mode, coupling, cond)
+    return (pd.read_parquet(out_root / f'{stem}_responses.parquet'),
+        pd.read_parquet(out_root / f'{stem}_spike_counts.parquet'))
 
 
 def score_base(base: str, orn: pd.DataFrame, couplings, out_root: Path, res_dir: Path,
@@ -73,8 +119,8 @@ def score_base(base: str, orn: pd.DataFrame, couplings, out_root: Path, res_dir:
     """Scores the saved runs of one base; returns one row per (mode, coupling)."""
     from al_analysis.mb_model import make_fixed_param_kc_simulator
     kws, _ = BASES[base]
-    rdir = out_root / base / 'responses'
-    sweep = pd.read_csv(out_root / base / 'sweep.csv')
+    regularize_layout(out_root, base)
+    sweep = pd.read_csv(out_root / f'{base}_sweep.csv')
     single = sweep[sweep['mode'] == 'single'].iloc[0]
     # acute APL off with the single-APL model's thresholds
     initial = {k: single[k] for k in ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale')
@@ -85,17 +131,18 @@ def score_base(base: str, orn: pd.DataFrame, couplings, out_root: Path, res_dir:
     )
     off_resp, off_spk = sim({'wAPLKC_scale': 0.0})
     del sim
-    off_resp.to_parquet(rdir / 'responses_acute_off.parquet')
-    off_spk.to_parquet(rdir / 'spike_counts_acute_off.parquet')
+    off_stem = flat_name(base, 'single', None, 'acute_off')
+    off_resp.to_parquet(out_root / f'{off_stem}_responses.parquet')
+    off_spk.to_parquet(out_root / f'{off_stem}_spike_counts.parquet')
     off = H.model_rdms(off_resp, off_spk)
-    single_on = H.model_rdms(*load_run(rdir, 'single'))
+    single_on = H.model_rdms(*load_run(out_root, base, 'single'))
 
     rows = []
     pair_rows = {}
     runs = [('single', None)] + [(m, c) for c in couplings for m in ('fixed', 'matched')]
     for mode, coupling in runs:
         name = mode if coupling is None else f'{mode}_coupling_{coupling:g}'
-        resp, spk = load_run(rdir, name)
+        resp, spk = load_run(out_root, base, mode, coupling)
         on = H.model_rdms(resp, spk)
         row = dict(base=base, mode=mode, coupling=coupling,
             response_rate=float(resp.astype(float).mean().mean()),
@@ -207,10 +254,15 @@ def main() -> None:
     loss_fn = yang_loss_fn()
     if not args.score_only:
         for base in args.bases:
+            if (out_root / f'{flat_name(base, "single", None)}_responses.parquet').exists():
+                print(f'=== {base}: runs already saved (flat layout); skipping simulations', flush=True)
+                continue
             print(f'=== {base}', flush=True)
+            # run_base writes <base>/responses/... and <base>/sweep.csv; regularized below
             ACS.run_base(base, orn, loss_fn, args.couplings, out_root,
                 n_dynamics_odors=args.n_dynamics_odors
             )
+            regularize_layout(out_root, base)
     stats = pd.concat([score_base(b, orn, args.couplings, out_root, res_dir, data, orn_pairs,
         drive, ref) for b in args.bases], ignore_index=True)
     stats.to_csv(res_dir / 'stats_vs_coupling.csv', index=False)
