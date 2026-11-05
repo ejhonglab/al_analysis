@@ -320,13 +320,17 @@ Every artifact page we publish (per-experiment summaries, the report page, summa
 add_to_reports pages) must also exist as a self-contained file under
 `<shared>/reports/`, the same document the artifact's share > export download gives. The
 artifact server serves the HTML we upload unchanged, so:
-1. build every artifact page as a local file (an `index.html` with figures embedded as data
-   URIs; a directory with `index.html` plus other files for a multi-file artifact) and publish
-   it with `publish_files` from that file, never from inline content;
+1. build every artifact page as a local file and publish it with `publish_files` from that
+   file, never from inline content. Prefer a single `index.html` with figures embedded as
+   data URIs (inline base64, no files alongside): its export is one .html file. Upload files
+   alongside `index.html` only when the page needs them (then the export is a .zip of the
+   folder), and never upload a figure that is also embedded;
 2. after every publish or republish, run (from this folder)
    `./venv/bin/python save_report_copy.py <index.html or directory> <name> <artifact url>`,
-   which copies the file to `<shared>/reports/<name>.html` (a zip for a directory) and upserts
-   its row in `reports/README.md` (name, page title, URL, when and from which host). Use the
+   which copies the file to `<shared>/reports/<name>.html`, or, when the artifact has files
+   alongside `index.html`, pass the directory holding exactly the published files and it
+   writes `<name>.zip` (index.html plus those files, as the export does); it upserts the
+   page's row in `reports/README.md` (name, page title, URL, when and from which host). Use the
    same `<name>` on republish so the folder holds the latest version only: `E<n>_<short>` for
    experiment pages, `report_<short>` for the report, `summary_<date>` for summaries,
    `note_<short>` for add_to_reports pages.
