@@ -292,7 +292,10 @@ Describe experiments in plain English ("the per-claw threshold sweep", "the KC-K
 inhibition experiment"), not by ID. Polished reports (the summary artifact, the final report)
 use no IDs in prose. Preliminary and experiment-specific notes (the per-experiment markdown,
 chat.md, replies to me) use the plain-English description first and then the ID in
-parentheses: "the per-claw threshold sweep (E16)".
+parentheses: "the per-claw threshold sweep (E16)". The same applies when referring to
+experiments in the terminal chat with me, including when proposing them or asking whether to
+run them: a short plain-English description first, then the ID in parentheses, never the
+bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
 
 ## Report artifact
 
