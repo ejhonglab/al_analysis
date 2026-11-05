@@ -41,6 +41,24 @@ PARAM_COLS = ['tag', 'variant', 'base', 'config', 'seed', 'target_rate', 'fixed_
 STATS_NAMES = ['stats_variants.csv', 'models.csv', 'wkckc_controls.csv', 'sweep.csv']
 
 
+# condition names used in the output file names (longest first, so 'acute_off' wins over 'off')
+CONDITIONS = ('homeo_full_off', 'homeo_data_off', 'acute_off', 'off', 'on')
+
+
+def split_variant_condition(filename: str):
+    """'<variant>_<condition>_spike_counts.parquet' -> (variant, condition); condition may
+    contain underscores (acute_off), so it is matched against CONDITIONS."""
+    stem = filename
+    for suffix in ('_spike_counts.parquet', '_responses.parquet'):
+        if stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+            break
+    for c in CONDITIONS:
+        if stem.endswith('_' + c):
+            return stem[:-len(c) - 1], c
+    return stem, ''
+
+
 def ascii_only(name: str) -> None:
     if not name.isascii():
         raise ValueError(f'non-ASCII name: {name!r}')
@@ -56,8 +74,8 @@ def archive_experiment(name: str, host: str) -> dict:
     dst.mkdir(parents=True, exist_ok=True)
     n_files = 0
     for p in sorted(src.rglob('*')):
-        if not p.is_file() or p.suffix in ('.pyc',):
-            continue
+        if not p.is_file() or p.suffix in ('.pyc', '.html'):
+            continue   # .html: artifact pages live in reports/, not here
         rel = p.relative_to(src)
         ascii_only(rel.as_posix())
         target = dst / rel
@@ -67,8 +85,20 @@ def archive_experiment(name: str, host: str) -> dict:
         n_files += 1
     # parameters: the stats tables' identifying / parameter columns
     frames = []
-    for sname in STATS_NAMES:
-        for sp in ([res / sname] if res else []) + [src / sname]:
+    # the fixed names plus any per-experiment summary / stats / fits table (atlas's
+    # experiments write E<n>_summary.csv, window_stats.csv, fits.csv, ...)
+    tables = []
+    for d in ([res] if res else []) + [src]:
+        for sname in STATS_NAMES:
+            tables.append(d / sname)
+        for pat in ('*_summary.csv', 'stats*.csv', 'window_stats.csv', 'fits.csv', 'variants.csv'):
+            tables.extend(sorted(d.glob(pat)))
+    seen = set()
+    for sp in tables:
+        if sp in seen:
+            continue
+        seen.add(sp)
+        for _ in (0,):
             if sp.exists():
                 df = pd.read_csv(sp)
                 keep = [c for c in PARAM_COLS if c in df.columns]
@@ -79,9 +109,10 @@ def archive_experiment(name: str, host: str) -> dict:
         params.to_csv(dst / 'params.csv', index=False)
     if res and (res / 'provenance.json').exists():
         shutil.copy2(res / 'provenance.json', dst / 'provenance.json')
-    variants = sorted({p.name.rsplit('_', 2)[0] for p in dst.rglob('*_spike_counts.parquet')} |
-        {p.name.rsplit('_', 2)[0] for p in dst.rglob('*_responses.parquet')})
-    conds = sorted({p.name.rsplit('_', 2)[1] for p in dst.rglob('*_spike_counts.parquet')})
+    parsed = [split_variant_condition(p.name) for p in list(dst.rglob('*_spike_counts.parquet'))
+        + list(dst.rglob('*_responses.parquet'))]
+    variants = sorted({v for v, _ in parsed})
+    conds = sorted({c for _, c in parsed if c})
     lines = [f'# {name}: model outputs', '',
         f'Copied {datetime.now():%Y-%m-%d %H:%M} from host {host} (`outputs/{name}/` of the al_analysis checkout). '
         f'{n_files} files; {len(variants)} variants; conditions: {", ".join(conds) if conds else "(see file names)"}.', '',
