@@ -134,11 +134,25 @@ def breadth_weights(wAPLKC0: pd.Series, breadth: pd.Series, k: float) -> pd.Seri
     return wAPLKC0 * f.fillna(1.0).to_numpy()
 
 
+STRUCTURE_WEIGHTS = dict(wt_dev=1.0, vcf_off=1.0, excess_on=0.5)
+WT_DEV_TARGET, VCF_OFF_TARGET = 0.83, 0.36          # data: structure beyond the ORN input
+EXCESS_DIFF_TARGET, EXCESS_DIFF_SCALE = 0.02, 0.05   # data: block excess - other excess, APL on
+
+
 def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series,
-    drive: pd.Series):
-    """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc)."""
+    drive: pd.Series, ref: Optional[pd.DataFrame] = None, structure: bool = False):
+    """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc).
+
+    With `structure=True` (E25) three terms are added: the structure beyond the ORN input
+    with APL on (rank agreement of the KC residual from a linear ORN prediction with the
+    same residual in Remy's wild-type somata; data 0.83), the natural-source alignment of
+    the APL-off residual (data 0.36), both as (target - value) / target clipped at 0, and
+    the APL-on excess profile ((excess of the block pairs - excess of the other between-group
+    pairs) vs the data's +0.02, scale 0.05). `ref` = `H.reference_pairs()`.
+    """
     ratio_target = float(data_rates['TNT'].reindex(H.APL16_ODORS).mean() /
         data_rates['TNT3c'].reindex(H.APL16_ODORS).mean())
+    weights = dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if structure else {}))
     ctrl = data['raw']['TNT3c']
     tnt = data['raw']['TNT']
     v = H.PRIMARY_MODEL_RDM
@@ -176,8 +190,20 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
             po_off=1.0 - np.nan_to_num(out['po_off_spearman'], nan=0.0),
             iso=max(0.0, ISO_TARGET - np.nan_to_num(out['iso_r2'], nan=0.0)) / ISO_SCALE,
         )
+        if structure:
+            rr_on = H.compare_to_references(on, ref)
+            rr_off = H.compare_to_references(off, ref)
+            ex = density_excess(s_on)
+            out['wt_dev_on'] = float(rr_on['spearman_resid_vs_remap_wt'])
+            out['vcf_off'] = float(rr_off['spearman_resid_vs_vcf_hyp'])
+            out['excess_on_block'] = float(ex['excess_block'])
+            out['excess_on_other'] = float(ex['excess_other_between'])
+            terms['wt_dev'] = max(0.0, WT_DEV_TARGET - np.nan_to_num(out['wt_dev_on'], nan=0.0)) / WT_DEV_TARGET
+            terms['vcf_off'] = max(0.0, VCF_OFF_TARGET - np.nan_to_num(out['vcf_off'], nan=0.0)) / VCF_OFF_TARGET
+            terms['excess_on'] = ((out['excess_on_block'] - out['excess_on_other'] - EXCESS_DIFF_TARGET)
+                / EXCESS_DIFF_SCALE) ** 2
         for name, t in terms.items():
-            out[f'term_{name}'] = float(LOSS_WEIGHTS[name] * t)
+            out[f'term_{name}'] = float(weights[name] * t)
         out['loss'] = float(sum(out[f'term_{n}'] for n in terms))
         return {kk: float(vv) for kk, vv in out.items()}
 
@@ -185,11 +211,12 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     return loss_fn
 
 
-def init_from_fit(tag: str, base: Dict[str, float]) -> Dict[str, float]:
+def init_from_fit(tag: str, base: Dict[str, float], experiment: str = 'E10_joint_fit'
+    ) -> Dict[str, float]:
     """Starting point taken from an earlier fit's row in fits.csv: its threshold, APL and
     APL->bouton factors relative to its own base are applied to `base` (so a solution found
     without a per-claw threshold can seed a fit with one), with its KC-KC scale."""
-    f = pd.read_csv(H.results_dir(EXPERIMENT) / 'fits.csv')
+    f = pd.read_csv(H.results_dir(experiment) / 'fits.csv')
     r = f[f.tag == tag]
     if len(r) == 0:
         raise ValueError(f'no fit {tag!r} in fits.csv')
@@ -204,12 +231,12 @@ def init_from_fit(tag: str, base: Dict[str, float]) -> Dict[str, float]:
 
 def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, maxfev: int,
     method: str, thr0_factor: float, claw_thr=None, init_from: Optional[str] = None,
-    verbose: bool = True):
+    init_from_experiment: str = 'E10_joint_fit', verbose: bool = True):
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if claw_thr is None else e19_row(claw_thr, k, kckc0)
     if init_from is not None:
-        init = init_from_fit(init_from, initial)
+        init = init_from_fit(init_from, initial, init_from_experiment)
         kckc0 = init['wKCKC_scale']
         print(f'starting from fit {init_from}: {init}', flush=True)
     elif r19 is not None:
@@ -312,14 +339,20 @@ def main() -> None:
         help='round 2: rectified per-claw offset (olfsysm claw_thr; E16 / E19), e.g. 40 or 70')
     ap.add_argument('--method', default='Nelder-Mead')
     ap.add_argument('--tag', default='', help='suffix for this run (e.g. a second start)')
+    ap.add_argument('--experiment', default=EXPERIMENT,
+        help='results / outputs folder name (E25 uses E25_joint_fit_structure)')
+    ap.add_argument('--loss', choices=['base', 'structure'], default='base',
+        help="'structure' adds the structure-beyond-ORN and APL-on excess-profile terms (E25)")
+    ap.add_argument('--init-from-experiment', default='E10_joint_fit',
+        help='experiment whose fits.csv --init-from reads')
     ap.add_argument('--init-from', default=None, metavar='TAG',
         help='start from an earlier fit (row TAG of fits.csv): its relative threshold / APL factors on this base, its KC-KC scale')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
 
-    res_dir = H.results_dir(EXPERIMENT)
-    out_dir = H.outputs_dir(EXPERIMENT)
+    res_dir = H.results_dir(args.experiment)
+    out_dir = H.outputs_dir(args.experiment)
     orn = H.apl16_orn_deltas()
     orn_pairs = H.orn16_consensus_pairs()
     drive = H.consensus_orn_drive()
@@ -333,8 +366,8 @@ def main() -> None:
     if args.figure_only:
         make_figure(res_dir, data)
         return
-    loss_fn = make_loss(data, data_rates, orn_pairs, drive)
-    print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}', flush=True)
+    loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss == 'structure'))
+    print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}; loss variant {args.loss}', flush=True)
 
     t0 = time.time()
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr)
@@ -348,7 +381,8 @@ def main() -> None:
         t0 = time.time()
         res, init, bounds = fit_one(k, orn, initial, wnorm, breadth, loss_fn, kckc0=args.kckc0,
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
-            thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from
+            thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
+            init_from_experiment=args.init_from_experiment
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -365,7 +399,7 @@ def main() -> None:
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
             method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
-            init_from=args.init_from,
+            init_from=args.init_from, loss_variant=args.loss,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
@@ -414,7 +448,8 @@ def main() -> None:
                 capture_output=True, text=True).stdout.strip(),
             olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
                 cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
-            base=BOUTON, claw_thr=args.claw_thr, base_params=initial, loss_weights=LOSS_WEIGHTS,
+            base=BOUTON, claw_thr=args.claw_thr, base_params=initial, loss_variant=args.loss,
+            loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=BLOCK_TARGET,
             block_scale=BLOCK_SCALE, rate_target=RATE_TARGET, ratio_target=loss_fn.ratio_target,
             ratio_log_scale=RATIO_LOG_SCALE, iso_target=ISO_TARGET, iso_scale=ISO_SCALE,
