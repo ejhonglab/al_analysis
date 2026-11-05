@@ -16207,7 +16207,8 @@ def make_kc_data_loss(*, target_response_rates: Optional[Union[float, pd.Series]
     target_corr: Optional[pd.DataFrame] = None, response_rate_weight: float = 1.0,
     corr_weight: float = 1.0,
     corr_from: Literal['responses', 'spike_counts'] = 'responses',
-    drop_silent_cells: bool = drop_silent_model_kcs
+    drop_silent_cells: bool = drop_silent_model_kcs,
+    similarity: Literal['pearson', 'cosine'] = 'pearson'
     ) -> Callable[[pd.DataFrame, pd.DataFrame], Dict[str, float]]:
     """Returns loss function comparing model KC outputs to measured KC data.
 
@@ -16221,11 +16222,13 @@ def make_kc_data_loss(*, target_response_rates: Optional[Union[float, pd.Series]
             by mean measured response rate (or absolute difference in mean response
             rates, divided by measured rate, if a single rate is passed).
 
-        target_corr: measured odor X odor correlations of KC responses (e.g. from
-            `load_remy_megamat_mean_kc_corrs`). Loss component is RMSE between model and
-            measured correlations, across odor pairs (diagonal excluded). Model
-            correlations that are undefined (an odor no non-silent model KC responds to)
-            are treated as 0.
+        target_corr: measured odor X odor similarities of KC responses, of the type
+            given by `similarity` (e.g. correlations from
+            `load_remy_megamat_mean_kc_corrs`, or 1 minus cosine distances, for
+            `similarity='cosine'`). Loss component is RMSE between model and measured
+            similarities, across odor pairs (only upper triangle used, so diagonal may
+            be NaN). Model similarities that are undefined (an odor no non-silent model
+            KC responds to) are treated as 0.
 
         response_rate_weight: weight of response rate component in total loss
 
@@ -16235,7 +16238,14 @@ def make_kc_data_loss(*, target_response_rates: Optional[Union[float, pd.Series]
             consistent with `fit_and_plot_mb_model` correlation plots.
 
         drop_silent_cells: whether to drop model KCs that do not respond to any odor,
-            before computing correlations (not used for response rates)
+            before computing correlations (not used for response rates). No effect for
+            `similarity='cosine'`.
+
+        similarity: how model odor X odor similarities are computed, to compare to
+            `target_corr`. 'pearson' for correlations between odors, and 'cosine' for
+            cosine similarity between odors (each a vector over all model cells). For
+            binary responses, cosine similarity of odors A and B is
+            |A and B| / sqrt(|A| * |B|), with |X| the number of cells responding to X.
 
     Returns loss function, taking `(responses, spike_counts)` (as output by
     `fit_mb_model`) and returning dict with total 'loss', as well as
@@ -16247,6 +16257,9 @@ def make_kc_data_loss(*, target_response_rates: Optional[Union[float, pd.Series]
 
     if corr_from not in ('responses', 'spike_counts'):
         raise ValueError(f"{corr_from=} not in ('responses', 'spike_counts')")
+
+    if similarity not in ('pearson', 'cosine'):
+        raise ValueError(f"{similarity=} not in ('pearson', 'cosine')")
 
     if isinstance(target_response_rates, pd.Series):
         assert not target_response_rates.isna().any()
@@ -16292,13 +16305,22 @@ def make_kc_data_loss(*, target_response_rates: Optional[Union[float, pd.Series]
             else:
                 model_data = spike_counts
 
-            if drop_silent_cells:
+            # (silent cells do not change cosine similarities)
+            if drop_silent_cells and similarity == 'pearson':
                 model_data = drop_silent_model_cells(model_data)
 
             model_data = model_data.iloc[:,
                 _match_odors(model_data.columns, target_corr.index)
             ]
-            model_corr_values = model_data.corr().values[triu_indices]
+            if similarity == 'pearson':
+                model_corr = model_data.corr().values
+            else:
+                values = model_data.values.astype(float)
+                norms = np.linalg.norm(values, axis=0)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    model_corr = (values.T @ values) / np.outer(norms, norms)
+
+            model_corr_values = model_corr[triu_indices]
             model_corr_values = np.nan_to_num(model_corr_values, nan=0.0)
 
             corr_loss = np.sqrt(np.mean((model_corr_values - target_corr_values)**2))
@@ -16311,15 +16333,84 @@ def make_kc_data_loss(*, target_response_rates: Optional[Union[float, pd.Series]
     return loss_fn
 
 
+def make_multi_condition_loss(condition_losses: Dict[str,
+        Callable[[pd.DataFrame, pd.DataFrame], Union[float, Dict[str, float]]]], *,
+    weights: Optional[Dict[str, float]] = None
+    ) -> Callable[[Dict[str, Tuple[pd.DataFrame, pd.DataFrame]]], Dict[str, float]]:
+    """Returns loss function combining losses for model outputs in several conditions.
+
+    For use as `optimize_mb_model_params` `loss_fn`, with `condition_param_overrides`
+    (e.g. to fit one set of parameters to data with APL intact and blocked).
+
+    Args:
+        condition_losses: maps condition names to loss functions for model outputs in
+            that condition (e.g. from `make_kc_data_loss`), each taking
+            `(responses, spike_counts)` and returning either a float or a dict with a
+            'loss' key.
+
+        weights: weight of each condition's loss in total loss. Conditions not in
+            `weights` have weight 1.
+
+    Returns loss function, taking dict mapping each condition name to
+    `(responses, spike_counts)` (as output by `fit_mb_model`) and returning dict with
+    total 'loss' (weighted sum of each condition's 'loss'), as well as all components
+    returned by each condition's loss function, with keys prefixed by condition name and
+    '_' (e.g. 'tnt_loss', 'tnt_corr_loss', 'ctrl_mean_response_rate').
+    """
+    if len(condition_losses) == 0:
+        raise ValueError('condition_losses empty')
+
+    if weights is None:
+        weights = dict()
+
+    unknown = set(weights) - set(condition_losses)
+    if len(unknown) > 0:
+        raise ValueError(f'weights passed for {unknown}, not in condition_losses')
+
+    weights = {c: float(weights.get(c, 1.0)) for c in condition_losses}
+
+    def loss_fn(condition_outputs: Dict[str, Tuple[pd.DataFrame, pd.DataFrame]]
+        ) -> Dict[str, float]:
+        """Returns dict of losses for model outputs (see `make_multi_condition_loss`).
+        """
+        if set(condition_outputs) != set(condition_losses):
+            raise ValueError(f'conditions in outputs ({set(condition_outputs)}) '
+                f'differ from those in condition_losses ({set(condition_losses)})'
+            )
+
+        losses = dict()
+        total_loss = 0.0
+        for condition, condition_loss_fn in condition_losses.items():
+            responses, spike_counts = condition_outputs[condition]
+            condition_losses_ = condition_loss_fn(responses, spike_counts)
+            if not isinstance(condition_losses_, dict):
+                condition_losses_ = {'loss': condition_losses_}
+
+            for k, v in condition_losses_.items():
+                key = f'{condition}_{k}'
+                if key in losses:
+                    raise ValueError(f'loss component name {key} not unique. rename '
+                        'conditions.'
+                    )
+                losses[key] = v
+
+            total_loss += weights[condition] * float(condition_losses_['loss'])
+
+        losses['loss'] = float(total_loss)
+        return losses
+
+    return loss_fn
+
+
 class _MaxEvalsReached(Exception):
     pass
 
 
 def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
-    loss_fn: Optional[Callable[[pd.DataFrame, pd.DataFrame],
-        Union[float, Dict[str, float]]]] = None,
+    loss_fn: Optional[Callable[..., Union[float, Dict[str, float]]]] = None,
     target_response_rates: Optional[Union[float, pd.Series]] = None,
     target_corr: Optional[pd.DataFrame] = None,
+    condition_param_overrides: Optional[Dict[str, ParamDict]] = None,
     params_to_optimize: Optional[Union[Sequence[str], Literal['all']]] = None,
     initial_params: Optional[ParamDict] = None,
     bounds: Optional[Dict[str, Tuple[float, float]]] = None, bound_factor: float = 10.0,
@@ -16344,9 +16435,21 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         loss_fn: takes `(responses, spike_counts)` (as output by `fit_mb_model`) and
             returns either a float or a dict with a 'loss' key (other keys are added to
             history). If not passed, defined via `make_kc_data_loss` with target kwargs.
+            If `condition_param_overrides` passed, instead takes one dict mapping each
+            condition name to `(responses, spike_counts)` for that condition (e.g. from
+            `make_multi_condition_loss`), and must be passed.
 
         target_response_rates/target_corr: passed to `make_kc_data_loss`, to define
             `loss_fn`. Must not be passed with `loss_fn`.
+
+        condition_param_overrides: if passed, maps condition names to parameter values
+            (subset of `optimizable_model_params` keys that apply to this model) that
+            differ in that condition, e.g. `{'ctrl': {}, 'tnt': {'wAPLKC_scale': 0.0}}`
+            to fit one set of parameters to data with APL intact and with APL output
+            blocked. Each evaluation simulates every condition, with the parameters
+            being evaluated updated by that condition's overrides (after any tying of
+            APL weights, see `tie_apl_weights`). Parameters being optimized can be
+            overridden. Conditions with identical parameters are only simulated once.
 
         params_to_optimize: subset of `optimizable_model_params` keys. Defaults to all
             that apply to this model (PN<>APL weight scales only included if
@@ -16393,12 +16496,14 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
         verify: if True, calls `fit_mb_model` with best parameters fixed, checks outputs
             are the same as from the faster simulation used during optimization, and
-            includes `fit_mb_model` outputs in returned dict.
+            includes `fit_mb_model` outputs in returned dict. If
+            `condition_param_overrides` passed, does this for each condition.
 
         **model_kws: passed to `fit_mb_model` (see `make_fixed_param_kc_simulator`)
 
     Returns dict with:
-        'params': best parameters (including those not optimized)
+        'params': best parameters (including those not optimized, and without any
+            `condition_param_overrides`)
         'fit_mb_model_kws': all kwargs (other than `orn_deltas`) for `fit_mb_model` /
             `fit_and_plot_mb_model` to reproduce best model: `model_kws` (without
             kwargs only used for tuning) and 'params'
@@ -16406,13 +16511,23 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         'losses': all components returned by `loss_fn`, at best parameters
         'initial_params'
         'initial_losses'
-        'history': DataFrame with parameters and losses for each evaluation
+        'history': DataFrame with parameters (without any `condition_param_overrides`)
+            and losses for each evaluation
         'scipy_result': `scipy.optimize` result (None if `maxfev` reached first)
         'model_kws': `model_kws`
         'params_to_optimize': list of parameters optimized
         'tied_params': list of parameters tied to wAPLKC_scale (see `tie_apl_weights`)
         If `verify=True`, also 'responses', 'spike_counts', 'wPNKC', and
-        'param_dict' (from `fit_mb_model` call w/ best parameters fixed).
+        'param_dict' (from `fit_mb_model` call w/ best parameters fixed, for the first
+        condition if `condition_param_overrides` passed).
+        If `condition_param_overrides` passed, also:
+        'condition_param_overrides': `condition_param_overrides`
+        'condition_params': dict mapping each condition to its best parameters ('params'
+            updated by that condition's overrides)
+        'condition_fit_mb_model_kws': dict mapping each condition to kwargs to
+            reproduce its best model (as 'fit_mb_model_kws')
+        'condition_outputs': dict mapping each condition to `(responses, spike_counts)`
+            at best parameters (from simulation during optimization)
     """
     if model_kws.get('plot_dir') is not None:
         raise ValueError('plot_dir not supported. to make plots, call '
@@ -16426,11 +16541,27 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         raise ValueError(f"{params_to_optimize=} must be 'all' if a str")
 
     if loss_fn is None:
+        if condition_param_overrides is not None:
+            raise ValueError('must pass loss_fn (e.g. from make_multi_condition_loss) '
+                'with condition_param_overrides'
+            )
         loss_fn = make_kc_data_loss(target_response_rates=target_response_rates,
             target_corr=target_corr
         )
     elif target_response_rates is not None or target_corr is not None:
         raise ValueError('pass either loss_fn or target_[response_rates|corr], not both')
+
+    if condition_param_overrides is not None:
+        if len(condition_param_overrides) == 0:
+            raise ValueError('condition_param_overrides empty')
+
+        # (simulator raises ValueError if any do not apply to this model)
+        for condition, overrides in condition_param_overrides.items():
+            unknown = set(overrides) - set(optimizable_model_params)
+            if len(unknown) > 0:
+                raise ValueError(f'condition {condition!r} overrides {unknown}, not in '
+                    f'{set(optimizable_model_params)}'
+                )
 
     simulator_kws = dict(model_kws)
     if (initial_params is None and target_response_rates is not None and
@@ -16530,6 +16661,14 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
         return params
 
+    def condition_params(params: ParamDict) -> Dict[str, ParamDict]:
+        return {c: {**params, **overrides}
+            for c, overrides in condition_param_overrides.items()
+        }
+
+    def params_key(params: ParamDict) -> Tuple[Tuple[str, float], ...]:
+        return tuple(sorted(params.items()))
+
     history = []
     best = dict()
 
@@ -16542,8 +16681,22 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             raise _MaxEvalsReached
 
         before = time.time()
-        responses, spike_counts = simulate(params)
-        losses = loss_fn(responses, spike_counts)
+        if condition_param_overrides is None:
+            responses, spike_counts = simulate(params)
+            losses = loss_fn(responses, spike_counts)
+            outputs = dict(responses=responses, spike_counts=spike_counts)
+        else:
+            key2outputs = dict()
+            condition_outputs = dict()
+            for c, c_params in condition_params(params).items():
+                key = params_key(c_params)
+                if key not in key2outputs:
+                    key2outputs[key] = simulate(c_params)
+                condition_outputs[c] = key2outputs[key]
+
+            losses = loss_fn(condition_outputs)
+            outputs = dict(condition_outputs=condition_outputs)
+
         if not isinstance(losses, dict):
             losses = {'loss': losses}
 
@@ -16554,9 +16707,7 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         history.append({**params, **losses, 'time_s': time.time() - before})
 
         if len(best) == 0 or loss < best['loss']:
-            best.update(loss=loss, params=params, losses=losses, responses=responses,
-                spike_counts=spike_counts
-            )
+            best.update(loss=loss, params=params, losses=losses, **outputs)
 
         if verbose:
             param_str = ' '.join(f'{p}={params[p]:.5g}' for p in params_to_optimize)
@@ -16672,7 +16823,18 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         'tied_params': tied,
     }
 
-    if verify:
+    if condition_param_overrides is not None:
+        best_condition_params = condition_params(best['params'])
+        result.update(
+            condition_param_overrides=condition_param_overrides,
+            condition_params=best_condition_params,
+            condition_fit_mb_model_kws={c: _fixed_param_model_kws(model_kws, p)
+                for c, p in best_condition_params.items()
+            },
+            condition_outputs=best['condition_outputs'],
+        )
+
+    if verify and condition_param_overrides is None:
         responses, spike_counts, wPNKC, param_dict = fit_mb_model(orn_deltas,
             **result['fit_mb_model_kws']
         )
@@ -16686,6 +16848,30 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         result.update(responses=responses, spike_counts=spike_counts, wPNKC=wPNKC,
             param_dict=param_dict
         )
+
+    elif verify:
+        key2fit_outputs = dict()
+        for c, c_params in best_condition_params.items():
+            key = params_key(c_params)
+            if key not in key2fit_outputs:
+                key2fit_outputs[key] = fit_mb_model(orn_deltas,
+                    **result['condition_fit_mb_model_kws'][c]
+                )
+            responses, spike_counts, wPNKC, param_dict = key2fit_outputs[key]
+
+            sim_responses, sim_spike_counts = best['condition_outputs'][c]
+            if not (responses.equals(sim_responses) and
+                    spike_counts.equals(sim_spike_counts)):
+
+                raise RuntimeError(f'fit_mb_model outputs for condition {c!r} with '
+                    'best parameters fixed did not match those from simulation during '
+                    'optimization'
+                )
+
+            if 'responses' not in result:
+                result.update(responses=responses, spike_counts=spike_counts,
+                    wPNKC=wPNKC, param_dict=param_dict
+                )
 
     return result
 
