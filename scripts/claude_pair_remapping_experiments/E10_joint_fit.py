@@ -184,6 +184,58 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     return res, init, bounds
 
 
+def make_figure(res_dir: Path, data: dict) -> None:
+    """Loss histories per fit, best-fit statistics vs k, and the best fit's matrices."""
+    plt = H._plt()
+    fits = pd.read_csv(res_dir / 'fits.csv').sort_values(['k', 'tag'])
+    hists = {f.stem.replace('history_', ''): pd.read_csv(f) for f in sorted(res_dir.glob('history_*.csv'))}
+    v = H.PRIMARY_MODEL_RDM
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8.5))
+    ax = axes[0, 0]
+    for tag, h in hists.items():
+        ax.plot(h.index, h['loss'].cummin(), label=tag)
+    ax.set(xlabel='evaluation', ylabel='best loss so far', title='Nelder-Mead progress', yscale='log')
+    ax.legend(fontsize=7)
+    panels = [
+        (f'{v}__block_fruity_small_iso', 'fruity x small-ester block (on vs off)', 0.055, (0.035, 0.075)),
+        (f'{v}__on_spearman', 'Spearman with control (APL on)', None, None),
+        (f'{v}__off_spearman', 'Spearman with TNT (APL off)', None, None),
+        ('rate_ratio_off_over_on', 'APL-off / APL-on response rate', 2.2, None),
+        ('kc_kc_inh', 'fitted KC-KC scale (kc_kc_inh)', None, None),
+    ]
+    for ax, (col, title, target, band) in zip(axes.flat[1:], panels):
+        for tag, sub in fits.groupby(fits.tag.str.contains('start2').map({False: 'start 1', True: 'start 2'})):
+            ax.plot(sub.k, sub[col], 'o-', label=tag)
+        if target is not None:
+            ax.axhline(target, color='k', ls='--', lw=1, label='data')
+        if band is not None:
+            ax.axhspan(*band, color='k', alpha=0.08)
+        ax.set(xlabel='breadth exponent k', title=title)
+        ax.legend(fontsize=7)
+    fig.suptitle('E10: joint fit (bouton base x breadth-weighted APL x KC-KC inhibition) to control and TNT', fontsize=11)
+    fig.tight_layout()
+    fig.savefig(res_dir / 'E10_joint_fit.png', dpi=130)
+    plt.close(fig)
+    # best fit overall: on / off model vs data and on-vs-off
+    best = fits.sort_values('loss').iloc[0]
+    long = pd.read_csv(res_dir / 'model_pair_distances_long.csv')
+    sub = long[long.tag == best.tag]
+    pairs = {c: g.set_index(['odor_a', 'odor_b'])['distance'] for c, g in sub.groupby('condition')}
+    if len(pairs) == 2:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+        on, off = pairs['on'], pairs['acute_off']
+        H.plot_model_vs_data(axes[0], on, data['raw']['TNT3c'], label=f'{best.tag} APL on')
+        axes[0].set_title(f'APL on vs control (Spearman {best[v + "__on_spearman"]:.2f})')
+        H.plot_model_vs_data(axes[1], off, data['raw']['TNT'], label=f'{best.tag} APL off')
+        axes[1].set_title(f'APL off vs TNT (Spearman {best[v + "__off_spearman"]:.2f})')
+        H.plot_on_vs_off(axes[2], on, off, label=best.tag)
+        axes[2].set_title(f'on vs off (block {best[v + "__block_fruity_small_iso"]:+.3f}, iso R2 {best[v + "__iso_r2"]:.2f})')
+        fig.suptitle(f'E10 best fit: {best.tag} (loss {best.loss:.2f})', fontsize=11)
+        fig.tight_layout()
+        fig.savefig(res_dir / 'E10_best_fit.png', dpi=130)
+        plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('-k', '--exponents', nargs='+', type=float, default=[3.0, 2.0, 1.0, 0.0])
@@ -194,6 +246,7 @@ def main() -> None:
     ap.add_argument('--method', default='Nelder-Mead')
     ap.add_argument('--tag', default='', help='suffix for this run (e.g. a second start)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
+    ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
 
     res_dir = H.results_dir(EXPERIMENT)
@@ -208,6 +261,9 @@ def main() -> None:
         'pearson': {g: H.yang_mean_rdm(g, 'pearson') for g in ('TNT3c', 'TNT')},
     }
     data_rates = {g: H.yang_response_fractions(g).mean() for g in ('TNT3c', 'TNT')}
+    if args.figure_only:
+        make_figure(res_dir, data)
+        return
     loss_fn = make_loss(data, data_rates, orn_pairs, drive)
     print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}', flush=True)
 
@@ -292,6 +348,10 @@ def main() -> None:
             approx_conc_note=H.APPROX_CONC_NOTE,
         )
         (res_dir / f'provenance_{tag}.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
+    try:
+        make_figure(res_dir, data)
+    except Exception as e:
+        print('figure failed:', repr(e)[:200])
     print('done ->', res_dir)
 
 
