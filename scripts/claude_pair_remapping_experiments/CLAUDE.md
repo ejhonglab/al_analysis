@@ -283,6 +283,11 @@ the text: the text should say what moved, which way,
 and whether it reached the data. Spelling out the full context for every number in prose is
 too verbose, so put the numbers in the table and the judgement in the sentence.
 
+Name Spearman-based statistics so the text itself says they are rank correlations: the
+per-odor response-rate comparison is "rate rank agreement" (or "rate rank match"), and
+likewise "rank agreement with the control matrix". Dropping "rank" because "Spearman" is
+mentioned nearby is allowed but is not the default.
+
 Describe experiments in plain English ("the per-claw threshold sweep", "the KC-KC lateral
 inhibition experiment"), not by ID. Polished reports (the summary artifact, the final report)
 use no IDs in prose. Preliminary and experiment-specific notes (the per-experiment markdown,
