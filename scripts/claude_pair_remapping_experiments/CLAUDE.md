@@ -253,6 +253,18 @@ table and the experiment statuses) and chat.md in the shared directory to see if
 priorities or claims have changed.
 
 
+## Notes to keep for the final summary report
+
+The shared directory has an `add_to_reports/` folder (README there). When I ask for a note
+to be saved for the report (e.g. my questions about a parameter and your answer, a methods
+caveat, a cross-experiment synthesis), write it as a self-contained markdown file in that
+folder, with the same content as any artifact you made for it and the artifact URL in its
+header, and add a row to the folder's README table. Keep working notes in `notes/`.
+
+When I later ask you to summarize all findings (the final report over all experiments),
+include every file in `add_to_reports/`, together with the per-experiment `E<n>_*.md`
+files and the Completed list in experiment_priorities.md.
+
 ## Report artifact
 
 The report markdown in this folder ("APL and the ORN→KC remapping of odor–odor
