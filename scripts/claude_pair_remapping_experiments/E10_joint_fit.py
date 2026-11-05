@@ -394,7 +394,7 @@ def main() -> None:
             block_scale=BLOCK_SCALE, rate_target=RATE_TARGET, ratio_target=loss_fn.ratio_target,
             ratio_log_scale=RATIO_LOG_SCALE, iso_target=ISO_TARGET, iso_scale=ISO_SCALE,
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
-            approx_conc_note=H.APPROX_CONC_NOTE,
+            approx_conc_note=H.APPROX_CONC_NOTE, model=H.model_provenance(orn_deltas=orn),
         )
         (res_dir / f'provenance_{tag}.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
     try:

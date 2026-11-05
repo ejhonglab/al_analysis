@@ -25,6 +25,7 @@ from termcolor import cprint
 
 from hong2p.util import format_date, symlink
 from al_analysis.al_util import warn
+from al_analysis import mb_model
 from al_analysis.mb_model import (read_param_csv, format_model_params,
     fitandplot_finished_writing, megamat_orn_deltas, fit_and_plot_mb_model,
     get_fitandplot_model_kw_list, QUICK_MODEL_KW_LIST
@@ -48,6 +49,12 @@ from test.test_mb_model import (FITANDPLOT_MODEL_KW_LIST, N_TEST_SEEDS,
 # (more appropriate place to do that? prob not? could refactor and also do in
 # model_mb_responses)
 def main():
+    # reference outputs must come from a clean olfsysm build of a known commit, whatever
+    # AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM says (the repro tests themselves ignore version info)
+    mb_model.STRICT_CLEAN_OLFSYSM = True
+    mb_model.require_clean_olfsysm(allow_env_override=False,
+        context='generate_reference_outputs_for_repro.py'
+    )
     """Generates reference outputs (see module docstring and CLI `--help`).
     """
     # TODO TODO add argument for substring to match against test ID (use -k, like

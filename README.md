@@ -143,6 +143,28 @@ TODO (+ explain how to setup ImageJ stuff and hotkeys for it, or link to repo th
 explains that)
 
 
+### Model provenance (olfsysm builds)
+
+Every model run (`mb_model.fit_mb_model`) first checks that the installed `olfsysm`
+extension is a clean build of a known commit: olfsysm bakes its git hash, a clean / dirty
+flag and a hash of its compiled sources into the module at build time, and
+`mb_model.olfsysm_is_clean()` also compares the build with the checkout it was installed
+from (`mb_model.olfsysm_build_info()` / `olfsysm_checkout_info()` show the details). If the
+check fails, the error says why and how to proceed: commit (or stash) the olfsysm changes
+and rebuild with `pip install -e ~/src/olfsysm`, or, for development only,
+```
+export AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM=1
+```
+to run anyway. `mb_model.model_provenance()` collects the olfsysm build info, the commit
+and dirty state (with diff) of `al_analysis` and `hong2p`, the CPU, Python and package
+versions, and content hashes of the model inputs; `fit_and_plot_mb_model` writes it as
+`model_provenance.json` next to each output's parameter files, and the KC-remapping
+experiment scripts include it in their `provenance.json`. The experiment harness
+(`scripts/claude_pair_remapping_experiments`) and `test/generate_reference_outputs_for_repro.py`
+always require a clean build (the environment variable is ignored there). The repro tests
+in `test/test_mb_model.py` do not compare any of this: they check that behavior did not
+change across versions.
+
 ### Installation notes
 
 Initially tested on Ubuntu 18.04, mostly on 20.04, and also believe it has worked on at

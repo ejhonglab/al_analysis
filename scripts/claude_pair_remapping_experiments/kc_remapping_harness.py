@@ -31,6 +31,14 @@ import pandas as pd
 from scipy import stats
 from sklearn.isotonic import IsotonicRegression
 
+# Every model run from these experiments must use a clean olfsysm build of a known commit
+# (CLAUDE.md, "Model provenance"): importing the harness makes `fit_mb_model` refuse
+# anything else, regardless of AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM. `model_provenance()` is
+# what the scripts put in their provenance.json.
+from al_analysis import mb_model as _mb_model
+_mb_model.STRICT_CLEAN_OLFSYSM = True
+model_provenance = _mb_model.model_provenance
+
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]

@@ -12565,6 +12565,10 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             call should have `use_connectome_APL_weights=True` (and the same
             `apl_weights_kc_mean`) as well.
     """
+    # the installed olfsysm must be a clean build of a known commit (see
+    # `require_clean_olfsysm`; `model_provenance()` records which one)
+    require_clean_olfsysm()
+
     if _wPNKC is not None:
         # just a hacky way to check pn2kc_connections is unset (== default 'hemibrain',
         # unless i move default out of kwarg def to be able to detect unset more easily)
@@ -18391,46 +18395,266 @@ def _write_params(param_dict: ParamDict, model_output_dir: Path, name: str, *,
 
 ALLOW_DIRTY_OLFSYSM_ENV_VAR = 'AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM'
 model_provenance_name = 'model_provenance.json'
+# longest diff of a dirty repository kept in a provenance record
+_MAX_PROVENANCE_DIFF_CHARS = 60_000
+
+# set True by entry points that must never run a model from an unclean olfsysm build
+# (the KC-remapping experiment harness, generate_reference_outputs_for_repro.py); then
+# ALLOW_DIRTY_OLFSYSM_ENV_VAR is ignored.
+STRICT_CLEAN_OLFSYSM: bool = False
 
 
 class OlfsysmBuildError(RuntimeError):
     """The installed olfsysm extension is not a clean build of a known commit."""
 
 
+def _run_git(args: Sequence[str], cwd) -> Optional[str]:
+    """stdout of `git <args>` run in `cwd`, or None if git fails / is missing."""
+    import subprocess
+    try:
+        return subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True,
+            check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def olfsysm_build_info() -> Dict[str, Any]:
-    """Returns the build information baked into the installed olfsysm extension."""
-    raise NotImplementedError
+    """Returns the build information baked into the installed olfsysm extension.
+
+    Keys (from `olfsysm.build_info()`, written by olfsysm's setup.py at build time):
+    'version', 'git_hash' (commit built from; '' if not built from a git checkout),
+    'git_dirty' (1 = tracked files were modified when built, 0 = clean, -1 = unknown),
+    'git_untracked' (count), 'git_diff' (of a dirty build, truncated), 'source_sha256'
+    (over the compiled sources and headers), 'build_time', 'build_flags', 'compiler',
+    'build_host'; plus 'module_file' and 'legacy_build' (True if the installed extension
+    predates build provenance, in which case the other values are placeholders).
+    """
+    import olfsysm
+    if hasattr(olfsysm, 'build_info'):
+        info = dict(olfsysm.build_info())
+        info['legacy_build'] = False
+    else:
+        info = dict(version=getattr(olfsysm, '__version__', None), git_hash='', git_dirty=-1,
+            git_untracked=-1, git_diff='', source_sha256='', build_time='', build_flags='',
+            compiler='', build_host='', legacy_build=True
+        )
+    info['module_file'] = olfsysm.__file__
+    return info
 
 
 def olfsysm_checkout_info() -> Dict[str, Any]:
-    """Returns git information on the olfsysm checkout the extension was installed from."""
-    raise NotImplementedError
+    """Returns git information on the olfsysm checkout the extension was installed from.
+
+    The checkout is the editable install location (pip's direct_url.json), else the
+    directory of the extension module (an in-place build). Keys: 'path', 'editable',
+    'git_hash', 'dirty' (tracked files modified), 'untracked', 'remote'; the git keys are
+    None if the path is not a git checkout.
+    """
+    import olfsysm
+    path = None
+    editable = False
+    try:
+        from importlib.metadata import distribution
+        direct_url = distribution('olfsysm').read_text('direct_url.json')
+        if direct_url:
+            j = json.loads(direct_url)
+            editable = bool(j.get('dir_info', {}).get('editable', False))
+            if j.get('url', '').startswith('file://'):
+                path = Path(j['url'][len('file://'):])
+    except Exception:
+        pass
+    if path is None:
+        path = Path(olfsysm.__file__).resolve().parent
+    out: Dict[str, Any] = dict(path=str(path), editable=editable, git_hash=None, dirty=None,
+        untracked=None, remote=None
+    )
+    head = _run_git(['rev-parse', 'HEAD'], path)
+    if head is None:
+        return out
+    status = _run_git(['status', '--porcelain', '--untracked-files=no'], path) or ''
+    untracked = _run_git(['ls-files', '--others', '--exclude-standard'], path) or ''
+    remote = (_run_git(['remote', 'get-url', 'origin'], path) or '').strip()
+    out.update(git_hash=head.strip(), dirty=bool(status.strip()),
+        untracked=len([l for l in untracked.splitlines() if l.strip()]), remote=remote or None
+    )
+    return out
+
+
+def olfsysm_clean_problems() -> List[str]:
+    """Reasons the installed olfsysm is not a clean, known build (empty list = clean).
+
+    Clean means: built from a git commit with no uncommitted changes to tracked files,
+    and, when the checkout it was installed from is found, that checkout is at the same
+    commit and also has no uncommitted changes to tracked files (otherwise the extension
+    may be stale with respect to the source).
+    """
+    build = olfsysm_build_info()
+    checkout = olfsysm_checkout_info()
+    problems = []
+    if build['legacy_build']:
+        problems.append('the installed olfsysm extension predates build provenance (no '
+            'olfsysm.build_info()); rebuild it from a current checkout'
+        )
+    elif build['git_dirty'] == -1:
+        problems.append('olfsysm was not built from a git checkout, so its commit is unknown')
+    elif build['git_dirty'] == 1:
+        problems.append(f"olfsysm was built from commit {build['git_hash'][:12]} with "
+            'uncommitted changes to tracked files'
+        )
+    if (checkout['git_hash'] and build['git_hash'] and
+            checkout['git_hash'] != build['git_hash']):
+        problems.append(f"the installed olfsysm was built from {build['git_hash'][:12]} but "
+            f"its checkout {checkout['path']} is at {checkout['git_hash'][:12]} (reinstall "
+            'it, or check out the built commit)'
+        )
+    if checkout['dirty']:
+        problems.append(f"the olfsysm checkout {checkout['path']} has uncommitted changes to "
+            'tracked files, so the installed build may be stale'
+        )
+    return problems
 
 
 def olfsysm_is_clean() -> bool:
     """Whether the installed olfsysm is a clean build matching its checkout's HEAD."""
-    raise NotImplementedError
+    return len(olfsysm_clean_problems()) == 0
 
 
-def require_clean_olfsysm(*, allow_env_override: bool = True) -> None:
-    """Raises OlfsysmBuildError unless `olfsysm_is_clean()` (see ALLOW_DIRTY_OLFSYSM_ENV_VAR)."""
-    raise NotImplementedError
+def require_clean_olfsysm(*, allow_env_override: bool = True, context: str = '') -> None:
+    """Raises OlfsysmBuildError unless `olfsysm_is_clean()`.
+
+    Args:
+        allow_env_override: if True (and `STRICT_CLEAN_OLFSYSM` is False), setting the
+            environment variable named by `ALLOW_DIRTY_OLFSYSM_ENV_VAR` to anything but
+            '' / '0' turns the error into a warning (development use; the dirty state and
+            diff still end up in the provenance record).
+
+        context: named in the error when the override is not allowed.
+    """
+    problems = olfsysm_clean_problems()
+    if len(problems) == 0:
+        return
+    override = os.environ.get(ALLOW_DIRTY_OLFSYSM_ENV_VAR, '')
+    allow_env_override = allow_env_override and not STRICT_CLEAN_OLFSYSM
+    if allow_env_override and override not in ('', '0'):
+        warn(f'running with an olfsysm build that is not clean ({"; ".join(problems)}), '
+            f'allowed by {ALLOW_DIRTY_OLFSYSM_ENV_VAR}={override}. the provenance record '
+            'will contain the dirty diff.'
+        )
+        return
+    msg = ('refusing to run the model: ' + '; '.join(problems) + '.\n'
+        'Fix: commit (or stash) the olfsysm changes and rebuild with '
+        '`pip install -e <olfsysm checkout>` (every install recompiles everything), so model '
+        'outputs can be tied to a commit.'
+    )
+    if allow_env_override:
+        msg += (f'\nFor development only, set {ALLOW_DIRTY_OLFSYSM_ENV_VAR}=1 (e.g. '
+            f'`export {ALLOW_DIRTY_OLFSYSM_ENV_VAR}=1`) to run anyway; the dirty diff is then '
+            f'recorded in {model_provenance_name}.'
+        )
+    else:
+        msg += (f'\n{context or "This entry point"} always requires a clean build '
+            f'({ALLOW_DIRTY_OLFSYSM_ENV_VAR} is ignored here).'
+        )
+    raise OlfsysmBuildError(msg)
 
 
 def repo_info(path_or_module) -> Dict[str, Any]:
-    """Git hash, dirty flag and diff digest of the repository containing a path / module."""
-    raise NotImplementedError
+    """Git hash, dirty flag and diff digest of the repository containing a path / module.
+
+    Keys: 'path' (repository root, or the input path if not a git checkout), 'git_hash',
+    'dirty' (tracked files modified), 'diff_sha256' and 'diff' (of a dirty checkout,
+    truncated to `_MAX_PROVENANCE_DIFF_CHARS`; None when clean), 'untracked', 'remote'.
+    """
+    path = path_or_module
+    if hasattr(path_or_module, '__file__') or hasattr(path_or_module, '__path__'):
+        # a module, or a (possibly namespace) package, whose __file__ can be None
+        path = getattr(path_or_module, '__file__', None) or list(path_or_module.__path__)[0]
+    path = Path(path).resolve()
+    if path.is_file():
+        path = path.parent
+    out: Dict[str, Any] = dict(path=str(path), git_hash=None, dirty=None, diff_sha256=None,
+        diff=None, untracked=None, remote=None
+    )
+    top = _run_git(['rev-parse', '--show-toplevel'], path)
+    if top is None:
+        return out
+    top = top.strip()
+    status = (_run_git(['status', '--porcelain', '--untracked-files=no'], top) or '').strip()
+    diff = _run_git(['diff', 'HEAD', '--'], top) or ''
+    untracked = _run_git(['ls-files', '--others', '--exclude-standard'], top) or ''
+    out.update(path=top, git_hash=(_run_git(['rev-parse', 'HEAD'], top) or '').strip(),
+        dirty=bool(status), remote=(_run_git(['remote', 'get-url', 'origin'], top) or
+            '').strip() or None,
+        untracked=len([l for l in untracked.splitlines() if l.strip()]),
+    )
+    if status:
+        out['diff_sha256'] = hashlib.sha256(diff.encode()).hexdigest()
+        if len(diff) > _MAX_PROVENANCE_DIFF_CHARS:
+            diff = (diff[:_MAX_PROVENANCE_DIFF_CHARS] +
+                f'\n... [diff truncated at {_MAX_PROVENANCE_DIFF_CHARS} characters]\n')
+        out['diff'] = diff
+    return out
+
+
+def _cpu_model() -> Optional[str]:
+    """CPU model name (informational only; nothing compares it)."""
+    try:
+        with open('/proc/cpuinfo') as f:
+            for line in f:
+                if line.lower().startswith('model name'):
+                    return line.split(':', 1)[1].strip()
+    except OSError:
+        pass
+    import platform
+    return platform.processor() or None
 
 
 def model_provenance(**inputs) -> Dict[str, Any]:
-    """Everything needed to tie a model output to the code and inputs that produced it."""
-    raise NotImplementedError
+    """Everything needed to tie a model output to the code and inputs that produced it.
+
+    Args:
+        **inputs: `fit_mb_model` inputs to record by content hash (e.g. `orn_deltas`, any
+            `_wPNKC` / `_wAPLKC` override); DataFrames / arrays are hashed, scalars kept.
+
+    Returns a JSON-serializable dict: 'timestamp', 'host', 'platform', 'cpu', 'python',
+    'packages' (versions), 'olfsysm' ('build' = `olfsysm_build_info()`, 'checkout' =
+    `olfsysm_checkout_info()`, 'clean', 'problems', 'allowed_dirty_by_env'),
+    'al_analysis' and 'hong2p' (`repo_info`), and 'inputs'.
+    """
+    import platform
+    import al_analysis
+    import hong2p
+    import olfsysm
+    import scipy
+    problems = olfsysm_clean_problems()
+    hashed = {}
+    for k, v in inputs.items():
+        try:
+            hashed[k] = _lr_cache_key_value(v)
+        except Exception:
+            hashed[k] = repr(v)[:200]
+    return dict(
+        timestamp=time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        host=platform.node(), platform=platform.platform(), cpu=_cpu_model(),
+        python=platform.python_version(),
+        packages=dict(olfsysm=getattr(olfsysm, '__version__', None), numpy=np.__version__,
+            pandas=pd.__version__, scipy=scipy.__version__),
+        olfsysm=dict(build=olfsysm_build_info(), checkout=olfsysm_checkout_info(),
+            clean=len(problems) == 0, problems=problems,
+            allowed_dirty_by_env=os.environ.get(ALLOW_DIRTY_OLFSYSM_ENV_VAR) or None,
+        ),
+        al_analysis=repo_info(al_analysis), hong2p=repo_info(hong2p), inputs=hashed,
+    )
 
 
 def write_model_provenance(model_output_dir: Path, provenance: Optional[Dict[str, Any]] = None
     ) -> Path:
     """Writes `model_provenance()` (or `provenance`) to `model_provenance_name` in the dir."""
-    raise NotImplementedError
+    path = Path(model_output_dir) / model_provenance_name
+    if provenance is None:
+        provenance = model_provenance()
+    path.write_text(json.dumps(provenance, indent=1, default=str) + '\n')
+    return path
 
 
 def write_params(param_dict: ParamDict, model_output_dir: Path, **kwargs) -> None:
@@ -18440,6 +18664,9 @@ def write_params(param_dict: ParamDict, model_output_dir: Path, **kwargs) -> Non
         **kwargs: passed to `_write_params`
     """
     _write_params(param_dict, model_output_dir, param_cache_name, csv=True, **kwargs)
+    # which olfsysm build / commits produced the outputs in this directory (a separate
+    # file, so parameter files and the repro tests that compare them are unaffected)
+    write_model_provenance(model_output_dir)
 
 
 def write_tuned_params(param_dict: ParamDict, model_output_dir: Path,

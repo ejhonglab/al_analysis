@@ -67,6 +67,21 @@ under ./outputs/E<n>_<short-description>/, which is gitignored. Compact results 
 summary CSVs) go to the shared directory, see below.
 
 
+## Model provenance
+
+Model outputs must be fully explained by the model parameters plus the commits of our code.
+olfsysm bakes its commit hash, a clean / dirty flag and a hash of its compiled sources into
+the extension at build time (`olfsysm.build_info()`), and every `pip install -e` recompiles
+everything, so there are no stale objects. `fit_mb_model` refuses to run unless the
+installed olfsysm is a clean build matching its checkout (`mb_model.olfsysm_is_clean()`);
+importing `kc_remapping_harness` makes that strict (`AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM` is
+ignored), so for the experiments here: commit the olfsysm change, `pip install -e
+~/src/olfsysm`, run the tests, then run the experiment. Every experiment's provenance.json
+includes `H.model_provenance(orn_deltas=...)` (olfsysm build, al_analysis / hong2p commit
+and dirty state with diff, CPU, package versions, input hashes), and
+`fit_and_plot_mb_model` outputs carry `model_provenance.json`. The CPU is recorded for
+information only; nothing compares it.
+
 ## System resources
 
 Run as many parallel experiments / simulations as you can to utilize the system's
