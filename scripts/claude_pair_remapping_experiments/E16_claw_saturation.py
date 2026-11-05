@@ -98,14 +98,76 @@ def row_summary(tag: str, meta: dict, row: dict) -> str:
         f"{row.get('spearman_vs_coinc3_on', float('nan')):.2f}; {meta['seconds']:.0f}s")
 
 
+def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
+    """Statistics vs cap: hue = base, line style = transfer (tanh / hard / offset + tanh),
+    dotted horizontal = the uncapped base, grey dotted = data."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker
+    p = H.PRIMARY_MODEL_RDM + '__'
+    if 'error' in stats:
+        stats = stats[stats['error'].isna()]
+    stats = stats[stats.get('breadth_k', pd.Series(index=stats.index, dtype=float)).isna()]
+    panels = [
+        ('Spearman with the coincidence-3 model (APL on)', 'spearman_vs_coinc3_on', None),
+        ('mean pair distance, APL on (data ctrl 0.86)', p + 'on_mean_model', 0.855),
+        ('excess sharing, block pairs, APL on (data -0.08)', 'on_excess_block', -0.080),
+        ('Spearman with control (APL on)', p + 'on_spearman', None),
+        ('Spearman with TNT (APL off)', p + 'off_spearman', None),
+        ('fruity x small-ester block (data +0.055)', p + 'block_fruity_small_iso', 0.055),
+    ]
+    colors = {'bouton': '#2b6cb0', 'claw-dynamics': '#d9480f'}
+    fig, axes = plt.subplots(2, 3, figsize=(12.5, 6.6))
+    for ax, (title, col, ref) in zip(axes.ravel(), panels):
+        for base, sub in stats.groupby('base'):
+            c = colors.get(base, '0.3')
+            nocap = sub[sub.claw_sat.isna()]
+            if len(nocap) and col in nocap:
+                ax.axhline(float(nocap[col].iloc[0]), color=c, lw=1, ls=':')
+            capped = sub[sub.claw_sat.notna()]
+            thr_col = capped['claw_thr'] if 'claw_thr' in capped else pd.Series(index=capped.index, dtype=float)
+            groups = capped.assign(_thr=thr_col.fillna(-1)).groupby(['form', '_thr'])
+            markers = ['o', 's', '^', 'D', 'v']
+            for (form, thr), ss in groups:
+                ss = ss.sort_values('claw_sat')
+                x = ss['claw_sat'].replace(0, 10).to_numpy()
+                if thr < 0:
+                    lab, ls, mfc, mk = f'{base}, {form}', ('-' if form == 'tanh' else '--'), (c if form == 'tanh' else 'white'), 'o'
+                else:
+                    thrs = sorted(set(thr_col.dropna()))
+                    mk = markers[(thrs.index(thr) + 1) % len(markers)]
+                    lab, ls, mfc = f'{base}, offset {thr:g} + tanh', '-', c
+                ax.plot(x, ss[col].to_numpy(), ls, color=c, marker=mk, ms=5, mfc=mfc, lw=1.4, label=lab)
+        if ref is not None:
+            ax.axhline(ref, color='0.45', lw=1, ls=(0, (1, 2)))
+        ax.set_xscale('log')
+        ax.set_xticks([10, 30, 50, 70, 100, 150, 250])
+        ax.set_xticklabels(['off.', '30', '50', '70', '100', '150', '250'])
+        ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+        ax.set_xlabel('per-claw cap (claw_sat; off. = offset only)')
+        ax.set_title(title, fontsize=10)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.grid(True, color='0.9', lw=0.6)
+    axes[0, 0].legend(fontsize=6.5, frameon=False)
+    fig.suptitle('E16: per-claw saturation (and offset) of the claw>soma transfer; dotted colored = uncapped base', fontsize=11)
+    fig.tight_layout()
+    fig.savefig(res_dir / 'E16_claw_saturation.png', dpi=130)
+    plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--bases', nargs='+', choices=list(BASE_KWS), default=['bouton', 'claw-dynamics'])
     ap.add_argument('--caps', nargs='+', type=float, default=[30.0, 50.0, 70.0, 100.0, 150.0, 250.0])
     ap.add_argument('--forms', nargs='+', choices=['tanh', 'hard'], default=['tanh', 'hard'])
+    ap.add_argument('--thr', nargs='+', type=float, default=None,
+        help='per-claw rectified offsets (olfsysm claw_thr) to cross with --caps (tanh); '
+        'tags <base>_thr<t>_tanh<cap>; a cap of 0 means offset only')
     ap.add_argument('--breadth', nargs='*', type=float, default=None,
         help='caps (tanh, bouton base) to combine with E12 breadth-weighted APL (k = 3)')
     ap.add_argument('--no-sweep', action='store_true', help='only the --breadth combinations')
+    ap.add_argument('--figure-only', action='store_true', help='only redraw the figure from the saved stats')
     ap.add_argument('--rescore-refs', action='store_true',
         help='recompute the spearman_vs_* columns of every saved row from the saved pair distances')
     args = ap.parse_args()
@@ -126,6 +188,9 @@ def main() -> None:
     rows = list(pd.read_csv(stats_path).to_dict('records')) if stats_path.exists() else []
     rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
     done = {r['tag'] for r in rows}
+    if args.figure_only:
+        make_figure(pd.read_csv(stats_path), res_dir)
+        return
     if args.rescore_refs:
         long = pd.read_csv(res_dir / 'model_pair_distances_long.csv')
         for r in rows:
@@ -156,18 +221,27 @@ def main() -> None:
     jobs = []
     if not args.no_sweep:
         for base in args.bases:
-            jobs.append((base, None, 'tanh'))
+            jobs.append((base, None, 'tanh', None))
             for form in args.forms:
                 for cap in args.caps:
-                    jobs.append((base, cap, form))
-    for base, cap, form in jobs:
-        tag = f'{base}_nocap' if cap is None else f'{base}_{form}{cap:g}'
+                    jobs.append((base, cap, form, None))
+    for base in args.bases:
+        for thr in (args.thr or []):
+            for cap in args.caps:
+                jobs.append((base, cap, 'tanh', thr))
+    for base, cap, form, thr in jobs:
+        if thr is not None:
+            tag = f'{base}_thr{thr:g}_tanh{cap:g}' if cap > 0 else f'{base}_thr{thr:g}'
+        else:
+            tag = f'{base}_nocap' if cap is None else f'{base}_{form}{cap:g}'
         if tag in done:
             continue
         refs = reference_pairs(base)
         kws = dict(BASE_KWS[base])
-        if cap is not None:
+        if cap is not None and cap > 0:
             kws.update(claw_sat=cap, claw_sat_hard=(form == 'hard'))
+        if thr is not None:
+            kws.update(claw_thr=thr)
         t0 = time.time()
         try:
             on_out, off_out, wPNKC, params, extra = tune_and_knockout(orn, kws, out_dir, tag,
@@ -176,7 +250,7 @@ def main() -> None:
         except Exception as e:
             print(f'{tag} FAILED: {e!r}'[:300], flush=True)
             rows.append(dict(variant=tag, tag=tag, base=base, claw_sat=cap, form=form,
-                error=repr(e)[:300]))
+                claw_thr=thr, error=repr(e)[:300]))
             pd.DataFrame(rows).to_csv(stats_path, index=False)
             continue
         # (fixed_thr may be per-KC and wAPLKC / wKCAPL are per-claw Series: keep means)
@@ -185,7 +259,7 @@ def main() -> None:
             'wAPLKC', 'wKCAPL')}
         params_path.write_text(json.dumps(tuned, indent=1))
         meta = dict(variant=tag, base=base, seed=None, target_rate=TARGET, tag=tag,
-            claw_sat=cap, form=(form if cap is not None else None),
+            claw_sat=cap, form=(form if cap is not None else None), claw_thr=thr,
             n_kcs=len(on_out[0]), n_glomeruli=wPNKC.shape[1],
             rate_on=rate(on_out[0]), rate_off=rate(off_out[0]), seconds=time.time() - t0,
             mean_claws_per_kc=float(kc_by_glomerulus(wPNKC).sum(axis='columns').mean()),
@@ -291,10 +365,11 @@ def main() -> None:
             capture_output=True, text=True).stdout.strip(),
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE,
             capture_output=True, text=True).stdout.strip(),
-        bases=BASE_KWS, caps=args.caps, forms=args.forms, breadth=args.breadth,
+        bases=BASE_KWS, caps=args.caps, forms=args.forms, thr=args.thr, breadth=args.breadth,
         approx_conc_note=H.APPROX_CONC_NOTE,
     )
     (res_dir / 'provenance.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
+    make_figure(pd.read_csv(stats_path), res_dir)
     print('done ->', res_dir)
 
 
