@@ -148,3 +148,45 @@ def test_option_validation():
         connectome_wPNKC(prat_claws=False, claw_weight='synapses')
     with pytest.raises(ValueError):
         connectome_wPNKC(multibouton_claws='nonsense', **KWS)
+
+
+BOUTON_MODEL = dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True,
+    use_connectome_APL_weights=True, pn_claw_to_apl=True, n_spikes_for_response=2
+)
+
+
+@pytest.mark.parametrize('kws', [
+        dict(multibouton_claws='argmax'),
+        dict(multibouton_claws='split'),
+        dict(claw_weight='synapses'),
+        dict(multibouton_claws='split', claw_weight='synapses'),
+    ], ids=lambda d: ','.join(f'{k}={v}' for k, v in d.items())
+)
+def test_fit_mb_model_runs_with_options(kws):
+    """`fit_mb_model` simulates the bouton model with each non-default option (fixed
+    threshold and APL weights, so nothing is tuned; 4 megamat odors), and the wiring it
+    returns has the option's properties. Guards the one-row-per-claw weight checks inside
+    `fit_mb_model`, which the `connectome_wPNKC` tests above do not reach.
+    """
+    from al_analysis.mb_model import fit_mb_model, megamat_orn_deltas
+
+    orn = megamat_orn_deltas().iloc[:, :4]
+    responses, spike_counts, wPNKC, params = fit_mb_model(orn, fixed_thr=100.0, wAPLKC=0.1,
+        make_plots=False, silent=True, **BOUTON_MODEL, **kws
+    )
+    assert responses.shape[1] == 4 and spike_counts.shape == responses.shape
+    assert len(responses) == wPNKC.index.get_level_values(KC_ID).nunique()
+    assert (wPNKC >= 0).all().all() and np.isfinite(wPNKC.to_numpy()).all()
+    row_sums = wPNKC.sum(axis='columns')
+    if kws.get('claw_weight', 'presence') == 'synapses':
+        assert np.allclose(row_sums, np.round(row_sums)) and (row_sums >= 5).all()
+        assert 10 < row_sums.median() < 25
+    else:
+        assert np.allclose(row_sums, 1.0)
+    n_nonzero = (wPNKC > 0).sum(axis='columns')
+    if kws.get('multibouton_claws', 'first') == 'split':
+        assert (n_nonzero > 1).any() and (n_nonzero > 1).mean() < 0.1
+    else:
+        assert (n_nonzero == 1).all()
+    for k, v in kws.items():
+        assert params.get(k, v) == v
