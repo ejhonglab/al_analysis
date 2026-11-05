@@ -1,5 +1,5 @@
 Analysis scripts and outputs behind the Nov 3, 2026 report
-"APL and the ORN→KC remapping of odor–odor correlations.md" (made in a web Claude session).
+"apl_orn_to_kc_remapping_report.md" (made in a web Claude session).
 
 `apl_analysis.py` reads `TNT3c_dist_apl16.csv` (control) and `TNT_dist_apl16.csv` (APL
 output blocked) from the working directory. The originals Yang sent were not saved with

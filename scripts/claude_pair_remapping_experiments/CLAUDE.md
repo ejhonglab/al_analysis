@@ -1,5 +1,5 @@
 We are following up on a report you made, in the markdown:
-"APL and the ORN→KC remapping of odor–odor correlations.md"
+"apl_orn_to_kc_remapping_report.md"
 
 The report may reference the analysis and outputs in apl_pair_analysis/, which you used
 in construction of the report (and provided alongside for download). The two 16x16 KC

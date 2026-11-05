@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-MD = HERE / 'APL and the ORN→KC remapping of odor–odor correlations.md'
+MD = HERE / 'apl_orn_to_kc_remapping_report.md'
 DEFAULT_OUT = HERE / 'outputs' / 'report_artifact' / 'report.html'
 
 CSS = """
