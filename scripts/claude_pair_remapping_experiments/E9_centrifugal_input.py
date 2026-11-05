@@ -324,6 +324,9 @@ def main() -> None:
     ext_kc, ext_b, wPNKC0, cent = build(orn, res_dir, args.rebuild)
     if args.build_only:
         return
+    # fit_mb_model wants the matrices' columns as the ORN odor names (the odor level of orn.columns)
+    full = {H.odor_abbrev(c): (c[-1] if isinstance(c, tuple) else c) for c in orn.columns}
+    ext_kc = ext_kc.rename(columns=full); ext_b = ext_b.rename(columns=full)
     done = {r['tag'] for r in rows}
     drive = H.consensus_orn_drive(); ref = H.reference_pairs(); refs = all_refs()
     data_rates = {g: H.yang_response_fractions(g)[H.APL16_ODORS].mean() for g in ('TNT3c', 'TNT')}
