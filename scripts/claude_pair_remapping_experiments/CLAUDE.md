@@ -374,6 +374,25 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   "split-half ceiling" or "iso R2" without that explanation; "the agreement between two halves
   of the recordings, the most any model could reach" is the register to use.
 
+- **Genotype labels.** In every figure title, axis label, legend entry, table header and
+  row label the two genotypes are "control flies" and "APL output blocked (TNT)", never "APL
+  blocked" or "TNT" alone (prose may say "with APL output blocked" once the label has been
+  introduced). Model conditions stay "APL on" / "APL off".
+- **Distance-matrix figures.** Panel titles name only what is shown ("ORN input", "KCs,
+  control flies", "KCs, APL output blocked (TNT)"); the distance function appears once per
+  panel, in the colorbar label, by its name ("cosine distance (1 - cosine similarity) across
+  glomerular responses"), never as a bare "similarity"; scatter axes say "...: cosine distance".
+  Long subplot titles are split over two lines, the statistic in parentheses on the second.
+- **Opaque terms and methods.** A technical term the main text needs but should not stop to
+  explain (isotonic, ...) gets a hover definition: put a `%%% hover` block (lines
+  `term: definition`, closed by `%%%`) anywhere in the markdown and `md_to_artifact.py` wraps
+  every whole-word use in paragraphs, lists and tables with a dotted underline that shows the
+  definition on hover. A method that deserves a real explanation (how it is done, why it was
+  chosen, what the alternatives were and why not) goes in a "Footnotes" section at the very
+  end of the page (`## Footnotes {#footnotes}`, one `### ... {#fn-<id>}` per note) and the
+  phrase in the text that uses it is linked there with `[phrase](#fn-<id>)`. Headings take an
+  explicit `{#id}`; without one they get a slug of their text.
+
 Canonical experiment names for summary reports:
 
 | ID | name used in summary reports |
