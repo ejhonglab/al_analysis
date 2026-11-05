@@ -9,6 +9,10 @@ Queries hemibrain v1.2.1 (neuprint.janelia.org) for
   2. lateral-horn centrifugal neurons (types LHCENT*) -> calyx (CA(R)) connections onto KCs,
      PNs (boutons) and APL;
   3. MB-C1 -> calyx connections onto the same targets;
+  4. the inputs to the LHCENT* cells and MB-C1 from every traced neuron, in every ROI (what
+     drives the centrifugal cells: lateral-horn neurons, PNs, others; `conn_to_centrifugal_all.csv`,
+     with the presynaptic type and the ROI, so the experiment can build the LHN -> centrifugal
+     weights and see what else converges on them);
 plus the neuron tables (bodyId, type, instance, status, synapse counts) for the PNs, LHNs,
 LHCENT neurons, MB-C1 and APL. Per-ROI synapse counts (weight) are saved unthresholded;
 the experiment chooses its threshold (the model's claw data used >= 4-5 synapses).
@@ -20,7 +24,9 @@ Credentials: neuprint-python reads the token from the environment variable
 NEUPRINT_APPLICATION_CREDENTIALS (a token from neuprint.janelia.org, account menu > Auth
 Token; set it in ~/.bash.local). The token is never written or printed by this script.
 
-Usage: ./venv/bin/python scripts/claude_pair_remapping_experiments/pull_neuprint_connectivity.py [--out DIR]
+Usage: ./venv/bin/python scripts/claude_pair_remapping_experiments/pull_neuprint_connectivity.py [--out DIR] [--only NAME ...]
+(--only restricts the pull to the named output files, e.g. --only conn_to_centrifugal_all.csv;
+the provenance's row counts are merged with the existing file's.)
 """
 from __future__ import annotations
 
@@ -69,6 +75,7 @@ def glomerulus_of(pn_type: str):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--out', type=Path, default=DEFAULT_OUT)
+    ap.add_argument('--only', nargs='+', default=None, help='only (re)pull these output files')
     args = ap.parse_args()
     token_check()
     import neuprint
@@ -84,6 +91,11 @@ def main() -> None:
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
     counts = {}
+    if args.only and (out / 'provenance.json').exists():
+        counts = json.loads((out / 'provenance.json').read_text()).get('row_counts', {})
+
+    def wanted(name: str) -> bool:
+        return not args.only or name in args.only
 
     def save(df: pd.DataFrame, name: str) -> None:
         df.to_csv(out / name, index=False)
@@ -91,20 +103,25 @@ def main() -> None:
         print(f'{name}: {len(df)} rows', flush=True)
 
     neuron_cols = ['bodyId', 'type', 'instance', 'status', 'pre', 'post', 'size']
-    pns, _ = fetch_neurons(NC(type=PN_TYPE, regex=True), client=client)
-    pns = pns[[c for c in neuron_cols if c in pns.columns]].copy()
-    pns['glomerulus'] = pns['type'].map(glomerulus_of)
-    pns['uniglomerular'] = pns['glomerulus'].notna()
-    save(pns.sort_values(['glomerulus', 'type', 'bodyId'], na_position='last'), 'neurons_pn.csv')
-    lhns, _ = fetch_neurons(NC(type=LHN_TYPE, regex=True), client=client)
-    lhns = lhns[[c for c in neuron_cols if c in lhns.columns]].copy()
-    lhns['centrifugal'] = lhns['type'].str.match(LHCENT_TYPE)
-    save(lhns.sort_values(['type', 'bodyId']), 'neurons_lhn.csv')
-    cent, _ = fetch_neurons(NC(type=f'{LHCENT_TYPE}|{MBC1_TYPE}|^APL$', regex=True), client=client)
-    cent = cent[[c for c in neuron_cols if c in cent.columns]].copy()
-    save(cent.sort_values(['type', 'bodyId']), 'neurons_centrifugal.csv')
+    if wanted('neurons_pn.csv'):
+        pns, _ = fetch_neurons(NC(type=PN_TYPE, regex=True), client=client)
+        pns = pns[[c for c in neuron_cols if c in pns.columns]].copy()
+        pns['glomerulus'] = pns['type'].map(glomerulus_of)
+        pns['uniglomerular'] = pns['glomerulus'].notna()
+        save(pns.sort_values(['glomerulus', 'type', 'bodyId'], na_position='last'), 'neurons_pn.csv')
+    if wanted('neurons_lhn.csv'):
+        lhns, _ = fetch_neurons(NC(type=LHN_TYPE, regex=True), client=client)
+        lhns = lhns[[c for c in neuron_cols if c in lhns.columns]].copy()
+        lhns['centrifugal'] = lhns['type'].str.match(LHCENT_TYPE)
+        save(lhns.sort_values(['type', 'bodyId']), 'neurons_lhn.csv')
+    if wanted('neurons_centrifugal.csv'):
+        cent, _ = fetch_neurons(NC(type=f'{LHCENT_TYPE}|{MBC1_TYPE}|^APL$', regex=True), client=client)
+        cent = cent[[c for c in neuron_cols if c in cent.columns]].copy()
+        save(cent.sort_values(['type', 'bodyId']), 'neurons_centrifugal.csv')
 
     def adjacencies(src_type, tgt_type, roi, name):
+        if not wanted(name):
+            return
         neurons, conn = fetch_adjacencies(NC(type=src_type, regex=True), NC(type=tgt_type, regex=True),
             rois=[roi], min_total_weight=1, client=client)
         types = neurons.set_index('bodyId')['type']
@@ -117,6 +134,17 @@ def main() -> None:
     adjacencies(PN_TYPE, LHN_TYPE, ROI_LH, 'conn_pn_to_lhn_LH.csv')
     adjacencies(LHCENT_TYPE, CALYX_TARGET_TYPE, ROI_CA, 'conn_lhcent_to_calyx_CA.csv')
     adjacencies(MBC1_TYPE, CALYX_TARGET_TYPE, ROI_CA, 'conn_mbc1_to_calyx_CA.csv')
+    if wanted('conn_to_centrifugal_all.csv'):
+        # every traced input to the centrifugal cells, all ROIs (sources=None: any neuron)
+        neurons, conn = fetch_adjacencies(None, NC(type=f'{LHCENT_TYPE}|{MBC1_TYPE}', regex=True),
+            min_total_weight=1, client=client)
+        types = neurons.set_index('bodyId')['type']
+        conn = conn.copy()
+        conn['type_pre'] = conn['bodyId_pre'].map(types)
+        conn['type_post'] = conn['bodyId_post'].map(types)
+        conn = conn[['bodyId_pre', 'type_pre', 'bodyId_post', 'type_post', 'roi', 'weight']]
+        save(conn.sort_values(['type_post', 'bodyId_post', 'weight'], ascending=[True, True, False]),
+            'conn_to_centrifugal_all.csv')
 
     def git(args, cwd):
         try:
@@ -128,7 +156,8 @@ def main() -> None:
         neuprint_python=getattr(neuprint, '__version__', None), script='pull_neuprint_connectivity.py',
         al_analysis_commit=git(['rev-parse', 'HEAD'], HERE),
         queries=dict(pn_types=PN_TYPE, lhn_types=LHN_TYPE, lhcent_types=LHCENT_TYPE, mbc1_type=MBC1_TYPE,
-            calyx_targets=CALYX_TARGET_TYPE, rois=dict(pn_to_lhn=ROI_LH, centrifugal_to_calyx=ROI_CA),
+            calyx_targets=CALYX_TARGET_TYPE, rois=dict(pn_to_lhn=ROI_LH, centrifugal_to_calyx=ROI_CA,
+                inputs_to_centrifugal='all ROIs'),
             weights='per-ROI synapse counts, unthresholded (min_total_weight=1)'),
         row_counts=counts,
     )

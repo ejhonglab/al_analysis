@@ -1,12 +1,12 @@
 {
- "generated": "2026-11-05T21:12:09+00:00",
- "host": "atlas",
+ "generated": "2026-11-05T21:18:31+00:00",
+ "host": "hal",
  "server": "https://neuprint.janelia.org",
  "dataset": "hemibrain:v1.2.1",
  "server_version": "1.9.8",
  "neuprint_python": "0.6.4",
  "script": "pull_neuprint_connectivity.py",
- "al_analysis_commit": "a145ae3b43c2af33ab16ac98fa8a7bb5db778d39",
+ "al_analysis_commit": "7a1e474a40299d039aea5fffc3d1294a542cdcdb",
  "queries": {
   "pn_types": ".*PN.*",
   "lhn_types": "^LH.*",
@@ -15,7 +15,8 @@
   "calyx_targets": "^KC.*|.*PN.*|^APL$",
   "rois": {
    "pn_to_lhn": "LH(R)",
-   "centrifugal_to_calyx": "CA(R)"
+   "centrifugal_to_calyx": "CA(R)",
+   "inputs_to_centrifugal": "all ROIs"
   },
   "weights": "per-ROI synapse counts, unthresholded (min_total_weight=1)"
  },
@@ -25,6 +26,7 @@
   "neurons_centrifugal.csv": 26,
   "conn_pn_to_lhn_LH.csv": 32757,
   "conn_lhcent_to_calyx_CA.csv": 1902,
-  "conn_mbc1_to_calyx_CA.csv": 2287
+  "conn_mbc1_to_calyx_CA.csv": 2287,
+  "conn_to_centrifugal_all.csv": 25191
  }
 }
