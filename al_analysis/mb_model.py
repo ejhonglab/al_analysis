@@ -671,6 +671,8 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
         'target_sparsity_factor_pre_APL': 'sp_factor_pre_apl',
         '_drop_glom_with_plus': 'drop-plusgloms',
         'use_connectome_APL_weights': 'connectome-APL',
+        'multibouton_claws': 'multibouton',
+        'claw_weight': 'claw-weight',
     }
 
     # TODO just use default values (from fit_mb_model def, via introspection? how else?)
@@ -681,6 +683,8 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # names, not the abbreviated values in param_abbrevs.
     exclude_if_value_matches = {
         'tune_on_hallem': False,
+        'multibouton_claws': 'first',
+        'claw_weight': 'presence',
         **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
             BOUTON_DEPLETION_PARAMS + EXT_INH_PARAMS + EXT_INH_RECORDED_PARAMS
         },
@@ -2616,12 +2620,11 @@ def claw2bouton_from_wPNKC(wPNKC: pd.DataFrame) -> pd.DataFrame:
     input_index = wPNKC.index.copy()
 
     if CLAW_ID in wPNKC.index.names:
-        # TODO support values >1? (i.e. if multibouton claws not dropped?)
         unique_vals = set(np.unique(wPNKC))
-        # this should also imply that sum of wPNKC is same as n_gt0 above
-        assert unique_vals == {0, 1}, ('expected wPNKC weight to be 0 or 1 for all claw'
-            ' and glom/bouton combos'
-        )
+        # weights other than 0 / 1 (claw_weight='synapses', or the shares of
+        # multibouton_claws='split') are returned in a 'weight' column
+        weighted = unique_vals != {0, 1}
+        assert (wPNKC >= 0).all().all(), 'expected non-negative wPNKC weights'
 
         # NOTE: this can be quite slow, and can use a lot of memory
         # TODO (delete?) replace w/ melt? in claw-case, could assert values are all 1
@@ -2634,7 +2637,10 @@ def claw2bouton_from_wPNKC(wPNKC: pd.DataFrame) -> pd.DataFrame:
         # claws, and grouping by glomerulus (assuming each claw essentially has same #
         # synapses, since i'm not currently tracking actual count of T-bars. that
         # assumption has seemed approximately true when i checked in the past)
-        df = stack_drop_na(wPNKC.replace(0, np.nan), col_names).index.to_frame(index=False)
+        stacked = stack_drop_na(wPNKC.replace(0, np.nan), col_names)
+        df = stacked.index.to_frame(index=False)
+        if weighted:
+            df['weight'] = np.asarray(stacked).ravel()
 
         old_index_names = list(wPNKC.index.names)
         try:
@@ -2644,11 +2650,14 @@ def claw2bouton_from_wPNKC(wPNKC: pd.DataFrame) -> pd.DataFrame:
             df = df.set_index(old_index_names, verify_integrity=True)
             assert len(df) == len(wPNKC)
         except ValueError:
-            warn('claw2bouton_from_wPNKC: duplicates in claw2bouton index! there are '
-                'likely still claws that are labelled as having input from multiple PNs'
-                " (probably an artifact of Pratyush's analysis. seemed to all be from "
-                'same PN_ID, for duplicates I saw)'
-            )
+            if not weighted:
+                warn('claw2bouton_from_wPNKC: duplicates in claw2bouton index! there '
+                    'are likely still claws that are labelled as having input from '
+                    "multiple PNs (probably an artifact of Pratyush's analysis. seemed "
+                    'to all be from same PN_ID, for duplicates I saw)'
+                )
+            # multibouton_claws='split': one row per (claw, bouton), weights summing to
+            # the claw's weight
             df = df.set_index(old_index_names)
 
         # works for claw+bouton case, at least (where i assume we are still dropping
@@ -2728,11 +2737,13 @@ def claw2bouton_from_wPNKC(wPNKC: pd.DataFrame) -> pd.DataFrame:
         ).explode().to_frame(name=glomerulus_col)
         assert len(df) == wPNKC.sum().sum()
 
-    assert list(df.columns) == list(col_names), f'{df.columns=} != {col_names=}'
+    expected_cols = list(col_names) + (['weight'] if 'weight' in df.columns else [])
+    assert list(df.columns) == expected_cols, f'{df.columns=} != {expected_cols=}'
 
-    if CLAW_ID in wPNKC.index.names:
+    if CLAW_ID in wPNKC.index.names and not df.index.duplicated().any():
         assert df.index.equals(input_index)
     else:
+        # (duplicated claw rows: multibouton_claws='split')
         assert df.index.drop_duplicates().equals(input_index)
 
     return df
@@ -2770,7 +2781,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     # TODO still want something like that, or never really a case where there is a
     # choice to be made?
     # TODO is this actually Optional? what happens if it's None
-    Btn_num_per_glom: Optional[int] = 10) -> pd.DataFrame:
+    Btn_num_per_glom: Optional[int] = 10, multibouton_claws: str = 'first',
+    claw_weight: str = 'presence') -> pd.DataFrame:
     """Returns PN->KC connectivity matrix (# of claws) for model, from connectome data.
 
     Args:
@@ -2824,6 +2836,23 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             bouton columns (each with an equal fraction of the weight). Tianpei's
             bouton implementation (unlike `prat_boutons`).
 
+        multibouton_claws: only for `prat_boutons=True`. How a claw whose synapses come
+            from more than one bouton of its PN (~340 of ~9,900 claws in Pratyush's v5
+            segmentation, mostly a dominant bouton plus a few synapses on a neighbour)
+            is placed in the claw x bouton matrix: 'first' (default; the bouton with the
+            lowest ID, the behavior before this option existed), 'argmax' (the bouton
+            with the most synapses onto the claw), or 'split' (every bouton, each with
+            a share of the claw's weight proportional to its synapse count, so the row
+            still sums to the claw's weight).
+
+        claw_weight: only for `prat_claws=True` (and `dist_weight=None`). 'presence'
+            (default): each claw has weight 1. 'synapses': each claw's weight is its
+            number of PN->KC synapses (per bouton, for `multibouton_claws='split'`).
+            olfsysm does not rescale `wPNKC` (each claw's drive is its weight times the
+            PN rate), so the mean claw drive is ~15x that of 'presence'. Tuning the KC
+            threshold to a target response rate absorbs that overall scale, but a given
+            `fixed_thr` or `claw_thr` is not comparable between the two settings.
+
     Returns DataFrame with one row per KC (or per claw, for one-row-per-claw outputs),
     and one column per glomerulus (or per bouton, for `prat_boutons=True`), with # of
     claws as values (0/1 for one-row-per-claw outputs). Row index levels are e.g.
@@ -2838,6 +2867,20 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         one_row_per_claw = True
 
     assert connectome in connectome_options
+    if multibouton_claws not in ('first', 'argmax', 'split'):
+        raise ValueError(f"{multibouton_claws=} must be 'first', 'argmax' or 'split'")
+    if claw_weight not in ('presence', 'synapses'):
+        raise ValueError(f"{claw_weight=} must be 'presence' or 'synapses'")
+    if multibouton_claws != 'first' and not prat_boutons:
+        raise ValueError('multibouton_claws requires prat_boutons=True')
+    if claw_weight != 'presence':
+        if not prat_claws:
+            raise ValueError("claw_weight='synapses' requires prat_claws=True")
+        if dist_weight is not None:
+            raise ValueError("claw_weight='synapses' can not be combined with dist_weight")
+    # per-(claw, bouton) synapse counts, kept for multibouton_claws / claw_weight
+    # (defined in the prat_claws + prat_boutons path)
+    claw_bouton_n_syn = None
     if _use_matt_wPNKC:
         assert not one_row_per_claw
         assert connectome == 'hemibrain'
@@ -3586,6 +3629,17 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
             assert len(claws[claw_cols].drop_duplicates()) == len(claws)
 
+            if prat_boutons:
+                # synapses per (KC, claw, PN, bouton): what agg_synapses_to_claws
+                # collapses away (it keeps only the set of boutons per claw)
+                claw_bouton_n_syn = syns.rename(columns=renames).groupby(
+                    claw_cols + [BOUTON_ID]).size().rename('n_syn').reset_index()
+                _per_claw = claw_bouton_n_syn.groupby(claw_cols).n_syn.sum()
+                assert _per_claw.equals(claws.set_index(claw_cols).n_synapses.reindex(
+                    _per_claw.index)), ('per-bouton synapse counts do not sum to the '
+                    'per-claw counts')
+                del _per_claw
+
             # TODO de-dedupe w/ code that does this below (id_cols_to_check)?
             id_cols = list(claw_cols)
             if prat_boutons:
@@ -4034,7 +4088,15 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             if dist_weight is None:
                 # TODO TODO define from something w/ synapse counts as values instead?
                 # (at least, if dist_weight is None)
-                wPNKC = dist_weights.fillna(0).astype(bool).astype(int)
+                if claw_weight == 'synapses':
+                    syn_weights = claws.reset_index().set_index(
+                        list(dist_weights.index.names)).pivot(columns=glomerulus_col,
+                        values='n_synapses')
+                    assert syn_weights.index.equals(dist_weights.index)
+                    wPNKC = syn_weights.fillna(0)
+                    assert np.isclose(wPNKC.sum().sum(), claws.n_synapses.sum())
+                else:
+                    wPNKC = dist_weights.fillna(0).astype(bool).astype(int)
             else:
                 # TODO need to scale so mean is similar to above? see comments above.
                 wPNKC = dist_weights.fillna(0)
@@ -4869,12 +4931,18 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # excludes NaN by default, but we already checked we don't have any of those
         n_kcs2 = kc_ids.nunique()
 
-        if dist_weight is None:
+        if dist_weight is None and claw_weight == 'presence':
             # TODO will this still be true if some claws have no input? is that
             # possible here? (dropping KCs with no input happens below, but not sure
             # if that ever applies on a per-claw basis?)
             assert wPNKC.sum().sum() == n_claws2
             assert set(np.unique(wPNKC.values.flat)) == {0, 1}
+        elif dist_weight is None:
+            # claw_weight='synapses': each claw's one entry is its PN->KC synapse count
+            assert (wPNKC > 0).sum().sum() == n_claws2
+            _vals = wPNKC.values[wPNKC.values > 0]
+            assert np.allclose(_vals, np.round(_vals)) and _vals.min() >= 1
+            del _vals
         else:
             assert (wPNKC > 0).sum().sum() == n_claws2, ('possibly 0 weight for some '
                 'claws with synapses? make sense?'
@@ -5397,10 +5465,89 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         assert not (wPNKC3 == 0).T.all().any()
         wPNKC3 = wPNKC3.loc[:, ~(wPNKC3 == 0).all()].copy()
 
+        cb = None
+        if multibouton_claws != 'first' or claw_weight != 'presence':
+            # Rebuild the claw x bouton matrix from the per-(claw, bouton) synapse counts
+            # instead of keeping only each claw's first bouton. Rows (claws) stay those
+            # of the default construction; the columns are the boutons used (see below).
+            assert claw_bouton_n_syn is not None
+            cb = claw_bouton_n_syn.merge(claw2bouton.reset_index()[claw_cols + [PN_ID]
+                ].drop_duplicates(), on=claw_cols + [PN_ID])
+            assert len(cb) >= len(claw2bouton), (len(cb), len(claw2bouton))
+            cb = cb.assign(n_syn_claw=cb.groupby(claw_cols + [PN_ID]).n_syn.transform('sum'))
+            if multibouton_claws == 'first':
+                cb = cb.sort_values(claw_cols + [PN_ID, BOUTON_ID]).drop_duplicates(
+                    claw_cols + [PN_ID])
+            elif multibouton_claws == 'argmax':
+                cb = cb.sort_values(claw_cols + [PN_ID, 'n_syn', BOUTON_ID],
+                    ascending=[True] * (len(claw_cols) + 1) + [False, True]
+                    ).drop_duplicates(claw_cols + [PN_ID])
+            if claw_weight == 'presence':
+                cb['weight'] = (cb.n_syn / cb.n_syn_claw if multibouton_claws == 'split'
+                    else 1.0)
+            else:
+                cb['weight'] = (cb.n_syn if multibouton_claws == 'split' else cb.n_syn_claw
+                    ).astype(float)
+            row_levels = list(wPNKC3.index.names)
+            rows = wPNKC3.index.to_frame(index=False)
+            glom_of_claw = claw2bouton.reset_index()[claw_cols + [glomerulus_col]
+                ].drop_duplicates(claw_cols).set_index(claw_cols)[glomerulus_col]
+            key = claw_cols + ([PN_ID] if PN_ID in rows.columns else [])
+            entries = rows.merge(cb[claw_cols + [PN_ID, BOUTON_ID, 'weight']], on=key,
+                how='left', suffixes=('', '_cb'))
+            if PN_ID not in rows.columns:
+                entries = entries.rename(columns={PN_ID + '_cb': PN_ID})
+            assert entries.weight.notna().all()
+            entries[glomerulus_col] = entries.set_index(claw_cols).index.map(glom_of_claw)
+            assert entries[glomerulus_col].notna().all()
+            col_levels = list(wPNKC3.columns.names)
+            new = entries.set_index(row_levels + col_levels)['weight'].unstack(col_levels
+                ).fillna(0)
+            # (unstack need not sort the columns; the default construction's are sorted)
+            new = new.sort_index(axis='columns')
+            new = new.reindex(index=wPNKC3.index)
+            assert new.notna().all().all()
+            assert len(new) == len(wPNKC3)
+            # The columns are the boutons the selected (claw, bouton) connections use.
+            # The default construction only has boutons that are some claw's lowest-ID
+            # bouton, so 'split' has a superset of its columns and 'argmax' may have a
+            # different subset of all boutons.
+            _z = (new == 0).all()
+            assert not _z.any(), (f'{int(_z.sum())} all-zero bouton columns, e.g. '
+                f'{new.columns[_z][:5].tolist()}; {new.shape=} {wPNKC3.shape=}')
+            del _z
+            if multibouton_claws == 'first':
+                assert set(new.columns) == set(wPNKC3.columns)
+                # (the default's column order; everything is sorted at the end anyway)
+                new = new.reindex(columns=wPNKC3.columns)
+            elif multibouton_claws == 'split':
+                assert set(wPNKC3.columns) <= set(new.columns)
+            if claw_weight == 'presence':
+                assert np.allclose(new.sum(axis='columns'), 1.0)
+            else:
+                claw_tot = cb.drop_duplicates(claw_cols).set_index(claw_cols).n_syn_claw
+                assert np.allclose(new.sum(axis='columns').to_numpy(), claw_tot.reindex(
+                    new.index.droplevel([n for n in row_levels if n not in claw_cols])
+                    ).to_numpy())
+            _all_cols = new.columns.union(wPNKC3.columns)
+            n_changed = int(((new > 0).reindex(columns=_all_cols, fill_value=False) !=
+                (wPNKC3 > 0).reindex(columns=_all_cols, fill_value=False)
+                ).any(axis='columns').sum())
+            warn(f'multibouton_claws={multibouton_claws!r}, claw_weight={claw_weight!r}: '
+                f'{n_changed} claws have a different bouton pattern than the default '
+                f"('first', 'presence') construction ({len(new.columns)} boutons, default "
+                f'{len(wPNKC3.columns)})'
+            )
+            del _all_cols
+            wPNKC3 = new
+
         n_boutons = len(row_per_claw_and_bouton.index.to_frame(index=False)[bouton_cols
             ].drop_duplicates()
         )
-        assert len(wPNKC3.columns) == n_boutons
+        if multibouton_claws == 'first':
+            assert len(wPNKC3.columns) == n_boutons
+        else:
+            n_boutons = len(wPNKC3.columns)
 
         # currently 392
         assert 350 < n_boutons < 600, f'{n_boutons=} seems inconsistent w/ # boutons'
@@ -5420,7 +5567,8 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
         # TODO maybe convert dtype back to int?
 
         # TODO move this assertion to all cases?
-        assert set(wPNKC3.T.sum().values) == {1.0}
+        if multibouton_claws == 'first' and claw_weight == 'presence':
+            assert set(wPNKC3.T.sum().values) == {1.0}
 
         # NOTE: this was initially before multibouton dropping (only had the
         # n_boutons_per_glom plot at that point)
@@ -5575,14 +5723,26 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
         # TODO delete eventually
         c2 = claw2bouton_from_wPNKC(wPNKC)
+        if 'weight' in c2.columns:
+            c2 = c2.drop(columns='weight')
         c1 = claw2bouton
         if c1.index.names == claw_cols:
             c1 = c1.reset_index()
         else:
             assert c1.index.names == [None]
-        c1 = c1.set_index(c2.index.names)
         if 'n_synapses' in c1.columns:
             c1 = c1.drop(columns='n_synapses')
+        if multibouton_claws != 'first':
+            # claw2bouton has each claw's lowest-ID bouton; the matrix now has the
+            # selected bouton(s) (one row per (claw, bouton) for 'split')
+            c1 = c1.drop(columns=BOUTON_ID).merge(cb[claw_cols + [PN_ID, BOUTON_ID]],
+                on=claw_cols + [PN_ID], how='inner'
+            )
+        _c2_index = list(c2.index.names)
+        _sort_cols = _c2_index + [c for c in (PN_ID, BOUTON_ID) if c not in _c2_index]
+        c2 = c2.reset_index().sort_values(_sort_cols, kind='stable').set_index(_c2_index)
+        c1 = c1.sort_values(_sort_cols, kind='stable').set_index(_c2_index)
+        del _c2_index, _sort_cols
         assert set(c1.columns) == set(c2.columns)
         c1 = c1[c2.columns].convert_dtypes()
         c2 = c2.convert_dtypes()
@@ -12249,6 +12409,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     tune_on_hallem: bool = False, pn2kc_connections: str = 'hemibrain',
     use_connectome_APL_weights: bool = False, weight_divisor: Optional[float] = None,
     prat_claws: bool = False, prat_boutons: bool = False,
+    multibouton_claws: str = 'first', claw_weight: str = 'presence',
     apl_unit_coupling: Optional[float] = None,
     apl_unit_n_neighbors: Optional[int] = None, apl_weights_kc_mean: bool = False,
     dist_weight: Optional[str] = None, _wPNKC: Optional[pd.DataFrame] = None,
@@ -13450,6 +13611,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
 
                 prat_claws=prat_claws,
                 prat_boutons=prat_boutons,
+                multibouton_claws=multibouton_claws,
+                claw_weight=claw_weight,
                 dist_weight=dist_weight,
 
                 # TODO move these both into the prat_claws=False + one-row-per-claw=True
