@@ -297,6 +297,53 @@ experiments in the terminal chat with me, including when proposing them or askin
 run them: a short plain-English description first, then the ID in parentheses, never the
 bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
 
+### Summary reports (the all-experiments summary and the final report)
+
+- **No experiment IDs at all**, not even in parentheses: refer to experiments by the
+  canonical short names below (same wording every time, so a reader can match the page to
+  the per-experiment notes through the Completed list). Per-experiment notes and chat keep
+  "plain-English name (E<n>)".
+- **Background first.** Before any model number, a section with a figure and a table that
+  shows what the data are: the ORN input matrix, the control KC matrix and the APL-blocked
+  KC matrix for the 16 odors; what the ORN->KC remapping looks like in control flies (which
+  pairs move, how much, rank agreement with the ORN input); and what blocking APL output
+  changes (mean distance, response fractions, the monotone on-vs-off relation and its one
+  pair-specific exception). Only then the model baseline and the mechanisms.
+- **Pages are generated, not hand-converted.** Write the summary as markdown, convert it with
+  `md_to_artifact.py` (handles `###`, list items and paragraphs wrapped over several lines,
+  tables, figures embedded from `![caption](path)`), and do not publish while its lint
+  reports anything (leftover `###`, `**`, backticks, link syntax, line breaks inside list
+  items). Read the produced HTML's structure (headings, list items, tables) once before
+  publishing; the artifact renders exactly that file.
+- Numbers in tables with the data value and the model baseline alongside (see above); prose
+  says what moved and whether it reached the data.
+
+Canonical experiment names for summary reports:
+
+| ID | name used in summary reports |
+|---|---|
+| E1 | the APL knockout baseline |
+| E2 | local APL units |
+| E3 | APL inhibition of PN boutons (drive-dependent APL gain) |
+| E4 | the PN->KC wiring substrate |
+| E5 | KC heterogeneity |
+| E6 | the readout window and time constants |
+| E7 | the data-only confound controls |
+| E8 | KC-KC lateral inhibition |
+| E9 | structured centrifugal input to the calyx |
+| E10 | the joint fit to both matrices |
+| E11 | claw coincidence with claw-level inhibition |
+| E12 | breadth-weighted APL |
+| E13 | the bouton base with claw coincidence |
+| E14 | oracle co-responder suppression |
+| E15 | the breadth x shared-input APL rule |
+| E16 | per-claw saturation and the per-claw threshold |
+| E17 | panel-general glomerulus scores and the APL-synapse anatomy check |
+| E18 | bouton vesicle depletion |
+| E19 | the threshold x breadth x KC-KC grid |
+| E20 | per-glomerulus drive normalization |
+| E21 | the APL-blocked sharing diagnostic |
+
 ## Report artifact
 
 The report markdown in this folder ("APL and the ORN→KC remapping of odor–odor
