@@ -5434,3 +5434,139 @@ def test_claw_sat_simulator(claw_sat_model):
     assert params2['claw_sat'] == claw_sat
     assert responses.equals(responses2)
     assert spike_counts.equals(spike_counts2)
+
+
+def test_claw_thr_zero_equals_default(claw_sat_model):
+    """Tests `claw_thr=0.0` (recorded, but no offset) does not change tuned outputs.
+    """
+    orn_deltas, kws, ret = claw_sat_model
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, claw_thr=0.0, **kws)
+    assert type(ret2[3]['claw_thr']) is float
+    assert not any(k in ret2[3] for k in ('claw_sat', 'claw_sat_hard'))
+    assert_fit_outputs_equal(ret, _pop_param(ret2, 'claw_thr', 0.0))
+
+
+def test_claw_thr_lowers_response_rate(claw_sat_model):
+    """Tests increasing `claw_thr` (w/ threshold and APL weights fixed at tuned values)
+    removes drive, alone and combined with `claw_sat`.
+
+    Not compared to the model w/o `claw_thr`, as it also lowers spontaneous input, and
+    thus thresholds (`fixed_thr + 2 * kc_spont_in`) by more than the odor drive, for
+    small enough `claw_thr` (e.g. 25-100 raise response rate in the bouton model).
+    Values here are above any claw's spontaneous drive (~70 in the bouton model), so
+    thresholds are the same for all of them.
+    """
+    orn_deltas, kws, ret = claw_sat_model
+    fixed_kws = get_thr_and_APL_weights(ret[3], kws)
+
+    rates = []
+    n_spikes = []
+    for claw_thr in (75.0, 100.0, 150.0):
+        responses, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
+            claw_thr=claw_thr, **fixed_kws, **kws
+        )
+        assert params['claw_thr'] == claw_thr
+        assert (params['kc_spont_in'] == 0).all()
+        rates.append(responses.mean().mean())
+        n_spikes.append(spike_counts.values.sum())
+
+    print(f'response rates (claw_thr=75 / 100 / 150): {rates}')
+    assert all(r2 < r for r, r2 in zip(rates, rates[1:]))
+    assert all(n2 < n for n, n2 in zip(n_spikes, n_spikes[1:]))
+
+    # above all claw drive
+    responses, _, _, _ = _fit_mb_model(orn_deltas=orn_deltas, claw_thr=1000.0,
+        **fixed_kws, **kws
+    )
+    assert (responses == 0).values.all()
+
+    claw_sat = 150.0
+    sat_responses, _, _, _ = _fit_mb_model(orn_deltas=orn_deltas, claw_sat=claw_sat,
+        **fixed_kws, **kws
+    )
+    both_responses, _, _, both_params = _fit_mb_model(orn_deltas=orn_deltas,
+        claw_thr=100.0, claw_sat=claw_sat, **fixed_kws, **kws
+    )
+    assert both_params['claw_thr'] == 100.0 and both_params['claw_sat'] == claw_sat
+    assert not both_responses.equals(sat_responses)
+
+
+def test_claw_thr_invalid(orn_deltas):
+    """Tests invalid `claw_thr` kwargs raise ValueError.
+    """
+    nonclaw_kws = dict(weight_divisor=20)
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True)
+    for kws, bad_kws in (
+            (claw_kws, dict(claw_thr=-1.0)),
+            (claw_kws, dict(claw_thr=np.inf)),
+            (claw_kws, dict(claw_thr=np.nan)),
+            (claw_kws, dict(claw_thr=50.0, claw_sat=-1.0)),
+            (claw_kws, dict(claw_thr=50.0, claw_sat_hard=True)),
+            (nonclaw_kws, dict(claw_thr=50.0)),
+            (nonclaw_kws, dict(claw_thr=0.0)),
+            (claw_kws, dict(claw_thr=50.0, n_claws_active_to_spike=2)),
+        ):
+
+        with pytest.raises(ValueError, match='claw_(sat|thr)'):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+
+def test_claw_thr_model_id():
+    """Tests model IDs / LR cache keys only change when `claw_thr` passed (including
+    0.0), and that small values are distinguishable.
+    """
+    kws = dict(one_row_per_claw=True, prat_claws=True)
+    none_kws = {**kws, 'claw_thr': None}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(claw_thr=0.0), dict(claw_thr=0.004), dict(claw_thr=0.005),
+        dict(claw_thr=70.0), dict(claw_thr=70.0, claw_sat=50.0), dict(claw_sat=50.0)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_claw_thr_simulator(claw_sat_model):
+    """Tests tuning w/ `claw_thr` and `claw_sat` together reaches the target response
+    rate, and that `make_fixed_param_kc_simulator` forwards `claw_thr` (matching
+    `fit_mb_model`).
+    """
+    orn_deltas, kws, _ = claw_sat_model
+    target = 0.1
+    claw_sat = 50.0
+    claw_kws = dict(claw_thr=70.0, claw_sat=claw_sat)
+
+    # initial call tunes threshold / APL weights (simulator checks it reproduces those
+    # tuned outputs)
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        target_sparsity=target, **claw_kws, **kws
+    )
+    assert not any(k in initial_params for k in CLAW_SAT_PARAMS)
+    tuned_responses, _ = simulate(dict())
+    tuned_rate = tuned_responses.mean().mean()
+    print(f'tuned response rate w/ {claw_kws}: {tuned_rate:.4f}')
+    # (olfsysm default mp.kc.sp_acc=0.1 is relative to target)
+    assert abs(tuned_rate - target) <= 0.1 * target + 1e-9
+
+    # same thresholds / APL weights and claw_sat, w/o claw_thr
+    simulate_nothr, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, claw_sat=claw_sat, **kws
+    )
+
+    # acute APL knockout (all APL weight scales 0)
+    apl_off = {k: 0.0 for k in initial_params if k != 'fixed_thr'}
+    responses, spike_counts = simulate(apl_off)
+    responses_nothr, _ = simulate_nothr(apl_off)
+    assert responses.mean().mean() > tuned_rate
+    assert not responses.equals(responses_nothr)
+
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **claw_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
+    )
+    assert params2['claw_thr'] == 70.0 and params2['claw_sat'] == claw_sat
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)

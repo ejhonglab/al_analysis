@@ -586,9 +586,9 @@ AL_INH_PARAMS: Tuple[str, ...] = ('pn_inhsc', 'pn_inhadd', 'ln_inhsc', 'ln_inhad
 # Disabled if `kc_kc_inh` is None.
 KC_KC_INH_PARAMS: Tuple[str, ...] = ('kc_kc_inh', 'kc_kc_tau')
 
-# `fit_mb_model` kwargs for per-claw saturation of claw>KC input (olfsysm
-# `mp.kc.claw_sat`). Disabled if `claw_sat` is None.
-CLAW_SAT_PARAMS: Tuple[str, ...] = ('claw_sat', 'claw_sat_hard')
+# `fit_mb_model` kwargs for the per-claw transfer of claw>KC input: saturation (olfsysm
+# `mp.kc.claw_sat`) and a rectified offset (`mp.kc.claw_thr`). Each disabled if None.
+CLAW_SAT_PARAMS: Tuple[str, ...] = ('claw_sat', 'claw_sat_hard', 'claw_thr')
 
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
@@ -666,7 +666,9 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     }
 
     # float formats for params where default '.2f' would lose too much precision
-    param_float_formats = {k: '.3g' for k in KC_KC_INH_PARAMS + ('claw_sat',)}
+    param_float_formats = {k: '.3g'
+        for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr')
+    }
 
     if exclude is None:
         exclude = set(exclude_params)
@@ -12158,6 +12160,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     ln_inhsc: Optional[float] = None, ln_inhadd: Optional[float] = None,
     kc_kc_inh: Optional[float] = None, kc_kc_tau: Optional[float] = None,
     claw_sat: Optional[float] = None, claw_sat_hard: Optional[bool] = None,
+    claw_thr: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12409,7 +12412,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `claw_sat * tanh(x / claw_sat)` (or `min(x, claw_sat)`, if
             `claw_sat_hard=True`), bounding how much any one claw can contribute to its
             KC (the linear-summation form of the `n_claws_active_to_spike` coincidence
-            rule). Also applied to spontaneous input (`kc_spont_in`, which thresholds
+            rule; see also `claw_thr`, applied before this). Also applied to spontaneous
+            input (`kc_spont_in`, which thresholds
             are relative to), and active during threshold / APL tuning. Claw>APL input
             (`pn_claw_to_apl=True`) is left unsaturated. Per-claw drive is in PN spike
             rate units (with default parameters and megamat inputs, ~20-45 Hz
@@ -12421,6 +12425,18 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         claw_sat_hard: if True, `claw_sat` clips claw drive (`min(x, claw_sat)`)
             instead of saturating it smoothly (`mp.kc.claw_sat_hard`, olfsysm default of
             False if None). Requires `claw_sat`.
+
+        claw_thr: if not None, each claw's drive `x` enters the sum across the KC's
+            claws as `max(x - claw_thr, 0)` (olfsysm `mp.kc.claw_thr`), before any
+            `claw_sat` saturation (so offset, then cap), for spontaneous input and
+            during odors (same scope and requirements as `claw_sat`, with or without
+            it). The `n_claws_active_to_spike` coincidence rule is a per-claw threshold
+            followed by a count of active claws. A cap alone (`claw_sat`) does not
+            approximate it, as weakly driven claws (e.g. spontaneous, ~20-45 Hz) then
+            count as much as strongly driven ones, so this offset supplies the knee:
+            `claw_thr` near such a model's per-claw threshold (~70-100) plus a
+            `claw_sat` of the same order approximates that rule w/ linear summation.
+            0.0 has no effect (but is recorded). Must be finite and not negative.
 
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
@@ -12720,7 +12736,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         if kc_kc_tau is not None:
             mp.kc.kc_kc_tau = float(kc_kc_tau)
 
-    # (only those passed, to also add to param_dict below)
+    # (only those passed, to also add to param_dict below. keys are also mp.kc
+    # attributes.)
     claw_sat_params = dict()
     if claw_sat is None:
         if claw_sat_hard is not None:
@@ -12729,17 +12746,28 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         claw_sat = float(claw_sat)
         if not (np.isfinite(claw_sat) and claw_sat > 0):
             raise ValueError(f'claw_sat must be finite and positive (got {claw_sat})')
-        if not one_row_per_claw:
-            raise ValueError('claw_sat requires one_row_per_claw=True')
-        if n_claws_active_to_spike is not None:
-            raise ValueError('claw_sat not supported with n_claws_active_to_spike '
-                '(spiking would not depend on the summed, saturated, claw drive)'
-            )
-        mp.kc.claw_sat = claw_sat
         claw_sat_params['claw_sat'] = claw_sat
         if claw_sat_hard is not None:
-            mp.kc.claw_sat_hard = bool(claw_sat_hard)
             claw_sat_params['claw_sat_hard'] = bool(claw_sat_hard)
+
+    if claw_thr is not None:
+        claw_thr = float(claw_thr)
+        if not (np.isfinite(claw_thr) and claw_thr >= 0):
+            raise ValueError(f'claw_thr must be finite and not negative (got '
+                f'{claw_thr})'
+            )
+        claw_sat_params['claw_thr'] = claw_thr
+
+    if len(claw_sat_params) > 0:
+        passed = ' / '.join(k for k in ('claw_sat', 'claw_thr') if k in claw_sat_params)
+        if not one_row_per_claw:
+            raise ValueError(f'{passed} requires one_row_per_claw=True')
+        if n_claws_active_to_spike is not None:
+            raise ValueError(f'{passed} not supported with n_claws_active_to_spike '
+                '(spiking would not depend on the summed, transformed, claw drive)'
+            )
+        for k, v in claw_sat_params.items():
+            setattr(mp.kc, k, v)
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
@@ -16262,8 +16290,8 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             there is KC-KC inhibition, and are overridden by any value in
             `initial_params`). Kwargs only used for tuning (e.g. `target_sparsity`)
             are ignored if `initial_params` passed. Other KC-layer kwargs that do not
-            change how thresholds / APL weights are defined (e.g. `claw_sat`) apply to
-            the initial call and to all simulations.
+            change how thresholds / APL weights are defined (e.g. `claw_sat` /
+            `claw_thr`) apply to the initial call and to all simulations.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
