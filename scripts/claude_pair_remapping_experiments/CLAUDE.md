@@ -399,6 +399,12 @@ Canonical experiment names for summary reports:
 | E19 | the threshold x breadth x KC-KC grid |
 | E20 | per-glomerulus drive normalization |
 | E21 | the APL-blocked sharing diagnostic |
+| E22 | the softer per-claw knee |
+| E23 | the weak-odor responder analysis |
+| E24 | input scaling for the terpenes and 1-octanol |
+| E25 | the joint fit with the structure-beyond-ORN targets in the loss |
+| E26 | the supralinear per-claw transfer |
+| E27 | the oracle glomerulus gain for the weak-input odors |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
