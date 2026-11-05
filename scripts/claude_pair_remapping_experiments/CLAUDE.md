@@ -114,7 +114,15 @@ In the shared directory, you may also create/edit:
 - proposed_experiments.md: add new experiments not already in experiment_priorities.md
   here, and if some of these should be higher priority than something in
   experiment_priorities.md, talk me through it and then move those items into
-  experiment_priorities.md after getting my OK.
+  experiment_priorities.md after getting my OK. Exception, so that no host sits idle
+  waiting for me: if your host would otherwise be idle (nothing runnable in the priority
+  list is unclaimed and suited to it), move proposed experiments into
+  experiment_priorities.md yourself, without my approval: give them the next E<n>, place
+  them where their stated rationale puts them (write that rationale in the entry; I will
+  reorder if I disagree), append them to the report markdown and republish the report
+  artifact (see "Report artifact" below), say in chat.md what you moved and why, then claim
+  one and start it. Proposals that would displace work another host is about to start
+  still go through me.
 
 Several agents (on different hosts) edit these files concurrently over NFS, so always
 re-read a shared file immediately before editing it, and keep each edit small. Before
@@ -249,7 +257,8 @@ priorities or claims have changed.
 
 The report markdown in this folder ("APL and the ORN→KC remapping of odor–odor
 correlations.md") doubles as the running list of in silico experiments. Whenever new
-experiments are added to experiment_priorities.md (E11 onwards), also:
+experiments are added to experiment_priorities.md (E11 onwards; by me, or by an otherwise
+idle host under the exception above), also:
 1. append them to the report's "In silico experiments" numbered list, in the same style as
    E1–E10 (bold `E<n>, title (mechanism)` then goal / design / readout / prediction in one
    paragraph), after the `*Added ...*` note (extend that note with when and from what the
