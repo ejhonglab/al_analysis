@@ -13,7 +13,7 @@ from al_analysis.mb_model import (connectome_wPNKC, fit_mb_model, megamat_orn_de
     KC_ID, KC_TYPE, CLAW_ID
 )
 from al_analysis.wpnkc_shuffles import (shuffle_wPNKC, curveball, wPNKC_shuffle_summary,
-    SHUFFLE_METHODS
+    shuffled_wPNKC, SHUFFLE_METHODS, NAMED_SHUFFLES
 )
 
 
@@ -243,6 +243,27 @@ def test_shuffle_bool_claws(wPNKCs, method):
     assert shuffled.astype(np.int64).equals(
         shuffle_wPNKC(wPNKCs['claw'], method)
     )
+
+
+def test_shuffled_wPNKC(wPNKCs):
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True,
+        use_connectome_APL_weights=True, n_spikes_for_response=2
+    )
+    for name, (method, within_kc_type) in NAMED_SHUFFLES.items():
+        for fmt, kws in [('kc', dict(weight_divisor=20)), ('claw', claw_kws)]:
+            expected = shuffle_wPNKC(wPNKCs[fmt], method, within_kc_type=within_kc_type,
+                seed=2
+            )
+            assert shuffled_wPNKC(name, seed=2, **kws).equals(expected)
+
+    assert shuffled_wPNKC('curveball', pn2kc_connections='hemibrain', weight_divisor=20
+        ).equals(shuffle_wPNKC(wPNKCs['kc'], 'curveball'))
+
+    with pytest.raises(ValueError):
+        shuffled_wPNKC('not_a_shuffle', weight_divisor=20)
+
+    with pytest.raises(ValueError):
+        shuffled_wPNKC('curveball', pn2kc_connections='fafb-left', weight_divisor=12)
 
 
 def test_shuffle_errors(wPNKCs):

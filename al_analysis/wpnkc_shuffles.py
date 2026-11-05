@@ -7,15 +7,25 @@ Outputs of `shuffle_wPNKC` can be passed to `fit_mb_model` via its `_wPNKC` keyw
 the unshuffled matrix).
 """
 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from al_analysis.mb_model import KC_ID, KC_TYPE, CLAW_ID
+from al_analysis.mb_model import (KC_ID, KC_TYPE, CLAW_ID, connectome_wPNKC,
+    get_connectome_wPNKC_params
+)
 
 
 SHUFFLE_METHODS: Tuple[str, ...] = ('claw_permutation', 'curveball')
+
+# name -> (`shuffle_wPNKC` method, within_kc_type), for `shuffled_wPNKC`
+NAMED_SHUFFLES: Dict[str, Tuple[str, bool]] = {
+    'claw_permutation': ('claw_permutation', False),
+    'claw_permutation_within_type': ('claw_permutation', True),
+    'curveball': ('curveball', False),
+    'curveball_within_type': ('curveball', True),
+}
 
 # default number of Curveball trades, per KC
 CURVEBALL_TRADES_PER_KC: int = 5
@@ -271,6 +281,34 @@ def shuffle_wPNKC(wPNKC: pd.DataFrame, method: str = 'claw_permutation', *,
         shuffled = shuffled.astype(wPNKC.dtypes.to_dict())
 
     return shuffled
+
+
+def shuffled_wPNKC(name: str, *, seed: int = 0, **model_kws) -> pd.DataFrame:
+    """Returns shuffled connectome wPNKC, to pass to `fit_mb_model` as `_wPNKC`.
+
+    Output is meant to be used as `fit_mb_model(..., _wPNKC=<output>, **model_kws)`.
+
+    Args:
+        name: key of `NAMED_SHUFFLES` ('<method>' or '<method>_within_type'), giving
+            `method` and `within_kc_type` for `shuffle_wPNKC`
+
+        seed: passed to `shuffle_wPNKC`
+
+        **model_kws: `fit_mb_model` kwargs. The subset that are `connectome_wPNKC`
+            arguments (see `get_connectome_wPNKC_params`) select the matrix to shuffle
+            (e.g. `prat_claws=True` for one row per claw, or `weight_divisor=20`).
+            Others are ignored.
+    """
+    if name not in NAMED_SHUFFLES:
+        raise ValueError(f'{name=} not in {list(NAMED_SHUFFLES)}')
+
+    # fit_mb_model only accepts _wPNKC with this (default) value
+    if model_kws.get('pn2kc_connections', 'hemibrain') != 'hemibrain':
+        raise ValueError("pn2kc_connections must be 'hemibrain' (or unset)")
+
+    method, within_kc_type = NAMED_SHUFFLES[name]
+    wPNKC = connectome_wPNKC(**get_connectome_wPNKC_params(model_kws))
+    return shuffle_wPNKC(wPNKC, method, within_kc_type=within_kc_type, seed=seed)
 
 
 def wPNKC_shuffle_summary(original: pd.DataFrame, shuffled: pd.DataFrame
