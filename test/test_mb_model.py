@@ -67,7 +67,8 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     uniform_bouton_wPNKC, bouton_glomerulus_probs, claw_coord_cols,
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
     plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
-    read_onestep_lr_cache, connectome_KCKC_weights, CLAW_SAT_PARAMS
+    read_onestep_lr_cache, connectome_KCKC_weights, CLAW_SAT_PARAMS,
+    BOUTON_DEPLETION_PARAMS
 )
 
 # TODO better way?
@@ -5568,5 +5569,274 @@ def test_claw_thr_simulator(claw_sat_model):
         **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
     )
     assert params2['claw_thr'] == 70.0 and params2['claw_sat'] == claw_sat
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)
+
+
+# reduced claw + bouton model (as in CLAW_SAT_MODEL_KWS), which `bouton_ves_p` requires
+# (prat_boutons=True)
+BOUTON_DEPLETION_MODEL_KWS: ParamDict = dict(one_row_per_claw=True, prat_claws=True,
+    prat_boutons=True, use_connectome_APL_weights=True
+)
+
+@pytest.fixture(scope='module')
+def bouton_depletion_model(orn_deltas
+    ) -> Tuple[pd.DataFrame, ParamDict, FitMBModelOutputs]:
+    """Returns `orn_deltas`, model kwargs, and tuned outputs w/o bouton depletion.
+
+    Uses `reduced_bouton_system` (so the returned `orn_deltas` and kwargs should be
+    used). Do not modify outputs.
+    """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, BOUTON_DEPLETION_MODEL_KWS)
+    return orn_deltas, kws, _fit_mb_model(orn_deltas=orn_deltas, **kws)
+
+
+def test_bouton_ves_p_zero_equals_default(bouton_depletion_model):
+    """Tests `bouton_ves_p=0.0` (recorded, but no depletion) does not change tuned
+    outputs, with or without `bouton_tau_r`.
+    """
+    orn_deltas, kws, ret = bouton_depletion_model
+    assert not any(k in ret[3] for k in BOUTON_DEPLETION_PARAMS)
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, bouton_ves_p=0.0, **kws)
+    assert type(ret2[3]['bouton_ves_p']) is float
+    assert 'bouton_tau_r' not in ret2[3]
+    assert_fit_outputs_equal(ret, _pop_param(ret2, 'bouton_ves_p', 0.0))
+
+    ret3 = _fit_mb_model(orn_deltas=orn_deltas, bouton_ves_p=0.0, bouton_tau_r=1.0,
+        **kws
+    )
+    assert_fit_outputs_equal(ret,
+        _pop_param(_pop_param(ret3, 'bouton_tau_r', 1.0), 'bouton_ves_p', 0.0)
+    )
+
+
+def test_bouton_ves_p_lowers_spike_counts(bouton_depletion_model):
+    """Tests increasing `bouton_ves_p` (w/ threshold and APL weights fixed at tuned
+    values) lowers spontaneous input, response rate and total spikes, and that a slower
+    pool recovery (`bouton_tau_r`) depletes more.
+
+    Steady-state bouton output `r / (1 + p * tau_r * r)` saturates at
+    `1 / (p * tau_r)` Hz, so at `tau_r=0.2` values of `p` >= ~0.1 (saturating at 50 Hz,
+    around spontaneous bouton rates of ~20-65 Hz here, vs up to ~220 Hz during odors)
+    silence nearly all KCs at the thresholds tuned w/o depletion. Values here leave
+    some responses.
+    """
+    orn_deltas, kws, ret = bouton_depletion_model
+    responses, spike_counts, _, params = ret
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+
+    rates = [responses.mean().mean()]
+    n_spikes = [spike_counts.values.sum()]
+    spont_in = [params['kc_spont_in']]
+    for ves_p in (0.003, 0.01, 0.03):
+        responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+            bouton_ves_p=ves_p, **fixed_kws, **kws
+        )
+        assert params2['bouton_ves_p'] == ves_p
+        assert 'bouton_tau_r' not in params2
+        assert not responses2.equals(responses)
+        rates.append(responses2.mean().mean())
+        n_spikes.append(spike_counts2.values.sum())
+        spont_in.append(params2['kc_spont_in'])
+
+    print(f'response rates (no depletion, then bouton_ves_p=0.003 / 0.01 / 0.03): '
+        f'{rates}'
+    )
+    print(f'total spikes: {n_spikes}')
+    assert all(r2 < r for r, r2 in zip(rates, rates[1:]))
+    assert all(n2 < n for n, n2 in zip(n_spikes, n_spikes[1:]))
+    assert rates[-1] > 0
+    # every KC gets spontaneous input from some bouton (w/ positive spontaneous rate)
+    assert all((s2 < s).all() for s, s2 in zip(spont_in, spont_in[1:]))
+
+    ves_p = 0.01
+    slow_responses, slow_spike_counts, _, slow_params = _fit_mb_model(
+        orn_deltas=orn_deltas, bouton_ves_p=ves_p, bouton_tau_r=1.0, **fixed_kws, **kws
+    )
+    assert slow_params['bouton_tau_r'] == 1.0
+    n_slow_spikes = slow_spike_counts.values.sum()
+    print(f'total spikes (bouton_ves_p={ves_p}): {n_spikes[2]} (bouton_tau_r=0.2, '
+        f'default) / {n_slow_spikes} (bouton_tau_r=1.0)'
+    )
+    assert n_slow_spikes < n_spikes[2]
+    assert not slow_responses.equals(responses)
+
+    # default bouton_tau_r (0.2) passed explicitly
+    _, spike_counts3, _, params3 = _fit_mb_model(orn_deltas=orn_deltas,
+        bouton_ves_p=ves_p, bouton_tau_r=0.2, **fixed_kws, **kws
+    )
+    assert params3['bouton_tau_r'] == 0.2
+    assert spike_counts3.values.sum() == n_spikes[2]
+
+
+def test_bouton_ves_p_dynamics(bouton_depletion_model):
+    """Tests depleted bouton outputs (`rv.pn.bouton_sims`) match a forward Euler
+    integration of the vesicle pool, w/ pools starting at steady state for spontaneous
+    rates.
+
+    APL weights are 0 (thresholds fixed at tuned values), so bouton rates before
+    depletion do not depend on the KCs, and are the bouton outputs of the model w/o
+    depletion.
+    """
+    orn_deltas, kws, ret = bouton_depletion_model
+    fixed_kws = get_thr_and_APL_weights(ret[3], kws)
+    apl_off_kws = {k: v if k == 'fixed_thr' else 0.0 for k, v in fixed_kws.items()}
+
+    ves_p = 0.3
+    tau_r = 0.2
+    _, _, _, params = _fit_mb_model(orn_deltas=orn_deltas, return_olfsysm_vars=True,
+        **apl_off_kws, **kws
+    )
+    mp = params['mp']
+    rates = np.stack(params['rv'].pn.bouton_sims)
+
+    _, _, _, params2 = _fit_mb_model(orn_deltas=orn_deltas, bouton_ves_p=ves_p,
+        bouton_tau_r=tau_r, return_olfsysm_vars=True, **apl_off_kws, **kws
+    )
+    assert params2['mp'].pn.bouton_ves_p == ves_p
+    assert params2['mp'].pn.bouton_tau_r == tau_r
+    outputs = np.stack(params2['rv'].pn.bouton_sims)
+    # (odors, boutons, time steps)
+    assert outputs.shape == rates.shape
+    assert outputs.shape[1] == mp.pn.n_total_boutons
+
+    dt = mp.time_dt
+    # KC (and bouton) simulation starts at the step after start_step (earlier steps are
+    # NaN)
+    start_step = int(round((mp.time_start - mp.time_pre_start) / dt))
+    assert np.isnan(outputs[:, :, :start_step + 1]).all()
+    assert not np.isnan(outputs[:, :, start_step + 1:]).any()
+
+    # as olfsysm sample_PN_spont (same for all odors)
+    spont_steps = slice(
+        start_step + int((mp.time_stim_start - mp.time_start) / (2 * dt)),
+        start_step + int((mp.time_stim_start - mp.time_start) / dt)
+    )
+    spont = rates[0, :, spont_steps].mean(axis=-1)
+    assert (spont > 0).all()
+
+    pool = np.broadcast_to(1 / (1 + ves_p * tau_r * spont), rates.shape[:2]).copy()
+    rate_prev = np.broadcast_to(spont, rates.shape[:2]).copy()
+    expected = np.full_like(rates, np.nan)
+    for t in range(start_step + 1, rates.shape[-1]):
+        pool += dt * ((1 - pool) / tau_r - ves_p * rate_prev * pool)
+        pool = np.clip(pool, 0, 1)
+        rate = np.maximum(rates[:, :, t], 0)
+        expected[:, :, t] = pool * rate
+        rate_prev = rate
+
+    assert np.allclose(outputs, expected, rtol=1e-9, atol=1e-9, equal_nan=True)
+
+    # pools are (close to) steady state before odor onset (PN rates still drift by
+    # <1% then), and depletion compresses strongly driven boutons more
+    prestim = slice(start_step + 1, spont_steps.stop)
+    assert np.allclose(outputs[:, :, prestim],
+        rates[:, :, prestim] / (1 + ves_p * tau_r * rates[:, :, prestim]), rtol=1e-2
+    )
+    peak_rates = np.nanmax(rates, axis=-1)
+    peak_ratio = np.nanmax(outputs, axis=-1) / peak_rates
+    strong = peak_rates > np.percentile(peak_rates, 90)
+    weak = peak_rates < np.percentile(peak_rates, 10)
+    assert peak_ratio[strong].mean() < peak_ratio[weak].mean()
+
+
+def test_bouton_ves_p_tuning(bouton_depletion_model):
+    """Tests tuning w/ bouton depletion reaches the target response rate.
+    """
+    orn_deltas, kws, ret = bouton_depletion_model
+    target = 0.1
+    responses, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
+        target_sparsity=target, bouton_ves_p=0.3, bouton_tau_r=0.2, **kws
+    )
+    assert params['bouton_ves_p'] == 0.3 and params['bouton_tau_r'] == 0.2
+    rate = responses.mean().mean()
+    print(f'tuned response rate w/ bouton_ves_p=0.3, bouton_tau_r=0.2: {rate:.4f} '
+        f'(total spikes {spike_counts.values.sum()} vs {ret[1].values.sum()} w/o '
+        'depletion)'
+    )
+    # (olfsysm default mp.kc.sp_acc=0.1 is relative to target)
+    assert abs(rate - target) <= 0.1 * target + 1e-9
+    assert not responses.equals(ret[0])
+
+
+def test_bouton_ves_p_invalid(orn_deltas):
+    """Tests invalid `bouton_ves_p` / `bouton_tau_r` kwargs raise ValueError.
+    """
+    bouton_kws = BOUTON_DEPLETION_MODEL_KWS
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True)
+    for kws, bad_kws in (
+            (bouton_kws, dict(bouton_ves_p=-0.1)),
+            (bouton_kws, dict(bouton_ves_p=np.nan)),
+            (bouton_kws, dict(bouton_ves_p=np.inf)),
+            (bouton_kws, dict(bouton_tau_r=0.2)),
+            (bouton_kws, dict(bouton_ves_p=0.3, bouton_tau_r=0.0)),
+            (bouton_kws, dict(bouton_ves_p=0.3, bouton_tau_r=-0.2)),
+            (bouton_kws, dict(bouton_ves_p=0.3, bouton_tau_r=np.nan)),
+            (claw_kws, dict(bouton_ves_p=0.3)),
+            (claw_kws, dict(bouton_ves_p=0.0)),
+            (dict(), dict(bouton_ves_p=0.3)),
+        ):
+
+        with pytest.raises(ValueError, match='bouton_(ves_p|tau_r)'):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+
+def test_bouton_ves_p_model_id():
+    """Tests model IDs / LR cache keys only change when `bouton_ves_p` (or
+    `bouton_tau_r`) passed (including 0.0), and that small values are distinguishable.
+    """
+    kws = BOUTON_DEPLETION_MODEL_KWS
+    none_kws = {**kws, 'bouton_ves_p': None, 'bouton_tau_r': None}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(bouton_ves_p=0.0), dict(bouton_ves_p=0.004),
+        dict(bouton_ves_p=0.005), dict(bouton_ves_p=0.3),
+        dict(bouton_ves_p=0.3, bouton_tau_r=0.2),
+        dict(bouton_ves_p=0.3, bouton_tau_r=1.0)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_bouton_ves_p_simulator(bouton_depletion_model):
+    """Tests `make_fixed_param_kc_simulator` forwards `bouton_ves_p` / `bouton_tau_r`
+    to its `fit_mb_model` calls and KC simulations, matching `fit_mb_model`.
+    """
+    orn_deltas, kws, ret = bouton_depletion_model
+    depletion_kws = dict(bouton_ves_p=0.3, bouton_tau_r=0.2)
+
+    # initial call tunes threshold / APL weights w/ depletion (simulator checks it
+    # reproduces those tuned outputs)
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        **depletion_kws, **kws
+    )
+    # (not parameters of the simulator)
+    assert not any(k in initial_params for k in BOUTON_DEPLETION_PARAMS)
+    tuned_responses, _ = simulate(dict())
+    assert abs(tuned_responses.mean().mean() - ret[0].mean().mean()) < 0.02
+
+    # same thresholds / APL weights, w/o depletion
+    simulate_nodep, initial_params2 = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, **kws
+    )
+    assert initial_params2 == initial_params
+
+    # acute APL knockout (all APL weight scales 0)
+    apl_off = {k: 0.0 for k in initial_params if k != 'fixed_thr'}
+    responses, spike_counts = simulate(apl_off)
+    responses_nodep, spike_counts_nodep = simulate_nodep(apl_off)
+    assert responses.mean().mean() > tuned_responses.mean().mean()
+    assert not responses.equals(responses_nodep)
+    assert spike_counts.values.sum() < spike_counts_nodep.values.sum()
+
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **depletion_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
+    )
+    assert params2['bouton_ves_p'] == 0.3 and params2['bouton_tau_r'] == 0.2
     assert responses.equals(responses2)
     assert spike_counts.equals(spike_counts2)

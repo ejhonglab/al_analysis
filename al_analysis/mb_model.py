@@ -590,6 +590,10 @@ KC_KC_INH_PARAMS: Tuple[str, ...] = ('kc_kc_inh', 'kc_kc_tau')
 # `mp.kc.claw_sat`) and a rectified offset (`mp.kc.claw_thr`). Each disabled if None.
 CLAW_SAT_PARAMS: Tuple[str, ...] = ('claw_sat', 'claw_sat_hard', 'claw_thr')
 
+# `fit_mb_model` kwargs for rate-based vesicle depletion at PN boutons (olfsysm
+# `mp.pn.bouton_ves_p` / `mp.pn.bouton_tau_r`). Disabled if `bouton_ves_p` is None.
+BOUTON_DEPLETION_PARAMS: Tuple[str, ...] = ('bouton_ves_p', 'bouton_tau_r')
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -662,12 +666,14 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # names, not the abbreviated values in param_abbrevs.
     exclude_if_value_matches = {
         'tune_on_hallem': False,
-        **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS},
+        **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
+            BOUTON_DEPLETION_PARAMS
+        },
     }
 
     # float formats for params where default '.2f' would lose too much precision
     param_float_formats = {k: '.3g'
-        for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr')
+        for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr') + BOUTON_DEPLETION_PARAMS
     }
 
     if exclude is None:
@@ -12161,6 +12167,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     kc_kc_inh: Optional[float] = None, kc_kc_tau: Optional[float] = None,
     claw_sat: Optional[float] = None, claw_sat_hard: Optional[bool] = None,
     claw_thr: Optional[float] = None,
+    bouton_ves_p: Optional[float] = None, bouton_tau_r: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12438,6 +12445,32 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `claw_sat` of the same order approximates that rule w/ linear summation.
             0.0 has no effect (but is recorded). Must be finite and not negative.
 
+        bouton_ves_p: if not None, rate-based (Tsodyks-Markram mean-field) vesicle
+            depletion of the PN>KC bouton (olfsysm `mp.pn.bouton_ves_p`): each bouton
+            has an available pool fraction `n` (in [0, 1]), with
+            `dn/dt = (1 - n) / bouton_tau_r - bouton_ves_p * r * n`, where `r` is the
+            bouton's rate (Hz, after any APL>bouton inhibition, clipped at 0), and
+            outputs `n * r`. The steady-state pool is `1 / (1 + p * tau_r * r)` (for
+            `p = bouton_ves_p`, `tau_r = bouton_tau_r`), so strongly driven PNs are
+            compressed, dynamically (pool recovery w/ `bouton_tau_r`), and w/ the
+            compression shared by all claws (and the bouton>APL input) of each bouton.
+            Pools start each odor at the steady state for the bouton's spontaneous rate,
+            and spontaneous input (`kc_spont_in`, which thresholds are relative to) uses
+            the same transfer. Active during threshold / APL tuning. Motivated as a
+            dynamic, bouton-shared alternative to per-claw saturation (`claw_sat`; E18
+            of the KC-remapping experiments). Sustained output saturates at
+            `1 / (p * tau_r)` Hz. With bouton rates of ~20-65 Hz spontaneous and up to
+            ~220 Hz during odors (default parameters, megamat inputs), and the default
+            `tau_r` of 0.2, values ~0.003-0.03 compress strong boutons mildly to
+            moderately, while values >= ~0.1 (saturating at <= 50 Hz) leave sustained
+            odor output near spontaneous output, so mainly the onset transient (before
+            the pool depletes) drives KCs. Requires `prat_boutons=True`. 0.0 has no
+            effect (but is recorded). Must be finite and not negative.
+
+        bouton_tau_r: recovery time constant (seconds) of the bouton vesicle pool
+            (`mp.pn.bouton_tau_r`, olfsysm default of 0.2 if None). Requires
+            `bouton_ves_p`. Must be finite and positive.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -12522,8 +12555,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         param_dict: dict containing tuned parameters (e.g. 'fixed_thr', 'wAPLKC'),
             certain model intermediates (e.g. 'kc_spont_in'), and certain parameters
             relevant for reproducibility (e.g. 'sp_acc', 'max_iters', and any of
-            `AL_INH_PARAMS`, `KC_KC_INH_PARAMS` or `CLAW_SAT_PARAMS` that were passed,
-            e.g. 'pn_inhsc').
+            `AL_INH_PARAMS`, `KC_KC_INH_PARAMS`, `CLAW_SAT_PARAMS` or
+            `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc').
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -12768,6 +12801,28 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             )
         for k, v in claw_sat_params.items():
             setattr(mp.kc, k, v)
+
+    # (only those passed, to also add to param_dict below. keys are also mp.pn
+    # attributes.)
+    bouton_depletion_params = dict()
+    if bouton_ves_p is None:
+        if bouton_tau_r is not None:
+            raise ValueError('bouton_tau_r requires bouton_ves_p')
+    else:
+        bouton_depletion_params['bouton_ves_p'] = float(bouton_ves_p)
+        if bouton_tau_r is not None:
+            bouton_depletion_params['bouton_tau_r'] = float(bouton_tau_r)
+
+        for k, v in bouton_depletion_params.items():
+            if not np.isfinite(v) or v < 0 or (k == 'bouton_tau_r' and v == 0):
+                raise ValueError(f'{k} must be finite and not negative (and '
+                    f'bouton_tau_r must be positive) (got {v})'
+                )
+        if not prat_boutons:
+            raise ValueError('bouton_ves_p / bouton_tau_r require prat_boutons=True')
+
+        for k, v in bouton_depletion_params.items():
+            setattr(mp.pn, k, v)
 
     # may or may not care to relax this later
     # (so that we can let either be defined from one, or to try varying separately)
@@ -15657,6 +15712,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     param_dict.update(al_inh_params)
     param_dict.update(kc_kc_inh_params)
     param_dict.update(claw_sat_params)
+    param_dict.update(bouton_depletion_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -16291,7 +16347,8 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             `initial_params`). Kwargs only used for tuning (e.g. `target_sparsity`)
             are ignored if `initial_params` passed. Other KC-layer kwargs that do not
             change how thresholds / APL weights are defined (e.g. `claw_sat` /
-            `claw_thr`) apply to the initial call and to all simulations.
+            `claw_thr` / `bouton_ves_p`) apply to the initial call and to all
+            simulations.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -19458,7 +19515,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
                 k: [x[k] for x in param_dict_list] for k in param_dict_keys
             }
             # inputs (same for all seeds), so they still match model_kws values below
-            for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS:
+            for k in (AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
+                    BOUTON_DEPLETION_PARAMS):
                 if k in param_dict:
                     assert len(set(param_dict[k])) == 1
                     param_dict[k] = param_dict[k][0]
