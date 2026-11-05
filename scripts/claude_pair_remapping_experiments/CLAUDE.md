@@ -3,10 +3,21 @@ We are following up on a report you made, in the markdown:
 
 The report may reference the analysis and outputs in apl_pair_analysis/, which you used
 in construction of the report (and provided alongside for download). The two 16x16 KC
-correlation-distance matrices the report analyzed (TNT3c_dist_apl16.csv [control] and
-TNT_dist_apl16.csv [APL output blocked], both from Yang) are not currently in
-apl_pair_analysis/. Until they are added, reconstruct them from the `ctrl` and `tnt`
-columns of apl_pair_analysis/all120_pairs.csv.
+distance matrices the report analyzed (TNT3c_dist_apl16.csv [control] and
+TNT_dist_apl16.csv [APL output blocked], both from Yang) are regenerated there from
+Yang's per-recording data (see below). Note they are 1 - cosine similarity over all KCs
+of a recording, averaged over recordings, not 1 - Pearson as the report says; see
+data/yang_apl16_kc_olfdb/README.md in the shared directory.
+
+Yang's per-recording APL16 KC data (TNT: olfdb dataset 19, TNT3c: dataset 20; per trial,
+per hemisphere) is in the lab's odor response database olfdb (the hong-data repo,
+deployed at /opt/olfdb on hal, served at http://hal:8080; HTTP API listed in its
+design.md, e.g. `/api/datasets`, `/api/download?ids=<id>&format=long`). It also has
+Remy's kiwi/control-mixture KC data and my megamat and validation2 ORN glomerulus data.
+Copies of Yang's two datasets, plus per-recording RDMs (Pearson and cosine) and per-odor
+response fractions computed from them, are in the shared directory under
+data/yang_apl16_kc_olfdb/ (made by yang_apl16_kc_data.py in this folder; re-run it to
+regenerate).
 
 Yang had her own Claude develop an independent static MB (KC+APL) model. That work (Oct
 2026) is on tensor under Tom/claude_APL_modeling_YZ4TC/Claude_APL_analysis/, with APL
