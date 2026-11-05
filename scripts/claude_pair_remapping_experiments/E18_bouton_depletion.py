@@ -51,6 +51,7 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    import matplotlib.ticker
     pre = H.PRIMARY_MODEL_RDM + '__'
     if 'error' in stats:
         stats = stats[stats['error'].isna()]
@@ -78,7 +79,11 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
                 lw=1.3, label=f'tau_r {tau:g} s')
         if ref is not None:
             ax.axhline(ref, color='0.45', lw=1, ls=(0, (1, 2)))
-        ax.set_xlabel('release probability p')
+        ax.set_xscale('log')
+        ax.set_xticks([0.003, 0.01, 0.03, 0.1])
+        ax.set_xticklabels(['0.003', '0.01', '0.03', '0.1'])
+        ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+        ax.set_xlabel('release probability p (per PN spike)')
         ax.set_title(title, fontsize=10)
         ax.spines[['top', 'right']].set_visible(False)
         ax.grid(True, color='0.9', lw=0.6)
