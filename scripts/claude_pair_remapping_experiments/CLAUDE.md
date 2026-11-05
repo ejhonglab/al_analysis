@@ -127,17 +127,28 @@ In the shared directory, you may also create/edit:
   for you than for me should be organized under a notes/ subdirectory.
 
 - proposed_experiments.md: add new experiments not already in experiment_priorities.md
-  here, and if some of these should be higher priority than something in
-  experiment_priorities.md, talk me through it and then move those items into
-  experiment_priorities.md after getting my OK. Exception, so that no host sits idle
-  waiting for me: if your host would otherwise be idle (nothing runnable in the priority
-  list is unclaimed and suited to it), move proposed experiments into
-  experiment_priorities.md yourself, without my approval: give them the next E<n>, place
-  them where their stated rationale puts them (write that rationale in the entry; I will
-  reorder if I disagree), append them to the report markdown and republish the report
-  artifact (see "Report artifact" below), say in chat.md what you moved and why, then claim
-  one and start it. Proposals that would displace work another host is about to start
-  still go through me.
+  here (standard entry text plus "proposed by <host>, <date time>"), and if some of these
+  should be higher priority than something in experiment_priorities.md, talk me through it
+  and then move those items into experiment_priorities.md after getting my OK. This file
+  holds OPEN proposals only: moving a proposal means cutting it from here (one line in the
+  file's "Moved log"), pasting its full text into the experiment_priorities.md entry with
+  the "proposed by / when" and "approved by / when" provenance, and adding its row to the
+  experiment index (below). Exception, so that no host sits idle waiting for me: if your
+  host would otherwise be idle (nothing runnable in the priority list is unclaimed and
+  suited to it), move proposed experiments into experiment_priorities.md yourself, without
+  my approval: give them the next E<n>, place them where their stated rationale puts them
+  (write that rationale in the entry; I will reorder if I disagree), append them to the
+  report markdown and republish the report artifact (see "Report artifact" below), say in
+  chat.md what you moved and why, then claim one and start it. Proposals that would
+  displace work another host is about to start still go through me.
+
+- The experiment index: experiment_priorities.md starts with a table with one row per
+  experiment ID (name, state: proposed / approved / running / completed, host, when and by
+  whom it was proposed, when and how it was approved or moved into the list, when it was
+  started, when it was completed and its position in the Completed list). Update the row at
+  every state change, under the lock, in the same edit that changes the entry or the
+  status line; it is the record of what happened when (for the reports) and the one place
+  to see what is running and what awaits my OK.
 
 Several agents (on different hosts) edit these files concurrently over NFS, so always
 re-read a shared file immediately before editing it, and keep each edit small. Before
