@@ -74,8 +74,9 @@ def spearman_with_refs(on_pairs: pd.Series, off_pairs: pd.Series, refs: Dict[str
     for key, ref in refs.items():
         model = on_pairs if key.endswith('_on') else off_pairs
         m = model.reindex(ref.index)
-        if m.isna().any():
-            # pairs may be stored in the other order
+        if m.isna().all():
+            # pairs may be stored in the other order (a model's own NaN distances, from
+            # odors without responders, must not trigger this)
             m = model.reindex(pd.MultiIndex.from_arrays(
                 [ref.index.get_level_values(1), ref.index.get_level_values(0)])
             )
