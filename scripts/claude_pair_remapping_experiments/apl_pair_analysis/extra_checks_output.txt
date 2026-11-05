@@ -1,0 +1,42 @@
+Spearman(model-vs-ORN residual, data-vs-ORN residual), 66 pairs:
+  hemibrain_wd20: vs WT 0.596, vs ctrl 0.509, vs TNT 0.577
+  uniform: vs WT 0.443, vs ctrl 0.524, vs TNT 0.514
+SD of model-vs-ORN residual: hemibrain 0.114, uniform 0.044; data WT 0.117
+Spearman(model, WT KC): uniform 0.849, hemibrain 0.841
+mean dist: uniform 0.780, hemibrain 0.837, WT KC 0.885
+
+12 odors: resid SD vs ORN ctrl 0.103, TNT 0.086; APL share of ctrl residual variance 0.30
+16 odors: resid SD vs ORN ctrl 0.097, TNT 0.088; APL share 0.18
+16 odors: rho(ORN,ctrl)=0.655, rho(ORN,TNT)=0.748, gap to 0.99 closed by APL block: 0.28
+12 odors: rho(ORN,ctrl)=0.779, rho(ORN,TNT)=0.851, gap to 0.99 closed by APL block: 0.34
+
+Per-odor APL pair-specific effect vs ORN drive:
+          iso  gauss    lin   mean  n_strong    top
+1-8ol  -0.024  0.005 -0.019  0.132       4.0  0.708
+euc    -0.019 -0.006 -0.047  0.128       4.0  0.832
+1-5ol  -0.017  0.017 -0.014  0.220       8.0  1.107
+t2h    -0.015  0.009 -0.025  0.195       8.0  0.994
+B-myr  -0.012  0.017 -0.007  0.110       1.0  0.561
+1-6ol  -0.009  0.031 -0.003  0.278       9.0  1.423
+-aPine -0.009  0.003 -0.047  0.170       6.0  1.374
+6al    -0.009  0.015 -0.014  0.194       7.0  0.924
+2-but   0.001  0.038  0.009  0.146       6.0  1.005
+paa     0.004  0.038  0.013  0.173       5.0  1.261
+ms      0.009  0.037  0.012  0.091       1.0  0.579
+ep      0.011  0.055  0.014  0.206       7.0  1.181
+2h      0.012  0.060  0.032  0.258       9.0  0.937
+pa      0.013  0.056  0.018  0.283       9.0  1.628
+IaA     0.028  0.069  0.036  0.221       7.0  1.236
+eb      0.035  0.082  0.044  0.248       8.0  1.339
+Spearman(per-odor isotonic resid, ORN mean) = 0.50 (p=0.05); gauss: 0.59
+Spearman(per-odor isotonic resid, ORN n_strong) = 0.35 (p=0.18); gauss: 0.45
+Spearman(per-odor isotonic resid, ORN top) = 0.45 (p=0.083); gauss: 0.41
+
+ORN16 corr distance, fruity x small_ester block mean: 0.509 ; fruity x alc: 0.447 ; alc x terp: 0.9 ; ald x terp: 0.799
+('1-5ol', '1-6ol') {'ctrl': 0.357, 'tnt': 0.244, 'res_lin': -0.122, 'res_iso': 0.0, 'res_gauss': 0.005}
+('eb', 'ep') {'ctrl': 0.336, 'tnt': 0.185, 'res_lin': -0.092, 'res_iso': 0.0, 'res_gauss': 0.066}
+('6al', 't2h') {'ctrl': 0.411, 'tnt': 0.295, 'res_lin': -0.112, 'res_iso': -0.011, 'res_gauss': -0.01}
+('-aPine', 'euc') {'ctrl': 0.452, 'tnt': 0.333, 'res_lin': -0.105, 'res_iso': 0.0, 'res_gauss': -0.02}
+('IaA', 'pa') {'ctrl': 0.434, 'tnt': 0.252, 'res_lin': -0.053, 'res_iso': 0.011, 'res_gauss': 0.07}
+('2h', 'IaA') {'ctrl': 0.657, 'tnt': 0.396, 'res_lin': 0.046, 'res_iso': 0.061, 'res_gauss': 0.107}
+('2h', 'pa') {'ctrl': 0.507, 'tnt': 0.339, 'res_lin': -0.055, 'res_iso': -0.028, 'res_gauss': 0.028}

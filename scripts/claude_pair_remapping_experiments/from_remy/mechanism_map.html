@@ -1,0 +1,301 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><title>Claw Dynamics Mechanism Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column; the figure breaks out to the frame width and scrolls sideways on phones. Colours = the Kenny Figures system: orange PN boutons, blue KC claws, teal APL, plus one hue per component. */
+:root {
+  --bg: #fbfaf7; --surface: #ffffff; --ink: #1d1f23; --muted: #5d626b; --rule: #e6e3dd; --band: #f1efe9;
+  --pn: #d4771a; --kc: #2b5c97; --apl: #0b9488; --apl-wash: #d7eeea;
+  --c1: #77818c; --c2: #c47f00; --c3: #6b5b95;
+  --c1-wash: #e4e7ea; --c2-wash: #f7e6c4; --c3-wash: #e3ddf0;
+  --font-display: "Source Serif 4", Georgia, serif; --font-body: "Inter", -apple-system, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #16171a; --surface: #1f2126; --ink: #ecebe6; --muted: #a4a8ae; --rule: #34373d; --band: #24262b;
+  --pn: #e9964a; --kc: #7ea6dc; --apl: #3fb9a3; --apl-wash: #163b35;
+  --c1: #9aa3ad; --c2: #e0a030; --c3: #a08fd0; --c1-wash: #2b2f35; --c2-wash: #3d2f10; --c3-wash: #2e2740; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #16171a; --surface: #1f2126; --ink: #ecebe6; --muted: #a4a8ae; --rule: #34373d; --band: #24262b;
+  --pn: #e9964a; --kc: #7ea6dc; --apl: #3fb9a3; --apl-wash: #163b35;
+  --c1: #9aa3ad; --c2: #e0a030; --c3: #a08fd0; --c1-wash: #2b2f35; --c2-wash: #3d2f10; --c3-wash: #2e2740; color-scheme: dark; }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55 }
+main { max-width: 1180px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px; display: flex; flex-direction: column; gap: 22px }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.15; margin: 0; text-wrap: balance }
+.lede { color: var(--muted); max-width: 70ch; margin: 0 }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 14px 10px }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch }
+.scroll svg { display: block; width: 100%; min-width: 900px; height: auto; color: var(--ink) }
+figcaption { font-size: 13px; color: var(--muted); max-width: 90ch; margin-top: 8px }
+svg text { font-family: var(--font-body); font-size: 12px; fill: currentColor }
+svg .h { font-weight: 600; font-size: 14px }
+svg .s { font-size: 11px; fill: var(--muted) }
+svg .f { font-family: "Source Serif 4", Georgia, serif; font-style: italic; font-size: 13px }
+svg .k { font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--rule) }
+th { font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); font-weight: 600; border-top: 0 }
+td:first-child { font-weight: 600; white-space: nowrap }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px }
+.tbl { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto }
+.tbl table { min-width: 760px }
+.loci { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px 22px; margin-top: 14px; font-size: 13px }
+.loci > div { display: grid; grid-template-columns: 24px 1fr; gap: 8px; min-width: 0 }
+.loci b { width: 22px; height: 22px; border-radius: 50%; background: var(--ink); color: var(--bg); font-size: 11.5px; display: inline-flex; align-items: center; justify-content: center }
+.d { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 3px 0 8px; vertical-align: 0 }
+.c1 { background: var(--c1) } .c2 { background: var(--c2) } .c3 { background: var(--c3) }
+.note { font-size: 13px; color: var(--muted); max-width: 90ch; margin: 0 }
+</style>
+
+<main>
+<h1>What the three components of “KC claws beyond <span style="white-space:nowrap">E[KC claws | PN boutons]”</span> stand for, and where in the circuit each could come from</h1>
+<p class="lede">Top: the three parts of the claw signal that the analysis separates, each with the pattern it makes in the odor-pair matrix and its signature in the data. Bottom: one calyx microglomerulus, drawn with the seven places a mechanism can act. Coloured dots on each place say which component that mechanism would feed.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 1240 905" role="img" aria-label="Three component cards (shared decorrelation, odor part, pair part) above a schematic of one calyx microglomerulus: antennal lobe, PN bouton, the claws of several Kenyon cells, their dendrites and somata, and the APL and MB-C1 inhibitory neurons; seven numbered loci are tagged with the components they would produce.">
+<defs>
+  <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="currentColor"/></marker>
+  <marker id="arr-pn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="var(--pn)"/></marker>
+  <marker id="arr-kc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="var(--kc)"/></marker>
+  <marker id="bar-apl" viewBox="0 0 4 12" refX="2" refY="6" markerWidth="4" markerHeight="12" orient="auto"><rect width="4" height="12" fill="var(--apl)"/></marker>
+  <marker id="arr-apl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="var(--apl)"/></marker>
+</defs>
+
+<!-- ============ component cards ============ -->
+<g id="card1">
+  <rect x="20" y="16" width="390" height="268" rx="10" fill="var(--c1-wash)" stroke="var(--c1)" stroke-width="1.5"/>
+  <circle cx="44" cy="42" r="8" fill="var(--c1)"/>
+  <text x="60" y="47" class="h">Shared decorrelation</text>
+  <text x="60" y="64" class="s">every pair, both regions · fast (τ ≈ 0.5 s) · level, not shape</text>
+  <!-- mini matrices: before / after -->
+  <g transform="translate(44,84)">
+    <text x="0" y="-4" class="s">0.5 s</text>
+    <g fill="var(--c1)">
+      <rect x="0" y="0" width="16" height="16" opacity=".85"/><rect x="18" y="0" width="16" height="16" opacity=".5"/><rect x="36" y="0" width="16" height="16" opacity=".7"/><rect x="54" y="0" width="16" height="16" opacity=".35"/>
+      <rect x="0" y="18" width="16" height="16" opacity=".5"/><rect x="18" y="18" width="16" height="16" opacity=".85"/><rect x="36" y="18" width="16" height="16" opacity=".4"/><rect x="54" y="18" width="16" height="16" opacity=".6"/>
+      <rect x="0" y="36" width="16" height="16" opacity=".7"/><rect x="18" y="36" width="16" height="16" opacity=".4"/><rect x="36" y="36" width="16" height="16" opacity=".85"/><rect x="54" y="36" width="16" height="16" opacity=".55"/>
+      <rect x="0" y="54" width="16" height="16" opacity=".35"/><rect x="18" y="54" width="16" height="16" opacity=".6"/><rect x="36" y="54" width="16" height="16" opacity=".55"/><rect x="54" y="54" width="16" height="16" opacity=".85"/>
+    </g>
+    <path d="M84 36 L112 36" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="98" y="30" class="s" text-anchor="middle">× c(t)</text>
+    <g transform="translate(124,0)" fill="var(--c1)">
+      <rect x="0" y="0" width="16" height="16" opacity=".85"/><rect x="18" y="0" width="16" height="16" opacity=".25"/><rect x="36" y="0" width="16" height="16" opacity=".35"/><rect x="54" y="0" width="16" height="16" opacity=".17"/>
+      <rect x="0" y="18" width="16" height="16" opacity=".25"/><rect x="18" y="18" width="16" height="16" opacity=".85"/><rect x="36" y="18" width="16" height="16" opacity=".2"/><rect x="54" y="18" width="16" height="16" opacity=".3"/>
+      <rect x="0" y="36" width="16" height="16" opacity=".35"/><rect x="18" y="36" width="16" height="16" opacity=".2"/><rect x="36" y="36" width="16" height="16" opacity=".85"/><rect x="54" y="36" width="16" height="16" opacity=".27"/>
+      <rect x="0" y="54" width="16" height="16" opacity=".17"/><rect x="18" y="54" width="16" height="16" opacity=".3"/><rect x="36" y="54" width="16" height="16" opacity=".27"/><rect x="54" y="54" width="16" height="16" opacity=".85"/>
+    </g>
+    <text x="124" y="-4" class="s">1.5 s</text>
+  </g>
+  <text x="250" y="100" class="f">r<tspan baseline-shift="sub" font-size="9">ij</tspan>(t) ≈ c(t) · r<tspan baseline-shift="sub" font-size="9">ij</tspan></text>
+  <text x="250" y="118" class="s">one scalar for all pairs;</text>
+  <text x="250" y="132" class="s">rank order unchanged</text>
+  <text x="44" y="182" class="s">In the data</text>
+  <text x="44" y="200">between-odor r: boutons 0.23 → 0.18, claws 0.26 → 0.13</text>
+  <text x="44" y="218">same-odor reliability holds; claws lose about twice as much</text>
+  <text x="44" y="236">does not change which pairs move relative to each other</text>
+  <text x="44" y="264" class="k" fill="var(--c1)">LOCI 1 · 2 · (4, fast part) — upstream or presynaptic</text>
+</g>
+
+<g id="card2">
+  <rect x="425" y="16" width="390" height="268" rx="10" fill="var(--c2-wash)" stroke="var(--c2)" stroke-width="1.5"/>
+  <circle cx="449" cy="42" r="8" fill="var(--c2)"/>
+  <text x="465" y="47" class="h">Odor part</text>
+  <text x="465" y="64" class="s">one value per odor · slow (1–3 s) · moves a whole row</text>
+  <g transform="translate(449,84)" fill="var(--c2)">
+    <text x="0" y="-4" class="s" fill="var(--muted)">odor i's row and column</text>
+    <rect x="0" y="0" width="16" height="16" opacity=".15"/><rect x="18" y="0" width="16" height="16" opacity=".15"/><rect x="36" y="0" width="16" height="16" opacity=".8"/><rect x="54" y="0" width="16" height="16" opacity=".15"/>
+    <rect x="0" y="18" width="16" height="16" opacity=".15"/><rect x="18" y="18" width="16" height="16" opacity=".15"/><rect x="36" y="18" width="16" height="16" opacity=".8"/><rect x="54" y="18" width="16" height="16" opacity=".15"/>
+    <rect x="0" y="36" width="16" height="16" opacity=".8"/><rect x="18" y="36" width="16" height="16" opacity=".8"/><rect x="36" y="36" width="16" height="16" opacity=".3"/><rect x="54" y="36" width="16" height="16" opacity=".8"/>
+    <rect x="0" y="54" width="16" height="16" opacity=".15"/><rect x="18" y="54" width="16" height="16" opacity=".15"/><rect x="36" y="54" width="16" height="16" opacity=".8"/><rect x="54" y="54" width="16" height="16" opacity=".15"/>
+    <text x="44" y="46" class="s" fill="var(--ink)" text-anchor="middle">i</text>
+  </g>
+  <text x="560" y="100" class="f">a<tspan baseline-shift="sub" font-size="9">i</tspan> + a<tspan baseline-shift="sub" font-size="9">j</tspan></text>
+  <text x="560" y="118" class="s">a gain or offset for odor i,</text>
+  <text x="560" y="132" class="s">applied to all 16 of its pairs</text>
+  <text x="449" y="182" class="s">In the data</text>
+  <text x="449" y="200">Lin +0.78 → +0.51 fades · aa +0.04 → +0.47 builds · t2h → −0.27</text>
+  <text x="449" y="218">33–40 % of the pattern; re-sorts between windows (r 0.57)</text>
+  <text x="449" y="236">follows the connectome bias at 1–3 s (r 0.54–0.62)</text>
+  <text x="449" y="264" class="k" fill="var(--c2)">LOCI 1 · 2 (slow gain) · 4 (APL holds it down at the soma)</text>
+</g>
+
+<g id="card3">
+  <rect x="830" y="16" width="390" height="268" rx="10" fill="var(--c3-wash)" stroke="var(--c3)" stroke-width="1.5"/>
+  <circle cx="854" cy="42" r="8" fill="var(--c3)"/>
+  <text x="870" y="47" class="h">Pair part</text>
+  <text x="870" y="64" class="s">one value per pair · present at 0.5 s · stationary · somata-like</text>
+  <g transform="translate(854,84)" fill="var(--c3)">
+    <text x="0" y="-4" class="s" fill="var(--muted)">scattered cells, symmetric</text>
+    <rect x="0" y="0" width="16" height="16" opacity=".1"/><rect x="18" y="0" width="16" height="16" opacity=".85"/><rect x="36" y="0" width="16" height="16" opacity=".1"/><rect x="54" y="0" width="16" height="16" opacity=".45"/>
+    <rect x="0" y="18" width="16" height="16" opacity=".85"/><rect x="18" y="18" width="16" height="16" opacity=".1"/><rect x="36" y="18" width="16" height="16" opacity=".1"/><rect x="54" y="18" width="16" height="16" opacity=".1"/>
+    <rect x="0" y="36" width="16" height="16" opacity=".1"/><rect x="18" y="36" width="16" height="16" opacity=".1"/><rect x="36" y="36" width="16" height="16" opacity=".1"/><rect x="54" y="36" width="16" height="16" opacity=".7"/>
+    <rect x="0" y="54" width="16" height="16" opacity=".45"/><rect x="18" y="54" width="16" height="16" opacity=".1"/><rect x="36" y="54" width="16" height="16" opacity=".7"/><rect x="54" y="54" width="16" height="16" opacity=".1"/>
+  </g>
+  <text x="965" y="100" class="f">r<tspan baseline-shift="sub" font-size="9">ij</tspan> − (a<tspan baseline-shift="sub" font-size="9">i</tspan> + a<tspan baseline-shift="sub" font-size="9">j</tspan>)</text>
+  <text x="965" y="118" class="s">what two odors share that</text>
+  <text x="965" y="132" class="s">neither shares with the rest</text>
+  <text x="854" y="182" class="s">In the data</text>
+  <text x="854" y="200">t2h–va, IaA–pa, 6al–aa gain; 1-6ol–B-cit, 1-8ol–t2h lose</text>
+  <text x="854" y="218">60–67 % of the pattern; cross-window r 0.92–0.96</text>
+  <text x="854" y="236">somata share it (r 0.65–0.71); any wiring model predicts it</text>
+  <text x="854" y="264" class="k" fill="var(--c3)">LOCI 5 · 6 · 7 · (4, regionalized) — one step of KC integration</text>
+</g>
+
+<!-- ============ circuit schematic ============ -->
+<text x="20" y="322" class="h">Where each component can arise: one calyx microglomerulus</text>
+<text x="20" y="340" class="s">Fluorescence is recorded at the two starred sites. A claw ROI is the average of the ~14 claws, from 14 different KCs, that grip one bouton.</text>
+
+<!-- antennal lobe -->
+<rect x="20" y="380" width="200" height="330" rx="10" fill="var(--band)" stroke="var(--rule)"/>
+<text x="120" y="402" class="h" text-anchor="middle">antennal lobe</text>
+<g>
+  <path d="M30 470 L60 470" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+  <path d="M30 540 L60 540" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+  <path d="M30 610 L60 610" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="30" y="458" class="s">ORNs</text>
+  <circle cx="90" cy="470" r="22" fill="var(--surface)" stroke="currentColor" stroke-width="1.3"/>
+  <circle cx="90" cy="540" r="22" fill="var(--surface)" stroke="currentColor" stroke-width="1.3"/>
+  <circle cx="90" cy="610" r="22" fill="var(--surface)" stroke="currentColor" stroke-width="1.3"/>
+  <text x="90" y="474" class="s" text-anchor="middle">glom.</text><text x="90" y="544" class="s" text-anchor="middle">glom.</text><text x="90" y="614" class="s" text-anchor="middle">glom.</text>
+  <!-- LN -->
+  <circle cx="165" cy="540" r="16" fill="var(--apl-wash)" stroke="var(--apl)" stroke-width="1.5"/>
+  <text x="165" y="544" class="s" text-anchor="middle" fill="var(--apl)">LN</text>
+  <path d="M152 530 L112 480" stroke="var(--apl)" stroke-width="1.3" marker-end="url(#bar-apl)"/>
+  <path d="M149 540 L114 540" stroke="var(--apl)" stroke-width="1.3" marker-end="url(#bar-apl)"/>
+  <path d="M152 550 L112 600" stroke="var(--apl)" stroke-width="1.3" marker-end="url(#bar-apl)"/>
+  <!-- PN axons out -->
+  <path d="M112 470 C150 470 170 470 240 470" stroke="var(--pn)" stroke-width="2" fill="none"/>
+  <path d="M112 540 C150 540 170 600 240 600" stroke="var(--pn)" stroke-width="2" fill="none"/>
+  <path d="M112 610 C150 610 170 680 240 680" stroke="var(--pn)" stroke-width="2" fill="none"/>
+</g>
+<!-- PN axons into calyx -->
+<text x="250" y="458" class="s" fill="var(--pn)">PN axons</text>
+<path d="M240 470 L420 470" stroke="var(--pn)" stroke-width="2"/>
+<path d="M240 600 C300 600 360 600 470 600" stroke="var(--pn)" stroke-width="2.5" fill="none"/>
+<path d="M240 680 L420 680" stroke="var(--pn)" stroke-width="2"/>
+<text x="330" y="488" class="s">other boutons of other PNs …</text>
+<text x="330" y="698" class="s">… each gripped by its own 14 claws</text>
+
+<!-- the bouton -->
+<circle cx="520" cy="600" r="44" fill="var(--pn)" opacity=".18"/>
+<circle cx="520" cy="600" r="44" fill="none" stroke="var(--pn)" stroke-width="2.5"/>
+<text x="520" y="596" class="h" text-anchor="middle" fill="var(--pn)">PN bouton</text>
+<text x="520" y="614" class="s" text-anchor="middle" style="font-size:10px">★ imaged</text>
+<!-- claws ring -->
+<g fill="none" stroke="var(--kc)" stroke-width="6" stroke-linecap="round">
+  <path d="M563 572 A56 56 0 0 1 572 612"/>
+  <path d="M566 630 A56 56 0 0 1 538 654"/>
+  <path d="M520 656 A56 56 0 0 1 488 648"/>
+  <path d="M472 636 A56 56 0 0 1 465 598"/>
+  <path d="M470 580 A56 56 0 0 1 492 552"/>
+  <path d="M506 546 A56 56 0 0 1 540 548"/>
+  <path d="M552 556 A56 56 0 0 1 560 566"/>
+</g>
+<text x="330" y="534" class="s" fill="var(--kc)">★ claw ROI = ~14 claws of 14 KCs, averaged</text>
+<!-- synapse locus 3 -->
+<path d="M548 582 L562 574" stroke="var(--pn)" stroke-width="2" marker-end="url(#arr-pn)"/>
+
+<!-- three KCs drawn explicitly: dendrites from claws to the right -->
+<g stroke="var(--kc)" stroke-width="2.2" fill="none">
+  <path d="M572 590 C640 580 680 560 760 540"/>
+  <path d="M572 616 C640 620 690 616 760 614"/>
+  <path d="M556 644 C640 680 690 690 760 688"/>
+</g>
+<!-- their other claws on other boutons (small orange) -->
+<g>
+  <circle cx="690" cy="505" r="9" fill="var(--pn)" opacity=".6"/><circle cx="716" cy="492" r="9" fill="var(--pn)" opacity=".6"/>
+  <path d="M690 514 C700 528 720 532 740 538" stroke="var(--kc)" stroke-width="1.6" fill="none"/>
+  <path d="M716 501 C726 516 736 528 748 538" stroke="var(--kc)" stroke-width="1.6" fill="none"/>
+  <circle cx="700" cy="650" r="9" fill="var(--pn)" opacity=".6"/><circle cx="728" cy="648" r="9" fill="var(--pn)" opacity=".6"/>
+  <path d="M700 641 C708 630 728 622 748 616" stroke="var(--kc)" stroke-width="1.6" fill="none"/>
+  <path d="M728 639 C736 630 744 622 754 616" stroke="var(--kc)" stroke-width="1.6" fill="none"/>
+  <circle cx="690" cy="730" r="9" fill="var(--pn)" opacity=".6"/><circle cx="720" cy="738" r="9" fill="var(--pn)" opacity=".6"/>
+  <path d="M690 721 C700 708 724 698 748 690" stroke="var(--kc)" stroke-width="1.6" fill="none"/>
+  <path d="M720 729 C730 716 740 702 754 690" stroke="var(--kc)" stroke-width="1.6" fill="none"/>
+  <text x="620" y="458" class="s" fill="var(--pn)">each KC's 5–6 other boutons</text>
+</g>
+<!-- somata / axons -->
+<g>
+  <circle cx="790" cy="540" r="16" fill="var(--kc)" opacity=".2"/><circle cx="790" cy="540" r="16" fill="none" stroke="var(--kc)" stroke-width="2"/>
+  <circle cx="790" cy="614" r="16" fill="var(--kc)" opacity=".2"/><circle cx="790" cy="614" r="16" fill="none" stroke="var(--kc)" stroke-width="2"/>
+  <circle cx="790" cy="688" r="16" fill="var(--kc)" opacity=".2"/><circle cx="790" cy="688" r="16" fill="none" stroke="var(--kc)" stroke-width="2"/>
+  <text x="790" y="544" class="s" text-anchor="middle" fill="var(--kc)">KC</text><text x="790" y="618" class="s" text-anchor="middle" fill="var(--kc)">KC</text><text x="790" y="692" class="s" text-anchor="middle" fill="var(--kc)">KC</text>
+  <path d="M806 540 L880 540" stroke="var(--kc)" stroke-width="2" marker-end="url(#arr-kc)"/>
+  <path d="M806 614 L880 614" stroke="var(--kc)" stroke-width="2" marker-end="url(#arr-kc)"/>
+  <path d="M806 688 L880 688" stroke="var(--kc)" stroke-width="2" marker-end="url(#arr-kc)"/>
+  <text x="900" y="618" class="s">axons → peduncle (spike initiation)</text>
+  <text x="900" y="634" class="s">→ lobes; somata = Figure 6 reference</text>
+  <!-- back-propagation dashed -->
+  <path d="M770 630 C720 652 660 652 578 636" stroke="var(--kc)" stroke-width="1.4" stroke-dasharray="4 3" fill="none" marker-end="url(#arr-kc)"/>
+  <text x="600" y="674" class="s" fill="var(--kc)">spike / depolarization back into the claw</text>
+</g>
+<!-- KC–KC synapse (locus 6) -->
+<path d="M666 566 L666 606" stroke="var(--kc)" stroke-width="1.6" marker-end="url(#arr-kc)"/>
+<text x="674" y="600" class="s" fill="var(--kc)">KC→KC</text>
+
+<!-- APL and MB-C1 -->
+<g>
+  <ellipse cx="520" cy="800" rx="46" ry="22" fill="var(--apl-wash)" stroke="var(--apl)" stroke-width="2"/>
+  <text x="520" y="796" class="h" text-anchor="middle" fill="var(--apl)">APL</text>
+  <text x="520" y="811" class="s" text-anchor="middle">GABA, non-spiking</text>
+  <ellipse cx="640" cy="800" rx="36" ry="18" fill="var(--apl-wash)" stroke="var(--apl)" stroke-width="1.5"/>
+  <text x="640" y="804" class="s" text-anchor="middle" fill="var(--apl)">MB-C1 (GABA)</text>
+  <!-- APL onto bouton (presynaptic) -->
+  <path d="M496 780 C470 740 468 680 486 646" stroke="var(--apl)" stroke-width="1.8" fill="none" marker-end="url(#bar-apl)"/>
+  <!-- APL onto claws / shaft -->
+  <path d="M530 778 C560 740 580 700 598 662" stroke="var(--apl)" stroke-width="1.8" fill="none" marker-end="url(#bar-apl)"/>
+  <path d="M548 782 C600 760 640 720 690 690" stroke="var(--apl)" stroke-width="1.4" fill="none" marker-end="url(#bar-apl)"/>
+  <!-- inputs to APL: from KC dendrites and from boutons -->
+  <path d="M620 680 C600 720 580 760 560 784" stroke="var(--kc)" stroke-width="1.4" fill="none" marker-end="url(#arr-kc)"/>
+  <path d="M506 646 C500 700 500 740 506 778" stroke="var(--pn)" stroke-width="1.4" fill="none" marker-end="url(#arr-pn)"/>
+  <!-- MB-C1 onto claws -->
+  <path d="M630 782 C620 740 600 700 580 672" stroke="var(--apl)" stroke-width="1.2" fill="none" stroke-dasharray="3 3" marker-end="url(#bar-apl)"/>
+  <text x="586" y="836" class="s" text-anchor="middle">APL: 9.5 % of KC dendritic input (≈1 APL per 7 PN synapses) · onto boutons of 126/136 calyx PNs</text>
+  <text x="586" y="851" class="s" text-anchor="middle">driven by PN boutons and by KC dendrites; mostly self-inhibition at λ ≈ 50 µm; regionalized around the active boutons</text>
+</g>
+
+<!-- locus badges: number on the drawing, explanation in the list below the figure -->
+<g id="badges" font-size="11" font-weight="600">
+  <g transform="translate(70,662)"><circle r="11" fill="var(--ink)"/><text y="4" text-anchor="middle" style="fill:var(--bg)">1</text><text x="18" y="4" class="s">ORN adaptation · LN inhibition</text></g>
+  <g transform="translate(452,712)"><circle r="11" fill="var(--ink)"/><text y="4" text-anchor="middle" style="fill:var(--bg)">2</text><text x="-18" y="4" class="s" text-anchor="end">presynaptic inhibition</text></g>
+  <g transform="translate(600,536)"><circle r="11" fill="var(--ink)"/><text y="4" text-anchor="middle" style="fill:var(--bg)">3</text><text x="18" y="4" class="s">bouton → claw synapse</text></g>
+  <g transform="translate(560,748)"><circle r="11" fill="var(--ink)"/><text y="4" text-anchor="middle" style="fill:var(--bg)">4</text><text x="18" y="4" class="s">inhibition on claws and shaft</text></g>
+  <g transform="translate(760,572)"><circle r="11" fill="var(--ink)"/><text y="4" text-anchor="middle" style="fill:var(--bg)">5</text><text x="18" y="4" class="s">dendritic integration</text></g>
+  <g transform="translate(650,580)"><circle r="11" fill="var(--ink)"/><text y="4" text-anchor="middle" style="fill:var(--bg)">6</text></g>
+  <g transform="translate(772,486)"><circle r="11" fill="var(--ink)"/><text y="4" text-anchor="middle" style="fill:var(--bg)">7</text><text x="18" y="4" class="s">which boutons each KC samples</text></g>
+</g>
+<!-- legend -->
+<g transform="translate(20,890)">
+    <path d="M700 -4 L730 -4" stroke="var(--pn)" stroke-width="2" marker-end="url(#arr-pn)"/><text x="738" y="0" class="s">excitation (ACh)</text>
+  <path d="M850 -4 L880 -4" stroke="var(--apl)" stroke-width="2" marker-end="url(#bar-apl)"/><text x="888" y="0" class="s">inhibition (GABA)</text>
+  <path d="M1000 -4 L1030 -4" stroke="var(--kc)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arr-kc)"/><text x="1038" y="0" class="s">cell-wide signal</text>
+</g>
+</svg>
+</div>
+<figcaption>Reading the picture: the bouton and the claw ring are the two imaged sites, and the three components are what the claw ring reports beyond the bouton. Anything acting at loci 1–2 reaches the bouton signal too and so cannot be claw-specific; loci 3–4 act within the microglomerulus and change levels (shared or per odor); loci 5–7 bring other boutons into the claw signal and are the only ones that can make pair-shaped structure.</figcaption>
+
+<div class="loci">
+  <div><b>1</b><span><strong>ORN adaptation and antennal-lobe LN inhibition</strong> (GABA-A fast, GABA-B over seconds). Reaches boutons and claws alike. <i class="d c1"></i>shared <i class="d c2"></i>slow part → odor part</span></div>
+  <div><b>2</b><span><strong>Presynaptic inhibition on the bouton</strong> — APL contacts the boutons of 126/136 calyx PNs; MB-C1 too. Effect on release unmeasured. <i class="d c1"></i>shared <i class="d c2"></i>drive-scaled → odor part</span></div>
+  <div><b>3</b><span><strong>The bouton → claw synapse</strong> — nAChR calcium entry; rectifying and saturating. Sets the gain (0.85 after noise correction) and the convex claw-vs-bouton relation. No pair structure of its own.</span></div>
+  <div><b>4</b><span><strong>Postsynaptic inhibition on claws and dendritic shaft</strong> — APL GABA-A (fast) and GABA-B (slow), 9.5 % of dendritic input; MB-C1 4.6 %; KC-intrinsic mAChR-A. <i class="d c1"></i>fast → the claw excess of the decorrelation <i class="d c2"></i>APL holds down the odor part at the soma, not its drift (labmate data) <i class="d c3"></i>regionalized → the ester–aldehyde block. In the labmate somata, about half of the claw → soma separation needs APL.</span></div>
+  <div><b>5</b><span><strong>Dendritic integration</strong> — the KC's other claws depolarize this one, and spikes back-propagate; averaged over the ~14 KCs on a bouton this adds one step of PN→KC convergence to the claw signal, from the first frame. <i class="d c3"></i>pair part</span></div>
+  <div><b>6</b><span><strong>KC → KC synapses in the calyx</strong> — cholinergic, 12 % of dendritic input; a second route for the same mixing. <i class="d c3"></i>pair part</span></div>
+  <div><b>7</b><span><strong>Which boutons each KC samples</strong> — the convergence statistics (any wiring model) make the pair part; the connectome's specific bias shows up only in the odor part and in one block. <i class="d c3"></i>pair part <i class="d c2"></i>bias → odor part</span></div>
+</div>
+</figure>
+
+<div class="tbl">
+<table>
+<thead><tr><th>Component</th><th>What it is, operationally</th><th>Most likely mechanism</th><th>What would separate the candidates</th></tr></thead>
+<tbody>
+<tr><td><span class="dot" style="background:var(--c1)"></span>Shared decorrelation</td><td>Between-odor correlation falls for every pair at once over ~1 s; reliability does not. Same in boutons; claws lose ~2× more.</td><td>Upstream (ORN adaptation, antennal-lobe LN inhibition) for the part common to both regions; fast APL/MB-C1 GABA-A on claws for the claw excess.</td><td>APL silencing: the claw excess should vanish, the common part stay (not testable with the labmate window-averaged somata). Bouton time course already shows the common part (done).</td></tr>
+<tr><td><span class="dot" style="background:var(--c2)"></span>Odor part</td><td>A per-odor term aᵢ that moves all of an odor's pairs; drifts over 1–3 s with odor-specific timing; carries the hemibrain bias during the sustained odor.</td><td>For the drift, a slow per-odor gain: KC-intrinsic mAChR-A, synaptic depression at the bouton, ORN/PN adaptation or slow LN GABA-B upstream. Not APL: in the labmate data the APL effect follows the odor part (r +0.82) but not its drift (r +0.13); APL holds the odor part down at the soma.</td><td>Each odor's aᵢ vs its total bouton drive (needs the amplitude data behind 7B). With APL silenced, the labmate somata show the odor part released and no link to the drift (exploratory); claw imaging under silencing would place it. Timescale: APL's measured lag is a few hundred ms, so 1–3 s needs a slow receptor or adaptation.</td></tr>
+<tr><td><span class="dot" style="background:var(--c3)"></span>Pair part</td><td>What two odors share beyond their row terms; present at 0.5 s, stable (r 0.92–0.96 across windows), matched by the somata, predicted by either wiring model.</td><td>One step of PN→KC integration leaking into claw calcium: dendritic depolarization and back-propagation (5), KC→KC synapses (6), set by which boutons the ~14 KCs on a bouton also sample (7). The ester–aldehyde block may add regionalized inhibition (4).</td><td>A claw-input model: hemibrain sampling matrix applied as W·Wᵀ onto bouton coordinates, no threshold, should beat the KC-output models. Single-KC claw imaging measures the cell-wide share directly. KC-output block removes back-propagation but not dendritic integration.</td></tr>
+</tbody>
+</table>
+</div>
+<p class="note">The loci are drawn for one microglomerulus; APL, MB-C1 and the KC→KC synapses act across the whole calyx. A caveat that cuts the other way: boutons and claws are sub-micron apart, so optical crosstalk makes claws look more like boutons, which works against every claw-specific component here, not for it.</p>
+</main>
+</body></html>

@@ -1,0 +1,196 @@
+/home/claude/analysis/apl_analysis.py:105: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  tidy['vcf_hyp_D3'] = tidy[vcf_seed_cols].mean(axis=1)
+16 odors: ['2h', 'IaA', 'pa', '2-but', 'eb', 'ep', '6al', 't2h', '1-8ol', '1-5ol', '1-6ol', 'ms', 'paa', '-aPine', 'euc', 'B-myr']
+
+=== A. TNT (APL output blocked) vs TNT3c (control), 120 pairs ===
+mean corr distance: control 0.840 (corr 0.160), TNT 0.661 (corr 0.339)
+median: control 0.884, TNT 0.694
+min/max control 0.336/1.001; TNT 0.185/0.890
+Spearman(control, TNT) = 0.869 (p=8.7e-38); Pearson r = 0.921
+Pearson of Fisher-z correlations: 0.939
+OLS control = 0.269 + 0.863*TNT; R^2 = 0.848; resid SD = 0.052
+Fisher-z OLS z_ctrl = -0.114 + 0.769*z_TNT; R^2 = 0.882
+
+APL effect (control - TNT) per pair: mean 0.178, SD 0.056, min 0.074, max 0.334
+
+Pairs where APL decorrelates LEAST relative to trend (resid most negative):
+                ctrl    tnt  delta  resid
+1-5ol  1-6ol   0.357  0.244  0.113 -0.122
+1-8ol  1-5ol   0.606  0.532  0.074 -0.122
+6al    t2h     0.411  0.295  0.116 -0.112
+-aPine euc     0.452  0.333  0.118 -0.105
+1-8ol  1-6ol   0.536  0.429  0.107 -0.104
+eb     ep      0.336  0.185  0.152 -0.092
+-aPine B-myr   0.575  0.447  0.128 -0.080
+1-5ol  -aPine  0.953  0.869  0.084 -0.066
+       euc     0.921  0.832  0.090 -0.065
+2-but  -aPine  0.913  0.820  0.093 -0.064
+       euc     0.863  0.761  0.103 -0.062
+euc    B-myr   0.638  0.498  0.140 -0.061
+
+Pairs where APL decorrelates MOST relative to trend (resid most positive):
+              ctrl    tnt  delta  resid
+pa    2-but  0.936  0.683  0.253  0.078
+eb    1-8ol  0.884  0.621  0.263  0.079
+IaA   2-but  0.897  0.634  0.263  0.081
+      1-6ol  0.872  0.599  0.273  0.086
+2h    2-but  0.867  0.593  0.274  0.086
+IaA   ep     0.839  0.556  0.283  0.090
+      eb     0.785  0.489  0.296  0.094
+pa    ep     0.889  0.605  0.284  0.097
+2h    ep     0.925  0.646  0.279  0.098
+2-but eb     0.773  0.463  0.310  0.104
+pa    eb     0.870  0.572  0.298  0.108
+2h    eb     0.939  0.606  0.334  0.148
+
+Per-odor means (sorted by mean residual):
+        mean_ctrl  mean_tnt  mean_delta  mean_resid
+-aPine      0.881     0.764       0.117      -0.047
+euc         0.857     0.736       0.121      -0.047
+t2h         0.823     0.670       0.153      -0.025
+1-8ol       0.826     0.667       0.159      -0.019
+6al         0.802     0.634       0.168      -0.014
+1-5ol       0.797     0.628       0.169      -0.014
+B-myr       0.844     0.675       0.169      -0.007
+1-6ol       0.761     0.574       0.187      -0.003
+2-but       0.855     0.669       0.186       0.009
+ms          0.911     0.730       0.181       0.012
+paa         0.871     0.682       0.188       0.013
+ep          0.844     0.650       0.194       0.014
+pa          0.845     0.646       0.199       0.018
+2h          0.802     0.581       0.221       0.032
+IaA         0.850     0.632       0.218       0.036
+eb          0.866     0.640       0.225       0.044
+
+Spearman(delta, control dist) = -0.152; Spearman(delta, TNT dist) = -0.526
+ARI(control vs TNT clustering, k=4) = 0.48
+ARI(control vs TNT clustering, k=5) = 1.00
+ARI(control vs TNT clustering, k=6) = 0.73
+ARI(control vs TNT clustering, k=7) = 1.00
+k=5 control clusters: {'2h': np.int32(3), 'IaA': np.int32(3), 'pa': np.int32(3), '2-but': np.int32(2), 'eb': np.int32(2), 'ep': np.int32(2), '6al': np.int32(4), 't2h': np.int32(4), '1-8ol': np.int32(4), '1-5ol': np.int32(4), '1-6ol': np.int32(4), 'ms': np.int32(5), 'paa': np.int32(4), '-aPine': np.int32(1), 'euc': np.int32(1), 'B-myr': np.int32(1)}
+k=5 TNT clusters:     {'2h': np.int32(3), 'IaA': np.int32(3), 'pa': np.int32(3), '2-but': np.int32(4), 'eb': np.int32(4), 'ep': np.int32(4), '6al': np.int32(2), 't2h': np.int32(2), '1-8ol': np.int32(2), '1-5ol': np.int32(2), '1-6ol': np.int32(2), 'ms': np.int32(5), 'paa': np.int32(2), '-aPine': np.int32(1), 'euc': np.int32(1), 'B-myr': np.int32(1)}
+k=6 control clusters: {'2h': np.int32(3), 'IaA': np.int32(3), 'pa': np.int32(3), '2-but': np.int32(2), 'eb': np.int32(2), 'ep': np.int32(2), '6al': np.int32(4), 't2h': np.int32(4), '1-8ol': np.int32(4), '1-5ol': np.int32(4), '1-6ol': np.int32(4), 'ms': np.int32(6), 'paa': np.int32(5), '-aPine': np.int32(1), 'euc': np.int32(1), 'B-myr': np.int32(1)}
+k=6 TNT clusters:     {'2h': np.int32(4), 'IaA': np.int32(4), 'pa': np.int32(4), '2-but': np.int32(5), 'eb': np.int32(5), 'ep': np.int32(5), '6al': np.int32(3), 't2h': np.int32(3), '1-8ol': np.int32(2), '1-5ol': np.int32(2), '1-6ol': np.int32(2), 'ms': np.int32(6), 'paa': np.int32(3), '-aPine': np.int32(1), 'euc': np.int32(1), 'B-myr': np.int32(1)}
+
+=== B. Comparison with megamat17 spaces (12 shared odors, 66 pairs) ===
+shared odors: ['2h', 'IaA', 'pa', '2-but', 'eb', 'ep', '6al', 't2h', '1-8ol', '1-5ol', '1-6ol', 'ms'] 12
+(66, 14)
+
+Sanity: control (TNT3c) vs WT KC soma megamat (kc_remy_combo): Spearman 0.847, Pearson 0.925
+        TNT vs WT KC soma: Spearman 0.867, Pearson 0.908
+        control vs kc_soma_new: Spearman 0.860
+mean dist on 66 pairs: orn 0.584, pn_bout 0.563, kc_claw 0.669, kc_soma(WT) 0.885, ctrl 0.809, tnt 0.607
+
+Spearman rho of each KC dataset with upstream stages / models (66 pairs):
+                      kc_tnt  kc_ctrl  kc_soma  kc_claw  pn_bout    orn
+orn                    0.851    0.779    0.876    0.880    0.881  1.000
+pn_dend                0.808    0.800    0.828    0.813    0.844  0.911
+pn_bout                0.793    0.727    0.855    0.871    1.000  0.881
+kc_claw                0.845    0.678    0.819    1.000    0.871  0.880
+kc_soma                0.867    0.847    1.000    0.819    0.855  0.876
+model_uniform          0.839    0.777    0.849    0.860    0.856  0.990
+model_hemibrain_wd20   0.827    0.761    0.841    0.814    0.764  0.849
+chem                   0.704    0.617    0.699    0.766    0.707  0.714
+vcf_raw                  NaN      NaN      NaN      NaN      NaN    NaN
+vcf_hyp                0.420    0.554    0.446    0.303    0.250  0.276
+
+Pearson r version:
+                      kc_tnt  kc_ctrl  kc_soma  kc_claw  pn_bout    orn
+orn                    0.795    0.729    0.781    0.860    0.889  1.000
+pn_dend                0.795    0.763    0.771    0.815    0.861  0.904
+pn_bout                0.798    0.734    0.820    0.868    1.000  0.889
+kc_claw                0.883    0.761    0.847    1.000    0.868  0.860
+kc_soma                0.908    0.925    1.000    0.847    0.820  0.781
+model_uniform          0.869    0.815    0.845    0.884    0.887  0.972
+model_hemibrain_wd20   0.870    0.795    0.843    0.867    0.788  0.839
+chem                   0.674    0.711    0.687    0.639    0.638  0.610
+vcf_raw                  NaN      NaN      NaN      NaN      NaN    NaN
+vcf_hyp                0.429    0.538    0.507    0.306    0.329  0.261
+rho(TNT,orn) - rho(ctrl,orn): Spearman +0.071 [-0.005,+0.163]; Pearson +0.068 [+0.027,+0.114]
+rho(TNT,kc_claw) - rho(ctrl,kc_claw): Spearman +0.165 [+0.072,+0.270]; Pearson +0.124 [+0.072,+0.193]
+rho(TNT,pn_bout) - rho(ctrl,pn_bout): Spearman +0.065 [-0.016,+0.158]; Pearson +0.065 [+0.023,+0.113]
+rho(TNT,chem) - rho(ctrl,chem): Spearman +0.086 [-0.007,+0.190]; Pearson -0.031 [-0.099,+0.051]
+rho(TNT,vcf_hyp) - rho(ctrl,vcf_hyp): Spearman -0.132 [-0.241,-0.034]; Pearson -0.110 [-0.166,-0.061]
+rho(TNT,vcf_raw) - rho(ctrl,vcf_raw): Spearman +nan [+nan,+nan]; Pearson +nan [+nan,+nan]
+rho(TNT,model_hemibrain_wd20) - rho(ctrl,model_hemibrain_wd20): Spearman +0.065 [-0.021,+0.161]; Pearson +0.075 [+0.027,+0.130]
+
+Residual structure (66 pairs):
+SD of ORN->KC residual: WT 0.117, ctrl 0.103, TNT 0.086
+Spearman(remap_ctrl, remap_tnt) = 0.815 (do the same pairs deviate from ORN with and without APL?)
+Spearman(remap_wt, remap_tnt) = 0.721; Spearman(remap_wt, remap_ctrl) = 0.825
+Spearman(APL pair-specific effect, WT remap) = 0.385 (p=0.0014)
+Spearman(APL raw effect ctrl-TNT, WT KC-ORN raw) = 0.421
+Spearman(APL pair-specific effect, VCF hyp) = 0.284 (p=0.021); vs vcf_raw nan; vs chem -0.029
+Spearman(ORN->KC residual, VCF hyp): WT 0.429, ctrl 0.442, TNT 0.361
+Pearson(ORN->KC residual, VCF hyp): WT 0.486, ctrl 0.507, TNT 0.365
+
+Rank-order agreement with ORN: ctrl 0.779, TNT 0.851, WT KC 0.876, claws 0.880, boutons 0.881, uniform model 0.990, hemibrain wd20 0.849
+
+Top pairs by WT remapping (KC more similar than ORN predicts; most negative resid):
+               orn  kc_soma  kc_ctrl  kc_tnt  remap_wt  remap_tnt  apl_eff  vcf_hyp
+1-5ol 1-6ol  0.223    0.277    0.357   0.244    -0.378     -0.186   -0.094    0.643
+IaA   pa     0.220    0.419    0.434   0.252    -0.233     -0.176   -0.025    0.976
+2-but ep     0.269    0.454    0.563   0.334    -0.230     -0.118    0.024    0.999
+eb    ep     0.107    0.393    0.336   0.185    -0.188     -0.188   -0.057    0.595
+1-8ol ms     1.048    0.993    0.853   0.670    -0.188     -0.165   -0.018    0.488
+6al   1-5ol  0.363    0.579    0.695   0.538    -0.165      0.040   -0.047    0.411
+pa    ms     1.084    1.041    0.953   0.738    -0.163     -0.115    0.014    0.960
+6al   t2h    0.204    0.506    0.411   0.295    -0.137     -0.125   -0.090    0.523
+      1-6ol  0.427    0.658    0.665   0.507    -0.127     -0.023   -0.045    0.660
+IaA   ms     0.940    0.990    0.915   0.710    -0.122     -0.073    0.005    1.187
+
+Top pairs by WT remapping (KC less similar than ORN predicts; most positive resid):
+             orn  kc_soma  kc_ctrl  kc_tnt  remap_wt  remap_tnt  apl_eff  vcf_hyp
+ep  1-5ol  0.394    0.878    0.826   0.634     0.114      0.121   -0.010    1.126
+eb  6al    0.624    1.042    0.958   0.740     0.132      0.113    0.018    1.045
+IaA 1-5ol  0.520    0.981    0.914   0.667     0.137      0.092    0.046    1.064
+pa  1-5ol  0.450    0.952    0.848   0.631     0.153      0.090    0.015    1.094
+ep  1-6ol  0.459    0.959    0.809   0.598     0.153      0.053    0.009    1.044
+2h  ep     0.491    0.982    0.925   0.646     0.155      0.085    0.077    1.188
+IaA 1-6ol  0.451    0.956    0.872   0.599     0.156      0.057    0.070    1.022
+2h  1-5ol  0.421    0.940    0.802   0.574     0.158      0.047    0.026    0.989
+ep  6al    0.644    1.088    0.934   0.757     0.164      0.120   -0.023    1.165
+eb  1-6ol  0.397    0.948    0.818   0.552     0.182      0.037    0.063    0.838
+
+=== C. 16-odor ORN consensus matrix vs TNT / control (120 pairs) ===
+ORN consensus concentrations used: {'2h': -3.0, 'IaA': -3.0, 'pa': -3.0, '2-but': -3.0, 'eb': -3.0, 'ep': -3.0, '6al': -3.0, 't2h': -3.0, '1-8ol': -3.0, '1-5ol': -3.0, '1-6ol': -3.0, 'ms': -3.0, 'PAA': -4.0, '-aPine': -1.5, 'euc': -1.75, 'B-myr': -2.0}
+glomeruli retained: 40 NaNs: 0
+consensus-ORN (12 odors) vs tidy orn_remy: Spearman 0.992, Pearson 0.995
+120 pairs: Spearman(ORN16, control) = 0.655; Spearman(ORN16, TNT) = 0.748
+120 pairs: Pearson(ORN16, control) = 0.689; Pearson(ORN16, TNT) = 0.788
+rho(ORN16,TNT) - rho(ORN16,ctrl): +0.092 90% CI [+0.029, +0.162]
+120 pairs: Spearman(ORN->ctrl resid, ORN->TNT resid) = 0.816; Spearman(APL pair-specific effect, ORN->ctrl resid) = 0.532; Spearman(APL pair-specific effect, ORN->TNT resid) = 0.018
+
+Pairs with largest convergence in KCs (ctrl) relative to ORN16 (most negative residual):
+              orn16   ctrl    tnt  resid_ctrl_vs_orn  resid_tnt_vs_orn  apl_eff
+1-5ol  1-6ol  0.160  0.357  0.244             -0.305            -0.200   -0.122
+eb     ep     0.047  0.336  0.185             -0.287            -0.212   -0.092
+-aPine B-myr  0.686  0.575  0.447             -0.270            -0.221   -0.080
+       euc    0.313  0.452  0.333             -0.264            -0.176   -0.105
+6al    t2h    0.122  0.411  0.295             -0.238            -0.133   -0.112
+IaA    pa     0.146  0.434  0.252             -0.223            -0.186   -0.053
+1-8ol  1-6ol  0.323  0.536  0.429             -0.183            -0.085   -0.104
+2h     pa     0.151  0.507  0.339             -0.152            -0.101   -0.055
+euc    B-myr  0.501  0.638  0.498             -0.143            -0.092   -0.061
+1-5ol  paa    0.848  0.769  0.588             -0.133            -0.148   -0.008
+1-6ol  paa    0.911  0.791  0.575             -0.132            -0.189    0.026
+2-but  ep     0.251  0.563  0.334             -0.130            -0.149    0.006
+
+Pairs with largest divergence in KCs (ctrl) relative to ORN16:
+           orn16   ctrl    tnt  resid_ctrl_vs_orn  resid_tnt_vs_orn  apl_eff
+pa  1-5ol  0.373  0.848  0.631              0.111             0.096    0.034
+eb  1-8ol  0.478  0.884  0.621              0.112             0.042    0.079
+ep  t2h    0.728  0.977  0.845              0.118             0.160   -0.021
+eb  t2h    0.752  0.987  0.822              0.119             0.126    0.009
+ep  6al    0.558  0.934  0.757              0.133             0.143    0.012
+IaA 1-6ol  0.369  0.872  0.599              0.137             0.066    0.086
+eb  1-5ol  0.334  0.871  0.640              0.149             0.122    0.050
+    6al    0.567  0.958  0.740              0.154             0.123    0.050
+IaA 1-5ol  0.432  0.914  0.667              0.157             0.108    0.069
+2h  ep     0.443  0.925  0.646              0.165             0.082    0.098
+paa B-myr  0.418  0.925  0.747              0.174             0.193    0.012
+2h  eb     0.376  0.939  0.606              0.202             0.070    0.148
+ARI k=4: ORN16 vs ctrl 0.41; ORN16 vs TNT 0.35; ctrl vs TNT 0.48
+ARI k=5: ORN16 vs ctrl 0.58; ORN16 vs TNT 0.58; ctrl vs TNT 1.00
+ARI k=6: ORN16 vs ctrl 0.90; ORN16 vs TNT 0.61; ctrl vs TNT 0.73
+ORN16 clusters k=6: {'2h': np.int32(2), 'IaA': np.int32(2), 'pa': np.int32(2), '2-but': np.int32(3), 'eb': np.int32(3), 'ep': np.int32(3), '6al': np.int32(1), 't2h': np.int32(1), '1-8ol': np.int32(1), '1-5ol': np.int32(1), '1-6ol': np.int32(1), 'ms': np.int32(6), 'paa': np.int32(5), '-aPine': np.int32(4), 'euc': np.int32(4), 'B-myr': np.int32(5)}
