@@ -374,10 +374,11 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   "split-half ceiling" or "iso R2" without that explanation; "the agreement between two halves
   of the recordings, the most any model could reach" is the register to use.
 
-- **Odor names.** Odors are always written by their panel abbreviations (2h, IaA, pa, 2-but,
+- **Odor names.** Odors are always written by their abbreviations only (2h, IaA, pa, 2-but,
   eb, ep, 6al, t2h, 1-8ol, 1-5ol, 1-6ol, ms, paa, -aPine, euc, B-myr; ASCII hyphen in -aPine),
-  in prose, tables and figures alike; the full names appear once, in the data section's key,
-  and nowhere else.
+  in prose, tables and figures alike, with no full names anywhere, not even a key. If an odor
+  has no abbreviation on hand, look it up in olfdb's odors table (http://hal:8080, see its
+  design.md for the API) rather than writing the full name.
 - **Genotype labels.** In every figure title, axis label, legend entry, table header and
   row label the two genotypes are "control flies" and "APL output blocked (TNT)", never "APL
   blocked" or "TNT" alone (prose may say "with APL output blocked" once the label has been
