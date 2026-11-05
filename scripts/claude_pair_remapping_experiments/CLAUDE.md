@@ -268,11 +268,14 @@ files and the Completed list in experiment_priorities.md.
 ## Writing results (notes, chat, reports, replies to me)
 
 Every statistic quoted in prose must carry its context: the baseline it is compared with,
-the direction of the change and whether that direction is an improvement, and the value in
-the KC data (the target) or the noise ceiling. "Per-odor rate agreement 0.68 to 0.57" is
-ambiguous (range or change? which is the baseline? better or worse? how far from the data?);
-write "per-odor rate agreement fell from 0.68 in the base model to 0.57 with the per-claw
-threshold (worse; the model-to-data ceiling is ~0.95)".
+described as a model configuration (what the model had and did not have) together with its
+number, never the number alone; the configuration the new number belongs to, likewise
+described; the direction of the change and whether that direction is an improvement; and
+the value in the KC data (the target) or the noise ceiling. "Per-odor rate agreement 0.68
+to 0.57" is ambiguous (range or change? which configuration is the baseline? better or
+worse? how far from the data?); write "per-odor rate agreement fell from 0.68 for the bouton
+model with connectome APL weights and no per-claw threshold to 0.57 once each claw's input
+was thresholded at 70 Hz (worse; the model-to-data ceiling is ~0.95)".
 
 In reports, prefer tables or plots that show the baseline, each variant and the KC data side
 by side, and keep most numbers out of the text: the text should say what moved, which way,
