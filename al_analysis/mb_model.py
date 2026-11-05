@@ -12031,6 +12031,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     dist_weight: Optional[str] = None, _wPNKC: Optional[pd.DataFrame] = None,
     _wAPLKC: Optional[pd.Series] = None, _wKCAPL: Optional[pd.Series] = None,
     _wAPLPN: Optional[pd.Series] = None, _wPNAPL: Optional[pd.Series] = None,
+    _wKCKC: Optional[pd.DataFrame] = None,
     # TODO want to keep this arg? make "private"? or optional, and err if set (either
     # True/False) if not using _w* weights abovee?
     tune_apl_weights: Optional[bool] = None,
@@ -12064,6 +12065,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     n_claws_active_to_spike: Optional[int] = None,
     pn_inhsc: Optional[float] = None, pn_inhadd: Optional[float] = None,
     ln_inhsc: Optional[float] = None, ln_inhadd: Optional[float] = None,
+    kc_kc_inh: Optional[float] = None, kc_kc_tau: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12294,12 +12296,32 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             normalization. See `sim_LN_layer` and `sim_PN_layer` in olfsysm.cpp. Must
             not be negative.
 
+        kc_kc_inh: if not None, enables APL-independent KC-KC lateral inhibition
+            (olfsysm `mp.kc.use_kc_kc_inh`), with weights `rv.kc.wKCKC` set to
+            `kc_kc_inh` times normalized hemibrain KC->KC synapse counts (see
+            `connectome_KCKC_weights`; normalized so the mean over KCs of total
+            incoming weight is 1), or times `_wKCKC` if passed. Each KC's spikes are
+            low-pass filtered (time constant `kc_kc_tau`) into an activity in Hz, and
+            `rv.kc.wKCKC @ activity` is subtracted from each KC's dVm/dt (at the soma),
+            in the same units as PN>KC drive. Active during threshold / APL tuning
+            too. 0.0 enables the code path with zero weights (same outputs as None).
+            Must not be negative.
+
+        kc_kc_tau: time constant (seconds) of the filtered KC activity driving KC-KC
+            inhibition (`mp.kc.kc_kc_tau`, olfsysm default of 0.05 if None). Requires
+            `kc_kc_inh`.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
             `use_connectome_APL_weights=True`). APL weights are NOT normalized by
             olfsysm, so should already be (e.g. from `rv.kc.wAPLKC_unscaled` of a call
             with `return_olfsysm_vars=True`).
+
+        _wKCKC: (internal use only, e.g. tests) KC x KC weights (index = post KC, columns
+            = pre KC, both KC IDs matching the `kc_id` level of the wPNKC index, in
+            any order), used instead of `connectome_KCKC_weights` output. Used as-is
+            (not normalized), then multiplied by `kc_kc_inh` (which must be passed).
 
         tune_apl_weights: whether APL weights are tuned. defaults to True if
             `scale_pre_tuning=True`, and to False if hardcoded `_w*` weights passed.
@@ -12404,6 +12426,11 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         assert tune_apl_weights != False
         if tune_apl_weights is None:
             tune_apl_weights = True
+
+    # TODO implement (KC-KC lateral inhibition, olfsysm p.kc.use_kc_kc_inh /
+    # rv.kc.wKCKC)
+    if kc_kc_inh is not None or kc_kc_tau is not None or _wKCKC is not None:
+        raise NotImplementedError('kc_kc_inh / kc_kc_tau / _wKCKC not yet implemented')
 
     if pn2kc_connections not in pn2kc_connections_options:
         raise ValueError(f'{pn2kc_connections=} not in {pn2kc_connections_options}')
