@@ -139,10 +139,17 @@ patterns in the APL), both of which I believe are currently loaded in
 al_analysis/scripts/model_yang_mixtures.py, though the data is probably mostly under
 al_analysis/al_analysis/data.
 
-Followup on questions you had in your intial markdown report:
 I asked Remy for her current analysis (on the same paper which one version of was
 presented in chapter 2 of my thesis), and she sent me all the contents of from_remy/.
+On first run, make a markdown file in the shared NAS folder (as notes/remy-summary.md)
+that summarizes what Remy sent me, in particular as relevant to these computational
+experiments.
 
+Make a similar notes/yang-summary.md file to describe anything Yang sent me
+(also only on first run), or if I add / tell you about new stuff from either of them.
+Some of her slides summarizing her data are in from_yang/
+
+Followup on questions you had in your intial markdown report:
 When I asked Yang about whether her APL16 odors were all at the same concentrations as
 Remy's panel 1 (megamat) and 2 (validation2) panels, she said:
 "Actually, no. the 4 overlapping w/ valid 2 are not. the conc for PAA is -3 instead of -4, other 3 are all at -2 instead of things like -1.75 etc in valid2."
