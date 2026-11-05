@@ -238,9 +238,9 @@ def make_figure(res_dir: Path, data: dict) -> None:
     ax.legend(fontsize=7)
     panels = [
         (f'{v}__block_fruity_small_iso', 'fruity x small-ester block (on vs off)', 0.055, (0.035, 0.075)),
-        (f'{v}__on_spearman', 'Spearman with control (APL on)', None, None),
-        (f'{v}__off_spearman', 'Spearman with TNT (APL off)', None, None),
-        ('rate_ratio_off_over_on', 'APL-off / APL-on response rate', 2.2, None),
+        (f'{v}__on_spearman', 'rank agreement with the control matrix (APL on)', None, None),
+        (f'{v}__off_spearman', 'rank agreement with the APL-blocked matrix (APL off)', None, None),
+        ('rate_ratio_off_over_on', 'response rate, APL off relative to on', 2.2, None),
         ('kc_kc_inh', 'fitted KC-KC scale (kc_kc_inh)', None, None),
     ]
     for ax, (col, title, target, band) in zip(axes.flat[1:], panels):
@@ -255,7 +255,7 @@ def make_figure(res_dir: Path, data: dict) -> None:
             ax.axhspan(*band, color='k', alpha=0.08)
         ax.set(xlabel='breadth exponent k', title=title)
         ax.legend(fontsize=7)
-    fig.suptitle('E10: joint fit (bouton base x breadth-weighted APL x KC-KC inhibition) to control and TNT', fontsize=11)
+    fig.suptitle('Joint fit of the bouton model (breadth-weighted APL, KC-KC inhibition, optional per-claw threshold) to the control and APL-blocked matrices', fontsize=11)
     fig.tight_layout()
     fig.savefig(res_dir / 'E10_joint_fit.png', dpi=130)
     plt.close(fig)
@@ -268,12 +268,12 @@ def make_figure(res_dir: Path, data: dict) -> None:
         fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
         on, off = pairs['on'], pairs['acute_off']
         H.plot_model_vs_data(axes[0], on, data['raw']['TNT3c'], label=f'{best.tag} APL on')
-        axes[0].set_title(f'APL on vs control (Spearman {best[v + "__on_spearman"]:.2f})')
+        axes[0].set_title(f'APL on vs control (rank agreement {best[v + "__on_spearman"]:.2f})')
         H.plot_model_vs_data(axes[1], off, data['raw']['TNT'], label=f'{best.tag} APL off')
-        axes[1].set_title(f'APL off vs TNT (Spearman {best[v + "__off_spearman"]:.2f})')
+        axes[1].set_title(f'APL off vs APL-blocked data (rank agreement {best[v + "__off_spearman"]:.2f})')
         H.plot_on_vs_off(axes[2], on, off, label=best.tag)
         axes[2].set_title(f'on vs off (block {best[v + "__block_fruity_small_iso"]:+.3f}, iso R2 {best[v + "__iso_r2"]:.2f})')
-        fig.suptitle(f'E10 best fit: {best.tag} (loss {best.loss:.2f})', fontsize=11)
+        fig.suptitle(f'Best joint fit: {best.tag} (loss {best.loss:.2f})', fontsize=11)
         fig.tight_layout()
         fig.savefig(res_dir / 'E10_best_fit.png', dpi=130)
         plt.close(fig)
