@@ -423,7 +423,10 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   `|---|` separator is a header row and a cell ending in `{span=N}` spans N columns, centered
   (e.g. `| | ORNs | KCs {span=2} |` over `| | | control flies | APL output blocked (TNT) |`).
   The data columns are labelled "ORNs" and "KCs" (parallel and short), never "ORN input", in
-  tables and figure panels alike; prose may still say "the ORN input".
+  tables and figure panels alike; prose may still say "the ORN input". A table that lists
+  statistics down its first column with numbers to compare across the other columns has
+  "statistic" as its first header cell: `md_to_artifact.py` then right-aligns the first column
+  (next to the numbers) and centers the table on the page.
 - **Parameter-list headers.** In tables meant for comparing numbers across columns (the
   best-models table and the like), a header that names a model by its parameters puts one
   parameter per line, with `<br>` inside the cell (`md_to_artifact.py` renders it as a line

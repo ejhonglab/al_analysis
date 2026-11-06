@@ -8,7 +8,10 @@ next item), pipe tables (every row before the `|---|` separator is a header row,
 cell ending in `{span=N}` spans N columns centered; a column whose body cells are mostly
 numbers is right-aligned as a whole, header included, and kept narrow so values sit close
 together; `<br>` inside a cell is a line break, used to put each parameter of a header that
-lists parameters on its own line), figures written as
+lists parameters on its own line; a table whose first header cell is "statistic" and whose
+other columns are all numeric is a table of statistics compared across columns: its first
+column is right-aligned, next to the numbers, and the table is centered on the page, up to
+the full window width, scrolling sideways only if wider), figures written as
 `![caption](path.png)` on their own line (embedded as data URIs, so the page is one file;
 clicking one opens it full screen, closed by a click, Esc or the x),
 `---` rules, collapsible blocks (a line `??? Title` opens one, a line `???` closes it; rendered
@@ -54,6 +57,11 @@ CSS = """
   th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; padding-left: 14px; }
   th.span { text-align: center; border-bottom: 1px solid var(--line); }
   tr.subhead th { border-top: 0; }
+  div.statwrap { margin: 12px calc(50% - 50vw + 8px) 16px; overflow-x: auto; }
+  div.statwrap table.stats { width: auto; margin: 0 auto; }
+  table.stats th.num, table.stats td.num { width: auto; }
+  table.stats td:first-child, table.stats th:first-child { text-align: right; }
+  table.stats td:first-child { min-width: 12em; }
   ol, ul { padding-left: 24px; } li { margin: 5px 0; }
   code { font-size: 0.9em; background: var(--soft); padding: 1px 4px; border-radius: 4px; }
   figure { margin: 18px 0; }
@@ -289,7 +297,9 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
             for c in range(ncol):
                 vals = [r[c] for r in body_rows if c < len(r) and r[c] != '']
                 col_num.append(bool(vals) and sum(bool(numeric_like.match(v)) for v in vals) >= 0.5 * len(vals))
-            t = ['<table>']
+            stats_table = ncol > 1 and all(col_num[1:]) and any(
+                r and _span_of(r[0])[0].strip().lower() == 'statistic' for r in head_rows)
+            t = ['<div class="statwrap"><table class="stats">' if stats_table else '<table>']
             for hk, hr in enumerate(head_rows):
                 cells_html, c = [], 0
                 for cell in hr:
@@ -303,7 +313,7 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
             for r in body_rows:
                 t.append('<tr>' + ''.join(
                     f'<td class="{"num" if c < ncol and col_num[c] else "txt"}">{cell_html(cell)}</td>' for c, cell in enumerate(r)) + '</tr>')
-            t.append('</table>')
+            t.append('</table></div>' if stats_table else '</table>')
             out.append('\n'.join(t)); continue
         m = _ITEM_RE.match(s)
         if m:
