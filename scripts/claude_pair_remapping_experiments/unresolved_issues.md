@@ -64,6 +64,26 @@ directory's notes/ and are linked from here.
 - **Affects.** The E8 and E19 figures (results/ and their artifacts).
 - **Remains.** Correct the literal and redraw when those figures are next regenerated.
 
+### Hand-rounded numbers in the summary report differ from their sources (found 2026-11-06)
+
+- **What.** Building the summary from the template (reports/summary_template.md, fill_report.py
+  --compare) found the typed values that differ from what their sources give. Pattern: values
+  first printed to 3 decimals and then rounded again by hand to 2 (0.8245 -> 0.825 -> 0.83).
+  KC data: the wild-type structure target 0.83 (is 0.82, three tables); the smallest pair distance
+  with APL output blocked 0.19 (is 0.18). Models: the KC-spike-driven no-gain fit's ρ on
+  odor-odor distances 0.57 (0.56); the breadth-2 joint fit's APL-on block excess −0.16 (−0.15);
+  breadth 3 with KC–KC 100: response rate ρ 0.73 (0.72) and structure beyond the ORN input +0.04
+  (+0.03). The response-rate ρ ceiling was given as one value "~0.97"; it is 0.98 for control
+  flies and 0.97 for APL output blocked (TNT). Full list: the shared directory's
+  results/templated_summary_preview/comparison.md.
+- **Related.** `E10_joint_fit.py` hard-codes the wild-type structure target as 0.83
+  (`WT_DEV_TARGET`; data 0.8245); every fit's wt term is off by about 0.007, uniformly, so fit
+  rankings are unaffected. The background table labels the 0.98 / 0.97 "measurement ceiling (ρ
+  between halves of the recordings)"; the ρ between halves is 0.91 / 0.90, and 0.98 / 0.97 is its
+  Spearman-Brown-corrected square root (the expected ρ of a noise-free model).
+- **Remains.** Switch the published summary to the template (Tom's OK); read WT_DEV_TARGET and
+  VCF_OFF_TARGET from the registry; fix the ceiling label.
+
 ## Resolved
 
 ### The archive's params.csv did not record what drives APL, the divisive flags or the fit bounds (found 2026-11-06, atlas)
