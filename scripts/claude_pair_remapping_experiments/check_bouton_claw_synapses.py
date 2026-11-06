@@ -171,6 +171,21 @@ MODEL_VARIANTS = [
 ]
 
 
+def _normalized_synapse_wPNKC(orn, mb: str):
+    """The bouton base's wiring with claw_weight='synapses' (and multibouton_claws=mb), from a
+    fixed-parameter run at E3's tuned values, normalized to mean 1 over the nonzero weights."""
+    from E3_drive_dependent_gain import BOUTON
+    from E12_breadth_apl import e3_bouton_params
+    from al_analysis.mb_model import fit_mb_model
+    init = e3_bouton_params()
+    _, _, w, _ = fit_mb_model(orn, fixed_thr=init['fixed_thr'], wAPLKC=init['wAPLKC_scale'], wKCAPL=init['wKCAPL_scale'],
+        wAPLPN=init['wAPLPN_scale'], wPNAPL=init['wPNAPL_scale'], **BOUTON, multibouton_claws=mb, claw_weight='synapses',
+        make_plots=False, silent=True)
+    vals = w.to_numpy(dtype=float); nz = vals[vals > 0]
+    info = dict(n_nonzero=int(len(nz)), mean=float(nz.mean()), median=float(np.median(nz)), cv=float(nz.std() / nz.mean()), min=float(nz.min()), max=float(nz.max()))
+    return w.astype(float) / nz.mean(), info
+
+
 def run_model_comparison(variants=None) -> None:
     """Bouton base (E3 kwargs) tuned at 5 % with APL on, acute APL off, for each
     (multibouton_claws, claw_weight) variant; scored as the experiments plus the rank
@@ -186,9 +201,17 @@ def run_model_comparison(variants=None) -> None:
         'pearson': {g: H.yang_mean_rdm(g, 'pearson') for g in ('TNT3c', 'TNT')}}
     rows, outs = [], {}
     v = H.PRIMARY_MODEL_RDM
+    syn_info = {}
     for mb, cw in (variants or MODEL_VARIANTS):
         tag = f'{mb}_{cw}'
         kws = dict(BOUTON, multibouton_claws=mb, claw_weight=cw, make_plots=False, silent=True)
+        if cw == 'synapses':
+            # raw synapse counts (mean ~16 per claw) scale every claw's input ~16x, which the
+            # threshold search cannot reach (tuning failed to converge in 100 iterations):
+            # normalize the weights to mean 1 over the claws that have one, so thresholds and
+            # claw_thr keep their meaning and the manipulation is the spread of claw strength
+            W, syn_info[tag] = _normalized_synapse_wPNKC(orn, mb)
+            kws = dict(BOUTON, multibouton_claws=mb, claw_weight='presence', _wPNKC=W, make_plots=False, silent=True)
         r_on, s_on, wPNKC, params = fit_mb_model(orn, target_sparsity=TARGET, **kws)
         r_off, s_off, _, _ = fit_mb_model(orn, fixed_thr=params['fixed_thr'], wAPLKC=0.0,
             wKCAPL=params['wKCAPL_scale'], wAPLPN=0.0, wPNAPL=params['wPNAPL_scale'], **kws)
@@ -198,6 +221,7 @@ def run_model_comparison(variants=None) -> None:
             wAPLPN_scale=params.get('wAPLPN_scale'), wPNAPL_scale=params.get('wPNAPL_scale'),
             n_kcs=len(r_on), n_glomeruli=wPNKC.shape[1], rate_on=rate(r_on), rate_off=rate(r_off),
             rate_ratio_off_over_on=rate(r_off) / max(rate(r_on), 1e-9),
+            synapse_weights_normalized_to_mean_1=(cw == 'synapses'), raw_synapse_weight_mean=syn_info.get(tag, {}).get('mean'),
             wpnkc_nonzero_per_claw_mean=float((wPNKC > 0).sum(axis='columns').mean()),
             wpnkc_row_sum_cv=float(wPNKC.sum(axis='columns').std() / wPNKC.sum(axis='columns').mean()))
         row, on, off = score(meta, (r_on, s_on), (r_off, s_off), wPNKC, orn, orn_pairs, drive, data, ref)
@@ -218,6 +242,8 @@ def run_model_comparison(variants=None) -> None:
         a, b = o['r_off'].astype(bool).align(base['r_off'].astype(bool), join='inner')
         row['frac_responses_changed_off'] = float((a != b).to_numpy().mean())
     pd.DataFrame(rows).to_csv(OUT / 'model_comparison.csv', index=False)
+    if syn_info:
+        (OUT / 'synapse_weight_normalization.json').write_text(json.dumps(syn_info, indent=1) + '\n')
     cols = ['tag', 'fixed_thr', 'rate_on', 'rate_off', v + '__block_fruity_small_iso', v + '__on_spearman', v + '__off_spearman', v + '__iso_r2', v + '__on_mean_model', 'spearman_on_vs_default', 'spearman_off_vs_default', 'frac_responses_changed_on', 'frac_responders_changed_on']
     print(pd.DataFrame(rows)[cols].round(3).to_string())
 
