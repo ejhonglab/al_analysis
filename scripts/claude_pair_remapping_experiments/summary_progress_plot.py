@@ -72,6 +72,50 @@ PALETTE = [('#2a78d6', '#3987e5'), ('#eb6834', '#d95926'), ('#1baf7a', '#199e70'
     ('#eda100', '#c98500'), ('#e87ba4', '#d55181'), ('#008300', '#008300')]
 TABLE_NAMES = ('stats_variants.csv', 'fits.csv', 'wkckc_controls.csv')
 
+# parameter columns shown in the hover text of a best model, in this order (label, format)
+PARAM_LABELS = [
+    ('base', 'base'), ('config', 'configuration'), ('kind', 'rule'),
+    ('claw_thr', 'per-claw threshold (Hz)'), ('claw_thr_width', 'knee width (Hz)'),
+    ('claw_sat', 'per-claw cap'), ('form', 'cap form'), ('claw_pow', 'per-claw power'),
+    ('n_claws_active_to_spike', 'claws to spike (coincidence)'), ('coinput_factor', 'co-input factor'),
+    ('k', 'breadth exponent'), ('breadth_k', 'breadth exponent'), ('m', 'shared-input exponent'),
+    ('kc_kc_inh', 'KC-KC scale'), ('wKCKC_scale', 'KC-KC scale'), ('kc_kc_tau', 'KC-KC tau (s)'),
+    ('fixed_thr', 'somatic threshold (Hz)'), ('thr_mean', 'somatic threshold (Hz)'),
+    ('wAPLKC_scale', 'APL->KC scale'), ('wKCAPL_scale', 'KC->APL scale'),
+    ('wAPLPN_scale', 'APL->bouton scale'), ('wPNAPL_scale', 'bouton->APL scale'),
+    ('apl_factor_vs_e3', 'APL->KC x E3 base'), ('aplpn_factor_vs_e3', 'APL->bouton x E3 base'),
+    ('kc_apl_factor', 'KC-APL factor'), ('apl_unit_coupling', 'APL unit coupling'), ('coupling', 'APL unit coupling'),
+    ('bouton_ves_p', 'bouton release p'), ('bouton_tau_r', 'bouton recovery tau (s)'),
+    ('alpha', 'normalization exponent'), ('gain_min', 'gain min'), ('gain_max', 'gain max'),
+    ('gain', 'glomerulus gain'), ('pn_inhadd', 'PN inhadd'), ('pn_inhsc', 'PN inhsc'), ('inhadd', 'PN inhadd'),
+    ('ext_inh_scale', 'external inhibition scale'), ('multibouton_claws', 'multibouton claws'),
+    ('claw_weight', 'claw weight'), ('wiring', 'wiring'), ('seed', 'seed'),
+    ('target_rate', 'target rate'), ('target', 'target rate'), ('rate_on', 'APL-on rate'), ('rate_off', 'APL-off rate'),
+]
+
+
+def describe_params(row: pd.Series) -> str:
+    """'label value; label value; ...' for the parameter columns the row has values for."""
+    parts, seen = [], set()
+    for col, label in PARAM_LABELS:
+        if col not in row.index or label in seen:
+            continue
+        v = row[col]
+        if v is None or (isinstance(v, float) and np.isnan(v)) or (isinstance(v, str) and v.strip() in ('', 'nan', 'None')):
+            continue
+        if col in ('claw_thr', 'claw_sat', 'kc_kc_inh', 'wKCKC_scale', 'coupling', 'apl_unit_coupling', 'gain') \
+                and isinstance(v, (int, float, np.integer, np.floating)) and float(v) in (0.0, 1.0) and col == 'gain':
+            continue   # gain 1 = no gain
+        if col in ('claw_thr', 'claw_sat', 'kc_kc_inh', 'wKCKC_scale') and isinstance(v, (int, float, np.integer, np.floating)) and float(v) == 0.0:
+            continue   # 0 = the mechanism is off
+        if isinstance(v, (float, np.floating)):
+            v = f'{float(v):.3g}' if abs(float(v)) < 1000 else f'{float(v):.0f}'
+        elif isinstance(v, (bool, np.bool_)):
+            v = 'yes' if v else 'no'
+        parts.append(f'{label} {v}')
+        seen.add(label)
+    return '; '.join(parts)
+
 
 def experiment_index() -> pd.DataFrame:
     """ID, name and completion time of every completed experiment, from the index table."""
@@ -131,7 +175,7 @@ def best_rows(exp: str, df: pd.DataFrame) -> list:
             continue
         i = (vals - target).abs().idxmin()
         out.append(dict(exp=exp, metric=key, value=float(vals[i]), target=target, variant=str(df.loc[i, 'tag']),
-            n_variants=int(vals.notna().sum())))
+            params=describe_params(df.loc[i]), n_variants=int(vals.notna().sum())))
     return out
 
 
@@ -164,8 +208,8 @@ def plot_html(pts: pd.DataFrame) -> str:
         series.append(dict(key=k, label=label, target=target, light=PALETTE[j][0], dark=PALETTE[j][1],
             baseline=float(sub.baseline.iloc[0]),
             points=[dict(t=r.completed.isoformat(timespec='minutes'), exp=r.exp, name=r['name'], variant=r.variant,
-                value=round(float(r.value), 4), gap=round(float(r.gap_closed), 4), best=round(float(r.running_best), 4),
-                new=bool(r.new_best)) for _, r in sub.iterrows()]))
+                params=r.params, value=round(float(r.value), 4), gap=round(float(r.gap_closed), 4),
+                best=round(float(r.running_best), 4), new=bool(r.new_best)) for _, r in sub.iterrows()]))
     data_json = json.dumps(series).replace('&', '&amp;').replace('</', '<\\/')
     # the table view (the running best per statistic, with the model that set it)
     best_tbl = ['<table><tr><th>statistic</th><th>KC data</th><th class="num">first model</th><th class="num">best so far</th><th>set by</th></tr>']
@@ -194,6 +238,8 @@ def plot_html(pts: pd.DataFrame) -> str:
 .prog .legend .item.off { opacity: 0.4; } .prog .legend .item.off .sw { background: var(--p-line) !important; }
 .prog .tip { position: absolute; pointer-events: none; background: var(--p-bg); color: var(--p-ink); border: 1px solid var(--p-line); border-radius: 6px; padding: 7px 9px; font-size: 0.82em; line-height: 1.35; box-shadow: 0 2px 8px rgba(0,0,0,0.12); max-width: 360px; display: none; z-index: 5; }
 .prog .tip b { font-weight: 600; }
+.prog .tip .params { color: var(--p-muted); }
+.prog .step.hit { cursor: pointer; }
 .prog .note { color: var(--p-muted); font-size: 0.86em; margin-top: 6px; }
 .prog details { margin-top: 8px; font-size: 0.9em; } .prog details summary { cursor: pointer; color: var(--p-muted); }
 @media (prefers-color-scheme: dark) { .prog .legend .sw { border-color: rgba(255,255,255,0.2); } }
@@ -241,11 +287,18 @@ def plot_html(pts: pd.DataFrame) -> str:
   var tip = root.querySelector('.tip');
   function showTip(evt, s, p) {
     var pct = Math.round(p.gap * 100);
-    tip.innerHTML = '<b>' + p.exp + ': ' + p.name + '</b><br>completed ' + p.t.replace('T', ' ') + '<br>' + s.label + ': <b>' + p.value + '</b> (KC data ' + s.target + '; first model ' + s.baseline.toFixed(3) + ')<br>best variant: ' + p.variant + '<br>' + pct + ' % of the gap closed' + (p.new ? ' (a new best at the time)' : '');
+    tip.innerHTML = '<b>' + p.exp + ': ' + p.name + '</b><br>completed ' + p.t.replace('T', ' ') + '<br>' + s.label + ': <b>' + p.value + '</b> (KC data ' + s.target + '; first model ' + s.baseline.toFixed(3) + ')<br>best variant: ' + p.variant + (p.params ? '<br><span class="params">' + p.params + '</span>' : '') + '<br>' + pct + ' % of the gap closed' + (p.new ? ' (a new best at the time)' : '');
+    placeTip(evt);
+  }
+  function showSegTip(evt, s, p, untilText) {
+    tip.innerHTML = '<b>best so far on: ' + s.label + '</b><br>from ' + p.t.replace('T', ' ') + ' ' + untilText + '<br>' + p.exp + ': ' + p.name + ', variant ' + p.variant + '<br>' + s.label + ' <b>' + p.value + '</b> (KC data ' + s.target + '; ' + Math.round(p.best * 100) + ' % of the gap closed)' + (p.params ? '<br>model parameters: <span class="params">' + p.params + '</span>' : '');
+    placeTip(evt);
+  }
+  function placeTip(evt) {
     tip.style.display = 'block';
     var r = root.getBoundingClientRect();
     var left = evt.clientX - r.left + 14, top = evt.clientY - r.top - 10;
-    if (left + 370 > r.width) left = Math.max(0, evt.clientX - r.left - 380);
+    if (left + 430 > r.width) left = Math.max(0, evt.clientX - r.left - 440);
     tip.style.left = left + 'px'; tip.style.top = top + 'px';
   }
   function hideTip() { tip.style.display = 'none'; }
@@ -253,15 +306,19 @@ def plot_html(pts: pd.DataFrame) -> str:
   data.forEach(function (s, j) {
     var color = dark ? s.dark : s.light;
     var g = el('g', {'data-key': s.key}, svg); groups[s.key] = g;
-    // running best as a staircase (step after)
-    var d = '', prevY = null;
-    s.points.forEach(function (p, i) {
-      var px = x(p.time), py = y(p.best);
-      if (i === 0) d += 'M' + px + ' ' + py; else d += ' H' + px + ' V' + py;
-      prevY = py;
+    // running best as a staircase (step after): one segment per model that set the best, so
+    // hovering a segment names the model (and its parameters) that held the best over that span
+    var setters = s.points.filter(function (p) { return p.new; });
+    setters.forEach(function (p, i) {
+      var next = setters[i + 1];
+      var xStart = x(p.time), xEnd = next ? x(next.time) : W - m.r, yy = y(p.best);
+      var d = 'M' + xStart + ' ' + (i === 0 ? yy : y(setters[i - 1].best)) + ' V' + yy + ' H' + xEnd;
+      el('path', {d: d, 'class': 'step', stroke: color}, g);
+      var hit = el('path', {d: d, 'class': 'step hit', stroke: 'transparent', 'stroke-width': 12}, g);
+      var until = next ? 'until ' + next.t.replace('T', ' ') : 'to now';
+      hit.addEventListener('mousemove', function (evt) { showSegTip(evt, s, p, until); });
+      hit.addEventListener('mouseleave', hideTip);
     });
-    d += ' H' + (W - m.r);
-    el('path', {d: d, 'class': 'step', stroke: color}, g);
     s.points.forEach(function (p) {
       var c = el('circle', {cx: x(p.time), cy: y(p.gap), r: p.new ? 5 : 4, fill: color, 'fill-opacity': p.new ? 1 : 0.55, 'class': 'pt'}, g);
       var hit = el('circle', {cx: x(p.time), cy: y(p.gap), r: 11, 'class': 'pt hit'}, g);
@@ -292,7 +349,7 @@ def plot_html(pts: pd.DataFrame) -> str:
     return (css + '\n<figure class="prog" id="progress-plot" data-series=\'' + data_json.replace("'", '&#39;') + "'>\n"
         '<div class="chart" style="position:relative"></div><div class="tip"></div>\n<div class="legend"></div>\n'
         '<div class="note">Each point is one experiment\'s best model on that statistic (filled and larger when it was the best so far; points below -50 % are drawn at -50 %); '
-        'the staircase is the best so far. Hover a point for the experiment, the model variant and the raw value; click a legend entry to hide or show its line. '
+        'the staircase is the best so far. Hover a point for the experiment, the model variant, its parameters and the raw value, or a step of the staircase for the model that held the best over that span; click a legend entry to hide or show its line. '
         'Oracle variants (co-responder suppression, the oracle glomerulus gain, the block-specific glomerulus set) are not counted.</div>\n'
         '<details><summary>Table: the best so far on each statistic</summary>' + ''.join(best_tbl) + '</details>\n'
         '</figure>' + script + '\n')
