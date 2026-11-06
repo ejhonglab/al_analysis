@@ -56,24 +56,24 @@ def group(odor: str) -> str:
     return 'esters' if odor in ESTERS else ('weak' if odor in WEAK else 'other')
 
 
-def suppression_stats(r_on: pd.Series, r_off: pd.Series, data_rates: dict) -> dict:
+def suppression_stats(r_on: pd.Series, r_off: pd.Series, data_rates: dict, floor: float = 0.5 / 1732) -> dict:
     """Per-odor APL-off / APL-on response-fraction ratio: its spread across odors (sd of the
     log ratio), its rank correlation with the APL-on fraction, its correlation with the
-    data's ratio, the ratio by odor group and for the three sparse odors.
+    data's ratio, the ratio by odor group and for the three sparse odors. An odor without
+    APL-on responders counts as having half a KC (`floor`), so it is not dropped.
     """
     r_on = r_on.reindex(H.APL16_ODORS); r_off = r_off.reindex(H.APL16_ODORS)
-    ratio = r_off / r_on.where(r_on > 0)
+    ratio = r_off / r_on.clip(lower=floor)
     d_ratio = (data_rates['TNT'] / data_rates['TNT3c']).reindex(H.APL16_ODORS)
-    ok = np.isfinite(ratio)
-    out = dict(suppression_sd_log=float(np.log(ratio[ok]).std(ddof=1)), suppression_median=float(ratio[ok].median()),
-        suppression_max=float(ratio[ok].max()), n_odors_no_on_responders=int((~ok).sum()),
-        spearman_suppression_vs_on_frac=float(sstats.spearmanr(ratio[ok], r_on[ok])[0]),
-        spearman_suppression_vs_data=float(sstats.spearmanr(ratio[ok], d_ratio[ok])[0]))
+    out = dict(suppression_sd_log=float(np.log(ratio).std(ddof=1)), suppression_median=float(ratio.median()),
+        suppression_max=float(ratio.max()), n_odors_no_on_responders=int((r_on == 0).sum()),
+        spearman_suppression_vs_on_frac=float(sstats.spearmanr(ratio, r_on)[0]),
+        spearman_suppression_vs_data=float(sstats.spearmanr(ratio, d_ratio)[0]))
     for g in ('esters', 'other', 'weak'):
         sel = [o for o in H.APL16_ODORS if group(o) == g]
         out[f'suppression_{g}'] = float(r_off[sel].mean() / r_on[sel].mean())
     for o in SPARSE:
-        out[f'suppression_{o}'] = float(ratio[o]) if np.isfinite(ratio[o]) else np.nan
+        out[f'suppression_{o}'] = float(ratio[o])
         out[f'on_frac_{o}'] = float(r_on[o])
     return out
 
@@ -128,13 +128,19 @@ def make_figure(stats: pd.DataFrame, fracs: pd.DataFrame, data_rates: dict, res_
     fig.tight_layout(); fig.savefig(res_dir / 'E35_divisive_apl.png', dpi=130); plt.close(fig)
 
 
-def merge(res_dir) -> tuple:
+def merge(res_dir, data_rates: dict) -> tuple:
+    """Merges the per-threshold tables and recomputes the suppression statistics from the
+    per-odor fractions (so every row uses the current definition)."""
     stats = pd.concat([pd.read_csv(f) for f in sorted(glob.glob(str(res_dir / 'stats_variants_*.csv')))], ignore_index=True)
-    stats.to_csv(res_dir / 'stats_variants.csv', index=False)
     fr = [pd.read_csv(f, index_col=0) for f in sorted(glob.glob(str(res_dir / 'per_odor_response_fractions_*.csv')))]
     fracs = fr[0]
     for f in fr[1:]:
         fracs = fracs.join(f[[c for c in f.columns if c not in fracs.columns]])
+    for i, r in stats.iterrows():
+        if f"{r.tag}_on" in fracs:
+            for kk, vv in suppression_stats(fracs[f"{r.tag}_on"], fracs[f"{r.tag}_acute_off"], data_rates).items():
+                stats.loc[i, kk] = vv
+    stats.to_csv(res_dir / 'stats_variants.csv', index=False)
     fracs.to_csv(res_dir / 'per_odor_response_fractions.csv')
     return stats, fracs
 
@@ -152,7 +158,7 @@ def main() -> None:
     res_dir = H.results_dir(EXPERIMENT); out_dir = H.outputs_dir(EXPERIMENT)
     data_rates = {g: H.yang_response_fractions(g)[H.APL16_ODORS].mean() for g in ('TNT3c', 'TNT')}
     if args.figure_only:
-        stats, fracs = merge(res_dir); make_figure(stats, fracs, data_rates, res_dir); print('figure ->', res_dir); return
+        stats, fracs = merge(res_dir, data_rates); make_figure(stats, fracs, data_rates, res_dir); print('figure ->', res_dir); return
     tt = thr_tag(thr) + ('_spk' if args.apl_drive == 'spikes' else '')
     stats_path = res_dir / f'stats_variants_{tt}.csv'; fracs_path = res_dir / f'per_odor_response_fractions_{tt}.csv'
     rows = list(pd.read_csv(stats_path).to_dict('records')) if stats_path.exists() else []

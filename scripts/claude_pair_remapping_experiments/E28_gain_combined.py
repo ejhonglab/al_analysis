@@ -38,6 +38,8 @@ from E16_claw_saturation import spearman_with_refs
 from E18_bouton_depletion import all_refs
 from E26_claw_power import sharing_deficit, deficit_table, WEAK
 from E27_glomerulus_gain import ORACLE, gained
+from E3_drive_dependent_gain import tune_and_knockout
+from E35_divisive_apl import suppression_stats
 
 EXPERIMENT = 'E28_gain_combined'
 E16_OUT = H.HERE / 'outputs' / 'E16_claw_saturation'
@@ -82,9 +84,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--points', nargs='+', default=list(POINTS), choices=list(POINTS))
     ap.add_argument('--gains', nargs='+', type=float, default=None, help='default: 1, 1.25, 1.5 for thr70; 1, 1.5 for thr40')
+    ap.add_argument('--apl-drive', default='claws', choices=['claws', 'spikes'],
+        help="what drives APL: 'claws' (the bouton base: summed claw input plus bouton rates, starting from E16's "
+        "tuned parameters) or 'spikes' (KC spikes plus bouton rates, pn_claw_to_apl=False, starting from a base "
+        "tuned here at 5 %% per threshold; E36)")
+    ap.add_argument('--experiment', default=None, help="results / outputs folder (default: E28_gain_combined, or "
+        "E36_spike_apl with --apl-drive spikes)")
     ap.add_argument('--figure-only', action='store_true')
     args = ap.parse_args()
-    res_dir = H.results_dir(EXPERIMENT); out_dir = H.outputs_dir(EXPERIMENT)
+    experiment = args.experiment or ('E36_spike_apl' if args.apl_drive == 'spikes' else EXPERIMENT)
+    base = dict(BOUTON, pn_claw_to_apl=False) if args.apl_drive == 'spikes' else BOUTON
+    res_dir = H.results_dir(experiment); out_dir = H.outputs_dir(experiment)
     stats_path = res_dir / 'stats_variants.csv'; fracs_path = res_dir / 'per_odor_response_fractions.csv'
     rows = list(pd.read_csv(stats_path).to_dict('records')) if stats_path.exists() else []
     rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
@@ -105,14 +115,24 @@ def main() -> None:
     for point in args.points:
         thr, k, s = POINTS[point]
         gains = args.gains if args.gains else ([1.0, 1.25, 1.5] if thr == 70.0 else [1.0, 1.5])
-        src = f'bouton_thr{thr:g}'
-        initial = {kk: float(tuned16[src][kk]) for kk in PARAM_KEYS}
-        thr_kws = dict(BOUTON, claw_thr=thr, make_plots=False, silent=True)
+        thr_kws = dict(base, claw_thr=thr, make_plots=False, silent=True)
+        if args.apl_drive == 'spikes':
+            src = f'spk_base_thr{thr:g}'
+            if src not in tuned:
+                _, _, _, bparams, _ = tune_and_knockout(orn, dict(base, claw_thr=thr), out_dir, src, with_pn_contrast=False)
+                tuned[src] = {kk: float(np.mean(np.asarray(bparams[kk], dtype=float))) for kk in PARAM_KEYS}
+                tuned[src].update(claw_thr=thr, apl_drive='spikes')
+                (out_dir / 'tuned_params.json').write_text(json.dumps(tuned, indent=1))
+            initial = {kk: float(tuned[src][kk]) for kk in PARAM_KEYS}
+            on_resp0 = pd.read_parquet(out_dir / f'{src}_on_responses.parquet')
+        else:
+            src = f'bouton_thr{thr:g}'
+            initial = {kk: float(tuned16[src][kk]) for kk in PARAM_KEYS}
+            on_resp0 = pd.read_parquet(E16_OUT / f'{src}_on_responses.parquet')
         _, _, wPNKC0, pd0 = fit_mb_model(orn, fixed_thr=initial['fixed_thr'], wAPLKC=initial['wAPLKC_scale'], wKCAPL=initial['wKCAPL_scale'],
             wAPLPN=initial['wAPLPN_scale'], wPNAPL=initial['wPNAPL_scale'], **thr_kws)
         wnorm = {kk: pd0[kk] / pd0[f'{kk}_scale'] for kk in ('wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL')}
         claw_kc = wnorm['wAPLKC'].index.get_level_values(H.KC_ID_LEVEL)
-        on_resp0 = pd.read_parquet(E16_OUT / f'{src}_on_responses.parquet')
         n_target = int((on_resp0.astype(float) != 0).to_numpy().sum()); rate_target = rate(on_resp0)
         mean_claws = float(kc_by_glomerulus(wPNKC0).sum(axis='columns').mean())
         for g in gains:
@@ -162,6 +182,8 @@ def main() -> None:
             for cond, sp in (('on', s_on), ('off', s_off)):
                 row.update({f'{cond}_{kk}': v for kk, v in density_excess(sp).items()})
             row.update(spearman_with_refs(on_p, off_p, refs)); row.update(sharing_deficit(s_off, data_pairs))
+            row.update(suppression_stats(H.response_fractions(r_on), H.response_fractions(r_off), data_rates))
+            row['apl_drive'] = args.apl_drive
             d = deficit_table(s_off, data_pairs); d.insert(0, 'tag', tag); deficits.append(d)
             rows.append(row); pairs[(tag, 'on')] = on_p; pairs[(tag, 'acute_off')] = off_p
             pd.DataFrame(rows).to_csv(stats_path, index=False)
@@ -179,11 +201,11 @@ def main() -> None:
             done.add(tag)
     if deficits:
         pd.concat(deficits).to_csv(res_dir / 'pair_deficits_long.csv', index=False, mode='a', header=not (res_dir / 'pair_deficits_long.csv').exists())
-    prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E28_gain_combined.py',
+    prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E28_gain_combined.py', apl_drive=args.apl_drive,
         host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(),
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
         olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=(H.HERE / '../../../olfsysm').resolve(), capture_output=True, text=True).stdout.strip(),
-        base=BOUTON, points={p: POINTS[p] for p in args.points}, gains=args.gains, oracle_glomeruli=ORACLE, tau=TAU, approx_conc_note=H.APPROX_CONC_NOTE)
+        base=base, points={p: POINTS[p] for p in args.points}, gains=args.gains, oracle_glomeruli=ORACLE, tau=TAU, approx_conc_note=H.APPROX_CONC_NOTE)
     (res_dir / 'provenance.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
     make_figure(pd.DataFrame(rows), fracs, res_dir)
     print('done ->', res_dir)
