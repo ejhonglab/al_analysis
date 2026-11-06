@@ -176,6 +176,10 @@ def main() -> None:
             kws['apl_inh_divisive'] = True
         if bouton_div:
             kws['bouton_inh_divisive'] = True
+        if kc_div or bouton_div:
+            # the divisive forms tune to APL scales 5-15x smaller than the subtractive ones,
+            # and the scale search needs more (mostly unsimulated) iterations to get there
+            kws['max_iters'] = 1000
         t0 = time.time()
         try:
             on_out, off_out, wPNKC, params, extra = tune_and_knockout(orn, kws, out_dir, tag, with_pn_contrast=False)
