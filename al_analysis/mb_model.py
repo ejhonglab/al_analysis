@@ -609,6 +609,12 @@ EXT_INH_RECORDED_PARAMS: Tuple[str, ...] = ('ext_inh_kc_max', 'ext_inh_bouton_ma
     'ext_inh_scale'
 )
 
+# `fit_mb_model` kwargs making APL inhibition divisive rather than subtractive, onto
+# KCs / claws (olfsysm `mp.kc.apl_inh_divisive`) and onto PN boutons
+# (`mp.pn.bouton_inh_divisive`). Subtractive (the default) if False, and only recorded in
+# output params (and model IDs) if True.
+APL_INH_FORM_PARAMS: Tuple[str, ...] = ('apl_inh_divisive', 'bouton_inh_divisive')
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -688,6 +694,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
         **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
             BOUTON_DEPLETION_PARAMS + EXT_INH_PARAMS + EXT_INH_RECORDED_PARAMS
         },
+        **{k: False for k in APL_INH_FORM_PARAMS},
     }
 
     # float formats for params where default '.2f' would lose too much precision
@@ -12474,6 +12481,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     ext_inh_kc: Optional[pd.DataFrame] = None,
     ext_inh_bouton: Optional[pd.DataFrame] = None,
     ext_inh_scale: Optional[float] = None,
+    apl_inh_divisive: bool = False, bouton_inh_divisive: bool = False,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12855,6 +12863,29 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             None) multiplying both `ext_inh_kc` and `ext_inh_bouton`. Requires either.
             0.0 has no effect (but is recorded). Must be finite and not negative.
 
+        apl_inh_divisive: if True, APL>KC inhibition is divisive (shunting; olfsysm
+            `mp.kc.apl_inh_divisive`): the PN>KC drive `x` of each claw (if
+            `one_row_per_claw=True`, else of each KC) becomes `x / (1 + i)`, where `i`
+            (clipped at 0) is its APL inhibition (APL>KC weight times APL activity, as
+            in the subtractive form), instead of `x - i`. At the same point as the
+            subtractive form (before `claw_dynamics`, the clipping of claws at 0
+            [unless `allow_net_inh_per_claw`] and any per-claw transfer [`claw_thr` /
+            `claw_pow` / `claw_sat`]), and active during threshold / APL tuning, so
+            tuned APL weight scales are those the divisive form needs to reach
+            `target_sparsity` (E35 of the KC-remapping experiments). Does not change
+            APL>bouton inhibition (see `bouton_inh_divisive`). False (the default)
+            keeps the subtractive form, and is not recorded in output params.
+
+        bouton_inh_divisive: if True, APL>bouton inhibition (`prat_boutons=True` w/
+            PN<>APL weights) is divisive (presynaptic gain reduction; olfsysm
+            `mp.pn.bouton_inh_divisive`): each bouton's rate `r` becomes `r / (1 + i)`,
+            w/ `i` its APL inhibition (clipped at 0), instead of `max(r - i, 0)`. At the
+            same point as the subtractive form (after any `ext_inh_bouton`, before any
+            bouton vesicle depletion [`bouton_ves_p`] and the bouton>claw transfer), and
+            active during tuning. Independent of `apl_inh_divisive`. Requires
+            `prat_boutons=True`. False (the default) keeps the subtractive form, and is
+            not recorded in output params.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -12940,8 +12971,9 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             certain model intermediates (e.g. 'kc_spont_in'), and certain parameters
             relevant for reproducibility (e.g. 'sp_acc', 'max_iters', and any of
             `AL_INH_PARAMS`, `KC_KC_INH_PARAMS`, `CLAW_SAT_PARAMS` or
-            `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc', and
-            `EXT_INH_RECORDED_PARAMS` for `EXT_INH_PARAMS` passed).
+            `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc',
+            `EXT_INH_RECORDED_PARAMS` for `EXT_INH_PARAMS` passed, and any of
+            `APL_INH_FORM_PARAMS` that were True).
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -13240,6 +13272,18 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
 
         for k, v in bouton_depletion_params.items():
             setattr(mp.pn, k, v)
+
+    # (only those True, to also add to param_dict below)
+    apl_inh_form_params = {k: True for k, v in
+        zip(APL_INH_FORM_PARAMS, (apl_inh_divisive, bouton_inh_divisive)) if v
+    }
+    if bouton_inh_divisive and not prat_boutons:
+        raise ValueError('bouton_inh_divisive requires prat_boutons=True')
+
+    if apl_inh_divisive:
+        mp.kc.apl_inh_divisive = True
+    if bouton_inh_divisive:
+        mp.pn.bouton_inh_divisive = True
 
     # (KC / bouton x odor DataFrames w/ columns in orn_deltas order. rows are aligned to
     # the model's KCs / boutons, and the matrices set into rv, below, after rv is
@@ -16221,6 +16265,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     param_dict.update(claw_sat_params)
     param_dict.update(bouton_depletion_params)
     param_dict.update(ext_inh_params)
+    param_dict.update(apl_inh_form_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -16856,9 +16901,10 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             are ignored if `initial_params` passed. Other KC-layer kwargs that do not
             change how thresholds / APL weights are defined (e.g. `claw_sat` /
             `claw_thr` / `claw_thr_width` / `claw_pow` / `claw_pow_ref` /
-            `bouton_ves_p` / `ext_inh_kc` / `ext_inh_bouton` / `ext_inh_scale`)
-            apply to the initial call and to all simulations (the external inhibition
-            matrices stay set in the olfsysm variables the simulations reuse).
+            `bouton_ves_p` / `ext_inh_kc` / `ext_inh_bouton` / `ext_inh_scale` /
+            `apl_inh_divisive` / `bouton_inh_divisive`) apply to the initial call and
+            to all simulations (the external inhibition matrices stay set in the
+            olfsysm variables the simulations reuse).
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -20309,7 +20355,8 @@ def fit_and_plot_mb_model(plot_dir: Path, *, sensitivity_analysis: bool = False,
             }
             # inputs (same for all seeds), so they still match model_kws values below
             for k in (AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
-                    BOUTON_DEPLETION_PARAMS + EXT_INH_RECORDED_PARAMS):
+                    BOUTON_DEPLETION_PARAMS + EXT_INH_RECORDED_PARAMS +
+                    APL_INH_FORM_PARAMS):
                 if k in param_dict:
                     assert len(set(param_dict[k])) == 1
                     param_dict[k] = param_dict[k][0]
