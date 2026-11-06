@@ -9,7 +9,8 @@ cell ending in `{span=N}` spans N columns centered; a column whose body cells ar
 numbers is right-aligned as a whole, header included, and kept narrow so values sit close
 together; `<br>` inside a cell is a line break, used to put each parameter of a header that
 lists parameters on its own line), figures written as
-`![caption](path.png)` on their own line (embedded as data URIs, so the page is one file),
+`![caption](path.png)` on their own line (embedded as data URIs, so the page is one file;
+clicking one opens it full screen, closed by a click, Esc or the x),
 `---` rules, collapsible blocks (a line `??? Title` opens one, a line `???` closes it; rendered
 as <details>, collapsed by default), hover definitions (a block opened by a line `%%% hover` and
 closed by `%%%`, each line `term: definition`; every whole-word occurrence of the term in
@@ -58,6 +59,11 @@ CSS = """
   figure { margin: 18px 0; }
   figure img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
   figcaption { color: var(--muted); font-size: 0.86em; margin-top: 6px; }
+  figure img.zoomable { cursor: zoom-in; }
+  .zoom-overlay { display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, 0.92); cursor: zoom-out; align-items: center; justify-content: center; }
+  .zoom-overlay.open { display: flex; }
+  .zoom-overlay img { width: 98vw; height: 98vh; object-fit: contain; background: #fff; border-radius: 4px; }
+  .zoom-close { position: absolute; top: 10px; right: 12px; z-index: 1; width: 38px; height: 38px; border-radius: 50%; font-size: 26px; line-height: 36px; padding: 0; color: #fff; background: rgba(0, 0, 0, 0.65); border: 1px solid rgba(255, 255, 255, 0.5); cursor: pointer; }
   hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
   details.fold { margin: 10px 0 18px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; background: var(--soft); }
   details.fold summary { cursor: pointer; font-weight: 600; color: var(--muted); }
@@ -73,6 +79,38 @@ _ITEM_RE = re.compile(r'^(\d+)\. (.*)')
 _BULLET_RE = re.compile(r'^[-*] (.*)')
 _FIG_RE = re.compile(r'^!\[(.*?)\]\((\S+?)\)\s*$')
 _BR_RE = re.compile(r'<br\s*/?>', re.I)
+
+
+# Click-to-fullscreen for the static figures (img.zoomable): an overlay over the page that
+# also asks the browser for real full screen (refused inside an iframe without the fullscreen
+# permission, in which case the overlay alone fills the frame); a click, Esc or the x closes it.
+ZOOM_JS = """<script>
+(function () {
+  var imgs = document.querySelectorAll('img.zoomable');
+  if (!imgs.length) return;
+  var ov = document.createElement('div');
+  ov.className = 'zoom-overlay'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true');
+  ov.innerHTML = '<button class="zoom-close" aria-label="close">\u00d7</button><img alt="">';
+  document.body.appendChild(ov);
+  var big = ov.querySelector('img');
+  function hide() { ov.classList.remove('open'); big.removeAttribute('src'); }
+  function close() {
+    if (document.fullscreenElement === ov && document.exitFullscreen) document.exitFullscreen().catch(function () {});
+    hide();
+  }
+  function open(img) {
+    big.src = img.src; big.alt = img.alt; ov.classList.add('open');
+    if (ov.requestFullscreen) ov.requestFullscreen().catch(function () {});
+  }
+  imgs.forEach(function (img) {
+    img.addEventListener('click', function () { open(img); });
+    img.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(img); } });
+  });
+  ov.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && ov.classList.contains('open')) close(); });
+  document.addEventListener('fullscreenchange', function () { if (!document.fullscreenElement && ov.classList.contains('open')) hide(); });
+})();
+</script>"""
 
 
 def inline(s: str) -> str:
@@ -232,7 +270,7 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
                 p = (figdir or Path('.')) / p
             if not p.exists():
                 raise FileNotFoundError(f'figure not found: {p}')
-            out.append(f'<figure><img src="{_data_uri(p)}" alt="{html_mod.escape(cap)}">'
+            out.append(f'<figure><img class="zoomable" tabindex="0" src="{_data_uri(p)}" alt="{html_mod.escape(cap)}" title="click to view full screen">'
                 + (f'<figcaption>{inline(cap)}</figcaption>' if cap else '') + '</figure>')
             i += 1; continue
         if s.startswith('|'):
@@ -308,7 +346,7 @@ def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str
     return (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         f'<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f'<title>{title}</title>\n<style>{CSS}</style>\n</head>\n<body>\n<main>\n{body}\n'
-        f'</main>\n</body>\n</html>\n')
+        f'</main>\n' + (ZOOM_JS + '\n' if 'class="zoomable"' in body else '') + '</body>\n</html>\n')
 
 
 def lint(page: str) -> List[str]:
