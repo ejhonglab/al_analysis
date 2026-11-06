@@ -17295,7 +17295,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
     params_to_optimize: Optional[Union[Sequence[str], Literal['all']]] = None,
     initial_params: Optional[ParamDict] = None,
     bounds: Optional[Dict[str, Tuple[float, float]]] = None, bound_factor: float = 10.0,
-    tie_apl_weights: bool = True, method: str = 'Nelder-Mead', maxfev: int = 200,
+    tie_apl_weights: Union[bool, Sequence[str]] = True, method: str = 'Nelder-Mead',
+    maxfev: int = 200,
     optimizer_kws: Optional[ParamDict] = None, verify: bool = True,
     verbose: bool = True, **model_kws) -> ParamDict:
     """Optimizes KC threshold / APL weight scales to minimize loss vs measured KC data.
@@ -17361,7 +17362,10 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
         tie_apl_weights: if True and 'wAPLKC_scale' is optimized, any other APL weight
             scales not optimized are multiplied by the same factor as wAPLKC_scale (as
-            `olfsysm` APL tuning does). Otherwise, they are fixed at initial values.
+            `olfsysm` APL tuning does). A sequence of parameter names ties only those
+            (e.g. `('wKCAPL_scale',)` keeps the KC->APL scale with wAPLKC_scale while a
+            non-optimized wAPLPN_scale stays at its initial value). Otherwise (False),
+            they are fixed at initial values.
 
         method: 'Nelder-Mead' or 'Powell' (local, starting from initial values, via
             `scipy.optimize.minimize`), or 'differential_evolution', 'dual_annealing',
@@ -17525,9 +17529,12 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
     tied = []
     if tie_apl_weights and 'wAPLKC_scale' in params_to_optimize:
-        tied = [p for p in ('wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale')
-            if p in initial_params and p not in params_to_optimize
-        ]
+        # True ties every other APL weight present; a sequence of names ties only those
+        # (e.g. ('wKCAPL_scale',) keeps the KC->APL scale with wAPLKC_scale while a
+        # non-optimized wAPLPN_scale stays at its initial value)
+        candidates = (('wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale') if tie_apl_weights is True
+            else tuple(tie_apl_weights))
+        tied = [p for p in candidates if p in initial_params and p not in params_to_optimize]
         if len(tied) > 0 and initial_params['wAPLKC_scale'] == 0:
             raise ValueError('can not tie APL weights to initial wAPLKC_scale of 0. '
                 'set tie_apl_weights=False'

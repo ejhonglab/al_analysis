@@ -313,9 +313,14 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     # bound controls (E31): the APL->bouton and APL->KC scales relative to the base's tuned
     # values (`initial`, E3's for the plain bouton base, E16's for a threshold base)
     params = ['fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'wKCKC_scale']
+    tie = True
     if aplpn_fixed is not None:
         init['wAPLPN_scale'] = initial['wAPLPN_scale'] * aplpn_fixed
+        init['wPNAPL_scale'] = initial['wPNAPL_scale'] * aplpn_fixed
         params.remove('wAPLPN_scale'); bounds.pop('wAPLPN_scale')
+        # tie only the KC->APL scale to the APL->KC scale: with the default (True) the
+        # non-optimized bouton scales would be tied to it too and move with it
+        tie = ('wKCAPL_scale',)
         print(f'APL->bouton scale fixed at {aplpn_fixed:g}x the base ({init["wAPLPN_scale"]:.4g})', flush=True)
     elif aplpn_max is not None:
         hi = initial['wAPLPN_scale'] * aplpn_max
@@ -336,7 +341,7 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     res = optimize_mb_model_params(orn, loss_fn=loss_fn,
         condition_param_overrides={'on': {}, 'off': {'wAPLKC_scale': 0.0, 'wAPLPN_scale': 0.0}},
         params_to_optimize=params,
-        initial_params=init, bounds=bounds, tie_apl_weights=True, method=method,
+        initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
         maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
         **base_kws(claw_thr), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
         _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU
