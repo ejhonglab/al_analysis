@@ -15,8 +15,8 @@ tuned at 5 % with APL on, acute APL off):
   random_g2_s<k> the same gain on as many randomly drawn ORN-driven glomeruli outside that set
                 (control for "any extra drive helps");
   synapses      the anatomical version: each claw weighted by its PN->KC synapse count
-                (fit_mb_model claw_weight='synapses'), normalized to mean 1 over claws so the
-                70 Hz knee keeps its meaning, passed as _wPNKC.
+                (fit_mb_model claw_weight='synapses', normalized to mean 1 over claws by
+                connectome_wPNKC so the 70 Hz knee keeps its meaning), passed as _wPNKC.
 Scored as E26 (E13 statistics, E7 excess by block, per-odor response fractions, E16 reference
 ranks, E21's APL-off sharing deficit by pair type incl. the terpene x fruity-ester subset).
 
@@ -57,15 +57,18 @@ def gained(wPNKC: pd.DataFrame, gloms, g: float) -> pd.DataFrame:
 
 def synapse_weighted_wPNKC(orn: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """The bouton base's wiring with each claw weighted by its PN->KC synapse count
-    (claw_weight='synapses'), normalized to mean 1 over the claws that have a weight."""
+    (claw_weight='synapses', which connectome_wPNKC normalizes to mean 1 over the nonzero
+    weights since al_analysis 07f9919), plus the raw counts' statistics (claw_weight='synapses_raw')."""
     from al_analysis.mb_model import fit_mb_model
     init = e3_bouton_params()
-    _, _, w, _ = fit_mb_model(orn, fixed_thr=init['fixed_thr'], wAPLKC=init['wAPLKC_scale'], wKCAPL=init['wKCAPL_scale'],
-        wAPLPN=init['wAPLPN_scale'], wPNAPL=init['wPNAPL_scale'], **BOUTON, claw_weight='synapses', make_plots=False, silent=True)
-    vals = w.to_numpy(dtype=float)
-    nz = vals[vals > 0]
-    info = dict(n_claws=int((vals > 0).sum()), mean_synapses=float(nz.mean()), median_synapses=float(np.median(nz)), cv=float(nz.std() / nz.mean()),
-        min=float(nz.min()), max=float(nz.max()))
+    fixed = dict(fixed_thr=init['fixed_thr'], wAPLKC=init['wAPLKC_scale'], wKCAPL=init['wKCAPL_scale'],
+        wAPLPN=init['wAPLPN_scale'], wPNAPL=init['wPNAPL_scale'], make_plots=False, silent=True)
+    _, _, w, _ = fit_mb_model(orn, **BOUTON, claw_weight='synapses', **fixed)
+    _, _, w_raw, _ = fit_mb_model(orn, **BOUTON, claw_weight='synapses_raw', **fixed)
+    vals = w.to_numpy(dtype=float); nz = vals[vals > 0]
+    raw = w_raw.to_numpy(dtype=float); raw = raw[raw > 0]
+    info = dict(n_claws=int((vals > 0).sum()), normalized_mean=float(nz.mean()), normalized_cv=float(nz.std() / nz.mean()),
+        raw_mean_synapses=float(raw.mean()), raw_median_synapses=float(np.median(raw)), raw_min=float(raw.min()), raw_max=float(raw.max()))
     return w.astype(float) / nz.mean(), info
 
 
