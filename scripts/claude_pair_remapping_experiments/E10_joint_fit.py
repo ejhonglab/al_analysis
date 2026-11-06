@@ -36,6 +36,8 @@ Glomerulus gain (E28's joint-fit arm): `--glom-gain 1.5 [--gain-glomeruli ...]` 
 PN->claw weights of the E27 oracle glomeruli (default set) in the wiring passed to the fit;
 tags get a `gain<G>_` prefix after the threshold prefix, and fits.csv / provenance record the
 gain and glomeruli.
+Second wiring draw (E30): `--wiring claw_permutation --wiring-seed N` replaces the base's claw x bouton
+matrix by that shuffle (al_analysis.wpnkc_shuffles) before any gain; tag prefix wiring-<name>-seed<N>_.
 """
 from __future__ import annotations
 
@@ -89,7 +91,7 @@ def base_kws(claw_thr) -> dict:
 
 
 def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
-    gain_gloms=None):
+    gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -100,7 +102,13 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     the returned wPNKC is the gained matrix (pass it to the fit as `_wPNKC`) and the breadth
     is recomputed from an APL-off run of the gained wiring at the base's parameters. The
     tuned base parameters themselves are not re-tuned at the gain: the joint fit fits the
-    threshold and the APL / KC-KC scales, and `--init-from` sets the start."""
+    threshold and the APL / KC-KC scales, and `--init-from` sets the start.
+
+    With `wiring` (a name from `al_analysis.wpnkc_shuffles.NAMED_SHUFFLES`, e.g.
+    'claw_permutation' or 'curveball_within_type'), the base's claw x bouton matrix is
+    replaced by that shuffle of it at `wiring_seed` (E4's substrate nulls: claw counts per
+    KC and per bouton kept, the assignment re-drawn), before any gain; the breadth is
+    recomputed from the re-drawn wiring. For replication of a fit on a second draw (E30)."""
     from al_analysis.mb_model import fit_mb_model
     hal_out = H.shared_dir() / 'data' / 'hal_outputs'
     if claw_thr is None:
@@ -122,6 +130,16 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         wAPLPN=initial['wAPLPN_scale'], wPNAPL=initial['wPNAPL_scale'], **kws
     )
     wnorm = {k: pd0[k] / pd0[f'{k}_scale'] for k in ('wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL')}
+    if wiring is not None:
+        from al_analysis.wpnkc_shuffles import NAMED_SHUFFLES, shuffle_wPNKC
+        if wiring not in NAMED_SHUFFLES:
+            raise ValueError(f'{wiring=} not in {list(NAMED_SHUFFLES)}')
+        method, within = NAMED_SHUFFLES[wiring]
+        wPNKC = shuffle_wPNKC(wPNKC, method, within_kc_type=within, seed=int(wiring_seed))
+        kws = dict(kws, _wPNKC=wPNKC)
+        hal_path = out_dir / 'no_such_file'
+        off_path = out_dir / (f'wiring-{wiring}-seed{int(wiring_seed)}_' + off_path.name)
+        print(f'wiring re-drawn: {wiring}, seed {wiring_seed}', flush=True)
     if gain is not None and gain != 1.0:
         from E27_glomerulus_gain import ORACLE, gained
         gloms = list(gain_gloms) if gain_gloms else list(ORACLE)
@@ -132,8 +150,7 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         kws = dict(kws, _wPNKC=wPNKC)
         # the gained wiring's own APL-off breadth (hal's saved base runs do not apply)
         hal_path = out_dir / 'no_such_file'
-        off_path = out_dir / (off_path.name.replace('_base_', f'_gain{gain:g}_base_')
-            if '_base_' in off_path.name else f'gain{gain:g}_' + off_path.name)
+        off_path = out_dir / (f'gain{gain:g}_' + off_path.name)
         print(f'gain {gain:g} on {gloms}', flush=True)
     if hal_path.exists():
         off_spk = pd.read_parquet(hal_path)
@@ -384,6 +401,11 @@ def main() -> None:
         "E27 / E28; tag prefix gain<G>_)")
     ap.add_argument('--gain-glomeruli', nargs='+', default=None, metavar='GLOM',
         help='glomeruli the gain applies to (default: the E27 oracle set: DC2 DL1 DM1 DM5 D DP1m VA7m VC1)')
+    ap.add_argument('--wiring', default=None, metavar='SHUFFLE',
+        help="re-draw the base's claw x bouton wiring with this al_analysis.wpnkc_shuffles "
+        "shuffle (claw_permutation, claw_permutation_within_type, curveball, "
+        "curveball_within_type; E30's second draw); tag prefix wiring-<SHUFFLE>-seed<N>_")
+    ap.add_argument('--wiring-seed', type=int, default=0, help='seed of the --wiring draw')
     ap.add_argument('--init-thr', type=float, default=None, metavar='HZ',
         help='start the somatic threshold here (overrides the seed / --thr0-factor; e.g. the '
         'threshold tuned for a gained wiring)')
@@ -412,15 +434,16 @@ def main() -> None:
     t0 = time.time()
     gain = None if args.glom_gain in (None, 1.0) else float(args.glom_gain)
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
-        gain_gloms=args.gain_glomeruli
+        gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed
     )
+    wiring_tag = '' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_'
     gain_gloms = None
     if gain is not None:
         from E27_glomerulus_gain import ORACLE
         gain_gloms = list(args.gain_glomeruli) if args.gain_glomeruli else list(ORACLE)
-    print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}); '
-        f'tuned params {initial}', flush=True)
-    prefix = ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + (
+    print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
+        f'wiring {args.wiring}); tuned params {initial}', flush=True)
+    prefix = ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_')
 
     fits_path = res_dir / 'fits.csv'
@@ -431,7 +454,8 @@ def main() -> None:
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
             thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
             init_from_experiment=args.init_from_experiment,
-            wPNKC_override=(wPNKC if gain is not None else None), init_thr=args.init_thr
+            wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None) else None),
+            init_thr=args.init_thr
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -447,6 +471,7 @@ def main() -> None:
         p = res['params']
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
             gain=gain, gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None),
+            wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
             method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
@@ -499,6 +524,7 @@ def main() -> None:
             olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
                 cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
             base=BOUTON, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
+            wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
             base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=BLOCK_TARGET,
