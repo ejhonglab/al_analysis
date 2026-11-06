@@ -12872,9 +12872,14 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             [unless `allow_net_inh_per_claw`] and any per-claw transfer [`claw_thr` /
             `claw_pow` / `claw_sat`]), and active during threshold / APL tuning, so
             tuned APL weight scales are those the divisive form needs to reach
-            `target_sparsity` (E35 of the KC-remapping experiments). Does not change
-            APL>bouton inhibition (see `bouton_inh_divisive`). False (the default)
-            keeps the subtractive form, and is not recorded in output params.
+            `target_sparsity` (E35 of the KC-remapping experiments). These are several
+            times smaller than subtractive ones (~5-15x in the tests), far below the
+            scale tuning starts from, so tuning can need more than the default
+            `max_iters` (most of the extra iterations only shrink steps that would
+            make the scale negative, without simulating; `max_iters=1000` sufficed in
+            the tests). Does not change APL>bouton inhibition (see
+            `bouton_inh_divisive`). False (the default) keeps the subtractive form,
+            and is not recorded in output params.
 
         bouton_inh_divisive: if True, APL>bouton inhibition (`prat_boutons=True` w/
             PN<>APL weights) is divisive (presynaptic gain reduction; olfsysm
@@ -12882,7 +12887,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             w/ `i` its APL inhibition (clipped at 0), instead of `max(r - i, 0)`. At the
             same point as the subtractive form (after any `ext_inh_bouton`, before any
             bouton vesicle depletion [`bouton_ves_p`] and the bouton>claw transfer), and
-            active during tuning. Independent of `apl_inh_divisive`. Requires
+            active during tuning (see `apl_inh_divisive` on `max_iters`). Independent
+            of `apl_inh_divisive`. Requires
             `prat_boutons=True`. False (the default) keeps the subtractive form, and is
             not recorded in output params.
 

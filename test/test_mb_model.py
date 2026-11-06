@@ -68,7 +68,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
     plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
     read_onestep_lr_cache, connectome_KCKC_weights, CLAW_SAT_PARAMS,
-    BOUTON_DEPLETION_PARAMS, EXT_INH_RECORDED_PARAMS
+    BOUTON_DEPLETION_PARAMS, EXT_INH_RECORDED_PARAMS, APL_INH_FORM_PARAMS
 )
 
 # TODO better way?
@@ -6356,3 +6356,191 @@ def test_ext_inh_simulator(ext_inh_model):
     assert params2['ext_inh_kc_max'] == 50.0
     assert responses.equals(responses2)
     assert spike_counts.equals(spike_counts2)
+
+
+# same models as for external inhibition (one-row-per-KC hemibrain, and the reduced claw
+# + bouton model, the only one w/ APL>bouton inhibition), w/ their tuned outputs shared
+@pytest.fixture(scope='module')
+def apl_inh_form_model(ext_inh_model
+    ) -> Tuple[pd.DataFrame, ParamDict, FitMBModelOutputs]:
+    """Returns `orn_deltas`, model kwargs, and tuned outputs w/ subtractive APL
+    inhibition (the default).
+
+    Bouton model uses `reduced_bouton_system` (so the returned `orn_deltas` and kwargs
+    should be used). Do not modify outputs.
+    """
+    return ext_inh_model
+
+
+# divisive inhibition tunes to ~5-15x smaller APL weight scales than subtractive, far
+# below the initial scale, so tuning w/ the default `sp_lr_coeff` spends many (cheap,
+# unsimulated) iterations shrinking steps that would make the scale negative (~110 w/
+# both divisive in the reduced bouton model, vs the default `max_iters` of 100)
+_DIVISIVE_TUNING_KWS: ParamDict = dict(max_iters=1000)
+
+def _apl_inh_form_variants(kws: ParamDict) -> List[ParamDict]:
+    """Returns the divisive `fit_mb_model` kwargs that apply to model `kws`.
+    """
+    variants = [dict(apl_inh_divisive=True)]
+    if kws.get('prat_boutons', False):
+        variants += [dict(bouton_inh_divisive=True),
+            dict(apl_inh_divisive=True, bouton_inh_divisive=True)
+        ]
+    return variants
+
+
+def test_apl_inh_divisive_false_equals_default(apl_inh_form_model):
+    """Tests `apl_inh_divisive=False` / `bouton_inh_divisive=False` (passed explicitly)
+    do not change tuned outputs, and are not recorded.
+    """
+    orn_deltas, kws, ret = apl_inh_form_model
+    assert not any(k in ret[3] for k in APL_INH_FORM_PARAMS)
+
+    false_kws = dict(apl_inh_divisive=False)
+    if kws.get('prat_boutons', False):
+        false_kws['bouton_inh_divisive'] = False
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, **false_kws, **kws)
+    assert not any(k in ret2[3] for k in APL_INH_FORM_PARAMS)
+    assert_fit_outputs_equal(ret, ret2)
+
+
+def test_apl_inh_divisive_changes_outputs(apl_inh_form_model):
+    """Tests divisive APL>KC and APL>bouton inhibition (w/ thresholds and APL weights
+    fixed at values tuned w/ subtractive inhibition) give finite outputs that differ
+    from subtractive inhibition, w/ the same spontaneous input.
+    """
+    orn_deltas, kws, ret = apl_inh_form_model
+    responses, spike_counts, _, params = ret
+    # (fixed params should reproduce tuned outputs)
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+
+    for div_kws in _apl_inh_form_variants(kws):
+        responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+            **div_kws, **fixed_kws, **kws
+        )
+        for k in APL_INH_FORM_PARAMS:
+            if k in div_kws:
+                assert params2[k] is True
+            else:
+                assert k not in params2
+
+        assert responses2.index.equals(responses.index)
+        assert responses2.columns.equals(responses.columns)
+        assert np.isin(responses2.values, (0, 1)).all()
+        # (may be all 0: w/ the same weights, divisive inhibition of strongly driven
+        # claws / boutons is much stronger, e.g. 200 / (1 + 20) vs 200 - 20)
+        assert np.isfinite(spike_counts2.values).all()
+        # (spontaneous input has no APL inhibition)
+        assert np.array_equal(params2['kc_spont_in'].values,
+            params['kc_spont_in'].values
+        )
+
+        n_changed = (responses2 != responses).values.sum()
+        print(f'{div_kws}: response rate {responses.values.mean():.4f} (subtractive) '
+            f'-> {responses2.values.mean():.4f} ({n_changed} KC-odor responses '
+            f'changed; total spikes {spike_counts.values.sum()} -> '
+            f'{spike_counts2.values.sum()})'
+        )
+        assert not spike_counts2.equals(spike_counts)
+
+
+def test_apl_inh_divisive_tuning(apl_inh_form_model):
+    """Tests tuning w/ divisive APL inhibition reaches the target response rate, w/
+    responses differing between variants (and from subtractive inhibition).
+    """
+    orn_deltas, kws, ret = apl_inh_form_model
+    target = 0.1
+    apl_keys = ('wAPLKC', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale',
+        'wPNAPL_scale'
+    )
+    def apl_params(params):
+        return {k: params[k] for k in apl_keys if k in params and is_scalar(params[k])}
+
+    variant_responses = [ret[0]]
+    for div_kws in _apl_inh_form_variants(kws):
+        responses, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
+            target_sparsity=target, **_DIVISIVE_TUNING_KWS, **div_kws, **kws
+        )
+        for k in div_kws:
+            assert params[k] is True
+        rate = responses.mean().mean()
+        print(f'{div_kws}: tuned response rate {rate:.4f}, APL weights '
+            f'{apl_params(params)} (subtractive: {apl_params(ret[3])}), '
+            f'tuning iters {params.get("tuning_iters")}'
+        )
+        assert np.isfinite(spike_counts.values).all()
+        # (olfsysm default mp.kc.sp_acc=0.1 is relative to target)
+        assert abs(rate - target) <= 0.1 * target + 1e-9
+        assert not any(responses.equals(x) for x in variant_responses)
+        variant_responses.append(responses)
+
+
+def test_apl_inh_divisive_invalid(orn_deltas):
+    """Tests `bouton_inh_divisive=True` w/o `prat_boutons=True` raises ValueError.
+    """
+    for kws in (dict(weight_divisor=20),
+            dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True)
+        ):
+        with pytest.raises(ValueError, match='bouton_inh_divisive'):
+            fit_mb_model(orn_deltas, bouton_inh_divisive=True, **kws)
+
+
+def test_apl_inh_divisive_model_id():
+    """Tests model IDs / LR cache keys only change when `apl_inh_divisive` /
+    `bouton_inh_divisive` are True.
+    """
+    kws = dict(BOUTON_DEPLETION_MODEL_KWS)
+    false_kws = {**kws, 'apl_inh_divisive': False, 'bouton_inh_divisive': False}
+    assert format_model_params(false_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(false_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(apl_inh_divisive=True), dict(bouton_inh_divisive=True),
+        dict(apl_inh_divisive=True, bouton_inh_divisive=True)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_apl_inh_divisive_simulator(apl_inh_form_model):
+    """Tests `make_fixed_param_kc_simulator` keeps divisive APL inhibition in its KC
+    simulations (matching `fit_mb_model`), including in the initial (tuning) call, and
+    that w/o APL (all APL weight scales 0) outputs equal those of subtractive inhibition.
+    """
+    orn_deltas, kws, ret = apl_inh_form_model
+    div_kws = _apl_inh_form_variants(kws)[-1]
+
+    target = 0.1
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        target_sparsity=target, **_DIVISIVE_TUNING_KWS, **div_kws, **kws
+    )
+    assert not any(k in initial_params for k in APL_INH_FORM_PARAMS)
+    tuned_responses, _ = simulate(dict())
+    assert abs(tuned_responses.mean().mean() - target) <= 0.1 * target + 1e-9
+
+    # same thresholds / APL weights, w/ subtractive inhibition
+    simulate_sub, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, **kws
+    )
+    assert not simulate_sub(dict())[1].equals(simulate(dict())[1])
+
+    # (half the tuned APL weights)
+    half_apl = {k: v / 2 for k, v in initial_params.items() if k != 'fixed_thr'}
+    responses, spike_counts = simulate(half_apl)
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **div_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **half_apl})}
+    )
+    for k in div_kws:
+        assert params2[k] is True
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)
+
+    # acute APL knockout: x / (1 + 0) == x - 0
+    apl_off = {k: 0.0 for k in initial_params if k != 'fixed_thr'}
+    responses_off, spike_counts_off = simulate(apl_off)
+    responses_off_sub, spike_counts_off_sub = simulate_sub(apl_off)
+    assert responses_off.equals(responses_off_sub)
+    assert spike_counts_off.equals(spike_counts_off_sub)
