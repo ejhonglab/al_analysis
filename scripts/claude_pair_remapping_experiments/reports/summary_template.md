@@ -1,4 +1,6 @@
-# KC remapping experiments: summary to date (2026-11-06, 09:39)
+# Model experiments to improve fit to KC remapping, with APL on/off
+
+last model experiment: {{meta:last_experiment}}, edited: {{meta:generated}}
 
 [TOC]
 

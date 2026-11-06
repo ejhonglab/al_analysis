@@ -15,6 +15,8 @@ separates table cells). Keys:
   `col=value[;col=value]` to select by other columns. `<column>` may list alternatives
   separated by commas; the first one the table has is used.
 - `lit:<text> # <source>`: a hand-entered value, allowed only with its source after `#`.
+- `meta:generated` (the time the page is built) and `meta:last_experiment` (the latest
+  completion time in the experiment index of experiment_priorities.md), as YYYY-MM-DD HH:MM.
 
 Every resolution returns the value and a source record (file, row, column, sha256 of the
 file, the al_analysis commit recorded in the folder's provenance if any), which
@@ -137,9 +139,34 @@ def _resolve_table(key: str) -> Resolved:
         sha256=_sha256(str(p)), commit=_commit(str(p.parent))))
 
 
+def _last_experiment() -> Resolved:
+    """Latest completion time in the experiment index (rows `| E<n> | ... | MM-DD HH:MM (#k) |`)."""
+    import re
+    from datetime import datetime
+    path = H.shared_dir() / 'experiment_priorities.md'
+    year = datetime.now().year
+    best = None
+    for line in path.read_text().split('\n'):
+        m = re.match(r'^\| (E\d+) \|.*\| completed \|.*\| (\d{2})-(\d{2}) (\d{2}):(\d{2}) \(#\d+\) \|\s*$', line)
+        if m:
+            t = datetime(year, int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)))
+            if best is None or t > best[0]:
+                best = (t, m.group(1))
+    if best is None:
+        raise KeyError('meta:last_experiment: no completed experiment in the index')
+    return Resolved('meta:last_experiment', best[0].strftime('%Y-%m-%d %H:%M'), dict(kind='meta',
+        description=f'completion time of the latest completed experiment ({best[1]}) in experiment_priorities.md\'s index',
+        file='experiment_priorities.md', sha256=_sha256(str(path))))
+
+
 def resolve(key: str) -> Resolved:
     """The value of a placeholder key, with its source."""
     key = key.strip()
+    if key == 'meta:generated':
+        from datetime import datetime
+        return Resolved(key, datetime.now().strftime('%Y-%m-%d %H:%M'), dict(kind='meta', description='time this page was built'))
+    if key == 'meta:last_experiment':
+        return _last_experiment()
     if key.startswith('lit:'):
         text, sep, src = key[4:].partition('#')
         if not sep or not src.strip():
@@ -186,6 +213,8 @@ def tooltip(res: Resolved) -> str:
     s = res.source
     if s.get('kind') == 'literal':
         return f"hand-entered: {s['source']}"
+    if s.get('kind') == 'meta':
+        return s['description']
     if s.get('kind') == 'data':
         part = f" ({'lower' if s['part'] == 'lo' else 'upper'} end of the 90 % interval)" if s.get('part') else ''
         return f"KC / ORN data: {s['name']}{part}: {s.get('definition') or ''} [data_targets.py {str(s.get('commit') or '')[:7]}]"

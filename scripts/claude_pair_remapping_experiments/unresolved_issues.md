@@ -99,7 +99,9 @@ directory's notes/ and are linked from here.
   the artifact would have (Tom: that suffices meanwhile).
 - **Remains.** At the start of the next session (once, without probing the tools repeatedly):
   tell Tom, and if the tools work, run build_summary.py, publish
-  outputs/_artifacts/summary/index.html to the summary slug and run save_report_copy.py. Until
+  outputs/_artifacts/summary/index.html to the summary slug with the new title "Model experiments to
+  improve fit to KC remapping, with APL on/off" (the artifact title is set at publish) and run
+  save_report_copy.py. Until
   then, keep updating the reports/ copy with save_report_copy.py after each build.
 
 ## Resolved

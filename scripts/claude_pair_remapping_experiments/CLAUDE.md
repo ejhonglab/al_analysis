@@ -434,8 +434,12 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   chat may still say "you".
 - **No provenance chatter.** Summary reports never mention which host or which model / agent
   ran, wrote or requested anything, do not open with a status list of what is completed,
-  running or started, and have no byline or "Artifact: ..." line: the page starts with the
-  title and the first content section.
+  running or started, and have no byline or "Artifact: ..." line. The page starts with the
+  title, "Model experiments to improve fit to KC remapping, with APL on/off" (no timestamp in
+  it), then one de-emphasized line, "last model experiment: {{meta:last_experiment}}, edited:
+  {{meta:generated}}" (both filled at build time as YYYY-MM-DD HH:MM, no comma inside a
+  timestamp; the converter renders the first paragraph under the title muted), then the first
+  content section. When republishing, pass that title to the artifact too.
 - **The progress plot follows the best-models section.** The section right after "Where the
   best models stand" and before the pending-experiments section is the interactive plot of
   how far the best model so far has closed the gap to the KC data on each
