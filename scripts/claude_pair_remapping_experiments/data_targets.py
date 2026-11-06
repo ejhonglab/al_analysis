@@ -131,6 +131,14 @@ def build() -> dict:
         add(f'{name}_struct_wt', st['spearman_resid_vs_remap_wt'], 'structure beyond the ORN input vs wild-type somata: ρ of the 66-pair residual around the linear ORN prediction with the same residual of Remy\'s wild-type KC somata', 'harness.compare_to_references', ['ref66'])
         add(f'{name}_vcf', st['spearman_resid_vs_vcf_hyp'], 'natural-source alignment: ρ of the 66-pair residual around the linear ORN prediction with the hyperbolic natural-source distances', 'harness.compare_to_references', ['ref66'])
 
+    for col, name, lab in (('kc_ctrl', 'ctrl', 'control flies'), ('kc_tnt', 'tnt', 'APL output blocked (TNT)')):
+        _, fit = H.linear_resid(ref[col], ref['orn'])
+        for k, desc in (('slope', 'slope b'), ('intercept', 'intercept a'), ('r2', 'R²')):
+            add(f'{name}_orn_fit_{k}', fit[k], f'{desc} of the least-squares line KC distance = a + b × mean ORN distance over the 66 megamat pairs, KCs in {lab}',
+                'harness.linear_resid (as in compare_to_references)', ['ref66'])
+    add('n_ref_pairs', len(ref), 'odor pairs shared by the APL16 panel and the megamat references (12 odors)', 'harness.reference_pairs', ['ref66'])
+    add('n_vcf_filled', int(ref['vcf_raw'].isna().sum()), 'of those pairs, how many have no raw natural-source dissimilarity (embedding-filled)', 'harness.reference_pairs', ['ref66'])
+
     sup = suppression_stats(fr['TNT3c'].mean(), fr['TNT'].mean(), {'TNT3c': fr['TNT3c'].mean(), 'TNT': fr['TNT'].mean()})
     boots = []
     for _ in range(2000):
