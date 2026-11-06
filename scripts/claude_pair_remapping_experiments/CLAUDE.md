@@ -403,6 +403,10 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   publishing; the artifact renders exactly that file.
 - Numbers in tables with the data value and the model baseline alongside (see above); prose
   says what moved and whether it reached the data.
+- **Third person throughout.** Summary reports (and the final report) are read by people other than
+  Tom: never address the reader or Tom in the second person ("your megamat data"); name data
+  by what they are ("the megamat ORN recordings, 9 flies"). Replies to Tom in the terminal and
+  chat may still say "you".
 - **No provenance chatter.** Summary reports never mention which host or which model / agent
   ran, wrote or requested anything, do not open with a status list of what is completed,
   running or started, and have no byline or "Artifact: ..." line: the page starts with the
