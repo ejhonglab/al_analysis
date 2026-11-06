@@ -132,7 +132,30 @@ def main() -> None:
         draw(o, ctrl, tnt, within, block, iso_resid, nums, measure=measure, out_name=out_name)
         old.update({prefix + k: v for k, v in nums.items()})
         print(measure, {k: round(v, 3) for k, v in nums.items()})
+    old.update(rate_ratios())
     jp.write_text(json.dumps(old, indent=1) + '\n')
+
+
+def rate_ratios(n_boot: int = 5000) -> dict:
+    """The data's APL-off (TNT) / APL-on (control) response-rate ratio, two ways, over the 16
+    odors: the fraction of KCs responding (trial-mean > 1; the definition model rate ratios use)
+    and the mean response size (trial-mean responses with negative values set to 0, over all
+    KCs and odors), each with a 90 % bootstrap interval over recordings."""
+    rng = np.random.default_rng(0)
+    frac = {g: H.yang_response_fractions(g)[H.APL16_ODORS].mean(axis=1) for g in ('TNT3c', 'TNT')}
+    tm = H.yang_trialmeans()
+    tm = tm[tm.odor.isin(H.APL16_ODORS)].assign(v=lambda d: d.value.clip(lower=0))
+    size = {g: tm[tm.genotype == g].groupby(['date', 'fly_num', 'hemibrain']).v.mean() for g in ('TNT3c', 'TNT')}
+    out = {}
+    for name, per_rec, pooled in (('fraction', frac, None),
+            ('mean_response', size, {g: float(tm[tm.genotype == g].v.mean()) for g in ('TNT3c', 'TNT')})):
+        point = (pooled['TNT'] / pooled['TNT3c']) if pooled else float(per_rec['TNT'].mean() / per_rec['TNT3c'].mean())
+        boots = [per_rec['TNT'].iloc[rng.integers(0, len(per_rec['TNT']), len(per_rec['TNT']))].mean()
+            / per_rec['TNT3c'].iloc[rng.integers(0, len(per_rec['TNT3c']), len(per_rec['TNT3c']))].mean() for _ in range(n_boot)]
+        lo, hi = np.percentile(boots, [5, 95])
+        out[f'rate_ratio_{name}'] = float(point)
+        out[f'rate_ratio_{name}_ci90'] = [float(lo), float(hi)]
+    return out
 
 
 if __name__ == '__main__':
