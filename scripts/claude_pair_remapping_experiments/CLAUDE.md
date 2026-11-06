@@ -103,7 +103,8 @@ Write markdown notes about current priorities / experiment interpretation to the
 tensor, in the Tom/claude_kc_remapping directory (will refer to this as the "shared
 directory"). On hal, tensor is automounted at /local/tensor, so the shared directory is
 /local/tensor/Tom/claude_kc_remapping (`ls` it to trigger the mount). On other hosts,
-find the mount with `mount | grep tensor`. The shared directory already contains copies
+find the mount with `mount | grep tensor`, or try the automount approach (also assuming
+it's at /local/tensor, if that fails). The shared directory already contains copies
 of the report, apl_pair_analysis/, from_remy/ and from_yang/.
 
 In the shared directory, create/maintain/read at least the following:
@@ -466,6 +467,13 @@ Canonical experiment names for summary reports:
 | E25 | the joint fit with the structure-beyond-ORN targets in the loss |
 | E26 | the supralinear per-claw transfer |
 | E27 | the oracle glomerulus gain for the weak-input odors |
+| E28 | the oracle glomerulus gain in the combined model |
+| E29 | the hemibrain substrate check for the oracle glomeruli |
+| E30 | the replication of the structure-loss joint fits on re-drawn wiring |
+| E31 | the APL->bouton bound control |
+| E32 | the ORN->PN stage and the weak odors |
+| E33 | the combined model on re-drawn wiring |
+| E34 | the combined model with interpretable bounds |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
