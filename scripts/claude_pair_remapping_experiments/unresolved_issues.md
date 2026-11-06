@@ -59,3 +59,27 @@ directory's notes/ and are linked from here.
 - **Remains.** Correct the literal and redraw when those figures are next regenerated.
 
 ## Resolved
+
+### The archive's params.csv did not record what drives APL, the divisive flags or the fit bounds (found 2026-11-06, atlas)
+
+- **What.** `archive_model_outputs.py` kept only the columns in its PARAM_COLS list, which lacked
+  `apl_drive`, `pn_claw_to_apl`, `apl_inh_divisive`, `bouton_inh_divisive`, `base_params`,
+  `init_params` and the bound settings (`aplpn_max`, `aplpn_fixed`, `aplkc_min`), and it copied
+  only `provenance.json`, not the joint-fit scripts' per-fit `provenance_<tag>.json`.
+- **Affected.** The shared archive (`data/model_outputs/`): E35's params.csv could not tell the
+  spike-driven or divisive variants from the others (the final parameters alone do not say what
+  drives APL or how it inhibits), E36 stage 2 likewise; E30 / E31 / E33 / E34 lacked their bounds;
+  the joint-fit folders (E10, E25, the E28 joint-fit arm, E30, E31, E33, E34, E36 stage 2) lacked
+  their per-fit provenance. No statistic or figure was affected.
+- **Resolved** in 6ba1063: the columns are archived, the per-fit provenance files copied (also by
+  `--params-only`), and the nine folders re-run with `--params-only` (old columns unchanged).
+
+### `--aplpn-fixed` did not fix the APL->bouton scale in the first run of the bound control (found 2026-11-06, atlas)
+
+- **What.** `optimize_mb_model_params(tie_apl_weights=True)` ties every APL scale, including the
+  non-optimized bouton scales, to the APL->KC factor, so E31's "APL->bouton fixed at 1x" fit moved
+  the bouton scale with the APL->KC scale (it ended at 2.4x).
+- **Affected.** E31's first fixed-scale run only.
+- **Resolved** in a7b611f (`tie_apl_weights` accepts the subset of scales to tie; `--aplpn-fixed`
+  ties only the KC->APL scale); the fixed variant was re-run, and the mis-run is kept as the
+  "tied to APL->KC" variant, annotated in E31_aplpn_bound.md and in its stats row.
