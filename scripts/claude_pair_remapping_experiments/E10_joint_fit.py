@@ -257,7 +257,7 @@ def init_from_fit(tag: str, base: Dict[str, float], experiment: str = 'E10_joint
 def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, maxfev: int,
     method: str, thr0_factor: float, claw_thr=None, init_from: Optional[str] = None,
     init_from_experiment: str = 'E10_joint_fit', verbose: bool = True,
-    wPNKC_override: Optional[pd.DataFrame] = None):
+    wPNKC_override: Optional[pd.DataFrame] = None, init_thr: Optional[float] = None):
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if claw_thr is None else e19_row(claw_thr, k, kckc0)
@@ -279,6 +279,10 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
             wAPLPN_scale=initial['wAPLPN_scale'], wPNAPL_scale=initial['wPNAPL_scale'],
             wKCKC_scale=kckc0,
         )
+    if init_thr is not None:
+        # a warm start at a known threshold (e.g. the one tuned for a gained wiring)
+        init['fixed_thr'] = float(init_thr)
+        print(f'start threshold overridden: {init_thr} Hz', flush=True)
     bounds = {
         'fixed_thr': (initial['fixed_thr'] / 4, initial['fixed_thr'] * 4),
         'wAPLKC_scale': (init['wAPLKC_scale'] / 30, init['wAPLKC_scale'] * 30),
@@ -380,6 +384,9 @@ def main() -> None:
         "E27 / E28; tag prefix gain<G>_)")
     ap.add_argument('--gain-glomeruli', nargs='+', default=None, metavar='GLOM',
         help='glomeruli the gain applies to (default: the E27 oracle set: DC2 DL1 DM1 DM5 D DP1m VA7m VC1)')
+    ap.add_argument('--init-thr', type=float, default=None, metavar='HZ',
+        help='start the somatic threshold here (overrides the seed / --thr0-factor; e.g. the '
+        'threshold tuned for a gained wiring)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -424,7 +431,7 @@ def main() -> None:
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
             thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
             init_from_experiment=args.init_from_experiment,
-            wPNKC_override=(wPNKC if gain is not None else None)
+            wPNKC_override=(wPNKC if gain is not None else None), init_thr=args.init_thr
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -442,7 +449,7 @@ def main() -> None:
             gain=gain, gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None),
             method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
-            init_from=args.init_from, loss_variant=args.loss,
+            init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
