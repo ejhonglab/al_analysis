@@ -38,6 +38,8 @@ tags get a `gain<G>_` prefix after the threshold prefix, and fits.csv / provenan
 gain and glomeruli.
 Second wiring draw (E30): `--wiring claw_permutation --wiring-seed N` replaces the base's claw x bouton
 matrix by that shuffle (al_analysis.wpnkc_shuffles) before any gain; tag prefix wiring-<name>-seed<N>_.
+Bound controls (E31): `--aplpn-max F`, `--aplpn-fixed F`, `--aplkc-min F` bound or fix the APL->bouton /
+APL->KC scales relative to the base's tuned values (use --tag to name the variant).
 """
 from __future__ import annotations
 
@@ -274,7 +276,9 @@ def init_from_fit(tag: str, base: Dict[str, float], experiment: str = 'E10_joint
 def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, maxfev: int,
     method: str, thr0_factor: float, claw_thr=None, init_from: Optional[str] = None,
     init_from_experiment: str = 'E10_joint_fit', verbose: bool = True,
-    wPNKC_override: Optional[pd.DataFrame] = None, init_thr: Optional[float] = None):
+    wPNKC_override: Optional[pd.DataFrame] = None, init_thr: Optional[float] = None,
+    aplpn_max: Optional[float] = None, aplpn_fixed: Optional[float] = None,
+    aplkc_min: Optional[float] = None):
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if claw_thr is None else e19_row(claw_thr, k, kckc0)
@@ -306,6 +310,24 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         'wAPLPN_scale': (init['wAPLPN_scale'] / 30, init['wAPLPN_scale'] * 30),
         'wKCKC_scale': (0.0, 300.0),
     }
+    # bound controls (E31): the APL->bouton and APL->KC scales relative to the base's tuned
+    # values (`initial`, E3's for the plain bouton base, E16's for a threshold base)
+    params = ['fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'wKCKC_scale']
+    if aplpn_fixed is not None:
+        init['wAPLPN_scale'] = initial['wAPLPN_scale'] * aplpn_fixed
+        params.remove('wAPLPN_scale'); bounds.pop('wAPLPN_scale')
+        print(f'APL->bouton scale fixed at {aplpn_fixed:g}x the base ({init["wAPLPN_scale"]:.4g})', flush=True)
+    elif aplpn_max is not None:
+        hi = initial['wAPLPN_scale'] * aplpn_max
+        init['wAPLPN_scale'] = min(init['wAPLPN_scale'], hi)
+        bounds['wAPLPN_scale'] = (min(bounds['wAPLPN_scale'][0], hi / 30), hi)
+        print(f'APL->bouton scale bounded at <= {aplpn_max:g}x the base ({hi:.4g}); start {init["wAPLPN_scale"]:.4g}', flush=True)
+    if aplkc_min is not None:
+        lo = initial['wAPLKC_scale'] * aplkc_min
+        init['wAPLKC_scale'] = max(init['wAPLKC_scale'], lo)
+        init['wKCAPL_scale'] = init['wAPLKC_scale'] * (initial['wKCAPL_scale'] / initial['wAPLKC_scale'])
+        bounds['wAPLKC_scale'] = (lo, max(bounds['wAPLKC_scale'][1], lo * 30))
+        print(f'APL->KC scale bounded at >= {aplkc_min:g}x the base ({lo:.4g}); start {init["wAPLKC_scale"]:.4g}', flush=True)
     opt_kws = {}
     if method == 'differential_evolution':
         opt_kws = dict(popsize=6, seed=0, polish=False, init='sobol')
@@ -313,7 +335,7 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     wiring_kws = {} if wPNKC_override is None else {'_wPNKC': wPNKC_override}
     res = optimize_mb_model_params(orn, loss_fn=loss_fn,
         condition_param_overrides={'on': {}, 'off': {'wAPLKC_scale': 0.0, 'wAPLPN_scale': 0.0}},
-        params_to_optimize=['fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'wKCKC_scale'],
+        params_to_optimize=params,
         initial_params=init, bounds=bounds, tie_apl_weights=True, method=method,
         maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
         **base_kws(claw_thr), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
@@ -409,6 +431,12 @@ def main() -> None:
     ap.add_argument('--init-thr', type=float, default=None, metavar='HZ',
         help='start the somatic threshold here (overrides the seed / --thr0-factor; e.g. the '
         'threshold tuned for a gained wiring)')
+    ap.add_argument('--aplpn-max', type=float, default=None, metavar='F',
+        help='bound the APL->bouton scale at <= F x the base\'s tuned value (E31)')
+    ap.add_argument('--aplpn-fixed', type=float, default=None, metavar='F',
+        help='fix the APL->bouton scale at F x the base\'s tuned value and fit the other three (E31)')
+    ap.add_argument('--aplkc-min', type=float, default=None, metavar='F',
+        help='bound the APL->KC scale at >= F x the base\'s tuned value (E31)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -455,7 +483,8 @@ def main() -> None:
             thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
             init_from_experiment=args.init_from_experiment,
             wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None) else None),
-            init_thr=args.init_thr
+            init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
+            aplkc_min=args.aplkc_min
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -475,6 +504,7 @@ def main() -> None:
             method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
+            aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
@@ -525,6 +555,7 @@ def main() -> None:
                 cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
             base=BOUTON, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
+            aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=BLOCK_TARGET,
