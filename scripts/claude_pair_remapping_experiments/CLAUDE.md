@@ -474,6 +474,7 @@ Canonical experiment names for summary reports:
 | E32 | the ORN->PN stage and the weak odors |
 | E33 | the combined model on re-drawn wiring |
 | E34 | the combined model with interpretable bounds |
+| E35 | divisive APL inhibition |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
