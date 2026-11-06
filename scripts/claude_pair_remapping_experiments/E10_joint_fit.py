@@ -40,6 +40,8 @@ Second wiring draw (E30): `--wiring claw_permutation --wiring-seed N` replaces t
 matrix by that shuffle (al_analysis.wpnkc_shuffles) before any gain; tag prefix wiring-<name>-seed<N>_.
 Bound controls (E31): `--aplpn-max F`, `--aplpn-fixed F`, `--aplkc-min F` bound or fix the APL->bouton /
 APL->KC scales relative to the base's tuned values (use --tag to name the variant).
+APL drive (E36): `--apl-drive spikes` drives APL by the KCs' spikes plus the bouton rates
+(pn_claw_to_apl=False) instead of the summed claw input; tag segment spk_.
 """
 from __future__ import annotations
 
@@ -85,10 +87,17 @@ def e19_row(claw_thr: float, k: float, kckc: float):
     return None if len(m) == 0 else m.iloc[0]
 
 
+APL_DRIVE = 'claws'   # set from --apl-drive; 'spikes' = APL driven by KC spikes (pn_claw_to_apl=False)
+
+
 def base_kws(claw_thr) -> dict:
     kws = dict(BOUTON, make_plots=False, silent=True)
     if claw_thr is not None:
         kws['claw_thr'] = float(claw_thr)
+    if APL_DRIVE == 'spikes':
+        # E35: APL driven by the KCs' spikes (plus the bouton rates) instead of the summed
+        # claw input; the APL-off breadth and the normalized APL weights do not depend on it
+        kws['pn_claw_to_apl'] = False
     return kws
 
 
@@ -433,6 +442,10 @@ def main() -> None:
         "shuffle (claw_permutation, claw_permutation_within_type, curveball, "
         "curveball_within_type; E30's second draw); tag prefix wiring-<SHUFFLE>-seed<N>_")
     ap.add_argument('--wiring-seed', type=int, default=0, help='seed of the --wiring draw')
+    ap.add_argument('--apl-drive', default='claws', choices=['claws', 'spikes'],
+        help="what drives APL: 'claws' (the summed claw input, pn_claw_to_apl=True, the bouton base "
+        "since E13) or 'spikes' (KC spikes plus bouton rates, pn_claw_to_apl=False; E35 / E36); "
+        "tag segment spk_ after the threshold prefix")
     ap.add_argument('--init-thr', type=float, default=None, metavar='HZ',
         help='start the somatic threshold here (overrides the seed / --thr0-factor; e.g. the '
         'threshold tuned for a gained wiring)')
@@ -445,6 +458,8 @@ def main() -> None:
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
+    global APL_DRIVE
+    APL_DRIVE = args.apl_drive
 
     res_dir = H.results_dir(args.experiment)
     out_dir = H.outputs_dir(args.experiment)
@@ -476,8 +491,8 @@ def main() -> None:
         gain_gloms = list(args.gain_glomeruli) if args.gain_glomeruli else list(ORACLE)
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
-    prefix = ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_')
+    prefix = ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + (
+        'spk_' if args.apl_drive == 'spikes' else '') + wiring_tag + ('' if gain is None else f'gain{gain:g}_')
 
     fits_path = res_dir / 'fits.csv'
     for k in args.exponents:
@@ -506,7 +521,7 @@ def main() -> None:
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
             gain=gain, gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None),
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
-            method=args.method,
+            apl_drive=args.apl_drive, method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
@@ -561,7 +576,7 @@ def main() -> None:
             base=BOUTON, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
-            base_params=initial, loss_variant=args.loss,
+            apl_drive=args.apl_drive, base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=BLOCK_TARGET,
             block_scale=BLOCK_SCALE, rate_target=RATE_TARGET, ratio_target=loss_fn.ratio_target,
