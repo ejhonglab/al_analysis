@@ -87,6 +87,21 @@ directory's notes/ and are linked from here.
   every later fit's loss by ~0.007, so do it between experiments, not mid-comparison); the
   per-experiment notes keep their hand-typed values.
 
+### Artifact publishing unavailable on both hosts (found 2026-11-06 14:34)
+
+- **What.** The claude-artifacts tools stopped working in hal's and atlas's sessions ("not found:
+  the artifact tools on this server aren't available to this session"); they come back only after
+  a Claude Code restart. Nothing was published or changed on the server.
+- **Affects.** The published summary artifact (https://claude.ai/artifact/DCsKxo7Y2XT1MhiL4MfJoe)
+  is the 14:08 version, without the footnote on how "structure beyond the ORN input" is computed
+  (and anything added to the template since). The shared directory's reports/summary_2026-11-06.html
+  (and current-summary.html) is kept current from build_summary.py's page, so it has the content
+  the artifact would have (Tom: that suffices meanwhile).
+- **Remains.** At the start of the next session (once, without probing the tools repeatedly):
+  tell Tom, and if the tools work, run build_summary.py, publish
+  outputs/_artifacts/summary/index.html to the summary slug and run save_report_copy.py. Until
+  then, keep updating the reports/ copy with save_report_copy.py after each build.
+
 ## Resolved
 
 ### The archive's params.csv did not record what drives APL, the divisive flags or the fit bounds (found 2026-11-06, atlas)
