@@ -32,6 +32,10 @@ Outputs: <shared>/results/E10_joint_fit/ (fits.csv, history_k<k>.csv, best-fit s
 figure) and ./outputs/E10_joint_fit/ (responses / spike counts of each best fit).
 Usage: OMP_NUM_THREADS=6 nice -n 10 ./venv/bin/python E10_joint_fit.py -k 3 1 [--maxfev 150]
        [--kckc0 60] [--claw-thr 40] [--method Nelder-Mead|direct|differential_evolution] [--smoke]
+Glomerulus gain (E28's joint-fit arm): `--glom-gain 1.5 [--gain-glomeruli ...]` multiplies the
+PN->claw weights of the E27 oracle glomeruli (default set) in the wiring passed to the fit;
+tags get a `gain<G>_` prefix after the threshold prefix, and fits.csv / provenance record the
+gain and glomeruli.
 """
 from __future__ import annotations
 
@@ -84,11 +88,19 @@ def base_kws(claw_thr) -> dict:
     return kws
 
 
-def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None):
+def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
+    gain_gloms=None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
-    regenerated here)."""
+    regenerated here).
+
+    With `gain`, the PN->claw weights of the glomeruli in `gain_gloms` (default: the oracle
+    set of the glomerulus-gain experiment, E27) are multiplied by `gain` (E27's `gained`);
+    the returned wPNKC is the gained matrix (pass it to the fit as `_wPNKC`) and the breadth
+    is recomputed from an APL-off run of the gained wiring at the base's parameters. The
+    tuned base parameters themselves are not re-tuned at the gain: the joint fit fits the
+    threshold and the APL / KC-KC scales, and `--init-from` sets the start."""
     from al_analysis.mb_model import fit_mb_model
     hal_out = H.shared_dir() / 'data' / 'hal_outputs'
     if claw_thr is None:
@@ -110,6 +122,19 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None):
         wAPLPN=initial['wAPLPN_scale'], wPNAPL=initial['wPNAPL_scale'], **kws
     )
     wnorm = {k: pd0[k] / pd0[f'{k}_scale'] for k in ('wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL')}
+    if gain is not None and gain != 1.0:
+        from E27_glomerulus_gain import ORACLE, gained
+        gloms = list(gain_gloms) if gain_gloms else list(ORACLE)
+        missing = set(gloms) - set(wPNKC.columns.get_level_values('glomerulus'))
+        if missing:
+            raise ValueError(f'gain glomeruli not in the wiring: {sorted(missing)}')
+        wPNKC = gained(wPNKC, gloms, gain)
+        kws = dict(kws, _wPNKC=wPNKC)
+        # the gained wiring's own APL-off breadth (hal's saved base runs do not apply)
+        hal_path = out_dir / 'no_such_file'
+        off_path = out_dir / (off_path.name.replace('_base_', f'_gain{gain:g}_base_')
+            if '_base_' in off_path.name else f'gain{gain:g}_' + off_path.name)
+        print(f'gain {gain:g} on {gloms}', flush=True)
     if hal_path.exists():
         off_spk = pd.read_parquet(hal_path)
         print(f'breadth from {hal_path}', flush=True)
@@ -231,7 +256,8 @@ def init_from_fit(tag: str, base: Dict[str, float], experiment: str = 'E10_joint
 
 def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, maxfev: int,
     method: str, thr0_factor: float, claw_thr=None, init_from: Optional[str] = None,
-    init_from_experiment: str = 'E10_joint_fit', verbose: bool = True):
+    init_from_experiment: str = 'E10_joint_fit', verbose: bool = True,
+    wPNKC_override: Optional[pd.DataFrame] = None):
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if claw_thr is None else e19_row(claw_thr, k, kckc0)
@@ -262,12 +288,14 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     opt_kws = {}
     if method == 'differential_evolution':
         opt_kws = dict(popsize=6, seed=0, polish=False, init='sobol')
+    # (only with a glomerulus gain, so the default path is unchanged)
+    wiring_kws = {} if wPNKC_override is None else {'_wPNKC': wPNKC_override}
     res = optimize_mb_model_params(orn, loss_fn=loss_fn,
         condition_param_overrides={'on': {}, 'off': {'wAPLKC_scale': 0.0, 'wAPLPN_scale': 0.0}},
         params_to_optimize=['fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'wKCKC_scale'],
         initial_params=init, bounds=bounds, tie_apl_weights=True, method=method,
         maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
-        **base_kws(claw_thr), _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
+        **base_kws(claw_thr), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
         _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU
     )
     return res, init, bounds
@@ -347,6 +375,11 @@ def main() -> None:
         help='experiment whose fits.csv --init-from reads')
     ap.add_argument('--init-from', default=None, metavar='TAG',
         help='start from an earlier fit (row TAG of fits.csv): its relative threshold / APL factors on this base, its KC-KC scale')
+    ap.add_argument('--glom-gain', type=float, default=None, metavar='G',
+        help="multiply the PN->claw weights of the gain glomeruli by G (the oracle gain of "
+        "E27 / E28; tag prefix gain<G>_)")
+    ap.add_argument('--gain-glomeruli', nargs='+', default=None, metavar='GLOM',
+        help='glomeruli the gain applies to (default: the E27 oracle set: DC2 DL1 DM1 DM5 D DP1m VA7m VC1)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -370,10 +403,18 @@ def main() -> None:
     print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}; loss variant {args.loss}', flush=True)
 
     t0 = time.time()
-    initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr)
-    print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}); tuned params '
-        f'{initial}', flush=True)
-    prefix = '' if args.claw_thr is None else f'thr{args.claw_thr:g}_'
+    gain = None if args.glom_gain in (None, 1.0) else float(args.glom_gain)
+    initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
+        gain_gloms=args.gain_glomeruli
+    )
+    gain_gloms = None
+    if gain is not None:
+        from E27_glomerulus_gain import ORACLE
+        gain_gloms = list(args.gain_glomeruli) if args.gain_glomeruli else list(ORACLE)
+    print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}); '
+        f'tuned params {initial}', flush=True)
+    prefix = ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + (
+        '' if gain is None else f'gain{gain:g}_')
 
     fits_path = res_dir / 'fits.csv'
     for k in args.exponents:
@@ -382,7 +423,8 @@ def main() -> None:
         res, init, bounds = fit_one(k, orn, initial, wnorm, breadth, loss_fn, kckc0=args.kckc0,
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
             thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
-            init_from_experiment=args.init_from_experiment
+            init_from_experiment=args.init_from_experiment,
+            wPNKC_override=(wPNKC if gain is not None else None)
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -397,6 +439,7 @@ def main() -> None:
             sp.to_parquet(out_dir / f'{tag}_{cond}_spike_counts.parquet')
         p = res['params']
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
+            gain=gain, gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None),
             method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, loss_variant=args.loss,
@@ -448,7 +491,8 @@ def main() -> None:
                 capture_output=True, text=True).stdout.strip(),
             olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
                 cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
-            base=BOUTON, claw_thr=args.claw_thr, base_params=initial, loss_variant=args.loss,
+            base=BOUTON, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
+            base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=BLOCK_TARGET,
             block_scale=BLOCK_SCALE, rate_target=RATE_TARGET, ratio_target=loss_fn.ratio_target,
