@@ -45,6 +45,8 @@ PARAM_COLS = ['tag', 'variant', 'base', 'config', 'kind', 'point', 'part', 'seed
     'gain_glomeruli', 'factor', 'scaled_odors', 'k', 'm', 'breadth', 'breadth_k', 'n_claws_active_to_spike',
     'coinput_factor', 'apl_unit_coupling', 'coupling', 'kc_set', 'kc_scale', 'bouton_scale', 'ext_inh_scale',
     'pn_inhadd', 'pn_inhsc', 'pn_apl_multiplier', 'multibouton_claws', 'claw_weight', 'wiring', 'wiring_seed',
+    'apl_drive', 'pn_claw_to_apl', 'apl_inh_divisive', 'bouton_inh_divisive', 'base_params',
+    'init_params', 'aplpn_max', 'aplpn_fixed', 'aplkc_min',
     'init_from', 'init_thr', 'loss_variant', 'method', 'maxfev', 'kckc0', 'thr0_factor',
     'n_kcs', 'n_glomeruli', 'rate_on', 'rate_off', 'rate_acute_off', 'rate_homeo_full_off',
     'rate_homeo_data_off', 'error']
@@ -77,9 +79,9 @@ def ascii_only(name: str) -> None:
 def archive_experiment(name: str, host: str, params_only: bool = False) -> dict:
     """Copies outputs/<name>/ to the archive and (re)builds its params.csv and README.
 
-    With `params_only`, only params.csv is rebuilt (from the shared results/ tables and the
-    tables already in the archive folder), so it works for experiments whose local outputs
-    are on another host; the README row is left as it is.
+    With `params_only`, only params.csv and the provenance files are refreshed (from the shared
+    results/ tables and the tables already in the archive folder), so it works for experiments
+    whose local outputs are on another host; the README row is left as it is.
     """
     src = H.HERE / 'outputs' / name
     res = H.results_dir(name) if (H.shared_dir() / 'results' / name).exists() else None
@@ -127,10 +129,12 @@ def archive_experiment(name: str, host: str, params_only: bool = False) -> dict:
     params = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if len(params):
         params.to_csv(dst / 'params.csv', index=False)
+    if res:
+        # provenance.json, plus the per-fit provenance_<tag>.json the joint-fit scripts write
+        for pf in sorted(res.glob('provenance*.json')):
+            shutil.copy2(pf, dst / pf.name)
     if params_only:
         return dict(name=name, host=host, n_files=len(list(dst.rglob('*'))), n_variants=params['tag'].nunique() if 'tag' in params.columns else len(params), conditions='', params_only=True)
-    if res and (res / 'provenance.json').exists():
-        shutil.copy2(res / 'provenance.json', dst / 'provenance.json')
     parsed = [split_variant_condition(p.name) for p in list(dst.rglob('*_spike_counts.parquet'))
         + list(dst.rglob('*_responses.parquet'))]
     variants = sorted({v for v, _ in parsed})
