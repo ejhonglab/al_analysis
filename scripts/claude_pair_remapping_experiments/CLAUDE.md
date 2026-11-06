@@ -375,8 +375,9 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   ran, wrote or requested anything, do not open with a status list of what is completed,
   running or started, and have no byline or "Artifact: ..." line: the page starts with the
   title and the first content section.
-- **The progress plot closes the page.** The last content section before the footnotes is the
-  interactive plot of how far the best model so far has closed the gap to the KC data on each
+- **The progress plot follows the best-models section.** The section right after "Where the
+  best models stand" and before the pending-experiments section is the interactive plot of
+  how far the best model so far has closed the gap to the KC data on each
   statistic, against experiment completion time (points = each experiment's best variant per
   statistic, hover for experiment and variant; a staircase per statistic; the KC target as a
   dotted line at 100 %, in the legend and not hideable; legend entries toggle lines). It is
