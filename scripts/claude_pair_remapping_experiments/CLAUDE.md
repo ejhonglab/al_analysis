@@ -82,6 +82,12 @@ and dirty state with diff, CPU, package versions, input hashes), and
 `fit_and_plot_mb_model` outputs carry `model_provenance.json`. The CPU is recorded for
 information only; nothing compares it.
 
+## Model and usage caps
+
+When a usage cap on Claude Fable is hit, switch to Opus 5.5 at xhigh effort and carry on
+with the same work. Subagents spawned while capped also use Opus 5.5 at xhigh (as for
+code-change subagents above).
+
 ## System resources
 
 Run as many parallel experiments / simulations as you can to utilize the system's
