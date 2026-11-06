@@ -1,12 +1,12 @@
 {
- "generated": "2026-11-05T21:18:31+00:00",
+ "generated": "2026-11-06T02:06:12+00:00",
  "host": "hal",
  "server": "https://neuprint.janelia.org",
  "dataset": "hemibrain:v1.2.1",
  "server_version": "1.9.8",
  "neuprint_python": "0.6.4",
  "script": "pull_neuprint_connectivity.py",
- "al_analysis_commit": "7a1e474a40299d039aea5fffc3d1294a542cdcdb",
+ "al_analysis_commit": "4cc4489841a7fbe9668e87cb0af8fd9a75eeb968",
  "queries": {
   "pn_types": ".*PN.*",
   "lhn_types": "^LH.*",
