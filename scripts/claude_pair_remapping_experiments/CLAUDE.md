@@ -418,6 +418,18 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   (e.g. `| | ORNs | KCs {span=2} |` over `| | | control flies | APL output blocked (TNT) |`).
   The data columns are labelled "ORNs" and "KCs" (parallel and short), never "ORN input", in
   tables and figure panels alike; prose may still say "the ORN input".
+- **Parameter-list headers.** In tables meant for comparing numbers across columns (the
+  best-models table and the like), a header that names a model by its parameters puts one
+  parameter per line, with `<br>` inside the cell (`md_to_artifact.py` renders it as a line
+  break in table cells; anywhere else its lint flags it): `breadth 3<br>KC–KC 100`, not
+  "breadth 3 × KC–KC 100"; the "×" or "+" joining parameters is dropped once each has its own
+  line. A descriptive part goes first, on its own line(s) ("grid point", `joint fit<br>structure
+  targets`, "the reference model"), then the parameters in a fixed order (per-claw threshold,
+  breadth, KC–KC, glomerulus gain, APL bounds). When columns share parameters, the shared ones
+  go in a spanning header row (`{span=N}`) and only what differs in the row below. The same
+  applies to a header listing what a column's "a / b / c" values are (`APL→bouton /<br>APL→KC<br>(×
+  baseline)`) and to a first-column header listing the table's fixed settings. Headers that
+  name statistics stay on one line for now.
 - **Genotype labels.** In every figure title, axis label, legend entry, table header and
   row label the two genotypes are "control flies" and "APL output blocked (TNT)", never "APL
   blocked" or "TNT" alone (prose may say "with APL output blocked" once the label has been

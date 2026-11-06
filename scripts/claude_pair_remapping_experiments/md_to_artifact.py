@@ -7,7 +7,8 @@ lists (continuation lines indented or simply following the item until a blank li
 next item), pipe tables (every row before the `|---|` separator is a header row, a header
 cell ending in `{span=N}` spans N columns centered; a column whose body cells are mostly
 numbers is right-aligned as a whole, header included, and kept narrow so values sit close
-together), figures written as
+together; `<br>` inside a cell is a line break, used to put each parameter of a header that
+lists parameters on its own line), figures written as
 `![caption](path.png)` on their own line (embedded as data URIs, so the page is one file),
 `---` rules, collapsible blocks (a line `??? Title` opens one, a line `???` closes it; rendered
 as <details>, collapsed by default), hover definitions (a block opened by a line `%%% hover` and
@@ -71,6 +72,7 @@ CSS = """
 _ITEM_RE = re.compile(r'^(\d+)\. (.*)')
 _BULLET_RE = re.compile(r'^[-*] (.*)')
 _FIG_RE = re.compile(r'^!\[(.*?)\]\((\S+?)\)\s*$')
+_BR_RE = re.compile(r'<br\s*/?>', re.I)
 
 
 def inline(s: str) -> str:
@@ -169,6 +171,10 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
     def text_html(s: str) -> str:
         return with_defs(inline(s), defs)
 
+    def cell_html(s: str) -> str:
+        """A table cell: `<br>` splits it into lines, each converted on its own."""
+        return '<br>'.join(text_html(part.strip()) for part in _BR_RE.split(s))
+
     def take_item(first: str) -> str:
         """Returns the item text with its continuation lines joined."""
         nonlocal i
@@ -251,14 +257,14 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
                 for cell in hr:
                     text, span = _span_of(cell)
                     if span > 1:
-                        cells_html.append(f'<th class="span" colspan="{span}">{text_html(text)}</th>')
+                        cells_html.append(f'<th class="span" colspan="{span}">{cell_html(text)}</th>')
                     else:
-                        cells_html.append(f'<th class="{"num" if c < ncol and col_num[c] else "txt"}">{text_html(text)}</th>')
+                        cells_html.append(f'<th class="{"num" if c < ncol and col_num[c] else "txt"}">{cell_html(text)}</th>')
                     c += span
                 t.append(f'<tr class="{"subhead" if hk else "head"}">' + ''.join(cells_html) + '</tr>')
             for r in body_rows:
                 t.append('<tr>' + ''.join(
-                    f'<td class="{"num" if c < ncol and col_num[c] else "txt"}">{text_html(cell)}</td>' for c, cell in enumerate(r)) + '</tr>')
+                    f'<td class="{"num" if c < ncol and col_num[c] else "txt"}">{cell_html(cell)}</td>' for c, cell in enumerate(r)) + '</tr>')
             t.append('</table>')
             out.append('\n'.join(t)); continue
         m = _ITEM_RE.match(s)
@@ -335,6 +341,8 @@ def lint(page: str) -> List[str]:
             probs.append('table-of-contents marker left in text')
         if re.search(r'\{#[A-Za-z0-9_-]+\}', t):
             probs.append(f'heading id marker left in text: {t[:70]!r}')
+        if re.search(r'&lt;br\s*/?&gt;', t, re.I):
+            probs.append(f'escaped line break left in text (<br> works in table cells only): {t[:70]!r}')
         if re.search(r'\{span=\d+\}', t):
             probs.append(f'column-span marker left in text: {t[:70]!r}')
         if re.match(r'^(\d+\. |[-*] )', t) and len(t) > 3:
