@@ -217,7 +217,8 @@ def main() -> None:
         host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), base=BOUTON, claw_thr=thr, forms={f: FORMS[f] for f in args.forms},
         approx_conc_note=H.APPROX_CONC_NOTE)
     try:
-        prov.update(H.model_provenance(orn_deltas=orn))
+        from al_analysis.mb_model import model_provenance
+        prov.update(model_provenance(orn_deltas=orn))
     except Exception as e:  # keep the commit hashes at least
         prov.update(al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
             olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=(H.HERE / '../../../olfsysm').resolve(), capture_output=True, text=True).stdout.strip(),
