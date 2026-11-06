@@ -349,8 +349,11 @@ too verbose, so put the numbers in the table and the judgement in the sentence.
 Names of the Spearman statistics (Tom, 2026-11-06). Write the Greek letter ρ (the character,
 not "rho"; when Tom types "rho" he means ρ):
 - between two sets of odor-odor distances (a model matrix and a KC matrix, two KC matrices, a
-  KC matrix and the ORNs): "ρ", e.g. "ρ with the control matrix", "ρ between the two KC
-  matrices"; with a value in text, "ρ=0.97" (not "rank agreement 0.97");
+  KC matrix and the ORNs): "ρ on odor-odor distances", always with that qualifier (prose, table
+  rows and headers, figure titles), so it is never confused with the response rate ρ, e.g. "ρ on
+  odor-odor distances with the ORNs", "ρ on odor-odor distances between the two KC matrices";
+  with a value in text, "ρ=0.97 on odor-odor distances" (not "rank agreement 0.97"); a spanning
+  header "ρ on odor-odor distances {span=N}" may carry the qualifier for the columns under it;
 - between per-odor response rates (the fraction of KCs responding to each odor, model vs data):
   "response rate ρ", e.g. "response rate ρ=0.67";
 - a response rate of real or model KCs is a "response rate", never a bare "rate" (bouton, PN
@@ -458,7 +461,13 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
 - **Genotype labels.** In every figure title, axis label, legend entry, table header and
   row label the two genotypes are "control flies" and "APL output blocked (TNT)", never "APL
   blocked" or "TNT" alone (prose may say "with APL output blocked" once the label has been
-  introduced). Model conditions stay "APL on" / "APL off".
+  introduced). Model conditions stay "APL on" / "APL off". Where one label covers the model
+  and the KC data together, paired as the model with APL on against the control flies and the
+  model with APL off against APL output blocked (TNT) (e.g. a column of the model's ρ with the
+  matching KC matrix, whose KC-data row is that matrix's ceiling), the label is just "APL on" /
+  "APL off": a "ρ on odor-odor distances {span=2}" header over "APL on" | "APL off", and rows
+  "ρ on odor-odor distances, APL on" / ", APL off", not "ρ with control" / "with APL output
+  blocked (TNT)".
 - **Distance-matrix figures.** Panel titles name only what is shown ("ORN input", "KCs,
   control flies", "KCs, APL output blocked (TNT)"); the distance function appears once per
   panel, in the colorbar label, by its name alone ("cosine distance across glomerular

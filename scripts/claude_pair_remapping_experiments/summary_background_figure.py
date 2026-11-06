@@ -59,6 +59,7 @@ def draw(orn, ctrl, tnt, within, block, iso_resid, nums, *, measure: str, out_na
     import matplotlib.pyplot as plt
     odors = list(H.APL16_ODORS)
     pearson = measure == 'pearson'
+    rho_on = 'correlations' if pearson else 'distances'   # what the panel titles' ρ is computed on
     tf = (lambda s: 1.0 - s) if pearson else (lambda s: s)
     o, c, t = tf(orn), tf(ctrl), tf(tnt)
     fit = tf(ctrl - iso_resid)
@@ -100,9 +101,9 @@ def draw(orn, ctrl, tnt, within, block, iso_resid, nums, *, measure: str, out_na
         ax.set_xlim(xlim); ax.set_ylim(lim); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel); ax.set_title(title, fontsize=11); ax.legend(fontsize=8, loc=corner)
         ax.spines[['top', 'right']].set_visible(False)
     scatter(axes[1, 0], o, c, orn_ax, kc_ax('control flies'),
-        f"KCs, control flies vs ORNs\n(ρ={nums['spearman_ctrl_orn']:.2f})")
+        f"KCs, control flies vs ORNs\n(ρ={nums['spearman_ctrl_orn']:.2f} on odor-odor {rho_on})")
     scatter(axes[1, 1], o, t, orn_ax, kc_ax('APL output blocked (TNT)'),
-        f"KCs, APL output blocked (TNT) vs ORNs\n(ρ={nums['spearman_tnt_orn']:.2f})")
+        f"KCs, APL output blocked (TNT) vs ORNs\n(ρ={nums['spearman_tnt_orn']:.2f} on odor-odor {rho_on})")
     ax = axes[1, 2]
     ax.plot(lim, lim, ls='--', color='0.8', lw=1, zorder=0)
     ax.scatter(t[~block], c[~block], s=12, color='#5c6370', label='pairs')
