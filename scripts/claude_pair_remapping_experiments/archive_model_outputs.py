@@ -14,6 +14,7 @@ README.md listing the variants. The top-level README.md gets one row per experim
     ./venv/bin/python archive_model_outputs.py E16_claw_saturation [E19_... ...]
     ./venv/bin/python archive_model_outputs.py --all          # every outputs/E* folder
     ./venv/bin/python archive_model_outputs.py --inputs       # ORN input + base wirings
+    ./venv/bin/python archive_model_outputs.py --all --params-only   # rebuild every params.csv
 
 File and folder names are ASCII only (CLAUDE.md); names with other characters are rejected.
 """
@@ -31,11 +32,20 @@ import pandas as pd
 import kc_remapping_harness as H
 
 ARCHIVE = H.shared_dir() / 'data' / 'model_outputs'
-PARAM_COLS = ['tag', 'variant', 'base', 'config', 'seed', 'target_rate', 'fixed_thr', 'fixed_thr_mean',
-    'fixed_thr_is_vector', 'thr_factor', 'thr_scale_homeo_full', 'thr_scale_homeo_data', 'wAPLKC', 'wKCAPL',
+# identifying columns, every model parameter a script has put in its table (fit_mb_model kwargs,
+# olfsysm parameters, input / wiring modifications), fit settings, and a few output rates. Add
+# to this list whenever a script records a new parameter column; params.csv is what the
+# archive README points at for regenerating a variant.
+PARAM_COLS = ['tag', 'variant', 'base', 'config', 'kind', 'point', 'part', 'seed', 'target_rate', 'target',
+    'fixed_thr', 'fixed_thr_mean', 'fixed_thr_is_vector', 'thr_factor', 'thr_scale_homeo_full',
+    'thr_scale_homeo_data', 'stage0_fixed_thr', 'stage0_thr_factor', 'wAPLKC', 'wKCAPL',
     'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'kc_apl_factor', 'wKCKC_scale',
-    'kc_kc_inh', 'kc_kc_tau', 'wkckc', 'claw_thr', 'claw_sat', 'form', 'bouton_ves_p', 'bouton_tau_r',
-    'alpha', 'gain_min', 'gain_max', 'k', 'breadth', 'breadth_k', 'n_claws_active_to_spike', 'coupling',
+    'kc_kc_inh', 'kc_kc_tau', 'wkckc', 'claw_thr', 'claw_thr_width', 'claw_sat', 'form', 'claw_pow',
+    'claw_pow_ref', 'bouton_ves_p', 'bouton_tau_r', 'alpha', 'gain_min', 'gain_max', 'gain', 'glomeruli',
+    'gain_glomeruli', 'factor', 'scaled_odors', 'k', 'm', 'breadth', 'breadth_k', 'n_claws_active_to_spike',
+    'coinput_factor', 'apl_unit_coupling', 'coupling', 'kc_set', 'kc_scale', 'bouton_scale', 'ext_inh_scale',
+    'pn_inhadd', 'pn_inhsc', 'pn_apl_multiplier', 'multibouton_claws', 'claw_weight', 'wiring', 'wiring_seed',
+    'init_from', 'init_thr', 'loss_variant', 'method', 'maxfev', 'kckc0', 'thr0_factor',
     'n_kcs', 'n_glomeruli', 'rate_on', 'rate_off', 'rate_acute_off', 'rate_homeo_full_off',
     'rate_homeo_data_off', 'error']
 STATS_NAMES = ['stats_variants.csv', 'models.csv', 'wkckc_controls.csv', 'sweep.csv']
@@ -64,16 +74,26 @@ def ascii_only(name: str) -> None:
         raise ValueError(f'non-ASCII name: {name!r}')
 
 
-def archive_experiment(name: str, host: str) -> dict:
+def archive_experiment(name: str, host: str, params_only: bool = False) -> dict:
+    """Copies outputs/<name>/ to the archive and (re)builds its params.csv and README.
+
+    With `params_only`, only params.csv is rebuilt (from the shared results/ tables and the
+    tables already in the archive folder), so it works for experiments whose local outputs
+    are on another host; the README row is left as it is.
+    """
     src = H.HERE / 'outputs' / name
     res = H.results_dir(name) if (H.shared_dir() / 'results' / name).exists() else None
-    if not src.exists():
-        raise FileNotFoundError(src)
     ascii_only(name)
     dst = ARCHIVE / name
+    if params_only:
+        if not dst.exists():
+            raise FileNotFoundError(f'{dst} (nothing archived yet; run without --params-only on the host that ran it)')
+        src = dst
+    elif not src.exists():
+        raise FileNotFoundError(src)
     dst.mkdir(parents=True, exist_ok=True)
     n_files = 0
-    for p in sorted(src.rglob('*')):
+    for p in ([] if params_only else sorted(src.rglob('*'))):
         if not p.is_file() or p.suffix in ('.pyc', '.html'):
             continue   # .html: artifact pages live in reports/, not here
         rel = p.relative_to(src)
@@ -107,6 +127,8 @@ def archive_experiment(name: str, host: str) -> dict:
     params = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if len(params):
         params.to_csv(dst / 'params.csv', index=False)
+    if params_only:
+        return dict(name=name, host=host, n_files=len(list(dst.rglob('*'))), n_variants=params['tag'].nunique() if 'tag' in params.columns else len(params), conditions='', params_only=True)
     if res and (res / 'provenance.json').exists():
         shutil.copy2(res / 'provenance.json', dst / 'provenance.json')
     parsed = [split_variant_condition(p.name) for p in list(dst.rglob('*_spike_counts.parquet'))
@@ -181,18 +203,21 @@ def main() -> None:
     ap.add_argument('experiments', nargs='*')
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--inputs', action='store_true')
+    ap.add_argument('--params-only', action='store_true',
+        help='only rebuild params.csv from the shared results tables (works for any host\'s experiments)')
     args = ap.parse_args()
     host = socket.gethostname()
     if args.inputs:
         save_inputs()
     names = args.experiments
     if args.all:
-        names = sorted(p.name for p in (H.HERE / 'outputs').glob('E*') if p.is_dir())
+        where = ARCHIVE if args.params_only else (H.HERE / 'outputs')
+        names = sorted(p.name for p in where.glob('E*') if p.is_dir())
     rows = []
     for n in names:
-        r = archive_experiment(n, host); rows.append(r)
-        print(f"{n}: {r['n_files']} files, {r['n_variants']} variants -> {ARCHIVE / n}")
-    if rows:
+        r = archive_experiment(n, host, params_only=args.params_only); rows.append(r)
+        print(f"{n}: {r['n_files']} files, {r['n_variants']} variants -> {ARCHIVE / n}" + (' (params.csv only)' if args.params_only else ''))
+    if rows and not args.params_only:
         update_index(rows)
 
 
