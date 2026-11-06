@@ -3,7 +3,7 @@
 olfdb, over the 36 glomeruli the model's ORN input uses.
 
 The matrix the program has used as its 16-odor ORN reference (apl_pair_analysis/
-orn16_consensus_corrdist.csv, `kc_remapping_harness.orn16_consensus_pairs()`) was computed by
+orn16_consensus_corrdist.csv, now `kc_remapping_harness.orn16_consensus_pairs_zero_filled()`) was computed by
 the original report's analysis from al_analysis/data/sent_to_vlad/2024-06-21/consensus_mean.csv
 over the union of the megamat and validation2 panels' glomeruli, with 0 in place of glomeruli a
 panel did not image (DL4 and VM4 for the megamat odors; VA4 and VL1 for the validation2 odors),
@@ -98,7 +98,7 @@ def main() -> None:
     V = pd.DataFrame(vec)[list(H.APL16_ODORS)]
     assert not V.isna().any().any()
 
-    old = H.orn16_consensus_pairs()
+    old = H.orn16_consensus_pairs_zero_filled()
     get = lambda s, a, b: s.get((a, b), s.get((b, a), np.nan))
     rows = []
     for a, b in combinations(H.APL16_ODORS, 2):

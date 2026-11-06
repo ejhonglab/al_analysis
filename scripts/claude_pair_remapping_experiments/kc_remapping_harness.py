@@ -361,7 +361,24 @@ def report_matrices() -> Dict[str, pd.Series]:
 
 
 def orn16_consensus_pairs() -> pd.Series:
-    """The report's 16-odor ORN matrix (1 - r of consensus glomerular mean dF/F)."""
+    """The 16-odor ORN odor-odor distances: 1 - Pearson r across the 36 glomeruli of the
+    model's ORN input, rebuilt from olfdb (datasets 1 and 4) by orn16_distances_from_olfdb.py
+    (shared directory, data/model_outputs/inputs/orn16_corrdist_olfdb_36glom.csv). Within-panel
+    pairs are the mean over flies of per-fly 1 - r (al_util.mean_of_fly_corrs); cross-panel pairs
+    (no fly imaged both panels) use the fly-mean vectors.
+
+    Since 2026-11-06; before, this returned the report's matrix
+    (`orn16_consensus_pairs_zero_filled()`), which counted glomeruli a panel did not image as
+    zero responses (unresolved_issues.md).
+    """
+    return pairs_from_square(pd.read_csv(shared_dir() / 'data' / 'model_outputs' / 'inputs' /
+        'orn16_corrdist_olfdb_36glom.csv', index_col=0
+    ))
+
+
+def orn16_consensus_pairs_zero_filled() -> pd.Series:
+    """The original report's 16-odor ORN matrix (1 - r of consensus glomerular mean dF/F over
+    the union of both panels' glomeruli, unimaged glomeruli as 0). Kept for comparison only."""
     return pairs_from_square(pd.read_csv(APL_PAIR_DIR / 'orn16_consensus_corrdist.csv',
         index_col=0
     ))

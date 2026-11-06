@@ -35,9 +35,15 @@ directory's notes/ and are linked from here.
   headline numbers is small: ρ of the KCs with the ORNs 0.655 to 0.648 (control flies), 0.748 to
   0.737 (APL output blocked (TNT)); individual pair distances move by 0.05-0.07 on average, up to
   0.15.
-- **Remains.** Point `orn16_consensus_pairs()` (or a new harness function) at the rebuilt matrix,
-  regenerate the summary's background figure / table, and decide whether to recompute the
-  deviation-from-ORN columns of earlier experiments or annotate them.
+- **Done (2026-11-06, later).** `orn16_consensus_pairs()` now reads the rebuilt matrix (the old one
+  stays available as `orn16_consensus_pairs_zero_filled()`); the summary's background figures,
+  data table (ORN column: mean distance 0.67 -> 0.73, range 0.05-1.13 -> 0.11-1.16, pairs > 0.8
+  apart 47 -> 52, within-group 0.28 -> 0.35, fruity x small-ester 0.51 -> 0.56; ρ with the ORNs
+  0.65 / 0.75 -> 0.65 / 0.74) and text are regenerated.
+- **Remains.** The ORN-based columns already written in earlier experiments' stats tables
+  (spearman_orn_on / _off, gap_closed, the *_dev columns) were computed with the old matrix; re-run
+  their scoring from the archived outputs or annotate the tables. Scripts re-run from now on use
+  the new matrix.
 
 ### The data's APL-off / APL-on response-rate ratio "1.9" was never computed (found 2026-11-06)
 
