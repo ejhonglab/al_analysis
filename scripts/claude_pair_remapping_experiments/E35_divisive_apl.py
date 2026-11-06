@@ -83,48 +83,68 @@ def thr_tag(thr) -> str:
 
 
 def make_figure(stats: pd.DataFrame, fracs: pd.DataFrame, data_rates: dict, res_dir) -> None:
+    """Per-odor suppression against the APL-on fraction for the data and three 70 Hz models,
+    then the suppression uniformity, the rate rank agreement and the matrix statistics for
+    every variant (claw-driven APL: four forms x two thresholds; KC-spike-driven: two forms x
+    two thresholds)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     p = H.PRIMARY_MODEL_RDM + '__'
     if 'error' in stats:
         stats = stats[stats['error'].isna()]
-    stats = stats.copy()
-    stats['thr_label'] = stats.claw_thr.map(lambda t: 'no threshold' if pd.isna(t) else f'{t:g} Hz')
-    order = [f'{f}_{thr_tag(t)}' for t in (None, 70.0) for f in FORMS]
-    stats = stats.set_index('tag').reindex([t for t in order if t in set(stats.tag)]).reset_index()
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8.5))
-    colors = {'sub': '#6b7280', 'kcdiv': '#1d4ed8', 'boutondiv': '#c2410c', 'bothdiv': '#15803d'}
-    d_on = data_rates['TNT3c'].reindex(H.APL16_ODORS); d_ratio = (data_rates['TNT'] / data_rates['TNT3c']).reindex(H.APL16_ODORS)
+    form_label = {'sub': 'subtractive', 'kcdiv': 'divisive at KCs', 'boutondiv': 'divisive at boutons', 'bothdiv': 'divisive at both'}
+    order = [f'{f}_{thr_tag(t)}' for t in (None, 70.0) for f in FORMS] + [f'{f}_{thr_tag(t)}_spk' for t in (None, 70.0) for f in ('sub', 'kcdiv')]
+    st = stats.set_index('tag').reindex([t for t in order if t in set(stats.tag)]).reset_index()
+    colors = {'sub': '#6b7280', 'kcdiv': '#1d4ed8', 'boutondiv': '#c2410c', 'bothdiv': '#7c3aed'}
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9.5))
     ax = axes[0, 0]
-    ax.scatter(d_on, d_ratio, s=30, color='black', label='KC data', zorder=5)
-    for _, r in stats.iterrows():
-        on = fracs[f"{r.tag}_on"].reindex(H.APL16_ODORS); off = fracs[f"{r.tag}_acute_off"].reindex(H.APL16_ODORS)
-        ratio = off / on.where(on > 0)
-        ax.scatter(on, ratio, s=18, color=colors[r.form], marker='o' if r.thr_label == 'no threshold' else '^', alpha=0.8,
-            label=f'{r.form}, {r.thr_label}')
-    ax.set_yscale('log'); ax.set_xlabel('APL-on response fraction (model) / control flies (data)'); ax.set_ylabel('APL off / on response fraction')
-    ax.set_title('per-odor APL suppression vs the odor\'s APL-on fraction', fontsize=9); ax.legend(fontsize=6.5, frameon=False, ncol=2)
-    x = np.arange(len(stats)); labels = [f'{f}\n{t}' for f, t in zip(stats.form, stats.thr_label)]
-    panels = [('suppression uniformity: sd across odors of log(off / on) (data 0.15, noise 0.13)', ['suppression_sd_log'], DATA_UNIFORMITY_SD, ['model']),
-        ('rate rank agreement with the data (ceiling 0.98 / 0.97)', ['spearman_rate_on_vs_data', 'spearman_rate_off_vs_data'], None, ['APL on', 'APL off']),
-        ('rank agreement with control (on) / TNT (off)', [p + 'on_spearman', p + 'off_spearman'], None, ['APL on vs control', 'APL off vs TNT']),
-        ('mean pair distance (data 0.84 on / 0.66 off)', [p + 'on_mean_model', p + 'off_mean_model'], 0.840, ['APL on', 'APL off']),
-        ('block (data +0.055) and APL-on block-pair excess (data -0.08)', [p + 'block_fruity_small_iso', 'on_excess_block'], 0.055, ['fruity x small-ester block', 'APL-on block-pair excess'])]
-    for ax, (title, cols, ref, lab) in zip(list(axes.ravel())[1:], panels):
+    d_on = data_rates['TNT3c'].reindex(H.APL16_ODORS); d_ratio = (data_rates['TNT'] / data_rates['TNT3c']).reindex(H.APL16_ODORS)
+    ax.scatter(d_on, d_ratio, s=34, color='black', label='KCs (control flies; APL output blocked (TNT) / control)', zorder=5)
+    for tag, c, lab in (('sub_thr70', '#6b7280', 'claw-driven APL, subtractive'), ('kcdiv_thr70', '#1d4ed8', 'claw-driven APL, divisive at KCs'),
+            ('sub_thr70_spk', '#15803d', 'spike-driven APL, subtractive')):
+        if f'{tag}_on' not in fracs:
+            continue
+        on = fracs[f'{tag}_on'].reindex(H.APL16_ODORS); off = fracs[f'{tag}_acute_off'].reindex(H.APL16_ODORS)
+        ax.scatter(on, off / on.clip(lower=0.5 / 1732), s=24, color=c, label=f'model, 70 Hz: {lab}', alpha=0.9)
+        for o in ('ms', 'B-myr'):
+            ax.annotate(o, (on[o], off[o] / max(on[o], 0.5 / 1732)), xytext=(4, 2), textcoords='offset points', fontsize=7, color=c)
+    ax.set_xscale('symlog', linthresh=0.005); ax.set_yscale('log')
+    ax.set_xlabel('fraction of KCs responding with APL on (model) or in control flies (data)', fontsize=8)
+    ax.set_ylabel('responders with APL off / with APL on', fontsize=8)
+    ax.set_title('per-odor APL suppression\n(odors without APL-on responders counted as half a KC)', fontsize=9)
+    ax.legend(fontsize=6.5, frameon=False, loc='upper right')
+    from matplotlib.patches import Patch
+    from matplotlib.ticker import ScalarFormatter
+    ax.yaxis.set_major_formatter(ScalarFormatter()); ax.yaxis.set_minor_formatter(ScalarFormatter())
+    x = np.arange(len(st)) + np.array([0.6 if t.endswith('_spk') else 0.0 for t in st.tag])
+    labels = ['none' if pd.isna(c) else f'{c:g} Hz' for c in st.claw_thr]
+    bar_colors = [colors[f] for f in st.form]
+    hatches = ['///' if t.endswith('_spk') else '' for t in st.tag]
+    split = (x[[not t.endswith('_spk') for t in st.tag]].max() + x[[t.endswith('_spk') for t in st.tag]].min()) / 2 if any(st.tag.str.endswith('_spk')) else None
+    panels = [('spread of suppression across odors: sd of log(off / on)\n(data 0.15, dotted; bootstrap noise 0.13, dashed)', ['suppression_sd_log'], [0.148, 0.128], ['']),
+        ('rank correlation of suppression with the APL-on fraction\n(data -0.12, dotted)', ['spearman_suppression_vs_on_frac'], [-0.12], ['']),
+        ('rate rank agreement, per odor (ceiling about 0.97)\nsolid: APL on vs control flies; pale: APL off vs APL output blocked (TNT)', ['spearman_rate_on_vs_data', 'spearman_rate_off_vs_data'], [], ['', '']),
+        ('rank agreement with the KC matrices\nsolid: APL on vs control flies; pale: APL off vs APL output blocked (TNT)', [p + 'on_spearman', p + 'off_spearman'], [], ['', '']),
+        ('mean cosine distance, APL on\n(control flies 0.84, dotted)', [p + 'on_mean_model'], [0.840], [''])]
+    for ax, (title, cols, refs_, lab) in zip(list(axes.ravel())[1:], panels):
         w = 0.8 / len(cols)
         for i, col in enumerate(cols):
-            ax.bar(x + (i - (len(cols) - 1) / 2) * w, stats[col], w, color=[colors[f] for f in stats.form], alpha=1.0 if i == 0 else 0.45, label=lab[i])
-        if ref is not None:
-            ax.axhline(ref, color='0.3', lw=1, ls=':')
-        if cols[0] == 'suppression_sd_log':
-            ax.axhline(DATA_UNIFORMITY_NOISE, color='0.6', lw=1, ls='--')
-        ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=7); ax.set_title(title, fontsize=9)
-        if len(cols) > 1:
-            ax.legend(fontsize=7, frameon=False)
+            ax.bar(x + (i - (len(cols) - 1) / 2) * w, st[col], w, color=bar_colors, alpha=1.0 if i == 0 else 0.4, hatch=hatches,
+                edgecolor='white', linewidth=0.8)
+        for j, r in enumerate(refs_):
+            ax.axhline(r, color='0.25' if j == 0 else '0.6', lw=1, ls=':' if j == 0 else '--')
+        if split is not None:
+            ax.axvline(split, color='0.75', lw=0.8)
+            ymax = ax.get_ylim()[1]
+            ax.text(np.mean(x[[not t.endswith('_spk') for t in st.tag]]), ymax, 'APL driven by the summed claw input', ha='center', va='bottom', fontsize=7.5, color='0.3')
+            ax.text(np.mean(x[[t.endswith('_spk') for t in st.tag]]), ymax, 'APL driven by KC spikes', ha='center', va='bottom', fontsize=7.5, color='0.3')
+        ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=7, rotation=90); ax.set_title(title, fontsize=9, pad=14)
+    handles = [Patch(color=colors[f], label=form_label[f]) for f in FORMS] + [Patch(facecolor='white', edgecolor='0.3', hatch='///', label='APL driven by KC spikes')]
+    axes[0, 1].legend(handles=handles, fontsize=7, frameon=False, loc='upper right')
     for ax in axes.ravel():
-        ax.spines[['top', 'right']].set_visible(False); ax.grid(True, color='0.9', lw=0.6)
-    fig.suptitle('E35: divisive APL inhibition on the bouton base (5 % with APL on, acute APL off); circles / first row: no per-claw threshold, triangles: 70 Hz', fontsize=10)
+        ax.spines[['top', 'right']].set_visible(False); ax.grid(True, axis='y', color='0.9', lw=0.6)
+    fig.suptitle('Divisive APL inhibition and the APL drive on the bouton base (tuned to 5 % responding with APL on, APL removed acutely)', fontsize=10)
     fig.tight_layout(); fig.savefig(res_dir / 'E35_divisive_apl.png', dpi=130); plt.close(fig)
 
 

@@ -481,6 +481,7 @@ Canonical experiment names for summary reports:
 | E33 | the combined model on re-drawn wiring |
 | E34 | the combined model with interpretable bounds |
 | E35 | divisive APL inhibition |
+| E36 | KC-spike-driven APL |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
