@@ -143,6 +143,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--thr', default='70', help="per-claw threshold in Hz, or 'none'")
     ap.add_argument('--forms', nargs='+', default=list(FORMS), choices=list(FORMS))
+    ap.add_argument('--apl-drive', default='claws', choices=['claws', 'spikes'],
+        help="what drives APL: 'claws' (the bouton base: summed claw input plus bouton rates, "
+        "pn_claw_to_apl=True) or 'spikes' (KC spikes plus bouton rates, pn_claw_to_apl=False)")
     ap.add_argument('--figure-only', action='store_true')
     args = ap.parse_args()
     thr = None if args.thr == 'none' else float(args.thr)
@@ -150,7 +153,7 @@ def main() -> None:
     data_rates = {g: H.yang_response_fractions(g)[H.APL16_ODORS].mean() for g in ('TNT3c', 'TNT')}
     if args.figure_only:
         stats, fracs = merge(res_dir); make_figure(stats, fracs, data_rates, res_dir); print('figure ->', res_dir); return
-    tt = thr_tag(thr)
+    tt = thr_tag(thr) + ('_spk' if args.apl_drive == 'spikes' else '')
     stats_path = res_dir / f'stats_variants_{tt}.csv'; fracs_path = res_dir / f'per_odor_response_fractions_{tt}.csv'
     rows = list(pd.read_csv(stats_path).to_dict('records')) if stats_path.exists() else []
     rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
@@ -170,6 +173,8 @@ def main() -> None:
         if tag in done:
             continue
         kws = dict(BOUTON)
+        if args.apl_drive == 'spikes':
+            kws['pn_claw_to_apl'] = False
         if thr is not None:
             kws['claw_thr'] = thr
         if kc_div:
@@ -185,12 +190,12 @@ def main() -> None:
             on_out, off_out, wPNKC, params, extra = tune_and_knockout(orn, kws, out_dir, tag, with_pn_contrast=False)
         except Exception as e:
             print(f'{tag} FAILED: {e!r}'[:300], flush=True)
-            rows.append(dict(variant=tag, tag=tag, form=form, claw_thr=thr, apl_inh_divisive=kc_div, bouton_inh_divisive=bouton_div, error=repr(e)[:300]))
+            rows.append(dict(variant=tag, tag=tag, form=form, claw_thr=thr, apl_drive=args.apl_drive, apl_inh_divisive=kc_div, bouton_inh_divisive=bouton_div, error=repr(e)[:300]))
             pd.DataFrame(rows).to_csv(stats_path, index=False); continue
         tuned[tag] = {k: float(np.mean(np.asarray(v, dtype=float))) for k, v in params.items() if k in PARAM_KEYS}
-        tuned[tag].update(claw_thr=thr, form=form, apl_inh_divisive=kc_div, bouton_inh_divisive=bouton_div)
+        tuned[tag].update(claw_thr=thr, form=form, apl_drive=args.apl_drive, apl_inh_divisive=kc_div, bouton_inh_divisive=bouton_div)
         tuned_path.write_text(json.dumps(tuned, indent=1))
-        meta = dict(variant=tag, base='bouton', seed=None, target_rate=TARGET, tag=tag, form=form, claw_thr=thr, apl_inh_divisive=kc_div,
+        meta = dict(variant=tag, base='bouton', seed=None, target_rate=TARGET, tag=tag, form=form, claw_thr=thr, apl_drive=args.apl_drive, apl_inh_divisive=kc_div,
             bouton_inh_divisive=bouton_div, n_kcs=len(on_out[0]), n_glomeruli=wPNKC.shape[1], rate_on=rate(on_out[0]), rate_off=rate(off_out[0]),
             seconds=time.time() - t0, mean_claws_per_kc=float(kc_by_glomerulus(wPNKC).sum(axis='columns').mean()), **extra,
             **{k: float(params[k]) for k in ('wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale') if k in params})
@@ -218,7 +223,7 @@ def main() -> None:
             res_dir / 'model_pair_distances_long.csv', index=False, mode='a', header=not (res_dir / 'model_pair_distances_long.csv').exists()); pairs.clear()
         done.add(tag)
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E35_divisive_apl.py',
-        host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), base=BOUTON, claw_thr=thr, forms={f: FORMS[f] for f in args.forms},
+        host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), base=BOUTON, claw_thr=thr, apl_drive=args.apl_drive, forms={f: FORMS[f] for f in args.forms},
         approx_conc_note=H.APPROX_CONC_NOTE)
     try:
         from al_analysis.mb_model import model_provenance
