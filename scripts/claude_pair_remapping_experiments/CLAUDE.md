@@ -67,6 +67,14 @@ under ./outputs/E<n>_<short-description>/, which is gitignored. Compact results 
 summary CSVs) go to the shared directory, see below.
 
 
+## Unresolved issues
+
+`unresolved_issues.md` in this folder tracks errors and bugs that affect, could affect, or have
+affected analysis outputs (a wrong input matrix, an unsourced number in a figure or report, a
+statistic computed differently from its description). Add an entry as soon as one is found (what,
+what it affects, what has been done, what remains), commit it, and move it to "Resolved" with the
+commit once every affected output is regenerated or annotated.
+
 ## Model provenance
 
 Model outputs must be fully explained by the model parameters plus the commits of our code.
