@@ -85,15 +85,35 @@ def e19_row(claw_thr: float, k: float, kckc: float):
     return None if len(m) == 0 else m.iloc[0]
 
 
-def base_kws(claw_thr) -> dict:
+def base_kws(claw_thr, apl_drive: str = 'claws') -> dict:
+    """The bouton base's fit_mb_model kwargs; `apl_drive='spikes'` drives APL by the KCs'
+    spikes (plus the bouton rates) instead of the summed claw input (pn_claw_to_apl=False;
+    E35 / E36)."""
     kws = dict(BOUTON, make_plots=False, silent=True)
     if claw_thr is not None:
         kws['claw_thr'] = float(claw_thr)
+    if apl_drive == 'spikes':
+        kws['pn_claw_to_apl'] = False
+    elif apl_drive != 'claws':
+        raise ValueError(f'{apl_drive=}')
     return kws
 
 
+def read_params(spec: str) -> Dict[str, float]:
+    """Absolute parameters from 'FILE:KEY' (a JSON file of {key: {param: value}}, e.g. a
+    tuned_params.json; FILE relative to the shared directory unless absolute)."""
+    path, key = spec.rsplit(':', 1)
+    path = Path(path)
+    if not path.is_absolute():
+        path = H.shared_dir() / path
+    d = json.loads(path.read_text())[key]
+    return {k: float(np.mean(np.asarray(v, dtype=float))) for k, v in d.items()
+        if k in PARAM_KEYS + ('wKCKC_scale',)}
+
+
 def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
-    gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0):
+    gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0, apl_drive: str = 'claws',
+    base_params: Optional[str] = None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -110,7 +130,11 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     'claw_permutation' or 'curveball_within_type'), the base's claw x bouton matrix is
     replaced by that shuffle of it at `wiring_seed` (E4's substrate nulls: claw counts per
     KC and per bouton kept, the assignment re-drawn), before any gain; the breadth is
-    recomputed from the re-drawn wiring. For replication of a fit on a second draw (E30)."""
+    recomputed from the re-drawn wiring. For replication of a fit on a second draw (E30).
+
+    With `apl_drive='spikes'` the base's tuned parameters must come from `base_params`
+    ('FILE:KEY', e.g. E36's spike-driven base tuned at 5 %); the APL-off breadth is the same
+    as the claw-driven base's at the same threshold (APL is off), so the saved runs apply."""
     from al_analysis.mb_model import fit_mb_model
     hal_out = H.shared_dir() / 'data' / 'hal_outputs'
     if claw_thr is None:
@@ -126,7 +150,19 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         # hal's E16 APL-off run of this base (the breadth E19 used)
         hal_path = hal_out / 'E16_claw_saturation' / f'bouton_thr{claw_thr:g}_acute_off_spike_counts.parquet'
         off_path = out_dir / f'thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
-    kws = base_kws(claw_thr)
+    if apl_drive == 'spikes':
+        if base_params is None:
+            raise ValueError("apl_drive='spikes' needs base_params (FILE:KEY of a spike-driven base)")
+        claw_initial = initial
+        initial = read_params(base_params)
+        if abs(initial['fixed_thr'] - claw_initial['fixed_thr']) > 1e-6 * claw_initial['fixed_thr']:
+            # the saved APL-off breadth is at the claw-driven base's threshold
+            hal_path = out_dir / 'no_such_file'
+            off_path = out_dir / ('spk_' + off_path.name)
+        print(f'spike-driven APL; base parameters from {base_params}: {initial}', flush=True)
+    elif base_params is not None:
+        initial = read_params(base_params)
+    kws = base_kws(claw_thr, apl_drive)
     _, _, wPNKC, pd0 = fit_mb_model(orn, fixed_thr=initial['fixed_thr'],
         wAPLKC=initial['wAPLKC_scale'], wKCAPL=initial['wKCAPL_scale'],
         wAPLPN=initial['wAPLPN_scale'], wPNAPL=initial['wPNAPL_scale'], **kws
@@ -278,11 +314,17 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     init_from_experiment: str = 'E10_joint_fit', verbose: bool = True,
     wPNKC_override: Optional[pd.DataFrame] = None, init_thr: Optional[float] = None,
     aplpn_max: Optional[float] = None, aplpn_fixed: Optional[float] = None,
-    aplkc_min: Optional[float] = None):
+    aplkc_min: Optional[float] = None, apl_drive: str = 'claws',
+    init_params: Optional[str] = None):
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
-    r19 = None if claw_thr is None else e19_row(claw_thr, k, kckc0)
-    if init_from is not None:
+    r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
+    if init_params is not None:
+        init = read_params(init_params)
+        init.setdefault('wKCKC_scale', kckc0)
+        kckc0 = init['wKCKC_scale']
+        print(f'starting from {init_params}: {init}', flush=True)
+    elif init_from is not None:
         init = init_from_fit(init_from, initial, init_from_experiment)
         kckc0 = init['wKCKC_scale']
         print(f'starting from fit {init_from}: {init}', flush=True)
@@ -343,7 +385,7 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         params_to_optimize=params,
         initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
         maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
-        **base_kws(claw_thr), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
+        **base_kws(claw_thr, apl_drive), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
         _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU
     )
     return res, init, bounds
@@ -442,6 +484,16 @@ def main() -> None:
         help='fix the APL->bouton scale at F x the base\'s tuned value and fit the other three (E31)')
     ap.add_argument('--aplkc-min', type=float, default=None, metavar='F',
         help='bound the APL->KC scale at >= F x the base\'s tuned value (E31)')
+    ap.add_argument('--apl-drive', default='claws', choices=['claws', 'spikes'],
+        help="what drives APL: 'claws' (the bouton base's summed claw input) or 'spikes' (KC "
+        "spikes plus the bouton rates, pn_claw_to_apl=False; E36; needs --base-params; tag prefix spk_)")
+    ap.add_argument('--base-params', default=None, metavar='FILE:KEY',
+        help='tuned base parameters (absolute) from a JSON file (relative to the shared directory), '
+        'e.g. results/E36_spike_apl/tuned_params.json:spk_base_thr70; the reference for '
+        '--aplpn-max / --aplpn-fixed / --aplkc-min and the *_factor_vs_e3 columns')
+    ap.add_argument('--init-params', default=None, metavar='FILE:KEY',
+        help='start from these absolute parameters (fixed_thr, the APL scales, wKCKC_scale), e.g. '
+        'results/E36_spike_apl/tuned_params.json:thr70_k2_kckc100_g1.5')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -467,7 +519,8 @@ def main() -> None:
     t0 = time.time()
     gain = None if args.glom_gain in (None, 1.0) else float(args.glom_gain)
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
-        gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed
+        gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed,
+        apl_drive=args.apl_drive, base_params=args.base_params
     )
     wiring_tag = '' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_'
     gain_gloms = None
@@ -476,7 +529,7 @@ def main() -> None:
         gain_gloms = list(args.gain_glomeruli) if args.gain_glomeruli else list(ORACLE)
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
-    prefix = ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
+    prefix = ('spk_' if args.apl_drive == 'spikes' else '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_')
 
     fits_path = res_dir / 'fits.csv'
@@ -489,7 +542,7 @@ def main() -> None:
             init_from_experiment=args.init_from_experiment,
             wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None) else None),
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
-            aplkc_min=args.aplkc_min
+            aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -509,6 +562,7 @@ def main() -> None:
             method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
+            apl_drive=args.apl_drive, base_params=args.base_params, init_params=args.init_params,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
@@ -558,7 +612,8 @@ def main() -> None:
                 capture_output=True, text=True).stdout.strip(),
             olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
                 cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
-            base=BOUTON, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
+            base=base_kws(args.claw_thr, args.apl_drive), apl_drive=args.apl_drive,
+            init_params=args.init_params, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             base_params=initial, loss_variant=args.loss,
