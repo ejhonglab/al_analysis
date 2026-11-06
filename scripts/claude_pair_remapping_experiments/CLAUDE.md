@@ -290,8 +290,8 @@ When you complete an experiment and its interpretation:
 4. regenerate the summary artifact (the all-experiments summary in `add_to_reports/`, see
    "Summary reports" below): fold the experiment's result into the section it belongs to
    (its row in the relevant table, a sentence on what moved and whether it reached the
-   data), move it out of the pending list, update the experiment key, rebuild the page with
-   `md_to_artifact.py`, republish it to the same slug, run `save_report_copy.py`, update the
+   data), move it out of the pending list, update the experiment key, regenerate the progress
+   plot (`summary_progress_plot.py`), rebuild the page with `md_to_artifact.py`, republish it to the same slug, run `save_report_copy.py`, update the
    add_to_reports README row and say so in chat.md. Every completed experiment appears in the
    summary before the host moves on.
 
@@ -375,6 +375,18 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   ran, wrote or requested anything, do not open with a status list of what is completed,
   running or started, and have no byline or "Artifact: ..." line: the page starts with the
   title and the first content section.
+- **The progress plot closes the page.** The last content section before the footnotes is the
+  interactive plot of how far the best model so far has closed the gap to the KC data on each
+  statistic, against experiment completion time (points = each experiment's best variant per
+  statistic, hover for experiment and variant; a staircase per statistic; the KC target as a
+  dotted line at 100 %, in the legend and not hideable; legend entries toggle lines). It is
+  generated, not drawn by hand: run `./venv/bin/python summary_progress_plot.py` (reads every
+  `results/E*/` table and the experiment index; writes `results/summary_progress/progress_plot.html`
+  and two CSVs) before every rebuild of the summary page, and keep the `%%% html
+  results/summary_progress/progress_plot.html` line in the markdown (md_to_artifact.py inserts the
+  file verbatim). New experiments appear automatically once their result table (stats_variants.csv,
+  fits.csv or E<n>_summary.csv with the harness scoring columns) and their completion time in the
+  index exist; oracle constructions and random / shuffled wirings are excluded in the script.
 - **Pending work goes at the bottom, with context.** Experiments still running or not yet run
   are described near the end, each with what it tests, the possible outcomes and what each
   outcome would mean for the picture, not as a bare list.

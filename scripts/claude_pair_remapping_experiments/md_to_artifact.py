@@ -22,6 +22,8 @@ like markdown (leftover `#`, `**`, backticks, `](`), which is how the "### headi
 split-sentence defects of hand-converted pages are caught.
 
 Usage: ./venv/bin/python md_to_artifact.py note.md page.html [--figdir DIR] [--title T]
+A line `%%% html <path>` (relative to --figdir) inserts that file's HTML verbatim (the summary's
+progress plot from summary_progress_plot.py); lint ignores <script> blocks.
 Import: convert_markdown(md_text, figdir) -> html; lint(html) -> list of problems.
 """
 from __future__ import annotations
@@ -182,6 +184,14 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
         s = ln.strip()
         if s == '':
             i += 1; continue
+        m_html = re.match(r'^%%% html (\S+)$', s)
+        if m_html:
+            # a prepared HTML fragment (e.g. the progress plot), inserted verbatim
+            p = (figdir or Path('.')) / m_html.group(1)
+            if not p.exists():
+                raise FileNotFoundError(f'html block not found: {p}')
+            out.append(p.read_text())
+            i += 1; continue
         m = re.match(r'^(#{1,3}) (.*)', s)
         if m:
             level = len(m.group(1))
@@ -299,6 +309,8 @@ def lint(page: str) -> List[str]:
     """Problems that mean markdown survived conversion (empty list = clean)."""
     text = re.sub(r'<img [^>]*>', '', page)
     text = re.sub(r'<style>.*?</style>', '', text, flags=re.S)
+    text = re.sub(r'<script>.*?</script>', '', text, flags=re.S)
+    text = re.sub(r"<figure class=\"prog\"[^>]*>", '', text)
     # heading text may legitimately start with "1." or "-": drop headings before the checks
     text = re.sub(r'<h[1-3][^>]*>.*?</h[1-3]>', '', text, flags=re.S)
     visible = re.sub(r'<[^>]+>', '\n', text)
