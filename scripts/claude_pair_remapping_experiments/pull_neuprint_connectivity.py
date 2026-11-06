@@ -13,8 +13,9 @@ Queries hemibrain v1.2.1 (neuprint.janelia.org) for
      drives the centrifugal cells: lateral-horn neurons, PNs, others; `conn_to_centrifugal_all.csv`,
      with the presynaptic type and the ROI, so the experiment can build the LHN -> centrifugal
      weights and see what else converges on them);
-plus the neuron tables (bodyId, type, instance, status, synapse counts) for the PNs, LHNs,
-LHCENT neurons, MB-C1 and APL. Per-ROI synapse counts (weight) are saved unthresholded;
+plus the neuron tables (bodyId, type, instance, status, synapse counts; for the PNs also their
+synapse counts inside the calyx and the lateral horn, ca_pre / ca_post / lh_pre / lh_post) for
+the PNs, LHNs, LHCENT neurons, MB-C1 and APL. Per-ROI synapse counts (weight) are saved unthresholded;
 the experiment chooses its threshold (the model's claw data used >= 4-5 synapses).
 
 Outputs (CSV + provenance.json) go to al_analysis/data/hemibrain_neuprint/, which is
@@ -105,7 +106,13 @@ def main() -> None:
     neuron_cols = ['bodyId', 'type', 'instance', 'status', 'pre', 'post', 'size']
     if wanted('neurons_pn.csv'):
         pns, _ = fetch_neurons(NC(type=PN_TYPE, regex=True), client=client)
+        roi = pns['roiInfo'] if 'roiInfo' in pns.columns else None
         pns = pns[[c for c in neuron_cols if c in pns.columns]].copy()
+        if roi is not None:
+            # per-ROI synapse counts (calyx and lateral horn), for the wiring checks
+            for roi_name, tag in ((ROI_CA, 'ca'), (ROI_LH, 'lh')):
+                pns[f'{tag}_pre'] = [int((r or {}).get(roi_name, {}).get('pre', 0)) for r in roi]
+                pns[f'{tag}_post'] = [int((r or {}).get(roi_name, {}).get('post', 0)) for r in roi]
         pns['glomerulus'] = pns['type'].map(glomerulus_of)
         pns['uniglomerular'] = pns['glomerulus'].notna()
         save(pns.sort_values(['glomerulus', 'type', 'bodyId'], na_position='last'), 'neurons_pn.csv')
