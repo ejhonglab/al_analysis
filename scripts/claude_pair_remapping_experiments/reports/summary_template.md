@@ -1,0 +1,495 @@
+# KC remapping experiments: summary to date (2026-11-06, 09:39)
+
+[TOC]
+
+%%% hover
+isotonic: Order-preserving. An isotonic fit is the non-decreasing curve (a step function) closest to the data in the least-squares sense, with no assumption about its shape; see the footnote on the monotone fit.
+VCF: Odor distances derived from how often odors co-occur across natural odor sources (the hyperbolic embedding of natural-source statistics in the thesis), used as a reference for structure the ORN input does not predict.
+%%%
+
+??? Experiment key: the ID of each experiment and the name used for it in this page
+- E1: the APL knockout baseline (completed)
+- E2: local APL units (completed)
+- E3: APL inhibition of PN boutons, the drive-dependent APL gain (completed)
+- E4: the PN→KC wiring substrate (completed)
+- E5: KC heterogeneity (completed)
+- E6: the readout window and time constants (completed)
+- E7: the data-only confound controls (completed)
+- E8: KC–KC lateral inhibition (completed)
+- E9: structured centrifugal input to the calyx (completed)
+- E10: the joint fit to both matrices (completed)
+- E11: claw coincidence with claw-level inhibition (completed)
+- E12: breadth-weighted APL (completed)
+- E13: the bouton base with claw coincidence (completed)
+- E14: oracle co-responder suppression (completed)
+- E15: the breadth × shared-input APL rule (completed)
+- E16: per-claw saturation and the per-claw threshold (completed)
+- E17: panel-general glomerulus scores and the APL-synapse anatomy check (completed)
+- E18: bouton vesicle depletion (completed)
+- E19: the threshold × breadth × KC–KC grid (completed)
+- E20: per-glomerulus drive normalization (completed)
+- E21: the APL-blocked sharing diagnostic (completed)
+- E22: the softer per-claw knee (completed)
+- E23: the weak-odor responder analysis (completed)
+- E24: input scaling for the terpenes and 1-8ol (completed)
+- E25: the joint fit with the structure-beyond-ORN targets in the loss (completed)
+- E26: the supralinear per-claw transfer (completed)
+- E27: the oracle glomerulus gain for the weak-input odors (completed)
+- E28: the oracle glomerulus gain in the combined model (completed)
+- E29: the hemibrain substrate check for the oracle glomeruli (completed)
+- E32: the ORN→PN stage and the weak odors (completed; the joint-fit stage not needed)
+- E30: the replication of the structure-loss joint fits on re-drawn wiring (completed)
+- E31: the APL→bouton bound control (completed)
+- E33: the combined model on re-drawn wiring (completed)
+- E34: the combined model with interpretable bounds (completed)
+- E35: divisive APL inhibition (completed)
+- E36: KC-spike-driven APL (completed)
+???
+
+## What the data show: the ORN→KC remapping in control flies, and what blocking APL output does to it
+
+Yang imaged Kenyon cell (KC) responses to 16 odors in seven chemical groups (fruity esters 2h, IaA, pa; small esters 2-but, eb, ep; aldehydes 6al, t2h; alcohols 1-8ol, 1-5ol, 1-6ol; ms; paa; terpenes -aPine, euc, B-myr) in control flies (11 recordings from 8 flies) and in flies whose APL output is blocked by tetanus toxin (8 recordings from 7 flies; "APL output blocked (TNT)" in the figures and tables). For every pair of odors, the distance between the two odors' KC responses is one minus the cosine similarity of the two population response vectors (one entry per KC, trial-averaged), computed per recording and averaged over recordings; the 120 pair distances of a genotype form its 16 × 16 matrix. The same 16 odors exist in the lab's ORN data, so distances can also be computed between the glomerular response vectors at the input of the circuit ([paa, euc and -aPine are at substituted ORN concentrations](#fn-concentrations), a caveat that applies to every number below). For the ORNs every comparison in this page uses one minus the Pearson correlation across the 36 glomeruli imaged in both ORN panels (the glomeruli of the model's ORN input), computed per fly and averaged over flies where both odors were imaged in the same flies; the megamat and validation2 odors were imaged in different flies, so pairs across the two panels use fly-mean responses. Cosine distance ranks the ORN pairs similarly (ρ=0.96 on odor-odor distances between the two) and gives a ρ on odor-odor distances with the KC matrices about 0.04 higher. The collapsible figure under the first one shows everything with Pearson correlation instead.
+
+![Top: the three 16 × 16 odor–odor distance matrices (ORNs; KCs, control flies; KCs, APL output blocked (TNT); odors in group order). Bottom left and middle: each KC matrix against the ORNs, pair by pair (blue: pairs within a chemical group; red circles: the nine fruity × small-ester pairs). Bottom right: control flies against APL output blocked (TNT), with the best monotone (isotonic) fit; the red circles sit above the curve, the fruity × small-ester block.](results/summary_background/summary_background.png)
+
+??? The same figure with Pearson correlation instead of cosine distance
+![The same six panels with every matrix as the Pearson correlation between the two odors' response vectors (r, from −1 to 1; ORNs across the 36 glomeruli, per fly and averaged over flies within a panel; KCs across KCs, per recording and averaged over recordings), in a blue–white–red colormap whose lightness is linear in |r| (white at 0; the diagonal is masked). Bottom: the same pair-by-pair comparisons in correlation; bottom right, the nine fruity × small-ester pairs sit below the monotone fit, less correlated in control flies than their correlation with APL output blocked (TNT) predicts.](results/summary_background/summary_background_pearson.png)
+???
+
+The statistics used throughout, in plain terms:
+
+- **Measurement ceiling:** how well two halves of the recordings of one genotype agree with each other (ρ=0.98 on odor-odor distances for control flies, 0.97 for APL output blocked (TNT)). No model can be expected to agree with the data better than the data agree with themselves.
+- **Monotone relation and the block:** the control matrix [is fitted with the best monotone](#fn-isotonic) (isotonic) function of the APL output blocked (TNT) matrix; the fraction of variance it explains is the isotonic R², and a pair's residual from that curve says how far it deviates from the common trend. The block is the mean residual of the nine fruity × small-ester pairs.
+- **Excess shared responders:** for each pair, the KC distance actually measured minus the distance expected if the two odors' responders were drawn independently with the odors' own response fractions; negative means the two odors share fewer KCs than their response density alone predicts, positive that they share more. Reported for the block pairs and for the other between-group pairs.
+- **Structure beyond the ORN input:** the part of a KC matrix not explained by a linear prediction from the ORN matrix (the residual), compared by ρ on these residual odor-odor distances either with the same residual in Remy's wild-type KC soma recordings (the 12 odors shared with the megamat panel), or with odor distances derived from natural-source odor statistics (the hyperbolic VCF embedding).
+
+| | ORNs | KCs {span=2} |
+| statistic | | control flies | APL output blocked (TNT) |
+|---|---|---|---|
+| mean pair distance (120 pairs) | {{data:orn_mean_dist ~ .2f}} | {{data:ctrl_mean_dist ~ .2f}} | {{data:tnt_mean_dist ~ .2f}} |
+| range of pair distances | {{data:orn_min_dist ~ .2f}}–{{data:orn_max_dist ~ .2f}} | {{data:ctrl_min_dist ~ .2f}}–{{data:ctrl_max_dist ~ .2f}} | {{data:tnt_min_dist ~ .2f}}–{{data:tnt_max_dist ~ .2f}} |
+| pairs more than 0.8 apart | {{data:orn_n_gt08 ~ .0f}} | {{data:ctrl_n_gt08 ~ .0f}} | {{data:tnt_n_gt08 ~ .0f}} |
+| mean distance within a chemical group | {{data:orn_within_mean ~ .2f}} | {{data:ctrl_within_mean ~ .2f}} | {{data:tnt_within_mean ~ .2f}} |
+| mean distance, fruity × small-ester pairs | {{data:orn_fruity_small_mean ~ .2f}} | {{data:ctrl_fruity_small_mean ~ .2f}} | {{data:tnt_fruity_small_mean ~ .2f}} |
+| ρ on odor-odor distances with the ORNs | — | {{data:rho_ctrl_orn ~ .2f}} | {{data:rho_tnt_orn ~ .2f}} |
+| ρ on odor-odor distances between the two KC matrices | — | {{data:rho_ctrl_tnt ~ .2f}} | {{data:rho_ctrl_tnt ~ .2f}} |
+| isotonic R² of control flies on APL output blocked (TNT) | — | {{data:iso_r2 ~ .2f}} | {{data:iso_r2 ~ .2f}} |
+| fraction of KCs responding per odor (mean) | — | {{data:ctrl_frac ~ .3f}} | {{data:tnt_frac ~ .3f}} |
+| measurement ceiling (ρ on odor-odor distances between halves of the recordings) | — | {{data:ctrl_ceiling ~ .2f}} | {{data:tnt_ceiling ~ .2f}} |
+
+**The remapping in control flies.** KCs push nearly every between-group pair to near-maximal distance: {{data:ctrl_n_gt08 ~ .0f}} of the 120 pairs are more than 0.8 apart in the control KC matrix, against {{data:orn_n_gt08 ~ .0f}} in the ORN input, while pairs within a chemical group stay partly similar (mean distance {{data:ctrl_within_mean ~ .2f}}). The order of pairs follows the ORN input only loosely (ρ={{data:rho_ctrl_orn ~ .2f}} on odor-odor distances, against a measurement ceiling of {{data:ctrl_ceiling ~ .2f}}): pairs that are close in the ORN input are spread over most of the KC range, and pairs already far apart in the ORN input are compressed at the top. This expansion is what any model of the circuit must produce first.
+
+**What blocking APL output does.** Twice as many KCs respond to each odor ({{data:tnt_frac ~ .3f}} instead of {{data:ctrl_frac ~ .3f}} of the KCs, with the per-odor pattern conserved), and the mean pair distance falls from {{data:ctrl_mean_dist ~ .2f}} to {{data:tnt_mean_dist ~ .2f}}, below the ORN input's own {{data:orn_mean_dist ~ .2f}}. The order of pairs is largely kept (ρ={{data:rho_ctrl_tnt ~ .2f}} on odor-odor distances between the two KC matrices) and the relation between them is monotone (isotonic R² {{data:iso_r2 ~ .2f}}, as high as the measurement ceiling allows), so most of APL's effect is a uniform sparsening. The code with APL output blocked (TNT) is more ORN-like than the control code (ρ on odor-odor distances with the ORN input {{data:rho_tnt_orn ~ .2f}} instead of {{data:rho_ctrl_orn ~ .2f}}), yet it keeps structure the ORN input does not predict: its residual beyond the ORN input agrees with the natural-source odor distances at {{data:tnt_vcf ~ .2f}}, which a linear model of the circuit does not reproduce. There is one pair-specific exception to the monotone relation: the nine fruity × small-ester pairs, 0.51 apart in the ORN input and 0.88 in control flies, fall to 0.60 when APL output is blocked (TNT), well below the monotone trend. That residual, +0.055 (90 % confidence interval +0.035 to +0.075), is the block referred to throughout; it means APL removes a population of KCs that respond to both ester groups. About half of the similarity gain with APL output blocked (TNT) is explained by the higher response density alone; the rest is structure, and both genotypes have fewer non-specific shared responders than a linear model gives (excess shared responders: control flies −0.08 for the block pairs and −0.10 for other between-group pairs; APL output blocked (TNT) −0.24 and −0.17).
+
+## What a model has to reproduce
+
+| target | value in the KC data |
+|---|---|
+| decorrelation level: mean pair distance with APL / without | {{data:ctrl_mean_dist ~ .2f}} / {{data:tnt_mean_dist ~ .2f}} |
+| APL-on vs APL-off relation: monotone, with one exception | isotonic R² {{data:iso_r2 ~ .2f}}; ρ={{data:rho_ctrl_tnt ~ .2f}} on odor-odor distances; fruity × small-ester block {{data:block ~ +.3f}} |
+| structure beyond the ORNs with APL output blocked (TNT) | ρ of the residual odor-odor distances with natural-source distances {{data:tnt_vcf ~ .2f}} |
+| non-specific shared responders (excess, block pairs / other pairs) | control flies {{data:ctrl_excess_block ~ .2f}} / {{data:ctrl_excess_other ~ .2f}}; APL output blocked (TNT) {{data:tnt_excess_block ~ .2f}} / {{data:tnt_excess_other ~ .2f}} |
+| response rate, APL output blocked (TNT) relative to control flies | {{data:rate_ratio_fraction ~ .1f}} by the fraction of KCs responding<br>{{data:rate_ratio_mean_response ~ .1f}} by mean response size (negative responses set to 0) |
+| per-odor response-rate pattern | response rate ρ, ceiling about {{data:ctrl_rate_rho_ceiling ~ .2f}} / {{data:tnt_rate_rho_ceiling ~ .2f}} |
+
+## The model and its baseline
+
+The model (olfsysm) runs ORNs → projection neurons (with antennal-lobe inhibition) → PN boutons (443 hemibrain boutons) → KC claws (hemibrain claws, about 9,500 claws on 1,732 KCs, about 6 claws per KC) → KC somata, with one APL neuron inhibiting claws and boutons through connectome synapse counts as weights, somatic thresholds tuned so that 5 % of KCs respond to an odor, and APL block modelled as the APL output weights set to zero at fixed thresholds (acute) or with thresholds re-tuned (homeostatic). The bouton model with connectome APL weights is the baseline for everything below.
+
+| statistic | bouton baseline | KC data |
+|---|---|---|
+| mean pair distance, APL on / off | {{E13:bouton_base:spike_counts_cosine__on_mean_model ~ .2f}} / {{E13:bouton_base:spike_counts_cosine__off_mean_model ~ .2f}} | {{data:ctrl_mean_dist ~ .2f}} / {{data:tnt_mean_dist ~ .2f}} |
+| ρ on odor-odor distances, APL on | {{E13:bouton_base:spike_counts_cosine__on_spearman ~ .2f}} | ceiling {{data:ctrl_ceiling ~ .2f}} |
+| ρ on odor-odor distances, APL off | {{E13:bouton_base:spike_counts_cosine__off_spearman ~ .2f}} | ceiling {{data:tnt_ceiling ~ .2f}} |
+| fruity × small-ester block | {{E13:bouton_base:spike_counts_cosine__block_fruity_small_iso ~ .2f}} | {{data:block ~ +.3f}} |
+| isotonic R² on vs off | {{E13:bouton_base:spike_counts_cosine__iso_r2 ~ .2f}} | {{data:iso_r2 ~ .2f}} |
+| excess shared responders, APL on (block / other pairs) | {{E13:bouton_base:on_excess_block ~ .2f}} / {{E13:bouton_base:on_excess_other_between ~ .2f}} | {{data:ctrl_excess_block ~ .2f}} / {{data:ctrl_excess_other ~ .2f}} |
+| excess shared responders, APL off (block / other pairs) | {{E13:bouton_base:off_excess_block ~ .2f}} / {{E13:bouton_base:off_excess_other_between ~ .2f}} | {{data:tnt_excess_block ~ .2f}} / {{data:tnt_excess_other ~ .2f}} |
+| structure beyond the ORN input, APL off (vs natural-source distances) | {{E13:bouton_base:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ .2f}} | {{data:tnt_vcf ~ .2f}} |
+| response rate ρ, per odor (APL on / off) | {{E13:bouton_base:spearman_rate_on_vs_data ~ .2f}} / {{E13:bouton_base:spearman_rate_off_vs_data ~ .2f}} | ceiling about {{data:ctrl_rate_rho_ceiling ~ .2f}} / {{data:tnt_rate_rho_ceiling ~ .2f}} |
+| response rate, APL off relative to on | {{E18:bouton_base:rate_ratio_off_over_on ~ .1f}} (by construction) | {{data:rate_ratio_mean_response ~ .1f}} (mean response ratio)<br>{{data:rate_ratio_fraction ~ .1f}} (as the models) |
+
+In every version of the baseline the model's APL is a uniform gain (isotonic R² 0.99, no block); the model is more ORN-like than the flies with APL output blocked (TNT) (it agrees with their matrix better than with the control matrix even with APL on); its distances are too small; and it carries none of the control-specific structure. Two things were therefore missing: a pair-specific APL action, and whatever makes the code with APL output blocked (TNT) less ORN-like than a linear model. Letting APL inhibit the PN boutons added the one odor-level effect the base lacked (the size of APL's effect on an odor tracking that odor's ORN drive); the data-only confound controls later showed that odor-level effect is largely a density effect and not a primary target.
+
+## What made a difference
+
+### The per-claw threshold on the PN→KC transfer: the decorrelation level and the excess sharing
+
+The one KC-level manipulation with leverage was the claw-coincidence rule found in the KC heterogeneity experiment: a KC spikes when two or three of its claws are individually driven above a per-claw threshold. The per-claw saturation experiment then showed what the rule is: a pure cap on each claw's contribution (saturating or hard) moves every statistic the wrong way, whereas a rectified per-claw offset (each claw's input minus a threshold, floored at zero, summed linearly at the soma with the ordinary tuned somatic threshold) reproduces the coincidence models at the rule's own per-claw thresholds (ρ=0.92–0.95 on odor-odor distances, on both wiring bases). The rule is a threshold, not a bound: a KC should respond because a few of its claws are driven strongly, not because many are driven weakly, and the linear model's spurious shared responders are KCs of the second kind. The offset is now a model parameter that keeps somatic integration, so it combines with the mechanisms below.
+
+| statistic | bouton baseline | bouton model<br>per-claw threshold 70 Hz | KC data |
+|---|---|---|---|
+| mean pair distance, APL on | 0.70 | 0.79 (better) | 0.84 |
+| excess shared responders, APL on (block / other) | −0.42 / −0.15 | −0.28 / −0.09 (better) | −0.08 / −0.10 |
+| excess shared responders, APL off (block / other) | −0.43 / −0.17 | −0.32 / −0.10 (better) | −0.24 / −0.17 |
+| structure beyond the ORN input, APL off | −0.05 | +0.06 (better; 0.36 on the claw-dynamics base) | 0.36 |
+| ρ on odor-odor distances, APL on | 0.57 | 0.53 (worse) | ceiling 0.98 |
+| ρ on odor-odor distances, APL off | 0.69 | 0.60 (worse) | ceiling 0.97 |
+| response rate ρ, per odor (APL on) | 0.68 | 0.57 (worse) | about 0.97 |
+| response rate, APL off relative to on | 1.9 | 2.1 | 1.9 (mean response ratio)<br>2.2 (as the models) |
+| fruity × small-ester block | 0.00 | −0.01 (no block) | +0.055 |
+
+The threshold brings the decorrelation level and the excess sharing toward the data and gives the first positive structure beyond the ORN input with APL off, at a cost: no gain in agreement with the control matrix, lower agreement with the APL output blocked (TNT) matrix, a worse per-odor response-rate pattern, and no block.
+
+**Biophysical realizations.** The threshold is about 40–70 Hz of PN rate above zero, roughly 1.5–2× a claw's spontaneous drive, and it must be present with APL output blocked (TNT). Candidates: (a) a local nonlinearity in the claw itself: each claw is a discrete postsynaptic compartment wrapping one bouton, and a regenerative event there (Ca²⁺ / Na⁺ spikelet, NMDA-like voltage dependence) would make its output to the soma a threshold function of its input; (b) subthreshold-activated K⁺ conductances in thin KC neurites (KCs express A-type Shal / Kv4 currents) that shunt small depolarizations, so only strong claw inputs propagate; (c) presynaptic: PN→KC release that needs high-rate input (facilitating or priming-limited synapses), an input-rate threshold rather than a postsynaptic one; (d) a tonic, subtractive inhibition of every claw from an APL-independent source (glia-derived GABA, or an APL output tetanus toxin does not block, such as electrical coupling), which with rectification is exactly an offset. The counting rule's "2–3 claws" is then just the number of such events the somatic threshold needs.
+
+### Breadth-weighted APL plus KC–KC lateral inhibition: the block
+
+The block needed a pair-specific removal, and the oracle co-responder experiment found what has to be removed: the KCs that respond to both ester groups when APL output is blocked (TNT) (8.5–11 % of KCs, broadly tuned, all with claws from the eight glomeruli both ester groups drive). Suppressing exactly those KCs gives the block, the control's excess profile, the best agreement with the control matrix of its base and positive structure beyond the ORN input, while suppressing random KCs or alcohol × aldehyde co-responders does nothing of the kind. The question became how a circuit finds them.
+
+Breadth-weighted APL made each KC's APL→KC weight proportional to a power of its tuning breadth: the number of odors it responds to with APL off, or, in the combined models and joint fits, the graded version, its total spike count over the 16 odors with APL off. Each claw's connectome APL→claw weight is multiplied by its KC's (breadth + 1) raised to the breadth exponent, and the overall KC↔APL scale is then re-matched so that the total number of responses with APL on is unchanged; the KC→APL weights are not reweighted. (The code also divides by (mean breadth + 1), the mean over all KCs, which the re-matching cancels; the + 1 keeps KCs silent without APL at a small nonzero weight.) Every statistic moved toward the data, and non-specific excess sharing reached the data's level, but the block pairs kept sharing responders: breadth finds the broad KCs, and the remaining co-responders are not broad. The breadth × shared-input rule added a term for claws from the glomeruli shared by the two ester groups and got the block, but the panel-general glomerulus-score experiment showed that term is circular (only the block-specific glomerulus set works; scores defined from the whole panel fail) and anatomically backwards (hemibrain APL→claw synapse counts are *lower* on those glomeruli's claws).
+
+KC–KC lateral inhibition then supplied a non-circular second ingredient: connectome-weighted inhibition between KCs whose claws contact each other, each KC's filtered spike output subtracted from its neighbours' somatic drive with a 50 ms time constant. Alone it is a weak second APL. On top of breadth-weighted APL it gives the block, the best APL-on agreement of any bouton model and the control's excess profile with the per-odor response rates kept. The mechanism check shows why: with the threshold re-tuned, the term reassigns responses, and the oracle's co-responder set supplies 55–67 % of the fruity / small-ester responses lost but gets only 25–42 % of those gained, so shared responders fall for the block pairs while other pairs keep theirs. A KC's lateral inhibition grows with how many of its connectome neighbours are co-active, which is largest in the dense, overlapping ester populations: the oracle's suppression without the oracle. The weight structure is part of it: with KC identities shuffled or uniform all-to-all weights, the generic effects (decorrelation, excess sharing, APL-off agreement) are unchanged but the block falls to the noise floor, so the hemibrain's claw-to-claw contacts, which pair KCs sharing calyx neighbourhoods, are what make the lateral term find the ester co-responders.
+
+| statistic | bouton baseline | oracle suppression<br>claw-dynamics base<br>coincidence 3 | breadth-weighted APL<br>exponent 3 | breadth exponent 3<br>KC–KC scale 100 | KC data |
+|---|---|---|---|---|---|
+| fruity × small-ester block | 0.00 | +0.052 | +0.015 | +0.075 | +0.055 |
+| ρ on odor-odor distances, APL on | 0.57 | 0.62 (of its base's 0.54) | 0.64 | 0.69 (best bouton model) | ceiling 0.98 |
+| excess shared responders, APL on (block / other) | −0.42 / −0.15 | −0.09 / −0.08 | −0.21 / −0.07 | −0.10 / −0.07 | −0.08 / −0.10 |
+| excess shared responders, APL off (block / other) | −0.43 / −0.17 | — | — | −0.34 / −0.14 | −0.24 / −0.17 |
+| isotonic R² on vs off | 0.99 | 0.90 | 0.96 | 0.88 | 0.94 |
+| response rate ρ, per odor (APL on / off) | 0.68 / 0.80 | 0.55 / — | 0.69 / 0.80 | 0.73 / 0.79 | about 0.97 |
+| response rate, APL off relative to on | 1.9 | — | 1.9 | 1.33 (worse) | 1.9 (mean response ratio)<br>2.2 (as the models) |
+| structure beyond the ORN input, APL off | −0.05 | +0.38 | — | +0.04 | 0.36 |
+
+Costs of the KC–KC term: the APL-off / APL-on response-rate ratio falls (inhibition that survives APL block damps the expansion), the APL-off matrix does not improve, and a slow version (300 ms) does little.
+
+**Biophysical realizations.** *Breadth-weighted APL→KC synapses* (weight proportional to (1 + breadth)^k with k about 3): the natural implementation is activity-dependent synaptic scaling, KCs that fire to many odors having strengthened their APL→KC (and KC→APL) synapses by Hebbian or homeostatic plasticity over days; both synapse classes are plastic in the mushroom body. The intrinsic version (more active KCs raise their own threshold) identifies the same KCs but removes sharing proportionally everywhere, so it does not substitute; a purely structural version (broad KCs having more claws, hence more APL contacts) is too weak, since claw count does not matter in the wiring and heterogeneity experiments. *KC–KC inhibition* with the connectome's claw–claw contacts, acting within about 50 ms: (a) direct KC→KC synapses, which the hemibrain has in large numbers in the calyx and peduncle; KCs are cholinergic, but they express the inhibitory muscarinic receptor mAChR-A, which reduces KC odor responses, so cholinergic KC→KC transmission can be net inhibitory (the metabotropic timescale is slower than the model's 50 ms, which the model's onset-dominated response window may exaggerate); (b) a KC→APL→KC loop confined to a calyx neighbourhood (APL's output is electrotonically local), admissible only if part of APL's local output survives tetanus toxin (gap junctions or non-vesicular release); (c) ephaptic or extracellular K⁺ coupling among the tightly packed KC neurites and somata, a fast, activity-dependent and APL-independent lateral interaction; (d) competition for a shared presynaptic resource at the bouton (dense co-active claws deplete it), which the bouton depletion experiment tested and ruled out as implemented. The required property in all cases is co-activity dependence with the right partners: inhibition that scales with how many of a KC's calyx neighbours (the KCs whose claws contact its claws) are active, not with the KC's own breadth and not with the population as a whole; mechanisms (a) and (c) have that locality built in, (b) only if APL's local output survives the toxin.
+
+### APL inhibition of PN boutons: the odor-level drive dependence
+
+Letting APL inhibit the PN boutons (connectome APL→bouton weights, about twice the fitted scale) gives the per-odor APL effect's dependence on ORN drive at matched response counts, with the pair-level statistics unchanged; more antennal-lobe contrast does not. Biophysically this is presynaptic GABAergic inhibition at PN terminals in the calyx (GABA-B receptors on PN boutons), which reduces release in proportion to the bouton's APL input; its effect is glomerulus-wise because a bouton's ~25 claws share it. The data-only confound controls later showed the odor-level effect is largely density, so this is a supporting rather than a primary ingredient; the bouton model is the APL-on reference for the mechanisms above, and the joint fit below shows the APL→bouton pathway is also what sets the APL-off / APL-on response-rate ratio.
+
+### Glomerulus-specific claw strength: the weak odors, and the structure beyond the ORN input
+
+The weak-odor analyses (below) had narrowed the five weak-input odors' problem to the claws of their own glomeruli counting for too little, and the oracle test confirms it. With the per-claw threshold in place, scaling the PN → claw weights of the eight glomeruli that carry those odors (VA7m, DL1, D for ms; DM1 for B-myr and paa; DP1m, VC1 for euc and -aPine; DC2, DM5 for 1-8ol) by 1.5 recruits the weak odors with the fruity-ester overlap the fly's responders have, halves the over-removal of the block pairs' shared responders, gives the best agreement with the control matrix of any threshold model, and lifts the structure beyond the ORN input to the data's level with APL output blocked and nearly to it with APL on, the first model to do so. The same gain on eight random glomeruli does none of this (it recruits nothing and disorders the code), so the effect is the identity of the glomeruli, not extra drive. The costs are moderate: the strongly driven esters lose responders, so the per-odor response-rate pattern and the mean distance with APL on move away from the data, and the block stays small without breadth-weighted APL and KC–KC inhibition.
+
+| statistic | KC data | per-claw threshold 70 | threshold 70<br>oracle gain 1.5<br>(weak odors' glomeruli) | threshold 70<br>gain 1.5<br>(random glomeruli) | threshold 70<br>synapse-count claw weights |
+|---|---|---|---|---|---|
+| fraction of KCs responding, APL off: ms / B-myr / paa / euc / 1-8ol | 0.12 / 0.11 / 0.14 / 0.10 / 0.10 | 0.00 / 0.01 / 0.08 / 0.05 / 0.05 | 0.04 / 0.04 / 0.13 / 0.07 / 0.07 | 0.00 / 0.01 / 0.03 / 0.10 / 0.03 | 0.01 / 0.02 / 0.12 / 0.08 / 0.06 |
+| APL-off sharing deficit, terpene / 1-8ol x fruity-ester pairs (0 = data) | 0 | +0.115 | +0.005 | +0.018 | +0.022 |
+| APL-off sharing deficit, ms / paa pairs | 0 | +0.112 | +0.023 | +0.179 | +0.040 |
+| structure beyond the ORN input, APL on / off | 0.44 / 0.36 | 0.21 / 0.06 | 0.38 / 0.36 | −0.29 / −0.29 | −0.01 / 0.03 |
+| ρ on odor-odor distances, APL on | ceiling 0.98 | 0.53 | 0.62 | 0.44 | 0.58 |
+| ρ on odor-odor distances, APL off | ceiling 0.97 | 0.60 | 0.62 | 0.71 | 0.70 |
+| excess shared responders, APL on (block / other) | −0.08 / −0.10 | −0.28 / −0.09 | −0.14 / −0.17 | −0.81 / −0.15 | −0.41 / −0.17 |
+| fruity × small-ester block | +0.055 | −0.01 | +0.015 | 0.00 | −0.02 |
+| mean pair distance, APL on / off | 0.84 / 0.66 | 0.79 / 0.75 | 0.73 / 0.69 | 0.67 / 0.62 | 0.70 / 0.66 |
+| response rate ρ, per odor (APL on / off) | ceiling 0.98 / 0.97 | 0.57 / 0.75 | 0.52 / 0.59 | 0.10 / 0.38 | 0.56 / 0.62 |
+
+(The random-glomeruli column is the first of two draws; the second recruits nothing either and collapses control agreement to 0.32.)
+
+The anatomical version of claw strength that the hemibrain offers, each claw weighted by its PN → KC synapse count, is not this gain: it recruits paa and -aPine but not ms or B-myr, loses the threshold's structure beyond the ORN input and doubles the over-sharing among the other pairs; and the eight glomeruli are not special in anything the model has (their PN peaks rank 14th to 36th of 36, their claws per glomerulus and synapses per claw are ordinary), which is why the per-glomerulus peak normalization did not find them. A direct check of the model's calyx wiring against the hemibrain for these eight glomeruli closes the calyx anatomy as the substrate: PNs are missing from the wiring for most glomeruli (a median of 62 % present), but the oracle set is not worse off (63 % against 71 % for the others), and in the calyx output represented it is if anything over-represented (more boutons, 10.4 against 7.4 per glomerulus, and more claws per hemibrain calyx presynaptic site); the correction the anatomy would justify is 0.83 to 1.12, centred on 1, against the 1.5 the oracle needs. Nor is it anything uniform at the ORN → PN stage: sweeping the model's antennal-lobe normalization and PN gain on the threshold base shows that weakening the normalization moves the weak odors away from the data (their top PNs fall, the esters' rise, and B-myr's responders go from 0.7 % of KCs to none), the default being already the strongest normalization the stage expresses, while a uniform PN gain is the per-claw knee in disguise: doubling every PN rate recruits the weak odors about as the 40 Hz knee does (ms 2 %, B-myr 3 % of KCs with APL off) at the knee's costs (the other pairs over-share, the mean distance falls to 0.73, the structure beyond the ORN input is lost), and quadrupling it gives a dense code with no threshold left. What the oracle stands for is therefore glomerulus-specific and upstream of the calyx: a glomerulus-specific ORN → PN gain, a release probability the synapse counts do not show, or, most simply, ORN input to these glomeruli that the lab's data understate for these odors by about 1.5× at the PN level, now with a concrete prediction of which glomeruli and by how much.
+
+**Biophysical realizations.** A 1.5× gain confined to a few glomeruli' claws: (a) more or larger boutons per PN for those glomeruli than the model's wiring gives them (the model takes bouton counts from the hemibrain, so this would have to be bouton size or release site number rather than count); (b) higher ORN → PN gain in those glomeruli (PN input resistance, dendritic integration, or less lateral inhibition in the antennal lobe for narrowly tuned channels), which the model's uniform transform does not represent; (c) claw-level synaptic scaling that strengthens claws from glomeruli that are rarely co-active with others (a homeostatic version of the oracle); (d) no circuit mechanism at all, if the ORN data understate these odors.
+
+**The gain in the combined model.** Put on the three-mechanism points, the gain does not add the way the threshold and the lateral term added to each other: at a fixed 5 % operating point it trades the block for the structure. At the block-first point (threshold 70, breadth 2, KC–KC 100) the block goes from +0.050 at gain 1 to −0.001 at gain 1.5 while the structure beyond the ORN input with APL output blocked rises from 0.10 to 0.40 (data 0.36), and the balanced point (threshold 40, breadth 2, KC–KC 30) does the same (+0.035 to −0.007; 0.18 to 0.37). The reason is in the excess profile: the gain raises the tuned somatic threshold (74 to 134 Hz at the block-first point), which removes the broad ester co-responders with APL off as well as on (APL-off block-pair excess −0.24 to −0.11; data −0.24), so the on-minus-off difference that is the block disappears; the lateral term had produced the block precisely by removing those KCs only with APL on. The structure against wild-type somata falls with the gain too (0.66 to 0.34; data 0.83), so the gain's structure and the lateral term's are not the same thing. The per-odor response-rate pattern collapses at the block-first point (0.61 / 0.45 to 0.35 / 0.01) and the response-rate ratio stays at 1.3–1.5 at every point. Whether one parameter set can hold the block and this structure is the joint fit's question (the gain as a fixed ingredient in the fit with the structure targets, running).
+
+| | | threshold 70<br>breadth 2<br>KC–KC 100 {span=2} | threshold 40<br>breadth 2<br>KC–KC 30 {span=2} |
+| statistic | KC data | gain 1 | gain 1.5 | gain 1 | gain 1.5 |
+|---|---|---|---|---|---|
+| fruity × small-ester block | +0.055 | +0.050 | −0.001 | +0.035 | −0.007 |
+| structure beyond the ORN input (natural-source), APL on / off | 0.44 / 0.36 | 0.29 / 0.10 | 0.27 / 0.40 | 0.25 / 0.18 | 0.28 / 0.37 |
+| structure beyond the ORN input vs wild-type somata, APL on | 0.83 | 0.66 | 0.34 | 0.49 | 0.35 |
+| ρ on odor-odor distances, APL on | ceiling 0.98 | 0.61 | 0.64 | 0.64 | 0.66 |
+| excess shared responders, APL off (block / other) | −0.24 / −0.17 | −0.24 / −0.07 | −0.11 / −0.13 | −0.32 / −0.12 | −0.22 / −0.19 |
+| ms / B-myr fraction responding, APL off | 0.12 / 0.11 | 0.02 / 0.03 | 0.05 / 0.04 | 0.02 / 0.03 | 0.04 / 0.04 |
+| response rate ρ, per odor (APL on / off) | ceiling 0.98 / 0.97 | 0.61 / 0.45 | 0.35 / 0.01 | 0.65 / 0.73 | 0.51 / 0.65 |
+| response rate, APL off relative to on | 1.9 (mean response ratio)<br>2.2 (as the models) | 1.28 | 1.38 | 1.43 | 1.52 |
+
+
+### The joint fit
+
+The joint fit optimizes one parameter set (KC threshold, the KC↔APL loop gain, the APL→bouton scale and the KC–KC scale) against both matrices at once, with a loss that also contains the block, the 5 % operating point, the APL-off / APL-on response-rate ratio, both genotypes' per-odor response-rate patterns and the monotonicity, for a fixed breadth exponent (0 to 3) and, in its second round, a fixed per-claw threshold (40 or 70 Hz). Nine fits in all.
+
+| | | | ρ on odor-odor distances {span=2} | | | | | | | |
+| model (all on the bouton model with connectome APL weights) | KC–KC scale /<br>threshold /<br>APL→KC /<br>APL→bouton<br>(× baseline) | block | APL on | APL off | isotonic R2 | response rate, APL off relative to on | response rate ρ on / off | mean distance on / off | structure beyond ORN vs wild-type somata | vs natural-source distances (APL off) | excess shared responders, APL on (block / other) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **KC data** | — | {{data:block ~ +.3f}} | ceiling {{data:ctrl_ceiling ~ .2f}} | ceiling {{data:tnt_ceiling ~ .2f}} | {{data:iso_r2 ~ .2f}} | {{data:rate_ratio_mean_response ~ .1f}} (mean response ratio)<br>{{data:rate_ratio_fraction ~ .1f}} (as below) | ceiling {{data:ctrl_rate_rho_ceiling ~ .2f}} / {{data:tnt_rate_rho_ceiling ~ .2f}} | {{data:ctrl_mean_dist ~ .2f}} / {{data:tnt_mean_dist ~ .2f}} | {{data:ctrl_struct_wt ~ .2f}} | {{data:tnt_vcf ~ .2f}} | {{data:ctrl_excess_block ~ .2f}} / {{data:ctrl_excess_other ~ .2f}} |
+| bouton baseline (no breadth weighting, no KC-KC, no threshold; the baseline's tuned parameters) | 0 / 1 / 1 / 1 | 0.00 | 0.57 | 0.69 | 0.99 | 1.9 | 0.68 / 0.80 | 0.70 / 0.66 | −0.06 | −0.05 | −0.42 / −0.15 |
+| breadth exponent 0 | 26 / 0.52 / 1.71 / 3.04 | +0.037 | 0.605 | 0.703 | 0.95 | 2.45 | 0.63 / 0.74 | 0.71 / 0.69 | 0.24 | +0.10 | -0.35 / -0.19 |
+| breadth exponent 1 | 28 / 0.57 / 1.41 / 1.18 | +0.057 | 0.667 | 0.713 | 0.94 | 2.18 | 0.69 / 0.74 | 0.79 / 0.69 | 0.36 | +0.08 | -0.19 / -0.10 |
+| breadth exponent 2 | 41 / 0.59 / 0.55 / 2.78 | +0.057 | 0.695 | 0.694 | 0.93 | 1.88 | 0.73 / 0.83 | 0.81 / 0.71 | 0.46 | +0.05 | -0.15 / -0.08 |
+| breadth exponent 3 | 13 / 0.80 / 0.24 / 2.23 | +0.052 | 0.646 | 0.720 | 0.94 | 2.00 | 0.68 / 0.76 | 0.79 / 0.67 | 0.49 | +0.08 | -0.17 / -0.08 |
+| per-claw threshold 40 Hz, breadth exponent 2 | 9 / 0.85 / 0.41 / 1.91 | +0.044 | 0.634 | 0.671 | 0.94 | 1.91 | 0.60 / 0.75 | 0.81 / 0.71 | 0.52 | +0.13 | -0.16 / -0.08 |
+| per-claw threshold 40 Hz, breadth exponent 3 | 9 / 0.86 / 0.29 / 1.03 | +0.042 | 0.635 | 0.673 | 0.94 | 1.88 | 0.54 / 0.75 | 0.82 / 0.71 | 0.56 | +0.13 | -0.15 / -0.07 |
+| per-claw threshold 70 Hz, breadth exponent 2 (from the grid point) | 110 / 0.51 / 0.50 / 1.36 | +0.045 | 0.565 | 0.591 | 0.85 | 1.39 | 0.60 / 0.65 | 0.88 / 0.84 | 0.63 | +0.16 | -0.08 / -0.04 |
+| per-claw threshold 70 Hz, breadth exponent 2 (seeded from the breadth-2 fit) | 10 / 0.56 / 0.41 / 11.04 | +0.057 | 0.550 | 0.633 | 0.94 | 2.45 | 0.50 / 0.78 | 0.81 / 0.74 | 0.57 | +0.16 | -0.14 / -0.09 |
+| per-claw threshold 70 Hz, breadth exponent 3 | 17 / 0.55 / 0.41 / 4.11 | +0.050 | 0.543 | 0.627 | 0.94 | 1.99 | 0.56 / 0.80 | 0.84 / 0.76 | 0.58 | +0.19 | -0.10 / -0.07 |
+
+Fitted jointly and without a per-claw threshold, the breadth-weighted APL plus KC–KC model reaches the data on every fitted target at once: the block at the data's size, the best agreement with the control matrix of any bouton model, the data's monotonicity, the APL-off / APL-on response-rate ratio and both per-odor response-rate patterns. It fixed the response-rate ratio by moving inhibition from the KC↔APL loop to the APL→bouton synapses: bouton-level inhibition is APL output too, so blocking APL then releases more responders. That confirms the hint from the bouton depletion experiment that the low ratio of the earlier KC–KC models was a matter of APL recruitment. The loss is nearly flat across breadth exponents 1 to 3, with different trade-offs (exponent 1 the best agreement with the APL output blocked (TNT) matrix and the best ratio, exponent 2 the best control matrix and per-odor response rates, exponent 3 the least lateral inhibition); without breadth weighting the fit still gets most of the block from lateral inhibition plus the APL re-balance but loses a little block and a tenth of control agreement, which is what breadth weighting is worth in the fit.
+
+Adding the per-claw threshold makes the joint fit worse, even when the fit is started from the best no-threshold solution: the optimizer removes most of the lateral inhibition, agreement with both matrices and the per-odor response rates fall, and the response-rate ratio is reached only with an extreme APL→bouton scale. What the threshold buys is the structure the loss does not contain: the structure beyond the ORN input (against wild-type somata and against natural-source odor distances) and the data's APL-on excess profile, where the no-threshold fits over-remove the block pairs' shared responders. Under these targets the threshold and the lateral term compete for the same KCs and the data prefer the lateral term. What no fit fixes: the APL output blocked (TNT) matrix's structure beyond the ORN input and the block pairs' too-low sharing with APL off; the APL-blocked sharing diagnostic traces that to the model's input for five weakly represented odors, which no KC mechanism can repair.
+
+**With the structure targets in the loss** (the joint fit with the structure-beyond-ORN targets in the loss: the same terms plus the structure beyond the ORN input against wild-type somata, the natural-source alignment of the APL-off residual and the APL-on excess profile), a per-claw threshold is selected (which of the two is not resolved across wiring draws; see the replication below). Seeded from their earlier solutions at breadth exponent 2, the 40 Hz and 70 Hz fits reach extended losses of 2.45 and 2.38 against 2.83 without a threshold, entirely through the structure terms (1.09 and 0.94 against 1.74) and at a rising price in the fitted statistics (1.37 and 1.44 against 1.10). None reaches the structure targets: the structure beyond the ORN input against wild type stalls at 0.54 at both thresholds (data 0.83; 0.46 without a threshold, which 140 evaluations did not move), the natural-source alignment reaches +0.25 at best (data 0.36), and the block pairs stay slightly more over-removed than the other pairs (−0.105 against −0.087; data −0.08 against −0.10). The best fit (70 Hz) pays with agreement with the control matrix (0.68 to 0.57) and the APL output blocked (TNT) matrix (0.69 to 0.60), the per-odor response rates (0.68 / 0.81 to 0.56 / 0.71), monotonicity (0.91) and the APL-off mean distance (0.72 to 0.78; data 0.66), while keeping the block (+0.07) and the response-rate ratio (2.0); its balance puts APL mostly on the boutons (12× the baseline's APL→bouton scale, a value the bound control below shows to mean "at least about 3×", 0.4× its APL→KC scale) under a low somatic threshold, and all three fits keep the lateral term (KC–KC 28–52) where the earlier threshold fits had let it collapse. Within this family the structure is bought, not added, which is why the next fit puts the oracle glomerulus gain inside the joint fit.
+
+| | | | | ρ on odor-odor distances {span=2} | | | | | | | |
+| model: bouton model<br>breadth exponent 2<br>extended loss | KC–KC scale /<br>threshold /<br>APL→KC /<br>APL→bouton<br>(× baseline) | extended loss | block | APL on | APL off | isotonic R2 | response rate, APL off relative to on | response rate ρ on / off | mean distance on / off | structure beyond ORN vs wild-type somata | vs natural-source distances (APL off) | excess shared responders, APL on (block / other) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **KC data** | — | {{lit:0 # the extended loss of the data itself is 0 by construction}} | {{data:block ~ +.3f}} | ceiling {{data:ctrl_ceiling ~ .2f}} | ceiling {{data:tnt_ceiling ~ .2f}} | {{data:iso_r2 ~ .2f}} | {{data:rate_ratio_mean_response ~ .1f}} (mean response ratio)<br>{{data:rate_ratio_fraction ~ .1f}} (as below) | ceiling {{data:ctrl_rate_rho_ceiling ~ .2f}} / {{data:tnt_rate_rho_ceiling ~ .2f}} | {{data:ctrl_mean_dist ~ .2f}} / {{data:tnt_mean_dist ~ .2f}} | {{data:ctrl_struct_wt ~ .2f}} | {{data:tnt_vcf ~ .2f}} | {{data:ctrl_excess_block ~ .2f}} / {{data:ctrl_excess_other ~ .2f}} |
+| no per-claw threshold | 52 / 0.51 / 0.80 / 3.05 | 2.83 | +0.060 | 0.679 | 0.690 | 0.93 | 2.10 | 0.68 / 0.81 | 0.82 / 0.72 | 0.46 | +0.15 | −0.12 / −0.08 |
+| per-claw threshold 40 Hz | 41 / 0.58 / 0.63 / 3.31 | 2.45 | +0.060 | 0.636 | 0.679 | 0.89 | 1.84 | 0.62 / 0.77 | 0.82 / 0.76 | 0.54 | +0.20 | −0.10 / −0.08 |
+| per-claw threshold 70 Hz | 28 / 0.45 / 0.40 / 12.3 | 2.38 | +0.070 | 0.574 | 0.602 | 0.91 | 2.03 | 0.56 / 0.71 | 0.82 / 0.78 | 0.54 | +0.25 | −0.105 / −0.087 |
+| per-claw threshold 70 Hz + oracle gain 1.5 on the weak odors' glomeruli | 11 / 0.99 / 0.21 / 17.6 | 1.94 | +0.049 | 0.601 | 0.637 | 0.95 | 2.49 | 0.35 / 0.72 | 0.74 / 0.70 | 0.32 | +0.36 | −0.134 / −0.167 |
+| per-claw threshold 40 Hz + oracle gain 1.5 | 22 / 0.79 / 0.58 / 8.2 | 1.93 | +0.043 | 0.657 | 0.631 | 0.91 | 2.48 | 0.39 / 0.87 | 0.75 / 0.69 | 0.36 | +0.36 | −0.137 / −0.163 |
+
+**With the oracle gain inside the fit** (the gain of 1.5 on the weak odors' eight glomeruli held fixed, the four parameters re-fitted from the structure-target optima), the block and the gain coexist, which they did not at the fixed operating points of the combined-model experiment: both threshold models keep the block (+0.049 and +0.043), reach the data's natural-source alignment (+0.36) and, for the first time in any fit, the data's order of the APL-on excess profile (the block pairs less over-removed than the other between-group pairs), with monotonicity back above the floor at 70 Hz and the best control agreement of any threshold model at 40 Hz (0.66). The extended loss falls to 1.94 and 1.93, the lowest of the program. The fit does it by raising the somatic threshold, shrinking the lateral term (to 11 and 22) and moving APL further onto the boutons. The costs are the ones the fixed points showed and one more: the per-odor response rate ρ with the control flies falls to 0.35 and 0.39 (the esters' response fractions drop as the weak odors are recruited), the structure beyond the ORN input against the wild-type somata falls from 0.54 to 0.32 and 0.36, and the mean APL-on distance falls to 0.74 (data 0.84). The gain pays for what it buys almost entirely out of those two statistics.
+
+
+**On re-drawn wiring.** Every joint fit above rests on one hemibrain wiring. Re-running the three structure-target fits on two re-draws of the bouton wiring (each KC type's claws re-assigned among that type's boutons, the smallest perturbation the wiring-substrate experiment used) keeps part of the conclusion and withdraws part. A per-claw threshold beats no threshold in five of the six comparisons across the three wirings, but which threshold wins flips (70 Hz on the real wiring and the first re-draw, 40 Hz on the second), so the loss selects a threshold and not a particular one. The threshold's gain in natural-source alignment repeats on every wiring; its +0.08 gain in structure against wild-type somata does not (+0.01 to +0.05 on one re-draw, −0.03 on the other, inside the substrate experiment's ±0.15), and is withdrawn. And every re-drawn fit is 1 to 2.5 worse in loss and 0.15 to 0.25 lower in wild-type structure than its real-wiring counterpart while keeping the block and the control agreement: fitted with the structure targets, the real hemibrain wiring carries structure the re-draws do not, so the absolute structure numbers of every fit on this page are the real wiring's.
+
+| model<br>breadth 2<br>structure loss | extended loss<br>real wiring /<br>re-draw 1 /<br>re-draw 2 | structure vs wild-type somata (data 0.83) | natural-source alignment, APL off (data 0.36) | block (data +0.055) |
+|---|---|---|---|---|
+| no per-claw threshold | 2.83 / 4.28 / 5.28 | 0.46 / 0.29 / 0.36 | +0.15 / −0.01 / +0.05 | +0.060 / +0.053 / +0.054 |
+| per-claw threshold 40 Hz | 2.45 / 4.79 / 2.94 | 0.54 / 0.30 / 0.32 | +0.20 / +0.13 / +0.28 | +0.060 / +0.024 / +0.055 |
+| per-claw threshold 70 Hz | 2.38 / 3.86 / 3.10 | 0.54 / 0.34 / 0.33 | +0.25 / +0.17 / +0.16 | +0.070 / +0.038 / +0.072 |
+| per-claw threshold 70 Hz + oracle gain 1.5 | 1.94 / — / 2.50 | 0.32 / — / 0.25 | +0.36 / — / +0.30 | +0.049 / — / +0.040 |
+| per-claw threshold 40 Hz + oracle gain 1.5 | 1.93 / — / 2.49 | 0.36 / — / 0.22 | +0.36 / — / +0.29 | +0.043 / — / +0.048 |
+
+The combined model replicates on the re-draw: with the gain the loss falls by about what it fell on the real wiring (0.60 and 0.45 against 0.44 and 0.52), the block is kept (+0.040 and +0.048), the natural-source alignment rises at 70 Hz from +0.16 to +0.30 (on the real wiring from +0.25 to +0.36; at 40 Hz the re-draw's gain-free fit already sat at +0.28), the agreement with the control matrix rises from 0.55 to 0.71 and from 0.54 to 0.68, the first threshold models at the level of the breadth × KC–KC models, and the APL-on excess profile takes the data's order on the re-draw as well. So the combined model's structure is the gain's own and not the wiring's, with its level about 0.06 lower away from the real hemibrain wiring; the costs, the per-odor response-rate pattern (0.33 to 0.35 with APL on) and the structure against wild-type somata, replicate too.
+
+**What the gain's response-rate cost is.** Comparing the per-odor response fractions of the fits with and
+without the gain against the KC data (figure below), the cost is confined to the APL-on condition:
+against the APL output blocked (TNT) data the gain costs nothing at 70 Hz and helps at 40 Hz. With
+APL on, three esters and three weak odors carry the loss. 2-but and 2h, the two odors the control
+flies respond to most, and IaA fall to ranks 10 to 14 of 16, because the gain fit's stronger APL
+removes 3.1 to 3.6 times as many responders as it leaves (the data: 1.8 to 2.4 times). ms, paa and
+B-myr, the odors the gain was meant to recruit, remain the three sparsest with APL on: the fit still
+removes 69 to 84 % of their APL-off responders (the data remove 52 to 59 %), although with APL off
+the gain brings them close to the data. And 1-8ol and euc, which the data do not place among the
+sparse odors, are over-recruited. Behind this is a feature of the data that no fit reproduces:
+blocking APL output multiplies every odor's response fraction by about the same factor, 2.2,
+whatever the odor (the spread across odors is at the noise of the recordings), whereas every fit's
+APL is odor-selective. It removes the sparse odors' responders preferentially (without the gain, a
+factor 1.7 for the six esters against 2.8 for the weak-input odors and 12 for B-myr) and, with the gain,
+2h, IaA and 2-but as well. The section on [what drives APL](#apl-drive), below, traces this to the
+model's APL input.
+
+| factor by which blocking APL output multiplies the response fraction<br>real wiring<br>breadth 2<br>structure loss | esters (fruity and small) | other odors | weak-input odors | response rate ρ, APL on / off |
+|---|---|---|---|---|
+| **KC data** | {{data:supp_esters ~ .1f}} | {{data:supp_other ~ .1f}} | {{data:supp_weak ~ .1f}} | ceiling {{data:ctrl_rate_rho_ceiling ~ .2f}} / {{data:tnt_rate_rho_ceiling ~ .2f}} |
+| per-claw threshold 70 Hz, no gain | 1.7 | 2.1 | 2.8 | 0.56 / 0.71 |
+| per-claw threshold 70 Hz + oracle gain 1.5 | 2.6 | 2.2 | 2.8 | 0.35 / 0.72 |
+| per-claw threshold 40 Hz, no gain | 1.6 | 1.9 | 2.3 | 0.62 / 0.77 |
+| per-claw threshold 40 Hz + oracle gain 1.5 | 2.4 | 2.4 | 2.8 | 0.39 / 0.87 |
+
+![Per-odor response fractions with APL on, model against the control flies, for the structure-loss joint fits without the gain (hollow) and with the 1.5x gain (filled), on the real wiring and on the second re-drawn wiring at both per-claw thresholds. Fruity esters in orange, the five weak-input odors in blue, the other odors in grey; the diagonal is the data's value.](results/gain_rate_cost/gain_rate_cost.png)
+
+**Is the extreme APL→bouton scale needed?** The structure-target optima put APL on the PN boutons at 8 to 18 times the baseline's tuned scale. Re-running the 70 Hz structure fit from its optimum with that scale capped at 3× the baseline costs 0.08 of extended loss (the fit sits on the cap and gives up only a little of the response-rate ratio), tying it to the APL→KC scale lands at 2.4× for the same loss, fixing it at the baseline's value costs 0.9 (the APL-off / APL-on response-rate ratio collapses to 1.5 and the block to +0.036, because the knockout then releases only the KC-side inhibition), and forcing the APL→KC scale up to at least 0.8× the baseline is worst of all (monotonicity collapses and the blocked flies' per-odor response-rate pattern is lost). So presynaptic APL at a few times the baseline is needed and the loss is flat above it: the large factors in the fitted optima mean "at least about 3×", not a prediction of synaptic strength, and there is no KC-side route in this family. The testable statement for APL imaging is the direction (the knockout's released responders come mostly through the boutons), not the number.
+
+| 70 Hz structure fit<br>APL→bouton scale | extended loss | APL→bouton /<br>APL→KC<br>(× baseline) | block | response rate, APL off relative to on | isotonic R2 | response rate ρ on / off | vs natural-source distances (APL off) |
+|---|---|---|---|---|---|---|---|
+| **KC data** | {{lit:0 # the extended loss of the data itself is 0 by construction}} | — | {{data:block ~ +.3f}} | {{data:rate_ratio_mean_response ~ .1f}} (mean response ratio)<br>{{data:rate_ratio_fraction ~ .1f}} (as below) | {{data:iso_r2 ~ .2f}} | ceiling {{data:ctrl_rate_rho_ceiling ~ .2f}} / {{data:tnt_rate_rho_ceiling ~ .2f}} | {{data:tnt_vcf ~ .2f}} |
+| free (12×) | 2.38 | 12.3 / 0.40 | +0.070 | 2.03 | 0.91 | 0.56 / 0.71 | +0.25 |
+| capped at 3× | 2.46 | 3.0 / 0.80 | +0.056 | 1.91 | 0.91 | 0.53 / 0.73 | +0.24 |
+| tied to the APL→KC scale | 2.45 | 2.4 / 0.95 | +0.050 | 1.94 | 0.91 | 0.49 / 0.78 | +0.23 |
+| fixed at the baseline (1×) | 3.25 | 1.0 / 0.61 | +0.036 | 1.48 | 0.94 | 0.56 / 0.73 | +0.19 |
+| APL→KC scale forced ≥ 0.8× | 3.12 | 4.4 / 1.09 | +0.069 | 1.87 | 0.80 | 0.31 / 0.08 | +0.32 |
+
+**The combined model with interpretable bounds.** Re-fitting the combined model (the per-claw threshold, breadth-weighted APL, KC–KC inhibition and the 1.5× gain on the weak odors' eight glomeruli) with the APL→bouton scale capped at 3× the baseline does not cost it anything: both threshold fits improve on their uncapped versions (70 Hz 1.94 to 1.84, 40 Hz 1.93 to 1.73, the lowest extended loss of the program), with the bouton scale on the cap, the APL→KC scale back up, the lateral term smaller and the somatic threshold higher; every gain of the uncapped fits is kept (the block at the data's size, the natural-source alignment at the data, the APL-on excess profile in the data's order, monotonicity 0.92 to 0.95) and the costs are smaller (the control flies' per-odor response rate ρ=0.41 / 0.47 against 0.35 / 0.39, the structure against wild type 0.35 / 0.40 against 0.32 / 0.36). The capped 40 Hz model is therefore the reference model, with parameters that can be stated: somatic threshold 0.88× the baseline's (200 Hz), 40 Hz per-claw threshold, APL→KC 0.80×, APL→bouton 3.0×, KC–KC 18, breadth exponent 2, gain 1.5. A gain of 1.25 does not split the trade but moves along it: it keeps the natural-source alignment and recovers most of the wild-type structure (0.49 / 0.50) while the block shrinks (+0.039 / +0.046) and the per-odor response-rate cost stays, so that cost belongs to the gain itself (a glomerulus-specific boost that lets the fit's APL remove the esters' responders, see above), not to its size.
+
+| combined model<br>structure loss<br>breadth 2 | extended loss | APL→bouton /<br>APL→KC (× baseline) /<br>KC–KC | block | response rate, APL off relative to on | isotonic R2 | response rate ρ on / off | structure vs wild type | vs natural-source distances (APL off) |
+|---|---|---|---|---|---|---|---|---|
+| **KC data** | {{lit:0 # the extended loss of the data itself is 0 by construction}} | — | {{data:block ~ +.3f}} | {{data:rate_ratio_mean_response ~ .1f}} (mean response ratio)<br>{{data:rate_ratio_fraction ~ .1f}} (as below) | {{data:iso_r2 ~ .2f}} | ceiling {{data:ctrl_rate_rho_ceiling ~ .2f}} / {{data:tnt_rate_rho_ceiling ~ .2f}} | {{data:ctrl_struct_wt ~ .2f}} | {{data:tnt_vcf ~ .2f}} |
+| 70 Hz, gain 1.5, uncapped | 1.94 | 17.6 / 0.21 / 11 | +0.049 | 2.49 | 0.95 | 0.35 / 0.72 | 0.32 | +0.36 |
+| 70 Hz, gain 1.5, capped at 3× | 1.84 | 3.0 / 0.42 / 6 | +0.050 | 2.43 | 0.95 | 0.41 / 0.77 | 0.35 | +0.36 |
+| 40 Hz, gain 1.5, uncapped | 1.93 | 8.2 / 0.58 / 22 | +0.043 | 2.48 | 0.91 | 0.39 / 0.87 | 0.36 | +0.36 |
+| 40 Hz, gain 1.5, capped at 3× (the reference model) | 1.73 | 3.0 / 0.80 / 18 | +0.054 | 2.42 | 0.92 | 0.47 / 0.84 | 0.40 | +0.37 |
+| 70 Hz, gain 1.25, capped | 2.02 | 2.8 / 0.62 / 30 | +0.039 | 1.98 | 0.93 | 0.40 / 0.50 | 0.50 | +0.36 |
+| 40 Hz, gain 1.25, capped | 1.83 | 2.7 / 0.88 / 28 | +0.046 | 2.14 | 0.90 | 0.37 / 0.78 | 0.49 | +0.38 |
+
+### What drives APL: the per-odor suppression {#apl-drive}
+
+Blocking APL output takes away the same share of every odor's responders in the data, and no model
+did that. Two things could make the model's APL odor-selective: the algebra of its inhibition, or
+what APL responds to. The divisive APL inhibition experiment tested both on the bouton base at 5 %.
+Replacing the subtraction with a division (the drive divided by one plus the inhibition) at the KCs,
+at the boutons or at both changes almost nothing. For a KC with a hard threshold that is expected: a
+drive divided by one plus the inhibition crosses threshold exactly when the drive minus the threshold
+times the inhibition does, so division acts as a shift of the threshold, as subtraction does. What
+APL responds to matters instead. In the bouton base, used by every model since the bouton base with
+claw coincidence, APL is driven by the summed input to all claws plus the bouton rates. Its activity
+then barely varies across odors: its peak during ms is three quarters of its peak during pa, though
+pa drives about a hundred times as many KCs. Every odor receives about the same threshold shift, and
+an odor whose few responders sit just above threshold loses most of them. Driving APL by the KCs'
+spikes instead makes APL follow how many KCs fire, and with the 70 Hz per-claw threshold the
+suppression becomes as uniform as the data's.
+
+The statistic is the spread of the suppression: per odor, the ratio of the fraction of KCs
+responding with APL off to the fraction responding with APL on, and the standard deviation of its
+logarithm across the 16 odors (an odor with no responders counted as half a KC). The data give
+0.15, where the noise of the recordings alone gives 0.13. Its rank correlation with the odor's APL-on
+fraction is negative when the sparse odors are suppressed most.
+
+| | | | | APL on<br>ρ(control flies, model), computed on {span=2} |
+| bouton base<br>5 % with APL on | spread of suppression | rank correlation with the APL-on fraction | esters (fruity and small) / other / weak-input odors | response rates | odor-odor distances |
+|---|---|---|---|---|---|
+| **KC data** | {{data:supp_spread ~ .2f}} (noise {{data:supp_noise ~ .2f}}) | {{data:supp_rho_on ~ .2f}} | {{data:supp_esters ~ .1f}} / {{data:supp_other ~ .1f}} / {{data:supp_weak ~ .1f}} | ceiling {{data:ctrl_rate_rho_ceiling ~ .2f}} | ceiling {{data:ctrl_ceiling ~ .2f}} |
+| APL driven by the claw input, subtractive, 70 Hz | 0.42 | −0.91 | 1.8 / 2.6 / 2.8 | 0.57 | 0.53 |
+| the same, divisive at the KCs | 0.33 | −0.91 | 1.8 / 2.5 / 2.3 | 0.67 | 0.52 |
+| the same, divisive at the boutons | 0.43 | −0.84 | 1.8 / 2.2 / 2.8 | 0.57 | 0.52 |
+| **APL driven by KC spikes, subtractive, 70 Hz** | **0.12** | **−0.12** | **1.9 / 2.0 / 1.9** | 0.67 | 0.52 |
+| APL driven by KC spikes, subtractive, no per-claw threshold | 0.51 | −0.61 | 2.0 / 2.4 / 2.4 | 0.71 | 0.59 |
+| APL driven by KC spikes, divisive at the KCs, no per-claw threshold | 0.17 | −0.63 | 1.8 / 2.2 / 2.1 | 0.71 | 0.58 |
+
+Without the per-claw threshold the bouton rates, the remaining part of APL's input that does not
+depend on how many KCs fire, keep the spike-driven APL partly selective. The claw base of the APL
+knockout baseline, whose APL is driven by KC spikes alone, suppresses uniformly without a threshold
+(spread 0.16). In this base the drive changes which odors keep their responders but not which odors
+share them: agreement with the control matrix is 0.52 to 0.59 in every variant, and there is no block,
+because the base has neither breadth-weighted APL nor KC–KC inhibition. With spike-driven APL, ms
+keeps its share of responders, which leaves its deficit entirely in the APL-off condition, the input
+problem the glomerulus gain addresses.
+
+![Per-odor suppression against the APL-on fraction for the KC data and three models at 70 Hz (top left), then, for every variant, the spread of the suppression across odors, its rank correlation with the APL-on fraction, the per-odor response rate ρ, ρ on odor-odor distances with the two KC matrices and the mean APL-on distance. Bars left of the line: APL driven by the summed claw input; hatched, right: by KC spikes.](results/E35_divisive_apl/E35_divisive_apl.png)
+
+**KC-spike-driven APL in the combined models.** Put into the fitted models (the structure-loss joint
+fits with the APL→bouton scale capped at 3×, each re-fitted from the claw-driven optimum), spike-driven
+APL keeps everything the combined model gained and makes the suppression more even across odors, but
+does not improve the per-odor response rates. The loss is lower without the oracle gain, the same at
+70 Hz with it, and slightly higher at 40 Hz with it (mostly a smaller block); the block, the
+response-rate ratio, ρ on odor-odor distances with both KC matrices, the natural-source alignment and
+the structure against wild-type somata stay where the claw-driven fits had them. The spread of the
+suppression falls by about half, and at 40 Hz reaches the data's; but the sparse odors still lose
+relatively more of their responders (the rank correlation of the suppression with the APL-on fraction
+stays strongly negative), and response rate ρ with APL on does not move. What drives APL therefore sets
+how evenly it suppresses odors, not the fitted models' structure or per-odor response-rate pattern;
+the remaining response-rate deficit is the oracle gain's own cost and the APL-off response rates of
+ms, B-myr and paa, which no APL drive changes. Among the models without the oracle gain, the
+spike-driven fit is the best of the program (extended loss 2.24 against 2.46 for its claw-driven
+counterpart), with the data's mean APL-on distance (0.84) and block (+0.060).
+
+| structure-loss joint fit<br>APL→bouton ≤ 3× | APL driven by | extended loss | response rate ρ, APL on | block | spread of suppression | rank correlation of suppression with the APL-on fraction |
+|---|---|---|---|---|---|---|
+| **KC data** | | {{lit:0 # the extended loss of the data itself is 0 by construction}} | ceiling {{data:ctrl_rate_rho_ceiling ~ .2f}} | {{data:block ~ +.3f}} | {{data:supp_spread ~ .2f}} | {{data:supp_rho_on ~ .2f}} |
+| threshold 70<br>no gain | claw input | 2.46 | 0.53 | +0.056 | 0.51 | −0.88 |
+| | KC spikes | 2.24 | 0.52 | +0.060 | 0.26 | −0.78 |
+| threshold 70<br>oracle gain 1.5 | claw input | 1.84 | 0.41 | +0.050 | 0.41 | −0.80 |
+| | KC spikes | 1.83 | 0.37 | +0.047 | 0.23 | −0.73 |
+| threshold 40<br>oracle gain 1.5 | claw input | 1.73 | 0.47 | +0.054 | 0.31 | −0.72 |
+| | KC spikes | 1.81 | 0.46 | +0.042 | 0.15 | −0.67 |
+
+![The same structure-loss joint fits with APL driven by the summed claw input (grey) and by KC spikes (green): extended loss, spread of the suppression across odors, response rate ρ with APL on, the block, the APL-off / APL-on response rate and ρ on odor-odor distances with the control matrix; dotted lines are the KC data.](results/E36_spike_apl/E36_spike_apl.png)
+
+## What did not matter, and what that rules out
+
+- **Where APL acts spatially (local APL units):** 529 connectome-defined APL compartments at any coupling give the same geometry as one APL (ρ=0.997–0.999 on odor-odor distances between the two): the units carry odor-specific patterns, but each KC averages over about 6 claws spread through the calyx. Spatially local APL is not a mechanism at the KC level.
+- **PN→KC wiring (the wiring substrate experiment):** no wiring (hemibrain claws, boutons, random, shuffled) reproduces the data's structure beyond the ORN input better than a 20-seed random null (0.27 ± 0.13); the real claw wiring scores below its own shuffles. The substrate is not the source.
+- **How the model reads the hemibrain claw segmentation (multi-bouton claws and synapse-count claw weights):** 3.5 % of claws take synapses from two boutons of their PN; putting each in its dominant bouton instead of the lowest-numbered one, or splitting it, changes 3 % of the responding KCs and nothing else (ρ=0.997 on odor-odor distances with the default model). Weighting each claw by its number of PN→KC synapses (median 15, spread 0.43 of the mean, mostly within glomerulus) changes which KCs respond (79 % of responders) and raises the agreement with the control matrix from 0.57 to 0.60 and with the APL-blocked matrix from 0.69 to 0.73 (better; the measurement ceilings are 0.98 / 0.97), a mild move toward fewer, stronger claws per KC, but leaves the block absent (−0.007; data +0.055) and adds no structure beyond the ORN input. The default construction is kept; the synapse weights are a base variant (used in the oracle glomerulus gain experiment's anatomical arm).
+- **KC heterogeneity:** per-KC thresholds by claw count, per-type thresholds and per-type APL weights leave the geometry unchanged; homeostatic per-KC thresholds are degenerate at 5 % on 16 odors.
+- **Readout window and time constants:** model spikes peak 50–150 ms after onset and die during the pulse; no window shows the block; APL and claw time constants only move the response rate.
+- **Harder inhibition of the shared-drive claws, the bouton base with claw coincidence, panel-general glomerulus scores, a per-claw cap, bouton vesicle depletion:** each moved some statistics but not the block (depletion moved every statistic the wrong way), and the APL-synapse anatomy check (APL synapses anti-correlated with the glomeruli that need them) argues against any static, glomerulus-targeted APL rule.
+- **Fixes for the weak-input odors (per-glomerulus drive normalization, a softer per-claw knee, input scaling for the terpenes and 1-8ol, a supralinear per-claw transfer):** each is negative; see the section below for what they changed and why.
+- **Structured centrifugal input to the calyx:** the hemibrain's calyx-projecting LHCENT cells, driven through a lateral-horn layer of 1291 neurons built from the PN → LHN synapse counts, are broadly tuned (every cell to every odor, strongest for the small esters, at most a threefold range across odors), and MB-C1 takes 59 % of its input from KCs inside the calyx, so it is a calyx feedback neuron like APL (its output goes to the gamma KCs) rather than a lateral-horn relay. Inhibition at the KC somata at any strength changes nothing. Inhibition at the boutons is a glomerulus-specific gain cut on the VA4, DM1, DM4, DM3 and DP1m boutons that silences 2-but (0.113 → 0.014 of KCs with APL output blocked; the fly 0.193), B-myr (0.020 → 0.004; fly 0.105) and half of paa, and the pair effects and higher matrix agreements it produces (control 0.57 → 0.63; APL output blocked (TNT) 0.69 → 0.77) are what silencing those odors looks like: the per-odor response-rate pattern collapses (0.68 / 0.80 → 0.31 / 0.45; ceiling 0.98 / 0.97), the APL-on block-pair excess goes from −0.42 to −0.58 (data −0.08), the block (−0.02) and the natural-source alignment (−0.04) do not appear, the small-ester / aldehyde divergences never move, and B-myr diverges from the other terpenes where the data converge. The pathway is not a source of category structure; MB-C1 would belong in a KC-driven, gamma-biased feedback model, a different question.
+- **The algebra of APL's inhibition (divisive APL inhibition):** dividing the drive instead of subtracting from it, at the KCs, the boutons or both, leaves the per-odor suppression as selective as before; at a hard threshold division acts as a shift of the threshold (see [what drives APL](#apl-drive)).
+- **The data-only confound controls:** half of the APL-block similarity change is density; the isotonic R² of 0.94 is at the measurement ceiling (0.99 in a model is not a failure); the odor-level drive effect is confounded with density change; the only robust pair-specific signature is the block.
+
+## Where the remaining gaps come from: five weak-input odors, and single-claw recruitment
+
+Every model with the per-claw threshold shares too little among the non-ester pairs when APL output is blocked (TNT), and no fit repairs it. Three analyses located the problem and four model-side fixes failed, which together narrow what is left to do.
+
+**The diagnostic.** Comparing six archived models with the APL output blocked (TNT) data pair by pair, the missing sharing sits in the 70 pairs of five odors: ms, B-myr, euc, paa and 1-8ol. In the modelled ORN input these drive few of the 36 glomeruli, weakly (ms and B-myr, both at the exact concentration, reach 50 Hz in only three glomeruli; their largest ORN response is 73–79 Hz against a median of 150 Hz), so the models recruit 0.2–8 % of KCs for them with APL output blocked (TNT) where the fly recruits 10–14 %, and odors that recruit few KCs cannot share them. The ester, fruity-ester and aldehyde pairs are at or above the data's sharing. The per-claw threshold makes it worse: its response fractions with APL output blocked (TNT) follow the number of glomeruli an odor drives above 70 Hz (ρ=0.74, against 0.49 in the data), which is also the threshold's per-odor response-rate cost. Hallem's data do not point to a missing glomerulus: the lab's ORN input and Hallem agree for the esters, fruity esters and aldehydes and disagree for exactly these five odors, so their glomerular input is uncertain rather than incomplete.
+
+**What the fly does with them.** In Yang's recordings ms recruits a channel of its own: the narrowest and most exclusive responders of the panel (45 % of its control responders respond to nothing else, against 9–31 % for other odors), 11.6 % of KCs with APL output blocked (TNT), co-tuned with glomerulus D's ORN profile rather than with DL1 or with its own. Only 8 % of KCs carry a claw from D and 1.3–1.5 % two claws from D or DL1, so most of these KCs are recruited by a single claw. paa is a milder case of the same. The terpenes and 1-8ol are different: they are recruited through ordinary broad KC populations whose co-tuning follows their ORN profiles (right glomeruli, understated drive), except that B-myr's responders co-tune with the other terpenes in a way the ORN input does not predict.
+
+| odor | fraction of KCs responding, APL output blocked (TNT): fly | threshold model | what the analyses found |
+|---|---|---|---|
+| ms | 0.116 | 0.002 | own narrow, exclusive channel; single-claw recruitment (glomerulus D) |
+| B-myr | 0.105 | 0.007 | weak, few-glomerulus input; responders co-tune with the other terpenes |
+| euc | 0.102 | 0.053 | right glomeruli, understated drive |
+| 1-8ol | 0.103 | 0.048 | right glomeruli, understated drive |
+| -aPine | 0.060 | 0.066 | already at the data |
+| paa | — | under-recruited | milder version of ms's channel |
+
+**Four fixes that did not work.**
+
+| fix (bouton model with the 70 Hz per-claw threshold unless stated) | what it changed | verdict |
+|---|---|---|
+| per-glomerulus drive normalization: each driven glomerulus's PN→claw weights scaled toward the median peak, at half or full strength | half strength leaves the per-odor response rate ρ where the threshold put it (0.57 → 0.60; ceiling 0.98); full strength inverts the pattern (0.28–0.33) by over-recruiting the boosted glomeruli's odors; at the grid's balanced point it improves control / agreement with the APL output blocked (TNT) matrix (0.64 → 0.68, 0.68 → 0.74) but halves the block and collapses the response-rate pattern (0.65 → 0.30) | dropped: the data's recruitment follows input strength, which the threshold exaggerates and the gain removes |
+| a softer per-claw knee (softplus, width 10–40 Hz) | interpolates between the hard threshold and none: response rate ρ=0.57 → 0.67 as decorrelation erodes (mean distance 0.79 → 0.76; data 0.84); ms stays at 0.2 % of KCs at every width | the knee stays hard; no transfer applied alike to all claws recruits KCs from one glomerulus |
+| input scaling for the terpenes and 1-8ol (× 1, 1.5, 2, 3) | × 1.5 matches euc's and 1-8ol's fractions, overshoots -aPine twofold and leaves B-myr at half; their pairs' sharing deficit falls from +0.075 to +0.048 but the part with the fruity esters (+0.10) stays at every factor, because the extra drive recruits KCs from the scaled odors' own glomeruli, not the ester-shared ones; response rate ρ falls from 0.57 / 0.75 to 0.30 / 0.31 | keep the unscaled input; the data want terpene responders that overlap the fruity-ester responders |
+| a supralinear per-claw transfer (each claw's input above the knee raised to the power 1.5, 2 or 3 relative to 50 Hz; also on the 40 Hz threshold) | no power recruits the weak odors: ms and B-myr fall from 0.2 % and 0.7 % of KCs to zero, euc and 1-8ol fall (0.053 → 0.033, 0.048 → 0.010), only paa (0.076 → 0.205; fly 0.137) and -aPine gain, and the strongly driven esters gain more; at power 3 the ester over-sharing disappears and agreement with the APL output blocked (TNT) matrix rises (0.60 → 0.66), but agreement with the control matrix (0.53 → 0.49) and the response-rate pattern (0.57 / 0.75 → 0.48 / 0.53) fall and the block stays absent | the model's PN rates are compressed (no PN above 134 Hz; the esters' strongest PNs are no higher than the weak odors'), so odors differ in how many PNs clear the knee (esters 5–7, weak odors 2–3) and any transfer applied alike to every claw rewards the esters' breadth |
+
+**What this leaves.** The per-claw-transfer family is closed: a cap, a soft knee, a convex power and the hard knee itself all leave the weak odors unrecruited, and scaling their input recruits them without the fly's fruity-ester overlap. The reason is at the PN level (table below): the ORN-to-PN transform compresses rates so that no odor has an unusually strong PN; the weak odors drive two or three PNs above the knee where the esters drive five to seven, and any rule applied alike to every claw rewards breadth. What would recruit them is glomerulus-specific: claws from their glomeruli counting for more, and the oracle gain on those glomeruli (above, in what made a difference) confirms it: a 1.5× gain recruits them with the right overlap and brings the structure beyond the ORN input to the data, while the hemibrain's per-claw synapse counts do not supply that gain and the centrifugal pathway (see what did not matter) does not either. The input side itself remains uncertain for the five odors (concentration, glomerular profile), which is a measurement question, not a modelling one.
+
+| odor | strongest PN rate in the model (Hz) | PNs above the 70 Hz knee | fraction of KCs responding, APL output blocked (TNT): fly / threshold model |
+|---|---|---|---|
+| ms | 96 (VA7m) | 2 | 0.116 / 0.002 |
+| paa | 124 (DM1) | 2 | 0.137 / 0.076 |
+| B-myr | 91 (DM1) | 3 | 0.105 / 0.007 |
+| euc | 109 (DP1m) | 4 | 0.102 / 0.053 |
+| 1-8ol | 97 (DC2) | 5 | 0.103 / 0.048 |
+| -aPine | 134 (VC1) | 3 | 0.060 / 0.066 |
+| 2h (fruity ester) | 84 (DM3) | 6 | 0.216 / 0.098 |
+| pa (fruity ester) | 111 (DM3) | 7 | 0.173 / 0.209 |
+| eb (small ester) | 105 (DM2) | 5 | 0.213 / 0.187 |
+
+## Where the best models stand
+
+| statistic | KC data | bouton baseline | per-claw threshold 70 | breadth 3<br>KC–KC 100 | grid point<br>threshold 70<br>breadth 2<br>KC–KC 100 | joint fit<br>breadth 2<br>KC–KC 41 | threshold 70<br>oracle gain 1.5 | joint fit<br>structure targets<br>threshold 70<br>breadth 2<br>KC–KC 28 | joint fit<br>structure targets<br>threshold 40<br>breadth 2<br>KC–KC 22<br>oracle gain 1.5 | the reference model<br>joint fit<br>structure targets<br>threshold 40<br>breadth 2<br>KC–KC 18<br>oracle gain 1.5<br>APL→bouton ≤ 3× | joint fit<br>structure targets<br>threshold 70<br>breadth 2<br>KC–KC 27<br>APL→bouton ≤ 3×<br>APL driven by KC spikes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ρ on odor-odor distances, APL on | ceiling {{data:ctrl_ceiling ~ .2f}} | {{E13:bouton_base:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E16:bouton_thr70:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E19:thr70_k2_kckc100:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E10:k2:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .3f}} | {{E27:oracle_g1.5:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E25:thr70_k2_ext:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E28:thr40_gain1.5_k2:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E34:thr40_gain1.5_k2_cap3:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} | {{E36:spk_thr70_k2_s2:spike_counts_cosine__on_spearman,spearman_vs_TNT3c_on ~ .2f}} |
+| ρ on odor-odor distances, APL off | ceiling {{data:tnt_ceiling ~ .2f}} | {{E13:bouton_base:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E16:bouton_thr70:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E19:thr70_k2_kckc100:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E10:k2:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E27:oracle_g1.5:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E25:thr70_k2_ext:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E28:thr40_gain1.5_k2:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E34:thr40_gain1.5_k2_cap3:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} | {{E36:spk_thr70_k2_s2:spike_counts_cosine__off_spearman,spearman_vs_TNT_off ~ .2f}} |
+| mean pair distance, APL on | {{data:ctrl_mean_dist ~ .2f}} | {{E13:bouton_base:spike_counts_cosine__on_mean_model ~ .2f}} | {{E16:bouton_thr70:spike_counts_cosine__on_mean_model ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:spike_counts_cosine__on_mean_model ~ .2f}} | {{E19:thr70_k2_kckc100:spike_counts_cosine__on_mean_model ~ .2f}} | {{E10:k2:spike_counts_cosine__on_mean_model ~ .2f}} | {{E27:oracle_g1.5:spike_counts_cosine__on_mean_model ~ .2f}} | {{E25:thr70_k2_ext:spike_counts_cosine__on_mean_model ~ .2f}} | {{E28:thr40_gain1.5_k2:spike_counts_cosine__on_mean_model ~ .2f}} | {{E34:thr40_gain1.5_k2_cap3:spike_counts_cosine__on_mean_model ~ .2f}} | {{E36:spk_thr70_k2_s2:spike_counts_cosine__on_mean_model ~ .2f}} |
+| fruity × small-ester block | {{data:block ~ +.3f}} | {{E13:bouton_base:spike_counts_cosine__block_fruity_small_iso ~ .2f}} | {{E16:bouton_thr70:spike_counts_cosine__block_fruity_small_iso ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} | {{E19:thr70_k2_kckc100:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} | {{E10:k2:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} | {{E27:oracle_g1.5:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} | {{E25:thr70_k2_ext:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} | {{E28:thr40_gain1.5_k2:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} | {{E34:thr40_gain1.5_k2_cap3:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} | {{E36:spk_thr70_k2_s2:spike_counts_cosine__block_fruity_small_iso ~ +.3f}} |
+| excess sharing, APL on (block / other) | {{data:ctrl_excess_block ~ .2f}} / {{data:ctrl_excess_other ~ .2f}} | {{E13:bouton_base:on_excess_block ~ .2f}} / {{E13:bouton_base:on_excess_other_between ~ .2f}} | {{E16:bouton_thr70:on_excess_block ~ .2f}} / {{E16:bouton_thr70:on_excess_other_between ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:on_excess_block ~ .2f}} / {{E8:breadth3_tau0.05_kckc100:on_excess_other_between ~ .2f}} | {{E19:thr70_k2_kckc100:on_excess_block ~ .2f}} / {{E19:thr70_k2_kckc100:on_excess_other_between ~ .2f}} | {{E10:k2:on_excess_block ~ .2f}} / {{E10:k2:on_excess_other_between ~ .2f}} | {{E27:oracle_g1.5:on_excess_block ~ .2f}} / {{E27:oracle_g1.5:on_excess_other_between ~ .2f}} | {{E25:thr70_k2_ext:on_excess_block ~ .3f}} / {{E25:thr70_k2_ext:on_excess_other_between ~ .3f}} | {{E28:thr40_gain1.5_k2:on_excess_block ~ .2f}} / {{E28:thr40_gain1.5_k2:on_excess_other_between ~ .2f}} | {{E34:thr40_gain1.5_k2_cap3:on_excess_block ~ .2f}} / {{E34:thr40_gain1.5_k2_cap3:on_excess_other_between ~ .2f}} | {{E36:spk_thr70_k2_s2:on_excess_block ~ .2f}} / {{E36:spk_thr70_k2_s2:on_excess_other_between ~ .2f}} |
+| excess sharing, APL off (block / other) | {{data:tnt_excess_block ~ .2f}} / {{data:tnt_excess_other ~ .2f}} | {{E13:bouton_base:off_excess_block ~ .2f}} / {{E13:bouton_base:off_excess_other_between ~ .2f}} | {{E16:bouton_thr70:off_excess_block ~ .2f}} / {{E16:bouton_thr70:off_excess_other_between ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:off_excess_block ~ .2f}} / {{E8:breadth3_tau0.05_kckc100:off_excess_other_between ~ .2f}} | {{E19:thr70_k2_kckc100:off_excess_block ~ .2f}} / {{E19:thr70_k2_kckc100:off_excess_other_between ~ .2f}} | {{E10:k2:off_excess_block ~ .2f}} / {{E10:k2:off_excess_other_between ~ .2f}} | {{E27:oracle_g1.5:off_excess_block ~ .2f}} / {{E27:oracle_g1.5:off_excess_other_between ~ .2f}} | {{E25:thr70_k2_ext:off_excess_block ~ .3f}} / {{E25:thr70_k2_ext:off_excess_other_between ~ .3f}} | {{E28:thr40_gain1.5_k2:off_excess_block ~ .2f}} / {{E28:thr40_gain1.5_k2:off_excess_other_between ~ .2f}} | {{E34:thr40_gain1.5_k2_cap3:off_excess_block ~ .2f}} / {{E34:thr40_gain1.5_k2_cap3:off_excess_other_between ~ .2f}} | {{E36:spk_thr70_k2_s2:off_excess_block ~ .2f}} / {{E36:spk_thr70_k2_s2:off_excess_other_between ~ .2f}} |
+| response rate, APL off relative to on | {{data:rate_ratio_mean_response ~ .1f}} (mean response ratio)<br>{{data:rate_ratio_fraction ~ .1f}} (as the models) | {{E18:bouton_base:rate_ratio_off_over_on ~ .1f}} (by construction) | {{E19:thr70_k0_kckc0:rate_ratio_off_over_on ~ .1f}} | {{E8:breadth3_tau0.05_kckc100:rate_ratio_off_over_on ~ .2f}} | {{E19:thr70_k2_kckc100:rate_ratio_off_over_on ~ .2f}} | {{E10:k2:rate_ratio_off_over_on ~ .2f}} | {{E27:oracle_g1.5:rate_ratio_off_over_on ~ .1f}} | {{E25:thr70_k2_ext:rate_ratio_off_over_on ~ .1f}} | {{E28:thr40_gain1.5_k2:rate_ratio_off_over_on ~ .1f}} | {{E34:thr40_gain1.5_k2_cap3:rate_ratio_off_over_on ~ .1f}} | {{E36:spk_thr70_k2_s2:rate_ratio_off_over_on ~ .2f}} |
+| response rate ρ, per odor (APL on) | about {{data:ctrl_rate_rho_ceiling ~ .2f}} | {{E13:bouton_base:spearman_rate_on_vs_data ~ .2f}} | {{E16:bouton_thr70:spearman_rate_on_vs_data ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:spearman_rate_on_vs_data ~ .2f}} | {{E19:thr70_k2_kckc100:spearman_rate_on_vs_data ~ .2f}} | {{E10:k2:spearman_rate_on_vs_data ~ .2f}} | {{E27:oracle_g1.5:spearman_rate_on_vs_data ~ .2f}} | {{E25:thr70_k2_ext:spearman_rate_on_vs_data ~ .2f}} | {{E28:thr40_gain1.5_k2:spearman_rate_on_vs_data ~ .2f}} | {{E34:thr40_gain1.5_k2_cap3:spearman_rate_on_vs_data ~ .2f}} | {{E36:spk_thr70_k2_s2:spearman_rate_on_vs_data ~ .2f}} |
+| structure beyond the ORN input, APL off | {{data:tnt_vcf ~ .2f}} | {{E13:bouton_base:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ .2f}} | {{E16:bouton_thr70:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E8:breadth3_tau0.05_kckc100:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E19:thr70_k2_kckc100:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E10:k2:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E27:oracle_g1.5:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E25:thr70_k2_ext:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E28:thr40_gain1.5_k2:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E34:thr40_gain1.5_k2_cap3:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} | {{E36:spk_thr70_k2_s2:spike_counts_cosine__off_spearman_resid_vs_vcf_hyp ~ +.2f}} |
+| isotonic R² on vs off | {{data:iso_r2 ~ .2f}} | {{E13:bouton_base:spike_counts_cosine__iso_r2 ~ .2f}} | {{E16:bouton_thr70:spike_counts_cosine__iso_r2 ~ .2f}} | {{E8:breadth3_tau0.05_kckc100:spike_counts_cosine__iso_r2 ~ .2f}} | {{E19:thr70_k2_kckc100:spike_counts_cosine__iso_r2 ~ .2f}} | {{E10:k2:spike_counts_cosine__iso_r2 ~ .2f}} | {{E27:oracle_g1.5:spike_counts_cosine__iso_r2 ~ .2f}} | {{E25:thr70_k2_ext:spike_counts_cosine__iso_r2 ~ .2f}} | {{E28:thr40_gain1.5_k2:spike_counts_cosine__iso_r2 ~ .2f}} | {{E34:thr40_gain1.5_k2_cap3:spike_counts_cosine__iso_r2 ~ .2f}} | {{E36:spk_thr70_k2_s2:spike_counts_cosine__iso_r2 ~ .2f}} |
+
+The two mechanisms fix complementary things: the per-claw threshold sets the decorrelation level and the APL-off structure; breadth-weighted APL with KC–KC inhibition sets the block and the control agreement. The threshold × breadth × KC–KC grid combined them and they add: its block-first point is the first model with the data's decorrelation level, control excess profile and block together, at the cost of the response-rate ratio, the per-odor response rates and monotonicity; its balanced point (threshold 40, breadth 2, KC–KC 30) keeps the per-odor response rates and monotonicity with a smaller block. The joint fit then showed the response-rate ratio is recoverable by rebalancing APL between claws and boutons, but, so far, only without the per-claw threshold. No model yet has the APL output blocked (TNT) matrix right (ρ on odor-odor distances at most 0.72 against a ceiling of 0.97; once the threshold is on, its non-ester pairs share too little), and these, with the per-odor response-rate pattern, are the remaining gaps; they point at the input side (the five weak-input odors analysed above) and at a stronger or differently distributed APL rather than at more KC mechanisms of the kind tested so far.
+
+## How close the best models have come to the KC data, over the run
+
+The plot below tracks, for six of the statistics used throughout this page, how far the best model found so far had closed the gap between the first measured model and the KC data, against the time each experiment finished. 100 % is the data's value, or its measurement ceiling where the data set one (the agreement between two halves of the recordings): ρ on odor-odor distances between the model and the KC data with APL on (the control matrix, ceiling 0.98) and with APL off (the APL output blocked (TNT) matrix, ceiling 0.97), the fruity × small-ester block (+0.055), the per-odor response rate ρ with the control flies (ceiling about 0.97), the structure beyond the ORN input against the wild-type somata (0.83), and the natural-source alignment of the APL-off residual (0.36); the APL-off / APL-on response-rate ratio is left out because the first measured model already sat at the data's 2.2, as most tuned acute-knockout models do. Each experiment contributes its best variant on each statistic separately (so the points on different lines are usually different models), among variants tuned near the 5 % operating point and excluding the oracle constructions and the random or shuffled wirings. The staircase is the best so far; hover a point for the experiment and the model behind it, click a legend entry to hide a line.
+
+%%% html results/summary_progress/progress_plot.html
+
+Two things the lines say that the sections above say in words: the block and the two structure statistics were closed early and by different models (the block by breadth-weighted APL with KC–KC inhibition, the structure by the coincidence rule and the per-claw threshold), while the agreement with the two matrices and the per-odor response rates have moved by a fifth of their gap at most, and no line has moved since the joint fits because the models that close one gap reopen another; the best single model on all statistics at once is in the table of the section before.
+
+## Experiments running or not yet run, and what each would tell us
+
+- **Nothing is running now.** The open in-model question left by KC-spike-driven APL is whether an APL driven by KC spikes alone (without the bouton rates, which kept it partly selective without a per-claw threshold) removes the remaining selectivity in the fitted models; the open measurement question is the ORN responses of the oracle glomeruli to ms, paa, B-myr, euc and 1-8ol at Yang's concentrations, which would decide whether the weak odors' deficit is in the input or in the circuit.
+- **Model and readout changes still worth making:** a saturating APL unit nonlinearity, a GCaMP-like readout with saturation, measured ORN time courses, real weights for the KCs of unknown type, and, from the weak-odor analyses, better-constrained ORN input for ms, B-myr, euc, paa and 1-8ol (concentrations and glomerular profiles).
+- **Data that would discriminate the mechanisms:** APL imaging under the same odors (is APL's output to broadly tuned KCs larger, as breadth-weighted APL requires?), KC–KC interaction tests (KC responses with neighbouring KCs silenced, the direct test of lateral inhibition), per-trial KC data for a reliability readout, and, for the single-claw question, imaging of ms responders with their glomerular input identified.
+
+## Parameter glossary with mechanisms
+
+- `claw_thr` (per-claw rectified offset; replaces the coincidence count `n_claws_active_to_spike`): claw-level nonlinearity, subthreshold K⁺ shunting, release-rate threshold, or tonic APL-independent inhibition; see the per-claw threshold section.
+- Breadth-weighted `_wAPLKC` (exponent k): activity-dependent scaling of APL↔KC synapses; see the block section.
+- `kc_kc_inh`, `kc_kc_tau` (KC–KC lateral inhibition, connectome claw–claw weights): direct KC→KC transmission via inhibitory muscarinic receptors, toxin-insensitive local APL loops, ephaptic / K⁺ coupling, or shared presynaptic depletion; see the block section.
+- APL→bouton weights (`wAPLPN`, `wPNAPL`): presynaptic GABA-B inhibition of PN terminals; see the bouton section; the joint fit raises them 2–3× to get the response-rate ratio.
+- `fixed_thr` (somatic threshold, tuned to 5 %): KC intrinsic excitability under homeostatic control; the tuning procedure is a homeostatic sparseness set-point, and "APL off = 2× response rate" is what that set-point implies.
+- `wAPLKC`, `wKCAPL` scales: global gains of the APL↔KC synapses (the data want APL to roughly halve the responder count).
+- `n_spikes_for_response = 2`: the imaging readout (nuclear GCaMP6s needs more than one spike); the readout-window experiment found the window itself is not a knob.
+- `claw_tau`, `apl_taum` (50 ms): synaptic / membrane filtering at claws and in APL; only the response rate depends on them.
+- Glomerulus-specific PN → claw gain (an oracle: the wiring columns of VA7m, DL1, D, DM1, DP1m, VC1, DC2, DM5 scaled by 1.5): the claws of the weak odors' glomeruli counting for more; realizations in the glomerulus-specific claw strength section (bouton size or release sites per glomerulus, ORN → PN gain, claw-level scaling, or understated ORN input).
+- `claw_pow`, `claw_pow_ref` (convex per-claw transfer after the threshold): a regenerative claw (dendritic spike, NMDA-like supralinearity); tested and negative, because it rewards the esters' breadth rather than the weak odors' few claws; see the weak-input section.
+- `ext_inh_kc`, `ext_inh_bouton`, `ext_inh_scale` (odor-specific external inhibition of KC somata and of bouton output during the odor): the lateral-horn centrifugal and MB-C1 pathway built from hemibrain synapse counts; tested and negative (too flat across odors at the soma; a glomerulus-specific gain cut at the boutons).
+- `claw_sat` (per-claw cap), `bouton_ves_p` / `bouton_tau_r` (bouton depletion): compressive transfers; both go the wrong way. Biophysically real (receptor saturation, short-term depression at PN terminals), but they cannot be what makes the KC code sparse in the data's way; whatever they do in the fly must sit under a per-claw threshold.
+- `apl_unit_coupling`, APL units: spatially local APL; no effect at the KC level.
+- `pn_inhadd` / `pn_inhsc`: antennal-lobe lateral inhibition (PN contrast); no help.
+
+## Footnotes {#footnotes}
+
+### How the monotone (isotonic) fit is done, and why {#fn-isotonic}
+
+**What is fitted.** The 120 pair distances of the control matrix are regressed on the 120 pair distances of the APL output blocked (TNT) matrix with isotonic regression: the fitted curve is the non-decreasing step function that is closest to the control values in the least-squares sense (the pool-adjacent-violators algorithm; scikit-learn's IsotonicRegression with increasing=True). "Isotonic" means order-preserving: the curve may bend any way as long as it never goes down, so a pair that is farther apart with APL output blocked is predicted to be at least as far apart in control flies. The isotonic R² is the fraction of the control variance the curve explains (0.94); a pair's residual is its control distance minus the curve's value at its APL output blocked (TNT) distance; and the block is the mean residual of the nine fruity × small-ester pairs (+0.055), with its confidence interval from resampling recordings.
+
+**Why this fit.** The hypothesis being tested is that APL's output is a uniform sparsening: every pair moves in the same direction by an amount that depends only on how far apart the pair already is. Any such effect is a monotone map from the APL output blocked (TNT) matrix to the control matrix, and isotonic regression is the most general monotone map, so its residuals contain only what no uniform effect can produce, the pair-specific part. It assumes nothing about the shape of the map (the data's map is strongly compressive at the top, where KC distances saturate near 1), it has no tuning parameter, and its R² can be compared directly with the measurement ceiling computed the same way between halves of the recordings.
+
+**The alternatives, and why not.** A linear fit of control on APL output blocked (TNT) assumes the change is proportional; with the saturation near 1 it explains less of the control variance (R² 0.85 against 0.94) and leaves curved residuals, so its block estimate (+0.098) mixes the pair-specific effect with the curvature the line cannot follow. A parametric saturating curve (a power or logistic function) has fewer degrees of freedom but imposes a shape the data would have to meet, and the block estimate then depends on that choice. Rank correlation alone (Spearman 0.87) tests monotonicity but gives no per-pair residual, so it cannot locate the block. Comparing the two matrices with the expectation from response density (the confound controls) asks a different, complementary question (whether two odors share more KCs than their response fractions predict) and is reported separately as the excess shared responders. The isotonic fit's own limitation is that a step function through 120 points can follow local noise, so its R² is an upper bound for any smooth monotone curve; that is why the residual is read for a block of nine pairs rather than for single pairs, and why the measurement ceiling is computed with the same fit.
+
+### Odor concentrations in each dataset {#fn-concentrations}
+
+The 16 odors of Yang's APL16 KC panel and the ORN data that stand in for them in the model (log10 of the v/v dilution). Twelve odors are at the concentrations of the lab's megamat ORN panel. For the four odors the APL16 panel shares with the validation2 ORN panel, Yang used different concentrations: no ORN data exist at paa -3, euc -2 or -aPine -2, so ORN data within one log10 unit stand in (the rule adopted for this work: a substitution within one log10 unit, inclusive, is allowed, and every result that involves the substituted odors' model input is reported as approximate). B-myr matches. The ORN input for paa is therefore from a tenfold weaker stimulus than the KCs saw, and for euc and -aPine from a somewhat stronger one, which bears on the weak-input-odor analyses: a shortfall of modelled drive for euc or -aPine cannot be blamed on the panel concentration, while for paa it could be.
+
+| odor | APL16 KC data (Yang) | ORN data used | ORN dataset | difference (ORN minus KC, log10 units) |
+|---|---|---|---|---|
+| 2h, IaA, pa, 2-but, eb, ep, 6al, t2h, 1-8ol, 1-5ol, 1-6ol, ms | -3 | -3 | megamat | 0 |
+| paa | -3 | -4 | validation2 | -1 (ORN weaker) |
+| -aPine | -2 | -1.5 | validation2 | +0.5 (ORN stronger) |
+| euc | -2 | -1.75 | validation2 | +0.25 (ORN stronger) |
+| B-myr | -2 | -2 | validation2 | 0 |

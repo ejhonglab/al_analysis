@@ -78,6 +78,7 @@ CSS = """
   details.fold ul { margin: 8px 0 4px; }
   a { color: var(--accent); }
   span.def { border-bottom: 1px dotted var(--muted); cursor: help; text-decoration: none; }
+  span.pv { cursor: help; border-bottom: 1px dotted rgba(127, 127, 127, 0.25); }
   nav.toc { margin: 10px 0 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); font-size: 0.92em; }
   nav.toc ol { margin: 0; padding-left: 20px; } nav.toc li { margin: 2px 0; } nav.toc > ol > li { margin: 4px 0; }
   nav.toc a { text-decoration: none; } nav.toc a:hover { text-decoration: underline; }
@@ -121,8 +122,17 @@ ZOOM_JS = """<script>
 </script>"""
 
 
+PV = re.compile(r'⟦pv:(.*?)§(.*?)⟧')
+
+
+def strip_pv(s: str) -> str:
+    """A filled report value `⟦pv:value§source⟧` (fill_report.py) reduced to its value."""
+    return PV.sub(r'\1', s)
+
+
 def inline(s: str) -> str:
     s = html_mod.escape(s, quote=False)
+    s = PV.sub(lambda m: f'<span class="pv" title="{m.group(2).replace(chr(34), chr(39))}">{m.group(1)}</span>', s)
     s = re.sub(r'`([^`]+)`', r'<code>\1</code>', s)
     s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
     s = re.sub(r'(?<![*\w])\*([^*\n]+?)\*(?![*\w])', r'<i>\1</i>', s)
@@ -295,7 +305,7 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
             numeric_like = re.compile(r'^([−+\-]?\d|[—–-]$|undefined$|n/?a$)')
             col_num = []
             for c in range(ncol):
-                vals = [r[c] for r in body_rows if c < len(r) and r[c] != '']
+                vals = [strip_pv(r[c]) for r in body_rows if c < len(r) and r[c] != '']
                 col_num.append(bool(vals) and sum(bool(numeric_like.match(v)) for v in vals) >= 0.5 * len(vals))
             stats_table = ncol > 1 and all(col_num[1:]) and any(
                 r and _span_of(r[0])[0].strip().lower() == 'statistic' for r in head_rows)

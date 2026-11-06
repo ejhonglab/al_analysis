@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Resolve report placeholders to values with recorded provenance.
 
-A placeholder in report markdown is `{{key|spec}}` (spec: a Python format spec such as `.2f`
-or `+.3f`; negative numbers are written with a Unicode minus). Keys:
+A placeholder in report markdown is `{{key ~ spec}}` (spec: a Python format spec such as `.2f`
+or `+.3f`; negative numbers are written with a Unicode minus; `|` is not used because it
+separates table cells). Keys:
 
 - `data:<name>` or `data:<name>.lo` / `.hi`: an entry of the data-target registry
   (results/data_targets/data_targets.json in the shared directory, written by
@@ -161,8 +162,12 @@ def resolve(key: str) -> Resolved:
 
 
 def format_value(value: Any, spec: Optional[str]) -> str:
-    """`value` formatted with `spec` (Python format spec), Unicode minus for negatives."""
+    """`value` formatted with `spec` (Python format spec), Unicode minus for negatives; a value
+    that rounds to zero carries no minus sign; strings (literals) without a spec are returned as
+    written."""
     if isinstance(value, str):
+        if not spec:
+            return value
         try:
             value = float(value)
         except ValueError:
@@ -171,8 +176,8 @@ def format_value(value: Any, spec: Optional[str]) -> str:
         s = format(float(value) if not spec.endswith('d') else int(round(float(value))), spec)
     else:
         s = str(value)
-    if s in ('-0.00', '-0.000', '-0.0', '-0', '+0.000', '+0.00') and float(value) == 0:
-        s = s.lstrip('+-') if not spec or '+' not in spec else '+' + s.lstrip('+-')
+    if s.startswith('-') and float(s) == 0:
+        s = s[1:]
     return s.replace('-', '−')
 
 
