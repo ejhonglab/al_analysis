@@ -394,6 +394,9 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
 - **Table of contents.** Every summary report starts with a two-level table of contents (its
   `##` and `###` headings, linked): a `[TOC]` line right after the title, which
   `md_to_artifact.py` expands.
+  The Footnotes section appears in it without its sub-entries (Tom, 2026-11-06): every footnote is
+  linked from the first place in the text that relies on it, and the converter's lint fails on a
+  footnote nothing links to.
 - **Figures open full screen.** Every static (non-interactive) figure in a summary report opens
   full screen when clicked (or focused and Enter): scaled to fill the screen, closed by a click,
   Esc or the x in the top right. `md_to_artifact.py` does this for every figure written as

@@ -146,8 +146,18 @@ def _is_block_start(ln: str) -> bool:
 
 
 def build_toc(body: str) -> str:
-    """A two-level nested list (h2 > h3) of the body's headings, linked to their ids."""
+    """A two-level nested list (h2 > h3) of the body's headings, linked to their ids. The
+    Footnotes section (`## Footnotes`, id `footnotes`) is listed without its sub-entries: every
+    footnote is reached from the text that cites it (`lint` checks that each one is linked)."""
     heads = [(int(l), i, re.sub(r'<[^>]+>', '', t)) for l, i, t in re.findall(r'<h([23]) id="([^"]+)">(.*?)</h[23]>', body, flags=re.S)]
+    kept, in_foot = [], False
+    for level, hid, text in heads:
+        if level == 2:
+            in_foot = hid == 'footnotes' or text.strip().lower() == 'footnotes'
+        elif in_foot:
+            continue
+        kept.append((level, hid, text))
+    heads = kept
     if not heads:
         return ''
     out = ['<nav class="toc"><ol>']
@@ -407,6 +417,13 @@ def lint(page: str) -> List[str]:
             probs.append(f'list marker left in text: {t[:70]!r}')
     if re.search(r'<li>[^<]*<br', page):
         probs.append('line break inside a list item')
+    # every footnote (an h3 under the Footnotes h2) must be linked from the text
+    m = re.search(r'<h2 id="footnotes"[^>]*>.*?</h2>(.*)$', page, flags=re.S)
+    if m:
+        for fid in re.findall(r'<h3 id="([^"]+)"', m.group(1)):
+            refs = re.findall(r'href="#' + re.escape(fid) + '"', page.replace(m.group(1), ''))
+            if not refs:
+                probs.append(f'footnote #{fid} is not linked from the text')
     return probs
 
 
