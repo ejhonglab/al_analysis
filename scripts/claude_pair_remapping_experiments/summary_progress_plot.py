@@ -96,14 +96,25 @@ PARAM_LABELS = [
     ('gain', 'glomerulus gain'), ('pn_inhadd', 'PN inhadd'), ('pn_inhsc', 'PN inhsc'), ('inhadd', 'PN inhadd'),
     ('ext_inh_scale', 'external inhibition scale'), ('multibouton_claws', 'multibouton claws'),
     ('claw_weight', 'claw weight'), ('wiring', 'wiring'), ('seed', 'seed'),
-    ('target_rate', 'target rate'), ('target', 'target rate'), ('rate_on', 'APL-on rate'), ('rate_off', 'APL-off rate'),
+    ('target_rate', 'target rate'), ('target', 'target rate'),
+]
+# statistics of the model's responses (measured, not set or tuned), shown after the parameters
+STAT_LABELS = [
+    ('rate_on', 'APL-on response rate'), ('rate_off', 'APL-off response rate'),
+    ('rate_ratio_off_over_on', 'APL-off / APL-on rate ratio'),
 ]
 
 
-def describe_params(row: pd.Series) -> str:
-    """'label value; label value; ...' for the parameter columns the row has values for."""
+def describe_params(row: pd.Series, labels: list = PARAM_LABELS) -> str:
+    """'label value; label value; ...' for the columns in `labels` the row has values for.
+
+    Args:
+        row: one variant's row of a result table.
+        labels: ordered (column, label) pairs; PARAM_LABELS by default, STAT_LABELS for
+            `describe_stats`. Columns the row lacks, and empty / NaN values, are skipped.
+    """
     parts, seen = [], set()
-    for col, label in PARAM_LABELS:
+    for col, label in labels:
         if col not in row.index or label in seen:
             continue
         v = row[col]
@@ -121,6 +132,11 @@ def describe_params(row: pd.Series) -> str:
         parts.append(f'{label} {v}')
         seen.add(label)
     return '; '.join(parts)
+
+
+def describe_stats(row: pd.Series) -> str:
+    """As `describe_params`, for the response statistics in STAT_LABELS."""
+    return describe_params(row, STAT_LABELS)
 
 
 def experiment_index() -> pd.DataFrame:
@@ -181,7 +197,7 @@ def best_rows(exp: str, df: pd.DataFrame) -> list:
             continue
         i = (vals - target).abs().idxmin()
         out.append(dict(exp=exp, metric=key, value=float(vals[i]), target=target, variant=str(df.loc[i, 'tag']),
-            params=describe_params(df.loc[i]), n_variants=int(vals.notna().sum())))
+            params=describe_params(df.loc[i]), stats=describe_stats(df.loc[i]), n_variants=int(vals.notna().sum())))
     return out
 
 
@@ -214,7 +230,7 @@ def plot_html(pts: pd.DataFrame) -> str:
         series.append(dict(key=k, label=label, target=target, light=SERIES_COLORS[k][0], dark=SERIES_COLORS[k][1],
             baseline=float(sub.baseline.iloc[0]),
             points=[dict(t=r.completed.isoformat(timespec='minutes'), exp=r.exp, name=r['name'], variant=r.variant,
-                params=r.params, value=round(float(r.value), 4), gap=round(float(r.gap_closed), 4),
+                params=r.params, stats=r['stats'], value=round(float(r.value), 4), gap=round(float(r.gap_closed), 4),
                 best=round(float(r.running_best), 4), new=bool(r.new_best)) for _, r in sub.iterrows()]))
     data_json = json.dumps(series).replace('&', '&amp;').replace('</', '<\\/')
     # the table view (the running best per statistic, with the model that set it)
@@ -297,15 +313,22 @@ def plot_html(pts: pd.DataFrame) -> str:
   // a left click on a hovered point or step pins its popup (selectable, with a close control) until
   // the x, Esc or a click anywhere outside it; hovering other marks does not replace a pinned popup
   var pinned = false, pinEvent = null, downInTip = false;
+  // the model's parameters (set or tuned), then statistics of its responses (measured), each
+  // de-emphasized and only when present
+  function modelText(p) {
+    var h = p.params ? '<br>model parameters: <span class="params">' + p.params + '</span>' : '';
+    if (p.stats) h += '<br>model stats:<br><span class="params">' + p.stats + '</span>';
+    return h;
+  }
   function showTip(evt, s, p) {
     if (pinned) return;
     var pct = Math.round(p.gap * 100);
-    tip.innerHTML = '<b>' + p.exp + ': ' + p.name + '</b><br>completed ' + p.t.replace('T', ' ') + '<br>' + s.label + ': <b>' + p.value + '</b> (KC data ' + s.target + '; first model ' + s.baseline.toFixed(3) + ')<br>best variant: ' + p.variant + (p.params ? '<br><span class="params">' + p.params + '</span>' : '') + '<br>' + pct + ' % of the gap closed' + (p.new ? ' (a new best at the time)' : '');
+    tip.innerHTML = '<b>' + p.exp + ': ' + p.name + '</b><br>completed ' + p.t.replace('T', ' ') + '<br>' + s.label + ': <b>' + p.value + '</b> (KC data ' + s.target + '; first model ' + s.baseline.toFixed(3) + ')<br>best variant: ' + p.variant + modelText(p) + '<br>' + pct + ' % of the gap closed' + (p.new ? ' (a new best at the time)' : '');
     placeTip(evt);
   }
   function showSegTip(evt, s, p, untilText) {
     if (pinned) return;
-    tip.innerHTML = '<b>best so far on: ' + s.label + '</b><br>from ' + p.t.replace('T', ' ') + ' ' + untilText + '<br>' + p.exp + ': ' + p.name + ', variant ' + p.variant + '<br>' + s.label + ' <b>' + p.value + '</b> (KC data ' + s.target + '; ' + Math.round(p.best * 100) + ' % of the gap closed)' + (p.params ? '<br>model parameters: <span class="params">' + p.params + '</span>' : '');
+    tip.innerHTML = '<b>best so far on: ' + s.label + '</b><br>from ' + p.t.replace('T', ' ') + ' ' + untilText + '<br>' + p.exp + ': ' + p.name + ', variant ' + p.variant + '<br>' + s.label + ' <b>' + p.value + '</b> (KC data ' + s.target + '; ' + Math.round(p.best * 100) + ' % of the gap closed)' + modelText(p);
     placeTip(evt);
   }
   function placeTip(evt) {
@@ -389,7 +412,7 @@ def plot_html(pts: pd.DataFrame) -> str:
     return (css + '\n<figure class="prog" id="progress-plot" data-series=\'' + data_json.replace("'", '&#39;') + "'>\n"
         '<div class="chart" style="position:relative"></div><div class="tip"></div>\n<div class="legend"></div>\n'
         '<div class="note">Each point is one experiment\'s best model on that statistic (filled and larger when it was the best so far; points below -50 % are drawn at -50 %); '
-        'the staircase is the best so far. Hover a point for the experiment, the model variant, its parameters and the raw value, or a step of the staircase for the model that held the best over that span, and click it to keep that popup open (close it with its x, Esc or a click elsewhere); click a legend entry to hide or show its line. '
+        'the staircase is the best so far. Hover a point for the experiment, the model variant, its parameters, its response rates and the raw value, or a step of the staircase for the model that held the best over that span, and click it to keep that popup open (close it with its x, Esc or a click elsewhere); click a legend entry to hide or show its line. '
         'Oracle variants (co-responder suppression, the oracle glomerulus gain, the block-specific glomerulus set) are not counted.</div>\n'
         '<details><summary>Table: the best so far on each statistic</summary>' + ''.join(best_tbl) + '</details>\n'
         '</figure>' + script + '\n')
