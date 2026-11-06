@@ -12,6 +12,12 @@ Writes <shared>/reports/<name>.html (or <name>.zip with index.html and the other
 directory is given, i.e. a multi-file artifact) and upserts a row in reports/README.md
 (name, title from the page's <title>, artifact URL, when and from which host it was copied).
 Republishing overwrites the same file: reports/ holds the latest version of each page.
+
+Summary pages (names starting with `summary_`) also update the symlink
+reports/current-summary.html -> <name>.html, so one bookmark always opens the latest summary
+as the date in the name changes; `--current <link name>` does the same for any page (e.g.
+`--current current-report.html` for the report page). A copy is written instead if the
+filesystem refuses the symlink.
 """
 from __future__ import annotations
 
@@ -33,6 +39,8 @@ artifact serves, i.e. what share > export downloads), written by `save_report_co
 the repo folder after each publish. One file per page, latest version only; multi-file
 artifacts are zipped (index.html plus the other files).
 
+`current-summary.html` is a symlink to the latest summary page (updated by the script).
+
 | name | title | artifact | copied | host |
 |---|---|---|---|---|
 """
@@ -48,6 +56,9 @@ def main() -> None:
     ap.add_argument('source', type=Path, help='the published index.html, or the directory of a multi-file artifact')
     ap.add_argument('name', help='file stem in reports/, e.g. E17_panel_general_apl, report_apl_remapping')
     ap.add_argument('url', help='the artifact URL')
+    ap.add_argument('--current', default=None, metavar='LINK',
+        help='also point reports/<LINK> at this copy (default: current-summary.html for '
+        'names starting with summary_)')
     args = ap.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', args.name):
         raise SystemExit(f'name must be a plain file stem: {args.name!r}')
@@ -74,8 +85,25 @@ def main() -> None:
         stale = reports / f'{args.name}.zip'
         if stale.exists():
             stale.unlink()
+    link_name = args.current or ('current-summary.html' if args.name.startswith('summary_') else None)
+    if link_name is not None:
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+', link_name) or link_name == dest.name:
+            raise SystemExit(f'bad --current link name: {link_name!r}')
+        link = reports / link_name
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        try:
+            link.symlink_to(dest.name)   # relative, so the link works from any mount point
+            print(f'{link} -> {dest.name}')
+        except OSError as e:
+            shutil.copyfile(dest, link)
+            print(f'{link}: copy of {dest.name} (symlink refused: {e})')
     readme = reports / 'README.md'
     text = readme.read_text() if readme.exists() else README_HEADER
+    if link_name is not None and 'current-summary.html' not in text:
+        text = text.replace('| name | title | artifact | copied | host |',
+            '`current-summary.html` is a symlink to the latest summary page (updated by the script).\n\n'
+            '| name | title | artifact | copied | host |', 1)
     if '| name | title |' not in text:
         text = README_HEADER + text
     row = (f'| {args.name} | {title.replace("|", "/")} | {args.url} | '

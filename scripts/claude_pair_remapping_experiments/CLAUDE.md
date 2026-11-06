@@ -514,6 +514,9 @@ artifact server serves the HTML we upload unchanged, so:
    same `<name>` on republish so the folder holds the latest version only: `E<n>_<short>` for
    experiment pages, `report_<short>` for the report, `summary_<date>` for summaries,
    `note_<short>` for add_to_reports pages.
+   For `summary_<date>` names the script also repoints the symlink `reports/current-summary.html`
+   at the new copy (so one bookmark always opens the latest summary); `--current <link>` does the
+   same for any other page.
 Record the artifact URL where the scheme already asks for it (the experiment markdown, the
 Completed entry, the add_to_reports README); the reports/ copy is in addition, not instead.
 
