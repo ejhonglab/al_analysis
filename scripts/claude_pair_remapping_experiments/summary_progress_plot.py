@@ -67,9 +67,15 @@ METRICS = {
 }
 # (the APL-off / APL-on rate ratio is not plotted: the first measured model already sat at the
 # data's 2.2, as most tuned acute-knockout models do, so a gap fraction is undefined for it)
-# the reference palette's categorical order (dataviz skill), light / dark
-PALETTE = [('#2a78d6', '#3987e5'), ('#eb6834', '#d95926'), ('#1baf7a', '#199e70'),
-    ('#eda100', '#c98500'), ('#e87ba4', '#d55181'), ('#008300', '#008300')]
+# statistic -> (light, dark) color: the reference palette's categorical hues (dataviz skill). The
+# two rank-agreement lines share the slot-1 blue on purpose, as a related pair: full strength for the
+# control matrix, a lighter, less saturated step of the same OKLCH hue (L 0.75 / 0.78, C 0.10) for
+# the APL-blocked one (normal-vision Delta E to the full blue 18.6 light / 16.9 dark)
+SERIES_COLORS = {
+    'ctrl': ('#2a78d6', '#3987e5'), 'tnt': ('#83b1ed', '#8cbaf7'),
+    'block': ('#1baf7a', '#199e70'), 'rate_rank': ('#eda100', '#c98500'),
+    'wt_dev': ('#e87ba4', '#d55181'), 'vcf_off': ('#008300', '#008300'),
+}
 TABLE_NAMES = ('stats_variants.csv', 'fits.csv', 'wkckc_controls.csv')
 
 # parameter columns shown in the hover text of a best model, in this order (label, format)
@@ -202,10 +208,10 @@ def collect() -> pd.DataFrame:
 def plot_html(pts: pd.DataFrame) -> str:
     keys = [k for k in METRICS if k in set(pts.metric)]
     series = []
-    for j, k in enumerate(keys):
+    for k in keys:
         sub = pts[pts.metric == k]
         label, target, _ = METRICS[k]
-        series.append(dict(key=k, label=label, target=target, light=PALETTE[j][0], dark=PALETTE[j][1],
+        series.append(dict(key=k, label=label, target=target, light=SERIES_COLORS[k][0], dark=SERIES_COLORS[k][1],
             baseline=float(sub.baseline.iloc[0]),
             points=[dict(t=r.completed.isoformat(timespec='minutes'), exp=r.exp, name=r['name'], variant=r.variant,
                 params=r.params, value=round(float(r.value), 4), gap=round(float(r.gap_closed), 4),
@@ -239,6 +245,9 @@ def plot_html(pts: pd.DataFrame) -> str:
 .prog .tip { position: absolute; pointer-events: none; background: var(--p-bg); color: var(--p-ink); border: 1px solid var(--p-line); border-radius: 6px; padding: 7px 9px; font-size: 0.82em; line-height: 1.35; box-shadow: 0 2px 8px rgba(0,0,0,0.12); max-width: 360px; display: none; z-index: 5; }
 .prog .tip b { font-weight: 600; }
 .prog .tip .params { color: var(--p-muted); }
+.prog .tip.pinned { pointer-events: auto; user-select: text; cursor: auto; border-color: var(--p-muted); box-shadow: 0 4px 16px rgba(0,0,0,0.22); padding-right: 26px; }
+.prog .tip .tip-x { position: absolute; top: 3px; right: 4px; border: 0; background: none; color: var(--p-muted); font: 16px/1 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; padding: 2px 5px; cursor: pointer; border-radius: 4px; }
+.prog .tip .tip-x:hover { color: var(--p-ink); background: var(--p-line); }
 .prog .step.hit { cursor: pointer; }
 .prog .note { color: var(--p-muted); font-size: 0.86em; margin-top: 6px; }
 .prog details { margin-top: 8px; font-size: 0.9em; } .prog details summary { cursor: pointer; color: var(--p-muted); }
@@ -285,12 +294,17 @@ def plot_html(pts: pd.DataFrame) -> str:
   var xl = el('text', {x: m.l + iw / 2, y: Hh - 8, 'text-anchor': 'middle'}, axis); xl.textContent = 'experiment completion time (2026)';
   el('line', {x1: m.l, x2: W - m.r, y1: m.t + ih, y2: m.t + ih}, axis);
   var tip = root.querySelector('.tip');
+  // a left click on a hovered point or step pins its popup (selectable, with a close control) until
+  // the x, Esc or a click anywhere outside it; hovering other marks does not replace a pinned popup
+  var pinned = false, pinEvent = null, downInTip = false;
   function showTip(evt, s, p) {
+    if (pinned) return;
     var pct = Math.round(p.gap * 100);
     tip.innerHTML = '<b>' + p.exp + ': ' + p.name + '</b><br>completed ' + p.t.replace('T', ' ') + '<br>' + s.label + ': <b>' + p.value + '</b> (KC data ' + s.target + '; first model ' + s.baseline.toFixed(3) + ')<br>best variant: ' + p.variant + (p.params ? '<br><span class="params">' + p.params + '</span>' : '') + '<br>' + pct + ' % of the gap closed' + (p.new ? ' (a new best at the time)' : '');
     placeTip(evt);
   }
   function showSegTip(evt, s, p, untilText) {
+    if (pinned) return;
     tip.innerHTML = '<b>best so far on: ' + s.label + '</b><br>from ' + p.t.replace('T', ' ') + ' ' + untilText + '<br>' + p.exp + ': ' + p.name + ', variant ' + p.variant + '<br>' + s.label + ' <b>' + p.value + '</b> (KC data ' + s.target + '; ' + Math.round(p.best * 100) + ' % of the gap closed)' + (p.params ? '<br>model parameters: <span class="params">' + p.params + '</span>' : '');
     placeTip(evt);
   }
@@ -300,8 +314,30 @@ def plot_html(pts: pd.DataFrame) -> str:
     var left = evt.clientX - r.left + 14, top = evt.clientY - r.top - 10;
     if (left + 430 > r.width) left = Math.max(0, evt.clientX - r.left - 440);
     tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    // keep the popup over the chart rather than the legend: flip it above the cursor when it
+    // would run past the chart's bottom edge
+    var chart = root.querySelector('.chart').getBoundingClientRect();
+    var h = tip.offsetHeight;
+    if (top + h > chart.height) tip.style.top = Math.max(0, evt.clientY - r.top - h - 12) + 'px';
   }
-  function hideTip() { tip.style.display = 'none'; }
+  function hideTip() { if (!pinned) tip.style.display = 'none'; }
+  function unpin() { pinned = false; pinEvent = null; tip.classList.remove('pinned'); tip.style.display = 'none'; }
+  function pin(evt, show) {
+    if (evt.button !== 0) return;
+    unpin(); show(evt);
+    pinned = true; pinEvent = evt; tip.classList.add('pinned');
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'tip-x';
+    btn.setAttribute('aria-label', 'close'); btn.title = 'close (Esc)'; btn.innerHTML = '&times;';
+    btn.addEventListener('click', unpin);
+    tip.appendChild(btn);
+  }
+  document.addEventListener('mousedown', function (evt) { downInTip = tip.contains(evt.target); });
+  document.addEventListener('click', function (evt) {
+    // (a drag that selects popup text and ends outside it is not a click outside)
+    if (!pinned || evt === pinEvent || evt.button !== 0 || downInTip || tip.contains(evt.target)) return;
+    unpin();
+  });
+  document.addEventListener('keydown', function (evt) { if (pinned && (evt.key === 'Escape' || evt.key === 'Esc')) unpin(); });
   var groups = {};
   data.forEach(function (s, j) {
     var color = dark ? s.dark : s.light;
@@ -316,15 +352,19 @@ def plot_html(pts: pd.DataFrame) -> str:
       el('path', {d: d, 'class': 'step', stroke: color}, g);
       var hit = el('path', {d: d, 'class': 'step hit', stroke: 'transparent', 'stroke-width': 12}, g);
       var until = next ? 'until ' + next.t.replace('T', ' ') : 'to now';
-      hit.addEventListener('mousemove', function (evt) { showSegTip(evt, s, p, until); });
+      var showSeg = function (evt) { showSegTip(evt, s, p, until); };
+      hit.addEventListener('mousemove', showSeg);
       hit.addEventListener('mouseleave', hideTip);
+      hit.addEventListener('click', function (evt) { pin(evt, showSeg); });
     });
     s.points.forEach(function (p) {
       var c = el('circle', {cx: x(p.time), cy: y(p.gap), r: p.new ? 5 : 4, fill: color, 'fill-opacity': p.new ? 1 : 0.55, 'class': 'pt'}, g);
       var hit = el('circle', {cx: x(p.time), cy: y(p.gap), r: 11, 'class': 'pt hit'}, g);
+      var showPt = function (evt) { showTip(evt, s, p); };
       [c, hit].forEach(function (e) {
-        e.addEventListener('mousemove', function (evt) { showTip(evt, s, p); });
+        e.addEventListener('mousemove', showPt);
         e.addEventListener('mouseleave', hideTip);
+        e.addEventListener('click', function (evt) { pin(evt, showPt); });
       });
     });
   });
@@ -349,7 +389,7 @@ def plot_html(pts: pd.DataFrame) -> str:
     return (css + '\n<figure class="prog" id="progress-plot" data-series=\'' + data_json.replace("'", '&#39;') + "'>\n"
         '<div class="chart" style="position:relative"></div><div class="tip"></div>\n<div class="legend"></div>\n'
         '<div class="note">Each point is one experiment\'s best model on that statistic (filled and larger when it was the best so far; points below -50 % are drawn at -50 %); '
-        'the staircase is the best so far. Hover a point for the experiment, the model variant, its parameters and the raw value, or a step of the staircase for the model that held the best over that span; click a legend entry to hide or show its line. '
+        'the staircase is the best so far. Hover a point for the experiment, the model variant, its parameters and the raw value, or a step of the staircase for the model that held the best over that span, and click it to keep that popup open (close it with its x, Esc or a click elsewhere); click a legend entry to hide or show its line. '
         'Oracle variants (co-responder suppression, the oracle glomerulus gain, the block-specific glomerulus set) are not counted.</div>\n'
         '<details><summary>Table: the best so far on each statistic</summary>' + ''.join(best_tbl) + '</details>\n'
         '</figure>' + script + '\n')
