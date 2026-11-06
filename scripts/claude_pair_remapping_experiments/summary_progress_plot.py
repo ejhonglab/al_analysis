@@ -52,13 +52,13 @@ SKIP_FOLDERS = {'E1_apl_knockout', 'E2_local_apl', 'E6_readout_window', 'E7_conf
 
 # statistic -> (label, target, candidate columns [standard names, early-atlas names])
 METRICS = {
-    'ctrl': ('rank agreement with the control matrix (APL on)', 0.98,
+    'ctrl': ('ρ with the control matrix (APL on)', 0.98,
         ['spike_counts_cosine__on_spearman', 'spearman_vs_TNT3c_on']),
-    'tnt': ('rank agreement with the APL-blocked matrix (APL off)', 0.97,
+    'tnt': ('ρ with the APL output blocked (TNT) matrix (APL off)', 0.97,
         ['spike_counts_cosine__off_spearman', 'spearman_vs_TNT_off']),
     'block': ('fruity x small-ester block', 0.055,
         ['spike_counts_cosine__block_fruity_small_iso', 'block_fruity_small_iso']),
-    'rate_rank': ('per-odor rate rank agreement, control', 0.97,
+    'rate_rank': ('per-odor response rate ρ, control flies', 0.97,
         ['spearman_rate_on_vs_data', 'per_odor_rate_spearman_vs_TNT3c_on']),
     'wt_dev': ('structure beyond the ORN input vs wild-type somata (APL on)', 0.83,
         ['spike_counts_cosine__on_spearman_resid_vs_remap_wt', 'spearman_resid_vs_remap_wt_on']),

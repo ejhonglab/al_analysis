@@ -326,11 +326,11 @@ Every statistic quoted in prose must carry its context: the baseline it is compa
 described as a model configuration (what the model had and did not have) together with its
 number, never the number alone; the configuration the new number belongs to, likewise
 described; the direction of the change and whether that direction is an improvement; and
-the value in the KC data (the target) or the noise ceiling. "Per-odor rate agreement 0.68
-to 0.57" is ambiguous (range or change? which configuration is the baseline? better or
-worse? how far from the data?); write "per-odor rate agreement fell from 0.68 for the bouton
-model with connectome APL weights and no per-claw threshold to 0.57 once each claw's input
-was thresholded at 70 Hz (worse; the model-to-data ceiling is ~0.95)".
+the value in the KC data (the target) or the noise ceiling. "Response rate ρ 0.68 to 0.57"
+is ambiguous (range or change? which configuration is the baseline? better or worse? how far
+from the data?); write "response rate ρ fell from 0.68 for the bouton model with connectome
+APL weights and no per-claw threshold to 0.57 once each claw's input was thresholded at 70 Hz
+(worse; the model-to-data ceiling is ~0.95)".
 
 In reports, and also in replies to me in the terminal chat, prefer tables (or plots) that
 show the baseline, each variant and the KC data side by side, and keep most numbers out of
@@ -338,10 +338,18 @@ the text: the text should say what moved, which way,
 and whether it reached the data. Spelling out the full context for every number in prose is
 too verbose, so put the numbers in the table and the judgement in the sentence.
 
-Name Spearman-based statistics so the text itself says they are rank correlations: the
-per-odor response-rate comparison is "rate rank agreement" (or "rate rank match"), and
-likewise "rank agreement with the control matrix". Dropping "rank" because "Spearman" is
-mentioned nearby is allowed but is not the default.
+Names of the Spearman statistics (Tom, 2026-11-06). Write the Greek letter ρ (the character,
+not "rho"; when Tom types "rho" he means ρ):
+- between two sets of odor-odor distances (a model matrix and a KC matrix, two KC matrices, a
+  KC matrix and the ORNs): "ρ", e.g. "ρ with the control matrix", "ρ between the two KC
+  matrices"; with a value in text, "ρ=0.97" (not "rank agreement 0.97");
+- between per-odor response rates (the fraction of KCs responding to each odor, model vs data):
+  "response rate ρ", e.g. "response rate ρ=0.67";
+- a response rate of real or model KCs is a "response rate", never a bare "rate" (bouton, PN
+  and ORN firing rates keep their own names).
+Never "rank agreement", "rate rank agreement" or "rate rank match" in new text. Where a table
+has both kinds for the same condition, group them under a spanning header, e.g. "APL on<br>
+ρ(control flies, model), computed on {span=2}" over "response rates" and "odor-odor distances".
 
 Describe experiments in plain English ("the per-claw threshold sweep", "the KC-KC lateral
 inhibition experiment"), not by ID. Polished reports (the summary artifact, the final report)
@@ -364,7 +372,7 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
 - **Background first.** Before any model number, a section with a figure and a table that
   shows what the data are: the ORN input matrix, the control KC matrix and the APL-blocked
   KC matrix for the 16 odors; what the ORN->KC remapping looks like in control flies (which
-  pairs move, how much, rank agreement with the ORN input); and what blocking APL output
+  pairs move, how much, ρ with the ORN input); and what blocking APL output
   changes (mean distance, response fractions, the monotone on-vs-off relation and its one
   pair-specific exception). Only then the model baseline and the mechanisms.
 - **Table of contents.** Every summary report starts with a two-level table of contents (its

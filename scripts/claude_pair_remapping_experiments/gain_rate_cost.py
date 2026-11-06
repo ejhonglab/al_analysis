@@ -7,7 +7,7 @@ the gain (E25 on the real wiring, E30 on re-drawn wiring 2) and with the 1.5x ga
 eight oracle glomeruli (E28's joint-fit arm, E33), plus the fixed-point variants of E28
 (gain added without re-fitting), and compares each variant's per-odor response fractions
 with the KC data (control flies for APL on, APL output blocked (TNT) for APL off): the
-rate rank agreement, each odor's rank, and how the fractions move between the no-gain and
+response rate ρ, each odor's rank, and how the fractions move between the no-gain and
 gain fits, by odor group (fruity esters / weak-input odors / the rest).
 
 Writes results/gain_rate_cost/ in the shared directory: per_odor_fractions.csv (every
@@ -160,7 +160,7 @@ def main() -> None:
             ax.annotate(odor, (x[odor], b[odor]), xytext=(4, 3), textcoords='offset points',
                 fontsize=7.5, color=c)
         ra = agree[(agree.wiring == wiring) & (agree.claw_thr == thr)].set_index('gain')
-        ax.set_title(f'{wiring}, {thr} Hz per-claw threshold\n(rate rank agreement '
+        ax.set_title(f'{wiring}, {thr} Hz per-claw threshold\n(response rate ρ='
             f'{ra.loc["no gain", "rate_rank_agreement_on"]:.2f} without the gain, '
             f'{ra.loc["gain 1.5", "rate_rank_agreement_on"]:.2f} with it)', fontsize=10)
         ax.set_xlim(lim)

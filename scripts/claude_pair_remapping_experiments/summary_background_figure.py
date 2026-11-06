@@ -73,14 +73,17 @@ def draw(orn, ctrl, tnt, within, block, iso_resid, nums, *, measure: str, out_na
         ax_lab = None
         cmap = 'Blues'; vmin, vmax = 0.0, 1.0
         lim = (0.0, 1.03)
+        # ORN correlation distances exceed 1 for anti-correlated pairs (up to ~1.13)
+        orn_vmax = max(1.0, float(np.ceil(o.max() * 10) / 10))
+        orn_lim = (0.0, max(1.03, float(o.max()) + 0.03))
     fig, axes = plt.subplots(2, 3, figsize=(16, 10.2))
     mats = [(square(o, odors, np.nan if pearson else 0.0), 'ORNs', orn_lab),
         (square(c, odors, np.nan if pearson else 0.0), 'KCs, control flies', kc_lab),
         (square(t, odors, np.nan if pearson else 0.0), 'KCs, APL output blocked (TNT)', kc_lab)]
-    for ax, (m, title, cbar) in zip(axes[0], mats):
+    for k, (ax, (m, title, cbar)) in enumerate(zip(axes[0], mats)):
         if pearson:
             ax.set_facecolor('#e5e7eb')
-        im = ax.imshow(m.to_numpy(), cmap=cmap, vmin=vmin, vmax=vmax)
+        im = ax.imshow(m.to_numpy(), cmap=cmap, vmin=vmin, vmax=(orn_vmax if (k == 0 and not pearson) else vmax))
         ax.set_xticks(range(16)); ax.set_xticklabels(odors, rotation=90, fontsize=8); ax.set_yticks(range(16)); ax.set_yticklabels(odors, fontsize=8)
         ax.set_title(title, fontsize=11)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03).set_label(cbar, fontsize=8)
@@ -89,16 +92,17 @@ def draw(orn, ctrl, tnt, within, block, iso_resid, nums, *, measure: str, out_na
     corner = 'upper left' if pearson else 'lower right'
 
     def scatter(ax, x, y, xlabel, ylabel, title):
-        ax.plot(lim, lim, ls='--', color='0.8', lw=1, zorder=0)
+        xlim = lim if pearson else orn_lim
+        ax.plot([0, max(xlim[1], lim[1])], [0, max(xlim[1], lim[1])], ls='--', color='0.8', lw=1, zorder=0)
         ax.scatter(x[~within], y[~within], s=16, color='#5c6370', label='between-group pairs')
         ax.scatter(x[within], y[within], s=16, color='#1f77ff', label='within-group pairs')
         ax.scatter(x[block], y[block], s=42, facecolors='none', edgecolors=BLOCK_COLOR, lw=1.4, label='fruity x small-ester pairs')
-        ax.set_xlim(lim); ax.set_ylim(lim); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel); ax.set_title(title, fontsize=11); ax.legend(fontsize=8, loc=corner)
+        ax.set_xlim(xlim); ax.set_ylim(lim); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel); ax.set_title(title, fontsize=11); ax.legend(fontsize=8, loc=corner)
         ax.spines[['top', 'right']].set_visible(False)
     scatter(axes[1, 0], o, c, orn_ax, kc_ax('control flies'),
-        f"KCs, control flies vs ORNs\n(rank agreement {nums['spearman_ctrl_orn']:.2f})")
+        f"KCs, control flies vs ORNs\n(ρ={nums['spearman_ctrl_orn']:.2f})")
     scatter(axes[1, 1], o, t, orn_ax, kc_ax('APL output blocked (TNT)'),
-        f"KCs, APL output blocked (TNT) vs ORNs\n(rank agreement {nums['spearman_tnt_orn']:.2f})")
+        f"KCs, APL output blocked (TNT) vs ORNs\n(ρ={nums['spearman_tnt_orn']:.2f})")
     ax = axes[1, 2]
     ax.plot(lim, lim, ls='--', color='0.8', lw=1, zorder=0)
     ax.scatter(t[~block], c[~block], s=12, color='#5c6370', label='pairs')
@@ -110,7 +114,7 @@ def draw(orn, ctrl, tnt, within, block, iso_resid, nums, *, measure: str, out_na
     ax.set_title(f"KCs, control flies vs APL output blocked (TNT)\n(isotonic R2 {nums['iso_r2']:.2f}; fruity x small-ester pairs "
         f"{abs(nums['block']):.3f} {where} the fit)", fontsize=11)
     ax.legend(fontsize=8, loc=corner); ax.spines[['top', 'right']].set_visible(False)
-    what = 'Pearson correlation' if pearson else 'cosine distance (KCs)'
+    what = 'Pearson correlation' if pearson else 'KCs: cosine distance'
     fig.suptitle(f"Yang's APL16 KC data: the ORN->KC remapping in control flies and what blocking APL output (TNT) does to it ({what})", fontsize=12)
     fig.tight_layout(); fig.savefig(OUT / out_name, dpi=130); plt.close(fig)
 

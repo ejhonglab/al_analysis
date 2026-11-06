@@ -84,7 +84,7 @@ def thr_tag(thr) -> str:
 
 def make_figure(stats: pd.DataFrame, fracs: pd.DataFrame, data_rates: dict, res_dir) -> None:
     """Per-odor suppression against the APL-on fraction for the data and three 70 Hz models,
-    then the suppression uniformity, the rate rank agreement and the matrix statistics for
+    then the suppression uniformity, the response rate ρ and the matrix statistics for
     every variant (claw-driven APL: four forms x two thresholds; KC-spike-driven: two forms x
     two thresholds)."""
     import matplotlib
@@ -124,8 +124,8 @@ def make_figure(stats: pd.DataFrame, fracs: pd.DataFrame, data_rates: dict, res_
     split = (x[[not t.endswith('_spk') for t in st.tag]].max() + x[[t.endswith('_spk') for t in st.tag]].min()) / 2 if any(st.tag.str.endswith('_spk')) else None
     panels = [('spread of suppression across odors: sd of log(off / on)\n(data 0.15, dotted; bootstrap noise 0.13, dashed)', ['suppression_sd_log'], [0.148, 0.128], ['']),
         ('rank correlation of suppression with the APL-on fraction\n(data -0.12, dotted)', ['spearman_suppression_vs_on_frac'], [-0.12], ['']),
-        ('rate rank agreement, per odor (ceiling about 0.97)\nsolid: APL on vs control flies; pale: APL off vs APL output blocked (TNT)', ['spearman_rate_on_vs_data', 'spearman_rate_off_vs_data'], [], ['', '']),
-        ('rank agreement with the KC matrices\nsolid: APL on vs control flies; pale: APL off vs APL output blocked (TNT)', [p + 'on_spearman', p + 'off_spearman'], [], ['', '']),
+        ('response rate ρ, per odor (ceiling about 0.97)\nsolid: APL on vs control flies; pale: APL off vs APL output blocked (TNT)', ['spearman_rate_on_vs_data', 'spearman_rate_off_vs_data'], [], ['', '']),
+        ('ρ with the KC matrices (odor-odor distances)\nsolid: APL on vs control flies; pale: APL off vs APL output blocked (TNT)', [p + 'on_spearman', p + 'off_spearman'], [], ['', '']),
         ('mean cosine distance, APL on\n(control flies 0.84, dotted)', [p + 'on_mean_model'], [0.840], [''])]
     for ax, (title, cols, refs_, lab) in zip(list(axes.ravel())[1:], panels):
         w = 0.8 / len(cols)
