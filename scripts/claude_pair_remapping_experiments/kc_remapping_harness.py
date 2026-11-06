@@ -459,6 +459,52 @@ def response_fractions(responses: pd.DataFrame) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
+# plotting
+def oklab_diverging_cmap(n: int = 256, l_end: float = 0.36, c_end: float = 0.15,
+    hue_neg: float = 262.0, hue_pos: float = 27.0):
+    """olfdb's (hong-data's) default blue-white-red colormap, as a matplotlib colormap.
+
+    Built in Oklab so that lightness is linear in |value|: white at the center, darkening
+    at the same rate towards a blue (negative) and a red (positive) pole of equal lightness
+    (port of `oklabDiverging` in /opt/olfdb/app/static/colormaps.js, same constants; chroma
+    shrunk into the sRGB gamut the same way). Use with a symmetric norm (white at 0).
+    """
+    from matplotlib.colors import ListedColormap
+
+    def oklab_to_linear_srgb(L, a, b):
+        l_ = L + 0.3963377774 * a + 0.2158037573 * b
+        m_ = L - 0.1055613458 * a - 0.0638541728 * b
+        s_ = L - 0.0894841775 * a - 1.2914855480 * b
+        l, m, s_cubed = l_ ** 3, m_ ** 3, s_ ** 3
+        return (4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s_cubed,
+            -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s_cubed,
+            -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s_cubed)
+
+    def to_srgb8(c):
+        c = min(1.0, max(0.0, c))
+        v = 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
+        return round(v * 255)
+
+    def oklch_to_rgb8(L, C, hue):
+        h = np.deg2rad(hue)
+        for _ in range(24):
+            rgb = oklab_to_linear_srgb(L, C * np.cos(h), C * np.sin(h))
+            if all(-1e-4 <= x <= 1.0001 for x in rgb):
+                return [to_srgb8(x) for x in rgb]
+            C *= 0.92
+        return [to_srgb8(x) for x in oklab_to_linear_srgb(L, 0.0, 0.0)]
+
+    half = (n - 1) / 2
+    colors = []
+    for i in range(n):
+        x = (i - half) / half
+        t = abs(x)
+        rgb = oklch_to_rgb8(1 - t * (1 - l_end), c_end * t, hue_neg if x < 0 else hue_pos)
+        colors.append([v / 255 for v in rgb])
+    return ListedColormap(colors, name='oklab_div')
+
+
+# ---------------------------------------------------------------------------
 # statistics
 def linear_resid(y: pd.Series, x: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
     """Residual of y around its OLS fit on x, plus fit summary (slope, intercept, r2)."""

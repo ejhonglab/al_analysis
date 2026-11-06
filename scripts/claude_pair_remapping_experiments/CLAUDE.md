@@ -446,6 +446,16 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   responses": no "(1 - cosine similarity)" gloss, never a bare "similarity"); scatter axes say
   "...: cosine distance". The definition in words belongs in the text, once.
   Long subplot titles are split over two lines, the statistic in parentheses on the second.
+- **The background figure has a Pearson twin.** Every report that shows the six-panel
+  background figure (the three matrices and the three pair-by-pair comparisons; made by
+  `summary_background_figure.py`) puts right under it a collapsed `??? ` block holding the same
+  six panels with Pearson correlation instead of cosine distance (`summary_background_pearson.png`,
+  written by the same script). Matrices of correlations (signed values centered on 0) use olfdb's
+  blue-white-red Oklab colormap, lightness linear in |value|, white at 0
+  (`kc_remapping_harness.oklab_diverging_cmap()`, a port of hong-data's default), on a symmetric
+  scale. Note the ORN matrix the program uses everywhere is one minus the Pearson correlation
+  across the 40 responding glomeruli (`orn16_consensus_pairs()`), so in the cosine figure the
+  ORN panel is labelled "Pearson correlation distance".
 - **Opaque terms and methods.** A technical term the main text needs but should not stop to
   explain (isotonic, ...) gets a hover definition: put a `%%% hover` block (lines
   `term: definition`, closed by `%%%`) anywhere in the markdown and `md_to_artifact.py` wraps
