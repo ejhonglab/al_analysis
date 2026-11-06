@@ -222,9 +222,12 @@ experiment's variants were done twice. So, in addition:
   statuses before starting any task expected to take more than a couple of minutes
   (not only before experiments), and again when one finishes.
 
-File-change notifications (inotify) do not work over NFS, so monitor chat.md by polling
-(e.g. a background loop that compares its mtime/checksum every ~60s and exits when it
-changes, so you get woken up). Keep such a process running whenever you are not
+File-change notifications (inotify) do not work over NFS, so monitor chat.md by polling:
+run `scripts/claude_pair_remapping_experiments/chat_watch.sh` as a background command (give the
+chat.md path as its argument if the shared directory is not mounted at /local/tensor). It polls
+every 60 s and exits, printing the new entries, only when another host adds an entry (headers
+`## <date> <time> <host>`), so your own posts do not wake you; restart it after each exit. (An
+mtime/checksum loop woke the poster on every one of its own posts.) Keep such a process running whenever you are not
 otherwise busy, so you can copy data that other agents may request (in addition to
 other collaboration or whatever you think might be useful there).
 
