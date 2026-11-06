@@ -81,8 +81,11 @@ directory's notes/ and are linked from here.
   rankings are unaffected. The background table labels the 0.98 / 0.97 "measurement ceiling (ρ
   between halves of the recordings)"; the ρ between halves is 0.91 / 0.90, and 0.98 / 0.97 is its
   Spearman-Brown-corrected square root (the expected ρ of a noise-free model).
-- **Remains.** Switch the published summary to the template (Tom's OK); read WT_DEV_TARGET and
-  VCF_OFF_TARGET from the registry; fix the ceiling label.
+- **Done (2026-11-06 14:08).** The published summary is generated from the template
+  (build_summary.py): the values above and the ceiling label / definition are corrected there.
+- **Remains.** Read WT_DEV_TARGET and VCF_OFF_TARGET in E10_joint_fit.py from the registry (changes
+  every later fit's loss by ~0.007, so do it between experiments, not mid-comparison); the
+  per-experiment notes keep their hand-typed values.
 
 ## Resolved
 

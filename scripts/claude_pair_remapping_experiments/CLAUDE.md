@@ -302,11 +302,13 @@ When you complete an experiment and its interpretation:
    lightly processed from your markdown from #1). Record the artifact URL in the
    markdown from #1 and in the Completed entry.
 
-4. regenerate the summary artifact (the all-experiments summary in `add_to_reports/`, see
-   "Summary reports" below): fold the experiment's result into the section it belongs to
-   (its row in the relevant table, a sentence on what moved and whether it reached the
-   data), move it out of the pending list, update the experiment key, regenerate the progress
-   plot (`summary_progress_plot.py`), rebuild the page with `md_to_artifact.py`, republish it to the same slug, run `save_report_copy.py`, update the
+4. regenerate the summary artifact (the all-experiments summary, see "Summary reports"
+   below): fold the experiment's result into the section it belongs to in the template
+   `reports/summary_template.md` (its row in the relevant table, a sentence on what moved and
+   whether it reached the data; its numbers as placeholders on its results table), move it out
+   of the pending list, update the experiment key, run `./venv/bin/python build_summary.py`
+   (progress plot, fill, the generated markdown in `add_to_reports/`, the page), republish the
+   page to the same slug, run `save_report_copy.py`, commit the template, update the
    add_to_reports README row and say so in chat.md. Every completed experiment appears in the
    summary before the host moves on.
 
@@ -395,6 +397,26 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   `![caption](path)` (on every page it builds), so static figures are always embedded that way,
   never as hand-written `<img>` or through `%%% html`; interactive plots inserted with `%%% html`
   (the progress plot) keep their own controls and are not affected.
+- **The summary is generated from a template; numbers come from their sources** (since
+  2026-11-06). Edit `reports/summary_template.md` in this folder (git), never the generated
+  `add_to_reports/summary_all_experiments_2026-11-05.md` (overwritten on every build; the last
+  hand-typed version is in the shared directory's notes/summary_backups/). A number that has a
+  source is a placeholder `{{key ~ spec}}` (spec a Python format spec, e.g. `.2f`, `+.3f`; `|`
+  is not allowed inside, it separates table cells): `data:<name>` (or `.lo` / `.hi` of its 90 %
+  interval) for KC / ORN data values, computed in `data_targets.py` (add new data values there,
+  with a definition, never as literals); `<EXP>[/<table.csv>]:<tag or col=value;...>:<column>`
+  for one cell of an experiment's results table (comma-separated column alternatives allowed);
+  `lit:<text> # <source>` only for values with no computed source, with the source stated.
+  Never round a printed value by hand (the hand-typed summary had ±0.01 errors from rounding
+  3-decimal printouts again). "KC data" rows and the best-models table must be all placeholders
+  (the build lints them); new tables should be too. Build with `./venv/bin/python
+  build_summary.py` (`--data-targets` first rebuilds the registry, needed when a data input
+  changes): it regenerates the progress plot, fills the template (failing on unknown keys),
+  writes the plain markdown to add_to_reports/ with a sidecar
+  (`summary_all_experiments_2026-11-05.values.json`: every value's file, row, column, sha256 and
+  commit) and builds `outputs/_artifacts/summary/index.html` with a source tooltip on every
+  filled value. `./venv/bin/python fill_report.py --check <sidecar>` lists values whose sources
+  changed since the build.
 - **Pages are generated, not hand-converted.** Write the summary as markdown, convert it with
   `md_to_artifact.py` (handles `###`, list items and paragraphs wrapped over several lines,
   tables, figures embedded from `![caption](path)`), and do not publish while its lint
