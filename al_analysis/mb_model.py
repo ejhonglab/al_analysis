@@ -2847,11 +2847,13 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
 
         claw_weight: only for `prat_claws=True` (and `dist_weight=None`). 'presence'
             (default): each claw has weight 1. 'synapses': each claw's weight is its
-            number of PN->KC synapses (per bouton, for `multibouton_claws='split'`).
-            olfsysm does not rescale `wPNKC` (each claw's drive is its weight times the
-            PN rate), so the mean claw drive is ~15x that of 'presence'. Tuning the KC
-            threshold to a target response rate absorbs that overall scale, but a given
-            `fixed_thr` or `claw_thr` is not comparable between the two settings.
+            number of PN->KC synapses (per bouton, for `multibouton_claws='split'`),
+            divided by the mean of the matrix's non-zero weights, so the weights have
+            mean 1 (as 'presence') and only the spread of claw strength changes (CV
+            ~0.43); `fixed_thr` / `claw_thr` keep their meaning. 'synapses_raw': the
+            integer counts themselves (mean ~15; olfsysm does not rescale `wPNKC`, so
+            thresholds tuned for 'presence' do not transfer, and threshold tuning may
+            not converge).
 
     Returns DataFrame with one row per KC (or per claw, for one-row-per-claw outputs),
     and one column per glomerulus (or per bouton, for `prat_boutons=True`), with # of
@@ -2869,15 +2871,15 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
     assert connectome in connectome_options
     if multibouton_claws not in ('first', 'argmax', 'split'):
         raise ValueError(f"{multibouton_claws=} must be 'first', 'argmax' or 'split'")
-    if claw_weight not in ('presence', 'synapses'):
-        raise ValueError(f"{claw_weight=} must be 'presence' or 'synapses'")
+    if claw_weight not in ('presence', 'synapses', 'synapses_raw'):
+        raise ValueError(f"{claw_weight=} must be 'presence', 'synapses' or 'synapses_raw'")
     if multibouton_claws != 'first' and not prat_boutons:
         raise ValueError('multibouton_claws requires prat_boutons=True')
     if claw_weight != 'presence':
         if not prat_claws:
-            raise ValueError("claw_weight='synapses' requires prat_claws=True")
+            raise ValueError(f"{claw_weight=} requires prat_claws=True")
         if dist_weight is not None:
-            raise ValueError("claw_weight='synapses' can not be combined with dist_weight")
+            raise ValueError(f"{claw_weight=} can not be combined with dist_weight")
     # per-(claw, bouton) synapse counts, kept for multibouton_claws / claw_weight
     # (defined in the prat_claws + prat_boutons path)
     claw_bouton_n_syn = None
@@ -4088,13 +4090,16 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             if dist_weight is None:
                 # TODO TODO define from something w/ synapse counts as values instead?
                 # (at least, if dist_weight is None)
-                if claw_weight == 'synapses':
+                if claw_weight in ('synapses', 'synapses_raw'):
                     syn_weights = claws.reset_index().set_index(
                         list(dist_weights.index.names)).pivot(columns=glomerulus_col,
                         values='n_synapses')
                     assert syn_weights.index.equals(dist_weights.index)
                     wPNKC = syn_weights.fillna(0)
                     assert np.isclose(wPNKC.sum().sum(), claws.n_synapses.sum())
+                    if claw_weight == 'synapses':
+                        # mean 1 over the claws (one non-zero entry each)
+                        wPNKC = wPNKC / wPNKC.values[wPNKC.values > 0].mean()
                 else:
                     wPNKC = dist_weights.fillna(0).astype(bool).astype(int)
             else:
@@ -4938,10 +4943,14 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
             assert wPNKC.sum().sum() == n_claws2
             assert set(np.unique(wPNKC.values.flat)) == {0, 1}
         elif dist_weight is None:
-            # claw_weight='synapses': each claw's one entry is its PN->KC synapse count
+            # claw_weight='synapses[_raw]': each claw's one entry is its PN->KC synapse
+            # count (normalized to mean 1 for 'synapses')
             assert (wPNKC > 0).sum().sum() == n_claws2
             _vals = wPNKC.values[wPNKC.values > 0]
-            assert np.allclose(_vals, np.round(_vals)) and _vals.min() >= 1
+            if claw_weight == 'synapses_raw':
+                assert np.allclose(_vals, np.round(_vals)) and _vals.min() >= 1
+            else:
+                assert np.isclose(_vals.mean(), 1.0) and _vals.min() > 0
             del _vals
         else:
             assert (wPNKC > 0).sum().sum() == n_claws2, ('possibly 0 weight for some '
@@ -5486,6 +5495,7 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 cb['weight'] = (cb.n_syn / cb.n_syn_claw if multibouton_claws == 'split'
                     else 1.0)
             else:
+                # raw counts here; 'synapses' is normalized to mean 1 below
                 cb['weight'] = (cb.n_syn if multibouton_claws == 'split' else cb.n_syn_claw
                     ).astype(float)
             row_levels = list(wPNKC3.index.names)
@@ -5529,6 +5539,13 @@ def connectome_wPNKC(connectome: str = 'hemibrain', *, prat_claws: bool = False,
                 assert np.allclose(new.sum(axis='columns').to_numpy(), claw_tot.reindex(
                     new.index.droplevel([n for n in row_levels if n not in claw_cols])
                     ).to_numpy())
+            if claw_weight == 'synapses':
+                # mean 1 over the non-zero entries (per claw, or per (claw, bouton)
+                # connection for 'split'), so only the spread of claw strength changes
+                _nz = new.values[new.values > 0]
+                new = new / _nz.mean()
+                assert np.isclose(new.values[new.values > 0].mean(), 1.0)
+                del _nz
             _all_cols = new.columns.union(wPNKC3.columns)
             n_changed = int(((new > 0).reindex(columns=_all_cols, fill_value=False) !=
                 (wPNKC3 > 0).reindex(columns=_all_cols, fill_value=False)

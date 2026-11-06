@@ -42,6 +42,11 @@ def split_synapses():
     return connectome_wPNKC(multibouton_claws='split', claw_weight='synapses', **KWS)
 
 
+@pytest.fixture(scope='module')
+def synapses_raw():
+    return connectome_wPNKC(claw_weight='synapses_raw', **KWS)
+
+
 def claw_keys(w: pd.DataFrame) -> pd.MultiIndex:
     return pd.MultiIndex.from_arrays([w.index.get_level_values(KC_ID),
         w.index.get_level_values(CLAW_ID)], names=[KC_ID, CLAW_ID])
@@ -113,17 +118,32 @@ def test_split_rows_sum_to_one(default, split):
     assert (split[nz > 1].max(axis='columns') < 1).all()
 
 
-def test_synapse_weights_are_integer_counts(default, synapses):
-    assert synapses.shape == default.shape and synapses.index.equals(default.index)
-    assert ((synapses > 0) == (default > 0)).all().all(), 'same bouton as default'
-    tot = synapses.sum(axis='columns')
+def test_synapse_weights_are_integer_counts(default, synapses_raw):
+    assert synapses_raw.shape == default.shape and synapses_raw.index.equals(default.index)
+    assert ((synapses_raw > 0) == (default > 0)).all().all(), 'same bouton as default'
+    tot = synapses_raw.sum(axis='columns')
     assert np.allclose(tot, np.round(tot)) and (tot >= 5).all()   # loader threshold
     assert 10 < tot.median() < 25
 
 
+def test_synapse_weights_normalized_to_mean_one(default, synapses, synapses_raw):
+    assert synapses.shape == default.shape and synapses.index.equals(default.index)
+    assert ((synapses > 0) == (default > 0)).all().all(), 'same bouton as default'
+    tot = synapses.sum(axis='columns')
+    assert np.isclose(tot.mean(), 1.0) and (tot > 0).all()
+    assert 0.3 < tot.std() < 0.6   # the spread of claw strength (CV ~0.43)
+    raw = synapses_raw.sum(axis='columns')
+    assert np.allclose(tot.to_numpy(), (raw / raw.mean()).to_numpy())
+
+
 def test_split_synapses(split, synapses, split_synapses):
+    # mean 1 over the per-connection entries, so row totals are proportional to the
+    # per-claw totals of the unsplit synapse weights (whose mean is over claws)
     tot = split_synapses.sum(axis='columns')
-    assert np.allclose(tot, synapses.sum(axis='columns'))
+    nz = split_synapses.to_numpy()[split_synapses.to_numpy() > 0]
+    assert np.isclose(nz.mean(), 1.0)
+    per_claw = synapses.sum(axis='columns')
+    assert np.allclose((tot / tot.sum()).to_numpy(), (per_claw / per_claw.sum()).to_numpy())
     assert ((split_synapses > 0) == (split > 0)).all().all()
     shares = split_synapses.div(tot, axis='index')
     assert np.allclose(shares.to_numpy(), split.to_numpy())
@@ -179,8 +199,8 @@ def test_fit_mb_model_runs_with_options(kws):
     assert (wPNKC >= 0).all().all() and np.isfinite(wPNKC.to_numpy()).all()
     row_sums = wPNKC.sum(axis='columns')
     if kws.get('claw_weight', 'presence') == 'synapses':
-        assert np.allclose(row_sums, np.round(row_sums)) and (row_sums >= 5).all()
-        assert 10 < row_sums.median() < 25
+        nz = wPNKC.to_numpy()[wPNKC.to_numpy() > 0]
+        assert np.isclose(nz.mean(), 1.0) and 0.3 < row_sums.std() < 0.6
     else:
         assert np.allclose(row_sums, 1.0)
     n_nonzero = (wPNKC > 0).sum(axis='columns')
