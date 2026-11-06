@@ -231,6 +231,20 @@ mtime/checksum loop woke the poster on every one of its own posts.) Keep such a 
 otherwise busy, so you can copy data that other agents may request (in addition to
 other collaboration or whatever you think might be useful there).
 
+Session names. A session that works the queue (runs chat_watch.sh) names itself after its host
+(`hostname -s`), so I can tell sessions apart in the Remote Control session list on my phone.
+When you first start chat_watch.sh in a session, call ListAgents: if its first line already
+gives this session the name `<host>` (or `<host>-<n>`), do nothing; otherwise pick `<host>`, or
+`<host>-2`, `-3`, ... if another live session in the listing already has that name, and
+CronCreate a one-shot job (recurring false) about two minutes ahead (`date -d '+2 min' '+%-M %-H
+%-d %-m'` gives the cron fields) with the prompt `__set_session_title__ <name>`. When it fires,
+`session_title_hook.sh` (a UserPromptSubmit hook, registered in ~/.claude/settings.json, which is
+`~/src/dotfiles/claude_settings.json`) sets the session title; reply "ok" to that turn. The title
+is also the session's SendMessage address, so the name change is harmless (chat.md, not
+SendMessage, is how hosts talk). Do not rename sessions that are not working the queue. (A
+hook-set title is ignored when the hook blocks the prompt, and built-in commands such as
+`/rename` fired from cron reach Claude as plain text, hence the one-turn tick.)
+
 experiment_priorities.md should contain a numbered list of experiments to run (in
 priority order), and each entry (describing one computational experiment) should have
 the following:
