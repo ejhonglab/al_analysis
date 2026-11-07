@@ -8,13 +8,17 @@ session records there current, and each host's `<host>_status.md` supplies the r
 ## Viewing it
 
 Open **http://hal:17486** on any computer on the lab network. The page reloads itself every
-30 s.
+30 s. The second line under the title says which folder on tensor the page is built from
+(`Tom/claude_kc_remapping`, and where the serving host mounts it).
 
-- **Hosts**: one row per host. It shows the most urgent state of its sessions, the status the
+- **Hosts**: one row per host. It shows the most urgent state of its sessions, the model and
+  effort level of each of its live sessions (e.g. "Opus 5.5 · xhigh"; together they set what the
+  session may do on the queue, see "Permissions by model and effort" in `../CLAUDE.md`; greyed
+  if the session is not on the queue, hover for the session names), the status the
   host's agent last declared (with what it is doing, ETA, and what it is blocked on), any
   experiments it runs and work it has claimed, when it last posted to chat.md, and when it
   joined. Click "status file" to see the whole `<host>_status.md`.
-- **Claude sessions**: one row per session, from the hooks:
+- **Claude sessions**: one row per session, from the hooks, with its model and effort level:
 
   | state | meaning |
   |---|---|
@@ -60,8 +64,31 @@ port to the LAN (hal runs ufw):
 sudo loginctl enable-linger tom
 sudo ufw allow from 10.0.0.0/24 to any port 17486 proto tcp
 ```
-After changing `server.py`, run `systemctl --user restart claude-queue-monitor`. Logs:
-`journalctl --user -u claude-queue-monitor`.
+Logs: `journalctl --user -u claude-queue-monitor`.
+
+## Applying code updates
+
+Everything runs straight from each host's al_analysis checkout (`~/src/kc_queue/al_analysis`
+on lab members' machines), so an update is a pull there, plus a restart for the server only:
+
+| changed | pull on | then |
+|---|---|---|
+| `server.py` | hal (the host serving the page) | `systemctl --user restart claude-queue-monitor` |
+| `presence_hook.py` | every host running queue sessions | nothing: every hook call runs the file afresh, so running sessions use the new version from their next event |
+| `../chat_watch.sh` | every host running queue sessions | nothing: a running watcher finishes on the old version and the next one it is restarted as uses the new one |
+| hook registration (dotfiles `claude_settings.json`, `../.claude/settings.json`) | every host (also `git -C ~/src/dotfiles pull` on Tom's) | nothing: running sessions reload their settings |
+
+On hal, for example:
+```
+git -C ~/src/al_analysis pull
+systemctl --user restart claude-queue-monitor
+systemctl --user status claude-queue-monitor
+```
+The status line should say `active (running) since` a time after the pull; if it says
+`activating (auto-restart)` or `failed`, the new `server.py` does not start, and
+`journalctl --user -u claude-queue-monitor -n 50` shows why. A session record only gains a field
+the new hook writes (such as the effort level) at that session's next hook event after the pull,
+so a session that stays idle shows the old record until it next does something.
 
 ## Configuration
 

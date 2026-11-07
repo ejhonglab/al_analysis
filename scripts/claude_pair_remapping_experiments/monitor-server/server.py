@@ -2,7 +2,8 @@
 """LAN dashboard of the KC-remapping work queue: hosts, their Claude sessions, and claims.
 
 Reads only the shared directory (Tom/claude_kc_remapping under /local/tensor or /mnt/tensor):
-- presence/<host>__<session>.json, written by presence_hook.py (Claude Code hooks);
+- presence/<host>__<session>.json, written by presence_hook.py (Claude Code hooks; includes
+  each session's model and effort level);
 - presence/<host>__<session>.watch, the heartbeat chat_watch.sh writes every poll;
 - <host>_status.md, each host's self-reported status (its front matter, if any);
 - chat.md entry headers, experiment_priorities.md (experiment index, work claims).
@@ -59,6 +60,12 @@ DECLARED_STATES = ('working', 'running', 'idle', 'blocked', 'offline')
 CHAT_HEADER = re.compile(r'^## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) (\S+)\s*$')
 STATUS_FILE = re.compile(r'^([A-Za-z0-9][A-Za-z0-9-]*)_status\.md$')
 PRESENCE_FILE = re.compile(r'^([A-Za-z0-9-]+)__([A-Za-z0-9._-]+)\.(json|watch)$')
+# model IDs: 'claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'claude-3-5-haiku-20241022',
+# optionally with a provider prefix ('us.anthropic.'), a '-v1:0' suffix or a '[1m]' context tag
+MODEL_ID = re.compile(r'^(?:.*\.)?claude-'
+    r'(?:(?P<family>[a-z]+)-(?P<major>\d+)(?:-(?P<minor>\d{1,2}))?'
+    r'|(?P<major_old>\d+)(?:-(?P<minor_old>\d))?-(?P<family_old>[a-z]+))'
+    r'(?:-\d{8})?(?:-v\d+(?::\d+)?)?(?P<context>\[\w+\])?$', re.I)
 
 
 def default_shared():
@@ -70,6 +77,36 @@ def default_shared():
         if os.path.isdir(d):
             return d
     return os.path.join(TENSOR_MOUNTS[0], SHARED_SUBDIR)
+
+
+def model_name(model):
+    """'Opus 5.5' for 'claude-opus-5-5' (and so on); the ID itself if it is not a Claude one."""
+    m = MODEL_ID.match(model or '')
+    if not m:
+        return model or None
+    family = m.group('family') or m.group('family_old')
+    major = m.group('major') or m.group('major_old')
+    minor = m.group('minor') or m.group('minor_old')
+    name = '{} {}{}'.format(family.capitalize(), major, '.' + minor if minor else '')
+    if m.group('context'):
+        name += ' ({})'.format(m.group('context')[1:-1].upper())
+    return name
+
+
+def model_label(model, effort):
+    """'Opus 5.5 · xhigh' (model and effort level), 'Opus 5.5' without an effort, or None."""
+    name = model_name(model)
+    if name and effort:
+        return '{} \u00b7 {}'.format(name, effort)
+    return name
+
+
+def tensor_path(shared):
+    """The shared directory relative to the tensor share, or None if it is not on a mount."""
+    for mount in TENSOR_MOUNTS:
+        if shared.startswith(mount.rstrip('/') + '/'):
+            return shared[len(mount.rstrip('/')) + 1:]
+    return None
 
 
 def local_epoch(text):
@@ -250,6 +287,7 @@ def session_view(rec, watch, now):
     s['queue'] = (bool(watch) or bool(rec.get('label'))
         or (rec.get('session_title') or '').startswith(QUEUE_TITLE_PREFIX))
     s['name'] = rec.get('session_title') or rec.get('label') or (rec.get('session_id') or '?')[:8]
+    s['model_label'] = model_label(rec.get('model'), rec.get('effort'))
     hide_after = HIDE_ENDED_S if view == 'ended' else HIDE_S
     s['hidden'] = now - activity > hide_after
     return s
@@ -289,11 +327,30 @@ def read_presence(shared, now):
     return sessions
 
 
+def host_models(sessions):
+    """Distinct models (with effort level) of a host's live sessions, queue sessions first.
+
+    Returns:
+        list of {'label', 'sessions' (names), 'queue' (any of them on the queue)}.
+    """
+    groups = {}
+    for s in sessions:
+        if s['view'] in ('ended', 'gone'):
+            continue
+        g = groups.setdefault(s.get('model_label') or 'model unknown',
+            {'sessions': [], 'queue': False})
+        g['sessions'].append(s['name'])
+        g['queue'] = g['queue'] or s['queue']
+    out = [dict(label=k, **g) for k, g in groups.items()]
+    out.sort(key=lambda g: (not g['queue'], g['label'] == 'model unknown', -len(g['sessions'])))
+    return out
+
+
 def collect(shared, now=None):
     """Everything the dashboard shows, as one JSON-serializable dict."""
     now = time.time() if now is None else now
-    out = {'shared': shared, 'generated': now, 'server_host': socket.gethostname(),
-        'errors': []}
+    out = {'shared': shared, 'tensor_path': tensor_path(shared), 'generated': now,
+        'server_host': socket.gethostname(), 'errors': []}
     try:
         names = os.listdir(shared)
     except OSError as e:
@@ -328,6 +385,7 @@ def collect(shared, now=None):
             'session_state': best,
             'sessions': len(hs),
             'queue_sessions': sum(1 for s in hs if s['queue']),
+            'models': host_models(hs),
             'declared': st and {k: v for k, v in st.items() if k != 'body'},
             'status_body': st and st['body'],
             'last_chat': chat.get('last'),
@@ -398,6 +456,7 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: .8rem; margin: 6
   max-height: 340px; overflow: auto; background: var(--chip); padding: 8px; border-radius: 6px; }
 .legend { color: var(--muted); font-size: .82rem; margin-top: 8px; }
 .legend span { margin-right: 14px; }
+code { font-size: .85em; }
 """
 
 
@@ -444,17 +503,22 @@ def render(state, refresh):
         w('<meta http-equiv="refresh" content="{:d}">'.format(int(refresh)))
     w('<title>KC queue monitor</title><style>{}</style></head><body><main>'.format(CSS))
     w('<h1>KC remapping work queue</h1>')
-    w('<div class="sub">{} &middot; served by {} &middot; generated {}{}</div>'.format(
-        esc(state['shared']), esc(state['server_host']),
-        datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S'),
+    w('<div class="sub">served by {} &middot; generated {}{}<br>'.format(
+        esc(state['server_host']), datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S'),
         ' &middot; reloads every {:d} s'.format(int(refresh)) if refresh else ''))
+    where = ('<code>{}</code> on tensor <span class="muted">(here {})</span>'.format(
+        esc(state['tensor_path']), esc(state['shared'])) if state.get('tensor_path')
+        else '<code>{}</code>'.format(esc(state['shared'])))
+    w('data from {}: <code>presence/</code> (hooks), <code>&lt;host&gt;_status.md</code>, '
+        '<code>chat.md</code>, <code>experiment_priorities.md</code></div>'.format(where))
     for e in state['errors']:
         w('<div class="err">{}</div>'.format(esc(e)))
 
     # hosts
     w('<h2>Hosts</h2><div class="wrap"><table><tr><th>host</th><th>sessions (hooks)</th>'
-        '<th>declared status</th><th>doing now</th><th>blocked on</th><th>running</th>'
-        '<th>status updated</th><th>last chat post</th><th>joined</th></tr>')
+        '<th>model &middot; effort</th><th>declared status</th><th>doing now</th>'
+        '<th>blocked on</th><th>running</th><th>status updated</th><th>last chat post</th>'
+        '<th>joined</th></tr>')
     for h in state['hosts']:
         dec = h['declared'] or {}
         fields = dec.get('fields') or {}
@@ -476,10 +540,15 @@ def render(state, refresh):
         if h['status_body']:
             now_text += '<details><summary>status file</summary><pre>{}</pre></details>'.format(
                 esc(h['status_body']))
+        models = '<br>'.join('<span class="nw{}" title="{}">{}{}</span>'.format(
+            '' if g['queue'] else ' muted', esc(', '.join(g['sessions'])
+                + ('' if g['queue'] else ' (not on queue)')), esc(g['label']),
+            ' <span class="muted">&times;{}</span>'.format(len(g['sessions']))
+                if len(g['sessions']) > 1 else '') for g in h['models'])
         blocked = fields.get('blocked_on')
-        w('<tr><td><b>{}</b></td><td>{}</td><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td>'
-            '<td>{}</td><td>{}</td><td>{}</td></tr>'.format(
-            esc(h['host']), sess,
+        w('<tr><td><b>{}</b></td><td>{}</td><td>{}</td><td>{}{}</td><td>{}</td><td>{}</td>'
+            '<td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+            esc(h['host']), sess, models or '<span class="muted">-</span>',
             badge(dstate, dtitle) if dstate else '<span class="muted">no status file</span>',
             '<br><span class="muted">since {}</span>'.format(esc(fields['since']))
                 if fields.get('since') else '',
@@ -497,7 +566,8 @@ def render(state, refresh):
     w('<h2>Claude sessions</h2>')
     if state['sessions']:
         w('<div class="wrap"><table><tr><th>host</th><th>session</th><th>state</th>'
-            '<th>last event</th><th>chat heartbeat</th><th>started</th><th>detail</th></tr>')
+            '<th>model &middot; effort</th><th>last event</th><th>chat heartbeat</th>'
+            '<th>started</th><th>detail</th></tr>')
         for s in state['sessions']:
             watch = s.get('watch')
             if watch:
@@ -514,10 +584,11 @@ def render(state, refresh):
             name = esc(s['name'])
             if not s['queue']:
                 name += ' <span class="muted">(not on queue)</span>'
-            w('<tr><td>{}</td><td title="{}">{}</td><td>{}</td><td>{}</td><td>{}</td>'
-                '<td>{}</td><td>{}</td></tr>'.format(
+            w('<tr><td>{}</td><td title="{}">{}</td><td>{}</td><td class="nw">{}</td><td>{}</td>'
+                '<td>{}</td><td>{}</td><td>{}</td></tr>'.format(
                 esc(s['host']), esc(s.get('session_id')), name,
-                badge(s['view'], VIEW_TEXT.get(s['view'])), last, hb,
+                badge(s['view'], VIEW_TEXT.get(s['view'])),
+                esc(s['model_label']) or '<span class="muted">-</span>', last, hb,
                 fmt_time(s.get('started_epoch'), now), esc(detail)))
         w('</table></div>')
     else:

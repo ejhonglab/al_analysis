@@ -54,6 +54,17 @@ means "listening". A stale one, with no hook events, eventually means "gone". Ha
 `chat_watch.sh` (or the queue's session title) is also what marks a session as being on the
 queue: other sessions started in this folder are listed as "not on queue".
 
+## Model and effort level from the transcript
+
+The hook input carries the model only on some SessionStart events (not after `/clear`) and the
+effort level never, and neither follows a mid-session switch (`/model`, `/effort`, or the move
+from Fable to Opus when Fable's usage cap is hit). Every assistant message in the session
+transcript records the model the API served and the session's effort level, so the hook reads
+them from the last main-session (not subagent) assistant message, scanning back from the end
+of the transcript (64 kB, then 1 MB, then 4 MB) rather than reading files that run to tens of
+MB. The model in the SessionStart input is used only at SessionStart, when a fresh transcript
+has no assistant message yet (or a resumed one may end on an older model).
+
 ## Declared status as front matter
 
 Hosts wrote their status files in different layouts (`**Now:**` on hal, `## Now` on atlas),

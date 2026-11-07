@@ -7,7 +7,9 @@ both apply) in the experiments folder's .claude/settings.json, for sessions star
 other machines. Each call reads the hook input JSON from stdin and
 keeps one file per session in the shared directory, `presence/<host>__<session_id>.json`,
 which `server.py` reads. Only sessions whose transcript or cwd is under this folder are
-recorded (a session recorded once stays recorded, wherever it `cd`s).
+recorded (a session recorded once stays recorded, wherever it `cd`s). The model and effort
+level come from the last assistant message in the transcript, since the hook input carries
+the model only on some SessionStart events and never the effort.
 
 To keep tool calls cheap and the NAS quiet, the full record lives in a local cache
 (~/.cache/claude-queue-presence/) and the shared file is rewritten only when the state or
@@ -41,6 +43,8 @@ MATCH = os.environ.get('KC_PRESENCE_MATCH', 'claude_pair_remapping_experiments')
 # rewrite the shared file at least this often while events keep coming
 SHARED_REFRESH_S = 60
 CACHE_MAX_AGE_S = 14 * 24 * 3600
+# how far back from the end of the transcript to look for the last assistant message
+TRANSCRIPT_TAIL_BYTES = (1 << 16, 1 << 20, 1 << 22)
 
 # state after each event (Notification and a few others are handled in next_state)
 EVENT_STATE = {
@@ -115,6 +119,43 @@ def transcript_start(path):
     return None
 
 
+def transcript_model(path):
+    """Model and effort level of the last main-session assistant message in the transcript.
+
+    Returns:
+        (model, effort): the model ID the API served (e.g. 'claude-opus-5-5') and the
+        session's effort level (e.g. 'xhigh'; None if the model has none), or (None, None) if
+        no assistant message is in the last few MB of the transcript.
+    """
+    try:
+        with open(path, 'rb') as f:
+            end = f.seek(0, os.SEEK_END)
+            for size in TRANSCRIPT_TAIL_BYTES:
+                start = max(0, end - size)
+                f.seek(start)
+                lines = f.read(end - start).split(b'\n')
+                # the first line of a chunk is usually cut off
+                for line in reversed(lines[1:] if start else lines):
+                    if b'"assistant"' not in line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if d.get('type') != 'assistant' or d.get('isSidechain'):
+                        continue
+                    model = (d.get('message') or {}).get('model') or d.get('requestedModel')
+                    # API error messages are written as model '<synthetic>'
+                    if not model or model.startswith('<'):
+                        continue
+                    return model, d.get('effort') or d.get('perTurnEffort')
+                if not start:
+                    break
+    except (OSError, AttributeError, TypeError):
+        pass
+    return None, None
+
+
 def custom_title(d):
     """The session's custom title (hook input, else the file Claude Code keeps next to the
     transcript), or None."""
@@ -186,13 +227,21 @@ def update(rec, d, host, now):
     title = custom_title(d)
     if title:
         rec['session_title'] = title
+    model, effort = transcript_model(d.get('transcript_path') or '')
+    if event == 'SessionStart' and d.get('model'):
+        # the model the session starts with (a resumed transcript may end on another one)
+        model = d['model']
+    if model:
+        rec['model'] = model
+        if effort:
+            rec['effort'] = effort
+        else:
+            rec.pop('effort', None)
     if d.get('agent_id'):
         rec['last_subagent_event'] = iso(now)
 
     if event == 'SessionStart':
         rec['start_source'] = d.get('source')
-        if d.get('model'):
-            rec['model'] = d['model']
         if d.get('source') in ('resume', 'fork'):
             rec['resumed'] = iso(now)
         rec.pop('ended', None)
@@ -276,7 +325,7 @@ def main():
         new = update(rec, d, host, T_EVENT)
         event = new['last_event']
         changed = any(new.get(k) != rec.get(k)
-            for k in ('state', 'session_title', 'label', 'detail', 'ended'))
+            for k in ('state', 'session_title', 'label', 'detail', 'ended', 'model', 'effort'))
         stale = T_EVENT - rec.get('shared_written_epoch', 0) >= SHARED_REFRESH_S
         shared = None
         if changed or stale or event in LIFECYCLE_EVENTS:

@@ -83,6 +83,51 @@ def test_hook_lifecycle(dirs):
     assert r['started'] == started
 
 
+def assistant_line(model, effort=None, sidechain=False):
+    d = dict(type='assistant', isSidechain=sidechain, message=dict(model=model, role='assistant'))
+    if effort:
+        d['effort'] = effort
+    return json.dumps(d, separators=(',', ':')) + '\n'
+
+
+def test_hook_records_model_and_effort(dirs, tmp_path):
+    shared, env = dirs
+    transcript = tmp_path / 'proj-claude-pair-remapping-experiments' / 's4.jsonl'
+    transcript.parent.mkdir()
+    transcript.write_text('{"type":"user","timestamp":"2026-11-07T10:00:00Z"}\n')
+    kw = dict(sid='s4', transcript_path=str(transcript))
+    # before the first reply, only the SessionStart input has the model
+    hook(env, 'SessionStart', source='startup', model='claude-fable-5-1', **kw)
+    r = record(shared, 's4')
+    assert r['model'] == 'claude-fable-5-1' and 'effort' not in r
+
+    with open(transcript, 'a') as f:
+        f.write(assistant_line('claude-fable-5-1', 'max'))
+        # a large tool result after the last assistant message
+        f.write(json.dumps(dict(type='user', content='x' * 200000)) + '\n')
+    hook(env, 'PreToolUse', tool_name='Bash', **kw)
+    r = record(shared, 's4')
+    assert r['model'] == 'claude-fable-5-1' and r['effort'] == 'max'
+
+    # switching model / effort mid-session (the Fable usage cap) reaches the shared file at
+    # once; subagent and synthetic (API error) messages do not count
+    with open(transcript, 'a') as f:
+        f.write(assistant_line('claude-opus-5-5', 'xhigh'))
+        f.write(assistant_line('claude-haiku-5-5', 'low', sidechain=True))
+        f.write(assistant_line('<synthetic>'))
+        f.write('{"type":"assistant","message":{"mod')
+    hook(env, 'PostToolUse', tool_name='Bash', **kw)
+    r = record(shared, 's4')
+    assert r['model'] == 'claude-opus-5-5' and r['effort'] == 'xhigh'
+
+    # a model without effort levels drops the old one
+    with open(transcript, 'a') as f:
+        f.write('\n' + assistant_line('claude-haiku-4-5'))
+    hook(env, 'Stop', **kw)
+    r = record(shared, 's4')
+    assert r['model'] == 'claude-haiku-4-5' and 'effort' not in r
+
+
 def test_hook_ignores_other_folders_and_follows_cd(dirs):
     shared, env = dirs
     other = dict(cwd='/home/x/src/olfsysm', sid='s2')
@@ -178,11 +223,13 @@ def make_shared(shared, now):
         (pdir / '{}__{}.watch'.format(host, sid)).write_text(json.dumps(dict(
             host=host, session_id=sid, state=state, epoch=now - age, interval_s=60)))
 
-    rec('hal', 'a', 'idle', 600)
+    rec('hal', 'a', 'idle', 600, model='claude-fable-5-1', effort='xhigh',
+        session_title='al_analysis modeling - hal')
     watch('hal', 'a', 'listening', 30)
-    rec('hal', 'b', 'waiting_permission', 60, detail='needs permission')
-    rec('atlas', 'c', 'working', 3600)
-    rec('atlas', 'd', 'ended', 100)
+    rec('hal', 'b', 'waiting_permission', 60, detail='needs permission',
+        model='claude-opus-5-5', effort='high')
+    rec('atlas', 'c', 'working', 3600, model='claude-opus-5-5', effort='xhigh')
+    rec('atlas', 'd', 'ended', 100, model='claude-sonnet-4-5-20250929')
     rec('atlas', 'e', 'idle', 30 * 24 * 3600)
     watch('atlas', 'f', 'listening', 10)
 
@@ -207,8 +254,34 @@ def test_collect(tmp_path):
     assert [r['id'] for r in st['approved']] == ['E38']
     assert st['index_counts'] == {'completed': 1, 'running': 1, 'approved': 1}
     assert st['recent_chat'][0]['first_line'] == 'third'
+    # queue sessions first; ended sessions and heartbeats without hook records do not count
+    assert [(g['label'], g['queue']) for g in hosts['hal']['models']] == [
+        ('Fable 5.1 \u00b7 xhigh', True), ('Opus 5.5 \u00b7 high', False)]
+    assert [(g['label'], g['sessions']) for g in hosts['atlas']['models']] == [
+        ('model unknown', ['f']), ('Opus 5.5 \u00b7 xhigh', ['c'])]
     html = server.render(st, 30)
     assert 'needs you' in html and 'E37' in html and '<script' not in html
+    assert 'Fable 5.1 \u00b7 xhigh' in html
+    assert 'data from <code>{}</code>'.format(tmp_path) in html
+
+
+def test_model_names():
+    names = {
+        'claude-opus-5-5': 'Opus 5.5',
+        'claude-fable-5-1': 'Fable 5.1',
+        'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
+        'claude-opus-4-20250514': 'Opus 4',
+        'claude-3-5-haiku-20241022': 'Haiku 3.5',
+        'claude-opus-4-6[1m]': 'Opus 4.6 (1M)',
+        'us.anthropic.claude-sonnet-4-5-20250929-v1:0': 'Sonnet 4.5',
+        'some-other-model': 'some-other-model',
+        None: None,
+    }
+    assert {m: server.model_name(m) for m in names} == names
+    assert server.model_label('claude-opus-5-5', 'xhigh') == 'Opus 5.5 \u00b7 xhigh'
+    assert server.model_label('claude-haiku-4-5', None) == 'Haiku 4.5'
+    assert server.tensor_path('/local/tensor/Tom/claude_kc_remapping') == 'Tom/claude_kc_remapping'
+    assert server.tensor_path('/tmp/Tom/claude_kc_remapping') is None
 
 
 def test_missing_shared_dir(tmp_path):
