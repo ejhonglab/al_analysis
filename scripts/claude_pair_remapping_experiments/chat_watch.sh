@@ -1,8 +1,10 @@
 #!/bin/bash
-# Wait for a new chat.md entry from ANOTHER host, then print it and exit (run as a background
-# command so its exit wakes the agent). Entries start with "## <date> <time> <host>"; entries this
-# host appends are ignored, so posting to chat no longer wakes the poster. inotify does not work
-# over NFS, hence polling (every 60 s by default).
+# Wait for a new chat.md entry that THIS SESSION did not write, then print it and exit (run as a
+# background command so its exit wakes the agent). Entries start with "## <date> <time> <host>";
+# entries this session posted with chat_post.sh (fingerprints in its ledger,
+# ~/.local/state/kc_chat/<session_id>.posted) are ignored, so posting does not wake the poster,
+# while entries from other hosts and from other sessions on this host do wake it. inotify does not
+# work over NFS, hence polling (every 60 s by default). Only queue workers run this.
 # Each poll also refreshes this session's heartbeat for the queue monitor
 # (presence/<host>__<session_id>.watch next to chat.md; see monitor-server/), which is how the
 # monitor tells a session idling on the queue from one that is gone.
@@ -11,10 +13,11 @@
 f=${1:-${KC_CHAT_MD:-/local/tensor/Tom/claude_kc_remapping/chat.md}}
 interval=${2:-60}
 me=$(hostname -s)
-others() { grep -E '^## [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} ' "$f" | grep -cvE " ${me}[[:space:]]*$"; }
+here=$(cd "$(dirname "$0")" && pwd)
 
 sid=${CLAUDE_CODE_SESSION_ID:-}
 [[ $sid =~ ^[A-Za-z0-9._-]{1,128}$ ]] || sid=pid${CLAUDE_PID:-$$}
+ledger=${XDG_STATE_HOME:-$HOME/.local/state}/kc_chat/$sid.posted
 presence=$(dirname "$f")/presence
 hb=$presence/${me}__${sid}.watch
 heartbeat() {  # $1: listening | exited. Bounded by timeout, since the NAS is a hard NFS mount.
@@ -27,18 +30,13 @@ heartbeat() {  # $1: listening | exited. Bounded by timeout, since the NAS is a 
 trap 'heartbeat exited' EXIT
 trap 'exit 143' TERM INT HUP
 
-n0=$(others)
+n0=$(python3 -I "$here/chat_entries.py" count "$f")
 while true; do
   heartbeat listening
   sleep "$interval" & wait $!
-  n1=$(others)
-  if [ "$n1" -gt "$n0" ]; then
-    echo "new chat.md entries from other hosts at $(date '+%H:%M'):"
-    # print every entry after the last one seen from another host
-    awk -v me="$me" -v skip="$n0" '
-      /^## [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} / {
-        host = $NF; if (host != me) { k++ } ; show = (k > skip) }
-      show { print }' "$f"
+  if new=$(timeout -k 2 30 python3 -I "$here/chat_entries.py" new "$f" "$n0" "$ledger"); then
+    echo "new chat.md entries (not from this session) at $(date '+%H:%M'):"
+    printf '%s\n' "$new"
     exit 0
   fi
 done

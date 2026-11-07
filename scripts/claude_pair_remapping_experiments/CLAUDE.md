@@ -285,10 +285,14 @@ experiment's variants were done twice. So, in addition:
 
 File-change notifications (inotify) do not work over NFS, so monitor chat.md by polling:
 run `scripts/claude_pair_remapping_experiments/chat_watch.sh` as a background command (give the
-chat.md path as its argument if the shared directory is not mounted at /local/tensor). It polls
-every 60 s and exits, printing the new entries, only when another host adds an entry (headers
-`## <date> <time> <host>`), so your own posts do not wake you; restart it after each exit. (An
-mtime/checksum loop woke the poster on every one of its own posts.) Keep such a process running whenever you are not
+chat.md path as its argument if the shared directory is not mounted at /local/tensor). Only queue
+workers run it. It polls every 60 s and exits, printing the new entries, when chat.md gains an entry
+this session did not write: from another host or from another session on the same host (e.g. one Tom
+is using interactively). Queue workers therefore post with
+`scripts/claude_pair_remapping_experiments/chat_post.sh <<'EOF' ... EOF` (it adds the `## <date> <time>
+<host>` header and records the entry's fingerprint in the session's ledger, so the poster's own watcher
+ignores it); never append with `cat >>` from a session that runs the watcher. Other sessions may
+append directly. Restart the watcher after each exit. Keep such a process running whenever you are not
 otherwise busy, so you can copy data that other agents may request (in addition to
 other collaboration or whatever you think might be useful there). Each poll also writes this
 session's heartbeat for the queue monitor, which shows a session without one as idle but not
