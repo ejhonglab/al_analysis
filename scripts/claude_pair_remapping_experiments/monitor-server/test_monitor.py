@@ -247,3 +247,17 @@ def test_hook_reads_custom_title(dirs, tmp_path):
     r = record(shared, 's3')
     assert r['session_title'] == 'al_analysis modeling - hal'
     assert r['started_epoch'] == pytest.approx(1793838710.89)
+
+
+def test_shared_dir_on_either_mount(tmp_path, monkeypatch):
+    import presence_hook
+    monkeypatch.delenv('KC_SHARED_DIR', raising=False)
+    local, mnt = tmp_path / 'local', tmp_path / 'mnt'
+    shared = mnt / 'Tom' / 'claude_kc_remapping'
+    shared.mkdir(parents=True)
+    monkeypatch.setattr(presence_hook, 'TENSOR_MOUNTS', (str(local), str(mnt)))
+    monkeypatch.setattr(server, 'TENSOR_MOUNTS', (str(local), str(mnt)))
+    assert presence_hook.shared_dir() == str(shared)
+    assert server.default_shared() == str(shared)
+    monkeypatch.setattr(presence_hook, 'TENSOR_MOUNTS', (str(local),))
+    assert presence_hook.shared_dir() is None

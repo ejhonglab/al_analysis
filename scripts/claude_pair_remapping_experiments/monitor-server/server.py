@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LAN dashboard of the KC-remapping work queue: hosts, their Claude sessions, and claims.
 
-Reads only the shared directory (default /local/tensor/Tom/claude_kc_remapping):
+Reads only the shared directory (Tom/claude_kc_remapping under /local/tensor or /mnt/tensor):
 - presence/<host>__<session>.json, written by presence_hook.py (Claude Code hooks);
 - presence/<host>__<session>.watch, the heartbeat chat_watch.sh writes every poll;
 - <host>_status.md, each host's self-reported status (its front matter, if any);
@@ -22,7 +22,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-DEFAULT_SHARED = os.environ.get('KC_SHARED_DIR', '/local/tensor/Tom/claude_kc_remapping')
+# where the hosts mount tensor (hal: /local/tensor, an automount; atlas: /mnt/tensor)
+TENSOR_MOUNTS = ('/local/tensor', '/mnt/tensor')
+SHARED_SUBDIR = 'Tom/claude_kc_remapping'
 DEFAULT_PORT = 17486
 
 # a session in 'working' state with no hook event for this long is shown as silent (a long
@@ -57,6 +59,17 @@ DECLARED_STATES = ('working', 'running', 'idle', 'blocked', 'offline')
 CHAT_HEADER = re.compile(r'^## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) (\S+)\s*$')
 STATUS_FILE = re.compile(r'^([A-Za-z0-9][A-Za-z0-9-]*)_status\.md$')
 PRESENCE_FILE = re.compile(r'^([A-Za-z0-9-]+)__([A-Za-z0-9._-]+)\.(json|watch)$')
+
+
+def default_shared():
+    """$KC_SHARED_DIR, else the shared directory under the first tensor mount that has it."""
+    if os.environ.get('KC_SHARED_DIR'):
+        return os.environ['KC_SHARED_DIR']
+    for mount in TENSOR_MOUNTS:
+        d = os.path.join(mount, SHARED_SUBDIR)
+        if os.path.isdir(d):
+            return d
+    return os.path.join(TENSOR_MOUNTS[0], SHARED_SUBDIR)
 
 
 def local_epoch(text):
@@ -590,13 +603,15 @@ def make_handler(monitor, refresh):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('--shared', default=DEFAULT_SHARED,
-        help='shared directory (default: %(default)s)')
+    p.add_argument('--shared', default=None, help='shared directory (default: $KC_SHARED_DIR, '
+        'else Tom/claude_kc_remapping under the first of {} that has it)'.format(
+        ' and '.join(TENSOR_MOUNTS)))
     p.add_argument('--port', type=int, default=DEFAULT_PORT, help='default: %(default)s')
     p.add_argument('--bind', default='0.0.0.0', help='address to listen on (default: all)')
     p.add_argument('--refresh', type=int, default=30,
         help='seconds between page reloads, 0 for none (default: %(default)s)')
     args = p.parse_args()
+    args.shared = args.shared or default_shared()
     server = ThreadingHTTPServer((args.bind, args.port),
         make_handler(Monitor(args.shared), args.refresh))
     server.daemon_threads = True

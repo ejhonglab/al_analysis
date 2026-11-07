@@ -13,8 +13,9 @@ title changes, on lifecycle events, or when the shared copy is over a minute old
 never prints anything (stdout of some events would reach Claude's context) and always exits
 0. It is wrapped in `timeout` in the settings, since the NAS is a hard NFS mount.
 
-Environment overrides (used by the tests): KC_SHARED_DIR, KC_PRESENCE_CACHE,
-KC_PRESENCE_MATCH.
+The shared directory is $KC_SHARED_DIR, else Tom/claude_kc_remapping under the first of
+/local/tensor and /mnt/tensor that has it (nothing is written if neither does). Other
+environment overrides (used by the tests): KC_PRESENCE_CACHE, KC_PRESENCE_MATCH.
 """
 import time
 
@@ -28,7 +29,9 @@ import socket
 import sys
 from datetime import datetime
 
-SHARED_DIR = os.environ.get('KC_SHARED_DIR', '/local/tensor/Tom/claude_kc_remapping')
+# where the hosts mount tensor (hal: /local/tensor, an automount; atlas: /mnt/tensor)
+TENSOR_MOUNTS = ('/local/tensor', '/mnt/tensor')
+SHARED_SUBDIR = 'Tom/claude_kc_remapping'
 CACHE_DIR = os.environ.get('KC_PRESENCE_CACHE') or os.path.join(
     os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'),
     'claude-queue-presence')
@@ -215,6 +218,17 @@ def update(rec, d, host, now):
     return rec
 
 
+def shared_dir():
+    """$KC_SHARED_DIR, else the shared directory under the first tensor mount that has it."""
+    if os.environ.get('KC_SHARED_DIR'):
+        return os.environ['KC_SHARED_DIR']
+    for mount in TENSOR_MOUNTS:
+        d = os.path.join(mount, SHARED_SUBDIR)
+        if os.path.isdir(d):
+            return d
+    return None
+
+
 def write_atomic(path, rec):
     tmp = os.path.join(os.path.dirname(path),
         '.{}.{}.tmp'.format(os.path.basename(path), os.getpid()))
@@ -262,8 +276,11 @@ def main():
         changed = any(new.get(k) != rec.get(k)
             for k in ('state', 'session_title', 'label', 'detail', 'ended'))
         stale = T_EVENT - rec.get('shared_written_epoch', 0) >= SHARED_REFRESH_S
+        shared = None
         if changed or stale or event in LIFECYCLE_EVENTS:
-            presence = os.path.join(SHARED_DIR, 'presence')
+            shared = shared_dir()
+        if shared:
+            presence = os.path.join(shared, 'presence')
             os.makedirs(presence, exist_ok=True)
             new['shared_written_epoch'] = T_EVENT
             write_atomic(os.path.join(presence, '{}__{}.json'.format(host, sid)), new)

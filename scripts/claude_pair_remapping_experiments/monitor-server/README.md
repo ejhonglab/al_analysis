@@ -62,13 +62,13 @@ After changing `server.py`, run `systemctl --user restart claude-queue-monitor`.
 
 ## Configuration
 
-- `server.py` options: `--shared` (default `/local/tensor/Tom/claude_kc_remapping`, or
-  `$KC_SHARED_DIR`), `--port` (17486), `--bind` (0.0.0.0) and `--refresh` (page reload, s;
+- `server.py` options: `--shared` (default `$KC_SHARED_DIR`, else `Tom/claude_kc_remapping`
+  under `/local/tensor` or `/mnt/tensor`, whichever has it), `--port` (17486), `--bind` (0.0.0.0) and `--refresh` (page reload, s;
   0 disables it). Edit `ExecStart` in the unit to change them. The thresholds behind the
   session states are constants at the top of `server.py`.
 - Hook: `presence_hook.py` records sessions whose cwd or transcript is under this folder
   (`$KC_PRESENCE_MATCH`). It writes `presence/<host>__<session>.json` in the shared
-  directory (`$KC_SHARED_DIR`) and keeps a local cache in `~/.cache/claude-queue-presence/`
+  directory (found as for the server; nothing is written on a host without it) and keeps a local cache in `~/.cache/claude-queue-presence/`
   (`$KC_PRESENCE_CACHE`). Set `KC_PRESENCE_DEBUG=1` to make it raise instead of failing
   silently.
 - Heartbeat: `../chat_watch.sh` writes `presence/<host>__<session>.watch` each poll, and
