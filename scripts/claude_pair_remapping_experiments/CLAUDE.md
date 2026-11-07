@@ -121,8 +121,8 @@ job, and run one at a time if the machine is busy.
 
 ## Lab members' machines
 
-Lab members can run queue sessions on their own machines, with their own Claude accounts. Once
-per machine:
+Lab members can run queue sessions on their own machines, with their own Claude accounts
+(README.md in this folder has the steps for the machine's owner and for Tom). Once per machine:
 1. `git clone https://github.com/ejhonglab/al_analysis ~/src/kc_queue/al_analysis`, then run
    `~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh`. The queue
    gets a tree of its own, ~/src/kc_queue, so that nothing already on the machine (the owner's
