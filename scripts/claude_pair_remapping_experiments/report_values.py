@@ -15,6 +15,9 @@ separates table cells). Keys:
   `col=value[;col=value]` to select by other columns. `<column>` may list alternatives
   separated by commas; the first one the table has is used.
 - `lit:<text> # <source>`: a hand-entered value, allowed only with its source after `#`.
+- `diff:<key> -- <key>`: the first key's value minus the second's (each any key above, e.g. a
+  model's APL-on minus its APL-off statistic), computed from the unrounded values; both sources
+  are recorded.
 - `meta:generated` (the time the page is built) and `meta:last_experiment` (the latest
   completion time in the experiment index of experiment_priorities.md), as YYYY-MM-DD HH:MM.
 
@@ -168,6 +171,14 @@ def resolve(key: str) -> Resolved:
         return Resolved(key, datetime.now().strftime('%Y-%m-%d %H:%M'), dict(kind='meta', description='time this page was built'))
     if key == 'meta:last_experiment':
         return _last_experiment()
+    if key.startswith('diff:'):
+        a, sep, b = key[5:].partition(' -- ')
+        if not sep or not a.strip() or not b.strip():
+            raise KeyError(f'{key}: a difference is written diff:<key> -- <key>')
+        ra, rb = resolve(a), resolve(b)
+        return Resolved(key, float(ra.value) - float(rb.value), dict(kind='difference',
+            a=dict(key=ra.key, source=ra.source, tooltip=tooltip(ra)),
+            b=dict(key=rb.key, source=rb.source, tooltip=tooltip(rb))))
     if key.startswith('lit:'):
         text, sep, src = key[4:].partition('#')
         if not sep or not src.strip():
@@ -216,6 +227,8 @@ def tooltip(res: Resolved) -> str:
         return f"hand-entered: {s['source']}"
     if s.get('kind') == 'meta':
         return s['description']
+    if s.get('kind') == 'difference':
+        return f"difference: ({s['a']['tooltip']}) minus ({s['b']['tooltip']})"
     if s.get('kind') == 'data':
         part = f" ({'lower' if s['part'] == 'lo' else 'upper'} end of the 90 % interval)" if s.get('part') else ''
         return f"KC / ORN data: {s['name']}{part}: {s.get('definition') or ''} [data_targets.py {str(s.get('commit') or '')[:7]}]"
