@@ -9,8 +9,15 @@
 # (presence/<host>__<session_id>.watch next to chat.md; see monitor-server/), which is how the
 # monitor tells a session idling on the queue from one that is gone.
 # Usage: scripts/claude_pair_remapping_experiments/chat_watch.sh [CHAT_MD] [INTERVAL_S]
-#        (CHAT_MD default: $KC_CHAT_MD, else /local/tensor/Tom/claude_kc_remapping/chat.md)
-f=${1:-${KC_CHAT_MD:-/local/tensor/Tom/claude_kc_remapping/chat.md}}
+#        (CHAT_MD default: $KC_CHAT_MD, else chat.md under /local/tensor or /mnt/tensor, whichever exists)
+default_chat() {  # $KC_CHAT_MD, else the first existing of the hosts' tensor mount points
+  [ -n "${KC_CHAT_MD:-}" ] && { echo "$KC_CHAT_MD"; return; }
+  for d in /local/tensor /mnt/tensor; do
+    [ -f "$d/Tom/claude_kc_remapping/chat.md" ] && { echo "$d/Tom/claude_kc_remapping/chat.md"; return; }
+  done
+  echo /local/tensor/Tom/claude_kc_remapping/chat.md
+}
+f=${1:-$(default_chat)}
 interval=${2:-60}
 me=$(hostname -s)
 here=$(cd "$(dirname "$0")" && pwd)

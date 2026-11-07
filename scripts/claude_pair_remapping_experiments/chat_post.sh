@@ -6,7 +6,14 @@
 #        <entry text, without the "## <date> <time> <host>" header, which this adds>
 #        EOF
 here=$(cd "$(dirname "$0")" && pwd)
-f=${1:-${KC_CHAT_MD:-/local/tensor/Tom/claude_kc_remapping/chat.md}}
+default_chat() {  # $KC_CHAT_MD, else the first existing of the hosts' tensor mount points
+  [ -n "${KC_CHAT_MD:-}" ] && { echo "$KC_CHAT_MD"; return; }
+  for d in /local/tensor /mnt/tensor; do
+    [ -f "$d/Tom/claude_kc_remapping/chat.md" ] && { echo "$d/Tom/claude_kc_remapping/chat.md"; return; }
+  done
+  echo /local/tensor/Tom/claude_kc_remapping/chat.md
+}
+f=${1:-$(default_chat)}
 me=$(hostname -s)
 sid=${CLAUDE_CODE_SESSION_ID:-}
 [[ $sid =~ ^[A-Za-z0-9._-]{1,128}$ ]] || { echo "chat_post.sh: CLAUDE_CODE_SESSION_ID is not set; not posting" >&2; exit 2; }
