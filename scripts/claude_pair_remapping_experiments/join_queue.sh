@@ -6,7 +6,14 @@
 # What it does (it changes nothing outside ~/src, ~/.ssh and push_keys/<host>/ in the shared
 # directory, except git's user.name / user.email in ~/.gitconfig, set only if missing and you agree):
 #   1. checks that this checkout is ~/src/al_analysis and that the shared directory is mounted;
-#   2. clones olfsysm and hong2p into ~/src (anonymous HTTPS: all three repositories are public);
+#   2. lists the checkouts already in ~/src (commit, date, uncommitted changes, how far behind the
+#      lab's default branch). Queue sessions keep them on that branch (they pull, commit, push and
+#      reinstall them), so for any that were there before this script (other than an up-to-date
+#      al_analysis) it explains this and asks once whether to update them; it exits if you decline,
+#      or if one has uncommitted changes, unpushed commits on its default branch or an origin other
+#      than the lab's repository. Checkouts it cloned or you agreed to are marked with
+#      kcqueue.managed in their .git/config and left alone by later runs. Then it clones olfsysm
+#      and hong2p if missing (anonymous HTTPS: all three repositories are public);
 #   3. if git has no name or email to commit with, explains why they are needed, asks for them and
 #      saves them with git config --global (it exits if you decline: queue sessions commit);
 #   4. builds ./venv with all three installed editable (skipped with --no-install);
@@ -31,6 +38,8 @@ REPOS=(al_analysis olfsysm hong2p)
 here=$(cd "$(dirname "$0")" && pwd)
 host=$(hostname -s)
 src=$HOME/src
+lab=${KC_QUEUE_LAB_URL:-https://github.com/$ORG}  # the lab's repositories ($KC_QUEUE_LAB_URL: tests)
+args=("$@")
 
 die() { echo "join_queue.sh: $*" >&2; exit 1; }
 warn() { echo "join_queue.sh: warning: $*" >&2; }
@@ -81,6 +90,23 @@ ident_missing() {  # prints user.name / user.email if some checkout has no value
       [ -n "$(git -C "$src/$r" config --get "$k" 2>/dev/null)" ] || { echo "$k"; break; }
     done
   done
+}
+
+is_managed() {  # $1: repo name. Was the checkout cloned by this script, or agreed to here?
+  [ "$(git -C "$src/$1" config --bool --get kcqueue.managed 2>/dev/null)" = true ]
+}
+
+lab_default_branch() {  # $1: repo name. The default branch of the lab's repository, e.g. "main".
+  git ls-remote --symref "$lab/$1.git" HEAD 2>/dev/null |
+    awk '$1 == "ref:" {sub("^refs/heads/", "", $2); print $2; exit}'
+}
+
+plural() {  # $1 count, $2 noun. "1 commit", "2 commits"
+  if [ "$1" = 1 ]; then echo "1 $2"; else echo "$1 ${2}s"; fi
+}
+
+commit_line() {  # $1 checkout, $2 commit. "<hash> from <date>: <subject>"
+  git -C "$1" log -1 --format='%h from %cd: %s' --date=format:'%Y-%m-%d %H:%M' "$2" | cut -c1-90
 }
 
 origin_is_ours() {  # $1: repo name. Is ~/src/<repo>'s origin ejhonglab/<repo> on GitHub?
@@ -147,16 +173,120 @@ if [ -f "$prev_info" ] && ! grep -qx "user: $USER" "$prev_info"; then
 fi
 
 step "checkouts in $src"
-for r in olfsysm hong2p; do
-  if [ -d "$src/$r/.git" ]; then
-    echo "$r: using the existing checkout $src/$r"
-  else
-    git clone "https://github.com/$ORG/$r.git" "$src/$r" || die "cloning $r failed"
-  fi
-done
+declare -A lab_b=()
+problems=() to_update=() to_mark=() to_ask=()
 for r in "${REPOS[@]}"; do
-  origin_is_ours "$r" || warn "$src/$r: origin is $(git -C "$src/$r" remote get-url origin)," \
-    "not $ORG/$r on GitHub; leaving its push setup alone"
+  d=$src/$r
+  if [ ! -e "$d" ]; then
+    echo "$r: not in $src yet; will be cloned from $lab/$r.git"
+    continue
+  fi
+  if [ ! -d "$d/.git" ]; then
+    echo "$r: $d is not a git checkout"
+    problems+=("$d exists but is not a git checkout")
+    continue
+  fi
+  head_ref=$(git -C "$d" symbolic-ref -q --short HEAD)
+  if [ -n "$head_ref" ]; then on="branch $head_ref"; else on="detached HEAD"; fi
+  if is_managed "$r"; then
+    echo "$r: set up for the queue by an earlier run, left as it is ($on, $(commit_line "$d" HEAD))"
+    continue
+  fi
+  origin=$(git -C "$d" remote get-url origin 2>/dev/null || echo none)
+  n_mod=$(git -C "$d" status --porcelain --untracked-files=no | wc -l)
+  n_new=$(git -C "$d" ls-files --others --exclude-standard | wc -l)
+  if [ "$n_mod" -gt 0 ]; then state="uncommitted changes to $(plural "$n_mod" "tracked file")"; else state=clean; fi
+  [ "$n_new" -gt 0 ] && state+=" ($(plural "$n_new" "untracked file"))"
+  echo "$r ($d)"
+  echo "    origin:   $origin"
+  echo "    now on:   $on, $(commit_line "$d" HEAD)"
+  echo "    state:    $state"
+  if ! origin_is_ours "$r"; then
+    problems+=("$r: its origin is $origin, not the lab's repository ($ORG/$r on GitHub)")
+    continue
+  fi
+  b=$(lab_default_branch "$r")
+  if [ -z "$b" ] || ! git -C "$d" fetch -q "$lab/$r.git" "+refs/heads/$b:refs/remotes/origin/$b"; then
+    problems+=("$r: could not fetch the lab's repository ($lab/$r.git)")
+    continue
+  fi
+  lab_b[$r]=$b
+  echo "    lab:      $b, $(commit_line "$d" "origin/$b")"
+  [ "$n_mod" -gt 0 ] && problems+=("$r: uncommitted changes to tracked files (git -C $d status)")
+  if git -C "$d" show-ref -q --verify "refs/heads/$b"; then
+    n_unpushed=$(git -C "$d" rev-list --count "origin/$b..refs/heads/$b")
+    [ "$n_unpushed" -gt 0 ] && problems+=("$r: its $b has $(plural "$n_unpushed" commit) not in the lab's $b, which queue sessions would push")
+  fi
+  if [ -z "$head_ref" ] && [ -z "$(git -C "$d" for-each-ref --count=1 --contains HEAD)" ]; then
+    problems+=("$r: its detached HEAD has commits on no branch or tag, which updating would leave behind")
+  fi
+  n_behind=$(git -C "$d" rev-list --count "HEAD..origin/$b")
+  if [ "$head_ref" = "$b" ] && [ "$n_behind" = 0 ]; then
+    echo "    update:   none needed (at the lab's $b)"
+  elif [ "$head_ref" = "$b" ]; then
+    echo "    update:   fast-forward $b by $(plural "$n_behind" commit)"
+    to_update+=("$r")
+  else
+    echo "    update:   switch to $b, at the lab's latest${head_ref:+ (branch $head_ref is kept as it is)}"
+    to_update+=("$r")
+  fi
+  to_mark+=("$r")
+  # an up-to-date al_analysis is the clone the setup instructions just made
+  [ "$r" = al_analysis ] && [[ " ${to_update[*]} " != *" al_analysis "* ]] || to_ask+=("$r")
+done
+if [ ${#problems[@]} -gt 0 ]; then
+  echo
+  echo "These checkouts cannot be used for the queue as they are:"
+  printf '  - %s\n' "${problems[@]}"
+  die "no checkout was changed. Fix the above, or move those checkouts out of $src (this script" \
+    "then clones fresh copies), and re-run this."
+fi
+if [ ${#to_ask[@]} -gt 0 ]; then
+  names=$(printf '%s\n' "${to_ask[@]}" | paste -sd, | sed 's/,\([^,]*\)$/ and \1/; s/,/, /g')
+  cat <<EOF
+
+Queue sessions keep these checkouts on the lab's latest default branch: they pull, commit and push,
+and reinstall them into ~/src/al_analysis/venv (installing olfsysm rebuilds its compiled module
+inside its checkout, replacing one built there by another environment with the same Python
+version). Any other environment using them (e.g. with them installed editable) sees every change.
+To keep a fixed version for such an environment, answer n, move that checkout out of ~/src and
+reinstall it in that environment from its new place, then re-run this: it clones fresh copies.
+EOF
+  [ -t 0 ] || die "no terminal to ask on; run this in a terminal"
+  while :; do
+    read -r -p "Update $names as listed above, and let queue sessions keep updating them? (required to continue) [y/N] " ans || ans=n
+    case ${ans,,} in
+      y|yes) break ;;
+      ''|n|no) die "no checkout was changed. Move any checkout another environment relies on" \
+        "out of ~/src and re-run this, so it clones fresh copies for the queue." ;;
+      *) echo "please answer y or n" ;;
+    esac
+  done
+fi
+head_before=$(git -C "$al" rev-parse HEAD)
+for r in "${to_update[@]}"; do
+  d=$src/$r b=${lab_b[$r]}
+  if [ "$(git -C "$d" symbolic-ref -q --short HEAD)" != "$b" ]; then
+    if git -C "$d" show-ref -q --verify "refs/heads/$b"; then
+      git -C "$d" checkout -q "$b"
+    else
+      git -C "$d" checkout -q -b "$b" --track "origin/$b"
+    fi || die "could not switch $d to $b"
+  fi
+  git -C "$d" merge -q --ff-only "origin/$b" || die "could not fast-forward $d to the lab's $b"
+  echo "$r: now on $b, $(commit_line "$d" HEAD)"
+done
+for r in "${to_mark[@]}"; do
+  git -C "$src/$r" config --bool kcqueue.managed true
+done
+if [ "$(git -C "$al" rev-parse HEAD)" != "$head_before" ] && [ -x "$here/join_queue.sh" ]; then
+  echo "al_analysis was updated, so carrying on with its new copy of this script"
+  exec "$here/join_queue.sh" ${args[@]+"${args[@]}"}
+fi
+for r in olfsysm hong2p; do
+  [ -e "$src/$r" ] && continue
+  git clone "$lab/$r.git" "$src/$r" || die "cloning $r failed"
+  git -C "$src/$r" config --bool kcqueue.managed true
 done
 
 step "git name and email"

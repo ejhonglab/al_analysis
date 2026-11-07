@@ -122,9 +122,10 @@ Lab members can run queue sessions on their own machines, with their own Claude 
 per machine:
 1. `git clone https://github.com/ejhonglab/al_analysis ~/src/al_analysis` (the hooks and scripts
    expect ~/src), then run `~/src/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh`.
-   It clones olfsysm and hong2p into ~/src, asks for a git name and email if none are set (queue
-   sessions commit, so it exits if they are declined), builds ./venv with all three installed
-   editable, makes an SSH deploy key for each repository the machine cannot already push to (only pushes use it:
+   It lists any checkouts already in ~/src and asks once before updating them (queue sessions
+   keep them on the lab's latest default branch), clones olfsysm and hong2p into ~/src if missing,
+   asks for a git name and email if none are set (queue sessions commit, so it exits if they are
+   declined), builds ./venv with all three installed editable, makes an SSH deploy key for each repository the machine cannot already push to (only pushes use it:
    fetches stay anonymous HTTPS, and the machine's own GitHub logins and other repositories are
    untouched), puts the public keys in push_keys/<host>/ in the shared directory, checks that the
    experiment inputs load and a model fit runs, and prints the keys' fingerprints
