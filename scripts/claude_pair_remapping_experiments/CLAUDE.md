@@ -35,6 +35,10 @@ easier to search than the PDF.
 
 ## Code changes
 
+Only agents at the code level or above (Opus or Fable at xhigh or max; see "Permissions by
+model and effort" below) write or edit code and scripts; others only run scripts already
+committed.
+
 When implementing experiments, modify ~/src/olfsysm (the model) or the library code in
 this repo or ~/src/hong2p, and then make scripts in this folder as needed. If either is
 not on this machine, clone it to that location from the ejhonglab Github. Changes to
@@ -94,8 +98,8 @@ information only; nothing compares it.
 
 When a usage cap on Claude Fable is hit, switch to Opus 5.5 at xhigh effort and carry on
 with the same work. Subagents spawned while capped also use Opus 5.5 at xhigh (as for
-code-change subagents above). An agent not on Fable makes no editorial edits to the queue
-(see "Editorial edits" below).
+code-change subagents above). Opus at xhigh keeps the code level but not the editorial level
+(see "Permissions by model and effort" below).
 
 ## System resources
 
@@ -145,8 +149,9 @@ In the shared directory, you may also create/edit:
 - arbitrary markdown files to summarize findings / keep notes. Notes that are more
   for you than for me should be organized under a notes/ subdirectory.
 
-- proposed_experiments.md (editorial: only agents that qualify under "Editorial edits" below
-  add, rewrite or move proposals, including under the idle-host exception): add new
+- proposed_experiments.md (editorial: only agents at the editorial level, see "Permissions by
+  model and effort" below, add, rewrite or move proposals, including under the idle-host
+  exception): add new
   experiments not already in experiment_priorities.md
   here (standard entry text plus "proposed by <host>, <date time>"), and if some of these
   should be higher priority than something in experiment_priorities.md, talk me through it
@@ -182,11 +187,11 @@ run the same experiment.
 
 ### How the queue works (and what not to ask Tom)
 
-The priority list is a queue. An idle host takes the next unclaimed item that it can run
-(claims it with its Status line and index row, then starts it); if nothing runnable is
-unclaimed, an agent that qualifies under "Editorial edits" below moves a proposal into the list
-under the idle-host rule and starts that, and any other agent does what that section says for
-an idle host. A
+The priority list is a queue. An idle host takes the next unclaimed item that it can run and
+that its level allows (claims it with its Status line and index row, then starts it); if
+nothing runnable is unclaimed, an agent at the editorial level ("Permissions by model and
+effort" below) moves a proposal into the list under the idle-host rule and starts that, and any
+other agent does what that section says for an idle host. A
 blocked item (data not on hand, code missing) says in its Status line exactly what unblocks
 it, and an idle host may take the unblocking itself as a work claim (a data pull, a
 connectome query, a code change); items whose unblocking needs something only Tom can
@@ -196,13 +201,50 @@ to Tom with offers or choices about queued work ("E9 or the coverage check?"): w
 is determined by the list and these rules, and the interface turns such closing lines into
 suggestions he does not need to see. Raise only decisions that are genuinely his.
 
-### Editorial edits (Fable at xhigh or max only)
+### Permissions by model and effort
 
-Some edits to the queue are editorial. Only an agent running on a Claude Fable model (your
-system prompt names your model; Fable IDs start with `claude-fable-`) at effort xhigh or max
-(`echo $CLAUDE_EFFORT`) makes them. Check both when you are about to make one, since a session
-can lose either (the switch to Opus when the Fable usage cap is hit, an /effort change).
-Subagents never make them; they report to the agent that spawned them. Editorial edits are:
+What an agent may do depends on its model (your system prompt names it: Fable IDs start with
+`claude-fable-`, Opus IDs with `claude-opus-`) and its effort level (`echo $CLAUDE_EFFORT`).
+Check both when you are about to use a permission, since either can change mid-session (the
+switch to Opus when the Fable usage cap is hit, an /effort change). A subagent has the level of
+its own model and effort, except that it never makes editorial edits (it reports to the agent
+that spawned it). Each level may also do everything the levels below it may do:
+
+| level | model and effort | adds |
+|---|---|---|
+| editorial | Fable, at xhigh or max | editorial edits (below) |
+| code | Opus or Fable, at xhigh or max | writing and editing code and scripts; writing up experiments |
+| run-only | any other model, or any model below xhigh | running scripts other agents wrote, copying their outputs to the shared directory, claims, status and chat |
+
+Joining the queue. When a session first joins the queue (before its first claim or its first
+chat_watch.sh), it tells me in its reply, in a few lines: its model and effort, its level and
+what that limits in the work it will take, and the three levels in one short line each, with no
+paths or file-level detail (e.g. "Fable at xhigh or max: everything, including adding, rewriting
+and reordering experiments. Opus or Fable at xhigh or max: code, scripts and write-ups, but not
+the experiment list. Anything else: runs existing scripts and hands the outputs over for
+write-up."). It tells me again if its level changes mid-session.
+
+Code and write-ups (code level and up): creating or editing any script or code (this folder,
+the rest of al_analysis, hong2p, olfsysm, the monitor and hooks), committing it, and spawning
+code-change subagents ("Code changes" above); and writing up experiments ("Completing an
+experiment" below: the interpretation markdown, the experiment's artifact, the summary and the
+report copies).
+
+Run-only agents may claim and run an experiment, or some of its variants, whose scripts are
+already written, committed and pushed, with the parameters its entry or the script's author
+gives; pull the repositories and reinstall the packages those scripts need (`pip install -e` of
+a clean checkout); copy the outputs to the shared directory (its results/ folder, and the
+model-output archive with `archive_model_outputs.py`) and list anything left local in the host's
+local_data file; take unblocking work only when it needs no new code (copying data that already
+exists); and keep claims, Status lines, the status file and chat. They do not create or edit
+scripts or code, not even a one-line fix, and do not write up results. When a run finishes or
+fails, the agent writes in the experiment's Status what ran, where the outputs are and what
+remains ("outputs copied, needs write-up", or "crashed: <error>, needs a code fix"), and posts in
+chat.md "For a code-level host: ..."; an agent at the code level or above claims the write-up or
+the fix and finishes the experiment. A run-only agent with nothing runnable says in chat.md that
+it is idle and sets `state: idle` in its status file.
+
+Editorial edits (editorial level only) are:
 - adding, rewriting or moving proposals in proposed_experiments.md, including moving them into
   experiment_priorities.md under the idle-host exception, and the report-list append and
   report artifact republish that go with adding experiments ("Report artifact" below);
@@ -210,27 +252,26 @@ Subagents never make them; they report to the agent that spawned them. Editorial
   experiment_priorities.md, proposed_experiments.md or the report;
 - changing the order of the priority list or of the Completed list.
 
-Every agent may still do the operational work: claim and release experiments and work
-(Status lines, index rows, Work claims rows), note probes in a Status, keep its status file
-and chat posts, and complete an experiment it ran ("Completing an experiment" below: notes,
-artifact, summary, archive). An agent that does not qualify completes an experiment without
-choosing its place in the Completed list: it adds the reference to the experiment's markdown
-to the entry, moves the entry (otherwise unchanged) to the end of the "Awaiting placement in
-Completed" section of experiment_priorities.md, and writes `(staged)` where the index row
-would give `(#k)`.
+Claiming and releasing experiments and work (Status lines, index rows, Work claims rows),
+noting probes in a Status, the status file and chat posts are not editorial. An agent at the
+code level completes an experiment without choosing its place in the Completed list: it adds
+the reference to the experiment's markdown to the entry, moves the entry (otherwise unchanged)
+to the end of the "Awaiting placement in Completed" section of experiment_priorities.md, and
+writes `(staged)` where the index row would give `(#k)`.
 
-A qualifying agent that takes the lock on experiment_priorities.md for any reason first
-empties that section: it moves each staged entry to its place in the Completed list (ordered
-as that list always is, experiments we learned more from first), renumbers the list, and
-updates the `(#k)` of every index row whose position changed, all in the same edit. A
-qualifying agent that completes an experiment places it directly.
+An agent at the editorial level that takes the lock on experiment_priorities.md for any reason
+first empties that section: it moves each staged entry to its place in the Completed list
+(ordered as that list always is, experiments we learned more from first), renumbers the list,
+and updates the `(#k)` of every index row whose position changed, all in the same edit. An
+agent at the editorial level that completes an experiment places it directly.
 
-An agent that does not qualify and has a proposal, a correction to an experiment's text, or a
-case for reordering posts it in chat.md, starting "For a Fable host:", with the text it would
-have written; a qualifying agent folds it in (or replies why not) and says so in chat. When a
-non-qualifying agent's host would otherwise be idle, the idle-host exception does not apply to
-it: it takes any unblocking work claim the list offers, and otherwise says in chat.md that it is
-idle and sets `state: idle` in its status file until a qualifying agent moves something in.
+An agent below the editorial level that has a proposal, a correction to an experiment's text,
+or a case for reordering posts it in chat.md, starting "For a Fable host:", with the text it
+would have written; an agent at the editorial level folds it in (or replies why not) and says so
+in chat. When such an agent's host would otherwise be idle, the idle-host exception does not
+apply to it: it takes any unblocking work claim the list offers that its level allows, and
+otherwise says in chat.md that it is idle and sets `state: idle` in its status file until an
+agent at the editorial level moves something in.
 
 ### Claims, probes and status
 
@@ -373,7 +414,9 @@ depth (e.g. 4), and start with the Tom, Remy, Yang, Remy_Yang, MB_Model, MB_team
 
 ## Completing an experiment
 
-When you complete an experiment and its interpretation:
+Completing an experiment is write-up work for an agent at the code level or above ("Permissions
+by model and effort" above); a run-only agent copies the outputs and hands over as that section
+says. When you complete an experiment and its interpretation:
 1. write a new markdown file in the shared folder with interpretation (longer form than
    in the summary in the experiment priorities entries above)
 
@@ -381,9 +424,9 @@ When you complete an experiment and its interpretation:
    markdown, then move the experiment entry to another numbered list in a "Completed"
    section at the bottom of the file (renumber remaining entries in priority list as you
    do this, but not their E<n> IDs). Entries in this list should be ordered with
-   experiments we learned more from presented earlier. An agent that does not qualify under
-   "Editorial edits" moves the entry to "Awaiting placement in Completed" instead, with
-   `(staged)` in its index row, and a qualifying agent places it later.
+   experiments we learned more from presented earlier. An agent below the editorial level
+   moves the entry to "Awaiting placement in Completed" instead, with `(staged)` in its index
+   row, and an agent at the editorial level places it later.
 
 3. make an artifact summarizing the findings of the experiment (with goals up top, and
    next steps summarized at the bottom) (this could just be taken directly from or
