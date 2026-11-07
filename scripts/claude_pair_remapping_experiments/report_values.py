@@ -140,14 +140,15 @@ def _resolve_table(key: str) -> Resolved:
 
 
 def _last_experiment() -> Resolved:
-    """Latest completion time in the experiment index (rows `| E<n> | ... | MM-DD HH:MM (#k) |`)."""
+    """Latest completion time in the experiment index (rows `| E<n> | ... | MM-DD HH:MM (#k) |`,
+    or `(staged)` in place of `(#k)` before a Fable agent places the entry in the Completed list)."""
     import re
     from datetime import datetime
     path = H.shared_dir() / 'experiment_priorities.md'
     year = datetime.now().year
     best = None
     for line in path.read_text().split('\n'):
-        m = re.match(r'^\| (E\d+) \|.*\| completed \|.*\| (\d{2})-(\d{2}) (\d{2}):(\d{2}) \(#\d+\) \|\s*$', line)
+        m = re.match(r'^\| (E\d+) \|.*\| completed \|.*\| (\d{2})-(\d{2}) (\d{2}):(\d{2}) \((?:#\d+|staged)\) \|\s*$', line)
         if m:
             t = datetime(year, int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)))
             if best is None or t > best[0]:

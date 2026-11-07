@@ -94,7 +94,8 @@ information only; nothing compares it.
 
 When a usage cap on Claude Fable is hit, switch to Opus 5.5 at xhigh effort and carry on
 with the same work. Subagents spawned while capped also use Opus 5.5 at xhigh (as for
-code-change subagents above).
+code-change subagents above). An agent not on Fable makes no editorial edits to the queue
+(see "Editorial edits" below).
 
 ## System resources
 
@@ -144,7 +145,9 @@ In the shared directory, you may also create/edit:
 - arbitrary markdown files to summarize findings / keep notes. Notes that are more
   for you than for me should be organized under a notes/ subdirectory.
 
-- proposed_experiments.md: add new experiments not already in experiment_priorities.md
+- proposed_experiments.md (editorial: only agents that qualify under "Editorial edits" below
+  add, rewrite or move proposals, including under the idle-host exception): add new
+  experiments not already in experiment_priorities.md
   here (standard entry text plus "proposed by <host>, <date time>"), and if some of these
   should be higher priority than something in experiment_priorities.md, talk me through it
   and then move those items into experiment_priorities.md after getting my OK. This file
@@ -163,7 +166,8 @@ In the shared directory, you may also create/edit:
 - The experiment index: experiment_priorities.md starts with a table with one row per
   experiment ID (name, state: proposed / approved / running / completed, host, when and by
   whom it was proposed, when and how it was approved or moved into the list, when it was
-  started, when it was completed and its position in the Completed list). Update the row at
+  started, when it was completed and its position in the Completed list, `(#k)`, or
+  `(staged)` while it waits in "Awaiting placement in Completed"). Update the row at
   every state change, under the lock, in the same edit that changes the entry or the
   status line; it is the record of what happened when (for the reports) and the one place
   to see what is running and what awaits my OK.
@@ -180,7 +184,9 @@ run the same experiment.
 
 The priority list is a queue. An idle host takes the next unclaimed item that it can run
 (claims it with its Status line and index row, then starts it); if nothing runnable is
-unclaimed, it moves a proposal into the list under the idle-host rule and starts that. A
+unclaimed, an agent that qualifies under "Editorial edits" below moves a proposal into the list
+under the idle-host rule and starts that, and any other agent does what that section says for
+an idle host. A
 blocked item (data not on hand, code missing) says in its Status line exactly what unblocks
 it, and an idle host may take the unblocking itself as a work claim (a data pull, a
 connectome query, a code change); items whose unblocking needs something only Tom can
@@ -189,6 +195,42 @@ hosts' work) say so, and that is what gets raised with him. Consequently, do not
 to Tom with offers or choices about queued work ("E9 or the coverage check?"): what runs next
 is determined by the list and these rules, and the interface turns such closing lines into
 suggestions he does not need to see. Raise only decisions that are genuinely his.
+
+### Editorial edits (Fable at xhigh or max only)
+
+Some edits to the queue are editorial. Only an agent running on a Claude Fable model (your
+system prompt names your model; Fable IDs start with `claude-fable-`) at effort xhigh or max
+(`echo $CLAUDE_EFFORT`) makes them. Check both when you are about to make one, since a session
+can lose either (the switch to Opus when the Fable usage cap is hit, an /effort change).
+Subagents never make them; they report to the agent that spawned them. Editorial edits are:
+- adding, rewriting or moving proposals in proposed_experiments.md, including moving them into
+  experiment_priorities.md under the idle-host exception, and the report-list append and
+  report artifact republish that go with adding experiments ("Report artifact" below);
+- rewriting the text that describes any experiment (goal, design, outcomes, requirements) in
+  experiment_priorities.md, proposed_experiments.md or the report;
+- changing the order of the priority list or of the Completed list.
+
+Every agent may still do the operational work: claim and release experiments and work
+(Status lines, index rows, Work claims rows), note probes in a Status, keep its status file
+and chat posts, and complete an experiment it ran ("Completing an experiment" below: notes,
+artifact, summary, archive). An agent that does not qualify completes an experiment without
+choosing its place in the Completed list: it adds the reference to the experiment's markdown
+to the entry, moves the entry (otherwise unchanged) to the end of the "Awaiting placement in
+Completed" section of experiment_priorities.md, and writes `(staged)` where the index row
+would give `(#k)`.
+
+A qualifying agent that takes the lock on experiment_priorities.md for any reason first
+empties that section: it moves each staged entry to its place in the Completed list (ordered
+as that list always is, experiments we learned more from first), renumbers the list, and
+updates the `(#k)` of every index row whose position changed, all in the same edit. A
+qualifying agent that completes an experiment places it directly.
+
+An agent that does not qualify and has a proposal, a correction to an experiment's text, or a
+case for reordering posts it in chat.md, starting "For a Fable host:", with the text it would
+have written; a qualifying agent folds it in (or replies why not) and says so in chat. When a
+non-qualifying agent's host would otherwise be idle, the idle-host exception does not apply to
+it: it takes any unblocking work claim the list offers, and otherwise says in chat.md that it is
+idle and sets `state: idle` in its status file until a qualifying agent moves something in.
 
 ### Claims, probes and status
 
@@ -335,7 +377,9 @@ When you complete an experiment and its interpretation:
    markdown, then move the experiment entry to another numbered list in a "Completed"
    section at the bottom of the file (renumber remaining entries in priority list as you
    do this, but not their E<n> IDs). Entries in this list should be ordered with
-   experiments we learned more from presented earlier.
+   experiments we learned more from presented earlier. An agent that does not qualify under
+   "Editorial edits" moves the entry to "Awaiting placement in Completed" instead, with
+   `(staged)` in its index row, and a qualifying agent places it later.
 
 3. make an artifact summarizing the findings of the experiment (with goals up top, and
    next steps summarized at the bottom) (this could just be taken directly from or
@@ -368,7 +412,7 @@ header, and add a row to the folder's README table. Keep working notes in `notes
 
 When I later ask you to summarize all findings (the final report over all experiments),
 include every file in `add_to_reports/`, together with the per-experiment `E<n>_*.md`
-files and the Completed list in experiment_priorities.md.
+files and the Completed list in experiment_priorities.md (place any staged entries first).
 
 ## Writing results (notes, chat, reports, replies to me)
 
