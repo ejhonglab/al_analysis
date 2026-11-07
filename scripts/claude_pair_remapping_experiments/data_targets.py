@@ -126,10 +126,21 @@ def build() -> dict:
                 'read from E7_confound_controls/B_blocks_graded.csv', ['e7_blocks'], ci=(row[('excess_dist', 'lo')], row[('excess_dist', 'hi')]))
 
     ref = H.reference_pairs()
+
+    def vcf_alignment(means):
+        # natural-source alignment of each genotype's 66-pair residual (the recording means
+        # reproduce shared12_pairs.csv's kc_ctrl / kc_tnt to 1e-8), and control minus TNT
+        out = {g: H.compare_to_references(means[g].reindex(ref.index), ref)['spearman_resid_vs_vcf_hyp'] for g in ('TNT3c', 'TNT')}
+        return {'ctrl': out['TNT3c'], 'tnt': out['TNT'], 'diff': out['TNT3c'] - out['TNT']}
+    vboot = H.bootstrap_recordings(vcf_alignment, recs, n_boot=1000, seed=0)
+    vfn = 'harness.compare_to_references on the recording means of the 66 pairs; 90 % interval: harness.bootstrap_recordings (1000 resamples of recordings, seed 0)'
     for col, name in (('kc_ctrl', 'ctrl'), ('kc_tnt', 'tnt')):
         st = H.compare_to_references(ref[col], ref)
         add(f'{name}_struct_wt', st['spearman_resid_vs_remap_wt'], 'structure beyond the ORN input vs wild-type somata: ρ of the 66-pair residual around the linear ORN prediction with the same residual of Remy\'s wild-type KC somata', 'harness.compare_to_references', ['ref66'])
-        add(f'{name}_vcf', st['spearman_resid_vs_vcf_hyp'], 'natural-source alignment: ρ of the 66-pair residual around the linear ORN prediction with the hyperbolic natural-source distances', 'harness.compare_to_references', ['ref66'])
+        add(f'{name}_vcf', st['spearman_resid_vs_vcf_hyp'], 'natural-source alignment: ρ of the 66-pair residual around the linear ORN prediction with the hyperbolic natural-source distances', vfn,
+            ['ref66', 'kc_rdms'], ci=vboot.loc[name, ['lo', 'hi']])
+    add('vcf_apl_effect', vboot.loc['diff', 'observed'], 'natural-source alignment, control flies minus APL output blocked (TNT): what APL output adds to it', vfn,
+        ['ref66', 'kc_rdms'], ci=vboot.loc['diff', ['lo', 'hi']])
 
     for col, name, lab in (('kc_ctrl', 'ctrl', 'control flies'), ('kc_tnt', 'tnt', 'APL output blocked (TNT)')):
         _, fit = H.linear_resid(ref[col], ref['orn'])
