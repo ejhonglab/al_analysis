@@ -4,18 +4,20 @@
 # it skips what is already done, so re-run it to finish an interrupted setup.
 #
 # What it does (it changes nothing outside ~/src, ~/.ssh and push_keys/<host>/ in the shared
-# directory):
+# directory, except git's user.name / user.email in ~/.gitconfig, set only if missing and you agree):
 #   1. checks that this checkout is ~/src/al_analysis and that the shared directory is mounted;
 #   2. clones olfsysm and hong2p into ~/src (anonymous HTTPS: all three repositories are public);
-#   3. builds ./venv with all three installed editable (skipped with --no-install);
-#   4. for each repository this machine cannot already push to, makes an SSH deploy key
+#   3. if git has no name or email to commit with, explains why they are needed, asks for them and
+#      saves them with git config --global (it exits if you decline: queue sessions commit);
+#   4. builds ./venv with all three installed editable (skipped with --no-install);
+#   5. for each repository this machine cannot already push to, makes an SSH deploy key
 #      (~/.ssh/kc_queue_<repo>) and sets up that checkout to fetch over HTTPS and push over SSH
 #      with that key only (remote.origin.pushurl and core.sshCommand in the checkout's own
 #      .git/config, so the machine's other repositories and GitHub logins are untouched);
-#   5. copies the public keys to push_keys/<host>/ in the shared directory and prints their
+#   6. copies the public keys to push_keys/<host>/ in the shared directory and prints their
 #      fingerprints, to send to Tom (by Slack, email or in person, not through the shared
 #      directory) so he can add them with approve_push_keys.sh <host>;
-#   6. checks that the experiment inputs load and a model fit runs, and runs the provenance tests
+#   7. checks that the experiment inputs load and a model fit runs, and runs the provenance tests
 #      (seconds; skipped with --no-tests). --full-tests also runs the whole QUICK=1 test suite,
 #      which took 2.5 h on hal.
 #
@@ -70,6 +72,15 @@ default_branch() {  # $1: checkout. Prints e.g. "main".
     { git -C "$1" remote set-head origin --auto >/dev/null 2>&1 &&
       b=$(git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); } || return 1
   echo "${b#origin/}"
+}
+
+ident_missing() {  # prints user.name / user.email if some checkout has no value for it
+  local k r
+  for k in user.name user.email; do
+    for r in "${REPOS[@]}"; do
+      [ -n "$(git -C "$src/$r" config --get "$k" 2>/dev/null)" ] || { echo "$k"; break; }
+    done
+  done
 }
 
 origin_is_ours() {  # $1: repo name. Is ~/src/<repo>'s origin ejhonglab/<repo> on GitHub?
@@ -128,10 +139,6 @@ done
 [ ${#missing[@]} = 0 ] || die "missing commands: ${missing[*]}"
 command -v claude >/dev/null 2>&1 || warn "Claude Code (claude) is not installed yet; see" \
   "https://code.claude.com/docs"
-if [ -z "$(git config --get user.email)" ] || [ -z "$(git config --get user.name)" ]; then
-  warn "git has no user.name / user.email, so commits will fail. Set them with" \
-    "git config --global user.name '<name>' and git config --global user.email '<email>'."
-fi
 prev_info=$shared/push_keys/$host/info.txt
 if [ -f "$prev_info" ] && ! grep -qx "user: $USER" "$prev_info"; then
   die "another machine (or user) already joined as '$host' ($prev_info). Host names identify" \
@@ -151,6 +158,50 @@ for r in "${REPOS[@]}"; do
   origin_is_ours "$r" || warn "$src/$r: origin is $(git -C "$src/$r" remote get-url origin)," \
     "not $ORG/$r on GitHub; leaving its push setup alone"
 done
+
+step "git name and email"
+mapfile -t no_ident < <(ident_missing)
+if [ ${#no_ident[@]} -gt 0 ]; then
+  what=$(printf '%s\n' "${no_ident[@]}" | sed 's/^user\.//' | paste -sd/ | sed 's|/| and |')
+  howto="set them with git config --global user.name '<name>' and git config --global user.email '<email>', then re-run this"
+  cat <<EOF
+git has no $what set.
+Queue sessions commit their code and results and push them to the lab's GitHub repositories, and
+git needs a name and an email for every commit: without them it refuses to commit, or makes up an
+address from this machine's host name. Both are public on every commit pushed. To have the commits
+linked to your GitHub profile, use an email address on your GitHub account (or the noreply address
+under GitHub's Settings > Emails). They are saved in ~/.gitconfig, so other repositories on this
+account use them too.
+EOF
+  [ -t 0 ] || die "no terminal to ask on; $howto"
+  while :; do
+    read -r -p "Set your git $what now? (required to continue) [y/N] " ans || ans=n
+    case ${ans,,} in
+      y|yes) break ;;
+      ''|n|no) die "a git name and email are required; $howto" ;;
+      *) echo "please answer y or n" ;;
+    esac
+  done
+  email_re='^[^[:space:]@<>]+@[^[:space:]@<>]+\.[^[:space:]@<>]+$'
+  for k in "${no_ident[@]}"; do
+    while :; do
+      if [ $k = user.name ]; then
+        read -r -p "Your name, as shown on commits (e.g. Jane Doe): " v || die "no name entered"
+        [ -n "$v" ] && [[ $v != *[\<\>]* ]] && break
+        echo "the name cannot be empty or contain < or >"
+      else
+        read -r -p "Your email (ideally one on your GitHub account): " v || die "no email entered"
+        [[ $v =~ $email_re ]] && break
+        echo "that does not look like an email address"
+      fi
+    done
+    git config --global "$k" "$v" || die "could not save $k in ~/.gitconfig"
+  done
+  mapfile -t no_ident < <(ident_missing)
+  [ ${#no_ident[@]} = 0 ] || die "some checkout still has no ${no_ident[*]}: its own .git/config" \
+    "overrides ~/.gitconfig there"
+fi
+echo "commits will be by: $(git -C "$al" config user.name) <$(git -C "$al" config user.email)>"
 
 if [ $install = 1 ]; then
   step "Python environment ($al/venv)"
