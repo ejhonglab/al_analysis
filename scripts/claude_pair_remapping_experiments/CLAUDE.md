@@ -35,7 +35,7 @@ easier to search than the PDF.
 
 ## Code changes
 
-Only agents at the code level or above (Opus or Fable at xhigh or max; see "Permissions by
+Only agents at the code level or above (Opus >=5.5 or Fable at xhigh or max; see "Permissions by
 model and effort" below) write or edit code and scripts; others only run scripts already
 committed.
 
@@ -56,7 +56,7 @@ tests (with QUICK=1, see the al_analysis CLAUDE.md) before committing model chan
 
 If multiple experiments would benefit from an overlapping set of changes to any library
 code, start with some of those code changes, regardless of which experiments you are
-running first. You may spawn up to 3 subagents (Opus 5.5, at xhigh effort) to work on
+running first. You may spawn up to 3 subagents (Opus >=5.5, at xhigh effort) to work on
 code changes necessary for any future experiments (prioritize code changes for
 experiments with higher priority), so they can work in parallel with ongoing experiments
 (which may take a non-negligible amount of simulation time). Commit and push as code
@@ -96,9 +96,9 @@ information only; nothing compares it.
 
 ## Model and usage caps
 
-When a usage cap on Claude Fable is hit, switch to Opus 5.5 at xhigh effort and carry on
+When a usage cap on Claude Fable is hit, switch to Opus >=5.5 at xhigh effort and carry on
 with the same work. Subagents spawned while capped also use Opus 5.5 at xhigh (as for
-code-change subagents above). Opus at xhigh keeps the code level but not the editorial level
+code-change subagents above). Opus >=5.5 at xhigh keeps the code level but not the editorial level
 (see "Permissions by model and effort" below).
 
 ## System resources
@@ -206,21 +206,21 @@ suggestions he does not need to see. Raise only decisions that are genuinely his
 What an agent may do depends on its model (your system prompt names it: Fable IDs start with
 `claude-fable-`, Opus IDs with `claude-opus-`) and its effort level (`echo $CLAUDE_EFFORT`).
 Check both when you are about to use a permission, since either can change mid-session (the
-switch to Opus when the Fable usage cap is hit, an /effort change). A subagent has the level of
+switch to Opus >=5.5 when the Fable usage cap is hit, an /effort change). A subagent has the level of
 its own model and effort, except that it never makes editorial edits (it reports to the agent
 that spawned it). Each level may also do everything the levels below it may do:
 
 | level | model and effort | adds |
 |---|---|---|
 | editorial | Fable, at xhigh or max | editorial edits (below) |
-| code | Opus or Fable, at xhigh or max | writing and editing code and scripts; writing up experiments |
+| code | Opus >=5.5 or Fable, at xhigh or max | writing and editing code and scripts; writing up experiments |
 | run-only | any other model, or any model below xhigh | running scripts other agents wrote, copying their outputs to the shared directory, claims, status and chat |
 
 Joining the queue. When a session first joins the queue (before its first claim or its first
 chat_watch.sh), it tells me in its reply, in a few lines: its model and effort, its level and
 what that limits in the work it will take, and the three levels in one short line each, with no
 paths or file-level detail (e.g. "Fable at xhigh or max: everything, including adding, rewriting
-and reordering experiments. Opus or Fable at xhigh or max: code, scripts and write-ups, but not
+and reordering experiments. Opus >=5.5 or Fable at xhigh or max: code, scripts and write-ups, but not
 the experiment list. Anything else: runs existing scripts and hands the outputs over for
 write-up."). It tells me again if its level changes mid-session.
 
