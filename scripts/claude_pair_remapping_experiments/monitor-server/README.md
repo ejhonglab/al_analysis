@@ -44,7 +44,10 @@ git -C ~/src/dotfiles pull
 ```
 The dotfiles' `claude_settings.json` (linked as `~/.claude/settings.json`) registers
 `presence_hook.py` for the session and tool events. Running sessions reload the settings, so
-no restart is needed.
+no restart is needed. On machines without Tom's dotfiles (lab members' hosts set up with
+`join_queue.sh`), `.claude/settings.json` in the experiments folder registers the same hooks
+for sessions started there; its entries are identical to the dotfiles' ones, so where both
+apply each hook runs once. Keep the two identical when changing either.
 
 **On the host serving the page (hal)**, install the systemd user service and start it:
 ```

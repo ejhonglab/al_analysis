@@ -52,3 +52,7 @@ chemfig/
 *.aux
 *.old
 .tox/
+
+# Claude Code per-machine state (the experiments folder's .claude/settings.json is shared)
+**/.claude/scheduled_tasks.lock
+**/.claude/settings.local.json

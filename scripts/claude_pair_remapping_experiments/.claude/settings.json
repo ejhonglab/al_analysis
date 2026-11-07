@@ -1,0 +1,145 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/session_title_hook.sh\"; [ -x \"$f\" ] && exec \"$f\"; cat >/dev/null; exit 0",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/presence_hook.py\"; [ -f \"$f\" ] && exec timeout -k 2 15 python3 -I \"$f\"; cat >/dev/null; exit 0",
+            "async": true,
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
