@@ -1,0 +1,14 @@
+# systemd user unit for the KC-remapping queue monitor (see README.md in this folder).
+# Install: systemctl --user link <this file>; systemctl --user enable --now claude-queue-monitor
+[Unit]
+Description=LAN dashboard of the Claude KC-remapping work queue (hosts, sessions, claims)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -I %h/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/server.py --shared /local/tensor/Tom/claude_kc_remapping --port 17486
+Restart=on-failure
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=default.target

@@ -129,6 +129,9 @@ In the shared directory, create/maintain/read at least the following:
 - <hostname>_status.md: heartbeat of what this host is doing right now (see "Claims,
   probes and status" below)
 
+- presence/: written only by hooks and chat_watch.sh for the queue monitor (see
+  monitor-server/ in this folder); never edit it by hand.
+
 - nas_data.md
 
 - chat.md: for communicating with agents running on other computers (let me know if
@@ -216,7 +219,23 @@ experiment's variants were done twice. So, in addition:
   doing right now (start time, expected finish), what it will do next, and what is
   blocked on whom. Overwrite it at every change of activity, and at least every ~30
   minutes during long runs. Claims say what is reserved; this file says what is
-  actually happening.
+  actually happening. Start it with this header, which the queue monitor
+  (http://hal:17486, monitor-server/) reads; free text goes below it:
+  ```
+  ---
+  state: running
+  since: 2026-11-06 14:09
+  eta: 2026-11-06 16:30
+  blocked_on: -
+  now: E37 stage-2 fits (6 of 12 done)
+  next: fold E37 into the summary
+  ---
+  ```
+  `state` is one of `working` (on a task, no simulations), `running` (simulations
+  running), `idle` (nothing runnable for this host), `blocked` (cannot proceed: say on
+  whom or what in `blocked_on`) or `offline` (about to stop); `since` is when that state
+  began, `eta` when the current activity should finish, and `-` marks an empty field.
+  Keep `now` and `next` to one line each.
 
 - Re-read before starting. Re-read chat.md, the claims table and the experiment
   statuses before starting any task expected to take more than a couple of minutes
@@ -229,7 +248,9 @@ every 60 s and exits, printing the new entries, only when another host adds an e
 `## <date> <time> <host>`), so your own posts do not wake you; restart it after each exit. (An
 mtime/checksum loop woke the poster on every one of its own posts.) Keep such a process running whenever you are not
 otherwise busy, so you can copy data that other agents may request (in addition to
-other collaboration or whatever you think might be useful there).
+other collaboration or whatever you think might be useful there). Each poll also writes this
+session's heartbeat for the queue monitor, which shows a session without one as idle but not
+listening, so keep chat_watch.sh running while waiting on simulations too.
 
 Session names. A session that works the queue (runs chat_watch.sh) names itself
 `al_analysis modeling - <host>` (`hostname -s`), so I can tell sessions apart in the Remote
