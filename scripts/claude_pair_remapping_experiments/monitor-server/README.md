@@ -12,12 +12,13 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
 (`Tom/claude_kc_remapping`, and where the serving host mounts it).
 
 - **Hosts**: one row per host. It shows the most urgent state of its sessions, the model and
-  effort level of each of its live sessions (e.g. "Opus 5.5 · xhigh"; together they set what the
-  session may do on the queue, see "Permissions by model and effort" in `../CLAUDE.md`; greyed
-  if the session is not on the queue, hover for the session names), the status the
-  host's agent last declared (with what it is doing, ETA, and what it is blocked on), any
-  experiments it runs and work it has claimed, when it last posted to chat.md, and when it
-  joined. Click "status file" to see the whole `<host>_status.md`.
+  effort level of each of its live sessions (e.g. "Opus 5.5" over "xhigh"; together they set
+  what the session may do on the queue, see "Permissions by model and effort" in
+  `../CLAUDE.md`; greyed if the session is not on the queue, hover for the session names), the
+  status the host's agent last declared (with what it is doing, ETA, and what it is blocked
+  on), any experiments it runs and work it has claimed, and when its status file was updated,
+  it last posted to chat.md ("last chat") and it joined, each with how long ago below. Click
+  "status file" to see the whole `<host>_status.md`.
 - **Claude sessions**: one row per session, from the hooks, with its model and effort level:
 
   | state | meaning |

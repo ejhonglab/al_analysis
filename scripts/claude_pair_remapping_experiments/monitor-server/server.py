@@ -287,6 +287,7 @@ def session_view(rec, watch, now):
     s['queue'] = (bool(watch) or bool(rec.get('label'))
         or (rec.get('session_title') or '').startswith(QUEUE_TITLE_PREFIX))
     s['name'] = rec.get('session_title') or rec.get('label') or (rec.get('session_id') or '?')[:8]
+    s['model_name'] = model_name(rec.get('model'))
     s['model_label'] = model_label(rec.get('model'), rec.get('effort'))
     hide_after = HIDE_ENDED_S if view == 'ended' else HIDE_S
     s['hidden'] = now - activity > hide_after
@@ -331,17 +332,20 @@ def host_models(sessions):
     """Distinct models (with effort level) of a host's live sessions, queue sessions first.
 
     Returns:
-        list of {'label', 'sessions' (names), 'queue' (any of them on the queue)}.
+        list of {'label' ('Opus 5.5 · xhigh'), 'model' ('Opus 5.5'), 'effort', 'sessions'
+        (names), 'queue' (any of them on the queue)}.
     """
     groups = {}
     for s in sessions:
         if s['view'] in ('ended', 'gone'):
             continue
-        g = groups.setdefault(s.get('model_label') or 'model unknown',
-            {'sessions': [], 'queue': False})
+        name = s.get('model_name') or 'model unknown'
+        effort = s.get('effort') if s.get('model_name') else None
+        g = groups.setdefault((name, effort), {'sessions': [], 'queue': False})
         g['sessions'].append(s['name'])
         g['queue'] = g['queue'] or s['queue']
-    out = [dict(label=k, **g) for k, g in groups.items()]
+    out = [dict(label='{} \u00b7 {}'.format(*k) if k[1] else k[0], model=k[0], effort=k[1], **g)
+        for k, g in groups.items()]
     out.sort(key=lambda g: (not g['queue'], g['label'] == 'model unknown', -len(g['sessions'])))
     return out
 
@@ -457,6 +461,7 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: .8rem; margin: 6
 .legend { color: var(--muted); font-size: .82rem; margin-top: 8px; }
 .legend span { margin-right: 14px; }
 code { font-size: .85em; }
+.model + .model { margin-top: 6px; }
 """
 
 
@@ -464,15 +469,20 @@ def esc(x):
     return html.escape('' if x is None else str(x))
 
 
-def fmt_time(t, now):
-    """'15:04 (12 min ago)' today, 'Nov 4 17:42' otherwise."""
+def fmt_time(t, now, split=False):
+    """'15:04 (12 min ago)' today, 'Nov 4 17:42 (2.5 d ago)' otherwise.
+
+    Args:
+        split: put how long ago on a second line, without the parentheses.
+    """
     if not t:
         return '<span class="muted">-</span>'
     d = datetime.fromtimestamp(t)
     today = datetime.fromtimestamp(now).date()
     stamp = d.strftime('%H:%M') if d.date() == today else d.strftime('%b %-d %H:%M')
-    return '<span class="nw" title="{}">{} <span class="muted">({})</span></span>'.format(
-        d.strftime('%Y-%m-%d %H:%M:%S'), stamp, ago(now - t))
+    return '<span class="nw" title="{}">{}{}<span class="muted">{}</span></span>'.format(
+        d.strftime('%Y-%m-%d %H:%M:%S'), stamp, '<br>' if split else ' ',
+        ago(now - t) if split else '({})'.format(ago(now - t)))
 
 
 def ago(s):
@@ -516,8 +526,8 @@ def render(state, refresh):
 
     # hosts
     w('<h2>Hosts</h2><div class="wrap"><table><tr><th>host</th><th>sessions (hooks)</th>'
-        '<th>model &middot; effort</th><th>declared status</th><th>doing now</th>'
-        '<th>blocked on</th><th>running</th><th>status updated</th><th>last chat post</th>'
+        '<th>model<br>effort</th><th>declared status</th><th>doing now</th>'
+        '<th>blocked on</th><th>running</th><th>status updated</th><th>last chat</th>'
         '<th>joined</th></tr>')
     for h in state['hosts']:
         dec = h['declared'] or {}
@@ -540,11 +550,12 @@ def render(state, refresh):
         if h['status_body']:
             now_text += '<details><summary>status file</summary><pre>{}</pre></details>'.format(
                 esc(h['status_body']))
-        models = '<br>'.join('<span class="nw{}" title="{}">{}{}</span>'.format(
+        models = ''.join('<div class="model nw{}" title="{}">{}{}{}</div>'.format(
             '' if g['queue'] else ' muted', esc(', '.join(g['sessions'])
-                + ('' if g['queue'] else ' (not on queue)')), esc(g['label']),
+                + ('' if g['queue'] else ' (not on queue)')), esc(g['model']),
             ' <span class="muted">&times;{}</span>'.format(len(g['sessions']))
-                if len(g['sessions']) > 1 else '') for g in h['models'])
+                if len(g['sessions']) > 1 else '',
+            '<br>' + esc(g['effort']) if g['effort'] else '') for g in h['models'])
         blocked = fields.get('blocked_on')
         w('<tr><td><b>{}</b></td><td>{}</td><td>{}</td><td>{}{}</td><td>{}</td><td>{}</td>'
             '<td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
@@ -556,8 +567,8 @@ def render(state, refresh):
             esc(blocked) if blocked and blocked != '-' else '<span class="muted">-</span>',
             esc(running + ('; claims: ' + claims if claims else '')) or
                 '<span class="muted">-</span>',
-            fmt_time(dec.get('mtime'), now), fmt_time(h['last_chat'], now),
-            fmt_time(h['joined'], now)))
+            fmt_time(dec.get('mtime'), now, True), fmt_time(h['last_chat'], now, True),
+            fmt_time(h['joined'], now, True)))
     w('</table></div>')
     w('<div class="legend">sessions: ' + ''.join('<span>{} {}</span>'.format(badge(v), esc(t))
         for v, t in VIEW_TEXT.items()) + '</div>')

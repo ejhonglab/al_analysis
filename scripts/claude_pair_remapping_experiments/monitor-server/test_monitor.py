@@ -259,8 +259,14 @@ def test_collect(tmp_path):
         ('Fable 5.1 \u00b7 xhigh', True), ('Opus 5.5 \u00b7 high', False)]
     assert [(g['label'], g['sessions']) for g in hosts['atlas']['models']] == [
         ('model unknown', ['f']), ('Opus 5.5 \u00b7 xhigh', ['c'])]
+    assert hosts['hal']['models'][0]['model'] == 'Fable 5.1'
+    assert hosts['hal']['models'][0]['effort'] == 'xhigh'
     html = server.render(st, 30)
     assert 'needs you' in html and 'E37' in html and '<script' not in html
+    # Hosts table: model and effort on two lines, as are the times and their recency
+    hosts_table = html[html.index('<h2>Hosts'):html.index('<h2>Claude sessions')]
+    assert 'Fable 5.1<br>xhigh' in hosts_table and '<th>last chat</th>' in hosts_table
+    assert ' ago</span>' in hosts_table and ' ago)' not in hosts_table
     assert 'Fable 5.1 \u00b7 xhigh' in html
     assert 'data from <code>{}</code>'.format(tmp_path) in html
 
