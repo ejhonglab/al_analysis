@@ -39,17 +39,20 @@ Only agents at the code level or above (Opus >=5.5 or Fable at xhigh or max; see
 model and effort" below) write or edit code and scripts; others only run scripts already
 committed.
 
-When implementing experiments, modify ~/src/olfsysm (the model) or the library code in
-this repo or ~/src/hong2p, and then make scripts in this folder as needed. If either is
-not on this machine, clone it to that location from the ejhonglab Github. Changes to
-either only take effect if the al_analysis venv has it installed editable from that
-checkout, which is not guaranteed (on hal, olfsysm is editable from ~/src/olfsysm, but
-hong2p is a plain install from Github). Check with `./venv/bin/pip show <pkg>` (an
-editable install reports "Editable project location") and, if needed, after
-`git pull`-ing the checkout (the venv copy may be newer than a stale checkout), run:
+When implementing experiments, modify olfsysm (the model) or the library code in this
+repo or hong2p, and then make scripts in this folder as needed. The olfsysm and hong2p
+checkouts are the ones next to this al_analysis checkout (../olfsysm and ../hong2p from its
+root): ~/src/olfsysm and ~/src/hong2p on Tom's hosts, ~/src/kc_queue/olfsysm and
+~/src/kc_queue/hong2p on lab members' machines (see "Lab members' machines" below). If either
+is missing, clone it there from the ejhonglab Github. Changes to either only take effect if the
+al_analysis venv has it installed editable from that checkout, which is not guaranteed (on hal,
+olfsysm is editable from ~/src/olfsysm, but hong2p is a plain install from Github). Check with
+`./venv/bin/pip show <pkg>` (an editable install reports "Editable project location") and, if
+needed, after `git pull`-ing the checkout (the venv copy may be newer than a stale checkout),
+run from the al_analysis root:
 ```
-./venv/bin/pip install -e ~/src/hong2p[all]
-./venv/bin/pip install -e ~/src/olfsysm
+./venv/bin/pip install -e ../hong2p[all]
+./venv/bin/pip install -e ../olfsysm
 ```
 olfsysm is a C++ extension, so re-run its `pip install -e` after any C++ change. Run the
 tests (with QUICK=1, see the al_analysis CLAUDE.md) before committing model changes.
@@ -87,8 +90,8 @@ the extension at build time (`olfsysm.build_info()`), and every `pip install -e`
 everything, so there are no stale objects. `fit_mb_model` refuses to run unless the
 installed olfsysm is a clean build matching its checkout (`mb_model.olfsysm_is_clean()`);
 importing `kc_remapping_harness` makes that strict (`AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM` is
-ignored), so for the experiments here: commit the olfsysm change, `pip install -e
-~/src/olfsysm`, run the tests, then run the experiment. Every experiment's provenance.json
+ignored), so for the experiments here: commit the olfsysm change, `./venv/bin/pip install -e
+../olfsysm` (from the al_analysis root), run the tests, then run the experiment. Every experiment's provenance.json
 includes `H.model_provenance(orn_deltas=...)` (olfsysm build, al_analysis / hong2p commit
 and dirty state with diff, CPU, package versions, input hashes), and
 `fit_and_plot_mb_model` outputs carry `model_provenance.json`. The CPU is recorded for
@@ -120,14 +123,17 @@ job, and run one at a time if the machine is busy.
 
 Lab members can run queue sessions on their own machines, with their own Claude accounts. Once
 per machine:
-1. `git clone https://github.com/ejhonglab/al_analysis ~/src/al_analysis` (the hooks and scripts
-   expect ~/src), then run `~/src/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh`.
-   It lists any checkouts already in ~/src and asks once before updating them (queue sessions
-   keep them on the lab's latest default branch), clones olfsysm and hong2p into ~/src if missing,
-   asks for a git name and email if none are set (queue sessions commit, so it exits if they are
-   declined), builds ./venv with all three installed editable, makes an SSH deploy key for each repository the machine cannot already push to (only pushes use it:
-   fetches stay anonymous HTTPS, and the machine's own GitHub logins and other repositories are
-   untouched), puts the public keys in push_keys/<host>/ in the shared directory, checks that the
+1. `git clone https://github.com/ejhonglab/al_analysis ~/src/kc_queue/al_analysis`, then run
+   `~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh`. The queue
+   gets a tree of its own, ~/src/kc_queue, so that nothing already on the machine (the owner's
+   checkouts in ~/src, their Python environments) is used or changed. The script restarts itself
+   in a clean environment (so an active conda environment or venv changes nothing), clones
+   olfsysm and hong2p into ~/src/kc_queue, asks for a git name and email if none are set (queue
+   sessions commit, so it exits if they are declined), makes a new venv,
+   ~/src/kc_queue/al_analysis/venv, from a system Python with all three installed editable (it
+   never uses or changes a venv it did not make), makes an SSH deploy key for each repository the
+   machine cannot already push to (only pushes use it: fetches stay anonymous HTTPS, and the
+   machine's own GitHub logins and other repositories are untouched), puts the public keys in push_keys/<host>/ in the shared directory, checks that the
    experiment inputs load and a model fit runs, and prints the keys' fingerprints
    (`--full-tests` also runs the whole QUICK=1 suite, which took 2.5 h on hal).
 2. The owner sends Tom the fingerprints (by Slack, email or in person, not through the shared
@@ -135,12 +141,20 @@ per machine:
    write-enabled deploy keys once he confirms; `join_queue.sh --check` on the machine then shows
    whether each checkout can push. `approve_push_keys.sh --list` lists the keys added so far and
    the hosts waiting, and `--revoke <host>` removes a host's keys.
-3. Queue sessions start in this folder (`cd ~/src/al_analysis/scripts/claude_pair_remapping_experiments
-   && claude`), since Claude Code reads `.claude/settings.json` (the session-title and
-   queue-monitor hooks) only from the folder a session starts in; accept its workspace-trust
-   prompt.
+3. Queue sessions start in this folder (`cd ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments
+   && claude`), since Claude Code reads `.claude/settings.json` (the session-title,
+   queue-monitor and queue-tree hooks) only from the folder a session starts in; accept its
+   workspace-trust prompt.
 
 On those machines:
+- Queue sessions work only in ~/src/kc_queue: its al_analysis, olfsysm and hong2p, and the venv
+  ~/src/kc_queue/al_analysis/venv (call it by its path, as ./venv/bin/... from that al_analysis).
+  Nothing else under ~/src may be changed, built, installed from or run: those checkouts and
+  environments are the owner's. Where these instructions or older notes say ~/src/al_analysis,
+  ~/src/olfsysm or ~/src/hong2p, read the copies in ~/src/kc_queue. At session start (and after
+  compaction) queue_session_hook.sh puts the venv first on every shell command's PATH, removes an
+  active conda environment's settings, and says this in the session's context (and each
+  subagent's); queue_guard.py refuses edits and shell commands that name other paths in ~/src.
 - A deploy key pushes to its one repository only, and the default branches refuse force pushes
   and deletions. If a push fails, run `join_queue.sh --check`; a revoked key is for Tom to sort
   out.
@@ -410,8 +424,10 @@ ListAgents: if its first line already gives this session the name `al_analysis m
 if another live session in the listing already has that name, and CronCreate a one-shot job
 (recurring false) about two minutes ahead (`date -d '+2 min' '+%-M %-H %-d %-m'` gives the cron
 fields) with the prompt `__set_session_title__ <label>`. When it fires, `session_title_hook.sh` (a
-UserPromptSubmit hook, registered in this folder's `.claude/settings.json` and, identically so it
-runs once, in Tom's ~/.claude/settings.json, which is `~/src/dotfiles/claude_settings.json`) sets
+UserPromptSubmit hook, registered in this folder's `.claude/settings.json` and in Tom's
+~/.claude/settings.json, which is `~/src/dotfiles/claude_settings.json`; the folder's copy runs the
+script in the session's own checkout, so it also works in ~/src/kc_queue, and the two commands
+differ, so in this folder on Tom's hosts it runs twice, harmlessly, with the same title) sets
 the title to `al_analysis modeling - <label>`; reply
 "ok" to that turn. A session still titled just `<host>` (the first version of this) re-ticks. The title
 is also the session's SendMessage address, so the name change is harmless (chat.md, not

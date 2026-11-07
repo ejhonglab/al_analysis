@@ -3,20 +3,26 @@
 # folder), for lab members who want to run queue sessions on their own machines. Safe to re-run:
 # it skips what is already done, so re-run it to finish an interrupted setup.
 #
-# What it does (it changes nothing outside ~/src, ~/.ssh and push_keys/<host>/ in the shared
-# directory, except git's user.name / user.email in ~/.gitconfig, set only if missing and you agree):
-#   1. checks that this checkout is ~/src/al_analysis and that the shared directory is mounted;
-#   2. lists the checkouts already in ~/src (commit, date, uncommitted changes, how far behind the
-#      lab's default branch). Queue sessions keep them on that branch (they pull, commit, push and
-#      reinstall them), so for any that were there before this script (other than an up-to-date
-#      al_analysis) it explains this and asks once whether to update them; it exits if you decline,
-#      or if one has uncommitted changes, unpushed commits on its default branch or an origin other
-#      than the lab's repository. Checkouts it cloned or you agreed to are marked with
-#      kcqueue.managed in their .git/config and left alone by later runs. Then it clones olfsysm
-#      and hong2p if missing (anonymous HTTPS: all three repositories are public);
+# The queue gets a tree of its own, ~/src/kc_queue: al_analysis (cloned there before running
+# this), olfsysm, hong2p and the venv al_analysis/venv. Queue sessions pull, commit, push and
+# reinstall these, and use nothing else on the machine: other checkouts in ~/src and other Python
+# environments are never used or changed (hooks in .claude/settings.json here remind each session
+# of this and refuse edits there). Outside the tree this script writes only to ~/.ssh,
+# push_keys/<host>/ in the shared directory and, if they are missing and you agree, git's
+# user.name / user.email in ~/.gitconfig. It restarts itself in a clean environment (env -i), so it
+# does the same whether or not a conda environment or venv is active in the shell it is run from.
+#
+# What it does:
+#   1. checks that this checkout is ~/src/kc_queue/al_analysis and that the shared directory is
+#      mounted;
+#   2. clones olfsysm and hong2p into ~/src/kc_queue (anonymous HTTPS: all three repositories are
+#      public), marking the checkouts it uses with kcqueue.managed in their .git/config; it
+#      refuses olfsysm / hong2p checkouts there that it did not clone;
 #   3. if git has no name or email to commit with, explains why they are needed, asks for them and
 #      saves them with git config --global (it exits if you decline: queue sessions commit);
-#   4. builds ./venv with all three installed editable (skipped with --no-install);
+#   4. makes a new venv, al_analysis/venv, from a system Python and installs all three editable
+#      (skipped with --no-install). It never uses or changes a venv it did not make (it marks its
+#      own with kc_queue_venv.txt), and checks that the packages import from the tree;
 #   5. for each repository this machine cannot already push to, makes an SSH deploy key
 #      (~/.ssh/kc_queue_<repo>) and sets up that checkout to fetch over HTTPS and push over SSH
 #      with that key only (remote.origin.pushurl and core.sshCommand in the checkout's own
@@ -28,18 +34,33 @@
 #      (seconds; skipped with --no-tests). --full-tests also runs the whole QUICK=1 test suite,
 #      which took 2.5 h on hal.
 #
-# Usage: ~/src/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh [--no-install] [--no-tests | --full-tests]
+# Usage: ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh [--no-install] [--no-tests | --full-tests]
 #        .../join_queue.sh --check    # once Tom has added the keys: can each checkout push?
-# PYTHON=<interpreter> picks the Python the venv is made with (default: python3.14).
+# PYTHON=<interpreter> picks the Python the venv is made from (default: python3.14 found on the
+# system PATH; not one inside a venv).
 set -uo pipefail
+
+# Restart in a clean environment: an active conda environment or venv (its PATH entries, CONDA_*,
+# VIRTUAL_ENV, PYTHONPATH, pip settings, conda's compiler flags) must not change what is built.
+if [ -z "${KC_QUEUE_CLEAN_ENV:-}" ]; then
+  : "${USER:=$(id -un)}"
+  keep=(KC_QUEUE_CLEAN_ENV=1 "USER=$USER" "KC_QUEUE_CLAUDE=$(command -v claude 2>/dev/null)"
+    "PATH=$HOME/.local/bin:$HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+  for v in HOME LOGNAME SHELL TERM TZ TMPDIR LANG LANGUAGE SSH_AUTH_SOCK DBUS_SESSION_BUS_ADDRESS \
+      XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME GH_TOKEN GITHUB_TOKEN \
+      http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY \
+      PYTHON KC_REMAPPING_SHARED KC_QUEUE_LAB_URL $(compgen -e | grep '^LC_'); do
+    [ -n "${!v+x}" ] && keep+=("$v=${!v}")
+  done
+  exec env -i "${keep[@]}" /bin/bash "$0" "$@"
+fi
 
 ORG=ejhonglab
 REPOS=(al_analysis olfsysm hong2p)
 here=$(cd "$(dirname "$0")" && pwd)
 host=$(hostname -s)
-src=$HOME/src
+src=$HOME/src/kc_queue  # the queue's tree
 lab=${KC_QUEUE_LAB_URL:-https://github.com/$ORG}  # the lab's repositories ($KC_QUEUE_LAB_URL: tests)
-args=("$@")
 
 die() { echo "join_queue.sh: $*" >&2; exit 1; }
 warn() { echo "join_queue.sh: warning: $*" >&2; }
@@ -60,9 +81,10 @@ done
 
 al=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || die "$here is not in a git checkout"
 [ "$(cd "$src/al_analysis" 2>/dev/null && pwd -P)" = "$(cd "$al" && pwd -P)" ] || die \
-  "this checkout is at $al, but the queue's hooks and scripts expect ~/src/al_analysis. Clone it" \
-  "there (git clone https://github.com/$ORG/al_analysis ~/src/al_analysis) and run its copy of" \
-  "this script."
+  "this checkout is at $al, but on lab members' machines the queue has a tree of its own," \
+  "~/src/kc_queue, so that it never uses or changes anything else on the machine. Clone" \
+  "al_analysis there (git clone https://github.com/$ORG/al_analysis ~/src/kc_queue/al_analysis)" \
+  "and run its copy of this script."
 V=$al/venv/bin
 
 find_shared() {  # the mount points chat_watch.sh and the presence hook look in ($KC_REMAPPING_SHARED: tests)
@@ -73,6 +95,17 @@ find_shared() {  # the mount points chat_watch.sh and the presence hook look in 
     [ -f "$c/chat.md" ] && { echo "$c"; return 0; }
   done
   return 1
+}
+
+is_managed() {  # $1: repo name. Was the checkout cloned by this script (or the setup steps)?
+  [ "$(git -C "$src/$1" config --bool --get kcqueue.managed 2>/dev/null)" = true ]
+}
+
+commit_line() {  # $1 checkout. "branch <b>, <hash> from <date>: <subject>"
+  local b
+  b=$(git -C "$1" symbolic-ref -q --short HEAD) && b="branch $b" || b="detached HEAD"
+  echo "$b, $(git -C "$1" log -1 --format='%h from %cd: %s' --date=format:'%Y-%m-%d %H:%M' |
+    cut -c1-80)"
 }
 
 default_branch() {  # $1: checkout. Prints e.g. "main".
@@ -90,23 +123,6 @@ ident_missing() {  # prints user.name / user.email if some checkout has no value
       [ -n "$(git -C "$src/$r" config --get "$k" 2>/dev/null)" ] || { echo "$k"; break; }
     done
   done
-}
-
-is_managed() {  # $1: repo name. Was the checkout cloned by this script, or agreed to here?
-  [ "$(git -C "$src/$1" config --bool --get kcqueue.managed 2>/dev/null)" = true ]
-}
-
-lab_default_branch() {  # $1: repo name. The default branch of the lab's repository, e.g. "main".
-  git ls-remote --symref "$lab/$1.git" HEAD 2>/dev/null |
-    awk '$1 == "ref:" {sub("^refs/heads/", "", $2); print $2; exit}'
-}
-
-plural() {  # $1 count, $2 noun. "1 commit", "2 commits"
-  if [ "$1" = 1 ]; then echo "1 $2"; else echo "$1 ${2}s"; fi
-}
-
-commit_line() {  # $1 checkout, $2 commit. "<hash> from <date>: <subject>"
-  git -C "$1" log -1 --format='%h from %cd: %s' --date=format:'%Y-%m-%d %H:%M' "$2" | cut -c1-90
 }
 
 origin_is_ours() {  # $1: repo name. Is ~/src/<repo>'s origin ejhonglab/<repo> on GitHub?
@@ -163,7 +179,7 @@ for t in git ssh ssh-keygen curl python3 timeout; do
   command -v "$t" >/dev/null 2>&1 || missing+=("$t")
 done
 [ ${#missing[@]} = 0 ] || die "missing commands: ${missing[*]}"
-command -v claude >/dev/null 2>&1 || warn "Claude Code (claude) is not installed yet; see" \
+[ -n "${KC_QUEUE_CLAUDE:-}" ] || warn "Claude Code (claude) is not installed yet; see" \
   "https://code.claude.com/docs"
 prev_info=$shared/push_keys/$host/info.txt
 if [ -f "$prev_info" ] && ! grep -qx "user: $USER" "$prev_info"; then
@@ -173,120 +189,22 @@ if [ -f "$prev_info" ] && ! grep -qx "user: $USER" "$prev_info"; then
 fi
 
 step "checkouts in $src"
-declare -A lab_b=()
-problems=() to_update=() to_mark=() to_ask=()
-for r in "${REPOS[@]}"; do
+origin_is_ours al_analysis || die "$al: origin is $(git -C "$al" remote get-url origin 2>/dev/null)," \
+  "not $ORG/al_analysis on GitHub. Clone it from https://github.com/$ORG/al_analysis.git."
+git -C "$al" config --bool kcqueue.managed true  # the clone the setup steps made
+for r in olfsysm hong2p; do
   d=$src/$r
   if [ ! -e "$d" ]; then
-    echo "$r: not in $src yet; will be cloned from $lab/$r.git"
-    continue
+    git clone -q "$lab/$r.git" "$d" || die "cloning $r failed"
+    git -C "$d" remote set-url origin "https://github.com/$ORG/$r.git"
+    git -C "$d" config --bool kcqueue.managed true
+  elif ! is_managed "$r"; then
+    die "$d was not cloned by this script, so it is not used or changed. Move it out of $src" \
+      "and re-run this."
   fi
-  if [ ! -d "$d/.git" ]; then
-    echo "$r: $d is not a git checkout"
-    problems+=("$d exists but is not a git checkout")
-    continue
-  fi
-  head_ref=$(git -C "$d" symbolic-ref -q --short HEAD)
-  if [ -n "$head_ref" ]; then on="branch $head_ref"; else on="detached HEAD"; fi
-  if is_managed "$r"; then
-    echo "$r: set up for the queue by an earlier run, left as it is ($on, $(commit_line "$d" HEAD))"
-    continue
-  fi
-  origin=$(git -C "$d" remote get-url origin 2>/dev/null || echo none)
-  n_mod=$(git -C "$d" status --porcelain --untracked-files=no | wc -l)
-  n_new=$(git -C "$d" ls-files --others --exclude-standard | wc -l)
-  if [ "$n_mod" -gt 0 ]; then state="uncommitted changes to $(plural "$n_mod" "tracked file")"; else state=clean; fi
-  [ "$n_new" -gt 0 ] && state+=" ($(plural "$n_new" "untracked file"))"
-  echo "$r ($d)"
-  echo "    origin:   $origin"
-  echo "    now on:   $on, $(commit_line "$d" HEAD)"
-  echo "    state:    $state"
-  if ! origin_is_ours "$r"; then
-    problems+=("$r: its origin is $origin, not the lab's repository ($ORG/$r on GitHub)")
-    continue
-  fi
-  b=$(lab_default_branch "$r")
-  if [ -z "$b" ] || ! git -C "$d" fetch -q "$lab/$r.git" "+refs/heads/$b:refs/remotes/origin/$b"; then
-    problems+=("$r: could not fetch the lab's repository ($lab/$r.git)")
-    continue
-  fi
-  lab_b[$r]=$b
-  echo "    lab:      $b, $(commit_line "$d" "origin/$b")"
-  [ "$n_mod" -gt 0 ] && problems+=("$r: uncommitted changes to tracked files (git -C $d status)")
-  if git -C "$d" show-ref -q --verify "refs/heads/$b"; then
-    n_unpushed=$(git -C "$d" rev-list --count "origin/$b..refs/heads/$b")
-    [ "$n_unpushed" -gt 0 ] && problems+=("$r: its $b has $(plural "$n_unpushed" commit) not in the lab's $b, which queue sessions would push")
-  fi
-  if [ -z "$head_ref" ] && [ -z "$(git -C "$d" for-each-ref --count=1 --contains HEAD)" ]; then
-    problems+=("$r: its detached HEAD has commits on no branch or tag, which updating would leave behind")
-  fi
-  n_behind=$(git -C "$d" rev-list --count "HEAD..origin/$b")
-  if [ "$head_ref" = "$b" ] && [ "$n_behind" = 0 ]; then
-    echo "    update:   none needed (at the lab's $b)"
-  elif [ "$head_ref" = "$b" ]; then
-    echo "    update:   fast-forward $b by $(plural "$n_behind" commit)"
-    to_update+=("$r")
-  else
-    echo "    update:   switch to $b, at the lab's latest${head_ref:+ (branch $head_ref is kept as it is)}"
-    to_update+=("$r")
-  fi
-  to_mark+=("$r")
-  # an up-to-date al_analysis is the clone the setup instructions just made
-  [ "$r" = al_analysis ] && [[ " ${to_update[*]} " != *" al_analysis "* ]] || to_ask+=("$r")
 done
-if [ ${#problems[@]} -gt 0 ]; then
-  echo
-  echo "These checkouts cannot be used for the queue as they are:"
-  printf '  - %s\n' "${problems[@]}"
-  die "no checkout was changed. Fix the above, or move those checkouts out of $src (this script" \
-    "then clones fresh copies), and re-run this."
-fi
-if [ ${#to_ask[@]} -gt 0 ]; then
-  names=$(printf '%s\n' "${to_ask[@]}" | paste -sd, | sed 's/,\([^,]*\)$/ and \1/; s/,/, /g')
-  cat <<EOF
-
-Queue sessions keep these checkouts on the lab's latest default branch: they pull, commit and push,
-and reinstall them into ~/src/al_analysis/venv (installing olfsysm rebuilds its compiled module
-inside its checkout, replacing one built there by another environment with the same Python
-version). Any other environment using them (e.g. with them installed editable) sees every change.
-To keep a fixed version for such an environment, answer n, move that checkout out of ~/src and
-reinstall it in that environment from its new place, then re-run this: it clones fresh copies.
-EOF
-  [ -t 0 ] || die "no terminal to ask on; run this in a terminal"
-  while :; do
-    read -r -p "Update $names as listed above, and let queue sessions keep updating them? (required to continue) [y/N] " ans || ans=n
-    case ${ans,,} in
-      y|yes) break ;;
-      ''|n|no) die "no checkout was changed. Move any checkout another environment relies on" \
-        "out of ~/src and re-run this, so it clones fresh copies for the queue." ;;
-      *) echo "please answer y or n" ;;
-    esac
-  done
-fi
-head_before=$(git -C "$al" rev-parse HEAD)
-for r in "${to_update[@]}"; do
-  d=$src/$r b=${lab_b[$r]}
-  if [ "$(git -C "$d" symbolic-ref -q --short HEAD)" != "$b" ]; then
-    if git -C "$d" show-ref -q --verify "refs/heads/$b"; then
-      git -C "$d" checkout -q "$b"
-    else
-      git -C "$d" checkout -q -b "$b" --track "origin/$b"
-    fi || die "could not switch $d to $b"
-  fi
-  git -C "$d" merge -q --ff-only "origin/$b" || die "could not fast-forward $d to the lab's $b"
-  echo "$r: now on $b, $(commit_line "$d" HEAD)"
-done
-for r in "${to_mark[@]}"; do
-  git -C "$src/$r" config --bool kcqueue.managed true
-done
-if [ "$(git -C "$al" rev-parse HEAD)" != "$head_before" ] && [ -x "$here/join_queue.sh" ]; then
-  echo "al_analysis was updated, so carrying on with its new copy of this script"
-  exec "$here/join_queue.sh" ${args[@]+"${args[@]}"}
-fi
-for r in olfsysm hong2p; do
-  [ -e "$src/$r" ] && continue
-  git clone "$lab/$r.git" "$src/$r" || die "cloning $r failed"
-  git -C "$src/$r" config --bool kcqueue.managed true
+for r in "${REPOS[@]}"; do
+  echo "$r: $(commit_line "$src/$r")"
 done
 
 step "git name and email"
@@ -335,25 +253,61 @@ echo "commits will be by: $(git -C "$al" config user.name) <$(git -C "$al" confi
 
 if [ $install = 1 ]; then
   step "Python environment ($al/venv)"
-  if [ ! -x "$V/python" ]; then
+  marker=$al/venv/kc_queue_venv.txt
+  if [ -e "$al/venv" ] && [ ! -f "$marker" ]; then
+    die "$al/venv exists but was not made by this script, so it is not used or changed. Move it" \
+      "out of $al and re-run this."
+  fi
+  if [ ! -e "$al/venv" ]; then
     py=${PYTHON:-python3.14}
-    command -v "$py" >/dev/null 2>&1 || die "$py not found. On Ubuntu:" \
+    pyx=$(command -v "$py") || die "$py not found on the system PATH ($PATH). On Ubuntu:" \
       "sudo apt install build-essential python3.14-dev python3.14-venv" \
-      "(or set PYTHON to another interpreter, 3.8 or newer)"
-    "$py" -c 'import ensurepip, sysconfig, os, sys
+      "(or set PYTHON to another interpreter, 3.8 or newer, outside any venv)"
+    # the base Python: not one inside a venv; a conda one works, but the venv then depends on it
+    base=$("$pyx" -I -c 'import os, sys
+print(int(sys.prefix != sys.base_prefix), int(os.path.isdir(os.path.join(sys.prefix, "conda-meta"))),
+    sys.prefix)') || die "$pyx does not run"
+    read -r in_venv in_conda prefix <<<"$base"
+    [ "$in_venv" = 0 ] || die "$pyx is inside the venv $prefix; set PYTHON to a system Python" \
+      "(e.g. /usr/bin/python3.14) instead"
+    [ "$in_conda" = 0 ] || warn "$pyx belongs to the conda environment $prefix; the venv stops" \
+      "working if that environment is removed or its Python changes"
+    "$pyx" -I -c 'import ensurepip, sysconfig, os, sys
 sys.exit(not os.path.exists(os.path.join(sysconfig.get_paths()["include"], "Python.h")))' ||
-      die "$py lacks its headers or ensurepip, needed to build olfsysm / make the venv. On" \
-        "Ubuntu: sudo apt install build-essential $(basename "$py")-dev $(basename "$py")-venv"
+      die "$pyx lacks its headers or ensurepip, needed to build olfsysm / make the venv. On" \
+        "Ubuntu: sudo apt install build-essential $(basename "$pyx")-dev $(basename "$pyx")-venv"
     command -v c++ >/dev/null 2>&1 || die "no C++ compiler (needed to build olfsysm). On" \
       "Ubuntu: sudo apt install build-essential"
-    "$py" -m venv "$al/venv" || die "making the venv failed"
+    "$pyx" -m venv "$al/venv" || die "making the venv failed"
+    { echo "made by join_queue.sh on $(date '+%Y-%m-%d %H:%M'), from $pyx ($("$pyx" -V 2>&1))"
+      echo "join_queue.sh only uses or changes a venv with this file in it."; } > "$marker"
   fi
+  "$V/python" -I -c 'import os, sys
+assert sys.prefix != sys.base_prefix and os.path.realpath(sys.prefix) == os.path.realpath(sys.argv[1])
+' "$al/venv" || die "$V/python is not the venv's own Python"
   "$V/python" -m pip install -q -U pip || die "upgrading pip failed"
   # al_analysis pins hong2p and olfsysm to their GitHub versions (exact-requirements.txt), so the
   # editable installs from the checkouts go last, replacing those
   "$V/python" -m pip install -e "$al[dev]" || die "installing al_analysis failed"
   "$V/python" -m pip install -e "$src/hong2p[all]" || die "installing hong2p failed"
   "$V/python" -m pip install -e "$src/olfsysm" || die "building / installing olfsysm failed"
+  (cd / && "$V/python" -I - "$src" <<'EOF') || die "the venv does not import from the queue's tree"
+import os, sys
+tree = os.path.realpath(sys.argv[1])
+import al_analysis, hong2p, olfsysm
+bad = []
+for name, mod in (('al_analysis', al_analysis), ('hong2p', hong2p), ('olfsysm', olfsysm)):
+    # al_analysis is a namespace package (no __init__.py): its directories instead of a file
+    locs = [mod.__file__] if getattr(mod, '__file__', None) else [
+        p for p in getattr(mod, '__path__', []) if os.path.isdir(p)]
+    for loc in locs or ['(nowhere)']:
+        path = os.path.realpath(loc)
+        print(f'{name}: imports from {path}')
+        if not path.startswith(os.path.join(tree, name) + os.sep):
+            bad.append(name)
+if bad:
+    raise SystemExit(f'{", ".join(bad)} should import from {tree}')
+EOF
 fi
 
 step "push access"
@@ -398,6 +352,7 @@ os=$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || uname -sr)
   echo "host: $(hostname -f 2>/dev/null || hostname)"
   echo "user: $USER"
   echo "joined: $(date '+%Y-%m-%d %H:%M')"
+  echo "tree: $src"
   echo "cores: $(nproc)"
   echo "memory_gb: ${mem:-?}"
   echo "os: $os"
@@ -468,7 +423,9 @@ cat <<EOF
 To work the queue, start Claude Code in this folder and accept its workspace-trust prompt (that
 enables the hooks in .claude/settings.json here):
     cd $here && claude
-and ask it to work the experiment queue. Use Opus 5.5 or newer, or Fable, at xhigh effort or above
-for code and write-ups; other models and lower efforts only run scripts that are already written
-(CLAUDE.md here, "Permissions by model and effort").
+and ask it to work the experiment queue. Queue sessions here work only in $src: its checkouts and
+al_analysis/venv. The hooks tell each session so, and refuse edits elsewhere in ~/src. Use Opus
+5.5 or newer, or Fable, at xhigh effort or above for code and write-ups; other models and lower
+efforts only run scripts that are already written (CLAUDE.md here, "Permissions by model and
+effort").
 EOF

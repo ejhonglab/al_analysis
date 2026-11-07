@@ -304,7 +304,7 @@ def main() -> None:
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE,
             capture_output=True, text=True).stdout.strip(),
         olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
-            cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
+            cwd=H.olfsysm_dir(), capture_output=True, text=True).stdout.strip(),
         bases=BASES, bouton=BOUTON, inhadd=args.inhadd, typical_inh=TYPICAL_INH,
         pn_apl_multipliers=PN_APL_MULTIPLIERS, approx_conc_note=H.APPROX_CONC_NOTE,
     )

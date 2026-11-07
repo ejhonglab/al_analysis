@@ -13471,21 +13471,19 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     # get crypic `ValueError: stod` in `osm.load_hc_data` below, if this doesn't exist
     assert hc_data_csv.exists()
 
-    # just assuming olfsysm is at the path I would typically clone it to. this check
-    # isn't super important. just establishing that the hc_data.csv committed in this
-    # repo matches where we copied it from.
-    # TODO warn if we can't check this? find olfsysm path some other way?
-    olfsysm_repo = Path('~/src/olfsysm').expanduser()
-    if olfsysm_repo.exists():
-        olfsysm_hc_data_csv = olfsysm_repo / 'hc_data.csv'
-        assert olfsysm_hc_data_csv.exists()
+    # the checkout the installed olfsysm was built from (~/src/olfsysm on Tom's hosts). this
+    # check isn't super important. just establishing that the hc_data.csv committed in this
+    # repo matches where we copied it from. a non-editable install has no hc_data.csv next to
+    # it, so then nothing is checked.
+    olfsysm_repo = olfsysm_checkout_path()
+    olfsysm_hc_data_csv = olfsysm_repo / 'hc_data.csv'
+    if olfsysm_hc_data_csv.exists():
 
         # checking files are exactly the same
         unchanged = filecmp.cmp(hc_data_csv, olfsysm_hc_data_csv, shallow=False)
         assert unchanged
 
-        del olfsysm_hc_data_csv
-    del olfsysm_repo
+    del olfsysm_hc_data_csv, olfsysm_repo
 
     # TODO TODO can i change to not load this when i'm just passing in my own data?
     # necessary even then? (add unit test to check?) (shouldn't be, if we are ourselves
@@ -18999,13 +18997,11 @@ def olfsysm_build_info() -> Dict[str, Any]:
     return info
 
 
-def olfsysm_checkout_info() -> Dict[str, Any]:
-    """Returns git information on the olfsysm checkout the extension was installed from.
+def _olfsysm_install_location() -> Tuple[Path, bool]:
+    """Returns (where olfsysm was installed from, whether that install is editable).
 
-    The checkout is the editable install location (pip's direct_url.json), else the
-    directory of the extension module (an in-place build). Keys: 'path', 'editable',
-    'git_hash', 'dirty' (tracked files modified), 'untracked', 'remote'; the git keys are
-    None if the path is not a git checkout.
+    The location is the editable install location (pip's direct_url.json), else the
+    directory of the extension module (an in-place build).
     """
     import olfsysm
     path = None
@@ -19022,6 +19018,28 @@ def olfsysm_checkout_info() -> Dict[str, Any]:
         pass
     if path is None:
         path = Path(olfsysm.__file__).resolve().parent
+    return path, editable
+
+
+def olfsysm_checkout_path() -> Path:
+    """Returns the olfsysm checkout the installed extension was built from.
+
+    E.g. ~/src/olfsysm on Tom's hosts and ~/src/kc_queue/olfsysm on lab members' machines (see
+    scripts/claude_pair_remapping_experiments/join_queue.sh); the extension's own directory if
+    it is not an editable install.
+    """
+    return _olfsysm_install_location()[0]
+
+
+def olfsysm_checkout_info() -> Dict[str, Any]:
+    """Returns git information on the olfsysm checkout the extension was installed from.
+
+    The checkout is the editable install location (pip's direct_url.json), else the
+    directory of the extension module (an in-place build). Keys: 'path', 'editable',
+    'git_hash', 'dirty' (tracked files modified), 'untracked', 'remote'; the git keys are
+    None if the path is not a git checkout.
+    """
+    path, editable = _olfsysm_install_location()
     out: Dict[str, Any] = dict(path=str(path), editable=editable, git_hash=None, dirty=None,
         untracked=None, remote=None
     )

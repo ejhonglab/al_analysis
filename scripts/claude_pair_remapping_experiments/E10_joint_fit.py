@@ -611,7 +611,7 @@ def main() -> None:
             al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE,
                 capture_output=True, text=True).stdout.strip(),
             olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
-                cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
+                cwd=H.olfsysm_dir(), capture_output=True, text=True).stdout.strip(),
             base=base_kws(args.claw_thr, args.apl_drive), apl_drive=args.apl_drive,
             init_params=args.init_params, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),

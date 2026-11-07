@@ -398,7 +398,7 @@ def main() -> None:
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE,
             capture_output=True, text=True).stdout.strip(),
         olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
-            cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
+            cwd=H.olfsysm_dir(), capture_output=True, text=True).stdout.strip(),
         windows=WINDOWS, gcamp_kernel=dict(rise_s=GCAMP_RISE_S, decay_s=GCAMP_DECAY_S),
         claw_taus=CLAW_TAUS, apl_taums=APL_TAUMS, meta=meta, remy_window_stats=rws,
         approx_conc_note=H.APPROX_CONC_NOTE)

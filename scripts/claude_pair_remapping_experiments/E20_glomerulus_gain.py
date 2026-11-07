@@ -245,7 +245,7 @@ def main() -> None:
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E20_glomerulus_gain.py',
         host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(),
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
-        olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=Path('~/src/olfsysm').expanduser(), capture_output=True, text=True).stdout.strip(),
+        olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.olfsysm_dir(), capture_output=True, text=True).stdout.strip(),
         base=BOUTON, alpha=args.alpha, thr=args.thr, combo=args.combo, peaks=peaks.round(1).to_dict(),
         approx_conc_note=H.APPROX_CONC_NOTE)
     (res_dir / 'provenance.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')

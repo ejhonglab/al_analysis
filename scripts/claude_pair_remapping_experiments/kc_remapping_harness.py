@@ -95,6 +95,14 @@ CONDITION_COLORS: Dict[str, str] = {'control': '#2a78d6', 'TNT': '#c8553d',
 
 # ---------------------------------------------------------------------------
 # paths
+def olfsysm_dir() -> Path:
+    """Returns the olfsysm checkout the installed olfsysm was built from.
+
+    ~/src/olfsysm on Tom's hosts, ~/src/kc_queue/olfsysm on lab members' machines.
+    """
+    return _mb_model.olfsysm_checkout_path()
+
+
 def shared_dir() -> Path:
     """The shared directory on tensor (Tom/claude_kc_remapping).
 
