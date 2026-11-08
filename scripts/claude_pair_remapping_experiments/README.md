@@ -42,6 +42,7 @@ needed.
    ```
    Use Opus 5.5 or newer, or Fable, at xhigh effort or above, if you want the session to write
    code and write-ups; other models and lower efforts only run scripts that are already written.
+4. Ask it to "join the work queue"
 
 Everything the queue uses lives in ~/src/kc_queue: its own copies of al_analysis, olfsysm and
 hong2p, and a new Python environment, ~/src/kc_queue/al_analysis/venv. Your other checkouts in
