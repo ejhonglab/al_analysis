@@ -231,12 +231,19 @@ On those machines:
   admins, and Actions runs get a read-only token (github_rules.sh, which Tom runs, sets and
   checks this). If a push fails, run `join_queue.sh --check`; a revoked key is for Tom to sort
   out.
-- Artifacts the session publishes are in the machine owner's claude.ai account, private unless
-  shared; the reports/ copy (save_report_copy.py) is what everyone else reads. Such sessions never
-  republish the summary page or the report page (both in Tom's account): after committing and
-  pushing the change to `reports/summary_template.md` or the report markdown, they post "For one
-  of Tom's hosts: rebuild and republish the summary" (or the report) in chat.md, and a session on
-  one of Tom's hosts does it.
+- Sessions on these machines publish no artifacts at all (a publish from them lands in the machine
+  owner's claude.ai account, not Tom's). They build every page they are responsible for (an
+  experiment's page, a note's page) with md_to_artifact.py as usual, save it with
+  `save_report_copy.py <index.html> <name> pending` (the README row's URL column reads "pending"
+  until a session on one of Tom's hosts fills it), write "pending (to be published from one of
+  Tom's hosts)" wherever the scheme records the artifact URL, and post "For one of Tom's hosts:
+  publish reports/<name>.html (markdown <path>)" in chat.md. A session on one of Tom's hosts then
+  publishes it into Tom's account, writes the URL into the markdown, rebuilds and republishes the
+  page, runs save_report_copy.py with the URL, and puts the URL where the scheme asks for it (the
+  experiment markdown, the Completed entry, the add_to_reports README). The summary page and the
+  report page are rebuilt by Tom's hosts from the template or the report markdown: after
+  committing and pushing the change to `reports/summary_template.md` or the report markdown,
+  post "For one of Tom's hosts: rebuild and republish the summary" (or the report) in chat.md.
 - Tom's personal instructions and memory are not there, so the conventions from them that the
   queue relies on are below ("Git and code conventions"), for every host, and so are the
   practical gotchas ("Gotchas", below).
@@ -605,7 +612,9 @@ says. When you complete an experiment and its interpretation:
 3. make an artifact summarizing the findings of the experiment (with goals up top, and
    next steps summarized at the bottom) (this could just be taken directly from or
    lightly processed from your markdown from #1). Record the artifact URL in the
-   markdown from #1 and in the Completed entry.
+   markdown from #1 and in the Completed entry. On a lab member's machine, build the page but do
+   not publish it: save it to reports/ with `pending` as its URL and hand the publishing to one
+   of Tom's hosts through chat.md ("Lab members' machines" above).
 
 4. regenerate the summary artifact (the all-experiments summary, see "Summary reports"
    below): fold the experiment's result into the section it belongs to in the template
@@ -945,6 +954,9 @@ artifact server serves the HTML we upload unchanged, so:
    same for any other page.
 Record the artifact URL where the scheme already asks for it (the experiment markdown, the
 Completed entry, the add_to_reports README); the reports/ copy is in addition, not instead.
+Publishing happens only from Tom's hosts: a session on a lab member's machine saves the page with
+`pending` as the URL and asks in chat.md for one of Tom's hosts to publish it ("Lab members'
+machines").
 
 ## Naming and choosing experiments
 
