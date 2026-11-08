@@ -197,7 +197,7 @@ def tune_spike_only_base(orn: pd.DataFrame, claw_thr, spike_base: Dict[str, floa
 
 def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
     gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0, apl_drive: str = 'claws',
-    base_params: Optional[str] = None, info: Optional[dict] = None):
+    base_params: Optional[str] = None, info: Optional[dict] = None, input_tag: Optional[str] = None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -256,6 +256,10 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         wAPLPN=initial['wAPLPN_scale'], wPNAPL=initial['wPNAPL_scale'], **kws
     )
     wnorm = {k: pd0[k] / pd0[f'{k}_scale'] for k in ('wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL')}
+    if input_tag is not None:
+        # another ORN input (--orn-input): the saved APL-off runs of the lab's input do not apply
+        hal_path = out_dir / 'no_such_file'
+        off_path = out_dir / (f'input-{input_tag}_' + off_path.name)
     if wiring is not None:
         from al_analysis.wpnkc_shuffles import NAMED_SHUFFLES, shuffle_wPNKC
         if wiring not in NAMED_SHUFFLES:
@@ -305,6 +309,28 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         if info is not None:
             info.update(tune_info)
     return initial, wnorm, wPNKC, breadth
+
+
+def read_orn_input(spec: str, orn: pd.DataFrame) -> pd.DataFrame:
+    """`orn` (the lab's 16-odor input, `H.apl16_orn_deltas()`) with its values replaced by those of the
+    CSV `spec` (glomeruli x abbreviated odors, the same glomeruli and odors in the same order, e.g.
+    E38's results/E38_hallem_input/inputs/hallem_shared_ms.csv; relative to the shared directory
+    unless absolute)."""
+    path = Path(spec)
+    if not path.is_absolute():
+        path = H.shared_dir() / path
+    alt = pd.read_csv(path, index_col=0)
+    ab = H.abbrev_columns(orn)
+    if list(alt.index) != list(orn.index) or list(alt.columns) != list(ab.columns):
+        raise ValueError(f'{path}: glomeruli / odors differ from apl16_orn_deltas()')
+    # only values that differ beyond the CSV's float round trip are replaced, so the rest stay the lab's exactly
+    out = orn.astype(float).copy()
+    a, o = alt.to_numpy(dtype=float), out.to_numpy()
+    mask = np.abs(a - o) > 1e-9
+    out[:] = np.where(mask, a, o)
+    changed = int(mask.sum())
+    print(f'ORN input from {path} ({changed} of {out.size} values differ from the lab input)', flush=True)
+    return out
 
 
 def breadth_weights(wAPLKC0: pd.Series, breadth: pd.Series, k: float) -> pd.Series:
@@ -582,6 +608,9 @@ def main() -> None:
         "shuffle (claw_permutation, claw_permutation_within_type, curveball, "
         "curveball_within_type; E30's second draw); tag prefix wiring-<SHUFFLE>-seed<N>_")
     ap.add_argument('--wiring-seed', type=int, default=0, help='seed of the --wiring draw')
+    ap.add_argument('--orn-input', default=None, metavar='CSV',
+        help='replace the ORN input with this CSV (glomeruli x abbreviated odors, as E38 writes them under '
+        'results/E38_hallem_input/inputs/; relative to the shared directory); tag prefix input-<stem>_')
     ap.add_argument('--init-thr', type=float, default=None, metavar='HZ',
         help='start the somatic threshold here (overrides the seed / --thr0-factor; e.g. the '
         'threshold tuned for a gained wiring)')
@@ -611,6 +640,10 @@ def main() -> None:
     res_dir = H.results_dir(args.experiment)
     out_dir = H.outputs_dir(args.experiment)
     orn = H.apl16_orn_deltas()
+    input_tag = None
+    if args.orn_input:
+        orn = read_orn_input(args.orn_input, orn)
+        input_tag = Path(args.orn_input).stem
     orn_pairs = H.orn16_consensus_pairs()
     drive = H.consensus_orn_drive()
     ref = H.reference_pairs()
@@ -637,9 +670,10 @@ def main() -> None:
     base_info = {}
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
         gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed,
-        apl_drive=args.apl_drive, base_params=args.base_params, info=base_info
+        apl_drive=args.apl_drive, base_params=args.base_params, info=base_info, input_tag=input_tag
     )
-    wiring_tag = '' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_'
+    wiring_tag = ('' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_') + (
+        '' if input_tag is None else f'input-{input_tag}_')
     gain_gloms = None
     if gain is not None:
         from E27_glomerulus_gain import ORACLE
@@ -676,7 +710,7 @@ def main() -> None:
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
             gain=gain, gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None),
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
-            method=args.method,
+            orn_input=args.orn_input, method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
             apl_drive=args.apl_drive, base_params=args.base_params, init_params=args.init_params,
@@ -731,7 +765,7 @@ def main() -> None:
             **start_prov,
             base=base_kws(args.claw_thr, args.apl_drive), apl_drive=args.apl_drive,
             init_params=args.init_params, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
-            wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
+            wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None), orn_input=args.orn_input,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
