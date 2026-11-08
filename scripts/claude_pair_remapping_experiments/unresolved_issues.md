@@ -8,6 +8,20 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
+
+- **What.** Several experiment scripts call `model_provenance()` (al_analysis commit, dirty flag and
+  diff) when they write provenance.json at the end of the run. A `git pull` while the run goes on
+  (routine with several hosts pushing) makes the file name a later commit than the one whose code was
+  imported. Found in the oracle-gain decomposition (E39): its two provenance files named bfd49c6 and
+  bf314a6 (dirty) for runs that imported b431aa1 and bfd49c6.
+- **Affects.** Only the recorded al_analysis commit of runs during which the checkout moved; the
+  olfsysm build info is baked into the extension and is exact. No statistic changes.
+- **Done.** E39's provenance files carry a `code_that_ran` annotation with the commits that ran;
+  E39_gain_decomposition.py now records provenance at the start.
+- **Remains.** The same fix (record at start) in the other scripts that call `model_provenance` at the
+  end (grep `model_provenance(orn_deltas`); until then, avoid pulling in a checkout with a run going.
+
 ### The 16-odor ORN reference matrix counts unimaged glomeruli as zero responses (found 2026-11-06)
 
 - **What.** `kc_remapping_harness.orn16_consensus_pairs()` reads `apl_pair_analysis/

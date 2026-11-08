@@ -59,13 +59,13 @@ V = H.PRIMARY_MODEL_RDM + '__'
 # statistics for the marginal-contribution table: (column, label)
 MARGINAL_STATS = ([(f'foff_{o}', f'{o} APL-off fraction') for o in WEAK]
     + [(f'fon_{o}', f'{o} APL-on fraction') for o in ESTERS]
-    + [('spearman_rate_on_vs_data', 'response rate rho, APL on'), ('spearman_rate_off_vs_data', 'response rate rho, APL off'),
+    + [('spearman_rate_on_vs_data', 'response rate ρ, APL on'), ('spearman_rate_off_vs_data', 'response rate ρ, APL off'),
        (V + 'on_spearman_resid_vs_vcf_hyp', 'natural-source alignment, APL on'),
        (V + 'off_spearman_resid_vs_vcf_hyp', 'natural-source alignment, APL off'),
        (V + 'on_spearman_resid_vs_remap_wt', 'structure vs wild type, APL on'),
        (V + 'block_fruity_small_iso', 'block'), ('on_excess_diff', 'APL-on excess, block - other'),
-       (V + 'on_spearman', 'rho on distances, APL on'), (V + 'off_spearman', 'rho on distances, APL off'),
-       (V + 'iso_r2', 'isotonic R2'), ('xl_loss', 'extended loss')])
+       (V + 'on_spearman', 'ρ on odor-odor distances, APL on'), (V + 'off_spearman', 'ρ on odor-odor distances, APL off'),
+       (V + 'iso_r2', 'isotonic R²'), ('xl_loss', 'extended loss (lower is better)')])
 
 
 def variants() -> dict:
@@ -126,6 +126,45 @@ def make_figure(stats: pd.DataFrame, res_dir) -> None:
     fig.tight_layout(); fig.savefig(res_dir / 'E39_gain_decomposition.png', dpi=130); plt.close(fig)
 
 
+# the statistics shown in the marginal-contribution figure (labels as in MARGINAL_STATS)
+FIG_STATS = ['ms APL-off fraction', 'paa APL-off fraction', 'B-myr APL-off fraction', 'euc APL-off fraction',
+    '1-8ol APL-off fraction', '2h APL-on fraction', 'IaA APL-on fraction', '2-but APL-on fraction',
+    'response rate ρ, APL on', 'response rate ρ, APL off', 'natural-source alignment, APL off',
+    'structure vs wild type, APL on', 'block', 'ρ on odor-odor distances, APL on', 'ρ on odor-odor distances, APL off',
+    'extended loss (lower is better)']
+
+
+def make_marginal_figure(stats: pd.DataFrame, res_dir) -> None:
+    """Per base, glomerulus x statistic heatmaps of the two marginal contributions."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    bases = [b for b in BASES if b in set(stats.base)]
+    fig, axes = plt.subplots(len(bases), 2, figsize=(17, 5.2 * len(bases)), squeeze=False)
+    for i, b in enumerate(bases):
+        m = marginals(stats, b)
+        labs = [l for l in FIG_STATS if (l, 'alone') in m.columns]
+        for j, (kind, title) in enumerate((('alone', 'gain on this glomerulus alone, minus no gain'),
+                ('needed', 'full set, minus the full set without this glomerulus'))):
+            ax = axes[i, j]
+            d = m.xs(kind, axis=1, level='kind')[labs].astype(float)
+            # each column scaled by its largest absolute value over both kinds, so colors compare within a column
+            scale = m.loc[:, [(l, k) for l in labs for k in ('alone', 'needed')]].abs().T.groupby(level=0).max().max(axis=1)
+            z = d / scale.reindex(labs).replace(0, np.nan).to_numpy()
+            ax.imshow(z.to_numpy(), cmap='PuOr_r', vmin=-1, vmax=1, aspect='auto')  # orange = increase
+            for r in range(d.shape[0]):
+                for c in range(d.shape[1]):
+                    x = d.iat[r, c]
+                    ax.text(c, r, '' if np.isnan(x) else f'{x:+.2f}', ha='center', va='center', fontsize=7)
+            ax.set_xticks(range(len(labs))); ax.set_xticklabels(labs, rotation=55, ha='right', fontsize=8)
+            ax.set_yticks(range(len(d))); ax.set_yticklabels(d.index, fontsize=9)
+            ax.set_title(f'{BASES[b]}: {title}', fontsize=9.5)
+    fig.suptitle('E39: what each oracle glomerulus contributes at the fitted combined models (gain 1.5; '
+        'threshold re-tuned to the fit\'s APL-on response rate; APL off acutely)\n'
+        'color: sign and size of the change within each column (orange: increase, purple: decrease)', fontsize=10.5)
+    fig.tight_layout(); fig.savefig(res_dir / 'E39_marginals.png', dpi=130); plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--bases', nargs='+', default=list(BASES), choices=list(BASES))
@@ -138,7 +177,7 @@ def main() -> None:
     rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
     if args.figure_only:
         st = pd.DataFrame(rows)
-        make_figure(st, res_dir)
+        make_figure(st, res_dir); make_marginal_figure(st, res_dir)
         for b in sorted(set(st.base)):
             marginals(st, b).to_csv(res_dir / f'marginals_{b}.csv')
         return
@@ -157,6 +196,12 @@ def main() -> None:
     e34_out = H.outputs_dir('E34_gain_bounded')
     tuned = json.loads((out_dir / 'tuned_params.json').read_text()) if (out_dir / 'tuned_params.json').exists() else {}
     from al_analysis.mb_model import fit_mb_model, make_fixed_param_kc_simulator
+    # code provenance at the start: the checkout can move (a pull) while the run goes on
+    try:
+        model_prov = H.model_provenance(orn_deltas=orn)
+    except Exception as e:  # keep the commit hash at least
+        model_prov = dict(al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True,
+            text=True).stdout.strip(), model_provenance_error=repr(e)[:200])
     pairs = {}; deficits = []
     for b in args.bases:
         fit_tag = BASES[b]
@@ -257,13 +302,9 @@ def main() -> None:
         host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), bases={b: BASES[b] for b in args.bases},
         fits_source='results/E34_gain_bounded/fits.csv', gain=GAIN, k=K, tau=TAU, oracle_glomeruli=ORACLE, per_odor_sets=SETS,
         variants={v: todo[v] for v in todo}, base_kws=base_kws(None), approx_conc_note=H.APPROX_CONC_NOTE)
-    try:
-        prov.update(H.model_provenance(orn_deltas=orn))
-    except Exception as e:  # keep the commit hashes at least
-        prov.update(al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
-            model_provenance_error=repr(e)[:200])
+    prov.update(model_prov)
     (res_dir / f'provenance_{"_".join(args.bases)}.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
-    make_figure(pd.DataFrame(rows), res_dir)
+    make_figure(pd.DataFrame(rows), res_dir); make_marginal_figure(pd.DataFrame(rows), res_dir)
     print('done ->', res_dir)
 
 

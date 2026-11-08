@@ -40,8 +40,10 @@ OUT = H.shared_dir() / 'results' / 'summary_progress'
 YEAR = 2026
 RATE_RANGE = (0.035, 0.075)   # APL-on response rate: comparable models only (tuned near 5 %)
 
-# experiments whose variants use information from the data they are scored against
-EXCLUDE = {'E14', 'E15'}
+# experiments whose variants use information from the data they are scored against; E39 splits the
+# reference model's oracle gain into glomerulus subsets at the full set's fitted parameters (its
+# full-set variant is E34's fit), so its best subset per statistic would be a post-hoc selection
+EXCLUDE = {'E14', 'E15', 'E39'}
 # variants excluded by tag / variant prefix: oracle gains, the block-specific glomerulus set,
 # and random / shuffled / re-drawn wirings (nulls, many seeds each: the best of twenty random
 # draws is a selection on noise, not a model)
