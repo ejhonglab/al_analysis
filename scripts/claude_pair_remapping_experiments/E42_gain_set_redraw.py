@@ -190,11 +190,59 @@ def make_figure(df: pd.DataFrame, data: Dict[str, float], res_dir: Path) -> None
     plt.close(fig)
 
 
+TABLE_ROWS = [
+    ('loss', 'extended loss (lower is better)', '.2f', None),
+    ('fit_block', 'fruity × small-ester block', '+.3f', 'block'),
+    ('fit_on_spearman', 'ρ on odor-odor distances, APL on', '.2f', 'ctrl_ceiling'),
+    ('fit_off_spearman', 'ρ on odor-odor distances, APL off', '.2f', 'tnt_ceiling'),
+    ('fit_po_on_spearman', 'response rate ρ, APL on', '.2f', 'ctrl_rate_rho_ceiling'),
+    ('fit_po_off_spearman', 'response rate ρ, APL off', '.2f', 'tnt_rate_rho_ceiling'),
+    ('fit_wt_dev_on', 'structure vs wild-type somata', '.2f', 'ctrl_struct_wt'),
+    ('fit_vcf_off', 'natural-source alignment, APL off', '.2f', 'tnt_vcf'),
+    ('rate_ratio_off_over_on', 'response rate, APL off / APL on', '.2f', 'rate_ratio'),
+    ('off_frac_ms', 'ms response fraction, APL off', '.3f', 'tnt_frac_ms'),
+    ('off_frac_paa', 'paa response fraction, APL off', '.3f', 'tnt_frac_paa'),
+    ('thr_factor', 'somatic threshold (× the base)', '.2f', None),
+    ('apl_factor_vs_e3', 'APL↔KC scale (× the base)', '.2f', None),
+    ('aplpn_factor_vs_e3', 'APL→bouton scale (× the base)', '.2f', None),
+    ('kc_kc_inh', 'KC–KC scale', '.1f', None),
+    ('n_evals', 'evaluations', '.0f', None),
+]
+MODELS = ['eight glomeruli (capped)', 'DC2 (capped)', 'Hallem-ms core3 (capped)']
+SHORT = {'eight glomeruli (capped)': 'eight glomeruli', 'DC2 (capped)': 'DC2 alone', 'Hallem-ms core3 (capped)': 'Hallem-ms core'}
+
+
+def markdown_tables(df: pd.DataFrame, data: Dict[str, float]) -> str:
+    """One table per threshold: statistic | KC data | each model on the real wiring and on draw 2."""
+    out = []
+    for thr in (70.0, 40.0):
+        sub = df[(df.claw_thr == thr) & df.model.isin(MODELS)]
+        head1 = '| | | ' + ' | '.join(f'{SHORT[m]} {{span=2}}' for m in MODELS) + ' |'
+        head2 = '| statistic | KC data | ' + ' | '.join('real wiring | draw 2' for _ in MODELS) + ' |'
+        sep = '|---|---|' + '---|---|' * len(MODELS)
+        rows = [f'**{thr:g} Hz per-claw threshold**', '', head1, head2, sep]
+        for col, label, fmt, dkey in TABLE_ROWS:
+            cells = []
+            for m in MODELS:
+                for w in ('real', 'draw 2'):
+                    r = sub[(sub.model == m) & (sub.wiring == w)]
+                    cells.append(format(float(r[col].iloc[0]), fmt) if len(r) == 1 and pd.notna(r[col].iloc[0]) else '-')
+            d = '-'
+            if dkey and dkey in data:
+                d = format(data[dkey], fmt)
+                if 'ceiling' in dkey:
+                    d = f'ceiling {d}'
+            rows.append(f'| {label} | {d} | ' + ' | '.join(cells) + ' |')
+        out.append('\n'.join(rows))
+    return '\n\n'.join(out) + '\n'
+
+
 def main() -> None:
     res_dir = H.results_dir(EXPERIMENT)
     df = load_rows()
     data = data_values()
     df.to_csv(res_dir / 'comparison.csv', index=False)
+    (res_dir / 'comparison_table.md').write_text(markdown_tables(df, data))
     pd.set_option('display.width', 250)
     cols = ['experiment', 'model', 'wiring', 'claw_thr', 'loss', 'fit_block', 'fit_on_spearman', 'fit_off_spearman',
         'fit_po_on_spearman', 'fit_po_off_spearman', 'fit_wt_dev_on', 'fit_vcf_off', 'rate_ratio_off_over_on', 'off_frac_ms']
