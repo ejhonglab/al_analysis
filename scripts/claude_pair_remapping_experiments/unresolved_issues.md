@@ -8,6 +8,28 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### The KC->APL drive per spike is proportional to the time step in spike-driven APL models (found 2026-11-07, viki)
+
+- **What.** In olfsysm's KC layer a KC spike adds `wKCAPL * 1e4` to dIs/dt for one step, so the
+  increment of the KC->APL current per spike is `wKCAPL * 1e4 * dt / tau_apl2kc`: it halves when
+  the step halves (the KC-KC term adds `1/kc_kc_tau` per spike and is dt-invariant; the
+  claw-driven and bouton-driven APL inputs are rates and dt-invariant). A step-halving test at
+  fixed parameters (numerics_dt_check.py; results/numerics_dt_check/; reports/
+  diffeq_stability_and_numerics.html) shows the spike-driven 70 Hz base's APL peak falling from
+  55.5 to 36.9 to 25.2 and its APL-on response rate rising from 5.2 % to 6.0 % to 6.7 % at
+  0.5 / 0.25 / 0.125 ms, with 14-22 % of its responses flipping, while the claw-driven base
+  converges (3-4 % of responses flip, every statistic within 0.01).
+- **Affects.** Every spike-driven APL model (E35's spike variants, E36, E37, E40's fits seeded from
+  E36's optima): their tuned wKCAPL scales are dt = 0.5 ms numbers, the "x baseline" factors
+  that compare them with claw-driven scales are not like for like, and the spike-driven /
+  bouton-driven balance of APL's input is dt-specific. Not affected: the odor-odor geometry
+  (rho with the 0.5 ms matrices 0.998 across steps; the agreement with both KC matrices within
+  0.002), the claw-driven models, and the APL-off condition.
+- **Done.** Documented in the numerics report with the measured bound; nothing re-run.
+- **Remains.** Make the spike impulse dt-invariant in olfsysm (add `wKCAPL / tau_apl2kc` per
+  spike, or add to Is directly at the spike), re-tune the spike-driven bases and re-state their
+  scales; until then, quote spike-driven scales with the step they were tuned at.
+
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
 - **What.** Several experiment scripts call `model_provenance()` (al_analysis commit, dirty flag and
