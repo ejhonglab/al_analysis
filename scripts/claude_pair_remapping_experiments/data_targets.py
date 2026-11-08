@@ -33,6 +33,8 @@ INPUTS = {
     'orn': H.shared_dir() / 'data' / 'model_outputs' / 'inputs' / 'orn16_corrdist_olfdb_36glom.csv',
     'ref66': H.APL_PAIR_DIR / 'shared12_pairs.csv',
     'e7_blocks': H.shared_dir() / 'results' / 'E7_confound_controls' / 'B_blocks_graded.csv',
+    'kc_trials_ctrl': H.yang_data_dir() / 'TNT3c' / 'dataset_20_long.csv',
+    'kc_trials_tnt': H.yang_data_dir() / 'TNT' / 'dataset_19_long.csv',
 }
 
 
@@ -77,6 +79,27 @@ def build() -> dict:
             f'KCs, {"control flies" if g == "TNT3c" else "APL output blocked (TNT)"}: mean pair distance over the 120 pairs with '
             'sub-threshold responses (trial mean <= 1) set to 0 before the cosine distance, as a model\'s spike counts are 0 for '
             'non-responding KCs (1 - cosine per recording, mean over recordings)', 'harness.transform_matrix(values=thresholded) + recording_rdms_from_matrices', ['kc_trialmeans'])
+    # the trial-to-trial noise floor and the noise-corrected distances (noise_floor_trial_distances.py):
+    # noise inflates every cosine distance toward 1, so the corrected mean is the level a noise-free
+    # model should match
+    from noise_floor_trial_distances import analyse as nf_analyse, load_trials as nf_load, recording_arrays as nf_recs
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        lab = 'control flies' if g == 'TNT3c' else 'APL output blocked (TNT)'
+        floors, pairs = [], []
+        for rec, by_odor in nf_recs(nf_load(g)).items():
+            po, pr = nf_analyse(by_odor, 'graded')
+            floors.append(po); pairs.append(pr['corrected'])
+        corrected = pd.concat(pairs, axis=1).mean(axis=1)
+        add(f'{name}_mean_dist_noise_corrected', corrected.mean(),
+            f'KCs, {lab}: mean pair distance over the 120 pairs after correcting each recording\'s cosine for trial-to-trial noise '
+            '(signal power |mean|^2 - s^2/n per odor; cosine of the trial means divided by the signal norms), mean over recordings: '
+            'the distance a noise-free recording would show', 'noise_floor_trial_distances.analyse', [f'kc_trials_{name}'])
+        add(f'{name}_trial_mean_floor', float(np.mean([f.trial_mean_floor.mean() for f in floors])),
+            f'KCs, {lab}: expected 1 - cosine between two independent 3-trial means of the same odor (noise alone), mean over odors and recordings',
+            'noise_floor_trial_distances.analyse', [f'kc_trials_{name}'])
+        add(f'{name}_single_trial_floor', float(np.mean([f.single_trial_floor.mean() for f in floors])),
+            f'KCs, {lab}: 1 - cosine between two single trials of the same odor, mean over trial pairs, odors and recordings',
+            'noise_floor_trial_distances.analyse', [f'kc_trials_{name}'])
     for name, (m, lab, inp) in mats.items():
         fn = 'data_targets.build (pair distances)'
         add(f'{name}_mean_dist', m.mean(), f'{lab}: mean pair distance over the 120 pairs', fn, inp)
