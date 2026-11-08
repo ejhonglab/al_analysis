@@ -155,6 +155,13 @@ Each of these cost real time to diagnose; check them before blaming a script.
 - Don't rebase or stash while a subagent works in the same checkout. Commit your own files by path
   (`git add <files> && git commit -- <files>`, which leaves the subagent's staged work alone), and
   push later if the push is rejected.
+- hal runs earlyoom with `--prefer` for Python: once free memory falls below 8 % it SIGTERMs
+  Python processes first, anyone's, not the process using the memory. On 2026-11-07 a test
+  that piped `yes` into `script` (which buffers its input without limit) filled memory and took
+  down the queue monitor (its unit restarts only on failure, so it stayed down), the olfdb and
+  bouldermesh containers' workers and a running model fit. Bound the memory of whatever you run,
+  never feed an endless stream into a program's stdin, and after a memory spike check
+  `systemctl --user status claude-queue-monitor` on hal.
 - Tests: the whole QUICK=1 suite took 2.5 h on hal (2026-11-06); for model changes,
   test/test_mb_model.py is the part that matters. Known failures, all filed as issues on
   ejhonglab/al_analysis: test_equalize_kc_type_sparsity (a leftover `breakpoint()`, #2),
