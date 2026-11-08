@@ -891,6 +891,7 @@ Canonical experiment names for summary reports:
 | E39 | the oracle gain decomposed by glomerulus |
 | E40 | the reduced gain sets in the joint fit |
 | E41 | the sub-threshold claw gain |
+| E42 | the reduced gain sets on a re-drawn wiring |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
