@@ -68,7 +68,7 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
     plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
     read_onestep_lr_cache, connectome_KCKC_weights, CLAW_SAT_PARAMS,
-    BOUTON_DEPLETION_PARAMS, EXT_INH_RECORDED_PARAMS, APL_INH_FORM_PARAMS
+    BOUTON_DEPLETION_PARAMS, EXT_INH_RECORDED_PARAMS, APL_INH_FORM_PARAMS, get_sim_var
 )
 
 # TODO better way?
@@ -2358,6 +2358,95 @@ def test_apl_unit_coupling(orn_deltas):
 
     assert coupling2spread[0.0] > 0.5, f'{coupling2spread=}'
     assert coupling2spread[10.0] < 0.5 * coupling2spread[0.0], f'{coupling2spread=}'
+
+
+class _ModelParamsWith:
+    """Stands in for `osm.ModelParams` in `fit_mb_model`: the default parameters, with
+    the time step and some `ModelParams.kc` attributes set, and APL dynamics saved.
+
+    The time step can only be changed this way, since olfsysm sizes its run variables
+    from the parameters at construction.
+    """
+    def __init__(self, orig, time_dt: float, **kc_attrs):
+        self.orig = orig
+        self.time_dt = time_dt
+        self.kc_attrs = kc_attrs
+
+    def __call__(self):
+        mp = self.orig()
+        mp.time_dt = self.time_dt
+        mp.kc.save_inh_sims = True
+        for k, v in self.kc_attrs.items():
+            setattr(mp.kc, k, v)
+        return mp
+
+
+@pytest.mark.parametrize('kws', [
+        dict(),
+        dict(one_row_per_claw=True, prat_claws=True, use_connectome_APL_weights=True,
+            apl_unit_coupling=10.0
+        ),
+    ], ids=format_model_params
+)
+def test_apl_spike_drive_dt_invariant(orn_deltas, monkeypatch, kws):
+    """Tests a KC spike's drive to APL does not depend on the time step.
+
+    With APL driven by KC spikes (`pn_claw_to_apl=False`), a spike lasts one step, so
+    olfsysm scales its drive to the KC->APL current by `apl_spike_ref_dt / time_dt`. At
+    the default step (equal to the default `apl_spike_ref_dt`), outputs must be
+    bit-identical to the unscaled drive (`apl_spike_ref_dt=0`, the behavior before the
+    parameter existed). With thresholds and APL weights fixed, halving the step should
+    then leave APL's peak potential nearly unchanged, whereas without the scaling it
+    falls by about a third (each spike's increment of the current halves).
+
+    The second case (claws, connectome APL weights, coupled APL units) covers the
+    APL-units branch of `sim_KC_layer`.
+    """
+    # few odors, to keep the dynamics small and tuning fast
+    orn_deltas = orn_deltas.iloc[:, :4]
+    assert not kws.get('pn_claw_to_apl', False)
+
+    _, _, _, params = _fit_mb_model(orn_deltas=orn_deltas, **kws)
+    fixed_kws = {**get_thr_and_APL_weights(params, kws), **kws}
+
+    orig = osm.ModelParams
+    default_dt = orig().time_dt
+    assert orig().kc.apl_spike_ref_dt == default_dt
+
+    def run(time_dt: float, **kc_attrs) -> Tuple[np.ndarray, np.ndarray]:
+        with monkeypatch.context() as m:
+            m.setattr(osm, 'ModelParams', _ModelParamsWith(orig, time_dt, **kc_attrs))
+            _, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas,
+                return_olfsysm_vars=True, **fixed_kws
+            )
+        mp = params['mp']
+        assert mp.time_dt == time_dt
+        # (odors, APL units [1 for a single APL], time steps)
+        inh = np.asarray(get_sim_var(params['rv'].kc, 'inh_sims'), dtype=float)
+        assert inh.shape[0] == orn_deltas.shape[1]
+        return spike_counts.values, inh.reshape(inh.shape[0], -1)
+
+    spikes, inh = run(default_dt)
+    spikes_unscaled, inh_unscaled = run(default_dt, apl_spike_ref_dt=0.0)
+    assert np.array_equal(spikes, spikes_unscaled)
+    assert np.array_equal(inh, inh_unscaled)
+    peak = inh.max(axis=1)
+    assert (peak > 0).all()
+
+    def peak_ratio(inh_half: np.ndarray) -> float:
+        # APL's peak potential (of any unit) per odor, at half the step relative to the
+        # default, averaged over odors
+        return float(np.mean(inh_half.max(axis=1) / peak))
+
+    _, inh_half = run(default_dt / 2)
+    _, inh_half_unscaled = run(default_dt / 2, apl_spike_ref_dt=0.0)
+    ratio = peak_ratio(inh_half)
+    ratio_unscaled = peak_ratio(inh_half_unscaled)
+    print(f'APL peak at half the step / at the default step: {ratio:.3f} '
+        f'(without the spike-drive scaling: {ratio_unscaled:.3f})'
+    )
+    assert abs(ratio - 1) < 0.1
+    assert ratio_unscaled < 0.85
 
 
 def _unit_potentials(values: np.ndarray, times: Sequence[float]) -> xr.DataArray:

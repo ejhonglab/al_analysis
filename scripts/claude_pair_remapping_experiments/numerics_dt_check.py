@@ -20,12 +20,17 @@ olfsysm sizes its run variables from the parameters at construction, so the step
 giving `fit_mb_model` a ModelParams constructor that sets `time_dt` (the only way to change
 it without a new kwarg); the dt = 0.5 ms run reproduces the stored model exactly.
 
-Outputs: <shared>/results/numerics_dt_check/{per_dt_stats.csv, flip_fractions.csv,
-provenance.json}.
-Usage: OMP_NUM_THREADS=16 ./venv/bin/python numerics_dt_check.py
+Since olfsysm's p.kc.apl_spike_ref_dt (default 0.5 ms, the default step), a spike's drive to
+APL is scaled by apl_spike_ref_dt / dt, so (2) no longer applies; the dt = 0.5 ms runs are
+unchanged by that. The first results (before it) are in results/numerics_dt_check/; re-runs go to
+a folder named with --out-name.
+
+Outputs: <shared>/results/<out-name>/{per_dt_stats.csv, flip_fractions.csv, provenance.json}.
+Usage: OMP_NUM_THREADS=16 ./venv/bin/python numerics_dt_check.py [--out-name NAME]
 """
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import time
@@ -83,10 +88,17 @@ def run(orn, kws, params, dt, cond, osm, mb_model):
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--out-name', default='numerics_dt_check',
+        help='folder under <shared>/results for the outputs (default: %(default)s)')
+    args = ap.parse_args()
     import olfsysm as osm
     import al_analysis.mb_model as mb_model
-    res_dir = H.shared_dir() / 'results' / 'numerics_dt_check'; res_dir.mkdir(exist_ok=True)
+    res_dir = H.shared_dir() / 'results' / args.out_name; res_dir.mkdir(exist_ok=True)
     orn = H.apl16_orn_deltas()
+    # recorded before the runs, so a pull during them cannot change it
+    model_prov = H.model_provenance(orn_deltas=orn)
+    apl_spike_ref_dt = getattr(osm.ModelParams().kc, 'apl_spike_ref_dt', None)
     data = {g: H.yang_mean_rdm(g, 'cosine') for g in ('TNT3c', 'TNT')}
     data_rates = {g: H.yang_response_fractions(g)[H.APL16_ODORS].mean() for g in ('TNT3c', 'TNT')}
     rows, flips = [], []
@@ -132,7 +144,8 @@ def main() -> None:
     print(pd.DataFrame(rows).round(4).to_string(index=False)); print(pd.DataFrame(flips).round(4).to_string(index=False))
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='numerics_dt_check.py',
         host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), dts_ms=[d * 1e3 for d in DTS],
-        bases={k: dict(kws=v[0], params=v[1]) for k, v in BASES.items()}, model=H.model_provenance(orn_deltas=orn))
+        apl_spike_ref_dt=apl_spike_ref_dt, bases={k: dict(kws=v[0], params=v[1]) for k, v in BASES.items()},
+        model=model_prov)
     (res_dir / 'provenance.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
     print('->', res_dir)
 
