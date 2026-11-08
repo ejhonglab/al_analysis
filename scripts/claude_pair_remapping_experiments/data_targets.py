@@ -67,6 +67,16 @@ def build() -> dict:
     mats = {'orn': (orn, 'ORNs (1 - Pearson r across 36 glomeruli)', ['orn']),
         'ctrl': (kc['TNT3c'], 'KCs, control flies (1 - cosine, mean over 11 recordings)', ['kc_rdms']),
         'tnt': (kc['TNT'], 'KCs, APL output blocked (TNT) (1 - cosine, mean over 8 recordings)', ['kc_rdms'])}
+    # the same mean distances with the data transformed as the models' spike counts are
+    # (sub-threshold responses, trial mean <= 1, set to 0; a model KC that does not respond
+    # contributes 0, so this is the comparable target for spike-count cosine distances)
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        rec_mats = H.yang_recording_matrices(g)
+        thr_rdms = H.recording_rdms_from_matrices({k: H.transform_matrix(m, values='thresholded') for k, m in rec_mats.items()})
+        add(f'{name}_mean_dist_thresholded', thr_rdms.mean(axis=0).mean(),
+            f'KCs, {"control flies" if g == "TNT3c" else "APL output blocked (TNT)"}: mean pair distance over the 120 pairs with '
+            'sub-threshold responses (trial mean <= 1) set to 0 before the cosine distance, as a model\'s spike counts are 0 for '
+            'non-responding KCs (1 - cosine per recording, mean over recordings)', 'harness.transform_matrix(values=thresholded) + recording_rdms_from_matrices', ['kc_trialmeans'])
     for name, (m, lab, inp) in mats.items():
         fn = 'data_targets.build (pair distances)'
         add(f'{name}_mean_dist', m.mean(), f'{lab}: mean pair distance over the 120 pairs', fn, inp)
