@@ -27,15 +27,20 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
   and hover text on every sample:
   - tokens per host, cumulative over the window: all tokens, all but cache reads, or output
     tokens only (links); tick "group hosts by Claude account" to sum the hosts that use one
-    claude.ai account;
+    claude.ai account. By default only queue work in queue sessions is counted: "queue work
+    only" leaves out the turns that a prompt typed into a session started (a request of Tom's)
+    until the agent runs `presence_hook.py --mark queue`, and "queue sessions only" leaves out
+    sessions that never ran `chat_watch.sh`; untick either to see everything;
   - the same for tokens on Fable models only;
   - plan usage per claude.ai account: the percentage of the 5-hour (dashed) and weekly (solid)
     limits, with a table of the latest reading, its reset times, and each host's first reading
     (its usage when it joined). Claude Code reports no separate Fable or Opus limit, so there
     is no Fable plot of this kind.
-- **Recent chat.md entries**: the latest posts.
-- **Claude sessions**: one row per session, from the hooks, with its model and effort level and
-  its tokens so far (hover for the output tokens):
+- **Recent chat.md entries**: the latest posts; click one for the whole message, again to fold
+  it.
+- **Claude sessions**: one row per session, from the hooks, with its model and effort level, its
+  tokens so far (hover for the output tokens and the manual-work share) and whether its current
+  turns count as queue or manual work:
 
   | state | meaning |
   |---|---|
@@ -125,8 +130,17 @@ so a session that stays idle shows the old record until it next does something.
   (`USAGE_SAMPLE_S`), at session start and end, and as soon as the status line has the
   session's first plan-usage reading: the session's tokens so far by model (from its
   transcript and its subagents', read incrementally; parse state in the local cache), the
-  claude.ai account (a 12-character hash of the account ID, its display name and plan, from
-  `~/.claude.json`; no email, no credentials), and the plan's 5-hour and weekly usage.
+  share of them in manual work (`tokens_manual`), the work mode in effect, whether the session
+  is a queue session (it has run `chat_watch.sh`), the claude.ai account (a 12-character hash
+  of the account ID, its display name and plan, from `~/.claude.json`; no email, no
+  credentials), and the plan's 5-hour and weekly usage.
+- Queue vs manual work: the transcript tags every prompt a person typed, so the turns from such
+  a prompt to the next one are manual work unless the prompt was a queue command (the join
+  command, the session-title tick, a bare acknowledgement); task notifications, scheduled
+  prompts and peer messages keep the mode in effect. `presence_hook.py --mark queue` (the
+  session ID from `$CLAUDE_CODE_SESSION_ID`) ends a manual segment, `--mark manual` starts one.
+- Theme: the page follows the system or browser dark / light setting; the "theme" links at the
+  top pin one (kept in the browser).
 - Status line: `../.claude/settings.json` sets `statusLine` to `statusline_capture.py` for
   sessions started in the experiments folder, refreshed every 300 s. It saves the `rate_limits`
   Claude Code passes it to the local cache and prints the plan usage ("5h 23% (to 21:00) · week

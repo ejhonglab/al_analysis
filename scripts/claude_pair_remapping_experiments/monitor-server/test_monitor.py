@@ -210,7 +210,7 @@ def make_shared(shared, now):
     (shared / 'atlas_status.md').write_text('# atlas status\n\n## Now\n- Idle (nothing).\n')
     (shared / 'experiment_priorities.md').write_text(PRIORITIES)
     (shared / 'chat.md').write_text('## 2026-11-04 17:42 atlas\nfirst\n\n'
-        '## 2026-11-04 17:45 hal\nsecond\n\n## 2026-11-06 15:52 atlas\nthird\n')
+        '## 2026-11-04 17:45 hal\nsecond\nwith a second line\n\n## 2026-11-06 15:52 atlas\nthird\n')
     pdir = shared / 'presence'
     pdir.mkdir(exist_ok=True)
 
@@ -237,7 +237,7 @@ def make_shared(shared, now):
     udir = shared / 'usage'
     udir.mkdir(exist_ok=True)
 
-    def usage(host, sid, account, points):
+    def usage(host, sid, account, points, queue_session=True, manual_fable=0):
         with open(udir / '{}__{}.jsonl'.format(host, sid), 'w') as f:
             for age, fable, opus, pu in points:
                 tokens = {}
@@ -247,18 +247,25 @@ def make_shared(shared, now):
                 if opus:
                     tokens['claude-opus-5-5'] = dict(input=10, output=opus, cache_read=10 * opus,
                         cache_creation=0)
+                # the manual share (of the Fable tokens) grows with the last sample
+                manual = {'claude-fable-5-1': dict(input=0, output=manual_fable,
+                    cache_read=10 * manual_fable, cache_creation=0)} if (
+                    manual_fable and age == points[-1][0]) else {}
                 f.write(json.dumps(dict(epoch=now - age, host=host, session_id=sid,
-                    account=account, tokens=tokens, plan_usage=pu)) + '\n')
+                    account=account, tokens=tokens, tokens_manual=manual, plan_usage=pu,
+                    queue_session=queue_session, work_mode='manual' if manual else 'queue'))
+                    + '\n')
 
     tom = dict(id='aaaa1111bbbb', name='Tom', plan='Max')
     def pu(age, five, week):
         return dict(five_hour=dict(used_percentage=five, resets_at=now + 3600),
             seven_day=dict(used_percentage=week, resets_at=now + 86400), captured_epoch=now - age)
     usage('hal', 'a', tom, [(7200, 1000, 0, pu(7200, 10, 40)), (3600, 3000, 500, pu(3600, 25, 42)),
-        (60, 5000, 2000, pu(60, 30, 45))])
+        (60, 5000, 2000, pu(60, 30, 45))], manual_fable=1000)
     usage('atlas', 'c', tom, [(5000, 0, 1000, None), (100, 0, 4000, pu(100, 31, 45))])
+    # viki's session never ran chat_watch.sh: not a queue session
     usage('viki', 'v', dict(id='cccc2222dddd', name='Yang', plan='Pro'),
-        [(3000, 200, 0, None), (200, 900, 0, None)])
+        [(3000, 200, 0, None), (200, 900, 0, None)], queue_session=False)
 
 
 def test_collect(tmp_path):
@@ -289,7 +296,7 @@ def test_collect(tmp_path):
     assert hosts['hal']['models'][0]['model'] == 'Fable 5.1'
     assert hosts['hal']['models'][0]['effort'] == 'xhigh'
     html = server.render(st, 30)
-    assert 'needs you' in html and 'E37' in html and '<script' not in html
+    assert 'needs you' in html and 'E37' in html and html.count('<script') == 1
     # Hosts table: model and effort on two lines, as are the times and their recency
     hosts_table = html[html.index('<h2>Hosts'):html.index('<h2>Running')]
     assert 'Fable 5.1<br>xhigh' in hosts_table and '<th>last chat</th>' in hosts_table
@@ -312,6 +319,13 @@ def test_usage_collect_and_render(tmp_path):
     assert hal['samples'][-1]['tokens']['output'] == 7000
     assert hal['samples'][-1]['tokens']['fable_output'] == 5000
     assert hal['samples'][-1]['tokens']['all'] == 5000 * 11 + 2000 * 11 + 20
+    assert hal['samples'][-1]['tokens']['manual_output'] == 1000
+    assert hal['samples'][-1]['tokens']['fable_manual_output'] == 1000
+    assert hal['queue_session'] is True and hal['work_mode'] == 'manual'
+    viki = next(s for s in u['sessions'] if s['host'] == 'viki')
+    assert viki['queue_session'] is False
+    assert server.token_value(hal['samples'][-1]['tokens'], '', 'output', 'queue') == 6000
+    assert server.token_value(hal['samples'][-1]['tokens'], 'fable_', 'output', 'all') == 5000
     # cumulative steps within the window, relative to its start
     pts = server.step_series([[(now - 7200, 10), (now - 60, 30)], [(now - 100, 5)]],
         now - 3600, now)
@@ -321,18 +335,30 @@ def test_usage_collect_and_render(tmp_path):
         'Recent chat.md entries', 'Claude sessions')]
     assert order == sorted(order)
     usage_html = html[html.index('<h2>Usage'):html.index('<h2>Recent chat')]
-    assert usage_html.count('<svg class="plot"') == 3 and '<script' not in html
-    # by host: hal's output over the last day (it started 2 h ago, so all of it) is 7k
-    assert '>hal (7k)<' in usage_html and '>viki (900)<' in usage_html
+    # the only script is the theme switch, in the head
+    assert usage_html.count('<svg class="plot"') == 3 and html.count('<script') == 1
+    assert '<meta name="color-scheme" content="light dark">' in html
+    assert 'data-theme="dark">dark</a>' in html
+    # by host, default: queue work in queue sessions only, so hal's output over the last day
+    # (it started 2 h ago) is 7k minus its 1k of manual work, and viki's session is left out
+    assert '>hal (6k)<' in usage_html and 'viki' not in usage_html
+    assert '&#9745; queue work only' in usage_html and '&#9745; queue sessions only' in usage_html
     assert '&#9744; group hosts by Claude account' in usage_html
-    grouped = server.render(st, 30, server.parse_opts('group=account&tokens=output'))
+    everything = server.render(st, 30, server.parse_opts('tokens=output&work=all&sessions=all'))
+    everything = everything[everything.index('<h2>Usage'):everything.index('<h2>Recent chat')]
+    assert '>hal (7k)<' in everything and '>viki (900)<' in everything
+    grouped = server.render(st, 30, server.parse_opts('group=account&tokens=output&work=all'))
     grouped = grouped[grouped.index('<h2>Usage'):grouped.index('<h2>Recent chat')]
     assert '&#9745; group hosts by Claude account' in grouped
     assert 'Tom (Max): atlas, hal (11k)' in grouped
     assert 'Tom (Max), weekly' in grouped and 'Tom (Max), 5-hour' in grouped
-    assert '45%' in grouped and 'Yang (Pro)' in grouped
-    # the sessions table shows each session's tokens from its presence record
-    assert server.parse_opts('days=99&tokens=bogus') == dict(days=3, tokens='all', group='host')
+    assert '45%' in grouped and 'Yang (Pro)' not in grouped
+    # a chat entry with more than one line expands to the whole message
+    chat = html[html.index('<h2>Recent chat'):html.index('<h2>Claude sessions')]
+    assert '<details class="chat"><summary>second</summary><pre>second\nwith a second line</pre>' in chat
+    assert '<details' not in chat.split('third')[0].rsplit('<tr>', 1)[-1]
+    assert server.parse_opts('days=99&tokens=bogus&work=x') == dict(days=3, tokens='all',
+        group='host', work='queue', sessions='queue')
 
 
 def test_model_names():
@@ -380,10 +406,20 @@ def test_http(tmp_path):
         httpd.shutdown()
 
 
-def usage_line(mid, model, out, sidechain=False):
-    return json.dumps(dict(type='assistant', isSidechain=sidechain, message=dict(id=mid,
+def usage_line(mid, model, out, sidechain=False, ts=None):
+    d = dict(type='assistant', isSidechain=sidechain, message=dict(id=mid,
         model=model, usage=dict(input_tokens=1, output_tokens=out, cache_read_input_tokens=100,
-        cache_creation_input_tokens=10)))) + '\n'
+        cache_creation_input_tokens=10)))
+    if ts:
+        d['timestamp'] = ts
+    return json.dumps(d) + '\n'
+
+
+def prompt_line(text, ts, kind='human', source='typed'):
+    """A transcript line of a prompt as Claude Code writes it (`origin.kind` 'human' and
+    `promptSource` 'typed' for one a person typed)."""
+    return json.dumps(dict(type='user', timestamp=ts, origin=dict(kind=kind), promptSource=source,
+        message=dict(role='user', content=text))) + '\n'
 
 
 def test_session_tokens(tmp_path):
@@ -398,15 +434,54 @@ def test_session_tokens(tmp_path):
     sub.mkdir(parents=True)
     (sub / 'agent-1.jsonl').write_text(usage_line('x1', 'claude-opus-5-5', 20))
     files = {}
-    tok = presence_hook.session_tokens(str(transcript), files)
+    tok, manual = presence_hook.session_tokens(str(transcript), files)
+    assert manual == {}
     assert tok == {'claude-fable-5-1': dict(input=2, output=10, cache_read=200, cache_creation=20),
         'claude-opus-5-5': dict(input=1, output=20, cache_read=100, cache_creation=10)}
     # incremental: the cut-off line completes, m3 counts once, m2 stays counted once
     with open(transcript, 'a') as f:
         f.write('age":{"output_tokens":4}}}\n' + usage_line('m3', 'claude-fable-5-1', 4))
     files = json.loads(json.dumps(files))
-    tok = presence_hook.session_tokens(str(transcript), files)
+    tok, _ = presence_hook.session_tokens(str(transcript), files)
     assert tok['claude-fable-5-1']['output'] == 14
+
+
+def test_work_mode_attribution(tmp_path):
+    import presence_hook as ph
+    T = '2026-11-08T10:{:02d}:00.000Z'
+    transcript = tmp_path / 's.jsonl'
+    # queue work until Tom types a request at 10:10; the title tick and a task notification do
+    # not change the mode; "ok" and the join command are queue commands
+    transcript.write_text(
+        prompt_line('join experiment work queue', T.format(0))
+        + usage_line('m1', 'claude-fable-5-1', 5, ts=T.format(1))
+        + prompt_line('__set_session_title__ hal', T.format(2), kind=None, source='system')
+        + usage_line('m2', 'claude-fable-5-1', 6, ts=T.format(3))
+        + prompt_line('please check the hook', T.format(10))
+        + usage_line('m3', 'claude-fable-5-1', 7, ts=T.format(11))
+        + prompt_line('<task-notification>x</task-notification>', T.format(12),
+            kind='task-notification', source='system')
+        + usage_line('m4', 'claude-fable-5-1', 8, ts=T.format(13))
+        + prompt_line('ok', T.format(20))
+        + usage_line('m5', 'claude-fable-5-1', 9, ts=T.format(21)))
+    sub = tmp_path / 's' / 'subagents'
+    sub.mkdir(parents=True)
+    (sub / 'agent-1.jsonl').write_text(usage_line('x1', 'claude-opus-5-5', 20, ts=T.format(12)))
+    files, bounds = {}, []
+    tok, manual = ph.session_tokens(str(transcript), files, bounds)
+    assert [(b[1], b[2]) for b in bounds] == [('queue', 'prompt'), ('manual', 'prompt'),
+        ('queue', 'prompt')]
+    assert tok['claude-fable-5-1']['output'] == 35 and tok['claude-opus-5-5']['output'] == 20
+    # m3, m4 and the subagent's message fall in the manual segment (10:10 to 10:20)
+    assert manual['claude-fable-5-1']['output'] == 15 and manual['claude-opus-5-5']['output'] == 20
+    # a mark ends a manual segment early: re-read with the mark at 10:12
+    files, bounds = {}, []
+    ph.add_bound(bounds, ph.line_epoch({'timestamp': T.format(12)}), 'queue', 'mark')
+    tok, manual = ph.session_tokens(str(transcript), files, bounds)
+    assert manual['claude-fable-5-1']['output'] == 7 and 'claude-opus-5-5' not in manual
+    assert ph.mode_at(bounds, ph.line_epoch({'timestamp': T.format(5)})) == 'queue'
+    assert ph.mode_at(bounds, ph.line_epoch({'timestamp': T.format(11)})) == 'manual'
+    assert ph.prompt_mode('Ok.') == 'queue' and ph.prompt_mode('what is the ETA?') == 'manual'
 
 
 def test_hook_writes_usage_samples(dirs, tmp_path):
@@ -429,6 +504,8 @@ def test_hook_writes_usage_samples(dirs, tmp_path):
     assert len(s) == 1 and s[0]['reason'] == 'SessionStart' and s[0]['plan_usage'] is None
     assert s[0]['tokens'] == {'claude-fable-5-1': dict(input=1, output=50, cache_read=100,
         cache_creation=10)}
+    assert s[0]['tokens_manual'] == {} and s[0]['work_mode'] == 'queue'
+    assert s[0]['queue_session'] is False
     assert s[0]['account']['name'] == 'Tom' and s[0]['account']['plan'] == 'Max'
     assert len(s[0]['account']['id']) == 12 and 'x@y' not in path.read_text()
     hook(env, 'PreToolUse', tool_name='Bash', **kw)
@@ -455,8 +532,20 @@ def test_hook_writes_usage_samples(dirs, tmp_path):
     subprocess.run(run, env=env, check=True)
     s = samples()
     assert len(s) == 3 and s[2]['reason'] == 'watch'
+    # the watcher's sample makes it a queue session
+    assert s[2]['queue_session'] is True
+    assert json.loads((Path(env['KC_PRESENCE_CACHE']) / 's5.json').read_text())['queue_session']
+    # the agent marks Tom's request as done (session ID from the environment)
+    r = subprocess.run([sys.executable, '-I', str(HERE / 'presence_hook.py'), '--mark', 'manual'],
+        env=dict(env, CLAUDE_CODE_SESSION_ID='s5'), capture_output=True, text=True)
+    assert r.returncode == 0 and 'manual work from' in r.stdout
+    rec = json.loads((Path(env['KC_PRESENCE_CACHE']) / 's5.json').read_text())
+    assert rec['work_mode'] == 'manual' and record(shared, 's5')['work_mode'] == 'manual'
     hook(env, 'SessionEnd', reason='other', **kw)
-    assert samples()[-1]['reason'] == 'SessionEnd'
+    assert samples()[-1]['reason'] == 'SessionEnd' and samples()[-1]['work_mode'] == 'manual'
+    r = subprocess.run([sys.executable, '-I', str(HERE / 'presence_hook.py'), '--mark', 'bogus',
+        's5'], env=env, capture_output=True, text=True)
+    assert r.returncode != 0
 
 
 def test_statusline_runs_users_own_command(tmp_path):

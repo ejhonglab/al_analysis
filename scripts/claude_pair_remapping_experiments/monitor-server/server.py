@@ -243,10 +243,14 @@ def read_chat(shared):
             if t is not None:
                 h['first'] = t if h['first'] is None else min(h['first'], t)
                 h['last'] = t if h['last'] is None else max(h['last'], t)
-            cur = {'time': t, 'host': host, 'first_line': ''}
+            cur = {'time': t, 'host': host, 'first_line': '', 'lines': []}
             entries.append(cur)
-        elif cur is not None and not cur['first_line'] and line.strip():
-            cur['first_line'] = line.strip()[:240]
+        elif cur is not None:
+            if not cur['first_line'] and line.strip():
+                cur['first_line'] = line.strip()[:240]
+            cur['lines'].append(line)
+    for e in entries:
+        e['text'] = '\n'.join(e.pop('lines')).strip()
     return hosts, entries[-12:][::-1]
 
 
@@ -372,23 +376,36 @@ def host_models(sessions):
 
 
 def sample_tokens(sample):
-    """Token counts of a usage sample: {'all', 'nocache', 'output'}, overall and on Fable."""
+    """Token counts of a usage sample: {'all', 'nocache', 'output'}, overall ('all'), on Fable
+    models ('fable_all'), and the same for the manual-work share ('manual_all',
+    'fable_manual_all'; the tokens of the turns a prompt Tom typed started, `tokens_manual`
+    in the sample; 0 in samples from before that split)."""
     out = {}
-    for model, t in (sample.get('tokens') or {}).items():
-        if not isinstance(t, dict):
-            continue
-        vals = {k: t.get(k) if isinstance(t.get(k), (int, float)) else 0
-            for k in ('input', 'output', 'cache_read', 'cache_creation')}
-        measures = {
-            'all': sum(vals.values()),
-            'nocache': vals['input'] + vals['output'] + vals['cache_creation'],
-            'output': vals['output'],
-        }
-        fable = 'fable' in (model or '').lower()
-        for k, v in measures.items():
-            out[k] = out.get(k, 0) + v
-            out['fable_' + k] = out.get('fable_' + k, 0) + (v if fable else 0)
+    for field, prefix in (('tokens', ''), ('tokens_manual', 'manual_')):
+        for model, t in (sample.get(field) or {}).items():
+            if not isinstance(t, dict):
+                continue
+            vals = {k: t.get(k) if isinstance(t.get(k), (int, float)) else 0
+                for k in ('input', 'output', 'cache_read', 'cache_creation')}
+            measures = {
+                'all': sum(vals.values()),
+                'nocache': vals['input'] + vals['output'] + vals['cache_creation'],
+                'output': vals['output'],
+            }
+            fable = 'fable' in (model or '').lower()
+            for k, v in measures.items():
+                out[prefix + k] = out.get(prefix + k, 0) + v
+                out['fable_' + prefix + k] = out.get('fable_' + prefix + k, 0) + (v if fable else 0)
     return out
+
+
+def token_value(tokens, prefix, measure, work):
+    """A sample's tokens for one plot: `prefix` '' or 'fable_', `measure` a TOKEN_MEASURES key,
+    `work` 'queue' (the manual-work share taken out) or 'all'."""
+    v = tokens.get(prefix + measure, 0)
+    if work == 'queue':
+        v -= tokens.get(prefix + 'manual_' + measure, 0)
+    return max(v, 0)
 
 
 def account_key(host, account):
@@ -420,7 +437,7 @@ def read_usage(shared, now):
                 continue
         except OSError:
             continue
-        host, samples = m.group(1), []
+        host, samples, queue_session, work_mode = m.group(1), [], False, None
         for line in (read_text(path) or '').splitlines():
             try:
                 d = json.loads(line)
@@ -431,6 +448,9 @@ def read_usage(shared, now):
             pu = d.get('plan_usage') if isinstance(d.get('plan_usage'), dict) else None
             samples.append({'epoch': d['epoch'], 'tokens': sample_tokens(d), 'plan_usage': pu,
                 'model': d.get('model')})
+            queue_session = queue_session or bool(d.get('queue_session'))
+            if d.get('work_mode') in ('queue', 'manual'):
+                work_mode = d['work_mode']
             acct = d.get('account') if isinstance(d.get('account'), dict) else None
             if d['epoch'] >= latest_account.get(host, (0, None))[0]:
                 latest_account[host] = (d['epoch'], acct)
@@ -438,7 +458,8 @@ def read_usage(shared, now):
                 first_reading[host] = dict(pu, epoch=d['epoch'])
         if samples:
             samples.sort(key=lambda s: s['epoch'])
-            sessions.append({'host': host, 'session_id': m.group(2), 'samples': samples})
+            sessions.append({'host': host, 'session_id': m.group(2), 'samples': samples,
+                'queue_session': queue_session, 'work_mode': work_mode})
     hosts, accounts = {}, {}
     for host in sorted({s['host'] for s in sessions}):
         acct = latest_account.get(host, (0, None))[1]
@@ -544,6 +565,9 @@ CSS = """
 :root[data-theme="dark"] { --bg: #161615; --fg: #ecebe6; --muted: #9b9a93; --card: #1f1f1d;
   --line: #34332f; --green: #5cc27a; --blue: #7cb0ec; --amber: #e0a63a; --orange: #f08a4b;
   --red: #f0766c; --grey: #8d8c85; --chip: #2a2a27; }
+:root { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -571,6 +595,14 @@ tr:last-child td { border-bottom: none; }
 .b-gone, .b-ended, .b-none { color: var(--muted); }
 .b-running { color: var(--green); } .b-blocked { color: var(--orange); }
 .b-offline, .b-unknown { color: var(--muted); }
+.b-manual { color: var(--orange); } .b-queue { color: var(--muted); }
+details.chat summary { color: var(--fg); font-size: inherit; list-style: none; }
+details.chat summary::-webkit-details-marker { display: none; }
+details.chat summary::before { content: "\25B8"; color: var(--muted); margin-right: 6px; }
+details.chat[open] summary::before { content: "\25BE"; }
+details.chat pre { max-height: none; }
+.theme a { color: var(--muted); text-decoration: none; margin: 0 2px; }
+.theme a.on { color: var(--fg); font-weight: 600; }
 details { margin-top: 4px; }
 summary { cursor: pointer; color: var(--muted); font-size: .82rem; }
 pre { white-space: pre-wrap; word-break: break-word; font-size: .8rem; margin: 6px 0 0;
@@ -606,6 +638,19 @@ CSS += ('@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
     '--s{}: {};'.format(i + 1, c[1]) for i, c in enumerate(SERIES_COLORS)) + ' } }\n')
 CSS += ':root[data-theme="dark"] { ' + ' '.join('--s{}: {};'.format(i + 1, c[1])
     for i, c in enumerate(SERIES_COLORS)) + ' }\n'
+
+
+# applies the reader's theme choice (localStorage 'theme': light | dark; absent = follow the
+# system or browser setting) before the page paints, and wires the theme links
+THEME_SCRIPT = (
+    "(function(){var k='theme',r=document.documentElement;function g(){try{return localStorage."
+    "getItem(k)}catch(e){return null}}function ap(t){if(t==='light'||t==='dark')r.setAttribute("
+    "'data-theme',t);else r.removeAttribute('data-theme');var l=document.querySelectorAll("
+    "'.theme a');for(var i=0;i<l.length;i++)l[i].className=(l[i].getAttribute('data-theme')==="
+    "(t||'auto'))?'on':''}ap(g());document.addEventListener('DOMContentLoaded',function(){ap(g());"
+    "var l=document.querySelectorAll('.theme a');for(var i=0;i<l.length;i++)l[i].addEventListener("
+    "'click',function(e){e.preventDefault();var t=this.getAttribute('data-theme');try{if(t==="
+    "'auto')localStorage.removeItem(k);else localStorage.setItem(k,t)}catch(x){}ap(t)})})})();")
 
 
 def esc(x):
@@ -661,12 +706,19 @@ def parse_opts(query):
         'days': days if days in USAGE_DAYS else USAGE_DEFAULT_DAYS,
         'tokens': one('tokens') if one('tokens') in TOKEN_MEASURES else 'all',
         'group': 'account' if one('group') == 'account' else 'host',
+        # 'queue': the turns Tom's typed prompts started are left out; 'all': every token
+        'work': 'all' if one('work') == 'all' else 'queue',
+        # 'queue': sessions that watch chat.md (queue workers) only; 'all': every session
+        'sessions': 'all' if one('sessions') == 'all' else 'queue',
     }
+
+
+OPT_KEYS = ('days', 'tokens', 'group', 'work', 'sessions')
 
 
 def opts_href(opts, **change):
     o = dict(opts, **change)
-    return '?' + urlencode([(k, o[k]) for k in ('days', 'tokens', 'group')])
+    return '?' + urlencode([(k, o[k]) for k in OPT_KEYS])
 
 
 def nice_max(v):
@@ -810,11 +862,28 @@ def usage_html(state, now, opts):
     tok = [('<b>{}</b>' if k == opts['tokens'] else '<a href="{1}">{0}</a>').format(
         esc(v), esc(opts_href(opts, tokens=k))) for k, v in TOKEN_MEASURES.items()]
     grouped = opts['group'] == 'account'
-    box = '<a href="{}">{} group hosts by Claude account</a>'.format(esc(opts_href(opts,
-        group='host' if grouped else 'account')), '&#9745;' if grouped else '&#9744;')
+    def checkbox(on, href, text, title):
+        return '<a href="{}" title="{}">{} {}</a>'.format(esc(href), esc(title),
+            '&#9745;' if on else '&#9744;', text)
+    box = checkbox(grouped, opts_href(opts, group='host' if grouped else 'account'),
+        'group hosts by Claude account', 'sum the hosts that use one claude.ai account')
+    queue_work = opts['work'] == 'queue'
+    queue_only = opts['sessions'] == 'queue'
+    box_work = checkbox(queue_work, opts_href(opts, work='all' if queue_work else 'queue'),
+        'queue work only', "leave out the turns that prompts typed into a session started "
+        "(Tom's requests), until the agent marks the session back as queue work")
+    box_sess = checkbox(queue_only, opts_href(opts, sessions='all' if queue_only else 'queue'),
+        'queue sessions only', 'only sessions that watch chat.md (the queue workers); other '
+        'sessions started in the experiments folder are left out')
     w('<div class="controls">last {}<span class="sep">&middot;</span>tokens: {}'
+        '<span class="sep">&middot;</span>{}<span class="sep">&middot;</span>{}'
         '<span class="sep">&middot;</span>{}</div>'.format(' | '.join(links), ' | '.join(tok),
-        box))
+        box, box_work, box_sess))
+    if queue_only:
+        sessions = [s for s in sessions if s.get('queue_session')]
+        hosts = {h: k for h, k in hosts.items() if any(s['host'] == h for s in sessions)}
+        accounts = {k: dict(a, hosts=[h for h in a['hosts'] if h in hosts])
+            for k, a in accounts.items() if k in set(hosts.values())}
     if not sessions:
         w('<p class="muted">No usage samples yet (<code>usage/</code> in the shared directory, '
             'written by presence_hook.py every 15 min).</p>')
@@ -835,8 +904,8 @@ def usage_html(state, now, opts):
     def token_plot(prefix, title, label):
         series = []
         for name, color, ss in entities:
-            pts = step_series([[(x['epoch'], x['tokens'].get(prefix + opts['tokens'], 0))
-                for x in s['samples']] for s in ss], t0, t1)
+            pts = step_series([[(x['epoch'], token_value(x['tokens'], prefix, opts['tokens'],
+                opts['work'])) for x in s['samples']] for s in ss], t0, t1)
             if any(v for _, v in pts):
                 series.append({'label': '{} ({})'.format(name, fmt_tokens(pts[-1][1])),
                     'color': color, 'points': pts, 'step': True})
@@ -848,7 +917,7 @@ def usage_html(state, now, opts):
         w('</div>')
         return series
 
-    what = TOKEN_MEASURES[opts['tokens']]
+    what = TOKEN_MEASURES[opts['tokens']] + (', queue work' if queue_work else '')
     token_plot('', 'Tokens per {} ({}, cumulative over the window)'.format(
         'Claude account' if grouped else 'host', what), 'tokens over time')
     token_plot('fable_', 'Tokens on Fable models per {} ({}, cumulative)'.format(
@@ -889,8 +958,9 @@ def usage_html(state, now, opts):
             + ' 5-hour' if isinstance(j.get('five_hour'), dict) else '',
             esc(datetime.fromtimestamp(j['epoch']).strftime('%b %-d %H:%M')))
             for h, j in sorted(a['joined'].items()))
-        tokens = sum(step_series([[(x['epoch'], x['tokens'].get(opts['tokens'], 0))
-            for x in s['samples']]], t0, t1)[-1][1] for s in sessions if hosts.get(s['host']) == key)
+        tokens = sum(step_series([[(x['epoch'], token_value(x['tokens'], '', opts['tokens'],
+            opts['work'])) for x in s['samples']]], t0, t1)[-1][1]
+            for s in sessions if hosts.get(s['host']) == key)
         rows.append('<tr><td><span class="sw" style="border-color: {}"></span>{}</td><td>{}</td>'
             '<td class="nw">{}</td><td class="nw">{}</td><td>{}</td><td class="nw">{}</td>'
             '<td>{}</td></tr>'.format(color, esc(a['label']), esc(', '.join(a['hosts'])),
@@ -908,7 +978,12 @@ def usage_html(state, now, opts):
         '<th>when each host joined</th></tr>{}</table></div>'.format(esc(what), opts['days'],
         ''.join(rows)))
     w('<p class="note">Tokens are summed from the session transcripts (subagents included) every '
-        '15 min. Plan usage is what Claude Code&#39;s status line last received (its '
+        '15 min. Queue work: the transcript tags every prompt a person typed, so the turns from '
+        'such a prompt to the next one count as manual work unless the prompt was a queue command '
+        '(the join command, the session-title tick, an acknowledgement) or the agent has since '
+        'run <code>presence_hook.py --mark queue</code>; task notifications, scheduled prompts and '
+        'peer messages keep the mode in effect. Queue sessions are those that have run '
+        '<code>chat_watch.sh</code>. Plan usage is what Claude Code&#39;s status line last received (its '
         '<code>rate_limits</code>: the 5-hour and weekly limits of claude.ai Pro, Max and Ultra '
         'plans); Claude Code reports no separate Fable or Opus limit, so the Fable plot shows '
         'tokens only. "When each host joined" is the first reading of each host&#39;s '
@@ -929,11 +1004,17 @@ def render(state, refresh, opts=None):
     w = out.append
     w('<!doctype html><html lang="en"><head><meta charset="utf-8">')
     w('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    w('<meta name="color-scheme" content="light dark">')
     if refresh:
         w('<meta http-equiv="refresh" content="{:d}">'.format(int(refresh)))
+    # the theme follows the system or browser setting (prefers-color-scheme) unless the reader
+    # picked one here; the choice is kept in the browser and applied before the first paint
+    w('<script>' + THEME_SCRIPT + '</script>')
     w('<title>{}</title><style>{}</style></head><body><main>'.format(esc(TITLE), CSS))
     w('<h1>{}</h1>'.format(esc(TITLE)))
-    w('<div class="sub">served by {} &middot; generated {}{}<br>'.format(
+    w('<div class="sub">served by {} &middot; generated {}{} &middot; <span class="theme">theme: '
+        '<a href="#" data-theme="auto">auto</a> | <a href="#" data-theme="light">light</a> | '
+        '<a href="#" data-theme="dark">dark</a></span><br>'.format(
         esc(state['server_host']), datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S'),
         ' &middot; reloads every {:d} s'.format(int(refresh)) if refresh else ''))
     where = ('<code>{}</code> on tensor <span class="muted">(here {})</span>'.format(
@@ -1032,18 +1113,25 @@ def render(state, refresh, opts=None):
     w(usage_html(state, now, opts))
 
     # chat
-    w('<h2>Recent chat.md entries</h2><div class="wrap"><table>'
-        '<tr><th>posted</th><th>host</th><th>first line</th></tr>')
+    w('<h2>Recent chat.md entries</h2><p class="sub">click an entry for the whole message, '
+        'again to fold it</p><div class="wrap"><table>'
+        '<tr><th>posted</th><th>host</th><th>message</th></tr>')
     for e in state['recent_chat']:
-        w('<tr><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
-            fmt_time(e['time'], now), esc(e['host']), esc(e['first_line'])))
+        text = e.get('text') or e['first_line']
+        if text and text != e['first_line']:
+            body = '<details class="chat"><summary>{}</summary><pre>{}</pre></details>'.format(
+                esc(e['first_line']), esc(text))
+        else:
+            body = esc(e['first_line'])
+        w('<tr><td class="nw">{}</td><td>{}</td><td>{}</td></tr>'.format(
+            fmt_time(e['time'], now), esc(e['host']), body))
     w('</table></div>')
 
     # sessions
     w('<h2>Claude sessions</h2>')
     if state['sessions']:
         w('<div class="wrap"><table><tr><th>host</th><th>session</th><th>state</th>'
-            '<th>model &middot; effort</th><th>tokens</th><th>last event</th>'
+            '<th>model &middot; effort</th><th>tokens</th><th>work</th><th>last event</th>'
             '<th>chat heartbeat</th><th>started</th><th>detail</th></tr>')
         for s in state['sessions']:
             watch = s.get('watch')
@@ -1062,13 +1150,26 @@ def render(state, refresh, opts=None):
             if not s['queue']:
                 name += ' <span class="muted">(not on queue)</span>'
             tok = s.get('tokens') if isinstance(s.get('tokens'), dict) else {}
-            tokens = '<span title="output: {}">{}</span>'.format(fmt_tokens(tok.get('output') or 0),
+            tokens = '<span title="output: {}; manual work: {}">{}</span>'.format(
+                fmt_tokens(tok.get('output') or 0), fmt_tokens(tok.get('manual') or 0),
                 fmt_tokens(tok['total'])) if tok.get('total') else '<span class="muted">-</span>'
+            if s.get('work_mode') == 'manual':
+                work = '<span class="badge b-manual" title="a prompt typed into the session '
+                'started this; its turns count as manual work until the agent runs '
+                'presence_hook.py --mark queue">manual</span>'
+                if s.get('work_mode_since'):
+                    work += ' <span class="muted">since {}</span>'.format(
+                        fmt_time(local_epoch(s['work_mode_since'][:16].replace('T', ' ')), now))
+            elif s.get('work_mode') == 'queue':
+                work = '<span class="badge b-queue">queue</span>'
+            else:
+                work = '<span class="muted">-</span>'
             w('<tr><td>{}</td><td title="{}">{}</td><td>{}</td><td class="nw">{}</td>'
-                '<td class="nw">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+                '<td class="nw">{}</td><td class="nw">{}</td><td>{}</td><td>{}</td><td>{}</td>'
+                '<td>{}</td></tr>'.format(
                 esc(s['host']), esc(s.get('session_id')), name,
                 badge(s['view'], VIEW_TEXT.get(s['view'])),
-                esc(s['model_label']) or '<span class="muted">-</span>', tokens, last, hb,
+                esc(s['model_label']) or '<span class="muted">-</span>', tokens, work, last, hb,
                 fmt_time(s.get('started_epoch'), now), esc(detail)))
         w('</table></div>')
     else:

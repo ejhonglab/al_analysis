@@ -91,6 +91,19 @@ the window.
   name and plan.
 - Hooks sample every 15 min while a session works; `chat_watch.sh` runs the sampler on each
   poll while it idles on chat.md, since no hook fires then.
+- Queue work against Tom's own requests: the transcript records how each prompt arrived
+  (`origin.kind` "human" and `promptSource` "typed" for a typed prompt; "task-notification",
+  "scheduled" and "peer" otherwise), but assistant messages carry no prompt ID, so attribution
+  is by time: every assistant message belongs to the segment the last typed prompt before it
+  started. A segment is queue work if that prompt was a queue command (the join command, the
+  session-title tick, a bare acknowledgement) and manual work otherwise; background
+  notifications inside a manual segment stay manual, since they usually continue the request.
+  The agent ends a manual segment with `--mark queue` (a timestamped boundary in the session's
+  usage state), because only it knows when Tom's request is done; the alternative, returning to
+  queue work at the end of the turn (the Stop hook), would mis-attribute every request that
+  spawns background work. Subagent transcripts take the main session's boundaries. Sessions
+  that never run `chat_watch.sh` (Tom's own sessions in the folder) are flagged apart, and the
+  plots leave them out by default.
 
 ## Declared status as front matter
 

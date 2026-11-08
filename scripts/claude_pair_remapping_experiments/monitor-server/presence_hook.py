@@ -25,7 +25,18 @@ model (summed from the `usage` of the assistant messages in its transcript and i
 transcripts, read incrementally), the claude.ai account the machine is logged in with (a hash
 of the account ID, its display name and plan, from ~/.claude.json), and the plan's 5-hour and
 weekly usage as the status line last received it (`statusline_capture.py`). `chat_watch.sh`
-runs `presence_hook.py --sample <session_id>` on each poll, so idle sessions keep sampling.
+runs `presence_hook.py --sample <session_id>` on each poll, so idle sessions keep sampling,
+and that call also marks the session as a queue session (one that watches chat.md).
+
+Tokens are split into queue work and manual work. The transcript tags every prompt a person
+typed (`origin.kind` "human" / `promptSource` "typed"; task notifications, scheduled prompts
+and peer messages are tagged otherwise), so each assistant message is attributed to the
+segment that the last typed prompt before it started: a queue segment if that prompt was a
+queue command (the join command, the session-title tick or a bare acknowledgement), a manual
+segment otherwise (a request Tom typed into the session). `presence_hook.py --mark queue`
+(run by the agent when it has finished such a request; the session ID comes from
+$CLAUDE_CODE_SESSION_ID) ends a manual segment early; `--mark manual` starts one. Each sample
+carries the manual share as `tokens_manual`, the mode in effect and the queue-session flag.
 
 The shared directory is $KC_SHARED_DIR, else Tom/claude_kc_remapping under the first of
 /local/tensor and /mnt/tensor that has it (nothing is written if neither does). Other
@@ -84,6 +95,11 @@ LIFECYCLE_EVENTS = {
     'PermissionRequest', 'PreCompact', 'PostCompact', 'UserPromptSubmit',
 }
 TITLE_TICK = re.compile(r'\s*__set_session_title__\s+(\S.{0,63}?)\s*')
+# typed prompts that are queue commands rather than requests of Tom's own (see prompt_mode)
+QUEUE_JOIN = re.compile(r'\bjoin\b.*\bqueue\b|\bqueue\b.*\bjoin\b', re.I | re.S)
+ACKNOWLEDGEMENTS = {'ok', 'okay', 'continue', 'go on', 'proceed', 'resume', 'carry on', 'yes'}
+WORK_MODES = ('queue', 'manual')
+BOUNDS_MAX = 500
 # a usage sample at most this often per session (and at its start and end)
 USAGE_SAMPLE_S = 15 * 60
 # transcript usage fields -> sample keys
@@ -270,6 +286,10 @@ def update(rec, d, host, now):
         m = TITLE_TICK.fullmatch(d.get('prompt') or '')
         if m:
             rec['label'] = m.group(1)
+        # a hint for the monitor until the next usage sample attributes the tokens exactly
+        # (the transcript's prompt tags decide; see scan_usage)
+        rec['work_mode'] = prompt_mode(d.get('prompt'))
+        rec['work_mode_since'] = iso(now)
     elif event in ('PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest'):
         rec['last_tool'] = d.get('tool_name')
 
@@ -286,6 +306,76 @@ def update(rec, d, host, now):
     return rec
 
 
+def prompt_mode(text):
+    """The work mode a typed prompt starts: 'queue' for a queue command (the join command,
+    the session-title tick, a bare acknowledgement), 'manual' for anything else Tom typed."""
+    t = (text or '').strip()
+    if TITLE_TICK.fullmatch(t) or QUEUE_JOIN.search(t):
+        return 'queue'
+    if t.lower().rstrip('.!') in ACKNOWLEDGEMENTS:
+        return 'queue'
+    return 'manual'
+
+
+def line_epoch(d):
+    t = d.get('timestamp')
+    if not isinstance(t, str):
+        return None
+    try:
+        return datetime.fromisoformat(t.replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return None
+
+
+def typed_prompt(d):
+    """(epoch, text) if a transcript line is a prompt a person typed, else None.
+
+    Tool results, meta lines, compaction summaries, task notifications (`origin.kind`
+    "task-notification"), scheduled prompts (`turnOrigin` "scheduled") and peer messages are
+    not; a typed prompt has `origin.kind` "human" or `promptSource` "typed".
+    """
+    if d.get('type') != 'user' or 'toolUseResult' in d or d.get('isMeta') or d.get(
+            'isCompactSummary'):
+        return None
+    origin = d.get('origin') if isinstance(d.get('origin'), dict) else {}
+    if not (origin.get('kind') == 'human' or d.get('promptSource') == 'typed'):
+        return None
+    epoch = line_epoch(d)
+    if epoch is None:
+        return None
+    c = (d.get('message') or {}).get('content')
+    if isinstance(c, list):
+        c = ' '.join(x.get('text') or '' for x in c if isinstance(x, dict)
+            and x.get('type') == 'text')
+    return epoch, c if isinstance(c, str) else ''
+
+
+def add_bound(bounds, epoch, mode, source, text=''):
+    """Inserts a work-mode boundary [epoch, mode, source, text] in time order (once)."""
+    entry = [epoch, mode, source, short(text, 80)]
+    for i, b in enumerate(bounds):
+        if b[0] == epoch and b[2] == source:
+            bounds[i] = entry
+            return
+        if b[0] > epoch:
+            bounds.insert(i, entry)
+            break
+    else:
+        bounds.append(entry)
+    del bounds[:-BOUNDS_MAX]
+
+
+def mode_at(bounds, epoch):
+    """The work mode in effect at `epoch`: that of the last boundary at or before it
+    ('queue' before any)."""
+    mode = 'queue'
+    for b in bounds:
+        if b[0] > epoch:
+            break
+        mode = b[1]
+    return mode
+
+
 def _add_usage(totals, model, usage):
     t = totals.setdefault(model or '?', {k: 0 for _, k in USAGE_KEYS})
     for src, dst in USAGE_KEYS:
@@ -294,23 +384,29 @@ def _add_usage(totals, model, usage):
             t[dst] += int(v)
 
 
-def scan_usage(path, st):
+def scan_usage(path, st, bounds=None, main=False):
     """Adds the token usage of the assistant messages appended to a transcript since the last
-    call to its parse state.
+    call to its parse state, split by work mode.
 
     Claude Code writes one transcript line per content block, each repeating its message's
     `usage`, so lines are counted once per message ID: the last line of a message is held as
-    `pending` until a line of another message follows.
+    `pending` until a line of another message follows. Each message is attributed to the work
+    mode in effect at its timestamp (`mode_at`); in the main transcript, the prompts a person
+    typed add the boundaries (`typed_prompt`, `prompt_mode`).
 
     Args:
         path: transcript (.jsonl).
         st: parse state from the previous call ({} the first time): `offset`, `totals`
-            ({model: {input, output, cache_read, cache_creation}} of finished messages),
-            `pending_id` and `pending` ([model, usage] of the last message seen).
+            ({model: {input, output, cache_read, cache_creation}} of finished messages, all
+            modes), `manual` (the same for messages in manual segments), `pending_id` and
+            `pending` ([model, usage, mode] of the last message seen).
+        bounds: the session's work-mode boundaries (updated in place when `main`).
+        main: whether this is the session's own transcript (not a subagent's).
 
     Returns:
         the updated state.
     """
+    bounds = [] if bounds is None else bounds
     try:
         size = os.path.getsize(path)
     except OSError:
@@ -319,6 +415,7 @@ def scan_usage(path, st):
         st = {}
     st.setdefault('offset', 0)
     st.setdefault('totals', {})
+    st.setdefault('manual', {})
     if size == st['offset']:
         return st
     with open(path, 'rb') as f:
@@ -328,13 +425,22 @@ def scan_usage(path, st):
     if end < 0:
         return st
     for line in data[:end].split(b'\n'):
-        if b'"usage"' not in line or b'"assistant"' not in line:
+        is_usage = b'"usage"' in line and b'"assistant"' in line
+        is_prompt = main and (b'"human"' in line or b'"typed"' in line)
+        if not (is_usage or is_prompt):
             continue
         try:
             d = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(d, dict) or d.get('type') != 'assistant':
+        if not isinstance(d, dict):
+            continue
+        if is_prompt:
+            tp = typed_prompt(d)
+            if tp:
+                add_bound(bounds, tp[0], prompt_mode(tp[1]), 'prompt', tp[1])
+            continue
+        if d.get('type') != 'assistant':
             continue
         m = d.get('message') or {}
         u = m.get('usage')
@@ -344,35 +450,53 @@ def scan_usage(path, st):
             continue
         mid = m.get('id') or d.get('requestId') or d.get('uuid')
         if st.get('pending') and mid != st.get('pending_id'):
-            _add_usage(st['totals'], *st['pending'])
+            _settle(st, st['pending'])
+        epoch = line_epoch(d)
+        mode = mode_at(bounds, epoch) if epoch is not None else 'queue'
         st['pending_id'] = mid
-        st['pending'] = [model, {k: u.get(k) for k, _ in USAGE_KEYS}]
+        st['pending'] = [model, {k: u.get(k) for k, _ in USAGE_KEYS}, mode]
     st['offset'] += end + 1
     return st
 
 
-def session_tokens(transcript, files):
-    """Tokens of a session and its subagents so far, by model.
+def _settle(st, pending):
+    """Counts a finished message ([model, usage, mode]) in the parse state's totals."""
+    model, usage = pending[0], pending[1]
+    mode = pending[2] if len(pending) > 2 else 'queue'
+    _add_usage(st['totals'], model, usage)
+    if mode == 'manual':
+        _add_usage(st.setdefault('manual', {}), model, usage)
+
+
+def session_tokens(transcript, files, bounds=None):
+    """Tokens of a session and its subagents so far, by model, and the manual-work share.
 
     Args:
         transcript: the session's transcript path.
         files: {path: parse state} from the previous call; updated in place.
+        bounds: the session's work-mode boundaries (see `scan_usage`); updated in place from
+            the main transcript's typed prompts, and applied to the subagents' messages too.
 
     Returns:
-        {model: {input, output, cache_read, cache_creation}}.
+        ({model: {input, output, cache_read, cache_creation}} for every message, the same for
+        the messages in manual segments).
     """
+    bounds = [] if bounds is None else bounds
     paths = [transcript]
     if transcript.endswith('.jsonl'):
         paths += sorted(glob.glob(os.path.join(transcript[:-len('.jsonl')], 'subagents',
             '*.jsonl')))
-    totals = {}
-    for path in paths:
-        st = files[path] = scan_usage(path, files.get(path) or {})
-        for model, t in st.get('totals', {}).items():
-            _add_usage(totals, model, {src: t[dst] for src, dst in USAGE_KEYS})
+    totals, manual = {}, {}
+    for i, path in enumerate(paths):
+        st = files[path] = scan_usage(path, files.get(path) or {}, bounds, main=(i == 0))
+        for dst_all, key in ((totals, 'totals'), (manual, 'manual')):
+            for model, t in st.get(key, {}).items():
+                _add_usage(dst_all, model, {src: t[dst] for src, dst in USAGE_KEYS})
         if st.get('pending'):
-            _add_usage(totals, *st['pending'])
-    return totals
+            _add_usage(totals, *st['pending'][:2])
+            if len(st['pending']) > 2 and st['pending'][2] == 'manual':
+                _add_usage(manual, *st['pending'][:2])
+    return totals, manual
 
 
 def account_info():
@@ -454,9 +578,12 @@ def sample_usage(rec, now, reason, force=False):
     if not shared:
         return None
     files = st.get('files') or {}
-    tokens = session_tokens(transcript, files) if transcript else {}
+    bounds = st.setdefault('bounds', [])
+    tokens, manual = session_tokens(transcript, files, bounds) if transcript else ({}, {})
+    mode = mode_at(bounds, now)
+    queue_session = bool(st.get('queue_session') or rec.get('queue_session'))
     sample = {
-        'version': 1,
+        'version': 2,
         'epoch': now,
         'time': iso(now),
         'host': host,
@@ -466,6 +593,9 @@ def sample_usage(rec, now, reason, force=False):
         'effort': rec.get('effort'),
         'account': account_info(),
         'tokens': tokens,
+        'tokens_manual': manual,
+        'work_mode': mode,
+        'queue_session': queue_session,
         'plan_usage': limits,
     }
     udir = os.path.join(shared, 'usage')
@@ -478,7 +608,12 @@ def sample_usage(rec, now, reason, force=False):
     write_atomic(state_path, st)
     total = sum(sum(t.values()) for t in tokens.values())
     rec['tokens'] = {'total': total, 'output': sum(t['output'] for t in tokens.values()),
-        'epoch': now}
+        'manual': sum(sum(t.values()) for t in manual.values()), 'epoch': now}
+    rec['work_mode'] = mode
+    if bounds:
+        rec['work_mode_since'] = iso(bounds[-1][0])
+    if queue_session:
+        rec['queue_session'] = True
     return sample
 
 
@@ -523,13 +658,67 @@ def sample_only(sid):
     with open(cache + '.lock', 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         rec = read_json_file(cache)
-        if rec and rec.get('state') != 'ended' and sample_usage(rec, time.time(), 'watch'):
+        if not rec or rec.get('state') == 'ended':
+            return
+        changed = False
+        if not rec.get('queue_session'):
+            # only queue workers run chat_watch.sh, so this session is one
+            rec['queue_session'] = True
+            state_path = os.path.join(CACHE_DIR, sid + '.usage.json')
+            st = read_json_file(state_path) or {}
+            st['queue_session'] = True
+            write_atomic(state_path, st)
+            changed = True
+        if sample_usage(rec, time.time(), 'watch') or changed:
             write_atomic(cache, rec)
+            if changed:
+                write_shared_presence(rec)
+
+
+def write_shared_presence(rec):
+    shared = shared_dir()
+    if not shared or not rec.get('host') or not rec.get('session_id'):
+        return
+    presence = os.path.join(shared, 'presence')
+    os.makedirs(presence, exist_ok=True)
+    rec['shared_written_epoch'] = time.time()
+    write_atomic(os.path.join(presence, '{}__{}.json'.format(rec['host'], rec['session_id'])),
+        rec)
+
+
+def mark_mode(mode, sid):
+    """`--mark queue|manual [session_id]`, run by the agent: from now on, the session's
+    tokens count as that kind of work (until the next prompt Tom types or the next mark).
+    Without a session ID, $CLAUDE_CODE_SESSION_ID (set in the session's shell commands)."""
+    if mode not in WORK_MODES:
+        raise SystemExit('mark: mode must be one of {}'.format(', '.join(WORK_MODES)))
+    sid = sid or os.environ.get('CLAUDE_CODE_SESSION_ID') or ''
+    if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', sid):
+        raise SystemExit('mark: no session ID (pass it, or run from a Claude Code session)')
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache = os.path.join(CACHE_DIR, sid + '.json')
+    now = time.time()
+    with open(cache + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state_path = os.path.join(CACHE_DIR, sid + '.usage.json')
+        st = read_json_file(state_path) or {}
+        add_bound(st.setdefault('bounds', []), now, mode, 'mark')
+        write_atomic(state_path, st)
+        rec = read_json_file(cache)
+        if rec:
+            rec['work_mode'] = mode
+            rec['work_mode_since'] = iso(now)
+            write_atomic(cache, rec)
+            write_shared_presence(rec)
+    print('{}: {} work from {}'.format(sid[:8], mode, iso(now)))
 
 
 def main():
     if sys.argv[1:2] == ['--sample']:
         sample_only(sys.argv[2] if len(sys.argv) > 2 else '')
+        return
+    if sys.argv[1:2] == ['--mark']:
+        mark_mode(sys.argv[2] if len(sys.argv) > 2 else '', sys.argv[3] if len(sys.argv) > 3 else '')
         return
     d = json.load(sys.stdin)
     sid = d.get('session_id')

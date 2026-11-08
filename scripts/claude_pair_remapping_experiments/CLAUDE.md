@@ -517,6 +517,14 @@ other collaboration or whatever you think might be useful there). Each poll also
 session's heartbeat for the queue monitor, which shows a session without one as idle but not
 listening, so keep chat_watch.sh running while waiting on simulations too.
 
+Token accounting. The monitor counts a queue session's tokens as queue work except for the
+turns that a prompt Tom types into the session starts (a question, a request), which count as
+manual work from that prompt on. When you have finished such a request and go back to queue
+work, run `monitor-server/presence_hook.py --mark queue` (from this folder; it takes the session
+ID from the environment) so the accounting follows; the join command, the session-title tick and
+a bare "ok" count as queue work by themselves. Only sessions that run chat_watch.sh count as
+queue sessions.
+
 Session names. A session that works the queue (runs chat_watch.sh) names itself
 `al_analysis modeling - <host>` (`hostname -s`), so I can tell sessions apart in the Remote
 Control session list on my phone. When you first start chat_watch.sh in a session, call
