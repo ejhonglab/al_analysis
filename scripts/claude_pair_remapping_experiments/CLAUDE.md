@@ -892,6 +892,7 @@ Canonical experiment names for summary reports:
 | E40 | the reduced gain sets in the joint fit |
 | E41 | the sub-threshold claw gain |
 | E42 | the reduced gain sets on a re-drawn wiring |
+| E43 | the model's trial-to-trial variability |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
