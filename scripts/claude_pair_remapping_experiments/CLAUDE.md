@@ -186,19 +186,23 @@ sessions on Tom's hosts do. Once per machine:
    `~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh`. The queue
    gets a tree of its own, ~/src/kc_queue, so that nothing already on the machine (the owner's
    checkouts in ~/src, their Python environments) is used or changed. The script restarts itself
-   in a clean environment (so an active conda environment or venv changes nothing), clones
-   olfsysm and hong2p into ~/src/kc_queue, asks for a git name and email if none are set (queue
+   in a clean environment (so an active conda environment or venv changes nothing), installs the
+   system packages it lacks with sudo apt install after showing the commands and asking (Python
+   3.14 with its headers and venv module, from the deadsnakes PPA on Ubuntu releases that do not
+   package it, a C++ compiler, git, ssh, curl), offers to install Claude Code if it is missing
+   (Anthropic's installer, no sudo), clones olfsysm and hong2p into ~/src/kc_queue, asks for a git name and email if none are set (queue
    sessions commit, so it exits if they are declined), makes a new venv,
    ~/src/kc_queue/al_analysis/venv, from a system Python with all three installed editable (it
    never uses or changes a venv it did not make), makes an SSH deploy key for each repository the
    machine cannot already push to (only pushes use it: fetches stay anonymous HTTPS, and the
    machine's own GitHub logins and other repositories are untouched), puts the public keys in push_keys/<host>/ in the shared directory, checks that the
-   experiment inputs load and a model fit runs, and prints the keys' fingerprints
-   (`--full-tests` also runs the whole QUICK=1 suite, which took 2.5 h on hal).
+   experiment inputs load and a model fit runs, and prints the keys' fingerprints, each hash on a
+   line of its own (`--full-tests` also runs the whole QUICK=1 suite, which took 2.5 h on hal).
 2. The owner sends Tom the fingerprints (by Slack, email or in person, not through the shared
    directory) and Tom runs `approve_push_keys.sh <host>` on one of his hosts, which adds them as
-   write-enabled deploy keys once he confirms; `join_queue.sh --check` on the machine then shows
-   whether each checkout can push. `approve_push_keys.sh --list` lists the keys added so far and
+   write-enabled deploy keys once he confirms (it prints the fingerprints the same way, to match
+   by eye); join_queue.sh offers to wait for this, checking every minute, and `join_queue.sh
+   --check` on the machine shows whether each checkout can push. `approve_push_keys.sh --list` lists the keys added so far and
    the hosts waiting, and `--revoke <host>` removes a host's keys.
 3. Queue sessions start in this folder (`cd ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments
    && claude`), since Claude Code reads `.claude/settings.json` (the session-title,

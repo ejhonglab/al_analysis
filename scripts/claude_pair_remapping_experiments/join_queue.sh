@@ -8,36 +8,44 @@
 # reinstall these, and use nothing else on the machine: other checkouts in ~/src and other Python
 # environments are never used or changed (hooks in .claude/settings.json here remind each session
 # of this and refuse edits there). Outside the tree this script writes only to ~/.ssh,
-# push_keys/<host>/ in the shared directory and, if they are missing and you agree, git's
-# user.name / user.email in ~/.gitconfig. It restarts itself in a clean environment (env -i), so it
+# push_keys/<host>/ in the shared directory and, each only if it is missing and you agree, the
+# system packages listed below (with sudo), Claude Code (in ~/.local) and git's user.name /
+# user.email in ~/.gitconfig. It restarts itself in a clean environment (env -i), so it
 # does the same whether or not a conda environment or venv is active in the shell it is run from.
 #
 # What it does:
 #   1. checks that this checkout is ~/src/kc_queue/al_analysis and that the shared directory is
 #      mounted;
-#   2. clones olfsysm and hong2p into ~/src/kc_queue (anonymous HTTPS: all three repositories are
+#   2. installs the system packages it needs and lacks, with sudo apt install after showing the
+#      commands and asking: Python 3.14 with its headers and venv module (from the deadsnakes PPA
+#      on Ubuntu releases that do not package it, e.g. 24.04; the PPA is added only then), a C++
+#      compiler (build-essential) and the commands it uses (git, ssh, curl). Python 3.14 is
+#      skipped with PYTHON=<interpreter> or when the venv exists already;
+#   3. offers to install Claude Code, if it is missing, with Anthropic's installer (no sudo);
+#   4. clones olfsysm and hong2p into ~/src/kc_queue (anonymous HTTPS: all three repositories are
 #      public), marking the checkouts it uses with kcqueue.managed in their .git/config; it
 #      refuses olfsysm / hong2p checkouts there that it did not clone;
-#   3. if git has no name or email to commit with, explains why they are needed, asks for them and
+#   5. if git has no name or email to commit with, explains why they are needed, asks for them and
 #      saves them with git config --global (it exits if you decline: queue sessions commit);
-#   4. makes a new venv, al_analysis/venv, from a system Python and installs all three editable
+#   6. makes a new venv, al_analysis/venv, from a system Python and installs all three editable
 #      (skipped with --no-install). It never uses or changes a venv it did not make (it marks its
 #      own with kc_queue_venv.txt), and checks that the packages import from the tree;
-#   5. for each repository this machine cannot already push to, makes an SSH deploy key
+#   7. for each repository this machine cannot already push to, makes an SSH deploy key
 #      (~/.ssh/kc_queue_<repo>) and sets up that checkout to fetch over HTTPS and push over SSH
 #      with that key only (remote.origin.pushurl and core.sshCommand in the checkout's own
 #      .git/config, so the machine's other repositories and GitHub logins are untouched);
-#   6. copies the public keys to push_keys/<host>/ in the shared directory and prints their
+#   8. copies the public keys to push_keys/<host>/ in the shared directory and prints their
 #      fingerprints, to send to Tom (by Slack, email or in person, not through the shared
-#      directory) so he can add them with approve_push_keys.sh <host>;
-#   7. checks that the experiment inputs load and a model fit runs, and runs the provenance tests
+#      directory) so he can add them with approve_push_keys.sh <host>, and offers to wait until he
+#      has (it checks every minute whether each checkout can push);
+#   9. checks that the experiment inputs load and a model fit runs, and runs the provenance tests
 #      (seconds; skipped with --no-tests). --full-tests also runs the whole QUICK=1 test suite,
 #      which took 2.5 h on hal.
 #
 # Usage: ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments/join_queue.sh [--no-install] [--no-tests | --full-tests]
 #        .../join_queue.sh --check    # once Tom has added the keys: can each checkout push?
 # PYTHON=<interpreter> picks the Python the venv is made from (default: python3.14 found on the
-# system PATH; not one inside a venv).
+# system PATH, installed as above if missing; not one inside a venv).
 set -uo pipefail
 
 # Restart in a clean environment: an active conda environment or venv (its PATH entries, CONDA_*,
@@ -65,6 +73,85 @@ lab=${KC_QUEUE_LAB_URL:-https://github.com/$ORG}  # the lab's repositories ($KC_
 die() { echo "join_queue.sh: $*" >&2; exit 1; }
 warn() { echo "join_queue.sh: warning: $*" >&2; }
 step() { printf '\n== %s\n' "$*"; }
+
+ask() {  # $1 question, $2 default answer (y or n; n if not given). Needs a terminal.
+  local ans def=${2:-n}
+  [ -t 0 ] || return 1
+  while :; do
+    read -r -p "$1 $([ "$def" = y ] && echo '[Y/n]' || echo '[y/N]') " ans || return 1
+    case ${ans,,} in
+      '') [ "$def" = y ]; return ;;
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+      *) echo "please answer y or n" ;;
+    esac
+  done
+}
+
+print_fingerprint() {  # $1 label, $2 public key file: the label, then the key's hash on a line of its own
+  local fp
+  fp=$(ssh-keygen -lf "$2" | awk '{print $2}') && [ -n "$fp" ] || return 1
+  printf '%s:\n%s\n' "$1" "$fp"
+}
+
+pkg_installed() {  # $1: Debian package. Is it installed?
+  [ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" = "install ok installed" ]
+}
+
+apt_offers() {  # $1: Debian package. Does an archive configured on this machine have it?
+  local c
+  c=$(apt-cache policy "$1" 2>/dev/null | awk '$1 == "Candidate:" {print $2}')
+  [ -n "$c" ] && [ "$c" != "(none)" ]
+}
+
+deadsnakes_offers() {  # $1 package, $2 Ubuntu codename. 0: the deadsnakes PPA has it; 1: no; 2: unreachable
+  command -v python3 >/dev/null 2>&1 || return 2
+  python3 -I - "$1" "https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu/dists/$2/main/binary-$(dpkg --print-architecture)/Packages.gz" <<'EOF'
+import gzip, sys, urllib.error, urllib.request
+try:
+    with urllib.request.urlopen(sys.argv[2], timeout=60) as r:
+        lines = gzip.decompress(r.read()).decode('utf-8', 'replace').splitlines()
+except urllib.error.HTTPError:
+    sys.exit(1)  # the PPA has no build for this release
+except Exception:
+    sys.exit(2)
+sys.exit(0 if f'Package: {sys.argv[1]}' in lines else 1)
+EOF
+}
+
+add_need() { [[ " ${need[*]} " == *" $1 "* ]] || need+=("$1"); }
+
+system_needs() {  # sets need (the Debian packages this machine lacks) and py_apt (1: Python 3.14's among them)
+  local t p pyx
+  local -A pkg_of=([git]=git [ssh]=openssh-client [ssh-keygen]=openssh-client [curl]=curl
+    [python3]=python3 [timeout]=coreutils)
+  need=() py_apt=0
+  for t in git ssh ssh-keygen curl python3 timeout; do
+    command -v "$t" >/dev/null 2>&1 || add_need "${pkg_of[$t]}"
+  done
+  [ $install = 1 ] || return 0
+  command -v c++ >/dev/null 2>&1 || add_need build-essential
+  # the Python the venv is made from: the distribution's python3.14 (or a PPA's), unless PYTHON
+  # names another or the venv exists already. A python3.14 installed some other way (from source,
+  # pyenv, uv) is left alone; the venv step checks that it has what it needs.
+  [ -z "${PYTHON:-}" ] && [ ! -e "$al/venv" ] && command -v dpkg-query >/dev/null 2>&1 || return 0
+  pyx=$(command -v python3.14 2>/dev/null)
+  if [ -z "$pyx" ] || dpkg -S "$(readlink -f "$pyx")" >/dev/null 2>&1; then
+    for p in python3.14 python3.14-dev python3.14-venv; do
+      pkg_installed "$p" || { add_need "$p"; py_apt=1; }
+    done
+  fi
+}
+
+why_pkg() {  # $1: package. Why the setup needs it.
+  case $1 in
+    python3.14) echo "Python 3.14, for the queue's Python environment (the system's python3 stays the default)" ;;
+    python3.14-dev) echo "its headers, to build the model (olfsysm)" ;;
+    python3.14-venv) echo "its venv module" ;;
+    build-essential) echo "a C++ compiler, to build the model (olfsysm)" ;;
+    *) echo "a command this script uses" ;;
+  esac
+}
 
 install=1 tests=1 check_only=0
 for a in "$@"; do
@@ -174,19 +261,97 @@ shared=$(find_shared) || die "the shared directory (Tom/claude_kc_remapping on t
   "the lab's NAS), or symlink an existing mount there, then re-run this."
 [ -w "$shared" ] || die "the shared directory $shared is not writable by $USER"
 echo "shared directory: $shared"
-missing=()
-for t in git ssh ssh-keygen curl python3 timeout; do
-  command -v "$t" >/dev/null 2>&1 || missing+=("$t")
-done
-[ ${#missing[@]} = 0 ] || die "missing commands: ${missing[*]}"
-[ -n "${KC_QUEUE_CLAUDE:-}" ] || warn "Claude Code (claude) is not installed yet; see" \
-  "https://code.claude.com/docs"
 prev_info=$shared/push_keys/$host/info.txt
 if [ -f "$prev_info" ] && ! grep -qx "user: $USER" "$prev_info"; then
   die "another machine (or user) already joined as '$host' ($prev_info). Host names identify" \
     "machines throughout the queue (chat.md, status files, keys), so this one needs a" \
     "different hostname."
 fi
+
+step "system packages"
+system_needs
+if [ ${#need[@]} = 0 ]; then
+  echo "nothing to install"
+else
+  command -v apt-get >/dev/null 2>&1 || die "this machine lacks ${need[*]} (Debian / Ubuntu" \
+    "package names) and has no apt. Install the equivalents with its package manager (for" \
+    "Python 3.14: the interpreter, its headers and its venv module), then re-run this."
+  os_name=$( (. /etc/os-release && echo "${PRETTY_NAME:-}") 2>/dev/null)
+  codename=$( (. /etc/os-release && echo "${UBUNTU_CODENAME:-}") 2>/dev/null)  # Ubuntu and derivatives
+  ppa=0
+  if [ $py_apt = 1 ] && ! apt_offers python3.14; then
+    other="If this machine's package lists are old, run sudo apt update and re-run this; otherwise"
+    other+=" install Python 3.14 (with its headers and venv module) another way and re-run this"
+    other+=" with PYTHON=<its path>."
+    [ -n "$codename" ] || die "Python 3.14 is not in the package archives this machine uses" \
+      "($os_name; apt-cache policy python3.14). $other"
+    deadsnakes_offers python3.14 "$codename"
+    case $? in
+      0) ppa=1 ;;
+      2) die "Python 3.14 is not in the package archives this machine uses, and the deadsnakes" \
+        "PPA (which has it for some Ubuntu releases) could not be reached to check. Re-run this" \
+        "when the network works, or install Python 3.14 another way and set PYTHON=<its path>." ;;
+      *) die "Python 3.14 is neither in the package archives this machine uses nor in the" \
+        "deadsnakes PPA for $os_name ($codename). $other" ;;
+    esac
+  fi
+  echo "This machine lacks these packages:"
+  for p in "${need[@]}"; do
+    printf '    %-16s %s\n' "$p" "$(why_pkg "$p")"
+  done
+  if [ $ppa = 1 ]; then
+    cat <<EOF
+$os_name does not package Python 3.14, so it comes from the deadsnakes PPA
+(https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa), the usual source of newer Pythons for
+Ubuntu LTS releases. It is a third-party package archive: adding it lets apt install Python 3.14
+and its updates from there.
+EOF
+  fi
+  sudo=sudo
+  [ "$(id -u)" = 0 ] && sudo=
+  cmds=()
+  if [ $ppa = 1 ]; then
+    command -v add-apt-repository >/dev/null 2>&1 ||
+      cmds+=("${sudo:+$sudo }apt install software-properties-common")
+    cmds+=("${sudo:+$sudo }add-apt-repository ppa:deadsnakes/ppa")
+  fi
+  cmds+=("${sudo:+$sudo }apt install ${need[*]}")
+  echo "To install them, this runs the following (sudo asks for your password; apt lists what it"
+  echo "will install and asks before installing anything):"
+  printf '    %s\n' "${cmds[@]}"
+  howto="run these commands yourself (or ask whoever administers this machine to), then re-run this"
+  [ -z "$sudo" ] || command -v sudo >/dev/null 2>&1 || die "sudo is not installed; $howto"
+  [ -t 0 ] || die "no terminal to ask on; $howto"
+  ask "Run them now?" || die "nothing installed; $howto"
+  for c in "${cmds[@]}"; do
+    echo "+ $c"
+    $c || die "'$c' failed; fix what it reports, then re-run this"
+  done
+  system_needs
+  [ ${#need[@]} = 0 ] || die "still missing after installing: ${need[*]}"
+fi
+
+step "Claude Code"
+claude_bin=${KC_QUEUE_CLAUDE:-$(command -v claude 2>/dev/null)}
+claude_new=0
+if [ -z "$claude_bin" ]; then
+  cat <<EOF
+Claude Code is not installed. Anthropic's installer puts it in ~/.local/bin, without sudo, and it
+then keeps itself up to date (https://code.claude.com/docs/en/setup):
+    curl -fsSL https://claude.ai/install.sh | bash
+EOF
+  if ask "Install it now?"; then
+    curl -fsSL https://claude.ai/install.sh | bash || die "installing Claude Code failed; see" \
+      "https://code.claude.com/docs/en/troubleshoot-install"
+    claude_bin=$HOME/.local/bin/claude
+    [ -x "$claude_bin" ] || die "the installer finished, but there is no $claude_bin"
+    claude_new=1
+  else
+    warn "Claude Code is not installed; install it before starting a queue session"
+  fi
+fi
+[ -z "$claude_bin" ] ||
+  echo "claude: $claude_bin ($(timeout 30 "$claude_bin" --version 2>/dev/null | head -1))"
 
 step "checkouts in $src"
 origin_is_ours al_analysis || die "$al: origin is $(git -C "$al" remote get-url origin 2>/dev/null)," \
@@ -409,14 +574,35 @@ fi
 step "done"
 if [ ${#keyed[@]} -gt 0 ]; then
   echo "Deploy keys for: ${keyed[*]}. Send Tom these fingerprints (by Slack, email or in person,"
-  echo "not through the shared directory):"
+  echo "not through the shared directory), and ask him to run approve_push_keys.sh $host:"
+  echo
   for r in "${keyed[@]}"; do
-    echo "    $r: $(ssh-keygen -lf "$HOME/.ssh/kc_queue_$r.pub")"
+    print_fingerprint "$r" "$HOME/.ssh/kc_queue_$r.pub" ||
+      die "ssh-keygen could not read $HOME/.ssh/kc_queue_$r.pub"
   done
-  echo "and ask him to run approve_push_keys.sh $host. Then check with:"
-  echo "    $here/join_queue.sh --check"
+  echo
+  if ask "Wait here until he has added them (checks every minute)?" y; then
+    echo "Waiting. Ctrl-C stops waiting; $here/join_queue.sh --check then checks later."
+    until check_push >/dev/null 2>&1; do
+      printf .
+      sleep 60
+    done
+    echo
+    echo "Tom has added the keys: all three checkouts can push."
+  else
+    echo "Once he has, check with:"
+    echo "    $here/join_queue.sh --check"
+  fi
 else
   echo "This machine can already push to all three repositories; no keys to add."
+fi
+if [ $claude_new = 1 ]; then
+  cat <<EOF
+
+Claude Code was just installed in ~/.local/bin. If your shell does not find claude, open a new
+terminal (or run ~/.local/bin/claude). The first time it starts, it asks you to log in with your
+Claude account.
+EOF
 fi
 cat <<EOF
 

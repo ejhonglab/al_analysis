@@ -22,6 +22,13 @@ PREFIX=kc-queue
 
 die() { echo "approve_push_keys.sh: $*" >&2; exit 1; }
 
+# the label, then the key's hash on a line of its own, as join_queue.sh prints them
+print_fingerprint() {  # $1 label, $2 public key file
+  local fp
+  fp=$(ssh-keygen -lf "$2" | awk '{print $2}') && [ -n "$fp" ] || return 1
+  printf '%s:\n%s\n' "$1" "$fp"
+}
+
 find_shared() {  # $KC_REMAPPING_SHARED: tests
   local c
   for c in ${KC_REMAPPING_SHARED:-} /local/tensor/Tom/claude_kc_remapping \
@@ -127,7 +134,7 @@ case ${1:-} in
       [[ $key =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*(\ [[:print:]]*)?$ ]] ||
         die "$f is not a single ssh-ed25519 public key"
       printf '%s\n' "$key" > "$tmp/$r.pub"
-      echo "$r: $(ssh-keygen -lf "$tmp/$r.pub")" || die "ssh-keygen could not read $f"
+      print_fingerprint "$r" "$tmp/$r.pub" || die "ssh-keygen could not read $f"
       todo+=("$r")
     done
     [ ${#todo[@]} -gt 0 ] || { echo "nothing to add"; exit 0; }

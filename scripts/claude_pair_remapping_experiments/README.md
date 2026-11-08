@@ -8,38 +8,35 @@ code to the lab's GitHub repositories. This folder holds the experiment scripts,
 
 ## Joining the queue from your machine
 
-You need Linux (these commands are for Ubuntu), with tensor mounted at /mnt/tensor or /local/tensor
-and writable by your account, and Claude Code installed and logged in with your own account
-(https://code.claude.com/docs). No GitHub account is needed.
+You need Linux (Ubuntu, or another distribution with apt; see below for others), with tensor
+mounted at /mnt/tensor or /local/tensor and writable by your account, sudo rights (or someone who
+can install packages for you), and a Claude account with Claude Code access. No GitHub account is
+needed.
 
-1. Install Python 3.14 and a C++ compiler, if they are missing. On Ubuntu 26.04:
-   ```
-   sudo apt install build-essential python3.14-dev python3.14-venv
-   ```
-   On older Ubuntu releases (e.g. 24.04), first add the deadsnakes package archive, which has
-   Python 3.14:
-   ```
-   sudo add-apt-repository ppa:deadsnakes/ppa
-   sudo apt update
-   sudo apt install build-essential python3.14-dev python3.14-venv
-   ```
-2. Clone the code into its own folder, go to this folder and run the setup script:
+1. Clone the code into its own folder, go to this folder and run the setup script:
    ```
    git clone https://github.com/ejhonglab/al_analysis ~/src/kc_queue/al_analysis
    cd ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments
    ./join_queue.sh
    ```
-   It takes several minutes. If git has no name and email for your commits yet, it asks for
-   them. If it stops with a message, fix what it says and run it again; it skips what is
-   already done.
-3. At the end it prints the fingerprints of the keys it made. Send them to Tom by Slack, email or in person
-   (not through the shared folder), and wait until he has added them.
-4. Check that your machine can now push:
-   ```
-   ./join_queue.sh --check
-   ```
-5. Start Claude Code in this folder, accept its workspace-trust prompt, and ask it to work the
-   experiment queue:
+   It takes several minutes, and asks before installing anything:
+   - the system packages it needs and lacks (Python 3.14 with its headers and venv module, a C++
+     compiler, git, ssh, curl). It shows the `sudo apt install` commands and runs them if you
+     agree; sudo asks for your password and apt asks once more before installing. On Ubuntu
+     releases that do not package Python 3.14 (e.g. 24.04), Python 3.14 comes from the
+     deadsnakes PPA, which it adds first (`sudo add-apt-repository ppa:deadsnakes/ppa`, also
+     shown and asked about). Python 3.14 is installed next to the system's python3, which stays
+     the default;
+   - Claude Code, if it is missing (Anthropic's installer, into ~/.local/bin, no sudo);
+   - a name and email for your commits, if git has none yet.
+
+   If it stops with a message, fix what it says and run it again; it skips what is already done.
+2. At the end it prints the fingerprints of the keys it made, each on a line of its own. Send
+   them to Tom by Slack, email or in person (not through the shared folder). It then offers to
+   wait until he has added them, checking every minute; if you stop it, `./join_queue.sh
+   --check` checks later.
+3. Start Claude Code in this folder, accept its workspace-trust prompt, and ask it to work the
+   experiment queue (the first time, it also asks you to log in):
    ```
    cd ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments && claude
    ```
@@ -49,20 +46,24 @@ and writable by your account, and Claude Code installed and logged in with your 
 Everything the queue uses lives in ~/src/kc_queue: its own copies of al_analysis, olfsysm and
 hong2p, and a new Python environment, ~/src/kc_queue/al_analysis/venv. Your other checkouts in
 ~/src and your other Python environments are never used or changed; hooks remind each session of
-this and refuse edits there. Outside ~/src/kc_queue the setup only adds SSH keys
-(~/.ssh/kc_queue_*), writes your machine's public keys and a short description of it (host,
-user, cores, memory, OS) to push_keys/<host>/ in the shared folder, and, if you agree, saves your
-git name and email.
+this and refuse edits there. Outside ~/src/kc_queue the setup only installs what it asked about
+above, adds SSH keys (~/.ssh/kc_queue_*), and writes your machine's public keys and a short
+description of it (host, user, cores, memory, OS) to push_keys/<host>/ in the shared folder.
+
+On a distribution without apt, install Python 3.14 (with its headers and venv module), a C++
+compiler, git, ssh and curl with its package manager first; the script then finds them.
 
 ### Options
 
 `join_queue.sh` options:
-- `--no-install`: skip building the Python environment.
+- `--no-install`: skip building the Python environment (and installing Python 3.14 and the C++
+  compiler for it).
 - `--no-tests`: skip the model check at the end. `--full-tests` also runs the whole QUICK=1 test
   suite (2.5 h on hal).
 - `--check`: only test whether each checkout can push.
 - `PYTHON=<interpreter> ./join_queue.sh`: build the environment from another Python than
-  python3.14 (3.8 or newer, not one inside a venv; a conda Python works but gets a warning).
+  python3.14 (3.8 or newer, not one inside a venv; a conda Python works but gets a warning). The
+  script then does not install Python 3.14.
 
 It does the same whether or not a conda environment or venv is active in your shell, and it never
 uses or changes a venv it did not make. Machines are identified by their short host name
@@ -72,9 +73,11 @@ uses or changes a venv it did not make. Machines are identified by their short h
 
 - **Approve its keys.** On one of your hosts, with gh logged in with admin rights on the three
   repositories, run `./approve_push_keys.sh <host>` from this folder in a terminal. Compare the
-  fingerprints it prints with the ones the machine's owner sent you, since anyone on the lab
+  fingerprints it prints (each on a line of its own, as join_queue.sh prints them) with the ones
+  the machine's owner sent you, since anyone on the lab
   network can write to the shared folder, and answer y. It adds them as write-enabled deploy
-  keys, one per repository; the owner then runs `./join_queue.sh --check`.
+  keys, one per repository; join_queue.sh, if the owner left it waiting, then
+  reports that each checkout can push (otherwise the owner runs `./join_queue.sh --check`).
 - **List and revoke.** `./approve_push_keys.sh --list` shows the keys added so far and the
   machines waiting. Deploy keys do not expire, so run `./approve_push_keys.sh --revoke <host>`
   when a machine stops working the queue. A key can only add ordinary commits to the default
