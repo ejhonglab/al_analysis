@@ -77,7 +77,8 @@ SUMMARY_COLS = {
     'weak_frac_off': 'weak_frac_off', 'weak_frac_on': 'weak_frac_on',
     'excess_on_block': 'on_excess_block', 'excess_on_other': 'on_excess_other_between',
     'suppression_sd_log': 'suppression_sd_log', 'loss_rate5': 'loss_rate5',
-    'loss_rate_ctrl': 'loss_rate_ctrl',
+    'loss_rate_ctrl': 'loss_rate_ctrl', 'loss_term_rate5': 'loss_term_rate_on_rate5',
+    'fixed_thr': 'fixed_thr', 'wAPLKC_scale': 'wAPLKC_scale', 'wAPLPN_scale': 'wAPLPN_scale',
 }
 
 
@@ -113,7 +114,7 @@ def summarize(res_dir, out_dir, loss5, loss_ctrl) -> pd.DataFrame:
     if stats_path.exists():
         for r in pd.read_csv(stats_path).to_dict('records'):
             rows.append(dict(part=r['part'], tag=r['tag'], claw_thr=r['claw_thr'], target=r.get('target_rate'),
-                **{k: r.get(c, np.nan) for k, c in SUMMARY_COLS.items()}))
+                kc_kc_inh=r.get('kc_kc_inh'), **{k: r.get(c, np.nan) for k, c in SUMMARY_COLS.items()}))
     fits_path = res_dir / 'fits.csv'
     if fits_path.exists():
         data_rates = {g: H.yang_response_fractions(g)[H.APL16_ODORS].mean() for g in ('TNT3c', 'TNT')}
@@ -124,8 +125,10 @@ def summarize(res_dir, out_dir, loss5, loss_ctrl) -> pd.DataFrame:
             extra = dict(fraction_stats(on_out[0], off_out[0], data_rates), **losses(loss5, loss_ctrl, on_out, off_out),
                 **suppression_stats(H.response_fractions(on_out[0]), H.response_fractions(off_out[0]), data_rates))
             rows.append(dict(part='B', tag=tag, claw_thr=r['claw_thr'], target=r.get('rate_target'),
-                **{k: (extra[c] if c in extra else r.get(c, np.nan)) for k, c in SUMMARY_COLS.items()}))
+                kc_kc_inh=r.get('kc_kc_inh'), **{k: (extra[c] if c in extra else r.get(c, np.nan)) for k, c in SUMMARY_COLS.items()}))
     t = pd.DataFrame(rows)
+    # every loss term but the rate target's, the same in both losses
+    t['loss_no_rate_term'] = t.loss_rate5 - t.loss_term_rate5
     t.to_csv(res_dir / 'comparison.csv', index=False)
     return t
 
