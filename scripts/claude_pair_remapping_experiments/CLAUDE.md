@@ -498,8 +498,9 @@ Control session list on my phone. When you first start chat_watch.sh in a sessio
 ListAgents: if its first line already gives this session the name `al_analysis modeling - <host>`
 (or `... - <host>-<n>`), do nothing; otherwise pick the label `<host>`, or `<host>-2`, `-3`, ...
 if another live session in the listing already has that name, and CronCreate a one-shot job
-(recurring false) about two minutes ahead (`date -d '+2 min' '+%-M %-H %-d %-m'` gives the cron
-fields) with the prompt `__set_session_title__ <label>`. When it fires, `session_title_hook.sh` (a
+(recurring false) about two minutes ahead (`date -d '+2 min' '+%-M %-H %-d %-m *'` gives all five
+cron fields; CronCreate refuses an expression without the trailing day-of-week `*`) with the
+prompt `__set_session_title__ <label>`. When it fires, `session_title_hook.sh` (a
 UserPromptSubmit hook, registered in this folder's `.claude/settings.json` and in Tom's
 ~/.claude/settings.json, which is `~/src/dotfiles/claude_settings.json`; the folder's copy runs the
 script in the session's own checkout, so it also works in ~/src/kc_queue, and the two commands
