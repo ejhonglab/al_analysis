@@ -279,7 +279,7 @@ def run_fit(fit: str, variants, *, orn, orn_pairs, drive, ref, data, data_rates,
                 apl_drive=meta['apl_drive'], source_fit=f'{exp}:{fit}', fit_fixed_thr=fit_params['fixed_thr'],
                 thr_factor=meta['thr_factor'], target_rate=target, base_params=r['base_params']),
             run=dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), host=socket.gethostname(),
-                seconds=row['seconds'], model=H.model_provenance(orn_deltas=orn)),
+                seconds=row['seconds'], model=start_provenance(orn)),
         )
         (parts / f'{tag}.json').write_text(json.dumps(part, indent=1, default=_jsonable) + '\n')
         print(f"{tag}: thr x{thr_f:.3f} (APL-on rate at the fit's threshold {rate_fit_thr:.4f}); rates on "
@@ -452,6 +452,17 @@ def make_figures(stats: pd.DataFrame, fracs: pd.DataFrame, res_dir: Path) -> Non
     plt.close(fig)
 
 
+_START_PROVENANCE = {}
+
+
+def start_provenance(orn):
+    """The model provenance (code commits, build, inputs), taken once at the start of the run, so
+    that a pull in this checkout during the run does not change the commit recorded for it."""
+    if 'p' not in _START_PROVENANCE:
+        _START_PROVENANCE['p'] = H.model_provenance(orn_deltas=orn)
+    return _START_PROVENANCE['p']
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--fits', nargs='+', default=list(FITS), choices=list(FITS), help='E36 optima to run')
@@ -465,6 +476,7 @@ def main() -> None:
     if not args.figure_only:
         out_dir = H.outputs_dir(args.experiment)
         orn = H.apl16_orn_deltas()
+        start_provenance(orn)
         orn_pairs = H.orn16_consensus_pairs()
         drive = H.consensus_orn_drive()
         ref = H.reference_pairs()

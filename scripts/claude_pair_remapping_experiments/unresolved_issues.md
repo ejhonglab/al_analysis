@@ -45,6 +45,11 @@ directory's notes/ and are linked from here.
   that ran from 7974f21 (the commits between touch only CLAUDE.md and join_queue.sh); annotated in the
   archive README and results/E38_hallem_input/PROVENANCE_NOTE.md, and E38_hallem_input.py now records
   provenance at the start.
+- **Done (hal).** E37's stage 0 (18:54-19:26) pulled at 19:04 and 19:12, so its variants record
+  7c61cd4, bfd49c6 and 00bbfa1 for code that ran from 7c61cd4 (the commits between touch only
+  CLAUDE.md, the summary template and the progress plot); annotated in
+  results/E37_spike_only_apl/PROVENANCE_NOTE.md, and E37_spike_only_apl.py now records provenance at
+  the start. E37's stage-1 fits ran with no pull and are exact.
 - **Remains.** The same fix (record at start) in the other scripts that call `model_provenance` at the
   end (grep `model_provenance(orn_deltas`); until then, avoid pulling in a checkout with a run going.
 
