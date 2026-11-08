@@ -100,11 +100,12 @@ def per_odor_extras(on_resp: pd.DataFrame, off_resp: pd.DataFrame, on_pairs: pd.
     return out
 
 
-def tune_and_knockout(orn, kws, out_dir, tag, *, with_pn_contrast: bool = True):
-    """fit_mb_model tuned with APL on (+ PN contrast from run vars), then APL off."""
+def tune_and_knockout(orn, kws, out_dir, tag, *, with_pn_contrast: bool = True,
+    target: float = TARGET):
+    """fit_mb_model tuned with APL on to `target` (+ PN contrast from run vars), then APL off."""
     from al_analysis.mb_model import fit_mb_model
     common = dict(kws, make_plots=False, silent=True)
-    ret = fit_mb_model(orn, target_sparsity=TARGET, return_olfsysm_vars=with_pn_contrast,
+    ret = fit_mb_model(orn, target_sparsity=target, return_olfsysm_vars=with_pn_contrast,
         **common
     )
     resp_on, spk_on, wPNKC, params = ret
