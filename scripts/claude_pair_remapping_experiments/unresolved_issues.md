@@ -87,6 +87,8 @@ directory's notes/ and are linked from here.
   every later fit's loss by ~0.007, so do it between experiments, not mid-comparison); the
   per-experiment notes keep their hand-typed values.
 
+## Resolved
+
 ### Artifact publishing unavailable on both hosts (found 2026-11-06 14:34)
 
 - **What.** The claude-artifacts tools stopped working in hal's and atlas's sessions ("not found:
@@ -97,14 +99,17 @@ directory's notes/ and are linked from here.
   (and anything added to the template since). The shared directory's reports/summary_2026-11-06.html
   (and current-summary.html) is kept current from build_summary.py's page, so it has the content
   the artifact would have (Tom: that suffices meanwhile).
-- **Remains.** At the start of the next session (once, without probing the tools repeatedly):
+- **Was to do.** At the start of the next session (once, without probing the tools repeatedly):
   tell Tom, and if the tools work, run build_summary.py, publish
   outputs/_artifacts/summary/index.html to the summary slug with the new title "Model experiments to
   improve fit to KC remapping, with APL on/off" (the artifact title is set at publish) and run
   save_report_copy.py. Until
   then, keep updating the reports/ copy with save_report_copy.py after each build.
-
-## Resolved
+- **Resolved** 2026-11-07 17:31 (hal): the tools work again in a new session; build_summary.py was
+  re-run (356 values, lint clean), the page published to the same artifact (version 50, title
+  "Model experiments to improve fit to KC remapping, with APL on/off") and copied to
+  reports/summary_2026-11-06.html with save_report_copy.py. No other page lagged (every reports/
+  row has its artifact).
 
 ### The archive's params.csv did not record what drives APL, the divisive flags or the fit bounds (found 2026-11-06, atlas)
 
