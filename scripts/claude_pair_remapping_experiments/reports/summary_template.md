@@ -56,6 +56,7 @@ VCF: Odor distances derived from how often odors co-occur across natural odor so
 - E44: the operating point (completed)
 - E45: the glomerulus gain at the data's operating point (completed)
 - E46: the operating-point fits on a re-drawn wiring (running)
+- E47: the wiring feature behind the block (not started)
 ???
 
 ## What the data show: the ORN→KC remapping in control flies, and what blocking APL output does to it
@@ -656,6 +657,8 @@ Two things the lines say that the sections above say in words: the block and the
 - **Data that would discriminate the mechanisms:** APL imaging under the same odors (is APL's output to broadly tuned KCs larger, as breadth-weighted APL requires?), KC–KC interaction tests (KC responses with neighbouring KCs silenced, the direct test of KC–KC inhibition), per-trial KC data for a reliability readout (and for the noise floor of the mean distances), and, for the single-claw question, imaging of ms responders with their glomerular input identified.
 
 - **The operating-point fits on a re-drawn wiring (running).** The glomerulus gain at the data's operating point gave its two best fits by 0.1-0.2 of extended loss (the eight glomeruli at 1.25 at the 70 Hz per-claw threshold; the DC2, DM5 and DM1 core with Hallem's ms input at 1.5 at 40 Hz), and the replication of the structure-loss joint fits on re-drawn wiring showed that differences of that size can be the wiring draw's, every re-draw losing most of the block. Four fits re-run those two models and the reference model (the eight at 1.5 at both thresholds) at the control flies' fraction on the second within-type claw-permutation draw, each seeded from its real-wiring optimum. If the ordering holds, the reference model's gain shrinks to 1.25 at 70 Hz and the 40 Hz choice between the eight and the core becomes a weighting question (agreement with the KC matrices against the weak odors' pattern); if it flips, the gain stays at 1.5 and its size at the data's operating point is reported as 1.25-1.5 within the draw spread; if every fit loses the block on the draw as at 5 %, the block's dependence on the real hemibrain wiring stands as a result in its own right.
+
+- **The wiring feature behind the block (not started).** Every re-drawn wiring loses most of the fruity × small-ester block the real hemibrain claw wiring makes once the model is fitted with the structure targets, so the block depends on something a within-type claw permutation destroys. The reference models, at their fitted scales with only the somatic threshold re-tuned, are run on four kinds of shuffle of the wiring (claw permutations, which keep each KC's and each glomerulus' claw counts; Curveball shuffles, which keep each KC's number of distinct glomeruli and each glomerulus' number of KCs; each with or without KC-type preservation), five draws each, and then re-fitted on one Curveball draw of each kind. If the Curveball shuffles keep the block, it rides on the wiring's degree structure, which any connectome-constrained wiring has; if only the within-type Curveball keeps it, the KC types' glomerulus preferences carry it; if all four lose it, the specific pairing of glomeruli on KCs in the hemibrain carries the block and the wiring itself is one of the mechanisms.
 
 ## Parameter glossary with mechanisms
 

@@ -896,6 +896,7 @@ Canonical experiment names for summary reports:
 | E44 | the operating point |
 | E45 | the glomerulus gain at the data's operating point |
 | E46 | the operating-point fits on a re-drawn wiring |
+| E47 | the wiring feature behind the block |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
