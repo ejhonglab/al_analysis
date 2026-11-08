@@ -231,7 +231,7 @@ def main() -> None:
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E41_claw_subgain.py',
         host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), parts=args.parts, base=BOUTON,
         thrs=args.thrs, gains=args.gains, b_gains=args.b_gains, fits={b: FITS[b] for b in args.fits},
-        fits_source='results/E34_gain_bounded/fits.csv', tau=TAU, approx_conc_note=H.APPROX_CONC_NOTE, **model_prov)
+        fits_source='results/E34_gain_bounded/fits.csv', tau=TAU, approx_conc_note=H.APPROX_CONC_NOTE, model=model_prov)
     (res_dir / f'provenance_{"".join(args.parts)}.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
     make_figure(pd.DataFrame(rows), res_dir)
     print('done ->', res_dir)
