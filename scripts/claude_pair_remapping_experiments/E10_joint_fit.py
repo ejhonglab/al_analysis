@@ -276,7 +276,10 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         kws = dict(kws, _wPNKC=wPNKC)
         # the gained wiring's own APL-off breadth (hal's saved base runs do not apply)
         hal_path = out_dir / 'no_such_file'
-        off_path = out_dir / (f'gain{gain:g}_' + off_path.name)
+        # the cache names the glomerulus set unless it is the oracle set (so two sets in one
+        # outputs folder, e.g. E40's, do not share an APL-off run)
+        gset = '' if sorted(gloms) == sorted(ORACLE) else '-'.join(sorted(gloms)) + '_'
+        off_path = out_dir / (f'gain{gain:g}_{gset}' + off_path.name)
         print(f'gain {gain:g} on {gloms}', flush=True)
     if hal_path.exists():
         off_spk = pd.read_parquet(hal_path)
