@@ -5,8 +5,9 @@ the bouton->APL input removed but not refitted (stage 0's `nopnapl`).
 
 Writes results/E37_spike_only_apl/stage1_comparison.csv in the shared directory: the extended
 loss, the fitted statistics, E35's suppression uniformity (computed here for the stage-1 fits
-from their saved APL-on / acute APL-off responses) and the absolute fitted scales (at olfsysm's
-0.5 ms step; spike-driven KC->APL drive per spike scales with the step, see unresolved_issues.md).
+from their saved APL-on / acute APL-off responses) and the absolute fitted scales (fitted at
+olfsysm's 0.5 ms step; since olfsysm ae6869c a KC spike's drive to APL no longer depends on the
+step, with outputs at 0.5 ms unchanged).
 
 Usage: ./venv/bin/python E37_stage1_summary.py
 """
