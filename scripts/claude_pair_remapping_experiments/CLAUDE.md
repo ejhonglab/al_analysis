@@ -143,6 +143,12 @@ Each of these cost real time to diagnose; check them before blaming a script.
   '^/path/venv/bin/python script.py'`), or check a pid or output file instead.
 - Never `pkill -f` a pattern from a Bash command (the chat watcher's name, say): it matches and
   kills the calling shell (exit 144). Stop background commands with TaskStop.
+- On lab members' machines, queue_guard.py refuses a shell command whose text contains any
+  `~/src/...` path outside the queue tree, including prose inside a heredoc (a status file saying
+  "checkouts in ~/src/kc_queue;" was refused because the trailing `;` made it a different path, and
+  `du -sh ~/src/*` was refused outright). In commands and in text written through them, write
+  paths inside the tree in full (`/home/<user>/src/kc_queue/...`) and refer to the rest as "the
+  owner's checkouts"; survey the owner's data with the Read tool, not with shell commands.
 - After `archive_model_outputs.py E<n>_...`, run `migrate_model_output_params.py` for that
   experiment: it fills params.csv from exact sources and adds the base_kwargs columns (Tom imports
   data/model_outputs into a viewer, so params.csv must be complete).
