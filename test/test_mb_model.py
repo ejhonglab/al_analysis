@@ -5706,6 +5706,212 @@ def test_claw_thr_width_simulator(claw_sat_model):
     assert spike_counts.equals(spike_counts2)
 
 
+def test_claw_thr_subgain_zero_equals_hard_knee(claw_thr_model):
+    """Tests `claw_thr_subgain=0.0` (recorded, but dead zone below the knee) does not
+    change tuned outputs of a `claw_thr` model.
+    """
+    orn_deltas, kws, ret = claw_thr_model
+    assert 'claw_thr_subgain' not in ret[3]
+
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, claw_thr_subgain=0.0, **kws)
+    assert type(ret2[3]['claw_thr_subgain']) is float
+    assert_fit_outputs_equal(ret, _pop_param(ret2, 'claw_thr_subgain', 0.0))
+
+
+def test_claw_thr_subgain_one_equals_no_threshold(claw_thr_model):
+    """Tests `claw_thr_subgain=1.0` gives the same outputs as the model w/o `claw_thr`
+    (both w/ threshold and APL weights fixed at values tuned w/ the hard knee).
+
+    g = 1 makes the per-claw transfer `max(x, 0)` (exactly, in olfsysm), and w/o
+    `claw_thr` claw drives enter unrectified, so the two only agree because claw drives
+    are not negative here: odor drive is clipped at 0 per claw (no
+    `allow_net_inh_per_claw`), and spontaneous drive (`kc_spont_in`) is a sum of
+    non-negative PN rates times non-negative weights.
+    """
+    orn_deltas, kws, ret = claw_thr_model
+    assert not kws.get('allow_net_inh_per_claw', False)
+    claw_thr = kws['claw_thr']
+    fixed_kws = get_thr_and_APL_weights(ret[3], kws)
+    nothr_kws = {k: v for k, v in kws.items() if k != 'claw_thr'}
+
+    ret_nothr = _fit_mb_model(orn_deltas=orn_deltas, **fixed_kws, **nothr_kws)
+    ret2 = _fit_mb_model(orn_deltas=orn_deltas, claw_thr_subgain=1.0, **fixed_kws,
+        **kws
+    )
+    assert type(ret2[3]['claw_thr_subgain']) is float
+    assert_fit_outputs_equal(ret_nothr,
+        _pop_param(_pop_param(ret2, 'claw_thr_subgain', 1.0), 'claw_thr', claw_thr)
+    )
+    # (the hard knee alone does change outputs at these parameters)
+    assert not ret_nothr[0].equals(ret[0])
+
+
+def test_claw_thr_subgain_adds_input(claw_thr_model):
+    """Tests 0 < `claw_thr_subgain` < 1 adds input below the knee, and that more
+    responses result for larger gains, w/ APL weights and absolute KC thresholds fixed
+    at values tuned w/ the hard knee.
+
+    The gain also adds spontaneous input (`kc_spont_in`), which thresholds are relative
+    to (`fixed_thr + 2 * kc_spont_in`). At fixed `fixed_thr`, that raises thresholds by
+    more than the odor drive in the bouton model (response rate ~0.096 -> ~0.078 ->
+    ~0.061 for g = 0 / 0.25 / 0.5), but not in the hemibrain claw model (~0.10 ->
+    ~0.12 -> ~0.15). So the absolute thresholds are held at their tuned values (vector
+    `fixed_thr` minus twice each gain's spontaneous input), and response rates compared
+    at those.
+    """
+    orn_deltas, kws, ret = claw_thr_model
+    responses, spike_counts, _, params = ret
+    fixed_kws = get_thr_and_APL_weights(params, kws)
+    assert is_scalar(fixed_kws['fixed_thr'])
+    spont_in = params['kc_spont_in'].values
+    abs_thr = fixed_kws['fixed_thr'] + 2 * spont_in
+
+    gains = (0.0, 0.25, 0.5)
+    g2spont_in = {0.0: spont_in}
+    rates = []
+    n_spikes = []
+    for g in gains:
+        g_kws = dict(claw_thr_subgain=g) if g > 0 else dict()
+        if g > 0:
+            # (spontaneous input does not depend on thresholds or APL weights)
+            responses2, _, _, params2 = _fit_mb_model(orn_deltas=orn_deltas, **g_kws,
+                **fixed_kws, **kws
+            )
+            assert params2['claw_thr_subgain'] == g
+            g2spont_in[g] = params2['kc_spont_in'].values
+            print(f'claw_thr_subgain={g}: response rate at fixed fixed_thr '
+                f'{responses.values.mean():.4f} -> {responses2.values.mean():.4f}'
+            )
+
+        vector_thr_kws = {**fixed_kws, 'fixed_thr': abs_thr - 2 * g2spont_in[g]}
+        responses3, spike_counts3, _, params3 = _fit_mb_model(orn_deltas=orn_deltas,
+            **g_kws, **vector_thr_kws, **kws
+        )
+        assert np.array_equal(params3['kc_spont_in'].values, g2spont_in[g])
+        if g == 0:
+            assert responses3.equals(responses)
+            assert spike_counts3.equals(spike_counts)
+
+        rates.append(responses3.values.mean())
+        n_spikes.append(spike_counts3.values.sum())
+
+    print(f'response rates at fixed absolute thresholds (claw_thr_subgain={gains}): '
+        f'{rates}'
+    )
+    assert all(r2 > r for r, r2 in zip(rates, rates[1:]))
+    assert all(n2 > n for n, n2 in zip(n_spikes, n_spikes[1:]))
+
+    # each claw gains g * min(max(x, 0), claw_thr), so input added is linear in g
+    added = {g: g2spont_in[g] - spont_in for g in gains[1:]}
+    assert (added[0.25] >= 0).all() and added[0.25].sum() > 0
+    assert np.allclose(added[0.5], 2 * added[0.25])
+
+
+def test_claw_thr_subgain_soft_knee(claw_thr_model):
+    """Tests `claw_thr_subgain` adds the same input to the soft knee (`claw_thr_width`)
+    as to the hard knee, and changes outputs of the soft knee model.
+    """
+    orn_deltas, kws, ret = claw_thr_model
+    fixed_kws = get_thr_and_APL_weights(ret[3], kws)
+    spont_in = ret[3]['kc_spont_in'].values
+    g = 0.5
+    width = 20.0
+
+    _, _, _, params_hard = _fit_mb_model(orn_deltas=orn_deltas, claw_thr_subgain=g,
+        **fixed_kws, **kws
+    )
+    responses_soft, _, _, params_soft = _fit_mb_model(orn_deltas=orn_deltas,
+        claw_thr_width=width, **fixed_kws, **kws
+    )
+    responses2, _, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        claw_thr_width=width, claw_thr_subgain=g, **fixed_kws, **kws
+    )
+    assert params2['claw_thr_width'] == width and params2['claw_thr_subgain'] == g
+
+    added_hard = params_hard['kc_spont_in'].values - spont_in
+    added_soft = params2['kc_spont_in'].values - params_soft['kc_spont_in'].values
+    assert added_hard.sum() > 0
+    assert np.allclose(added_soft, added_hard)
+    assert not responses2.equals(responses_soft)
+
+
+def test_claw_thr_subgain_invalid(orn_deltas):
+    """Tests invalid `claw_thr_subgain` kwargs raise ValueError.
+    """
+    nonclaw_kws = dict(weight_divisor=20)
+    claw_kws = dict(one_row_per_claw=True, prat_claws=True)
+    for kws, bad_kws in (
+            (claw_kws, dict(claw_thr_subgain=0.5)),
+            (claw_kws, dict(claw_thr_subgain=0.0)),
+            (claw_kws, dict(claw_sat=50.0, claw_thr_subgain=0.5)),
+            (claw_kws, dict(claw_thr=70.0, claw_thr_subgain=-0.5)),
+            (claw_kws, dict(claw_thr=70.0, claw_thr_subgain=np.inf)),
+            (claw_kws, dict(claw_thr=70.0, claw_thr_subgain=np.nan)),
+            (nonclaw_kws, dict(claw_thr=70.0, claw_thr_subgain=0.5)),
+        ):
+
+        with pytest.raises(ValueError, match='claw_(sat|thr)'):
+            fit_mb_model(orn_deltas, **bad_kws, **kws)
+
+
+def test_claw_thr_subgain_model_id():
+    """Tests model IDs / LR cache keys only change when `claw_thr_subgain` passed
+    (including 0.0), and that small values are distinguishable.
+    """
+    kws = dict(one_row_per_claw=True, prat_claws=True, claw_thr=70.0)
+    none_kws = {**kws, 'claw_thr_subgain': None}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(claw_thr_subgain=0.0), dict(claw_thr_subgain=0.004),
+        dict(claw_thr_subgain=0.005), dict(claw_thr_subgain=0.5),
+        dict(claw_thr_subgain=0.5, claw_thr_width=20.0), dict(claw_thr_width=20.0)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_claw_thr_subgain_simulator(claw_sat_model):
+    """Tests `make_fixed_param_kc_simulator` forwards `claw_thr_subgain` (matching
+    `fit_mb_model`), including in the initial (tuning) call.
+    """
+    orn_deltas, kws, _ = claw_sat_model
+    target = 0.1
+    claw_kws = dict(claw_thr=70.0, claw_thr_subgain=0.5)
+
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas,
+        target_sparsity=target, **claw_kws, **kws
+    )
+    assert not any(k in initial_params for k in CLAW_SAT_PARAMS)
+    tuned_responses, _ = simulate(dict())
+    tuned_rate = tuned_responses.mean().mean()
+    print(f'tuned response rate w/ {claw_kws}: {tuned_rate:.4f}')
+    # (olfsysm default mp.kc.sp_acc=0.1 is relative to target)
+    assert abs(tuned_rate - target) <= 0.1 * target + 1e-9
+
+    # same thresholds / APL weights, w/ dead zone below the knee
+    simulate_hard, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, claw_thr=claw_kws['claw_thr'], **kws
+    )
+
+    # acute APL knockout (all APL weight scales 0)
+    apl_off = {k: 0.0 for k in initial_params if k != 'fixed_thr'}
+    responses, spike_counts = simulate(apl_off)
+    responses_hard, _ = simulate_hard(apl_off)
+    assert responses.mean().mean() > tuned_rate
+    assert not responses.equals(responses_hard)
+
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **claw_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **apl_off})}
+    )
+    assert params2['claw_thr_subgain'] == claw_kws['claw_thr_subgain']
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)
+
+
 def test_claw_pow_one_equals_default(claw_thr_model):
     """Tests `claw_pow=1.0` (recorded, but no power transfer) does not change tuned
     outputs of a `claw_thr` model.

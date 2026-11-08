@@ -588,10 +588,11 @@ KC_KC_INH_PARAMS: Tuple[str, ...] = ('kc_kc_inh', 'kc_kc_tau')
 
 # `fit_mb_model` kwargs for the per-claw transfer of claw>KC input: saturation (olfsysm
 # `mp.kc.claw_sat`), a rectified offset (`mp.kc.claw_thr`, w/ an optional soft knee
-# of width `mp.kc.claw_thr_width`) and a power transfer (`mp.kc.claw_pow`, about
+# of width `mp.kc.claw_thr_width` and an optional sub-threshold gain
+# `mp.kc.claw_thr_subgain`) and a power transfer (`mp.kc.claw_pow`, about
 # `mp.kc.claw_pow_ref`). Each disabled if None.
 CLAW_SAT_PARAMS: Tuple[str, ...] = ('claw_sat', 'claw_sat_hard', 'claw_thr',
-    'claw_thr_width', 'claw_pow', 'claw_pow_ref'
+    'claw_thr_width', 'claw_thr_subgain', 'claw_pow', 'claw_pow_ref'
 )
 
 # `fit_mb_model` kwargs for rate-based vesicle depletion at PN boutons (olfsysm
@@ -700,7 +701,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     # float formats for params where default '.2f' would lose too much precision
     param_float_formats = {k: '.3g'
         for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr', 'claw_thr_width',
-            'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS +
+            'claw_thr_subgain', 'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS +
             EXT_INH_RECORDED_PARAMS
     }
 
@@ -12476,6 +12477,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     kc_kc_inh: Optional[float] = None, kc_kc_tau: Optional[float] = None,
     claw_sat: Optional[float] = None, claw_sat_hard: Optional[bool] = None,
     claw_thr: Optional[float] = None, claw_thr_width: Optional[float] = None,
+    claw_thr_subgain: Optional[float] = None,
     claw_pow: Optional[float] = None, claw_pow_ref: Optional[float] = None,
     bouton_ves_p: Optional[float] = None, bouton_tau_r: Optional[float] = None,
     ext_inh_kc: Optional[pd.DataFrame] = None,
@@ -12772,6 +12774,22 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             can lower response rates. 0.0 gives the hard knee (but is recorded).
             Requires `claw_thr` (no effect if it is 0). Must be finite and not
             negative.
+
+        claw_thr_subgain: if not None (and > 0), the sub-threshold gain `g` of the
+            `claw_thr` knee (olfsysm `mp.kc.claw_thr_subgain`):
+            `g * min(max(x, 0), claw_thr)` is added to the knee's output (hard, or soft
+            w/ `claw_thr_width`), before any `claw_pow` / `claw_sat`. With the hard
+            knee, each claw's drive `x` enters as `g * x` below `claw_thr` and
+            `g * claw_thr + (x - claw_thr)` above it (for `x >= 0`; continuous at the
+            knee), so weakly driven claws count at a reduced gain instead of not at all
+            (E41 of the KC-remapping experiments). `g = 1` gives `max(x, 0)` exactly,
+            which equals the model w/o `claw_thr` (claw drives are clipped at 0 unless
+            `allow_net_inh_per_claw=True`, and spontaneous claw drive is not negative).
+            Applies to spontaneous input (`kc_spont_in`, which thresholds are relative
+            to) too, so at fixed `fixed_thr` it raises thresholds as well as odor drive,
+            and can lower response rates. 0.0 gives the dead zone of the hard knee (but
+            is recorded). Requires `claw_thr` (no effect if it is 0). Must be finite and
+            not negative.
 
         claw_pow: if not None (and != 1), a power-law (supralinear for > 1) per-claw
             transfer (olfsysm `mp.kc.claw_pow`): each claw's rectified drive
@@ -13224,9 +13242,18 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
                     f'{claw_thr_width})'
                 )
             claw_sat_params['claw_thr_width'] = claw_thr_width
+        if claw_thr_subgain is not None:
+            claw_thr_subgain = float(claw_thr_subgain)
+            if not (np.isfinite(claw_thr_subgain) and claw_thr_subgain >= 0):
+                raise ValueError('claw_thr_subgain must be finite and not negative '
+                    f'(got {claw_thr_subgain})'
+                )
+            claw_sat_params['claw_thr_subgain'] = claw_thr_subgain
 
     elif claw_thr_width is not None:
         raise ValueError('claw_thr_width requires claw_thr')
+    elif claw_thr_subgain is not None:
+        raise ValueError('claw_thr_subgain requires claw_thr')
 
     if claw_pow is not None:
         claw_pow = float(claw_pow)
@@ -16904,11 +16931,11 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             `initial_params`). Kwargs only used for tuning (e.g. `target_sparsity`)
             are ignored if `initial_params` passed. Other KC-layer kwargs that do not
             change how thresholds / APL weights are defined (e.g. `claw_sat` /
-            `claw_thr` / `claw_thr_width` / `claw_pow` / `claw_pow_ref` /
-            `bouton_ves_p` / `ext_inh_kc` / `ext_inh_bouton` / `ext_inh_scale` /
-            `apl_inh_divisive` / `bouton_inh_divisive`) apply to the initial call and
-            to all simulations (the external inhibition matrices stay set in the
-            olfsysm variables the simulations reuse).
+            `claw_thr` / `claw_thr_width` / `claw_thr_subgain` / `claw_pow` /
+            `claw_pow_ref` / `bouton_ves_p` / `ext_inh_kc` / `ext_inh_bouton` /
+            `ext_inh_scale` / `apl_inh_divisive` / `bouton_inh_divisive`) apply to the
+            initial call and to all simulations (the external inhibition matrices stay
+            set in the olfsysm variables the simulations reuse).
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),

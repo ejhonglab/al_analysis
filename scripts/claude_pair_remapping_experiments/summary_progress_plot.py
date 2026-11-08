@@ -91,7 +91,8 @@ TABLE_NAMES = ('stats_variants.csv', 'fits.csv', 'wkckc_controls.csv')
 PARAM_LABELS = [
     ('base', 'base'), ('config', 'configuration'), ('kind', 'rule'),
     ('claw_thr', 'per-claw threshold (Hz)'), ('claw_thr_width', 'knee width (Hz)'),
-    ('claw_sat', 'per-claw cap'), ('form', 'cap form'), ('claw_pow', 'per-claw power'),
+    ('claw_thr_subgain', 'sub-threshold gain'), ('claw_sat', 'per-claw cap'), ('form', 'cap form'),
+    ('claw_pow', 'per-claw power'),
     ('n_claws_active_to_spike', 'claws to spike (coincidence)'), ('coinput_factor', 'co-input factor'),
     ('k', 'breadth exponent'), ('breadth_k', 'breadth exponent'), ('m', 'shared-input exponent'),
     ('kc_kc_inh', 'KC-KC scale'), ('wKCKC_scale', 'KC-KC scale'), ('kc_kc_tau', 'KC-KC tau (s)'),
