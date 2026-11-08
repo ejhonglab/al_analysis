@@ -19,6 +19,10 @@ directory's notes/ and are linked from here.
   olfsysm build info is baked into the extension and is exact. No statistic changes.
 - **Done.** E39's provenance files carry a `code_that_ran` annotation with the commits that ran;
   E39_gain_decomposition.py now records provenance at the start.
+- **Done (viki).** E38's run (18:22-18:46) pulled at 18:24, so its provenance.json names 3160ed6 for code
+  that ran from 7974f21 (the commits between touch only CLAUDE.md and join_queue.sh); annotated in the
+  archive README and results/E38_hallem_input/PROVENANCE_NOTE.md, and E38_hallem_input.py now records
+  provenance at the start.
 - **Remains.** The same fix (record at start) in the other scripts that call `model_provenance` at the
   end (grep `model_provenance(orn_deltas`); until then, avoid pulling in a checkout with a run going.
 

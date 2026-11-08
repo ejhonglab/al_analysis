@@ -294,6 +294,8 @@ def main() -> None:
     for tag, (orn, meta) in variants.items():
         H.abbrev_columns(orn).to_csv(res_dir / 'inputs' / f'{tag}.csv')
     hal = hallem_deltas(orn0.index); hal.to_csv(res_dir / 'inputs' / 'hallem_shared_glomeruli.csv')
+    # recorded at the start, so a pull during the run cannot change the commit the file names
+    model_prov = H.model_provenance(orn_deltas=orn0, hallem_deltas=hal)
     (res_dir / 'inputs' / 'variants.json').write_text(json.dumps({t: m for t, (_, m) in variants.items()}, indent=1) + '\n')
     orn_pairs = H.orn16_consensus_pairs(); drive = H.consensus_orn_drive(); ref = H.reference_pairs(); refs = all_refs()
     data = {'raw': {g: H.yang_mean_rdm(g, 'cosine') for g in ('TNT3c', 'TNT')},
@@ -419,7 +421,7 @@ def main() -> None:
         hallem_odors=HALLEM_ODORS, hallem_conc_log10=HALLEM_CONC, yang_conc={o: H.YANG_CONC[o] for o in HALLEM_ODORS},
         hallem_conc_note='Hallem & Carlson 2006 odors at 10^-2; Yang\'s ms, paa and 1-8ol at 10^-3 and B-myr at 10^-2, so the Hallem-based inputs are within the one-log-unit rule but on its high side (upper bounds)',
         shared_glomeruli=list(hal.index), candidate_glomeruli=CAND_GLOMS, variants={t: m for t, (_, m) in variants.items()},
-        approx_conc_note=H.APPROX_CONC_NOTE, model=H.model_provenance(orn_deltas=orn0, hallem_deltas=hal))
+        approx_conc_note=H.APPROX_CONC_NOTE, model=model_prov)
     (res_dir / 'provenance.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
     make_figure(pd.DataFrame(rows), pd.read_csv(fracs_path, index_col=0), pd.read_csv(resp_path), res_dir)
     print('done ->', res_dir)
