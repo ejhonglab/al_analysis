@@ -120,20 +120,54 @@ Parts B / C write to <results>/partB|partC and <outputs>/partB|partC (same file 
 trial files named by sigma), with their own provenance.json (code provenance at the start, under
 "model"), so part A's files are never touched.
 
+Models from other experiments' joint fits (`--model-from EXPERIMENT:TAG`, repeatable; E48): the model
+of row TAG of <shared>/results/EXPERIMENT/fits.csv (a fit of E10_joint_fit.py) at its fitted
+parameters, built as ref40 is from E34's row (`fit_model`, which builds ref40 too): bouton_base at the
+row's claw_thr, with its gain on gain_glomeruli (empty: the oracle set, as in E10_joint_fit), its
+re-drawn wiring (wiring, wiring_seed) and its ORN input (orn_input, read with
+E10_joint_fit.read_orn_input); breadth weights with exponent k from the APL-off run of that wiring at
+the base's tuned parameters; the fitted fixed_thr, APL scales and kc_kc_inh (tau kc_kc_tau). The
+APL->bouton bound (aplpn_max) and the targets of the loss do not matter at fixed parameters; rows
+with APL driven by KC spikes (apl_drive spikes / spikes_only, E36 / E37) or from a --base-params
+base are refused. Name: E<n>-TAG, E<n> the experiment's ID (e.g. E45-thr70_gain1.25_rate0.068_k2_cap3;
+the whole folder name if it has no E<n>_ prefix); file names, tables and noise_levels.json /
+checks.json use it. Checks, as for ref40: the deterministic run equals the fit's saved outputs
+(./outputs/EXPERIMENT, else the shared archive data/model_outputs/EXPERIMENT; when neither has them, a
+warning and `missing` in checks.json), its response rates equal the row's rate_on / rate_off, and
+sigma = 0 reproduces it. These models draw the noise of ref40 (draw index 1), so all models defined
+by fits share their draws (common random numbers across models). With --model-from, a run includes
+only those models plus any named by --models (without --model-from the default is base70 and ref40).
+`--experiment NAME` puts the folders under results/NAME and outputs/NAME instead of E43's (part A in
+a partA subfolder there, parts B / C in partB / partC as above).
+
+Parts B / C only: `--sigma-from MODEL` skips the calibration and takes the matched sigmas (APL on and
+APL off) of MODEL from an existing noise_levels.json of the same noise (`--sigma-from-dir`; default
+this run's results folder if it holds MODEL, else E43's own folder for the part, e.g.
+results/E43_model_trial_noise/partB); each level is still re-tuned to the model's own rate, and those
+tuning trials are its calibration rows (kind 'sigma_from'). `--levels match_on ...` (all parts)
+simulates pseudo-recordings only at the levels with one of those labels (a model's levels in
+noise_levels.json are those of its last run). The tables are rewritten by every analysis, but a model
+whose trial files are not on this host keeps its rows from the existing tables, as its entries in
+noise_levels.json, checks.json and calibration.csv are kept.
+
 Usage: OMP_NUM_THREADS=12 nice -n 10 ./venv/bin/python E43_model_trial_noise.py [--models base70 ref40]
        [--n-recordings 10] [--n-trials 3] [--cal-grid 25 50 100 200 400 800] [--cal-trials 3]
        [--analyse-only] [--figure-only]
        ... --part B [--sigma-grid 0.05 0.1 0.15 0.2 0.3] [--tune-trials 3] [--seed 43] [--rate-tol 0.01]
        [--below 0.5 0.25] [--cal-refine 1] [--cal-max-extend 3]
        ... --part C [--sigma-grid 0.1 0.2 0.3 0.45 0.6] (other options as part B)
+       ... [--model-from EXPERIMENT:TAG ...] [--models ...] [--experiment NAME] [--levels LABEL ...]
+       [--sigma-from MODEL [--sigma-from-dir DIR]]
 """
 from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import time
 from contextlib import contextmanager
@@ -146,16 +180,20 @@ from scipy import stats as sstats
 
 import kc_remapping_harness as H
 import noise_floor_trial_distances as NF
-from E10_joint_fit import base_kws, bouton_base, breadth_weights, e19_row
+from E10_joint_fit import TAU, base_kws, bouton_base, breadth_weights, e19_row, read_orn_input
 from E26_claw_power import WEAK
 from E27_glomerulus_gain import ORACLE
 
 EXPERIMENT = 'E43_model_trial_noise'
+# (--model-from adds its models to MODELS and FIT_MODELS)
 MODELS = {
     'base70': 'claw-driven bouton base, 70 Hz per-claw threshold, tuned at 5 %',
     'ref40': 'reference model (thr40_gain1.5_k2_cap3 at its fitted parameters)',
 }
 REF_FIT = 'thr40_gain1.5_k2_cap3'
+REF_EXPERIMENT = 'E34_gain_bounded'
+# models defined by a row of a joint fit's fits.csv: name -> (experiment, tag)
+FIT_MODELS = {'ref40': (REF_EXPERIMENT, REF_FIT)}
 BASE_CLAW_THR = 70.0
 PARAM_KEYS = ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale')
 CONDS = ('on', 'acute_off')
@@ -209,6 +247,59 @@ def load_npz(path: Path) -> dict:
 
 def write_json(path: Path, obj) -> None:
     path.write_text(json.dumps(obj, indent=1, default=str) + '\n')
+
+
+def read_json(path: Path, default=None):
+    """`path`'s JSON (`default` if missing), read again after a pause if another process is writing it."""
+    for i in range(5):
+        if not path.exists():
+            return default
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            if i == 4:
+                raise
+            time.sleep(2.0)
+
+
+def update_json(path: Path, key: str, value) -> dict:
+    """Sets one model's entry of a JSON file keyed by model (noise_levels.json), re-reading it first so
+    the entries another process wrote meanwhile (other models into the same folder) are kept; returns
+    the whole content."""
+    cur = read_json(path, {})
+    cur[key] = value
+    write_json(path, cur)
+    return cur
+
+
+# provenance.json: entries keyed by model, and the keys of a session's record in previous_sessions
+PROV_PER_MODEL = ('bases', 'params', 'model_info', 'rate_targets', 'model_sources', 'levels', 'tuned_fixed_thr')
+PROV_SESSION_KEYS = ('generated', 'host', 'models', 'settings', 'n_trials_simulated', 'model')
+
+
+def write_prov(path: Path, prov: dict) -> None:
+    """Writes this session's provenance.json (`prov`, updated in place), keeping what another process
+    running other models into the same folder wrote meanwhile: the per-model entries of models not in
+    this session (`prov['models']`), and that process's session among previous_sessions."""
+    cur = read_json(path)
+    if cur:
+        mine = set(prov.get('models') or [])
+        for k in PROV_PER_MODEL:
+            if k in cur or k in prov:
+                theirs = cur.get(k) or {}
+                prov[k] = dict(theirs, **{m: v for m, v in (prov.get(k) or {}).items() if m in mine or m not in theirs})
+        me = (prov.get('generated'), prov.get('host'))
+        sessions = list(cur.get('previous_sessions') or []) + list(prov.get('previous_sessions') or [])
+        if (cur.get('generated'), cur.get('host')) != me:
+            sessions.append({k: cur.get(k) for k in PROV_SESSION_KEYS})
+        uniq = {}
+        for sess in sessions:
+            key = (sess.get('generated'), sess.get('host'))
+            if key != me:
+                uniq[key] = sess
+        if uniq or 'previous_sessions' in prov:
+            prov['previous_sessions'] = sorted(uniq.values(), key=lambda x: str(x.get('generated')))
+    write_json(path, prov)
 
 
 def to_arrays(responses: pd.DataFrame, spike_counts: pd.DataFrame):
@@ -372,6 +463,139 @@ def onoff_cols(st: dict) -> dict:
 
 # ---------------------------------------------------------------------------
 # the models
+def exp_id(experiment: str) -> str:
+    """'E45' for 'E45_gain_at_ctrl_frac' (the whole name if it has no E<n>_ prefix)."""
+    m = re.match(r'(E\d+)_', experiment)
+    return m.group(1) if m else experiment
+
+
+def fit_row(experiment: str, tag: str) -> pd.Series:
+    """Row `tag` of <shared>/results/<experiment>/fits.csv (E10_joint_fit.py's table of fits)."""
+    path = H.shared_dir() / 'results' / experiment / 'fits.csv'
+    if not path.exists():
+        raise FileNotFoundError(f'{path}: no fits.csv for experiment {experiment!r}')
+    f = pd.read_csv(path)
+    m = f[f['tag'] == tag]
+    if len(m) != 1:
+        raise ValueError(f'{path}: {len(m)} rows with tag {tag!r} (need exactly one)')
+    return m.iloc[0]
+
+
+def model_from(spec: str) -> str:
+    """Registers the model of a `--model-from EXPERIMENT:TAG` spec (MODELS, FIT_MODELS) and returns
+    its name, '<E<n>>-<TAG>'."""
+    experiment, sep, tag = spec.partition(':')
+    if not (sep and experiment and tag):
+        raise ValueError(f'--model-from {spec!r}: expected EXPERIMENT:TAG')
+    fit_row(experiment, tag)
+    name = f'{exp_id(experiment)}-{tag}'
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', name):
+        raise ValueError(f'--model-from {spec!r}: the model name {name!r} is not file-safe')
+    if FIT_MODELS.get(name, (experiment, tag)) != (experiment, tag):
+        raise ValueError(f'--model-from {spec!r}: the name {name} already stands for {FIT_MODELS[name]}')
+    FIT_MODELS[name] = (experiment, tag)
+    MODELS[name] = f'the {experiment} fit at its fitted parameters'
+    return name
+
+
+def model_source(name: str) -> dict:
+    """{'fit_experiment', 'fit_tag'} of a model defined by a fits.csv row (empty for base70)."""
+    return dict(fit_experiment=FIT_MODELS[name][0], fit_tag=FIT_MODELS[name][1]) if name in FIT_MODELS else {}
+
+
+def _given(row: pd.Series, col: str):
+    """The row's value in `col`, or None when the column is missing or the cell is empty."""
+    v = row.get(col)
+    if v is None or (isinstance(v, float) and np.isnan(v)) or (isinstance(v, str) and not v.strip()):
+        return None
+    return v
+
+
+def breadth_cache_name(claw_thr, gain, gloms, wiring, wiring_seed, input_tag):
+    """Name of the APL-off run that E10_joint_fit.bouton_base computes (and caches in its out_dir)
+    for the breadth; None when it reads the base's saved run (no gain, wiring or other input)."""
+    if gain is None and wiring is None and input_tag is None:
+        return None
+    name = ('' if claw_thr is None else f'thr{claw_thr:g}_') + 'base_acute_off_spike_counts.parquet'
+    if input_tag is not None:
+        name = f'input-{input_tag}_' + name
+    if wiring is not None:
+        name = f'wiring-{wiring}-seed{int(wiring_seed)}_' + name
+    if gain is not None:
+        name = f'gain{gain:g}_' + ('' if sorted(gloms) == sorted(ORACLE) else '-'.join(sorted(gloms)) + '_') + name
+    return name
+
+
+def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
+    """The model of a joint fit's fits.csv row (FIT_MODELS[name]) at its fitted parameters, built as
+    E10_joint_fit.py built it during the fit (E39 rebuilds it the same way): bouton_base with the
+    row's claw_thr, gain, gain glomeruli, re-drawn wiring and ORN input; breadth weights (exponent k)
+    from the APL-off run of that wiring at the base's tuned parameters; the fitted scales, KC-KC
+    inhibition with tau kc_kc_tau.
+
+    Returns:
+        dict: 'orn' (the model's ORN input), 'p_on' (the fitted parameters, wKCKC_scale =
+        kc_kc_inh), 'kws' (make_fixed_param_kc_simulator kwargs), 'saved' ({condition: [responses,
+        spike counts paths]} of the fit's own outputs, local copy else the shared archive), 'rates'
+        (the row's rate_on, rate_off) and 'info'.
+    """
+    experiment, tag = FIT_MODELS[name]
+    fit = fit_row(experiment, tag)
+    drive = _given(fit, 'apl_drive') or 'claws'
+    if drive != 'claws':
+        raise NotImplementedError(f'{experiment}:{tag}: APL driven by {drive!r} (E36 / E37 rows); only fits with '
+            'claw-driven APL can be rebuilt here')
+    if _given(fit, 'base_params') is not None:
+        raise NotImplementedError(f'{experiment}:{tag}: fits from a --base-params base are not supported')
+    if name == 'ref40' and sorted(str(fit['gain_glomeruli']).split(',')) != sorted(ORACLE):
+        raise ValueError(f"{REF_FIT}: gain glomeruli {fit['gain_glomeruli']} are not the oracle set {ORACLE}")
+    claw_thr = None if _given(fit, 'claw_thr') is None else float(fit['claw_thr'])
+    k = float(fit['k'])
+    gain = None if _given(fit, 'gain') is None or float(fit['gain']) == 1.0 else float(fit['gain'])
+    gloms = []
+    if gain is not None:
+        g = _given(fit, 'gain_glomeruli')
+        # (as E10_joint_fit: no glomeruli given = the oracle set of the glomerulus-gain experiment, E27)
+        gloms = list(ORACLE) if g is None or sorted(str(g).split(',')) == sorted(ORACLE) else str(g).split(',')
+    wiring = _given(fit, 'wiring')
+    wiring_seed = int(float(fit['wiring_seed'])) if wiring is not None else 0
+    orn_input = _given(fit, 'orn_input')
+    input_tag, extra = None, {}
+    if wiring is not None:
+        extra.update(wiring=str(wiring), wiring_seed=wiring_seed)
+    if orn_input is not None:
+        orn = read_orn_input(str(orn_input), orn)
+        input_tag = Path(str(orn_input)).stem
+        p = Path(str(orn_input))
+        p = p if p.is_absolute() else H.shared_dir() / p
+        extra.update(orn_input=str(orn_input), orn_input_sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+    tau = float(fit['kc_kc_tau']) if _given(fit, 'kc_kc_tau') is not None else TAU
+    p_on = {kk: float(fit[kk]) for kk in PARAM_KEYS}
+    p_on['wKCKC_scale'] = float(fit['kc_kc_inh'])
+    _, wnorm, W, breadth = bouton_base(orn, out_dir, claw_thr=claw_thr, gain=gain, gain_gloms=gloms or None,
+        wiring=None if wiring is None else str(wiring), wiring_seed=wiring_seed, input_tag=input_tag)
+    kws = dict(base_kws(claw_thr))
+    if gain is not None or wiring is not None:
+        # (E10_joint_fit passes the wiring only when it differs from the base's)
+        kws['_wPNKC'] = W
+    kws.update(_wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, k), _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'],
+        _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau)
+    # the fit's own outputs: this host's copy, else the shared archive
+    dirs = (H.HERE / 'outputs' / experiment, H.shared_dir() / 'data' / 'model_outputs' / experiment)
+    saved_dir = next((d for d in dirs if (d / f'{tag}_on_responses.parquet').exists()), dirs[0])
+    saved = {c: [saved_dir / f'{tag}_{c}_{kind}.parquet' for kind in ('responses', 'spike_counts')] for c in CONDS}
+    info = dict(source=f'results/{experiment}/fits.csv row {tag}', claw_thr=claw_thr, k=k, gain=1.0 if gain is None else gain,
+        gain_glomeruli=gloms, kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau, fit_experiment=experiment, fit_tag=tag, **extra)
+    # the APL-off run behind the breadth against the fit's
+    off_name = breadth_cache_name(claw_thr, gain, gloms, wiring, wiring_seed, input_tag)
+    if off_name is not None:
+        theirs = next((d / off_name for d in (saved_dir, *dirs) if (d / off_name).exists()), None)
+        if theirs is not None and (out_dir / off_name).exists():
+            info[f'breadth_run_max_abs_diff_vs_{exp_id(experiment).lower()}'] = float(np.abs(
+                pd.read_parquet(theirs).astype(float).to_numpy() - pd.read_parquet(out_dir / off_name).astype(float).to_numpy()).max())
+    return dict(orn=orn, p_on=p_on, kws=kws, saved=saved, rates=(float(fit['rate_on']), float(fit['rate_off'])), info=info)
+
+
 class NoisyModel:
     """One model at fixed parameters, re-run trial by trial with PN noise.
 
@@ -384,6 +608,8 @@ class NoisyModel:
         from al_analysis.mb_model import get_time_index, make_fixed_param_kc_simulator
         self.name = name
         self.info: dict = {}
+        # (models from fits.csv rows: the row's rate_on / rate_off, checked against the deterministic run)
+        self.fit_rates = None
         if name == 'base70':
             r = e19_row(BASE_CLAW_THR, 0.0, 0.0)
             p_on = {k: float(r[k]) for k in PARAM_KEYS}
@@ -393,31 +619,11 @@ class NoisyModel:
                 for c in CONDS}
             self.info.update(source='E19 stats row thr70_k0_kckc0 (E16 bouton_thr70, tuned at 5 % with APL on)',
                 claw_thr=BASE_CLAW_THR, k=0.0, gain=1.0, kc_kc_inh=0.0)
-        elif name == 'ref40':
-            fit = pd.read_csv(H.shared_dir() / 'results' / 'E34_gain_bounded' / 'fits.csv').set_index('tag').loc[REF_FIT]
-            claw_thr, k, gain = float(fit['claw_thr']), float(fit['k']), float(fit['gain'])
-            tau = float(fit['kc_kc_tau'])
-            if sorted(str(fit['gain_glomeruli']).split(',')) != sorted(ORACLE):
-                raise ValueError(f"{REF_FIT}: gain glomeruli {fit['gain_glomeruli']} are not the oracle set {ORACLE}")
-            p_on = {kk: float(fit[kk]) for kk in PARAM_KEYS}
-            p_on['wKCKC_scale'] = float(fit['kc_kc_inh'])
-            _, wnorm, W, breadth = bouton_base(orn, out_dir, claw_thr=claw_thr, gain=gain)
-            kws = dict(base_kws(claw_thr), _wPNKC=W, _wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, k),
-                _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'],
-                kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau)
-            # E34's own outputs: this host's copy, else the shared archive
-            e34 = next((d for d in (H.HERE / 'outputs' / 'E34_gain_bounded',
-                H.shared_dir() / 'data' / 'model_outputs' / 'E34_gain_bounded') if (d / f'{REF_FIT}_on_responses.parquet').exists()),
-                H.HERE / 'outputs' / 'E34_gain_bounded')
-            self.saved = {c: [e34 / f'{REF_FIT}_{c}_{kind}.parquet' for kind in ('responses', 'spike_counts')] for c in CONDS}
-            self.info.update(source=f'results/E34_gain_bounded/fits.csv row {REF_FIT}', claw_thr=claw_thr, k=k, gain=gain,
-                gain_glomeruli=list(ORACLE), kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau)
-            # the gained wiring's APL-off breadth against E34's
-            b_saved = e34 / f'gain{gain:g}_thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
-            b_mine = out_dir / f'gain{gain:g}_thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
-            if b_saved.exists() and b_mine.exists():
-                self.info['breadth_run_max_abs_diff_vs_e34'] = float(np.abs(pd.read_parquet(b_saved).astype(float).to_numpy()
-                    - pd.read_parquet(b_mine).astype(float).to_numpy()).max())
+        elif name in FIT_MODELS:
+            # ref40 (E34's thr40_gain1.5_k2_cap3) and the --model-from models
+            fm = fit_model(name, orn, out_dir)
+            orn, p_on, kws, self.saved, self.fit_rates = fm['orn'], fm['p_on'], fm['kws'], fm['saved'], fm['rates']
+            self.info.update(fm['info'])
         else:
             raise ValueError(name)
         self.kws_scalar = {k: v for k, v in kws.items() if not k.startswith('_')}
@@ -495,6 +701,12 @@ class Session:
     def get(self) -> NoisyModel:
         if self.model is not None:
             return self.model
+        meta_path = self.out_dir / f'{self.name}_meta.json'
+        if self.name in FIT_MODELS and meta_path.exists():
+            prev = json.loads(meta_path.read_text())
+            if 'fit_experiment' in prev and (prev['fit_experiment'], prev.get('fit_tag')) != FIT_MODELS[self.name]:
+                raise RuntimeError(f'{meta_path}: {self.name} was {prev["fit_experiment"]}:{prev.get("fit_tag")} here, not '
+                    f'{":".join(FIT_MODELS[self.name])}')
         t0 = time.time()
         m = self.model_cls(self.name, self.orn, self.out_dir)
         build_s = time.time() - t0
@@ -521,9 +733,15 @@ class Session:
             else:
                 saved[cond] = dict(file=str(rp), missing=True)
         rec['det_vs_saved'] = saved
+        missing = [v['file'] for v in saved.values() if v.get('missing')]
+        if missing:
+            print(f'{self.name}: WARNING no saved outputs to compare the deterministic run with ({", ".join(missing)} not '
+                'found); recorded as missing in checks.json', flush=True)
         res0, tr0 = m.check_sd0()
         rec['sd0_trial_vs_det_at_build'] = res0
         rec['rate_det'] = {cond: float(m.det[cond][0].mean()) for cond in CONDS}
+        if m.fit_rates is not None:
+            rec['rate_det_minus_fits_csv'] = {c: rec['rate_det'][c] - r for c, r in zip(CONDS, m.fit_rates)}
         rec['n_kcs'] = int(m.det['on'][0].shape[0])
         self.record = rec
         self._save_checks()
@@ -535,6 +753,9 @@ class Session:
         assert not any(det_vs_previous.values()), f'{self.name}: deterministic run differs from the previous session ({det_vs_previous})'
         bad = [c for c, v in saved.items() if not v.get('missing') and (v['responses_mismatch'] or v['spike_counts_mismatch'])]
         assert not bad, f'{self.name}: deterministic run differs from the saved outputs ({saved})'
+        # (fits.csv's rates are means of per-odor means: equal up to rounding)
+        assert all(abs(d) < 1e-9 for d in rec.get('rate_det_minus_fits_csv', {}).values()), \
+            f'{self.name}: deterministic response rates differ from the fits.csv row ({rec["rate_det_minus_fits_csv"]})'
         save_npz(self.out_dir / f'{self.name}_det_pn.npz', {k: v for k, v in tr0.items() if k.startswith('pn_')})
         meta = dict(model=self.name, description=MODELS[self.name], kws=m.kws_scalar, params=m.params,
             n_spikes_for_response=m.n_spikes_for_response, n_kcs=rec['n_kcs'], n_pn_glomeruli=int(tr0['pn_win'].shape[-1]), **m.info)
@@ -542,17 +763,21 @@ class Session:
         self.prov.setdefault('bases', {})[self.name] = m.kws_scalar
         self.prov.setdefault('params', {})[self.name] = m.params
         self.prov.setdefault('model_info', {})[self.name] = m.info
-        write_json(self.prov_path, self.prov)
+        write_prov(self.prov_path, self.prov)
         self.model = m
         return m
 
     def _save_checks(self) -> None:
-        sessions = self.checks.setdefault(self.name, [])
+        # (re-read first: another process may have added other models' checks meanwhile)
+        cur = read_json(self.checks_path, {})
+        sessions = cur.setdefault(self.name, [])
         if sessions and sessions[-1].get('generated') == self.record.get('generated'):
             sessions[-1] = self.record
         else:
             sessions.append(self.record)
-        write_json(self.checks_path, self.checks)
+        write_json(self.checks_path, cur)
+        self.checks.clear()
+        self.checks.update(cur)
 
     def ensure(self, path: Path, sd: float, n: int) -> dict:
         """The n trials at noise sd stored at `path`, simulated first if missing."""
@@ -701,9 +926,27 @@ def load_det(out_dir: Path, name: str) -> dict:
         for kind in ('responses', 'spike_counts')))) for cond in CONDS}
 
 
+def merge_kept(new: pd.DataFrame, path: Path, analysed: set) -> pd.DataFrame:
+    """`new` plus the rows of the existing table at `path` of models not analysed in this call (their
+    trial files are on another host), so an analysis on one host never drops another host's models."""
+    if not path.exists():
+        return new
+    # (round_trip: the kept rows are written back unchanged)
+    old = pd.read_csv(path, float_precision='round_trip')
+    if 'model' not in old.columns:
+        return new
+    keep = old[~old['model'].isin(set(analysed) | {'data'})]
+    if not len(keep):
+        return new
+    print(f'{path.name}: rows of {sorted(keep["model"].unique())} kept from the existing table (no trial files of theirs '
+        'analysed here)', flush=True)
+    return pd.concat([new, keep], ignore_index=True) if len(new) else keep.reset_index(drop=True)
+
+
 def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir: Path, data: dict, key: str = 'sd',
         ncol: str = 'noise_sd', extra=None) -> pd.DataFrame:
-    """The readouts of every model x level (tables written to `res_dir`).
+    """The readouts of every model x level (tables written to `res_dir`; models without trial files
+    here keep their rows of the existing tables, `merge_kept`).
 
     Args:
         key: the noise level's name in the trial files (`trials_path`).
@@ -716,6 +959,7 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
         for kind in ('raw', 'corrected'):
             st, _ = H.compare_on_off(data[('TNT3c', how)][kind], data[('TNT', how)][kind])
             onoff_rows.append(dict(model='data', level='-', **{ncol: np.nan}, transform=how, matrix=kind, **onoff_cols(st)))
+    analysed = set()
     for name, lv in levels_all.items():
         meta_path = out_dir / f'{name}_meta.json'
         if not meta_path.exists():
@@ -725,9 +969,11 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
         det = load_det(out_dir, name)
         det_pn = load_npz(out_dir / f'{name}_det_pn.npz')
         det_pairs = {(c, how): pairs_of(NF.transform(det[c][1], how)) for c in CONDS for how in TRANSFORMS}
+        # (the deterministic rows go in only if the model has trial files here)
+        det_onoff, at, n_stats = [], len(onoff_rows), len(stats)
         for how in TRANSFORMS:
             st, _ = H.compare_on_off(det_pairs[('on', how)], det_pairs[('acute_off', how)])
-            onoff_rows.append(dict(model=name, level='deterministic', **{ncol: 0.0}, transform=how, matrix='deterministic',
+            det_onoff.append(dict(model=name, level='deterministic', **{ncol: 0.0}, transform=how, matrix='deterministic',
                 **onoff_cols(st)))
         for label, sd in lv['levels'].items():
             arrs = [load_npz(p) for p in (trials_path(out_dir, name, sd, n_tr, r, key) for r in range(n_rec)) if p.exists()]
@@ -765,6 +1011,7 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
                     raw_a, det_a = H.align_pairs(s['raw'], det_p)
                     cor_a, det_b = H.align_pairs(s['corrected'], det_p)
                     row = dict(tag=f'{name}__{label}__{cond}__{how}', variant=f'{name}__{label}', model=name, base='bouton',
+                        fit_experiment=meta.get('fit_experiment'), fit_tag=meta.get('fit_tag'),
                         level=label, **{ncol: float(sd)}, matched_to='+'.join(matched_to), condition=cond, transform=how,
                         n_recordings=s['n_recordings'], n_trials=int(arrs[0][f'{cond}_spk'].shape[0]),
                         n_silent_odor_recordings=n_silent, n_no_signal_odor_recordings=s['n_no_signal'],
@@ -814,13 +1061,17 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
                 for kind in ('raw', 'corrected', 'grand'):
                     st, _ = H.compare_on_off(mats[('on', how)][kind], mats[('acute_off', how)][kind])
                     onoff_rows.append(dict(model=name, level=label, **{ncol: float(sd)}, transform=how, matrix=kind, **onoff_cols(st)))
-    st = pd.DataFrame(stats)
+        if len(stats) > n_stats:
+            analysed.add(name)
+            onoff_rows[at:at] = det_onoff
+    st = merge_kept(pd.DataFrame(stats), res_dir / 'stats_noise.csv', analysed)
     st.to_csv(res_dir / 'stats_noise.csv', index=False)
-    pd.DataFrame(onoff_rows).to_csv(res_dir / 'onoff_noise.csv', index=False)
-    if odor_rows:
-        pd.DataFrame(odor_rows).to_csv(res_dir / 'per_odor_noise.csv', index=False)
-    if pair_rows:
-        pd.concat(pair_rows, ignore_index=True).to_csv(res_dir / 'pairs_noise_long.csv', index=False)
+    merge_kept(pd.DataFrame(onoff_rows), res_dir / 'onoff_noise.csv', analysed).to_csv(res_dir / 'onoff_noise.csv', index=False)
+    for rows, fname in ((pd.DataFrame(odor_rows), 'per_odor_noise.csv'),
+            (pd.concat(pair_rows, ignore_index=True) if pair_rows else pd.DataFrame(), 'pairs_noise_long.csv')):
+        rows = merge_kept(rows, res_dir / fname, analysed)
+        if len(rows):
+            rows.to_csv(res_dir / fname, index=False)
     return st
 
 
@@ -858,9 +1109,12 @@ def make_figure(res_dir: Path, ncol: str = 'noise_sd', xlabel: str = 'PN noise s
     oo = pd.read_csv(res_dir / 'onoff_noise.csv')
     lv = json.loads((res_dir / 'noise_levels.json').read_text())
     g = st[st['transform'] == 'graded']
-    models = [m for m in MODELS if m in set(g.model)]
+    # (models registered in this process first, then any other model of the tables, e.g. from --model-from in another run)
+    in_table = list(dict.fromkeys(g.model))
+    models = [m for m in MODELS if m in in_table] + [m for m in in_table if m not in MODELS]
     if not models:
         return
+    desc = {m: MODELS.get(m) or lv.get(m, {}).get('description', '') for m in models}
     fig, axes = plt.subplots(len(models), 7, figsize=(31, 4.8 * len(models)), squeeze=False)
 
     def first(s, col):
@@ -882,7 +1136,7 @@ def make_figure(res_dir: Path, ncol: str = 'noise_sd', xlabel: str = 'PN noise s
             if m in lv:
                 a.axvline(lv[m]['matched'][c]['sd'], color=COLORS[c], lw=0.8, alpha=0.5)
         a.set_title('same-odor distance between single trials (floor)\n(dotted: KC data; vertical: matched noise)', fontsize=9)
-        a.set_ylabel(f'{m}: {MODELS[m]}', fontsize=8)
+        a.set_ylabel(f'{m}:\n{desc[m]}', fontsize=8)
         # 2: mean pair distance
         a = ax[1]
         for c in CONDS:
@@ -935,6 +1189,10 @@ def make_figure(res_dir: Path, ncol: str = 'noise_sd', xlabel: str = 'PN noise s
             a.set_title(f'{title}\n(KC data: dotted raw {dat.at["raw", col]:.3f}, dash-dot corrected {dat.at["corrected", col]:.3f})', fontsize=9)
         for a in ax:
             a.set_xscale('log')
+            lo, hi = a.get_xlim()
+            if 0 < lo and hi / lo < 2:
+                # (one or two close levels, e.g. a --levels match_on run: a readable range around them)
+                a.set_xlim(np.sqrt(lo * hi) / 1.6, np.sqrt(lo * hi) * 1.6)
             a.set_xlabel(xlabel, fontsize=8)
             a.legend(fontsize=6, frameon=False)
             a.spines[['top', 'right']].set_visible(False)
@@ -974,10 +1232,20 @@ GAIN_NOISE_NOTE = ('Part C: per trial, each glomerulus x odor ORN input delta (m
     '(pseudo-recording rep) and 5 (the sigma = 0 check).')
 
 
+def seed_index(name: str) -> int:
+    """The model's index in the draws' spawn key: base70 0, ref40 1, and every other model defined by a
+    fits.csv row (--model-from) ref40's, so all those models get the same draws (common random numbers)."""
+    if name in MODEL_SEED_IDX:
+        return MODEL_SEED_IDX[name]
+    if name in FIT_MODELS:
+        return MODEL_SEED_IDX['ref40']
+    raise KeyError(name)
+
+
 def b_draws(seed: int, name: str, kind: str, rep: int, n: int, size: int) -> np.ndarray:
     """n x size standard normal draws for one tuning set or pseudo-recording (reproducible, and the
     first trials' draws do not depend on n)."""
-    ss = np.random.SeedSequence(int(seed), spawn_key=(MODEL_SEED_IDX[name], DRAW_KINDS[kind], int(rep)))
+    ss = np.random.SeedSequence(int(seed), spawn_key=(seed_index(name), DRAW_KINDS[kind], int(rep)))
     return np.random.default_rng(ss).standard_normal((int(n), int(size)))
 
 
@@ -1282,10 +1550,13 @@ def b_guess(tuned: dict, sigma: float):
 
 
 def calibrate_b(sess: SessionB, grid: list, n_tune: int, max_extend: int, refine: int, targets: dict, rate_target: float,
-        seed: int, tol: float, max_evals: int, f0: float):
+        seed: int, tol: float, max_evals: int, f0: float, fixed_matched=None, grid_kind: str = 'grid'):
     """Floors of the tuning trials at each sigma of the grid (extended / refined as needed), each at
     its re-tuned threshold, and the sigmas matching the data's floors. Returns (calibration rows,
-    info dict as part A's plus 'tuned' {sigma: fixed_thr})."""
+    info dict as part A's plus 'tuned' {sigma: fixed_thr}).
+
+    With `fixed_matched` (--sigma-from: another model's 'matched' entry) only the grid is measured
+    (its rows labelled `grid_kind`), and the matched sigmas are `fixed_matched`."""
     pts, rows, tuned = {}, [], {0.0: f0}
     grid = sorted(r3(g) for g in grid)
 
@@ -1319,8 +1590,12 @@ def calibrate_b(sess: SessionB, grid: list, n_tune: int, max_extend: int, refine
         return max(pts, key=lambda s: pts[s][c])
 
     for sigma in grid:
-        measure(sigma, 'grid')
+        measure(sigma, grid_kind)
     step = grid[-1] / grid[-2] if len(grid) > 1 and grid[-1] > grid[-2] else 2.0
+    if fixed_matched is not None:
+        return rows, dict(grid=grid, step=step, n_tune_trials=n_tune, points={str(k): v for k, v in sorted(pts.items())},
+            matched=fixed_matched, peaks={c: dict(sd=peak(c), floor=pts[peak(c)][c]) for c in CONDS},
+            tuned={str(k): v for k, v in sorted(tuned.items())})
     for _ in range(max_extend):
         if not any(pts[peak(c)][c] < targets[c] and peak(c) == max(pts) for c in CONDS):
             break
@@ -1390,6 +1665,44 @@ def make_levels_b(matched: dict, below) -> dict:
     return lv
 
 
+def select_levels(levels: dict, labels) -> dict:
+    """`levels` restricted to those with one of `labels` among their '+'-joined labels (--levels;
+    all of them when `labels` is empty)."""
+    if not labels:
+        return levels
+    out = {lab: s for lab, s in levels.items() if set(lab.split('+')) & set(labels)}
+    if not out:
+        raise ValueError(f'--levels {" ".join(labels)}: none of the levels {list(levels)}')
+    return out
+
+
+def sigma_source(model: str, res_dir: Path, sub: str, part: str, thr_jitter: str, thr_min_frac: float, src_dir=None) -> dict:
+    """--sigma-from: the matched sigmas of `model` in an existing noise_levels.json of the same noise:
+    `src_dir`'s, else `res_dir`'s when it holds `model`, else E43's own folder for this part
+    (<shared>/results/E43_model_trial_noise/<sub>). The folder's provenance.json must name the same
+    part (and for part B the same jitter and clipping)."""
+    cands = [Path(src_dir)] if src_dir else [res_dir, H.shared_dir() / 'results' / EXPERIMENT / sub]
+    for d in cands:
+        path = d / 'noise_levels.json'
+        lv = json.loads(path.read_text()) if path.exists() else {}
+        if model in lv:
+            break
+    else:
+        raise FileNotFoundError(f'--sigma-from {model}: no entry in the noise_levels.json of {[str(c) for c in cands]}')
+    pv = d / 'provenance.json'
+    if not pv.exists():
+        raise FileNotFoundError(f'--sigma-from {model}: {pv} missing, so the kind of noise of {path} cannot be checked')
+    prov = json.loads(pv.read_text())
+    st = prov.get('settings', {})
+    theirs = (prov.get('part'), st.get('thr_jitter'), st.get('thr_min_frac')) if part == 'B' else (prov.get('part'),)
+    mine = (part, thr_jitter, thr_min_frac) if part == 'B' else (part,)
+    if theirs != mine:
+        raise ValueError(f'--sigma-from {model}: {path} is noise {theirs} (part, jitter, clipping), this run {mine}')
+    e = lv[model]
+    return dict(model=model, file=str(path), matched=e['matched'], source_levels=e.get('levels'),
+        source_rate_target=e.get('rate_target'), source_n_tune_trials=e.get('n_tune_trials'))
+
+
 PARTS = {
     'B': dict(dir='partB', session=SessionB, note=THR_NOISE_NOTE, grid=[0.05, 0.1, 0.15, 0.2, 0.3],
         xlabel='σ, relative SD of the per-trial jitter of each KC\'s threshold',
@@ -1413,8 +1726,8 @@ def main_b(args) -> None:
     part = PARTS[args.part]
     # (the lognormal threshold jitter is a different noise: its own folders)
     sub = part['dir'] + ('_lognormal' if args.part == 'B' and args.thr_jitter == 'lognormal' else '')
-    res_dir = Path(args.results_dir) if args.results_dir else H.results_dir(EXPERIMENT) / sub
-    out_dir = Path(args.outputs_dir) if args.outputs_dir else H.outputs_dir(EXPERIMENT) / sub
+    res_dir = Path(args.results_dir) if args.results_dir else H.results_dir(args.experiment) / sub
+    out_dir = Path(args.outputs_dir) if args.outputs_dir else H.outputs_dir(args.experiment) / sub
     res_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     ExcitabilityModel.thr_min_frac = float(args.thr_min_frac)
@@ -1429,9 +1742,17 @@ def main_b(args) -> None:
     levels_all = json.loads(levels_path.read_text()) if levels_path.exists() else {}
     settings = dict(n_recordings=args.n_recordings, n_trials=args.n_trials, sigma_grid=grid,
         tune_trials=args.tune_trials, seed=args.seed, rate_tol=args.rate_tol, tune_max_evals=args.tune_max_evals,
-        below=args.below, max_extend=args.cal_max_extend, refine=args.cal_refine,
+        below=args.below, max_extend=args.cal_max_extend, refine=args.cal_refine, levels=args.levels,
         **({'thr_min_frac': args.thr_min_frac, 'thr_jitter': args.thr_jitter} if args.part == 'B' else {}))
     if not args.analyse_only:
+        src_sigma = None
+        if args.sigma_from:
+            if args.sigma_from in args.models:
+                raise ValueError(f'--sigma-from {args.sigma_from}: it is also a model of this run')
+            src_sigma = sigma_source(args.sigma_from, res_dir, sub, args.part, args.thr_jitter, float(args.thr_min_frac),
+                args.sigma_from_dir)
+            print(f'matched sigmas from {args.sigma_from} ({src_sigma["file"]}): APL on {src_sigma["matched"]["on"]["sd"]:g}, '
+                f'APL off {src_sigma["matched"]["acute_off"]["sd"]:g}', flush=True)
         orn = H.apl16_orn_deltas()
         checks = json.loads(checks_path.read_text()) if checks_path.exists() else {}
         prov_path = res_dir / 'provenance.json'
@@ -1439,16 +1760,17 @@ def main_b(args) -> None:
         prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E43_model_trial_noise.py',
             part=args.part, host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), models=args.models,
             model_descriptions={m: MODELS[m] for m in args.models}, ref_fit=REF_FIT, fits_source='results/E34_gain_bounded/fits.csv',
-            settings=settings, floor_targets=targets, noise=part['note'], approx_conc_note=H.APPROX_CONC_NOTE,
-            model=H.model_provenance(orn_deltas=orn))
+            model_sources={m: dict(experiment=FIT_MODELS[m][0], tag=FIT_MODELS[m][1]) for m in args.models if m in FIT_MODELS},
+            experiment=args.experiment, sigma_from=src_sigma, settings=settings, floor_targets=targets, noise=part['note'],
+            approx_conc_note=H.APPROX_CONC_NOTE, model=H.model_provenance(orn_deltas=orn))
         if prev is not None:
             prov['bases'], prov['params'] = prev.get('bases', {}), prev.get('params', {})
             prov['model_info'] = prev.get('model_info', {})
             prov['rate_targets'] = prev.get('rate_targets', {})
+            prov['model_sources'] = dict(prev.get('model_sources', {}), **prov['model_sources'])
             prov['previous_sessions'] = prev.get('previous_sessions', []) + [{k: prev.get(k) for k in ('generated', 'host', 'models',
                 'settings', 'n_trials_simulated', 'model')}]
-        write_json(prov_path, prov)
-        cal_old = pd.read_csv(cal_csv) if cal_csv.exists() else pd.DataFrame()
+        write_prov(prov_path, prov)
         cal_new = []
         t_all = time.time()
         for name in args.models:
@@ -1464,11 +1786,18 @@ def main_b(args) -> None:
                     m = sess.get()
                     rate_target, f0 = float(m.det['on'][0].mean()), m.f0
                 prov.setdefault('rate_targets', {})[name] = rate_target
-                write_json(prov_path, prov)
-                rows, info = calibrate_b(sess, grid, args.tune_trials, args.cal_max_extend, args.cal_refine, targets, rate_target,
-                    args.seed, args.rate_tol, args.tune_max_evals, f0)
+                write_prov(prov_path, prov)
+                if src_sigma is None:
+                    rows, info = calibrate_b(sess, grid, args.tune_trials, args.cal_max_extend, args.cal_refine, targets,
+                        rate_target, args.seed, args.rate_tol, args.tune_max_evals, f0)
+                    levels = select_levels(make_levels_b(info['matched'], args.below), args.levels)
+                else:
+                    # another model's matched sigmas: tuned (and floors measured) only at this run's levels
+                    levels = select_levels(make_levels_b(src_sigma['matched'], args.below), args.levels)
+                    rows, info = calibrate_b(sess, sorted(set(levels.values())), args.tune_trials, 0, 0, targets, rate_target,
+                        args.seed, args.rate_tol, args.tune_max_evals, f0, fixed_matched=src_sigma['matched'],
+                        grid_kind='sigma_from')
                 cal_new += rows
-                levels = make_levels_b(info['matched'], args.below)
                 tuned = {float(k): v for k, v in info['tuned'].items()}
                 lvl_thr, lvl_tune = {}, {}
                 for label, sigma in levels.items():
@@ -1477,10 +1806,11 @@ def main_b(args) -> None:
                     lvl_thr[label] = float(a['fixed_thr'])
                     lvl_tune[label] = dict(rate_tuned=float(a['rate_tuned']), converged=bool(a['converged']),
                         n_evals=int(a['n_evals']))
-                levels_all[name] = dict(info, levels=levels, tuned_fixed_thr=lvl_thr, tuning=lvl_tune, fixed_thr_det=f0,
-                    rate_target=rate_target, n_recordings=args.n_recordings, n_trials=args.n_trials, seed=args.seed,
-                    noise_level=(f'sigma ({part["xlabel"]}; the "sd" keys of matched / peaks hold sigma)'))
-                write_json(levels_path, levels_all)
+                levels_all = update_json(levels_path, name, dict(info, levels=levels, tuned_fixed_thr=lvl_thr, tuning=lvl_tune,
+                    fixed_thr_det=f0, rate_target=rate_target, n_recordings=args.n_recordings, n_trials=args.n_trials,
+                    seed=args.seed, noise_level=(f'sigma ({part["xlabel"]}; the "sd" keys of matched / peaks hold sigma)'),
+                    description=MODELS[name], **model_source(name),
+                    **({} if src_sigma is None else {'sigma_from': {k: src_sigma[k] for k in ('model', 'file')}})))
                 print(f'{name}: matched sigma APL on {info["matched"]["on"]["sd"]:g}, APL off '
                     f'{info["matched"]["acute_off"]["sd"]:g}; levels {levels}; re-tuned fixed_thr {lvl_thr}', flush=True)
                 for label, sigma in levels.items():
@@ -1490,13 +1820,15 @@ def main_b(args) -> None:
             finally:
                 sess.finish()
                 prov['n_trials_simulated'] = prov.get('n_trials_simulated', 0) + sess.n_trials_run
-            keep = cal_old[~cal_old.model.isin({r['model'] for r in cal_new})] if len(cal_old) else cal_old
+            # (re-read: another process may have added other models' rows meanwhile)
+            cal_cur = pd.read_csv(cal_csv, float_precision='round_trip') if cal_csv.exists() else pd.DataFrame()
+            keep = cal_cur[~cal_cur.model.isin({r['model'] for r in cal_new})] if len(cal_cur) else cal_cur
             pd.concat([keep, pd.DataFrame(cal_new)], ignore_index=True).to_csv(cal_csv, index=False)
         prov['levels'] = {m: v['levels'] for m, v in levels_all.items()}
         prov['tuned_fixed_thr'] = {m: v['tuned_fixed_thr'] for m, v in levels_all.items()}
         prov['finished'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
         prov['seconds'] = time.time() - t_all
-        write_json(prov_path, prov)
+        write_prov(prov_path, prov)
 
     def extra(name, label, sigma, cond, arrs):
         lv = levels_all[name]
@@ -1504,8 +1836,10 @@ def main_b(args) -> None:
             fixed_thr_ratio=lv['tuned_fixed_thr'][label] / lv['fixed_thr_det'], rate_target_on=lv['rate_target'],
             tune_rate=lv['tuning'][label]['rate_tuned'], tune_converged=lv['tuning'][label]['converged'],
             frac_clipped=float(np.mean([a['n_clipped'].mean() / float(a['n_draws_per_trial']) for a in arrs])), seed=lv['seed'],
-            **heavy_tail(arrs, cond))
+            sigma_from=(lv.get('sigma_from') or {}).get('model'), **heavy_tail(arrs, cond))
 
+    # (again: other processes may have added models to this folder meanwhile)
+    levels_all = read_json(levels_path, {})
     data = data_side()
     st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data, key=B_KEY, ncol=B_KEY, extra=extra)
     print_summary(st, res_dir, ncol=B_KEY, extra_cols=('fixed_thr_ratio', 'frac_clipped', 'max_spike_count',
@@ -1518,7 +1852,17 @@ def main_b(args) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--models', nargs='+', default=list(MODELS), choices=list(MODELS))
+    ap.add_argument('--models', nargs='*', default=None, choices=list(MODELS),
+        help='built-in models of this run (default base70 ref40, or none when --model-from is given)')
+    ap.add_argument('--model-from', action='append', default=[], metavar='EXPERIMENT:TAG',
+        help='also run the model of row TAG of <shared>/results/EXPERIMENT/fits.csv at its fitted parameters, named '
+        'E<n>-TAG (repeatable; e.g. E45_gain_at_ctrl_frac:thr70_gain1.25_rate0.068_k2_cap3)')
+    ap.add_argument('--experiment', default=EXPERIMENT,
+        help='results / outputs folder name (default E43_model_trial_noise; with another name part A goes in its partA '
+        'subfolder, parts B / C in partB / partC as usual)')
+    ap.add_argument('--levels', nargs='+', default=None, metavar='LABEL',
+        help='pseudo-recordings only at the levels with one of these labels (e.g. match_on; part A: match_on match_off lo '
+        'hi lo2, parts B / C: match_on match_off lo lo2 ...)')
     ap.add_argument('--n-recordings', type=int, default=10, help='pseudo-recordings per noise level')
     ap.add_argument('--n-trials', type=int, default=3, help='trials per pseudo-recording')
     ap.add_argument('--cal-grid', nargs='+', type=float, default=[25.0, 50.0, 100.0, 200.0, 400.0, 800.0],
@@ -1550,14 +1894,32 @@ def main() -> None:
     ap.add_argument('--thr-jitter', choices=('normal', 'lognormal'), default='normal',
         help='part B: thr0 x (1 + sigma xi) clipped (normal, as in the entry), or thr0 x exp(sigma xi - sigma^2 / 2) '
         '(lognormal, mean thr0, no low tail; folders partB_lognormal)')
+    ap.add_argument('--sigma-from', default=None, metavar='MODEL',
+        help="parts B / C: no calibration; the matched sigmas are MODEL's from an existing noise_levels.json of the same "
+        "noise (e.g. ref40), each level still re-tuned to this model's rate")
+    ap.add_argument('--sigma-from-dir', default=None, metavar='DIR',
+        help="the results folder whose noise_levels.json --sigma-from reads (default: this run's if it holds MODEL, else "
+        "<shared>/results/E43_model_trial_noise/<part folder>)")
     args = ap.parse_args()
     if args.n_trials < 2 or args.cal_trials < 2 or args.tune_trials < 2:
         ap.error('floors need at least 2 trials')
+    if args.sigma_from and args.part == 'A':
+        ap.error('--sigma-from is for parts B / C')
+    try:
+        fit_names = [model_from(s) for s in args.model_from]
+    except (ValueError, FileNotFoundError) as e:
+        ap.error(str(e))
+    if args.models is None:
+        args.models = [] if fit_names else ['base70', 'ref40']
+    args.models = list(dict.fromkeys(list(args.models) + fit_names))
+    if not args.models and not (args.analyse_only or args.figure_only):
+        ap.error('no models to run')
     if args.part in ('B', 'C'):
         main_b(args)
         return
-    res_dir = Path(args.results_dir) if args.results_dir else H.results_dir(EXPERIMENT)
-    out_dir = Path(args.outputs_dir) if args.outputs_dir else H.outputs_dir(EXPERIMENT)
+    sub_a = '' if args.experiment == EXPERIMENT else 'partA'
+    res_dir = Path(args.results_dir) if args.results_dir else H.results_dir(args.experiment) / sub_a
+    out_dir = Path(args.outputs_dir) if args.outputs_dir else H.outputs_dir(args.experiment) / sub_a
     res_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.figure_only:
@@ -1575,17 +1937,19 @@ def main() -> None:
         prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E43_model_trial_noise.py',
             host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), models=args.models,
             model_descriptions={m: MODELS[m] for m in args.models}, ref_fit=REF_FIT, fits_source='results/E34_gain_bounded/fits.csv',
+            model_sources={m: dict(experiment=FIT_MODELS[m][0], tag=FIT_MODELS[m][1]) for m in args.models if m in FIT_MODELS},
+            experiment=args.experiment,
             settings=dict(n_recordings=args.n_recordings, n_trials=args.n_trials, cal_grid=args.cal_grid, cal_trials=args.cal_trials,
-                cal_max_extend=args.cal_max_extend, cal_refine=args.cal_refine, bracket=args.bracket),
+                cal_max_extend=args.cal_max_extend, cal_refine=args.cal_refine, bracket=args.bracket, levels=args.levels),
             floor_targets=targets, noise=NOISE_NOTE, approx_conc_note=H.APPROX_CONC_NOTE,
             model=H.model_provenance(orn_deltas=orn))
         if prev is not None:
             prov['bases'], prov['params'] = prev.get('bases', {}), prev.get('params', {})
             prov['model_info'] = prev.get('model_info', {})
+            prov['model_sources'] = dict(prev.get('model_sources', {}), **prov['model_sources'])
             prov['previous_sessions'] = prev.get('previous_sessions', []) + [{k: prev.get(k) for k in ('generated', 'host', 'models',
                 'settings', 'n_trials_simulated', 'model')}]
-        write_json(prov_path, prov)
-        cal_old = pd.read_csv(cal_csv) if cal_csv.exists() else pd.DataFrame()
+        write_prov(prov_path, prov)
         cal_new = []
         t_all = time.time()
         for name in args.models:
@@ -1594,9 +1958,9 @@ def main() -> None:
                 rows, info = calibrate(sess, args.cal_grid, args.cal_trials, args.cal_max_extend, args.cal_refine, targets,
                     out_dir / f'{name}_det_pn.npz')
                 cal_new += rows
-                levels = make_levels(info['matched'], info['peaks'], args.bracket)
-                levels_all[name] = dict(info, levels=levels, n_recordings=args.n_recordings, n_trials=args.n_trials)
-                write_json(levels_path, levels_all)
+                levels = select_levels(make_levels(info['matched'], info['peaks'], args.bracket), args.levels)
+                levels_all = update_json(levels_path, name, dict(info, levels=levels, n_recordings=args.n_recordings,
+                    n_trials=args.n_trials, description=MODELS[name], **model_source(name)))
                 print(f'{name}: matched sd APL on {info["matched"]["on"]["sd"]:g}, APL off {info["matched"]["acute_off"]["sd"]:g}; '
                     f'levels {levels}', flush=True)
                 for label, sd in levels.items():
@@ -1606,12 +1970,16 @@ def main() -> None:
                 sess.finish()
                 prov['n_trials_simulated'] = prov.get('n_trials_simulated', 0) + sess.n_trials_run
             # calibration points of models re-calibrated here replace their earlier rows
-            keep = cal_old[~cal_old.model.isin({r['model'] for r in cal_new})] if len(cal_old) else cal_old
+            # (re-read: another process may have added other models' rows meanwhile)
+            cal_cur = pd.read_csv(cal_csv, float_precision='round_trip') if cal_csv.exists() else pd.DataFrame()
+            keep = cal_cur[~cal_cur.model.isin({r['model'] for r in cal_new})] if len(cal_cur) else cal_cur
             pd.concat([keep, pd.DataFrame(cal_new)], ignore_index=True).to_csv(cal_csv, index=False)
         prov['levels'] = {m: v['levels'] for m, v in levels_all.items()}
         prov['finished'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
         prov['seconds'] = time.time() - t_all
-        write_json(prov_path, prov)
+        write_prov(prov_path, prov)
+    # (again: other processes may have added models to this folder meanwhile)
+    levels_all = read_json(levels_path, {})
     data = data_side()
     for c in CONDS:
         g = GENOTYPE[c]
