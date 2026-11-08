@@ -83,6 +83,7 @@ def build() -> dict:
     # noise inflates every cosine distance toward 1, so the corrected mean is the level a noise-free
     # model should match
     from noise_floor_trial_distances import analyse as nf_analyse, load_trials as nf_load, recording_arrays as nf_recs
+    corrected_means = {}
     for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
         lab = 'control flies' if g == 'TNT3c' else 'APL output blocked (TNT)'
         floors, pairs = [], []
@@ -90,6 +91,7 @@ def build() -> dict:
             po, pr = nf_analyse(by_odor, 'graded')
             floors.append(po); pairs.append(pr['corrected'])
         corrected = pd.concat(pairs, axis=1).mean(axis=1)
+        corrected_means[g] = corrected
         add(f'{name}_mean_dist_noise_corrected', corrected.mean(),
             f'KCs, {lab}: mean pair distance over the 120 pairs after correcting each recording\'s cosine for trial-to-trial noise '
             '(signal power |mean|^2 - s^2/n per odor; cosine of the trial means divided by the signal norms), mean over recordings: '
@@ -100,6 +102,15 @@ def build() -> dict:
         add(f'{name}_single_trial_floor', float(np.mean([f.single_trial_floor.mean() for f in floors])),
             f'KCs, {lab}: 1 - cosine between two single trials of the same odor, mean over trial pairs, odors and recordings',
             'noise_floor_trial_distances.analyse', [f'kc_trials_{name}'])
+    # the block on the noise-corrected matrices: what a noise-free model should make, if the
+    # correction holds for its noise (the trial-to-trial variability experiment, E43, found it
+    # recovers a model's deterministic block for two of its three noise models)
+    c_ctrl, c_tnt = H.align_pairs(corrected_means['TNT3c'], corrected_means['TNT'])
+    st_c, _ = H.compare_on_off(c_ctrl, c_tnt)
+    add('block_corrected', st_c['block_fruity_small_iso'],
+        'fruity x small-ester block on the noise-corrected matrices: mean isotonic residual of the 9 pairs (control on APL output '
+        'blocked), each matrix the mean over recordings of its trial-noise-corrected cosine distances',
+        'noise_floor_trial_distances.analyse + harness.compare_on_off', ['kc_trials_ctrl', 'kc_trials_tnt'])
     for name, (m, lab, inp) in mats.items():
         fn = 'data_targets.build (pair distances)'
         add(f'{name}_mean_dist', m.mean(), f'{lab}: mean pair distance over the 120 pairs', fn, inp)
