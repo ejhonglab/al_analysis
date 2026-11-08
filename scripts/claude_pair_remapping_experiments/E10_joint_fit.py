@@ -45,6 +45,9 @@ What drives APL: `--apl-drive spikes` (E36) drives it by the KCs' spikes plus th
 (E37) also removes the bouton->APL input (wPNAPL = 0): the same --base-params base, its APL scales
 re-tuned to 5 % with wPNAPL at 0 (`tune_spike_only_base`), and the fit keeps wPNAPL at 0 (the
 APL->bouton scale is still fitted); tag prefix spko_.
+Operating point (E44): `--rate-target R` replaces the 5 % of the rate_on term by R (a number, or a
+data-target registry key such as ctrl_frac, the control flies' fraction, 0.068); the base, the
+ratio target and the other terms are unchanged; tag prefix rate<R>_ (after any gain prefix).
 """
 from __future__ import annotations
 
@@ -347,7 +350,8 @@ EXCESS_DIFF_TARGET, EXCESS_DIFF_SCALE = H.data_target('ctrl_excess_block_minus_o
 
 
 def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series,
-    drive: pd.Series, ref: Optional[pd.DataFrame] = None, structure: bool = False):
+    drive: pd.Series, ref: Optional[pd.DataFrame] = None, structure: bool = False,
+    rate_target: float = RATE_TARGET):
     """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc).
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
@@ -356,7 +360,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     the APL-off residual (data 0.36), both as (target - value) / target clipped at 0, and
     the APL-on excess profile ((excess of the block pairs - excess of the other between-group
     pairs) vs the data's +0.024, scale 0.05); targets from the data-target registry.
-    `ref` = `H.reference_pairs()`.
+    `ref` = `H.reference_pairs()`. `rate_target` is the APL-on response rate the rate_on term
+    pulls toward (E44).
     """
     ratio_target = float(data_rates['TNT'].reindex(H.APL16_ODORS).mean() /
         data_rates['TNT3c'].reindex(H.APL16_ODORS).mean())
@@ -392,7 +397,7 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
             on_mat=1.0 - out['on_spearman'],
             off_mat=1.0 - out['off_spearman'],
             block=((np.nan_to_num(out['block'], nan=-0.2) - BLOCK_TARGET) / BLOCK_SCALE) ** 2,
-            rate_on=((out['rate_on'] - RATE_TARGET) / RATE_SCALE) ** 2,
+            rate_on=((out['rate_on'] - rate_target) / RATE_SCALE) ** 2,
             ratio=((np.log(max(out['ratio'], 1e-3)) - np.log(ratio_target)) / RATIO_LOG_SCALE) ** 2,
             po_on=1.0 - np.nan_to_num(out['po_on_spearman'], nan=0.0),
             po_off=1.0 - np.nan_to_num(out['po_off_spearman'], nan=0.0),
@@ -416,6 +421,7 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         return {kk: float(vv) for kk, vv in out.items()}
 
     loss_fn.ratio_target = ratio_target
+    loss_fn.rate_target = float(rate_target)
     return loss_fn
 
 
@@ -633,6 +639,9 @@ def main() -> None:
     ap.add_argument('--init-params', default=None, metavar='FILE:KEY',
         help='start from these absolute parameters (fixed_thr, the APL scales, wKCKC_scale), e.g. '
         'results/E36_spike_apl/tuned_params.json:thr70_k2_kckc100_g1.5')
+    ap.add_argument('--rate-target', default=None, metavar='R',
+        help="APL-on response rate of the loss's rate_on term (default 0.05): a number or a "
+        "data-target registry key (e.g. ctrl_frac, the control flies' fraction; E44); tag prefix rate<R>_")
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -662,8 +671,17 @@ def main() -> None:
         olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.olfsysm_dir(),
             capture_output=True, text=True).stdout.strip(),
         model=H.model_provenance(orn_deltas=orn))
-    loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss == 'structure'))
-    print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}; loss variant {args.loss}', flush=True)
+    rate_target, rate_tag = RATE_TARGET, ''
+    if args.rate_target is not None:
+        try:
+            rate_target = float(args.rate_target)
+        except ValueError:
+            rate_target = float(H.data_target(args.rate_target))
+        rate_tag = f'rate{rate_target:.3f}_'
+    loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss == 'structure'),
+        rate_target=rate_target)
+    print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}; APL-on rate target '
+        f'{loss_fn.rate_target:.4f}; loss variant {args.loss}', flush=True)
 
     t0 = time.time()
     gain = None if args.glom_gain in (None, 1.0) else float(args.glom_gain)
@@ -681,7 +699,7 @@ def main() -> None:
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_')
+        '' if gain is None else f'gain{gain:g}_') + rate_tag
 
     fits_path = res_dir / 'fits.csv'
     for k in args.exponents:
@@ -713,6 +731,7 @@ def main() -> None:
             orn_input=args.orn_input, method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
+            rate_target=loss_fn.rate_target, rate_target_spec=args.rate_target,
             apl_drive=args.apl_drive, base_params=args.base_params, init_params=args.init_params,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
@@ -770,7 +789,8 @@ def main() -> None:
             base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=BLOCK_TARGET,
-            block_scale=BLOCK_SCALE, rate_target=RATE_TARGET, ratio_target=loss_fn.ratio_target,
+            block_scale=BLOCK_SCALE, rate_target=loss_fn.rate_target, rate_target_spec=args.rate_target,
+            ratio_target=loss_fn.ratio_target,
             ratio_log_scale=RATIO_LOG_SCALE, iso_target=ISO_TARGET, iso_scale=ISO_SCALE,
             **(dict(wt_dev_target=WT_DEV_TARGET, vcf_off_target=VCF_OFF_TARGET,
                 excess_diff_target=EXCESS_DIFF_TARGET, excess_diff_scale=EXCESS_DIFF_SCALE)
