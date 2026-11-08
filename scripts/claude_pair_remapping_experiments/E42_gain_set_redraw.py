@@ -82,11 +82,12 @@ def model_name(r: pd.Series) -> str:
     gs = gain_set(r)
     inp = 'Hallem-ms ' if isinstance(r.get('orn_input'), str) and 'hallem' in r['orn_input'] else ''
     cap = '' if pd.isna(r.get('aplpn_max')) else ' (capped)'
+    start2 = ' start 2' if 'start2' in str(r.get('tag', '')) else ''
     if gs == 'none':
-        return 'no gain'
+        return 'no gain' + start2
     if gs == 'eight':
-        return 'eight glomeruli' + cap
-    return f'{inp}{gs}' + cap
+        return 'eight glomeruli' + cap + start2
+    return f'{inp}{gs}' + cap + start2
 
 
 def wiring_name(r: pd.Series) -> str:
@@ -135,7 +136,7 @@ def load_rows() -> pd.DataFrame:
             row.update(weak_fractions(exp, r.tag))
             rows.append(row)
     df = pd.DataFrame(rows)
-    order = {'eight glomeruli (capped)': 0, 'eight glomeruli': 1, 'DC2 (capped)': 2, 'core3 (capped)': 3,
+    order = {'eight glomeruli (capped)': 0, 'eight glomeruli': 1, 'DC2 (capped)': 2, 'DC2 (capped) start 2': 2.5, 'core3 (capped)': 3,
         'Hallem-ms core3 (capped)': 4, 'no gain': 5}
     df['model_order'] = df.model.map(order).fillna(9)
     return df.sort_values(['claw_thr', 'model_order', 'wiring', 'experiment']).drop(columns='model_order')
@@ -158,7 +159,7 @@ def data_values() -> Dict[str, float]:
 
 def make_figure(df: pd.DataFrame, data: Dict[str, float], res_dir: Path) -> None:
     plt = H._plt()
-    models = [m for m in ['eight glomeruli (capped)', 'eight glomeruli', 'DC2 (capped)', 'core3 (capped)',
+    models = [m for m in ['eight glomeruli (capped)', 'eight glomeruli', 'DC2 (capped)', 'DC2 (capped) start 2', 'core3 (capped)',
         'Hallem-ms core3 (capped)', 'no gain'] if m in set(df.model)]
     colors = {70.0: '#1f5fbf', 40.0: '#d1662a'}
     markers = {'real': 'o', 'draw 2': 's', 'draw 1': '^'}
@@ -208,8 +209,9 @@ TABLE_ROWS = [
     ('kc_kc_inh', 'KC–KC scale', '.1f', None),
     ('n_evals', 'evaluations', '.0f', None),
 ]
-MODELS = ['eight glomeruli (capped)', 'DC2 (capped)', 'Hallem-ms core3 (capped)']
-SHORT = {'eight glomeruli (capped)': 'eight glomeruli', 'DC2 (capped)': 'DC2 alone', 'Hallem-ms core3 (capped)': 'Hallem-ms core'}
+MODELS = ['eight glomeruli (capped)', 'DC2 (capped)', 'DC2 (capped) start 2', 'Hallem-ms core3 (capped)']
+SHORT = {'eight glomeruli (capped)': 'eight glomeruli', 'DC2 (capped)': 'DC2 alone', 'DC2 (capped) start 2': 'DC2 alone, second start',
+    'Hallem-ms core3 (capped)': 'Hallem-ms core'}
 
 
 def markdown_tables(df: pd.DataFrame, data: Dict[str, float]) -> str:
@@ -217,14 +219,17 @@ def markdown_tables(df: pd.DataFrame, data: Dict[str, float]) -> str:
     out = []
     for thr in (70.0, 40.0):
         sub = df[(df.claw_thr == thr) & df.model.isin(MODELS)]
-        head1 = '| | | ' + ' | '.join(f'{SHORT[m]} {{span=2}}' for m in MODELS) + ' |'
-        head2 = '| statistic | KC data | ' + ' | '.join('real wiring | draw 2' for _ in MODELS) + ' |'
-        sep = '|---|---|' + '---|---|' * len(MODELS)
+        models = [m for m in MODELS if (sub.model == m).any()]
+        # a second start exists only on the draw: one column for it
+        wirings = {m: (('draw 2',) if m.endswith('start 2') else ('real', 'draw 2')) for m in models}
+        head1 = '| | | ' + ' | '.join(f'{SHORT[m]} {{span={len(wirings[m])}}}' if len(wirings[m]) > 1 else SHORT[m] for m in models) + ' |'
+        head2 = '| statistic | KC data | ' + ' | '.join(' | '.join('real wiring' if w == 'real' else w for w in wirings[m]) for m in models) + ' |'
+        sep = '|---|---|' + '---|' * sum(len(wirings[m]) for m in models)
         rows = [f'**{thr:g} Hz per-claw threshold**', '', head1, head2, sep]
         for col, label, fmt, dkey in TABLE_ROWS:
             cells = []
-            for m in MODELS:
-                for w in ('real', 'draw 2'):
+            for m in models:
+                for w in wirings[m]:
                     r = sub[(sub.model == m) & (sub.wiring == w)]
                     cells.append(format(float(r[col].iloc[0]), fmt) if len(r) == 1 and pd.notna(r[col].iloc[0]) else '-')
             d = '-'
