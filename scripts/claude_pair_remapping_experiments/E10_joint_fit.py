@@ -44,6 +44,7 @@ APL->KC scales relative to the base's tuned values (use --tag to name the varian
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import time
@@ -62,10 +63,13 @@ from E12_breadth_apl import e3_bouton_params, density_excess
 
 EXPERIMENT = 'E10_joint_fit'
 TAU = 0.05
-BLOCK_TARGET, BLOCK_SCALE = 0.055, 0.05
+# data targets come from the data-target registry (data_targets.py); 2026-11-07, before which
+# the fits used hand-typed values (block 0.055, iso R2 0.94, structure 0.83, natural-source
+# alignment 0.36, excess difference 0.02), each within 0.006 of the registry's
+BLOCK_TARGET, BLOCK_SCALE = H.data_target('block'), 0.05
 RATE_TARGET, RATE_SCALE = 0.05, 0.01
 RATIO_LOG_SCALE = np.log(1.5)
-ISO_TARGET, ISO_SCALE = 0.94, 0.05
+ISO_TARGET, ISO_SCALE = H.data_target('iso_r2'), 0.05
 LOSS_WEIGHTS = dict(on_mat=1.0, off_mat=1.0, block=1.0, rate_on=1.0, ratio=0.5, po_on=0.5,
     po_off=0.5, iso=0.25)
 # E12's KC<->APL factor matching the breadth-weighted model's response count to k = 0's
@@ -215,8 +219,10 @@ def breadth_weights(wAPLKC0: pd.Series, breadth: pd.Series, k: float) -> pd.Seri
 
 
 STRUCTURE_WEIGHTS = dict(wt_dev=1.0, vcf_off=1.0, excess_on=0.5)
-WT_DEV_TARGET, VCF_OFF_TARGET = 0.83, 0.36          # data: structure beyond the ORN input
-EXCESS_DIFF_TARGET, EXCESS_DIFF_SCALE = 0.02, 0.05   # data: block excess - other excess, APL on
+# data: structure beyond the ORN input vs wild-type somata (APL on), natural-source alignment
+# of the APL-off residual, and block excess - other excess (APL on)
+WT_DEV_TARGET, VCF_OFF_TARGET = H.data_target('ctrl_struct_wt'), H.data_target('tnt_vcf')
+EXCESS_DIFF_TARGET, EXCESS_DIFF_SCALE = H.data_target('ctrl_excess_block_minus_other'), 0.05
 
 
 def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series,
@@ -225,10 +231,11 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
     with APL on (rank agreement of the KC residual from a linear ORN prediction with the
-    same residual in Remy's wild-type somata; data 0.83), the natural-source alignment of
+    same residual in Remy's wild-type somata; data 0.82), the natural-source alignment of
     the APL-off residual (data 0.36), both as (target - value) / target clipped at 0, and
     the APL-on excess profile ((excess of the block pairs - excess of the other between-group
-    pairs) vs the data's +0.02, scale 0.05). `ref` = `H.reference_pairs()`.
+    pairs) vs the data's +0.024, scale 0.05); targets from the data-target registry.
+    `ref` = `H.reference_pairs()`.
     """
     ratio_target = float(data_rates['TNT'].reindex(H.APL16_ODORS).mean() /
         data_rates['TNT3c'].reindex(H.APL16_ODORS).mean())
@@ -621,6 +628,10 @@ def main() -> None:
             block_target=BLOCK_TARGET,
             block_scale=BLOCK_SCALE, rate_target=RATE_TARGET, ratio_target=loss_fn.ratio_target,
             ratio_log_scale=RATIO_LOG_SCALE, iso_target=ISO_TARGET, iso_scale=ISO_SCALE,
+            **(dict(wt_dev_target=WT_DEV_TARGET, vcf_off_target=VCF_OFF_TARGET,
+                excess_diff_target=EXCESS_DIFF_TARGET, excess_diff_scale=EXCESS_DIFF_SCALE)
+                if args.loss == 'structure' else {}),
+            data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
             approx_conc_note=H.APPROX_CONC_NOTE, model=H.model_provenance(orn_deltas=orn),
         )

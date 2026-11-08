@@ -55,14 +55,12 @@ directory's notes/ and are linked from here.
 - **Affects.** Report text and tables (the summary now reads "1.9 (mean response ratio) / 2.2");
   per-experiment notes E8, E10, E19, E25, E28, E30, E33 still say "1.9–2.2" or "1.9 by mean rate".
   The joint fits' loss used 2.2 throughout, so no fit is affected.
-- **Remains.** Annotate or leave the old notes; the value-registry proposal in the provenance note.
-
-### Two figures label the data's isotonic R² as 0.75 (found 2026-11-06)
-
-- **What.** `E8_kc_kc_inhibition.py` and `E19_thr_breadth_kckc.py` draw a reference line
-  "isotonic R2 on vs off (data 0.75)"; the data give 0.94. Unsourced like the 1.9 above.
-- **Affects.** The E8 and E19 figures (results/ and their artifacts).
-- **Remains.** Correct the literal and redraw when those figures are next regenerated.
+- **Done (2026-11-07, hal).** The value registry exists (data_targets.py; scripts read it with
+  `H.data_target`). The E8 and E19 figures draw the data's ratio from it (2.2, fraction of KCs
+  responding; redrawn with `--figure-only`), and the E8 and E19 notes and pages say 2.2 with a dated
+  correction note (pages republished, reports/ copies updated).
+- **Remains.** Notes E10, E25, E28, E30, E33 still say "1.9–2.2" or "1.9 by mean rate" (annotate
+  or leave).
 
 ### Hand-rounded numbers in the summary report differ from their sources (found 2026-11-06)
 
@@ -83,11 +81,29 @@ directory's notes/ and are linked from here.
   Spearman-Brown-corrected square root (the expected ρ of a noise-free model).
 - **Done (2026-11-06 14:08).** The published summary is generated from the template
   (build_summary.py): the values above and the ceiling label / definition are corrected there.
-- **Remains.** Read WT_DEV_TARGET and VCF_OFF_TARGET in E10_joint_fit.py from the registry (changes
-  every later fit's loss by ~0.007, so do it between experiments, not mid-comparison); the
-  per-experiment notes keep their hand-typed values.
+- **Done (2026-11-07, hal, between experiments).** E10_joint_fit.py reads its five data targets
+  from the registry (structure vs wild type 0.8245, natural-source alignment 0.3612, block 0.0554,
+  isotonic R² 0.9391, excess difference 0.0237; were 0.83, 0.36, 0.055, 0.94, 0.02) and records them
+  and the registry's sha256 in each fit's provenance, so joint fits from now on use a loss that
+  differs from the earlier fits' by at most 0.006 in any target. summary_progress_plot.py reads its
+  six targets from the registry (the APL-on response rate ρ target was 0.97, the APL-off ceiling;
+  it is 0.98; the wild-type structure 0.83 is 0.82). In the template, the progress-plot paragraph
+  and 29 other KC-data values (the wild-type structure "0.83" in four places, the natural-source
+  alignment 0.44 / 0.36, the block, the ceilings) are placeholders now; summary republished.
+- **Remains.** Other KC-data columns in the template's tables are still typed (not all checked
+  against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### Two figures label the data's isotonic R² as 0.75 (found 2026-11-06)
+
+- **What.** `E8_kc_kc_inhibition.py` and `E19_thr_breadth_kckc.py` draw a reference line
+  "isotonic R2 on vs off (data 0.75)"; the data give 0.94. Unsourced like the 1.9 above.
+- **Affects.** The E8 and E19 figures (results/ and their artifacts).
+- **Resolved.** The literal was corrected in 4fe1fde and both figures redrawn on 2026-11-05; the
+  E8 note and page still quoted the data's 0.75 in their text (calling the model's 0.88 "preserved",
+  though it is below the data's 0.94) and were corrected on 2026-11-07, when both figures were
+  redrawn again with every data reference read from the registry (pages republished).
 
 ### Artifact publishing unavailable on both hosts (found 2026-11-06 14:34)
 

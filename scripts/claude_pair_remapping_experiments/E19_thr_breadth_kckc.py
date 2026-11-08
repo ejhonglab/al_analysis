@@ -48,16 +48,21 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
     p = H.PRIMARY_MODEL_RDM + '__'
     if 'error' in stats:
         stats = stats[stats['error'].isna()]
+    d = H.data_target   # data reference values from the data-target registry
     panels = [
-        ('fruity x small-ester block (data +0.055)', p + 'block_fruity_small_iso', 0.055),
+        (f"fruity x small-ester block (data {d('block'):+.3f})", p + 'block_fruity_small_iso', d('block')),
         ('Spearman with control (APL on)', p + 'on_spearman', None),
         ('Spearman with TNT (APL off)', p + 'off_spearman', None),
-        ('excess sharing, block pairs, APL on (data -0.08)', 'on_excess_block', -0.080),
-        ('excess sharing, block pairs, APL off (data -0.24)', 'off_excess_block', -0.239),
-        ('mean pair distance, APL on (data 0.84, graded cosine)', p + 'on_mean_model', 0.840),
-        ('APL-off / APL-on response rate (data 1.9)', 'rate_ratio_off_over_on', 1.9),
+        (f"excess sharing, block pairs, APL on (data {d('ctrl_excess_block'):.2f})", 'on_excess_block',
+            d('ctrl_excess_block')),
+        (f"excess sharing, block pairs, APL off (data {d('tnt_excess_block'):.2f})", 'off_excess_block',
+            d('tnt_excess_block')),
+        (f"mean pair distance, APL on (data {d('ctrl_mean_dist'):.2f}, graded cosine)", p + 'on_mean_model',
+            d('ctrl_mean_dist')),
+        (f"APL-off / APL-on response rate (data {d('rate_ratio_fraction'):.1f})", 'rate_ratio_off_over_on',
+            d('rate_ratio_fraction')),
         ('per-odor rate vs data, APL on', 'spearman_rate_on_vs_data', None),
-        ('isotonic R2 on vs off (data 0.94)', p + 'iso_r2', 0.94),
+        (f"isotonic R2 on vs off (data {d('iso_r2'):.2f})", p + 'iso_r2', d('iso_r2')),
     ]
     colors = {40.0: '#2b6cb0', 70.0: '#d9480f', 0.0: '0.35'}
     markers = {0.0: 'o', 30.0: 's', 100.0: '^'}

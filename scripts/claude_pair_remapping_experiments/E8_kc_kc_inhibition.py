@@ -53,14 +53,16 @@ def make_figure(stats: pd.DataFrame, res_dir: Path) -> None:
     import matplotlib.pyplot as plt
     p = H.PRIMARY_MODEL_RDM + '__'
     stats = stats[~stats.get('error', pd.Series(index=stats.index, dtype=object)).notna()]
-    data_ctrl, data_tnt = -0.080, -0.239   # E7 excess (block) in the data, control / TNT
+    d = H.data_target   # data reference values from the data-target registry
     panels = [
         ('Spearman with data', [(p + 'on_spearman', 'APL on vs control'), (p + 'off_spearman', 'APL off vs TNT')], None),
-        ('fruity x small-ester block (data +0.055)', [(p + 'block_fruity_small_iso', '')], 0.055),
-        ('APL-off residual vs VCF (data 0.36)', [(p + 'off_spearman_resid_vs_vcf_hyp', '')], 0.36),
-        ('excess sharing, block pairs (APL on)', [('on_excess_block', '')], data_ctrl),
-        ('isotonic R2 on vs off (data 0.94)', [(p + 'iso_r2', '')], 0.94),
-        ('APL-off / APL-on response rate (data 1.9)', [('rate_ratio_off_over_on', '')], 1.9),
+        (f"fruity x small-ester block (data {d('block'):+.3f})", [(p + 'block_fruity_small_iso', '')], d('block')),
+        (f"APL-off residual vs VCF (data {d('tnt_vcf'):.2f})", [(p + 'off_spearman_resid_vs_vcf_hyp', '')], d('tnt_vcf')),
+        (f"excess sharing, block pairs (APL on; data {d('ctrl_excess_block'):+.2f})", [('on_excess_block', '')],
+            d('ctrl_excess_block')),
+        (f"isotonic R2 on vs off (data {d('iso_r2'):.2f})", [(p + 'iso_r2', '')], d('iso_r2')),
+        (f"APL-off / APL-on response rate (data {d('rate_ratio_fraction'):.1f})", [('rate_ratio_off_over_on', '')],
+            d('rate_ratio_fraction')),
     ]
     colors = {'plain': '#2b6cb0', 'breadth3': '#d9480f'}
     fig, axes = plt.subplots(2, 3, figsize=(12, 6.4))

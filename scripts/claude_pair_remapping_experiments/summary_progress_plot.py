@@ -50,21 +50,26 @@ EXCLUDE_VARIANT = re.compile(r'^(oracle|blockset|uniform|hemidraw|shuffle-)|_g1\
 SKIP_FOLDERS = {'E1_apl_knockout', 'E2_local_apl', 'E6_readout_window', 'E7_confound_controls',
     'E21_apl_off_sharing', 'E23_weak_odor_responders', 'E29_oracle_substrate'}
 
-# statistic -> (label, target, candidate columns [standard names, early-atlas names])
-METRICS = {
-    'ctrl': ('ρ on odor-odor distances, APL on', 0.98,
+# statistic -> (label, data-target registry entry of its target (the data's value, or its
+# measurement ceiling), format of the target in labels, candidate columns [standard names,
+# early-atlas names])
+METRIC_DEFS = {
+    'ctrl': ('ρ on odor-odor distances, APL on', 'ctrl_ceiling', '.2f',
         ['spike_counts_cosine__on_spearman', 'spearman_vs_TNT3c_on']),
-    'tnt': ('ρ on odor-odor distances, APL off', 0.97,
+    'tnt': ('ρ on odor-odor distances, APL off', 'tnt_ceiling', '.2f',
         ['spike_counts_cosine__off_spearman', 'spearman_vs_TNT_off']),
-    'block': ('fruity x small-ester block', 0.055,
+    'block': ('fruity x small-ester block', 'block', '+.3f',
         ['spike_counts_cosine__block_fruity_small_iso', 'block_fruity_small_iso']),
-    'rate_rank': ('per-odor response rate ρ, APL on', 0.97,
+    'rate_rank': ('per-odor response rate ρ, APL on', 'ctrl_rate_rho_ceiling', '.2f',
         ['spearman_rate_on_vs_data', 'per_odor_rate_spearman_vs_TNT3c_on']),
-    'wt_dev': ('structure beyond the ORN input vs wild-type somata (APL on)', 0.83,
+    'wt_dev': ('structure beyond the ORN input vs wild-type somata (APL on)', 'ctrl_struct_wt', '.2f',
         ['spike_counts_cosine__on_spearman_resid_vs_remap_wt', 'spearman_resid_vs_remap_wt_on']),
-    'vcf_off': ('natural-source alignment of the APL-off residual', 0.36,
+    'vcf_off': ('natural-source alignment of the APL-off residual', 'tnt_vcf', '.2f',
         ['spike_counts_cosine__off_spearman_resid_vs_vcf_hyp', 'spearman_resid_vs_vcf_hyp_off']),
 }
+# statistic -> (label, target, candidate columns), the target read from the registry
+METRICS = {k: (label, H.data_target(entry), cols) for k, (label, entry, _, cols) in METRIC_DEFS.items()}
+TARGET_LABELS = {k: format(METRICS[k][1], fmt) for k, (_, _, fmt, _) in METRIC_DEFS.items()}
 # (the APL-off / APL-on rate ratio is not plotted: the first measured model already sat at the
 # data's 2.2, as most tuned acute-knockout models do, so a gap fraction is undefined for it)
 # statistic -> (light, dark) color: the reference palette's categorical hues (dataviz skill). The
@@ -227,7 +232,7 @@ def plot_html(pts: pd.DataFrame) -> str:
     for k in keys:
         sub = pts[pts.metric == k]
         label, target, _ = METRICS[k]
-        series.append(dict(key=k, label=label, target=target, light=SERIES_COLORS[k][0], dark=SERIES_COLORS[k][1],
+        series.append(dict(key=k, label=label, target=target, target_label=TARGET_LABELS[k], light=SERIES_COLORS[k][0], dark=SERIES_COLORS[k][1],
             baseline=float(sub.baseline.iloc[0]),
             points=[dict(t=r.completed.isoformat(timespec='minutes'), exp=r.exp, name=r['name'], variant=r.variant,
                 params=r.params, stats=r['stats'], value=round(float(r.value), 4), gap=round(float(r.gap_closed), 4),
@@ -238,7 +243,7 @@ def plot_html(pts: pd.DataFrame) -> str:
     for s in series:
         last = max(s['points'], key=lambda p: (p['best'], p['t']))
         setter = next(p for p in s['points'] if abs(p['best'] - last['best']) < 1e-9 and p['new'])
-        best_tbl.append(f"<tr><td>{html.escape(s['label'])}</td><td class=\"num\">{s['target']:g}</td>"
+        best_tbl.append(f"<tr><td>{html.escape(s['label'])}</td><td class=\"num\">{s['target_label']}</td>"
             f"<td class=\"num\">{s['baseline']:.3g}</td><td class=\"num\">{setter['value']:.3g} ({100 * last['best']:.0f} % of the gap)</td>"
             f"<td>{html.escape(setter['exp'] + ': ' + setter['name'])}, {html.escape(setter['variant'])}, {setter['t'].replace('T', ' ')}</td></tr>")
     best_tbl.append('</table>')
@@ -323,12 +328,12 @@ def plot_html(pts: pd.DataFrame) -> str:
   function showTip(evt, s, p) {
     if (pinned) return;
     var pct = Math.round(p.gap * 100);
-    tip.innerHTML = '<b>' + p.exp + ': ' + p.name + '</b><br>completed ' + p.t.replace('T', ' ') + '<br>' + s.label + ': <b>' + p.value + '</b> (KC data ' + s.target + '; first model ' + s.baseline.toFixed(3) + ')<br>best variant: ' + p.variant + modelText(p) + '<br>' + pct + ' % of the gap closed' + (p.new ? ' (a new best at the time)' : '');
+    tip.innerHTML = '<b>' + p.exp + ': ' + p.name + '</b><br>completed ' + p.t.replace('T', ' ') + '<br>' + s.label + ': <b>' + p.value + '</b> (KC data ' + s.target_label + '; first model ' + s.baseline.toFixed(3) + ')<br>best variant: ' + p.variant + modelText(p) + '<br>' + pct + ' % of the gap closed' + (p.new ? ' (a new best at the time)' : '');
     placeTip(evt);
   }
   function showSegTip(evt, s, p, untilText) {
     if (pinned) return;
-    tip.innerHTML = '<b>best so far on: ' + s.label + '</b><br>from ' + p.t.replace('T', ' ') + ' ' + untilText + '<br>' + p.exp + ': ' + p.name + ', variant ' + p.variant + '<br>' + s.label + ' <b>' + p.value + '</b> (KC data ' + s.target + '; ' + Math.round(p.best * 100) + ' % of the gap closed)' + modelText(p);
+    tip.innerHTML = '<b>best so far on: ' + s.label + '</b><br>from ' + p.t.replace('T', ' ') + ' ' + untilText + '<br>' + p.exp + ': ' + p.name + ', variant ' + p.variant + '<br>' + s.label + ' <b>' + p.value + '</b> (KC data ' + s.target_label + '; ' + Math.round(p.best * 100) + ' % of the gap closed)' + modelText(p);
     placeTip(evt);
   }
   function placeTip(evt) {
@@ -400,7 +405,7 @@ def plot_html(pts: pd.DataFrame) -> str:
     var color = dark ? s.dark : s.light;
     var item = document.createElement('span'); item.className = 'item';
     var sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = color;
-    var txt = document.createElement('span'); txt.textContent = s.label + ' (KC data ' + s.target + ')';
+    var txt = document.createElement('span'); txt.textContent = s.label + ' (KC data ' + s.target_label + ')';
     item.appendChild(sw); item.appendChild(txt); legend.appendChild(item);
     item.addEventListener('click', function () {
       var off = item.classList.toggle('off');

@@ -22,6 +22,7 @@ Run `python kc_remapping_harness.py` to reproduce the report's data-vs-data stat
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -129,6 +130,31 @@ def outputs_dir(experiment: str) -> Path:
     d = HERE / 'outputs' / experiment
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def data_targets_path() -> Path:
+    """The data-target registry, <shared>/results/data_targets/data_targets.json (written by
+    data_targets.py)."""
+    return shared_dir() / 'results' / 'data_targets' / 'data_targets.json'
+
+
+_DATA_TARGETS: Dict[str, dict] = {}
+
+
+def data_target(name: str) -> float:
+    """Value of one entry of the data-target registry (e.g. 'ctrl_ceiling', 'block').
+
+    Figure scripts and loss functions read KC / ORN data values with this rather than from
+    literals. The registry is read once per process; run data_targets.py to rebuild it.
+
+    Raises:
+        KeyError: `name` is not in the registry.
+    """
+    if not _DATA_TARGETS:
+        _DATA_TARGETS.update(json.loads(data_targets_path().read_text()))
+    if name not in _DATA_TARGETS:
+        raise KeyError(f'{name!r} is not in the data-target registry ({data_targets_path()})')
+    return float(_DATA_TARGETS[name]['value'])
 
 
 # ---------------------------------------------------------------------------
