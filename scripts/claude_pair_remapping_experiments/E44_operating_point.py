@@ -158,20 +158,26 @@ def make_figure(comp: pd.DataFrame, res_dir) -> None:
         for thr in (70.0, 40.0):
             s = a[a.claw_thr == thr]
             ax.plot(100 * s.rate_on, s[col], '-o', color=colors[thr], lw=1.5, ms=5, label=f'bouton base, {thr:g} Hz (part A)')
-            for part, marker, label in (('C', 's', 'reference model, threshold re-tuned (C)'), ('B', 'D', 'reference model re-fitted (B)')):
-                p = comp[(comp.part == part) & (comp.claw_thr == thr)]
-                if len(p):
-                    ax.plot(100 * p.rate_on, p[col], marker, color=colors[thr], mfc='white', mew=1.5, ms=7, ls='none',
+            c = comp[(comp.part == 'C') & (comp.claw_thr == thr)]
+            fit, ret = c[c.tag.str.endswith('_fit')], c[~c.tag.str.endswith('_fit')]
+            if len(fit) and len(ret):
+                ax.plot(100 * np.r_[fit.rate_on.iloc[0], ret.rate_on.iloc[0]], np.r_[fit[col].iloc[0], ret[col].iloc[0]],
+                    color=colors[thr], lw=0.8, ls='--')
+            for sel, marker, mfc, label in ((fit, 's', colors[thr], 'reference model at its fit'),
+                    (ret, 's', 'white', 'reference model, threshold re-tuned (C)'),
+                    (comp[(comp.part == 'B') & (comp.claw_thr == thr)], 'D', 'white', 'reference model re-fitted (B)')):
+                if len(sel):
+                    ax.plot(100 * sel.rate_on, sel[col], marker, color=colors[thr], mfc=mfc, mew=1.5, ms=7, ls='none',
                         label=f'{label}, {thr:g} Hz')
         ref = H.data_target(key) if key else (weak_data if col == 'weak_frac_off' else None)
         if ref is not None:
-            ax.axhline(ref, color='0.3', ls=':', lw=1.2, label='KC data')
+            ax.axhline(ref, color='0.3', ls=':', lw=1.2, label='KC data (for the ρ panels: the measurement ceiling)')
         ax.axvline(100 * CTRL_FRAC, color='0.75', lw=1, zorder=0)
         ax.set_title(title, fontsize=10)
         ax.set_xlabel('APL-on response rate (%)')
         ax.grid(alpha=0.25, lw=0.5)
     h, l = axs.flat[0].get_legend_handles_labels()
-    fig.legend(h, l, loc='lower center', ncol=4, fontsize=9, bbox_to_anchor=(0.5, -0.06))
+    fig.legend(h, l, loc='lower center', ncol=3, fontsize=9, bbox_to_anchor=(0.5, -0.09))
     fig.suptitle("The operating point: statistics against the APL-on response rate (grey line: the control flies' "
         f"{100 * CTRL_FRAC:.1f} %)", fontsize=12)
     fig.savefig(res_dir / 'E44_operating_point.png', dpi=130, bbox_inches='tight')
