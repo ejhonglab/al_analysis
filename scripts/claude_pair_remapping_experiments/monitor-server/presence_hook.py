@@ -19,6 +19,14 @@ title changes, on lifecycle events, or when the shared copy is over a minute old
 never prints anything (stdout of some events would reach Claude's context) and always exits
 0. It is wrapped in `timeout` in the settings, since the NAS is a hard NFS mount.
 
+Every 15 min (and at the session's start and end) it also appends a usage sample to
+`usage/<host>__<session_id>.jsonl` in the shared directory: the session's tokens so far by
+model (summed from the `usage` of the assistant messages in its transcript and its subagents'
+transcripts, read incrementally), the claude.ai account the machine is logged in with (a hash
+of the account ID, its display name and plan, from ~/.claude.json), and the plan's 5-hour and
+weekly usage as the status line last received it (`statusline_capture.py`). `chat_watch.sh`
+runs `presence_hook.py --sample <session_id>` on each poll, so idle sessions keep sampling.
+
 The shared directory is $KC_SHARED_DIR, else Tom/claude_kc_remapping under the first of
 /local/tensor and /mnt/tensor that has it (nothing is written if neither does). Other
 environment overrides (used by the tests): KC_PRESENCE_CACHE, KC_PRESENCE_MATCH.
@@ -28,6 +36,8 @@ import time
 T_EVENT = time.time()
 
 import fcntl
+import glob
+import hashlib
 import json
 import os
 import re
@@ -74,6 +84,11 @@ LIFECYCLE_EVENTS = {
     'PermissionRequest', 'PreCompact', 'PostCompact', 'UserPromptSubmit',
 }
 TITLE_TICK = re.compile(r'\s*__set_session_title__\s+(\S.{0,63}?)\s*')
+# a usage sample at most this often per session (and at its start and end)
+USAGE_SAMPLE_S = 15 * 60
+# transcript usage fields -> sample keys
+USAGE_KEYS = (('input_tokens', 'input'), ('output_tokens', 'output'),
+    ('cache_read_input_tokens', 'cache_read'), ('cache_creation_input_tokens', 'cache_creation'))
 
 
 def iso(t):
@@ -271,6 +286,202 @@ def update(rec, d, host, now):
     return rec
 
 
+def _add_usage(totals, model, usage):
+    t = totals.setdefault(model or '?', {k: 0 for _, k in USAGE_KEYS})
+    for src, dst in USAGE_KEYS:
+        v = usage.get(src)
+        if isinstance(v, (int, float)):
+            t[dst] += int(v)
+
+
+def scan_usage(path, st):
+    """Adds the token usage of the assistant messages appended to a transcript since the last
+    call to its parse state.
+
+    Claude Code writes one transcript line per content block, each repeating its message's
+    `usage`, so lines are counted once per message ID: the last line of a message is held as
+    `pending` until a line of another message follows.
+
+    Args:
+        path: transcript (.jsonl).
+        st: parse state from the previous call ({} the first time): `offset`, `totals`
+            ({model: {input, output, cache_read, cache_creation}} of finished messages),
+            `pending_id` and `pending` ([model, usage] of the last message seen).
+
+    Returns:
+        the updated state.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return st
+    if size < st.get('offset', 0):
+        st = {}
+    st.setdefault('offset', 0)
+    st.setdefault('totals', {})
+    if size == st['offset']:
+        return st
+    with open(path, 'rb') as f:
+        f.seek(st['offset'])
+        data = f.read(size - st['offset'])
+    end = data.rfind(b'\n')
+    if end < 0:
+        return st
+    for line in data[:end].split(b'\n'):
+        if b'"usage"' not in line or b'"assistant"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict) or d.get('type') != 'assistant':
+            continue
+        m = d.get('message') or {}
+        u = m.get('usage')
+        model = m.get('model')
+        # API errors are written as model '<synthetic>'
+        if not isinstance(u, dict) or (model or '').startswith('<'):
+            continue
+        mid = m.get('id') or d.get('requestId') or d.get('uuid')
+        if st.get('pending') and mid != st.get('pending_id'):
+            _add_usage(st['totals'], *st['pending'])
+        st['pending_id'] = mid
+        st['pending'] = [model, {k: u.get(k) for k, _ in USAGE_KEYS}]
+    st['offset'] += end + 1
+    return st
+
+
+def session_tokens(transcript, files):
+    """Tokens of a session and its subagents so far, by model.
+
+    Args:
+        transcript: the session's transcript path.
+        files: {path: parse state} from the previous call; updated in place.
+
+    Returns:
+        {model: {input, output, cache_read, cache_creation}}.
+    """
+    paths = [transcript]
+    if transcript.endswith('.jsonl'):
+        paths += sorted(glob.glob(os.path.join(transcript[:-len('.jsonl')], 'subagents',
+            '*.jsonl')))
+    totals = {}
+    for path in paths:
+        st = files[path] = scan_usage(path, files.get(path) or {})
+        for model, t in st.get('totals', {}).items():
+            _add_usage(totals, model, {src: t[dst] for src, dst in USAGE_KEYS})
+        if st.get('pending'):
+            _add_usage(totals, *st['pending'])
+    return totals
+
+
+def account_info():
+    """The claude.ai account Claude Code is logged in with on this machine.
+
+    Read from the `oauthAccount` entry of ~/.claude.json (or $CLAUDE_CONFIG_DIR/.claude.json),
+    where Claude Code keeps the account details; the format is not documented, so anything
+    missing gives None. Only a hash of the account ID leaves the machine, with the display
+    name and plan.
+
+    Returns:
+        {'id', 'name', 'plan'}, or None (no claude.ai login, e.g. an API key).
+    """
+    paths = [os.path.expanduser('~/.claude.json')]
+    if os.environ.get('CLAUDE_CONFIG_DIR'):
+        paths.insert(0, os.path.join(os.environ['CLAUDE_CONFIG_DIR'], '.claude.json'))
+    for path in paths:
+        try:
+            with open(path) as f:
+                acct = json.load(f).get('oauthAccount') or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        uuid = acct.get('accountUuid')
+        if not uuid:
+            return None
+        return {'id': hashlib.sha256(uuid.encode()).hexdigest()[:12],
+            'name': acct.get('displayName') or None, 'plan': acct.get('planDisplayName') or None}
+    return None
+
+
+def read_json_file(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def plan_usage(capture):
+    """The 5-hour and weekly plan usage from a status-line capture, or None."""
+    limits = (capture or {}).get('rate_limits')
+    if not isinstance(limits, dict):
+        return None
+    out = {}
+    for window in ('five_hour', 'seven_day'):
+        w = limits.get(window)
+        if isinstance(w, dict) and isinstance(w.get('used_percentage'), (int, float)):
+            out[window] = {'used_percentage': w['used_percentage'],
+                'resets_at': w.get('resets_at')}
+    if not out:
+        return None
+    out['captured_epoch'] = capture.get('epoch')
+    return out
+
+
+def sample_usage(rec, now, reason, force=False):
+    """Appends a usage sample for a session to usage/<host>__<session>.jsonl when one is due.
+
+    Due USAGE_SAMPLE_S after the last sample, when `force`d (session start and end), and at
+    once when the status line has captured the session's first plan-usage reading. Must be
+    called with the session's lock held.
+
+    Returns:
+        the sample written, or None.
+    """
+    sid, host = rec.get('session_id'), rec.get('host')
+    transcript = rec.get('transcript_path') or ''
+    if not sid or not host:
+        return None
+    state_path = os.path.join(CACHE_DIR, sid + '.usage.json')
+    st = read_json_file(state_path) or {}
+    limits = plan_usage(read_json_file(os.path.join(CACHE_DIR, sid + '.statusline.json')))
+    # the first plan-usage reading of a session is sampled at once (its usage when it joined)
+    first_limits = bool(limits) and not st.get('limits_epoch')
+    if not (force or first_limits or now - st.get('sampled_epoch', 0) >= USAGE_SAMPLE_S):
+        return None
+    shared = shared_dir()
+    if not shared:
+        return None
+    files = st.get('files') or {}
+    tokens = session_tokens(transcript, files) if transcript else {}
+    sample = {
+        'version': 1,
+        'epoch': now,
+        'time': iso(now),
+        'host': host,
+        'session_id': sid,
+        'reason': reason,
+        'model': rec.get('model'),
+        'effort': rec.get('effort'),
+        'account': account_info(),
+        'tokens': tokens,
+        'plan_usage': limits,
+    }
+    udir = os.path.join(shared, 'usage')
+    os.makedirs(udir, exist_ok=True)
+    with open(os.path.join(udir, '{}__{}.jsonl'.format(host, sid)), 'a') as f:
+        f.write(json.dumps(sample, sort_keys=True, separators=(',', ':')) + '\n')
+    st.update(files=files, sampled_epoch=now)
+    if limits:
+        st['limits_epoch'] = limits.get('captured_epoch') or now
+    write_atomic(state_path, st)
+    total = sum(sum(t.values()) for t in tokens.values())
+    rec['tokens'] = {'total': total, 'output': sum(t['output'] for t in tokens.values()),
+        'epoch': now}
+    return sample
+
+
 def shared_dir():
     """$KC_SHARED_DIR, else the shared directory under the first tensor mount that has it."""
     if os.environ.get('KC_SHARED_DIR'):
@@ -302,7 +513,24 @@ def prune_cache():
             pass
 
 
+def sample_only(sid):
+    """`--sample <session_id>` (run by chat_watch.sh each poll): a usage sample if one is due."""
+    if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', sid or ''):
+        return
+    cache = os.path.join(CACHE_DIR, sid + '.json')
+    if not os.path.exists(cache):
+        return
+    with open(cache + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rec = read_json_file(cache)
+        if rec and rec.get('state') != 'ended' and sample_usage(rec, time.time(), 'watch'):
+            write_atomic(cache, rec)
+
+
 def main():
+    if sys.argv[1:2] == ['--sample']:
+        sample_only(sys.argv[2] if len(sys.argv) > 2 else '')
+        return
     d = json.load(sys.stdin)
     sid = d.get('session_id')
     if not sid or not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', sid):
@@ -326,6 +554,7 @@ def main():
 
         new = update(rec, d, host, T_EVENT)
         event = new['last_event']
+        sample_usage(new, T_EVENT, event, force=event in ('SessionStart', 'SessionEnd'))
         changed = any(new.get(k) != rec.get(k)
             for k in ('state', 'session_title', 'label', 'detail', 'ended', 'model', 'effort'))
         stale = T_EVENT - rec.get('shared_written_epoch', 0) >= SHARED_REFRESH_S

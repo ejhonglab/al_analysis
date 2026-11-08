@@ -1,4 +1,9 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "d=${CLAUDE_PROJECT_DIR:-$PWD}; f=$d/monitor-server/statusline_capture.py; [ -f \"$f\" ] || f=$d/scripts/claude_pair_remapping_experiments/monitor-server/statusline_capture.py; case $d in */src/kc_queue/*) ;; *) [ -f \"$f\" ] || f=$HOME/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/statusline_capture.py ;; esac; [ -f \"$f\" ] && exec timeout -k 1 5 python3 -I \"$f\"; cat >/dev/null; exit 0",
+    "refreshInterval": 300
+  },
   "hooks": {
     "UserPromptSubmit": [
       {

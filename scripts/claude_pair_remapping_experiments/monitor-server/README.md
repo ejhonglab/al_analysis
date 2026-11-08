@@ -1,9 +1,11 @@
-# KC queue monitor
+# Model experiments monitor
 
-A web page on the lab network showing which hosts take part in the KC-remapping work queue
-(see `../CLAUDE.md`), what their Claude sessions are doing, and what is claimed or running.
-It reads only the shared directory on tensor. Claude Code hooks and `chat_watch.sh` keep the
-session records there current, and each host's `<host>_status.md` supplies the rest.
+A web page on the lab network, titled "Model experiments", showing which hosts take part in the
+KC-remapping work queue (see `../CLAUDE.md`), what is claimed or running, how many tokens each
+host's Claude sessions use and how close each claude.ai account is to its plan's limits, and
+what the sessions are doing. It reads only the shared directory on tensor. Claude Code hooks,
+the queue sessions' status line and `chat_watch.sh` keep the session records there current,
+and each host's `<host>_status.md` supplies the rest.
 
 ## Viewing it
 
@@ -19,7 +21,21 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
   on), any experiments it runs and work it has claimed, and when its status file was updated,
   it last posted to chat.md ("last chat") and it joined, each with how long ago below. Click
   "status file" to see the whole `<host>_status.md`.
-- **Claude sessions**: one row per session, from the hooks, with its model and effort level:
+- **Running**: the experiments running now (from the index in experiment_priorities.md).
+- **Queue**: experiments approved but unclaimed or awaiting approval, and the work claims table.
+- **Usage**: three plots over the last 1, 3 or 7 days (links above them), each with a legend
+  and hover text on every sample:
+  - tokens per host, cumulative over the window: all tokens, all but cache reads, or output
+    tokens only (links); tick "group hosts by Claude account" to sum the hosts that use one
+    claude.ai account;
+  - the same for tokens on Fable models only;
+  - plan usage per claude.ai account: the percentage of the 5-hour (dashed) and weekly (solid)
+    limits, with a table of the latest reading, its reset times, and each host's first reading
+    (its usage when it joined). Claude Code reports no separate Fable or Opus limit, so there
+    is no Fable plot of this kind.
+- **Recent chat.md entries**: the latest posts.
+- **Claude sessions**: one row per session, from the hooks, with its model and effort level and
+  its tokens so far (hover for the output tokens):
 
   | state | meaning |
   |---|---|
@@ -34,11 +50,7 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
 
   Sessions in this folder that never ran `chat_watch.sh` and are not titled
   `al_analysis modeling - <host>` are marked "not on queue".
-- **Queue**: experiments running, approved but unclaimed, or awaiting approval (from the
-  index in experiment_priorities.md), plus the work claims table and the latest chat.md
-  posts.
-
-`http://hal:17486/api/state` returns the same as JSON.
+`http://hal:17486/api/state` returns the same data as JSON.
 
 ## Setting it up
 
@@ -79,6 +91,7 @@ on lab members' machines), so an update is a pull there, plus a restart for the 
 |---|---|---|
 | `server.py` | hal (the host serving the page) | `systemctl --user restart claude-queue-monitor` |
 | `presence_hook.py` | every host running queue sessions | nothing: every hook call runs the file afresh, so running sessions use the new version from their next event |
+| `statusline_capture.py` | every host running queue sessions | nothing: each status-line update runs the file afresh |
 | `../chat_watch.sh` | every host running queue sessions | nothing: a running watcher finishes on the old version and the next one it is restarted as uses the new one |
 | hook registration (dotfiles `claude_settings.json`, `../.claude/settings.json`) | every host (also `git -C ~/src/dotfiles pull` on Tom's) | nothing: running sessions reload their settings |
 
@@ -106,7 +119,20 @@ so a session that stays idle shows the old record until it next does something.
   (`$KC_PRESENCE_CACHE`). Set `KC_PRESENCE_DEBUG=1` to make it raise instead of failing
   silently.
 - Heartbeat: `../chat_watch.sh` writes `presence/<host>__<session>.watch` each poll, and
-  marks it `exited` when it exits.
+  marks it `exited` when it exits. It also runs `presence_hook.py --sample <session>` each poll,
+  which writes a usage sample when one is due.
+- Usage samples: `presence_hook.py` appends one to `usage/<host>__<session>.jsonl` every 15 min
+  (`USAGE_SAMPLE_S`), at session start and end, and as soon as the status line has the
+  session's first plan-usage reading: the session's tokens so far by model (from its
+  transcript and its subagents', read incrementally; parse state in the local cache), the
+  claude.ai account (a 12-character hash of the account ID, its display name and plan, from
+  `~/.claude.json`; no email, no credentials), and the plan's 5-hour and weekly usage.
+- Status line: `../.claude/settings.json` sets `statusLine` to `statusline_capture.py` for
+  sessions started in the experiments folder, refreshed every 300 s. It saves the `rate_limits`
+  Claude Code passes it to the local cache and prints the plan usage ("5h 23% (to 21:00) · week
+  41% (to Mon 09:00)"). A project's `statusLine` replaces the user's own, so if the user has
+  one in `~/.claude/settings.json`, the script runs that command and prints its output
+  instead.
 - Declared status: the header block at the top of each `<host>_status.md` (format in
   `../CLAUDE.md`, "Heartbeat"). A status file without one is shown as "unknown", with the
   first line of its "Now" section.

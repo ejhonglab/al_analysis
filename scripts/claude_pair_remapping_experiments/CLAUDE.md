@@ -158,10 +158,10 @@ Each of these cost real time to diagnose; check them before blaming a script.
 - hal runs earlyoom with `--prefer` for Python: once free memory falls below 8 % it SIGTERMs
   Python processes first, anyone's, not the process using the memory. On 2026-11-07 a test
   that piped `yes` into `script` (which buffers its input without limit) filled memory and took
-  down the queue monitor (its unit restarts only on failure, so it stayed down), the olfdb and
-  bouldermesh containers' workers and a running model fit. Bound the memory of whatever you run,
-  never feed an endless stream into a program's stdin, and after a memory spike check
-  `systemctl --user status claude-queue-monitor` on hal.
+  down the queue monitor (its unit then restarted only on failure, so it stayed down; it
+  restarts after any exit now), the olfdb and bouldermesh containers' workers and a running
+  model fit. Bound the memory of whatever you run, and never feed an endless stream into a
+  program's stdin.
 - Tests: the whole QUICK=1 suite took 2.5 h on hal (2026-11-06); for model changes,
   test/test_mb_model.py is the part that matters. Known failures, all filed as issues on
   ejhonglab/al_analysis: test_equalize_kc_type_sparsity (a leftover `breakpoint()`, #2),
@@ -299,8 +299,9 @@ In the shared directory, create/maintain/read at least the following:
 - <hostname>_status.md: heartbeat of what this host is doing right now (see "Claims,
   probes and status" below)
 
-- presence/: written only by hooks and chat_watch.sh for the queue monitor (see
-  monitor-server/ in this folder); never edit it by hand.
+- presence/ and usage/: written only by hooks and chat_watch.sh for the queue monitor (see
+  monitor-server/ in this folder; usage/ holds each session's token and plan-usage samples);
+  never edit them by hand.
 
 - push_keys/<host>/: public deploy keys and an info.txt, written by join_queue.sh on lab
   members' machines (see "Lab members' machines" above); never edit it by hand.

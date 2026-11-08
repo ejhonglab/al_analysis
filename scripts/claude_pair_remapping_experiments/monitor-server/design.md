@@ -65,6 +65,33 @@ of the transcript (64 kB, then 1 MB, then 4 MB) rather than reading files that r
 MB. The model in the SessionStart input is used only at SessionStart, when a fresh transcript
 has no assistant message yet (or a resumed one may end on an older model).
 
+## Token and plan usage
+
+Each sample of a session's usage goes to its own file, `usage/<host>__<session>.jsonl`, one
+JSON line per sample, so every file has one writer (the session's hooks, serialized by the same
+lock as its presence record) and the server only reads. Samples are cumulative per session,
+which makes a missed or late sample harmless: the server plots, per host or account, the sum
+over sessions of each session's latest total, as a step function relative to the start of
+the window.
+
+- Tokens come from the transcripts, which record each API response's `usage`. Claude Code
+  writes one line per content block, all repeating their message's usage, so a message is
+  counted once (its last line, by message ID). Transcripts run to tens of MB, so the hook
+  reads only what was appended since its last sample (offsets in the local cache); the first
+  sample of a long session reads it whole, in well under a second. Subagent transcripts
+  (`<session>/subagents/*.jsonl`) are included. This field is not a documented format; the
+  documented alternative, OpenTelemetry export, would need a collector on every machine.
+- Plan usage (the 5-hour and weekly limits) is documented only as the `rate_limits` of the
+  status line's input, so the queue sessions get a status line that saves it locally. The hook
+  reads it at its next sample. The values are those of the last API response before the
+  status line ran, so an idle session's reading ages; the table says when it was read. No
+  documented source gives a per-model (Fable, Opus) limit.
+- The account comes from `~/.claude.json`, where Claude Code keeps the logged-in account's
+  details (undocumented); only a hash of the account ID leaves the machine, with the display
+  name and plan.
+- Hooks sample every 15 min while a session works; `chat_watch.sh` runs the sampler on each
+  poll while it idles on chat.md, since no hook fires then.
+
 ## Declared status as front matter
 
 Hosts wrote their status files in different layouts (`**Now:**` on hal, `## Now` on atlas),

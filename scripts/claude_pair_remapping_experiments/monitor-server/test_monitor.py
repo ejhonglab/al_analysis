@@ -233,6 +233,33 @@ def make_shared(shared, now):
     rec('atlas', 'e', 'idle', 30 * 24 * 3600)
     watch('atlas', 'f', 'listening', 10)
 
+    # usage samples: hal and atlas on one account, viki on another without plan usage
+    udir = shared / 'usage'
+    udir.mkdir(exist_ok=True)
+
+    def usage(host, sid, account, points):
+        with open(udir / '{}__{}.jsonl'.format(host, sid), 'w') as f:
+            for age, fable, opus, pu in points:
+                tokens = {}
+                if fable:
+                    tokens['claude-fable-5-1'] = dict(input=10, output=fable, cache_read=10 * fable,
+                        cache_creation=0)
+                if opus:
+                    tokens['claude-opus-5-5'] = dict(input=10, output=opus, cache_read=10 * opus,
+                        cache_creation=0)
+                f.write(json.dumps(dict(epoch=now - age, host=host, session_id=sid,
+                    account=account, tokens=tokens, plan_usage=pu)) + '\n')
+
+    tom = dict(id='aaaa1111bbbb', name='Tom', plan='Max')
+    def pu(age, five, week):
+        return dict(five_hour=dict(used_percentage=five, resets_at=now + 3600),
+            seven_day=dict(used_percentage=week, resets_at=now + 86400), captured_epoch=now - age)
+    usage('hal', 'a', tom, [(7200, 1000, 0, pu(7200, 10, 40)), (3600, 3000, 500, pu(3600, 25, 42)),
+        (60, 5000, 2000, pu(60, 30, 45))])
+    usage('atlas', 'c', tom, [(5000, 0, 1000, None), (100, 0, 4000, pu(100, 31, 45))])
+    usage('viki', 'v', dict(id='cccc2222dddd', name='Yang', plan='Pro'),
+        [(3000, 200, 0, None), (200, 900, 0, None)])
+
 
 def test_collect(tmp_path):
     now = time.time()
@@ -264,11 +291,48 @@ def test_collect(tmp_path):
     html = server.render(st, 30)
     assert 'needs you' in html and 'E37' in html and '<script' not in html
     # Hosts table: model and effort on two lines, as are the times and their recency
-    hosts_table = html[html.index('<h2>Hosts'):html.index('<h2>Claude sessions')]
+    hosts_table = html[html.index('<h2>Hosts'):html.index('<h2>Running')]
     assert 'Fable 5.1<br>xhigh' in hosts_table and '<th>last chat</th>' in hosts_table
     assert ' ago</span>' in hosts_table and ' ago)' not in hosts_table
     assert 'Fable 5.1 \u00b7 xhigh' in html
     assert 'data from <code>{}</code>'.format(tmp_path) in html
+
+
+def test_usage_collect_and_render(tmp_path):
+    now = time.time()
+    make_shared(tmp_path, now)
+    st = server.collect(str(tmp_path), now)
+    u = st['usage']
+    assert u['hosts'] == {'atlas': 'aaaa1111bbbb', 'hal': 'aaaa1111bbbb', 'viki': 'cccc2222dddd'}
+    tom = u['accounts']['aaaa1111bbbb']
+    assert tom['label'] == 'Tom (Max)' and tom['hosts'] == ['atlas', 'hal']
+    assert tom['joined']['hal']['seven_day']['used_percentage'] == 40
+    assert tom['joined']['atlas']['five_hour']['used_percentage'] == 31
+    hal = next(s for s in u['sessions'] if s['host'] == 'hal')
+    assert hal['samples'][-1]['tokens']['output'] == 7000
+    assert hal['samples'][-1]['tokens']['fable_output'] == 5000
+    assert hal['samples'][-1]['tokens']['all'] == 5000 * 11 + 2000 * 11 + 20
+    # cumulative steps within the window, relative to its start
+    pts = server.step_series([[(now - 7200, 10), (now - 60, 30)], [(now - 100, 5)]],
+        now - 3600, now)
+    assert pts == [(now - 3600, 0), (now - 100, 5), (now - 60, 25), (now, 25)]
+    html = server.render(st, 30, server.parse_opts('days=1&tokens=output'))
+    order = [html.index('<h2>' + h) for h in ('Hosts', 'Running', 'Queue', 'Usage',
+        'Recent chat.md entries', 'Claude sessions')]
+    assert order == sorted(order)
+    usage_html = html[html.index('<h2>Usage'):html.index('<h2>Recent chat')]
+    assert usage_html.count('<svg class="plot"') == 3 and '<script' not in html
+    # by host: hal's output over the last day (it started 2 h ago, so all of it) is 7k
+    assert '>hal (7k)<' in usage_html and '>viki (900)<' in usage_html
+    assert '&#9744; group hosts by Claude account' in usage_html
+    grouped = server.render(st, 30, server.parse_opts('group=account&tokens=output'))
+    grouped = grouped[grouped.index('<h2>Usage'):grouped.index('<h2>Recent chat')]
+    assert '&#9745; group hosts by Claude account' in grouped
+    assert 'Tom (Max): atlas, hal (11k)' in grouped
+    assert 'Tom (Max), weekly' in grouped and 'Tom (Max), 5-hour' in grouped
+    assert '45%' in grouped and 'Yang (Pro)' in grouped
+    # the sessions table shows each session's tokens from its presence record
+    assert server.parse_opts('days=99&tokens=bogus') == dict(days=3, tokens='all', group='host')
 
 
 def test_model_names():
@@ -305,13 +369,106 @@ def test_http(tmp_path):
     base = 'http://127.0.0.1:{}'.format(httpd.server_address[1])
     try:
         page = urllib.request.urlopen(base + '/').read().decode()
-        assert 'KC remapping work queue' in page
+        assert '<title>Model experiments</title>' in page
+        assert '<svg class="plot"' in urllib.request.urlopen(
+            base + '/?days=7&group=account&tokens=output').read().decode()
         state = json.loads(urllib.request.urlopen(base + '/api/state').read())
         assert {h['host'] for h in state['hosts']} == {'hal', 'atlas'}
         with pytest.raises(urllib.error.HTTPError):
             urllib.request.urlopen(base + '/../etc/passwd')
     finally:
         httpd.shutdown()
+
+
+def usage_line(mid, model, out, sidechain=False):
+    return json.dumps(dict(type='assistant', isSidechain=sidechain, message=dict(id=mid,
+        model=model, usage=dict(input_tokens=1, output_tokens=out, cache_read_input_tokens=100,
+        cache_creation_input_tokens=10)))) + '\n'
+
+
+def test_session_tokens(tmp_path):
+    import presence_hook
+    transcript = tmp_path / 's.jsonl'
+    # one message written as three content-block lines, and a tool result between messages
+    transcript.write_text(usage_line('m1', 'claude-fable-5-1', 5) + usage_line('m1',
+        'claude-fable-5-1', 7) + '{"type":"user","message":{"content":"x"}}\n' + usage_line(
+        'm2', 'claude-fable-5-1', 3) + usage_line('m2', 'claude-fable-5-1', 3) + usage_line(
+        'e', '<synthetic>', 99) + '{"type":"assistant","message":{"id":"m3","us')
+    sub = tmp_path / 's' / 'subagents'
+    sub.mkdir(parents=True)
+    (sub / 'agent-1.jsonl').write_text(usage_line('x1', 'claude-opus-5-5', 20))
+    files = {}
+    tok = presence_hook.session_tokens(str(transcript), files)
+    assert tok == {'claude-fable-5-1': dict(input=2, output=10, cache_read=200, cache_creation=20),
+        'claude-opus-5-5': dict(input=1, output=20, cache_read=100, cache_creation=10)}
+    # incremental: the cut-off line completes, m3 counts once, m2 stays counted once
+    with open(transcript, 'a') as f:
+        f.write('age":{"output_tokens":4}}}\n' + usage_line('m3', 'claude-fable-5-1', 4))
+    files = json.loads(json.dumps(files))
+    tok = presence_hook.session_tokens(str(transcript), files)
+    assert tok['claude-fable-5-1']['output'] == 14
+
+
+def test_hook_writes_usage_samples(dirs, tmp_path):
+    shared, env = dirs
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / '.claude.json').write_text(json.dumps(dict(oauthAccount=dict(accountUuid='u-1',
+        displayName='Tom', planDisplayName='Max', emailAddress='x@y'))))
+    env = dict(env, HOME=str(home))
+    transcript = tmp_path / 'proj-claude-pair-remapping-experiments' / 's5.jsonl'
+    transcript.parent.mkdir()
+    transcript.write_text(usage_line('m1', 'claude-fable-5-1', 50))
+    kw = dict(sid='s5', transcript_path=str(transcript))
+    path = shared / 'usage' / '{}__s5.jsonl'.format(HOST)
+    def samples():
+        return [json.loads(x) for x in path.read_text().splitlines()]
+
+    hook(env, 'SessionStart', source='startup', **kw)
+    s = samples()
+    assert len(s) == 1 and s[0]['reason'] == 'SessionStart' and s[0]['plan_usage'] is None
+    assert s[0]['tokens'] == {'claude-fable-5-1': dict(input=1, output=50, cache_read=100,
+        cache_creation=10)}
+    assert s[0]['account']['name'] == 'Tom' and s[0]['account']['plan'] == 'Max'
+    assert len(s[0]['account']['id']) == 12 and 'x@y' not in path.read_text()
+    hook(env, 'PreToolUse', tool_name='Bash', **kw)
+    assert len(samples()) == 1
+    # the status line's first plan-usage reading is sampled at the next event
+    r = subprocess.run([sys.executable, '-I', str(HERE / 'statusline_capture.py')],
+        input=json.dumps(dict(session_id='s5', rate_limits=dict(five_hour=dict(
+        used_percentage=23.5, resets_at=time.time() + 3600), seven_day=dict(used_percentage=41.2,
+        resets_at=time.time() + 86400)))), env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.startswith('5h 24% (to ') and 'week 41%' in r.stdout
+    hook(env, 'PostToolUse', tool_name='Bash', **kw)
+    s = samples()
+    assert len(s) == 2 and s[1]['plan_usage']['seven_day']['used_percentage'] == 41.2
+    rec = json.loads((Path(env['KC_PRESENCE_CACHE']) / 's5.json').read_text())
+    assert rec['tokens']['total'] == 161 and rec['tokens']['output'] == 50
+    # chat_watch.sh's --sample: nothing until 15 min have passed
+    run = [sys.executable, '-I', str(HERE / 'presence_hook.py'), '--sample', 's5']
+    subprocess.run(run, env=env, check=True)
+    assert len(samples()) == 2
+    state = Path(env['KC_PRESENCE_CACHE']) / 's5.usage.json'
+    st = json.loads(state.read_text())
+    st['sampled_epoch'] -= 16 * 60
+    state.write_text(json.dumps(st))
+    subprocess.run(run, env=env, check=True)
+    s = samples()
+    assert len(s) == 3 and s[2]['reason'] == 'watch'
+    hook(env, 'SessionEnd', reason='other', **kw)
+    assert samples()[-1]['reason'] == 'SessionEnd'
+
+
+def test_statusline_runs_users_own_command(tmp_path):
+    cfg = tmp_path / 'cfg'
+    cfg.mkdir()
+    (cfg / 'settings.json').write_text(json.dumps(dict(statusLine=dict(type='command',
+        command='jq -r .session_id 2>/dev/null || python3 -c "print(\'mine\')"'))))
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=str(cfg), KC_PRESENCE_CACHE=str(tmp_path / 'c'))
+    r = subprocess.run([sys.executable, '-I', str(HERE / 'statusline_capture.py')],
+        input=json.dumps(dict(session_id='s6')), env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() in ('s6', 'mine')
+    assert json.loads((tmp_path / 'c' / 's6.statusline.json').read_text())['rate_limits'] is None
 
 
 def test_hook_reads_custom_title(dirs, tmp_path):

@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
-"""LAN dashboard of the KC-remapping work queue: hosts, their Claude sessions, and claims.
+"""LAN dashboard of the model-experiments work queue: hosts, claims, token and plan usage,
+and the Claude sessions.
 
 Reads only the shared directory (Tom/claude_kc_remapping under /local/tensor or /mnt/tensor):
 - presence/<host>__<session>.json, written by presence_hook.py (Claude Code hooks; includes
   each session's model and effort level);
 - presence/<host>__<session>.watch, the heartbeat chat_watch.sh writes every poll;
+- usage/<host>__<session>.jsonl, the 15-min usage samples presence_hook.py appends (tokens by
+  model, the claude.ai account, the plan's 5-hour and weekly usage);
 - <host>_status.md, each host's self-reported status (its front matter, if any);
 - chat.md entry headers, experiment_priorities.md (experiment index, work claims).
 
-Serves `/` (HTML, reloads itself) and `/api/state` (the same as JSON). Standard library
-only, so it runs under any system python3 >= 3.8.
+Serves `/` (HTML, reloads itself; query parameters `days`, `tokens` and `group` choose what the
+usage plots show) and `/api/state` (the same data as JSON). Standard library only, so it runs
+under any system python3 >= 3.8.
 """
 import argparse
 import html
 import json
+import math
 import os
 import re
 import socket
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 # where the hosts mount tensor (hal: /local/tensor, an automount; atlas: /mnt/tensor)
 TENSOR_MOUNTS = ('/local/tensor', '/mnt/tensor')
@@ -41,6 +46,22 @@ HIDE_S = 3 * 24 * 3600
 CACHE_S = 5
 # queue sessions title themselves this way (CLAUDE.md, "Session names")
 QUEUE_TITLE_PREFIX = 'al_analysis modeling - '
+TITLE = 'Model experiments'
+
+# usage plots: time windows offered (days) and the default; token measures
+USAGE_DAYS = (1, 3, 7)
+USAGE_DEFAULT_DAYS = 3
+TOKEN_MEASURES = {
+    'all': 'all tokens',
+    'nocache': 'all but cache reads',
+    'output': 'output tokens',
+}
+USAGE_FILE = re.compile(r'^([A-Za-z0-9-]+)__([A-Za-z0-9._-]+)\.jsonl$')
+# categorical slots (the dataviz reference palette, light / dark), assigned to hosts and
+# accounts in a fixed (sorted) order
+SERIES_COLORS = [('#2a78d6', '#3987e5'), ('#eb6834', '#d95926'), ('#1baf7a', '#199e70'),
+    ('#eda100', '#c98500'), ('#e87ba4', '#d55181'), ('#008300', '#008300'),
+    ('#6250d6', '#9085e9'), ('#e34948', '#e66767')]
 
 # how sessions rank when summarizing a host (first = shown)
 VIEW_ORDER = ['needs you', 'error', 'working', 'silent', 'listening', 'idle', 'gone', 'ended']
@@ -350,6 +371,100 @@ def host_models(sessions):
     return out
 
 
+def sample_tokens(sample):
+    """Token counts of a usage sample: {'all', 'nocache', 'output'}, overall and on Fable."""
+    out = {}
+    for model, t in (sample.get('tokens') or {}).items():
+        if not isinstance(t, dict):
+            continue
+        vals = {k: t.get(k) if isinstance(t.get(k), (int, float)) else 0
+            for k in ('input', 'output', 'cache_read', 'cache_creation')}
+        measures = {
+            'all': sum(vals.values()),
+            'nocache': vals['input'] + vals['output'] + vals['cache_creation'],
+            'output': vals['output'],
+        }
+        fable = 'fable' in (model or '').lower()
+        for k, v in measures.items():
+            out[k] = out.get(k, 0) + v
+            out['fable_' + k] = out.get('fable_' + k, 0) + (v if fable else 0)
+    return out
+
+
+def account_key(host, account):
+    return account['id'] if account and account.get('id') else 'host:' + host
+
+
+def read_usage(shared, now):
+    """The usage samples of the sessions active in the longest plot window.
+
+    Returns:
+        {'sessions': [{'host', 'session_id', 'samples': [{'epoch', 'tokens' (sample_tokens),
+        'plan_usage', 'model'}]}], 'hosts': {host: account key}, 'accounts': {key: {'label',
+        'name', 'plan', 'hosts', 'joined': {host: first plan-usage reading}}}}.
+    """
+    udir = os.path.join(shared, 'usage')
+    try:
+        names = os.listdir(udir)
+    except OSError:
+        names = []
+    cutoff = now - (max(USAGE_DAYS) + 1) * 86400
+    sessions, latest_account, first_reading = [], {}, {}
+    for name in sorted(names):
+        m = USAGE_FILE.match(name)
+        if not m:
+            continue
+        path = os.path.join(udir, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                continue
+        except OSError:
+            continue
+        host, samples = m.group(1), []
+        for line in (read_text(path) or '').splitlines():
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(d, dict) or not isinstance(d.get('epoch'), (int, float)):
+                continue
+            pu = d.get('plan_usage') if isinstance(d.get('plan_usage'), dict) else None
+            samples.append({'epoch': d['epoch'], 'tokens': sample_tokens(d), 'plan_usage': pu,
+                'model': d.get('model')})
+            acct = d.get('account') if isinstance(d.get('account'), dict) else None
+            if d['epoch'] >= latest_account.get(host, (0, None))[0]:
+                latest_account[host] = (d['epoch'], acct)
+            if pu and (host not in first_reading or d['epoch'] < first_reading[host]['epoch']):
+                first_reading[host] = dict(pu, epoch=d['epoch'])
+        if samples:
+            samples.sort(key=lambda s: s['epoch'])
+            sessions.append({'host': host, 'session_id': m.group(2), 'samples': samples})
+    hosts, accounts = {}, {}
+    for host in sorted({s['host'] for s in sessions}):
+        acct = latest_account.get(host, (0, None))[1]
+        key = account_key(host, acct)
+        hosts[host] = key
+        a = accounts.setdefault(key, {'name': (acct or {}).get('name'),
+            'plan': (acct or {}).get('plan'), 'hosts': [], 'joined': {}})
+        a['hosts'].append(host)
+        if host in first_reading:
+            a['joined'][host] = first_reading[host]
+    labels = {}
+    for key, a in accounts.items():
+        if key.startswith('host:'):
+            label = 'unknown account ({})'.format(key[5:])
+        else:
+            label = (a['name'] or 'account ' + key[:6]) + (' ({})'.format(a['plan'])
+                if a['plan'] else '')
+        labels.setdefault(label, []).append(key)
+        a['label'] = label
+    for label, keys in labels.items():
+        if len(keys) > 1:
+            for key in keys:
+                accounts[key]['label'] += ' #' + key[:4]
+    return {'sessions': sessions, 'hosts': hosts, 'accounts': accounts}
+
+
 def collect(shared, now=None):
     """Everything the dashboard shows, as one JSON-serializable dict."""
     now = time.time() if now is None else now
@@ -411,6 +526,7 @@ def collect(shared, now=None):
         'proposed': [r for r in index if r.get('state', '').lower().startswith('proposed')],
         'claims': claims,
         'recent_chat': recent,
+        'usage': read_usage(shared, now),
     })
     return out
 
@@ -434,6 +550,7 @@ body { margin: 0; background: var(--bg); color: var(--fg);
 main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
 h1 { font-size: 1.35rem; margin: 0 0 2px; }
 h2 { font-size: 1.05rem; margin: 28px 0 8px; }
+h3 { font-size: .95rem; margin: 16px 0 6px; }
 .sub { color: var(--muted); font-size: .88rem; margin-bottom: 14px; }
 .err { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red);
   padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
@@ -462,7 +579,33 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: .8rem; margin: 6
 .legend span { margin-right: 14px; }
 code { font-size: .85em; }
 .model + .model { margin-top: 6px; }
+.controls { font-size: .85rem; color: var(--muted); margin: 0 0 10px; }
+.controls a { color: var(--blue); text-decoration: none; }
+.controls b { color: var(--fg); }
+.controls .sep { margin: 0 8px; }
+.plotbox { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px 10px; margin-bottom: 12px; }
+.plotbox h3 { font-size: .92rem; margin: 2px 0 4px; }
+.plot { width: 100%; height: auto; display: block; }
+.plot .grid { stroke: var(--line); stroke-width: 1; }
+.plot .axis { fill: var(--muted); font-size: 11px; }
+.plot .ref { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.plot .series { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.plot .dash { stroke-dasharray: 6 4; }
+.plot .pt { stroke: var(--card); stroke-width: 1.5; }
+.plot .hit { fill: transparent; stroke: none; }
+.keys { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: .84rem; margin: 6px 2px 0; }
+.sw { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle;
+  margin-right: 6px; }
+.sw.dash { border-top-style: dashed; }
+.note { color: var(--muted); font-size: .82rem; margin: 6px 2px 0; }
 """
+CSS += ':root { ' + ' '.join('--s{}: {};'.format(i + 1, c[0])
+    for i, c in enumerate(SERIES_COLORS)) + ' }\n'
+CSS += ('@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { ' + ' '.join(
+    '--s{}: {};'.format(i + 1, c[1]) for i, c in enumerate(SERIES_COLORS)) + ' } }\n')
+CSS += ':root[data-theme="dark"] { ' + ' '.join('--s{}: {};'.format(i + 1, c[1])
+    for i, c in enumerate(SERIES_COLORS)) + ' }\n'
 
 
 def esc(x):
@@ -502,8 +645,285 @@ def badge(view, title=None):
     t = ' title="{}"'.format(esc(title)) if title else ''
     return '<span class="badge {}"{}>{}</span>'.format(esc(cls), t, esc(view))
 
+# ---------------------------------------------------------------- usage plots
 
-def render(state, refresh):
+def parse_opts(query):
+    """The usage plots' options from a query string: days, tokens (measure), group."""
+    q = parse_qs(query or '')
+    def one(k):
+        v = q.get(k)
+        return v[-1] if v else None
+    try:
+        days = int(one('days') or USAGE_DEFAULT_DAYS)
+    except ValueError:
+        days = USAGE_DEFAULT_DAYS
+    return {
+        'days': days if days in USAGE_DAYS else USAGE_DEFAULT_DAYS,
+        'tokens': one('tokens') if one('tokens') in TOKEN_MEASURES else 'all',
+        'group': 'account' if one('group') == 'account' else 'host',
+    }
+
+
+def opts_href(opts, **change):
+    o = dict(opts, **change)
+    return '?' + urlencode([(k, o[k]) for k in ('days', 'tokens', 'group')])
+
+
+def nice_max(v):
+    if v <= 0:
+        return 1.0
+    e = 10 ** math.floor(math.log10(v))
+    for m in (1, 2, 2.5, 5, 10):
+        if m * e >= v * (1 - 1e-9):
+            return m * e
+    return 10 * e
+
+
+def fmt_tokens(v):
+    for div, suffix in ((1e9, 'B'), (1e6, 'M'), (1e3, 'k')):
+        if abs(v) >= div:
+            x = v / div
+            return ('{:.0f}' if x >= 100 else '{:.1f}').format(x).replace('.0', '') + suffix
+    return '{:.0f}'.format(v)
+
+
+def fmt_pct(v):
+    return '{:.0f}%'.format(v)
+
+
+def time_ticks(t0, t1):
+    """Tick times and labels for a time axis from t0 to t1 (at most about 8, on local hours)."""
+    span_h = (t1 - t0) / 3600
+    step = next((s for s in (1, 2, 3, 6, 12, 24, 48) if span_h / s <= 8), 48)
+    d = datetime.fromtimestamp(t0).replace(minute=0, second=0, microsecond=0)
+    ticks = []
+    while d.timestamp() <= t1:
+        ts = d.timestamp()
+        if ts >= t0:
+            if step < 24 and d.hour % step == 0:
+                ticks.append((ts, d.strftime('%b %-d') if d.hour == 0 else d.strftime('%H:%M')))
+            elif step >= 24 and d.hour == 0 and d.toordinal() % (step // 24) == 0:
+                ticks.append((ts, d.strftime('%b %-d')))
+        d += timedelta(hours=1)
+    return ticks
+
+
+def step_series(sessions, t0, t1):
+    """Cumulative total over sessions within [t0, t1], as step points relative to t0.
+
+    Args:
+        sessions: per session, its (epoch, cumulative value) samples, sorted.
+
+    Returns:
+        [(t, value - value at t0)], from t0 to t1.
+    """
+    events, cur = [], []
+    for i, ss in enumerate(sessions):
+        v0 = 0
+        for t, v in ss:
+            if t <= t0:
+                v0 = v
+            elif t <= t1:
+                events.append((t, i, v))
+        cur.append(v0)
+    base = sum(cur)
+    pts = [(t0, 0)]
+    for t, i, v in sorted(events):
+        cur[i] = v
+        pts.append((t, sum(cur) - base))
+    pts.append((t1, sum(cur) - base))
+    return pts
+
+
+def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230):
+    """An inline SVG line plot over time.
+
+    Args:
+        series: [{'label', 'color' (a CSS color), 'points' [(t, y)], 'step' (draw as a step
+            function), 'dash'}].
+        y_fmt: formats a y value for the axis and the hover text.
+        y_max: top of the y axis (default: a round number above the data).
+        ref: y value of a dotted reference line (e.g. 100 %).
+    """
+    W, H, ml, mr, mt, mb = 900, height, 58, 14, 8, 24
+    ys = [y for s in series for _, y in s['points']]
+    top = y_max or nice_max(max(ys) if ys else 1)
+    def X(tv):
+        return ml + (tv - t0) / max(t1 - t0, 1) * (W - ml - mr)
+    def Y(v):
+        return mt + (1 - min(max(v, 0), top) / top) * (H - mt - mb)
+    o = ['<svg class="plot" viewBox="0 0 {} {}" role="img" aria-label="{}">'.format(
+        W, H, esc(label))]
+    for i in range(5):
+        v = top * i / 4
+        o.append('<line class="grid" x1="{0}" x2="{1}" y1="{2:.1f}" y2="{2:.1f}"/>'
+            '<text class="axis" x="{3}" y="{4:.1f}" text-anchor="end">{5}</text>'.format(
+            ml, W - mr, Y(v), ml - 6, Y(v) + 4, esc(y_fmt(v))))
+    for tv, text in time_ticks(t0, t1):
+        o.append('<text class="axis" x="{:.1f}" y="{}" text-anchor="middle">{}</text>'.format(
+            X(tv), H - 6, esc(text)))
+    if ref is not None and ref <= top:
+        o.append('<line class="ref" x1="{0}" x2="{1}" y1="{2:.1f}" y2="{2:.1f}"/>'.format(
+            ml, W - mr, Y(ref)))
+    for s in series:
+        pts = s['points']
+        if not pts:
+            continue
+        xy = []
+        for j, (tv, v) in enumerate(pts):
+            if s.get('step') and j:
+                xy.append((X(tv), Y(pts[j - 1][1])))
+            xy.append((X(tv), Y(v)))
+        o.append('<polyline class="series{}" style="stroke: {}" points="{}"><title>{}</title>'
+            '</polyline>'.format(' dash' if s.get('dash') else '', s['color'],
+            ' '.join('{:.1f},{:.1f}'.format(*q) for q in xy), esc(s['label'])))
+        marks = pts[1:-1] if s.get('step') else pts
+        if len(marks) > 150:
+            marks = marks[::math.ceil(len(marks) / 150)] + [marks[-1]]
+        for tv, v in marks:
+            tip = '{}: {} at {}'.format(s['label'], y_fmt(v),
+                datetime.fromtimestamp(tv).strftime('%b %-d %H:%M'))
+            o.append('<g><circle class="hit" cx="{0:.1f}" cy="{1:.1f}" r="8"/><circle class="pt" '
+                'cx="{0:.1f}" cy="{1:.1f}" r="3.5" style="fill: {2}"/><title>{3}</title></g>'.format(
+                X(tv), Y(v), s['color'], esc(tip)))
+    o.append('</svg>')
+    keys = ''.join('<span><span class="sw{}" style="border-color: {}"></span>{}</span>'.format(
+        ' dash' if s.get('dash') else '', s['color'], esc(s['label'])) for s in series)
+    return ''.join(o) + '<div class="keys">{}</div>'.format(keys)
+
+
+def series_color(i):
+    return 'var(--s{})'.format(i + 1) if i < len(SERIES_COLORS) else 'var(--grey)'
+
+
+def usage_html(state, now, opts):
+    """The usage section: tokens per host (or account), tokens on Fable models, plan usage."""
+    u = state.get('usage') or {}
+    sessions, hosts, accounts = u.get('sessions') or [], u.get('hosts') or {}, u.get(
+        'accounts') or {}
+    o = []
+    w = o.append
+    links = []
+    for d in USAGE_DAYS:
+        links.append('<b>{} d</b>'.format(d) if d == opts['days'] else
+            '<a href="{}">{} d</a>'.format(esc(opts_href(opts, days=d)), d))
+    tok = [('<b>{}</b>' if k == opts['tokens'] else '<a href="{1}">{0}</a>').format(
+        esc(v), esc(opts_href(opts, tokens=k))) for k, v in TOKEN_MEASURES.items()]
+    grouped = opts['group'] == 'account'
+    box = '<a href="{}">{} group hosts by Claude account</a>'.format(esc(opts_href(opts,
+        group='host' if grouped else 'account')), '&#9745;' if grouped else '&#9744;')
+    w('<div class="controls">last {}<span class="sep">&middot;</span>tokens: {}'
+        '<span class="sep">&middot;</span>{}</div>'.format(' | '.join(links), ' | '.join(tok),
+        box))
+    if not sessions:
+        w('<p class="muted">No usage samples yet (<code>usage/</code> in the shared directory, '
+            'written by presence_hook.py every 15 min).</p>')
+        return ''.join(o)
+    t1, t0 = now, now - opts['days'] * 86400
+    host_order = sorted(hosts)
+    acct_order = sorted(accounts, key=lambda k: accounts[k]['label'].lower())
+    def acct_label(key):
+        a = accounts[key]
+        return '{}: {}'.format(a['label'], ', '.join(a['hosts']))
+    if grouped:
+        entities = [(acct_label(k), series_color(i), [s for s in sessions
+            if hosts.get(s['host']) == k]) for i, k in enumerate(acct_order)]
+    else:
+        entities = [(h, series_color(i), [s for s in sessions if s['host'] == h])
+            for i, h in enumerate(host_order)]
+
+    def token_plot(prefix, title, label):
+        series = []
+        for name, color, ss in entities:
+            pts = step_series([[(x['epoch'], x['tokens'].get(prefix + opts['tokens'], 0))
+                for x in s['samples']] for s in ss], t0, t1)
+            if any(v for _, v in pts):
+                series.append({'label': '{} ({})'.format(name, fmt_tokens(pts[-1][1])),
+                    'color': color, 'points': pts, 'step': True})
+        w('<div class="plotbox"><h3>{}</h3>'.format(esc(title)))
+        if series:
+            w(svg_plot(series, t0, t1, fmt_tokens, label=label))
+        else:
+            w('<p class="muted">none in this window</p>')
+        w('</div>')
+        return series
+
+    what = TOKEN_MEASURES[opts['tokens']]
+    token_plot('', 'Tokens per {} ({}, cumulative over the window)'.format(
+        'Claude account' if grouped else 'host', what), 'tokens over time')
+    token_plot('fable_', 'Tokens on Fable models per {} ({}, cumulative)'.format(
+        'Claude account' if grouped else 'host', what), 'Fable tokens over time')
+
+    # plan usage, per account
+    series, rows = [], []
+    for i, key in enumerate(acct_order):
+        a = accounts[key]
+        readings = {}
+        for s in sessions:
+            if hosts.get(s['host']) != key:
+                continue
+            for x in s['samples']:
+                pu = x.get('plan_usage')
+                if pu:
+                    readings[pu.get('captured_epoch') or x['epoch']] = pu
+        pts = sorted(readings.items())
+        color = series_color(i)
+        for window, name, dash in (('seven_day', 'weekly', False), ('five_hour', '5-hour', True)):
+            wp = [(tv, r[window]['used_percentage']) for tv, r in pts
+                if t0 <= tv <= t1 and isinstance(r.get(window), dict)]
+            if wp:
+                series.append({'label': '{}, {}'.format(a['label'], name), 'color': color,
+                    'points': wp, 'dash': dash})
+        last = pts[-1] if pts else None
+        def cell(window):
+            if not last or not isinstance(last[1].get(window), dict):
+                return '<span class="muted">-</span>'
+            r = last[1][window]
+            reset = r.get('resets_at')
+            return '{}{}'.format(fmt_pct(r['used_percentage']),
+                ' <span class="muted">(resets {})</span>'.format(esc(datetime.fromtimestamp(
+                reset).strftime('%a %H:%M'))) if isinstance(reset, (int, float)) else '')
+        joined = '<br>'.join('{} {}{} <span class="muted">({})</span>'.format(esc(h),
+            fmt_pct(j['seven_day']['used_percentage']) + ' weekly' if isinstance(
+            j.get('seven_day'), dict) else '', ', ' + fmt_pct(j['five_hour']['used_percentage'])
+            + ' 5-hour' if isinstance(j.get('five_hour'), dict) else '',
+            esc(datetime.fromtimestamp(j['epoch']).strftime('%b %-d %H:%M')))
+            for h, j in sorted(a['joined'].items()))
+        tokens = sum(step_series([[(x['epoch'], x['tokens'].get(opts['tokens'], 0))
+            for x in s['samples']]], t0, t1)[-1][1] for s in sessions if hosts.get(s['host']) == key)
+        rows.append('<tr><td><span class="sw" style="border-color: {}"></span>{}</td><td>{}</td>'
+            '<td class="nw">{}</td><td class="nw">{}</td><td>{}</td><td class="nw">{}</td>'
+            '<td>{}</td></tr>'.format(color, esc(a['label']), esc(', '.join(a['hosts'])),
+            cell('five_hour'), cell('seven_day'), fmt_time(last[0], now) if last else
+            '<span class="muted">-</span>', fmt_tokens(tokens),
+            joined or '<span class="muted">-</span>'))
+    w('<div class="plotbox"><h3>Plan usage per Claude account (% of the 5-hour and weekly '
+        'limits)</h3>')
+    if series:
+        w(svg_plot(series, t0, t1, fmt_pct, y_max=100, ref=100, label='plan usage over time'))
+    else:
+        w('<p class="muted">no plan-usage readings in this window</p>')
+    w('<div class="wrap" style="margin-top: 10px"><table><tr><th>account</th><th>hosts</th>'
+        '<th>5-hour</th><th>weekly</th><th>read</th><th>tokens ({}, last {} d)</th>'
+        '<th>when each host joined</th></tr>{}</table></div>'.format(esc(what), opts['days'],
+        ''.join(rows)))
+    w('<p class="note">Tokens are summed from the session transcripts (subagents included) every '
+        '15 min. Plan usage is what Claude Code&#39;s status line last received (its '
+        '<code>rate_limits</code>: the 5-hour and weekly limits of claude.ai Pro, Max and Ultra '
+        'plans); Claude Code reports no separate Fable or Opus limit, so the Fable plot shows '
+        'tokens only. "When each host joined" is the first reading of each host&#39;s '
+        'sessions. A session&#39;s tokens from before its first sample (it was running when '
+        'sampling began) appear as one step at that sample.</p></div>')
+    return ''.join(o)
+
+
+def render(state, refresh, opts=None):
+    """The dashboard page.
+
+    Args:
+        opts: the usage plots' options (parse_opts); defaults if None.
+    """
+    opts = opts or parse_opts('')
     now = state['generated']
     out = []
     w = out.append
@@ -511,16 +931,17 @@ def render(state, refresh):
     w('<meta name="viewport" content="width=device-width, initial-scale=1">')
     if refresh:
         w('<meta http-equiv="refresh" content="{:d}">'.format(int(refresh)))
-    w('<title>KC queue monitor</title><style>{}</style></head><body><main>'.format(CSS))
-    w('<h1>KC remapping work queue</h1>')
+    w('<title>{}</title><style>{}</style></head><body><main>'.format(esc(TITLE), CSS))
+    w('<h1>{}</h1>'.format(esc(TITLE)))
     w('<div class="sub">served by {} &middot; generated {}{}<br>'.format(
         esc(state['server_host']), datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S'),
         ' &middot; reloads every {:d} s'.format(int(refresh)) if refresh else ''))
     where = ('<code>{}</code> on tensor <span class="muted">(here {})</span>'.format(
         esc(state['tensor_path']), esc(state['shared'])) if state.get('tensor_path')
         else '<code>{}</code>'.format(esc(state['shared'])))
-    w('data from {}: <code>presence/</code> (hooks), <code>&lt;host&gt;_status.md</code>, '
-        '<code>chat.md</code>, <code>experiment_priorities.md</code></div>'.format(where))
+    w('data from {}: <code>presence/</code> and <code>usage/</code> (hooks), '
+        '<code>&lt;host&gt;_status.md</code>, <code>chat.md</code>, '
+        '<code>experiment_priorities.md</code></div>'.format(where))
     for e in state['errors']:
         w('<div class="err">{}</div>'.format(esc(e)))
 
@@ -573,12 +994,57 @@ def render(state, refresh):
     w('<div class="legend">sessions: ' + ''.join('<span>{} {}</span>'.format(badge(v), esc(t))
         for v, t in VIEW_TEXT.items()) + '</div>')
 
+    # running experiments
+    w('<h2>Running</h2>')
+    if state['running']:
+        w('<div class="wrap"><table><tr><th>ID</th><th>name</th><th>state</th><th>host</th>'
+            '<th>started</th></tr>')
+        for r in state['running']:
+            w('<tr><td class="nw">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+                *(esc(r.get(k)) for k in ('id', 'name', 'state', 'host', 'started'))))
+        w('</table></div>')
+    else:
+        w('<p class="muted">Nothing running.</p>')
+
+    # queue
+    counts = state['index_counts']
+    w('<h2>Queue</h2><p class="muted">Experiment index: {}</p>'.format(
+        esc(', '.join('{} {}'.format(n, k) for k, n in sorted(counts.items()))) or 'empty'))
+    for title, rows in (('Approved, unclaimed', state['approved']),
+            ('Proposed (awaiting approval)', state['proposed'])):
+        if not rows:
+            continue
+        w('<h3>{}</h3><div class="wrap"><table><tr><th>ID</th><th>name</th><th>state</th>'
+            '<th>host</th><th>started</th></tr>'.format(esc(title)))
+        for r in rows:
+            w('<tr><td class="nw">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+                *(esc(r.get(k)) for k in ('id', 'name', 'state', 'host', 'started'))))
+        w('</table></div>')
+    if state['claims']:
+        w('<h3>Work claims</h3><div class="wrap"><table><tr>' + ''.join(
+            '<th>{}</th>'.format(esc(k)) for k in state['claims'][0]) + '</tr>')
+        for r in state['claims']:
+            w('<tr>' + ''.join('<td>{}</td>'.format(esc(v)) for v in r.values()) + '</tr>')
+        w('</table></div>')
+
+    # usage
+    w('<h2>Usage</h2>')
+    w(usage_html(state, now, opts))
+
+    # chat
+    w('<h2>Recent chat.md entries</h2><div class="wrap"><table>'
+        '<tr><th>posted</th><th>host</th><th>first line</th></tr>')
+    for e in state['recent_chat']:
+        w('<tr><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+            fmt_time(e['time'], now), esc(e['host']), esc(e['first_line'])))
+    w('</table></div>')
+
     # sessions
     w('<h2>Claude sessions</h2>')
     if state['sessions']:
         w('<div class="wrap"><table><tr><th>host</th><th>session</th><th>state</th>'
-            '<th>model &middot; effort</th><th>last event</th><th>chat heartbeat</th>'
-            '<th>started</th><th>detail</th></tr>')
+            '<th>model &middot; effort</th><th>tokens</th><th>last event</th>'
+            '<th>chat heartbeat</th><th>started</th><th>detail</th></tr>')
         for s in state['sessions']:
             watch = s.get('watch')
             if watch:
@@ -595,44 +1061,20 @@ def render(state, refresh):
             name = esc(s['name'])
             if not s['queue']:
                 name += ' <span class="muted">(not on queue)</span>'
-            w('<tr><td>{}</td><td title="{}">{}</td><td>{}</td><td class="nw">{}</td><td>{}</td>'
-                '<td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+            tok = s.get('tokens') if isinstance(s.get('tokens'), dict) else {}
+            tokens = '<span title="output: {}">{}</span>'.format(fmt_tokens(tok.get('output') or 0),
+                fmt_tokens(tok['total'])) if tok.get('total') else '<span class="muted">-</span>'
+            w('<tr><td>{}</td><td title="{}">{}</td><td>{}</td><td class="nw">{}</td>'
+                '<td class="nw">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
                 esc(s['host']), esc(s.get('session_id')), name,
                 badge(s['view'], VIEW_TEXT.get(s['view'])),
-                esc(s['model_label']) or '<span class="muted">-</span>', last, hb,
+                esc(s['model_label']) or '<span class="muted">-</span>', tokens, last, hb,
                 fmt_time(s.get('started_epoch'), now), esc(detail)))
         w('</table></div>')
     else:
         w('<p class="muted">No session has reported through the hooks yet.</p>')
 
-    # queue
-    counts = state['index_counts']
-    w('<h2>Queue</h2><p class="muted">Experiment index: {}</p>'.format(
-        esc(', '.join('{} {}'.format(n, k) for k, n in sorted(counts.items()))) or 'empty'))
-    for title, rows in (('Running', state['running']), ('Approved, unclaimed',
-            state['approved']), ('Proposed (awaiting approval)', state['proposed'])):
-        if not rows:
-            continue
-        w('<h2>{}</h2><div class="wrap"><table><tr><th>ID</th><th>name</th><th>state</th>'
-            '<th>host</th><th>started</th></tr>'.format(esc(title)))
-        for r in rows:
-            w('<tr><td class="nw">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
-                *(esc(r.get(k)) for k in ('id', 'name', 'state', 'host', 'started'))))
-        w('</table></div>')
-    if state['claims']:
-        w('<h2>Work claims</h2><div class="wrap"><table><tr>' + ''.join(
-            '<th>{}</th>'.format(esc(k)) for k in state['claims'][0]) + '</tr>')
-        for r in state['claims']:
-            w('<tr>' + ''.join('<td>{}</td>'.format(esc(v)) for v in r.values()) + '</tr>')
-        w('</table></div>')
-
-    # chat
-    w('<h2>Recent chat.md entries</h2><div class="wrap"><table>'
-        '<tr><th>posted</th><th>host</th><th>first line</th></tr>')
-    for e in state['recent_chat']:
-        w('<tr><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
-            fmt_time(e['time'], now), esc(e['host']), esc(e['first_line'])))
-    w('</table></div></main></body></html>')
+    w('</main></body></html>')
     return ''.join(out)
 
 
@@ -658,9 +1100,10 @@ class Monitor:
 def make_handler(monitor, refresh):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            path = urlparse(self.path).path
+            url = urlparse(self.path)
+            path = url.path
             if path in ('/', '/index.html'):
-                body = render(monitor.get(), refresh).encode()
+                body = render(monitor.get(), refresh, parse_opts(url.query)).encode()
                 ctype = 'text/html; charset=utf-8'
             elif path == '/api/state':
                 body = json.dumps(monitor.get(), indent=1).encode()
