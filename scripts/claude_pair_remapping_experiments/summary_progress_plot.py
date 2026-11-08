@@ -45,7 +45,9 @@ EXCLUDE = {'E14', 'E15'}
 # variants excluded by tag / variant prefix: oracle gains, the block-specific glomerulus set,
 # and random / shuffled / re-drawn wirings (nulls, many seeds each: the best of twenty random
 # draws is a selection on noise, not a model)
-EXCLUDE_VARIANT = re.compile(r'^(oracle|blockset|uniform|hemidraw|shuffle-)|_g1\.25$|_g1\.5$|_g2$|_g3$|random_g|_seed\d+', re.I)
+# E38's level-matched input controls (the lab's profiles scaled to Hallem's level: not candidate
+# inputs, a control separating profile from level) are excluded too
+EXCLUDE_VARIANT = re.compile(r'^(oracle|blockset|uniform|hemidraw|shuffle-|A_lab_scaled)|_g1\.25$|_g1\.5$|_g2$|_g3$|random_g|_seed\d+', re.I)
 # experiments without a comparable model table (data-only, readout-only, or no on/off scoring)
 SKIP_FOLDERS = {'E1_apl_knockout', 'E2_local_apl', 'E6_readout_window', 'E7_confound_controls',
     'E21_apl_off_sharing', 'E23_weak_odor_responders', 'E29_oracle_substrate'}
