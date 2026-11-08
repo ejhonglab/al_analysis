@@ -894,6 +894,7 @@ Canonical experiment names for summary reports:
 | E42 | the reduced gain sets on a re-drawn wiring |
 | E43 | the model's trial-to-trial variability |
 | E44 | the operating point |
+| E45 | the glomerulus gain at the data's operating point |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
