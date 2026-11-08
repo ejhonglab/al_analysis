@@ -150,6 +150,11 @@ def build() -> dict:
     rr = rate_ratios()
     add('rate_ratio_fraction', rr['rate_ratio_fraction'], 'response rate with APL output blocked (TNT) relative to control flies: ratio of the mean fractions of KCs responding', 'summary_background_figure.rate_ratios', ['kc_fractions'], ci=rr['rate_ratio_fraction_ci90'])
     add('rate_ratio_mean_response', rr['rate_ratio_mean_response'], 'the same ratio for the mean response size (trial-mean responses with negative values set to 0)', 'summary_background_figure.rate_ratios', ['kc_trialmeans'], ci=rr['rate_ratio_mean_response_ci90'])
+    from E26_claw_power import WEAK
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        w = float(fr[g].mean()[WEAK].mean())
+        add(f'{name}_weak_frac', w, 'fraction of KCs responding (trial mean > 1) to the six weak-input odors (ms, paa, euc, -aPine, B-myr, 1-8ol), mean over those odors and the recordings', 'data_targets.build', ['kc_fractions'])
+        add(f'{name}_weak_share', w / float(fr[g].mean(axis=1).mean()), "the six weak-input odors' response fraction relative to the mean over the 16 odors", 'data_targets.build', ['kc_fractions'])
 
     e7 = pd.read_csv(INPUTS['e7_blocks'], header=[0, 1], index_col=0)
     for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
