@@ -895,6 +895,7 @@ Canonical experiment names for summary reports:
 | E43 | the model's trial-to-trial variability |
 | E44 | the operating point |
 | E45 | the glomerulus gain at the data's operating point |
+| E46 | the operating-point fits on a re-drawn wiring |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 

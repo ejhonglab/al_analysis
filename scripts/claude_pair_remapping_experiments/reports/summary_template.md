@@ -55,6 +55,7 @@ VCF: Odor distances derived from how often odors co-occur across natural odor so
 - E43: the model's trial-to-trial variability (running)
 - E44: the operating point (completed)
 - E45: the glomerulus gain at the data's operating point (completed)
+- E46: the operating-point fits on a re-drawn wiring (running)
 ???
 
 ## What the data show: the ORN→KC remapping in control flies, and what blocking APL output does to it
@@ -653,6 +654,8 @@ Two things the lines say that the sections above say in words: the block and the
 - **The open measurement question** is the ORN responses of the oracle glomeruli to ms, paa, B-myr, euc and 1-8ol at Yang's concentrations; after the Hallem-input test it is two glomeruli first, DL1's response to ms and DM6's to paa at 10^-3, which would decide whether those two odors' deficit is in the input, while B-myr's and euc's stay open. The decomposition of the gain adds that its structural part needs a measurement of a different kind: DC2's drive onto the KCs relative to its ORN response ([above](#gain-decomposition)).
 - **Model and readout changes still worth making:** a saturating APL unit nonlinearity, a GCaMP-like readout with saturation, measured ORN time courses, real weights for the KCs of unknown type, and, from the weak-odor analyses, better-constrained ORN input for ms, B-myr, euc, paa and 1-8ol (concentrations and glomerular profiles; Hallem's receptor data, [tried above](#hallem-input), cover ms and paa but not B-myr or euc, and at ten times Yang's concentration).
 - **Data that would discriminate the mechanisms:** APL imaging under the same odors (is APL's output to broadly tuned KCs larger, as breadth-weighted APL requires?), KC–KC interaction tests (KC responses with neighbouring KCs silenced, the direct test of KC–KC inhibition), per-trial KC data for a reliability readout (and for the noise floor of the mean distances), and, for the single-claw question, imaging of ms responders with their glomerular input identified.
+
+- **The operating-point fits on a re-drawn wiring (running).** The glomerulus gain at the data's operating point gave its two best fits by 0.1-0.2 of extended loss (the eight glomeruli at 1.25 at the 70 Hz per-claw threshold; the DC2, DM5 and DM1 core with Hallem's ms input at 1.5 at 40 Hz), and the replication of the structure-loss joint fits on re-drawn wiring showed that differences of that size can be the wiring draw's, every re-draw losing most of the block. Four fits re-run those two models and the reference model (the eight at 1.5 at both thresholds) at the control flies' fraction on the second within-type claw-permutation draw, each seeded from its real-wiring optimum. If the ordering holds, the reference model's gain shrinks to 1.25 at 70 Hz and the 40 Hz choice between the eight and the core becomes a weighting question (agreement with the KC matrices against the weak odors' pattern); if it flips, the gain stays at 1.5 and its size at the data's operating point is reported as 1.25-1.5 within the draw spread; if every fit loses the block on the draw as at 5 %, the block's dependence on the real hemibrain wiring stands as a result in its own right.
 
 ## Parameter glossary with mechanisms
 
