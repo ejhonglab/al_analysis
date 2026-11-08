@@ -98,7 +98,9 @@ DELTA_ROWS = [(c, l, f) for c, l, f, _ in TABLE_ROWS if c in ('loss_no_rate', 'f
     'fit_off_spearman', 'fit_po_on_spearman', 'fit_po_off_spearman', 'fit_wt_dev_on', 'fit_vcf_on', 'fit_vcf_off',
     'vcf_on_minus_off')]
 DELTA_ROWS.append(('weak_share_off', "weak odors' share of the APL-off response rate", '.2f'))
-MODELS = ['eight glomeruli at 1.25', 'eight glomeruli at 1.5', 'Hallem-ms core at 1.5']
+# the second starts (E46's addendum: the reference model's draw-2 fits started from the eight-at-1.25 draw solution) are
+# a model of their own in the tables, so that each (model, wiring, operating point) cell holds one fit
+MODELS = ['eight glomeruli at 1.25', 'eight glomeruli at 1.5', 'eight glomeruli at 1.5, second start', 'Hallem-ms core at 1.5']
 
 
 def gain_set(r: pd.Series) -> str:
@@ -127,7 +129,8 @@ def model_name(r: pd.Series) -> str:
         return 'no gain'
     inp = 'Hallem-ms ' if isinstance(r.get('orn_input'), str) and 'hallem' in r['orn_input'] else ''
     name = 'eight glomeruli' if gs == 'eight' else ('core' if gs == 'core3' else gs)
-    return f'{inp}{name} at {float(r.gain):g}'
+    start2 = ', second start' if 'start2' in str(r.get('tag', '')) else ''
+    return f'{inp}{name} at {float(r.gain):g}{start2}'
 
 
 def wiring_name(r: pd.Series) -> str:
