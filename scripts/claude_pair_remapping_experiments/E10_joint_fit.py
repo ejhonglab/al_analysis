@@ -620,6 +620,12 @@ def main() -> None:
     if args.figure_only:
         make_figure(res_dir, data)
         return
+    # code provenance at the start: the checkout can move (a pull) while the fits run
+    start_prov = dict(al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE,
+            capture_output=True, text=True).stdout.strip(),
+        olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.olfsysm_dir(),
+            capture_output=True, text=True).stdout.strip(),
+        model=H.model_provenance(orn_deltas=orn))
     loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss == 'structure'))
     print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}; loss variant {args.loss}', flush=True)
 
@@ -719,10 +725,7 @@ def main() -> None:
         prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'),
             script='E10_joint_fit.py', host=subprocess.run(['hostname'], capture_output=True,
                 text=True).stdout.strip(),
-            al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE,
-                capture_output=True, text=True).stdout.strip(),
-            olfsysm_commit=subprocess.run(['git', 'rev-parse', 'HEAD'],
-                cwd=H.olfsysm_dir(), capture_output=True, text=True).stdout.strip(),
+            **start_prov,
             base=base_kws(args.claw_thr, args.apl_drive), apl_drive=args.apl_drive,
             init_params=args.init_params, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
@@ -737,7 +740,7 @@ def main() -> None:
                 if args.loss == 'structure' else {}),
             data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
-            approx_conc_note=H.APPROX_CONC_NOTE, model=H.model_provenance(orn_deltas=orn),
+            approx_conc_note=H.APPROX_CONC_NOTE,
             # (E37: how the spike-only base in base_params was re-tuned from --base-params)
             **(dict(spike_only_base_tuning=base_info) if base_info else {}),
         )
