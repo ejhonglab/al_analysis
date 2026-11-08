@@ -210,6 +210,36 @@ def build() -> dict:
     add('supp_rho_on', sup['spearman_suppression_vs_on_frac'], 'rank correlation of the per-odor suppression with the control flies\' response fraction', 'E35_divisive_apl.suppression_stats', ['kc_fractions'])
     for k in ('esters', 'other', 'weak'):
         add(f'supp_{k}', sup[f'suppression_{k}'], f'APL output blocked (TNT) / control response fraction, {k} odors (group means)', 'E35_divisive_apl.suppression_stats', ['kc_fractions'])
+    # how Yang's KC distances agree with Remy's wild-type megamat KC data on the 12 shared odors
+    # (66 pairs; yang_remy_kc_agreement.py). Remy's distances are correlation distances (1 - Pearson
+    # across KC somata or claws), Yang's cosine distances, so the comparisons are rank-based
+    # (Pearson r of the two distance sets is given as well).
+    from yang_remy_kc_agreement import agreement
+    ag = agreement(ref, n_boot=2000, seed=0)
+    agfn = 'yang_remy_kc_agreement.agreement'
+    remy_sets = {'soma': "Remy's wild-type KC somata (kc_remy_combo, 18 flies; correlation distance)",
+        'soma_2022': "Remy's 2022 wild-type KC somata (4 flies; correlation distance)",
+        'claw': "Remy's wild-type KC claws (4 flies; correlation distance)"}
+    for x, geno in (('ctrl', 'control flies'), ('tnt', 'flies with APL output blocked (TNT)')):
+        for r, desc in remy_sets.items():
+            add(f'rho_{x}_remy_{r}', ag[f'rho_{x}_remy_{r}'], f'ρ on odor-odor distances, KCs in {geno} (Yang, cosine distance) vs {desc}, the 66 pairs of the 12 shared odors', agfn, ['kc_rdms', 'ref66'],
+                ci=[ag['rho_%s_remy_soma_lo' % x], ag['rho_%s_remy_soma_hi' % x]] if r == 'soma' else None)
+            add(f'pearson_{x}_remy_{r}', ag[f'pearson_{x}_remy_{r}'], f'Pearson r between the same two sets of 66 distances', agfn, ['kc_rdms', 'ref66'])
+        add(f'rho_{x}_orn_66', ag[f'rho_{x}_orn_66'], f'ρ on odor-odor distances, KCs in {geno} vs ORNs, on the 66 shared pairs', agfn, ['kc_rdms', 'ref66'])
+        add(f'{x}_ceiling_66', ag[f'{x}_ceiling_66'], f'measurement ceiling on odor-odor distances of the {geno} matrix on the 66 shared pairs (sqrt of the Spearman-Brown-corrected split-half ρ, 200 splits)', 'harness.split_half_reliability', ['kc_rdms', 'ref66'])
+        add(f'{x}_split_half_66', ag[f'{x}_split_half_66'], f'ρ between the mean matrices of random halves of the {geno} recordings, 66 shared pairs (200 splits)', 'harness.split_half_reliability', ['kc_rdms', 'ref66'])
+        add(f'{x}_rec_rho_remy_soma', ag[f'{x}_rec_rho_remy_soma'], f"mean over {geno} recordings of one recording's ρ on odor-odor distances with Remy's wild-type KC somata (66 pairs)", agfn, ['kc_rdms', 'ref66'])
+        add(f'{x}_rec_rho_loo', ag[f'{x}_rec_rho_loo'], f"mean over {geno} recordings of one recording's ρ on odor-odor distances with the mean of the other recordings of its genotype (66 pairs)", agfn, ['kc_rdms', 'ref66'])
+        add(f'{x}_mean_66', ag[f'{x}_mean_66'], f'KCs, {geno}: mean cosine distance over the 66 shared pairs', agfn, ['kc_rdms', 'ref66'])
+        add(f'{x}_block_mean_66', ag[f'{x}_block_mean_66'], f'KCs, {geno}: mean cosine distance of the 9 fruity x small-ester pairs', agfn, ['kc_rdms', 'ref66'])
+        add(f'{x}_within_mean_66', ag[f'{x}_within_mean_66'], f'KCs, {geno}: mean cosine distance of the within-group pairs among the 12 shared odors', agfn, ['kc_rdms', 'ref66'])
+    add('remy_soma_mean_66', ag['remy_soma_mean_66'], "Remy's wild-type KC somata: mean correlation distance over the 66 shared pairs", agfn, ['ref66'])
+    add('remy_soma_block_mean_66', ag['remy_soma_block_mean_66'], "Remy's wild-type KC somata: mean correlation distance of the 9 fruity x small-ester pairs", agfn, ['ref66'])
+    add('remy_soma_within_mean_66', ag['remy_soma_within_mean_66'], "Remy's wild-type KC somata: mean correlation distance of the within-group pairs", agfn, ['ref66'])
+    add('rho_remy_soma_orn', ag['rho_remy_soma_orn'], "ρ on odor-odor distances, Remy's wild-type KC somata vs ORNs (66 pairs)", agfn, ['ref66'])
+    add('rho_remy_soma_claw', ag['rho_remy_soma_claw'], "ρ on odor-odor distances, Remy's wild-type KC somata vs Remy's KC claws (66 pairs)", agfn, ['ref66'])
+    add('rho_remy_soma_soma_2022', ag['rho_remy_soma_soma_2022'], "ρ on odor-odor distances, Remy's 18-fly KC somata vs the 2022 4-fly somata (66 pairs)", agfn, ['ref66'])
+    add('rho_ctrl_tnt_66', ag['rho_ctrl_tnt_66'], 'ρ on odor-odor distances between the two Yang KC matrices on the 66 shared pairs', agfn, ['kc_rdms', 'ref66'])
     add('n_recordings_ctrl', len(recs['TNT3c']), 'control recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     add('n_recordings_tnt', len(recs['TNT']), 'APL output blocked (TNT) recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     return reg

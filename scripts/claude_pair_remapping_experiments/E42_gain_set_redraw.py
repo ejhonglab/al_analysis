@@ -52,7 +52,9 @@ STATS = [
     ('fit_po_on_spearman', 'response rate rho, APL on', 'ctrl_rate_rho_ceiling'),
     ('fit_po_off_spearman', 'response rate rho, APL off', 'tnt_rate_rho_ceiling'),
     ('fit_wt_dev_on', 'structure vs wild-type somata', 'ctrl_struct_wt'),
+    ('fit_vcf_on', 'natural-source alignment, APL on', 'ctrl_vcf'),
     ('fit_vcf_off', 'natural-source alignment, APL off', 'tnt_vcf'),
+    ('vcf_on_minus_off', 'natural-source alignment, APL on minus off', 'vcf_apl_effect'),
     ('rate_ratio_off_over_on', 'response rate, APL off / APL on', 'rate_ratio'),
     ('off_frac_ms', 'ms response fraction, APL off', 'tnt_frac_ms'),
 ]
@@ -133,6 +135,9 @@ def load_rows() -> pd.DataFrame:
                     'fit_term_po_on', 'fit_term_po_off', 'fit_term_iso', 'fit_term_wt_dev', 'fit_term_vcf_off',
                     'fit_term_excess_on', 'spike_counts_cosine__on_mean_model', 'spike_counts_cosine__off_mean_model']:
                 row[c] = r.get(c, np.nan)
+            # the natural-source alignment with APL on (the loss only scores it with APL off), and APL on minus off
+            row['fit_vcf_on'] = r.get('spike_counts_cosine__on_spearman_resid_vs_vcf_hyp', np.nan)
+            row['vcf_on_minus_off'] = row['fit_vcf_on'] - row['fit_vcf_off']
             row.update(weak_fractions(exp, r.tag))
             rows.append(row)
     df = pd.DataFrame(rows)
@@ -145,7 +150,7 @@ def load_rows() -> pd.DataFrame:
 def data_values() -> Dict[str, float]:
     d = {}
     for key in ('block', 'ctrl_ceiling', 'tnt_ceiling', 'ctrl_rate_rho_ceiling', 'tnt_rate_rho_ceiling',
-            'ctrl_struct_wt', 'tnt_vcf'):
+            'ctrl_struct_wt', 'ctrl_vcf', 'tnt_vcf', 'vcf_apl_effect'):
         try:
             d[key] = H.data_target(key)
         except Exception as e:   # a missing registry key only loses a reference line
@@ -199,7 +204,9 @@ TABLE_ROWS = [
     ('fit_po_on_spearman', 'response rate ρ, APL on', '.2f', 'ctrl_rate_rho_ceiling'),
     ('fit_po_off_spearman', 'response rate ρ, APL off', '.2f', 'tnt_rate_rho_ceiling'),
     ('fit_wt_dev_on', 'structure vs wild-type somata', '.2f', 'ctrl_struct_wt'),
+    ('fit_vcf_on', 'natural-source alignment, APL on', '.2f', 'ctrl_vcf'),
     ('fit_vcf_off', 'natural-source alignment, APL off', '.2f', 'tnt_vcf'),
+    ('vcf_on_minus_off', 'natural-source alignment, APL on minus off', '+.2f', 'vcf_apl_effect'),
     ('rate_ratio_off_over_on', 'response rate, APL off / APL on', '.2f', 'rate_ratio'),
     ('off_frac_ms', 'ms response fraction, APL off', '.3f', 'tnt_frac_ms'),
     ('off_frac_paa', 'paa response fraction, APL off', '.3f', 'tnt_frac_paa'),
@@ -250,7 +257,8 @@ def main() -> None:
     (res_dir / 'comparison_table.md').write_text(markdown_tables(df, data))
     pd.set_option('display.width', 250)
     cols = ['experiment', 'model', 'wiring', 'claw_thr', 'loss', 'fit_block', 'fit_on_spearman', 'fit_off_spearman',
-        'fit_po_on_spearman', 'fit_po_off_spearman', 'fit_wt_dev_on', 'fit_vcf_off', 'rate_ratio_off_over_on', 'off_frac_ms']
+        'fit_po_on_spearman', 'fit_po_off_spearman', 'fit_wt_dev_on', 'fit_vcf_on', 'fit_vcf_off', 'vcf_on_minus_off',
+        'rate_ratio_off_over_on', 'off_frac_ms']
     print(df[cols].round(3).to_string(index=False))
     print('data:', {k: round(v, 3) for k, v in data.items()})
     make_figure(df, data, res_dir)

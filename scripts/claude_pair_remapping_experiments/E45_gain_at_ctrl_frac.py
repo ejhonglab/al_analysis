@@ -142,6 +142,7 @@ TABLE_ROWS = [
     ('struct_wt_on', 'structure vs wild-type somata, APL on', '.2f', 'ctrl_struct_wt'),
     ('vcf_on', 'natural-source alignment, APL on', '.2f', 'ctrl_vcf'),
     ('vcf_off', 'natural-source alignment, APL off', '.2f', 'tnt_vcf'),
+    ('vcf_on_minus_off', 'natural-source alignment, APL on minus off', '+.2f', 'vcf_apl_effect'),
     ('mean_dist_on', 'mean cosine distance, APL on', '.2f', 'ctrl_mean_dist'),
     ('mean_dist_off', 'mean cosine distance, APL off', '.2f', 'tnt_mean_dist'),
     ('weak_frac_on', "weak odors' response rate, APL on", '.3f', 'ctrl_weak_frac'),
@@ -158,7 +159,7 @@ TABLE_ROWS = [
     ('n_evals', 'evaluations', '.0f', None),
 ]
 DATA_KEYS = ('ctrl_frac', 'tnt_frac', 'rate_ratio_fraction', 'block', 'ctrl_ceiling', 'tnt_ceiling', 'iso_r2',
-    'ctrl_rate_rho_ceiling', 'tnt_rate_rho_ceiling', 'ctrl_struct_wt', 'ctrl_vcf', 'tnt_vcf', 'ctrl_mean_dist',
+    'ctrl_rate_rho_ceiling', 'tnt_rate_rho_ceiling', 'ctrl_struct_wt', 'ctrl_vcf', 'tnt_vcf', 'vcf_apl_effect', 'ctrl_mean_dist',
     'tnt_mean_dist', 'ctrl_mean_dist_noise_corrected', 'tnt_mean_dist_noise_corrected', 'ctrl_weak_frac',
     'ctrl_weak_share', 'tnt_weak_frac', 'tnt_weak_share')
 
@@ -248,6 +249,7 @@ def load_rows(loss5, loss_ctrl, inputs: Dict[str, str]) -> Tuple[pd.DataFrame, L
                 operating_point=OPS[arm.op], op=arm.op, rate_target=(CTRL_FRAC if arm.op == 'ctrl' else RATE_TARGET),
                 experiment=arm.experiment, tag=tag, claw_thr=thr, note=arm.note,
                 **{k: r.get(c, np.nan) for k, c in FITS_COLS.items()})
+            row['vcf_on_minus_off'] = row['vcf_on'] - row['vcf_off']
             warnings = check_settings(arm, thr, r)
             paths, where = outputs_paths(arm.experiment, tag)
             row['outputs'] = where
@@ -385,6 +387,7 @@ PANELS = [
     ('struct_wt_on', 'structure beyond the ORN input\nvs wild-type somata, APL on', 'ctrl_struct_wt'),
     ('vcf_on', 'natural-source alignment, APL on', 'ctrl_vcf'),
     ('vcf_off', 'natural-source alignment, APL off', 'tnt_vcf'),
+    ('vcf_on_minus_off', 'natural-source alignment, APL on minus off', 'vcf_apl_effect'),
     ('rate_on', 'response rate, APL on', 'ctrl_frac'),
     ('rate_ratio', 'APL-off / APL-on response rate', 'rate_ratio_fraction'),
     ('weak_frac_off', "weak odors' response rate, APL off", 'tnt_weak_frac'),
@@ -476,7 +479,8 @@ def main() -> None:
 
     pd.set_option('display.width', 250)
     show = ['experiment', 'model', 'operating_point', 'claw_thr', 'loss_own', 'loss_no_rate_term', 'block', 'rho_ctrl',
-        'rho_tnt', 'rate_rho_on', 'rate_rho_off', 'struct_wt_on', 'vcf_off', 'rate_ratio', 'weak_frac_off', 'weak_share_off']
+        'rho_tnt', 'rate_rho_on', 'rate_rho_off', 'struct_wt_on', 'vcf_on', 'vcf_off', 'vcf_on_minus_off', 'rate_ratio',
+        'weak_frac_off', 'weak_share_off']
     if len(df):
         print(df[show].round(3).to_string(index=False))
         for r in df[df.warnings.astype(bool)].itertuples():

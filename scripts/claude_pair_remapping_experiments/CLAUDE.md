@@ -806,6 +806,15 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   applies to a header listing what a column's "a / b / c" values are (`APL→bouton /<br>APL→KC<br>(×
   baseline)`) and to a first-column header listing the table's fixed settings. Headers that
   name statistics stay on one line for now.
+- **Natural-source alignment is three numbers (Tom, 2026-11-08).** Every table, comparison
+  script and summary analysis that gives the natural-source alignment gives it with APL on,
+  with APL off and as the difference (APL on minus APL off), never APL off alone: three rows
+  ("natural-source alignment, APL on" / ", APL off" / ", APL on minus off") or one row
+  "natural-source alignment, APL on / off / on minus off" with "a / b / c" cells. The KC data's
+  values are the registry's ctrl_vcf, tnt_vcf and vcf_apl_effect; in the template a difference
+  is `{{diff:<key> -- <key> ~ +.2f}}`. Every stats table and fits.csv carries the APL-on value
+  as `spike_counts_cosine__on_spearman_resid_vs_vcf_hyp` (the loss only scores APL off, as
+  `fit_vcf_off`), so comparison scripts take it from there.
 - **Genotype labels.** In every figure title, axis label, legend entry, table header and
   row label the two genotypes are "control flies" and "APL output blocked (TNT)", never "APL
   blocked" or "TNT" alone (prose may say "with APL output blocked" once the label has been

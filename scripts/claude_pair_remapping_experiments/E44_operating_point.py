@@ -130,6 +130,7 @@ def summarize(res_dir, out_dir, loss5, loss_ctrl) -> pd.DataFrame:
     # every loss term but the rate target's, the same in both losses
     t['loss_no_rate_term'] = t.loss_rate5 - t.loss_term_rate5
     t['weak_share_off'] = t.weak_frac_off / t.rate_off
+    t['vcf_on_minus_off'] = t.vcf_on - t.vcf_off
     t.to_csv(res_dir / 'comparison.csv', index=False)
     return t
 

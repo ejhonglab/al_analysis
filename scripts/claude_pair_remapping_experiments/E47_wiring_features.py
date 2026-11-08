@@ -81,7 +81,9 @@ STATS = [
     ('spearman_rate_on_vs_data', 'response rate ρ, APL on', '.2f', 'ctrl_rate_rho_ceiling'),
     ('spearman_rate_off_vs_data', 'response rate ρ, APL off', '.2f', 'tnt_rate_rho_ceiling'),
     (f'{V}__on_spearman_resid_vs_remap_wt', 'structure vs wild-type somata', '.2f', 'ctrl_struct_wt'),
+    (f'{V}__on_spearman_resid_vs_vcf_hyp', 'natural-source alignment, APL on', '.2f', 'ctrl_vcf'),
     (f'{V}__off_spearman_resid_vs_vcf_hyp', 'natural-source alignment, APL off', '.2f', 'tnt_vcf'),
+    ('vcf_on_minus_off', 'natural-source alignment, APL on minus off', '+.2f', 'vcf_apl_effect'),
     ('rate_ratio_off_over_on', 'response rate, APL off / APL on', '.2f', 'rate_ratio'),
     ('weak_share_off', "weak odors' share of the APL-off response rate", '.2f', 'tnt_weak_share'),
     ('thr_factor_vs_fit', 'somatic threshold (× the fitted one)', '.2f', None),
@@ -114,7 +116,7 @@ def wiring_summary(real_W: pd.DataFrame, shuffle: str, seed: int) -> Dict[str, f
 def data_values() -> Dict[str, float]:
     d = {}
     for key in ('block', 'ctrl_ceiling', 'tnt_ceiling', 'ctrl_rate_rho_ceiling', 'tnt_rate_rho_ceiling',
-            'ctrl_struct_wt', 'tnt_vcf', 'tnt_weak_share', 'iso_r2'):
+            'ctrl_struct_wt', 'ctrl_vcf', 'tnt_vcf', 'vcf_apl_effect', 'tnt_weak_share', 'iso_r2'):
         try:
             d[key] = H.data_target(key)
         except Exception as e:   # a missing registry key only loses a reference line
@@ -132,6 +134,7 @@ def summarize(res_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if 'error' in stats.columns else stats
     stats = stats.copy()
     stats['weak_share_off'] = stats.weak_frac_off / stats.rate_off
+    stats['vcf_on_minus_off'] = stats[f'{V}__on_spearman_resid_vs_vcf_hyp'] - stats[f'{V}__off_spearman_resid_vs_vcf_hyp']
     shp = res_dir / 'shuffle_summary.csv'
     if shp.exists():
         sh = pd.read_csv(shp)
@@ -146,7 +149,9 @@ def summarize(res_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
                 f'{V}__on_spearman': r['fit_on_spearman'], f'{V}__off_spearman': r['fit_off_spearman'],
                 'spearman_rate_on_vs_data': r['fit_po_on_spearman'], 'spearman_rate_off_vs_data': r['fit_po_off_spearman'],
                 f'{V}__on_spearman_resid_vs_remap_wt': r['fit_wt_dev_on'],
+                f'{V}__on_spearman_resid_vs_vcf_hyp': r.get('spike_counts_cosine__on_spearman_resid_vs_vcf_hyp', np.nan),
                 f'{V}__off_spearman_resid_vs_vcf_hyp': r['fit_vcf_off'],
+                'vcf_on_minus_off': r.get('spike_counts_cosine__on_spearman_resid_vs_vcf_hyp', np.nan) - r['fit_vcf_off'],
                 'rate_ratio_off_over_on': r['rate_ratio_off_over_on'], 'thr_factor_vs_fit': np.nan}))
     comp = pd.concat([stats, pd.DataFrame(rows)], ignore_index=True) if rows else stats
     comp.to_csv(res_dir / 'comparison.csv', index=False)

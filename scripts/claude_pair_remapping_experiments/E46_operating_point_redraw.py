@@ -63,7 +63,9 @@ STATS = [
     ('fit_po_on_spearman', 'response rate rho, APL on', 'ctrl_rate_rho_ceiling'),
     ('fit_po_off_spearman', 'response rate rho, APL off', 'tnt_rate_rho_ceiling'),
     ('fit_wt_dev_on', 'structure vs wild-type somata', 'ctrl_struct_wt'),
+    ('fit_vcf_on', 'natural-source alignment, APL on', 'ctrl_vcf'),
     ('fit_vcf_off', 'natural-source alignment, APL off', 'tnt_vcf'),
+    ('vcf_on_minus_off', 'natural-source alignment, APL on minus off', 'vcf_apl_effect'),
     ('rate_ratio_off_over_on', 'response rate, APL off / APL on', 'rate_ratio'),
     ('weak_share_off', "weak odors' share of the APL-off response rate", 'tnt_weak_share'),
 ]
@@ -76,7 +78,9 @@ TABLE_ROWS = [
     ('fit_po_on_spearman', 'response rate ρ, APL on', '.2f', 'ctrl_rate_rho_ceiling'),
     ('fit_po_off_spearman', 'response rate ρ, APL off', '.2f', 'tnt_rate_rho_ceiling'),
     ('fit_wt_dev_on', 'structure vs wild-type somata', '.2f', 'ctrl_struct_wt'),
+    ('fit_vcf_on', 'natural-source alignment, APL on', '.2f', 'ctrl_vcf'),
     ('fit_vcf_off', 'natural-source alignment, APL off', '.2f', 'tnt_vcf'),
+    ('vcf_on_minus_off', 'natural-source alignment, APL on minus off', '+.2f', 'vcf_apl_effect'),
     ('fit_iso_r2', 'isotonic R² of the APL-on vs APL-off relation', '.2f', 'iso_r2'),
     ('rate_ratio_off_over_on', 'response rate, APL off / APL on', '.2f', 'rate_ratio'),
     ('weak_frac_off', "weak odors' response rate, APL off", '.3f', 'tnt_weak_frac'),
@@ -91,7 +95,8 @@ TABLE_ROWS = [
 ]
 # statistics in the draw-cost table (draw 2 minus real wiring)
 DELTA_ROWS = [(c, l, f) for c, l, f, _ in TABLE_ROWS if c in ('loss_no_rate', 'fit_block', 'fit_on_spearman',
-    'fit_off_spearman', 'fit_po_on_spearman', 'fit_po_off_spearman', 'fit_wt_dev_on', 'fit_vcf_off')]
+    'fit_off_spearman', 'fit_po_on_spearman', 'fit_po_off_spearman', 'fit_wt_dev_on', 'fit_vcf_on', 'fit_vcf_off',
+    'vcf_on_minus_off')]
 DELTA_ROWS.append(('weak_share_off', "weak odors' share of the APL-off response rate", '.2f'))
 MODELS = ['eight glomeruli at 1.25', 'eight glomeruli at 1.5', 'Hallem-ms core at 1.5']
 
@@ -180,6 +185,9 @@ def load_rows() -> pd.DataFrame:
             for c in COLUMNS:
                 row[c] = r.get(c, np.nan)
             row['loss_no_rate'] = row['loss'] - row['fit_term_rate_on']
+            # the natural-source alignment with APL on (the loss only scores it with APL off), and APL on minus off
+            row['fit_vcf_on'] = r.get('spike_counts_cosine__on_spearman_resid_vs_vcf_hyp', np.nan)
+            row['vcf_on_minus_off'] = row['fit_vcf_on'] - row['fit_vcf_off']
             row.update(weak_fractions(exp, r.tag))
             rows.append(row)
     df = pd.DataFrame(rows)
@@ -193,7 +201,7 @@ def load_rows() -> pd.DataFrame:
 def data_values() -> Dict[str, float]:
     d = {}
     for key in ('block', 'ctrl_ceiling', 'tnt_ceiling', 'ctrl_rate_rho_ceiling', 'tnt_rate_rho_ceiling',
-            'ctrl_struct_wt', 'tnt_vcf', 'tnt_weak_frac', 'tnt_weak_share', 'iso_r2'):
+            'ctrl_struct_wt', 'ctrl_vcf', 'tnt_vcf', 'vcf_apl_effect', 'tnt_weak_frac', 'tnt_weak_share', 'iso_r2'):
         try:
             d[key] = H.data_target(key)
         except Exception as e:   # a missing registry key only loses a reference line
@@ -304,7 +312,7 @@ def main() -> None:
     pd.set_option('display.width', 250)
     cols = ['experiment', 'model', 'wiring', 'operating_point', 'claw_thr', 'loss', 'loss_no_rate', 'fit_block',
         'fit_on_spearman', 'fit_off_spearman', 'fit_po_on_spearman', 'fit_po_off_spearman', 'fit_wt_dev_on',
-        'fit_vcf_off', 'rate_ratio_off_over_on', 'weak_share_off']
+        'fit_vcf_on', 'fit_vcf_off', 'vcf_on_minus_off', 'rate_ratio_off_over_on', 'weak_share_off']
     print(df[cols].round(3).to_string(index=False))
     print('data:', {k: round(v, 3) for k, v in data.items()})
     make_figure(df, data, res_dir)
