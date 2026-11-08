@@ -77,9 +77,16 @@ uses or changes a venv it did not make. Machines are identified by their short h
   keys, one per repository; the owner then runs `./join_queue.sh --check`.
 - **List and revoke.** `./approve_push_keys.sh --list` shows the keys added so far and the
   machines waiting. Deploy keys do not expire, so run `./approve_push_keys.sh --revoke <host>`
-  when a machine stops working the queue. Force pushes and deletions of the default branches are
-  refused for every key (a ruleset on each repository), but a key can still push ordinary
-  commits, which every queue host pulls and runs.
+  when a machine stops working the queue. A key can only add ordinary commits to the default
+  branch (see the GitHub settings below), but those commits every queue host pulls and runs, so
+  sessions on your hosts read pulled changes to the hooks, the setup scripts and the build files
+  before running anything (CLAUDE.md, "Lab members' machines").
+- **GitHub settings.** `./github_rules.sh` sets what the keys rely on, on all three repositories:
+  the default Actions token is read-only, and rulesets refuse creating, updating or deleting any
+  branch but the default one (Dependabot's excepted) or any tag to everyone but admins, next to
+  the existing ruleset refusing force pushes and deletions of the default branch to everyone.
+  Re-running it changes nothing already in place; `./github_rules.sh --check` only shows the
+  current settings.
 - **Testing on someone else's machine under your own account first.** Don't approve the keys
   from that run, and before they run it under their account, remove push_keys/<host>/ in the
   shared folder (otherwise their run stops, since the host is recorded as yours) and

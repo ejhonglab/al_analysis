@@ -2,9 +2,11 @@
 """Claude Code hook recording what a queue session is doing, for the queue monitor.
 
 Registered (async) for the session lifecycle and tool events in ~/.claude/settings.json
-(~/src/dotfiles/claude_settings.json) on Tom's hosts, and identically (so it runs once where
-both apply) in the experiments folder's .claude/settings.json, for sessions started there on
-other machines. Each call reads the hook input JSON from stdin and
+(~/src/dotfiles/claude_settings.json) on Tom's hosts, and in the experiments folder's
+.claude/settings.json, which runs the copy in the session's own checkout (so it also works in
+~/src/kc_queue on lab members' machines); the two commands differ, so in that folder on Tom's
+hosts it runs twice per event, which is harmless. Each call reads the hook
+input JSON from stdin and
 keeps one file per session in the shared directory, `presence/<host>__<session_id>.json`,
 which `server.py` reads. Only sessions whose transcript or cwd is under this folder are
 recorded (a session recorded once stays recorded, wherever it `cd`s). The model and effort
