@@ -6,7 +6,9 @@ After=network-online.target
 
 [Service]
 ExecStart=/usr/bin/python3 -I %h/src/al_analysis/scripts/claude_pair_remapping_experiments/monitor-server/server.py --shared /local/tensor/Tom/claude_kc_remapping --port 17486
-Restart=on-failure
+# always: a SIGTERM (hal's earlyoom sends those to Python processes when memory runs low)
+# counts as a clean exit, which on-failure does not restart; systemctl stop still stops it
+Restart=always
 RestartSec=10
 Nice=10
 
