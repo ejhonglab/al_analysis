@@ -153,7 +153,8 @@ def responder_analysis(tag: str, cond: str, resp: pd.DataFrame, wPNKC: pd.DataFr
     odors = [o for o in H.APL16_ODORS if o in R.columns]
     R = R[odors]
     N = len(R); n = R.sum(); breadth = R.sum(axis=1)
-    claws = kc_by_glomerulus(wPNKC).astype(float)
+    # claws counted, not weighted (a gained wiring has weights of 1.5 on the gained glomeruli)
+    claws = kc_by_glomerulus((wPNKC.astype(float) > 0).astype(float))
     claws.index = _kc_index(claws)
     claws = claws.T.groupby(level='glomerulus').sum().T if isinstance(claws.columns, pd.MultiIndex) else claws
     claws = claws.reindex(R.index).fillna(0.0)
@@ -262,13 +263,29 @@ def main() -> None:
     ap.add_argument('--ref-fits', nargs='+', default=list(REF_FITS), choices=list(REF_FITS))
     ap.add_argument('--thr', type=float, default=70.0, help='per-claw threshold of part A')
     ap.add_argument('--figure-only', action='store_true')
+    ap.add_argument('--responders-only', action='store_true',
+        help='rebuild responders.csv and responder_claws.csv from the saved outputs (claws from the archived base wiring), then the figures')
     args = ap.parse_args()
     res_dir = H.results_dir(EXPERIMENT); out_dir = H.outputs_dir(EXPERIMENT)
     stats_path = res_dir / 'stats_variants.csv'; fracs_path = res_dir / 'per_odor_response_fractions.csv'
     resp_path = res_dir / 'responders.csv'; claw_path = res_dir / 'responder_claws.csv'
     rows = list(pd.read_csv(stats_path).to_dict('records')) if stats_path.exists() else []
     rows = [r for r in rows if not (isinstance(r.get('error'), str) and r['error'])]
-    if args.figure_only:
+    if args.responders_only:
+        # the claw counts only need which claws exist, so the base wiring serves every variant
+        w = pd.read_parquet(H.shared_dir() / 'data' / 'model_outputs' / 'inputs' / 'wPNKC_bouton_base.parquet')
+        data_overlap = pd.read_csv(H.shared_dir() / 'results' / 'E23_weak_odor_responders' / 'overlap_profiles.csv')
+        resp_rows = data_responder_rows('TNT') + data_responder_rows('TNT3c'); claw_rows = []
+        for r in rows:
+            for cond, geno in (('on', 'TNT3c'), ('acute_off', 'TNT')):
+                f = out_dir / f"{r['tag']}_{cond}_responses.parquet"
+                if not f.exists():
+                    print('missing', f); continue
+                rr, cr = responder_analysis(r['tag'], cond, pd.read_parquet(f), w, data_overlap, geno)
+                resp_rows.extend(rr); claw_rows.extend(cr)
+        pd.DataFrame(resp_rows).to_csv(resp_path, index=False); pd.DataFrame(claw_rows).to_csv(claw_path, index=False)
+        print('responder tables rebuilt for', len(rows), 'variants')
+    if args.figure_only or args.responders_only:
         make_figure(pd.DataFrame(rows), pd.read_csv(fracs_path, index_col=0), pd.read_csv(resp_path), res_dir); return
     done = {r['tag'] for r in rows}
     orn0 = H.apl16_orn_deltas()
