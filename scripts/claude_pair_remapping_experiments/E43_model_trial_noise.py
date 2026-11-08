@@ -1,0 +1,980 @@
+#!/usr/bin/env python3
+"""E43: trial-to-trial variability in the model (PN noise calibrated to the KC data's same-odor floors).
+
+Every other experiment compares one deterministic model run with KC matrices built from trial
+means of three noisy trials per odor, averaged over recordings. Here two models get
+trial-to-trial variability, and their trials go through the data's own pipeline
+(noise_floor_trial_distances.py: `analyse` per recording, then the mean over recordings), so the
+model's floors, raw and noise-corrected mean distances, ρ and response rates are measured as the
+data's are, and the noisy model's grand mean can be compared with the deterministic run.
+
+Noise. olfsysm adds N(0, sd) to dPN/dt of every glomerulus at every time step (sim_PN_layer,
+`mp.pn.noise.sd`, 0 in every other experiment), so the PN rate carries an Ornstein-Uhlenbeck-like
+fluctuation with the PN time constant (10 ms), of stationary SD 0.16 * sd at dt = 0.5 ms (before
+the rectification at 0; the increment is not scaled by sqrt(dt), so the same sd is a different
+fluctuation at another time step). It is shared by every bouton and claw of a glomerulus and
+independent across glomeruli, odors and trials. The generator is a thread_local std::mt19937
+seeded from std::random_device (build_wPNKC reseeds it only when it draws a random wiring, not for
+these preset ones), so draws are independent across trials, processes and resumed runs, but not
+reproducible. A trial: set the sd, `osm.run_PN_sims(mp, rv)`, then the KC layer at fixed
+parameters through `make_fixed_param_kc_simulator`'s simulate (`run_KC_sims(mp, rv, False)`:
+wiring, thresholds and APL weights fixed), with APL on and with APL off acutely (APL->KC and
+APL->bouton scales 0) on the same noisy PN trial. The simulator's mp / rv are captured by wrapping
+mb_model.fit_mb_model while the simulator is built (no library change). Spike counts are over the
+whole simulated period (-0.5 to 0.75 s around the 0.5 s odor), as in every experiment.
+
+Models. base70: the claw-driven bouton base with the 70 Hz per-claw threshold at its 5 % tuned
+parameters (E16's bouton_thr70, E19's thr70_k0_kckc0 row). ref40: the reference model, E34's
+thr40_gain1.5_k2_cap3 at its fitted parameters (results/E34_gain_bounded/fits.csv), built as E39
+builds it (E10_joint_fit.bouton_base with the gain, breadth_weights, its KC-KC tau). Built-in
+checks: a trial at sd = 0 reproduces the deterministic run exactly (asserted for APL on and off
+when a model is built, and again after its noisy trials), and the deterministic run equals E16's /
+E34's saved outputs (asserted when those files are present).
+
+Calibration. Per model, `--cal-trials` trials at each sd of `--cal-grid`, then `--cal-refine`
+rounds of trials at the interpolated estimates. The floor (the single-trial same-odor distance of
+graded spike counts, as the data's) is not monotone in sd: it rises from 0, peaks, and falls again
+once the rectified noise drives every KC on every trial (the base model at sd 1000 responds in
+99.8 % of KC x odor trials, and its trials are near-identical). The grid is extended (by its last
+ratio, up to `--cal-max-extend` points) upward only while a floor below its target is still rising
+at the top, and downward while the lowest point is above the target. The matched sd is interpolated
+linearly in log sd at the first upward crossing: APL on matched to the control flies' floor
+(data_targets ctrl_single_trial_floor), APL off to APL output blocked (TNT)'s
+(tnt_single_trial_floor); when a floor never reaches its target, refinement locates its peak
+instead, and the peak's sd stands in (flagged bracketed = false in noise_levels.json). Levels: the
+two matched sds, `--bracket`[0] x the smaller, and `--bracket`[1] x the larger, unless that lies
+beyond a floor's peak, in which case `--bracket`[0]^2 x the smaller (defaults 0.5 and 2): four
+levels, three if the two matched sds coincide.
+
+Pseudo-recordings. At each level, `--n-recordings` pseudo-recordings (default 10) of `--n-trials`
+trials (default 3) of all 16 odors: all model KCs of the one wiring (pseudo-recordings differ only
+in noise); a trial's value is the KC's spike count in it (the model's primary readout; the data's
+is z-scored fluorescence). Transforms as for the data: 'graded' (spike counts) and 'thresholded'
+(counts <= 1 set to 0: only trials with a response, 2 spikes, keep their count).
+
+Readouts per model x level x condition x transform (the KC data through the same functions):
+floors (single trial, trial mean, reliability); the mean pair distance of the 3-trial means
+averaged over pseudo-recordings (raw) and noise-corrected, against the deterministic run and the
+data; the grand mean over all trials against the deterministic run (response rate, per-odor
+response fractions, the weak odors, spike counts, distances: the bias from noise passing through
+the thresholds); ρ on odor-odor distances of the noisy, corrected, grand-mean and deterministic
+matrices with the KC data (raw and corrected) and with the deterministic model, and the model's own
+split-half ρ over pseudo-recordings (its measurement ceiling, computed as the data's); response
+fractions under four definitions (the per-trial response averaged over trials; a response in at
+least 2 of 3 trials; trial-mean spike count >= 1; trial-mean spike count >= 2, the per-trial
+criterion applied to the trial mean) with their response rate ρ with the data; the block, the
+isotonic R² and ρ between the APL-on and APL-off matrices (raw, corrected, grand mean,
+deterministic; the data likewise); and the PN noise in Hz (pre-odor temporal SD, trial-to-trial SD
+of the odor-window mean rate), to judge how plausible the matched noise is.
+
+Outputs: <shared>/results/E43_model_trial_noise/: stats_noise.csv (one row per model x level x
+condition x transform; deliberately not named stats_variants.csv, so the progress plot does not
+take a noise-driven value as a best model), onoff_noise.csv, per_odor_noise.csv,
+pairs_noise_long.csv, calibration.csv, noise_levels.json, checks.json, provenance.json (code
+provenance taken at the start of each session, under "model"; earlier sessions kept under
+"previous_sessions") and E43_model_trial_noise.png. ./outputs/E43_model_trial_noise/: the
+deterministic runs (<model>_{on,acute_off}_{responses,spike_counts}.parquet), <model>_meta.json,
+<model>_det_pn.npz, and the trials (calibration/ and trials/: npz with per-trial spike counts,
+responses and PN summaries). Resumable: finished trial files are skipped, and a model is only built
+when something of it is missing.
+Usage: OMP_NUM_THREADS=12 nice -n 10 ./venv/bin/python E43_model_trial_noise.py [--models base70 ref40]
+       [--n-recordings 10] [--n-trials 3] [--cal-grid 25 50 100 200 400 800] [--cal-trials 3]
+       [--analyse-only] [--figure-only]
+"""
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import math
+import os
+import subprocess
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from scipy import stats as sstats
+
+import kc_remapping_harness as H
+import noise_floor_trial_distances as NF
+from E10_joint_fit import base_kws, bouton_base, breadth_weights, e19_row
+from E26_claw_power import WEAK
+from E27_glomerulus_gain import ORACLE
+
+EXPERIMENT = 'E43_model_trial_noise'
+MODELS = {
+    'base70': 'claw-driven bouton base, 70 Hz per-claw threshold, tuned at 5 %',
+    'ref40': 'reference model (thr40_gain1.5_k2_cap3 at its fitted parameters)',
+}
+REF_FIT = 'thr40_gain1.5_k2_cap3'
+BASE_CLAW_THR = 70.0
+PARAM_KEYS = ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale')
+CONDS = ('on', 'acute_off')
+GENOTYPE = {'on': 'TNT3c', 'acute_off': 'TNT'}
+DATA_PREFIX = {'on': 'ctrl', 'acute_off': 'tnt'}
+TRANSFORMS = ('graded', 'thresholded')
+ODORS = list(H.APL16_ODORS)
+FRACTION_DEFS = ('trial', '2of3', 'count1', 'mean_resp')
+# (det_pn) PN entries counted as driven for the coefficient of variation of the window mean
+PN_ACTIVE_HZ = 20.0
+NOISE_NOTE = ('olfsysm sim_PN_layer adds N(mp.pn.noise.mean = 0, mp.pn.noise.sd) to dPN/dt of every glomerulus at every '
+    'time step; PN rate += dPNdt * dt / pn.taum, then rectified at 0. Stationary SD of the fluctuation (unrectified) = '
+    'sd * (dt / taum) / sqrt(1 - (1 - dt / taum)^2) = 0.160 * sd at dt 0.5 ms, taum 10 ms; correlation time taum; not '
+    'scaled by sqrt(dt). Generator: thread_local std::mt19937 seeded from std::random_device (not reseeded for preset '
+    'wirings): trials independent, not reproducible. APL on and APL off share each noisy PN trial.')
+
+
+# ---------------------------------------------------------------------------
+# small helpers
+def r3(x: float) -> float:
+    """`x` rounded to 3 significant digits (noise sds are kept at this precision)."""
+    return float(f'{float(x):.3g}')
+
+
+def sd_tag(sd: float) -> str:
+    return format(float(sd), '.4g').replace('+', '')
+
+
+def cal_path(out_dir: Path, name: str, sd: float, n: int) -> Path:
+    return out_dir / 'calibration' / f'{name}_sd{sd_tag(sd)}_n{n}.npz'
+
+
+def trials_path(out_dir: Path, name: str, sd: float, n: int, rep: int) -> Path:
+    return out_dir / 'trials' / f'{name}_sd{sd_tag(sd)}_n{n}_rep{rep:02d}.npz'
+
+
+def save_npz(path: Path, arrs: dict) -> None:
+    """Written to a temporary name first, so an interrupted run never leaves a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + '.tmp')
+    with open(tmp, 'wb') as f:
+        np.savez_compressed(f, **arrs)
+    os.replace(tmp, path)
+
+
+def load_npz(path: Path) -> dict:
+    with np.load(path) as z:
+        return {k: z[k] for k in z.files}
+
+
+def write_json(path: Path, obj) -> None:
+    path.write_text(json.dumps(obj, indent=1, default=str) + '\n')
+
+
+def to_arrays(responses: pd.DataFrame, spike_counts: pd.DataFrame):
+    """(responses as bool, spike counts as uint16), KCs x odors in ODORS order."""
+    r = H.abbrev_columns(responses.astype(float))[ODORS].to_numpy()
+    s = H.abbrev_columns(spike_counts.astype(float))[ODORS].to_numpy()
+    if not np.isin(r, (0.0, 1.0)).all():
+        raise ValueError('responses not 0 / 1')
+    if not np.array_equal(s, np.rint(s)) or s.min() < 0 or s.max() >= 2 ** 16:
+        raise ValueError('spike counts not non-negative integers < 2^16')
+    return r.astype(bool), s.astype(np.uint16)
+
+
+def pairs_of(mat: np.ndarray) -> pd.Series:
+    """Cosine pair distances of a KCs x odors array (ODORS order)."""
+    return H.pair_distances(pd.DataFrame(np.asarray(mat, dtype=float), columns=ODORS), 'cosine')
+
+
+def spearman_odors(a: pd.Series, b: pd.Series) -> float:
+    a, b = a.reindex(ODORS), b.reindex(ODORS)
+    ok = a.notna() & b.notna()
+    return float(sstats.spearmanr(a[ok], b[ok])[0]) if ok.sum() > 2 else np.nan
+
+
+@contextmanager
+def captured_olfsysm_vars(store: dict):
+    """Within the block, `fit_mb_model(..., return_olfsysm_vars=True)` also puts its mp / rv in
+    `store` (make_fixed_param_kc_simulator keeps them only in its closure)."""
+    import al_analysis.mb_model as mbm
+    orig = mbm.fit_mb_model
+
+    def wrapper(*args, **kwargs):
+        ret = orig(*args, **kwargs)
+        if kwargs.get('return_olfsysm_vars'):
+            store['mp'], store['rv'] = ret[3]['mp'], ret[3]['rv']
+        return ret
+
+    mbm.fit_mb_model = wrapper
+    try:
+        yield store
+    finally:
+        mbm.fit_mb_model = orig
+
+
+# ---------------------------------------------------------------------------
+# the data's pipeline, applied to KC data and model trials alike
+def summarize(recs: dict, how: str) -> dict:
+    """noise_floor_trial_distances' per-recording `analyse`, aggregated as its main() does: floors
+    as the mean over odors within a recording, then over recordings; pair distances (raw and
+    noise-corrected) as the mean over recordings.
+
+    Args:
+        recs: {recording: {odor: trials x KCs array}}.
+        how: 'graded' or 'thresholded' (NF.transform).
+    """
+    floors, pairs = [], []
+    for rec, by_odor in recs.items():
+        if len(by_odor) < 2:
+            continue
+        with np.errstate(invalid='ignore', divide='ignore'):
+            po, pr = NF.analyse(by_odor, how)
+        po = po.reset_index()
+        po.insert(0, 'recording', str(rec))
+        floors.append(po)
+        pairs.append(pr)
+    fl = pd.concat(floors, ignore_index=True)
+    by_rec = fl.groupby('recording')
+    return dict(
+        floor1=float(by_rec.single_trial_floor.mean().mean()),
+        floor_mean=float(by_rec.trial_mean_floor.mean().mean()),
+        reliability=float(by_rec.reliability.mean().mean()),
+        raw=pd.concat([p['raw'] for p in pairs], axis=1).mean(axis=1),
+        corrected=pd.concat([p['corrected'] for p in pairs], axis=1).mean(axis=1),
+        rec_raw=pd.DataFrame([p['raw'] for p in pairs]).reset_index(drop=True),
+        per_odor=fl.groupby('odor')[['single_trial_floor', 'trial_mean_floor', 'reliability']].mean().reindex(ODORS),
+        n_recordings=len(pairs),
+        # (odor, recording) whose noise estimate reached its trial-mean power (signal power clipped
+        # at 1e-12: trial-mean floor 1, corrected distances of its pairs unbounded), and corrected
+        # pair distances outside [0, 2] in any recording
+        n_no_signal=int((fl.reliability <= 1e-9).sum()),
+        n_corrected_out_of_range=int(sum(((p['corrected'] < 0) | (p['corrected'] > 2)).sum() for p in pairs)),
+    )
+
+
+def recordings(arr_list: list, cond: str, how: str):
+    """{pseudo-recording: {odor: trials x KCs spike counts}} from trial files, without odors whose
+    transformed trials are all zero in that pseudo-recording (their cosine is undefined, and
+    `analyse` would divide by zero); also returns how many (recording, odor) were dropped."""
+    recs, n_silent = {}, 0
+    for i, a in enumerate(arr_list):
+        X = a[f'{cond}_spk'].astype(float)
+        by_odor = {}
+        for j, o in enumerate(ODORS):
+            if not NF.transform(X[:, :, j], how).any():
+                n_silent += 1
+                continue
+            by_odor[o] = X[:, :, j]
+        recs[i] = by_odor
+    return recs, n_silent
+
+
+def data_side() -> dict:
+    """The KC data through `summarize` (both genotypes and transforms), their split-half ρ, and the
+    per-odor response fractions (trial mean > 1, mean over recordings)."""
+    out = {}
+    for g in ('TNT3c', 'TNT'):
+        recs = NF.recording_arrays(NF.load_trials(g))
+        for how in TRANSFORMS:
+            s = summarize(recs, how)
+            s['split_half'] = H.split_half_reliability(s['rec_raw'], n_splits=200, seed=0)
+            out[(g, how)] = s
+        out[(g, 'fractions')] = H.yang_response_fractions(g)[ODORS].mean()
+    return out
+
+
+def trial_set_floors(arrs: dict, cond: str, how: str = 'graded') -> dict:
+    recs, n_silent = recordings([arrs], cond, how)
+    s = summarize(recs, how)
+    return dict(floor1=s['floor1'], floor_mean=s['floor_mean'], n_silent=n_silent)
+
+
+def pn_stats(arr_list: list, det_pn: dict) -> dict:
+    """PN noise in Hz from the trials' PN summaries (odors x glomeruli per trial)."""
+    win = [a['pn_win'].astype(float) for a in arr_list]
+    det_win = det_pn['pn_win'].astype(float)   # odors x glomeruli (the sd = 0 trial)
+    active = det_win >= PN_ACTIVE_HZ
+    n_tr = win[0].shape[0]
+    tsd = [w.std(axis=0, ddof=1) for w in win] if n_tr > 1 else []
+    return dict(
+        pn_window_mean_hz_det=float(det_win.mean()),
+        pn_window_mean_hz=float(np.mean([w.mean() for w in win])),
+        pn_window_trial_sd_hz=float(np.mean(tsd)) if tsd else np.nan,
+        pn_window_trial_cv_driven=float(np.mean([(s[active] / det_win[active]).mean() for s in tsd])) if tsd and active.any() else np.nan,
+        pn_pre_temporal_sd_hz_det=float(det_pn['pn_pre_sd'].astype(float).mean()),
+        pn_pre_temporal_sd_hz=float(np.mean([a['pn_pre_sd'].astype(float).mean() for a in arr_list])),
+    )
+
+
+def fractions(arr_list: list, cond: str, n_spikes_for_response: int) -> dict:
+    """Per-odor response fractions of the noisy trials under the four definitions (FRACTION_DEFS),
+    each a mean over pseudo-recordings: 'trial' the per-trial response averaged over trials,
+    '2of3' a response in at least ceil(2 T / 3) of the T trials, 'count1' trial-mean spike count
+    >= 1, 'mean_resp' trial-mean spike count >= the per-trial criterion (2 spikes)."""
+    resp = [a[f'{cond}_resp'].astype(float) for a in arr_list]
+    spk = [a[f'{cond}_spk'].astype(float) for a in arr_list]
+    k = math.ceil(2 * resp[0].shape[0] / 3)
+    vals = dict(
+        trial=np.concatenate(resp).mean(axis=(0, 1)),
+        **{'2of3': np.mean([(r.sum(axis=0) >= k).mean(axis=0) for r in resp], axis=0)},
+        count1=np.mean([(s.mean(axis=0) >= 1).mean(axis=0) for s in spk], axis=0),
+        mean_resp=np.mean([(s.mean(axis=0) >= n_spikes_for_response).mean(axis=0) for s in spk], axis=0),
+    )
+    return {d: pd.Series(vals[d], index=ODORS) for d in FRACTION_DEFS}
+
+
+def onoff_cols(st: dict) -> dict:
+    return dict(block=st['block_fruity_small_iso'], block_other_between=st['block_other_between_iso'],
+        iso_r2=st['iso_r2'], lin_r2=st['lin_r2'], rho_on_off=st['spearman_on_off'], mean_on=st['mean_on'],
+        mean_off=st['mean_off'])
+
+
+# ---------------------------------------------------------------------------
+# the models
+class NoisyModel:
+    """One model at fixed parameters, re-run trial by trial with PN noise.
+
+    Builds the model (`make_fixed_param_kc_simulator`, keeping its olfsysm mp / rv), runs the
+    deterministic APL-on and acute APL-off outputs (`det`), and gives `trial(sd)` /
+    `trials(sd, n)`.
+    """
+
+    def __init__(self, name: str, orn: pd.DataFrame, out_dir: Path):
+        from al_analysis.mb_model import get_time_index, make_fixed_param_kc_simulator
+        self.name = name
+        self.info: dict = {}
+        if name == 'base70':
+            r = e19_row(BASE_CLAW_THR, 0.0, 0.0)
+            p_on = {k: float(r[k]) for k in PARAM_KEYS}
+            kws = base_kws(BASE_CLAW_THR)
+            hal = H.shared_dir() / 'data' / 'hal_outputs' / 'E16_claw_saturation'
+            self.saved = {c: [hal / f'bouton_thr{BASE_CLAW_THR:g}_{c}_{kind}.parquet' for kind in ('responses', 'spike_counts')]
+                for c in CONDS}
+            self.info.update(source='E19 stats row thr70_k0_kckc0 (E16 bouton_thr70, tuned at 5 % with APL on)',
+                claw_thr=BASE_CLAW_THR, k=0.0, gain=1.0, kc_kc_inh=0.0)
+        elif name == 'ref40':
+            fit = pd.read_csv(H.shared_dir() / 'results' / 'E34_gain_bounded' / 'fits.csv').set_index('tag').loc[REF_FIT]
+            claw_thr, k, gain = float(fit['claw_thr']), float(fit['k']), float(fit['gain'])
+            tau = float(fit['kc_kc_tau'])
+            if sorted(str(fit['gain_glomeruli']).split(',')) != sorted(ORACLE):
+                raise ValueError(f"{REF_FIT}: gain glomeruli {fit['gain_glomeruli']} are not the oracle set {ORACLE}")
+            p_on = {kk: float(fit[kk]) for kk in PARAM_KEYS}
+            p_on['wKCKC_scale'] = float(fit['kc_kc_inh'])
+            _, wnorm, W, breadth = bouton_base(orn, out_dir, claw_thr=claw_thr, gain=gain)
+            kws = dict(base_kws(claw_thr), _wPNKC=W, _wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, k),
+                _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'],
+                kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau)
+            # E34's own outputs: this host's copy, else the shared archive
+            e34 = next((d for d in (H.HERE / 'outputs' / 'E34_gain_bounded',
+                H.shared_dir() / 'data' / 'model_outputs' / 'E34_gain_bounded') if (d / f'{REF_FIT}_on_responses.parquet').exists()),
+                H.HERE / 'outputs' / 'E34_gain_bounded')
+            self.saved = {c: [e34 / f'{REF_FIT}_{c}_{kind}.parquet' for kind in ('responses', 'spike_counts')] for c in CONDS}
+            self.info.update(source=f'results/E34_gain_bounded/fits.csv row {REF_FIT}', claw_thr=claw_thr, k=k, gain=gain,
+                gain_glomeruli=list(ORACLE), kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau)
+            # the gained wiring's APL-off breadth against E34's
+            b_saved = e34 / f'gain{gain:g}_thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
+            b_mine = out_dir / f'gain{gain:g}_thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
+            if b_saved.exists() and b_mine.exists():
+                self.info['breadth_run_max_abs_diff_vs_e34'] = float(np.abs(pd.read_parquet(b_saved).astype(float).to_numpy()
+                    - pd.read_parquet(b_mine).astype(float).to_numpy()).max())
+        else:
+            raise ValueError(name)
+        self.kws_scalar = {k: v for k, v in kws.items() if not k.startswith('_')}
+        store: dict = {}
+        with captured_olfsysm_vars(store):
+            self.sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p_on, **kws)
+        self.mp, self.rv = store['mp'], store['rv']
+        self.params = {'on': dict(p_on), 'acute_off': dict(p_on, wAPLKC_scale=0.0, wAPLPN_scale=0.0)}
+        t = np.asarray(get_time_index(self.mp, self.rv), dtype=float)
+        self.win = (t >= self.mp.time_stim_start) & (t < self.mp.time_stim_end)
+        self.pre = (t >= self.mp.time_start) & (t < self.mp.time_stim_start)
+        inputs = [H.odor_abbrev(c) for c in orn.columns]
+        self.pn_idx = [inputs.index(o) for o in ODORS]
+        self.n_spikes_for_response = int(self.mp.kc.n_spikes_for_response)
+        if float(self.mp.pn.noise.sd) != 0.0 or float(self.mp.pn.noise.mean) != 0.0:
+            raise RuntimeError('the model was built with PN noise')
+        self.det_frames = {cond: self.sim(p) for cond, p in self.params.items()}
+        self.det = {cond: to_arrays(*rs) for cond, rs in self.det_frames.items()}
+
+    def trial(self, sd: float) -> dict:
+        """One trial at noise sd: PN layer with noise, then the KC layer with APL on and APL off."""
+        import olfsysm as osm
+        from al_analysis.mb_model import get_sim_var
+        self.mp.pn.noise.sd = float(sd)
+        try:
+            if float(self.mp.pn.noise.sd) != float(sd):
+                raise RuntimeError('could not set mp.pn.noise.sd')
+            osm.run_PN_sims(self.mp, self.rv)
+            out = {}
+            for cond, p in self.params.items():
+                out[f'{cond}_resp'], out[f'{cond}_spk'] = to_arrays(*self.sim(p))
+            pn = np.asarray(get_sim_var(self.rv.pn, 'pn_sims'), dtype=float)
+            if pn.shape[0] != len(self.pn_idx) or pn.shape[2] != len(self.win):
+                raise RuntimeError(f'unexpected PN sims shape {pn.shape}')
+            pn = pn[self.pn_idx]
+            out['pn_win'] = pn[:, :, self.win].mean(axis=2).astype(np.float32)
+            out['pn_pre_sd'] = pn[:, :, self.pre].std(axis=2).astype(np.float32)
+        finally:
+            self.mp.pn.noise.sd = 0.0
+        return out
+
+    def trials(self, sd: float, n: int) -> dict:
+        trs = [self.trial(sd) for _ in range(n)]
+        out = {k: np.stack([tr[k] for tr in trs]) for k in trs[0]}
+        out['noise_sd'] = np.asarray(float(sd))
+        return out
+
+    def check_sd0(self) -> tuple:
+        """A trial at sd = 0 against the deterministic run: mismatching entries per condition."""
+        tr = self.trial(0.0)
+        res = {cond: dict(responses_mismatch=int((tr[f'{cond}_resp'] != self.det[cond][0]).sum()),
+            spike_counts_mismatch=int((tr[f'{cond}_spk'] != self.det[cond][1]).sum())) for cond in CONDS}
+        return res, tr
+
+    def close(self) -> None:
+        del self.sim, self.mp, self.rv, self.det_frames
+        gc.collect()
+
+
+class Session:
+    """One model's simulations in this process; the model is built on first need, with its
+    deterministic outputs saved / compared and the sd = 0 checks asserted and recorded."""
+
+    def __init__(self, name: str, orn: pd.DataFrame, out_dir: Path, checks: dict, checks_path: Path, prov: dict,
+            prov_path: Path):
+        self.name, self.orn, self.out_dir = name, orn, out_dir
+        self.checks, self.checks_path, self.prov, self.prov_path = checks, checks_path, prov, prov_path
+        self.model = None
+        self.n_noisy = 0
+        self.record: dict = {}
+        self.sim_seconds = 0.0
+        self.n_trials_run = 0
+
+    def get(self) -> NoisyModel:
+        if self.model is not None:
+            return self.model
+        t0 = time.time()
+        m = NoisyModel(self.name, self.orn, self.out_dir)
+        build_s = time.time() - t0
+        rec = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), build_seconds=build_s, **m.info)
+        # the deterministic run: saved on first build, compared exactly on later builds
+        det_vs_previous = {}
+        for cond, (r, s) in m.det_frames.items():
+            rp, sp = (self.out_dir / f'{self.name}_{cond}_{kind}.parquet' for kind in ('responses', 'spike_counts'))
+            if rp.exists() and sp.exists():
+                pr, ps = to_arrays(pd.read_parquet(rp), pd.read_parquet(sp))
+                det_vs_previous[cond] = int((pr != m.det[cond][0]).sum() + (ps != m.det[cond][1]).sum())
+            else:
+                r.to_parquet(rp)
+                s.to_parquet(sp)
+        rec['det_mismatch_vs_previous_session'] = det_vs_previous
+        # against the experiment's own saved outputs (E16 / E34)
+        saved = {}
+        for cond, (rp, sp) in m.saved.items():
+            if rp.exists() and sp.exists():
+                pr, ps = to_arrays(pd.read_parquet(rp), pd.read_parquet(sp))
+                saved[cond] = dict(file=str(rp), responses_mismatch=int((pr != m.det[cond][0]).sum()),
+                    spike_counts_mismatch=int((ps != m.det[cond][1]).sum()))
+            else:
+                saved[cond] = dict(file=str(rp), missing=True)
+        rec['det_vs_saved'] = saved
+        res0, tr0 = m.check_sd0()
+        rec['sd0_trial_vs_det_at_build'] = res0
+        rec['rate_det'] = {cond: float(m.det[cond][0].mean()) for cond in CONDS}
+        rec['n_kcs'] = int(m.det['on'][0].shape[0])
+        self.record = rec
+        self._save_checks()
+        print(f"{self.name}: built in {build_s:.0f}s; {rec['n_kcs']} KCs; deterministic response rate on "
+            f"{rec['rate_det']['on']:.4f} off {rec['rate_det']['acute_off']:.4f}; vs saved {saved}; sd = 0 trial vs "
+            f"deterministic {res0}", flush=True)
+        bad = [c for c, v in res0.items() if v['responses_mismatch'] or v['spike_counts_mismatch']]
+        assert not bad, f'{self.name}: the sd = 0 trial did not reproduce the deterministic run ({res0})'
+        assert not any(det_vs_previous.values()), f'{self.name}: deterministic run differs from the previous session ({det_vs_previous})'
+        bad = [c for c, v in saved.items() if not v.get('missing') and (v['responses_mismatch'] or v['spike_counts_mismatch'])]
+        assert not bad, f'{self.name}: deterministic run differs from the saved outputs ({saved})'
+        save_npz(self.out_dir / f'{self.name}_det_pn.npz', {k: v for k, v in tr0.items() if k.startswith('pn_')})
+        meta = dict(model=self.name, description=MODELS[self.name], kws=m.kws_scalar, params=m.params,
+            n_spikes_for_response=m.n_spikes_for_response, n_kcs=rec['n_kcs'], n_pn_glomeruli=int(tr0['pn_win'].shape[-1]), **m.info)
+        write_json(self.out_dir / f'{self.name}_meta.json', meta)
+        self.prov.setdefault('bases', {})[self.name] = m.kws_scalar
+        self.prov.setdefault('params', {})[self.name] = m.params
+        self.prov.setdefault('model_info', {})[self.name] = m.info
+        write_json(self.prov_path, self.prov)
+        self.model = m
+        return m
+
+    def _save_checks(self) -> None:
+        sessions = self.checks.setdefault(self.name, [])
+        if sessions and sessions[-1].get('generated') == self.record.get('generated'):
+            sessions[-1] = self.record
+        else:
+            sessions.append(self.record)
+        write_json(self.checks_path, self.checks)
+
+    def ensure(self, path: Path, sd: float, n: int) -> dict:
+        """The n trials at noise sd stored at `path`, simulated first if missing."""
+        if path.exists():
+            return load_npz(path)
+        m = self.get()
+        t0 = time.time()
+        arrs = m.trials(sd, n)
+        dt = time.time() - t0
+        save_npz(path, arrs)
+        self.sim_seconds += dt
+        self.n_trials_run += n
+        self.n_noisy += n if sd > 0 else 0
+        print(f'{self.name}: {n} trials at sd {sd:g} in {dt:.0f}s ({dt / n:.1f}s per trial) -> {path.name}', flush=True)
+        return arrs
+
+    def finish(self) -> None:
+        if self.model is None:
+            return
+        if self.n_noisy:
+            res, _ = self.model.check_sd0()
+            self.record['sd0_trial_vs_det_after_noisy_trials'] = res
+            self.record['n_noisy_trials_this_session'] = self.n_noisy
+            self.record['seconds_per_trial'] = self.sim_seconds / max(self.n_trials_run, 1)
+            self._save_checks()
+            print(f'{self.name}: sd = 0 trial after {self.n_noisy} noisy trials vs deterministic {res}', flush=True)
+            bad = [c for c, v in res.items() if v['responses_mismatch'] or v['spike_counts_mismatch']]
+            assert not bad, f'{self.name}: after the noisy trials, the sd = 0 trial no longer reproduces the deterministic run ({res})'
+        self.model.close()
+        self.model = None
+
+
+# ---------------------------------------------------------------------------
+# calibration
+def interpolate_sd(points: dict, cond: str, target: float) -> dict:
+    """sd at which the floor of `cond` crosses `target` (first upward crossing, linear in log sd),
+    or the closest point if no pair of points brackets it."""
+    sds = sorted(points)
+    f = [points[s][cond] for s in sds]
+    for i in range(len(sds) - 1):
+        if f[i] <= target <= f[i + 1] and f[i + 1] > f[i]:
+            x0, x1 = np.log(sds[i]), np.log(sds[i + 1])
+            sd = float(np.exp(x0 + (target - f[i]) / (f[i + 1] - f[i]) * (x1 - x0)))
+            return dict(sd=r3(sd), bracketed=True, between=[sds[i], sds[i + 1]], target=target)
+    j = int(np.argmin(np.abs(np.asarray(f) - target)))
+    return dict(sd=sds[j], bracketed=False, between=None, target=target)
+
+
+def calibrate(sess: Session, grid: list, n_cal: int, max_extend: int, refine: int, targets: dict, det_pn_path: Path):
+    """Floors at the grid (extended / refined as needed) and the sds matching the data's floors.
+
+    Returns (calibration rows, {'points', 'matched', 'step', ...})."""
+    pts, rows = {}, []
+    grid = sorted(r3(g) for g in grid)
+
+    def measure(sd: float, kind: str) -> None:
+        sd = r3(sd)
+        if sd in pts:
+            return
+        arrs = sess.ensure(cal_path(sess.out_dir, sess.name, sd, n_cal), sd, n_cal)
+        pts[sd] = {}
+        pn = pn_stats([arrs], load_npz(det_pn_path)) if det_pn_path.exists() else {}
+        for cond in CONDS:
+            fg = trial_set_floors(arrs, cond, 'graded')
+            ft = trial_set_floors(arrs, cond, 'thresholded')
+            pts[sd][cond] = fg['floor1']
+            rows.append(dict(model=sess.name, noise_sd=sd, kind=kind, condition=cond, n_trials=n_cal,
+                single_trial_floor=fg['floor1'], trial_mean_floor=fg['floor_mean'], n_silent_odors=fg['n_silent'],
+                single_trial_floor_thresholded=ft['floor1'], target_single_trial_floor=targets[cond],
+                rate_trial=float(arrs[f'{cond}_resp'].mean()), spikes_per_kc_odor=float(arrs[f'{cond}_spk'].astype(float).mean()), **pn))
+        print(f"{sess.name} calibration sd {sd:g} ({kind}): single-trial floor APL on {pts[sd]['on']:.3f} "
+            f"(control flies {targets['on']:.3f}), APL off {pts[sd]['acute_off']:.3f} (APL output blocked (TNT) "
+            f"{targets['acute_off']:.3f})", flush=True)
+
+    def peak(c: str) -> float:
+        return max(pts, key=lambda s: pts[s][c])
+
+    for sd in grid:
+        measure(sd, 'grid')
+    step = grid[-1] / grid[-2] if len(grid) > 1 and grid[-1] > grid[-2] else 2.0
+    # The floor is not monotone in sd: it rises from 0, peaks, then falls as heavy noise makes every
+    # KC fire on every trial (rate -> 1, trials alike). Extend up only while a floor below its target
+    # is still rising at the top of the points; down while the lowest point is above the target.
+    for _ in range(max_extend):
+        if not any(pts[peak(c)][c] < targets[c] and peak(c) == max(pts) for c in CONDS):
+            break
+        measure(max(pts) * step, 'extension')
+    for _ in range(max_extend):
+        if not any(pts[min(pts)][c] > targets[c] for c in CONDS):
+            break
+        measure(min(pts) / step, 'extension')
+    for _ in range(refine):
+        new = set()
+        for c in CONDS:
+            m = interpolate_sd(pts, c, targets[c])
+            if m['bracketed']:
+                new.add(m['sd'])
+            else:   # never reached: locate the floor's peak more closely instead
+                new |= {r3(peak(c) * step ** 0.5), r3(peak(c) / step ** 0.5)}
+        new = sorted(new - set(pts))
+        if not new:
+            break
+        for sd in new:
+            measure(sd, 'refine')
+    matched = {c: interpolate_sd(pts, c, targets[c]) for c in CONDS}
+    peaks = {c: dict(sd=peak(c), floor=pts[peak(c)][c]) for c in CONDS}
+    for c, m in matched.items():
+        if not m['bracketed']:
+            print(f'{sess.name}: WARNING the {c} single-trial floor never reached {targets[c]:.3f} over sd {min(pts):g}-{max(pts):g} '
+                f'(largest {peaks[c]["floor"]:.3f} at sd {peaks[c]["sd"]:g}); using the closest point, sd {m["sd"]:g}', flush=True)
+    return rows, dict(grid=grid, step=step, n_cal_trials=n_cal, points={str(k): v for k, v in sorted(pts.items())}, matched=matched,
+        peaks=peaks)
+
+
+def make_levels(matched: dict, peaks: dict, bracket) -> dict:
+    """label -> sd: the matched sds first, then `bracket[0]` x the smaller and `bracket[1]` x the
+    larger; when the larger bracket lies beyond the sd of either floor's peak (where more noise only
+    makes trials more alike), `bracket[0]`^2 x the smaller instead ('lo2'). Labels are joined with
+    '+' where two levels coincide."""
+    m_on, m_off = matched['on']['sd'], matched['acute_off']['sd']
+    lv: dict = {}
+
+    def add(label, sd):
+        sd = r3(sd)
+        for k, v in list(lv.items()):
+            if v == sd:
+                lv[f'{k}+{label}'] = lv.pop(k)
+                return
+        lv[label] = sd
+
+    add('match_on', m_on)
+    add('match_off', m_off)
+    add('lo', bracket[0] * min(m_on, m_off))
+    hi = bracket[1] * max(m_on, m_off)
+    if hi <= min(p['sd'] for p in peaks.values()):
+        add('hi', hi)
+    else:
+        add('lo2', bracket[0] ** 2 * min(m_on, m_off))
+    return lv
+
+
+# ---------------------------------------------------------------------------
+# analysis
+def load_det(out_dir: Path, name: str) -> dict:
+    return {cond: tuple(a.astype(float) for a in to_arrays(*(pd.read_parquet(out_dir / f'{name}_{cond}_{kind}.parquet')
+        for kind in ('responses', 'spike_counts')))) for cond in CONDS}
+
+
+def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir: Path, data: dict) -> pd.DataFrame:
+    stats, odor_rows, pair_rows, onoff_rows = [], [], [], []
+    for how in TRANSFORMS:
+        for kind in ('raw', 'corrected'):
+            st, _ = H.compare_on_off(data[('TNT3c', how)][kind], data[('TNT', how)][kind])
+            onoff_rows.append(dict(model='data', level='-', noise_sd=np.nan, transform=how, matrix=kind, **onoff_cols(st)))
+    for name, lv in levels_all.items():
+        meta_path = out_dir / f'{name}_meta.json'
+        if not meta_path.exists():
+            print(f'{name}: no {meta_path.name}; skipped in the analysis', flush=True)
+            continue
+        meta = json.loads(meta_path.read_text())
+        det = load_det(out_dir, name)
+        det_pn = load_npz(out_dir / f'{name}_det_pn.npz')
+        det_pairs = {(c, how): pairs_of(NF.transform(det[c][1], how)) for c in CONDS for how in TRANSFORMS}
+        for how in TRANSFORMS:
+            st, _ = H.compare_on_off(det_pairs[('on', how)], det_pairs[('acute_off', how)])
+            onoff_rows.append(dict(model=name, level='deterministic', noise_sd=0.0, transform=how, matrix='deterministic', **onoff_cols(st)))
+        for label, sd in lv['levels'].items():
+            arrs = [load_npz(p) for p in (trials_path(out_dir, name, sd, n_tr, r) for r in range(n_rec)) if p.exists()]
+            if not arrs:
+                continue
+            pn = pn_stats(arrs, det_pn)
+            mats = {}
+            for cond in CONDS:
+                g = GENOTYPE[cond]
+                matched_to = [c for c in CONDS if lv['matched'][c]['sd'] == sd]
+                spk_all = np.concatenate([a[f'{cond}_spk'] for a in arrs]).astype(float)
+                fr = fractions(arrs, cond, int(meta['n_spikes_for_response']))
+                det_fr = pd.Series(det[cond][0].mean(axis=0), index=ODORS)
+                data_fr = data[(g, 'fractions')]
+                rc = dict(rate_det=float(det_fr.mean()), data_rate=float(data_fr.mean()), weak_frac_det=float(det_fr[WEAK].mean()),
+                    data_weak_frac=float(data_fr[WEAK].mean()), rate_rho_vs_data_det=spearman_odors(det_fr, data_fr))
+                for d, f in fr.items():
+                    rc[f'rate_{d}'] = float(f.mean())
+                    rc[f'weak_frac_{d}'] = float(f[WEAK].mean())
+                    rc[f'rate_rho_vs_data_{d}'] = spearman_odors(f, data_fr)
+                rc['rate_bias_trial'] = rc['rate_trial'] - rc['rate_det']
+                rc['rate_rho_trial_vs_det'] = spearman_odors(fr['trial'], det_fr)
+                rc['spikes_per_kc_odor_det'] = float(det[cond][1].mean())
+                rc['spikes_per_kc_odor'] = float(spk_all.mean())
+                rc['spike_ratio_noisy_over_det'] = rc['spikes_per_kc_odor'] / max(rc['spikes_per_kc_odor_det'], 1e-12)
+                params = meta['params'][cond]
+                for how in TRANSFORMS:
+                    recs, n_silent = recordings(arrs, cond, how)
+                    s = summarize(recs, how)
+                    d = data[(g, how)]
+                    grand = np.mean([NF.transform(x, how) for x in spk_all], axis=0)
+                    grand_p, det_p = pairs_of(grand), det_pairs[(cond, how)]
+                    mats[(cond, how)] = dict(raw=s['raw'], corrected=s['corrected'], grand=grand_p)
+                    sh = H.split_half_reliability(s['rec_raw'], n_splits=200, seed=0) if s['n_recordings'] >= 4 else {}
+                    raw_a, det_a = H.align_pairs(s['raw'], det_p)
+                    cor_a, det_b = H.align_pairs(s['corrected'], det_p)
+                    row = dict(tag=f'{name}__{label}__{cond}__{how}', variant=f'{name}__{label}', model=name, base='bouton',
+                        level=label, noise_sd=float(sd), matched_to='+'.join(matched_to), condition=cond, transform=how,
+                        n_recordings=s['n_recordings'], n_trials=int(arrs[0][f'{cond}_spk'].shape[0]),
+                        n_silent_odor_recordings=n_silent, n_no_signal_odor_recordings=s['n_no_signal'],
+                        n_corrected_pairs_out_of_range=s['n_corrected_out_of_range'],
+                        claw_thr=meta.get('claw_thr'), k=meta.get('k'), gain=meta.get('gain'), kc_kc_tau=meta.get('kc_kc_tau', np.nan),
+                        kc_kc_inh=params.get('wKCKC_scale', 0.0), **{kk: params[kk] for kk in PARAM_KEYS},
+                        single_trial_floor=s['floor1'], trial_mean_floor=s['floor_mean'], reliability=s['reliability'],
+                        data_single_trial_floor=d['floor1'], data_trial_mean_floor=d['floor_mean'], data_reliability=d['reliability'],
+                        mean_dist_raw=float(s['raw'].mean()), mean_dist_corrected=float(s['corrected'].mean()),
+                        mean_dist_det=float(det_p.mean()), mean_dist_grand=float(grand_p.mean()),
+                        data_mean_dist_raw=float(d['raw'].mean()), data_mean_dist_corrected=float(d['corrected'].mean()),
+                        raw_minus_det=float(s['raw'].mean() - det_p.mean()), corrected_minus_det=float(s['corrected'].mean() - det_p.mean()),
+                        grand_minus_det=float(grand_p.mean() - det_p.mean()),
+                        pair_mae_raw_vs_det=float((raw_a - det_a).abs().mean()), pair_mae_corrected_vs_det=float((cor_a - det_b).abs().mean()),
+                        rho_raw_vs_data=H.spearman(s['raw'], d['raw']), rho_corrected_vs_data=H.spearman(s['corrected'], d['raw']),
+                        rho_corrected_vs_data_corrected=H.spearman(s['corrected'], d['corrected']),
+                        rho_grand_vs_data=H.spearman(grand_p, d['raw']),
+                        rho_det_vs_data=H.spearman(det_p, d['raw']), rho_det_vs_data_corrected=H.spearman(det_p, d['corrected']),
+                        rho_raw_vs_det=H.spearman(s['raw'], det_p), rho_corrected_vs_det=H.spearman(s['corrected'], det_p),
+                        rho_grand_vs_det=H.spearman(grand_p, det_p),
+                        model_split_half_rho=sh.get('split_half', np.nan), model_ceiling=sh.get('ceiling', np.nan),
+                        data_split_half_rho=d['split_half']['split_half'], data_ceiling=d['split_half']['ceiling'],
+                        **rc, **pn)
+                    stats.append(row)
+                    pdf = pd.DataFrame({'raw': s['raw'], 'corrected': s['corrected'], 'det': det_p, 'grand': grand_p,
+                        'data_raw': d['raw'], 'data_corrected': d['corrected']})
+                    pdf.index.names = ['odor_a', 'odor_b']
+                    pdf = pdf.reset_index()
+                    for col, val in (('transform', how), ('condition', cond), ('noise_sd', float(sd)), ('level', label), ('model', name)):
+                        pdf.insert(0, col, val)
+                    pair_rows.append(pdf)
+                    if how == 'graded':
+                        po, dpo = s['per_odor'], d['per_odor']
+                        det_spk_o = det[cond][1].mean(axis=0)
+                        spk_o = spk_all.mean(axis=(0, 1))
+                        for j, o in enumerate(ODORS):
+                            odor_rows.append(dict(model=name, level=label, noise_sd=float(sd), condition=cond, odor=o, weak=o in WEAK,
+                                det_frac=float(det_fr[o]), **{f'frac_{dd}': float(fr[dd][o]) for dd in FRACTION_DEFS},
+                                data_frac=float(data_fr[o]), single_trial_floor=float(po.at[o, 'single_trial_floor']),
+                                trial_mean_floor=float(po.at[o, 'trial_mean_floor']),
+                                data_single_trial_floor=float(dpo.at[o, 'single_trial_floor']),
+                                data_trial_mean_floor=float(dpo.at[o, 'trial_mean_floor']),
+                                spikes_per_kc_det=float(det_spk_o[j]), spikes_per_kc=float(spk_o[j])))
+            for how in TRANSFORMS:
+                for kind in ('raw', 'corrected', 'grand'):
+                    st, _ = H.compare_on_off(mats[('on', how)][kind], mats[('acute_off', how)][kind])
+                    onoff_rows.append(dict(model=name, level=label, noise_sd=float(sd), transform=how, matrix=kind, **onoff_cols(st)))
+    st = pd.DataFrame(stats)
+    st.to_csv(res_dir / 'stats_noise.csv', index=False)
+    pd.DataFrame(onoff_rows).to_csv(res_dir / 'onoff_noise.csv', index=False)
+    if odor_rows:
+        pd.DataFrame(odor_rows).to_csv(res_dir / 'per_odor_noise.csv', index=False)
+    if pair_rows:
+        pd.concat(pair_rows, ignore_index=True).to_csv(res_dir / 'pairs_noise_long.csv', index=False)
+    return st
+
+
+def print_summary(st: pd.DataFrame, res_dir: Path) -> None:
+    if not len(st):
+        return
+    g = st[st['transform'] == 'graded'].copy()
+    cols = ['model', 'level', 'noise_sd', 'condition', 'n_recordings', 'single_trial_floor', 'data_single_trial_floor',
+        'trial_mean_floor', 'data_trial_mean_floor', 'mean_dist_raw', 'data_mean_dist_raw', 'mean_dist_corrected',
+        'data_mean_dist_corrected', 'mean_dist_det', 'rho_raw_vs_data', 'rho_det_vs_data', 'model_ceiling', 'data_ceiling',
+        'rate_det', 'rate_trial', 'rate_2of3', 'rate_count1', 'rate_mean_resp', 'data_rate', 'weak_frac_det', 'weak_frac_trial',
+        'pn_pre_temporal_sd_hz', 'pn_window_trial_sd_hz']
+    pd.set_option('display.width', 250)
+    print(g[[c for c in cols if c in g]].round(3).to_string(index=False))
+    oo = pd.read_csv(res_dir / 'onoff_noise.csv')
+    print(oo[oo['transform'] == 'graded'].round(3).to_string(index=False))
+
+
+# ---------------------------------------------------------------------------
+# figure
+COLORS = {'on': '#2a78d6', 'acute_off': '#eb6834'}
+COND_LABEL = {'on': 'APL on', 'acute_off': 'APL off'}
+DATA_LABEL = {'on': 'control flies', 'acute_off': 'APL output blocked (TNT)'}
+KIND_COLORS = {'raw': '#1baf7a', 'corrected': '#6250d6', 'grand': '#eda100'}
+
+
+def make_figure(res_dir: Path) -> None:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    st = pd.read_csv(res_dir / 'stats_noise.csv')
+    cal = pd.read_csv(res_dir / 'calibration.csv') if (res_dir / 'calibration.csv').exists() else pd.DataFrame()
+    oo = pd.read_csv(res_dir / 'onoff_noise.csv')
+    lv = json.loads((res_dir / 'noise_levels.json').read_text())
+    g = st[st['transform'] == 'graded']
+    models = [m for m in MODELS if m in set(g.model)]
+    if not models:
+        return
+    fig, axes = plt.subplots(len(models), 7, figsize=(31, 4.8 * len(models)), squeeze=False)
+
+    def first(s, col):
+        return float(s[col].iloc[0]) if len(s) else np.nan
+
+    for i, m in enumerate(models):
+        ax = axes[i]
+        gm = g[g.model == m]
+        per = {c: gm[gm.condition == c].sort_values('noise_sd') for c in CONDS}
+        # 1: calibration
+        a = ax[0]
+        for c in CONDS:
+            if len(cal):
+                cc = cal[(cal.model == m) & (cal.condition == c)].sort_values('noise_sd')
+                a.plot(cc.noise_sd, cc.single_trial_floor, 'o-', color=COLORS[c], ms=4, lw=1, label=f'{COND_LABEL[c]}, calibration trials')
+            a.plot(per[c].noise_sd, per[c].single_trial_floor, 'D', color=COLORS[c], ms=8, mfc='none', mew=1.5,
+                label=f'{COND_LABEL[c]}, pseudo-recordings')
+            a.axhline(first(per[c], 'data_single_trial_floor'), color=COLORS[c], ls=':', lw=1.2, label=f'KCs, {DATA_LABEL[c]}')
+            if m in lv:
+                a.axvline(lv[m]['matched'][c]['sd'], color=COLORS[c], lw=0.8, alpha=0.5)
+        a.set_title('same-odor distance between single trials (floor)\n(dotted: KC data; vertical: matched noise)', fontsize=9)
+        a.set_ylabel(f'{m}: {MODELS[m]}', fontsize=8)
+        # 2: mean pair distance
+        a = ax[1]
+        for c in CONDS:
+            a.plot(per[c].noise_sd, per[c].mean_dist_raw, 'o-', color=COLORS[c], ms=5, lw=1.3, label=f'{COND_LABEL[c]}, 3-trial means')
+            a.plot(per[c].noise_sd, per[c].mean_dist_corrected, 's--', color=COLORS[c], ms=5, lw=1.3, label=f'{COND_LABEL[c]}, noise-corrected')
+            a.axhline(first(per[c], 'mean_dist_det'), color=COLORS[c], lw=1, alpha=0.6, label=f'{COND_LABEL[c]}, deterministic')
+            a.axhline(first(per[c], 'data_mean_dist_raw'), color='0.45', ls=':', lw=1)
+            a.axhline(first(per[c], 'data_mean_dist_corrected'), color='0.45', ls='-.', lw=0.8)
+        a.set_title('mean pair distance (1 - cosine)\n(KC data: dotted raw {:.2f} / {:.2f}, dash-dot noise-corrected {:.2f} / {:.2f})'.format(
+            first(per['on'], 'data_mean_dist_raw'), first(per['acute_off'], 'data_mean_dist_raw'),
+            first(per['on'], 'data_mean_dist_corrected'), first(per['acute_off'], 'data_mean_dist_corrected')), fontsize=9)
+        # 3: rho with the KC data
+        a = ax[2]
+        for c in CONDS:
+            a.plot(per[c].noise_sd, per[c].rho_raw_vs_data, 'o-', color=COLORS[c], ms=5, lw=1.3, label=f'{COND_LABEL[c]}, 3-trial means')
+            a.plot(per[c].noise_sd, per[c].rho_corrected_vs_data_corrected, 's--', color=COLORS[c], ms=5, lw=1.3,
+                label=f'{COND_LABEL[c]}, noise-corrected (vs corrected KC data)')
+            a.axhline(first(per[c], 'rho_det_vs_data'), color=COLORS[c], lw=1, alpha=0.6, label=f'{COND_LABEL[c]}, deterministic')
+        a.set_title('ρ on odor-odor distances with the KC data\n(measurement ceilings {:.2f} APL on / {:.2f} APL off)'.format(
+            first(per['on'], 'data_ceiling'), first(per['acute_off'], 'data_ceiling')), fontsize=9)
+        # 4: response rate
+        a = ax[3]
+        for c in CONDS:
+            for d, sty, lab in (('trial', 'o-', 'per trial'), ('2of3', 's--', 'in 2 of 3 trials'), ('count1', '^:', 'trial-mean count >= 1')):
+                a.plot(per[c].noise_sd, per[c][f'rate_{d}'], sty, color=COLORS[c], ms=5, lw=1.2, label=f'{COND_LABEL[c]}, {lab}')
+            a.axhline(first(per[c], 'rate_det'), color=COLORS[c], lw=1, alpha=0.6, label=f'{COND_LABEL[c]}, deterministic')
+            a.axhline(first(per[c], 'data_rate'), color='0.45', ls=':', lw=1)
+        a.set_title('response rate (mean over the 16 odors)\n(dotted: KC data {:.3f} / {:.3f})'.format(
+            first(per['on'], 'data_rate'), first(per['acute_off'], 'data_rate')), fontsize=9)
+        # 5: weak odors
+        a = ax[4]
+        for c in CONDS:
+            a.plot(per[c].noise_sd, per[c].weak_frac_trial, 'o-', color=COLORS[c], ms=5, lw=1.3, label=f'{COND_LABEL[c]}, per trial')
+            a.axhline(first(per[c], 'weak_frac_det'), color=COLORS[c], lw=1, alpha=0.6, label=f'{COND_LABEL[c]}, deterministic')
+            a.axhline(first(per[c], 'data_weak_frac'), color='0.45', ls=':', lw=1)
+        a.set_title('weak odors\' mean response fraction ({})\n(dotted: KC data {:.3f} / {:.3f})'.format(
+            ', '.join(WEAK), first(per['on'], 'data_weak_frac'), first(per['acute_off'], 'data_weak_frac')), fontsize=9)
+        # 6, 7: block and isotonic R2 between the APL-on and APL-off matrices
+        og = oo[oo['transform'] == 'graded']
+        dat = og[og.model == 'data'].set_index('matrix')
+        detm = og[(og.model == m) & (og.matrix == 'deterministic')]
+        for a, col, title in ((ax[5], 'block', 'fruity x small-ester block'), (ax[6], 'iso_r2', 'isotonic R² of APL on on APL off')):
+            for kind, sty, lab in (('raw', 'o-', '3-trial means'), ('corrected', 's--', 'noise-corrected'), ('grand', '^:', 'grand mean of all trials')):
+                s = og[(og.model == m) & (og.matrix == kind)].sort_values('noise_sd')
+                a.plot(s.noise_sd, s[col], sty, color=KIND_COLORS[kind], ms=5, lw=1.2, label=lab)
+            if len(detm):
+                a.axhline(float(detm[col].iloc[0]), color='0.2', lw=1, label='deterministic')
+            a.axhline(float(dat.at['raw', col]), color='0.45', ls=':', lw=1)
+            a.axhline(float(dat.at['corrected', col]), color='0.45', ls='-.', lw=0.8)
+            a.set_title(f'{title}\n(KC data: dotted raw {dat.at["raw", col]:.3f}, dash-dot corrected {dat.at["corrected", col]:.3f})', fontsize=9)
+        for a in ax:
+            a.set_xscale('log')
+            a.set_xlabel('PN noise sd (mp.pn.noise.sd)', fontsize=8)
+            a.legend(fontsize=6, frameon=False)
+            a.spines[['top', 'right']].set_visible(False)
+            a.grid(True, color='0.9', lw=0.6)
+    n_rec, n_tr = int(g.n_recordings.max()), int(g.n_trials.max())
+    fig.suptitle(f'E43: trial-to-trial variability in the model (Gaussian noise on the PN rate; {n_rec} pseudo-recordings of {n_tr} '
+        'trials per noise level; graded spike counts through the KC data\'s pipeline; APL on compared with control flies, '
+        'APL off with APL output blocked (TNT))', fontsize=11)
+    fig.tight_layout()
+    fig.savefig(res_dir / 'E43_model_trial_noise.png', dpi=120)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap.add_argument('--models', nargs='+', default=list(MODELS), choices=list(MODELS))
+    ap.add_argument('--n-recordings', type=int, default=10, help='pseudo-recordings per noise level')
+    ap.add_argument('--n-trials', type=int, default=3, help='trials per pseudo-recording')
+    ap.add_argument('--cal-grid', nargs='+', type=float, default=[25.0, 50.0, 100.0, 200.0, 400.0, 800.0],
+        help='noise sds of the calibration grid')
+    ap.add_argument('--cal-trials', type=int, default=3, help='trials per calibration point')
+    ap.add_argument('--cal-max-extend', type=int, default=3, help='points the grid may be extended by, either way')
+    ap.add_argument('--cal-refine', type=int, default=1, help='rounds of trials at the interpolated matched sds')
+    ap.add_argument('--bracket', nargs=2, type=float, default=[0.5, 2.0],
+        help='factors of the smaller / larger matched sd for the bracketing levels')
+    ap.add_argument('--results-dir', default=None, help='default: <shared>/results/E43_model_trial_noise')
+    ap.add_argument('--outputs-dir', default=None, help='default: ./outputs/E43_model_trial_noise')
+    ap.add_argument('--analyse-only', action='store_true', help='no simulation: tables and figure from the stored trials')
+    ap.add_argument('--figure-only', action='store_true')
+    args = ap.parse_args()
+    if args.n_trials < 2 or args.cal_trials < 2:
+        ap.error('floors need at least 2 trials')
+    res_dir = Path(args.results_dir) if args.results_dir else H.results_dir(EXPERIMENT)
+    out_dir = Path(args.outputs_dir) if args.outputs_dir else H.outputs_dir(EXPERIMENT)
+    res_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.figure_only:
+        make_figure(res_dir)
+        return
+    targets = {c: H.data_target(f'{DATA_PREFIX[c]}_single_trial_floor') for c in CONDS}
+    levels_path, checks_path, cal_csv = res_dir / 'noise_levels.json', res_dir / 'checks.json', res_dir / 'calibration.csv'
+    levels_all = json.loads(levels_path.read_text()) if levels_path.exists() else {}
+    if not args.analyse_only:
+        orn = H.apl16_orn_deltas()
+        checks = json.loads(checks_path.read_text()) if checks_path.exists() else {}
+        prov_path = res_dir / 'provenance.json'
+        prev = json.loads(prov_path.read_text()) if prov_path.exists() else None
+        # code provenance at the start: the checkout can move (a pull) while the run goes on
+        prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E43_model_trial_noise.py',
+            host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), models=args.models,
+            model_descriptions={m: MODELS[m] for m in args.models}, ref_fit=REF_FIT, fits_source='results/E34_gain_bounded/fits.csv',
+            settings=dict(n_recordings=args.n_recordings, n_trials=args.n_trials, cal_grid=args.cal_grid, cal_trials=args.cal_trials,
+                cal_max_extend=args.cal_max_extend, cal_refine=args.cal_refine, bracket=args.bracket),
+            floor_targets=targets, noise=NOISE_NOTE, approx_conc_note=H.APPROX_CONC_NOTE,
+            model=H.model_provenance(orn_deltas=orn))
+        if prev is not None:
+            prov['bases'], prov['params'] = prev.get('bases', {}), prev.get('params', {})
+            prov['model_info'] = prev.get('model_info', {})
+            prov['previous_sessions'] = prev.get('previous_sessions', []) + [{k: prev.get(k) for k in ('generated', 'host', 'models',
+                'settings', 'n_trials_simulated', 'model')}]
+        write_json(prov_path, prov)
+        cal_old = pd.read_csv(cal_csv) if cal_csv.exists() else pd.DataFrame()
+        cal_new = []
+        t_all = time.time()
+        for name in args.models:
+            sess = Session(name, orn, out_dir, checks, checks_path, prov, prov_path)
+            try:
+                rows, info = calibrate(sess, args.cal_grid, args.cal_trials, args.cal_max_extend, args.cal_refine, targets,
+                    out_dir / f'{name}_det_pn.npz')
+                cal_new += rows
+                levels = make_levels(info['matched'], info['peaks'], args.bracket)
+                levels_all[name] = dict(info, levels=levels, n_recordings=args.n_recordings, n_trials=args.n_trials)
+                write_json(levels_path, levels_all)
+                print(f'{name}: matched sd APL on {info["matched"]["on"]["sd"]:g}, APL off {info["matched"]["acute_off"]["sd"]:g}; '
+                    f'levels {levels}', flush=True)
+                for label, sd in levels.items():
+                    for rep in range(args.n_recordings):
+                        sess.ensure(trials_path(out_dir, name, sd, args.n_trials, rep), sd, args.n_trials)
+            finally:
+                sess.finish()
+                prov['n_trials_simulated'] = prov.get('n_trials_simulated', 0) + sess.n_trials_run
+            # calibration points of models re-calibrated here replace their earlier rows
+            keep = cal_old[~cal_old.model.isin({r['model'] for r in cal_new})] if len(cal_old) else cal_old
+            pd.concat([keep, pd.DataFrame(cal_new)], ignore_index=True).to_csv(cal_csv, index=False)
+        prov['levels'] = {m: v['levels'] for m, v in levels_all.items()}
+        prov['finished'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        prov['seconds'] = time.time() - t_all
+        write_json(prov_path, prov)
+    data = data_side()
+    for c in CONDS:
+        g = GENOTYPE[c]
+        for key, val in (('single_trial_floor', data[(g, 'graded')]['floor1']), ('trial_mean_floor', data[(g, 'graded')]['floor_mean'])):
+            reg = H.data_target(f'{DATA_PREFIX[c]}_{key}')
+            if abs(val - reg) > 1e-6:
+                print(f'WARNING: KC data {DATA_PREFIX[c]}_{key} recomputed here {val:.6f}, registry {reg:.6f}', flush=True)
+    st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data)
+    print_summary(st, res_dir)
+    if len(st):
+        make_figure(res_dir)
+    print('done ->', res_dir)
+
+
+if __name__ == '__main__':
+    main()
