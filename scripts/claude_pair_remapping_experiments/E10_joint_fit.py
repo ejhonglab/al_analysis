@@ -40,6 +40,11 @@ Second wiring draw (E30): `--wiring claw_permutation --wiring-seed N` replaces t
 matrix by that shuffle (al_analysis.wpnkc_shuffles) before any gain; tag prefix wiring-<name>-seed<N>_.
 Bound controls (E31): `--aplpn-max F`, `--aplpn-fixed F`, `--aplkc-min F` bound or fix the APL->bouton /
 APL->KC scales relative to the base's tuned values (use --tag to name the variant).
+What drives APL: `--apl-drive spikes` (E36) drives it by the KCs' spikes plus the bouton rates
+(pn_claw_to_apl=False), from the spike-driven base given by --base-params; `--apl-drive spikes_only`
+(E37) also removes the bouton->APL input (wPNAPL = 0): the same --base-params base, its APL scales
+re-tuned to 5 % with wPNAPL at 0 (`tune_spike_only_base`), and the fit keeps wPNAPL at 0 (the
+APL->bouton scale is still fitted); tag prefix spko_.
 """
 from __future__ import annotations
 
@@ -92,11 +97,12 @@ def e19_row(claw_thr: float, k: float, kckc: float):
 def base_kws(claw_thr, apl_drive: str = 'claws') -> dict:
     """The bouton base's fit_mb_model kwargs; `apl_drive='spikes'` drives APL by the KCs'
     spikes (plus the bouton rates) instead of the summed claw input (pn_claw_to_apl=False;
-    E35 / E36)."""
+    E35 / E36). 'spikes_only' (E37) has the same kwargs: the bouton->APL input is removed by
+    its scale (wPNAPL_scale = 0), which is a parameter, not a kwarg."""
     kws = dict(BOUTON, make_plots=False, silent=True)
     if claw_thr is not None:
         kws['claw_thr'] = float(claw_thr)
-    if apl_drive == 'spikes':
+    if apl_drive in ('spikes', 'spikes_only'):
         kws['pn_claw_to_apl'] = False
     elif apl_drive != 'claws':
         raise ValueError(f'{apl_drive=}')
@@ -115,9 +121,83 @@ def read_params(spec: str) -> Dict[str, float]:
         if k in PARAM_KEYS + ('wKCKC_scale',)}
 
 
+SPIKE_ONLY_TIED = ('wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale')
+
+
+def tune_spike_only_base(orn: pd.DataFrame, claw_thr, spike_base: Dict[str, float], wnorm: dict,
+    *, target: float = RATE_TARGET, tol: float = 0.02, max_iter: int = 30
+    ) -> Tuple[Dict[str, float], dict]:
+    """The spike-only base (E37): a spike-driven base with the bouton->APL input removed.
+
+    wPNAPL_scale is set to 0 and the other three APL scales (APL->KC, KC->APL, APL->bouton) are
+    multiplied by one factor, as olfsysm's tuning ties them, found by geometric bisection so
+    that the APL-on response rate is within `tol` (relative) of `target`. The somatic
+    threshold stays the spike-driven base's: olfsysm picks it with APL silent, so it does not
+    depend on wPNAPL. Simulated on the base's own wiring (no gain or re-drawn wiring) with the
+    normalized APL weights `wnorm` (unweighted by breadth), as the base was tuned.
+
+    Args:
+        orn: ORN input (`H.apl16_orn_deltas()`).
+        claw_thr: per-claw threshold of the base (None for none).
+        spike_base: absolute parameters of the spike-driven base (wPNAPL_scale > 0).
+        wnorm: normalized APL weights of the base ({'wAPLKC', 'wKCAPL', 'wAPLPN', 'wPNAPL'}).
+
+    Returns:
+        The spike-only base's absolute parameters (PARAM_KEYS, wPNAPL_scale 0), and a dict with
+        the factor applied to the tied scales, the APL-on response rate reached, and the
+        number of simulations.
+    """
+    from al_analysis.mb_model import make_fixed_param_kc_simulator
+    if not spike_base['wPNAPL_scale'] > 0:
+        raise ValueError('spike_base must be a spike-driven base with wPNAPL_scale > 0 (the '
+            'spike-only base is re-tuned from it)')
+    p0 = {k: float(spike_base[k]) for k in PARAM_KEYS}
+    p0['wPNAPL_scale'] = 0.0
+    sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p0, **base_kws(claw_thr, 'spikes_only'),
+        _wAPLKC=wnorm['wAPLKC'], _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'],
+        _wPNAPL=wnorm['wPNAPL']
+    )
+    rates: Dict[float, float] = {}
+
+    def run(f: float) -> float:
+        if f not in rates:
+            r, _ = sim({k: p0[k] * f for k in SPIKE_ONLY_TIED})
+            rates[f] = rate(r)
+            print(f'  spike-only base: APL scales x{f:.4g} -> APL-on rate {rates[f]:.4f}', flush=True)
+        return rates[f]
+
+    # the rate falls as the factor rises; bracket the target, then bisect in log space
+    lo = hi = 1.0
+    while run(lo) < target:
+        lo /= 2.0
+        if lo < 1e-3:
+            raise RuntimeError(f'APL-on rate below {target} even at APL scales x{lo:g}')
+    while run(hi) > target:
+        hi *= 2.0
+        if hi > 1e3:
+            raise RuntimeError(f'APL-on rate above {target} even at APL scales x{hi:g}')
+    best = min(rates, key=lambda f: abs(rates[f] - target))
+    for _ in range(max_iter):
+        if abs(rates[best] - target) / target < tol:
+            break
+        f = float(np.sqrt(lo * hi))
+        rk = run(f)
+        if abs(rk - target) < abs(rates[best] - target):
+            best = f
+        if rk > target:
+            lo = f
+        else:
+            hi = f
+    del sim
+    params = dict(p0, **{k: p0[k] * best for k in SPIKE_ONLY_TIED})
+    info = dict(factor=best, rate_on=rates[best], target=target, tol=tol, n_sims=len(rates),
+        spike_base={k: float(spike_base[k]) for k in PARAM_KEYS})
+    return params, info
+
+
 def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
     gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0, apl_drive: str = 'claws',
-    base_params: Optional[str] = None):
+    base_params: Optional[str] = None, info: Optional[dict] = None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -138,7 +218,11 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
 
     With `apl_drive='spikes'` the base's tuned parameters must come from `base_params`
     ('FILE:KEY', e.g. E36's spike-driven base tuned at 5 %); the APL-off breadth is the same
-    as the claw-driven base's at the same threshold (APL is off), so the saved runs apply."""
+    as the claw-driven base's at the same threshold (APL is off), so the saved runs apply.
+    With `apl_drive='spikes_only'` (E37) `base_params` is likewise the spike-driven base, and
+    the returned parameters are the spike-only base re-tuned from it (`tune_spike_only_base`;
+    the breadth is unchanged, since the threshold is); the tuning details go into `info`, if
+    passed."""
     from al_analysis.mb_model import fit_mb_model
     hal_out = H.shared_dir() / 'data' / 'hal_outputs'
     if claw_thr is None:
@@ -154,9 +238,9 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         # hal's E16 APL-off run of this base (the breadth E19 used)
         hal_path = hal_out / 'E16_claw_saturation' / f'bouton_thr{claw_thr:g}_acute_off_spike_counts.parquet'
         off_path = out_dir / f'thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
-    if apl_drive == 'spikes':
+    if apl_drive in ('spikes', 'spikes_only'):
         if base_params is None:
-            raise ValueError("apl_drive='spikes' needs base_params (FILE:KEY of a spike-driven base)")
+            raise ValueError(f'apl_drive={apl_drive!r} needs base_params (FILE:KEY of a spike-driven base)')
         claw_initial = initial
         initial = read_params(base_params)
         if abs(initial['fixed_thr'] - claw_initial['fixed_thr']) > 1e-6 * claw_initial['fixed_thr']:
@@ -209,6 +293,14 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     breadth = pd.Series(off_spk.astype(float).sum(axis='columns').to_numpy(),
         index=off_spk.index.get_level_values(H.KC_ID_LEVEL)
     )
+    if apl_drive == 'spikes_only':
+        t0 = time.time()
+        initial, tune_info = tune_spike_only_base(orn, claw_thr, initial, wnorm)
+        print(f'spike-only base (wPNAPL 0): APL scales x{tune_info["factor"]:.4f} of the spike-driven '
+            f'base, APL-on rate {tune_info["rate_on"]:.4f} ({tune_info["n_sims"]} simulations, '
+            f'{time.time() - t0:.0f}s): {initial}', flush=True)
+        if info is not None:
+            info.update(tune_info)
     return initial, wnorm, wPNKC, breadth
 
 
@@ -382,6 +474,11 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         init['wKCAPL_scale'] = init['wAPLKC_scale'] * (initial['wKCAPL_scale'] / initial['wAPLKC_scale'])
         bounds['wAPLKC_scale'] = (lo, max(bounds['wAPLKC_scale'][1], lo * 30))
         print(f'APL->KC scale bounded at >= {aplkc_min:g}x the base ({lo:.4g}); start {init["wAPLKC_scale"]:.4g}', flush=True)
+    if apl_drive == 'spikes_only':
+        # no bouton->APL input (E37): wPNAPL stays at 0, and only the KC->APL scale is tied
+        # to the APL->KC scale (the starting point may come from a fit that had the input)
+        init['wPNAPL_scale'] = 0.0
+        tie = ('wKCAPL_scale',)
     opt_kws = {}
     if method == 'differential_evolution':
         opt_kws = dict(popsize=6, seed=0, polish=False, init='sobol')
@@ -491,13 +588,16 @@ def main() -> None:
         help='fix the APL->bouton scale at F x the base\'s tuned value and fit the other three (E31)')
     ap.add_argument('--aplkc-min', type=float, default=None, metavar='F',
         help='bound the APL->KC scale at >= F x the base\'s tuned value (E31)')
-    ap.add_argument('--apl-drive', default='claws', choices=['claws', 'spikes'],
-        help="what drives APL: 'claws' (the bouton base's summed claw input) or 'spikes' (KC "
-        "spikes plus the bouton rates, pn_claw_to_apl=False; E36; needs --base-params; tag prefix spk_)")
+    ap.add_argument('--apl-drive', default='claws', choices=['claws', 'spikes', 'spikes_only'],
+        help="what drives APL: 'claws' (the bouton base's summed claw input), 'spikes' (KC "
+        "spikes plus the bouton rates, pn_claw_to_apl=False; E36; needs --base-params; tag prefix spk_) "
+        "or 'spikes_only' (KC spikes only, the bouton->APL scale wPNAPL held at 0, from the "
+        "--base-params spike-driven base re-tuned to 5 %% with wPNAPL 0; E37; tag prefix spko_)")
     ap.add_argument('--base-params', default=None, metavar='FILE:KEY',
         help='tuned base parameters (absolute) from a JSON file (relative to the shared directory), '
         'e.g. results/E36_spike_apl/tuned_params.json:spk_base_thr70; the reference for '
-        '--aplpn-max / --aplpn-fixed / --aplkc-min and the *_factor_vs_e3 columns')
+        '--aplpn-max / --aplpn-fixed / --aplkc-min and the *_factor_vs_e3 columns (with '
+        '--apl-drive spikes_only, the spike-only base re-tuned from it is the reference)')
     ap.add_argument('--init-params', default=None, metavar='FILE:KEY',
         help='start from these absolute parameters (fixed_thr, the APL scales, wKCKC_scale), e.g. '
         'results/E36_spike_apl/tuned_params.json:thr70_k2_kckc100_g1.5')
@@ -525,9 +625,10 @@ def main() -> None:
 
     t0 = time.time()
     gain = None if args.glom_gain in (None, 1.0) else float(args.glom_gain)
+    base_info = {}
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
         gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed,
-        apl_drive=args.apl_drive, base_params=args.base_params
+        apl_drive=args.apl_drive, base_params=args.base_params, info=base_info
     )
     wiring_tag = '' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_'
     gain_gloms = None
@@ -536,7 +637,7 @@ def main() -> None:
         gain_gloms = list(args.gain_glomeruli) if args.gain_glomeruli else list(ORACLE)
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
-    prefix = ('spk_' if args.apl_drive == 'spikes' else '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
+    prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_')
 
     fits_path = res_dir / 'fits.csv'
@@ -577,6 +678,9 @@ def main() -> None:
             kc_kc_inh=p['wKCKC_scale'], kc_kc_tau=TAU,
             apl_factor_vs_e3=p['wAPLKC_scale'] / initial['wAPLKC_scale'],
             aplpn_factor_vs_e3=p['wAPLPN_scale'] / initial['wAPLPN_scale'],
+            # (E37) the re-tuned spike-only base the *_factor columns are relative to
+            **({f'base_{kk}': vv for kk, vv in initial.items()} if args.apl_drive == 'spikes_only' else {}),
+            **(dict(spike_only_base_factor=base_info['factor']) if base_info else {}),
             loss=res['loss'], initial_loss=res['initial_losses']['loss'],
             n_kcs=len(r_on), n_glomeruli=wPNKC.shape[1], rate_on=rate(r_on),
             rate_off=rate(r_off), rate_ratio_off_over_on=rate(r_off) / max(rate(r_on), 1e-9),
@@ -634,6 +738,8 @@ def main() -> None:
             data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
             approx_conc_note=H.APPROX_CONC_NOTE, model=H.model_provenance(orn_deltas=orn),
+            # (E37: how the spike-only base in base_params was re-tuned from --base-params)
+            **(dict(spike_only_base_tuning=base_info) if base_info else {}),
         )
         (res_dir / f'provenance_{tag}.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
     try:
