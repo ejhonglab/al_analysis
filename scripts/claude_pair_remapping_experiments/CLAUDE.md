@@ -876,6 +876,9 @@ Canonical experiment names for summary reports:
 | E34 | the combined model with interpretable bounds |
 | E35 | divisive APL inhibition |
 | E36 | KC-spike-driven APL |
+| E37 | spike-only APL (the bouton input to APL removed) |
+| E38 | Hallem's receptor data as the weak odors' input |
+| E39 | the oracle gain decomposed by glomerulus |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
