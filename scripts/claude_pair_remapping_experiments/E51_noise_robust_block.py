@@ -25,8 +25,14 @@ processed as the KC data), and writes:
   model, and in the data;
 - E51_fit_histories.png: for each noise-aware fit, the loss and the deterministic and jittered
   blocks over the evaluations (from history_<tag>.csv), i.e. how the optimizer traded the two.
-Models whose fits or pipeline results are not in yet are listed as pending and left out of the
-figures. Nothing is simulated.
+Simplex vertices of a noise-aware fit that went through the pipeline as fixed models (E43's
+`--model-from EXPERIMENT:TAG@EVAL`, pipeline model E51-<tag>_ev<EVAL>; the evaluations whose block on
+the fit's draws reached the data's size at a loss cost elsewhere) get rows of their own, with the
+deterministic statistics of that evaluation from the fit's history, their natural-source alignment
+(APL on / off) from the deterministic outputs the pipeline saved (outputs/E51_noise_robust_block/partB
+on the host that ran it, else the shared archive), key thr<T>_gain<G>_noise_ev<EVAL>, and are marked
+on the history figure. Models whose fits or pipeline results are not in yet are listed as pending and
+left out of the figures. Nothing is simulated.
 Usage: ./venv/bin/python E51_noise_robust_block.py [--out DIR] [--partb DIR]
 """
 from __future__ import annotations
@@ -34,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,6 +115,65 @@ def criterion_label(fit: pd.Series) -> str:
     return s
 
 
+def vertex_models(stats: pd.DataFrame, fits: pd.DataFrame) -> list:
+    """(tag, evaluation, pipeline model name) of every simplex-vertex model in the pipeline's table,
+    i.e. models named E51-<tag>_ev<N> whose <tag> is one of the noise-aware fits."""
+    out = []
+    for mname in stats['model'].astype(str).unique():
+        m = re.fullmatch(rf'{re.escape(exp_id(EXPERIMENT))}-(.+)_ev(\d+)', mname)
+        if m and m.group(1) in fits.index:
+            out.append((m.group(1), int(m.group(2)), mname))
+    return sorted(out, key=lambda v: (v[0], v[1]))
+
+
+# history column -> the fits.csv column it stands for (a vertex row is built from the fit's history)
+HISTORY_TO_FIT = {'block': 'fit_block', 'on_spearman': 'fit_on_spearman', 'off_spearman': 'fit_off_spearman',
+    'po_on_spearman': 'fit_po_on_spearman', 'po_off_spearman': 'fit_po_off_spearman', 'wt_dev_on': 'fit_wt_dev_on',
+    'vcf_off': 'fit_vcf_off', 'rate_on': 'fit_rate_on', 'rate_off': 'fit_rate_off', 'jit_block': 'fit_jit_block',
+    'jit_rate_on': 'fit_jit_rate_on', 'jit_rate_off': 'fit_jit_rate_off', 'jit_on_spearman': 'fit_jit_on_spearman',
+    'jit_off_spearman': 'fit_jit_off_spearman', 'jit_vcf_off': 'fit_jit_vcf_off', 'fixed_thr': 'fixed_thr',
+    'wAPLKC_scale': 'wAPLKC_scale', 'wKCAPL_scale': 'wKCAPL_scale', 'wAPLPN_scale': 'wAPLPN_scale',
+    'wPNAPL_scale': 'wPNAPL_scale', 'wKCKC_scale': 'kc_kc_inh', 'loss': 'loss', 'time_s': 'time_s'}
+
+
+def history_as_fit(res_dir: Path, tag: str, ev: int, fit: pd.Series) -> pd.Series:
+    """A fits.csv-like row for evaluation `ev` of the fit `tag`: the evaluation's statistics and
+    parameters from history_<tag>.csv under the fits.csv column names, the fit's jitter settings
+    (JIT_COLS) and block target carried over from its own row."""
+    h = pd.read_csv(res_dir / f'history_{tag}.csv')
+    m = h[h['eval'] == ev]
+    if len(m) != 1:
+        raise ValueError(f'history_{tag}.csv: {len(m)} rows with eval {ev}')
+    hr = m.iloc[0]
+    row = {HISTORY_TO_FIT[c]: float(hr[c]) for c in HISTORY_TO_FIT if c in hr.index}
+    row['n_evals'] = float(ev)
+    for c in JIT_COLS + ('block_target',):
+        if c in fit.index and pd.notna(fit[c]):
+            row[c] = fit[c]
+    return pd.Series(row)
+
+
+def saved_alignment(mname: str) -> dict:
+    """The natural-source alignment (Spearman of the model's APL-on and APL-off odor-odor distance
+    residuals from the ORN prediction with the natural-source hypothesis, as the loss scores APL
+    off) from the deterministic outputs the pipeline saved for model `mname`: {'vcf_on', 'vcf_off',
+    'source'}; NaN where no saved outputs are found."""
+    dirs = (H.outputs_dir(EXPERIMENT) / 'partB', H.shared_dir() / 'data' / 'model_outputs' / EXPERIMENT / 'partB',
+        H.shared_dir() / 'data' / 'model_outputs' / EXPERIMENT)
+    out = dict(vcf_on=np.nan, vcf_off=np.nan, source=None)
+    for d in dirs:
+        files = {c: [d / f'{mname}_{c}_{kind}.parquet' for kind in ('responses', 'spike_counts')] for c in ('on', 'acute_off')}
+        if all(f.exists() for fs in files.values() for f in fs):
+            ref = H.reference_pairs()
+            for c, key in (('on', 'vcf_on'), ('acute_off', 'vcf_off')):
+                r, s = (pd.read_parquet(f) for f in files[c])
+                pairs = H.model_rdms(r, s)[H.PRIMARY_MODEL_RDM]
+                out[key] = float(H.compare_to_references(pairs, ref)['spearman_resid_vs_vcf_hyp'])
+            out['source'] = str(d)
+            break
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--out', type=Path, default=None, help='output folder (default: the results folder)')
@@ -134,35 +200,56 @@ def main() -> None:
         if f.exists():
             inputs[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
             tables[name] = pd.read_csv(f)
-    # the model list: each counterpart, then its noise-aware fits
-    # (label, key, experiment, tag, pipeline model name, counterpart label or None); `key` is a
-    # stable row key for the summary template (thr<T>_gain<G>_det / _noise[_<i>])
+    # the model list: each counterpart, then its noise-aware fits, then any simplex vertices of those
+    # fits that went through the pipeline
+    # (label, key, experiment, tag, pipeline model name, counterpart label or None, evaluation or
+    # None); `key` is a stable row key for the summary template (thr<T>_gain<G>_det / _noise[_<i>] /
+    # _noise_ev<N>)
     models = []
+    noise_label = {}
     for label, exp, tag, thr, gain in COUNTERPARTS:
         base_key = f'thr{thr}_gain{gain:g}'
-        models.append((label + ', deterministic fit', base_key + '_det', exp, tag, f'{exp_id(exp)}-{tag}', None))
+        models.append((label + ', deterministic fit', base_key + '_det', exp, tag, f'{exp_id(exp)}-{tag}', None, None))
         nf = noise_fits_for(fits[EXPERIMENT], thr, gain)
         if not nf:
             models.append((label + ', noise-aware fit (pending)', base_key + '_noise', EXPERIMENT, None, None,
-                label + ', deterministic fit'))
+                label + ', deterministic fit', None))
         for i, t in enumerate(nf):
-            models.append((label + ', noise-aware fit' + (f' ({i + 1})' if len(nf) > 1 else ''),
-                base_key + '_noise' + (f'_{i + 1}' if len(nf) > 1 else ''), EXPERIMENT, t,
-                f'{exp_id(EXPERIMENT)}-{t}', label + ', deterministic fit'))
+            lab = label + ', noise-aware fit' + (f' ({i + 1})' if len(nf) > 1 else '')
+            noise_label[t] = (lab, base_key + '_noise' + (f'_{i + 1}' if len(nf) > 1 else ''))
+            models.append((lab, noise_label[t][1], EXPERIMENT, t, f'{exp_id(EXPERIMENT)}-{t}', label + ', deterministic fit', None))
+    if 'stats_noise' in tables:
+        for t, ev, mname in vertex_models(tables['stats_noise'], fits[EXPERIMENT]):
+            lab, k = noise_label.get(t, (t, t))
+            models.append((f'{lab}, evaluation {ev}', f'{k}_ev{ev}', EXPERIMENT, t, mname, lab, ev))
     rows = []
     excess = {}
-    for label, key, exp, tag, mname, counterpart in models:
+    for label, key, exp, tag, mname, counterpart, ev in models:
         fit = fits[exp].loc[tag] if (tag is not None and tag in fits[exp].index) else None
+        if fit is not None and ev is not None:
+            fit = history_as_fit(res_dir, tag, ev, fit)
         row = dict(model=label, key=key, experiment=exp, tag=tag, pipeline_model=mname, counterpart=counterpart,
-            fit=('done' if fit is not None else 'pending'))
+            eval=(np.nan if ev is None else ev), fit=('done' if fit is not None else 'pending'))
         if fit is not None:
             row.update(loss_recorded=float(fit['loss']),
                 block_target=(float(fit['block_target']) if 'block_target' in fit.index and pd.notna(fit['block_target']) else dt('block')),
                 criterion=(criterion_label(fit) if 'jitter_k' in fit.index and pd.notna(fit['jitter_k']) and int(fit['jitter_k']) > 0
                     else 'deterministic block'))
+            if ev is not None:
+                row['criterion'] = f'evaluation {ev} of the fit under: {row["criterion"]} (a simplex vertex the optimizer visited, not an optimum)'
             row.update({k: float(fit[k]) for k in FIT_COLS if k in fit.index and pd.notna(fit[k])})
             row.update({k: fit[k] for k in JIT_COLS if k in fit.index and pd.notna(fit[k])})
-            row['vcf_on'] = float(fit[V + 'on_spearman_resid_vs_vcf_hyp']) if V + 'on_spearman_resid_vs_vcf_hyp' in fit.index else np.nan
+            if ev is None:
+                row['vcf_on'] = float(fit[V + 'on_spearman_resid_vs_vcf_hyp']) if V + 'on_spearman_resid_vs_vcf_hyp' in fit.index else np.nan
+            else:
+                # a vertex's alignment comes from the deterministic outputs the pipeline saved (the
+                # history records APL off only); its APL-off value is checked against the history's
+                al = saved_alignment(mname)
+                row['vcf_on'] = al['vcf_on']
+                row['alignment_source'] = al['source']
+                if al['source'] is not None and 'fit_vcf_off' in row and abs(al['vcf_off'] - row['fit_vcf_off']) > 1e-6:
+                    print(f"{mname}: WARNING the saved deterministic run's APL-off alignment {al['vcf_off']:.4f} differs from "
+                        f"the history's {row['fit_vcf_off']:.4f}", flush=True)
             row['vcf_on_minus_off'] = row['vcf_on'] - row['fit_vcf_off'] if 'fit_vcf_off' in row else np.nan
             if 'wPNAPL_scale' in row and row.get('wKCAPL_scale', 0) > 0:
                 row['wPNAPL_over_wKCAPL'] = row['wPNAPL_scale'] / row['wKCAPL_scale']
@@ -202,17 +289,18 @@ def main() -> None:
         d = o[(o['model'] == 'data') & (o['transform'] == 'graded')].set_index('matrix')
         if 'corrected' in d.index:
             data_block_corr = float(d.at['corrected', 'block'])
-    lines = ['| model (structure fits at 6.8 %, APL->bouton cap 3) | fitting criterion | extended loss (as fitted) | block, deterministic | block on the fit\'s own draws | block through independent noise, three-trial means | block, grand mean of 30 trials | matched σ | single-trial floor reached, APL on / off | response rate per trial, APL on / off | ρ on odor-odor distances, APL on / off (noisy) | response rate ρ, APL on (noisy) | natural-source alignment, APL on / off / on minus off (deterministic) |',
+    lines = ['| model (structure fits at 6.8 %, APL->bouton cap 3) | fitting criterion | extended loss (at the fit\'s end, or at the evaluation) | block, deterministic | block on the fit\'s own draws | block through independent noise, three-trial means | block, grand mean of 30 trials | matched σ | single-trial floor reached, APL on / off | response rate per trial, APL on / off | ρ on odor-odor distances, APL on / off (noisy) | response rate ρ, APL on (noisy) | natural-source alignment, APL on / off / on minus off (deterministic) |',
         '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
 
-    def fmt(x, spec):
-        return '' if x is None or (isinstance(x, float) and np.isnan(x)) else format(x, spec)
+    def fmt(x, spec, missing=''):
+        return missing if x is None or (isinstance(x, float) and np.isnan(x)) else format(x, spec)
 
     for _, r in df.iterrows():
         if r['fit'] != 'done':
             lines.append(f"| {r['model']} | | | | | | | | | | | | |")
             continue
-        vcf = f"{fmt(r.get('vcf_on'), '.2f')} / {fmt(r.get('fit_vcf_off'), '.2f')} / {fmt(r.get('vcf_on_minus_off'), '+.2f')}"
+        # (a vertex's APL-on alignment is n/a until the pipeline's saved deterministic outputs are on hand)
+        vcf = f"{fmt(r.get('vcf_on'), '.2f', 'n/a')} / {fmt(r.get('fit_vcf_off'), '.2f', 'n/a')} / {fmt(r.get('vcf_on_minus_off'), '+.2f', 'n/a')}"
         own = fmt(r.get('fit_jit_block'), '+.3f')
         if r['pipeline'] != 'done':
             # a noise-aware fit records its own-draw response rates; a deterministic fit has none to show here
@@ -242,7 +330,7 @@ def main() -> None:
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E51_noise_robust_block.py',
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
         inputs_sha256=inputs, partb=str(partb),
-        models=[dict(label=m[0], key=m[1], experiment=m[2], tag=m[3], pipeline_model=m[4], counterpart=m[5]) for m in models],
+        models=[dict(label=m[0], key=m[1], experiment=m[2], tag=m[3], pipeline_model=m[4], counterpart=m[5], eval=m[6]) for m in models],
         pending_fits=pend_fit, pending_pipeline=pend_pipe)
     (out / 'provenance_comparison.json').write_text(json.dumps(prov, indent=1) + '\n')
     print('\n'.join(lines))
@@ -253,6 +341,10 @@ def _short(label: str) -> str:
     return label.replace(', deterministic fit', '\ndeterministic fit').replace(', noise-aware fit', '\nnoise-aware fit')
 
 
+def _is_vertex(r) -> bool:
+    return pd.notna(r.get('eval', np.nan))
+
+
 def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> None:
     import matplotlib
     matplotlib.use('Agg')
@@ -261,19 +353,23 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
     done = df[(df['fit'] == 'done') & (df['pipeline'] == 'done')]
     fig, ax = plt.subplots(figsize=(6.8, 5.8))
     by_label = {r['model']: r for _, r in done.iterrows()}
+    has_vertex = False
     for _, r in done.iterrows():
         noise_fit = r['criterion'] != 'deterministic block'
-        c = '#d9480f' if noise_fit else '#2b6cb0'
-        ax.plot([r['block_det']], [r['block_raw']], 'o', color=c, ms=6)
+        vertex = _is_vertex(r)
+        has_vertex |= vertex
+        c = '#6a4c93' if vertex else ('#d9480f' if noise_fit else '#2b6cb0')
+        ax.plot([r['block_det']], [r['block_raw']], 'D' if vertex else 'o', color=c, ms=6)
         ax.plot([r['block_det']], [r['block_grand']], 's', color=c, ms=5, mfc='none')
         if noise_fit and pd.notna(r.get('fit_jit_block', np.nan)):
             ax.plot([r['block_det']], [r['fit_jit_block']], '^', color=c, ms=6, mfc='none')
         ax.annotate(_short(r['model']), (r['block_det'], r['block_raw']), fontsize=6.5, xytext=(4, 3), textcoords='offset points')
         cp = r.get('counterpart')
         if noise_fit and isinstance(cp, str) and cp in by_label:
+            # a noise-aware fit is joined to its deterministic-fitted counterpart, a vertex to its fit
             c0 = by_label[cp]
             ax.annotate('', xy=(r['block_det'], r['block_raw']), xytext=(c0['block_det'], c0['block_raw']),
-                arrowprops=dict(arrowstyle='->', color='0.45', lw=0.9))
+                arrowprops=dict(arrowstyle='->', color='0.45', lw=0.9, ls='--' if vertex else '-'))
     ax.plot([0, 0.08], [0, 0.08], ':', color='0.5', lw=1)
     ax.axhline(dt('block'), color='k', lw=1, ls='--')
     ax.text(0.001, dt('block') + 0.001, 'KC data, measured (three-trial means)', fontsize=7)
@@ -282,8 +378,10 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
         ax.text(data_block_corr + 0.001, 0.002, 'KC data,\nnoise-corrected', fontsize=7)
     ax.plot([], [], 'o', color='#2b6cb0', label='deterministic fit: three-trial means through independent noise')
     ax.plot([], [], 'o', color='#d9480f', label='noise-aware fit: three-trial means through independent noise')
+    if has_vertex:
+        ax.plot([], [], 'D', color='#6a4c93', label="a simplex vertex of the noise-aware fit (not an optimum): three-trial means through independent noise")
     ax.plot([], [], 's', color='0.3', mfc='none', label='grand mean over 30 trials')
-    ax.plot([], [], '^', color='#d9480f', mfc='none', label="noise-aware fit: block on the fit's own draws (the criterion)")
+    ax.plot([], [], '^', color='#d9480f', mfc='none', label="noise-aware fit (or vertex): block on the fit's own draws (the criterion)")
     ax.set_xlabel('fruity × small-ester block, deterministic model'); ax.set_ylabel('block after trial-to-trial noise, processed as the data')
     ax.set_xlim(0, 0.08); ax.set_ylim(-0.005, 0.08); ax.legend(fontsize=7, frameon=False, loc='upper left')
     ax.spines[['top', 'right']].set_visible(False); ax.grid(True, color='0.9', lw=0.6)
@@ -292,9 +390,15 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
     labels = [k for k in excess if k != 'KC data']
     if not labels:
         return
-    fig, axes = plt.subplots(1, len(labels) + 1, figsize=(2.6 * (len(labels) + 1), 4.4), sharey=True)
+    # one panel per model plus the data, wrapped into rows of at most five
+    panels = labels + ['KC data']
+    ncols = min(len(panels), 5)
+    nrows = int(np.ceil(len(panels) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.6 * ncols, 4.4 * nrows), sharey=True, squeeze=False)
     pair_names = [f'{a} / {b}' for a, b in BLOCK_PAIRS]
-    for ax, lab in zip(np.atleast_1d(axes), labels + ['KC data']):
+    for ax in axes.flat[len(panels):]:
+        ax.set_visible(False)
+    for ax, lab in zip(axes.flat, panels):
         e = excess[lab].reindex(BLOCK_PAIRS)
         x = np.arange(len(BLOCK_PAIRS))
         for i, (col, c, mk) in enumerate(zip(e.columns, ['0.2', '#2b6cb0', '#d9480f'], ['o', 's', '^'])):
@@ -303,7 +407,8 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
         ax.set_xticks(x); ax.set_xticklabels(pair_names, rotation=70, fontsize=7)
         ax.set_title(_short(lab), fontsize=8); ax.legend(fontsize=6, frameon=False)
         ax.spines[['top', 'right']].set_visible(False); ax.grid(True, color='0.92', lw=0.6)
-    np.atleast_1d(axes)[0].set_ylabel('excess of the APL-on distance over the\nisotonic trend from the APL-off distance')
+    for row_axes in axes:
+        row_axes[0].set_ylabel('excess of the APL-on distance over the\nisotonic trend from the APL-off distance')
     fig.suptitle('The nine fruity × small-ester pairs: deterministic against processed through the matched noise', fontsize=9.5)
     fig.tight_layout(); fig.savefig(out / 'E51_block_pairs.png', dpi=130); plt.close(fig)
 
@@ -314,13 +419,18 @@ def make_history_figure(df: pd.DataFrame, res_dir: Path, out: Path) -> list:
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     dt = H.data_target
-    fits = df[(df['fit'] == 'done') & (df['experiment'] == EXPERIMENT)]
-    files = [(r['model'], res_dir / f"history_{r['tag']}.csv") for _, r in fits.iterrows()]
-    files = [(m, f) for m, f in files if f.exists()]
+    is_vertex = df['eval'].notna() if 'eval' in df else pd.Series(False, index=df.index)
+    fits = df[(df['fit'] == 'done') & (df['experiment'] == EXPERIMENT) & ~is_vertex]
+    # the simplex vertices that went through the pipeline, per fit, marked on its panels
+    vertices = {}
+    for _, r in df[is_vertex & (df['fit'] == 'done')].iterrows():
+        vertices.setdefault(r['tag'], []).append(int(r['eval']))
+    files = [(r['model'], r['tag'], res_dir / f"history_{r['tag']}.csv") for _, r in fits.iterrows()]
+    files = [(m, t, f) for m, t, f in files if f.exists()]
     if not files:
         return []
-    fig, axes = plt.subplots(2, len(files), figsize=(4.2 * len(files), 6.2), squeeze=False)
-    for j, (label, f) in enumerate(files):
+    fig, axes = plt.subplots(2, len(files), figsize=(max(4.2 * len(files), 8.4), 6.2), squeeze=False)
+    for j, (label, tag, f) in enumerate(files):
         h = pd.read_csv(f)
         ax = axes[0, j]
         ax.plot(h.index, h['loss'], color='0.75', lw=0.7, label='loss at each evaluation')
@@ -332,12 +442,18 @@ def make_history_figure(df: pd.DataFrame, res_dir: Path, out: Path) -> list:
             ax.plot(h.index, h['block'], color='#2b6cb0', lw=0.9, label='deterministic block')
             ax.plot(h.index, h['jit_block'], color='#d9480f', lw=0.9, label="block on the fit's draws (the criterion)")
         ax.axhline(dt('block'), color='k', lw=1, ls='--', label='KC data, measured')
+        for i, ev in enumerate(sorted(vertices.get(tag, []))):
+            for a in axes[:, j]:
+                a.axvline(ev, color='#6a4c93', lw=0.9, ls=':', label=('vertex run through the pipeline' if (i == 0 and a is ax) else None))
+            # (the labels are staggered so that neighbouring evaluations do not overprint)
+            ax.annotate(f'evaluation {ev}', (ev, ax.get_ylim()[1]), fontsize=6.5, color='#6a4c93', xytext=(2, -8 - 9 * i),
+                textcoords='offset points')
         ax.set(xlabel='evaluation', ylabel='fruity × small-ester block'); ax.legend(fontsize=7, frameon=False)
         for a in axes[:, j]:
             a.spines[['top', 'right']].set_visible(False); a.grid(True, color='0.92', lw=0.6)
     fig.suptitle('The noise-aware fits: loss, and the deterministic against the fitted (jittered) block over the evaluations', fontsize=9.5)
     fig.tight_layout(); fig.savefig(out / 'E51_fit_histories.png', dpi=130); plt.close(fig)
-    return [f for _, f in files]
+    return [f for _, _, f in files]
 
 
 if __name__ == '__main__':
