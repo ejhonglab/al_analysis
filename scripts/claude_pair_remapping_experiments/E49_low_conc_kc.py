@@ -8,7 +8,9 @@ on the APL16 panel plus the low-concentration odors of Yang's diagnostic-odor mi
 (natmix_dilute: 2h at 10^-5, ea at 10^-5 and 10^-7) for which ORN spike deltas exist within Tom's
 one-log-unit rule (data/yang_weak_odor_kc/orn_input_availability.csv; the substitutions are
 recorded per odor), and on the binary mixtures whose components are covered, with the components'
-ORN deltas summed (the assumption to state: the measured air mixtures are at other concentrations).
+ORN deltas combined as their elementwise maximum per glomerulus (Tom's rule, 2026-11-08: the sum overestimates
+most glomeruli, the max fits the lab's measured mixtures better; the measured air mixtures of these odors are at
+other concentrations).
 Odors are simulated independently in olfsysm at fixed thresholds and APL weights, so adding
 columns changes nothing for the APL16 odors; the APL16 columns are checked against each fit's
 saved outputs (checks.json).
@@ -91,7 +93,8 @@ ORN_SOURCE: Dict[str, Tuple[str, str]] = {
     'ea @ -5': ('kiwi', 'ea @ -4.2'),
     'ea @ -7': ('glomeruli_diagnostics', 'ea @ -8'),
 }
-# mixtures with both components covered: Yang's label -> components (summed spike deltas)
+# mixtures with both components covered: Yang's label -> components (spike deltas combined as the elementwise max
+# per glomerulus, never the sum: Tom, 2026-11-08, CLAUDE.md "Data from Remy and Yang")
 MIXTURES: Dict[str, Tuple[str, str]] = {
     '2h @ -7 + ma @ -7': ('2h @ -7', 'ma @ -7'),
     '2h @ -7 + farn @ -3': ('2h @ -7', 'farn @ -3'),
@@ -140,7 +143,7 @@ def substitutions() -> Dict[str, str]:
         st = av.loc[odor, 'spike_deltas_status'] if odor in av.index else 'unlisted'
         out[odor] = 'exact' if st == 'exact' else f'{st}: {col} ({panel})'
     for mix, comps in MIXTURES.items():
-        out[mix] = 'sum of ' + ' and '.join(f'{c} [{out[c]}]' for c in comps)
+        out[mix] = 'max of ' + ' and '.join(f'{c} [{out[c]}]' for c in comps)
     return out
 
 
@@ -157,14 +160,14 @@ def extended_orn(orn16: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
     for odor, (panel, col) in ORN_SOURCE.items():
         cols[odor] = nm[(panel, col)].astype(float)
     for mix, comps in MIXTURES.items():
-        cols[MIX_COLNAME[mix]] = cols[comps[0]] + cols[comps[1]]
+        cols[MIX_COLNAME[mix]] = np.maximum(cols[comps[0]], cols[comps[1]])
     extra = pd.DataFrame(cols, index=orn16.index)   # keeps the index name ('glomerulus'), which fit_mb_model checks
     extra.columns = pd.MultiIndex.from_tuples([(PANEL, o) for o in extra.columns], names=orn16.columns.names)
     orn = pd.concat([orn16, extra], axis='columns')
     orn.index.name = orn16.index.name
     info = dict(glomeruli=gl, natmix_glomeruli_missing_filled_0=missing, natmix_glomeruli_dropped=dropped,
         extra_odors=EXTRA_ODORS, orn_source={k: list(v) for k, v in ORN_SOURCE.items()},
-        mixtures={k: list(v) for k, v in MIXTURES.items()})
+        mixtures={k: list(v) for k, v in MIXTURES.items()}, mixture_rule='elementwise max of the components per glomerulus')
     return orn, info
 
 
