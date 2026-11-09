@@ -215,8 +215,11 @@ def main() -> None:
         vcf = f"{fmt(r.get('vcf_on'), '.2f')} / {fmt(r.get('fit_vcf_off'), '.2f')} / {fmt(r.get('vcf_on_minus_off'), '+.2f')}"
         own = fmt(r.get('fit_jit_block'), '+.3f')
         if r['pipeline'] != 'done':
+            # a noise-aware fit records its own-draw response rates; a deterministic fit has none to show here
+            own_rates = (f"{fmt(r.get('fit_jit_rate_on'), '.3f')} / {fmt(r.get('fit_jit_rate_off'), '.3f')} (fit's own draws)"
+                if pd.notna(r.get('fit_jit_rate_on', np.nan)) else '')
             lines.append(f"| {r['model']} | {r['criterion']} | {r['loss_recorded']:.2f} | {fmt(r.get('fit_block'), '+.3f')} | {own} | (pending) | | | | "
-                f"{fmt(r.get('fit_jit_rate_on'), '.3f')} / {fmt(r.get('fit_jit_rate_off'), '.3f')} (fit's own draws) | | | {vcf} |")
+                f"{own_rates} | | | {vcf} |")
             continue
         lines.append(f"| {r['model']} | {r['criterion']} | {r['loss_recorded']:.2f} | {r['block_det']:+.3f} | {own} | {r['block_raw']:+.3f} | {r['block_grand']:+.3f} | "
             f"{r['sigma']:.3f} | {r['floor_on']:.2f} / {r['floor_off']:.2f} | {r['rate_trial_on']:.3f} / {r['rate_trial_off']:.3f} | "
