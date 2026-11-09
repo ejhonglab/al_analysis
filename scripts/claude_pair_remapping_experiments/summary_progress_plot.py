@@ -68,6 +68,8 @@ METRIC_DEFS = {
         ['spearman_rate_on_vs_data', 'per_odor_rate_spearman_vs_TNT3c_on']),
     'wt_dev': ('structure beyond the ORN input vs wild-type somata (APL on)', 'ctrl_struct_wt', '.2f',
         ['spike_counts_cosine__on_spearman_resid_vs_remap_wt', 'spearman_resid_vs_remap_wt_on']),
+    'vcf_on': ('natural-source alignment of the APL-on residual', 'ctrl_vcf', '.2f',
+        ['spike_counts_cosine__on_spearman_resid_vs_vcf_hyp', 'spearman_resid_vs_vcf_hyp_on']),
     'vcf_off': ('natural-source alignment of the APL-off residual', 'tnt_vcf', '.2f',
         ['spike_counts_cosine__off_spearman_resid_vs_vcf_hyp', 'spearman_resid_vs_vcf_hyp_off']),
 }
@@ -79,11 +81,13 @@ TARGET_LABELS = {k: format(METRICS[k][1], fmt) for k, (_, _, fmt, _) in METRIC_D
 # statistic -> (light, dark) color: the reference palette's categorical hues (dataviz skill). The
 # two rank-agreement lines share the slot-1 blue on purpose, as a related pair: full strength for the
 # control matrix, a lighter, less saturated step of the same OKLCH hue (L 0.75 / 0.78, C 0.10) for
-# the APL-blocked one (normal-vision Delta E to the full blue 18.6 light / 16.9 dark)
+# the APL-blocked one (normal-vision Delta E to the full blue 18.6 light / 16.9 dark); the two
+# natural-source alignment lines are paired the same way in the dark green (full for APL on, a
+# lighter step for APL off)
 SERIES_COLORS = {
     'ctrl': ('#2a78d6', '#3987e5'), 'tnt': ('#83b1ed', '#8cbaf7'),
     'block': ('#1baf7a', '#199e70'), 'rate_rank': ('#eda100', '#c98500'),
-    'wt_dev': ('#e87ba4', '#d55181'), 'vcf_off': ('#008300', '#008300'),
+    'wt_dev': ('#e87ba4', '#d55181'), 'vcf_on': ('#008300', '#2a9d2a'), 'vcf_off': ('#7fc27f', '#8ccf8c'),
 }
 TABLE_NAMES = ('stats_variants.csv', 'fits.csv', 'wkckc_controls.csv')
 
