@@ -193,18 +193,29 @@ def _slug(text: str) -> str:
 
 
 def with_defs(html: str, defs: dict) -> str:
-    """Wraps whole-word occurrences of each defined term (outside tags) in a hover span."""
+    """Wraps whole-word occurrences of each defined term (outside tags) in a hover span.
+
+    Longer terms are wrapped first and a wrapped occurrence is never matched again (it is
+    replaced by a marker until the end), so terms may contain other terms ("oracle gain" and
+    "oracle"): each occurrence gets the longest term that covers it, and no span is nested in
+    another or inserted into a span's title."""
     if not defs:
         return html
+    spans: List[str] = []
+
+    def wrap(m, definition: str) -> str:
+        spans.append(f'<span class="def" title="{html_mod.escape(definition, quote=True)}">{m.group(1)}</span>')
+        return f'\x00{len(spans) - 1}\x00'
+
     parts = re.split(r'(<[^>]+>)', html)
     for k, part in enumerate(parts):
         if part.startswith('<'):
             continue
-        for term, definition in defs.items():
+        for term in sorted(defs, key=len, reverse=True):
             part = re.sub(r'(?<![\w-])(' + re.escape(term) + r')(?![\w-])',
-                lambda m: f'<span class="def" title="{html_mod.escape(definition, quote=True)}">{m.group(1)}</span>', part)
+                lambda m, d=defs[term]: wrap(m, d), part)
         parts[k] = part
-    return ''.join(parts)
+    return re.sub(r'\x00(\d+)\x00', lambda m: spans[int(m.group(1))], ''.join(parts))
 
 
 def _data_uri(path: Path) -> str:
