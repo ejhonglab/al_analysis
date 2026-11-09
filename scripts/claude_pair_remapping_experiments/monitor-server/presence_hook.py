@@ -37,7 +37,9 @@ segment otherwise (a request Tom typed into the session). `presence_hook.py --ma
 (run by the agent when it has finished such a request; the session ID comes from
 $CLAUDE_CODE_SESSION_ID) ends a manual segment early; `--mark manual` starts one; `--at <time>`
 (epoch seconds or ISO 8601, local time if no zone) places the boundary in the past, e.g. when a
-request was finished before marks existed, and the transcript is re-read at the next sample.
+request was finished before marks existed, and the transcript is re-read at the next sample;
+`presence_hook.py --rebuild` then rewrites the session's past samples from the transcript and
+the boundaries, so the history shows the split as if it had always been in place.
 Each sample carries the manual share as `tokens_manual`, the mode in effect and the
 queue-session flag.
 
@@ -565,6 +567,105 @@ def plan_usage(capture):
     return out
 
 
+def message_log(transcript):
+    """Every assistant message of a session and its subagents, once per message ID with the
+    usage and timestamp of its last line (as `scan_usage` counts them): [(epoch, model, usage)],
+    sorted by time; messages without a timestamp are left out."""
+    paths = [transcript]
+    if transcript.endswith('.jsonl'):
+        paths += sorted(glob.glob(os.path.join(transcript[:-len('.jsonl')], 'subagents', '*.jsonl')))
+    out = []
+    for path in paths:
+        last = {}
+        try:
+            with open(path, 'rb') as f:
+                lines = f.read().split(b'\n')
+        except OSError:
+            continue
+        for line in lines:
+            if not (b'"usage"' in line and b'"assistant"' in line):
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(d, dict) or d.get('type') != 'assistant':
+                continue
+            m = d.get('message') or {}
+            u, model = m.get('usage'), m.get('model')
+            if not isinstance(u, dict) or (model or '').startswith('<'):
+                continue
+            mid = m.get('id') or d.get('requestId') or d.get('uuid')
+            epoch = line_epoch(d)
+            if epoch is not None:
+                last[mid] = (epoch, model, {k: u.get(k) for k, _ in USAGE_KEYS})
+        out += last.values()
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def rebuild_samples(sid):
+    """`--rebuild [session_id]`: rewrites every usage sample of the session from its transcript
+    and its current boundaries, so that boundaries set after the fact (prompts from before the
+    work-mode split, `--mark --at`) hold for the history too: each sample gets the tokens, the
+    manual share and the mode of the messages written before it. The plots then rise
+    monotonically instead of dropping where a re-read moved tokens to manual work."""
+    sid = sid or os.environ.get('CLAUDE_CODE_SESSION_ID') or ''
+    if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', sid):
+        raise SystemExit('rebuild: no session ID (pass it, or run from a Claude Code session)')
+    shared = shared_dir()
+    if not shared:
+        raise SystemExit('rebuild: the shared directory is not mounted')
+    cache = os.path.join(CACHE_DIR, sid + '.json')
+    with open(cache + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rec = read_json_file(cache) or {}
+        state_path = os.path.join(CACHE_DIR, sid + '.usage.json')
+        st = read_json_file(state_path) or {}
+        transcript, host = rec.get('transcript_path') or '', rec.get('host') or ''
+        if not (transcript and host and os.path.exists(transcript)):
+            raise SystemExit('rebuild: no transcript recorded for session {}'.format(sid[:8]))
+        path = os.path.join(shared, 'usage', '{}__{}.jsonl'.format(host, sid))
+        try:
+            with open(path) as f:
+                raw = f.read().splitlines()
+        except OSError:
+            raise SystemExit('rebuild: no usage samples at {}'.format(path))
+        bounds = st.setdefault('bounds', [])
+        session_tokens(transcript, {}, bounds)   # the transcript's prompts as boundaries
+        msgs = message_log(transcript)
+        totals, manual, i, out, changed = {}, {}, 0, [], 0
+        for line in raw:
+            try:
+                s = json.loads(line)
+            except ValueError:
+                out.append(line)
+                continue
+            if not isinstance(s, dict) or not isinstance(s.get('epoch'), (int, float)):
+                out.append(line)
+                continue
+            while i < len(msgs) and msgs[i][0] <= s['epoch']:
+                epoch, model, usage = msgs[i]
+                _add_usage(totals, model, usage)
+                if mode_at(bounds, epoch) == 'manual':
+                    _add_usage(manual, model, usage)
+                i += 1
+            new = dict(s, tokens=json.loads(json.dumps(totals)), tokens_manual=json.loads(
+                json.dumps(manual)), work_mode=mode_at(bounds, s['epoch']))
+            changed += new != s
+            out.append(json.dumps(new, sort_keys=True, separators=(',', ':')))
+        tmp = '{}.{}.tmp'.format(path, os.getpid())
+        with open(tmp, 'w') as f:
+            f.write(''.join(x + '\n' for x in out))
+        os.replace(tmp, path)
+        st['scan_version'] = SCAN_VERSION
+        write_atomic(state_path, st)
+    share = sum(sum(t.values()) for t in manual.values())
+    total = sum(sum(t.values()) for t in totals.values())
+    print('{}: {} of {} samples rewritten from {} messages; manual share at the last one {} of {} '
+        'tokens'.format(sid[:8], changed, len(raw), len(msgs), share, total))
+
+
 def refresh_scan_state(st):
     """The file states to scan with: the saved ones, or none when the state comes from an
     older scan (`scan_version` below SCAN_VERSION), so that every file is re-read from the
@@ -768,6 +869,9 @@ def mark_mode(mode, sid, at=None):
 def main():
     if sys.argv[1:2] == ['--sample']:
         sample_only(sys.argv[2] if len(sys.argv) > 2 else '')
+        return
+    if sys.argv[1:2] == ['--rebuild']:
+        rebuild_samples(sys.argv[2] if len(sys.argv) > 2 else '')
         return
     if sys.argv[1:2] == ['--mark']:
         args, at = sys.argv[2:], None

@@ -524,6 +524,49 @@ def test_rescan_after_work_mode_split(tmp_path):
     assert ph.refresh_scan_state(st3) == {} and st3['bounds'] == [[1.0, 'queue', 'mark', '']]
 
 
+def test_rebuild_samples(dirs, tmp_path):
+    import presence_hook as ph
+    shared, env = dirs
+    T = '2026-11-08T10:{:02d}:00.000Z'
+    e = lambda m: ph.line_epoch({'timestamp': T.format(m)})
+    transcript = tmp_path / 's7.jsonl'
+    transcript.write_text(prompt_line('join experiment work queue', T.format(0))
+        + usage_line('m1', 'claude-fable-5-1', 5, ts=T.format(1))
+        + prompt_line('please check the hook', T.format(10))
+        + usage_line('m2', 'claude-fable-5-1', 7, ts=T.format(11))
+        + usage_line('m3', 'claude-fable-5-1', 9, ts=T.format(21)))
+    cache = Path(env['KC_PRESENCE_CACHE'])
+    cache.mkdir(exist_ok=True)
+    (cache / 's7.json').write_text(json.dumps(dict(session_id='s7', host=HOST,
+        transcript_path=str(transcript))))
+    # the request was ended with --mark queue --at 10:20, after the samples were written
+    (cache / 's7.usage.json').write_text(json.dumps(dict(bounds=[[e(20), 'queue', 'mark', 'at']])))
+    udir = shared / 'usage'
+    udir.mkdir(exist_ok=True)
+    fable = lambda out: {'claude-fable-5-1': dict(input=1, output=out, cache_read=100, cache_creation=10)}
+    old = [dict(version=2, epoch=e(m), time='t', host=HOST, session_id='s7', reason='watch',
+        tokens=fable(out), tokens_manual={}, work_mode='queue') for m, out in ((5, 5), (15, 12), (25, 21))]
+    path = udir / '{}__s7.jsonl'.format(HOST)
+    path.write_text(''.join(json.dumps(s) + '\n' for s in old) + 'not json\n')
+    r = subprocess.run([sys.executable, '-I', str(HERE / 'presence_hook.py'), '--rebuild', 's7'],
+        env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert '2 of 4 samples rewritten from 3 messages' in r.stdout
+    lines = path.read_text().splitlines()
+    assert lines[-1] == 'not json'
+    new = [json.loads(x) for x in lines[:3]]
+    assert new[0]['tokens_manual'] == {} and new[0]['work_mode'] == 'queue' and new[0]['tokens'] == fable(5)
+    # m2 (10:11) falls in the request (10:10 to the 10:20 mark); m3 (10:21) is queue work again
+    assert new[1]['tokens_manual']['claude-fable-5-1']['output'] == 7 and new[1]['work_mode'] == 'manual'
+    assert new[2]['tokens_manual']['claude-fable-5-1']['output'] == 7 and new[2]['work_mode'] == 'queue'
+    # totals are rebuilt from the messages too (three of them by 10:25)
+    assert new[2]['tokens'] == {'claude-fable-5-1': dict(input=3, output=21, cache_read=300, cache_creation=30)}
+    assert new[2]['reason'] == 'watch'
+    st = json.loads((cache / 's7.usage.json').read_text())
+    assert [(b[1], b[2]) for b in st['bounds']] == [('queue', 'prompt'), ('manual', 'prompt'), ('queue', 'mark')]
+    assert st['scan_version'] == ph.SCAN_VERSION
+
+
 def test_hook_writes_usage_samples(dirs, tmp_path):
     shared, env = dirs
     home = tmp_path / 'home'
