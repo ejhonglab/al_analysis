@@ -8,6 +8,33 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### A fit seeded with `--init-from` does not start at its seed's optimum and runs with a different bouton->APL / KC->APL input balance (found 2026-11-08, atlas)
+
+- **What.** `init_from_fit` in E10_joint_fit.py builds the starting point from the seed row's factors
+  relative to the base (threshold, APL, APL->bouton) but resets the bouton->APL input scale
+  (`wPNAPL_scale`, tied, never fitted) to the base's value while the KC->APL scale gets the seed's APL
+  factor. The tie keeps every tied scale at its starting ratio to the APL->KC scale for the whole fit,
+  so a chained fit (i) does not start at its seed's optimum (E44's 40 Hz reference model at 6.8 %
+  starts at block +0.050 and APL-on response rate 0.070 instead of its fitted +0.054 and 0.068) and
+  (ii) runs with a bouton->APL vs KC->APL input balance (wPNAPL / wKCAPL) that differs from its
+  seed's: 5.57 for E44's 40 Hz fit vs 4.23 for its +0.072-target re-fit in E48; 10.58 vs 7.54 at
+  70 Hz; 7.24 for E45's eight at 1.25 at 70 Hz vs 2.57 for its +0.072 and +0.10 re-fits (the tuned
+  base: 4.45). Found by the code subagent writing the noise-aware loss (E51).
+- **Affects.** Every fit started with `--init-from`: E48's re-fits (from E44 / E45's optima) and E45's
+  gain fits (from the nearest 5 % optima; their `initial` in provenance has the base's wPNAPL_scale).
+  The block target through the noise (E48) compared each re-fit with a counterpart that was meant to
+  differ only in the target; they also differ in this unfitted balance, so the "raising the target
+  cannot raise the block" reading rests on a confounded comparison. Comparisons across fits of the
+  family that were seeded differently (E45's gain 1.25 against E44's gain 1.5, which started from
+  E19's grid rows) differ in it too. No statistic of any single fit is wrong: each fit is what its
+  recorded `initial` and tie say it is (provenance records `initial`, not the seed tag).
+- **Done.** `--init-from-exact` (al_analysis 8b3820d) starts at the seed's absolute parameters
+  (checked against the row at the first evaluation); the noise-robust block's fits (E51) use it. The
+  default `--init-from` is unchanged.
+- **Remains.** Annotate E48's note and the summary's block-target paragraph with the confound; repeat
+  E48's three re-fits with `--init-from-exact` if the block-target question stays open after E51;
+  record the seed tag and the start mode in provenance.
+
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
 - **What.** Several experiment scripts call `model_provenance()` (al_analysis commit, dirty flag and
