@@ -366,6 +366,10 @@ def test_usage_collect_and_render(tmp_path):
     assert '&#9745; group hosts by Claude account' in grouped
     assert 'Tom (Max): atlas, hal (11k)' in grouped
     assert 'Tom (Max), weekly' in grouped and 'Tom (Max), 5-hour' in grouped
+    # the plan-usage legend shows markers, the 5-hour series desaturated ones
+    assert '<span class="mk" style="background: color-mix(in srgb, var(--s1) 45%, var(--card))"></span>Tom (Max), 5-hour' in grouped
+    assert '<span class="mk" style="background: var(--s1)"></span>Tom (Max), weekly' in grouped
+    assert 'class="series dash soft"' in grouped
     assert '45%' in grouped and 'Yang (Pro)' not in grouped
     # a chat entry with more than one line expands to the whole message
     chat = html[html.index('<h2>Recent chat'):html.index('<h2>Claude sessions')]

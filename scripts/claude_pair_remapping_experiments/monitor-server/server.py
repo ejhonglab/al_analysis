@@ -624,12 +624,15 @@ code { font-size: .85em; }
 .plot .ref { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .plot .series { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .plot .dash { stroke-dasharray: 6 4; }
+.plot .soft { opacity: .55; }
 .plot .pt { stroke: var(--card); stroke-width: 1.5; }
 .plot .hit { fill: transparent; stroke: none; }
 .keys { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: .84rem; margin: 6px 2px 0; }
 .sw { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle;
   margin-right: 6px; }
 .sw.dash { border-top-style: dashed; }
+.mk { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle;
+  margin-right: 6px; border: 1.5px solid var(--card); box-sizing: border-box; }
 .note { color: var(--muted); font-size: .82rem; margin: 6px 2px 0; }
 """
 CSS += ':root { ' + ' '.join('--s{}: {};'.format(i + 1, c[0])
@@ -805,15 +808,24 @@ def step_series(sessions, t0, t1):
     return pts
 
 
-def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230):
+def soft_color(color):
+    """The desaturated, lighter version of a series color (a CSS color, usually a variable),
+    for a series told apart by its markers: the color mixed with the card background."""
+    return 'color-mix(in srgb, {} 45%, var(--card))'.format(color)
+
+
+def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230, keys='lines'):
     """An inline SVG line plot over time.
 
     Args:
         series: [{'label', 'color' (a CSS color), 'points' [(t, y)], 'step' (draw as a step
-            function), 'dash'}].
+            function), 'dash', 'soft' (desaturated markers and a faint line, for a series whose
+            points overlap another's so that line styles cannot be seen)}].
         y_fmt: formats a y value for the axis and the hover text.
         y_max: top of the y axis (default: a round number above the data).
         ref: y value of a dotted reference line (e.g. 100 %).
+        keys: the legend's swatches: 'lines' (a stroke, dashed for dashed series) or
+            'markers' (a dot in the series' marker color).
     """
     W, H, ml, mr, mt, mb = 900, height, 58, 14, 8, 24
     ys = [y for s in series for _, y in s['points']]
@@ -844,9 +856,10 @@ def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230):
             if s.get('step') and j:
                 xy.append((X(tv), Y(pts[j - 1][1])))
             xy.append((X(tv), Y(v)))
-        o.append('<polyline class="series{}" style="stroke: {}" points="{}"><title>{}</title>'
-            '</polyline>'.format(' dash' if s.get('dash') else '', s['color'],
-            ' '.join('{:.1f},{:.1f}'.format(*q) for q in xy), esc(s['label'])))
+        mark_color = soft_color(s['color']) if s.get('soft') else s['color']
+        o.append('<polyline class="series{}{}" style="stroke: {}" points="{}"><title>{}</title>'
+            '</polyline>'.format(' dash' if s.get('dash') else '', ' soft' if s.get('soft') else '',
+            s['color'], ' '.join('{:.1f},{:.1f}'.format(*q) for q in xy), esc(s['label'])))
         marks = pts[1:-1] if s.get('step') else pts
         if len(marks) > 150:
             marks = marks[::math.ceil(len(marks) / 150)] + [marks[-1]]
@@ -855,11 +868,15 @@ def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230):
                 datetime.fromtimestamp(tv).strftime('%b %-d %H:%M'))
             o.append('<g><circle class="hit" cx="{0:.1f}" cy="{1:.1f}" r="8"/><circle class="pt" '
                 'cx="{0:.1f}" cy="{1:.1f}" r="3.5" style="fill: {2}"/><title>{3}</title></g>'.format(
-                X(tv), Y(v), s['color'], esc(tip)))
+                X(tv), Y(v), mark_color, esc(tip)))
     o.append('</svg>')
-    keys = ''.join('<span><span class="sw{}" style="border-color: {}"></span>{}</span>'.format(
-        ' dash' if s.get('dash') else '', s['color'], esc(s['label'])) for s in series)
-    return ''.join(o) + '<div class="keys">{}</div>'.format(keys)
+    if keys == 'markers':
+        legend = ''.join('<span><span class="mk" style="background: {}"></span>{}</span>'.format(
+            soft_color(s['color']) if s.get('soft') else s['color'], esc(s['label'])) for s in series)
+    else:
+        legend = ''.join('<span><span class="sw{}" style="border-color: {}"></span>{}</span>'.format(
+            ' dash' if s.get('dash') else '', s['color'], esc(s['label'])) for s in series)
+    return ''.join(o) + '<div class="keys">{}</div>'.format(legend)
 
 
 def series_color(i):
@@ -1000,12 +1017,14 @@ def usage_html(state, now, opts):
                     readings[pu.get('captured_epoch') or x['epoch']] = pu
         pts = sorted(readings.items())
         color = series_color(i)
+        # the two windows' readings land on the same instants, so their markers overlap and
+        # a line style cannot be seen: the 5-hour series gets desaturated markers instead
         for window, name, dash in (('seven_day', 'weekly', False), ('five_hour', '5-hour', True)):
             wp = [(tv, r[window]['used_percentage']) for tv, r in pts
                 if t0 <= tv <= t1 and isinstance(r.get(window), dict)]
             if wp:
                 series.append({'label': '{}, {}'.format(a['label'], name), 'color': color,
-                    'points': wp, 'dash': dash})
+                    'points': wp, 'dash': dash, 'soft': dash})
         last = pts[-1] if pts else None
         def cell(window):
             if not last or not isinstance(last[1].get(window), dict):
@@ -1033,7 +1052,8 @@ def usage_html(state, now, opts):
     w('<div class="plotbox"><h3>Plan usage per Claude account (% of the 5-hour and weekly '
         'limits)</h3>')
     if series:
-        w(svg_plot(series, t0, t1, fmt_pct, y_max=100, ref=100, label='plan usage over time'))
+        w(svg_plot(series, t0, t1, fmt_pct, y_max=100, ref=100, label='plan usage over time',
+            keys='markers'))
     else:
         w('<p class="muted">no plan-usage readings in this window</p>')
     w('<div class="wrap" style="margin-top: 10px"><table><tr><th>account</th><th>hosts</th>'
