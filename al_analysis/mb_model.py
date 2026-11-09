@@ -16941,7 +16941,11 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     with any subset of keys of initial parameters (others are left at initial values),
     and returns `responses` and `spike_counts` (with same format as `fit_mb_model`
     outputs). Output should equal that of a `fit_mb_model` call with these parameters
-    fixed (via `fixed_params_to_fit_mb_model_kws`). Initial parameters have values for
+    fixed (via `fixed_params_to_fit_mb_model_kws`). `simulate` also takes an optional
+    `kc_thr_factor` (one positive value per KC, in output row order), multiplying each
+    KC's threshold (`fixed_thr` + 2 * its spontaneous input) for that simulation only
+    (e.g. a per-trial excitability jitter); those outputs have no `fit_mb_model`
+    equivalent. Initial parameters have values for
     all keys of `optimizable_model_params` that apply to this model (PN<>APL weight
     scales only included if `prat_boutons=True`, 'apl_unit_coupling' only if the APL is
     split into units, and 'wKCKC_scale' [= `kc_kc_inh`] only if there is KC-KC
@@ -17035,12 +17039,29 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     rv.log.disable()
     rv.verbose = False
 
-    def simulate(params: ParamDict) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def simulate(params: ParamDict, kc_thr_factor: Optional[np.ndarray] = None
+        ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Returns `responses`, `spike_counts` from re-running KCs w/ `params` changed.
+
+        Args:
+            params: see `make_fixed_param_kc_simulator`
+            kc_thr_factor: if passed, one positive factor per KC (in output row order)
+                that each KC's threshold is multiplied by, in this simulation only
         """
         unknown = set(params) - set(initial_params)
         if len(unknown) > 0:
             raise ValueError(f'parameters {unknown} not in {set(initial_params)}')
+
+        if kc_thr_factor is not None:
+            kc_thr_factor = np.asarray(kc_thr_factor, dtype=float)
+            if kc_thr_factor.size != spont_in.size:
+                raise ValueError(f'kc_thr_factor has {kc_thr_factor.size} values for '
+                    f'{spont_in.size} KCs'
+                )
+            if not (np.isfinite(kc_thr_factor).all() and (kc_thr_factor > 0).all()):
+                raise ValueError('kc_thr_factor must be finite and positive')
+
+            kc_thr_factor = kc_thr_factor.reshape(spont_in.shape)
 
         params = {**initial_params, **params}
 
@@ -17053,7 +17074,10 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
 
         # same as olfsysm.fit_sparseness does w/ fixed threshold (fit_mb_model always
         # uses add_fixed_thr_to_spont=True when fixed_thr passed)
-        rv.kc.thr = params['fixed_thr'] + spont_in * 2.0
+        thr = params['fixed_thr'] + spont_in * 2.0
+        if kc_thr_factor is not None:
+            thr = thr * kc_thr_factor
+        rv.kc.thr = thr
 
         # same as olfsysm.fit_sparseness does w/ fixed APL weights (and same as
         # fit_mb_model does w/o connectome APL weights, where unscaled weights are 1)
@@ -17369,6 +17393,7 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
     target_response_rates: Optional[Union[float, pd.Series]] = None,
     target_corr: Optional[pd.DataFrame] = None,
     condition_param_overrides: Optional[Dict[str, ParamDict]] = None,
+    condition_kc_thr_factors: Optional[Dict[str, np.ndarray]] = None,
     params_to_optimize: Optional[Union[Sequence[str], Literal['all']]] = None,
     initial_params: Optional[ParamDict] = None,
     bounds: Optional[Dict[str, Tuple[float, float]]] = None, bound_factor: float = 10.0,
@@ -17409,6 +17434,14 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             being evaluated updated by that condition's overrides (after any tying of
             APL weights, see `tie_apl_weights`). Parameters being optimized can be
             overridden. Conditions with identical parameters are only simulated once.
+
+        condition_kc_thr_factors: if passed, maps some of the `condition_param_overrides`
+            conditions to per-KC threshold factors (the simulator's `kc_thr_factor`, see
+            `make_fixed_param_kc_simulator`), applied in every evaluation of that
+            condition (e.g. fixed draws of a per-trial excitability jitter, as extra
+            conditions beside the deterministic ones). Such conditions are always
+            simulated (never shared with another condition), and are not checked by
+            `verify` (their outputs have no `fit_mb_model` equivalent).
 
         params_to_optimize: subset of `optimizable_model_params` keys. Defaults to all
             that apply to this model (PN<>APL weight scales only included if
@@ -17525,6 +17558,17 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
                 raise ValueError(f'condition {condition!r} overrides {unknown}, not in '
                     f'{set(optimizable_model_params)}'
                 )
+
+    if condition_kc_thr_factors is None:
+        condition_kc_thr_factors = dict()
+    elif condition_param_overrides is None:
+        raise ValueError('condition_kc_thr_factors requires condition_param_overrides')
+    else:
+        unknown = set(condition_kc_thr_factors) - set(condition_param_overrides)
+        if len(unknown) > 0:
+            raise ValueError(f'condition_kc_thr_factors conditions {unknown} not in '
+                'condition_param_overrides'
+            )
 
     simulator_kws = dict(model_kws)
     if (initial_params is None and target_response_rates is not None and
@@ -17655,6 +17699,12 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             key2outputs = dict()
             condition_outputs = dict()
             for c, c_params in condition_params(params).items():
+                if c in condition_kc_thr_factors:
+                    condition_outputs[c] = simulate(c_params,
+                        kc_thr_factor=condition_kc_thr_factors[c]
+                    )
+                    continue
+
                 key = params_key(c_params)
                 if key not in key2outputs:
                     key2outputs[key] = simulate(c_params)
@@ -17818,6 +17868,9 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
     elif verify:
         key2fit_outputs = dict()
         for c, c_params in best_condition_params.items():
+            if c in condition_kc_thr_factors:
+                continue
+
             key = params_key(c_params)
             if key not in key2fit_outputs:
                 key2fit_outputs[key] = fit_mb_model(orn_deltas,

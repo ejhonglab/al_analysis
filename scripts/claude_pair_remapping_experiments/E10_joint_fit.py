@@ -51,17 +51,42 @@ ratio target and the other terms are unchanged; tag prefix rate<R>_ (after any g
 Block target (E48): `--block-target B` replaces the data's measured block (+0.055) in the block term
 by B (a number, or a registry key such as block_corrected, the block on the noise-corrected
 matrices); tag prefix block<B>_ (after the rate prefix).
+Noise-aware loss (E51): `--jitter-k K` (default 0, the deterministic fit) adds to every evaluation K
+runs of each condition with each KC's threshold multiplied by max(1 + sigma xi, 0.01) (E43 part B's
+per-trial excitability jitter, applied to the threshold the simulator has just set, so the fitted
+fixed_thr still scales it; optimize_mb_model_params' condition_kc_thr_factors), xi standard normal
+per KC from numpy default_rng(SeedSequence(`--jitter-seed`)): K fixed draws, the same at every
+evaluation (common random numbers), draw i shared by the APL-on and APL-off runs. The jittered
+statistics are those of the trial mean of the K runs of each condition, read as E43 / E48 read a
+pseudo-recording: cosine distances of the trial-mean spike counts, response rates as the per-trial
+responses averaged over trials; `--jitter-trials T` (dividing K) instead averages the distances of
+K / T pseudo-recordings of T trials, E48's processing exactly (fed E48's 10 x 3 trials of E44's 40 Hz
+model, the loss gives its processed block, +0.0247, rate and ρ to the last digit; one 3-trial
+pseudo-recording's block scatters by ~0.02-0.03 across draws). `--jitter-terms block` (option 1)
+takes only the block term from them, `all` (option 2, the fit "as measured") every term. The deterministic 'on' / 'off' runs are
+still what is saved and scored (fits.csv's columns as without the option); the jittered statistics
+are added as fit_jit_* columns, with jitter_k / jitter_sigma / jitter_seed / jitter_terms, and the
+best fit's trial means are saved (jitmean_*). `--jitter-sigma` defaults to the APL-on-matched sigma
+of the --init-from model in a part-B noise_levels.json (E43 / E48). The jittered runs share the fitted
+fixed_thr, so their per-trial response rate is above the deterministic one; E43 / E48 instead re-tuned
+fixed_thr at each sigma to hold it (by x1.066 for E44's 40 Hz model at 0.207): `--jitter-thr-scale
+matched` multiplies the jittered thresholds by that ratio (fixed; a number C gives it directly).
+Tag prefix jitK<K>_ (jitK<K>t<T>_ with --jitter-trials, x<C> with a threshold scale, all with `all`),
+after the block prefix.
+`--init-from-exact` starts at the --init-from fit's absolute parameters instead of its factors on
+this base (which reset its bouton->APL scale to the base's).
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -352,9 +377,62 @@ WT_DEV_TARGET, VCF_OFF_TARGET = H.data_target('ctrl_struct_wt'), H.data_target('
 EXCESS_DIFF_TARGET, EXCESS_DIFF_SCALE = H.data_target('ctrl_excess_block_minus_other'), 0.05
 
 
+JITTER_TERMS = ('block', 'all')
+JITTER_THR_MIN = 0.01
+# models E43 names other than E<n>-<tag> (its --model-from naming)
+NOISE_MODEL_ALIASES = {('E34_gain_bounded', 'thr40_gain1.5_k2_cap3'): 'ref40'}
+
+
+def jitter_conditions(k: int) -> List[Tuple[str, str]]:
+    """(jittered condition, deterministic condition it repeats) for draws 0..k-1."""
+    return [(f'{c}_jit{i}', c) for i in range(int(k)) for c in ('on', 'off')]
+
+
+def jitter_factors(k: int, n_kcs: int, sigma: float, seed: int, scale: float = 1.0) -> np.ndarray:
+    """k x n_kcs per-KC threshold factors scale * max(1 + sigma xi, JITTER_THR_MIN), xi standard
+    normal from numpy default_rng(SeedSequence(seed)) (row i is the same for any k > i)."""
+    xi = np.random.default_rng(np.random.SeedSequence(int(seed))).standard_normal((int(k), int(n_kcs)))
+    f = np.maximum(1.0 + float(sigma) * xi, JITTER_THR_MIN)
+    return f if scale == 1.0 else float(scale) * f
+
+
+def matched_noise(experiment: str, tag: str) -> dict:
+    """The APL-on-matched threshold jitter of the model fitted as `tag` in `experiment`, from the
+    part-B noise_levels.json files under <shared>/results (E43 / E48): 'sigma', 'thr_ratio' (the
+    fixed_thr E43 re-tuned at that sigma, to hold the per-trial APL-on response rate at the
+    deterministic one, over the deterministic fixed_thr; NaN if not recorded) and 'source'.
+    Raises ValueError if no file has the model, or if files disagree by more than 0.005 in sigma."""
+    m = re.match(r'(E\d+)_', experiment)
+    name = NOISE_MODEL_ALIASES.get((experiment, tag), f'{m.group(1) if m else experiment}-{tag}')
+    found = {}
+    for p in sorted((H.shared_dir() / 'results').glob('*/partB/noise_levels.json')):
+        lv = json.loads(p.read_text()).get(name, {})
+        if 'on' in lv.get('matched', {}):
+            tuned = lv.get('tuned_fixed_thr', {}).get('match_on')
+            ratio = (float(tuned) / float(lv['fixed_thr_det']) if tuned is not None and lv.get('fixed_thr_det')
+                else np.nan)
+            found[str(p.relative_to(H.shared_dir()))] = dict(sigma=float(lv['matched']['on']['sd']), thr_ratio=ratio)
+    if not found:
+        raise ValueError(f'no part-B noise_levels.json has model {name!r}; pass --jitter-sigma')
+    sigmas = [v['sigma'] for v in found.values()]
+    if max(sigmas) - min(sigmas) > 0.005:
+        raise ValueError(f'matched sigmas of {name!r} disagree: {found}; pass --jitter-sigma')
+    src, v = next(iter(found.items()))
+    return dict(v, source=f'{src}:{name}')
+
+
+def trial_mean(runs: list) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """(responses, spike counts) averaged over runs [(responses, spike_counts), ...]: responses
+    become the fraction of runs in which each KC responded to each odor."""
+    r0, s0 = runs[0]
+    return tuple(pd.DataFrame(np.mean([run[j].to_numpy(dtype=float) for run in runs], axis=0),
+        index=x.index, columns=x.columns) for j, x in enumerate((r0, s0)))
+
+
 def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series,
     drive: pd.Series, ref: Optional[pd.DataFrame] = None, structure: bool = False,
-    rate_target: float = RATE_TARGET, block_target: float = BLOCK_TARGET):
+    rate_target: float = RATE_TARGET, block_target: float = BLOCK_TARGET, jitter_k: int = 0,
+    jitter_terms: str = 'block', jitter_trials: Optional[int] = None):
     """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc).
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
@@ -366,19 +444,57 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     `ref` = `H.reference_pairs()`. `rate_target` is the APL-on response rate the rate_on term
     pulls toward (E44); `block_target` the block the block term pulls toward (the data's
     measured block by default; E48).
+
+    With `jitter_k` K > 0 (E51), `outputs` also has the jittered runs ('on_jit<i>' / 'off_jit<i>',
+    `jitter_conditions`); every statistic is also computed on the trial mean of the K runs of each
+    condition (`trial_mean`; returned with a jit_ prefix), and the block term (`jitter_terms`
+    'block') or every term ('all') is taken from those instead of the deterministic runs. With
+    `jitter_trials` T < K (a divisor of K), the distance matrices are instead the mean over the K / T
+    pseudo-recordings (consecutive draws) of each one's trial-mean cosine distances, as E43 / E48
+    process the model's trials and the data are processed (response rates and the spike-count
+    excess still from all K runs).
     """
+    if jitter_terms not in JITTER_TERMS:
+        raise ValueError(f'{jitter_terms=} not in {JITTER_TERMS}')
+    n_trials = int(jitter_trials) if jitter_trials else int(jitter_k)
+    if jitter_k and (n_trials < 1 or jitter_k % n_trials):
+        raise ValueError(f'jitter_trials {jitter_trials} must divide jitter_k {jitter_k}')
     ratio_target = float(data_rates['TNT'].reindex(H.APL16_ODORS).mean() /
         data_rates['TNT3c'].reindex(H.APL16_ODORS).mean())
     weights = dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if structure else {}))
     ctrl = data['raw']['TNT3c']
     tnt = data['raw']['TNT']
     v = H.PRIMARY_MODEL_RDM
+    jit = jitter_conditions(jitter_k)
 
     def loss_fn(outputs) -> Dict[str, float]:
-        r_on, s_on = outputs['on']
-        r_off, s_off = outputs['off']
-        on = H.model_rdms(r_on, s_on)[v]
-        off = H.model_rdms(r_off, s_off)[v]
+        out, terms = stats_terms(*outputs['on'], *outputs['off'])
+        if jit:
+            runs = {c: [outputs[j] for j, cc in jit if cc == c] for c in ('on', 'off')}
+            rdms = None
+            if n_trials < jitter_k:
+                rdms = {c: pd.concat([H.pair_distances(trial_mean(rr[i:i + n_trials])[1], 'cosine')
+                    for i in range(0, jitter_k, n_trials)], axis=1).mean(axis=1) for c, rr in runs.items()}
+            jout, jterms = stats_terms(*trial_mean(runs['on']), *trial_mean(runs['off']), rdms=rdms)
+            out.update({f'jit_{kk}': vv for kk, vv in jout.items()})
+            if jitter_terms == 'all':
+                terms = jterms
+            else:
+                terms['block'] = jterms['block']
+        for name, t in terms.items():
+            out[f'term_{name}'] = float(weights[name] * t)
+        out['loss'] = float(sum(out[f'term_{n}'] for n in terms))
+        return {kk: float(vv) for kk, vv in out.items()}
+
+    def stats_terms(r_on, s_on, r_off, s_off, rdms: Optional[dict] = None
+        ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """(statistics, loss terms) of one APL-on / APL-off pair of outputs; `rdms` ({'on', 'off'}
+        pair distances) replaces the distances of the spike counts."""
+        if rdms is None:
+            on = H.model_rdms(r_on, s_on)[v]
+            off = H.model_rdms(r_off, s_off)[v]
+        else:
+            on, off = rdms['on'], rdms['off']
         out = {}
         out['on_spearman'] = H.spearman(on, ctrl)
         out['off_spearman'] = H.spearman(off, tnt)
@@ -419,10 +535,7 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
             terms['vcf_off'] = max(0.0, VCF_OFF_TARGET - np.nan_to_num(out['vcf_off'], nan=0.0)) / VCF_OFF_TARGET
             terms['excess_on'] = ((out['excess_on_block'] - out['excess_on_other'] - EXCESS_DIFF_TARGET)
                 / EXCESS_DIFF_SCALE) ** 2
-        for name, t in terms.items():
-            out[f'term_{name}'] = float(weights[name] * t)
-        out['loss'] = float(sum(out[f'term_{n}'] for n in terms))
-        return {kk: float(vv) for kk, vv in out.items()}
+        return out, terms
 
     loss_fn.ratio_target = ratio_target
     loss_fn.rate_target = float(rate_target)
@@ -430,16 +543,40 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     return loss_fn
 
 
-def init_from_fit(tag: str, base: Dict[str, float], experiment: str = 'E10_joint_fit'
-    ) -> Dict[str, float]:
+def _same_value(a, b) -> bool:
+    """Whether two fits.csv cells agree (missing / NaN / None alike; numbers to 1e-9 relative)."""
+    a_na, b_na = (x is None or (isinstance(x, float) and np.isnan(x)) for x in (a, b))
+    if a_na or b_na:
+        return a_na and b_na
+    try:
+        return bool(np.isclose(float(a), float(b), rtol=1e-9, atol=0))
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+
+def init_from_fit(tag: str, base: Dict[str, float], experiment: str = 'E10_joint_fit',
+    exact: bool = False, expect: Optional[dict] = None) -> Dict[str, float]:
     """Starting point taken from an earlier fit's row in fits.csv: its threshold, APL and
     APL->bouton factors relative to its own base are applied to `base` (so a solution found
-    without a per-claw threshold can seed a fit with one), with its KC-KC scale."""
+    without a per-claw threshold can seed a fit with one), with its KC-KC scale.
+
+    The bouton->APL scale (wPNAPL_scale) is then the base's, while the KC->APL scale gets the
+    APL factor, so a fit whose input scales were tied to the APL->KC scale does not start at
+    its own optimum (their ratio differs). With `exact` the row's absolute parameters are
+    returned instead (the fit's own optimum); `expect` ({fits.csv column: value}, the columns
+    that define the base, e.g. claw_thr, gain, k) must then match the row.
+    """
     f = pd.read_csv(H.results_dir(experiment) / 'fits.csv')
     r = f[f.tag == tag]
     if len(r) == 0:
         raise ValueError(f'no fit {tag!r} in fits.csv')
     r = r.iloc[0]
+    if exact:
+        bad = {c: (r[c], v) for c, v in (expect or {}).items() if c in r.index and not _same_value(r[c], v)}
+        if bad:
+            raise ValueError(f'fit {tag!r} differs from this run in {bad} (row, this run); an exact start '
+                'needs the same base')
+        return dict({kk: float(r[kk]) for kk in PARAM_KEYS}, wKCKC_scale=float(r['kc_kc_inh']))
     return dict(fixed_thr=base['fixed_thr'] * float(r['thr_factor']),
         wAPLKC_scale=base['wAPLKC_scale'] * float(r['apl_factor_vs_e3']),
         wKCAPL_scale=base['wKCAPL_scale'] * float(r['apl_factor_vs_e3']),
@@ -454,7 +591,11 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     wPNKC_override: Optional[pd.DataFrame] = None, init_thr: Optional[float] = None,
     aplpn_max: Optional[float] = None, aplpn_fixed: Optional[float] = None,
     aplkc_min: Optional[float] = None, apl_drive: str = 'claws',
-    init_params: Optional[str] = None):
+    init_params: Optional[str] = None, kc_thr_factors: Optional[np.ndarray] = None,
+    init_exact_expect: Optional[dict] = None):
+    """One joint fit; `kc_thr_factors` (K x KCs, `jitter_factors`) adds the K jittered runs of
+    each condition (`jitter_conditions`) to every evaluation; `init_exact_expect` (not None)
+    starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True)."""
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
@@ -464,7 +605,8 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         kckc0 = init['wKCKC_scale']
         print(f'starting from {init_params}: {init}', flush=True)
     elif init_from is not None:
-        init = init_from_fit(init_from, initial, init_from_experiment)
+        init = init_from_fit(init_from, initial, init_from_experiment,
+            **({} if init_exact_expect is None else dict(exact=True, expect=init_exact_expect)))
         kckc0 = init['wKCKC_scale']
         print(f'starting from fit {init_from}: {init}', flush=True)
     elif r19 is not None:
@@ -524,8 +666,14 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         opt_kws = dict(popsize=6, seed=0, polish=False, init='sobol')
     # (only with a glomerulus gain, so the default path is unchanged)
     wiring_kws = {} if wPNKC_override is None else {'_wPNKC': wPNKC_override}
+    overrides = {'on': {}, 'off': {'wAPLKC_scale': 0.0, 'wAPLPN_scale': 0.0}}
+    jit_kws = {}
+    if kc_thr_factors is not None and len(kc_thr_factors) > 0:
+        jit = jitter_conditions(len(kc_thr_factors))
+        jit_kws['condition_kc_thr_factors'] = {j: kc_thr_factors[int(j.rsplit('jit', 1)[1])] for j, _ in jit}
+        overrides.update({j: overrides[c] for j, c in jit})
     res = optimize_mb_model_params(orn, loss_fn=loss_fn,
-        condition_param_overrides={'on': {}, 'off': {'wAPLKC_scale': 0.0, 'wAPLPN_scale': 0.0}},
+        condition_param_overrides=overrides, **jit_kws,
         params_to_optimize=params,
         initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
         maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
@@ -609,6 +757,9 @@ def main() -> None:
         help='experiment whose fits.csv --init-from reads')
     ap.add_argument('--init-from', default=None, metavar='TAG',
         help='start from an earlier fit (row TAG of fits.csv): its relative threshold / APL factors on this base, its KC-KC scale')
+    ap.add_argument('--init-from-exact', action='store_true',
+        help="with --init-from: start at the fit's own absolute parameters (its optimum, including its "
+        'bouton->APL scale, which the relative factors reset to the base\'s); the fit must have this run\'s base')
     ap.add_argument('--glom-gain', type=float, default=None, metavar='G',
         help="multiply the PN->claw weights of the gain glomeruli by G (the oracle gain of "
         "E27 / E28; tag prefix gain<G>_)")
@@ -651,6 +802,24 @@ def main() -> None:
         help="block the loss's block term pulls toward (default: the data's measured block, +0.055): a number "
         "or a data-target registry key (e.g. block_corrected, the block on the noise-corrected matrices; E48); "
         "tag prefix block<B>_")
+    ap.add_argument('--jitter-k', type=int, default=0, metavar='K',
+        help='noise-aware loss (E51): K jittered runs of each condition per evaluation (fixed per-KC threshold '
+        'factor draws, common to every evaluation); 0 (default) fits the deterministic runs only; tag prefix jitK<K>_')
+    ap.add_argument('--jitter-sigma', type=float, default=None, metavar='S',
+        help="SD of the threshold factor 1 + S xi (default: the --init-from model's APL-on-matched sigma in a "
+        'part-B noise_levels.json, E43 / E48)')
+    ap.add_argument('--jitter-seed', type=int, default=0, help='seed of the threshold factor draws')
+    ap.add_argument('--jitter-thr-scale', default='1', metavar='C',
+        help="multiply the jittered runs' thresholds by C as well (default 1); 'matched': the ratio E43 re-tuned "
+        "fixed_thr by at the --init-from model's matched sigma, which holds its per-trial APL-on response rate "
+        'at the deterministic one, as in E43 / E48 (tag part x<C> after jitK<K>)')
+    ap.add_argument('--jitter-trials', type=int, default=None, metavar='T',
+        help='with --jitter-k K: group the K runs into K / T pseudo-recordings of T trials (T divides K) and '
+        'take the distances as the mean over them of each one\'s trial-mean distances, as E43 / E48 process '
+        'trials (default T = K: one trial mean); tag part t<T> after jitK<K>')
+    ap.add_argument('--jitter-terms', choices=JITTER_TERMS, default='block',
+        help="loss terms computed on the trial mean of the jittered runs: 'block' (the block term only) or "
+        "'all' (every term; tag prefix jitK<K>all_)")
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -694,8 +863,41 @@ def main() -> None:
         except ValueError:
             block_target = float(H.data_target(args.block_target))
         block_tag = f'block{block_target:.3f}_'
+    if args.jitter_k < 0:
+        ap.error('--jitter-k must be >= 0')
+    jit_k, jit_tag, jit_sigma, jit_sigma_src, jit_scale, jit_scale_src = int(args.jitter_k), '', None, None, 1.0, None
+    if jit_k > 0:
+        noise = None
+        if args.init_from is not None and (args.jitter_sigma is None or args.jitter_thr_scale == 'matched'):
+            noise = matched_noise(args.init_from_experiment, args.init_from)
+        if args.jitter_sigma is not None:
+            jit_sigma, jit_sigma_src = float(args.jitter_sigma), '--jitter-sigma'
+        elif noise is not None:
+            jit_sigma, jit_sigma_src = noise['sigma'], noise['source']
+        else:
+            ap.error('--jitter-k > 0 needs --jitter-sigma (or --init-from a model with a matched sigma)')
+        if jit_sigma < 0:
+            ap.error('--jitter-sigma must be >= 0')
+        if args.jitter_thr_scale == 'matched':
+            if noise is None or not np.isfinite(noise['thr_ratio']):
+                ap.error("--jitter-thr-scale matched needs --init-from a model with a re-tuned threshold in a "
+                    'part-B noise_levels.json')
+            if args.jitter_sigma is not None and abs(jit_sigma - noise['sigma']) > 1e-9:
+                ap.error(f"--jitter-thr-scale matched: the ratio is for sigma {noise['sigma']}, not {jit_sigma}")
+            jit_scale, jit_scale_src = noise['thr_ratio'], noise['source'] + ' (tuned_fixed_thr match_on / fixed_thr_det)'
+        else:
+            jit_scale, jit_scale_src = float(args.jitter_thr_scale), '--jitter-thr-scale'
+            if not jit_scale > 0:
+                ap.error('--jitter-thr-scale must be > 0')
+        jit_trials = jit_k if args.jitter_trials is None else int(args.jitter_trials)
+        if jit_trials < 1 or jit_k % jit_trials:
+            ap.error(f'--jitter-trials {jit_trials} must divide --jitter-k {jit_k}')
+        jit_tag = f'jitK{jit_k}' + ('' if jit_trials == jit_k else f't{jit_trials}') + (
+            '' if jit_scale == 1.0 else f'x{jit_scale:.3f}') + (
+            'all' if args.jitter_terms == 'all' else '') + '_'
     loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss == 'structure'),
-        rate_target=rate_target, block_target=block_target)
+        rate_target=rate_target, block_target=block_target, jitter_k=jit_k, jitter_terms=args.jitter_terms,
+        jitter_trials=args.jitter_trials)
     print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}; APL-on rate target '
         f'{loss_fn.rate_target:.4f}; block target {loss_fn.block_target:+.4f}; loss variant {args.loss}', flush=True)
 
@@ -715,22 +917,51 @@ def main() -> None:
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag
+        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + jit_tag
+    jit_factors, jit_meta = None, {}
+    if jit_k > 0:
+        jit_factors = jitter_factors(jit_k, len(breadth), jit_sigma, args.jitter_seed, jit_scale)
+        jit_meta = dict(jitter_k=jit_k, jitter_sigma=jit_sigma, jitter_sigma_source=jit_sigma_src,
+            jitter_seed=args.jitter_seed, jitter_terms=args.jitter_terms, jitter_trials=jit_trials,
+            jitter_thr_min=JITTER_THR_MIN,
+            jitter_thr_scale=jit_scale, jitter_thr_scale_source=jit_scale_src,
+            jitter_n_clipped=int((jit_factors <= jit_scale * JITTER_THR_MIN).sum()),
+            jitter_draws_sha256=hashlib.sha256(np.ascontiguousarray(jit_factors, dtype='<f8').tobytes()).hexdigest())
+        print(f'noise-aware loss: {jit_k} jittered runs per condition, sigma {jit_sigma:g} ({jit_sigma_src}), '
+            f'threshold scale {jit_scale:.4f}, seed {args.jitter_seed}, terms {args.jitter_terms}; '
+            f'{jit_meta["jitter_n_clipped"]} factors clipped; '
+            f'draws sha256 {jit_meta["jitter_draws_sha256"][:12]}', flush=True)
+
+    if args.init_from_exact and args.init_from is None:
+        ap.error('--init-from-exact needs --init-from')
 
     fits_path = res_dir / 'fits.csv'
     for k in args.exponents:
         tag = f'{prefix}k{k:g}{args.tag}'
         t0 = time.time()
+        exact_expect = None
+        if args.init_from_exact:
+            # the fits.csv columns (as main writes them) that define the base
+            exact_expect = dict(k=k, claw_thr=args.claw_thr, gain=gain,
+                gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None), wiring=args.wiring,
+                wiring_seed=(args.wiring_seed if args.wiring else None), orn_input=args.orn_input,
+                apl_drive=args.apl_drive, base_params=args.base_params)
         res, init, bounds = fit_one(k, orn, initial, wnorm, breadth, loss_fn, kckc0=args.kckc0,
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
             thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
             init_from_experiment=args.init_from_experiment,
             wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None) else None),
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
-            aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params
+            aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
+            kc_thr_factors=jit_factors, init_exact_expect=exact_expect
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
+        if exact_expect is not None:
+            r0 = pd.read_csv(H.results_dir(args.init_from_experiment) / 'fits.csv').set_index('tag').loc[args.init_from]
+            print('exact start check (first evaluation vs the fit\'s row): ' + '; '.join(
+                f'{c} {hist[c].iloc[0]:.6g} vs {r0["fit_" + c]:.6g}' for c in ('block', 'rate_on', 'on_spearman',
+                'off_spearman') if 'fit_' + c in r0.index), flush=True)
         if args.smoke:
             print(hist[['loss', 'time_s']].describe().T, flush=True)
             print(hist.iloc[-1].to_dict(), flush=True)
@@ -740,6 +971,12 @@ def main() -> None:
         for cond, (r, sp) in (('on', (r_on, s_on)), ('acute_off', (r_off, s_off))):
             r.to_parquet(out_dir / f'{tag}_{cond}_responses.parquet')
             sp.to_parquet(out_dir / f'{tag}_{cond}_spike_counts.parquet')
+        if jit_k > 0:
+            # the trial means of the best fit's jittered runs (responses: fraction of runs)
+            for cond, c in (('on', 'on'), ('acute_off', 'off')):
+                r, sp = trial_mean([res['condition_outputs'][j] for j, cc in jitter_conditions(jit_k) if cc == c])
+                r.to_parquet(out_dir / f'{tag}_jitmean_{cond}_responses.parquet')
+                sp.to_parquet(out_dir / f'{tag}_jitmean_{cond}_spike_counts.parquet')
         p = res['params']
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
             gain=gain, gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None),
@@ -765,6 +1002,9 @@ def main() -> None:
             rate_off=rate(r_off), rate_ratio_off_over_on=rate(r_off) / max(rate(r_on), 1e-9),
             seconds=time.time() - t0,
             mean_claws_per_kc=float(kc_by_glomerulus(wPNKC).sum(axis='columns').mean()),
+            **(dict(init_from_experiment=args.init_from_experiment, init_from_exact=True) if args.init_from_exact
+                else {}),
+            **jit_meta,
         )
         meta.update({f'fit_{kk}': vv for kk, vv in res['losses'].items() if kk != 'loss'})
         row, on, off = score(meta, (r_on, s_on), (r_off, s_off), wPNKC, orn, orn_pairs, drive,
@@ -793,7 +1033,10 @@ def main() -> None:
             f"vs ctrl {row[v + '__on_spearman']:.3f} dev {row[v + '__on_spearman_dev']:+.2f}; off vs TNT "
             f"{row[v + '__off_spearman']:.3f}; iso R2 {row[v + '__iso_r2']:.3f}; excess on "
             f"{row['on_excess_block']:+.3f}/{row['on_excess_other_between']:+.3f}; per-odor rates "
-            f"{row['spearman_rate_on_vs_data']:.2f}/{row['spearman_rate_off_vs_data']:.2f}", flush=True
+            f"{row['spearman_rate_on_vs_data']:.2f}/{row['spearman_rate_off_vs_data']:.2f}"
+            + (f"; jittered (trial mean of {jit_k}) block {res['losses']['jit_block']:+.3f}, rates on "
+            f"{res['losses']['jit_rate_on']:.4f} off {res['losses']['jit_rate_off']:.4f}" if jit_k > 0 else ''),
+            flush=True
         )
         prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'),
             script='E10_joint_fit.py', host=subprocess.run(['hostname'], capture_output=True,
@@ -814,9 +1057,20 @@ def main() -> None:
                 if args.loss == 'structure' else {}),
             data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
+            **(dict(init_from=args.init_from, init_from_experiment=args.init_from_experiment, init_from_exact=True)
+                if args.init_from_exact else {}),
             approx_conc_note=H.APPROX_CONC_NOTE,
             # (E37: how the spike-only base in base_params was re-tuned from --base-params)
             **(dict(spike_only_base_tuning=base_info) if base_info else {}),
+            **(dict(jitter=dict(jit_meta, n_kcs=len(breadth), conditions=[j for j, _ in jitter_conditions(jit_k)],
+                note=('per evaluation, each condition also run K times with each KC threshold (fixed_thr + 2 * '
+                'spont_in, as the simulator sets it) multiplied by jitter_thr_scale * max(1 + sigma xi, jitter_thr_min), xi = numpy '
+                'default_rng(SeedSequence(seed)).standard_normal((K, n_kcs)) in olfsysm KC order, draw i shared by '
+                'on_jit<i> and off_jit<i> and fixed across evaluations (common random numbers); jittered statistics '
+                'on the trial mean of the K runs (spike counts averaged; response rates = per-trial responses '
+                'averaged over runs), except that with jitter_trials T < K the distances are the mean over the K / T '
+                'pseudo-recordings (consecutive draws) of their trial-mean cosine distances; jitter_terms: the loss '
+                'terms taken from them'))) if jit_k > 0 else {}),
         )
         (res_dir / f'provenance_{tag}.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
     try:

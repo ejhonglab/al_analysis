@@ -5048,6 +5048,70 @@ def test_optimize_mb_model_params_tuning_kws(orn_deltas):
     )
 
 
+def test_optimize_mb_model_params_kc_thr_factors(orn_deltas, initial_params):
+    """Tests the simulator's per-KC threshold factors (`kc_thr_factor`), and
+    `optimize_mb_model_params` `condition_kc_thr_factors` (extra conditions simulated with
+    fixed factors, as the noise-aware joint fit adds jittered runs).
+    """
+    simulate, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params
+    )
+    responses, spike_counts = simulate(dict())
+    n_kcs = len(responses)
+
+    # factors of 1 change nothing
+    responses1, spike_counts1 = simulate(dict(), kc_thr_factor=np.ones(n_kcs))
+    assert responses1.equals(responses) and spike_counts1.equals(spike_counts)
+
+    factor = np.maximum(1 + 0.2 * np.random.default_rng(0).standard_normal(n_kcs), 0.01)
+    responses_j, spike_counts_j = simulate(dict(), kc_thr_factor=factor)
+    assert not spike_counts_j.equals(spike_counts)
+
+    higher, _ = simulate(dict(), kc_thr_factor=np.full(n_kcs, 1.2))
+    assert higher.mean().mean() < responses.mean().mean()
+
+    # the factors apply to that simulation only
+    responses2, spike_counts2 = simulate(dict())
+    assert responses2.equals(responses) and spike_counts2.equals(spike_counts)
+
+    for bad in (np.ones(n_kcs - 1), np.zeros(n_kcs), np.full(n_kcs, np.nan)):
+        with pytest.raises(ValueError):
+            simulate(dict(), kc_thr_factor=bad)
+
+    seen = []
+
+    def loss_fn(outputs):
+        seen.append(outputs)
+        return float(outputs['a'][0].mean().mean() + outputs['a_jit'][0].mean().mean())
+
+    overrides = {'a': {}, 'b': {}, 'a_jit': {}}
+    maxfev = 3
+    ret = optimize_mb_model_params(orn_deltas, loss_fn=loss_fn,
+        condition_param_overrides=overrides, condition_kc_thr_factors={'a_jit': factor},
+        initial_params=initial_params, params_to_optimize=['fixed_thr'], maxfev=maxfev
+    )
+    assert len(ret['history']) == maxfev
+    first = seen[0]
+    # identical conditions without factors are still simulated once and shared
+    assert first['a'] is first['b']
+    assert first['a'][1].equals(spike_counts)
+    assert first['a_jit'][0].equals(responses_j)
+    assert first['a_jit'][1].equals(spike_counts_j)
+    # (verify=True only checks the conditions without factors)
+    assert ret['responses'].equals(ret['condition_outputs']['a'][0])
+
+    with pytest.raises(ValueError):
+        optimize_mb_model_params(orn_deltas, loss_fn=loss_fn,
+            condition_param_overrides=overrides, condition_kc_thr_factors={'c': factor},
+            initial_params=initial_params, maxfev=1, verify=False
+        )
+    with pytest.raises(ValueError):
+        optimize_mb_model_params(orn_deltas, target_response_rates=0.08,
+            condition_kc_thr_factors={'a': factor}, initial_params=initial_params,
+            maxfev=1, verify=False
+        )
+
+
 def test_remy_megamat_kc_targets(orn_deltas):
     """Tests measured megamat KC targets match model odors, and give finite loss.
     """
