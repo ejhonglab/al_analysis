@@ -771,6 +771,11 @@ def summary(res_dir: Path) -> None:
     comp['vcf_on_minus_off'] = comp[f'{V}__on_spearman_resid_vs_vcf_hyp'] - comp[f'{V}__off_spearman_resid_vs_vcf_hyp']
     comp['weak_share_off'] = comp.weak_frac_off / comp.rate_off
     comp.to_csv(res_dir / 'comparison.csv', index=False)
+    # per model and wiring group (the lesions and E47's shuffle classes): mean, sd and count over draws, for the summary
+    cols = [c for c, *_ in STATS if c in comp.columns]
+    grp = comp[comp.shuffle != 'real'].groupby(['model', 'shuffle'])[cols].agg(['mean', 'std', 'count'])
+    grp.columns = [f'{c}__{s}' for c, s in grp.columns]
+    grp.reset_index().to_csv(res_dir / 'per_class.csv', index=False)
     data = data_values()
     out = []
     groups = list(LESIONS) + list(SHUFFLES)
