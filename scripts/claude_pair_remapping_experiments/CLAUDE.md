@@ -1011,6 +1011,38 @@ Publishing happens only from Tom's hosts: a session on a lab member's machine sa
 `pending` as the URL and asks in chat.md for one of Tom's hosts to publish it ("Lab members'
 machines").
 
+### Republishing a shared page (the summary, the report)
+
+Several sessions publish the same artifact (the summary page, the report page), each from a page built
+from its own checkout. The Artifact tool refuses a publish that was not built on the live version (it
+tracks per session which version that session has seen), and it should: a page built from a template
+that is behind another host's publish would drop that host's content. Git is the source of truth for the
+content, the live artifact for what is published; the tool cannot know that a pull already merged the
+other host's change, so a cross-host publish is refused once with a diff, refused again as "identical",
+and goes through on the third attempt. Instead of that dance, before republishing the summary or the
+report:
+1. pull, and make sure the template (or the report markdown) you build from is at origin/main or ahead
+   of it with your own change only; build;
+2. publish. If it goes through, run `save_report_copy.py` as usual. If it is refused because "a newer
+   version published elsewhere is live", that is the expected case after another host's publish: the
+   refusal saves the live page's source to a file (its path is in the message) and counts that version as
+   seen (the Artifact tool's `read` with `path: index.html` saves the same file without counting as seen,
+   and `read` without a path would put the whole page into the context, so neither replaces this step);
+3. run `./venv/bin/python publish_check.py <saved live index.html> <your build>`: it compares the two at
+   the level of tags and sentences, ignoring the build timestamps, the `[commit ...]` tooltip hashes and
+   the server's wrapper, and prints what the live page has that your build drops (REMOVED) or rewrites
+   (CHANGED). If it prints nothing, or only your own intended edits (a status word, a pending bullet you
+   removed because the experiment completed), rebuild (the new build timestamp makes the page new content,
+   which the tool otherwise refuses as "identical content resent") and publish: it goes through. If it
+   prints content you did not touch, the template in git is behind someone's publish: pull again and
+   rebuild, or ask in chat.md who published from what; never force a publish over it;
+4. `save_report_copy.py` as usual.
+Who publishes what: an experiment's own page is published only by the host that wrote it; the report
+page by the host that moved an experiment in (after its own markdown commit); "For one of Tom's hosts"
+republish requests (from lab members' machines) go to hal by default and to atlas only if hal has not
+answered within about fifteen minutes, so that two hosts do not publish the same page within a minute of
+each other.
+
 ## Naming and choosing experiments
 
 When naming markdown notes relevant to a single experiment only, or naming scripts to
