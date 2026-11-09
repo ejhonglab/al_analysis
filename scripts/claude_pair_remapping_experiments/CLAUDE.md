@@ -1047,6 +1047,33 @@ republish requests (from lab members' machines) go to hal by default and to atla
 answered within about fifteen minutes, so that two hosts do not publish the same page within a minute of
 each other.
 
+## The main goal for new experiments (Tom, 2026-11-09)
+
+The agreement of the model's odor-odor distances with the two KC matrices, ρ on odor-odor distances with
+APL on against the control flies and with APL off against APL output blocked (TNT), is the main priority
+for every experiment proposed or claimed from now on. Where it stood on 2026-11-09: the ceilings are
+0.98 / 0.97; the ORN input alone gives 0.65 / 0.74; the bouton baseline 0.57 / 0.69; the reference model
+0.65 / 0.63; the best any model has reached is 0.695 (the first joint fit) / 0.77 (a structure-loss fit
+on a re-drawn wiring, and the centrifugal input). Some thirty experiments moved these two by at most a
+fifth of their gap, and the mechanisms that bought the block and the natural-source alignment lowered the
+APL-off agreement below the ORN input's own; the per-odor response-rate pattern (response rate ρ 0.47 for
+the reference model against a ceiling of 0.98) is the most likely lever, since which odors recruit many
+KCs shapes every distance. So:
+- a proposal states first how its result would move these two statistics (directly, through the per-odor
+  response-rate pattern, or through the input that limits them), with the expected size; proposals that
+  bear only on other statistics (the block, the natural-source alignment, noise-robustness, wiring
+  carriers) go after every proposal that bears on the main goal, and an idle host takes a main-goal
+  proposal first;
+- the first experiments under this goal (hal's chat post of 2026-11-09, ~13:00, and proposed_experiments.md
+  as they are written up): the per-odor rate oracle (per-odor input scales or per-odor thresholds that put
+  the model's response rates on the data's, with ρ on odor-odor distances as the free readout: how much of
+  the gap is the recruitment pattern), the per-pair decomposition of the gap for the reference model
+  (which odors and pairs carry it, with APL on and with APL off), a fit whose loss is the two ρ's with the
+  structure statistics as constraints (the reachable maximum of the present mechanism set), the input-side
+  tests for the weak-input odors (the ORN measurement at Yang's concentrations; the five odors' input free
+  within bounds as an oracle), and the soft per-claw transfer in place of the hard threshold the
+  low-concentration data falsified.
+
 ## Naming and choosing experiments
 
 When naming markdown notes relevant to a single experiment only, or naming scripts to
