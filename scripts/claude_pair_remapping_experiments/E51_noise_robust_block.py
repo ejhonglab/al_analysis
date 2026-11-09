@@ -8,10 +8,13 @@ pseudo-recordings of three trials with fixed per-KC threshold-jitter draws), the
 deterministic-fitted counterparts (E44_operating_point: the eight glomeruli at 1.5 at the 40 and
 70 Hz per-claw thresholds; E45_gain_at_ctrl_frac: the eight at 1.25 at 70 Hz) and the trial-noise
 pipeline's results on all of them (results/E51_noise_robust_block/partB/, made by
-E43_model_trial_noise.py --part B --model-from <experiment>:<tag> --cal-trials 6 --experiment
-E51_noise_robust_block: per-trial KC threshold jitter at the sigma that matches the data's
-single-trial same-odor floor, independent draws from the fits', 10 pseudo-recordings of 3 trials,
-processed as the KC data), and writes:
+E43_model_trial_noise.py --part B --model-from <experiment>:<tag> --experiment
+E51_noise_robust_block with E48's settings: per-trial KC threshold jitter at the sigma that matches
+the data's single-trial same-odor floor, calibrated on the default 3 tuning trials, independent
+draws from the fits', 10 pseudo-recordings of 3 trials, processed as the KC data; a model missing
+from that folder, i.e. a deterministic-fitted counterpart the pipeline already ran for E48 under
+the same settings, takes its rows from results/E48_block_target_noise/partB/, `--partb-fallback`,
+and comparison.csv says where each model's rows came from), and writes:
 - comparison.csv / comparison_table.md: per model, the deterministic block, the block on the fit's
   own jitter draws (the fitted criterion, from fits.csv), the block through the pipeline's
   independent noise (three-trial means; the grand mean over all 30 trials), the matched sigma and
@@ -33,7 +36,7 @@ deterministic statistics of that evaluation from the fit's history, their natura
 on the host that ran it, else the shared archive), key thr<T>_gain<G>_noise_ev<EVAL>, and are marked
 on the history figure. Models whose fits or pipeline results are not in yet are listed as pending and
 left out of the figures. Nothing is simulated.
-Usage: ./venv/bin/python E51_noise_robust_block.py [--out DIR] [--partb DIR]
+Usage: ./venv/bin/python E51_noise_robust_block.py [--out DIR] [--partb DIR] [--partb-fallback DIR|none]
 """
 from __future__ import annotations
 
@@ -179,11 +182,17 @@ def main() -> None:
     ap.add_argument('--out', type=Path, default=None, help='output folder (default: the results folder)')
     ap.add_argument('--partb', type=Path, default=None,
         help="the pipeline's part-B folder (default: results/E51_noise_robust_block/partB)")
+    ap.add_argument('--partb-fallback', type=Path, default=None,
+        help="a second part-B folder whose rows stand in for models missing from --partb (default: "
+        "results/E48_block_target_noise/partB, which holds the deterministic-fitted counterparts under the same settings; "
+        "'none' for no fallback)")
     args = ap.parse_args()
     res_dir = H.results_dir(EXPERIMENT)
     out = args.out or res_dir
     out.mkdir(parents=True, exist_ok=True)
     partb = args.partb or (res_dir / 'partB')
+    fallback = (None if str(args.partb_fallback) == 'none' else
+        args.partb_fallback or (H.results_dir('E48_block_target_noise') / 'partB'))
     dt = H.data_target
     inputs = {}
     fits = {}
@@ -194,12 +203,29 @@ def main() -> None:
             continue
         inputs[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
         fits[exp] = pd.read_csv(f).set_index('tag')
+    # the pipeline's tables: the experiment's own part-B folder, plus, for each model absent from it,
+    # that model's rows from the fallback folder (the same pipeline settings on the same model give
+    # the same rows, so a counterpart already run for E48 is not run again)
     tables = {}
+    pipeline_source = {}
     for name in ('stats_noise', 'onoff_noise', 'pairs_noise_long'):
+        frames = []
         f = partb / f'{name}.csv'
         if f.exists():
             inputs[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
-            tables[name] = pd.read_csv(f)
+            frames.append(pd.read_csv(f))
+            pipeline_source.update({m: str(partb) for m in frames[-1]['model'].unique()})
+        fb = (fallback / f'{name}.csv') if fallback is not None else None
+        if fb is not None and fb.exists():
+            have = set(frames[0]['model']) if frames else set()
+            extra = pd.read_csv(fb)
+            extra = extra[~extra['model'].isin(have)]
+            if len(extra):
+                inputs[str(fb)] = hashlib.sha256(fb.read_bytes()).hexdigest()
+                frames.append(extra)
+                pipeline_source.update({m: str(fallback) for m in extra['model'].unique() if m not in pipeline_source})
+        if frames:
+            tables[name] = pd.concat(frames, ignore_index=True)
     # the model list: each counterpart, then its noise-aware fits, then any simplex vertices of those
     # fits that went through the pipeline
     # (label, key, experiment, tag, pipeline model name, counterpart label or None, evaluation or
@@ -259,6 +285,7 @@ def main() -> None:
             rows.append(row)
             continue
         row['pipeline'] = 'done'
+        row['pipeline_source'] = pipeline_source.get(mname)
         s = tables['stats_noise']; o = tables['onoff_noise']; p = tables['pairs_noise_long']
         g = s[(s['model'] == mname) & (s['level'] == lv) & (s['transform'] == 'graded')].set_index('condition')
         oo = o[(o['model'] == mname) & (o['transform'] == 'graded')].set_index(['level', 'matrix'])
@@ -329,7 +356,8 @@ def main() -> None:
         inputs[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E51_noise_robust_block.py',
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
-        inputs_sha256=inputs, partb=str(partb),
+        inputs_sha256=inputs, partb=str(partb), partb_fallback=(None if fallback is None else str(fallback)),
+        pipeline_source={m: pipeline_source.get(m) for m in sorted({mm[4] for mm in models if mm[4] is not None})},
         models=[dict(label=m[0], key=m[1], experiment=m[2], tag=m[3], pipeline_model=m[4], counterpart=m[5], eval=m[6]) for m in models],
         pending_fits=pend_fit, pending_pipeline=pend_pipe)
     (out / 'provenance_comparison.json').write_text(json.dumps(prov, indent=1) + '\n')
@@ -363,7 +391,10 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
         ax.plot([r['block_det']], [r['block_grand']], 's', color=c, ms=5, mfc='none')
         if noise_fit and pd.notna(r.get('fit_jit_block', np.nan)):
             ax.plot([r['block_det']], [r['fit_jit_block']], '^', color=c, ms=6, mfc='none')
-        ax.annotate(_short(r['model']), (r['block_det'], r['block_raw']), fontsize=6.5, xytext=(4, 3), textcoords='offset points')
+        # deterministic fits are labelled to the upper right, the noise-aware fits and vertices (which
+        # can sit on top of their counterpart) to the lower left
+        ax.annotate(_short(r['model']), (r['block_det'], r['block_raw']), fontsize=6.5, textcoords='offset points',
+            **(dict(xytext=(-5, -4), ha='right', va='top') if noise_fit else dict(xytext=(5, 4), ha='left', va='bottom')))
         cp = r.get('counterpart')
         if noise_fit and isinstance(cp, str) and cp in by_label:
             # a noise-aware fit is joined to its deterministic-fitted counterpart, a vertex to its fit

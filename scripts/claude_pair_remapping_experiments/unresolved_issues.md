@@ -8,6 +8,24 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### Trial-noise pipeline runs described as calibrated on 6 trials were calibrated on 3 (found 2026-11-09, hal)
+
+- **What.** `E43_model_trial_noise.py --cal-trials` is part A's option (the PN-rate-noise calibration);
+  parts B / C calibrate on their threshold-tuning trials, `--tune-trials` (default 3), and ignored
+  `--cal-trials`. Every part-B run that passed `--cal-trials 6` (the noise-robust block's part C: hal's
+  run on E44's 40 Hz model, 18:43-00:57; atlas's run on viki's eight at 1.25 noise-aware fit, 23:05-00:50)
+  calibrated on 3 trials, i.e. with E48's settings exactly. hal noticed because its run's rows equal E48's
+  rows for the same model to six digits; the runs' provenance records `tune_trials` 3 throughout.
+- **Affects.** Only descriptions: the E51 entry's design (C) and Status lines, atlas's chat posts of
+  2026-11-09 00:52 and 01:03 ("6 calibration trials"), the comments in the run scripts, and the E48 note's
+  next-steps line recommending `--cal-trials 6`. No number is wrong, and the runs compare directly with
+  E48's partB rows (which therefore serve as the deterministic counterparts in E51's comparison).
+- **Done.** The pipeline refuses `--cal-trials` in parts B / C unless it equals `--tune-trials`, and its help
+  says which option is which; E51_noise_robust_block.py's docstring and E51's run scripts say 3 tuning
+  trials; the E51 entry's text and a chat correction (atlas, 2026-11-09 ~02:40).
+- **Remains.** The E48 note's next-steps line (say `--tune-trials 6`), in E48's addendum from the exact-start
+  repeat.
+
 ### A fit seeded with `--init-from` does not start at its seed's optimum and runs with a different bouton->APL / KC->APL input balance (found 2026-11-08, atlas)
 
 - **What.** `init_from_fit` in E10_joint_fit.py builds the starting point from the seed row's factors

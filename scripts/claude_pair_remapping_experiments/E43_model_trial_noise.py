@@ -95,7 +95,9 @@ tuned at 5 %): a bracketing bisection (multiplicative steps from the threshold i
 between the sigmas tuned so far, until the target is bracketed, then splits at the log-rate interpolation, kept inside
 the middle 80 % of the bracket) to `--rate-tol` (relative, default 1 %). This holds the operating
 point fixed, which part A confounds with the noise. The tuning trials (APL on and off at the tuned
-threshold) are the calibration point at that sigma; calibration (grid `--sigma-grid`, extension
+threshold) are the calibration point at that sigma, so `--tune-trials` is parts B / C's
+calibration-trial count (`--cal-trials` is part A's and is refused here with a different value;
+until 2026-11-09 it was silently ignored); calibration (grid `--sigma-grid`, extension
 and refinement as part A) matches the APL-on floor to the control flies' and the APL-off floor to
 APL output blocked (TNT)'s, and the levels are the two matched sigmas plus `--below` (0.5, 0.25) x
 the smaller; each level is re-tuned, then `--n-recordings` pseudo-recordings of `--n-trials`
@@ -1923,7 +1925,9 @@ def main() -> None:
     ap.add_argument('--n-trials', type=int, default=3, help='trials per pseudo-recording')
     ap.add_argument('--cal-grid', nargs='+', type=float, default=[25.0, 50.0, 100.0, 200.0, 400.0, 800.0],
         help='noise sds of the calibration grid')
-    ap.add_argument('--cal-trials', type=int, default=3, help='trials per calibration point')
+    ap.add_argument('--cal-trials', type=int, default=None,
+        help='part A: trials per calibration point (default 3). Parts B / C calibrate on their tuning trials, --tune-trials; '
+        'given a different --cal-trials there, the script refuses to run')
     ap.add_argument('--cal-max-extend', type=int, default=3, help='points the grid may be extended by, either way')
     ap.add_argument('--cal-refine', type=int, default=1, help='rounds of trials at the interpolated matched sds')
     ap.add_argument('--bracket', nargs=2, type=float, default=[0.5, 2.0],
@@ -1938,7 +1942,8 @@ def main() -> None:
     ap.add_argument('--sigma-grid', nargs='+', type=float, default=None,
         help='parts B / C: sigmas of the calibration grid (default B 0.05 0.1 0.15 0.2 0.3, C 0.1 0.2 0.3 0.45 0.6)')
     ap.add_argument('--tune-trials', type=int, default=3,
-        help='parts B / C: trials (fixed draws) the threshold is re-tuned on; their floors are the calibration points')
+        help='parts B / C: trials (fixed draws) the threshold is re-tuned on at each sigma; their floors are the calibration '
+        'points, so this is the calibration-trial count of parts B / C (--cal-trials is part A\'s)')
     ap.add_argument('--seed', type=int, default=43, help='parts B / C: seed of the noise draws')
     ap.add_argument('--rate-tol', type=float, default=0.01,
         help='parts B / C: relative tolerance of the re-tuned APL-on response rate')
@@ -1957,6 +1962,13 @@ def main() -> None:
         help="the results folder whose noise_levels.json --sigma-from reads (default: this run's if it holds MODEL, else "
         "<shared>/results/E43_model_trial_noise/<part folder>)")
     args = ap.parse_args()
+    if args.cal_trials is None:
+        args.cal_trials = 3
+    elif args.part != 'A' and args.cal_trials != args.tune_trials:
+        # --cal-trials silently did nothing in parts B / C until 2026-11-09 (runs meant to calibrate on 6
+        # trials calibrated on the default 3 tuning trials)
+        ap.error(f"--cal-trials is part A's option; part {args.part} calibrates on its tuning trials, --tune-trials "
+            f"(now {args.tune_trials}): pass --tune-trials {args.cal_trials} instead")
     if args.n_trials < 2 or args.cal_trials < 2 or args.tune_trials < 2:
         ap.error('floors need at least 2 trials')
     if args.sigma_from and args.part == 'A':
