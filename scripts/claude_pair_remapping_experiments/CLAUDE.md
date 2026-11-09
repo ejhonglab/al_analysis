@@ -1039,9 +1039,10 @@ report:
    (CHANGED). If it prints nothing, or only your own intended edits (a status word, a pending bullet you
    removed because the experiment completed), open the saved live file once with the Read tool (a few lines
    are enough: the Artifact tool counts only a Read of that file as having looked at the live version, not a
-   script that read it) and publish again: it goes through (the summary's build timestamp makes every rebuild
-   new content; the report page changes only when its experiment list does, so there the same build is
-   resent). If it
+   script that read it), then for the summary rebuild it (`build_summary.py`) and publish the rebuild: the same
+   bytes as the refused publish are refused a second time as "identical", and the build timestamp makes the
+   rebuild new content (atlas, 2026-11-09 15:33). The report page changes only when its experiment list does,
+   so there the same build is resent and goes through on that second attempt. If publish_check.py
    prints content you did not touch, the template in git is behind someone's publish: pull again and
    rebuild, or ask in chat.md who published from what; never force a publish over it;
 4. `save_report_copy.py` as usual.
