@@ -939,6 +939,7 @@ Canonical experiment names for summary reports:
 | E55 | the margin proxy for the block through the noise |
 | E56 | the network-aware margin proxy |
 | E57 | building the natural-source alignment back (the convergence transplant) |
+| E58 | the glomerulus gain as the carrier of a noise-robust block |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
