@@ -933,6 +933,7 @@ Canonical experiment names for summary reports:
 | E49 | the low-concentration KC data as constraints |
 | E50 | the fitted block on more shuffle draws |
 | E51 | the noise-robust block |
+| E52 | the glomerulus pairs behind the natural-source alignment |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
