@@ -917,6 +917,7 @@ Canonical experiment names for summary reports:
 | E48 | the block target through the noise |
 | E49 | the low-concentration KC data as constraints |
 | E50 | the fitted block on more shuffle draws |
+| E51 | the noise-robust block |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
