@@ -48,6 +48,11 @@ MODELS = [
     ('eight at 1.25, 70 Hz, target +0.055', 'E45_gain_at_ctrl_frac', 'thr70_gain1.25_rate0.068_k2_cap3', 'E45-thr70_gain1.25_rate0.068_k2_cap3', E48B),
     ('eight at 1.25, 70 Hz, target +0.072', EXPERIMENT, 'thr70_gain1.25_rate0.068_block0.072_k2_cap3', 'E48-thr70_gain1.25_rate0.068_block0.072_k2_cap3', E48B),
     ('eight at 1.25, 70 Hz, target +0.10 (probe)', EXPERIMENT, 'thr70_gain1.25_rate0.068_block0.100_k2_cap3', 'E48-thr70_gain1.25_rate0.068_block0.100_k2_cap3', E48B),
+    # the clean repeat (2026-11-08): the same re-fits started exactly at their +0.055-target seeds (--init-from-exact;
+    # the --init-from seeding had reset the bouton->APL input scale, unresolved_issues.md)
+    ('eight at 1.5, 40 Hz, target +0.072, exact start', EXPERIMENT, 'thr40_gain1.5_rate0.068_block0.072_k2_cap3_exact', 'E48-thr40_gain1.5_rate0.068_block0.072_k2_cap3_exact', E48B),
+    ('eight at 1.5, 70 Hz, target +0.072, exact start', EXPERIMENT, 'thr70_gain1.5_rate0.068_block0.072_k2_cap3_exact', 'E48-thr70_gain1.5_rate0.068_block0.072_k2_cap3_exact', E48B),
+    ('eight at 1.25, 70 Hz, target +0.072, exact start', EXPERIMENT, 'thr70_gain1.25_rate0.068_block0.072_k2_cap3_exact', 'E48-thr70_gain1.25_rate0.068_block0.072_k2_cap3_exact', E48B),
 ]
 BLOCK_PAIRS = [(a, b) for a in ('2h', 'IaA', 'pa') for b in ('2-but', 'eb', 'ep')]
 
@@ -109,6 +114,9 @@ def main() -> None:
             row.update({k: float(fit[k]) for k in ('fit_block', 'fit_on_spearman', 'fit_off_spearman', 'fit_po_on_spearman', 'fit_po_off_spearman',
                 'fit_wt_dev_on', 'fit_vcf_off', 'thr_factor', 'apl_factor_vs_e3', 'aplpn_factor_vs_e3', 'kc_kc_inh', 'fixed_thr') if k in fit.index})
             row['vcf_on'] = float(fit[V + 'on_spearman_resid_vs_vcf_hyp']) if V + 'on_spearman_resid_vs_vcf_hyp' in fit.index else np.nan
+            # the (unfitted) balance between the APL's bouton and KC inputs, which the --init-from seeding changed
+            if 'wPNAPL_scale' in fit.index and 'wKCAPL_scale' in fit.index and float(fit['wKCAPL_scale']) != 0:
+                row['wPNAPL_over_wKCAPL'] = float(fit['wPNAPL_scale']) / float(fit['wKCAPL_scale'])
         t = tables[folder]
         lv = level_of(t['stats_noise'], mname) if 'stats_noise' in t else None
         if lv is None:
@@ -147,16 +155,17 @@ def main() -> None:
     if o48 is not None:
         d = o48[(o48['model'] == 'data') & (o48['transform'] == 'graded')].set_index('matrix')
         data_block_corr = float(d.at['corrected', 'block'])
-    lines = ['| model (structure fits at 6.8 %, APL->bouton cap 3; the 5 % reference model for comparison) | block target | extended loss (as fitted) | block, deterministic | block through the noise, three-trial means | block, grand mean of 30 trials | block, noise-corrected | matched σ | single-trial floor reached, APL on / off | response rate per trial, APL on / off | ρ on odor-odor distances, APL on / off (noisy) | response rate ρ, APL on (noisy) |',
-        '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+    lines = ['| model (structure fits at 6.8 %, APL->bouton cap 3; the 5 % reference model for comparison) | block target | extended loss (as fitted) | bouton->APL / KC->APL input scale ratio | block, deterministic | block through the noise, three-trial means | block, grand mean of 30 trials | block, noise-corrected | matched σ | single-trial floor reached, APL on / off | response rate per trial, APL on / off | ρ on odor-odor distances, APL on / off (noisy) | response rate ρ, APL on (noisy) |',
+        '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
     for _, r in df.iterrows():
+        ratio = f"{r['wPNAPL_over_wKCAPL']:.2f}" if 'wPNAPL_over_wKCAPL' in r.index and pd.notna(r['wPNAPL_over_wKCAPL']) else ''
         if r['pipeline'] != 'done':
-            lines.append(f"| {r['model']} | {r['block_target']:+.3f} | {r['loss_recorded']:.2f} | {r.get('fit_block', np.nan):+.3f} | (pending) | | | | | | | |")
+            lines.append(f"| {r['model']} | {r['block_target']:+.3f} | {r['loss_recorded']:.2f} | {ratio} | {r.get('fit_block', np.nan):+.3f} | (pending) | | | | | | | |")
             continue
-        lines.append(f"| {r['model']} | {r['block_target']:+.3f} | {r['loss_recorded']:.2f} | {r['block_det']:+.3f} | {r['block_raw']:+.3f} | {r['block_grand']:+.3f} | "
+        lines.append(f"| {r['model']} | {r['block_target']:+.3f} | {r['loss_recorded']:.2f} | {ratio} | {r['block_det']:+.3f} | {r['block_raw']:+.3f} | {r['block_grand']:+.3f} | "
             f"{r['block_corrected']:+.3f} | {r['sigma']:.3f} | {r['floor_on']:.2f} / {r['floor_off']:.2f} | {r['rate_trial_on']:.3f} / {r['rate_trial_off']:.3f} | "
             f"{r['rho_raw_on']:.2f} / {r['rho_raw_off']:.2f} | {r['rate_rho_trial_on']:.2f} |")
-    lines.append(f"| KC data | | | {dt('block'):+.3f} measured{'' if data_block_corr is None else f', {data_block_corr:+.3f} noise-corrected'} | | | | | "
+    lines.append(f"| KC data | | | | {dt('block'):+.3f} measured{'' if data_block_corr is None else f', {data_block_corr:+.3f} noise-corrected'} | | | | | "
         f"{dt('ctrl_single_trial_floor'):.2f} / {dt('tnt_single_trial_floor'):.2f} | {dt('ctrl_frac'):.3f} / {dt('tnt_frac'):.3f} | ceiling {dt('ctrl_ceiling'):.2f} / {dt('tnt_ceiling'):.2f} | ceiling {dt('ctrl_rate_rho_ceiling'):.2f} |")
     pend = [r['model'] for _, r in df.iterrows() if r['pipeline'] != 'done']
     if pend:
@@ -201,9 +210,15 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
     labels = [k for k in excess if k != 'KC data']
     if not labels:
         return
-    fig, axes = plt.subplots(1, len(labels) + 1, figsize=(2.6 * (len(labels) + 1), 4.2), sharey=True)
+    panels = labels + ['KC data']
+    ncols = min(len(panels), 6)
+    nrows = int(np.ceil(len(panels) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.6 * ncols, 4.2 * nrows), sharey=True, squeeze=False)
+    axes = axes.ravel()
+    for ax in axes[len(panels):]:
+        ax.set_visible(False)
     pair_names = [f'{a} / {b}' for a, b in BLOCK_PAIRS]
-    for ax, lab in zip(axes, labels + ['KC data']):
+    for ax, lab in zip(axes, panels):
         e = excess[lab].reindex(BLOCK_PAIRS)
         x = np.arange(len(BLOCK_PAIRS))
         for i, (col, c, mk) in enumerate(zip(e.columns, ['0.2', '#2b6cb0', '#d9480f'], ['o', 's', '^'])):
@@ -212,7 +227,8 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
         ax.set_xticks(x); ax.set_xticklabels(pair_names, rotation=70, fontsize=7)
         ax.set_title(lab.replace(', target ', '\ntarget '), fontsize=8); ax.legend(fontsize=6, frameon=False)
         ax.spines[['top', 'right']].set_visible(False); ax.grid(True, color='0.92', lw=0.6)
-    axes[0].set_ylabel('excess of the APL-on distance over the\nisotonic trend from the APL-off distance')
+    for ax in axes[::ncols]:
+        ax.set_ylabel('excess of the APL-on distance over the\nisotonic trend from the APL-off distance')
     fig.suptitle('The nine fruity × small-ester pairs: deterministic against processed through the matched noise', fontsize=9.5)
     fig.tight_layout(); fig.savefig(out / 'E48_block_pairs.png', dpi=130); plt.close(fig)
 
