@@ -6,9 +6,9 @@
    (fill_report.py; fails on any unresolved placeholder, prints lint for bare numbers in KC-data
    rows and the best-models table);
 3. writes the plain filled markdown (no tooltip markup) to the shared directory's
-   add_to_reports/summary_all_experiments_2026-11-05.md (generated: edit the template, never
+   add_to_reports/summary_all_experiments.md (generated: edit the template, never
    that file), and the sidecar of every value's source next to it
-   (summary_all_experiments_2026-11-05.values.json);
+   (summary_all_experiments.values.json);
 4. builds the page with source tooltips (md_to_artifact.py) at
    outputs/_artifacts/summary/index.html.
 Publishing and save_report_copy.py stay manual (CLAUDE.md, "Summary reports").
@@ -27,7 +27,7 @@ import kc_remapping_harness as H
 import fill_report as F
 
 TEMPLATE = H.HERE / 'reports' / 'summary_template.md'
-OUT_MD = H.shared_dir() / 'add_to_reports' / 'summary_all_experiments_2026-11-05.md'
+OUT_MD = H.shared_dir() / 'add_to_reports' / 'summary_all_experiments.md'
 OUT_HTML = H.HERE / 'outputs' / '_artifacts' / 'summary' / 'index.html'
 
 

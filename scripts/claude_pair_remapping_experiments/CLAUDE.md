@@ -740,7 +740,8 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   (the progress plot) keep their own controls and are not affected.
 - **The summary is generated from a template; numbers come from their sources** (since
   2026-11-06). Edit `reports/summary_template.md` in this folder (git), never the generated
-  `add_to_reports/summary_all_experiments_2026-11-05.md` (overwritten on every build; the last
+  `add_to_reports/summary_all_experiments.md` (overwritten on every build; the name carries no date,
+  the page's own header carries the edit time; the last
   hand-typed version is in the shared directory's notes/summary_backups/). A number that has a
   source is a placeholder `{{key ~ spec}}` (spec a Python format spec, e.g. `.2f`, `+.3f`; `|`
   is not allowed inside, it separates table cells): `data:<name>` (or `.lo` / `.hi` of its 90 %
@@ -754,7 +755,7 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   build_summary.py` (`--data-targets` first rebuilds the registry, needed when a data input
   changes): it regenerates the progress plot, fills the template (failing on unknown keys),
   writes the plain markdown to add_to_reports/ with a sidecar
-  (`summary_all_experiments_2026-11-05.values.json`: every value's file, row, column, sha256 and
+  (`summary_all_experiments.values.json`: every value's file, row, column, sha256 and
   commit) and builds `outputs/_artifacts/summary/index.html` with a source tooltip on every
   filled value. `./venv/bin/python fill_report.py --check <sidecar>` lists values whose sources
   changed since the build.
@@ -1005,9 +1006,10 @@ artifact server serves the HTML we upload unchanged, so:
    writes `<name>.zip` (index.html plus those files, as the export does); it upserts the
    page's row in `reports/README.md` (name, page title, URL, when and from which host). Use the
    same `<name>` on republish so the folder holds the latest version only: `E<n>_<short>` for
-   experiment pages, `report_<short>` for the report, `summary_<date>` for summaries,
+   experiment pages, `report_<short>` for the report, `summary_all_experiments` for the summary (one
+   name, no date: the page's header carries the edit time; Tom, 2026-11-09),
    `note_<short>` for add_to_reports pages.
-   For `summary_<date>` names the script also repoints the symlink `reports/current-summary.html`
+   For names starting with `summary_` the script also repoints the symlink `reports/current-summary.html`
    at the new copy (so one bookmark always opens the latest summary); `--current <link>` does the
    same for any other page.
 Record the artifact URL where the scheme already asks for it (the experiment markdown, the
