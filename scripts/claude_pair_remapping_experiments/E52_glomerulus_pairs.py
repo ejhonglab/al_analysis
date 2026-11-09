@@ -471,7 +471,9 @@ def figure_b(table: pd.DataFrame, corr: pd.DataFrame, res_dir: Path) -> None:
     ax.set_xticks(range(len(tnames)))
     ax.set_xticklabels(['natural-source\ndistance', 'chemical\ndistance', 'ORN\ndistance', 'residual,\ncontrol flies', 'residual,\nAPL output\nblocked (TNT)', 'residual,\nwild-type\nsomata'], fontsize=7)
     ax.axhline(0, color='k', lw=0.6); ax.set_ylabel('Spearman ρ with the wiring-sharing score (66 pairs)', fontsize=8)
-    ax.legend(fontsize=6, frameon=False, ncol=2)
+    lo, hi = ax.get_ylim()
+    ax.set_ylim(lo, hi + 0.45 * (hi - lo))   # room for the legend above the bars
+    ax.legend(fontsize=6, frameon=False, ncol=2, loc='upper left')
     fig.suptitle('From glomerulus pairs to odor pairs: how much the two odors\' glomeruli are over-wired onto common KCs, against what the pair does in the KC data', fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(res_dir / f'{EXPERIMENT}_odor_pair_scores.png', dpi=130)
@@ -869,6 +871,7 @@ def main() -> None:
     ap.add_argument('--seeds', nargs='+', type=int, default=[0, 1, 2], help='lesion draws (part C)')
     ap.add_argument('--models', nargs='+', choices=list(MODELS), default=list(MODELS))
     ap.add_argument('--summary', action='store_true', help='only (re)write part C\'s comparison tables and figure')
+    ap.add_argument('--figures', action='store_true', help='with --part B: only redraw its figure from the saved tables')
     ap.add_argument('--out', type=Path, default=None, help='results folder (default: the shared results folder)')
     args = ap.parse_args()
     res_dir = args.out if args.out else H.results_dir(EXPERIMENT)
@@ -886,6 +889,11 @@ def main() -> None:
         part_a(res_dir, args.draws)
         prov_key = 'part_a'
     elif args.part == 'B':
+        if args.figures:
+            table = pd.read_csv(res_dir / 'odor_pair_scores.csv').set_index(['odor_a', 'odor_b'])
+            figure_b(table, pd.read_csv(res_dir / 'score_correlations.csv', keep_default_na=False), res_dir)
+            print('part B figure redrawn ->', res_dir)
+            return
         part_b(res_dir)
         prov_key = 'part_b'
     else:
