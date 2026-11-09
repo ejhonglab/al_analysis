@@ -106,6 +106,10 @@ DATA_PANELS = {'2h @ -7': ('diag_mix', 'natmix_dilute'), 'ma @ -7': ('diag_mix',
 MIX_COLNAME = {'2h @ -7 + ma @ -7': '2h+ma @ -7', '2h @ -7 + farn @ -3': '2h-7+farn-3 @ 0', 'ma @ -7 + farn @ -3': 'ma-7+farn-3 @ 0'}
 COL_TO_LABEL = {v: k for k, v in MIX_COLNAME.items()}
 EXTRA_ODORS = list(ORN_SOURCE) + list(MIXTURES)
+# Yang's odors whose ORN input is the same column as another simulated odor's (farn @ -2.5 and farn @ -3 both map to
+# farn @ -2, the only farn concentration in the lab's ORN data): the tables show them with the aliased odor's model
+# values and their own KC data (Tom, 2026-11-08, via hal), flagged
+ALIAS = {'farn @ -2.5': 'farn @ -3', '2h @ -7 + farn @ -2.5': '2h @ -7 + farn @ -3', 'ma @ -7 + farn @ -2.5': 'ma @ -7 + farn @ -3'}
 
 
 def yang_dir() -> Path:
@@ -377,9 +381,12 @@ def summarize(res_dir: Path) -> None:
         '| odor | ORN input | KC data, control flies | KC data, APL output blocked | ' + ' | '.join(
             (f'{MODEL_LABELS[m]}<br>det on / off' + ('<br>noisy on / off' if noisy else '')) for m in models) + ' |',
         '|---|---|---|---|' + '---|' * len(models)]
-    odors = list(ORN_SOURCE) + list(MIXTURES)
+    odors = []
+    for o in list(ORN_SOURCE) + list(MIXTURES):
+        odors.append(o); odors += [a for a, base in ALIAS.items() if base == o]
     for odor in odors:
-        sub = fr[fr.odor == odor]
+        base = ALIAS.get(odor, odor)
+        sub = fr[fr.odor == base]
         cells = []
         for m in models:
             s = sub[sub.model == m].set_index('cond')
@@ -388,6 +395,8 @@ def summarize(res_dir: Path) -> None:
                 c += f"<br>{s.loc['on', 'frac_count1']:.3f} / {s.loc['acute_off', 'frac_count1']:.3f}"
             cells.append(c)
         subst = sub.substitution.iloc[0] if not sub.empty else '-'
+        if odor in ALIAS:
+            subst = f'the same input as {base} (model values repeated)'
         lines.append(f'| {odor} | {subst} | {dcell(odor, "control")} | {dcell(odor, "apl_output_blocked")} | ' + ' | '.join(cells) + ' |')
     # APL-off / APL-on ratios
     lines += ['', '**APL-off / APL-on response ratio per odor (data: APL output blocked / control flies, diag_mix; model: acute APL off / APL on, deterministic' + (' and noisy' if noisy else '') + ')**', '',
@@ -410,15 +419,19 @@ def summarize(res_dir: Path) -> None:
     lines += ['', '**Mixtures: the measured mixture against the union of the components (data: Yang\'s union prediction; model: KCs responding to either component), control flies / APL on and APL output blocked / APL off**', '',
         '| mixture | KC data: mixture / union, control | the same, APL output blocked | ' + ' | '.join(f'{MODEL_LABELS[m]}<br>mixture / union, APL on<br>mixture / union, APL off' for m in models) + ' |',
         '|---|---|---|' + '---|' * len(models)]
-    for mix in MIXTURES:
+    mixes = []
+    for mi in MIXTURES:
+        mixes.append(mi); mixes += [a for a, base in ALIAS.items() if base == mi]
+    for mix in mixes:
         def dm(group):
             d = data[(data.odor == mix) & (data.group == group) & (data.panel == 'diag_mix')]
             return f'{float(d.frac.iloc[0]):.3f} / {float(d.union.iloc[0]):.3f}' if len(d) == 1 else '-'
         cells = []
         for m in models:
-            s = mx[(mx.mixture == mix) & (mx.model == m)].set_index('cond')
+            s = mx[(mx.mixture == ALIAS.get(mix, mix)) & (mx.model == m)].set_index('cond')
             cells.append(f"{s.loc['on', 'frac_mix_det']:.3f} / {s.loc['on', 'frac_union_det']:.3f}<br>{s.loc['acute_off', 'frac_mix_det']:.3f} / {s.loc['acute_off', 'frac_union_det']:.3f}")
-        lines.append(f'| {mix} | {dm("control")} | {dm("apl_output_blocked")} | ' + ' | '.join(cells) + ' |')
+        label = mix + (' (model: the same input as ' + ALIAS[mix] + ')' if mix in ALIAS else '')
+        lines.append(f'| {label} | {dm("control")} | {dm("apl_output_blocked")} | ' + ' | '.join(cells) + ' |')
     (res_dir / 'comparison_table.md').write_text('\n'.join(lines) + '\n')
     make_figure(fr, mx, data, models, noisy, res_dir)
     print('\n'.join(lines))
