@@ -1050,3 +1050,12 @@ Rule: when no exact concentration match is available, ORN data within 1 log10 v/
 datasets (e.g. Remy's vs Yang's KC data). Every time outputs affected by such a
 substitution are discussed, note which results are affected (here: anything involving
 paa, euc or -aPine model input).
+
+Mixture ORN input (Tom, 2026-11-08). When a mixture's ORN response has to be generated from
+its components (e.g. Yang's weak binary mixtures of diagnostic odors, 2h / ma / farn, from the
+diagnostics-panel ORN data), take the elementwise **max** of the components' responses per
+glomerulus, never their sum: the sum overestimates the response of most glomeruli, the max
+fits the measured mixtures better. Alternatives may be proposed (and run beside the max),
+but the max is the default, and any experiment that used the sum is redone with the max.
+Measured mixture ORN responses (Remy's kiwi / control panels, `natmix_orn_deltas()`) are
+used as measured.
