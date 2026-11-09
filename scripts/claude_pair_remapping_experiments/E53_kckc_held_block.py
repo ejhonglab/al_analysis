@@ -314,7 +314,7 @@ def make_figures(df: pd.DataFrame, excess: dict, out: Path, data_block_corr) -> 
             ax.plot(x, e[col].to_numpy(), mk, color=c, ms=5, label=col, mfc=('none' if i == 2 else None))
         ax.axhline(0, color='0.6', lw=0.8)
         ax.set_xticks(x); ax.set_xticklabels(pair_names, rotation=70, fontsize=7)
-        ax.set_title(lab.replace(', ', ',\n', 1), fontsize=7.5); ax.legend(fontsize=6, frameon=False)
+        ax.set_title(lab.replace(', ', ',\n').replace(' (evaluation', '\n(evaluation'), fontsize=7); ax.legend(fontsize=6, frameon=False)
         ax.spines[['top', 'right']].set_visible(False); ax.grid(True, color='0.92', lw=0.6)
     for row_axes in axes:
         row_axes[0].set_ylabel('excess of the APL-on distance over the\nisotonic trend from the APL-off distance')
