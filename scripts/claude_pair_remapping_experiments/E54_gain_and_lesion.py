@@ -55,10 +55,16 @@ MODELS_NOGAIN: Dict[str, Tuple[str, str, float, float, Optional[float]]] = {
 MODEL_LABEL = {'thr70_gain1.5': 'eight at 1.5, 70 Hz', 'thr40_gain1.5': 'eight at 1.5, 40 Hz',
     'thr70_gain1.25': 'eight at 1.25, 70 Hz', 'thr40_nogain': 'no gain, 40 Hz', 'thr70_nogain': 'no gain, 70 Hz'}
 SPLIT_LESIONS = ('lesion_gained', 'control_gained', 'lesion_ungained', 'control_ungained')
+# part C2: the two halves together (the 32 over-shared pairs with ORN data) and the 23 pairs among glomeruli
+# without ORN data on their own, each with its control
+PART_C2 = ('lesion_orn_all', 'control_orn_all', 'lesion_nonorn', 'control_nonorn')
+ALL_LESIONS = SPLIT_LESIONS + PART_C2
 GROUP_LABEL = {'real': 'real wiring', 'nogain': 'gain set to 1', 'lesion_targeted': 'all 55 over-shared pairs lesioned (E52)',
     'lesion_control': 'matched control pairs lesioned (E52)', 'lesion_gained': 'over-shared pairs with a gained glomerulus lesioned',
     'control_gained': 'their matched control pairs lesioned', 'lesion_ungained': 'over-shared pairs without gained glomeruli lesioned',
-    'control_ungained': 'their matched control pairs lesioned'}
+    'control_ungained': 'their matched control pairs lesioned', 'lesion_orn_all': 'all 32 over-shared pairs with ORN data lesioned',
+    'control_orn_all': 'their 32 matched control pairs lesioned', 'lesion_nonorn': 'the 23 over-shared pairs without ORN data lesioned',
+    'control_nonorn': 'their matched control pairs lesioned (E52\'s)'}
 
 
 def e52_results() -> Path:
@@ -93,12 +99,20 @@ def split_plan(res_dir: Path) -> pd.DataFrame:
                 target=max(int(c.observed) - excess, 0), n_removed=min(excess, int(c.observed)), null_mean=c[f'{NULL_CLASS}_null_mean'],
                 min_z=c.min_z, matched_to=f'{r.glom_a}/{r.glom_b}'))
     plan = pd.DataFrame(rows)
+    # part C2: the two halves together, and the pairs without ORN data (with E52's controls matched to them)
+    both = plan[plan.kind.isin(['lesion_gained', 'lesion_ungained'])].assign(kind='lesion_orn_all')
+    both_c = plan[plan.kind.isin(['control_gained', 'control_ungained'])].assign(kind='control_orn_all')
+    nonorn = plan52[(plan52.kind == 'lesion_targeted') & ~plan52.in_orn_input].assign(kind='lesion_nonorn', matched_to='')
+    nonorn_keys = {f'{a}/{b}' for a, b in zip(nonorn.glom_a, nonorn.glom_b)}
+    nonorn_c = plan52[(plan52.kind == 'lesion_control') & plan52.matched_to.isin(nonorn_keys)].assign(kind='control_nonorn')
+    cols = ['kind', 'glom_a', 'glom_b', 'observed', 'target', 'n_removed', 'null_mean', 'min_z', 'matched_to']
+    plan = pd.concat([plan, both, both_c, nonorn[cols], nonorn_c[cols]], ignore_index=True)
     plan.to_csv(res_dir / 'lesion_pairs.csv', index=False)
     return plan
 
 
-def make_split_lesions(W: pd.DataFrame, plan: pd.DataFrame, seeds: List[int], out_dir: Path, res_dir: Path
-    ) -> Dict[Tuple[str, int], pd.DataFrame]:
+def make_split_lesions(W: pd.DataFrame, plan: pd.DataFrame, seeds: List[int], out_dir: Path, res_dir: Path,
+    kinds: Tuple[str, ...] = SPLIT_LESIONS) -> Dict[Tuple[str, int], pd.DataFrame]:
     """The four split lesions per seed: each subset's pairs brought to their targets with the other
     over-shared pairs (and, for a control, every over-shared pair) protected."""
     from al_analysis.wpnkc_shuffles import lesion_coinput, coinput_counts, wPNKC_shuffle_summary
@@ -108,8 +122,8 @@ def make_split_lesions(W: pd.DataFrame, plan: pd.DataFrame, seeds: List[int], ou
     out: Dict[Tuple[str, int], pd.DataFrame] = {}
     oc_path = res_dir / 'lesion_outcome.csv'
     outcome = list(pd.read_csv(oc_path).to_dict('records')) if oc_path.exists() else []
-    outcome = [r for r in outcome if not (r['kind'] in SPLIT_LESIONS and int(r['seed']) in seeds)]
-    for kind in SPLIT_LESIONS:
+    outcome = [r for r in outcome if not (r['kind'] in kinds and int(r['seed']) in seeds)]
+    for kind in kinds:
         sub = plan[plan.kind == kind]
         targets = {(a, b): int(t) for a, b, t in zip(sub.glom_a, sub.glom_b, sub.target)}
         own = set(targets)
@@ -270,12 +284,14 @@ def jobs_for(parts: List[str], seeds: List[int], res_dir: Path, out_dir: Path) -
             for (kind, seed), L in les.items():
                 jobs.append(dict(tag=f'B_{mkey}_{kind}-seed{seed}_retuned', part='B', model=mkey, spec=spec, gain=None, wiring=L,
                     wiring_tag=f'{kind}-seed{seed}', shuffle=kind, seed=seed))
-    if 'C' in parts:
+    for part, kinds in (('C', SPLIT_LESIONS), ('C2', PART_C2)):
+        if part not in parts:
+            continue
         plan = split_plan(res_dir)
-        les = make_split_lesions(base_wiring(), plan, seeds, out_dir, res_dir)
+        les = make_split_lesions(base_wiring(), plan, seeds, out_dir, res_dir, kinds=kinds)
         for mkey, spec in MODELS.items():
             for (kind, seed), L in les.items():
-                jobs.append(dict(tag=f'C_{mkey}_{kind}-seed{seed}_retuned', part='C', model=mkey, spec=spec, gain=spec[4], wiring=L,
+                jobs.append(dict(tag=f'{part}_{mkey}_{kind}-seed{seed}_retuned', part=part, model=mkey, spec=spec, gain=spec[4], wiring=L,
                     wiring_tag=f'{kind}-seed{seed}', shuffle=kind, seed=seed))
     return jobs
 
@@ -374,9 +390,9 @@ def summary(res_dir: Path) -> None:
     # C: the split lesions under the gained models
     for mkey in MODELS:
         sub = comp[comp.model == mkey]
-        if sub[sub.shuffle.isin(SPLIT_LESIONS)].empty:
+        if sub[sub.shuffle.isin(ALL_LESIONS)].empty:
             continue
-        groups = [g for g in list(SPLIT_LESIONS) + ['lesion_targeted', 'lesion_control'] if (sub.shuffle == g).any()]
+        groups = [g for g in list(ALL_LESIONS) + ['lesion_targeted', 'lesion_control'] if (sub.shuffle == g).any()]
         table(f'**C. The {MODEL_LABEL[mkey]} at its fitted scales on the split lesions (threshold re-tuned)**',
             '| | | real wiring | ' + ' | '.join(f'{GROUP_LABEL[g]} (n = {int((sub.shuffle == g).sum())})' for g in groups) + ' |',
             '| statistic | KC data | threshold re-tuned | ' + ' | '.join('mean ± sd' for _ in groups) + ' |',
@@ -413,12 +429,12 @@ def figure(comp: pd.DataFrame, data: Dict[str, float], res_dir: Path) -> None:
         (f'{V}__block_fruity_small_iso', 'fruity × small-ester block', 'block'),
         ('spearman_rate_on_vs_data', 'response rate ρ, APL on', 'ctrl_rate_rho_ceiling'),
         ('loss_rate_ctrl', 'extended loss at 6.8 % (lower is better)', None)]
-    groups = ['real', 'nogain', 'lesion_targeted', 'lesion_control', 'lesion_gained', 'control_gained', 'lesion_ungained', 'control_ungained']
+    groups = ['real', 'nogain', 'lesion_targeted', 'lesion_control'] + list(ALL_LESIONS)
     groups = [g for g in groups if (comp.shuffle == g).any()]
     models = [m for m in list(MODELS) + list(MODELS_NOGAIN) if (comp.model == m).any()]
     colors = {'thr70_gain1.5': '#1f5fbf', 'thr40_gain1.5': '#d1662a', 'thr70_gain1.25': '#2a9d5c', 'thr40_nogain': '#8e44ad', 'thr70_nogain': '#7f8c8d'}
     offs = {m: (i - (len(models) - 1) / 2) * 0.15 for i, m in enumerate(models)}
-    fig, axes = plt.subplots(1, len(panels), figsize=(5 * len(panels), 6.5))
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.6 * len(panels), 7))
     for ax, (col, label, dkey) in zip(axes, panels):
         for m in models:
             sub = comp[comp.model == m]
@@ -449,7 +465,7 @@ def figure(comp: pd.DataFrame, data: Dict[str, float], res_dir: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--parts', nargs='+', choices=['A', 'B', 'C'], default=['A', 'B', 'C'])
+    ap.add_argument('--parts', nargs='+', choices=['A', 'B', 'C', 'C2'], default=['A', 'B', 'C', 'C2'])
     ap.add_argument('--seeds', nargs='+', type=int, default=[0, 1], help='draws of the split lesions (part C)')
     ap.add_argument('--plan', action='store_true', help='only build the split lesions and their tables')
     ap.add_argument('--summary', action='store_true', help='only (re)write the comparison tables and the figure')
@@ -461,7 +477,7 @@ def main() -> None:
         plan = split_plan(res_dir)
         pd.set_option('display.width', 250)
         print(plan.groupby('kind')[['n_removed', 'observed']].agg(['sum', 'count']))
-        make_split_lesions(base_wiring(), plan, args.seeds, out_dir, res_dir)
+        make_split_lesions(base_wiring(), plan, args.seeds, out_dir, res_dir, kinds=ALL_LESIONS)
         print(pd.read_csv(res_dir / 'lesion_outcome.csv').drop(columns=['reached']).to_string(index=False))
         return
     jobs = jobs_for(args.parts, args.seeds, res_dir, out_dir)
