@@ -571,8 +571,21 @@ def test_hook_writes_usage_samples(dirs, tmp_path):
     assert r.returncode == 0 and 'manual work from' in r.stdout
     rec = json.loads((Path(env['KC_PRESENCE_CACHE']) / 's5.json').read_text())
     assert rec['work_mode'] == 'manual' and record(shared, 's5')['work_mode'] == 'manual'
+    # a mark in the past: inserted in order, the transcript re-read at the next sample
+    r = subprocess.run([sys.executable, '-I', str(HERE / 'presence_hook.py'), '--mark', 'queue',
+        's5', '--at', '2026-11-08T02:31:00-08:00'], env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and 'queue work from 2026-11-08T02:31:00' in r.stdout
+    assert '(now manual work, since' in r.stdout
+    st = json.loads(state.read_text())
+    assert st['files'] == {} and [(b[1], b[2], b[3]) for b in st['bounds']] == [
+        ('queue', 'mark', 'at'), ('manual', 'mark', '')]
+    assert json.loads((Path(env['KC_PRESENCE_CACHE']) / 's5.json').read_text())['work_mode'] == 'manual'
+    r = subprocess.run([sys.executable, '-I', str(HERE / 'presence_hook.py'), '--mark', 'queue',
+        's5', '--at', 'yesterday'], env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and 'ISO 8601' in r.stderr
     hook(env, 'SessionEnd', reason='other', **kw)
     assert samples()[-1]['reason'] == 'SessionEnd' and samples()[-1]['work_mode'] == 'manual'
+    assert samples()[-1]['tokens'] == s[0]['tokens']
     r = subprocess.run([sys.executable, '-I', str(HERE / 'presence_hook.py'), '--mark', 'bogus',
         's5'], env=env, capture_output=True, text=True)
     assert r.returncode != 0

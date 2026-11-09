@@ -35,8 +35,11 @@ segment that the last typed prompt before it started: a queue segment if that pr
 queue command (the join command, the session-title tick or a bare acknowledgement), a manual
 segment otherwise (a request Tom typed into the session). `presence_hook.py --mark queue`
 (run by the agent when it has finished such a request; the session ID comes from
-$CLAUDE_CODE_SESSION_ID) ends a manual segment early; `--mark manual` starts one. Each sample
-carries the manual share as `tokens_manual`, the mode in effect and the queue-session flag.
+$CLAUDE_CODE_SESSION_ID) ends a manual segment early; `--mark manual` starts one; `--at <time>`
+(epoch seconds or ISO 8601, local time if no zone) places the boundary in the past, e.g. when a
+request was finished before marks existed, and the transcript is re-read at the next sample.
+Each sample carries the manual share as `tokens_manual`, the mode in effect and the
+queue-session flag.
 
 The shared directory is $KC_SHARED_DIR, else Tom/claude_kc_remapping under the first of
 /local/tensor and /mnt/tensor that has it (nothing is written if neither does). Other
@@ -703,31 +706,57 @@ def write_shared_presence(rec):
         rec)
 
 
-def mark_mode(mode, sid):
-    """`--mark queue|manual [session_id]`, run by the agent: from now on, the session's
-    tokens count as that kind of work (until the next prompt Tom types or the next mark).
+def parse_time(text):
+    """A time given to `--at`: epoch seconds, or ISO 8601 ('2026-11-08T02:31:00-08:00';
+    '2026-11-08 02:31' is local time)."""
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    d = datetime.fromisoformat(text.strip().replace('Z', '+00:00'))
+    if d.tzinfo is None:
+        d = d.astimezone()
+    return d.timestamp()
+
+
+def mark_mode(mode, sid, at=None):
+    """`--mark queue|manual [session_id] [--at <time>]`, run by the agent: from now on (or
+    from `at`, a past time), the session's tokens count as that kind of work, until the next
+    prompt Tom types or the next mark. A boundary in the past (before the last sample) also
+    makes the next sample re-read the transcript, so the tokens since it are re-attributed.
     Without a session ID, $CLAUDE_CODE_SESSION_ID (set in the session's shell commands)."""
     if mode not in WORK_MODES:
         raise SystemExit('mark: mode must be one of {}'.format(', '.join(WORK_MODES)))
     sid = sid or os.environ.get('CLAUDE_CODE_SESSION_ID') or ''
     if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', sid):
         raise SystemExit('mark: no session ID (pass it, or run from a Claude Code session)')
+    now = time.time()
+    try:
+        when = now if at is None else parse_time(at)
+    except ValueError:
+        raise SystemExit('mark: --at wants epoch seconds or an ISO 8601 time, not {!r}'.format(at))
+    if when > now + 60:
+        raise SystemExit('mark: --at must not be in the future')
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache = os.path.join(CACHE_DIR, sid + '.json')
-    now = time.time()
     with open(cache + '.lock', 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state_path = os.path.join(CACHE_DIR, sid + '.usage.json')
         st = read_json_file(state_path) or {}
-        add_bound(st.setdefault('bounds', []), now, mode, 'mark')
+        bounds = st.setdefault('bounds', [])
+        add_bound(bounds, when, mode, 'mark', 'at' if at is not None else '')
+        if when < st.get('sampled_epoch', 0):
+            st['files'] = {}   # re-read from the start at the next sample (totals are cumulative)
         write_atomic(state_path, st)
+        current = mode_at(bounds, now)
         rec = read_json_file(cache)
         if rec:
-            rec['work_mode'] = mode
-            rec['work_mode_since'] = iso(now)
+            rec['work_mode'] = current
+            rec['work_mode_since'] = iso(bounds[-1][0])
             write_atomic(cache, rec)
             write_shared_presence(rec)
-    print('{}: {} work from {}'.format(sid[:8], mode, iso(now)))
+    print('{}: {} work from {}{}'.format(sid[:8], mode, iso(when),
+        '' if current == mode else ' (now {} work, since {})'.format(current, iso(bounds[-1][0]))))
 
 
 def main():
@@ -735,7 +764,12 @@ def main():
         sample_only(sys.argv[2] if len(sys.argv) > 2 else '')
         return
     if sys.argv[1:2] == ['--mark']:
-        mark_mode(sys.argv[2] if len(sys.argv) > 2 else '', sys.argv[3] if len(sys.argv) > 3 else '')
+        args, at = sys.argv[2:], None
+        if '--at' in args:
+            i = args.index('--at')
+            at = args[i + 1] if i + 1 < len(args) else ''
+            del args[i:i + 2]
+        mark_mode(args[0] if args else '', args[1] if len(args) > 1 else '', at)
         return
     d = json.load(sys.stdin)
     sid = d.get('session_id')
