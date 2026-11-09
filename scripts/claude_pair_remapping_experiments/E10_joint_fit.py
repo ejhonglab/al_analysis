@@ -1057,8 +1057,11 @@ def main() -> None:
                 if args.loss == 'structure' else {}),
             data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
-            **(dict(init_from=args.init_from, init_from_experiment=args.init_from_experiment, init_from_exact=True)
-                if args.init_from_exact else {}),
+            # (the seed fit and the start mode, so a chained fit's start is explained: see
+            # unresolved_issues.md on --init-from)
+            init_from=args.init_from,
+            init_from_experiment=(args.init_from_experiment if args.init_from is not None else None),
+            init_from_exact=bool(args.init_from_exact and args.init_from is not None),
             approx_conc_note=H.APPROX_CONC_NOTE,
             # (E37: how the spike-only base in base_params was re-tuned from --base-params)
             **(dict(spike_only_base_tuning=base_info) if base_info else {}),
