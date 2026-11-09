@@ -17394,6 +17394,7 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
     target_corr: Optional[pd.DataFrame] = None,
     condition_param_overrides: Optional[Dict[str, ParamDict]] = None,
     condition_kc_thr_factors: Optional[Dict[str, np.ndarray]] = None,
+    condition_hooks: Optional[Dict[str, Callable[..., Any]]] = None,
     params_to_optimize: Optional[Union[Sequence[str], Literal['all']]] = None,
     initial_params: Optional[ParamDict] = None,
     bounds: Optional[Dict[str, Tuple[float, float]]] = None, bound_factor: float = 10.0,
@@ -17442,6 +17443,14 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             conditions beside the deterministic ones). Such conditions are always
             simulated (never shared with another condition), and are not checked by
             `verify` (their outputs have no `fit_mb_model` equivalent).
+
+        condition_hooks: if passed, maps extra condition names (not in
+            `condition_param_overrides`) to callables `hook(simulate, params)` run in every
+            evaluation after the conditions above, with the simulator closure and the
+            parameters being evaluated (after tying); whatever a hook returns is that
+            condition's entry in the outputs passed to `loss_fn` (e.g. a derived quantity
+            that needs extra simulations at the current parameters). Not checked by `verify`,
+            and not part of the returned 'condition_outputs' best-model reproduction.
 
         params_to_optimize: subset of `optimizable_model_params` keys. Defaults to all
             that apply to this model (PN<>APL weight scales only included if
@@ -17567,6 +17576,17 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         unknown = set(condition_kc_thr_factors) - set(condition_param_overrides)
         if len(unknown) > 0:
             raise ValueError(f'condition_kc_thr_factors conditions {unknown} not in '
+                'condition_param_overrides'
+            )
+
+    if condition_hooks is None:
+        condition_hooks = dict()
+    elif condition_param_overrides is None:
+        raise ValueError('condition_hooks requires condition_param_overrides')
+    else:
+        clash = set(condition_hooks) & set(condition_param_overrides)
+        if len(clash) > 0:
+            raise ValueError(f'condition_hooks conditions {clash} are also in '
                 'condition_param_overrides'
             )
 
@@ -17710,8 +17730,12 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
                     key2outputs[key] = simulate(c_params)
                 condition_outputs[c] = key2outputs[key]
 
-            losses = loss_fn(condition_outputs)
+            hook_outputs = {c: hook(simulate, params) for c, hook in condition_hooks.items()}
+
+            losses = loss_fn({**condition_outputs, **hook_outputs})
             outputs = dict(condition_outputs=condition_outputs)
+            if len(hook_outputs) > 0:
+                outputs['hook_outputs'] = hook_outputs
 
         if not isinstance(losses, dict):
             losses = {'loss': losses}
@@ -17849,6 +17873,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             },
             condition_outputs=best['condition_outputs'],
         )
+        if 'hook_outputs' in best:
+            result['hook_outputs'] = best['hook_outputs']
 
     if verify and condition_param_overrides is None:
         responses, spike_counts, wPNKC, param_dict = fit_mb_model(orn_deltas,

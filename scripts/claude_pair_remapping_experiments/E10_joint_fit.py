@@ -45,6 +45,15 @@ APL->KC scales relative to the base's tuned values (use --tag to name the varian
 KC-KC held (the KC-KC-held fits proposed from E51): `--kckc-fixed S` holds the KC-KC scale (kc_kc_inh) at S and fits the other three
 parameters; with --init-from the start is the seed's parameters with its KC-KC replaced by S; tag
 prefix kckc<S>_ (after the block prefix).
+The block term on the proxy (E60): `--block-proxy PASSES` computes the block term on the batched
+network-aware proxy's block through the noise (noise_proxy.py: at every evaluation two extra simulations
+per condition, the voltages saved, every KC's drive reconstructed and replayed at the trial-noise
+pipeline's jittered thresholds for PASSES passes with the KC-KC inhibition from the other KCs' replayed
+spikes), every other term deterministic; sigma and the threshold ratio as for --jitter-k (the --init-from
+model's matched values by default); `--proxy-relax` damps the passes; `--proxy-recordings`,
+`--proxy-trials`, `--proxy-seed` are the pipeline's 10, 3, 43. The proxy's block, grand-mean block,
+floors and rates are recorded as fit_proxy_* (history proxy_*); tag prefix proxyP<PASSES>[r]_ (after the
+KC-KC prefix). Cost per evaluation: the four extra simulations and the passes (about 3 min on atlas).
 What drives APL: `--apl-drive spikes` (E36) drives it by the KCs' spikes plus the bouton rates
 (pn_claw_to_apl=False), from the spike-driven base given by --base-params; `--apl-drive spikes_only`
 (E37) also removes the bouton->APL input (wPNAPL = 0): the same --base-params base, its APL scales
@@ -84,6 +93,7 @@ this base (which reset its bouton->APL scale to the base's).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import re
@@ -453,8 +463,12 @@ def trial_mean(runs: list) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series,
     drive: pd.Series, ref: Optional[pd.DataFrame] = None, structure: bool = False,
     rate_target: float = RATE_TARGET, block_target: float = BLOCK_TARGET, jitter_k: int = 0,
-    jitter_terms: str = 'block', jitter_trials: Optional[int] = None):
-    """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc).
+    jitter_terms: str = 'block', jitter_trials: Optional[int] = None, proxy: Optional[dict] = None):
+    """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). With `proxy`
+    (E60; n_recordings, n_trials, n_spikes_for_response) the outputs carry 'proxy', the batched
+    network-aware proxy's trial spike counts per condition, and the block term is computed on their
+    pipeline statistics (noise_proxy.pipeline_pairs) instead of the deterministic distances; the
+    other terms stay deterministic. The proxy's block, floors and rates are returned as proxy_*.
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
     with APL on (rank agreement of the KC residual from a linear ORN prediction with the
@@ -502,6 +516,17 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
                 terms = jterms
             else:
                 terms['block'] = jterms['block']
+        if proxy is not None and 'proxy' in outputs:
+            import noise_proxy
+            pp = noise_proxy.pipeline_pairs(outputs['proxy'], proxy['n_recordings'], proxy['n_trials'],
+                proxy['n_spikes_for_response'])
+            pout, pterms = stats_terms(*outputs['on'], *outputs['off'], rdms={'on': pp['on']['raw'], 'off': pp['acute_off']['raw']})
+            out.update({f'proxy_{kk}': pout[kk] for kk in ('block', 'iso_r2', 'on_spearman', 'off_spearman')})
+            gst, _ = H.compare_on_off(pp['on']['grand'], pp['acute_off']['grand'])
+            out['proxy_block_grand'] = float(gst['block_fruity_small_iso'])
+            out.update(proxy_floor1_on=pp['on']['floor1'], proxy_floor1_off=pp['acute_off']['floor1'],
+                proxy_rate_on=pp['on']['rate'], proxy_rate_off=pp['acute_off']['rate'])
+            terms['block'] = pterms['block']
         for name, t in terms.items():
             out[f'term_{name}'] = float(weights[name] * t)
         out['loss'] = float(sum(out[f'term_{n}'] for n in terms))
@@ -613,11 +638,15 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     aplpn_max: Optional[float] = None, aplpn_fixed: Optional[float] = None,
     aplkc_min: Optional[float] = None, apl_drive: str = 'claws',
     init_params: Optional[str] = None, kc_thr_factors: Optional[np.ndarray] = None,
-    init_exact_expect: Optional[dict] = None, kckc_fixed: Optional[float] = None):
+    init_exact_expect: Optional[dict] = None, kckc_fixed: Optional[float] = None,
+    block_proxy: Optional[dict] = None):
     """One joint fit; `kc_thr_factors` (K x KCs, `jitter_factors`) adds the K jittered runs of
     each condition (`jitter_conditions`) to every evaluation; `init_exact_expect` (not None)
     starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True);
-    `kckc_fixed` holds the KC-KC scale there and fits the other three parameters."""
+    `kckc_fixed` holds the KC-KC scale there and fits the other three parameters; `block_proxy`
+    (E60: the settings dict of main's `proxy`) adds the batched network-aware proxy as the
+    condition hook 'proxy' of every evaluation (noise_proxy.make_block_proxy_hook; the simulator's
+    olfsysm variables captured with E43's captured_olfsysm_vars)."""
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
@@ -701,14 +730,25 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         jit = jitter_conditions(len(kc_thr_factors))
         jit_kws['condition_kc_thr_factors'] = {j: kc_thr_factors[int(j.rsplit('jit', 1)[1])] for j, _ in jit}
         overrides.update({j: overrides[c] for j, c in jit})
-    res = optimize_mb_model_params(orn, loss_fn=loss_fn,
-        condition_param_overrides=overrides, **jit_kws,
-        params_to_optimize=params,
-        initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
-        maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
-        **base_kws(claw_thr, apl_drive), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
-        _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU
-    )
+    hook_kws, ctx = {}, contextlib.nullcontext()
+    if block_proxy is not None:
+        import noise_proxy
+        import E43_model_trial_noise as E43
+        store: dict = {}
+        hook = noise_proxy.make_block_proxy_hook(store, orn, block_proxy['sigma'], block_proxy['thr_ratio'],
+            block_proxy['n_recordings'], block_proxy['n_trials'], block_proxy['seed'], block_proxy['passes'],
+            block_proxy['relax'], {'on': overrides['on'], 'off': overrides['off']})
+        hook_kws = dict(condition_hooks={'proxy': hook})
+        ctx = E43.captured_olfsysm_vars(store)
+    with ctx:
+        res = optimize_mb_model_params(orn, loss_fn=loss_fn,
+            condition_param_overrides=overrides, **jit_kws, **hook_kws,
+            params_to_optimize=params,
+            initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
+            maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
+            **base_kws(claw_thr, apl_drive), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
+            _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU
+        )
     return res, init, bounds
 
 
@@ -776,6 +816,17 @@ def main() -> None:
         help='hold the KC-KC scale (kc_kc_inh) at S and fit the other three parameters (the KC-KC-held fits); with --init-from '
         "the start is the seed fit's parameters with its KC-KC scale replaced by S (so an exact start's first "
         'evaluation differs from the row); tag prefix kckc<S>_ (after the block prefix)')
+    ap.add_argument('--block-proxy', type=int, default=0, metavar='PASSES',
+        help="compute the loss's block term on the batched network-aware proxy's block through the noise (noise_proxy."
+        'make_block_proxy_hook: PASSES replay passes of every KC at the trial-noise pipeline\'s jittered thresholds, '
+        "with each KC's KC-KC inhibition from the other KCs' replayed spikes; E60), every other term deterministic; the "
+        'sigma and the re-tuned threshold ratio come from --jitter-sigma / --jitter-thr-scale or, by default, from the '
+        '--init-from model\'s part-B noise_levels.json as for --jitter-k; tag prefix proxyP<PASSES>_ (r with --proxy-relax)')
+    ap.add_argument('--proxy-relax', action='store_true',
+        help='the proxy\'s inhibition for pass k + 1 from the mean of passes k and k - 1 (damps the oscillation between passes)')
+    ap.add_argument('--proxy-recordings', type=int, default=10, help="the proxy's pseudo-recordings (the pipeline's 10)")
+    ap.add_argument('--proxy-trials', type=int, default=3, help="trials per pseudo-recording (the pipeline's 3)")
+    ap.add_argument('--proxy-seed', type=int, default=43, help="the draws' seed (the pipeline's 43, kind 'rec', the fits.csv models' index)")
     ap.add_argument('--thr0-factor', type=float, default=0.7,
         help='initial threshold as a factor of E3 bouton threshold (E8: 0.6-0.77 at KC-KC 30-100)')
     ap.add_argument('--claw-thr', type=float, default=None,
@@ -932,9 +983,35 @@ def main() -> None:
         jit_tag = f'jitK{jit_k}' + ('' if jit_trials == jit_k else f't{jit_trials}') + (
             '' if jit_scale == 1.0 else f'x{jit_scale:.3f}') + (
             'all' if args.jitter_terms == 'all' else '') + '_'
+    # (E60) the block term on the batched network-aware proxy: sigma and the threshold ratio as for the jitter
+    proxy_tag, proxy = '', None
+    if args.block_proxy < 0:
+        ap.error('--block-proxy must be >= 0')
+    if args.block_proxy > 0:
+        if args.init_from is None and (args.jitter_sigma is None or args.jitter_thr_scale == 'matched'):
+            ap.error('--block-proxy needs --init-from a model with a matched sigma, or --jitter-sigma and a numeric --jitter-thr-scale')
+        noise = matched_noise(args.init_from_experiment, args.init_from) if (
+            args.init_from is not None and (args.jitter_sigma is None or args.jitter_thr_scale == 'matched')) else None
+        p_sigma, p_sigma_src = (float(args.jitter_sigma), '--jitter-sigma') if args.jitter_sigma is not None else (noise['sigma'], noise['source'])
+        if args.jitter_thr_scale == 'matched':
+            if noise is None or not np.isfinite(noise['thr_ratio']):
+                ap.error("--jitter-thr-scale matched needs --init-from a model with a re-tuned threshold in a part-B noise_levels.json")
+            p_ratio, p_ratio_src = noise['thr_ratio'], noise['source'] + ' (tuned_fixed_thr match_on / fixed_thr_det)'
+        else:
+            p_ratio, p_ratio_src = float(args.jitter_thr_scale), '--jitter-thr-scale'
+        if args.proxy_recordings < 1 or args.proxy_trials < 1:
+            ap.error('--proxy-recordings and --proxy-trials must be >= 1')
+        proxy = dict(passes=int(args.block_proxy), relax=bool(args.proxy_relax), sigma=p_sigma, sigma_source=p_sigma_src,
+            thr_ratio=p_ratio, thr_ratio_source=p_ratio_src, n_recordings=int(args.proxy_recordings),
+            n_trials=int(args.proxy_trials), seed=int(args.proxy_seed), n_spikes_for_response=2)
+        proxy_tag = f'proxyP{proxy["passes"]}' + ('r' if proxy['relax'] else '') + '_'
     loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss == 'structure'),
         rate_target=rate_target, block_target=block_target, jitter_k=jit_k, jitter_terms=args.jitter_terms,
-        jitter_trials=args.jitter_trials)
+        jitter_trials=args.jitter_trials, proxy=proxy)
+    if proxy is not None:
+        print(f"block term on the proxy: {proxy['passes']} passes{' with relaxation' if proxy['relax'] else ''}, sigma "
+            f"{proxy['sigma']:g} ({proxy['sigma_source']}), threshold ratio {proxy['thr_ratio']:.4f} ({proxy['thr_ratio_source']}), "
+            f"{proxy['n_recordings']} x {proxy['n_trials']} trials, seed {proxy['seed']}", flush=True)
     print(f'data off/on rate ratio target {loss_fn.ratio_target:.3f}; APL-on rate target '
         f'{loss_fn.rate_target:.4f}; block target {loss_fn.block_target:+.4f}; loss variant {args.loss}', flush=True)
 
@@ -960,7 +1037,7 @@ def main() -> None:
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
     kckc_tag = '' if args.kckc_fixed is None else f'kckc{args.kckc_fixed:g}_'
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + kckc_tag + jit_tag
+        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + kckc_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
         jit_factors = jitter_factors(jit_k, len(breadth), jit_sigma, args.jitter_seed, jit_scale)
@@ -996,7 +1073,8 @@ def main() -> None:
             wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None or wiring_matrix is not None) else None),
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
             aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
-            kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed
+            kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed,
+            block_proxy=proxy
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -1035,6 +1113,7 @@ def main() -> None:
             apl_drive=args.apl_drive, base_params=args.base_params, init_params=args.init_params,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             kckc_fixed=args.kckc_fixed,
+            **({f'proxy_{kk}': vv for kk, vv in proxy.items()} if proxy is not None else {}),
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
@@ -1095,6 +1174,13 @@ def main() -> None:
             wiring_file=args.wiring_file, wiring_tag=args.wiring_tag,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             kckc_fixed=args.kckc_fixed, base_params=initial, loss_variant=args.loss,
+            **(dict(block_proxy=dict(proxy, note=('the loss\'s block term on the batched network-aware proxy (noise_proxy.'
+                'make_block_proxy_hook): at every evaluation each condition is simulated once more with the thresholds out of reach '
+                'and once with the voltages saved, every KC\'s drive is reconstructed, and the trials are replayed at the pipeline\'s '
+                'jittered thresholds (thr_ratio x the current threshold, 1 + sigma xi, clipped at 0.01; draws b_draws(seed, ref40 '
+                'index, rec, rep)) for the given passes, each KC\'s KC-KC inhibition from the other KCs\' spikes of the previous pass '
+                '(pass 1: the deterministic run\'s); the block (the pipeline\'s three-trial-mean distances, isotonic excess) of the '
+                'last pass replaces the deterministic block in the block term; everything else deterministic'))) if proxy is not None else {}),
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=loss_fn.block_target, block_target_spec=args.block_target,
             block_scale=BLOCK_SCALE, rate_target=loss_fn.rate_target, rate_target_spec=args.rate_target,
