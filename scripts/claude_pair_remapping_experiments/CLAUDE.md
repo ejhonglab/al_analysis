@@ -942,6 +942,7 @@ Canonical experiment names for summary reports:
 | E58 | the glomerulus gain as the carrier of a noise-robust block |
 | E59 | the co-input-preserving shuffle |
 | E60 | the batched proxy as the block term of a fit |
+| E61 | the per-pair decomposition of the gap in ρ on odor-odor distances |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
