@@ -1033,8 +1033,11 @@ report:
    the level of tags and sentences, ignoring the build timestamps, the `[commit ...]` tooltip hashes and
    the server's wrapper, and prints what the live page has that your build drops (REMOVED) or rewrites
    (CHANGED). If it prints nothing, or only your own intended edits (a status word, a pending bullet you
-   removed because the experiment completed), rebuild (the new build timestamp makes the page new content,
-   which the tool otherwise refuses as "identical content resent") and publish: it goes through. If it
+   removed because the experiment completed), open the saved live file once with the Read tool (a few lines
+   are enough: the Artifact tool counts only a Read of that file as having looked at the live version, not a
+   script that read it) and publish again: it goes through (the summary's build timestamp makes every rebuild
+   new content; the report page changes only when its experiment list does, so there the same build is
+   resent). If it
    prints content you did not touch, the template in git is behind someone's publish: pull again and
    rebuild, or ask in chat.md who published from what; never force a publish over it;
 4. `save_report_copy.py` as usual.
