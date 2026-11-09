@@ -435,8 +435,8 @@ def coinput_counts(wPNKC: pd.DataFrame, by: Optional[str] = 'glomerulus') -> pd.
 
 def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int = 0,
     within_kc_type: bool = True, protect: Optional[Iterable[Tuple]] = None,
-    by: Optional[str] = 'glomerulus', max_tries: int = 2000, strict: bool = True
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    by: Optional[str] = 'glomerulus', max_tries: int = 2000, strict: bool = True,
+    passes: int = 1) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Returns one-row-per-claw `wPNKC` with the number of KCs sharing each listed pair of
     glomeruli brought to a target, by claw swaps that keep every margin, and the swaps made.
 
@@ -452,13 +452,15 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
     than the target share the pair (a transplant of co-input, e.g. into a shuffled wiring):
     a random KC with claws from one glomerulus of the pair and none from the other takes one
     claw of the other from a random KC of the same group that has the other and not the
-    first, giving one of its own claws from a third glomerulus in exchange, under the same
-    rules (no other listed pair gains a KC, no protected pair loses one). So every KC keeps
-    its number of claws, every column (bouton, hence glomerulus) its number of claws (per KC
-    type with `within_kc_type`), no listed pair other than the one being raised gains a KC
-    and protected pairs keep their counts; a KC's number of distinct glomeruli and the counts
-    of unlisted pairs change incidentally, as under a claw permutation restricted to the
-    swapped claws.
+    first, giving one of its own claws from a third glomerulus in exchange, so that no
+    protected pair changes (other target pairs may change, since a transplanted co-input
+    structure has its pairs on common KCs; with `passes` > 1 the targets are revisited until
+    every pair is at its target or a pass makes no progress). So every KC keeps its number
+    of claws, every column (bouton, hence glomerulus) its number of claws (per KC type with
+    `within_kc_type`), no listed pair gains a KC while pairs are being lowered, and
+    protected pairs keep their counts; a KC's number of distinct glomeruli and the counts of
+    unlisted pairs change incidentally, as under a claw permutation restricted to the swapped
+    claws.
 
     Args:
         wPNKC: one row per claw (`CLAW_ID` index level), 0/1 values.
@@ -474,6 +476,9 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
             would break a protected pair by giving up either glomerulus); False leaves such
             a pair where it got to and goes on (compare the result's counts with the
             targets, e.g. with `coinput_counts`).
+        passes: how many times to go over `targets` (later pairs' swaps can move earlier
+            pairs' counts, mostly when raising); stops early once every pair is at its
+            target or a pass changed nothing.
 
     Returns (lesioned copy of `wPNKC`, DataFrame of the swaps: glom_a, glom_b (the pair
     being changed), n_before (its count before the step), kc, moved (the glomerulus the KC
@@ -565,11 +570,11 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
         own = [r for r in kc_claws[k] if claw_glom[r] != have and claw_glom[r] != need]
         if not own:
             return None
-        # `need` arrives at k: no listed pair (need, y) other than the target may gain k
+        # `need` arrives at k: no protected pair (need, y) may gain k
         others_k = counts[k] > 0
         others_k = others_k.copy()
         others_k[have] = False
-        if listed[need][others_k].any():
+        if protected[need][others_k].any():
             return None
         for _ in range(max_tries):
             r2 = pool[rng.integers(len(pool))]
@@ -588,12 +593,14 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
                     continue
                 keeps_k2 = keeps_k2.copy()
                 keeps_k2[need] = False
-            if listed[x][keeps_k2].any():
+            if protected[x][keeps_k2].any():
                 continue
             return r1, int(r2)
         return None
 
-    for p, target in targets.items():
+    for _pass in range(max(int(passes), 1)):
+      n_swaps_before = len(swaps)
+      for p, target in targets.items():
         a, b = pair_idx(p)
         tries = 0
         while True:
@@ -658,6 +665,10 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
                     partner_kc=kc_ids[claw_rows[r2]], received=groups[x],
                     claw_row=int(claw_rows[r1]), partner_row=int(claw_rows[r2])
                 ))
+      at_target = all(int(np.count_nonzero((counts[:, pair_idx(p)[0]] > 0) & (counts[:, pair_idx(p)[1]] > 0))) == t
+          for p, t in targets.items())
+      if at_target or len(swaps) == n_swaps_before:
+          break
 
     new_values = np.zeros_like(values)
     new_values[claw_rows, new_col] = 1

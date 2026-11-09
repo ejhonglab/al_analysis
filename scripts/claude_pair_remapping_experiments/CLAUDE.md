@@ -938,6 +938,7 @@ Canonical experiment names for summary reports:
 | E54 | the gain and the wiring behind the natural-source alignment |
 | E55 | the margin proxy for the block through the noise |
 | E56 | the network-aware margin proxy |
+| E57 | building the natural-source alignment back (the convergence transplant) |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
