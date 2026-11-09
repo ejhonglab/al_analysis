@@ -934,6 +934,7 @@ Canonical experiment names for summary reports:
 | E50 | the fitted block on more shuffle draws |
 | E51 | the noise-robust block |
 | E52 | the glomerulus pairs behind the natural-source alignment |
+| E53 | KC-KC lateral inhibition as the carrier of a noise-robust block |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
