@@ -20,8 +20,11 @@ directory's notes/ and are linked from here.
   seed's: 5.57 for E44's 40 Hz fit vs 4.23 for its +0.072-target re-fit in E48; 10.58 vs 7.54 at
   70 Hz; 7.24 for E45's eight at 1.25 at 70 Hz vs 2.57 for its +0.072 and +0.10 re-fits (the tuned
   base: 4.45). Found by the code subagent writing the noise-aware loss (E51).
-- **Affects.** Every fit started with `--init-from`: E48's re-fits (from E44 / E45's optima) and E45's
-  gain fits (from the nearest 5 % optima; their `initial` in provenance has the base's wPNAPL_scale).
+- **Affects.** Every fit started with `--init-from`: E48's re-fits (from E44 / E45's optima), E45's
+  gain fits (from the nearest 5 % optima; their `initial` in provenance has the base's wPNAPL_scale),
+  and the re-drawn-wiring fits of E46 and E47 (from E44 / E45's optima; viki, 2026-11-08 18:39: each
+  draw's fit was compared with the real wiring's fit after both converged in their own runs, so their
+  conclusions stand, but the notes need the annotation).
   The block target through the noise (E48) compared each re-fit with a counterpart that was meant to
   differ only in the target; they also differ in this unfitted balance, so the "raising the target
   cannot raise the block" reading rests on a confounded comparison. Comparisons across fits of the
@@ -31,7 +34,9 @@ directory's notes/ and are linked from here.
 - **Done.** `--init-from-exact` (al_analysis 8b3820d) starts at the seed's absolute parameters
   (checked against the row at the first evaluation); the noise-robust block's fits (E51) use it. The
   default `--init-from` is unchanged.
-- **Remains.** Annotate E48's note and the summary's block-target paragraph with the confound; repeat
+- **Done.** E48's note and page and the summary template's block-target paragraph carry the caveat
+  (atlas, 2026-11-08 18:39; template 23977e5).
+- **Remains.** The same annotation in E46's and E47's notes (viki, hal); repeat
   E48's three re-fits with `--init-from-exact` if the block-target question stays open after E51;
   record the seed tag and the start mode in provenance.
 
