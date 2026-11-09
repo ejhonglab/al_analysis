@@ -341,7 +341,12 @@ def test_usage_collect_and_render(tmp_path):
     assert 'data-theme="dark">dark</a>' in html
     # by host, default: queue work in queue sessions only, so hal's output over the last day
     # (it started 2 h ago) is 7k minus its 1k of manual work, and viki's session is left out
-    assert '>hal (6k)<' in usage_html and 'viki' not in usage_html
+    assert '>hal (6k)<' in usage_html and '>viki (' not in usage_html
+    # the options table shows what the two options leave out: hal's 1k of manual work, and
+    # viki's session (not a queue session) with its 900 tokens
+    assert '<td>hal</td><td class="nw">1 / 0</td><td class="nw">7k</td><td class="nw">1k' in usage_html
+    assert '<td>viki</td><td class="nw">0 / 1</td><td class="nw">900</td>' in usage_html
+    assert '(100.0 %)</span></td><td class="nw">0</td></tr>' in usage_html
     assert '&#9745; queue work only' in usage_html and '&#9745; queue sessions only' in usage_html
     assert '&#9744; group hosts by Claude account' in usage_html
     everything = server.render(st, 30, server.parse_opts('tokens=output&work=all&sessions=all'))

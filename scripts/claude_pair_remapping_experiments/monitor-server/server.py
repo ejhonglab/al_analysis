@@ -650,7 +650,14 @@ THEME_SCRIPT = (
     "(t||'auto'))?'on':''}ap(g());document.addEventListener('DOMContentLoaded',function(){ap(g());"
     "var l=document.querySelectorAll('.theme a');for(var i=0;i<l.length;i++)l[i].addEventListener("
     "'click',function(e){e.preventDefault();var t=this.getAttribute('data-theme');try{if(t==="
-    "'auto')localStorage.removeItem(k);else localStorage.setItem(k,t)}catch(x){}ap(t)})})})();")
+    "'auto')localStorage.removeItem(k);else localStorage.setItem(k,t)}catch(x){}ap(t)})});"
+    # every option link reloads the page and so does the refresh every 30 s: keep the reader's
+    # place (the usage controls sit far down the page), unless the URL names an anchor
+    "var sk='scroll:'+location.pathname;function sv(){try{sessionStorage.setItem(sk,String("
+    "window.pageYOffset||0))}catch(e){}}window.addEventListener('pagehide',sv);document."
+    "addEventListener('DOMContentLoaded',function(){if(location.hash)return;try{var y="
+    "sessionStorage.getItem(sk);if(y!==null)window.scrollTo(0,parseInt(y,10)||0)}catch(e){}})"
+    "})();")
 
 
 def esc(x):
@@ -848,8 +855,43 @@ def series_color(i):
     return 'var(--s{})'.format(i + 1) if i < len(SERIES_COLORS) else 'var(--grey)'
 
 
+def options_table(sessions, t0, t1, opts):
+    """Per host, what the two usage options leave out over the plot window: the manual-work
+    share ("queue work only") and the tokens of sessions that are not queue sessions ("queue
+    sessions only"), beside the total and what the plots show under the current options. The
+    manual share is usually a few per cent of a host's tokens, so without this table toggling
+    either option moves nothing visible on the plots."""
+    def total(ss, work):
+        return sum(step_series([[(x['epoch'], token_value(x['tokens'], '', opts['tokens'], work))
+            for x in s['samples']]], t0, t1)[-1][1] for s in ss)
+
+    def share(v, whole):
+        if not whole:
+            return fmt_tokens(v)
+        return '{} <span class="muted">({:.1f} %)</span>'.format(fmt_tokens(v), 100.0 * v / whole)
+    queue_work, queue_only = opts['work'] == 'queue', opts['sessions'] == 'queue'
+    rows = []
+    for h in sorted({s['host'] for s in sessions}):
+        ss = [s for s in sessions if s['host'] == h]
+        sq = [s for s in ss if s.get('queue_session')]
+        so = [s for s in ss if not s.get('queue_session')]
+        everything = total(ss, 'all')
+        manual = everything - total(ss, 'queue')
+        shown = total(sq if queue_only else ss, 'queue' if queue_work else 'all')
+        rows.append('<tr><td>{}</td><td class="nw">{} / {}</td><td class="nw">{}</td>'
+            '<td class="nw">{}</td><td class="nw">{}</td><td class="nw">{}</td></tr>'.format(
+            esc(h), len(sq), len(so), fmt_tokens(everything), share(manual, everything),
+            share(total(so, 'all'), everything), fmt_tokens(shown)))
+    return ('<div class="wrap"><table><tr><th>host</th><th>sessions<br>queue / other</th>'
+        '<th>tokens, {}<br>last {} d, everything</th><th>manual work<br>(left out by "queue work '
+        'only")</th><th>in other sessions<br>(left out by "queue sessions only")</th>'
+        '<th>shown in the plots</th></tr>{}</table></div>'.format(
+        esc(TOKEN_MEASURES[opts['tokens']]), opts['days'], ''.join(rows)))
+
+
 def usage_html(state, now, opts):
-    """The usage section: tokens per host (or account), tokens on Fable models, plan usage."""
+    """The usage section: what the options leave out per host, tokens per host (or account),
+    tokens on Fable models, plan usage."""
     u = state.get('usage') or {}
     sessions, hosts, accounts = u.get('sessions') or [], u.get('hosts') or {}, u.get(
         'accounts') or {}
@@ -879,16 +921,21 @@ def usage_html(state, now, opts):
         '<span class="sep">&middot;</span>{}<span class="sep">&middot;</span>{}'
         '<span class="sep">&middot;</span>{}</div>'.format(' | '.join(links), ' | '.join(tok),
         box, box_work, box_sess))
+    if not sessions:
+        w('<p class="muted">No usage samples yet (<code>usage/</code> in the shared directory, '
+            'written by presence_hook.py every 15 min).</p>')
+        return ''.join(o)
+    t1, t0 = now, now - opts['days'] * 86400
+    w(options_table(sessions, t0, t1, opts))
     if queue_only:
         sessions = [s for s in sessions if s.get('queue_session')]
         hosts = {h: k for h, k in hosts.items() if any(s['host'] == h for s in sessions)}
         accounts = {k: dict(a, hosts=[h for h in a['hosts'] if h in hosts])
             for k, a in accounts.items() if k in set(hosts.values())}
     if not sessions:
-        w('<p class="muted">No usage samples yet (<code>usage/</code> in the shared directory, '
-            'written by presence_hook.py every 15 min).</p>')
+        w('<p class="muted">No queue sessions in this window; uncheck "queue sessions only" to '
+            'see the other sessions.</p>')
         return ''.join(o)
-    t1, t0 = now, now - opts['days'] * 86400
     host_order = sorted(hosts)
     acct_order = sorted(accounts, key=lambda k: accounts[k]['label'].lower())
     def acct_label(key):
