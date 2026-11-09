@@ -132,10 +132,16 @@ def pair_excess_frame(tables: dict, mname: str, lv: str) -> pd.DataFrame:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--out', type=Path, default=None, help='output folder (default: the results folder)')
+    ap.add_argument('--per-odor', action='store_true',
+        help="only the per-odor response-rate diagnostic (per_odor_rates.csv and E53_per_odor_rates.png): each model's "
+        "deterministic per-odor response rates with APL on and off, from its saved outputs, against the KC data's")
     args = ap.parse_args()
     res_dir = H.results_dir(EXPERIMENT)
     out = args.out or res_dir
     out.mkdir(parents=True, exist_ok=True)
+    if args.per_odor:
+        per_odor_rates(out)
+        return
     dt = H.data_target
     inputs = {}
     fits = {}
@@ -356,6 +362,73 @@ def make_history_figure(df: pd.DataFrame, res_dir: Path, out: Path) -> list:
     fig.suptitle('The KC-KC-held fits: loss, the deterministic block and the APL-off response rate over the evaluations', fontsize=9.5)
     fig.tight_layout(); fig.savefig(out / 'E53_fit_histories.png', dpi=130); plt.close(fig)
     return [f for _, _, f in files]
+
+
+def saved_responses(experiment: str, tag: str, cond: str) -> Optional[pd.DataFrame]:
+    """The saved KC x odor response matrix of fit `tag` of `experiment` with APL on ('on') or off
+    ('acute_off'): from the experiment's local outputs folder, else the shared archive; None if absent."""
+    for d in (H.outputs_dir(experiment), H.shared_dir() / 'data' / 'model_outputs' / experiment):
+        f = d / f'{tag}_{cond}_responses.parquet'
+        if f.exists():
+            return pd.read_parquet(f)
+    return None
+
+
+def per_odor_rates(out: Path) -> None:
+    """The per-odor response-rate diagnostic: for each base's seed and KC-KC-held fits, the deterministic
+    fraction of KCs responding to each odor with APL on and off (from the saved outputs), beside the KC
+    data's per-odor response fractions (control flies for APL on, APL output blocked (TNT) for APL off;
+    the means over recordings), with each model's Spearman ρ against the data; per_odor_rates.csv (long)
+    and E53_per_odor_rates.png."""
+    from scipy import stats
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    data = {'on': H.yang_response_fractions('TNT3c').mean().reindex(H.APL16_ODORS),
+        'acute_off': H.yang_response_fractions('TNT').mean().reindex(H.APL16_ODORS)}
+    fits = pd.read_csv(H.results_dir(EXPERIMENT) / 'fits.csv').set_index('tag') if (H.results_dir(EXPERIMENT) / 'fits.csv').exists() else pd.DataFrame()
+    rows, series = [], {}
+    for label, exp, tag, thr, gain in BASES:
+        models = [(label + ', the seed', exp, tag, float('nan'))]
+        models += [(label + f', KC-KC held at {s:g}', EXPERIMENT, t, s) for t, s in held_fits_for(fits, thr, gain)]
+        for mlabel, mexp, mtag, held in models:
+            for cond in ('on', 'acute_off'):
+                r = saved_responses(mexp, mtag, cond)
+                if r is None:
+                    continue
+                fr = H.response_fractions(r).reindex(H.APL16_ODORS)
+                series[(mlabel, cond)] = fr
+                rho = float(stats.spearmanr(fr, data[cond])[0])
+                for odor in H.APL16_ODORS:
+                    rows.append(dict(base=label, model=mlabel, experiment=mexp, tag=mtag, held_kckc=held, condition=cond,
+                        odor=odor, model_rate=float(fr[odor]), data_rate=float(data[cond][odor]), spearman_vs_data=rho))
+    df = pd.DataFrame(rows)
+    df.to_csv(out / 'per_odor_rates.csv', index=False)
+    bases = [b[0] for b in BASES]
+    fig, axes = plt.subplots(2, len(bases), figsize=(6.4 * len(bases), 7.2), squeeze=False, sharey='row')
+    x = np.arange(len(H.APL16_ODORS))
+    for j, base in enumerate(bases):
+        for i, cond in enumerate(('on', 'acute_off')):
+            ax = axes[i, j]
+            ax.plot(x, data[cond].to_numpy(), 'k--', lw=1.2, label=('KC data: control flies' if cond == 'on' else 'KC data: APL output blocked (TNT)'))
+            labels = [k for k in series if k[0].startswith(base) and k[1] == cond]
+            cmap = plt.get_cmap('viridis')
+            for n, key in enumerate(labels):
+                fr = series[key]
+                rho = float(stats.spearmanr(fr, data[cond])[0])
+                ax.plot(x, fr.to_numpy(), 'o-', color=cmap(n / max(len(labels) - 1, 1)), ms=4, lw=1,
+                    label=f"{key[0].split(', ', 2)[-1]} (ρ={rho:.2f})")
+            ax.set_xticks(x); ax.set_xticklabels(H.APL16_ODORS, rotation=70, fontsize=7)
+            ax.set_ylabel('fraction of KCs responding' + (', APL on' if cond == 'on' else ', APL off'), fontsize=8)
+            ax.legend(fontsize=6.5, frameon=False)
+            ax.spines[['top', 'right']].set_visible(False); ax.grid(True, color='0.92', lw=0.6)
+            if i == 0:
+                ax.set_title(base, fontsize=9.5)
+    fig.suptitle('Per-odor response rates (deterministic) of the seed and the KC-KC-held fits against the KC data', fontsize=9.5)
+    fig.tight_layout(); fig.savefig(out / 'E53_per_odor_rates.png', dpi=130); plt.close(fig)
+    summary = df.groupby(['model', 'condition'])['spearman_vs_data'].first().unstack('condition')
+    print(summary.round(3).to_string())
+    print('->', out / 'per_odor_rates.csv')
 
 
 if __name__ == '__main__':
