@@ -137,10 +137,9 @@ def make_wirings(seeds: List[int], out_dir: Path, res_dir: Path, workers: int = 
                 outcome = [r for r in outcome if not (r['shuffle'] == row['shuffle'] and int(r['seed']) == row['seed'])] + [row]
                 pd.DataFrame(outcome).to_csv(oc_path, index=False)
                 print(f"{row['shuffle']} seed {row['seed']}: objective {row['objective_start']:.0f} -> {row['objective_end']:.0f}, "
-                    f"pair |diff| max {row['pair_abs_diff_max']}, co-input corr {row['draw_coinput_corr_vs_real']:.3f} -> "
-                    f"{row['matched_coinput_corr_vs_real']:.3f}, triplet corr {row['draw_triplet_corr_vs_real']:.3f} -> "
-                    f"{row['matched_triplet_corr_vs_real']:.3f}, claws changed vs real {row['matched_frac_claws_changed_vs_real']:.3f}, "
-                    f"{row['wall_seconds']:.0f}s", flush=True)
+                    f"pair |diff| max {row['pair_abs_diff_max']}, glomerulus-pair co-input corr with the real wiring {row['coinput_corr']:.4f}, "
+                    f"triplet corr {row['draw_triplet_corr_vs_real']:.3f} -> {row['matched_triplet_corr_vs_real']:.3f}, claws differing "
+                    f"from the real wiring {row['frac_claws_changed_vs_target']:.3f}, {row['wall_seconds']:.0f}s", flush=True)
     return {(cls, seed): pd.read_parquet(out_dir / f'wPNKC_{cls}-seed{seed}_matched.parquet') for cls in CLASSES for seed in seeds}
 
 
@@ -152,6 +151,37 @@ def jobs_for(wirings: Dict[Tuple[str, int], pd.DataFrame]) -> List[dict]:
             jobs.append(dict(tag=f'M_{mkey}_{group}-seed{seed}_retuned', part='M', model=mkey, spec=spec, gain=spec[4], wiring=L,
                 wiring_tag=f'{group}-seed{seed}', shuffle=group, seed=seed))
     return jobs
+
+
+def glom_coinput_corr(W: pd.DataFrame, X: pd.DataFrame) -> float:
+    """Pearson correlation over glomerulus pairs of the shared-KC counts of X with those of W."""
+    from al_analysis.wpnkc_shuffles import coinput_counts
+    a = coinput_counts(W).to_numpy(); b = coinput_counts(X).reindex_like(coinput_counts(W)).to_numpy()
+    iu = np.triu_indices(len(a), k=1)
+    return float(np.corrcoef(a[iu].astype(float), b[iu].astype(float))[0, 1])
+
+
+def matched_wiring_stats(oc: pd.DataFrame, out_dir: Path, e57_out: Path) -> Dict[Tuple[str, int], dict]:
+    """Per draw: the glomerulus-level co-input correlation with the real wiring of the untreated draw (re-drawn
+    from its seed) and, where E57's transplanted wiring of the same draw is on this host, its pairwise and
+    three-way co-input correlations."""
+    from al_analysis.wpnkc_shuffles import NAMED_SHUFFLES, shuffle_wPNKC
+    W = base_wiring()
+    T_real = None
+    out: Dict[Tuple[str, int], dict] = {}
+    for r in oc.itertuples():
+        method, within = NAMED_SHUFFLES[r.shuffle]
+        S = shuffle_wPNKC(W, method, within_kc_type=within, seed=int(r.seed))
+        d = {'draw_coinput_corr': glom_coinput_corr(W, S), 'transplant_coinput_corr': float('nan'), 'transplant_triplet_corr': float('nan')}
+        tpath = e57_out / f'wPNKC_{r.shuffle}-seed{int(r.seed)}_transplant.parquet'
+        if tpath.exists():
+            Tw = pd.read_parquet(tpath)
+            if T_real is None:
+                T_real = triplet_counts(W)
+            d['transplant_coinput_corr'] = glom_coinput_corr(W, Tw)
+            d['transplant_triplet_corr'] = triplet_corr(T_real, triplet_counts(Tw))
+        out[(r.shuffle, int(r.seed))] = d
+    return out
 
 
 def _fit_row(r: dict, model: str, shuffle: str, part: str) -> dict:
@@ -297,22 +327,27 @@ def summary(res_dir: Path) -> None:
                         cells.append('-')
             rows.append(f'| {label} | {d} | ' + ' | '.join(cells) + ' |')
         out.append('\n'.join(rows))
-    # the matchings
+    # the matchings (with E57's transplant of the same draw beside, where its wiring is on this host)
     oc_path = res_dir / 'matching_outcome.csv'
     if oc_path.exists():
         oc = pd.read_csv(oc_path)
-        rows = ['**The matchings (per draw): annealed claw swaps toward the real wiring\'s 54 x 54 shared-KC counts**', '',
-            '| draw | swaps within KC type | type layer held | objective: start -> end | pair |diff| max / mean | co-input correlation with '
-            'the real wiring: draw -> matched | three-way co-input correlation with the real wiring: draw -> matched | type layer |diff| max: '
-            'draw -> matched | claws changed vs the draw | claws differing from the real wiring: draw -> matched | seconds |',
+        wiring_stats = matched_wiring_stats(oc, H.outputs_dir(EXPERIMENT), H.outputs_dir(E57))
+        rows = ['**The matchings (per draw): annealed claw swaps toward the real wiring\'s 54 x 54 shared-KC counts. Co-input correlations are '
+            'Pearson over the 1431 glomerulus pairs (or the 24,804 triples) of the number of KCs with claws from all of them, wiring vs the real '
+            'wiring; "+ convergence" is E57\'s transplant of the 32 pairs into the same draw**', '',
+            '| draw | swaps within KC type | type layer held | objective: start -> end | pair |diff| max / mean | pairwise co-input '
+            'correlation: draw / + convergence / matched | three-way co-input correlation: draw / + convergence / matched | type layer |diff| '
+            'max: draw -> matched | claws changed vs the draw | claws differing from the real wiring (glomerulus level): matched | seconds |',
             '|---|---|---|---|---|---|---|---|---|---|---|']
         for r in oc.itertuples():
+            ws = wiring_stats.get((r.shuffle, int(r.seed)), {})
+            tp = ws.get('transplant_coinput_corr'); tt = ws.get('transplant_triplet_corr')
             rows.append(f'| {CLASS_LABEL[r.shuffle]} seed {r.seed} | {"yes" if r.within_kc_type else "no"} | {"yes" if r.match_type_layer else "no"} '
                 f'| {r.objective_start:.0f} -> {r.objective_end:.0f} | {r.pair_abs_diff_max} / {r.pair_abs_diff_mean:.2f} | '
-                f'{r.draw_coinput_corr_vs_real:.3f} -> {r.matched_coinput_corr_vs_real:.3f} | {r.draw_triplet_corr_vs_real:.3f} -> '
-                f'{r.matched_triplet_corr_vs_real:.3f} | {r.draw_type_layer_abs_diff_max} -> {r.matched_type_layer_abs_diff_max} | '
-                f'{r.frac_claws_changed_vs_draw:.3f} | {r.draw_frac_claws_changed_vs_real:.3f} -> {r.matched_frac_claws_changed_vs_real:.3f} | '
-                f'{r.wall_seconds:.0f} |')
+                f'{ws.get("draw_coinput_corr", float("nan")):.3f} / {tp:.3f} / {r.coinput_corr:.3f} | '
+                f'{r.draw_triplet_corr_vs_real:.3f} / {tt:.3f} / {r.matched_triplet_corr_vs_real:.3f} | '
+                f'{r.draw_type_layer_abs_diff_max} -> {r.matched_type_layer_abs_diff_max} | {r.frac_claws_changed_vs_draw:.3f} | '
+                f'{r.frac_claws_changed_vs_target:.3f} | {r.wall_seconds:.0f} |'.replace('nan', '-'))
         out.append('\n'.join(rows))
     # the re-fits
     fits = comp[comp.variant == 'fit']
