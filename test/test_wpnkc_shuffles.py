@@ -454,3 +454,46 @@ def test_lesion_coinput_errors(wPNKCs):
 
     with pytest.raises(ValueError, match='twice'):
         lesion_coinput(wPNKCs['claw'], {('DM1', 'DM1'): 0})
+
+
+@pytest.mark.parametrize('within_kc_type', [True, False])
+def test_lesion_coinput_raise(wPNKCs, within_kc_type):
+    """A target above the current count raises the pair's shared-KC count by claw swaps
+    that keep every margin, with other listed pairs not gaining and protected pairs unchanged."""
+    from al_analysis.wpnkc_shuffles import coinput_counts, lesion_coinput, shuffle_wPNKC
+
+    wPNKC = wPNKCs['claw']
+    co = coinput_counts(wPNKC)
+    off = co.to_numpy().copy()
+    np.fill_diagonal(off, 0)
+    order = np.argsort(off.ravel())[::-1]
+    i, j = np.unravel_index(order[0], off.shape)
+    top = (co.index[i], co.index[j])
+    i3, j3 = np.unravel_index(order[8], off.shape)
+    protect = (co.index[i3], co.index[j3])
+    # a shuffled wiring has lost the pair's excess; raise it back to the real count
+    shuffled = shuffle_wPNKC(wPNKC, 'curveball', within_kc_type=True, seed=3)
+    co_s = coinput_counts(shuffled)
+    assert co_s.loc[top] < co.loc[top]
+    targets = {top: int(co.loc[top])}
+    raised, swaps = lesion_coinput(shuffled, targets, seed=2, within_kc_type=within_kc_type,
+        protect=[protect]
+    )
+    co_r = coinput_counts(raised)
+    assert co_r.loc[top] == targets[top]
+    assert co_r.loc[protect] == co_s.loc[protect]
+    assert (raised.groupby(level=KC_ID).sum().sum(axis=1)
+        == shuffled.groupby(level=KC_ID).sum().sum(axis=1)).all()
+    assert raised.sum().equals(shuffled.sum())
+    if within_kc_type:
+        assert raised.groupby(level=KC_TYPE).sum().equals(shuffled.groupby(level=KC_TYPE).sum())
+    changed = (raised.to_numpy() != shuffled.to_numpy()).any(axis=1)
+    assert set(np.flatnonzero(changed)) == set(swaps.claw_row) | set(swaps.partner_row)
+    assert len(swaps) == int(co.loc[top]) - int(co_s.loc[top])
+    assert (swaps.received == top[0]).all() or (swaps.received == top[1]).all() or \
+        set(swaps.received) <= set(top)
+    # reproducible, and lowering it back lands on the shuffled count
+    again, _ = lesion_coinput(shuffled, targets, seed=2, within_kc_type=within_kc_type, protect=[protect])
+    assert again.equals(raised)
+    back, _ = lesion_coinput(raised, {top: int(co_s.loc[top])}, seed=5, within_kc_type=within_kc_type)
+    assert coinput_counts(back).loc[top] <= int(co_s.loc[top])
