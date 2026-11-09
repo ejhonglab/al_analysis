@@ -137,6 +137,11 @@ warning and `missing` in checks.json), its response rates equal the row's rate_o
 sigma = 0 reproduces it. These models draw the noise of ref40 (draw index 1), so all models defined
 by fits share their draws (common random numbers across models). With --model-from, a run includes
 only those models plus any named by --models (without --model-from the default is base70 and ref40).
+`--model-from EXPERIMENT:TAG@EVAL` (E51) takes the same fit's base settings from fits.csv row TAG but
+the parameters (fixed_thr, the APL scales, wKCKC_scale as kc_kc_inh) from row EVAL of
+results/EXPERIMENT/history_TAG.csv, i.e. the model the optimizer evaluated at evaluation EVAL (a
+simplex vertex that was not the optimum); name E<n>-TAG_ev<EVAL>, response rates checked against the
+history row's rate_on / rate_off, no saved outputs to compare with (recorded as missing).
 `--experiment NAME` puts the folders under results/NAME and outputs/NAME instead of E43's (part A in
 a partA subfolder there, parts B / C in partB / partC as above).
 
@@ -194,6 +199,10 @@ REF_FIT = 'thr40_gain1.5_k2_cap3'
 REF_EXPERIMENT = 'E34_gain_bounded'
 # models defined by a row of a joint fit's fits.csv: name -> (experiment, tag)
 FIT_MODELS = {'ref40': (REF_EXPERIMENT, REF_FIT)}
+# models at the parameters of one evaluation of a fit's history (--model-from EXPERIMENT:TAG@EVAL):
+# name -> evaluation index into results/EXPERIMENT/history_TAG.csv (the fit's base settings still come
+# from its fits.csv row, FIT_MODELS[name])
+HISTORY_EVALS: dict = {}
 BASE_CLAW_THR = 70.0
 PARAM_KEYS = ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale')
 CONDS = ('on', 'acute_off')
@@ -481,26 +490,58 @@ def fit_row(experiment: str, tag: str) -> pd.Series:
     return m.iloc[0]
 
 
+def history_row(experiment: str, tag: str, ev: int) -> pd.Series:
+    """Row `ev` (the `eval` column) of <shared>/results/<experiment>/history_<tag>.csv (E10_joint_fit.py's
+    per-evaluation record of the fit: the absolute parameters and the statistics at each evaluation)."""
+    path = H.shared_dir() / 'results' / experiment / f'history_{tag}.csv'
+    if not path.exists():
+        raise FileNotFoundError(f'{path}: no fit history for {experiment}:{tag}')
+    h = pd.read_csv(path)
+    m = h[h['eval'] == ev]
+    if len(m) != 1:
+        raise ValueError(f'{path}: {len(m)} rows with eval {ev} (need exactly one; the file has {len(h)} evaluations)')
+    return m.iloc[0]
+
+
 def model_from(spec: str) -> str:
     """Registers the model of a `--model-from EXPERIMENT:TAG` spec (MODELS, FIT_MODELS) and returns
-    its name, '<E<n>>-<TAG>'."""
-    experiment, sep, tag = spec.partition(':')
-    if not (sep and experiment and tag):
-        raise ValueError(f'--model-from {spec!r}: expected EXPERIMENT:TAG')
+    its name, '<E<n>>-<TAG>'; with `EXPERIMENT:TAG@EVAL`, the model at the parameters of evaluation
+    EVAL of that fit's history (HISTORY_EVALS too), named '<E<n>>-<TAG>_ev<EVAL>'."""
+    experiment, sep, rest = spec.partition(':')
+    tag, at, ev_s = rest.partition('@')
+    if not (sep and experiment and tag) or (at and not ev_s):
+        raise ValueError(f'--model-from {spec!r}: expected EXPERIMENT:TAG or EXPERIMENT:TAG@EVAL')
     fit_row(experiment, tag)
-    name = f'{exp_id(experiment)}-{tag}'
+    ev = None
+    if at:
+        try:
+            ev = int(ev_s)
+        except ValueError:
+            raise ValueError(f'--model-from {spec!r}: EVAL must be an integer evaluation index') from None
+        history_row(experiment, tag, ev)
+    name = f'{exp_id(experiment)}-{tag}' + ('' if ev is None else f'_ev{ev}')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', name):
         raise ValueError(f'--model-from {spec!r}: the model name {name!r} is not file-safe')
     if FIT_MODELS.get(name, (experiment, tag)) != (experiment, tag):
         raise ValueError(f'--model-from {spec!r}: the name {name} already stands for {FIT_MODELS[name]}')
     FIT_MODELS[name] = (experiment, tag)
-    MODELS[name] = f'the {experiment} fit at its fitted parameters'
+    if ev is None:
+        MODELS[name] = f'the {experiment} fit at its fitted parameters'
+    else:
+        HISTORY_EVALS[name] = ev
+        MODELS[name] = f'the {experiment} fit {tag} at the parameters of evaluation {ev} of its history'
     return name
 
 
 def model_source(name: str) -> dict:
-    """{'fit_experiment', 'fit_tag'} of a model defined by a fits.csv row (empty for base70)."""
-    return dict(fit_experiment=FIT_MODELS[name][0], fit_tag=FIT_MODELS[name][1]) if name in FIT_MODELS else {}
+    """{'fit_experiment', 'fit_tag'} of a model defined by a fits.csv row (empty for base70), plus
+    'fit_eval' for a model at one evaluation of the fit's history."""
+    if name not in FIT_MODELS:
+        return {}
+    src = dict(fit_experiment=FIT_MODELS[name][0], fit_tag=FIT_MODELS[name][1])
+    if name in HISTORY_EVALS:
+        src['fit_eval'] = HISTORY_EVALS[name]
+    return src
 
 
 def _given(row: pd.Series, col: str):
@@ -572,6 +613,17 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
     tau = float(fit['kc_kc_tau']) if _given(fit, 'kc_kc_tau') is not None else TAU
     p_on = {kk: float(fit[kk]) for kk in PARAM_KEYS}
     p_on['wKCKC_scale'] = float(fit['kc_kc_inh'])
+    rates = (float(fit['rate_on']), float(fit['rate_off']))
+    source = f'results/{experiment}/fits.csv row {tag}'
+    ev = HISTORY_EVALS.get(name)
+    if ev is not None:
+        # the same base, at the parameters the optimizer evaluated at evaluation `ev` (a simplex
+        # vertex); the history records the deterministic statistics of that evaluation
+        hr = history_row(experiment, tag, ev)
+        p_on = {kk: float(hr[kk]) for kk in PARAM_KEYS}
+        p_on['wKCKC_scale'] = float(hr['wKCKC_scale'])
+        rates = (float(hr['rate_on']), float(hr['rate_off']))
+        source = f'results/{experiment}/history_{tag}.csv evaluation {ev} (base settings from fits.csv row {tag})'
     _, wnorm, W, breadth = bouton_base(orn, out_dir, claw_thr=claw_thr, gain=gain, gain_gloms=gloms or None,
         wiring=None if wiring is None else str(wiring), wiring_seed=wiring_seed, input_tag=input_tag)
     kws = dict(base_kws(claw_thr))
@@ -580,12 +632,15 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         kws['_wPNKC'] = W
     kws.update(_wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, k), _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'],
         _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau)
-    # the fit's own outputs: this host's copy, else the shared archive
+    # the fit's own outputs: this host's copy, else the shared archive (a history evaluation has none:
+    # the fit saved only its optimum's outputs, so the paths below are missing for it and recorded so)
     dirs = (H.HERE / 'outputs' / experiment, H.shared_dir() / 'data' / 'model_outputs' / experiment)
     saved_dir = next((d for d in dirs if (d / f'{tag}_on_responses.parquet').exists()), dirs[0])
-    saved = {c: [saved_dir / f'{tag}_{c}_{kind}.parquet' for kind in ('responses', 'spike_counts')] for c in CONDS}
-    info = dict(source=f'results/{experiment}/fits.csv row {tag}', claw_thr=claw_thr, k=k, gain=1.0 if gain is None else gain,
-        gain_glomeruli=gloms, kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau, fit_experiment=experiment, fit_tag=tag, **extra)
+    saved_tag = tag if ev is None else f'{tag}_ev{ev}'
+    saved = {c: [saved_dir / f'{saved_tag}_{c}_{kind}.parquet' for kind in ('responses', 'spike_counts')] for c in CONDS}
+    info = dict(source=source, claw_thr=claw_thr, k=k, gain=1.0 if gain is None else gain,
+        gain_glomeruli=gloms, kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau, fit_experiment=experiment, fit_tag=tag,
+        **({} if ev is None else dict(fit_eval=ev)), **extra)
     # the APL-off run behind the breadth against the fit's
     off_name = breadth_cache_name(claw_thr, gain, gloms, wiring, wiring_seed, input_tag)
     if off_name is not None:
@@ -593,7 +648,7 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         if theirs is not None and (out_dir / off_name).exists():
             info[f'breadth_run_max_abs_diff_vs_{exp_id(experiment).lower()}'] = float(np.abs(
                 pd.read_parquet(theirs).astype(float).to_numpy() - pd.read_parquet(out_dir / off_name).astype(float).to_numpy()).max())
-    return dict(orn=orn, p_on=p_on, kws=kws, saved=saved, rates=(float(fit['rate_on']), float(fit['rate_off'])), info=info)
+    return dict(orn=orn, p_on=p_on, kws=kws, saved=saved, rates=rates, info=info)
 
 
 class NoisyModel:
@@ -1854,9 +1909,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--models', nargs='*', default=None, choices=list(MODELS),
         help='built-in models of this run (default base70 ref40, or none when --model-from is given)')
-    ap.add_argument('--model-from', action='append', default=[], metavar='EXPERIMENT:TAG',
+    ap.add_argument('--model-from', action='append', default=[], metavar='EXPERIMENT:TAG[@EVAL]',
         help='also run the model of row TAG of <shared>/results/EXPERIMENT/fits.csv at its fitted parameters, named '
-        'E<n>-TAG (repeatable; e.g. E45_gain_at_ctrl_frac:thr70_gain1.25_rate0.068_k2_cap3)')
+        'E<n>-TAG (repeatable; e.g. E45_gain_at_ctrl_frac:thr70_gain1.25_rate0.068_k2_cap3); with @EVAL, that fit at '
+        'the parameters of evaluation EVAL of results/EXPERIMENT/history_TAG.csv, named E<n>-TAG_ev<EVAL>')
     ap.add_argument('--experiment', default=EXPERIMENT,
         help='results / outputs folder name (default E43_model_trial_noise; with another name part A goes in its partA '
         'subfolder, parts B / C in partB / partC as usual)')
