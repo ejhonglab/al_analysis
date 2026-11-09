@@ -480,8 +480,11 @@ def make_lesions(W: pd.DataFrame, plan: pd.DataFrame, seeds: List[int], out_dir:
                 swaps = pd.read_csv(out_dir / f'swaps_{kind}-seed{seed}.csv')
             else:
                 t0 = time.time()
+                # the control protects the over-shared pairs, which can lock a few of its
+                # KCs; it then stops short on that pair (lesion_outcome.csv has the counts)
                 L, swaps = lesion_coinput(W, targets, seed=seed, within_kc_type=True,
-                    protect=(over_pairs if kind == 'lesion_control' else None))
+                    protect=(over_pairs if kind == 'lesion_control' else None),
+                    strict=(kind != 'lesion_control'))
                 L.to_parquet(path); swaps.to_csv(out_dir / f'swaps_{kind}-seed{seed}.csv', index=False)
                 print(f'{kind} seed {seed}: {len(swaps)} claw swaps in {time.time() - t0:.0f}s', flush=True)
             out[(kind, seed)] = L

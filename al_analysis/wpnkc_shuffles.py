@@ -435,7 +435,7 @@ def coinput_counts(wPNKC: pd.DataFrame, by: Optional[str] = 'glomerulus') -> pd.
 
 def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int = 0,
     within_kc_type: bool = True, protect: Optional[Iterable[Tuple]] = None,
-    by: Optional[str] = 'glomerulus', max_tries: int = 2000
+    by: Optional[str] = 'glomerulus', max_tries: int = 2000, strict: bool = True
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Returns one-row-per-claw `wPNKC` with fewer KCs sharing each listed pair of glomeruli,
     reduced by claw swaps that keep every margin, and the swaps made.
@@ -464,6 +464,10 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
         protect: pairs whose counts may not change (other targets may fall below their
             targets incidentally, never rise).
         max_tries: random partner draws per claw, and KC draws per pair, before giving up.
+        strict: raise when a pair cannot be brought to its target (e.g. every KC sharing it
+            would break a protected pair by giving up either glomerulus); False leaves such
+            a pair where it got to and goes on (compare the result's counts with the
+            targets, e.g. with `coinput_counts`).
 
     Returns (lesioned copy of `wPNKC`, DataFrame of the swaps: glom_a, glom_b (the pair
     being reduced), n_before (its count before the step), kc, moved (the glomerulus the KC
@@ -471,7 +475,7 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
     positions in `wPNKC`)).
 
     Raises:
-        RuntimeError: a pair could not be brought to its target.
+        RuntimeError: a pair could not be brought to its target (`strict`).
     """
     if CLAW_ID not in wPNKC.index.names:
         raise ValueError('lesion_coinput needs one-row-per-claw wPNKC (a CLAW_ID index level)')
@@ -555,9 +559,11 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
             if len(both) <= target:
                 break
             if tries >= max_tries:
-                raise RuntimeError(f'pair {p!r}: stuck at {len(both)} KCs sharing it '
-                    f'(target {target}) after {tries} attempts'
-                )
+                if strict:
+                    raise RuntimeError(f'pair {p!r}: stuck at {len(both)} KCs sharing it '
+                        f'(target {target}) after {tries} attempts'
+                    )
+                break
             tries += 1
             k = int(both[rng.integers(len(both))])
             ca, cb = counts[k, a], counts[k, b]
