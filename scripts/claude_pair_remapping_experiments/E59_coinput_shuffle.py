@@ -184,6 +184,49 @@ def matched_wiring_stats(oc: pd.DataFrame, out_dir: Path, e57_out: Path) -> Dict
     return out
 
 
+def wiring_structure(oc: pd.DataFrame, out_dir: Path, e57_out: Path) -> pd.DataFrame:
+    """Per draw and treatment (untreated, E57's transplant, matched): co-input structure beyond the pairwise
+    matrix, against the real wiring: the type-resolved pairwise correlation (each KC type's shared-KC counts,
+    concatenated), the three-way correlation among the over-shared pairs' glomeruli, and how many KCs carry
+    three or more (four or more) of those glomeruli."""
+    from al_analysis.wpnkc_shuffles import NAMED_SHUFFLES, shuffle_wPNKC, _kc_counts, _column_groups, _kc_codes, _kc_groups
+    W = base_wiring()
+    codes, groups = _column_groups(W.columns, 'glomerulus')
+    onehot = np.zeros((len(codes), len(groups))); onehot[np.arange(len(codes)), codes] = 1
+    row_kc, n_kcs = _kc_codes(W); kc_group = _kc_groups(W, row_kc, n_kcs); types = np.unique(kc_group)
+    pairs = pd.read_csv(H.shared_dir() / 'results' / E57 / 'transplant_pairs.csv')
+    gl = list(groups); fidx = [gl.index(g) for g in sorted(set(pairs.glom_a) | set(pairs.glom_b))]
+    iu = np.triu_indices(len(groups), k=1)
+    n = len(fidx); tri = [(i, j, l) for i in range(n) for j in range(i + 1, n) for l in range(j + 1, n)]
+
+    def binary(X):
+        return ((_kc_counts(X) @ onehot) > 0).astype(np.int64)
+
+    def feats(B):
+        per_type = np.concatenate([(B[kc_group == t].T @ B[kc_group == t])[iu] for t in types]).astype(float)
+        Bf = B[:, fidx].astype(float)
+        T = np.einsum('ki,kj,kl->ijl', Bf, Bf, Bf)
+        nf = B[:, fidx].sum(axis=1)
+        return per_type, np.array([T[i, j, l] for i, j, l in tri], dtype=float), nf
+
+    pt_real, tri_real, nf_real = feats(binary(W))
+    rows = [dict(shuffle='real', seed=np.nan, kind='real', type_resolved_pair_corr=1.0, over_shared_triplet_corr=1.0,
+        kcs_3plus=int((nf_real >= 3).sum()), kcs_4plus=int((nf_real >= 4).sum()), mean_over_shared_gloms_per_kc=float(nf_real.mean()))]
+    for r in oc.itertuples():
+        method, within = NAMED_SHUFFLES[r.shuffle]
+        S = shuffle_wPNKC(W, method, within_kc_type=within, seed=int(r.seed))
+        wirings = [('untreated', S), ('matched', pd.read_parquet(out_dir / f'wPNKC_{r.shuffle}-seed{int(r.seed)}_matched.parquet'))]
+        tpath = e57_out / f'wPNKC_{r.shuffle}-seed{int(r.seed)}_transplant.parquet'
+        if tpath.exists():
+            wirings.insert(1, ('transplant', pd.read_parquet(tpath)))
+        for kind, X in wirings:
+            pt, tr, nf = feats(binary(X))
+            rows.append(dict(shuffle=r.shuffle, seed=int(r.seed), kind=kind, type_resolved_pair_corr=float(np.corrcoef(pt, pt_real)[0, 1]),
+                over_shared_triplet_corr=float(np.corrcoef(tr, tri_real)[0, 1]), kcs_3plus=int((nf >= 3).sum()), kcs_4plus=int((nf >= 4).sum()),
+                mean_over_shared_gloms_per_kc=float(nf.mean())))
+    return pd.DataFrame(rows)
+
+
 def _fit_row(r: dict, model: str, shuffle: str, part: str) -> dict:
     on = r.get('spike_counts_cosine__on_spearman_resid_vs_vcf_hyp', np.nan)
     return {'model': model, 'shuffle': shuffle, 'variant': 'fit', 'part': part, 'seed': r.get('wiring_seed', np.nan),
@@ -348,6 +391,25 @@ def summary(res_dir: Path) -> None:
                 f'{r.draw_triplet_corr_vs_real:.3f} / {tt:.3f} / {r.matched_triplet_corr_vs_real:.3f} | '
                 f'{r.draw_type_layer_abs_diff_max} -> {r.matched_type_layer_abs_diff_max} | {r.frac_claws_changed_vs_draw:.3f} | '
                 f'{r.frac_claws_changed_vs_target:.3f} | {r.wall_seconds:.0f} |'.replace('nan', '-'))
+        out.append('\n'.join(rows))
+        ws_df = wiring_structure(oc, H.outputs_dir(EXPERIMENT), H.outputs_dir(E57))
+        ws_df.to_csv(res_dir / 'wiring_structure.csv', index=False)
+        n_gl = len(set(pd.read_csv(H.shared_dir() / 'results' / E57 / 'transplant_pairs.csv')[['glom_a', 'glom_b']].to_numpy().ravel()))
+        rows = [f'**Co-input structure beyond the pairwise matrix, against the real wiring (mean ± sd over the three draws of each class): the '
+            f'type-resolved pairwise correlation (each KC type\'s shared-KC counts), the three-way correlation among the {n_gl} glomeruli of the 32 '
+            'over-shared pairs, and the KCs carrying three or more (four or more) of those glomeruli**', '',
+            '| wiring | type-resolved pairwise co-input correlation | three-way co-input correlation, over-shared pairs\' glomeruli | KCs with >= 3 of them | '
+            'KCs with >= 4 of them |', '|---|---|---|---|---|']
+        real = ws_df[ws_df.kind == 'real'].iloc[0]
+        rows.append(f'| real wiring | 1.000 | 1.000 | {int(real.kcs_3plus)} | {int(real.kcs_4plus)} |')
+        for cls in CLASSES:
+            for kind, lab in (('untreated', 'untreated (E47)'), ('transplant', '+ the 32 pairs\' convergence (E57)'), ('matched', 'all 1431 pairs matched')):
+                q = ws_df[(ws_df.shuffle == cls) & (ws_df.kind == kind)]
+                if q.empty:
+                    continue
+                rows.append(f'| {CLASS_LABEL[cls]}, {lab} | {q.type_resolved_pair_corr.mean():.3f} ± {q.type_resolved_pair_corr.std(ddof=1):.3f} | '
+                    f'{q.over_shared_triplet_corr.mean():.3f} ± {q.over_shared_triplet_corr.std(ddof=1):.3f} | {q.kcs_3plus.mean():.0f} ± {q.kcs_3plus.std(ddof=1):.0f} | '
+                    f'{q.kcs_4plus.mean():.0f} ± {q.kcs_4plus.std(ddof=1):.0f} |')
         out.append('\n'.join(rows))
     # the re-fits
     fits = comp[comp.variant == 'fit']
