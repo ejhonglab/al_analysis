@@ -40,6 +40,9 @@ Second wiring draw (E30): `--wiring claw_permutation --wiring-seed N` replaces t
 matrix by that shuffle (al_analysis.wpnkc_shuffles) before any gain; tag prefix wiring-<name>-seed<N>_.
 Bound controls (E31): `--aplpn-max F`, `--aplpn-fixed F`, `--aplkc-min F` bound or fix the APL->bouton /
 APL->KC scales relative to the base's tuned values (use --tag to name the variant).
+KC-KC held (the KC-KC-held fits proposed from E51): `--kckc-fixed S` holds the KC-KC scale (kc_kc_inh) at S and fits the other three
+parameters; with --init-from the start is the seed's parameters with its KC-KC replaced by S; tag
+prefix kckc<S>_ (after the block prefix).
 What drives APL: `--apl-drive spikes` (E36) drives it by the KCs' spikes plus the bouton rates
 (pn_claw_to_apl=False), from the spike-driven base given by --base-params; `--apl-drive spikes_only`
 (E37) also removes the bouton->APL input (wPNAPL = 0): the same --base-params base, its APL scales
@@ -608,10 +611,11 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     aplpn_max: Optional[float] = None, aplpn_fixed: Optional[float] = None,
     aplkc_min: Optional[float] = None, apl_drive: str = 'claws',
     init_params: Optional[str] = None, kc_thr_factors: Optional[np.ndarray] = None,
-    init_exact_expect: Optional[dict] = None):
+    init_exact_expect: Optional[dict] = None, kckc_fixed: Optional[float] = None):
     """One joint fit; `kc_thr_factors` (K x KCs, `jitter_factors`) adds the K jittered runs of
     each condition (`jitter_conditions`) to every evaluation; `init_exact_expect` (not None)
-    starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True)."""
+    starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True);
+    `kckc_fixed` holds the KC-KC scale there and fits the other three parameters."""
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
@@ -653,6 +657,13 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     # values (`initial`, E3's for the plain bouton base, E16's for a threshold base)
     params = ['fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'wKCKC_scale']
     tie = True
+    if kckc_fixed is not None:
+        # the KC-KC scale is a setting of this fit, not a fitted parameter; the
+        # simulator's kc_kc_inh (kckc0 below) is set to it as well
+        init['wKCKC_scale'] = float(kckc_fixed)
+        kckc0 = float(kckc_fixed)
+        params.remove('wKCKC_scale'); bounds.pop('wKCKC_scale')
+        print(f'KC-KC scale held at {kckc_fixed:g}', flush=True)
     if aplpn_fixed is not None:
         init['wAPLPN_scale'] = initial['wAPLPN_scale'] * aplpn_fixed
         init['wPNAPL_scale'] = initial['wPNAPL_scale'] * aplpn_fixed
@@ -759,6 +770,10 @@ def main() -> None:
     ap.add_argument('-k', '--exponents', nargs='+', type=float, default=[3.0, 2.0, 1.0, 0.0])
     ap.add_argument('--maxfev', type=int, default=150)
     ap.add_argument('--kckc0', type=float, default=60.0, help='initial KC-KC scale')
+    ap.add_argument('--kckc-fixed', type=float, default=None, metavar='S',
+        help='hold the KC-KC scale (kc_kc_inh) at S and fit the other three parameters (the KC-KC-held fits); with --init-from '
+        "the start is the seed fit's parameters with its KC-KC scale replaced by S (so an exact start's first "
+        'evaluation differs from the row); tag prefix kckc<S>_ (after the block prefix)')
     ap.add_argument('--thr0-factor', type=float, default=0.7,
         help='initial threshold as a factor of E3 bouton threshold (E8: 0.6-0.77 at KC-KC 30-100)')
     ap.add_argument('--claw-thr', type=float, default=None,
@@ -932,8 +947,9 @@ def main() -> None:
         gain_gloms = list(args.gain_glomeruli) if args.gain_glomeruli else list(ORACLE)
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
+    kckc_tag = '' if args.kckc_fixed is None else f'kckc{args.kckc_fixed:g}_'
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + jit_tag
+        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + kckc_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
         jit_factors = jitter_factors(jit_k, len(breadth), jit_sigma, args.jitter_seed, jit_scale)
@@ -969,13 +985,15 @@ def main() -> None:
             wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None) else None),
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
             aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
-            kc_thr_factors=jit_factors, init_exact_expect=exact_expect
+            kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
         if exact_expect is not None:
             r0 = pd.read_csv(H.results_dir(args.init_from_experiment) / 'fits.csv').set_index('tag').loc[args.init_from]
-            print('exact start check (first evaluation vs the fit\'s row): ' + '; '.join(
+            print('exact start check (first evaluation vs the fit\'s row'
+                + ('' if args.kckc_fixed is None else f'; KC-KC held at {args.kckc_fixed:g}, so they differ')
+                + '): ' + '; '.join(
                 f'{c} {hist[c].iloc[0]:.6g} vs {r0["fit_" + c]:.6g}' for c in ('block', 'rate_on', 'on_spearman',
                 'off_spearman') if 'fit_' + c in r0.index), flush=True)
         if args.smoke:
@@ -1004,6 +1022,7 @@ def main() -> None:
             block_target=loss_fn.block_target, block_target_spec=args.block_target,
             apl_drive=args.apl_drive, base_params=args.base_params, init_params=args.init_params,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
+            kckc_fixed=args.kckc_fixed,
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
@@ -1062,7 +1081,7 @@ def main() -> None:
             init_params=args.init_params, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None), orn_input=args.orn_input,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
-            base_params=initial, loss_variant=args.loss,
+            kckc_fixed=args.kckc_fixed, base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
             block_target=loss_fn.block_target, block_target_spec=args.block_target,
             block_scale=BLOCK_SCALE, rate_target=loss_fn.rate_target, rate_target_spec=args.rate_target,

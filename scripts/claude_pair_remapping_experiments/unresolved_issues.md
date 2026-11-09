@@ -61,8 +61,10 @@ directory's notes/ and are linked from here.
   `init_from_experiment`) and the start mode (`init_from_exact`).
 - **Done.** E46's note carries the caveat (viki, 2026-11-08 18:41; its caveats list; page republished from one of Tom's hosts).
 - **Done.** E47's note carries the caveat (hal, 2026-11-08; its caveats list, on the part B refits; page version 4).
-- **Remains.** E48's three re-fits repeated with `--init-from-exact` (atlas, running since 2026-11-08 18:49,
-  one at a time; tags `..._cap3_exact` in E48's fits.csv) and E48's note updated from them.
+- **Done.** E50's note carries the caveat (hal, 2026-11-09 02:16; its caveats list, second bullet; page and reports copy built from it).
+- **Done.** E45's note carries the caveat (atlas, 2026-11-09 05:10; its caveats list; page version 4, reports copy updated).
+- **Remains.** E48's three re-fits repeated with `--init-from-exact` (atlas; the fits done 2026-11-08 23:02, tags
+  `..._cap3_exact` in E48's fits.csv; their pipeline runs 2026-11-09 00:51-~08:00) and E48's note updated from them.
 
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
