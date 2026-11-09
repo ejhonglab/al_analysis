@@ -64,6 +64,7 @@ E47 = 'E47_wiring_features'
 NULL_CLASS = 'curveball_within_type'   # the class keeping the most of the margins: the reference null
 Z_OVER = 2.0
 TYPE_CLASSES = ('claw_permutation_within_type', 'curveball_within_type')
+PLAIN_CLASSES = ('claw_permutation', 'curveball')   # the type-ignoring classes; their within-type twins keep the type structure
 WEIGHTINGS = ('norm', 'raw')
 LESIONS = ('lesion_targeted', 'lesion_control')
 LESION_LABEL = {'lesion_targeted': 'over-shared pairs lesioned', 'lesion_control': 'matched control pairs lesioned'}
@@ -112,25 +113,53 @@ def part_a(res_dir: Path, n_draws: int) -> pd.DataFrame:
         f'{n_draws} draws per class', flush=True)
     nulls: Dict[str, np.ndarray] = {}
     nulls_type: Dict[Tuple[str, str], np.ndarray] = {}
+    deg_type_obs = {t: np.diag(coinput_counts(W[types == t]).to_numpy()).astype(int) for t in type_names}
+    deg_type_null: Dict[Tuple[str, str], np.ndarray] = {}
     for cls in SHUFFLES:
         method, within = NAMED_SHUFFLES[cls]
         t0 = time.time()
         draws = np.zeros((n_draws, len(pairs)), dtype=np.int32)
         draws_t = {t: np.zeros((n_draws, len(pairs)), dtype=np.int32) for t in type_names} if cls in TYPE_CLASSES else {}
+        deg_t = {t: np.zeros((n_draws, len(gloms)), dtype=np.int32) for t in type_names} if cls in PLAIN_CLASSES else {}
         for d in range(n_draws):
             S = shuffle_wPNKC(W, method, within_kc_type=within, seed=1000 + d)
             draws[d] = upper(coinput_counts(S))
             for t in draws_t:
                 draws_t[t][d] = upper(coinput_counts(S[types == t]))
+            for t in deg_t:
+                deg_t[t][d] = np.diag(coinput_counts(S[types == t]).to_numpy())
         nulls[cls] = draws
         for t, a in draws_t.items():
             nulls_type[(cls, t)] = a
+        for t, a in deg_t.items():
+            deg_type_null[(cls, t)] = a
         print(f'  {cls}: {time.time() - t0:.0f}s', flush=True)
     np.savez_compressed(res_dir / 'coinput_null_draws.npz', observed=obs_u, glomeruli=np.array(gloms, dtype=object),
         **{f'null_{c}': a for c, a in nulls.items()},
         **{f'observed_{t}': a for t, a in obs_type.items()},
         **{f'null_{c}_{t}': a for (c, t), a in nulls_type.items()})
     orn_gloms = set(H.abbrev_columns(H.apl16_orn_deltas()).index)
+    # the type structure: each glomerulus' number of KCs of each type against the type-ignoring
+    # classes (the within-type classes keep these numbers exactly)
+    n_type = {t: int((W.index.droplevel([l for l in W.index.names if l not in ('kc_id', 'kc_type')]).drop_duplicates()
+        .get_level_values('kc_type') == t).sum()) for t in type_names}
+    trows = []
+    for t in type_names:
+        for i, g in enumerate(gloms):
+            r = dict(glomerulus=g, kc_type=t, n_kcs_of_type=n_type[t], observed=int(deg_type_obs[t][i]),
+                frac_of_type=deg_type_obs[t][i] / n_type[t], in_orn_input=g in orn_gloms)
+            for cls in PLAIN_CLASSES:
+                a = deg_type_null[(cls, t)][:, i]
+                mean, sd = a.mean(), a.std(ddof=1)
+                r[f'{cls}_null_mean'] = mean; r[f'{cls}_null_sd'] = sd; r[f'{cls}_excess'] = r['observed'] - mean
+                r[f'{cls}_z'] = (r['observed'] - mean) / sd if sd > 0 else (0.0 if r['observed'] == mean else np.sign(r['observed'] - mean) * np.inf)
+            r['min_abs_z'] = min(abs(r[f'{cls}_z']) for cls in PLAIN_CLASSES)
+            r['sign'] = int(np.sign(r[f'{PLAIN_CLASSES[0]}_excess']))
+            trows.append(r)
+    type_bias = pd.DataFrame(trows)
+    type_bias.to_csv(res_dir / 'glomerulus_type_bias.csv', index=False)
+    tb = type_bias[type_bias.min_abs_z >= Z_OVER]
+    print(f'glomerulus x KC-type counts beyond the type-ignoring nulls (|z| >= {Z_OVER:g} against both): {len(tb)} of {len(type_bias)}', flush=True)
     df = pd.DataFrame({'glom_a': [p[0] for p in pairs], 'glom_b': [p[1] for p in pairs],
         'n_kcs_a': [int(n_kcs[p[0]]) for p in pairs], 'n_kcs_b': [int(n_kcs[p[1]]) for p in pairs],
         'in_orn_input': [(p[0] in orn_gloms) and (p[1] in orn_gloms) for p in pairs], 'observed': obs_u})
@@ -233,6 +262,11 @@ def matrices_from_pairs(df: pd.DataFrame) -> Tuple[pd.Index, Dict[str, pd.DataFr
         ia = df.glom_a.map(idx).to_numpy(); ib = df.glom_b.map(idx).to_numpy()
         m[ia, ib] = v; m[ib, ia] = v
         out[key] = pd.DataFrame(m, index=gloms, columns=gloms)
+    # what the KC-type structure adds to the margins: the within-type null's mean minus the
+    # type-ignoring null's (the part of the excess over a type-ignoring class that its
+    # within-type twin explains)
+    for cls in PLAIN_CLASSES:
+        out[f'typestruct_{cls}'] = out[f'null_{cls}_within_type'] - out[f'null_{cls}']
     return gloms, out
 
 
@@ -339,6 +373,8 @@ def part_b(res_dir: Path) -> None:
         wname, kind = skey.split('_', 1)
         cls = next((c for c in SHUFFLES if kind.endswith(c)), '')
         kind0 = kind[:-(len(cls) + 1)] if cls else kind
+        if kind0 == 'null' and cls in TYPE_CLASSES:
+            pass
         for tname, t in targets.items():
             rho, p, n = perm_p(s, t)
             rows.append(dict(weighting=wname, kind=kind0, null_class=cls, target=tname, rho=rho, perm_p=p, n_pairs=n))
@@ -385,6 +421,7 @@ def part_b(res_dir: Path) -> None:
     print(partial[(partial.weighting == 'norm') & (partial.score == f'excess_{NULL_CLASS}')].round(3).to_string(index=False))
     print(block[(block.weighting == 'norm') & block.kind.isin(['obs', f'excess_{NULL_CLASS}', f'null_{NULL_CLASS}'])].round(4).to_string(index=False))
     figure_b(table, corr, res_dir)
+    (res_dir / 'tables_ab.md').write_text(tables_ab(res_dir))
 
 
 def figure_b(table: pd.DataFrame, corr: pd.DataFrame, res_dir: Path) -> None:
@@ -417,12 +454,19 @@ def figure_b(table: pd.DataFrame, corr: pd.DataFrame, res_dir: Path) -> None:
             ax.legend(fontsize=8, frameon=False)
     ax = axes.flat[-1]
     sub = corr[(corr.weighting == 'norm') & (corr.target.isin(['vcf_hyp', 'chem', 'orn', 'resid_ctrl', 'resid_tnt', 'resid_wt']))]
-    kinds = [('obs', ''), ('null', NULL_CLASS)] + [('excess', c) for c in SHUFFLES]
+    kinds = [('obs', ''), ('null', NULL_CLASS)] + [('excess', c) for c in SHUFFLES] + [('typestruct', c) for c in PLAIN_CLASSES]
     width = 0.8 / len(kinds)
     tnames = ['vcf_hyp', 'chem', 'orn', 'resid_ctrl', 'resid_tnt', 'resid_wt']
     for i, (kind, cls) in enumerate(kinds):
         r = sub[(sub.kind == kind) & (sub.null_class == cls)].set_index('target').reindex(tnames)
-        lab = {'obs': 'observed counts', 'null': f'null mean ({CLASS_LABEL[cls]})'}.get(kind, f'excess over {CLASS_LABEL[cls]}')
+        if kind == 'obs':
+            lab = 'observed counts'
+        elif kind == 'null':
+            lab = f'null mean ({CLASS_LABEL[cls]})'
+        elif kind == 'typestruct':
+            lab = f'KC-type structure (within-type minus plain null, {CLASS_LABEL[cls]})'
+        else:
+            lab = f'excess over {CLASS_LABEL[cls]}'
         ax.bar(np.arange(len(tnames)) + (i - len(kinds) / 2 + 0.5) * width, r.rho, width=width, label=lab)
     ax.set_xticks(range(len(tnames)))
     ax.set_xticklabels(['natural-source\ndistance', 'chemical\ndistance', 'ORN\ndistance', 'residual,\ncontrol flies', 'residual,\nAPL output\nblocked (TNT)', 'residual,\nwild-type\nsomata'], fontsize=7)
@@ -432,6 +476,101 @@ def figure_b(table: pd.DataFrame, corr: pd.DataFrame, res_dir: Path) -> None:
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(res_dir / f'{EXPERIMENT}_odor_pair_scores.png', dpi=130)
     plt.close(fig)
+
+
+TARGET_LABEL = {'vcf_hyp': 'natural-source distance (hyperbolic embedding)', 'chem': 'chemical distance (ECFP)',
+    'orn': 'ORN distance', 'resid_ctrl': 'KC residual around the ORN prediction, control flies',
+    'resid_tnt': 'KC residual around the ORN prediction, APL output blocked (TNT)',
+    'resid_wt': "KC residual around the ORN prediction, Remy's wild-type somata"}
+
+
+def tables_ab(res_dir: Path) -> str:
+    """Markdown tables of parts A and B for the write-up (from the saved CSVs)."""
+    df = pd.read_csv(res_dir / 'coinput_pairs.csv')
+    corr = pd.read_csv(res_dir / 'score_correlations.csv', keep_default_na=False)
+    partial = pd.read_csv(res_dir / 'alignment_partial.csv')
+    block = pd.read_csv(res_dir / 'block_scores.csv')
+    out = []
+    rows = ['**Over- and under-shared glomerulus pairs (part A): pairs of the 54 glomeruli whose number of KCs with claws from both '
+        f'is z >= {Z_OVER:g} above (below) every shuffle class\'s null of 200 draws**', '',
+        '| | all pairs | both glomeruli in the ORN input |', '|---|---:|---:|',
+        f'| pairs | {len(df)} | {int(df.in_orn_input.sum())} |',
+        f'| over-shared | {int(df.over_shared.sum())} | {int((df.over_shared & df.in_orn_input).sum())} |',
+        f'| under-shared | {int(df.under_shared.sum())} | {int((df.under_shared & df.in_orn_input).sum())} |']
+    for cls in SHUFFLES:
+        rows.append(f'| z >= {Z_OVER:g} against the {CLASS_LABEL[cls]} alone | {int((df[f"{cls}_z"] >= Z_OVER).sum())} | '
+            f'{int(((df[f"{cls}_z"] >= Z_OVER) & df.in_orn_input).sum())} |')
+    out.append('\n'.join(rows))
+    top = df[df.over_shared].sort_values('min_z', ascending=False)
+    rows = ['**The over-shared pairs, strongest first (smallest z over the four classes); expected = the within-type Curveball null mean**', '',
+        '| glomerulus pair | in the ORN input | KCs with claws from both | expected | excess | smallest z | z, claw permutation | z, within type | z, Curveball | z, within type |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+    for r in top.itertuples():
+        rows.append(f'| {r.glom_a} / {r.glom_b} | {"yes" if r.in_orn_input else "no"} | {int(r.observed)} | '
+            f'{getattr(r, f"{NULL_CLASS}_null_mean"):.1f} | {getattr(r, f"{NULL_CLASS}_excess"):+.1f} | {r.min_z:.1f} | '
+            + ' | '.join(f'{getattr(r, f"{c}_z"):.1f}' for c in SHUFFLES) + ' |')
+    out.append('\n'.join(rows))
+    under = df[df.under_shared].sort_values('max_z').head(15)
+    rows = ['**The fifteen most under-shared pairs (largest z over the four classes)**', '',
+        '| glomerulus pair | in the ORN input | KCs with claws from both | expected | excess | largest z |', '|---|---|---:|---:|---:|---:|']
+    for r in under.itertuples():
+        rows.append(f'| {r.glom_a} / {r.glom_b} | {"yes" if r.in_orn_input else "no"} | {int(r.observed)} | '
+            f'{getattr(r, f"{NULL_CLASS}_null_mean"):.1f} | {getattr(r, f"{NULL_CLASS}_excess"):+.1f} | {r.max_z:.1f} |')
+    out.append('\n'.join(rows))
+    tb_path = res_dir / 'glomerulus_type_bias.csv'
+    if tb_path.exists():
+        tb = pd.read_csv(tb_path)
+        sel = tb[(tb.min_abs_z >= Z_OVER) & tb.in_orn_input].copy()
+        sel['order'] = -sel.min_abs_z
+        rows = ['**The KC-type structure (part A): glomeruli whose number of KCs of a type is |z| >= 2 away from both type-ignoring nulls '
+            '(the within-type shuffles keep these numbers); glomeruli with ORN data, strongest first**', '',
+            '| glomerulus | KC type | KCs of the type with a claw from it | fraction of the type | expected, claw permutation | z | expected, Curveball | z |',
+            '|---|---|---:|---:|---:|---:|---:|---:|']
+        for r in sel.sort_values('order').itertuples():
+            rows.append(f'| {r.glomerulus} | {r.kc_type} | {int(r.observed)} | {r.frac_of_type:.2f} | {r.claw_permutation_null_mean:.1f} | '
+                f'{r.claw_permutation_z:+.1f} | {r.curveball_null_mean:.1f} | {r.curveball_z:+.1f} |')
+        out.append('\n'.join(rows))
+    cols = [('norm', 'obs', ''), ('norm', 'null', NULL_CLASS)] + [('norm', 'excess', c) for c in SHUFFLES] + \
+        [('norm', 'typestruct', c) for c in PLAIN_CLASSES] + [('raw', 'excess', NULL_CLASS)]
+    head = ['observed counts', f'margins only (null mean, {CLASS_LABEL[NULL_CLASS]})'] + [f'excess over the {CLASS_LABEL[c]}' for c in SHUFFLES] + \
+        [f'KC-type structure ({CLASS_LABEL[c]}: within-type null minus plain null)' for c in PLAIN_CLASSES] + \
+        [f'excess over the {CLASS_LABEL[NULL_CLASS]}, ORN input in Hz']
+    rows = ['**The odor-pair wiring-sharing score against what the pair does elsewhere (part B): Spearman ρ over the 66 megamat pairs, '
+        'with the two-sided p from 5000 permutations of the odor labels. The score sums the glomerulus pairs\' shared-KC counts '
+        'weighted by the two odors\' ORN input (clipped at 0, normalized per odor unless "in Hz")**', '',
+        '| the score is correlated with | ' + ' | '.join(head) + ' |', '|---|' + '---:|' * len(head)]
+    targets = ['vcf_hyp', 'chem', 'orn', 'resid_ctrl', 'resid_tnt', 'resid_wt'] + sorted(c for c in corr.target.unique() if c.startswith('model_contrib_off')) + \
+        sorted(c for c in corr.target.unique() if c.startswith('model_contrib_on'))
+    mlabel = {'thr40_gain1.5': 'eight at 1.5, 40 Hz', 'thr70_gain1.5': 'eight at 1.5, 70 Hz', 'thr70_gain1.25': 'eight at 1.25, 70 Hz'}
+    for tgt in targets:
+        if tgt.startswith('model_contrib'):
+            cond, m = tgt.split('_', 3)[2], tgt.split('_', 3)[3]
+            label = f"the fitted model's wiring contribution, APL {cond} ({mlabel.get(m, m)})"
+        else:
+            label = TARGET_LABEL[tgt]
+        cells = []
+        for w, kind, cls in cols:
+            r = corr[(corr.weighting == w) & (corr.kind == kind) & (corr.null_class == cls) & (corr.target == tgt)]
+            cells.append(f'{float(r.rho.iloc[0]):+.2f} (p {float(r.perm_p.iloc[0]):.3f})' if len(r) == 1 else '-')
+        rows.append(f'| {label} | ' + ' | '.join(cells) + ' |')
+    out.append('\n'.join(rows))
+    rows = ['**The natural-source alignment (ρ of the KC residual around the ORN prediction with the natural-source distance) with the '
+        f'excess score (over the {CLASS_LABEL[NULL_CLASS]}, normalized ORN input) partialled out**', '',
+        '| KCs | alignment | with the score partialled out | ρ of the score with the residual | ρ of the score with the natural-source distance |',
+        '|---|---:|---:|---:|---:|']
+    for r in partial[(partial.weighting == 'norm') & (partial.score == f'excess_{NULL_CLASS}')].itertuples():
+        rows.append(f'| {r.genotype} | {r.alignment:.3f} | {r.alignment_partial:.3f} | {r.rho_score_resid:+.2f} | {r.rho_score_vcf:+.2f} |')
+    out.append('\n'.join(rows))
+    rows = ['**The score on the fruity x small-ester pairs (normalized ORN input)**', '',
+        '| score | fruity x small-ester (9 pairs) | other between-group (47) | within group (10) |', '|---|---:|---:|---:|']
+    for kind, label in (('obs', 'observed shared-KC counts'), (f'null_{NULL_CLASS}', f'margins only (null mean, {CLASS_LABEL[NULL_CLASS]})'),
+            (f'excess_{NULL_CLASS}', f'excess over the {CLASS_LABEL[NULL_CLASS]}')):
+        r = block[(block.weighting == 'norm') & (block.kind == kind)]
+        if len(r) == 1:
+            r = r.iloc[0]
+            rows.append(f'| {label} | {r["fruity x small-ester mean"]:.2f} | {r["other between-group mean"]:.2f} | {r["within group mean"]:.2f} |')
+    out.append('\n'.join(rows))
+    return '\n\n'.join(out) + '\n'
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +875,8 @@ def main() -> None:
     res_dir.mkdir(parents=True, exist_ok=True)
     out_dir = H.outputs_dir(EXPERIMENT)
     if args.summary:
+        if (res_dir / 'score_correlations.csv').exists():
+            (res_dir / 'tables_ab.md').write_text(tables_ab(res_dir))
         summary(res_dir)
         return
     if args.part is None:
