@@ -79,6 +79,7 @@ Curveball: A randomization of a binary matrix that keeps every row and column su
 - E53: KC-KC lateral inhibition as the carrier of a noise-robust block (completed)
 - E54: the gain and the wiring behind the natural-source alignment (running)
 - E55: the margin proxy for the block through the noise (completed)
+- E56: the network-aware margin proxy (running)
 ???
 
 ## What the data show: the ORN→KC remapping in control flies, and what blocking APL output does to it
@@ -827,6 +828,7 @@ Two things the lines say that the sections above say in words: the block and the
 
 
 - **The gain and the wiring behind the natural-source alignment (running).** The glomerulus-pairs experiment found that lesioning only the over-shared pairs' excess drops the fixed-scale models' natural-source alignment with APL off from about 0.36 to the within-type shuffles' level, but four of the eight gained glomeruli sit in those pairs, so the drop may be the glomerulus gain riding on the convergence rather than the convergence itself. This runs the reference models without the gain, the lesions under the no-gain fits, the lesion split into pairs with and without a gained glomerulus, and a re-fit on a lesioned wiring. If the no-gain models lose the alignment under the lesion too, the food-glomerulus convergence itself carries it; if only the gained-involving pairs carry the drop, the pairwise share was the gain's redistribution and the wiring carrier is the KC-type structure alone; a re-fit that recovers the alignment would mean the fixed-scale drop is compensable.
+- **The network-aware margin proxy (running).** The margin proxy showed that replaying each KC at the pipeline's jittered thresholds with the network held at the deterministic run misses, in proportion to the KC–KC inhibition's weight relative to the threshold, what that inhibition does with the jitter, and misses it most where the strong-KC–KC models carry block through the noise. This adds the network's first response: a second and third replay pass in which each KC's KC–KC inhibition comes from the other KCs' replayed spikes of the same trial, compared with the pipeline on the same models. If a pass or two brings the strong-KC–KC models within the pipeline's sampling error, a noise-robustness term with the network's response exists at a few times a deterministic evaluation's cost and can go into the loss; if the passes converge elsewhere or not at all, noise-robustness in the KC–KC direction stays a simulated quantity.
 
 ## Parameter glossary with mechanisms
 

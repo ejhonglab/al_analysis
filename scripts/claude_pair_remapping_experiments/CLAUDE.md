@@ -937,6 +937,7 @@ Canonical experiment names for summary reports:
 | E53 | KC-KC lateral inhibition as the carrier of a noise-robust block |
 | E54 | the gain and the wiring behind the natural-source alignment |
 | E55 | the margin proxy for the block through the noise |
+| E56 | the network-aware margin proxy |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
