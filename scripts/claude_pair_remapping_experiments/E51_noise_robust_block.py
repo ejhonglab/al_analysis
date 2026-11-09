@@ -135,19 +135,25 @@ def main() -> None:
             inputs[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
             tables[name] = pd.read_csv(f)
     # the model list: each counterpart, then its noise-aware fits
-    models = []  # (label, experiment, tag, pipeline model name, counterpart label or None)
+    # (label, key, experiment, tag, pipeline model name, counterpart label or None); `key` is a
+    # stable row key for the summary template (thr<T>_gain<G>_det / _noise[_<i>])
+    models = []
     for label, exp, tag, thr, gain in COUNTERPARTS:
-        models.append((label + ', deterministic fit', exp, tag, f'{exp_id(exp)}-{tag}', None))
+        base_key = f'thr{thr}_gain{gain:g}'
+        models.append((label + ', deterministic fit', base_key + '_det', exp, tag, f'{exp_id(exp)}-{tag}', None))
         nf = noise_fits_for(fits[EXPERIMENT], thr, gain)
         if not nf:
-            models.append((label + ', noise-aware fit (pending)', EXPERIMENT, None, None, label + ', deterministic fit'))
-        for t in nf:
-            models.append((label + ', noise-aware fit', EXPERIMENT, t, f'{exp_id(EXPERIMENT)}-{t}', label + ', deterministic fit'))
+            models.append((label + ', noise-aware fit (pending)', base_key + '_noise', EXPERIMENT, None, None,
+                label + ', deterministic fit'))
+        for i, t in enumerate(nf):
+            models.append((label + ', noise-aware fit' + (f' ({i + 1})' if len(nf) > 1 else ''),
+                base_key + '_noise' + (f'_{i + 1}' if len(nf) > 1 else ''), EXPERIMENT, t,
+                f'{exp_id(EXPERIMENT)}-{t}', label + ', deterministic fit'))
     rows = []
     excess = {}
-    for label, exp, tag, mname, counterpart in models:
+    for label, key, exp, tag, mname, counterpart in models:
         fit = fits[exp].loc[tag] if (tag is not None and tag in fits[exp].index) else None
-        row = dict(model=label, experiment=exp, tag=tag, pipeline_model=mname, counterpart=counterpart,
+        row = dict(model=label, key=key, experiment=exp, tag=tag, pipeline_model=mname, counterpart=counterpart,
             fit=('done' if fit is not None else 'pending'))
         if fit is not None:
             row.update(loss_recorded=float(fit['loss']),
@@ -233,7 +239,7 @@ def main() -> None:
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E51_noise_robust_block.py',
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
         inputs_sha256=inputs, partb=str(partb),
-        models=[dict(label=m[0], experiment=m[1], tag=m[2], pipeline_model=m[3], counterpart=m[4]) for m in models],
+        models=[dict(label=m[0], key=m[1], experiment=m[2], tag=m[3], pipeline_model=m[4], counterpart=m[5]) for m in models],
         pending_fits=pend_fit, pending_pipeline=pend_pipe)
     (out / 'provenance_comparison.json').write_text(json.dumps(prov, indent=1) + '\n')
     print('\n'.join(lines))
