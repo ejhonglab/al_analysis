@@ -973,6 +973,14 @@ def usage_html(state, now, opts):
 
     what = TOKEN_MEASURES[opts['tokens']] + {'queue_work': ', queue work',
         'queue_sessions': ', queue sessions', 'all': ', all sessions'}[opts['scope']]
+    w('<p class="note">Queue and manual work are told apart by time alone: every message in a '
+        'session\'s transcript, and in its subagents\' transcripts, counts for the mode in effect '
+        'when it was written, from the typed prompt that started a segment to the agent\'s '
+        '<code>--mark queue</code> or the next typed queue command. So a subagent started for queue '
+        'work that runs on during one of Tom\'s requests counts as manual work for that time, and '
+        'the reverse; and a request whose end was never marked counts as manual until the next '
+        'typed queue command. Ends set after the fact (<code>--mark queue --at</code>) are as exact '
+        'as the record they were taken from.</p>')
     token_plot('', 'Tokens per {} ({}, cumulative over the window)'.format(
         'Claude account' if grouped else 'host', what), 'tokens over time')
     token_plot('fable_', 'Tokens on Fable models per {} ({}, cumulative)'.format(

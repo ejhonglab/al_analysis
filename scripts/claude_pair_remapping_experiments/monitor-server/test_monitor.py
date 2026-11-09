@@ -337,6 +337,8 @@ def test_usage_collect_and_render(tmp_path):
     usage_html = html[html.index('<h2>Usage'):html.index('<h2>Recent chat')]
     # the only script is the theme switch, in the head
     assert usage_html.count('<svg class="plot"') == 3 and html.count('<script') == 1
+    # the attribution caveat sits right above the token plots
+    assert usage_html.index('told apart by time alone') < usage_html.index('<svg class="plot"')
     assert '<meta name="color-scheme" content="light dark">' in html
     assert 'data-theme="dark">dark</a>' in html
     # by host, default: queue work in queue sessions only, so hal's output over the last day
