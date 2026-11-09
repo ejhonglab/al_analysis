@@ -8,64 +8,6 @@ directory's notes/ and are linked from here.
 
 ## Open
 
-### Trial-noise pipeline runs described as calibrated on 6 trials were calibrated on 3 (found 2026-11-09, hal)
-
-- **What.** `E43_model_trial_noise.py --cal-trials` is part A's option (the PN-rate-noise calibration);
-  parts B / C calibrate on their threshold-tuning trials, `--tune-trials` (default 3), and ignored
-  `--cal-trials`. Every part-B run that passed `--cal-trials 6` (the noise-robust block's part C: hal's
-  run on E44's 40 Hz model, 18:43-00:57; atlas's run on viki's eight at 1.25 noise-aware fit, 23:05-00:50)
-  calibrated on 3 trials, i.e. with E48's settings exactly. hal noticed because its run's rows equal E48's
-  rows for the same model to six digits; the runs' provenance records `tune_trials` 3 throughout.
-- **Affects.** Only descriptions: the E51 entry's design (C) and Status lines, atlas's chat posts of
-  2026-11-09 00:52 and 01:03 ("6 calibration trials"), the comments in the run scripts, and the E48 note's
-  next-steps line recommending `--cal-trials 6`. No number is wrong, and the runs compare directly with
-  E48's partB rows (which therefore serve as the deterministic counterparts in E51's comparison).
-- **Done.** The pipeline refuses `--cal-trials` in parts B / C unless it equals `--tune-trials`, and its help
-  says which option is which; E51_noise_robust_block.py's docstring and E51's run scripts say 3 tuning
-  trials; the E51 entry's text and a chat correction (atlas, 2026-11-09 ~02:40).
-- **Remains.** The E48 note's next-steps line (say `--tune-trials 6`), in E48's addendum from the exact-start
-  repeat.
-
-### A fit seeded with `--init-from` does not start at its seed's optimum and runs with a different bouton->APL / KC->APL input balance (found 2026-11-08, atlas)
-
-- **What.** `init_from_fit` in E10_joint_fit.py builds the starting point from the seed row's factors
-  relative to the base (threshold, APL, APL->bouton) but resets the bouton->APL input scale
-  (`wPNAPL_scale`, tied, never fitted) to the base's value while the KC->APL scale gets the seed's APL
-  factor. The tie keeps every tied scale at its starting ratio to the APL->KC scale for the whole fit,
-  so a chained fit (i) does not start at its seed's optimum (E44's 40 Hz reference model at 6.8 %
-  starts at block +0.050 and APL-on response rate 0.070 instead of its fitted +0.054 and 0.068) and
-  (ii) runs with a bouton->APL vs KC->APL input balance (wPNAPL / wKCAPL) that differs from its
-  seed's: 5.57 for E44's 40 Hz fit vs 4.23 for its +0.072-target re-fit in E48; 10.58 vs 7.54 at
-  70 Hz; 7.24 for E45's eight at 1.25 at 70 Hz vs 2.57 for its +0.072 and +0.10 re-fits (the tuned
-  base: 4.45). Found by the code subagent writing the noise-aware loss (E51).
-- **Affects.** Every fit started with `--init-from`: E48's re-fits (from E44 / E45's optima), E45's
-  gain fits (from the nearest 5 % optima; their `initial` in provenance has the base's wPNAPL_scale),
-  and the re-drawn-wiring fits of E46 and E47 (from E44 / E45's optima; viki, 2026-11-08 18:39: each
-  draw's fit was compared with the real wiring's fit after both converged in their own runs, so their
-  conclusions stand, but the notes need the annotation).
-  The block target through the noise (E48) compared each re-fit with a counterpart that was meant to
-  differ only in the target; they also differ in this unfitted balance, so the "raising the target
-  cannot raise the block" reading rests on a confounded comparison. Comparisons across fits of the
-  family that were seeded differently (E45's gain 1.25 against E44's gain 1.5, which started from
-  E19's grid rows) differ in it too. No statistic of any single fit is wrong: each fit is what its
-  recorded `initial` and tie say it is (provenance records `initial`, not the seed tag).
-  Also every re-fit on a re-drawn or shuffled wiring chained from E44 / E45's optima (E46's draw-2 fits, E47's part B,
-  E50's draws): their class comparisons are like-for-like (all chained the same way), but their comparison with the
-  real-wiring fit carries the balance difference besides the wiring (noted in E47's note; E46's and E50's notes to follow).
-- **Done.** `--init-from-exact` (al_analysis 8b3820d) starts at the seed's absolute parameters
-  (checked against the row at the first evaluation); the noise-robust block's fits (E51) use it. The
-  default `--init-from` is unchanged.
-- **Done.** E48's note and page and the summary template's block-target paragraph carry the caveat
-  (atlas, 2026-11-08 18:39; template 23977e5).
-- **Done.** E10_joint_fit.py's provenance now always records the seed fit (`init_from`,
-  `init_from_experiment`) and the start mode (`init_from_exact`).
-- **Done.** E46's note carries the caveat (viki, 2026-11-08 18:41; its caveats list; page republished from one of Tom's hosts).
-- **Done.** E47's note carries the caveat (hal, 2026-11-08; its caveats list, on the part B refits; page version 4).
-- **Done.** E50's note carries the caveat (hal, 2026-11-09 02:16; its caveats list, second bullet; page and reports copy built from it).
-- **Done.** E45's note carries the caveat (atlas, 2026-11-09 05:10; its caveats list; page version 4, reports copy updated).
-- **Remains.** E48's three re-fits repeated with `--init-from-exact` (atlas; the fits done 2026-11-08 23:02, tags
-  `..._cap3_exact` in E48's fits.csv; their pipeline runs 2026-11-09 00:51-~08:00) and E48's note updated from them.
-
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
 - **What.** Several experiment scripts call `model_provenance()` (al_analysis commit, dirty flag and
@@ -175,6 +117,67 @@ directory's notes/ and are linked from here.
   against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### A fit seeded with `--init-from` does not start at its seed's optimum and runs with a different bouton->APL / KC->APL input balance (found 2026-11-08, atlas)
+
+- **What.** `init_from_fit` in E10_joint_fit.py builds the starting point from the seed row's factors
+  relative to the base (threshold, APL, APL->bouton) but resets the bouton->APL input scale
+  (`wPNAPL_scale`, tied, never fitted) to the base's value while the KC->APL scale gets the seed's APL
+  factor. The tie keeps every tied scale at its starting ratio to the APL->KC scale for the whole fit,
+  so a chained fit (i) does not start at its seed's optimum (E44's 40 Hz reference model at 6.8 %
+  starts at block +0.050 and APL-on response rate 0.070 instead of its fitted +0.054 and 0.068) and
+  (ii) runs with a bouton->APL vs KC->APL input balance (wPNAPL / wKCAPL) that differs from its
+  seed's: 5.57 for E44's 40 Hz fit vs 4.23 for its +0.072-target re-fit in E48; 10.58 vs 7.54 at
+  70 Hz; 7.24 for E45's eight at 1.25 at 70 Hz vs 2.57 for its +0.072 and +0.10 re-fits (the tuned
+  base: 4.45). Found by the code subagent writing the noise-aware loss (E51).
+- **Affects.** Every fit started with `--init-from`: E48's re-fits (from E44 / E45's optima), E45's
+  gain fits (from the nearest 5 % optima; their `initial` in provenance has the base's wPNAPL_scale),
+  and the re-drawn-wiring fits of E46 and E47 (from E44 / E45's optima; viki, 2026-11-08 18:39: each
+  draw's fit was compared with the real wiring's fit after both converged in their own runs, so their
+  conclusions stand, but the notes need the annotation).
+  The block target through the noise (E48) compared each re-fit with a counterpart that was meant to
+  differ only in the target; they also differ in this unfitted balance, so the "raising the target
+  cannot raise the block" reading rests on a confounded comparison. Comparisons across fits of the
+  family that were seeded differently (E45's gain 1.25 against E44's gain 1.5, which started from
+  E19's grid rows) differ in it too. No statistic of any single fit is wrong: each fit is what its
+  recorded `initial` and tie say it is (provenance records `initial`, not the seed tag).
+  Also every re-fit on a re-drawn or shuffled wiring chained from E44 / E45's optima (E46's draw-2 fits, E47's part B,
+  E50's draws): their class comparisons are like-for-like (all chained the same way), but their comparison with the
+  real-wiring fit carries the balance difference besides the wiring (noted in E47's note; E46's and E50's notes to follow).
+- **Done.** `--init-from-exact` (al_analysis 8b3820d) starts at the seed's absolute parameters
+  (checked against the row at the first evaluation); the noise-robust block's fits (E51) use it. The
+  default `--init-from` is unchanged.
+- **Done.** E48's note and page and the summary template's block-target paragraph carry the caveat
+  (atlas, 2026-11-08 18:39; template 23977e5).
+- **Done.** E10_joint_fit.py's provenance now always records the seed fit (`init_from`,
+  `init_from_experiment`) and the start mode (`init_from_exact`).
+- **Done.** E46's note carries the caveat (viki, 2026-11-08 18:41; its caveats list; page republished from one of Tom's hosts).
+- **Done.** E47's note carries the caveat (hal, 2026-11-08; its caveats list, on the part B refits; page version 4).
+- **Done.** E50's note carries the caveat (hal, 2026-11-09 02:16; its caveats list, second bullet; page and reports copy built from it).
+- **Done.** E45's note carries the caveat (atlas, 2026-11-09 05:10; its caveats list; page version 4, reports copy updated).
+- **Resolved.** E48's three re-fits repeated with `--init-from-exact` (tags `..._cap3_exact` in E48's fits.csv; the fits
+  2026-11-08 18:49-23:02, their pipeline runs 2026-11-09 00:51-07:46, atlas) give the same answer as the warm-start re-fits
+  (deterministic block +0.002 to +0.007 against their seeds, through the noise -0.002 to +0.002); E48's note carries the
+  addendum and the summary's block-target passage the exact-start rows (atlas, 2026-11-09 07:50), and every affected note is
+  annotated (E45, E46, E47, E48, E50).
+
+### Trial-noise pipeline runs described as calibrated on 6 trials were calibrated on 3 (found 2026-11-09, hal)
+
+- **What.** `E43_model_trial_noise.py --cal-trials` is part A's option (the PN-rate-noise calibration);
+  parts B / C calibrate on their threshold-tuning trials, `--tune-trials` (default 3), and ignored
+  `--cal-trials`. Every part-B run that passed `--cal-trials 6` (the noise-robust block's part C: hal's
+  run on E44's 40 Hz model, 18:43-00:57; atlas's run on viki's eight at 1.25 noise-aware fit, 23:05-00:50)
+  calibrated on 3 trials, i.e. with E48's settings exactly. hal noticed because its run's rows equal E48's
+  rows for the same model to six digits; the runs' provenance records `tune_trials` 3 throughout.
+- **Affects.** Only descriptions: the E51 entry's design (C) and Status lines, atlas's chat posts of
+  2026-11-09 00:52 and 01:03 ("6 calibration trials"), the comments in the run scripts, and the E48 note's
+  next-steps line recommending `--cal-trials 6`. No number is wrong, and the runs compare directly with
+  E48's partB rows (which therefore serve as the deterministic counterparts in E51's comparison).
+- **Done.** The pipeline refuses `--cal-trials` in parts B / C unless it equals `--tune-trials`, and its help
+  says which option is which; E51_noise_robust_block.py's docstring and E51's run scripts say 3 tuning
+  trials; the E51 entry's text and a chat correction (atlas, 2026-11-09 ~02:40).
+- **Resolved.** E48's note names `--tune-trials 6` in its next steps and says in its addendum which option the
+  pipeline runs' calibration follows (atlas, 2026-11-09 07:50; page republished, reports copy updated).
 
 ### The KC->APL drive per spike is proportional to the time step in spike-driven APL models (found 2026-11-07, viki)
 
