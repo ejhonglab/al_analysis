@@ -489,6 +489,31 @@ def test_work_mode_attribution(tmp_path):
     assert ph.prompt_mode('Ok.') == 'queue' and ph.prompt_mode('what is the ETA?') == 'manual'
 
 
+def test_rescan_after_work_mode_split(tmp_path):
+    import presence_hook as ph
+    T = '2026-11-08T10:{:02d}:00.000Z'
+    transcript = tmp_path / 's.jsonl'
+    transcript.write_text(prompt_line('please check the hook', T.format(10))
+        + usage_line('m3', 'claude-fable-5-1', 7, ts=T.format(11)))
+    # a state saved by the hook before the split: the lines consumed, totals kept, no manual
+    # share, no boundaries, no scan version
+    files = {}
+    tok, _ = ph.session_tokens(str(transcript), files)
+    for f in files.values():
+        f.pop('manual', None)
+    st = {'files': files, 'bounds': [], 'sampled_epoch': 0}
+    files2 = ph.refresh_scan_state(st)
+    assert files2 == {} and st['scan_version'] == ph.SCAN_VERSION
+    tok2, manual = ph.session_tokens(str(transcript), files2, st['bounds'])
+    assert tok2 == tok and manual['claude-fable-5-1']['output'] == 7
+    assert [(b[1], b[2]) for b in st['bounds']] == [('manual', 'prompt')]
+    # a state at the current version keeps its offsets; a rebuild keeps --mark boundaries only
+    st2 = dict(st, files=files2)
+    assert ph.refresh_scan_state(st2) is files2
+    st3 = {'files': files2, 'bounds': [[1.0, 'queue', 'mark', ''], [2.0, 'manual', 'prompt', 'x']]}
+    assert ph.refresh_scan_state(st3) == {} and st3['bounds'] == [[1.0, 'queue', 'mark', '']]
+
+
 def test_hook_writes_usage_samples(dirs, tmp_path):
     shared, env = dirs
     home = tmp_path / 'home'

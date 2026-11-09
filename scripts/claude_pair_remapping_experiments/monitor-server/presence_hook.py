@@ -99,6 +99,9 @@ TITLE_TICK = re.compile(r'\s*__set_session_title__\s+(\S.{0,63}?)\s*')
 QUEUE_JOIN = re.compile(r'\bjoin\b.*\bqueue\b|\bqueue\b.*\bjoin\b', re.I | re.S)
 ACKNOWLEDGEMENTS = {'ok', 'okay', 'continue', 'go on', 'proceed', 'resume', 'carry on', 'yes'}
 WORK_MODES = ('queue', 'manual')
+# bumped when the transcript scan changes what it records (the work-mode split): a session
+# state from an older scan is re-read from the start once (refresh_scan_state)
+SCAN_VERSION = 2
 BOUNDS_MAX = 500
 # a usage sample at most this often per session (and at its start and end)
 USAGE_SAMPLE_S = 15 * 60
@@ -553,6 +556,20 @@ def plan_usage(capture):
     return out
 
 
+def refresh_scan_state(st):
+    """The file states to scan with: the saved ones, or none when the state comes from an
+    older scan (`scan_version` below SCAN_VERSION), so that every file is re-read from the
+    start once. The work-mode split arrived after sessions had been scanned, and the scan is
+    incremental, so prompts typed before a host's hook had it never became boundaries and the
+    tokens after them never counted as manual work. Totals are cumulative, so a re-read gives
+    the same totals; the `--mark` boundaries are kept and the prompt ones re-derived."""
+    if st.get('scan_version', 0) >= SCAN_VERSION:
+        return st.get('files') or {}
+    st['bounds'] = [b for b in st.get('bounds') or [] if len(b) > 2 and b[2] == 'mark']
+    st['scan_version'] = SCAN_VERSION
+    return {}
+
+
 def sample_usage(rec, now, reason, force=False):
     """Appends a usage sample for a session to usage/<host>__<session>.jsonl when one is due.
 
@@ -577,7 +594,7 @@ def sample_usage(rec, now, reason, force=False):
     shared = shared_dir()
     if not shared:
         return None
-    files = st.get('files') or {}
+    files = refresh_scan_state(st)
     bounds = st.setdefault('bounds', [])
     tokens, manual = session_tokens(transcript, files, bounds) if transcript else ({}, {})
     mode = mode_at(bounds, now)
