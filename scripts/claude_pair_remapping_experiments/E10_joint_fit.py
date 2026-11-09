@@ -38,6 +38,8 @@ tags get a `gain<G>_` prefix after the threshold prefix, and fits.csv / provenan
 gain and glomeruli.
 Second wiring draw (E30): `--wiring claw_permutation --wiring-seed N` replaces the base's claw x bouton
 matrix by that shuffle (al_analysis.wpnkc_shuffles) before any gain; tag prefix wiring-<name>-seed<N>_.
+--wiring-file PARQUET --wiring-tag TAG replaces it with a saved matrix instead (a lesioned wiring, E54); tag
+prefix wiring-<TAG>_.
 Bound controls (E31): `--aplpn-max F`, `--aplpn-fixed F`, `--aplkc-min F` bound or fix the APL->bouton /
 APL->KC scales relative to the base's tuned values (use --tag to name the variant).
 KC-KC held (the KC-KC-held fits proposed from E51): `--kckc-fixed S` holds the KC-KC scale (kc_kc_inh) at S and fits the other three
@@ -801,6 +803,10 @@ def main() -> None:
         "shuffle (claw_permutation, claw_permutation_within_type, curveball, "
         "curveball_within_type; E30's second draw); tag prefix wiring-<SHUFFLE>-seed<N>_")
     ap.add_argument('--wiring-seed', type=int, default=0, help='seed of the --wiring draw')
+    ap.add_argument('--wiring-file', default=None, metavar='PARQUET',
+        help="replace the base's claw x bouton wiring with this saved matrix (same index and columns as the base's, "
+        "e.g. a lesioned wiring from E52; exclusive with --wiring); needs --wiring-tag; tag prefix wiring-<TAG>_")
+    ap.add_argument('--wiring-tag', default=None, metavar='TAG', help='name of the --wiring-file wiring (for the tag and the caches)')
     ap.add_argument('--orn-input', default=None, metavar='CSV',
         help='replace the ORN input with this CSV (glomeruli x abbreviated odors, as E38 writes them under '
         'results/E38_hallem_input/inputs/; relative to the shared directory); tag prefix input-<stem>_')
@@ -935,11 +941,16 @@ def main() -> None:
     t0 = time.time()
     gain = None if args.glom_gain in (None, 1.0) else float(args.glom_gain)
     base_info = {}
+    if args.wiring_file is not None and args.wiring_tag is None:
+        ap.error('--wiring-file needs --wiring-tag')
+    wiring_matrix = pd.read_parquet(args.wiring_file) if args.wiring_file else None
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
         gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed,
-        apl_drive=args.apl_drive, base_params=args.base_params, info=base_info, input_tag=input_tag
+        apl_drive=args.apl_drive, base_params=args.base_params, info=base_info, input_tag=input_tag,
+        wiring_matrix=wiring_matrix, wiring_tag=args.wiring_tag
     )
     wiring_tag = ('' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_') + (
+        '' if args.wiring_file is None else f'wiring-{args.wiring_tag}_') + (
         '' if input_tag is None else f'input-{input_tag}_')
     gain_gloms = None
     if gain is not None:
@@ -982,7 +993,7 @@ def main() -> None:
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
             thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
             init_from_experiment=args.init_from_experiment,
-            wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None) else None),
+            wPNKC_override=(wPNKC if (gain is not None or args.wiring is not None or wiring_matrix is not None) else None),
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
             aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
             kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed
@@ -1015,6 +1026,7 @@ def main() -> None:
         meta = dict(variant=tag, tag=tag, base='bouton', seed=None, k=k, claw_thr=args.claw_thr,
             gain=gain, gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None),
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None),
+            wiring_file=args.wiring_file, wiring_tag=args.wiring_tag,
             orn_input=args.orn_input, method=args.method,
             maxfev=args.maxfev, n_evals=len(hist), kckc0=args.kckc0, thr0_factor=args.thr0_factor,
             init_from=args.init_from, init_thr=args.init_thr, loss_variant=args.loss,
@@ -1080,6 +1092,7 @@ def main() -> None:
             base=base_kws(args.claw_thr, args.apl_drive), apl_drive=args.apl_drive,
             init_params=args.init_params, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None), orn_input=args.orn_input,
+            wiring_file=args.wiring_file, wiring_tag=args.wiring_tag,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             kckc_fixed=args.kckc_fixed, base_params=initial, loss_variant=args.loss,
             loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
