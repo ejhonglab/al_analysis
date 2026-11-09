@@ -1064,7 +1064,7 @@ KCs shapes every distance. So:
   bear only on other statistics (the block, the natural-source alignment, noise-robustness, wiring
   carriers) go after every proposal that bears on the main goal, and an idle host takes a main-goal
   proposal first;
-- the first experiments under this goal (hal's chat post of 2026-11-09, ~13:00, and proposed_experiments.md
+- the first experiments under this goal (hal's chat post of 2026-11-09 13:39, and proposed_experiments.md
   as they are written up): the per-odor rate oracle (per-odor input scales or per-odor thresholds that put
   the model's response rates on the data's, with ρ on odor-odor distances as the free readout: how much of
   the gap is the recruitment pattern), the per-pair decomposition of the gap for the reference model
