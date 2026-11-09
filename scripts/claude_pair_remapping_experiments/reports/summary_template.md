@@ -668,8 +668,8 @@ The agreement of the model's odor-odor distances with the two KC matrices is the
 
 The gap is not where the fits were scored. The nine fruity × small-ester block pairs and the 13 within-group pairs together carry a tenth of it; the 75 pairs of one of the six weak-input odors (ms, paa, euc, -aPine, B-myr, 1-8ol) carry most of it, more than they do of the ORN input's own gap, and three odors carry two thirds: paa, B-myr and 2-but. The two conditions mis-order the same pairs (the reference model's residuals with APL on and with APL off agree at ρ 0.69), so the APL-off gap is mostly the APL-on gap carried over, with the wrong per-pair APL effect (the models' is half the data's and lands on other pairs) as the smaller remainder. Dropping the strongly driven odors' pairs (2h, 6al, the alcohols other than 1-8ol) lowers ρ: the model orders them better than the input does.
 
-| | | reference model {span=2} | ORN input {span=2} | reference model {span=2} | ORN input {span=2} |
 | | | APL on {span=4} | APL off {span=4} |
+| | | reference model {span=2} | ORN input {span=2} | reference model {span=2} | ORN input {span=2} |
 | pairs | n | share of the gap | mean abs rank residual | share | residual | share | residual | share | residual |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | block (fruity × small ester) | 9 | {{E61/class_summary.csv:short=reference 40 Hz;condition=on;classification=pair_class;value=block:share_of_gap ~ .0%}} | {{E61/class_summary.csv:short=reference 40 Hz;condition=on;classification=pair_class;value=block:mean_abs_resid ~ .0f}} | {{E61/class_summary.csv:short=ORN input;condition=on;classification=pair_class;value=block:share_of_gap ~ .0%}} | {{E61/class_summary.csv:short=ORN input;condition=on;classification=pair_class;value=block:mean_abs_resid ~ .0f}} | {{E61/class_summary.csv:short=reference 40 Hz;condition=off;classification=pair_class;value=block:share_of_gap ~ .0%}} | {{E61/class_summary.csv:short=reference 40 Hz;condition=off;classification=pair_class;value=block:mean_abs_resid ~ .0f}} | {{E61/class_summary.csv:short=ORN input;condition=off;classification=pair_class;value=block:share_of_gap ~ .0%}} | {{E61/class_summary.csv:short=ORN input;condition=off;classification=pair_class;value=block:mean_abs_resid ~ .0f}} |
@@ -680,8 +680,8 @@ The gap is not where the fits were scored. The nine fruity × small-ester block 
 
 The five odors that carry the gap, with the share of one minus ρ their 15 pairs carry (each pair belongs to two odors, so the shares over all 16 odors sum to twice the gap) and the gain in ρ if their pairs were dropped, for the reference model and for the ORN input:
 
-| | reference model {span=2} | ORN input | reference model {span=2} | ORN input |
 | | APL on {span=3} | APL off {span=3} |
+| | reference model {span=2} | ORN input | reference model {span=2} | ORN input |
 | odor | share of the gap | gain in ρ without the odor | gain in ρ | share | gain | gain |
 |---|---:|---:|---:|---:|---:|---:|
 | paa | {{E61/odor_summary.csv:short=reference 40 Hz;condition=on;odor=paa:contribution_share ~ .0%}} | {{E61/odor_summary.csv:short=reference 40 Hz;condition=on;odor=paa:loo_delta_rho ~ +.2f}} | {{E61/odor_summary.csv:short=ORN input;condition=on;odor=paa:loo_delta_rho ~ +.2f}} | {{E61/odor_summary.csv:short=reference 40 Hz;condition=off;odor=paa:contribution_share ~ .0%}} | {{E61/odor_summary.csv:short=reference 40 Hz;condition=off;odor=paa:loo_delta_rho ~ +.2f}} | {{E61/odor_summary.csv:short=ORN input;condition=off;odor=paa:loo_delta_rho ~ +.2f}} |
