@@ -682,3 +682,261 @@ def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int 
         'claw_row', 'partner_row'
     ]
     return lesioned, pd.DataFrame(swaps, columns=cols)
+
+
+def match_coinput(wPNKC: pd.DataFrame, target: pd.DataFrame, *, seed: int = 0,
+    within_kc_type: bool = True, match_type_layer: bool = True, type_layer_weight: float = 1.0,
+    by: Optional[str] = 'glomerulus', n_steps: int = 1_000_000, t_start: float = 10.0,
+    t_end: float = 0.1, stop_at: float = 0.0) -> Tuple[pd.DataFrame, pd.Series]:
+    """Returns one-row-per-claw `wPNKC` whose glomerulus x glomerulus shared-KC counts are brought
+    toward `target`'s by simulated annealing over claw swaps, and a Series of statistics.
+
+    A step picks two claws of two different KCs (of the same `KC_TYPE` with `within_kc_type`)
+    from different glomeruli and exchanges their columns (boutons), so every KC keeps its number
+    of claws and every column (bouton, hence glomerulus) its number of claws, per KC type with
+    `within_kc_type`. The step is accepted when it lowers the objective, otherwise with
+    probability exp(-delta / T), T falling geometrically from `t_start` to `t_end` over
+    `n_steps`. The objective is the sum of squared differences between the wiring's and the
+    target's numbers of KCs with claws from both glomeruli of each pair (the upper triangle of
+    `coinput_counts`, the diagonal included, so each glomerulus' number of KCs is matched too)
+    plus, with `match_type_layer`, the squared differences of the numbers of KCs of each `KC_TYPE`
+    with any claw from each glomerulus (the type layer). A KC's set of glomeruli changes only
+    when a swap removes a glomerulus' last claw or adds a first one, so steps that move claws
+    between boutons of glomeruli both KCs keep cost nothing and are always accepted (they
+    re-assign boutons, as a claw permutation within each KC's glomeruli would).
+
+    The result has the target's pairwise co-input structure (to the residual reported) on KCs
+    that are not the target's: which KC holds which pair is re-assigned, and three-way and
+    higher co-input is whatever the pairwise matching implies. Compare `frac_claws_changed_vs_target`
+    with the starting draw's to see that the match did not rebuild the target wiring.
+
+    Args:
+        wPNKC: one row per claw (`CLAW_ID` index level), 0/1 values: the starting wiring (e.g. a
+            `shuffle_wPNKC` draw of the target).
+        target: the wiring whose co-input to match (same format and columns as `wPNKC`; its
+            index must have `KC_TYPE` with `match_type_layer`).
+        seed: for `np.random.default_rng`. Output is reproducible for a given seed.
+        within_kc_type: swaps stay within a `KC_TYPE` (per-type bouton claw counts kept; needed
+            for the type layer to stay matched once it is).
+        match_type_layer: also match the per-type glomerulus KC counts.
+        type_layer_weight: weight of the type layer's squared differences in the objective
+            (above 1 holds the type layer tighter than the pairs).
+        by: column level grouping the columns into glomeruli (as `coinput_counts`).
+        n_steps: proposals made (the schedule's length).
+        t_start, t_end: temperatures (objective units: one pair count off by one costs 1).
+        stop_at: stop once the objective is at or below this.
+
+    Returns (matched copy of `wPNKC`, Series: n_steps_made, n_accepted, n_changed (accepted steps
+    that changed some count), objective_start, objective_end, pair_abs_diff_max, pair_abs_diff_mean
+    (upper triangle, off-diagonal), glom_n_kcs_abs_diff_max (diagonal), coinput_corr (Pearson,
+    upper triangle, wiring vs target), type_layer_abs_diff_max (NaN unless matched),
+    frac_claws_changed_vs_start, frac_claws_changed_vs_target (NaN unless the indexes agree),
+    seconds).
+
+    Raises:
+        ValueError: inputs not one-row-per-claw, or columns differing.
+    """
+    import time as _time
+
+    if CLAW_ID not in wPNKC.index.names or CLAW_ID not in target.index.names:
+        raise ValueError('match_coinput needs one-row-per-claw wPNKC and target (a CLAW_ID index level)')
+    if not wPNKC.columns.equals(target.columns):
+        raise ValueError('wPNKC and target must have the same columns')
+
+    t0 = _time.time()
+    values = _wPNKC_values(wPNKC, True)
+    row_kc, n_kcs = _kc_codes(wPNKC)
+    claw_rows = np.flatnonzero(values.any(axis=1))
+    claw_col = values[claw_rows].argmax(axis=1)
+    claw_kc = row_kc[claw_rows]
+    col_group, groups = _column_groups(wPNKC.columns, by)
+    claw_glom = col_group[claw_col].copy()
+    n_gloms = len(groups)
+    if within_kc_type or match_type_layer:
+        kc_group = _kc_groups(wPNKC, row_kc, n_kcs)
+    else:
+        kc_group = np.zeros(n_kcs, dtype=np.int64)
+    swap_group = kc_group if within_kc_type else np.zeros(n_kcs, dtype=np.int64)
+
+    counts = np.zeros((n_kcs, n_gloms), dtype=np.int64)
+    np.add.at(counts, (claw_kc, claw_glom), 1)
+    binary = (counts > 0).astype(np.int64)
+    C = binary.T @ binary
+
+    t_values = _wPNKC_values(target, True)
+    t_row_kc, t_n_kcs = _kc_codes(target)
+    t_claw_rows = np.flatnonzero(t_values.any(axis=1))
+    t_claw_glom = col_group[t_values[t_claw_rows].argmax(axis=1)]
+    t_counts = np.zeros((t_n_kcs, n_gloms), dtype=np.int64)
+    np.add.at(t_counts, (t_row_kc[t_claw_rows], t_claw_glom), 1)
+    t_binary = (t_counts > 0).astype(np.int64)
+    T = t_binary.T @ t_binary
+    D = C - T  # current minus target, symmetric
+
+    type_of_kc = kc_group
+    if match_type_layer:
+        if KC_TYPE not in target.index.names:
+            raise ValueError('match_type_layer=True requires a KC_TYPE index level on target')
+        _kc_groups(target, t_row_kc, t_n_kcs)  # checks each target KC has one type
+
+        def kc_type_labels(df: pd.DataFrame, rk: np.ndarray) -> np.ndarray:
+            labels = pd.Index(df.index.get_level_values(KC_TYPE)).astype(str)
+            return labels[np.unique(rk, return_index=True)[1]].to_numpy()
+
+        lab_here = kc_type_labels(wPNKC, row_kc)
+        lab_there = kc_type_labels(target, t_row_kc)
+        type_labels = pd.Index(np.unique(np.concatenate([lab_here, lab_there])))
+        type_of_kc = type_labels.get_indexer(lab_here)
+        N = np.zeros((len(type_labels), n_gloms), dtype=np.int64)
+        np.add.at(N, type_of_kc, binary)
+        NT = np.zeros((len(type_labels), n_gloms), dtype=np.int64)
+        np.add.at(NT, type_labels.get_indexer(lab_there), t_binary)
+        DN = N - NT
+    else:
+        DN = None
+
+    def objective() -> float:
+        iu = np.triu_indices(n_gloms)
+        obj = float((D[iu] ** 2).sum())
+        if DN is not None:
+            obj += type_layer_weight * float((DN ** 2).sum())
+        return obj
+
+    obj_start = objective()
+    obj = obj_start
+    rng = np.random.default_rng(seed)
+    group_claws = {g: np.flatnonzero(swap_group[claw_kc] == g) for g in np.unique(swap_group)}
+    group_of_claw = swap_group[claw_kc]
+    n_claws = len(claw_kc)
+    new_col = claw_col.copy()
+    # per-KC glomerulus sets as Python sets (small), for the delta computation
+    kc_set = [set(np.flatnonzero(counts[k] > 0).tolist()) for k in range(n_kcs)]
+
+    log_ratio = np.log(t_end / t_start) if n_steps > 1 else 0.0
+    n_acc = 0
+    n_changed = 0
+    steps_made = 0
+    u = rng.random(n_steps)
+    pick1 = rng.integers(n_claws, size=n_steps)
+    for step in range(n_steps):
+        if obj <= stop_at:
+            break
+        steps_made = step + 1
+        r1 = int(pick1[step])
+        pool = group_claws[group_of_claw[r1]]
+        r2 = int(pool[rng.integers(len(pool))])
+        k1, k2 = int(claw_kc[r1]), int(claw_kc[r2])
+        x, y = int(claw_glom[r1]), int(claw_glom[r2])
+        if k1 == k2 or x == y:
+            continue
+        lose_x1 = counts[k1, x] == 1
+        gain_y1 = counts[k1, y] == 0
+        lose_y2 = counts[k2, y] == 1
+        gain_x2 = counts[k2, x] == 0
+        if not (lose_x1 or gain_y1 or lose_y2 or gain_x2):
+            # bouton-level move only: always accepted
+            new_col[r1], new_col[r2] = new_col[r2], new_col[r1]
+            claw_glom[r1], claw_glom[r2] = y, x
+            counts[k1, x] -= 1; counts[k1, y] += 1
+            counts[k2, y] -= 1; counts[k2, x] += 1
+            n_acc += 1
+            continue
+        # changes to the pairwise matrix (i <= j keyed), from each KC's set changes
+        changes: Dict[Tuple[int, int], int] = {}
+
+        def add(i: int, j: int, c: int) -> None:
+            key = (i, j) if i <= j else (j, i)
+            changes[key] = changes.get(key, 0) + c
+
+        s1 = kc_set[k1]
+        if lose_x1:
+            for g in s1:
+                add(x, g, -1)  # includes (x, x): the diagonal
+        if gain_y1:
+            for g in s1:
+                if g == x and lose_x1:
+                    continue
+                add(y, g, 1)
+            add(y, y, 1)
+        s2 = kc_set[k2]
+        if lose_y2:
+            for g in s2:
+                add(y, g, -1)
+        if gain_x2:
+            for g in s2:
+                if g == y and lose_y2:
+                    continue
+                add(x, g, 1)
+            add(x, x, 1)
+        delta = 0.0
+        for (i, j), c in changes.items():
+            d = D[i, j]
+            delta += (d + c) ** 2 - d * d
+        n_changes = None
+        if DN is not None:
+            t1, t2 = int(type_of_kc[k1]), int(type_of_kc[k2])
+            n_changes = {}
+            if lose_x1:
+                n_changes[(t1, x)] = n_changes.get((t1, x), 0) - 1
+            if gain_y1:
+                n_changes[(t1, y)] = n_changes.get((t1, y), 0) + 1
+            if lose_y2:
+                n_changes[(t2, y)] = n_changes.get((t2, y), 0) - 1
+            if gain_x2:
+                n_changes[(t2, x)] = n_changes.get((t2, x), 0) + 1
+            for (t, g), c in n_changes.items():
+                d = DN[t, g]
+                delta += type_layer_weight * ((d + c) ** 2 - d * d)
+        if delta > 0:
+            temp = t_start * np.exp(log_ratio * step / max(n_steps - 1, 1))
+            if u[step] >= np.exp(-delta / temp):
+                continue
+        # accept
+        new_col[r1], new_col[r2] = new_col[r2], new_col[r1]
+        claw_glom[r1], claw_glom[r2] = y, x
+        counts[k1, x] -= 1; counts[k1, y] += 1
+        counts[k2, y] -= 1; counts[k2, x] += 1
+        if lose_x1:
+            s1.discard(x)
+        if gain_y1:
+            s1.add(y)
+        if lose_y2:
+            s2.discard(y)
+        if gain_x2:
+            s2.add(x)
+        for (i, j), c in changes.items():
+            D[i, j] += c
+            if i != j:
+                D[j, i] += c
+        if n_changes:
+            for (t, g), c in n_changes.items():
+                DN[t, g] += c
+        obj += delta
+        n_acc += 1
+        n_changed += 1
+
+    new_values = np.zeros_like(values)
+    new_values[claw_rows, new_col] = 1
+    matched = pd.DataFrame(new_values, index=wPNKC.index.copy(), columns=wPNKC.columns.copy())
+    if wPNKC.dtypes.nunique() > 1:
+        matched = matched.astype(wPNKC.dtypes.to_dict())
+
+    iu1 = np.triu_indices(n_gloms, k=1)
+    C_end = D + T
+    corr = float(np.corrcoef(C_end[iu1].astype(float), T[iu1].astype(float))[0, 1])
+    frac_vs_start = float((new_col != claw_col).mean())
+    frac_vs_target = float('nan')
+    if wPNKC.index.equals(target.index):
+        frac_vs_target = float((col_group[new_col] != t_claw_glom).mean()) if np.array_equal(claw_rows, t_claw_rows) \
+            else float('nan')
+    stats = pd.Series({
+        'n_steps_made': int(steps_made), 'n_accepted': int(n_acc), 'n_changed': int(n_changed),
+        'objective_start': obj_start, 'objective_end': objective(),
+        'pair_abs_diff_max': int(np.abs(D[iu1]).max()), 'pair_abs_diff_mean': float(np.abs(D[iu1]).mean()),
+        'glom_n_kcs_abs_diff_max': int(np.abs(np.diag(D)).max()),
+        'coinput_corr': corr,
+        'type_layer_abs_diff_max': int(np.abs(DN).max()) if DN is not None else float('nan'),
+        'frac_claws_changed_vs_start': frac_vs_start, 'frac_claws_changed_vs_target': frac_vs_target,
+        'seconds': float(_time.time() - t0),
+    }, dtype=object)
+    return matched, stats

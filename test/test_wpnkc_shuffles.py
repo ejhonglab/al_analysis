@@ -497,3 +497,48 @@ def test_lesion_coinput_raise(wPNKCs, within_kc_type):
     assert again.equals(raised)
     back, _ = lesion_coinput(raised, {top: int(co_s.loc[top])}, seed=5, within_kc_type=within_kc_type)
     assert coinput_counts(back).loc[top] <= int(co_s.loc[top])
+
+
+def test_match_coinput(wPNKCs):
+    """Annealed same-type claw swaps bring a within-type Curveball draw's pairwise shared-KC
+    counts toward the real wiring's, keeping every margin, without rebuilding the real wiring."""
+    from al_analysis.wpnkc_shuffles import coinput_counts, match_coinput, shuffle_wPNKC
+
+    wPNKC = wPNKCs['claw']
+    shuffled = shuffle_wPNKC(wPNKC, 'curveball', within_kc_type=True, seed=1)
+    before = wPNKC_shuffle_summary(wPNKC, shuffled)
+    matched, stats = match_coinput(shuffled, wPNKC, seed=0, n_steps=150_000, t_start=5.0,
+        t_end=0.2, type_layer_weight=4.0
+    )
+    print(stats.to_string())
+    assert stats['objective_end'] < 0.5 * stats['objective_start']
+    assert stats['n_changed'] > 0
+    assert stats['coinput_corr'] > before['coinput_corr']
+    # the type layer (per-type KCs per glomerulus) is exact on the draw and kept matched
+    assert stats['type_layer_abs_diff_max'] <= 3
+    # every margin kept: claws per KC, claws per bouton per type
+    assert (matched.groupby(level=KC_ID).sum().sum(axis=1)
+        == shuffled.groupby(level=KC_ID).sum().sum(axis=1)).all()
+    assert matched.groupby(level=KC_TYPE).sum().equals(shuffled.groupby(level=KC_TYPE).sum())
+    # a match, not a rebuild
+    assert stats['frac_claws_changed_vs_target'] > 0.5
+    assert 0 < stats['frac_claws_changed_vs_start'] < 1
+    after = wPNKC_shuffle_summary(wPNKC, matched)
+    assert after['coinput_corr'] > before['coinput_corr']
+    co = coinput_counts(matched)
+    iu = np.triu_indices(len(co), k=1)
+    assert np.abs(co.to_numpy()[iu] - coinput_counts(wPNKC).to_numpy()[iu]).max() == stats['pair_abs_diff_max']
+
+    # a wiring already at the target stops at once
+    same, s2 = match_coinput(wPNKC, wPNKC, n_steps=1000)
+    assert s2['objective_start'] == 0 and s2['n_steps_made'] == 0
+    assert same.equals(wPNKC)
+
+
+def test_match_coinput_errors(wPNKCs):
+    from al_analysis.wpnkc_shuffles import match_coinput
+
+    with pytest.raises(ValueError, match='one-row-per-claw'):
+        match_coinput(wPNKCs['kc'], wPNKCs['kc'])
+    with pytest.raises(ValueError, match='same columns'):
+        match_coinput(wPNKCs['claw'], wPNKCs['claw'].iloc[:, :-1])
