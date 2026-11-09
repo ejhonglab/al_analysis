@@ -19,7 +19,7 @@ at 1.25 at 70 Hz) at their fitted scales with the somatic threshold re-tuned to 
 wiring, scored as E47 / E52 / E54 score their variants; --summary puts them beside E47's rows for
 the untreated draws and the real wiring.
 Outputs: <shared>/results/E57_convergence_transplant/ (transplant_pairs.csv, transplant_outcome.csv,
-stats_variants.csv, comparison.csv, comparison_table.md, per_class.csv, E57_convergence_transplant.png,
+stats_variants.csv, comparison.csv, comparison_table.md, per_class.csv, paired_differences.csv, E57_convergence_transplant.png,
 provenance.json) and ./outputs/E57_convergence_transplant/ (the transplanted wirings, swaps,
 per-variant responses / spike counts, partC/ caches).
 Usage: ./venv/bin/python E57_convergence_transplant.py --plan            (the wirings only)
@@ -148,6 +148,8 @@ def summary(res_dir: Path) -> None:
     grp = comp[comp.shuffle != 'real'].groupby(['model', 'shuffle'])[cols].agg(['mean', 'std', 'count'])
     grp.columns = [f'{c}__{s}' for c, s in grp.columns]
     grp.reset_index().to_csv(res_dir / 'per_class.csv', index=False)
+    paired = paired_differences(comp)
+    paired.to_csv(res_dir / 'paired_differences.csv', index=False)
     data = data_values()
     out = []
     groups = ['curveball_within_type', 'curveball_within_type_transplant', 'curveball_within_type_control',
@@ -178,6 +180,7 @@ def summary(res_dir: Path) -> None:
                     else (format(float(v.iloc[0]), fmt) if len(v) == 1 else '-'))
             rows.append(f'| {label} | {d} | ' + ' | '.join(cells) + ' |')
         out.append('\n'.join(rows))
+    out.extend(paired_tables(paired, comp, data))
     oc_path = res_dir / 'transplant_outcome.csv'
     if oc_path.exists():
         oc = pd.read_csv(oc_path)
@@ -193,6 +196,80 @@ def summary(res_dir: Path) -> None:
     (res_dir / 'comparison_table.md').write_text('\n\n'.join(out) + '\n')
     figure(comp, data, res_dir, groups)
     print('\n\n'.join(out))
+
+
+PAIRED_COLS = (f'{V}__on_spearman_resid_vs_vcf_hyp', f'{V}__off_spearman_resid_vs_vcf_hyp', 'vcf_on_minus_off',
+    f'{V}__block_fruity_small_iso', f'{V}__on_spearman_resid_vs_remap_wt', 'spearman_rate_on_vs_data', 'loss_rate_ctrl')
+
+
+def paired_differences(comp: pd.DataFrame) -> pd.DataFrame:
+    """Each treated draw against the same seed's untreated draw (E47's row for that draw): the treatment's
+    effect per draw and its mean and sd over draws, for the statistics in PAIRED_COLS (long format).
+
+    The group means of the comparison tables set three treated draws against E47's five untreated ones;
+    this takes the draw-to-draw variation out by differencing within a seed.
+    """
+    rows = []
+    for mkey in MODELS:
+        sub = comp[comp.model == mkey]
+        for cls in CLASSES:
+            base = sub[sub.shuffle == cls].set_index('seed')
+            for kind in KINDS:
+                t = sub[sub.shuffle == f'{cls}_{kind}'].set_index('seed')
+                seeds = sorted(set(t.index) & set(base.index))
+                if not seeds:
+                    continue
+                for col in PAIRED_COLS:
+                    if col not in sub.columns:
+                        continue
+                    tv = t.loc[seeds, col].astype(float).values; bv = base.loc[seeds, col].astype(float).values
+                    d = tv - bv
+                    rows.append(dict(model=mkey, shuffle=cls, kind=kind, stat=col, n=len(seeds), mean_diff=float(d.mean()),
+                        sd_diff=float(d.std(ddof=1)) if len(seeds) > 1 else float('nan'), untreated_mean=float(bv.mean()),
+                        treated_mean=float(tv.mean()), per_seed=json.dumps({int(sd): round(float(x), 4) for sd, x in zip(seeds, d)})))
+    return pd.DataFrame(rows)
+
+
+def paired_tables(paired: pd.DataFrame, comp: pd.DataFrame, data: Dict[str, float]) -> List[str]:
+    """One markdown table per model: the KC data, the real wiring, and per shuffle class the untreated draws
+    (seeds 1 to 3) and each treatment's effect on the same draws (mean ± sd of the paired differences)."""
+    out = []
+    for mkey in MODELS:
+        p = paired[paired.model == mkey]
+        if p.empty:
+            continue
+        real = comp[(comp.model == mkey) & (comp.shuffle == 'real')]
+        rows = [f'**{MODEL_LABEL[mkey]} at its fitted scales: each treated draw against the same seed\'s untreated draw '
+            '(the treatment\'s effect, mean ± sd over the three draws)**', '',
+            '| | | | Curveball within type {span=3} | Curveball {span=3} |',
+            '| statistic | KC data | real wiring | untreated (seeds 1 to 3) | + the 32 pairs\' convergence, minus untreated | '
+            '+ the same raises on control pairs, minus untreated | untreated (seeds 1 to 3) | + the 32 pairs\' convergence, minus '
+            'untreated | + the same raises on control pairs, minus untreated |',
+            '|---|---|---|---|---|---|---|---|---|']
+        for col, label, fmt, dkey in STATS:
+            if col not in PAIRED_COLS or col not in comp.columns:
+                continue
+            d = '-'
+            if dkey and dkey in data:
+                d = format(data[dkey], fmt)
+                if 'ceiling' in dkey:
+                    d = f'ceiling {d}'
+            cells = [format(float(real[col].iloc[0]), fmt) if len(real) == 1 and pd.notna(real[col].iloc[0]) else '-']
+            dfmt = '+' + fmt.lstrip('+'); sfmt = fmt.lstrip('+')
+            for cls in CLASSES:
+                q = p[(p.shuffle == cls) & (p.stat == col)].set_index('kind')
+                if q.empty:
+                    cells += ['-', '-', '-']; continue
+                cells.append(format(float(q.untreated_mean.iloc[0]), fmt))
+                for kind in KINDS:
+                    if kind in q.index:
+                        r = q.loc[kind]
+                        cells.append(f'{format(r.mean_diff, dfmt)} ± {format(r.sd_diff, sfmt)}' if r.n > 1 else format(r.mean_diff, dfmt))
+                    else:
+                        cells.append('-')
+            rows.append(f'| {label} | {d} | ' + ' | '.join(cells) + ' |')
+        out.append('\n'.join(rows))
+    return out
 
 
 def figure(comp: pd.DataFrame, data: Dict[str, float], res_dir: Path, groups: List[str]) -> None:
