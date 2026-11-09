@@ -342,3 +342,115 @@ def test_shuffled_wPNKC_model_one_row_per_claw(wPNKCs, orn_deltas, kws):
         orn_deltas.columns.get_level_values('odor')
     )
     assert np.isclose(responses.mean().mean(), target_sparsity, rtol=0.15)
+
+
+def _small_claw_wPNKC(multi_columns: bool) -> pd.DataFrame:
+    """3 KCs: KC0 claws A, B; KC1 claws A, B, B; KC2 claws B, C (type g, g, ab)."""
+    rows = [(0, 0, 'g'), (0, 1, 'g'), (1, 0, 'g'), (1, 1, 'g'), (1, 2, 'g'), (2, 0, 'ab'),
+        (2, 1, 'ab')
+    ]
+    gloms = ['A', 'B', 'A', 'B', 'B', 'B', 'C']
+    if multi_columns:
+        columns = pd.MultiIndex.from_tuples([('A', 1, 0), ('B', 2, 0), ('B', 2, 1), ('C', 3, 0)],
+            names=['glomerulus', 'pn_id', 'bouton_id']
+        )
+        # KC1's two B claws on different boutons of B
+        col_of = {('A', 0): 0, ('A', 1): 0, ('B', 0): 1, ('B', 1): 1, ('B', 2): 2, ('C', 2): 3}
+        cols = [col_of[(g, kc)] for g, (kc, _, _) in zip(gloms, rows)]
+    else:
+        columns = pd.Index(['A', 'B', 'C'], name='glomerulus')
+        cols = [columns.get_loc(g) for g in gloms]
+    values = np.zeros((len(rows), len(columns)), dtype=np.int64)
+    values[np.arange(len(rows)), cols] = 1
+    index = pd.MultiIndex.from_tuples(rows, names=[KC_ID, CLAW_ID, KC_TYPE])
+    return pd.DataFrame(values, index=index, columns=columns)
+
+
+@pytest.mark.parametrize('multi_columns', [False, True])
+def test_coinput_counts_small(multi_columns):
+    from al_analysis.wpnkc_shuffles import coinput_counts
+
+    co = coinput_counts(_small_claw_wPNKC(multi_columns))
+    expected = pd.DataFrame([[2, 2, 0], [2, 3, 1], [0, 1, 1]], index=['A', 'B', 'C'],
+        columns=['A', 'B', 'C']
+    )
+    assert co.index.tolist() == ['A', 'B', 'C']
+    assert np.array_equal(co.to_numpy(), expected.to_numpy())
+
+
+def test_coinput_counts_hemibrain(wPNKCs):
+    from al_analysis.wpnkc_shuffles import coinput_counts
+
+    wPNKC = wPNKCs['claw']
+    co = coinput_counts(wPNKC)
+    assert np.array_equal(co.to_numpy(), co.to_numpy().T)
+    # the diagonal is each glomerulus' number of KCs
+    n_kcs = (kc_counts(wPNKC) > 0).sum()
+    assert np.array_equal(np.diag(co.to_numpy()), n_kcs.reindex(co.index).to_numpy())
+    # a claw permutation keeps the diagonal roughly and the shuffle summary's co-input
+    # correlation is computed from the same counts
+    co_kc = coinput_counts(wPNKCs['kc'])
+    assert co_kc.index.equals(wPNKCs['kc'].columns)
+
+
+@pytest.mark.parametrize('within_kc_type', [True, False])
+def test_lesion_coinput(wPNKCs, within_kc_type):
+    from al_analysis.wpnkc_shuffles import coinput_counts, lesion_coinput
+
+    wPNKC = wPNKCs['claw']
+    co = coinput_counts(wPNKC)
+    off = co.to_numpy().copy()
+    np.fill_diagonal(off, 0)
+    i, j = np.unravel_index(off.argmax(), off.shape)
+    top = (co.index[i], co.index[j])
+    # a second pair to reduce, and one to protect
+    i2, j2 = np.unravel_index(np.argsort(off.ravel())[-4], off.shape)
+    second = (co.index[i2], co.index[j2])
+    i3, j3 = np.unravel_index(np.argsort(off.ravel())[-9], off.shape)
+    protect = (co.index[i3], co.index[j3])
+    targets = {top: int(off[i, j]) - 6, second: int(off[i2, j2]) - 3}
+
+    lesioned, swaps = lesion_coinput(wPNKC, targets, seed=1, within_kc_type=within_kc_type,
+        protect=[protect]
+    )
+    assert lesioned.index.equals(wPNKC.index) and lesioned.columns.equals(wPNKC.columns)
+    assert lesioned.dtypes.equals(wPNKC.dtypes)
+    co2 = coinput_counts(lesioned)
+    # the listed pairs reached their targets (a later pair's swaps may take an earlier one
+    # lower, never higher) and the protected pair did not grow
+    assert co2.loc[top] <= targets[top] and co2.loc[second] <= targets[second]
+    assert co2.loc[top] >= targets[top] - 3
+    assert co2.loc[protect] == co.loc[protect]
+    # every margin kept: claws per KC, claws per glomerulus (per type if asked)
+    assert (lesioned.groupby(level=KC_ID).sum().sum(axis=1)
+        == wPNKC.groupby(level=KC_ID).sum().sum(axis=1)).all()
+    assert lesioned.sum().equals(wPNKC.sum())
+    if within_kc_type:
+        assert lesioned.groupby(level=KC_TYPE).sum().equals(wPNKC.groupby(level=KC_TYPE).sum())
+    summary = wPNKC_shuffle_summary(wPNKC, lesioned)
+    assert summary['kc_n_claws_preserved'] and summary['max_abs_glom_n_claws_change'] == 0
+    # the swaps table accounts for every changed claw
+    changed = (lesioned.to_numpy() != wPNKC.to_numpy()).any(axis=1)
+    assert set(np.flatnonzero(changed)) == set(swaps.claw_row) | set(swaps.partner_row)
+    assert len(swaps) > 0 and (swaps.moved != swaps.received).all()
+    # reproducible
+    again, _ = lesion_coinput(wPNKC, targets, seed=1, within_kc_type=within_kc_type,
+        protect=[protect]
+    )
+    assert again.equals(lesioned)
+    # a target at the current count changes nothing
+    same, no_swaps = lesion_coinput(wPNKC, {top: int(off[i, j])}, seed=1)
+    assert same.equals(wPNKC) and no_swaps.empty
+
+
+def test_lesion_coinput_errors(wPNKCs):
+    from al_analysis.wpnkc_shuffles import lesion_coinput
+
+    with pytest.raises(ValueError, match='one-row-per-claw'):
+        lesion_coinput(wPNKCs['kc'], {('DM1', 'DM4'): 0})
+
+    with pytest.raises(ValueError, match='not two glomeruli'):
+        lesion_coinput(wPNKCs['claw'], {('DM1', 'no_such_glomerulus'): 0})
+
+    with pytest.raises(ValueError, match='twice'):
+        lesion_coinput(wPNKCs['claw'], {('DM1', 'DM1'): 0})

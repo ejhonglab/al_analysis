@@ -7,7 +7,7 @@ Outputs of `shuffle_wPNKC` can be passed to `fit_mb_model` via its `_wPNKC` keyw
 the unshuffled matrix).
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -400,3 +400,202 @@ def wPNKC_shuffle_summary(original: pd.DataFrame, shuffled: pd.DataFrame
         'coinput_corr': float(coinput_corr),
         'coinput_resid_corr': float(coinput_resid_corr),
     }, dtype=object)
+
+
+def _column_groups(columns: pd.Index, by: Optional[str]) -> Tuple[np.ndarray, pd.Index]:
+    """Returns (group code per column, group labels): the columns grouped by MultiIndex
+    level `by` when they have it, else each column its own group.
+    """
+    if by is not None and isinstance(columns, pd.MultiIndex) and by in columns.names:
+        codes, groups = pd.factorize(columns.get_level_values(by))
+        return np.asarray(codes), pd.Index(groups)
+
+    return np.arange(len(columns)), pd.Index(columns)
+
+
+def coinput_counts(wPNKC: pd.DataFrame, by: Optional[str] = 'glomerulus') -> pd.DataFrame:
+    """Returns # of KCs with claws from both glomeruli of each glomerulus pair.
+
+    Args:
+        wPNKC: either `shuffle_wPNKC` format.
+        by: column level to group the columns by before counting (default 'glomerulus',
+            the first level of the bouton model's (glomerulus, pn_id, bouton_id) columns).
+            None, or a level the columns do not have, counts per column.
+
+    Returns symmetric (groups x groups) DataFrame of counts; the diagonal is each group's
+    number of KCs (with any claw from it).
+    """
+    counts = _kc_counts(wPNKC)
+    codes, groups = _column_groups(wPNKC.columns, by)
+    onehot = np.zeros((len(codes), len(groups)), dtype=np.int64)
+    onehot[np.arange(len(codes)), codes] = 1
+    binary = ((counts @ onehot) > 0).astype(np.int64)
+    return pd.DataFrame(binary.T @ binary, index=groups, columns=groups)
+
+
+def lesion_coinput(wPNKC: pd.DataFrame, targets: Dict[Tuple, int], *, seed: int = 0,
+    within_kc_type: bool = True, protect: Optional[Iterable[Tuple]] = None,
+    by: Optional[str] = 'glomerulus', max_tries: int = 2000
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns one-row-per-claw `wPNKC` with fewer KCs sharing each listed pair of glomeruli,
+    reduced by claw swaps that keep every margin, and the swaps made.
+
+    For each pair in `targets` (in order), while more KCs than its target have claws from
+    both its glomeruli: a random such KC gives up all its claws from the glomerulus of the
+    pair it has fewer claws from (ties random); each of those claws exchanges its column
+    (bouton) with a claw of a random other KC (of the same `KC_TYPE` with `within_kc_type`)
+    that has claws from neither glomerulus of the pair, chosen so that no pair in `targets`
+    or `protect` gains a KC (the partner claw's glomerulus may not form a listed pair with a
+    glomerulus the first KC keeps, nor the moved glomerulus with one the partner KC has) and
+    no pair in `protect` loses one either (neither KC may give up the last claw of a
+    glomerulus that forms a protected pair with another of its glomeruli). So every KC
+    keeps its number of claws, every column (bouton, hence glomerulus) its number of claws
+    (per KC type with `within_kc_type`), no listed pair gains a KC and protected pairs keep
+    their counts; a KC's number of distinct glomeruli and the counts of unlisted pairs
+    change incidentally, as under a claw permutation restricted to the swapped claws.
+
+    Args:
+        wPNKC: one row per claw (`CLAW_ID` index level), 0/1 values.
+        targets: {(glom_a, glom_b): target # of KCs}, glomeruli being labels of column
+            level `by` (or columns). A target at or above the current count changes
+            nothing for that pair.
+        seed: for `np.random.default_rng`. Output is reproducible for a given seed.
+        within_kc_type: partners come from the same `KC_TYPE` as the KC giving up a claw.
+        protect: pairs whose counts may not change (other targets may fall below their
+            targets incidentally, never rise).
+        max_tries: random partner draws per claw, and KC draws per pair, before giving up.
+
+    Returns (lesioned copy of `wPNKC`, DataFrame of the swaps: glom_a, glom_b (the pair
+    being reduced), n_before (its count before the step), kc, moved (the glomerulus the KC
+    gave up), partner_kc, received (the glomerulus it got), claw_row, partner_row (row
+    positions in `wPNKC`)).
+
+    Raises:
+        RuntimeError: a pair could not be brought to its target.
+    """
+    if CLAW_ID not in wPNKC.index.names:
+        raise ValueError('lesion_coinput needs one-row-per-claw wPNKC (a CLAW_ID index level)')
+
+    values = _wPNKC_values(wPNKC, True)
+    row_kc, n_kcs = _kc_codes(wPNKC)
+    claw_rows = np.flatnonzero(values.any(axis=1))
+    claw_col = values[claw_rows].argmax(axis=1)
+    claw_kc = row_kc[claw_rows]
+    col_group, groups = _column_groups(wPNKC.columns, by)
+    claw_glom = col_group[claw_col].copy()
+    n_gloms = len(groups)
+    gidx = {g: i for i, g in enumerate(groups)}
+    if within_kc_type:
+        kc_group = _kc_groups(wPNKC, row_kc, n_kcs)
+    else:
+        kc_group = np.zeros(n_kcs, dtype=np.int64)
+
+    def pair_idx(p) -> Tuple[int, int]:
+        if len(p) != 2 or p[0] not in gidx or p[1] not in gidx:
+            raise ValueError(f'pair {p!r} is not two glomeruli of the wiring')
+        if p[0] == p[1]:
+            raise ValueError(f'pair {p!r} names one glomerulus twice')
+        return gidx[p[0]], gidx[p[1]]
+
+    listed = np.zeros((n_gloms, n_gloms), dtype=bool)
+    for p in list(targets) + list(protect or ()):
+        a, b = pair_idx(p)
+        listed[a, b] = listed[b, a] = True
+    protected = np.zeros((n_gloms, n_gloms), dtype=bool)
+    for p in (protect or ()):
+        a, b = pair_idx(p)
+        protected[a, b] = protected[b, a] = True
+
+    counts = np.zeros((n_kcs, n_gloms), dtype=np.int64)
+    np.add.at(counts, (claw_kc, claw_glom), 1)
+    # the claws of each KC (swaps change a claw's column, never its KC)
+    order = np.argsort(claw_kc, kind='stable')
+    bounds = np.searchsorted(claw_kc[order], np.arange(n_kcs + 1))
+    kc_claws = [order[bounds[k]:bounds[k + 1]] for k in range(n_kcs)]
+    group_claws = {g: np.flatnonzero(kc_group[claw_kc] == g) for g in np.unique(kc_group)}
+    kc_ids = wPNKC.index.get_level_values(KC_ID)
+
+    rng = np.random.default_rng(seed)
+    new_col = claw_col.copy()
+    swaps: List[dict] = []
+
+    def partner_for(k: int, moved: int, other: int) -> Optional[int]:
+        """A claw (index into claw_rows) of another KC of k's group with neither `moved` nor
+        `other`, whose glomerulus can come to k without any listed pair gaining a KC."""
+        pool = group_claws[kc_group[k]]
+        keeps_k = counts[k] > 0
+        if counts[k, moved] == 1:
+            keeps_k = keeps_k.copy()
+            keeps_k[moved] = False
+        for _ in range(max_tries):
+            r2 = pool[rng.integers(len(pool))]
+            k2 = claw_kc[r2]
+            if k2 == k or counts[k2, moved] > 0 or counts[k2, other] > 0:
+                continue
+            x = claw_glom[r2]
+            if x == moved or listed[x][keeps_k].any():
+                continue
+            keeps_k2 = counts[k2] > 0
+            if counts[k2, x] == 1:
+                # k2 gives up x: no protected pair (x, y) may lose k2
+                if protected[x][keeps_k2].any():
+                    continue
+                keeps_k2 = keeps_k2.copy()
+                keeps_k2[x] = False
+            if listed[moved][keeps_k2].any():
+                continue
+            return int(r2)
+        return None
+
+    for p, target in targets.items():
+        a, b = pair_idx(p)
+        tries = 0
+        while True:
+            both = np.flatnonzero((counts[:, a] > 0) & (counts[:, b] > 0))
+            if len(both) <= target:
+                break
+            if tries >= max_tries:
+                raise RuntimeError(f'pair {p!r}: stuck at {len(both)} KCs sharing it '
+                    f'(target {target}) after {tries} attempts'
+                )
+            tries += 1
+            k = int(both[rng.integers(len(both))])
+            ca, cb = counts[k, a], counts[k, b]
+            prefer = [(a, b), (b, a)] if ca < cb or (ca == cb and rng.random() < 0.5) else [(b, a), (a, b)]
+            # k may not give up a glomerulus that forms a protected pair with another of its own
+            choice = [(m, o) for m, o in prefer if not protected[m][counts[k] > 0].any()]
+            if not choice:
+                continue
+            moved, other = choice[0]
+            n_before = len(both)
+            for r1 in [r for r in kc_claws[k] if claw_glom[r] == moved]:
+                r2 = partner_for(k, moved, other)
+                if r2 is None:
+                    # k keeps both glomeruli (its swaps so far still keep every margin);
+                    # another KC is tried
+                    break
+                k2, x = int(claw_kc[r2]), int(claw_glom[r2])
+                new_col[r1], new_col[r2] = new_col[r2], new_col[r1]
+                claw_glom[r1], claw_glom[r2] = x, moved
+                counts[k, moved] -= 1
+                counts[k, x] += 1
+                counts[k2, x] -= 1
+                counts[k2, moved] += 1
+                swaps.append(dict(glom_a=p[0], glom_b=p[1], n_before=n_before,
+                    kc=kc_ids[claw_rows[r1]], moved=groups[moved],
+                    partner_kc=kc_ids[claw_rows[r2]], received=groups[x],
+                    claw_row=int(claw_rows[r1]), partner_row=int(claw_rows[r2])
+                ))
+
+    new_values = np.zeros_like(values)
+    new_values[claw_rows, new_col] = 1
+    lesioned = pd.DataFrame(new_values, index=wPNKC.index.copy(),
+        columns=wPNKC.columns.copy()
+    )
+    if wPNKC.dtypes.nunique() > 1:
+        lesioned = lesioned.astype(wPNKC.dtypes.to_dict())
+
+    cols = ['glom_a', 'glom_b', 'n_before', 'kc', 'moved', 'partner_kc', 'received',
+        'claw_row', 'partner_row'
+    ]
+    return lesioned, pd.DataFrame(swaps, columns=cols)

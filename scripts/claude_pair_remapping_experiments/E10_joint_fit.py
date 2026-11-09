@@ -228,7 +228,8 @@ def tune_spike_only_base(orn: pd.DataFrame, claw_thr, spike_base: Dict[str, floa
 
 def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
     gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0, apl_drive: str = 'claws',
-    base_params: Optional[str] = None, info: Optional[dict] = None, input_tag: Optional[str] = None):
+    base_params: Optional[str] = None, info: Optional[dict] = None, input_tag: Optional[str] = None,
+    wiring_matrix: Optional[pd.DataFrame] = None, wiring_tag: Optional[str] = None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -246,6 +247,9 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     replaced by that shuffle of it at `wiring_seed` (E4's substrate nulls: claw counts per
     KC and per bouton kept, the assignment re-drawn), before any gain; the breadth is
     recomputed from the re-drawn wiring. For replication of a fit on a second draw (E30).
+    `wiring_matrix` (with `wiring_tag`, which names the cached APL-off run) replaces the
+    base's claw x bouton matrix by that matrix instead (same index and columns; e.g. a
+    targeted lesion of it, E52), likewise before any gain.
 
     With `apl_drive='spikes'` the base's tuned parameters must come from `base_params`
     ('FILE:KEY', e.g. E36's spike-driven base tuned at 5 %); the APL-off breadth is the same
@@ -301,6 +305,18 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         hal_path = out_dir / 'no_such_file'
         off_path = out_dir / (f'wiring-{wiring}-seed{int(wiring_seed)}_' + off_path.name)
         print(f'wiring re-drawn: {wiring}, seed {wiring_seed}', flush=True)
+    if wiring_matrix is not None:
+        if wiring is not None:
+            raise ValueError('pass wiring (a named shuffle) or wiring_matrix, not both')
+        if wiring_tag is None:
+            raise ValueError('wiring_matrix needs wiring_tag (it names the cached APL-off run)')
+        if not (wiring_matrix.index.equals(wPNKC.index) and wiring_matrix.columns.equals(wPNKC.columns)):
+            raise ValueError("wiring_matrix must have the base wiring's index and columns")
+        wPNKC = wiring_matrix
+        kws = dict(kws, _wPNKC=wPNKC)
+        hal_path = out_dir / 'no_such_file'
+        off_path = out_dir / (f'wiring-{wiring_tag}_' + off_path.name)
+        print(f'wiring replaced: {wiring_tag}', flush=True)
     if gain is not None and gain != 1.0:
         from E27_glomerulus_gain import ORACLE, gained
         gloms = list(gain_gloms) if gain_gloms else list(ORACLE)
