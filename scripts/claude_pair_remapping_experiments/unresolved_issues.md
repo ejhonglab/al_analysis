@@ -41,7 +41,8 @@ directory's notes/ and are linked from here.
   (atlas, 2026-11-08 18:39; template 23977e5).
 - **Done.** E10_joint_fit.py's provenance now always records the seed fit (`init_from`,
   `init_from_experiment`) and the start mode (`init_from_exact`).
-- **Remains.** The same annotation in E46's and E47's notes (viki, hal); repeat
+- **Done.** E46's note carries the caveat (viki, 2026-11-08 18:41; its caveats list; page republished from one of Tom's hosts).
+- **Remains.** The same annotation in E47's note (hal); repeat
   E48's three re-fits with `--init-from-exact` if the block-target question stays open after E51.
 
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
