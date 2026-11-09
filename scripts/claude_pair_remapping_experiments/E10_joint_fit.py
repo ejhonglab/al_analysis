@@ -44,7 +44,8 @@ Bound controls (E31): `--aplpn-max F`, `--aplpn-fixed F`, `--aplkc-min F` bound 
 APL->KC scales relative to the base's tuned values (use --tag to name the variant).
 KC-KC held (the KC-KC-held fits proposed from E51): `--kckc-fixed S` holds the KC-KC scale (kc_kc_inh) at S and fits the other three
 parameters; with --init-from the start is the seed's parameters with its KC-KC replaced by S; tag
-prefix kckc<S>_ (after the block prefix).
+prefix kckc<S>_ (after the block prefix). --loss rho (E63) puts rho<W>_ (W the matrix terms' weight) after the block
+prefix.
 The block term on the proxy (E60): `--block-proxy PASSES` computes the block term on the batched
 network-aware proxy's block through the noise (noise_proxy.py: at every evaluation two extra simulations
 per condition, the voltages saved, every KC's drive reconstructed and replayed at the trial-noise
@@ -402,6 +403,24 @@ def breadth_weights(wAPLKC0: pd.Series, breadth: pd.Series, k: float) -> pd.Seri
 
 
 STRUCTURE_WEIGHTS = dict(wt_dev=1.0, vcf_off=1.0, excess_on=0.5)
+# the two-rho loss (E63): the two matrix terms first, the per-odor rate terms, the operating point and
+# the rate ratio kept as constraints, the block, monotonicity and structure terms reported but not optimized
+RHO_WEIGHTS = dict(on_mat=4.0, off_mat=4.0, block=0.0, iso=0.0, wt_dev=0.0, vcf_off=0.0, excess_on=0.0)
+LOSS_VARIANTS = ('base', 'structure', 'rho')
+
+
+def loss_weights(variant: str) -> dict:
+    """The term weights of a loss variant: 'base' (E10), 'structure' (E25: the structure terms added),
+    'rho' (E63: the structure statistics computed, the two matrix terms at 4, block / monotonicity / structure
+    at 0)."""
+    if variant not in LOSS_VARIANTS:
+        raise ValueError(f'{variant=} not in {LOSS_VARIANTS}')
+    w = dict(LOSS_WEIGHTS)
+    if variant in ('structure', 'rho'):
+        w.update(STRUCTURE_WEIGHTS)
+    if variant == 'rho':
+        w.update(RHO_WEIGHTS)
+    return w
 # data: structure beyond the ORN input vs wild-type somata (APL on), natural-source alignment
 # of the APL-off residual, and block excess - other excess (APL on)
 WT_DEV_TARGET, VCF_OFF_TARGET = H.data_target('ctrl_struct_wt'), H.data_target('tnt_vcf')
@@ -463,8 +482,12 @@ def trial_mean(runs: list) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series,
     drive: pd.Series, ref: Optional[pd.DataFrame] = None, structure: bool = False,
     rate_target: float = RATE_TARGET, block_target: float = BLOCK_TARGET, jitter_k: int = 0,
-    jitter_terms: str = 'block', jitter_trials: Optional[int] = None, proxy: Optional[dict] = None):
-    """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). With `proxy`
+    jitter_terms: str = 'block', jitter_trials: Optional[int] = None, proxy: Optional[dict] = None,
+    variant: Optional[str] = None):
+    """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). `variant` names the
+    weight set (`loss_weights`; default 'structure' with `structure=True`, else 'base'); 'rho' (E63) computes
+    the structure statistics but weights only the two matrix terms, the rates, the operating point and the
+    ratio. With `proxy`
     (E60; n_recordings, n_trials, n_spikes_for_response) the outputs carry 'proxy', the batched
     network-aware proxy's trial spike counts per condition, and the block term is computed on their
     pipeline statistics (noise_proxy.pipeline_pairs) instead of the deterministic distances; the
@@ -496,7 +519,11 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         raise ValueError(f'jitter_trials {jitter_trials} must divide jitter_k {jitter_k}')
     ratio_target = float(data_rates['TNT'].reindex(H.APL16_ODORS).mean() /
         data_rates['TNT3c'].reindex(H.APL16_ODORS).mean())
-    weights = dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if structure else {}))
+    if variant is None:
+        variant = 'structure' if structure else 'base'
+    if variant == 'rho' and not structure:
+        raise ValueError("variant='rho' needs structure=True (its statistics are reported)")
+    weights = loss_weights(variant)
     ctrl = data['raw']['TNT3c']
     tnt = data['raw']['TNT']
     v = H.PRIMARY_MODEL_RDM
@@ -835,8 +862,10 @@ def main() -> None:
     ap.add_argument('--tag', default='', help='suffix for this run (e.g. a second start)')
     ap.add_argument('--experiment', default=EXPERIMENT,
         help='results / outputs folder name (E25 uses E25_joint_fit_structure)')
-    ap.add_argument('--loss', choices=['base', 'structure'], default='base',
-        help="'structure' adds the structure-beyond-ORN and APL-on excess-profile terms (E25)")
+    ap.add_argument('--loss', choices=list(LOSS_VARIANTS), default='base',
+        help="'structure' adds the structure-beyond-ORN and APL-on excess-profile terms (E25); 'rho' puts the two "
+        "matrix terms first (weight 4 each) with the per-odor rate terms, the operating point and the rate ratio as "
+        "constraints and the block, monotonicity and structure terms at 0, reported not optimized (E63)")
     ap.add_argument('--init-from-experiment', default='E10_joint_fit',
         help='experiment whose fits.csv --init-from reads')
     ap.add_argument('--init-from', default=None, metavar='TAG',
@@ -1005,7 +1034,7 @@ def main() -> None:
             thr_ratio=p_ratio, thr_ratio_source=p_ratio_src, n_recordings=int(args.proxy_recordings),
             n_trials=int(args.proxy_trials), seed=int(args.proxy_seed), n_spikes_for_response=2)
         proxy_tag = f'proxyP{proxy["passes"]}' + ('r' if proxy['relax'] else '') + '_'
-    loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss == 'structure'),
+    loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss in ('structure', 'rho')), variant=args.loss,
         rate_target=rate_target, block_target=block_target, jitter_k=jit_k, jitter_terms=args.jitter_terms,
         jitter_trials=args.jitter_trials, proxy=proxy)
     if proxy is not None:
@@ -1036,8 +1065,9 @@ def main() -> None:
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
     kckc_tag = '' if args.kckc_fixed is None else f'kckc{args.kckc_fixed:g}_'
+    loss_tag = f"rho{loss_weights('rho')['on_mat']:g}_" if args.loss == 'rho' else ''
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + kckc_tag + proxy_tag + jit_tag
+        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
         jit_factors = jitter_factors(jit_k, len(breadth), jit_sigma, args.jitter_seed, jit_scale)
@@ -1181,14 +1211,14 @@ def main() -> None:
                 'index, rec, rep)) for the given passes, each KC\'s KC-KC inhibition from the other KCs\' spikes of the previous pass '
                 '(pass 1: the deterministic run\'s); the block (the pipeline\'s three-trial-mean distances, isotonic excess) of the '
                 'last pass replaces the deterministic block in the block term; everything else deterministic'))) if proxy is not None else {}),
-            loss_weights=dict(LOSS_WEIGHTS, **(STRUCTURE_WEIGHTS if args.loss == 'structure' else {})),
+            loss_weights=loss_weights(args.loss),
             block_target=loss_fn.block_target, block_target_spec=args.block_target,
             block_scale=BLOCK_SCALE, rate_target=loss_fn.rate_target, rate_target_spec=args.rate_target,
             ratio_target=loss_fn.ratio_target,
             ratio_log_scale=RATIO_LOG_SCALE, iso_target=ISO_TARGET, iso_scale=ISO_SCALE,
             **(dict(wt_dev_target=WT_DEV_TARGET, vcf_off_target=VCF_OFF_TARGET,
                 excess_diff_target=EXCESS_DIFF_TARGET, excess_diff_scale=EXCESS_DIFF_SCALE)
-                if args.loss == 'structure' else {}),
+                if args.loss in ('structure', 'rho') else {}),
             data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
             # (the seed fit and the start mode, so a chained fit's start is explained: see
