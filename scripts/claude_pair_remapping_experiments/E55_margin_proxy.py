@@ -157,6 +157,23 @@ def label_of(name: str) -> str:
     return f'{base}, {kind} ({exp})'
 
 
+def kc_kc_scale(name: str, src: dict) -> float:
+    """The model's KC-KC scale (kc_kc_inh): the fits.csv row's (or the history row's, for a vertex);
+    0 for base70."""
+    if name == 'base70':
+        return 0.0
+    exp, tag, ev = src['fit_experiment'], src['fit_tag'], src['fit_eval']
+    if exp is None:
+        exp, tag = E43.FIT_MODELS[name]
+    if ev is None:
+        return float(E43.fit_row(exp, tag)['kc_kc_inh'])
+    r = E43.history_row(exp, tag, ev)
+    for col in ('kc_kc_inh', 'wKCKC_scale'):
+        if col in r.index:
+            return float(r[col])
+    return float('nan')
+
+
 def pair_excess(pairs: pd.DataFrame, col: str) -> pd.Series:
     """Per pair, the APL-on distance's residual from the isotonic fit on the APL-off distance."""
     def series(p):
@@ -422,14 +439,17 @@ def fmt(x, spec='+.3f', missing=''):
 
 
 def write_table(per_model: pd.DataFrame, out: Path, agree: pd.DataFrame) -> None:
-    head = ('| model | block, deterministic | block through the noise, three-trial means: pipeline / replay model | grand mean of '
-        '30 trials: pipeline / replay model | single-trial floor, APL on: pipeline / replay | response rate per trial, APL on / off: '
-        'pipeline | the same, replay model | APL-on responses within one σ | APL-made carriers\' return probability | margins (s) | '
-        'replay (s) |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n')
+    head = ('| model | KC-KC scale / fixed threshold | block, deterministic | block through the noise, three-trial means: pipeline / '
+        'replay model | grand mean of 30 trials: pipeline / replay model | single-trial floor, APL on: pipeline / replay | the network\'s '
+        'share (pipeline minus replay): block / floor | response rate per trial, APL on / off: pipeline | the same, replay model | APL-on '
+        'responses within one σ | APL-made carriers\' return probability | margins (s) | replay (s) |\n'
+        '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n')
     rows = []
     for _, r in per_model.iterrows():
-        rows.append(f"| {r['label']} | {fmt(r['block_det'])} | {fmt(r['obs_block_raw'])} / {fmt(r['pred_block_raw'])} | "
+        rows.append(f"| {r['label']} | {fmt(r['kc_kc_scale'], '.1f')} / {fmt(r['fixed_thr_det'], '.0f')} | {fmt(r['block_det'])} | "
+            f"{fmt(r['obs_block_raw'])} / {fmt(r['pred_block_raw'])} | "
             f"{fmt(r['obs_block_grand'])} / {fmt(r['pred_block_grand'])} | {fmt(r['obs_floor1_on'], '.2f')} / {fmt(r['pred_floor1_on'], '.2f')} | "
+            f"{fmt(r['net_block_raw'])} / {fmt(r['net_floor1_on'], '+.2f')} | "
             f"{fmt(r['obs_rate_on'], '.3f')} / {fmt(r['obs_rate_off'], '.3f')} | {fmt(r['pred_rate_on'], '.3f')} / {fmt(r['pred_rate_off'], '.3f')} | "
             f"{fmt(100 * r['frac_resp_within_sigma_on'], '.0f')} % | {fmt(r['mean_p_change_apl_made_other_on'], '.2f')} | "
             f"{fmt(r['margin_seconds'], '.0f')} | {fmt(r['replay_seconds'], '.0f')} |")
@@ -443,7 +463,8 @@ def make_figures(per_model: pd.DataFrame, per_pair: pd.DataFrame, out: Path) -> 
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.4))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 11))
+    axes = axes.ravel()
     for ax, matrix, title in ((axes[0], 'raw', 'three-trial means over ten pseudo-recordings'), (axes[1], 'grand', 'grand mean over all 30 trials')):
         x, y = per_model[f'obs_block_{matrix}'], per_model[f'pred_block_{matrix}']
         lim = (min(0, x.min(), y.min()) - 0.005, max(x.max(), y.max()) + 0.008)
@@ -456,6 +477,17 @@ def make_figures(per_model: pd.DataFrame, per_pair: pd.DataFrame, out: Path) -> 
             ylabel='block, replay model (margins only; same draws)', title=f'fruity × small-ester block: {title}')
         ax.grid(alpha=0.3)
     ax = axes[2]
+    x = per_model['kckc_over_thr']
+    ax.scatter(x, per_model['net_floor1_on'], s=34, color='#6a4c93', zorder=3, label="APL-on single-trial floor")
+    ax.scatter(x, per_model['net_block_raw'], s=34, color='#2b6cb0', marker='s', zorder=3, label='block, three-trial means')
+    ax.axhline(0, color='0.5', lw=0.8)
+    for _, r in per_model.iterrows():
+        ax.annotate(r['short'], (r['kckc_over_thr'], r['net_floor1_on']), fontsize=6.5, textcoords='offset points', xytext=(4, 3))
+    ax.set(xlabel='KC-KC scale / fixed threshold (the KC-KC inhibition in units of the threshold)',
+        ylabel="the network's share: pipeline minus replay model", title="what the margins miss, against the KC-KC strength")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    ax = axes[3]
     x = per_model['block_det'] - per_model['obs_block_raw']
     y = per_model['frac_resp_within_sigma_on']
     ax.scatter(x, y, s=34, color='#d9480f', zorder=3)
@@ -548,9 +580,11 @@ def main() -> None:
         pred = process(trials, n_resp)
         ms = margin_stats(n, kc, info['sigma'], excess_det)
         ms_rows.append(dict(model=n, label=label_of(n), sigma=info['sigma'], thr_ratio=checks['thr_ratio'], **ms))
+        kckc = kc_kc_scale(n, src)
         row = dict(model=n, label=label_of(n), short=short_label(n), partb_experiment=info['partb_experiment'], level=info['level'],
             sigma=info['sigma'], thr_ratio=checks['thr_ratio'], seed=info['seed'], n_recordings=info['n_recordings'],
-            n_trials=info['n_trials'], block_det=bdet, **src)
+            n_trials=info['n_trials'], block_det=bdet, kc_kc_scale=kckc, fixed_thr_det=info['fixed_thr_det'],
+            kckc_over_thr=kckc / info['fixed_thr_det'], **src)
         for how in HOWS:
             suf = '' if how == 'graded' else '_thresholded'
             for matrix in MATRICES:
@@ -561,6 +595,9 @@ def main() -> None:
                     k2 = key.replace('rate_trial', 'rate')
                     row[f'obs_{k2}_{cl}{suf}'] = obs[(how, cond)][key]
                     row[f'pred_{k2}_{cl}{suf}'] = pred[(how, cond)][key]
+        # the network's share: what the pipeline shows beyond the replay model (its reaction to the jitter)
+        row.update(net_block_raw=row['obs_block_raw'] - row['pred_block_raw'], net_block_grand=row['obs_block_grand'] - row['pred_block_grand'],
+            net_floor1_on=row['obs_floor1_on'] - row['pred_floor1_on'], net_floor1_off=row['obs_floor1_off'] - row['pred_floor1_off'])
         row.update({k: ms[k] for k in ('frac_resp_within_sigma_on', 'frac_resp_within_sigma_acute_off', 'mean_p_lose_on',
             'mean_p_change_apl_made_other_on', 'mean_p_change_carriers_resp_on')})
         row.update(margin_seconds=checks['margin_seconds'], replay_seconds=checks['replay_seconds'],
@@ -582,18 +619,26 @@ def main() -> None:
             f"rates on {row['obs_rate_on']:.4f} / {row['pred_rate_on']:.4f} off {row['obs_rate_off']:.4f} / {row['pred_rate_off']:.4f}; "
             f"margins {checks['margin_seconds']:.0f}s, replay {checks['replay_seconds']:.0f}s", flush=True)
     per_model, per_pair = pd.DataFrame(pm_rows), pd.DataFrame(pp_rows)
+    # (the key column names each row for the summary template's placeholders)
     ag_rows = []
-    for stat, pred_c, obs_c in (('block, three-trial means', 'pred_block_raw', 'obs_block_raw'),
-            ('block, grand mean', 'pred_block_grand', 'obs_block_grand'),
-            ('block, three-trial means (thresholded)', 'pred_block_raw_thresholded', 'obs_block_raw_thresholded'),
-            ('single-trial floor, APL on', 'pred_floor1_on', 'obs_floor1_on'), ('single-trial floor, APL off', 'pred_floor1_off', 'obs_floor1_off'),
-            ('response rate per trial, APL on', 'pred_rate_on', 'obs_rate_on'), ('response rate per trial, APL off', 'pred_rate_off', 'obs_rate_off'),
-            ('mean pair distance, three-trial means, APL on', 'pred_mean_dist_raw_on', 'obs_mean_dist_raw_on'),
-            ('mean pair distance, three-trial means, APL off', 'pred_mean_dist_raw_off', 'obs_mean_dist_raw_off')):
-        ag_rows.append(dict(statistic=stat, **agreement(per_model, pred_c, obs_c)))
-    ag_rows.append(dict(statistic='pair excess, three-trial means (all pairs x models)', **agreement(per_pair, 'pred_excess_raw', 'obs_excess_raw')))
-    ag_rows.append(dict(statistic='block lost (det minus three-trial means) against the APL-on fraction within one sigma',
+    for key, stat, pred_c, obs_c in (('block_raw', 'block, three-trial means', 'pred_block_raw', 'obs_block_raw'),
+            ('block_grand', 'block, grand mean', 'pred_block_grand', 'obs_block_grand'),
+            ('block_raw_thresholded', 'block, three-trial means (thresholded)', 'pred_block_raw_thresholded', 'obs_block_raw_thresholded'),
+            ('floor_on', 'single-trial floor, APL on', 'pred_floor1_on', 'obs_floor1_on'),
+            ('floor_off', 'single-trial floor, APL off', 'pred_floor1_off', 'obs_floor1_off'),
+            ('rate_on', 'response rate per trial, APL on', 'pred_rate_on', 'obs_rate_on'),
+            ('rate_off', 'response rate per trial, APL off', 'pred_rate_off', 'obs_rate_off'),
+            ('mean_dist_on', 'mean pair distance, three-trial means, APL on', 'pred_mean_dist_raw_on', 'obs_mean_dist_raw_on'),
+            ('mean_dist_off', 'mean pair distance, three-trial means, APL off', 'pred_mean_dist_raw_off', 'obs_mean_dist_raw_off')):
+        ag_rows.append(dict(key=key, statistic=stat, **agreement(per_model, pred_c, obs_c)))
+    ag_rows.append(dict(key='pair_excess_raw', statistic='pair excess, three-trial means (all pairs x models)',
+        **agreement(per_pair, 'pred_excess_raw', 'obs_excess_raw')))
+    ag_rows.append(dict(key='within_sigma_vs_lost', statistic='block lost (det minus three-trial means) against the APL-on fraction within one sigma',
         **agreement(per_model.assign(lost=per_model['block_det'] - per_model['obs_block_raw']), 'frac_resp_within_sigma_on', 'lost')))
+    ag_rows.append(dict(key='net_floor_vs_kckc', statistic="the network's share of the APL-on floor (pipeline minus replay) against KC-KC scale / fixed threshold",
+        **agreement(per_model, 'kckc_over_thr', 'net_floor1_on')))
+    ag_rows.append(dict(key='net_block_vs_kckc', statistic="the network's share of the block (pipeline minus replay, absolute) against KC-KC scale / fixed threshold",
+        **agreement(per_model.assign(net_abs=per_model['net_block_raw'].abs()), 'kckc_over_thr', 'net_abs')))
     agree = pd.DataFrame(ag_rows)
     agree.to_csv(out / 'agreement.csv', index=False)
     write_table(per_model, out, agree)
