@@ -98,6 +98,9 @@ LIFECYCLE_EVENTS = {
     'PermissionRequest', 'PreCompact', 'PostCompact', 'UserPromptSubmit',
 }
 TITLE_TICK = re.compile(r'\s*__set_session_title__\s+(\S.{0,63}?)\s*')
+# prompts the harness submits itself (the hook event does not say who typed a prompt)
+NOTIFICATION_TEXT = re.compile(r'\s*(<task-notification|<system-reminder|<cross-session-message'
+    r'|Another Claude session sent a message|\[Cross-session|\[Artifact comment)')
 # typed prompts that are queue commands rather than requests of Tom's own (see prompt_mode)
 QUEUE_JOIN = re.compile(r'\bjoin\b.*\bqueue\b|\bqueue\b.*\bjoin\b', re.I | re.S)
 ACKNOWLEDGEMENTS = {'ok', 'okay', 'continue', 'go on', 'proceed', 'resume', 'carry on', 'yes'}
@@ -289,13 +292,16 @@ def update(rec, d, host, now):
         rec['ended'] = iso(now)
         rec['end_reason'] = d.get('reason')
     elif event == 'UserPromptSubmit':
-        m = TITLE_TICK.fullmatch(d.get('prompt') or '')
+        text = d.get('prompt') or ''
+        m = TITLE_TICK.fullmatch(text)
         if m:
             rec['label'] = m.group(1)
         # a hint for the monitor until the next usage sample attributes the tokens exactly
-        # (the transcript's prompt tags decide; see scan_usage)
-        rec['work_mode'] = prompt_mode(d.get('prompt'))
-        rec['work_mode_since'] = iso(now)
+        # (the transcript's prompt tags decide; see scan_usage); a task notification, a peer
+        # message or a reminder is not a prompt anyone typed and leaves the mode alone
+        if not NOTIFICATION_TEXT.match(text):
+            rec['work_mode'] = prompt_mode(text)
+            rec['work_mode_since'] = iso(now)
     elif event in ('PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest'):
         rec['last_tool'] = d.get('tool_name')
 

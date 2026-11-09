@@ -347,12 +347,19 @@ def test_usage_collect_and_render(tmp_path):
     assert '<td>hal</td><td class="nw">1 / 0</td><td class="nw">7k</td><td class="nw">1k' in usage_html
     assert '<td>viki</td><td class="nw">0 / 1</td><td class="nw">900</td>' in usage_html
     assert '(100.0 %)</span></td><td class="nw">0</td></tr>' in usage_html
-    assert '&#9745; queue work only' in usage_html and '&#9745; queue sessions only' in usage_html
+    assert '<b title="the queue sessions (those that watch chat.md), without the turns that' in usage_html
+    assert '>queue sessions only</a>' in usage_html and '>all work</a>' in usage_html
     assert '&#9744; group hosts by Claude account' in usage_html
-    everything = server.render(st, 30, server.parse_opts('tokens=output&work=all&sessions=all'))
+    assert server.parse_opts('tokens=output&work=all&sessions=all')['scope'] == 'all'
+    everything = server.render(st, 30, server.parse_opts('tokens=output&scope=all'))
     everything = everything[everything.index('<h2>Usage'):everything.index('<h2>Recent chat')]
     assert '>hal (7k)<' in everything and '>viki (900)<' in everything
-    grouped = server.render(st, 30, server.parse_opts('group=account&tokens=output&work=all'))
+    assert '<b title="every session started in the experiments folder, all of its work">all work</b>' in everything
+    # queue sessions only: hal's manual work counts, viki's session does not
+    qs = server.render(st, 30, server.parse_opts('tokens=output&scope=queue_sessions'))
+    qs = qs[qs.index('<h2>Usage'):qs.index('<h2>Recent chat')]
+    assert '>hal (7k)<' in qs and '>viki (' not in qs
+    grouped = server.render(st, 30, server.parse_opts('group=account&tokens=output&scope=queue_sessions'))
     grouped = grouped[grouped.index('<h2>Usage'):grouped.index('<h2>Recent chat')]
     assert '&#9745; group hosts by Claude account' in grouped
     assert 'Tom (Max): atlas, hal (11k)' in grouped
@@ -362,8 +369,9 @@ def test_usage_collect_and_render(tmp_path):
     chat = html[html.index('<h2>Recent chat'):html.index('<h2>Claude sessions')]
     assert '<details class="chat"><summary>second</summary><pre>second\nwith a second line</pre>' in chat
     assert '<details' not in chat.split('third')[0].rsplit('<tr>', 1)[-1]
-    assert server.parse_opts('days=99&tokens=bogus&work=x') == dict(days=3, tokens='all',
-        group='host', work='queue', sessions='queue')
+    assert server.parse_opts('days=99&tokens=bogus&work=x&scope=y') == dict(days=3, tokens='all',
+        group='host', scope='queue_work')
+    assert server.parse_opts('work=all')['scope'] == 'queue_sessions'
 
 
 def test_model_names():
@@ -571,6 +579,16 @@ def test_hook_writes_usage_samples(dirs, tmp_path):
     assert r.returncode == 0 and 'manual work from' in r.stdout
     rec = json.loads((Path(env['KC_PRESENCE_CACHE']) / 's5.json').read_text())
     assert rec['work_mode'] == 'manual' and record(shared, 's5')['work_mode'] == 'manual'
+    # the harness's own prompts (a background task's notification, a peer message) are not
+    # requests and leave the hint alone; a typed "ok" is a queue command
+    hook(env, 'UserPromptSubmit', prompt='<task-notification>\n<task-id>b1</task-id>', **kw)
+    assert record(shared, 's5')['work_mode'] == 'manual'
+    hook(env, 'UserPromptSubmit', prompt='Another Claude session sent a message:\n<cross-session-message from="x">hi</cross-session-message>', **kw)
+    assert record(shared, 's5')['work_mode'] == 'manual'
+    hook(env, 'UserPromptSubmit', prompt='ok', **kw)
+    assert record(shared, 's5')['work_mode'] == 'queue'
+    hook(env, 'UserPromptSubmit', prompt='please look at the fits', **kw)
+    assert record(shared, 's5')['work_mode'] == 'manual'
     # a mark in the past: inserted in order, the transcript re-read at the next sample
     r = subprocess.run([sys.executable, '-I', str(HERE / 'presence_hook.py'), '--mark', 'queue',
         's5', '--at', '2026-11-08T02:31:00-08:00'], env=env, capture_output=True, text=True)

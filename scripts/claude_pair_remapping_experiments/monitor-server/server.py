@@ -709,18 +709,29 @@ def parse_opts(query):
         days = int(one('days') or USAGE_DEFAULT_DAYS)
     except ValueError:
         days = USAGE_DEFAULT_DAYS
+    scope = one('scope')
+    if scope not in {k for k, _, _ in SCOPES}:
+        # links from before the three-way choice carried work= and sessions=
+        scope = ('all' if one('sessions') == 'all' else 'queue_sessions') if one('work') == 'all' \
+            else 'queue_work'
     return {
         'days': days if days in USAGE_DAYS else USAGE_DEFAULT_DAYS,
         'tokens': one('tokens') if one('tokens') in TOKEN_MEASURES else 'all',
         'group': 'account' if one('group') == 'account' else 'host',
-        # 'queue': the turns Tom's typed prompts started are left out; 'all': every token
-        'work': 'all' if one('work') == 'all' else 'queue',
-        # 'queue': sessions that watch chat.md (queue workers) only; 'all': every session
-        'sessions': 'all' if one('sessions') == 'all' else 'queue',
+        'scope': scope,
     }
 
 
-OPT_KEYS = ('days', 'tokens', 'group', 'work', 'sessions')
+OPT_KEYS = ('days', 'tokens', 'group', 'scope')
+# what the usage plots count: key, label, explanation
+SCOPES = (
+    ('queue_work', 'queue work only', 'the queue sessions (those that watch chat.md), without the '
+        "turns that prompts typed into a session started (Tom's requests), until the agent "
+        'marks the session back as queue work'),
+    ('queue_sessions', 'queue sessions only', 'everything the queue sessions did, manual work '
+        'included; other sessions started in the experiments folder are left out'),
+    ('all', 'all work', 'every session started in the experiments folder, all of its work'),
+)
 
 
 def opts_href(opts, **change):
@@ -869,7 +880,7 @@ def options_table(sessions, t0, t1, opts):
         if not whole:
             return fmt_tokens(v)
         return '{} <span class="muted">({:.1f} %)</span>'.format(fmt_tokens(v), 100.0 * v / whole)
-    queue_work, queue_only = opts['work'] == 'queue', opts['sessions'] == 'queue'
+    queue_work, queue_only = opts['scope'] == 'queue_work', opts['scope'] != 'all'
     rows = []
     for h in sorted({s['host'] for s in sessions}):
         ss = [s for s in sessions if s['host'] == h]
@@ -884,7 +895,7 @@ def options_table(sessions, t0, t1, opts):
             share(total(so, 'all'), everything), fmt_tokens(shown)))
     return ('<div class="wrap"><table><tr><th>host</th><th>sessions<br>queue / other</th>'
         '<th>tokens, {}<br>last {} d, everything</th><th>manual work<br>(left out by "queue work '
-        'only")</th><th>in other sessions<br>(left out by "queue sessions only")</th>'
+        'only")</th><th>in other sessions<br>(left out unless "all work")</th>'
         '<th>shown in the plots</th></tr>{}</table></div>'.format(
         esc(TOKEN_MEASURES[opts['tokens']]), opts['days'], ''.join(rows)))
 
@@ -909,18 +920,14 @@ def usage_html(state, now, opts):
             '&#9745;' if on else '&#9744;', text)
     box = checkbox(grouped, opts_href(opts, group='host' if grouped else 'account'),
         'group hosts by Claude account', 'sum the hosts that use one claude.ai account')
-    queue_work = opts['work'] == 'queue'
-    queue_only = opts['sessions'] == 'queue'
-    box_work = checkbox(queue_work, opts_href(opts, work='all' if queue_work else 'queue'),
-        'queue work only', "leave out the turns that prompts typed into a session started "
-        "(Tom's requests), until the agent marks the session back as queue work")
-    box_sess = checkbox(queue_only, opts_href(opts, sessions='all' if queue_only else 'queue'),
-        'queue sessions only', 'only sessions that watch chat.md (the queue workers); other '
-        'sessions started in the experiments folder are left out')
+    queue_work = opts['scope'] == 'queue_work'
+    queue_only = opts['scope'] != 'all'
+    work = ' | '.join(('<b title="{2}">{0}</b>' if k == opts['scope']
+        else '<a href="{1}" title="{2}">{0}</a>').format(esc(label), esc(opts_href(opts, scope=k)),
+        esc(title)) for k, label, title in SCOPES)
     w('<div class="controls">last {}<span class="sep">&middot;</span>tokens: {}'
-        '<span class="sep">&middot;</span>{}<span class="sep">&middot;</span>{}'
-        '<span class="sep">&middot;</span>{}</div>'.format(' | '.join(links), ' | '.join(tok),
-        box, box_work, box_sess))
+        '<span class="sep">&middot;</span>work: {}<span class="sep">&middot;</span>{}</div>'.format(
+        ' | '.join(links), ' | '.join(tok), work, box))
     if not sessions:
         w('<p class="muted">No usage samples yet (<code>usage/</code> in the shared directory, '
             'written by presence_hook.py every 15 min).</p>')
@@ -952,7 +959,7 @@ def usage_html(state, now, opts):
         series = []
         for name, color, ss in entities:
             pts = step_series([[(x['epoch'], token_value(x['tokens'], prefix, opts['tokens'],
-                opts['work'])) for x in s['samples']] for s in ss], t0, t1)
+                'queue' if queue_work else 'all')) for x in s['samples']] for s in ss], t0, t1)
             if any(v for _, v in pts):
                 series.append({'label': '{} ({})'.format(name, fmt_tokens(pts[-1][1])),
                     'color': color, 'points': pts, 'step': True})
@@ -964,7 +971,8 @@ def usage_html(state, now, opts):
         w('</div>')
         return series
 
-    what = TOKEN_MEASURES[opts['tokens']] + (', queue work' if queue_work else '')
+    what = TOKEN_MEASURES[opts['tokens']] + {'queue_work': ', queue work',
+        'queue_sessions': ', queue sessions', 'all': ', all sessions'}[opts['scope']]
     token_plot('', 'Tokens per {} ({}, cumulative over the window)'.format(
         'Claude account' if grouped else 'host', what), 'tokens over time')
     token_plot('fable_', 'Tokens on Fable models per {} ({}, cumulative)'.format(
@@ -1006,7 +1014,7 @@ def usage_html(state, now, opts):
             esc(datetime.fromtimestamp(j['epoch']).strftime('%b %-d %H:%M')))
             for h, j in sorted(a['joined'].items()))
         tokens = sum(step_series([[(x['epoch'], token_value(x['tokens'], '', opts['tokens'],
-            opts['work'])) for x in s['samples']]], t0, t1)[-1][1]
+            'queue' if queue_work else 'all')) for x in s['samples']]], t0, t1)[-1][1]
             for s in sessions if hosts.get(s['host']) == key)
         rows.append('<tr><td><span class="sw" style="border-color: {}"></span>{}</td><td>{}</td>'
             '<td class="nw">{}</td><td class="nw">{}</td><td>{}</td><td class="nw">{}</td>'

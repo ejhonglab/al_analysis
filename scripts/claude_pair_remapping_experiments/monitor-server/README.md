@@ -27,10 +27,13 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
   and hover text on every sample:
   - tokens per host, cumulative over the window: all tokens, all but cache reads, or output
     tokens only (links); tick "group hosts by Claude account" to sum the hosts that use one
-    claude.ai account. By default only queue work in queue sessions is counted: "queue work
-    only" leaves out the turns that a prompt typed into a session started (a request of Tom's)
-    until the agent runs `presence_hook.py --mark queue`, and "queue sessions only" leaves out
-    sessions that never ran `chat_watch.sh`; untick either to see everything;
+    claude.ai account. "work:" chooses what is counted: "queue work only" (the default) counts
+    the queue sessions (those that ran `chat_watch.sh`) without the turns that a prompt typed
+    into a session started (a request of Tom's), until the agent runs
+    `presence_hook.py --mark queue`; "queue sessions only" counts everything the queue sessions
+    did; "all work" counts every session started in the experiments folder. A table under the
+    controls gives, per host, what each choice leaves out. The page keeps its scroll position
+    across these links and its own refresh;
   - the same for tokens on Fable models only;
   - plan usage per claude.ai account: the percentage of the 5-hour (dashed) and weekly (solid)
     limits, with a table of the latest reading, its reset times, and each host's first reading
