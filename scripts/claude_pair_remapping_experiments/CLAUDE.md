@@ -117,6 +117,9 @@ it has odors (16 for the APL panel, 17 for megamat) and pick the number of concu
 jobs from that: on hal (48 cores), two 17-odor jobs (34 threads) at once is fine. On
 machines with fewer cores (atlas), run fewer jobs at once rather than fewer threads per
 job, and run one at a time if the machine is busy.
+Memory counts as much as cores, and so does anything started beside the simulations: a
+test container without a memory limit took the whole of hal's RAM once ("Gotchas" below,
+the earlyoom entry, which has the rules for containers and for feeding programs' stdin).
 
 
 ## Gotchas
@@ -156,12 +159,24 @@ Each of these cost real time to diagnose; check them before blaming a script.
   (`git add <files> && git commit -- <files>`, which leaves the subagent's staged work alone), and
   push later if the push is rejected.
 - hal runs earlyoom with `--prefer` for Python: once free memory falls below 8 % it SIGTERMs
-  Python processes first, anyone's, not the process using the memory. On 2026-11-07 a test
-  that piped `yes` into `script` (which buffers its input without limit) filled memory and took
-  down the queue monitor (its unit then restarted only on failure, so it stayed down; it
-  restarts after any exit now), the olfdb and bouldermesh containers' workers and a running
-  model fit. Bound the memory of whatever you run, and never feed an endless stream into a
-  program's stdin.
+  Python processes first, anyone's, not the process using the memory. On 2026-11-07 a one-off
+  test of join_queue.sh, run from hal's queue session in a Docker container (`docker run --rm
+  ... ubuntu:26.04`) with `yes "" | script -qefc 'bash harness.sh'` to answer its prompts,
+  filled hal's memory at about 1 GB/s (`script` keeps everything its stdin delivers faster than
+  the child reads it, and the container had no memory limit) and took down the queue monitor
+  (its unit then restarted only on failure, so it stayed down; it restarts after any exit now),
+  the olfdb and bouldermesh containers' workers (olfdb's fit worker lost two fits) and a running
+  model fit. Nothing committed uses that pattern (the harness lived in a scratch folder); the
+  rules, for every host and for ad-hoc commands as much as for scripts:
+  - Never feed an endless generator (`yes`, `cat /dev/zero`, an unbounded loop) into a
+    program's stdin. A script with prompts gets a finite list of answers (`printf 'y\n\n\n'`,
+    or a loop with a fixed count and `sleep`s), and the whole test runs under `timeout`.
+  - Every container started for a test gets `--memory <N>g --memory-swap <N>g` (the same value,
+    so it cannot swap) and `--pids-limit 512`, so the kernel kills the container's process and
+    not someone else's; check `docker ps` and `free -g` right after starting it, and `docker
+    stop` it when the test is over (do not rely on `--rm` plus a timeout inside).
+  - Anything else that can grow without bound (a buffered pipe, a log held in memory) runs in a
+    shell with `ulimit -v` set, and never in the background without a `timeout`.
 - Tests: the whole QUICK=1 suite took 2.5 h on hal (2026-11-06); for model changes,
   test/test_mb_model.py is the part that matters. Known failures, all filed as issues on
   ejhonglab/al_analysis: test_equalize_kc_type_sparsity (a leftover `breakpoint()`, #2),
