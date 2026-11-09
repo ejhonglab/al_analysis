@@ -31,6 +31,9 @@ directory's notes/ and are linked from here.
   family that were seeded differently (E45's gain 1.25 against E44's gain 1.5, which started from
   E19's grid rows) differ in it too. No statistic of any single fit is wrong: each fit is what its
   recorded `initial` and tie say it is (provenance records `initial`, not the seed tag).
+  Also every re-fit on a re-drawn or shuffled wiring chained from E44 / E45's optima (E46's draw-2 fits, E47's part B,
+  E50's draws): their class comparisons are like-for-like (all chained the same way), but their comparison with the
+  real-wiring fit carries the balance difference besides the wiring (noted in E47's note; E46's and E50's notes to follow).
 - **Done.** `--init-from-exact` (al_analysis 8b3820d) starts at the seed's absolute parameters
   (checked against the row at the first evaluation); the noise-robust block's fits (E51) use it. The
   default `--init-from` is unchanged.
