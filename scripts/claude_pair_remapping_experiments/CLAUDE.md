@@ -945,6 +945,7 @@ Canonical experiment names for summary reports:
 | E61 | the per-pair decomposition of the gap in ρ on odor-odor distances |
 | E62 | the per-odor rate oracle |
 | E63 | the two-ρ fit |
+| E64 | the weak-input odors' input as a bounded oracle |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
