@@ -944,6 +944,7 @@ Canonical experiment names for summary reports:
 | E60 | the batched proxy as the block term of a fit |
 | E61 | the per-pair decomposition of the gap in ρ on odor-odor distances |
 | E62 | the per-odor rate oracle |
+| E63 | the two-ρ fit |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
