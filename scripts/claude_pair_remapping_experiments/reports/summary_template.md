@@ -60,6 +60,7 @@ Curveball: A randomization of a binary matrix that keeps every row and column su
 - E47: the wiring feature behind the block (completed)
 - E48: the block target through the noise (completed)
 - E49: the low-concentration KC data as constraints (running)
+- E50: the fitted block on more shuffle draws (running)
 ???
 
 ## What the data show: the ORN→KC remapping in control flies, and what blocking APL output does to it
@@ -714,6 +715,8 @@ Two things the lines say that the sections above say in words: the block and the
 
 
 - **The low-concentration KC data as constraints (running).** Every constraint on this page comes from the APL16 panel at 10^-3 to 10^-2, where the per-claw threshold that every good model carries costs nothing; for weak input it is a dead zone. Two further KC datasets of Yang's have the input weak by construction: in control flies 2h and ma at 10^-7 recruit 5–6 % of KCs and farn at 10^-3 4 %, with APL output blocked two to three times as many, and binary mixtures recruit fewer KCs than the union of their components. The fitted models are run at their fitted parameters on those odors (ORN input within one log unit of the recorded concentration, the stronger one where the exact one is missing, so a failure to recruit is the conservative result) and on the mixtures with the components' input summed, with and without the matched trial noise. If they recruit the low-concentration odors near the data's fractions with the data's APL ratio, the dead zone is not what limits weak responses; if they give near-zero responses, the per-claw threshold is falsified as a hard rectifier at low concentration and a sub-threshold slope or noise through the threshold has to carry them; if the mixtures come out union-like where the flies' are sub-additive, a within-mixture suppression is missing.
+
+- **The fitted block on more shuffle draws (running).** The wiring-feature result above rests, for its re-fitted half, on one draw per kind of shuffle, while at fixed scales the draw-to-draw spread of the block within a kind was as large as the differences between kinds. The 40 Hz reference model at the control flies' response fraction is being re-fitted on three further draws each of the two extreme kinds, the plain claw permutation and the within-type Curveball. If the plain claw permutation keeps the block on every draw and the within-type Curveball loses part of it on every draw, the fitted block is a property of the kind of shuffle and the re-reading of the re-drawn-wiring results stands; if the two overlap over draws, the block's recovery under re-fitting is draw-specific and the claim narrows to the block being recoverable on some global shuffles, with the natural-source alignment the one wiring-specific result; if both recover it on most draws, the re-draws' losses were partly local optima and re-fits on draws need several starts.
 
 ## Parameter glossary with mechanisms
 
