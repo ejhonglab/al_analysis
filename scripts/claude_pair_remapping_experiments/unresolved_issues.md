@@ -8,17 +8,6 @@ directory's notes/ and are linked from here.
 
 ## Open
 
-### The summary's low-concentration table may read the wrong noisy fraction (found 2026-11-10, viki's planning subagent)
-- **What.** In "The per-claw threshold at low concentration" the summary template fills the columns "APL on, through the matched noise"
-  from E49's `fractions.csv` column `frac_trial` (each trial's response fraction, averaged). E49's note and that subsection's prose describe
-  the recordings' rule, a mean over the three trials of at least one spike, which is `frac_count1`; with `frac_trial` the noisy columns
-  barely differ from the noiseless ones (e.g. 2h @ -7, reference model: 0.0137 against 0.0139).
-- **Touches.** That table of the summary (six rows, two models); nothing else reads `frac_trial` (the APL-effect fit on re-drawn wirings
-  uses `frac_count1`).
-- **Done.** Nothing yet.
-- **Remains.** E49's author (viki) checks which column E49 meant, then the template's placeholders are switched (or the prose changed) and
-  the summary rebuilt.
-
 ### The KC data's amplitudes and response criterion are relative to each cell's whole-recording spread (found 2026-11-10, hal's planning subagent; confirmed by Yang)
 - **What.** Yang's per-trial KC values (files suffixed `zscored_full`) look z-scored per cell over the whole recording, not against a
   pre-odor baseline: in every one of the 19 APL16 recordings the per-KC mean of squared trial values has a sharp upper edge (99.9th
@@ -147,6 +136,17 @@ directory's notes/ and are linked from here.
   against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### The summary's low-concentration table read the wrong noisy fraction (found 2026-11-10, viki's planning subagent)
+- **What.** In "The per-claw threshold at low concentration" the summary template fills the columns "APL on, through the matched noise"
+  from E49's `fractions.csv` column `frac_trial` (each trial's response fraction, averaged). E49's note and that subsection's prose describe
+  the recordings' rule, a mean over the three trials of at least one spike, which is `frac_count1`; with `frac_trial` the noisy columns
+  barely differ from the noiseless ones (e.g. 2h @ -7, reference model: 0.0137 against 0.0139).
+- **Touches.** That table of the summary (six rows, two models); nothing else reads `frac_trial` (the APL-effect fit on re-drawn wirings
+  uses `frac_count1`).
+- **Done.** E49's own comparison table (E49_low_conc_kc.py) prints `frac_count1` in that column, and the subsection's prose ("roughly
+  doubles") describes it, so the template's twelve placeholders now read `frac_count1` (al_analysis, with this entry); the summary
+  rebuilt and saved 2026-11-10.
 
 ### The progress plot counted re-drawn wirings as models (found 2026-11-10, viki)
 - **What.** `summary_progress_plot.py` meant to leave out random, shuffled and re-drawn wirings (its comment and CLAUDE.md), but its pattern
