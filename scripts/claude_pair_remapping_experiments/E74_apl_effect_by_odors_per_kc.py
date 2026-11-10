@@ -150,7 +150,7 @@ KEY_MODELS = [
     ('fit S', 'the ceiling family with the input-scaled threshold at 0.25 fitted under the per-KC reading (E74 fit S)', EXPERIMENT,
      'zcaplrate_rate0.068_aplzcell_refr3_adapt0.04142t1000_thrin0.25_k2'),
     ('part C fit 1', 'the ceiling family fitted under the per-KC reading with the class term, linear form (E74 part C, fit C1)',
-     EXPERIMENT, 'zcaplrate_rate0.068_aplzcellclslin_refr3_adapt0.04142t1000_k2'),
+     EXPERIMENT, 'zcaplrate_rate0.068_aplzcellclslin_refr3_adapt0.04142t1000_k2_cap3'),
     ('part C fit 2', 'the same with the input-scaled threshold at 0.25, from fit S (E74 part C, fit C2)', EXPERIMENT,
      'zcaplrate_rate0.068_aplzcellclslin_refr3_adapt0.04142t1000_thrin0.25_k2'),
     ('ref.', 'the reference model (eight glomeruli at 1.5, 40 Hz per-claw threshold, 6.8 %; E44)', 'E44_operating_point',
