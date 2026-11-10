@@ -169,6 +169,18 @@ def archive_vs_common(out: Path) -> pd.DataFrame:
     return res
 
 
+def split_scores(site: str, scores: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+    """{site: {glomerulus: score}} of a profile: one site's scores as they are, or a multi-site profile ('a+b') whose
+    scores are keyed 'site:glomerulus'."""
+    if '+' not in site:
+        return {site: dict(scores)}
+    out: Dict[str, Dict[str, float]] = {s: {} for s in site.split('+')}
+    for k, v in scores.items():
+        s, g = k.split(':', 1)
+        out[s][g] = float(v)
+    return out
+
+
 class ProfileModel:
     """C2 (the breadth-2 APL-effect fit, E67) at its fitted parameters on the real wiring, as a fixed-parameter simulator
     whose APL->KC and APL->bouton weights a profile changes in place (the simulator's own unscaled weight arrays, checked
@@ -208,16 +220,23 @@ class ProfileModel:
         self.site, self.scores = None, {}
 
     def set_profile(self, site: Optional[str], scores: Dict[str, float]) -> None:
+        """Set the APL weights to the base's times a profile (`site` one of SITES, or several joined by '+', whose scores
+        are keyed 'site:glomerulus'); None or no scores restores the base's weights."""
         self._kc[...] = self._kc0
         self._pn[...] = self._pn0
         self.site, self.scores = site, dict(scores)
         if site is None or not scores:
             return
-        f = profile_factors(site, scores, self.W, self.wAPLKC, self.wAPLPN).to_numpy()
-        if site == 'bouton':
-            self._pn[...] = self._pn0 * f.reshape(self._pn0.shape)
-        else:
-            self._kc[...] = self._kc0 * f.reshape(self._kc0.shape)
+        fkc = np.ones(self._kc0.size)
+        fpn = np.ones(self._pn0.size)
+        for st, sc in split_scores(site, scores).items():
+            f = profile_factors(st, sc, self.W, self.wAPLKC, self.wAPLPN).to_numpy()
+            if st == 'bouton':
+                fpn = fpn * f
+            else:
+                fkc = fkc * f
+        self._pn[...] = self._pn0 * fpn.reshape(self._pn0.shape)
+        self._kc[...] = self._kc0 * fkc.reshape(self._kc0.shape)
 
     def run_on(self, x: float):
         q = dict(self.p, wAPLKC_scale=self.p['wAPLKC_scale'] * x, wKCAPL_scale=self.p['wKCAPL_scale'] * x,
@@ -500,10 +519,103 @@ def linear_profile(out: Path) -> pd.DataFrame:
     return cv
 
 
+def _map_for(out: Path, site: str) -> pd.DataFrame:
+    """The map of a profile's site(s), columns keyed as the profile's scores (glomerulus, or 'site:glomerulus')."""
+    if '+' not in site:
+        return map_matrix(out, site)
+    return pd.concat({s: map_matrix(out, s) for s in site.split('+')}, axis=1).pipe(
+        lambda M: M.set_axis([f'{a}:{b}' for a, b in M.columns], axis=1))
+
+
 def simulate_profiles(out: Path) -> pd.DataFrame:
     """Part D2: the chosen profiles at 0.5, 1 and 1.5 times their strength, the leave-one-odor-out profiles on their
-    held-out pairs, permuted controls; scored as part C."""
-    raise NotImplementedError
+    held-out pairs, permuted controls; scored as part C. Runs only if the gate passed at some site. Writes
+    profile_sims.csv (per point: the simulated change against the linear prediction, the predicted reduction of the common
+    error if the change transferred, the real wiring's own loss and pattern part)."""
+    import json
+    cv = pd.read_csv(out / 'profile_cv.csv')
+    prof = pd.read_csv(out / 'profiles.csv')
+    passed = cv[(cv.variant == 'ridge') & (cv.gate.astype(str) == 'True')]
+    if passed.empty:
+        print('the gate failed at every site: outcome (c); D2 does not run', flush=True)
+        return pd.DataFrame()
+    c = common_error('cal')
+    c.index = _canon(c.index)
+    c = c.sort_index()
+    chosen = []
+    best = passed.sort_values('loo_odor_reduction', ascending=False).iloc[0]
+    chosen.append(prof[(prof.profile == best.profile) & (prof.variant == 'ridge')].iloc[0])
+    two = prof[(prof.variant == 'ridge') & prof.profile.str.contains(r'\+', regex=True)]
+    if len(two) and two.iloc[0].profile in set(passed.profile):
+        chosen.append(two.iloc[0])
+    sp = cv[cv.variant == 'sparse'].sort_values('loo_odor_reduction', ascending=False)
+    if len(sp):
+        chosen.append(prof[(prof.profile == sp.iloc[0].profile) & (prof.variant == 'sparse')].iloc[0])
+    pts = []
+    for r in chosen:
+        sc = json.loads(r.scores)
+        for k in (0.5, 1.0, 1.5):
+            pts.append(dict(point_id=f'D2:{r.profile}:{r.variant}:x{k:g}', stage='D2', site=r.profile,
+                            scores={g: v * k for g, v in sc.items()}))
+    # leave one odor out, at the best ridge profile's site and strength
+    M = _map_for(out, best.profile).reindex(c.index)
+    lam = float(best.lam)
+    odors = sorted(set(c.index.get_level_values(0)) | set(c.index.get_level_values(1)))
+    for o in odors:
+        held = np.array([o in pr for pr in c.index])
+        s = fit_scores(M.to_numpy()[~held], c.to_numpy()[~held] - c.to_numpy()[~held].mean(), lam)
+        pts.append(dict(point_id=f'D2loo:{best.profile}:{o}', stage='D2loo', site=best.profile,
+                        scores={g: float(v) for g, v in zip(M.columns, s)}))
+    # permuted controls: the best profile's scores permuted across glomeruli
+    sc = json.loads(chosen[0].scores)
+    keys = list(sc)
+    for seed in (1, 2):
+        perm = np.random.default_rng(seed).permutation(len(keys))
+        pts.append(dict(point_id=f'D2perm:{best.profile}:{seed}', stage='D2perm', site=best.profile,
+                        scores={keys[i]: sc[keys[j]] for i, j in enumerate(perm)}))
+    sensitivity_map(out, points=pts)
+    return score_profile_sims(out)
+
+
+def score_profile_sims(out: Path) -> pd.DataFrame:
+    """Each part-D2 point against the linear prediction and the common error (profile_sims.csv)."""
+    import json
+    m = pd.read_csv(out / 'sensitivity_map.csv')
+    pr = pd.read_csv(out / 'sensitivity_pairs.csv')
+    pr = pr[pr.readout == 'cal']
+    base = pr[pr.point_id == 'base'].set_index(['odor_a', 'odor_b'])['effect']
+    base.index = _canon(base.index)
+    c = common_error('cal')
+    c.index = _canon(c.index)
+    c = c.sort_index()
+    base_row = m[m.point_id == 'base'].iloc[0]
+    rows = []
+    for _, r in m[m.stage.astype(str).str.startswith('D2')].iterrows():
+        e = pr[pr.point_id == r.point_id].set_index(['odor_a', 'odor_b'])['effect']
+        e.index = _canon(e.index)
+        ch = (e - base.reindex(e.index)).reindex(c.index)
+        sc = json.loads(r.scores)
+        M = _map_for(out, r.site).reindex(c.index)
+        pred = M[list(sc)].to_numpy() @ np.array([sc[g] for g in sc])
+        chc = ch.to_numpy() - ch.to_numpy().mean()
+        res = c.to_numpy() + chc
+        res = res - res.mean()
+        row = dict(point_id=r.point_id, stage=r.stage, site=r.site, factor=r.factor,
+                   corr_sim_pred=float(np.corrcoef(ch.to_numpy(), pred)[0, 1]),
+                   transfer_reduction=1.0 - float((res ** 2).sum()) / float((c.to_numpy() ** 2).sum()),
+                   cal_loss=r.cal_loss, cal_pattern=r.cal_pattern, cal_rho=r.cal_rho, raw_loss=r.raw_loss,
+                   d_cal_loss=r.cal_loss - base_row.cal_loss, d_cal_pattern=r.cal_pattern - base_row.cal_pattern,
+                   rate_rho_on=r.rate_rho_on, realism_flag=r.realism_flag)
+        if str(r.stage) == 'D2loo':
+            o = r.point_id.rsplit(':', 1)[1]
+            held = np.array([o in pp for pp in c.index])
+            row['heldout_reduction'] = 1.0 - float((res[held] ** 2).sum()) / float((c.to_numpy()[held] ** 2).sum())
+        rows.append(row)
+    res = pd.DataFrame(rows)
+    res.to_csv(out / 'profile_sims.csv', index=False)
+    if len(res):
+        print(res.round(4).to_string(), flush=True)
+    return res
 
 
 def anatomy(out: Path) -> pd.DataFrame:
