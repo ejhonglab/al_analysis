@@ -882,7 +882,8 @@ def map_choice(df: pd.DataFrame) -> pd.DataFrame:
     """Per map, how near the reading's APL-on amplitude statistics (the responders' coefficient of variation,
     the share above 4 z, the largest trial mean, the per-KC edge) are to the control flies' (mean relative
     absolute deviation), per variant; the map kept is the one with the lower median over the variants
-    without a realism flag under the data's criterion. No distance between odors and no APL effect enters."""
+    without a realism flag under the present definitions (the same variants for both maps). No distance
+    between odors and no APL effect enters."""
     pa = pd.read_csv(H.results_dir(EXPERIMENT) / 'data_edge_per_recording.csv')
     ctrl = pa[(pa.panel == 'APL16') & (pa.genotype == 'TNT3c')]
     dt = H.data_target
@@ -892,7 +893,8 @@ def map_choice(df: pd.DataFrame) -> pd.DataFrame:
     for a_map in MAPS:
         g = df[(df.reading_def == f'zcell_{a_map}') & (df.reading == 'graded')]
         dev = np.mean([np.abs(g[f'{k}_on'] - v) / abs(v) for k, v in target.items()], axis=0)
-        for (f, t, flag), d in zip(g[['folder', 'tag', 'realism_flag']].itertuples(index=False), dev):
+        flags = g['realism_flag_by_variant'].fillna('') if 'realism_flag_by_variant' in g else g['realism_flag']
+        for f, t, flag, d in zip(g.folder, g.tag, flags, dev):
             rows.append(dict(folder=f, tag=t, map=a_map, amp_deviation=float(d), realistic=flag == ''))
     out = pd.DataFrame(rows)
     out.attrs['target'] = target
