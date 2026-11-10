@@ -755,16 +755,50 @@ def apl_effect(on: pd.Series, off: pd.Series) -> pd.Series:
 _YANG_APL_EFFECT: Dict[tuple, pd.Series] = {}
 
 
-def yang_apl_effect(measure: str = 'cosine', binarize: Optional[float] = None) -> pd.Series:
+YANG_EFFECT_VALUES = ('graded', 'thresholded', 'noise_corrected')
+
+
+def yang_recording_rdms_values(genotype: str, values: str = 'graded') -> pd.DataFrame:
+    """Per-recording cosine pair distances (rows recordings, columns pairs) of the KC data
+    transformed as `values` says: 'graded' (as `yang_recording_rdms`), 'thresholded' (trial
+    means <= 1 set to 0 before the distance, as a model KC that does not respond contributes 0)
+    or 'noise_corrected' (each recording's cosine corrected for trial-to-trial noise,
+    `noise_floor_trial_distances.analyse`: the distance a noise-free recording would show)."""
+    if values == 'graded':
+        return yang_recording_rdms(genotype, 'cosine')
+    if values == 'thresholded':
+        return recording_rdms_from_matrices({k: transform_matrix(m, values='thresholded')
+            for k, m in yang_recording_matrices(genotype).items()})
+    if values == 'noise_corrected':
+        # a script module of this folder that imports the harness, hence imported here
+        from noise_floor_trial_distances import analyse, load_trials, recording_arrays
+        rows = {}
+        for rec, by_odor in recording_arrays(load_trials(genotype)).items():
+            _, pr = analyse(by_odor, 'graded')
+            rows[rec] = canonical_pairs(pr['corrected'])
+        return _stack_recordings(rows)
+    raise ValueError(f'unknown values {values!r} (one of {YANG_EFFECT_VALUES})')
+
+
+def yang_apl_effect(measure: str = 'cosine', binarize: Optional[float] = None,
+    values: str = 'graded') -> pd.Series:
     """The KC data's per-pair APL effect: the control flies' (TNT3c) distance minus the
     distance with APL output blocked (TNT), each the mean over recordings (`yang_mean_rdm`).
     `binarize` (e.g. 1, Yang's responder threshold on z-scored trial means) computes it from
     binarized responses instead, the like-for-like target of a binarized model readout
-    (`readout(..., 'binary')`). Cached per (measure, binarize)."""
-    key = (measure, binarize)
+    (`readout(..., 'binary')`). `values` 'thresholded' or 'noise_corrected' (cosine only, without
+    `binarize`) computes it from the data transformed as `yang_recording_rdms_values` says.
+    Cached per (measure, binarize, values)."""
+    key = (measure, binarize, values)
     if key not in _YANG_APL_EFFECT:
-        _YANG_APL_EFFECT[key] = apl_effect(yang_mean_rdm('TNT3c', measure, binarize=binarize),
-            yang_mean_rdm('TNT', measure, binarize=binarize))
+        if values == 'graded':
+            _YANG_APL_EFFECT[key] = apl_effect(yang_mean_rdm('TNT3c', measure, binarize=binarize),
+                yang_mean_rdm('TNT', measure, binarize=binarize))
+        else:
+            if measure != 'cosine' or binarize is not None:
+                raise ValueError('values other than graded are computed for cosine distances without binarize')
+            _YANG_APL_EFFECT[key] = apl_effect(yang_recording_rdms_values('TNT3c', values).mean(),
+                yang_recording_rdms_values('TNT', values).mean())
     return _YANG_APL_EFFECT[key]
 
 
@@ -880,16 +914,39 @@ def amplitude_stats(mat: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def responder_cv(values: np.ndarray) -> float:
+    """Coefficient of variation (sd / mean) of the responders' amplitudes, pooled over odors."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    return float(v.std() / v.mean()) if len(v) and v.mean() > 0 else np.nan
+
+
+def readout_stat(on_counts: pd.DataFrame, kind: str, param, stat: str = 'participation_ratio',
+    responders_min: Optional[float] = None) -> float:
+    """A concentration statistic of the readout of `on_counts`: an `amplitude_stats` column
+    (mean over odors) or 'responder_cv' (`responder_cv` of the readout among responders).
+    `responders_min` (e.g. 2, the model's response threshold) zeroes the readout of the
+    non-responding entries first, like-for-like with the data's statistics on responders only
+    (trial means <= 1 set to 0); 'responder_cv' always uses responders (default 2 spikes)."""
+    r = readout(on_counts, kind, param)
+    if stat == 'responder_cv':
+        thr = 2.0 if responders_min is None else responders_min
+        return responder_cv(r.to_numpy()[on_counts.to_numpy() >= thr])
+    if responders_min is not None:
+        r = r.where(on_counts >= responders_min, 0.0)
+    return float(amplitude_stats(r)[stat].mean())
+
+
 def calibrate_readout(on_counts: pd.DataFrame, kind: str, target: float, stat: str = 'participation_ratio',
-    bounds: Tuple[float, float] = (1e-3, 1e3), iters: int = 60) -> float:
+    bounds: Tuple[float, float] = (1e-3, 1e3), iters: int = 60, responders_min: Optional[float] = None) -> float:
     """The parameter of a one-parameter readout ('power', 'saturating' or 'log1p') at which the
-    APL-on mean over odors of `stat` (an `amplitude_stats` column) equals `target`, e.g. the
-    control flies' participation ratio: bisection on a log scale. The parameter is fixed on the APL-on
-    counts alone and then used unchanged for APL off, so the APL effect is not fitted. Returns the
-    bound nearest to the target when it is not bracketed."""
+    APL-on `readout_stat` (`stat`, `responders_min`) equals `target`, e.g. the control flies'
+    participation ratio: bisection on a log scale. The parameter is fixed on the APL-on counts
+    alone and then used unchanged for APL off, so the APL effect is not fitted. Returns the bound
+    nearest to the target when it is not bracketed (for 'power' the upper bound is 1, raw counts)."""
     if kind == 'power':
         bounds = (max(bounds[0], 1e-3), 1.0)
-    f = lambda p: float(amplitude_stats(readout(on_counts, kind, p))[stat].mean())
+    f = lambda p: readout_stat(on_counts, kind, p, stat, responders_min)
     lo, hi = np.log(bounds[0]), np.log(bounds[1])
     flo, fhi = f(np.exp(lo)) - target, f(np.exp(hi)) - target
     if flo * fhi > 0:
