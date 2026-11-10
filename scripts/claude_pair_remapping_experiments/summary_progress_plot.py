@@ -44,8 +44,9 @@ RATE_RANGE = (0.035, 0.075)   # APL-on response rate: comparable models only (tu
 # reference model's oracle gain into glomerulus subsets at the full set's fitted parameters (its
 # full-set variant is E34's fit), so its best subset per statistic would be a post-hoc selection
 # E62 (the per-odor rate oracle) and E64 (the bounded-input oracle) set each odor's input from the KC data they
-# are scored against
-EXCLUDE = {'E14', 'E15', 'E39', 'E62', 'E64'}
+# are scored against, and E66's per-odor APL oracle each odor's input and APL strength (its other variants, the
+# breadth exponent on the reference models, are not new bests on raw counts)
+EXCLUDE = {'E14', 'E15', 'E39', 'E62', 'E64', 'E66'}
 # variants excluded by tag / variant prefix: oracle gains, the block-specific glomerulus set,
 # and random / shuffled / re-drawn wirings (nulls, many seeds each: the best of twenty random
 # draws is a selection on noise, not a model)
