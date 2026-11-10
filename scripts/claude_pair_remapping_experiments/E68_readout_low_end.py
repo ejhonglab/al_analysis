@@ -1576,7 +1576,7 @@ def write_table_b(res: Path, df: pd.DataFrame, cal: pd.DataFrame, amp: pd.DataFr
         '| model | configuration | K | b | c | wp | wm | iterations | converged | at a bound | rate | 0.5-1.5 z | 0.25-1 z | below -0.25 z |',
         '|---|---|---:|---:|---:|---:|---:|---:|---|---|---:|---:|---:|---:|']
     for r in cal.itertuples():
-        ab = ', '.join(k.replace('_at_bound', '') for k in cal.columns if k.endswith('_at_bound') and getattr(r, k) is True)
+        ab = ', '.join(k.replace('_at_bound', '') for k in cal.columns if k.endswith('_at_bound') and pd.notna(getattr(r, k)) and bool(getattr(r, k)))
         L.append(f'| {r.model} | {r.config} | {r.K:.2f} | {r.b:+.2f} | {r.c:.2f} | {r.wp:.3f} | {r.wm:.3f} | {r.iterations} | {r.converged} | {ab} | '
             f'{pct(r.rate)} | {pct(r.band_share)} | {pct(r.band025)} | {pct(r.below)} |')
     L += ['', f"Targets (control flies): rate {pct(dt('ctrl_frac'))}, 0.5-1.5 z {pct(dt('ctrl_share_z_05_15'))}, 0.25-1 z "
