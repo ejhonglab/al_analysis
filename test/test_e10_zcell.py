@@ -3,7 +3,7 @@
 scripts/claude_pair_remapping_experiments/E10_joint_fit.py `zcell_terms` and make_loss's `apl_readout='zcell'`,
 `rate_criterion='zcell'`, `zcell`): the reading per evaluation is E73 part B's (`zcell_rows`), the rate terms take
 the reading's criterion only when asked, the options off leave every term and statistic as before, and the 'start'
-calibration is held. Needs the shared directory (the data-target registry and the KC data); skipped without it."""
+calibration is held; E74 part C's class term (`apl_class_term`) is off by default and adds only its own term. Needs the shared directory (the data-target registry and the KC data); skipped without it."""
 
 import sys
 from pathlib import Path
@@ -148,3 +148,30 @@ def test_validation(ctx):
     # fit 4's form needs no particular rate target
     E10.make_loss(ctx['data'], ctx['data_rates'], ctx['orn_pairs'], ctx['drive'], ref=ctx['ref'], structure=True,
         variant='apl', rate_target=0.05, apl_readout='zcell')
+
+
+def test_apl_class_term(ctx):
+    """E74 part C: off by default; on, it adds its term (apl_class_mse over the square of the registry's floor, weight
+    APL_CLASS_WEIGHT) and its apl_class_* statistics and changes nothing else; it needs the reading's APL term."""
+    import json
+    if 'apl_class_rmse_floor' not in json.loads(H.data_targets_path().read_text()):
+        pytest.skip('the registry has no apl_class_rmse_floor yet')
+    o = _outputs()
+    off = _loss(ctx, apl_readout='zcell', rate_criterion='zcell')
+    assert off.apl_class_term is False and 'class_term' not in off.apl
+    a = off(o)
+    assert 'term_apl_class' not in a and not any(k.startswith('apl_class_') for k in a)
+    on = _loss(ctx, apl_readout='zcell', rate_criterion='zcell', apl_class_term=True)
+    b = on(o)
+    floor = H.data_target('apl_class_rmse_floor')
+    assert np.isclose(b['term_apl_class'], E10.APL_CLASS_WEIGHT * b['apl_class_mse'] / floor ** 2)
+    for k, v in a.items():
+        if k != 'loss':
+            assert b[k] == v, k
+    assert np.isclose(b['loss'], a['loss'] + b['term_apl_class'])
+    assert on(o) == b          # the same pseudo-recordings at every evaluation
+    with pytest.raises(ValueError):
+        _loss(ctx, apl_readout='cal', apl_class_term=True)
+    with pytest.raises(ValueError):
+        E10.make_loss(ctx['data'], ctx['data_rates'], ctx['orn_pairs'], ctx['drive'], ref=ctx['ref'], structure=True,
+            variant='structure', apl_class_term=True)
