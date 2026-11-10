@@ -406,7 +406,11 @@ STRUCTURE_WEIGHTS = dict(wt_dev=1.0, vcf_off=1.0, excess_on=0.5)
 # the two-rho loss (E63): the two matrix terms first, the per-odor rate terms, the operating point and
 # the rate ratio kept as constraints, the block, monotonicity and structure terms reported but not optimized
 RHO_WEIGHTS = dict(on_mat=4.0, off_mat=4.0, block=0.0, iso=0.0, wt_dev=0.0, vcf_off=0.0, excess_on=0.0)
-LOSS_VARIANTS = ('base', 'structure', 'rho')
+# the APL-effect loss (E67): the per-pair APL effect first (the loss over its floor, on raw spike counts or
+# under E65's calibrated readout, `--apl-readout`), the operating point, the rate ratio and the per-odor rate
+# terms as constraints with walls, the two matrix terms held at 1, block / monotonicity / structure reported
+APL_READOUTS = ('raw', 'cal', 'both')
+LOSS_VARIANTS = ('base', 'structure', 'rho', 'apl')
 
 
 def loss_weights(variant: str) -> dict:
@@ -523,6 +527,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         variant = 'structure' if structure else 'base'
     if variant == 'rho' and not structure:
         raise ValueError("variant='rho' needs structure=True (its statistics are reported)")
+    if variant == 'apl':
+        raise NotImplementedError('--loss apl (E67): interface only so far')
     weights = loss_weights(variant)
     ctrl = data['raw']['TNT3c']
     tnt = data['raw']['TNT']
@@ -866,6 +872,18 @@ def main() -> None:
         help="'structure' adds the structure-beyond-ORN and APL-on excess-profile terms (E25); 'rho' puts the two "
         "matrix terms first (weight 4 each) with the per-odor rate terms, the operating point and the rate ratio as "
         "constraints and the block, monotonicity and structure terms at 0, reported not optimized (E63)")
+    ap.add_argument('--apl-readout', choices=list(APL_READOUTS), default='cal',
+        help="with --loss apl (E67): the model's side of the APL-effect term: 'raw' (cosine on raw spike counts), "
+        "'cal' (E65's saturating readout n / (n + K), K re-calibrated at every evaluation on the APL-on counts to the "
+        "control flies' responders-only participation ratio, applied unchanged to APL off) or 'both' (the two terms at "
+        "half weight each); tag part apl<readout>")
+    ap.add_argument('--apl-pattern-only', action='store_true',
+        help='with --loss apl: the APL-effect term on the pattern part only (both means removed); tag part pat')
+    ap.add_argument('--apl-block-term', action='store_true',
+        help='with --loss apl: add the block term computed under the calibrated readout (weight 1); tag part blk')
+    ap.add_argument('--apl-opk-term', action='store_true',
+        help="with --loss apl: add a term on the number of odors per KC with APL off (half the summed absolute "
+        "difference from the data's shares of KCs responding to 0, 1, 2-3, 4-7, 8+ odors, squared over 0.15); tag part opk")
     ap.add_argument('--init-from-experiment', default='E10_joint_fit',
         help='experiment whose fits.csv --init-from reads')
     ap.add_argument('--init-from', default=None, metavar='TAG',
