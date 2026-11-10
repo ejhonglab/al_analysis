@@ -983,9 +983,10 @@ def write_readme(out_dir: Path, results: dict, avail: pd.DataFrame,
     a('## Units\n')
     a('As the APL16 data: neuropil-corrected suite2p fluorescence (`Fc`) of curated ROIs, '
         'z-scored (file suffix `..._s2p_mean_curated_Fc_zscored_full_cell_resp_df...`), '
-        'one response value per KC and trial. The z-score baseline (pre-odor frames or the '
-        'whole trace), the statistic (mean or peak) and the response window are not stated '
-        'in any of the material (notes/yang-summary.md). Absolute z-score levels are not '
+        'one response value per KC and trial: each KC\'s Fc (F - 0.7 Fneu) is z-scored over the whole '
+        'recording, and a trial\'s response is the mean z 2-8 s after odor onset minus the mean '
+        'over the 5 s before (Yang, 2026-11-10; add_to_reports/yang_response_definition.md, checked '
+        'on the APL16 recordings). Absolute z-score levels are not '
         'comparable to dF/F (or to the ORN dF/F data), and depend on each KC\'s noise; the '
         '> 1 response thresholds are Yang\'s choice, in these units.\n')
 
