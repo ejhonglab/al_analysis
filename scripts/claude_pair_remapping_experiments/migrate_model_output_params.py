@@ -37,6 +37,7 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -93,6 +94,62 @@ PROV_SCALARS = {
 }
 # E8: 'plain' = the base APL weights (no breadth weighting, exponent 0); 'breadth3' = exponent 3
 CONFIG_TO_K = {'E8': {'plain': 0.0, 'breadth3': 3.0}}
+# scripts whose response-rate target (target_sparsity passed to fit_mb_model) is a module constant and
+# appears nowhere in the archive: (script, constant); E17 tunes to E15's constant (E17's TARGET = E15.TARGET)
+SCRIPT_TARGET = {'E11': ('E11_coincidence_claw_inhibition.py', 'TARGET'), 'E14': ('E14_oracle_coresponders.py', 'TARGET'),
+    'E15': ('E15_breadth_shared_apl.py', 'TARGET'), 'E17': ('E15_breadth_shared_apl.py', 'TARGET')}
+# scripts run with the default of a --target option that neither the provenance nor the run log records
+# (E6: `--target`, default 0.05; its README and run.log show no other value)
+SCRIPT_DEFAULT_TARGET = {'E6': ('E6_readout_window.py', '--target')}
+RESULTS = H.shared_dir() / 'results'
+
+
+def script_constant(script: str, name: str) -> Optional[float]:
+    """A numeric module-level constant `NAME = <number>` of a script in this folder, or None."""
+    p = Path(__file__).with_name(script)
+    if not p.exists():
+        return None
+    m = re.search(rf'^{re.escape(name)}\s*=\s*({NUM})\s*$', p.read_text(), re.M)
+    return float(m.group(1)) if m else None
+
+
+def script_option_default(script: str, option: str) -> Optional[float]:
+    """The numeric default of an argparse option of a script in this folder, or None."""
+    p = Path(__file__).with_name(script)
+    if not p.exists():
+        return None
+    m = re.search(rf"add_argument\('{re.escape(option)}'[^)]*default=({NUM})", p.read_text())
+    return float(m.group(1)) if m else None
+
+
+def numeric(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if np.isnan(f) else f
+
+
+def fit_rate_target(results_name: str, archive_dir: Path, tag: str) -> Tuple[Optional[float], str]:
+    """The response-rate target a joint fit (`E10_joint_fit.py` row `tag`) was fitted at: its per-fit
+    provenance file's `rate_target` (archive copy, else the results folder's), else its results fits.csv
+    row's `rate_target`; (None, '') when neither records it."""
+    for d in (archive_dir, RESULTS / results_name):
+        p = d / f'provenance_{tag}.json'
+        if p.exists():
+            v = numeric(json.load(open(p)).get('rate_target'))
+            if v is not None:
+                return v, f'{p.name} rate_target'
+    f = RESULTS / results_name / 'fits.csv'
+    if f.exists():
+        fits = pd.read_csv(f, low_memory=False)
+        if 'tag' in fits.columns and 'rate_target' in fits.columns:
+            r = fits[fits['tag'].astype(str) == tag]
+            if len(r) == 1:
+                v = numeric(r['rate_target'].iloc[0])
+                if v is not None:
+                    return v, f'results/{results_name}/fits.csv rate_target'
+    return None, ''
 
 
 def is_na(v) -> bool:
@@ -143,6 +200,7 @@ class Migration:
         self.prov = json.load(open(prov_path)) if prov_path.exists() else {}
         self.log = []
         self.unidentified = None
+        self.stats = None
 
     def fill(self, idx, col: str, value, source: str):
         if col not in self.df.columns:
@@ -211,6 +269,18 @@ class Migration:
             else:
                 ident |= has_v & df['variant'].astype(str).isin(stems)
         if ident.sum() == 0:
+            # an experiment-wide target still applies to every row (E6: both bases run at --target's default)
+            target = None
+            if self.exp in SCRIPT_TARGET:
+                target = (script_constant(*SCRIPT_TARGET[self.exp]), f'{SCRIPT_TARGET[self.exp][0]} {SCRIPT_TARGET[self.exp][1]}')
+            elif self.exp in SCRIPT_DEFAULT_TARGET:
+                script, opt = SCRIPT_DEFAULT_TARGET[self.exp]
+                target = (script_option_default(script, opt), f'{script} {opt} default (no other value recorded)')
+            if target is not None and target[0] is not None:
+                for idx in df.index:
+                    self.fill(idx, 'target_rate', target[0], target[1] + '; experiment-wide, rows not otherwise identified')
+                print(f'{self.dir.name}: no identified rows; target_rate only')
+                return bool(self.log)
             print(f'{self.dir.name}: no identified rows; left untouched')
             return False
         if (~ident).any():
@@ -295,7 +365,62 @@ class Migration:
                 self.fill(idx, 'apl_unit_coupling', float(df.at[idx, 'coupling']), 'alias coupling (E2 column = fit_mb_model apl_unit_coupling)')
             if self.exp == 'E3' and 'wAPLKC' in df.columns and not is_na(df.at[idx, 'wAPLKC']):
                 self.fill(idx, 'wAPLKC_scale', float(df.at[idx, 'wAPLKC']), "alias wAPLKC (E3's table stored params['wAPLKC_scale'] under this name)")
+            self.fill_target_rate(idx, tag)
         return True
+
+    def fill_target_rate(self, idx, tag: str):
+        """target_rate (the APL-on response fraction the model was tuned or fitted to) from the source that
+        records it: a joint fit's own provenance or fits.csv row; for a model run at another experiment's
+        fitted parameters with the threshold not re-tuned, that fit's target; E43's noise runs, the target of
+        the model they add noise to (provenance model_info); else the script's constant or option default."""
+        df = self.df
+        if 'target_rate' in df.columns and not is_na(df.at[idx, 'target_rate']):
+            return
+        if not tag:
+            return
+        v, src = fit_rate_target(self.dir.name, self.dir, tag)
+        if v is not None:
+            self.fill(idx, 'target_rate', v, src); return
+        if self.stats is None:
+            sp = RESULTS / self.dir.name / 'stats_variants.csv'
+            self.stats = pd.read_csv(sp, low_memory=False) if sp.exists() else pd.DataFrame()
+        st = self.stats
+        if len(st) and {'tag', 'ref_fit', 'ref_experiment'} <= set(st.columns):
+            r = st[st['tag'].astype(str) == tag]
+            if len(r) == 1 and not is_na(r['ref_fit'].iloc[0]) and not is_na(r['ref_experiment'].iloc[0]):
+                f = numeric(r['thr_factor_vs_fit'].iloc[0]) if 'thr_factor_vs_fit' in r.columns else None
+                if f == 1.0 and not ('target_rate' in r.columns and numeric(r['target_rate'].iloc[0]) is not None):
+                    ref_exp, ref_fit = str(r['ref_experiment'].iloc[0]), str(r['ref_fit'].iloc[0])
+                    v, src = fit_rate_target(ref_exp, ARCHIVE / ref_exp, ref_fit)
+                    if v is not None:
+                        self.fill(idx, 'target_rate', v, f'the fit it runs at, threshold not re-tuned: {ref_exp} {ref_fit}, {src}'); return
+        if self.exp == 'E43':
+            info = self.prov.get('model_info', {}).get(tag.split('__')[0], {})
+            source = str(info.get('source', ''))
+            m = re.match(r'^results/(E\d+_\w+)/fits\.csv row (\S+)', source)
+            if m:
+                v, src = fit_rate_target(m.group(1), ARCHIVE / m.group(1), m.group(2))
+                if v is not None:
+                    self.fill(idx, 'target_rate', v, f'the model the noise is added to (provenance model_info: {source}), {src}'); return
+            m = re.match(r'^(E\d+) stats row (\S+)', source)
+            if m:
+                arch = next(iter(sorted(ARCHIVE.glob(f'{m.group(1)}_*'))), None)
+                if arch is not None and (arch / 'params.csv').exists():
+                    q = pd.read_csv(arch / 'params.csv', low_memory=False)
+                    r = q[q['tag'].astype(str) == m.group(2)] if 'tag' in q.columns and 'target_rate' in q.columns else q.iloc[0:0]
+                    if len(r) == 1 and numeric(r['target_rate'].iloc[0]) is not None:
+                        self.fill(idx, 'target_rate', float(r['target_rate'].iloc[0]),
+                            f'the model the noise is added to (provenance model_info: {source}), {arch.name} params.csv target_rate'); return
+        if self.exp in SCRIPT_TARGET:
+            script, name = SCRIPT_TARGET[self.exp]
+            v = script_constant(script, name)
+            if v is not None:
+                self.fill(idx, 'target_rate', v, f'{script} {name} (target_sparsity passed to fit_mb_model)'); return
+        if self.exp in SCRIPT_DEFAULT_TARGET:
+            script, opt = SCRIPT_DEFAULT_TARGET[self.exp]
+            v = script_option_default(script, opt)
+            if v is not None:
+                self.fill(idx, 'target_rate', v, f'{script} {opt} default (no other value recorded)')
 
     def write(self, stamp: str):
         backup = ARCHIVE / 'params_backup'; backup.mkdir(exist_ok=True)
