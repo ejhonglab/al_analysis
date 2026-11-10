@@ -1036,6 +1036,7 @@ Canonical experiment names for summary reports:
 | E67 | the APL-effect fits |
 | E68 | the low end of the readout |
 | E69 | the firing ceiling for the KCs |
+| E70 | the high-firing KCs that survive APL |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 

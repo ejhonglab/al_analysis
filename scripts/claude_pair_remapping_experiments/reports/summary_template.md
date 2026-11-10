@@ -93,6 +93,9 @@ one-spike floor: An offset b added to the spike count of every KC that fired, be
 - E65: the compressive readout of the model's spike counts (completed)
 - E66: the per-odor profile of the APL effect (completed)
 - E68: the low end of the readout (completed)
+- E67: the APL-effect fits (running)
+- E69: the firing ceiling for the KCs (running)
+- E70: the high-firing KCs that survive APL (running)
 ???
 
 ## What the data show: the ORN→KC remapping in control flies, and what blocking APL output does to it
