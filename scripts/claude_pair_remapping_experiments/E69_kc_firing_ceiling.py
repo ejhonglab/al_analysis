@@ -903,10 +903,22 @@ def figures(df: pd.DataFrame) -> None:
     plt.close(fig)
 
 
+def write_tuned_params(df: pd.DataFrame) -> None:
+    """tuned_params.json (results and outputs): every variant's absolute parameters, {tag: {param: value}},
+    the form E10_joint_fit.py's --init-params FILE:KEY reads (part B starts from them), with the variant's KC
+    refractory period and adaptation."""
+    keys = ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'wKCKC_scale',
+        'kc_refractory_period', 'kc_adapt_inc', 'kc_adapt_tau')
+    out = {r['tag']: {k: (None if pd.isna(r[k]) else float(r[k])) for k in keys} for _, r in df.iterrows()}
+    for d in (res_dir(), out_dir()):
+        write_json(d / 'tuned_params.json', out)
+
+
 def stage_summarize() -> None:
     df = merged()
     df = df.merge(basecal_z_stats(df), on='tag', how='left')
     df.to_csv(res_dir() / 'stats_variants.csv', index=False)
+    write_tuned_params(df)
     long = pd.read_csv(res_dir() / 'model_pair_distances_long_A.csv')
     long = long.drop_duplicates(['tag', 'condition', 'odor_a', 'odor_b'], keep='last')
     long.to_csv(res_dir() / 'model_pair_distances_long.csv', index=False)
