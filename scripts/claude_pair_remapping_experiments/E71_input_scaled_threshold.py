@@ -1085,7 +1085,8 @@ def stage_partC() -> None:
     if not p.exists():
         raise FileNotFoundError(f'{p}: run the part-C pipeline commands first (--stage partC-commands)')
     d = pd.read_csv(p)
-    d = d[(d.kind == 'raw') & (d.transform == 'graded')]
+    # (d.kind / d.transform would be DataFrame methods, not the columns)
+    d = d[(d['kind'] == 'raw') & (d['transform'] == 'graded')]
     data = H.yang_apl_effect()
     rows = []
     for model, g in d.groupby('model'):
