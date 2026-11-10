@@ -126,7 +126,8 @@ Models from other experiments' joint fits (`--model-from EXPERIMENT:TAG`, repeat
 of row TAG of <shared>/results/EXPERIMENT/fits.csv (a fit of E10_joint_fit.py) at its fitted
 parameters, built as ref40 is from E34's row (`fit_model`, which builds ref40 too): bouton_base at the
 row's claw_thr, with its gain on gain_glomeruli (empty: the oracle set, as in E10_joint_fit), its
-re-drawn wiring (wiring, wiring_seed) and its ORN input (orn_input, read with
+re-drawn wiring (wiring, wiring_seed; or a wiring read from a file, wiring_file with wiring_tag, as
+E10_joint_fit.py's --wiring-file, e.g. E59's co-input-matched wirings) and its ORN input (orn_input, read with
 E10_joint_fit.read_orn_input); breadth weights with exponent k from the APL-off run of that wiring at
 the base's tuned parameters; the fitted fixed_thr, APL scales and kc_kc_inh (tau kc_kc_tau). The
 APL->bouton bound (aplpn_max) and the targets of the loss do not matter at fixed parameters; rows
@@ -564,16 +565,19 @@ def _given(row: pd.Series, col: str):
     return v
 
 
-def breadth_cache_name(claw_thr, gain, gloms, wiring, wiring_seed, input_tag):
+def breadth_cache_name(claw_thr, gain, gloms, wiring, wiring_seed, input_tag, wiring_tag=None):
     """Name of the APL-off run that E10_joint_fit.bouton_base computes (and caches in its out_dir)
-    for the breadth; None when it reads the base's saved run (no gain, wiring or other input)."""
-    if gain is None and wiring is None and input_tag is None:
+    for the breadth; None when it reads the base's saved run (no gain, wiring or other input).
+    `wiring_tag` names a wiring read from a file (bouton_base's wiring_matrix)."""
+    if gain is None and wiring is None and input_tag is None and wiring_tag is None:
         return None
     name = ('' if claw_thr is None else f'thr{claw_thr:g}_') + 'base_acute_off_spike_counts.parquet'
     if input_tag is not None:
         name = f'input-{input_tag}_' + name
     if wiring is not None:
         name = f'wiring-{wiring}-seed{int(wiring_seed)}_' + name
+    if wiring_tag is not None:
+        name = f'wiring-{wiring_tag}_' + name
     if gain is not None:
         name = f'gain{gain:g}_' + ('' if sorted(gloms) == sorted(ORACLE) else '-'.join(sorted(gloms)) + '_') + name
     return name
@@ -617,6 +621,19 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
     input_tag, extra = None, {}
     if wiring is not None:
         extra.update(wiring=str(wiring), wiring_seed=wiring_seed)
+    # a wiring read from a file (E10_joint_fit.py's --wiring-file / --wiring-tag, e.g. E59's co-input-matched wirings)
+    wiring_file, wiring_tag, wiring_matrix = _given(fit, 'wiring_file'), _given(fit, 'wiring_tag'), None
+    if wiring_file is not None:
+        if wiring is not None:
+            raise ValueError(f'{experiment}:{tag}: both a named wiring ({wiring}) and a wiring file')
+        if wiring_tag is None:
+            raise ValueError(f'{experiment}:{tag}: a wiring file without a wiring tag')
+        wp = Path(str(wiring_file))
+        # (relative paths as E10_joint_fit.py read them, from this folder)
+        wp = wp if wp.is_absolute() else H.HERE / wp
+        wiring_matrix, wiring_tag = pd.read_parquet(wp), str(wiring_tag)
+        extra.update(wiring_file=str(wiring_file), wiring_tag=wiring_tag,
+            wiring_file_sha256=hashlib.sha256(wp.read_bytes()).hexdigest())
     if orn_input is not None:
         orn = read_orn_input(str(orn_input), orn)
         input_tag = Path(str(orn_input)).stem
@@ -642,12 +659,13 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
     thr_in = None if _given(fit, 'kc_thr_input_exp') is None else float(fit['kc_thr_input_exp'])
     _, wnorm, W, breadth = bouton_base(orn, out_dir, claw_thr=claw_thr, gain=gain, gain_gloms=gloms or None,
         wiring=None if wiring is None else str(wiring), wiring_seed=wiring_seed, input_tag=input_tag,
+        **({} if wiring_matrix is None else dict(wiring_matrix=wiring_matrix, wiring_tag=wiring_tag)),
         **({} if thr_in is None else dict(kc_thr_input_exp=thr_in)))
     kc_thr_factor = None if thr_in is None else kc_input_thr_factor(W, breadth.index, thr_in)
     if thr_in is not None:
         extra.update(kc_thr_input_exp=thr_in)
     kws = dict(base_kws(claw_thr))
-    if gain is not None or wiring is not None:
+    if gain is not None or wiring is not None or wiring_matrix is not None:
         # (E10_joint_fit passes the wiring only when it differs from the base's)
         kws['_wPNKC'] = W
     kws.update(_wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, k), _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'],
@@ -668,7 +686,8 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         gain_glomeruli=gloms, kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau, fit_experiment=experiment, fit_tag=tag,
         **({} if ev is None else dict(fit_eval=ev)), **extra)
     # the APL-off run behind the breadth against the fit's
-    off_name = breadth_cache_name(claw_thr, gain, gloms, wiring, wiring_seed, input_tag)
+    off_name = breadth_cache_name(claw_thr, gain, gloms, wiring, wiring_seed, input_tag,
+        wiring_tag=None if wiring_matrix is None else wiring_tag)
     if off_name is not None:
         theirs = next((d / off_name for d in (saved_dir, *dirs) if (d / off_name).exists()), None)
         if theirs is not None and (out_dir / off_name).exists():
