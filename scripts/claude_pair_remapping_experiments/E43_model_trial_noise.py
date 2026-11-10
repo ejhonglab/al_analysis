@@ -154,6 +154,14 @@ trials, and part B's unjittered thresholds thr0, so the per-trial jitter multipl
 thresholds). `--save-recording-distances` (off by default) also writes each pseudo-recording's pair distances
 (raw, the cosine distances of its trial means, and noise-corrected) to pairs_recordings_long.csv, so single
 pseudo-recordings can be scored as single recorded flies (E71 part C).
+`--zcell` (E73 part C; off by default) also reads the trials as the recordings are read: each pseudo-recording a
+session of the panel, its trials' spike counts through the per-KC session z-score reading (`--zcell-map`,
+saturating by default; `--zcell-q`, the registry's zcell_q_window by default), calibrated on the APL-on trials
+and applied unchanged to APL off, exactly as E73's part B reads saved trials (E73_per_kc_normalization.zcell_rows),
+and the deterministic run the same way; scored graded, thresholded and binarized against the same reading of the
+KC data (the APL-effect loss with its parts, the response rates, their ratio, the response rate ρ, the
+odors-per-KC distributions, the amplitudes, ...): zcell_noise.csv in the results folder. Works with
+`--analyse-only` on trials already simulated.
 
 Parts B / C only: `--sigma-from MODEL` skips the calibration and takes the matched sigmas (APL on and
 APL off) of MODEL from an existing noise_levels.json of the same noise (`--sigma-from-dir`; default
@@ -172,7 +180,7 @@ Usage: OMP_NUM_THREADS=12 nice -n 10 ./venv/bin/python E43_model_trial_noise.py 
        [--below 0.5 0.25] [--cal-refine 1] [--cal-max-extend 3]
        ... --part C [--sigma-grid 0.1 0.2 0.3 0.45 0.6] (other options as part B)
        ... [--model-from EXPERIMENT:TAG ...] [--models ...] [--experiment NAME] [--levels LABEL ...]
-       [--sigma-from MODEL [--sigma-from-dir DIR]]
+       [--sigma-from MODEL [--sigma-from-dir DIR]] [--zcell [--zcell-q Q] [--zcell-map saturating|linear]]
 """
 from __future__ import annotations
 
@@ -1200,6 +1208,61 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
     return st
 
 
+def analyse_zcell(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir: Path, key: str = 'sd',
+        ncol: str = 'noise_sd', q=None, amp: str = 'saturating') -> pd.DataFrame:
+    """The trials read as the recordings are (`--zcell`; E73 part C): every model x level's pseudo-recordings
+    (recordings, trials, KCs, odors) through the per-KC session z-score reading, each pseudo-recording a session,
+    calibrated on its APL-on trials and applied unchanged to APL off (E73_per_kc_normalization.zcell_rows, as E73's
+    part B reads the saved trials: reading_def zcell_<amp>_trials[_q<q>]), and the deterministic run read the same
+    way (level 'deterministic', reading_def zcell_<amp>[_q<q>]); each scored graded, with sub-threshold values set
+    to 0 and binarized, against the same reading of the KC data. Written to `res_dir`/zcell_noise.csv (one row per
+    model x level x reading; rows of other models, or of other reading settings, kept).
+
+    Args:
+        q: share of the session inside the response windows (default the registry's zcell_q_window).
+        amp: the reading's amplitude map ('saturating' or 'linear').
+    """
+    import E73_per_kc_normalization as E73
+    q_window = H.data_target('zcell_q_window')
+    q = q_window if q is None else float(q)
+    qtag = '' if q == q_window else E73.q_tag(q)
+    rows = []
+    for name, lv in levels_all.items():
+        meta_path = out_dir / f'{name}_meta.json'
+        if not meta_path.exists():
+            continue
+        meta = json.loads(meta_path.read_text())
+        base = dict(model=name, fit_experiment=meta.get('fit_experiment'), fit_tag=meta.get('fit_tag'))
+        new = []
+        for label, sd in lv['levels'].items():
+            arrs = [load_npz(p) for p in (trials_path(out_dir, name, sd, n_tr, r, key) for r in range(n_rec)) if p.exists()]
+            if not arrs:
+                continue
+            t_on, t_off = (np.stack([a[f'{c}_spk'].astype(float) for a in arrs]) for c in CONDS)
+            b = dict(base, level=label, **{ncol: float(sd)}, matched_to='+'.join(c for c in CONDS if lv['matched'][c]['sd'] == sd),
+                n_recordings=len(arrs), n_trials=int(t_on.shape[1]))
+            rr = E73.zcell_rows(b, t_on, t_off, q=q, a_map=amp, tag='_trials' + qtag)[0]
+            new += rr
+            g = next(r for r in rr if r['reading'] == 'graded')
+            print(f'{name} {label}: per-KC session z-score reading, APL-effect loss (graded) {g["rmse"]:.4f} (mean '
+                f'{g["mean"]:+.4f}), response rates {g["rate_on"]:.4f} / {g["rate_off"]:.4f}', flush=True)
+        if new:
+            det = load_det(out_dir, name)
+            on_det, off_det = (pd.DataFrame(det[c][1], columns=ODORS) for c in CONDS)
+            b = dict(base, level='deterministic', **{ncol: 0.0}, matched_to='', n_recordings=1, n_trials=1)
+            rows += E73.zcell_rows(b, on_det, off_det, q=q, a_map=amp, tag=qtag)[0] + new
+    new_df = pd.DataFrame(rows)
+    path = res_dir / 'zcell_noise.csv'
+    if path.exists() and len(new_df):
+        old = pd.read_csv(path, float_precision='round_trip')
+        done = set(zip(new_df['model'], new_df['reading_def']))
+        old = old[[(m, r) not in done for m, r in zip(old['model'], old['reading_def'])]]
+        new_df = pd.concat([new_df, old], ignore_index=True)
+    if len(new_df):
+        new_df.to_csv(path, index=False)
+    return new_df
+
+
 def print_summary(st: pd.DataFrame, res_dir: Path, ncol: str = 'noise_sd', extra_cols: tuple = ()) -> None:
     if not len(st):
         return
@@ -1972,6 +2035,9 @@ def main_b(args) -> None:
         save_recordings=args.save_recording_distances)
     print_summary(st, res_dir, ncol=B_KEY, extra_cols=('fixed_thr_ratio', 'frac_clipped', 'max_spike_count',
         'spike_share_thr_below_half'))
+    if args.zcell:
+        analyse_zcell(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, key=B_KEY, ncol=B_KEY, q=args.zcell_q,
+            amp=args.zcell_map)
     if len(st):
         make_figure(res_dir, **fig_kw)
     print('done ->', res_dir)
@@ -2035,7 +2101,23 @@ def main() -> None:
     ap.add_argument('--sigma-from-dir', default=None, metavar='DIR',
         help="the results folder whose noise_levels.json --sigma-from reads (default: this run's if it holds MODEL, else "
         "<shared>/results/E43_model_trial_noise/<part folder>)")
+    ap.add_argument('--zcell', action='store_true',
+        help="(E73 part C) also read every model x level's trials through the per-KC session z-score reading, calibrated "
+        'on the APL-on trials (and the deterministic run the same way), scored against the same reading of the KC data: '
+        'zcell_noise.csv in the results folder')
+    ap.add_argument('--zcell-q', default=None, metavar='Q',
+        help="with --zcell: the share of the session inside the response windows (a number or a data-target registry key; "
+        "default zcell_q_window, 0.128)")
+    ap.add_argument('--zcell-map', choices=('saturating', 'linear'), default='saturating',
+        help="with --zcell: the reading's amplitude map (default saturating, E73 part B's choice)")
     args = ap.parse_args()
+    if args.zcell_q is not None:
+        try:
+            args.zcell_q = float(args.zcell_q)
+        except ValueError:
+            args.zcell_q = float(H.data_target(args.zcell_q))
+    if not args.zcell and (args.zcell_q is not None or args.zcell_map != 'saturating'):
+        ap.error('--zcell-q / --zcell-map need --zcell')
     if args.cal_trials is None:
         args.cal_trials = 3
     elif args.part != 'A' and args.cal_trials != args.tune_trials:
@@ -2132,6 +2214,8 @@ def main() -> None:
     st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data,
         save_recordings=args.save_recording_distances)
     print_summary(st, res_dir)
+    if args.zcell:
+        analyse_zcell(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, q=args.zcell_q, amp=args.zcell_map)
     if len(st):
         make_figure(res_dir)
     print('done ->', res_dir)

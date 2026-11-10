@@ -32,6 +32,8 @@ Outputs: <shared>/results/E10_joint_fit/ (fits.csv, history_k<k>.csv, best-fit s
 figure) and ./outputs/E10_joint_fit/ (responses / spike counts of each best fit).
 Usage: OMP_NUM_THREADS=6 nice -n 10 ./venv/bin/python E10_joint_fit.py -k 3 1 [--maxfev 150]
        [--kckc0 60] [--claw-thr 40] [--method Nelder-Mead|direct|differential_evolution] [--smoke]
+       [--loss apl --apl-readout zcell --rate-criterion zcell [--zcell-q Q] [--zcell-map saturating|linear]
+       [--zcell-calibrate every|start]] (E73 part C; see below)
 Glomerulus gain (E28's joint-fit arm): `--glom-gain 1.5 [--gain-glomeruli ...]` multiplies the
 PN->claw weights of the E27 oracle glomeruli (default set) in the wiring passed to the fit;
 tags get a `gain<G>_` prefix after the threshold prefix, and fits.csv / provenance record the
@@ -103,6 +105,27 @@ and in the breadth pre-pass (`bouton_base`'s APL-off run, its fixed_thr re-tuned
 APL-off response count; `input_scaled_prepass`). Fixed, not fitted; off by default (the fits as before).
 Recorded in fits.csv (kc_thr_input_exp, the pre-pass's threshold factor, the factor's spread) and the
 provenance; tag prefix thrin<A>_ (after the ceiling prefix); refused with --block-proxy.
+The per-KC session z-score reading (E73 part C; with --loss apl): `--apl-readout zcell` computes the APL-effect
+term under the reading of the recordings that E73's part B scores every archived variant with
+(E73_per_kc_normalization.zcell_rows, graded, against the graded data): each model KC's session of the 16 odors
+and the solvent, 3 trials each, its spike counts through the amplitude map `--zcell-map` (saturating n / (n + K),
+the default, or linear), the response confined to its window, the share `--zcell-q` of the session (default the
+registry's zcell_q_window, 0.128; a number or a registry key), with the registry's slow drift (kc_scale_ratio_0),
+z-scored over the KC's session, in expectation over the measurement noise; calibrated at every evaluation on the
+APL-on counts (the noise term, K and the noise ratio: the APL-on response rate under the data's criterion, trial
+mean > 1 z, at the control flies' ctrl_frac, the responders' mean amplitude at ctrl_resp_amp_mean_z, a silent
+KC's trial sd at ctrl_trial_noise_sd) and applied unchanged to APL off. `--rate-criterion zcell` (default
+'spikes', the model's two-spike responses) takes the operating point, the rate ratio with its wall, the per-odor
+rate terms with their wall and the odors-per-KC term (--apl-opk-term) from the same reading's criterion: the
+operating point term is then ~0 by construction whenever the calibration reaches its target, so the threshold is
+held only by the other terms; `--zcell-calibrate start` calibrates once instead, on the first evaluation's APL-on
+counts, and holds the noise, K and noise ratio for the rest of the fit (a fixed measurement, so the operating
+point term binds); the default 'every' is the reading as specified. Needs --rate-target ctrl_frac (the
+calibration's rate). Every evaluation with either option records the reading's statistics (apl_zcell_<rmse,
+mean, pattern, per_odor, pair_specific, rho> and E73's by_variant columns with a zcell_ prefix, e.g.
+zcell_rate_on, zcell_rate_ratio, zcell_rate_rho_on, zcell_opk_off_tv, zcell_K, zcell_noise); the two-spike
+columns keep their meaning. Off by default (the fits as before); tag prefix zc<apl|rate|aplrate>[-lin][-q<Q>][-cal1]_
+at the start of the tag (the APL term, the rate terms, or both under the reading).
 """
 from __future__ import annotations
 
@@ -515,7 +538,16 @@ RHO_WEIGHTS = dict(on_mat=4.0, off_mat=4.0, block=0.0, iso=0.0, wt_dev=0.0, vcf_
 # the APL-effect loss (E67): the per-pair APL effect first (the loss over its floor, on raw spike counts or
 # under E65's calibrated readout, `--apl-readout`), the operating point, the rate ratio and the per-odor rate
 # terms as constraints with walls, the two matrix terms held at 1, block / monotonicity / structure reported
-APL_READOUTS = ('raw', 'cal', 'both')
+APL_READOUTS = ('raw', 'cal', 'both', 'zcell')
+# (E73 part C) the response criterion of the rate terms: the model's two-spike responses, or the data's criterion
+# under the per-KC session z-score reading; the reading's amplitude map and calibration (`zcell_terms`)
+RATE_CRITERIA = ('spikes', 'zcell')
+ZCELL_MAPS = ('saturating', 'linear')
+ZCELL_CALIBRATE = ('every', 'start')
+# columns of E73's zcell_rows not recorded per evaluation: settings and constants, the APL-effect statistics
+# (recorded as apl_zcell_*), the breadth checks
+ZCELL_SKIP = ('q', 'drift', 'center', 'n_pairs', 'data_mean', 'rmse', 'rmse_centered', 'mean', 'per_odor',
+    'pair_specific', 'spearman')
 APL_WEIGHTS = dict(apl=2.0, apl_raw=1.0, apl_cal=1.0, on_mat=1.0, off_mat=1.0, block=0.0, iso=0.0, wt_dev=0.0, vcf_off=0.0,
     excess_on=0.0, rate_on=1.0, ratio=1.0, po_on=0.5, po_off=0.5, ratio_wall=1.0, po_wall=1.0, apl_block=1.0, opk=1.0)
 # the walls: the APL-off / APL-on response-rate ratio outside the data's 90 % interval, and the APL-on per-odor
@@ -626,6 +658,39 @@ def apl_effect_terms(on: pd.Series, off: pd.Series, s_on: pd.DataFrame, s_off: p
     return out
 
 
+def zcell_terms(s_on: pd.DataFrame, s_off: pd.DataFrame, zcell: dict, cal: Optional[dict] = None
+    ) -> Tuple[Dict[str, float], dict]:
+    """The per-KC session z-score reading of one model's APL-on / APL-off spike counts (E73 part C), exactly as
+    E73's part B scores an archived variant: `E73_per_kc_normalization.zcell_rows` on the counts in APL16 odor
+    order, graded reading against the graded data, calibrated on `s_on` unless `cal` is given.
+
+    Args:
+        s_on, s_off: spike counts (KCs x odors, the simulator's odor labels).
+        zcell: the reading's settings, 'q' (share of the session in the response windows) and 'amp' (`ZCELL_MAPS`).
+        cal: a calibration to apply instead of calibrating on `s_on` (a `calibrate_session_zscore` dict).
+
+    Returns (statistics, the calibration used). Statistics: apl_zcell_<rmse, mean, pattern, per_odor,
+    pair_specific, rho> (the APL-effect loss with its parts, as apl_effect_terms names them), every other
+    numeric column of E73's row with a zcell_ prefix (zcell_rate_on / _off, zcell_rate_ratio, zcell_rate_rho_on
+    / _off, zcell_opk_<on|off>_<bin> and _tv, the amplitudes, the mean distances, the block, the two ρ's on
+    odor-odor distances, the natural-source alignment, zcell_noise / _K / _noise_ratio and the calibration's
+    flags) and zcell_realism_flagged (1 when E73's realism flag is set under the reading).
+    """
+    import E73_per_kc_normalization as E73
+    on, off = (H.abbrev_columns(s.astype(float))[H.APL16_ODORS] for s in (s_on, s_off))
+    rows, cal = E73.zcell_rows({}, on, off, q=zcell['q'], a_map=zcell['amp'], readings=('graded',), cal=cal)
+    r = rows[0]
+    out = {f'apl_zcell_{k}': float(r[c]) for k, c in (('rmse', 'rmse'), ('mean', 'mean'), ('pattern', 'rmse_centered'),
+        ('per_odor', 'per_odor'), ('pair_specific', 'pair_specific'), ('rho', 'spearman'))}
+    for k, v in r.items():
+        if k in ZCELL_SKIP or k.startswith(('scale_ratio_b', 'amp_base_b')):
+            continue
+        if isinstance(v, (bool, int, float, np.bool_, np.integer, np.floating)):
+            out[f'zcell_{k}'] = float(v)
+    out['zcell_realism_flagged'] = float(bool(r.get('realism_flag')))
+    return out, cal
+
+
 def trial_mean(runs: list) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """(responses, spike counts) averaged over runs [(responses, spike_counts), ...]: responses
     become the fraction of runs in which each KC responded to each odor."""
@@ -639,7 +704,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     rate_target: float = RATE_TARGET, block_target: float = BLOCK_TARGET, jitter_k: int = 0,
     jitter_terms: str = 'block', jitter_trials: Optional[int] = None, proxy: Optional[dict] = None,
     variant: Optional[str] = None, apl_readout: str = 'cal', apl_pattern_only: bool = False,
-    apl_block_term: bool = False, apl_opk_term: bool = False):
+    apl_block_term: bool = False, apl_opk_term: bool = False, rate_criterion: str = 'spikes',
+    zcell: Optional[dict] = None):
     """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). `variant` names the
     weight set (`loss_weights`; default 'structure' with `structure=True`, else 'base'); 'rho' (E63) computes
     the structure statistics but weights only the two matrix terms, the rates, the operating point and the
@@ -660,6 +726,15 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     term) and `apl_opk_term` (the number of odors per KC with APL off: half the summed absolute difference
     from the data's shares, over OPK_SCALE, squared). Every evaluation records `apl_effect_terms` under
     both readouts and the APL-off odors-per-KC shares (opk_off_<bin>, opk_off_dist).
+
+    The per-KC session z-score reading (E73 part C; `zcell_terms`): `apl_readout` 'zcell' takes the APL-effect
+    term from the reading; `rate_criterion` 'zcell' (default 'spikes') takes the rate_on, ratio, po_on, po_off
+    terms, the two walls and the odors-per-KC term from the reading's criterion (trial mean > 1 z, in
+    expectation) instead of the two-spike responses (the data side of each is the same: the data's criterion).
+    `zcell`: 'q', 'amp' (`ZCELL_MAPS`, default saturating) and 'calibrate' ('every': at every evaluation on its
+    APL-on counts; 'start': once, on the first evaluation's, then held). With either option every evaluation
+    records the reading's statistics; the reading's calibration targets the control flies' rate (ctrl_frac), so
+    `rate_criterion` 'zcell' needs `rate_target` at it.
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
     with APL on (rank agreement of the KC residual from a linear ORN prediction with the
@@ -692,6 +767,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     if variant == 'rho' and not structure:
         raise ValueError("variant='rho' needs structure=True (its statistics are reported)")
     apl = variant == 'apl'
+    use_zcell = False
+    held: dict = {}
     if apl:
         if not structure:
             raise ValueError("variant='apl' needs structure=True (its statistics are reported)")
@@ -699,13 +776,33 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
             raise ValueError("variant='apl' is deterministic only (no jitter_k, no proxy)")
         if apl_readout not in APL_READOUTS:
             raise ValueError(f'{apl_readout=} not in {APL_READOUTS}')
+        if rate_criterion not in RATE_CRITERIA:
+            raise ValueError(f'{rate_criterion=} not in {RATE_CRITERIA}')
         apl_floor = H.data_target('apl_effect_rmse_floor')
         apl_data = H.yang_apl_effect()
         cal_target = H.data_target('ctrl_participation_ratio_resp')
         ratio_lo, ratio_hi = H.data_target_ci('rate_ratio_fraction')
         opk_data = np.array([H.data_target(f'tnt_odors_per_kc_{b}') for b in OPK_BINS])
-    elif apl_pattern_only or apl_block_term or apl_opk_term or apl_readout != 'cal':
-        raise ValueError('the apl_* options need variant=apl')
+        use_zcell = apl_readout == 'zcell' or rate_criterion == 'zcell'
+        if use_zcell:
+            import E73_per_kc_normalization as E73
+            zcell = dict(zcell or {})
+            zcell.setdefault('q', H.data_target('zcell_q_window'))
+            zcell.setdefault('amp', 'saturating')
+            zcell.setdefault('calibrate', 'every')
+            if zcell['amp'] not in ZCELL_MAPS or zcell['calibrate'] not in ZCELL_CALIBRATE:
+                raise ValueError(f'zcell {zcell}: amp one of {ZCELL_MAPS}, calibrate one of {ZCELL_CALIBRATE}')
+            zcell['q'] = float(zcell['q'])
+            # (the reading's fixed settings, as E73 sets them, for the provenance)
+            zcell.update(drift=float(E73.refs()['drift']), targets={k: float(v) for k, v in E73.refs()['targets'].items()})
+            if rate_criterion == 'zcell' and not np.isclose(rate_target, zcell['targets']['rate'], rtol=1e-12, atol=0):
+                raise ValueError(f"rate_criterion 'zcell': the reading is calibrated to the control flies' APL-on rate "
+                    f"{zcell['targets']['rate']}, so rate_target must be it (not {rate_target})")
+        elif zcell is not None:
+            raise ValueError('zcell settings need apl_readout or rate_criterion zcell')
+    elif apl_pattern_only or apl_block_term or apl_opk_term or apl_readout != 'cal' or rate_criterion != 'spikes' or \
+            zcell is not None:
+        raise ValueError('the apl_* / rate_criterion / zcell options need variant=apl')
     weights = loss_weights(variant)
     ctrl = data['raw']['TNT3c']
     tnt = data['raw']['TNT']
@@ -796,19 +893,34 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
             opk = odors_per_kc(r_off)
             out.update({f'opk_off_{b}': float(v) for b, v in zip(OPK_BINS, opk)})
             out['opk_off_dist'] = float(0.5 * np.abs(opk - opk_data).sum())
+            if use_zcell:
+                zout, zcal = zcell_terms(s_on, s_off, zcell, cal=held.get('cal'))
+                if zcell['calibrate'] == 'start':
+                    held.setdefault('cal', zcal)
+                out.update(zout)
             part = 'pattern' if apl_pattern_only else 'rmse'
             if apl_readout == 'both':
                 terms['apl_raw'] = out[f'apl_raw_{part}'] / apl_floor
                 terms['apl_cal'] = out[f'apl_cal_{part}'] / apl_floor
             else:
                 terms['apl'] = out[f'apl_{apl_readout}_{part}'] / apl_floor
-            excess = max(0.0, ratio_lo - out['ratio'], out['ratio'] - ratio_hi)
+            ratio_v, po_on_v, opk_dist_v = out['ratio'], out['po_on_spearman'], out['opk_off_dist']
+            if rate_criterion == 'zcell':
+                # the operating point, the ratio, the per-odor rates and the odors per KC under the data's criterion
+                ratio_v, po_on_v, opk_dist_v = out['zcell_rate_ratio'], out['zcell_rate_rho_on'], out['zcell_opk_off_tv']
+                if not np.isfinite(ratio_v):
+                    ratio_v = 1e-3
+                terms['rate_on'] = ((out['zcell_rate_on'] - rate_target) / RATE_SCALE) ** 2
+                terms['ratio'] = ((np.log(max(ratio_v, 1e-3)) - np.log(ratio_target)) / RATIO_LOG_SCALE) ** 2
+                terms['po_on'] = 1.0 - np.nan_to_num(po_on_v, nan=0.0)
+                terms['po_off'] = 1.0 - np.nan_to_num(out['zcell_rate_rho_off'], nan=0.0)
+            excess = max(0.0, ratio_lo - ratio_v, ratio_v - ratio_hi)
             terms['ratio_wall'] = (excess / RATIO_WALL_SCALE) ** 2
-            terms['po_wall'] = (max(0.0, PO_WALL - np.nan_to_num(out['po_on_spearman'], nan=0.0)) / PO_WALL_SCALE) ** 2
+            terms['po_wall'] = (max(0.0, PO_WALL - np.nan_to_num(po_on_v, nan=0.0)) / PO_WALL_SCALE) ** 2
             if apl_block_term:
                 terms['apl_block'] = ((np.nan_to_num(out['block_cal'], nan=-0.2) - block_target) / BLOCK_SCALE) ** 2
             if apl_opk_term:
-                terms['opk'] = (out['opk_off_dist'] / OPK_SCALE) ** 2
+                terms['opk'] = (opk_dist_v / OPK_SCALE) ** 2
         return out, terms
 
     loss_fn.ratio_target = ratio_target
@@ -816,6 +928,11 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         opk_term=bool(apl_opk_term), floor=apl_floor, cal_target=cal_target, ratio_wall=[ratio_lo, ratio_hi],
         ratio_wall_scale=RATIO_WALL_SCALE, po_wall=PO_WALL, po_wall_scale=PO_WALL_SCALE, opk_data=dict(zip(OPK_BINS, opk_data.tolist())),
         opk_scale=OPK_SCALE) if apl else None)
+    if use_zcell:
+        loss_fn.apl.update(rate_criterion=rate_criterion, zcell=zcell)
+    # (E73 part C) the reading's settings, or None; the held calibration ('calibrate' 'start'; cleared per fit)
+    loss_fn.zcell = zcell if use_zcell else None
+    loss_fn.zcell_held = held
     loss_fn.rate_target = float(rate_target)
     loss_fn.block_target = float(block_target)
     return loss_fn
@@ -1093,8 +1210,24 @@ def main() -> None:
     ap.add_argument('--apl-readout', choices=list(APL_READOUTS), default='cal',
         help="with --loss apl (E67): the model's side of the APL-effect term: 'raw' (cosine on raw spike counts), "
         "'cal' (E65's saturating readout n / (n + K), K re-calibrated at every evaluation on the APL-on counts to the "
-        "control flies' responders-only participation ratio, applied unchanged to APL off) or 'both' (the two terms at "
-        "half weight each); tag part apl<readout>")
+        "control flies' responders-only participation ratio, applied unchanged to APL off), 'both' (the two terms at "
+        "half weight each) or 'zcell' (E73 part C: the per-KC session z-score reading, graded, calibrated at every "
+        "evaluation on the APL-on counts; see the module doc); tag part apl<readout>")
+    ap.add_argument('--rate-criterion', choices=list(RATE_CRITERIA), default='spikes',
+        help="with --loss apl (E73 part C): the response criterion of the operating point, the rate ratio and its wall, "
+        "the per-odor rate terms and the odors-per-KC term: 'spikes' (the model's two-spike responses, as before) or "
+        "'zcell' (the data's criterion, trial mean > 1 z, under the per-KC session z-score reading; needs "
+        "--rate-target ctrl_frac); tag prefix zc...rate_")
+    ap.add_argument('--zcell-q', default=None, metavar='Q',
+        help="with a zcell option: the share of the session inside the response windows (a number or a data-target "
+        "registry key; default zcell_q_window, Yang's APL16 recordings' 0.128); tag part -q<Q> when not the default")
+    ap.add_argument('--zcell-map', choices=list(ZCELL_MAPS), default=None,
+        help="with a zcell option: the reading's amplitude map (default saturating, n / (n + K), K calibrated; E73 "
+        "part B's choice); tag part -lin for linear")
+    ap.add_argument('--zcell-calibrate', choices=list(ZCELL_CALIBRATE), default=None,
+        help="with a zcell option: 'every' (default; the reading calibrated at every evaluation on its APL-on counts) or "
+        "'start' (calibrated once, on the first evaluation's, and held: the operating point term then binds under "
+        "--rate-criterion zcell); tag part -cal1 for start")
     ap.add_argument('--apl-pattern-only', action='store_true',
         help='with --loss apl: the APL-effect term on the pattern part only (both means removed); tag part pat')
     ap.add_argument('--apl-block-term', action='store_true',
@@ -1282,16 +1415,47 @@ def main() -> None:
         proxy_tag = f'proxyP{proxy["passes"]}' + ('r' if proxy['relax'] else '') + '_'
     if args.loss != 'apl' and (args.apl_pattern_only or args.apl_block_term or args.apl_opk_term):
         ap.error('--apl-pattern-only / --apl-block-term / --apl-opk-term need --loss apl')
+    # (E73 part C) the per-KC session z-score reading
+    use_zcell = args.apl_readout == 'zcell' or args.rate_criterion == 'zcell'
+    zcell_given = args.zcell_q is not None or args.zcell_map is not None or args.zcell_calibrate is not None
+    if (use_zcell or zcell_given) and args.loss != 'apl':
+        ap.error('--apl-readout zcell / --rate-criterion zcell / --zcell-* need --loss apl')
+    if zcell_given and not use_zcell:
+        ap.error('--zcell-q / --zcell-map / --zcell-calibrate need --apl-readout zcell or --rate-criterion zcell')
+    zcell, zcell_tag = None, ''
+    if use_zcell:
+        q_window = H.data_target('zcell_q_window')
+        zq = q_window
+        if args.zcell_q is not None:
+            try:
+                zq = float(args.zcell_q)
+            except ValueError:
+                zq = float(H.data_target(args.zcell_q))
+        if not 0 < zq < 1:
+            ap.error(f'--zcell-q {zq} must be in (0, 1)')
+        zcell = dict(q=zq, amp=args.zcell_map or 'saturating', calibrate=args.zcell_calibrate or 'every')
+        if args.rate_criterion == 'zcell' and not np.isclose(rate_target, H.data_target('ctrl_frac'), rtol=1e-12, atol=0):
+            ap.error("--rate-criterion zcell: the reading is calibrated to the control flies' APL-on rate; pass --rate-target ctrl_frac")
+        zcell_tag = ('zc' + ('apl' if args.apl_readout == 'zcell' else '') + ('rate' if args.rate_criterion == 'zcell' else '')
+            + ('-lin' if zcell['amp'] == 'linear' else '') + ('' if zq == q_window else f'-q{zq:.3f}')
+            + ('-cal1' if zcell['calibrate'] == 'start' else '') + '_')
     loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss in ('structure', 'rho', 'apl')), variant=args.loss,
         rate_target=rate_target, block_target=block_target, jitter_k=jit_k, jitter_terms=args.jitter_terms,
         jitter_trials=args.jitter_trials, proxy=proxy,
         **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
-            apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}))
+            apl_opk_term=args.apl_opk_term, rate_criterion=args.rate_criterion, zcell=zcell) if args.loss == 'apl' else {}))
     if loss_fn.apl is not None:
         print(f"APL-effect loss: readout {args.apl_readout}{', pattern part only' if args.apl_pattern_only else ''}"
             f"{', block under the readout' if args.apl_block_term else ''}{', odors per KC with APL off' if args.apl_opk_term else ''}; "
             f"floor {loss_fn.apl['floor']:.4f}, calibration target {loss_fn.apl['cal_target']:.4f}, ratio wall "
             f"{loss_fn.apl['ratio_wall'][0]:.2f}-{loss_fn.apl['ratio_wall'][1]:.2f}", flush=True)
+    if loss_fn.zcell is not None:
+        z = loss_fn.zcell
+        print(f"per-KC session z-score reading (E73): APL-effect term {'under it' if args.apl_readout == 'zcell' else 'not'}; "
+            f"rate terms under {'its' if args.rate_criterion == 'zcell' else 'the two-spike'} criterion; q {z['q']:.6g}, map "
+            f"{z['amp']}, drift {z['drift']:.4f}, calibrated {'at every evaluation' if z['calibrate'] == 'every' else 'once, at the start'} "
+            f"on APL on (rate {z['targets']['rate']:.4f}, responders' amplitude {z['targets']['amp']:.3f} z, silent trial sd "
+            f"{z['targets']['silent_sd']:.3f} z)", flush=True)
     if proxy is not None:
         print(f"block term on the proxy: {proxy['passes']} passes{' with relaxation' if proxy['relax'] else ''}, sigma "
             f"{proxy['sigma']:g} ({proxy['sigma_source']}), threshold ratio {proxy['thr_ratio']:.4f} ({proxy['thr_ratio_source']}), "
@@ -1343,7 +1507,7 @@ def main() -> None:
     if args.loss == 'apl':
         loss_tag = (f'apl{args.apl_readout}' + ('pat' if args.apl_pattern_only else '') + ('blk' if args.apl_block_term else '')
             + ('opk' if args.apl_opk_term else '') + '_')
-    prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
+    prefix = zcell_tag + {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + kc_tag + thrin_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
@@ -1366,6 +1530,8 @@ def main() -> None:
     for k in args.exponents:
         tag = f'{prefix}k{k:g}{args.tag}'
         t0 = time.time()
+        # (E73, --zcell-calibrate start: each fit calibrates the reading on its own start)
+        loss_fn.zcell_held.clear()
         exact_expect = None
         if args.init_from_exact:
             # the fits.csv columns (as main writes them) that define the base
@@ -1433,6 +1599,10 @@ def main() -> None:
             **({f'proxy_{kk}': vv for kk, vv in proxy.items()} if proxy is not None else {}),
             **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
                 apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}),
+            # (E73 part C: the per-KC session z-score reading's settings; absent when not used)
+            **(dict(rate_criterion=args.rate_criterion, zcell_q=loss_fn.zcell['q'], zcell_map=loss_fn.zcell['amp'],
+                zcell_calibrate=loss_fn.zcell['calibrate'], zcell_drift=loss_fn.zcell['drift'])
+                if loss_fn.zcell is not None else {}),
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
@@ -1485,7 +1655,13 @@ def main() -> None:
             f"{res['losses']['apl_raw_pattern']:.3f}), calibrated {res['losses']['apl_cal_rmse']:.3f} (mean "
             f"{res['losses']['apl_cal_mean']:+.3f}, pattern {res['losses']['apl_cal_pattern']:.3f}, K {res['losses']['apl_cal_K']:.2f}); "
             f"block calibrated {res['losses']['block_cal']:+.3f}; odors per KC off distance {res['losses']['opk_off_dist']:.3f}"
-            if args.loss == 'apl' else ''),
+            if args.loss == 'apl' else '')
+            + (f"; per-KC session z-score reading: APL-effect loss {res['losses']['apl_zcell_rmse']:.3f} (mean "
+            f"{res['losses']['apl_zcell_mean']:+.3f}, pattern {res['losses']['apl_zcell_pattern']:.3f}), rates on "
+            f"{res['losses']['zcell_rate_on']:.4f} off {res['losses']['zcell_rate_off']:.4f} (x{res['losses']['zcell_rate_ratio']:.2f}), "
+            f"per-odor rates {res['losses']['zcell_rate_rho_on']:.2f}/{res['losses']['zcell_rate_rho_off']:.2f}, odors per KC off "
+            f"distance {res['losses']['zcell_opk_off_tv']:.3f}, K {res['losses']['zcell_K']:.3g}, noise {res['losses']['zcell_noise']:.4g}"
+            if loss_fn.zcell is not None else ''),
             flush=True
         )
         prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'),
@@ -1523,6 +1699,17 @@ def main() -> None:
                 'floor, on raw spike counts (cosine) or under the saturating readout n / (n + K), K re-calibrated at every evaluation '
                 '(kc_remapping_harness.calibrate_readout, responders_min 2) on the APL-on counts and applied unchanged to APL off; the '
                 'data side is the graded effect (yang_apl_effect); walls as in E10_joint_fit.APL_WEIGHTS'))) if loss_fn.apl is not None else {}),
+            **(dict(zcell=dict(loss_fn.zcell, apl_readout=args.apl_readout, rate_criterion=args.rate_criterion,
+                held_calibration=loss_fn.zcell_held.get('cal'), note=('E73 part C: the per-KC session z-score reading '
+                '(E73_per_kc_normalization.zcell_rows, graded, as E73 part B scores the archived variants: each model KC\'s '
+                'session of the 16 odors and the solvent, 3 trials each, its spike counts through the amplitude map, the '
+                'response confined to its window, the share q of the session, z-scored over the KC\'s session with the '
+                'slow drift; in expectation over the measurement noise), calibrated on the APL-on counts (the noise, K and '
+                'the noise ratio to the targets: rate, responders\' amplitude, silent trial sd) at every evaluation '
+                '(calibrate every) or once on the first evaluation\'s (start, held_calibration), applied unchanged to '
+                'APL off; apl_readout zcell: the APL-effect term under it; rate_criterion zcell: rate_on, ratio, po_on, '
+                'po_off, the two walls and the odors-per-KC term under its criterion (trial mean > 1 z)')))
+                if loss_fn.zcell is not None else {}),
             data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
             # (the seed fit and the start mode, so a chained fit's start is explained: see

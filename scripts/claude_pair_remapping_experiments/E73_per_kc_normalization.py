@@ -63,8 +63,11 @@ from __future__ import annotations
 
 import os
 
-for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
-    os.environ.setdefault(_v, '1')
+# (only when run as a script: E10_joint_fit.py and E43_model_trial_noise.py import this module for the reading,
+# and must keep the thread count of their simulations; the worker processes inherit the setting)
+if __name__ == '__main__':
+    for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
+        os.environ.setdefault(_v, '1')
 
 import argparse
 from pathlib import Path
