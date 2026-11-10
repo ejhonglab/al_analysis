@@ -966,7 +966,41 @@ def part_s(args) -> None:
     write_table_bc(res_dir, table, pd.read_csv(mp) if mp.exists() else None, pd.DataFrame(corr_rows))
     if mp.exists():
         figure_multipliers(res_dir, pd.read_csv(mp))
+    if (table.part == 'C').any():
+        figure_breadth(res_dir, table[table.part == 'C'])
     print(table.round(3).to_string())
+
+
+def figure_breadth(res_dir: Path, c: pd.DataFrame) -> None:
+    """Part C: the APL-effect loss, its mean APL effect and its per-odor and pair-specific parts against the breadth
+    exponent, per reference model and breadth definition, under raw counts and the calibrated readout."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    c = c.copy()
+    c['k'] = c.index.str.extract(r'_k([0-9.]+)$', expand=False).astype(float).to_numpy()
+    c['bdef'] = ['n_odors' if '_n_odors_' in t else 'spikes' for t in c.index]
+    stats = [('apl_effect_rmse', 'APL-effect loss (lower is better)'), ('apl_effect_mean', 'mean APL effect'),
+        ('apl_effect_per_odor', 'per-odor part'), ('apl_effect_pair_specific', 'pair-specific part')]
+    fig, axes = plt.subplots(2, len(stats), figsize=(4 * len(stats), 7), sharex=True)
+    floors = {'apl_effect_rmse': H.data_target('apl_effect_rmse_floor'), 'apl_effect_mean': H.data_target('apl_effect_mean')}
+    for r, readout in enumerate(('raw', CAL_READOUT)):
+        for j, (st, lab) in enumerate(stats):
+            ax = axes[r, j]
+            for i, model in enumerate(REF_BASES):
+                for bdef, ls in (('spikes', '-'), ('n_odors', '--')):
+                    g = c[(c.model == model) & ((c.bdef == bdef) | (c.k == 0))].sort_values('k')
+                    ax.plot(g.k, g[f'{readout}__{st}'], ls, marker='o', ms=4, c=f'C{i}',
+                        label=f"{BASES[model]['label']}, breadth = {'APL-off spike total' if bdef == 'spikes' else 'number of odors'}")
+            if st in floors:
+                ax.axhline(floors[st], c='k', ls=':', lw=1)
+            ax.set_title(f'{lab}\n({READOUT_LABEL[readout]})', fontsize=9)
+            if r == 1:
+                ax.set_xlabel('breadth exponent')
+    axes[1, 0].legend(fontsize=6.5, loc='upper center', bbox_to_anchor=(2.2, -0.22), ncol=2, frameon=False)
+    fig.tight_layout()
+    fig.savefig(res_dir / 'E66_breadth_exponent.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 
 def figure_multipliers(res_dir: Path, mu: pd.DataFrame) -> None:
