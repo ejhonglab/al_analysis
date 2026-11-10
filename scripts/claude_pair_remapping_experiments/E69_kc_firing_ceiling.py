@@ -44,6 +44,15 @@ readout with noise, 'cal_noise': entries above 4 z, the responders' mean amplitu
 band, both conditions); the odors-per-KC distribution in both conditions with its distance from the
 flies'; the realism flag (apl_effect_scores.realism_flag, all four bands).
 
+Part B (E10_joint_fit.py --experiment E69_kc_firing_ceiling --loss apl --apl-readout both with the ceiling
+fixed, from part A's re-tuned parameters in tuned_params.json; its fits.csv and histories in the same
+results folder): `--stage partB` re-simulates every fit of fits.csv at its fitted parameters (the spike
+counts must equal the fit's saved ones) and scores it as the part A variants are (part 'B': partB_variant_stats.csv,
+parts_B.csv, shares_B.csv, model_pair_distances_long_B.csv); `--stage summarize` then writes
+comparison_table_partB.md (each fit beside its start, and the fits through the trial-noise pipeline,
+E43_model_trial_noise.py --part B with --results-dir results/E69_kc_firing_ceiling/trial_noise, scored on
+the APL effect from its pairs_noise_long.csv as the compressive readout experiment, E65, scores the others).
+
 Outputs: results/E69_kc_firing_ceiling/ (bases.json, base_checks.json, pilot.json, settings_log.csv,
 stats_variants.csv, model_pair_distances_long.csv, ceiling_readouts.csv, worst_pairs.csv,
 partA_variant_stats.csv, parts_A.csv, shares_A.csv, comparison_table.md, figures, provenance.json);
@@ -54,6 +63,7 @@ Usage (from this folder; one process at a time):
     (runs every missing check, the pilot and every missing setting, each in its own process, then
     --stage summarize)
     ../../venv/bin/python E69_kc_firing_ceiling.py --stage summarize
+    OMP_NUM_THREADS=8 nice -n 10 ../../venv/bin/python E69_kc_firing_ceiling.py --stage partB  (after part B's fits)
 """
 from __future__ import annotations
 
@@ -198,14 +208,20 @@ class Model:
     with the KC refractory / adaptation kwargs `kc`, set in its initial call, so every simulation
     has them); `sim(params)` returns (responses, spike counts) with columns in ODORS order."""
 
-    def __init__(self, key: str, kc: Optional[dict] = None):
+    def __init__(self, key: str, kc: Optional[dict] = None, ref: Optional[Tuple[str, str]] = None):
+        """`ref` (experiment, tag): that fit at its fitted parameters instead of the base's (a part B fit,
+        whose fits.csv row carries its KC refractory / adaptation parameters, which E43.fit_model passes on;
+        `kc` must then be empty); `self.base` stays the base's."""
         import E43_model_trial_noise as E43
         from al_analysis.mb_model import make_fixed_param_kc_simulator
         from E10_joint_fit import bouton_base
         b = bases()[key]
+        if ref is not None and kc:
+            raise ValueError('kc with ref: the fit row carries its own KC refractory / adaptation parameters')
         self.key, self.base, self.kc = key, b, dict(kc or {})
         copy_base_caches()
-        name = E43.model_from(f"{b['exp']}:{b['tag']}")
+        exp, tag = ref if ref is not None else (b['exp'], b['tag'])
+        name = E43.model_from(f"{exp}:{tag}")
         self.lab_orn = H.apl16_orn_deltas()
         fm = E43.fit_model(name, self.lab_orn, base_dir())
         if fm['info'].get('wiring') or fm['info'].get('orn_input'):
@@ -215,7 +231,7 @@ class Model:
         gain = self.info.get('gain', 1.0)
         _, _, self.W, _ = bouton_base(self.orn, base_dir(), claw_thr=self.info.get('claw_thr'),
             gain=None if gain == 1.0 else gain, gain_gloms=self.info.get('gain_glomeruli') or None)
-        self.fit = E43.fit_row(b['exp'], b['tag'])
+        self.fit = E43.fit_row(exp, tag)
         t0 = time.time()
         self._sim, _ = make_fixed_param_kc_simulator(self.orn, initial_params=self.p, **self.kws, **self.kc)
         self.build_seconds = time.time() - t0
@@ -350,7 +366,7 @@ def score(tag: str, meta: dict, model: Model, on_out, off_out) -> dict:
     c = ctx()
     on_s, off_s = on_out[1].astype(float), off_out[1].astype(float)
     K = H.calibrate_readout(on_s, 'saturating', c['pr_target'], stat='participation_ratio', responders_min=RESP_MIN)
-    row = E66.score_variant(c, tag, meta, on_out, off_out, model.W, model.lab_orn, K, 'A', res_dir(), out_dir())
+    row = E66.score_variant(c, tag, meta, on_out, off_out, model.W, model.lab_orn, K, meta.get('part', 'A'), res_dir(), out_dir())
     ex = dict(tag=tag, cal_K=K)
     ae = apl_effect_terms(H.pair_distances(on_s, 'cosine'), H.pair_distances(off_s, 'cosine'), on_s, off_s, c['effect'],
         c['pr_target'])
@@ -644,6 +660,109 @@ def stage_setting(tag: str) -> None:
         lp, mode='a', header=not lp.exists(), index=False)
 
 
+def partB_fits() -> pd.DataFrame:
+    """Part B's fits: the rows of fits.csv (E10_joint_fit.py --experiment E69_kc_firing_ceiling), in the
+    order they were written."""
+    p = res_dir() / 'fits.csv'
+    return pd.read_csv(p) if p.exists() else pd.DataFrame()
+
+
+def partB_base(r) -> str:
+    """The part A base a part B fit belongs to (its per-claw threshold and glomerulus gain)."""
+    claw_thr, gain = r.get('claw_thr'), r.get('gain')
+    if pd.notna(claw_thr) and float(claw_thr) == 40.0 and pd.notna(gain) and float(gain) == 1.5:
+        return 'ref40'
+    if pd.isna(claw_thr) and (pd.isna(gain) or float(gain) == 1.0):
+        return 'e67cal'
+    raise ValueError(f"{r['tag']}: no part A base with claw_thr {claw_thr} and gain {gain}")
+
+
+def partB_start(r) -> str:
+    """The tag a part B fit started from: the key of its --init-params (a part A variant) or its --init-from
+    (an earlier part B fit)."""
+    if isinstance(r.get('init_params'), str) and r['init_params']:
+        return r['init_params'].rsplit(':', 1)[1]
+    if isinstance(r.get('init_from'), str) and r['init_from']:
+        return r['init_from']
+    return ''
+
+
+def stage_partB() -> None:
+    """Scores every part B fit not yet scored: re-simulated at its fitted parameters (the fits.csv row,
+    with its KC refractory period and adaptation), the spike counts checked equal to the fit's saved
+    ones, then scored as the part A variants (part 'B' tables)."""
+    p = res_dir() / 'partB_variant_stats.csv'
+    done = set(pd.read_csv(p)['tag'].astype(str)) if p.exists() else set()
+    strengths_ = strengths()
+    checks = read_json(res_dir() / 'partB_checks.json', {})
+    for _, r in partB_fits().iterrows():
+        tag = str(r['tag'])
+        if tag in done:
+            continue
+        t0 = time.time()
+        key = partB_base(r)
+        m = Model(key, ref=(EXPERIMENT, tag))
+        on, off = m.sim(m.p), m.sim(m.off_params())
+        chk = {}
+        for cond, out in (('on', on), ('acute_off', off)):
+            saved = pd.read_parquet(out_dir() / f'{tag}_{cond}_spike_counts.parquet')
+            saved = saved[sorted(saved.columns, key=lambda c: ODORS.index(H.odor_abbrev(c)))].astype(float)
+            chk[f'{cond}_index_equal'] = bool(saved.index.equals(out[1].index))
+            chk[f'{cond}_mismatch'] = int((saved.to_numpy() != out[1].to_numpy(dtype=float)).sum())
+        chk['rate_on_vs_fit'] = rate(on[0]) - float(r['rate_on'])
+        chk['rate_off_vs_fit'] = rate(off[0]) - float(r['rate_off'])
+        if any(v != 0 for k, v in chk.items() if k.endswith('mismatch')) or not all(v for k, v in chk.items()
+                if k.endswith('index_equal')) or abs(chk['rate_on_vs_fit']) > 1e-9 or abs(chk['rate_off_vs_fit']) > 1e-9:
+            raise RuntimeError(f'{tag}: the re-simulated fit does not reproduce its saved outputs: {chk}')
+        checks[tag] = dict(checks=chk, base=key, time=now(), host=socket.gethostname(), **code_state())
+        write_json(res_dir() / 'partB_checks.json', checks)
+        b0 = read_json(res_dir() / 'base_checks.json', {})[key]['params']
+        inc = float(r['kc_adapt_inc']) if pd.notna(r.get('kc_adapt_inc')) else 0.0
+        strength = next((i + 1 for i, s in enumerate(strengths_) if inc > 0 and np.isclose(s, inc, rtol=1e-6)), '')
+        aplpn_e3 = float(m.fit.get('aplpn_factor_vs_e3', np.nan)) if 'aplpn_factor_vs_e3' in m.fit else np.nan
+        meta = dict(variant=f'B_{partB_start(r)}' + ('_opk' if r.get('apl_opk_term') is True or str(r.get('apl_opk_term')) == 'True' else ''),
+            tag=tag, part='B', setting=tag, **base_meta(m), kc_refractory_period=float(r['kc_refractory_period']),
+            kc_adapt_inc=inc, kc_adapt_tau=float(r['kc_adapt_tau']) if inc > 0 else np.nan, adapt_strength=strength,
+            thr_factor=m.p['fixed_thr'] / b0['fixed_thr'], apl_factor=m.p['wAPLKC_scale'] / b0['wAPLKC_scale'],
+            target_rate_on=np.nan, target_rate_off=np.nan, rate_on=rate(on[0]), rate_off=rate(off[0]), thr_at_bound=False,
+            apl_at_bound=False, aplpn_factor_vs_e3=aplpn_e3, aplpn_over_cap=bool(aplpn_e3 > APLPN_CAP + 1e-9),
+            n_sims=int(r['n_evals']) if pd.notna(r.get('n_evals')) else np.nan, seconds=time.time() - t0, start=partB_start(r),
+            fit_loss=float(r['loss']), fit_initial_loss=float(r['initial_loss']),
+            apl_opk_term=str(r.get('apl_opk_term')) == 'True', **params_meta(m.p))
+        meta['n_kcs'] = int(on[0].shape[0])
+        meta['rate_ratio_off_over_on'] = meta['rate_off'] / meta['rate_on']
+        score(tag, meta, m, on, off)
+        print(f'{tag}: re-simulation checks {chk}', flush=True)
+
+
+def noise_apl_effect(d_dir: Optional[Path] = None) -> pd.DataFrame:
+    """The part B fits through the trial-noise pipeline (results/E69_kc_firing_ceiling/trial_noise/), scored
+    on the APL effect as the compressive readout experiment (E65 `noise_apl_effect`) scores the others: per
+    model and noise level, the model's per-pair effect from its noisy three-trial-mean distances ('raw',
+    against the data's raw distances), from its noise-corrected ones ('corrected', against the data's
+    corrected ones) and from its deterministic ones ('det'); graded values; with the block on the raw
+    matrices (onoff_noise.csv)."""
+    d_dir = res_dir() / 'trial_noise' if d_dir is None else d_dir
+    if not (d_dir / 'pairs_noise_long.csv').exists():
+        return pd.DataFrame()
+    d = pd.read_csv(d_dir / 'pairs_noise_long.csv')
+    d = d[d['transform'] == 'graded']
+    oo = pd.read_csv(d_dir / 'onoff_noise.csv') if (d_dir / 'onoff_noise.csv').exists() else pd.DataFrame()
+    rows = []
+    for (model, level), g in d.groupby(['model', 'level'], sort=False):
+        on = g[g.condition == 'on'].set_index(['odor_a', 'odor_b'])
+        off = g[g.condition == 'acute_off'].set_index(['odor_a', 'odor_b'])
+        for col, dcol in (('raw', 'data_raw'), ('corrected', 'data_corrected'), ('det', 'data_raw')):
+            st = H.apl_effect_stats(on[col], off[col], H.apl_effect(on[dcol], off[dcol]))
+            row = dict(model=model, level=level, sigma=float(g['sigma'].iloc[0]), distances=col, **st)
+            if len(oo):
+                b = oo[(oo.model == model) & (oo.level == level) & (oo['transform'] == 'graded') &
+                    (oo.matrix == ('corrected' if col == 'corrected' else 'raw'))]
+                row['block'] = float(b['block'].iloc[0]) if len(b) else np.nan
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def child(args: List[str], log: Path) -> int:
     """Runs this script with `args` in its own process (a C++ exception inside the parallel region
     kills the process without a traceback), output to `log`."""
@@ -683,14 +802,16 @@ def stage_run() -> None:
 # ---------------------------------------------------------------------------
 # summary: merged tables, comparison table, figures, provenance
 def merged() -> pd.DataFrame:
-    st = pd.read_csv(res_dir() / 'partA_variant_stats.csv')
+    st = pd.concat([pd.read_csv(p) for p in (res_dir() / 'partA_variant_stats.csv', res_dir() / 'partB_variant_stats.csv')
+        if p.exists()], ignore_index=True)
     ex = pd.read_csv(res_dir() / 'ceiling_readouts.csv')
     st = st.drop_duplicates('tag', keep='last').set_index('tag')
     ex = ex.drop_duplicates('tag', keep='last').set_index('tag')
     df = st.join(ex[[c for c in ex.columns if c not in st.columns]], how='inner')
     order = {s['tag']: i for i, s in enumerate([dict(tag=f'{k}_base') for k in BASES] + settings())}
+    order.update({t: 1000 + i for i, t in enumerate(partB_fits().get('tag', pd.Series(dtype=str)).astype(str))})
     df['_o'] = [order.get(t, 999) for t in df.index]
-    return df.sort_values('_o').drop(columns='_o').reset_index()
+    return df.sort_values('_o', kind='stable').drop(columns='_o').reset_index()
 
 
 def basecal_z_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -811,6 +932,98 @@ def write_table(df: pd.DataFrame) -> None:
     (res_dir() / 'comparison_table.md').write_text('\n'.join(L) + '\n')
 
 
+def write_partB_table(df: pd.DataFrame, noise: pd.DataFrame) -> None:
+    """comparison_table_partB.md: each part B fit beside its start (a part A variant or an earlier fit),
+    with the KC data; the fitted parameters; the fits through the trial-noise pipeline beside the
+    APL-effect fits' (E67) three fits through the same pipeline."""
+    from apl_effect_scores import opk_band
+    dt = H.data_target
+    bs = bases()
+    checks = read_json(res_dir() / 'base_checks.json', {})
+    by_tag = df.set_index('tag')
+    fits = df[df.part == 'B']
+
+    def label(tag: str) -> str:
+        r = by_tag.loc[tag]
+        if r.part == 'A':
+            return f"start: part A, {setting_label(r).replace('<br>', ', ')}"
+        return f"fitted ({int(r.n_sims) if pd.notna(r.n_sims) else '?'} evaluations)" + (', + odors per KC term' if r.get('apl_opk_term') is True else '')
+
+    def flag(r) -> str:
+        return r.realism_flag if isinstance(r.realism_flag, str) and r.realism_flag else '-'
+
+    L = ['# E69: a firing ceiling for the KCs, part B (re-fits under the APL-effect loss with the ceiling fixed)', '',
+        f'Generated {datetime.now():%Y-%m-%d %H:%M} by E69_kc_firing_ceiling.py (`--stage partB`, `--stage summarize`). Fits: '
+        'E10_joint_fit.py --experiment E69_kc_firing_ceiling --loss apl --apl-readout both (the raw-count and the calibrated-readout '
+        'APL-effect terms at weight 1 each), 3 ms refractory period and adaptation at τ 1 s fixed, the somatic threshold, APL->KC '
+        '(KC->APL tied), APL->bouton (capped at 3 x the bouton base\'s) and KC-KC free, from part A\'s re-tuned parameters '
+        '(tuned_params.json). Each fit re-simulated at its fitted parameters reproduces its saved spike counts exactly '
+        '(partB_checks.json). "readout": E65\'s calibrated saturating readout, K re-calibrated on the variant\'s APL-on counts '
+        '(at its bound of 1000 the readout is linear and the two definitions coincide).', '']
+    for base_key, g in fits.groupby('base', sort=False):
+        L += [f"## {bs[base_key]['label']} ({base_key})", '',
+            '| | largest count<br>APL on / off | APL-effect loss, raw<br>(mean; per-odor; pair-specific) | ρ per-pair<br>raw | '
+            'APL-effect loss, readout<br>(mean; per-odor; pair-specific) | ρ per-pair<br>readout | K | block<br>raw / readout | '
+            'odors per KC<br>APL on / off | response rates<br>on / off (ratio) | response rate ρ<br>APL on / off | realism flag |',
+            '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
+        rows = []
+        for r in g.itertuples():
+            if r.start in by_tag.index and r.start not in rows:
+                rows.append(r.start)
+            rows.append(r.tag)
+        for tag in rows:
+            r = by_tag.loc[tag]
+            L.append(f"| {label(tag)} | {r.max_count_on:.0f} / {r.max_count_off:.0f} | {fmt(r.apl_raw_rmse)} ({r.apl_raw_mean:+.3f}; "
+                f"{fmt(r.apl_raw_per_odor)}; {fmt(r.apl_raw_pair_specific)}) | {fmt(r.apl_raw_rho, '.2f')} | {fmt(r.apl_cal_rmse)} "
+                f"({r.apl_cal_mean:+.3f}; {fmt(r.apl_cal_per_odor)}; {fmt(r.apl_cal_pair_specific)}) | {fmt(r.apl_cal_rho, '.2f')} | "
+                f"{fmt(r.cal_K, '.1f')} | {fmt(r[f'{V}__block_fruity_small_iso'])} / {fmt(r.block_cal)} | {fmt(r.opk_on_tv, '.3f')} / "
+                f"{fmt(r.opk_off_tv, '.3f')} | {r.rate_on:.4f} / {r.rate_off:.4f} ({r.rate_off / r.rate_on:.2f}) | "
+                f"{fmt(r.spearman_rate_on_vs_data, '.2f')} / {fmt(r.spearman_rate_off_vs_data, '.2f')} | {flag(r)} |")
+        L.append(f"| KC data | - | floor {fmt(dt('apl_effect_rmse_floor'))} (+{dt('apl_effect_mean'):.3f}) | ceiling "
+            f"{fmt(dt('apl_effect_rho_ceiling'), '.2f')} | floor {fmt(dt('apl_effect_rmse_floor'))} (+{dt('apl_effect_mean'):.3f}) | - | - | "
+            f"{fmt(dt('block'))} / - | bands {opk_band('on'):.3f} / {opk_band('off'):.3f} | {dt('ctrl_frac'):.4f} / {dt('tnt_frac'):.4f} "
+            f"({dt('rate_ratio_fraction'):.2f}) | band >= 0.37 (APL on) | - |")
+        b0 = checks[base_key]['params']
+        L += ['', '| | somatic threshold<br>(Hz; x base) | APL->KC<br>(x base) | APL->bouton<br>(x base) | KC-KC | ρ on odor-odor distances<br>APL on / off | '
+            'natural-source alignment<br>APL on / off / on minus off | mean distance, raw<br>APL on / off | APL off, E68\'s conversion:<br>above 4 z / '
+            'responders\' mean z | responders-only participation ratio, raw<br>APL on / off |',
+            '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+        for tag in rows:
+            r = by_tag.loc[tag]
+            von, voff = r[f'{V}__on_spearman_resid_vs_vcf_hyp'], r[f'{V}__off_spearman_resid_vs_vcf_hyp']
+            L.append(f"| {label(tag)} | {r.fixed_thr:.1f} ({r.fixed_thr / b0['fixed_thr']:.3f}) | {r.wAPLKC_scale / b0['wAPLKC_scale']:.3f} | "
+                f"{r.wAPLPN_scale / b0['wAPLPN_scale']:.3f} | {r.wKCKC_scale:.1f} | {fmt(r[f'{V}__on_spearman'])} / {fmt(r[f'{V}__off_spearman'])} | "
+                f"{fmt(von, '.2f')} / {fmt(voff, '.2f')} / {fmt(von - voff, '+.2f')} | {fmt(r[f'{V}__on_mean_model'])} / "
+                f"{fmt(r[f'{V}__off_mean_model'])} | {pct(r.z_floor_noise_share_above_4_acute_off)} / "
+                f"{fmt(r.z_floor_noise_resp_amp_mean_acute_off, '.2f')} | {pct(r.pr_resp_raw_on)} / {pct(r.pr_resp_raw_off)} |")
+        L.append(f"| KC data | - | - | - | - | ceilings 0.98 / 0.97 | {dt('ctrl_vcf'):.2f} / {dt('tnt_vcf'):.2f} / {dt('vcf_apl_effect'):+.2f} | "
+            f"{dt('ctrl_mean_dist'):.3f} / {dt('tnt_mean_dist'):.3f} | {pct(dt('tnt_share_z_above_4'))} / {fmt(dt('tnt_resp_amp_mean_z'), '.2f')} | "
+            f"{pct(dt('ctrl_participation_ratio_resp'))} / {pct(dt('tnt_participation_ratio_resp'))} |")
+        L.append('')
+    e67 = noise_apl_effect(RESULTS / E67_FOLDER / 'partB')
+    allnoise = pd.concat([x for x in (noise, e67) if len(x)], ignore_index=True) if (len(noise) or len(e67)) else pd.DataFrame()
+    if len(allnoise):
+        L += ['## Through the trial-noise pipeline (E48\'s settings), raw counts', '',
+            'Ten pseudo-recordings of three trials, the per-KC threshold jitter matched to the control flies\' (match_on) or the '
+            'blocked flies\' (match_off) single-trial distances, the threshold re-tuned to the deterministic APL-on response rate; '
+            'the model\'s per-pair APL effect from its noisy three-trial-mean distances against the data\'s raw distances '
+            '("deterministic": the model without noise). E67\'s fits from results/E67_apl_effect_fits/partB.', '',
+            '| model | | APL-effect loss, raw counts | mean APL effect | ρ on the per-pair APL effect | block |', '|---|---|---:|---:|---:|---:|']
+        for model, g in allnoise.groupby('model', sort=False):
+            det = g[(g.distances == 'det')].iloc[0]
+            L.append(f"| {model} | deterministic | {fmt(det.apl_effect_rmse)} | {det.apl_effect_mean:+.3f} | {fmt(det.apl_effect_spearman, '.2f')} | - |")
+            for level in ('match_on', 'match_off'):
+                x = g[(g.level == level) & (g.distances == 'raw')]
+                if len(x):
+                    x = x.iloc[0]
+                    L.append(f"|  | through the noise, {level} (σ {x.sigma:.3f}) | {fmt(x.apl_effect_rmse)} | {x.apl_effect_mean:+.3f} | "
+                        f"{fmt(x.apl_effect_spearman, '.2f')} | {fmt(x.get('block'))} |")
+        L.append(f"| KC data | | floor {fmt(dt('apl_effect_rmse_floor'))} | +{dt('apl_effect_mean'):.3f} | ceiling "
+            f"{fmt(dt('apl_effect_rho_ceiling'), '.2f')} | {fmt(dt('block'))} |")
+        L.append('')
+    (res_dir() / 'comparison_table_partB.md').write_text('\n'.join(L) + '\n')
+
+
 def figures(df: pd.DataFrame) -> None:
     import matplotlib
     matplotlib.use('Agg')
@@ -919,11 +1132,18 @@ def stage_summarize() -> None:
     df = df.merge(basecal_z_stats(df), on='tag', how='left')
     df.to_csv(res_dir() / 'stats_variants.csv', index=False)
     write_tuned_params(df)
-    long = pd.read_csv(res_dir() / 'model_pair_distances_long_A.csv')
+    long = pd.concat([pd.read_csv(p) for p in (res_dir() / 'model_pair_distances_long_A.csv',
+        res_dir() / 'model_pair_distances_long_B.csv') if p.exists()], ignore_index=True)
     long = long.drop_duplicates(['tag', 'condition', 'odor_a', 'odor_b'], keep='last')
     long.to_csv(res_dir() / 'model_pair_distances_long.csv', index=False)
-    write_table(df)
-    figures(df)
+    part_a = df[df.part == 'A']
+    write_table(part_a)
+    figures(part_a)
+    if (df.part == 'B').any():
+        noise = noise_apl_effect()
+        if len(noise):
+            noise.to_csv(res_dir() / 'noise_apl_effect.csv', index=False)
+        write_partB_table(df, noise)
     write_provenance(df)
     cols = ['tag', 'max_count_off', 'apl_raw_rmse', 'apl_raw_mean', 'apl_cal_rmse', 'apl_cal_mean', 'cal_K',
         'z_floor_noise_share_above_4_acute_off', 'z_floor_noise_resp_amp_mean_acute_off', 'opk_on_tv', 'opk_off_tv',
@@ -954,7 +1174,7 @@ def write_provenance(df: pd.DataFrame) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--stage', required=True, choices=['check', 'pilot', 'setting', 'run', 'summarize', 'bases', 'list'])
+    ap.add_argument('--stage', required=True, choices=['check', 'pilot', 'setting', 'run', 'summarize', 'partB', 'bases', 'list'])
     ap.add_argument('--base', choices=list(BASES))
     ap.add_argument('--tag')
     args = ap.parse_args()
@@ -973,6 +1193,8 @@ def main() -> None:
         stage_run()
     elif args.stage == 'summarize':
         stage_summarize()
+    elif args.stage == 'partB':
+        stage_partB()
 
 
 if __name__ == '__main__':
