@@ -182,6 +182,9 @@ Each of these cost real time to diagnose; check them before blaming a script.
     stop` it when the test is over (do not rely on `--rm` plus a timeout inside).
   - Anything else that can grow without bound (a buffered pipe, a log held in memory) runs in a
     shell with `ulimit -v` set, and never in the background without a `timeout`.
+- Thread count: importing `al_analysis.mb_model` imports rastermap, which resets OpenMP to all of the machine's cores, so
+  olfsysm runs on 48 threads on hal however OMP_NUM_THREADS is set (found by E69's code subagent, 2026-11-10). Set
+  OMP_THREAD_LIMIT as well (e.g. `OMP_NUM_THREADS=16 OMP_THREAD_LIMIT=16`); the limit holds.
 - Tests: the whole QUICK=1 suite took 2.5 h on hal (2026-11-06); for model changes,
   test/test_mb_model.py is the part that matters. Known failures, all filed as issues on
   ejhonglab/al_analysis: test_equalize_kc_type_sparsity (a leftover `breakpoint()`, #2),
