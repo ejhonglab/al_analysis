@@ -1044,6 +1044,7 @@ Canonical experiment names for summary reports:
 | E70 | the high-firing KCs that survive APL |
 | E71 | the input-scaled KC threshold |
 | E72 | the APL-effect fit on re-drawn wirings (the model as a population of flies) |
+| E73 | the per-KC normalization of the recordings |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 

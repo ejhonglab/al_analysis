@@ -8,6 +8,22 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### The KC data's amplitudes and response criterion may be relative to each cell's whole-recording spread (found 2026-11-10, hal's planning subagent)
+- **What.** Yang's per-trial KC values (files suffixed `zscored_full`) look z-scored per cell over the whole recording, not against a
+  pre-odor baseline: in every one of the 19 APL16 recordings the per-KC mean of squared trial values has a sharp upper edge (99.9th
+  percentile within 0.6 of the maximum; maxima 3.64 to 4.99 in control flies, 4.90 to 5.83 with APL output blocked (TNT)), the largest
+  trial mean is 7.3 to 7.4 in both genotypes, and responders' mean amplitude is about 2 z whether a KC responds to one odor or to eleven;
+  the low-concentration panel (diag_mix) shows the same edge. An inference from the values (read-only probes, nothing saved); notes/
+  yang-summary.md lists the z-score's definition as unknown.
+- **Affects (if it holds).** Every comparison of amplitudes with the model (E68's z conversion and its amplitude statistics; E69's APL-off
+  amplitudes and the "strong tail" readings; E65's calibration targets), the data's response criterion (trial mean above 1 z) against the
+  model's two-spike criterion, so the response rates, their ratio, the per-odor rates and the odors-per-KC distributions (all four realism
+  bands, every fit's operating point), and the low-concentration fractions (E49, E72's part F).
+- **Done.** The probes (in the E73 entry of experiment_priorities.md); the per-KC normalization of the recordings (E73) is claimed by hal to
+  test it (part A) and read every archived model the same way (part B).
+- **Remains.** E73's parts A and B; Yang's confirmation of how the responses were z-scored (the question goes to Tom); re-reading or annotating
+  the affected outputs depending on the answer.
+
 ### The claw-count thresholds of the KC heterogeneity experiment (E5) were not applied (found 2026-11-10, atlas's planning subagent)
 - **What.** E5_kc_heterogeneity.py's `thr_nclaws_0.5` / `thr_nclaws_1` variants pass a per-KC vector as `fixed_thr` to the simulator of
   `make_fixed_param_kc_simulator`, whose `simulate` computes `thr = params['fixed_thr'] + spont_in * 2.0` with `spont_in` a column
