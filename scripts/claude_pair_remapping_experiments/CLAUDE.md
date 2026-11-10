@@ -669,7 +669,8 @@ the summary (step 4) are planning work: a Fable subagent gives them when the acc
 otherwise the entry is staged and the summary passage is requested in chat.md ("For a Fable
 host:"). When you complete an experiment and its interpretation:
 1. write a new markdown file in the shared folder with interpretation (longer form than
-   in the summary in the experiment priorities entries above)
+   in the summary in the experiment priorities entries above), with a "Realism" section
+   (Tom, 2026-11-09; below)
 
 2. edit the priorities file to add additional entry text referring to that additional
    markdown, then move the experiment entry to another numbered list in a "Completed"
@@ -698,6 +699,30 @@ host:"). When you complete an experiment and its interpretation:
    page to the same slug, run `save_report_copy.py`, commit the template, update the
    add_to_reports README row and say so in chat.md. Every completed experiment appears in the
    summary before the host moves on.
+
+Realism in every write-up (Tom, 2026-11-09). Every per-experiment note and its page, those in
+progress on 2026-11-09 and every later one, has a section "Realism" (after the results, before the
+interpretation; one with a "Realism flag" belongs in the opening summary too) that says, for the
+experiment's seed or baseline, its best variant on the APL-effect loss and any variant the note
+recommends, how far the model is from the flies in the respects that make it a fly's mushroom body
+and not only a fit:
+- always, in a table beside the KC data's values: the overall response rate with APL on and with APL
+  off and their ratio, the response rate ρ with APL on and with APL off, and whether each is inside
+  the realism bands ("The main goal for new experiments"; `realism` in results/apl_effect/
+  by_variant.csv), naming any flagged variant;
+- where the experiment moved them or they bear on its reading (the writer judges, and is free to go
+  further): the spread of each odor's response over KCs (the participation ratio, the top-1 % share
+  and the responders' coefficient of variation against the registry's ctrl_ / tnt_participation_ratio_*,
+  _top1_share_resp, _resp_amp_cv), the number of odors each KC responds to (ctrl_ / tnt_odors_per_kc_*),
+  the largest spike counts per KC and odor, the per-odor response fractions of the odors the
+  experiment changed, the mean pair distances with APL on and off (noise-corrected data values), and
+  any parameter at a value that would be hard to defend physiologically (a gain, a KC–KC scale, an
+  APL→bouton scale, a threshold), with what the literature or the connectome allows where known;
+- one or two sentences on whether the experiment's gains came with a realism cost, and whether the
+  result would survive holding the realism bands (or a stricter reading of them).
+Realism is reported, not optimized: the section says where a model stands, and a flagged result also
+goes to Tom as "The main goal for new experiments" says. An experiment completed before 2026-11-09
+17:55 keeps its note as written.
 
 Before starting any task that will take more than a couple of minutes (an experiment,
 a shared-code change, a data pull), re-read experiment_priorities.md (the work claims
