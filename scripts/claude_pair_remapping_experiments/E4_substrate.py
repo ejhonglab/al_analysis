@@ -150,6 +150,11 @@ def score(meta: dict, on_out, off_out, wPNKC, orn, orn_pairs, drive, data, ref) 
                 'spearman_per_odor_iso_vs_drive', 'spearman_orn_on', 'spearman_orn_off',
                 'gap_closed'):
             row[f'{variant}__{k}'] = st[k]
+        # the per-pair APL effect (APL-on minus APL-off distance) against the data's
+        ae = H.apl_effect_stats(on[variant], off[variant],
+            H.apl_effect(tgt['TNT3c'], tgt['TNT']))
+        for k, v in ae.items():
+            row[f'{variant}__{k}'] = v
     ci = claw_input_pairs(wPNKC, orn)
     rr = H.compare_to_references(ci, ref)
     row['claw_input__spearman_kc_claw'] = rr['spearman_kc_claw']

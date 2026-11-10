@@ -139,6 +139,46 @@ def build() -> dict:
     add('block_other_between', boot.loc['block_other_between_iso', 'observed'], 'mean isotonic residual of the other between-group pairs', fn, ['kc_rdms'],
         ci=boot.loc['block_other_between_iso', ['lo', 'hi']])
 
+    # the per-pair APL effect (control minus APL output blocked (TNT) distance; Tom's main target
+    # since 2026-11-09 17:55): its mean and spread, the loss a model with the true effect would
+    # still show against the measured one (bootstrap over recordings), and the ceiling on ρ
+    # across pairs (Spearman-Brown-corrected split halves)
+    effect = H.apl_effect(kc['TNT3c'], kc['TNT'])
+    rng_e = np.random.default_rng(0)
+    boot_mean, boot_rmse, boot_rho = [], [], []
+    for _ in range(1000):
+        m = H.resample_recording_means(recs, rng_e)
+        e_b = H.apl_effect(m['TNT3c'], m['TNT']).reindex(effect.index)
+        boot_mean.append(float(e_b.mean()))
+        boot_rmse.append(float(np.sqrt(np.mean((e_b - effect) ** 2))))
+        boot_rho.append(H.spearman(e_b, effect))
+    efn = 'harness.apl_effect; 90 % interval and floor: harness.resample_recording_means (1000 resamples of recordings, seed 0)'
+    add('apl_effect_mean', effect.mean(), 'mean over the 120 pairs of the per-pair APL effect: the control flies\' distance minus the distance '
+        'with APL output blocked (TNT), cosine, each the mean over recordings', efn, ['kc_rdms'], ci=np.percentile(boot_mean, [5, 95]))
+    add('apl_effect_sd', effect.std(), 'standard deviation over the 120 pairs of the per-pair APL effect (control minus APL output blocked (TNT))',
+        'harness.apl_effect', ['kc_rdms'])
+    add('apl_effect_min', effect.min(), 'smallest per-pair APL effect (control minus APL output blocked (TNT))', 'harness.apl_effect', ['kc_rdms'])
+    add('apl_effect_max', effect.max(), 'largest per-pair APL effect (control minus APL output blocked (TNT))', 'harness.apl_effect', ['kc_rdms'])
+    add('apl_effect_rmse_floor', float(np.mean(boot_rmse)), 'floor of the APL-effect loss: root mean squared difference over the 120 pairs '
+        'between the per-pair APL effect of a resampled data set (recordings drawn with replacement within each genotype) and the measured '
+        'one, mean over resamples: the loss a model with the true per-pair effect would show against the measured effect', efn, ['kc_rdms'],
+        ci=np.percentile(boot_rmse, [5, 95]))
+    sh_rho = []
+    for _ in range(500):
+        halves = [{}, {}]
+        for g, df in recs.items():
+            idx = rng_e.permutation(len(df))
+            halves[0][g] = df.iloc[idx[:len(df) // 2]].mean()
+            halves[1][g] = df.iloc[idx[len(df) // 2:]].mean()
+        a = H.apl_effect(halves[0]['TNT3c'], halves[0]['TNT'])
+        b = H.apl_effect(halves[1]['TNT3c'], halves[1]['TNT']).reindex(a.index)
+        sh_rho.append(H.spearman(a, b))
+    r_sh = float(np.nanmean(sh_rho)); full = 2 * r_sh / (1 + r_sh)
+    add('apl_effect_rho_split_half', r_sh, 'ρ on the per-pair APL effect between random halves of the recordings (each genotype split in two; 500 splits)',
+        'data_targets.build', ['kc_rdms'], ci=np.percentile(sh_rho, [5, 95]))
+    add('apl_effect_rho_ceiling', float(np.sqrt(full)), 'ceiling on ρ on the per-pair APL effect: sqrt of the Spearman-Brown-corrected split-half ρ '
+        '(the expected ρ of a noise-free model with the true per-pair effect against the measured one)', 'data_targets.build', ['kc_rdms'])
+
     for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
         sh = H.split_half_reliability(recs[g], n_splits=200, seed=0)
         add(f'{name}_split_half_rho', sh['split_half'], f'ρ between the mean matrices of random halves of the {"control" if g == "TNT3c" else "APL output blocked (TNT)"} recordings (200 splits)',

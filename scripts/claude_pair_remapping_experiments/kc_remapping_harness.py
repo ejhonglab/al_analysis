@@ -745,6 +745,53 @@ def compare_model_to_data(model: pd.Series, data: pd.Series, *,
     return out
 
 
+def apl_effect(on: pd.Series, off: pd.Series) -> pd.Series:
+    """Per-pair APL effect on odor-odor distances: the APL-on distance minus the APL-off
+    distance of each pair (canonical pair order; pairs missing from either side dropped)."""
+    a, b = align_pairs(canonical_pairs(on), canonical_pairs(off))
+    return (a - b).rename('apl_effect')
+
+
+_YANG_APL_EFFECT: Dict[str, pd.Series] = {}
+
+
+def yang_apl_effect(measure: str = 'cosine') -> pd.Series:
+    """The KC data's per-pair APL effect: the control flies' (TNT3c) distance minus the
+    distance with APL output blocked (TNT), each the mean over recordings (`yang_mean_rdm`).
+    Cached per measure."""
+    if measure not in _YANG_APL_EFFECT:
+        _YANG_APL_EFFECT[measure] = apl_effect(yang_mean_rdm('TNT3c', measure), yang_mean_rdm('TNT', measure))
+    return _YANG_APL_EFFECT[measure]
+
+
+def apl_effect_stats(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = None
+    ) -> Dict[str, float]:
+    """How well a model's per-pair APL effect (APL-on minus APL-off distance) matches the
+    KC data's, over the pairs both have (the 120 pairs of the APL16 panel).
+
+    Args:
+        on, off: the model's pair distances with APL on and with APL off (acute), cosine
+            distance on spike counts as everywhere else.
+        data: the data's per-pair APL effect; default `yang_apl_effect()` (control flies
+            minus APL output blocked (TNT), cosine, mean over recordings).
+
+    Keys (`apl_effect_` prefix): `rmse`, the APL-effect loss (root mean squared difference
+    between the model's and the data's per-pair effect; lower is better); `rmse_centered`, the
+    same with each side's mean removed (the pattern part: rmse^2 = mean_error^2 +
+    rmse_centered^2); `mean` (the model's mean effect), `mean_error` (model minus data),
+    `spearman` and `pearson` (the per-pair pattern), `n_pairs`.
+    """
+    data = yang_apl_effect() if data is None else data
+    m, d = align_pairs(apl_effect(on, off), data)
+    err = m - d
+    mean_error = float(err.mean())
+    return dict(apl_effect_rmse=float(np.sqrt(np.mean(err ** 2))),
+        apl_effect_rmse_centered=float(np.sqrt(np.mean((err - mean_error) ** 2))),
+        apl_effect_mean=float(m.mean()), apl_effect_mean_error=mean_error,
+        apl_effect_spearman=spearman(m, d), apl_effect_pearson=pearson(m, d),
+        apl_effect_n_pairs=int(len(m)))
+
+
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,
     *, unit: str = 'recording') -> Dict[str, pd.Series]:
     """One bootstrap replicate of {genotype: mean pair Series}.

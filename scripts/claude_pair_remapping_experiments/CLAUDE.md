@@ -879,6 +879,16 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   applies to a header listing what a column's "a / b / c" values are (`APL→bouton /<br>APL→KC<br>(×
   baseline)`) and to a first-column header listing the table's fixed settings. Headers that
   name statistics stay on one line for now.
+- **The APL effect in the best-models table and the progress plot (Tom, 2026-11-09).** The best-models
+  table carries three rows for the APL effect on odor-odor distances (the APL-effect loss, the mean APL
+  effect, ρ on the per-pair APL effect, all placeholders on results/apl_effect/by_variant.csv) and the
+  response rates with APL on and off, and ends with a row of buttons, one under every column, written
+  `!button[matrices](results/apl_effect/matrices/<results folder>__<tag>.png)` (the KC data column:
+  `.../matrices/data.png`). A button opens, full screen like a figure, the column's distance matrices:
+  the KC data's APL on (control flies), APL off (APL output blocked (TNT)) and their difference in the
+  top row, the model's same three in the bottom row. `apl_effect_scores.py` draws every figure a button in
+  the template names, so a new column needs only its button cell. The progress plot has the APL-effect
+  loss and ρ on the per-pair APL effect as series.
 - **Natural-source alignment is three numbers (Tom, 2026-11-08).** Every table, comparison
   script and summary analysis that gives the natural-source alignment gives it with APL on,
   with APL off and as the difference (APL on minus APL off), never APL off alone: three rows
@@ -1103,32 +1113,57 @@ republish requests (from lab members' machines) go to hal by default and to atla
 answered within about fifteen minutes, so that two hosts do not publish the same page within a minute of
 each other.
 
-## The main goal for new experiments (Tom, 2026-11-09)
+## The main goal for new experiments (Tom, 2026-11-09 17:55; replaces the 13:00 version)
 
-The agreement of the model's odor-odor distances with the two KC matrices, ρ on odor-odor distances with
-APL on against the control flies and with APL off against APL output blocked (TNT), is the main priority
-for every experiment proposed or claimed from now on. Where it stood on 2026-11-09: the ceilings are
-0.98 / 0.97; the ORN input alone gives 0.65 / 0.74; the bouton baseline 0.57 / 0.69; the reference model
-0.65 / 0.63; the best any model has reached is 0.695 (the first joint fit) / 0.77 (a structure-loss fit
-on a re-drawn wiring, and the centrifugal input). Some thirty experiments moved these two by at most a
-fifth of their gap, and the mechanisms that bought the block and the natural-source alignment lowered the
-APL-off agreement below the ORN input's own; the per-odor response-rate pattern (response rate ρ 0.47 for
-the reference model against a ceiling of 0.98) is the most likely lever, since which odors recruit many
-KCs shapes every distance. So:
-- a proposal states first how its result would move these two statistics (directly, through the per-odor
-  response-rate pattern, or through the input that limits them), with the expected size; proposals that
-  bear only on other statistics (the block, the natural-source alignment, noise-robustness, wiring
-  carriers) go after every proposal that bears on the main goal, and an idle host takes a main-goal
-  proposal first;
-- the first experiments under this goal (hal's chat post of 2026-11-09 13:39, and proposed_experiments.md
-  as they are written up): the per-odor rate oracle (per-odor input scales or per-odor thresholds that put
-  the model's response rates on the data's, with ρ on odor-odor distances as the free readout: how much of
-  the gap is the recruitment pattern), the per-pair decomposition of the gap for the reference model
-  (which odors and pairs carry it, with APL on and with APL off), a fit whose loss is the two ρ's with the
-  structure statistics as constraints (the reachable maximum of the present mechanism set), the input-side
-  tests for the weak-input odors (the ORN measurement at Yang's concentrations; the five odors' input free
-  within bounds as an oracle), and the soft per-claw transfer in place of the hard threshold the
-  low-concentration data falsified.
+The main target is the APL effect on odor-odor distances, pair by pair: for each of the 120 odor pairs,
+the distance with APL on minus the distance with APL off. In the KC data that is the control flies'
+distance minus the distance with APL output blocked (TNT), each the mean over recordings of the cosine
+distance (Yang's APL16 recordings, the same matrices as everywhere else); in a model, its APL-on distance
+minus its acute APL-off distance (cosine distance on spike counts). The statistics, computed by
+`kc_remapping_harness.apl_effect_stats` (`spike_counts_cosine__apl_effect_*` columns in every stats
+table; `apl_effect_scores.py` scores every saved variant of every experiment from its
+model_pair_distances_long.csv into results/apl_effect/, and build_summary.py runs it):
+- "the APL-effect loss" (`apl_effect_rmse`): the root mean squared difference between the model's and the
+  data's per-pair APL effect over the 120 pairs, lower is better; the quantity to improve;
+- its two parts, always reported beside it: "the mean APL effect" (`apl_effect_mean`; the data's +0.18)
+  and "ρ on the per-pair APL effect" (`apl_effect_spearman`, the pattern across pairs); the loss splits
+  exactly into the mean part and the pattern part (`apl_effect_rmse_centered`, the loss with both means
+  removed);
+- the data's own recording-to-recording variability gives the floor of the loss (about 0.04: the loss
+  of a resampled data set against the measured one) and the ceiling of the ρ (from split halves of the
+  recordings); both are in the data-target registry (`apl_effect_rmse_floor`, `apl_effect_rho_ceiling`).
+Where it stood on 2026-11-09 (lower is better): the first joint fit 0.111 and breadth-weighted APL with
+KC-KC inhibition 0.118, the reference model 0.143 (0.130 at the control flies' 6.8 %), the bouton
+baseline 0.149; every model's mean APL effect is +0.04 to +0.10 against the data's +0.18, so about half
+of every loss is the mean part, and ρ on the per-pair APL effect is 0.13 to 0.44.
+
+So:
+- every proposal states first how it would move the APL-effect loss, its mean part and its pattern part,
+  with the expected size; the two ρ's on odor-odor distances (the previous main goal, below) and every
+  other statistic are still computed and reported for every model; proposals that bear only on other
+  statistics go after those that bear on the APL-effect loss, and an idle host takes one of these first;
+- biological realism is a constraint, not a target. The loss's mean part can be lowered by changing the
+  response rates (more KCs responding with APL off brings the APL-off distances down and the effect up),
+  so every result is read with the overall response rates and the per-odor pattern beside it, and a
+  model is flagged when its APL-on response rate is outside 0.045 to 0.085 (the control flies' 0.068;
+  the models are tuned at 0.05 or 0.068), its APL-off response rate outside 0.11 to 0.19 (the data's
+  0.150; off / on ratio 2.2), or its response rate ρ with APL on more than 0.10 below the reference
+  model's (0.47). `apl_effect_scores.py` writes the flags (`realism_flag` in results/apl_effect/
+  by_variant.csv). Tom asked to be told when experiments start to diverge from biological realism: a
+  host whose result is flagged (or whose experiment's best variant on the APL-effect loss is) says so in
+  chat.md, starting "Realism flag:", and in its next reply to Tom, with the numbers beside the data's;
+  the summary's best-models table shows the response rates of every column;
+- running experiments (the batched-proxy fit E60 on atlas, the two-ρ fit E63 on viki, the bounded input
+  oracle E64 on hal) finish as planned and their write-ups report the APL-effect loss beside their own
+  statistics.
+
+The previous main goal (Tom, 2026-11-09 13:00), kept for the record: ρ on odor-odor distances with APL on
+against the control flies and with APL off against APL output blocked (TNT) (ceilings 0.98 / 0.97; the
+ORN input alone 0.65 / 0.74; the reference model 0.65 / 0.63; the best 0.695 / 0.77). Under it the
+per-pair decomposition of the gap (E61), the per-odor rate oracle (E62), the two-ρ fit (E63) and the
+bounded input oracle (E64) were run: the gap sat on the pairs of paa, B-myr and 2-but, which the model
+collapses onto DM1- and DP1m-carrying KCs, and neither the response-rate level nor the loss weighting
+moved it.
 
 ## Naming and choosing experiments
 
