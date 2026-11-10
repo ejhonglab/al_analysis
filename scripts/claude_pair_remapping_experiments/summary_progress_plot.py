@@ -46,7 +46,9 @@ RATE_RANGE = (0.035, 0.075)   # APL-on response rate: comparable models only (tu
 # E62 (the per-odor rate oracle) and E64 (the bounded-input oracle) set each odor's input from the KC data they
 # are scored against, and E66's per-odor APL oracle each odor's input and APL strength (its other variants, the
 # breadth exponent on the reference models, are not new bests on raw counts)
-EXCLUDE = {'E14', 'E15', 'E39', 'E62', 'E64', 'E66'}
+# E70 (the high-firing KCs that survive APL) is a diagnosis: its runs are other experiments' models re-run,
+# wirings with chosen KCs re-drawn, and APL->KC raised on chosen KCs
+EXCLUDE = {'E14', 'E15', 'E39', 'E62', 'E64', 'E66', 'E70'}
 # variants excluded by tag / variant prefix: oracle gains, the block-specific glomerulus set,
 # and random / shuffled / re-drawn wirings (nulls, many seeds each: the best of twenty random
 # draws is a selection on noise, not a model)
