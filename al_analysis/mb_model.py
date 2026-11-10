@@ -17031,11 +17031,12 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     with any subset of keys of initial parameters (others are left at initial values),
     and returns `responses` and `spike_counts` (with same format as `fit_mb_model`
     outputs). Output should equal that of a `fit_mb_model` call with these parameters
-    fixed (via `fixed_params_to_fit_mb_model_kws`). `simulate` also takes an optional
+    fixed (via `fixed_params_to_fit_mb_model_kws`). `fixed_thr` must be a scalar
+    (`simulate` raises ValueError otherwise). `simulate` also takes an optional
     `kc_thr_factor` (one positive value per KC, in output row order), multiplying each
     KC's threshold (`fixed_thr` + 2 * its spontaneous input) for that simulation only
-    (e.g. a per-trial excitability jitter); those outputs have no `fit_mb_model`
-    equivalent. It also takes an optional `kc_spiking` dict (keys among
+    (e.g. a per-trial excitability jitter, or thresholds that differ between KCs); those
+    outputs have no `fit_mb_model` equivalent. It also takes an optional `kc_spiking` dict (keys among
     `KC_SPIKING_PARAMS`, checked as in `fit_mb_model`), setting those KC refractory /
     adaptation parameters for that simulation only (others stay as the initial call set
     them); the outputs equal those of a `fit_mb_model` call with these parameters and the
@@ -17186,6 +17187,14 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             kc_thr_factor = kc_thr_factor.reshape(spont_in.shape)
 
         params = {**initial_params, **params}
+
+        if np.ndim(params['fixed_thr']) != 0:
+            # a per-KC vector would broadcast against the spont_in column below to a
+            # (KCs x KCs) matrix, of which olfsysm only reads the first column, so every
+            # KC would get the vector's first value
+            raise ValueError('fixed_thr must be a scalar (for per-KC thresholds, pass '
+                'kc_thr_factor)'
+            )
 
         # olfsysm only checks weights in fit_sparseness, which is not called below
         negative = {p: v for p, v in params.items() if p != 'fixed_thr' and v < 0}

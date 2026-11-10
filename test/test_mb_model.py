@@ -5113,6 +5113,37 @@ def test_optimize_mb_model_params_kc_thr_factors(orn_deltas, initial_params):
         )
 
 
+def test_fixed_param_kc_simulator_scalar_fixed_thr(orn_deltas, initial_params):
+    """Tests the simulator refuses a per-KC `fixed_thr` vector (which it used to broadcast
+    against the per-KC spontaneous input to a KCs x KCs matrix, of which olfsysm only
+    read the first column, so every KC got the vector's first value), and that
+    `kc_thr_factor` is the route to per-KC thresholds.
+    """
+    simulate, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params
+    )
+    responses, spike_counts = simulate(dict())
+    n_kcs = len(responses)
+    thr = initial_params['fixed_thr']
+
+    vec = thr * np.linspace(0.5, 1.5, n_kcs)
+    for bad in (vec, np.full(n_kcs, thr), np.array([thr]), list(vec)):
+        with pytest.raises(ValueError, match='kc_thr_factor'):
+            simulate(dict(fixed_thr=bad))
+
+    # numpy scalars (and 0-d arrays) are scalars
+    for ok in (np.float64(thr), np.array(thr)):
+        responses2, spike_counts2 = simulate(dict(fixed_thr=ok))
+        assert responses2.equals(responses) and spike_counts2.equals(spike_counts)
+
+    # per-KC thresholds (fixed_thr + 2 * spont_in) * factor, which differ from every KC
+    # at the first KC's threshold (what the vector used to give)
+    factor = np.linspace(0.5, 1.5, n_kcs)
+    _, spike_counts_f = simulate(dict(), kc_thr_factor=factor)
+    _, spike_counts_first = simulate(dict(), kc_thr_factor=np.full(n_kcs, factor[0]))
+    assert not spike_counts_f.equals(spike_counts_first)
+
+
 def test_remy_megamat_kc_targets(orn_deltas):
     """Tests measured megamat KC targets match model odors, and give finite loss.
     """
