@@ -24,6 +24,7 @@ import argparse
 import json
 import shutil
 import socket
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -51,6 +52,16 @@ PARAM_COLS = ['tag', 'variant', 'base', 'config', 'kind', 'point', 'part', 'seed
     'n_kcs', 'n_glomeruli', 'rate_on', 'rate_off', 'rate_acute_off', 'rate_homeo_full_off',
     'rate_homeo_data_off', 'error']
 STATS_NAMES = ['stats_variants.csv', 'models.csv', 'wkckc_controls.csv', 'sweep.csv']
+# archive folders whose params.csv (and file names / README) were rebuilt by hand, so that olfdb lists one
+# row per saved model; re-archiving them would overwrite that with the stats tables' rows (and, for E6, copy
+# back the old file names), so they are skipped unless --force-hand-built is passed. Each folder's
+# params_migration_log.csv says what was done.
+HAND_BUILT = {
+    'E6_readout_window': 'files renamed <base>_<window>_<condition>_spike_counts.parquet, one row per base x window (2026-11-09)',
+    'E36_spike_apl': 'rows spk_base_thr40 / spk_base_thr70 added from tuned_params.json (2026-11-09)',
+    'E43_model_trial_noise': 'params.csv is the two models ref40 / base70; the noise statistics are in noise_statistics_rows.csv (2026-11-09)',
+    'E49_low_conc_kc': 'params.csv written by hand: E49 has none of the tables params.csv is built from (2026-11-09)',
+}
 
 
 # condition names used in the output file names (longest first, so 'acute_off' wins over 'off')
@@ -76,7 +87,7 @@ def ascii_only(name: str) -> None:
         raise ValueError(f'non-ASCII name: {name!r}')
 
 
-def archive_experiment(name: str, host: str, params_only: bool = False) -> dict:
+def archive_experiment(name: str, host: str, params_only: bool = False, force_hand_built: bool = False) -> dict:
     """Copies outputs/<name>/ to the archive and (re)builds its params.csv and README.
 
     With `params_only`, only params.csv and the provenance files are refreshed (from the shared
@@ -86,6 +97,10 @@ def archive_experiment(name: str, host: str, params_only: bool = False) -> dict:
     src = H.HERE / 'outputs' / name
     res = H.results_dir(name) if (H.shared_dir() / 'results' / name).exists() else None
     ascii_only(name)
+    if name in HAND_BUILT and not force_hand_built:
+        print(f'!!! {name} SKIPPED: its params.csv was rebuilt by hand ({HAND_BUILT[name]}); re-archiving would overwrite it. '
+            'Update it by hand (and its params_migration_log.csv), or pass --force-hand-built and redo the hand edits.', file=sys.stderr)
+        return dict(name=name, host=host, n_files=0, n_variants=0, conditions='', skipped=True)
     dst = ARCHIVE / name
     if params_only:
         if not dst.exists():
@@ -129,12 +144,20 @@ def archive_experiment(name: str, host: str, params_only: bool = False) -> dict:
     params = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if len(params):
         params.to_csv(dst / 'params.csv', index=False)
+    missing_params = not len(params) and any(dst.rglob('*_spike_counts.parquet'))
+    if missing_params:
+        # E49 (2026-11-08) was archived with spike counts and no params.csv, so olfdb listed none of its models
+        print(f'!!! {name}: spike count files archived but NO params.csv built: none of the tables it is built from '
+            f'({", ".join(STATS_NAMES)}, *_summary.csv, stats*.csv, window_stats.csv, fits.csv, variants.csv) exists in '
+            f'results/{name}/ or outputs/{name}/. Write params.csv by hand (one row per saved model, tag = the file names\' '
+            'variant) or save the run\'s table under one of those names, then re-run.', file=sys.stderr)
     if res:
         # provenance.json, plus the per-fit provenance_<tag>.json the joint-fit scripts write
         for pf in sorted(res.glob('provenance*.json')):
             shutil.copy2(pf, dst / pf.name)
     if params_only:
-        return dict(name=name, host=host, n_files=len(list(dst.rglob('*'))), n_variants=params['tag'].nunique() if 'tag' in params.columns else len(params), conditions='', params_only=True)
+        return dict(name=name, host=host, n_files=len(list(dst.rglob('*'))), n_variants=params['tag'].nunique() if 'tag' in params.columns else len(params), conditions='', params_only=True,
+            missing_params=missing_params)
     parsed = [split_variant_condition(p.name) for p in list(dst.rglob('*_spike_counts.parquet'))
         + list(dst.rglob('*_responses.parquet'))]
     variants = sorted({v for v, _ in parsed})
@@ -151,7 +174,7 @@ def archive_experiment(name: str, host: str, params_only: bool = False) -> dict:
     if variants:
         lines += ['Variants:', ''] + [f'- `{v}`' for v in variants] + ['']
     (dst / 'README.md').write_text('\n'.join(lines))
-    return dict(name=name, host=host, n_files=n_files, n_variants=len(variants), conditions=', '.join(conds))
+    return dict(name=name, host=host, n_files=n_files, n_variants=len(variants), conditions=', '.join(conds), missing_params=missing_params)
 
 
 def save_inputs() -> None:
@@ -209,6 +232,8 @@ def main() -> None:
     ap.add_argument('--inputs', action='store_true')
     ap.add_argument('--params-only', action='store_true',
         help='only rebuild params.csv from the shared results tables (works for any host\'s experiments)')
+    ap.add_argument('--force-hand-built', action='store_true',
+        help=f'also re-archive the folders whose params.csv was rebuilt by hand ({", ".join(HAND_BUILT)}), overwriting it')
     args = ap.parse_args()
     host = socket.gethostname()
     if args.inputs:
@@ -219,10 +244,16 @@ def main() -> None:
         names = sorted(p.name for p in where.glob('E*') if p.is_dir())
     rows = []
     for n in names:
-        r = archive_experiment(n, host, params_only=args.params_only); rows.append(r)
+        r = archive_experiment(n, host, params_only=args.params_only, force_hand_built=args.force_hand_built)
+        if r.get('skipped'):
+            continue
+        rows.append(r)
         print(f"{n}: {r['n_files']} files, {r['n_variants']} variants -> {ARCHIVE / n}" + (' (params.csv only)' if args.params_only else ''))
     if rows and not args.params_only:
         update_index(rows)
+    missing = [r['name'] for r in rows if r.get('missing_params')]
+    if missing:
+        sys.exit(f'!!! no params.csv for {", ".join(missing)} (see above); olfdb will list none of their models')
 
 
 if __name__ == '__main__':
