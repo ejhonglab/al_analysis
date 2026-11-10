@@ -942,6 +942,51 @@ def match_coinput(wPNKC: pd.DataFrame, target: pd.DataFrame, *, seed: int = 0,
     return matched, stats
 
 
+
+def _claw_arrays(wPNKC: pd.DataFrame, within_kc_type: bool):
+    """(values, claw_rows, claw_col, claw_kc, kc_group, kc_ids per KC code) of one-row-per-claw
+    `wPNKC`."""
+    if CLAW_ID not in wPNKC.index.names:
+        raise ValueError('needs one-row-per-claw wPNKC (a CLAW_ID index level)')
+    values = _wPNKC_values(wPNKC, True)
+    row_kc, n_kcs = _kc_codes(wPNKC)
+    claw_rows = np.flatnonzero(values.any(axis=1))
+    claw_col = values[claw_rows].argmax(axis=1)
+    claw_kc = row_kc[claw_rows]
+    if within_kc_type:
+        kc_group = _kc_groups(wPNKC, row_kc, n_kcs)
+    else:
+        kc_group = np.zeros(n_kcs, dtype=np.int64)
+    kc_codes_ids = pd.unique(wPNKC.index.get_level_values(KC_ID))
+    return values, claw_rows, claw_col, claw_kc, kc_group, kc_codes_ids
+
+
+def _kc_mask(kc_ids: np.ndarray, kcs: Optional[Iterable], what: str) -> np.ndarray:
+    """Boolean mask over KC codes of the KCs in `kcs` (all must be in the wiring)."""
+    if kcs is None:
+        return np.zeros(len(kc_ids), dtype=bool)
+    kcs = pd.Index(list(kcs))
+    missing = kcs.difference(pd.Index(kc_ids))
+    if len(missing):
+        raise ValueError(f'{what}: {len(missing)} KCs not in the wiring (e.g. {list(missing[:3])})')
+    return np.isin(kc_ids, kcs)
+
+
+def _with_columns(wPNKC: pd.DataFrame, values: np.ndarray, claw_rows: np.ndarray,
+    new_col: np.ndarray) -> pd.DataFrame:
+    new_values = np.zeros_like(values)
+    new_values[claw_rows, new_col] = 1
+    out = pd.DataFrame(new_values, index=wPNKC.index.copy(), columns=wPNKC.columns.copy())
+    if wPNKC.dtypes.nunique() > 1:
+        out = out.astype(wPNKC.dtypes.to_dict())
+    return out
+
+
+_SUBSET_SWAP_COLS = ['kc', 'partner_kc', 'claw_row', 'partner_row', 'column_before',
+    'column_after'
+]
+
+
 def redraw_kc_subset(wPNKC: pd.DataFrame, kcs: Iterable, *, seed: int = 0,
     within_kc_type: bool = True, protect_kcs: Optional[Iterable] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -951,7 +996,8 @@ def redraw_kc_subset(wPNKC: pd.DataFrame, kcs: Iterable, *, seed: int = 0,
     (without replacement) from the KCs outside the set (of the same `KC_TYPE` with
     `within_kc_type`, and not in `protect_kcs`). So every KC keeps its number of claws, every
     column (bouton, hence glomerulus) its number of claws (per KC type with
-    `within_kc_type`), and only the set's claws and their exchange partners' change.
+    `within_kc_type`), and only the set's claws and their exchange partners' change (a
+    partner drawn with the claw's own column leaves both as they were).
 
     Args:
         wPNKC: one row per claw (`CLAW_ID` index level), 0/1 values.
@@ -962,9 +1008,45 @@ def redraw_kc_subset(wPNKC: pd.DataFrame, kcs: Iterable, *, seed: int = 0,
             stay as is).
 
     Returns (re-drawn copy of `wPNKC`, DataFrame of the swaps: kc, partner_kc, claw_row,
-    partner_row (row positions in `wPNKC`), column_before, column_after (of the set's claw)).
+    partner_row (row positions in `wPNKC`), column_before, column_after (positions in
+    `wPNKC.columns`, of the set's claw)).
+
+    Raises:
+        ValueError: a KC of `kcs` or `protect_kcs` is not in the wiring, or a type has fewer
+            partner claws than the set has claws.
     """
-    raise NotImplementedError
+    values, claw_rows, claw_col, claw_kc, kc_group, kc_ids = _claw_arrays(wPNKC,
+        within_kc_type
+    )
+    in_set = _kc_mask(kc_ids, kcs, 'kcs')
+    protected = _kc_mask(kc_ids, protect_kcs, 'protect_kcs')
+    rng = np.random.default_rng(seed)
+    new_col = claw_col.copy()
+    claw_group = kc_group[claw_kc]
+    swaps: List[dict] = []
+    for group in np.unique(kc_group):
+        set_claws = np.flatnonzero((claw_group == group) & in_set[claw_kc])
+        if len(set_claws) == 0:
+            continue
+        pool = np.flatnonzero((claw_group == group) & ~in_set[claw_kc] &
+            ~protected[claw_kc]
+        )
+        if len(pool) < len(set_claws):
+            raise ValueError(f'KC type group {group}: {len(set_claws)} claws to re-draw but '
+                f'only {len(pool)} partner claws'
+            )
+        partners = rng.choice(pool, size=len(set_claws), replace=False)
+        for r1, r2 in zip(set_claws, partners):
+            c1, c2 = new_col[r1], new_col[r2]
+            new_col[r1], new_col[r2] = c2, c1
+            swaps.append(dict(kc=kc_ids[claw_kc[r1]], partner_kc=kc_ids[claw_kc[r2]],
+                claw_row=int(claw_rows[r1]), partner_row=int(claw_rows[r2]),
+                column_before=int(c1), column_after=int(c2)
+            ))
+
+    return (_with_columns(wPNKC, values, claw_rows, new_col),
+        pd.DataFrame(swaps, columns=_SUBSET_SWAP_COLS)
+    )
 
 
 def restore_kc_subset(wPNKC: pd.DataFrame, original: pd.DataFrame, kcs: Iterable, *,
@@ -974,23 +1056,67 @@ def restore_kc_subset(wPNKC: pd.DataFrame, original: pd.DataFrame, kcs: Iterable
     claws of a set of KCs given back their columns in `original`, by the same margin-keeping
     exchanges as `redraw_kc_subset` (the reverse of a re-draw), and the swaps.
 
-    Each claw of a KC in `kcs` whose column differs from its column in `original` exchanges
-    columns with a claw of a KC outside the set (same `KC_TYPE` with `within_kc_type`, not
-    in `protect_kcs`) that has the wanted column, drawn at random; where no such claw is
-    left, with a claw of the set that has the wanted column but should not. So every KC keeps
-    its number of claws and every column its number of claws (per type), and the set's claws
-    end with exactly their columns in `original` (when the column totals per type of
-    `wPNKC` and `original` agree, as for a within-type claw permutation).
+    Each claw of a KC in `kcs` whose column differs from its column in `original` (in random
+    order) exchanges columns with a claw of a KC outside the set (same `KC_TYPE` with
+    `within_kc_type`, not in `protect_kcs`) that has the wanted column, drawn at random;
+    where no such claw is left, with a claw of the set that has the wanted column but should
+    not. So every KC keeps its number of claws and every column its number of claws (per
+    type), and the set's claws end with exactly their columns in `original` (when the column
+    totals per type of `wPNKC` and `original` agree, as for a within-type claw permutation).
 
     Args:
         wPNKC: one row per claw, same index and columns as `original`.
         original: the wiring whose columns the set's claws get back.
         kcs, seed, within_kc_type, protect_kcs: as `redraw_kc_subset`.
 
-    Returns (restored copy of `wPNKC`, DataFrame of the swaps as `redraw_kc_subset`'s).
+    Returns (restored copy of `wPNKC`, DataFrame of the swaps as `redraw_kc_subset`'s, with
+    column_before / column_after the set claw's column in `wPNKC` and its restored one).
 
     Raises:
         ValueError: `wPNKC` and `original` differ in index or columns, or a set claw's column
             cannot be restored (the column totals differ).
     """
-    raise NotImplementedError
+    if not (wPNKC.index.equals(original.index) and wPNKC.columns.equals(original.columns)):
+        raise ValueError('wPNKC and original must have the same index and columns')
+    values, claw_rows, claw_col, claw_kc, kc_group, kc_ids = _claw_arrays(wPNKC,
+        within_kc_type
+    )
+    o_values = _wPNKC_values(original, True)
+    if not np.array_equal(np.flatnonzero(o_values.any(axis=1)), claw_rows):
+        raise ValueError('wPNKC and original must have claws on the same rows')
+    want = o_values[claw_rows].argmax(axis=1)
+    in_set = _kc_mask(kc_ids, kcs, 'kcs')
+    protected = _kc_mask(kc_ids, protect_kcs, 'protect_kcs')
+    rng = np.random.default_rng(seed)
+    new_col = claw_col.copy()
+    claw_group = kc_group[claw_kc]
+    swaps: List[dict] = []
+    for group in np.unique(kc_group):
+        g_set = (claw_group == group) & in_set[claw_kc]
+        todo = np.flatnonzero(g_set & (new_col != want))
+        if len(todo) == 0:
+            continue
+        outside = (claw_group == group) & ~in_set[claw_kc] & ~protected[claw_kc]
+        for r1 in rng.permutation(todo):
+            if new_col[r1] == want[r1]:
+                # fixed by an earlier exchange within the set
+                continue
+            c = want[r1]
+            cand = np.flatnonzero(outside & (new_col == c))
+            if len(cand) == 0:
+                cand = np.flatnonzero(g_set & (new_col == c) & (want != c))
+            if len(cand) == 0:
+                raise ValueError(f'claw row {claw_rows[r1]}: no claw of its type has its '
+                    f'original column {wPNKC.columns[c]!r} to give'
+                )
+            r2 = cand[rng.integers(len(cand))]
+            c1 = new_col[r1]
+            new_col[r1], new_col[r2] = c, c1
+            swaps.append(dict(kc=kc_ids[claw_kc[r1]], partner_kc=kc_ids[claw_kc[r2]],
+                claw_row=int(claw_rows[r1]), partner_row=int(claw_rows[r2]),
+                column_before=int(c1), column_after=int(c)
+            ))
+
+    return (_with_columns(wPNKC, values, claw_rows, new_col),
+        pd.DataFrame(swaps, columns=_SUBSET_SWAP_COLS)
+    )

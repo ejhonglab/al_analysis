@@ -542,3 +542,120 @@ def test_match_coinput_errors(wPNKCs):
         match_coinput(wPNKCs['kc'], wPNKCs['kc'])
     with pytest.raises(ValueError, match='same columns'):
         match_coinput(wPNKCs['claw'], wPNKCs['claw'].iloc[:, :-1])
+
+
+def _subset(wPNKC: pd.DataFrame, n: int, seed: int = 0) -> list:
+    kc_ids = pd.unique(wPNKC.index.get_level_values(KC_ID))
+    return sorted(np.random.default_rng(seed).choice(kc_ids, size=n, replace=False).tolist())
+
+
+def _check_margins(orig: pd.DataFrame, new: pd.DataFrame, within_kc_type: bool) -> None:
+    assert new.index.equals(orig.index) and new.columns.equals(orig.columns)
+    assert new.dtypes.equals(orig.dtypes)
+    assert (new.groupby(level=KC_ID).sum().sum(axis=1)
+        == orig.groupby(level=KC_ID).sum().sum(axis=1)).all()
+    assert new.sum().equals(orig.sum())
+    if within_kc_type:
+        assert new.groupby(level=KC_TYPE).sum().equals(orig.groupby(level=KC_TYPE).sum())
+
+
+@pytest.mark.parametrize('within_kc_type', [True, False])
+def test_redraw_kc_subset(wPNKCs, within_kc_type):
+    from al_analysis.wpnkc_shuffles import redraw_kc_subset
+
+    wPNKC = wPNKCs['claw']
+    kcs = _subset(wPNKC, 25)
+    protect = _subset(wPNKC, 40, seed=1)
+    protect = [k for k in protect if k not in kcs]
+    new, swaps = redraw_kc_subset(wPNKC, kcs, seed=3, within_kc_type=within_kc_type,
+        protect_kcs=protect
+    )
+    _check_margins(wPNKC, new, within_kc_type)
+    row_kc = wPNKC.index.get_level_values(KC_ID)
+    claw_rows = np.flatnonzero(wPNKC.to_numpy().any(axis=1))
+    # every claw of the set was exchanged, once, with a claw outside the set (and outside
+    # the protected KCs), of the same type if asked
+    set_claws = claw_rows[np.isin(row_kc[claw_rows], kcs)]
+    assert sorted(swaps.claw_row) == sorted(set_claws.tolist())
+    assert not swaps.partner_kc.isin(kcs).any() and not swaps.partner_kc.isin(protect).any()
+    assert swaps.partner_row.is_unique
+    if within_kc_type:
+        kc_type = wPNKC.index.get_level_values(KC_TYPE)
+        assert (kc_type[swaps.claw_row] == kc_type[swaps.partner_row]).all()
+    # only the set's claws and their partners' changed, and most of the set's did
+    changed = np.flatnonzero((new.to_numpy() != wPNKC.to_numpy()).any(axis=1))
+    assert set(changed) <= set(swaps.claw_row) | set(swaps.partner_row)
+    assert not np.isin(row_kc[changed], protect).any()
+    moved = swaps.column_before != swaps.column_after
+    assert set(changed) == set(swaps.claw_row[moved]) | set(swaps.partner_row[moved])
+    assert moved.mean() > 0.8
+    assert (new.to_numpy()[swaps.claw_row].argmax(axis=1) == swaps.column_after).all()
+    # same seed, same draw; another seed, another draw
+    again, swaps2 = redraw_kc_subset(wPNKC, kcs, seed=3, within_kc_type=within_kc_type,
+        protect_kcs=protect
+    )
+    assert again.equals(new) and swaps2.equals(swaps)
+    other, _ = redraw_kc_subset(wPNKC, kcs, seed=4, within_kc_type=within_kc_type,
+        protect_kcs=protect
+    )
+    assert not other.equals(new)
+    # an empty set changes nothing
+    same, none = redraw_kc_subset(wPNKC, [], seed=3)
+    assert same.equals(wPNKC) and none.empty
+
+
+@pytest.mark.parametrize('within_kc_type', [True, False])
+def test_restore_kc_subset(wPNKCs, within_kc_type):
+    from al_analysis.wpnkc_shuffles import redraw_kc_subset, restore_kc_subset
+
+    wPNKC = wPNKCs['claw']
+    kcs = _subset(wPNKC, 25)
+    shuffled = shuffle_wPNKC(wPNKC, 'claw_permutation', within_kc_type=within_kc_type,
+        seed=2
+    )
+    restored, swaps = restore_kc_subset(shuffled, wPNKC, kcs, seed=5,
+        within_kc_type=within_kc_type
+    )
+    _check_margins(wPNKC, restored, within_kc_type)
+    _check_margins(shuffled, restored, within_kc_type)
+    in_set = wPNKC.index.get_level_values(KC_ID).isin(kcs)
+    # the set's claws have exactly their original columns back
+    assert restored[in_set].equals(wPNKC[in_set])
+    assert not shuffled[in_set].equals(wPNKC[in_set])
+    # only the set's claws and their partners changed from the shuffled draw
+    changed = np.flatnonzero((restored.to_numpy() != shuffled.to_numpy()).any(axis=1))
+    assert set(changed) <= set(swaps.claw_row) | set(swaps.partner_row)
+    if within_kc_type:
+        kc_type = wPNKC.index.get_level_values(KC_TYPE)
+        assert (kc_type[swaps.claw_row] == kc_type[swaps.partner_row]).all()
+    again, _ = restore_kc_subset(shuffled, wPNKC, kcs, seed=5,
+        within_kc_type=within_kc_type
+    )
+    assert again.equals(restored)
+    # the reverse of a re-draw restores the real wiring's set
+    redrawn, _ = redraw_kc_subset(wPNKC, kcs, seed=1, within_kc_type=within_kc_type)
+    back, _ = restore_kc_subset(redrawn, wPNKC, kcs, seed=1, within_kc_type=within_kc_type)
+    assert back[in_set].equals(wPNKC[in_set])
+    _check_margins(wPNKC, back, within_kc_type)
+    # restoring the original itself changes nothing
+    same, none = restore_kc_subset(wPNKC, wPNKC, kcs)
+    assert same.equals(wPNKC) and none.empty
+
+
+def test_subset_errors(wPNKCs):
+    from al_analysis.wpnkc_shuffles import redraw_kc_subset, restore_kc_subset
+
+    with pytest.raises(ValueError, match='one-row-per-claw'):
+        redraw_kc_subset(wPNKCs['kc'], [])
+    with pytest.raises(ValueError, match='not in the wiring'):
+        redraw_kc_subset(wPNKCs['claw'], [-12345])
+    wPNKC = wPNKCs['claw']
+    with pytest.raises(ValueError, match='same index'):
+        restore_kc_subset(wPNKC.iloc[:-1], wPNKC, [])
+    # a different column total per type cannot be restored
+    kcs = _subset(wPNKC, 25)
+    shuffled = shuffle_wPNKC(wPNKC, 'curveball', within_kc_type=True, seed=2)
+    vals = wPNKC.to_numpy()
+    if not np.array_equal(shuffled.to_numpy().sum(axis=0), vals.sum(axis=0)):
+        with pytest.raises(ValueError, match='original column'):
+            restore_kc_subset(shuffled, wPNKC, pd.unique(wPNKC.index.get_level_values(KC_ID)))
