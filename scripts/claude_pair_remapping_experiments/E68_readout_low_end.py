@@ -515,7 +515,8 @@ def calibrate(on: np.ndarray, how: str, K_e65: float) -> Dict[str, object]:
         sig = trial_sig.mean(axis=1) if trial_sig.ndim == 4 else trial_sig
         mu = np.concatenate([x.T for x in sig]) if sig.ndim == 3 else sig.T
         st = H.low_end_stats(c * mu, s / np.sqrt(N_TRIALS), band=BAND)
-        return dict(K=K_e65, floor=0.0, c=c, iterations=0, converged=True, K_at_bound=False, floor_at_bound=False, c_at_bound=False, **st)
+        return dict(K=K_e65, floor=0.0, c=c, iterations=0, converged=True, K_at_bound=False, floor_at_bound=False,
+            c_at_bound=bool(c <= 1.0001e-3 or c >= 0.9999e4), **st)
     kw = dict(noise_sd=s, target_rate=t['rate'], target_pr=t['pr'], n_trials=N_TRIALS, K0=K_e65 if np.isfinite(K_e65) else 10.0,
         floor_bounds=FLOOR_BOUNDS)
     if how == 'joint_no_floor':
@@ -573,7 +574,8 @@ def score_variant(job: tuple) -> Tuple[List[dict], List[dict], List[dict], Dict[
         else:
             dist = {cond: readings_noise_free(z[cond]) for cond in z}
             zs = {cond: [z[cond]] for cond in z}
-        base = dict(folder=folder, tag=tag, config=name, K=K, floor=b, c=c, one_spike_z=c * saturating(np.array([1.0]), K, b)[0],
+        base = dict(folder=folder, tag=tag, config=name, K=K, floor=b, c=c, c_at_bound=bool(cal['c_at_bound']),
+            K_at_bound=bool(cal['K_at_bound']), floor_at_bound=bool(cal['floor_at_bound']), one_spike_z=c * saturating(np.array([1.0]), K, b)[0],
             two_spike_z=c * saturating(np.array([2.0]), K, b)[0])
         amp = dict(base)
         for cond in z:
@@ -689,13 +691,19 @@ def medians(df: pd.DataFrame) -> pd.DataFrame:
     parts, the mean effect and the ρ's; the share of variants whose loss falls below their 'cal' loss in
     the same reading; the Spearman of the variants' order by loss against 'cal'."""
     real = df[df.realism_flag.fillna('') == '']
+    # variants whose ORN-driven spikes (one or more) cover fewer entries than the control flies' response rate
+    # cannot reach it under the data's criterion at any conversion c (c runs to its bound): left out of every
+    # configuration's medians, so that all are over the same variants
+    unreach = set(map(tuple, real.loc[real.c_at_bound, ['folder', 'tag']].drop_duplicates().to_numpy()))
+    real = real[[(f, t) not in unreach for f, t in zip(real.folder, real.tag)]]
     base = real[real.config == 'cal'].set_index(['folder', 'tag', 'reading'])['rmse']
     out = []
     for (cfg, reading), g in real.groupby(['config', 'reading'], sort=False):
         g = g.set_index(['folder', 'tag', 'reading'])
         b0 = base.reindex(g.index)
         best = g['rmse'].idxmin()
-        out.append(dict(config=cfg, reading=reading, n=len(g), loss=g.rmse.median(), mean_effect=g['mean'].median(),
+        out.append(dict(config=cfg, reading=reading, n=len(g), n_rate_unreachable=len(unreach), n_K_at_bound=int(g.K_at_bound.sum()),
+            n_floor_at_bound=int(g.floor_at_bound.sum()), loss=g.rmse.median(), mean_effect=g['mean'].median(),
             pattern_part=g.rmse_centered.median(), per_odor=g.per_odor.median(), pair_specific=g.pair_specific.median(),
             rho_effect=g.spearman.median(), rho_on=g.rho_on.median(), rho_off=g.rho_off.median(), block=g.block.median(),
             K=g.K.median(), floor=g.floor.median(), c=g.c.median(), share_improved_vs_cal=float((g.rmse < b0).mean()),
@@ -947,12 +955,16 @@ def write_table(out, dtab, a1, df, key, amp, one, med, tr, tcal) -> None:
         f"{dt('apl_effect_rmse_floor'):.3f}, the data's mean effect {dmean['graded']:+.3f}.", '']
     # 7: calibration and medians
     L += ['## Medians over the variants without a realism flag', '',
+        f'Left out: {int(med.n_rate_unreachable.iloc[0])} variants whose entries with one or more spikes cover fewer than the control flies\' '
+        '6.8 % of KC x odor entries, so no conversion c reaches the response rate under the data\'s criterion (c at its bound; mostly '
+        'early models tuned at 5 %). "K / b at a bound": variants in the row whose calibration ran to a bound.', '',
         '| configuration | reading | variants | loss | mean effect | pattern part | per-odor | pair-specific | ρ on the per-pair APL effect | '
-        'ρ on odor-odor distances, APL on / off | K | b | c | improved vs as now | ρ with the as-now order | lowest loss (variant) |',
-        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
+        'ρ on odor-odor distances, APL on / off | K | b | c | K / b at a bound | improved vs as now | ρ with the as-now order | lowest loss (variant) |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
     for r in med.itertuples():
         L.append(f'| {r.config} | {r.reading} | {r.n} | {r.loss:.3f} | {r.mean_effect:+.3f} | {r.pattern_part:.3f} | {r.per_odor:.3f} | {r.pair_specific:.3f} | '
-            f'{r.rho_effect:.2f} | {r.rho_on:.2f} / {r.rho_off:.2f} | {r.K:.1f} | {r.floor:+.2f} | {r.c:.1f} | {pct(r.share_improved_vs_cal)} | {r.order_rho_vs_cal:.2f} | '
+            f'{r.rho_effect:.2f} | {r.rho_on:.2f} / {r.rho_off:.2f} | {r.K:.1f} | {r.floor:+.2f} | {r.c:.1f} | {r.n_K_at_bound} / {r.n_floor_at_bound} | '
+            f'{pct(r.share_improved_vs_cal)} | {r.order_rho_vs_cal:.2f} | '
             f'{r.best_loss:.3f} ({r.best}) |')
     cal = pd.read_csv(out / 'calibration.csv')
     L += ['', '## The calibrations', '', '| calibration | variants | at a bound (K / b / c) | not converged | iterations (median, max) | K (median) | b (median) | c (median) |',
