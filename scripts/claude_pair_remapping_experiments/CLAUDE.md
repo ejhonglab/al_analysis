@@ -1007,6 +1007,7 @@ Canonical experiment names for summary reports:
 | E63 | the two-ρ fit |
 | E64 | the weak-input odors' input as a bounded oracle |
 | E65 | the compressive readout of the model's spike counts |
+| E66 | the per-odor profile of the APL effect |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 

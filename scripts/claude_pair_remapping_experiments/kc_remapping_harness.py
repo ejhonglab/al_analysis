@@ -830,6 +830,70 @@ def apl_effect_stats(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = 
         apl_effect_n_pairs=int(len(m)))
 
 
+def pair_design(pairs: pd.Index, odors: Optional[List[str]] = None) -> Tuple[np.ndarray, List[str]]:
+    """The additive design over odors of a set of odor pairs: one row per pair, one column per odor,
+    1 for the pair's two odors (so a pair's value is modelled as the sum of its odors' shares).
+    Returns (matrix, odor order); `odors` defaults to the odors in `pairs`, in order of appearance."""
+    if odors is None:
+        odors = list(dict.fromkeys([o for p in pairs for o in p]))
+    col = {o: i for i, o in enumerate(odors)}
+    X = np.zeros((len(pairs), len(odors)))
+    for r, (a, b) in enumerate(pairs):
+        X[r, col[a]] = 1.0
+        X[r, col[b]] = 1.0
+    return X, odors
+
+
+def odor_shares(effect: pd.Series) -> Tuple[pd.Series, float]:
+    """Each odor's share of a per-pair quantity under the additive model `value(a, b) = s_a + s_b`
+    (least squares over the pairs), and the fraction of the quantity's variance over pairs the
+    additive model explains."""
+    X, odors = pair_design(effect.index)
+    y = effect.to_numpy(dtype=float)
+    s, *_ = np.linalg.lstsq(X, y, rcond=None)
+    fit = X @ s
+    var = float(np.var(y))
+    return pd.Series(s, index=pd.Index(odors, name='odor'), name='share'), (float(1 - np.var(y - fit) / var) if var > 0 else np.nan)
+
+
+def apl_effect_decomposition(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = None
+    ) -> Tuple[Dict[str, float], pd.DataFrame]:
+    """The APL-effect loss (`apl_effect_stats`) split into three parts whose squares add:
+    `rmse**2 = mean_error**2 + per_odor**2 + pair_specific**2`. The pattern part's error (model
+    minus data, each with its mean removed) is projected onto the additive space over odors (a
+    pair's value the sum of its two odors' shares, `odor_shares`): the projection's root mean
+    square is the per-odor part, the residual's the pair-specific part.
+
+    Args:
+        on, off: the model's pair distances with APL on and APL off (any readout, e.g.
+            `readout_pair_distances`).
+        data: the data's per-pair effect; default `yang_apl_effect()`.
+
+    Returns (dict with the `apl_effect_stats` keys plus `apl_effect_per_odor`,
+    `apl_effect_pair_specific`, `apl_effect_share_pearson` (the model's per-odor shares against the
+    data's), `apl_effect_model_additive_r2` and `apl_effect_data_additive_r2` (variance over pairs
+    each side's additive model explains); DataFrame indexed by odor with the model's and the data's
+    shares and their difference).
+    """
+    data = yang_apl_effect() if data is None else data
+    stats = apl_effect_stats(on, off, data)
+    m, d = align_pairs(apl_effect(on, off), data)
+    err = (m - m.mean()) - (d - d.mean())
+    X, odors = pair_design(m.index)
+    coef, *_ = np.linalg.lstsq(X, err.to_numpy(dtype=float), rcond=None)
+    proj = X @ coef
+    resid = err.to_numpy(dtype=float) - proj
+    sm, r2m = odor_shares(m)
+    sd, r2d = odor_shares(d)
+    shares = pd.DataFrame({'model_share': sm, 'data_share': sd.reindex(sm.index)})
+    shares['share_error'] = shares.model_share - shares.data_share
+    stats.update(apl_effect_per_odor=float(np.sqrt(np.mean(proj ** 2))),
+        apl_effect_pair_specific=float(np.sqrt(np.mean(resid ** 2))),
+        apl_effect_share_pearson=float(np.corrcoef(shares.model_share, shares.data_share)[0, 1]),
+        apl_effect_model_additive_r2=r2m, apl_effect_data_additive_r2=r2d)
+    return stats, shares
+
+
 # ---------------------------------------------------------------------------
 # readouts of the model's spike counts (E65): the model's side of the per-pair APL effect is a
 # cosine distance on raw spike counts, the data's on z-scored GCaMP fluorescence, which
