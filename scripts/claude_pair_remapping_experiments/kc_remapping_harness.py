@@ -1457,6 +1457,76 @@ def kc_noise_floor(n_sd: float = 2.0) -> float:
     return float(n_sd * kc_trial_noise_sd('TNT3c') / np.sqrt(3))
 
 
+# ---------------------------------------------------------------------------
+# the recordings' per-KC normalization on the model's side (E73): Yang's values appear to be each
+# KC's fluorescence z-scored over its whole recording, so a KC's response is relative to its own
+# session; these read a model's spike counts the same way
+ZCELL_MAPS = ('linear', 'saturating')
+
+
+def session_zscore(counts, *, q: float, noise, amp: str = 'linear', K: Optional[float] = None,
+    noise_ratio: float = 0.385, n_trials: int = 3, n_blank: int = 1, divisor: Optional[float] = None
+    ) -> Dict[str, object]:
+    """A model's KC responses read as the recordings appear to be: each KC's session (the panel's odors
+    and `n_blank` blank stimuli, `n_trials` trials each) assembled from its spike counts and z-scored over
+    the whole session (E73).
+
+    Each trial's response window holds the share `q` of the session's frames; inside it the KC's signal is
+    its amplitude a (`amp`: 'linear', a = n; 'saturating', a = n / (n + K)), outside it 0; every frame
+    carries independent noise of sd `noise` (amplitude units). The KC's z-score subtracts its session mean
+    mu = q mean(a) and divides by its session sd S = sqrt(q mean(a^2) - mu^2 + noise^2), so a trial reads
+    (a - mu) / S plus measurement noise of sd noise_ratio x noise / S (a silent KC's trial sd is
+    `noise_ratio`). The per-KC mean of squared trial values cannot exceed 1 / q (the edge of part A).
+
+    Args:
+        counts: spike counts, (units x odors) DataFrame or array (the same counts on every trial), or
+            (recordings, trials, units, odors) per-trial counts (jittered trials; each recording a session).
+        q: share of the session's frames inside the response windows.
+        noise: frame-noise sd in amplitude units, one value for all units (or an array over units).
+        amp, K: the amplitude map (`ZCELL_MAPS`); K the saturating map's half-saturation.
+        noise_ratio: sd of a response window's mean noise relative to the frame-noise sd.
+        n_trials: trials per odor when `counts` is 2-D.
+        n_blank: blank (solvent) stimuli in the session, amplitude 0.
+        divisor: the control: every unit's amplitude divided by this one value, nothing subtracted (no
+            per-KC normalization), measurement noise sd noise_ratio x noise / divisor.
+
+    Returns dict: trials ((recordings, trials, units, odors) noise-free trial values in z), center (their
+    mean over trials), trial_sd ((recordings, units) sd of one trial's measurement noise in z), n_trials,
+    blank ((recordings, units) the blank's value in z), mean_sq ((recordings, units) expected per-unit mean
+    of squared trial values over the session), odors (column labels or None).
+    """
+    raise NotImplementedError
+
+
+def zcell_pair_distances(z: Dict[str, object], reading: str = 'graded', thresh: float = KC_RESPONSE_Z) -> pd.Series:
+    """Cosine odor-odor distances of a `session_zscore` reading, in expectation over its measurement noise
+    (closed form, as `expected_pair_distances_noisy`), mean over its recordings: 'graded' (all values,
+    negative ones included: the data's cosine), 'thresholded' (trial means <= `thresh` set to 0) or
+    'binary' (trial mean > `thresh`)."""
+    raise NotImplementedError
+
+
+def zcell_stats(z: Dict[str, object], thresh: float = KC_RESPONSE_Z) -> Dict[str, object]:
+    """Statistics of a `session_zscore` reading under the data's criterion (trial mean > `thresh`), in
+    expectation over the measurement noise: response rate (and per odor), the responders' mean amplitude
+    and coefficient of variation, the shares above 4 z and in 0.5-1.5 z, the odors-per-KC distribution
+    (0, 1, 2-3, 4-7, 8 or more), the non-responders' trial sd, the per-unit mean square's upper edge and
+    the largest trial mean."""
+    raise NotImplementedError
+
+
+def calibrate_session_zscore(on_counts, *, q: float, amp: str = 'linear', target_rate: float,
+    target_amp: Optional[float] = None, target_silent_sd: Optional[float] = None, n_trials: int = 3,
+    n_blank: int = 1, K0: float = 5.0, noise_bounds: Tuple[float, float] = (1e-4, 1e4),
+    K_bounds: Tuple[float, float] = (1e-2, 1e3), tol: float = 1e-6, max_iter: int = 30) -> Dict[str, object]:
+    """The parameters of `session_zscore` set on the APL-on counts alone (then used unchanged for APL off):
+    the frame noise so that the APL-on response rate under the data's criterion is `target_rate`; for the
+    saturating map also K so that the responders' mean amplitude is `target_amp`; and, with
+    `target_silent_sd`, the noise ratio so that the trial sd of the non-responding entries is that value.
+    Returns dict(noise, K, noise_ratio, the achieved statistics, at_bound flags, converged)."""
+    raise NotImplementedError
+
+
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,
     *, unit: str = 'recording') -> Dict[str, pd.Series]:
     """One bootstrap replicate of {genotype: mean pair Series}.
