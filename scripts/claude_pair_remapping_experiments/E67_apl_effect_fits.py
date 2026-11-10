@@ -283,27 +283,53 @@ def make_figures(df: pd.DataFrame, res_dir: Path) -> None:
     for ax in axes[-1]:
         ax.set_xlabel('evaluation', fontsize=8)
     fig.tight_layout(); fig.savefig(res_dir / 'E67_fit_histories.png', dpi=120); plt.close(fig)
-    # the mean APL effect against the pattern part, start -> fit, under each definition
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.6), sharey=True)
+    # the mean APL effect against the pattern part, start -> fit, under each definition: colour by start family,
+    # marker by the definition in the loss (circle: the readout, square: raw counts, triangle: both), a short label
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.2))
     starts = df[df.kind == 'start (first evaluation)'].set_index('tag')
-    cmap = plt.get_cmap('tab10')
+    fam = {'A': '#d9480f', 'C': '#7048e8', 'C2': '#2b6cb0', 'D': '#2f9e44', 'E': '#868e96'}
+    marker = {'cal': 'o', 'raw': 's', 'both': '^'}
     for ax, name, lab in zip(axes, ('raw', 'cal'), ('raw spike counts', 'calibrated readout')):
-        for i, (_, r) in enumerate(fit.iterrows()):
-            c = cmap(i % 10)
-            s = starts.loc[r['tag']] if r['tag'] in starts.index else None
-            if s is not None and np.isfinite(s.get(f'{name}_mean', np.nan)):
-                ax.annotate('', xy=(r[f'{name}_mean'], r[f'{name}_pattern']), xytext=(s[f'{name}_mean'], s[f'{name}_pattern']),
-                    arrowprops=dict(arrowstyle='->', color=c, lw=1))
-            ax.plot(r[f'{name}_mean'], r[f'{name}_pattern'], 'o', color=c, ms=6,
-                label=f"{r['tag']} ({'in the loss' if r.get('apl_readout') in (name, 'both') else 'scored only'})")
+        xs, ys = [dt('apl_effect_mean')], []
+        for _, r in fit.iterrows():
+            lab_short = fit_label(r)
+            family = lab_short.split()[0]
+            c = fam.get(family, 'k')
+            s0 = starts.loc[r['tag']] if r['tag'] in starts.index else None
+            if s0 is not None and np.isfinite(s0.get(f'{name}_mean', np.nan)):
+                ax.annotate('', xy=(r[f'{name}_mean'], r[f'{name}_pattern']), xytext=(s0[f'{name}_mean'], s0[f'{name}_pattern']),
+                    arrowprops=dict(arrowstyle='->', color=c, lw=0.8, alpha=0.6))
+                xs.append(s0[f'{name}_mean']); ys.append(s0[f'{name}_pattern'])
+            ax.plot(r[f'{name}_mean'], r[f'{name}_pattern'], marker.get(r.get('apl_readout'), 'o'), color=c, ms=7, mec='k', mew=0.4)
+            ax.annotate(lab_short, (r[f'{name}_mean'], r[f'{name}_pattern']), fontsize=6, xytext=(4, 2), textcoords='offset points')
+            xs.append(r[f'{name}_mean']); ys.append(r[f'{name}_pattern'])
+        ax.set_xlim(min(xs) - 0.01, max(xs) + 0.01); ax.set_ylim(min(ys) - 0.004, max(ys) + 0.004)
         ax.axvline(dt('apl_effect_mean'), color='k', ls='--', lw=0.8)
-        ax.set_xlabel(f'mean APL effect, {lab}', fontsize=9); ax.set_title(lab, fontsize=9)
-        ax.spines[['top', 'right']].set_visible(False)
-    axes[0].set_ylabel('pattern part of the APL-effect loss (lower is better)', fontsize=9)
-    axes[1].legend(fontsize=6, frameon=False, loc='upper left')
-    fig.suptitle('Each fit from its start (arrow) under both definitions; dashed: the KC data\'s mean APL effect', fontsize=9.5)
+        ax.set_xlabel(f'mean APL effect, {lab} (dashed: KC data)', fontsize=9); ax.set_title(lab, fontsize=9.5)
+        ax.set_ylabel('pattern part of the APL-effect loss (lower is better)', fontsize=9)
+        ax.spines[['top', 'right']].set_visible(False); ax.grid(True, color='0.92', lw=0.6)
+    from matplotlib.lines import Line2D
+    handles = [Line2D([], [], color=c, marker='o', ls='', label=k) for k, c in fam.items()] + [
+        Line2D([], [], color='k', marker=m, ls='', mfc='w', label=f'fitted {"under the readout" if d == "cal" else "on raw counts" if d == "raw" else "under both"}')
+        for d, m in marker.items()]
+    axes[1].legend(handles=handles, fontsize=7, frameon=False, loc='upper right')
+    fig.suptitle('Each fit from its start (arrow), scored under both definitions; A, C, C2, D, E: the start families', fontsize=9.5)
     fig.tight_layout(); fig.savefig(res_dir / 'E67_mean_vs_pattern.png', dpi=130); plt.close(fig)
 
+
+def fit_label(r) -> str:
+    """A short label: the start family (A, C, C2 for C2's start and every fit from C2's parameters, D, E), the
+    definition in the loss and the arm."""
+    start = str(r.get('start', ''))
+    tag = str(r['tag'])
+    fam = 'C2' if (start.startswith('C2') or start.startswith('from rate0.068_aplcal_k2') or tag.startswith('rate0.068_aplraw_k2')) else (
+        'D' if ('DM1' in tag) else start)
+    arm = ''
+    for key, text in (('aplcalblk', ' +block'), ('aplcalopk', ' +odors/KC'), ('aplboth', ' both'), ('aplrawpat', ' pattern only'),
+                      ('c2bal5', ' balance 5.1'), ('_k1.5_', ' exponent 1.5'), ('_k1_', ' exponent 1')):
+        if key in tag:
+            arm += text
+    return f"{fam} {r.get('apl_readout')}{arm}"
 
 if __name__ == '__main__':
     main()
