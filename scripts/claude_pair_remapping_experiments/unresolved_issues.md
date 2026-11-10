@@ -8,6 +8,17 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### The summary's low-concentration table may read the wrong noisy fraction (found 2026-11-10, viki's planning subagent)
+- **What.** In "The per-claw threshold at low concentration" the summary template fills the columns "APL on, through the matched noise"
+  from E49's `fractions.csv` column `frac_trial` (each trial's response fraction, averaged). E49's note and that subsection's prose describe
+  the recordings' rule, a mean over the three trials of at least one spike, which is `frac_count1`; with `frac_trial` the noisy columns
+  barely differ from the noiseless ones (e.g. 2h @ -7, reference model: 0.0137 against 0.0139).
+- **Touches.** That table of the summary (six rows, two models); nothing else reads `frac_trial` (the APL-effect fit on re-drawn wirings
+  uses `frac_count1`).
+- **Done.** Nothing yet.
+- **Remains.** E49's author (viki) checks which column E49 meant, then the template's placeholders are switched (or the prose changed) and
+  the summary rebuilt.
+
 ### The KC data's amplitudes and response criterion are relative to each cell's whole-recording spread (found 2026-11-10, hal's planning subagent; confirmed by Yang)
 - **What.** Yang's per-trial KC values (files suffixed `zscored_full`) look z-scored per cell over the whole recording, not against a
   pre-odor baseline: in every one of the 19 APL16 recordings the per-KC mean of squared trial values has a sharp upper edge (99.9th
@@ -136,6 +147,15 @@ directory's notes/ and are linked from here.
   against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### The progress plot counted re-drawn wirings as models (found 2026-11-10, viki)
+- **What.** `summary_progress_plot.py` meant to leave out random, shuffled and re-drawn wirings (its comment and CLAUDE.md), but its pattern
+  caught only `_seed<N>`; the joint fit's re-drawn wirings are tagged `wiring-<method>-seed<N>_...` (and `thr40_wiring-...`), so the
+  re-drawn, shuffled, lesioned and transplanted wirings of E30, E33, E42, E46, E47, E50, E54, E59 and E72 were counted, and some were the
+  running best (E30's draws on several statistics; E72's P3 would have been the best ρ on the per-pair APL effect).
+- **Touches.** The progress plot and its table of best models per statistic on the summary page, since 2026-11-06.
+- **Done.** The pattern also matches `wiring-` and E72's `popfit_<P|M><n>` (al_analysis, with the E72 summary passage); the summary
+  rebuilt and saved 2026-11-10 (E30's draw points gone, e.g. the best ρ on odor-odor distances with APL off 0.771 -> 0.769).
 
 ### The claw-count thresholds of the KC heterogeneity experiment (E5) were not applied (found 2026-11-10, atlas's planning subagent)
 - **What.** E5_kc_heterogeneity.py's `thr_nclaws_0.5` / `thr_nclaws_1` variants pass a per-KC vector as `fixed_thr` to the simulator of

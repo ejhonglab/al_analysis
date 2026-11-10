@@ -55,8 +55,11 @@ EXCLUDE = {'E14', 'E15', 'E39', 'E62', 'E64', 'E66', 'E70'}
 # E38's level-matched input controls (the lab's profiles scaled to Hallem's level: not candidate
 # inputs, a control separating profile from level) are excluded too, and so is E71's control of the sign of
 # the input-scaled KC threshold (a negative power, e.g. c2_a-0.5)
+# (`wiring-` in a tag marks a re-drawn, shuffled, lesioned or transplanted wiring, E10_joint_fit.py's --wiring /
+# --wiring-file prefixes, e.g. thr40_wiring-claw_permutation_within_type-seed2_...; `_seed\d+` alone missed them, since
+# those tags have -seed<N>; E72's popfit_<P|M><n> are its shared parameter set on re-drawn wirings)
 EXCLUDE_VARIANT = re.compile(r'^(oracle|blockset|uniform|hemidraw|shuffle-|A_lab_scaled)|_g1\.25$|_g1\.5$|_g2$|_g3$|random_g|_seed\d+'
-    r'|_a-\d', re.I)
+    r'|_a-\d|wiring-|^popfit_[PM]\d', re.I)
 # experiments without a comparable model table (data-only, readout-only, or no on/off scoring)
 SKIP_FOLDERS = {'E1_apl_knockout', 'E2_local_apl', 'E6_readout_window', 'E7_confound_controls',
     'E21_apl_off_sharing', 'E23_weak_odor_responders', 'E29_oracle_substrate'}
