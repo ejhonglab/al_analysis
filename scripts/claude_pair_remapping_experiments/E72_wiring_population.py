@@ -327,15 +327,187 @@ def write_table(st: pd.DataFrame, pops: pd.DataFrame, out: Path) -> None:
     (out / 'comparison_table.md').write_text('\n'.join(L) + '\n')
 
 
-def population_fit(wirings: Sequence[str], held_out: Sequence[str], maxfev: int = 150) -> Dict[str, float]:
-    """Part D: one set of the four parameters fitted to the population of `wirings` under E67's 'both' loss computed
-    on the population, then run once on `held_out`."""
-    raise NotImplementedError
+M_FILES = {f'M{s}': (H.shared_dir() / 'data' / 'model_outputs' / 'E59_coinput_shuffle' / f'wPNKC_curveball_within_type-seed{s}_matched.parquet',
+                     f'curveball_within_type_matched-seed{s}') for s in (1, 2, 3)}
+TIED = ('wKCAPL_scale', 'wPNAPL_scale')
+FREE = ('fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'wKCKC_scale')
+
+
+def wiring_simulator(label: str, p_fit: Dict[str, float], orn: pd.DataFrame, out_dir: Path):
+    """A fixed-parameter simulator of C2's family (breadth exponent 2, no gain, no per-claw threshold) on one wiring,
+    built as E10_joint_fit.py builds the fit's model (bouton_base of that wiring, its own breadth pre-pass, the connectome
+    APL weights, KC-KC inhibition with tau TAU), started at `p_fit` (that wiring's fitted absolute parameters)."""
+    from al_analysis.mb_model import make_fixed_param_kc_simulator
+    import E10_joint_fit as J
+    if label == REAL:
+        _, wnorm, W, breadth = J.bouton_base(orn, out_dir, None)
+        override = {}
+    elif label.startswith('P'):
+        _, wnorm, W, breadth = J.bouton_base(orn, out_dir, None, wiring='claw_permutation_within_type', wiring_seed=int(label[1:]))
+        override = {'_wPNKC': W}
+    else:
+        path, tag = M_FILES[label]
+        _, wnorm, W, breadth = J.bouton_base(orn, out_dir, None, wiring_matrix=pd.read_parquet(path), wiring_tag=tag)
+        override = {'_wPNKC': W}
+    kws = dict(J.base_kws(None), **override, _wAPLKC=J.breadth_weights(wnorm['wAPLKC'], breadth, 2.0), _wKCAPL=wnorm['wKCAPL'],
+        _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=p_fit['wKCKC_scale'], kc_kc_tau=J.TAU)
+    sim, _ = make_fixed_param_kc_simulator(orn, initial_params=dict(p_fit), **kws)
+    return sim
+
+
+def fitted_params(folder: str, tag: str) -> Dict[str, float]:
+    f = pd.read_csv(H.results_dir(folder) / 'fits.csv').set_index('tag').loc[tag]
+    p = {k: float(f[k]) for k in ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale')}
+    p['wKCKC_scale'] = float(f['kc_kc_inh'])
+    return p
+
+
+class PopulationLoss:
+    """E67's 'both' APL-effect loss (E10_joint_fit.make_loss variant 'apl', readout 'both') computed on a population of
+    wirings: the two APL-effect terms (raw counts; the calibrated readout with K per wiring) and the two matrix terms
+    on the mean over wirings of the pair distances per condition; the operating point, the rate ratio with its wall
+    and the per-odor terms on the wiring-mean response rates and fractions. With one wiring it is E10's loss."""
+
+    def __init__(self):
+        import E10_joint_fit as J
+        self.J = J
+        self.w = J.loss_weights('apl')
+        self.rate_target = float(H.data_target('ctrl_frac'))
+        data_rates = {g: H.yang_response_fractions(g).mean() for g in ('TNT3c', 'TNT')}
+        self.rates = {g: data_rates[g].reindex(H.APL16_ODORS) for g in data_rates}
+        self.ratio_target = float(self.rates['TNT'].mean() / self.rates['TNT3c'].mean())
+        self.ratio_lo, self.ratio_hi = H.data_target_ci('rate_ratio_fraction')
+        self.floor = H.data_target('apl_effect_rmse_floor')
+        self.cal_target = H.data_target('ctrl_participation_ratio_resp')
+        self.ctrl, self.tnt = H.yang_mean_rdm('TNT3c', 'cosine'), H.yang_mean_rdm('TNT', 'cosine')
+        self.effect = H.yang_apl_effect()
+
+    def __call__(self, outs: Sequence[Dict[str, tuple]]) -> Dict[str, float]:
+        from scipy import stats
+        from E3_drive_dependent_gain import rate
+        J, v = self.J, H.PRIMARY_MODEL_RDM
+        raw = {c: pd.concat([H.model_rdms(*o[c])[v] for o in outs], axis=1).mean(axis=1) for c in ('on', 'off')}
+        cal_on, cal_off = [], []
+        for o in outs:
+            K = H.calibrate_readout(o['on'][1], 'saturating', self.cal_target, stat='participation_ratio', responders_min=2.0)
+            cal_on.append(H.readout_pair_distances(o['on'][1], 'saturating', K))
+            cal_off.append(H.readout_pair_distances(o['off'][1], 'saturating', K))
+        cal = {'on': pd.concat(cal_on, axis=1).mean(axis=1), 'off': pd.concat(cal_off, axis=1).mean(axis=1)}
+        out = {}
+        out['on_spearman'] = H.spearman(raw['on'], self.ctrl)
+        out['off_spearman'] = H.spearman(raw['off'], self.tnt)
+        out['rate_on'] = float(np.mean([rate(o['on'][0]) for o in outs]))
+        out['rate_off'] = float(np.mean([rate(o['off'][0]) for o in outs]))
+        out['ratio'] = out['rate_off'] / max(out['rate_on'], 1e-9)
+        po = {c: pd.concat([H.response_fractions(o[c][0]).reindex(H.APL16_ODORS) for o in outs], axis=1).mean(axis=1) for c in ('on', 'off')}
+        out['po_on_spearman'] = float(stats.spearmanr(po['on'], self.rates['TNT3c'])[0])
+        out['po_off_spearman'] = float(stats.spearmanr(po['off'], self.rates['TNT'])[0])
+        for name, d in (('raw', raw), ('cal', cal)):
+            dec, _ = H.apl_effect_decomposition(d['on'], d['off'], self.effect)
+            out.update({f'apl_{name}_rmse': dec['apl_effect_rmse'], f'apl_{name}_mean': dec['apl_effect_mean'],
+                f'apl_{name}_pattern': dec['apl_effect_rmse_centered'], f'apl_{name}_rho': dec['apl_effect_spearman']})
+        terms = dict(
+            on_mat=1.0 - out['on_spearman'],
+            off_mat=1.0 - out['off_spearman'],
+            rate_on=((out['rate_on'] - self.rate_target) / J.RATE_SCALE) ** 2,
+            ratio=((np.log(max(out['ratio'], 1e-3)) - np.log(self.ratio_target)) / J.RATIO_LOG_SCALE) ** 2,
+            po_on=1.0 - np.nan_to_num(out['po_on_spearman'], nan=0.0),
+            po_off=1.0 - np.nan_to_num(out['po_off_spearman'], nan=0.0),
+            apl_raw=out['apl_raw_rmse'] / self.floor,
+            apl_cal=out['apl_cal_rmse'] / self.floor,
+            ratio_wall=(max(0.0, self.ratio_lo - out['ratio'], out['ratio'] - self.ratio_hi) / J.RATIO_WALL_SCALE) ** 2,
+            po_wall=(max(0.0, J.PO_WALL - np.nan_to_num(out['po_on_spearman'], nan=0.0)) / J.PO_WALL_SCALE) ** 2)
+        for name, t in terms.items():
+            out[f'term_{name}'] = float(self.w[name] * t)
+        out['loss'] = float(sum(out[f'term_{n}'] for n in terms))
+        return out
+
+
+def simulate_population(sims: Dict[str, object], ratios: Dict[str, tuple], theta: Dict[str, float]) -> List[Dict[str, tuple]]:
+    """Every wiring at the shared parameters `theta` (FREE), its KC->APL and bouton->APL scales tied to APL->KC by that
+    wiring's own fitted ratios; APL off: APL->KC and APL->bouton at 0."""
+    outs = []
+    for lab, sim in sims.items():
+        r_kc, r_pn = ratios[lab]
+        p = dict(theta, wKCAPL_scale=theta['wAPLKC_scale'] * r_kc, wPNAPL_scale=theta['wAPLKC_scale'] * r_pn)
+        outs.append({'on': sim(p), 'off': sim(dict(p, wAPLKC_scale=0.0, wAPLPN_scale=0.0))})
+    return outs
+
+
+def population_fit(wirings: Sequence[str], held_out: Sequence[str], maxfev: int = 150, check_only: bool = False) -> Dict[str, float]:
+    """Part D: one set of the four parameters (absolute: somatic threshold, APL->KC, APL->bouton, KC-KC) fitted to the
+    population of `wirings` under E67's 'both' loss computed on the population (PopulationLoss), Nelder-Mead in
+    log(parameter / start) from the median of the wirings' part-B optima, then run once on `held_out` and scored.
+    First checks that with the real wiring alone at C2's parameters the loss is C2's saved loss to the last digit."""
+    from scipy.optimize import minimize
+    out_dir = H.outputs_dir(EXPERIMENT)
+    res_dir = H.results_dir(EXPERIMENT)
+    orn = H.apl16_orn_deltas()
+    members = {lab: (folder, tag) for lab, folder, tag in new_fit_members()}
+    loss = PopulationLoss()
+    # the check: the real wiring alone at C2's fitted parameters reproduces E67's saved loss
+    p_c2 = fitted_params('E67_apl_effect_fits', C2_TAG)
+    sim_real = wiring_simulator(REAL, p_c2, orn, out_dir)
+    o = {'on': sim_real(p_c2), 'off': sim_real(dict(p_c2, wAPLKC_scale=0.0, wAPLPN_scale=0.0))}
+    got = loss([o])['loss']
+    saved = float(pd.read_csv(H.results_dir('E67_apl_effect_fits') / 'fits.csv').set_index('tag').loc[C2_TAG, 'loss'])
+    print(f'check: one wiring at C2 -> loss {got!r}, saved {saved!r}', flush=True)
+    if got != saved:
+        raise RuntimeError(f'the population loss with one wiring does not reproduce C2 ({got!r} vs {saved!r})')
+    if check_only:
+        return {'check_loss': got, 'saved_loss': saved}
+    sims, ratios, starts = {}, {}, []
+    for lab in list(wirings) + list(held_out):
+        folder, tag = members[lab]
+        p = fitted_params(folder, tag)
+        sims[lab] = sim_real if lab == REAL else wiring_simulator(lab, p, orn, out_dir)
+        ratios[lab] = (p['wKCAPL_scale'] / p['wAPLKC_scale'], p['wPNAPL_scale'] / p['wAPLKC_scale'])
+        if lab in wirings:
+            starts.append([p[k] for k in FREE])
+    x0 = np.median(np.array(starts), axis=0)
+    start = dict(zip(FREE, x0))
+    fit_sims = {lab: sims[lab] for lab in wirings}
+    hist = []
+
+    def f(z):
+        theta = {k: float(start[k] * np.exp(zz)) for k, zz in zip(FREE, z)}
+        out = loss(simulate_population(fit_sims, ratios, theta))
+        hist.append(dict(theta, **out))
+        if len(hist) % 10 == 0:
+            print(f"eval {len(hist)}: loss {out['loss']:.4f} (readout {out['apl_cal_rmse']:.4f}, raw {out['apl_raw_rmse']:.4f})", flush=True)
+            pd.DataFrame(hist).to_csv(res_dir / 'population_fit_history.csv', index=False)
+        return out['loss']
+
+    simplex = np.vstack([np.zeros(len(FREE))] + [0.15 * np.eye(len(FREE))[i] for i in range(len(FREE))])
+    res = minimize(f, np.zeros(len(FREE)), method='Nelder-Mead', options=dict(maxfev=maxfev, initial_simplex=simplex, xatol=1e-3, fatol=1e-4))
+    pd.DataFrame(hist).to_csv(res_dir / 'population_fit_history.csv', index=False)
+    best = min(hist, key=lambda h: h['loss'])
+    theta = {k: best[k] for k in FREE}
+    # held-out: run once at the fitted set, score the held-out population and each held-out wiring
+    held = {lab: sims[lab] for lab in held_out}
+    outs_held = simulate_population(held, ratios, theta)
+    outs_fit = simulate_population(fit_sims, ratios, theta)
+    for lab, oo in zip(list(fit_sims) + list(held), outs_fit + outs_held):
+        for c, cc in (('on', 'on'), ('off', 'acute_off')):
+            oo[c][0].to_parquet(out_dir / f'popfit_{lab}_{cc}_responses.parquet')
+            oo[c][1].to_parquet(out_dir / f'popfit_{lab}_{cc}_spike_counts.parquet')
+    dist_h = {ro: [distances(o, ro) for o in outs_held] for ro in ('raw', 'cal', 'binary')}
+    dist_f = {ro: [distances(o, ro) for o in outs_fit] for ro in ('raw', 'cal', 'binary')}
+    result = dict(start=start, theta=theta, n_evals=len(hist), loss=best['loss'], wirings=list(wirings), held_out=list(held_out),
+        fitted_population={k: v for k, v in population_row(outs_fit, dist_f).items()},
+        held_out_population={k: v for k, v in population_row(outs_held, dist_h).items()},
+        held_out_loss=loss(outs_held), check_loss=got, ratios={k: list(v) for k, v in ratios.items()},
+        al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
+        model=H.model_provenance(orn_deltas=orn))
+    (res_dir / 'population_fit.json').write_text(json.dumps(result, indent=1, default=float) + '\n')
+    print(json.dumps({k: result[k] for k in ('theta', 'loss', 'n_evals')}, indent=1, default=float))
+    return result
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', default='score', choices=['A', 'score', 'D'])
+    ap.add_argument('--part', default='score', choices=['A', 'score', 'D', 'D-check'])
+    ap.add_argument('--maxfev', type=int, default=150)
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
     out.mkdir(parents=True, exist_ok=True)
@@ -344,7 +516,7 @@ def main() -> None:
     elif args.part == 'score':
         score(out)
     else:
-        raise NotImplementedError('part D: not yet written')
+        population_fit([REAL, 'P1', 'P2', 'M1'], ['P3', 'P4', 'M2', 'M3'], maxfev=args.maxfev, check_only=(args.part == 'D-check'))
 
 
 if __name__ == '__main__':
