@@ -226,22 +226,51 @@ def summary(res_dir: Path) -> None:
     tuned = [a for a in arms if a != 'untuned']
     models = [m for m in MODELS if (sc.model == m).any()]
     rows = ['**The per-odor input scales the oracle needs (a scale above 1 means the odor\'s ORN input is too weak for the KC data\'s recruitment '
-        'at the fitted parameters), with the fitted model\'s response fractions and the data\'s**', '',
-        '| | KC data {span=2} | ' + ' | '.join(f'{MODEL_LABEL[m]} {{span={2 + len(tuned)}}}' for m in models) + ' |',
-        '| odor | control flies | APL output blocked (TNT) | ' + ' | '.join('fitted model, APL on | fitted model, APL off | ' + ' | '.join(
-            f'scale, {a} arm' for a in tuned) for m in models) + ' |',
-        '|---|---|---|' + '---|' * ((2 + len(tuned)) * len(models))]
+        'at the fitted parameters), with the fitted model\'s response fractions and the data\'s, and each odor\'s APL-off / APL-on recruitment '
+        'ratio (the per-odor APL effect) in the data and the fitted model**', '',
+        '| | KC data {span=3} | ' + ' | '.join(f'{MODEL_LABEL[m]} {{span={3 + len(tuned)}}}' for m in models) + ' |',
+        '| odor | control flies | APL output blocked (TNT) | off / on | ' + ' | '.join('fitted model, APL on | fitted model, APL off | off / on | ' +
+            ' | '.join(f'scale, {a} arm' for a in tuned) for m in models) + ' |',
+        '|---|---|---|---|' + '---|' * ((3 + len(tuned)) * len(models))]
     for o in H.APL16_ODORS:
         d_on = sc[(sc.odor == o)].data_on.iloc[0]; d_off = sc[(sc.odor == o)].data_off.iloc[0]
         cells = []
         for m in models:
             u = sc[(sc.model == m) & (sc.arm == 'untuned') & (sc.odor == o)]
-            cells += [f'{u.fraction_on.iloc[0]:.3f}' if len(u) else '-', f'{u.fraction_off.iloc[0]:.3f}' if len(u) else '-']
+            cells += [f'{u.fraction_on.iloc[0]:.3f}' if len(u) else '-', f'{u.fraction_off.iloc[0]:.3f}' if len(u) else '-',
+                f'{u.fraction_off.iloc[0] / u.fraction_on.iloc[0]:.1f}' if len(u) and u.fraction_on.iloc[0] > 0 else '-']
             for a in tuned:
                 t = sc[(sc.model == m) & (sc.arm == a) & (sc.odor == o)]
                 cells.append((f'{t.scale.iloc[0]:.2f}' + (' (at the bracket)' if bool(t.at_bracket.iloc[0]) else '')) if len(t) else '-')
-        rows.append(f'| {o} | {d_on:.3f} | {d_off:.3f} | ' + ' | '.join(cells) + ' |')
+        rows.append(f'| {o} | {d_on:.3f} | {d_off:.3f} | {d_off / d_on:.1f} | ' + ' | '.join(cells) + ' |')
     out.append('\n'.join(rows))
+    # the pairs the gap decomposition (E61) named, before and after
+    long = pd.read_csv(res_dir / 'model_pair_distances_long.csv')
+    named = [('paa', 'B-myr'), ('paa', '2-but'), ('B-myr', '2-but'), ('t2h', 'paa'), ('1-8ol', 'ms'), ('1-6ol', 'paa')]
+    data_d = {g: H.yang_mean_rdm(g, 'cosine') for g in ('TNT3c', 'TNT')}  # pair-indexed Series
+    if all(isinstance(v, pd.Series) for v in data_d.values()):
+        rows = ['**The pairs the gap decomposition (E61) named: cosine distance in the KC data and in the models, untuned and with the per-odor '
+            'scales (APL on / APL off)**', '',
+            '| pair | KC data | ' + ' | '.join(f'{MODEL_LABEL[m]} {{span={len(arms)}}}' for m in models) + ' |',
+            '| | control flies / APL output blocked (TNT) | ' + ' | '.join(' | '.join(ARM_LABEL[a] for a in arms) for m in models) + ' |',
+            '|---|---|' + '---|' * (len(arms) * len(models))]
+
+        def dist(series: pd.Series, a: str, b: str) -> float:
+            for key in ((a, b), (b, a)):
+                if key in series.index:
+                    return float(series.loc[key])
+            return float('nan')
+
+        for a, b in named:
+            cells = []
+            for m in models:
+                for arm in arms:
+                    tag = f'R_{m}_{arm}'
+                    on = long[(long.tag == tag) & (long.condition == 'on')].set_index(['odor_a', 'odor_b']).distance
+                    off = long[(long.tag == tag) & (long.condition == 'acute_off')].set_index(['odor_a', 'odor_b']).distance
+                    cells.append(f'{dist(on, a, b):.2f} / {dist(off, a, b):.2f}')
+            rows.append(f'| {a} / {b} | {dist(data_d["TNT3c"], a, b):.2f} / {dist(data_d["TNT"], a, b):.2f} | ' + ' | '.join(cells) + ' |')
+        out.append('\n'.join(rows))
     (res_dir / 'comparison_table.md').write_text('\n\n'.join(out) + '\n')
     figure(st, sc, data, res_dir)
     print('\n\n'.join(out))
