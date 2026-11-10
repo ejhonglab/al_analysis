@@ -54,3 +54,6 @@ def test_decomposition_squares_add_and_parts():
     stats2, _ = H.apl_effect_decomposition(off + data.to_numpy() + noise, off, data)
     assert stats2['apl_effect_per_odor'] == pytest.approx(0.0, abs=1e-12)
     assert stats2['apl_effect_pair_specific'] == pytest.approx(float(np.sqrt(np.mean(noise ** 2))))
+    parts = H.apl_effect_pair_parts(off + data.to_numpy() + noise, off, data)
+    assert np.allclose(parts['per_odor'] + parts['pair_specific'], parts['error'])
+    assert np.allclose(parts['pair_specific'].to_numpy(), noise)

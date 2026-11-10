@@ -856,6 +856,22 @@ def odor_shares(effect: pd.Series) -> Tuple[pd.Series, float]:
     return pd.Series(s, index=pd.Index(odors, name='odor'), name='share'), (float(1 - np.var(y - fit) / var) if var > 0 else np.nan)
 
 
+def apl_effect_pair_parts(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = None) -> pd.DataFrame:
+    """Per pair, the parts of the APL-effect loss (`apl_effect_decomposition`): columns `model` and
+    `data` (each side's per-pair effect), `error` (model minus data, each with its mean removed: the
+    pattern part's error), `per_odor` (its projection onto the additive space over odors) and
+    `pair_specific` (the residual; `error = per_odor + pair_specific`). Index the pairs both sides
+    have; `data` defaults to `yang_apl_effect()`."""
+    data = yang_apl_effect() if data is None else data
+    m, d = align_pairs(apl_effect(on, off), data)
+    err = (m - m.mean()) - (d - d.mean())
+    X, _ = pair_design(m.index)
+    coef, *_ = np.linalg.lstsq(X, err.to_numpy(dtype=float), rcond=None)
+    proj = X @ coef
+    return pd.DataFrame({'model': m, 'data': d, 'error': err, 'per_odor': proj,
+        'pair_specific': err.to_numpy(dtype=float) - proj}, index=m.index)
+
+
 def apl_effect_decomposition(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = None
     ) -> Tuple[Dict[str, float], pd.DataFrame]:
     """The APL-effect loss (`apl_effect_stats`) split into three parts whose squares add:
@@ -877,18 +893,13 @@ def apl_effect_decomposition(on: pd.Series, off: pd.Series, data: Optional[pd.Se
     """
     data = yang_apl_effect() if data is None else data
     stats = apl_effect_stats(on, off, data)
-    m, d = align_pairs(apl_effect(on, off), data)
-    err = (m - m.mean()) - (d - d.mean())
-    X, odors = pair_design(m.index)
-    coef, *_ = np.linalg.lstsq(X, err.to_numpy(dtype=float), rcond=None)
-    proj = X @ coef
-    resid = err.to_numpy(dtype=float) - proj
-    sm, r2m = odor_shares(m)
-    sd, r2d = odor_shares(d)
+    parts = apl_effect_pair_parts(on, off, data)
+    sm, r2m = odor_shares(parts['model'])
+    sd, r2d = odor_shares(parts['data'])
     shares = pd.DataFrame({'model_share': sm, 'data_share': sd.reindex(sm.index)})
     shares['share_error'] = shares.model_share - shares.data_share
-    stats.update(apl_effect_per_odor=float(np.sqrt(np.mean(proj ** 2))),
-        apl_effect_pair_specific=float(np.sqrt(np.mean(resid ** 2))),
+    stats.update(apl_effect_per_odor=float(np.sqrt(np.mean(parts['per_odor'] ** 2))),
+        apl_effect_pair_specific=float(np.sqrt(np.mean(parts['pair_specific'] ** 2))),
         apl_effect_share_pearson=float(np.corrcoef(shares.model_share, shares.data_share)[0, 1]),
         apl_effect_model_additive_r2=r2m, apl_effect_data_additive_r2=r2d)
     return stats, shares
