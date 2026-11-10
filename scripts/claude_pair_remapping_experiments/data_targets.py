@@ -9,7 +9,9 @@ figure scripts and loss functions should read their reference values from here i
 literals. KC distances are one minus the cosine similarity of per-recording trial-mean response
 vectors, averaged over recordings (the report's matrices); ORN distances are
 `kc_remapping_harness.orn16_consensus_pairs()` (1 - Pearson r, 36 glomeruli, olfdb).
-Usage: ./venv/bin/python data_targets.py
+Usage: ./venv/bin/python data_targets.py [--add-new]
+(--add-new: compute every entry but write only those not yet in the registry, keeping the existing entries as
+they are, and list any existing entry whose recomputed value or interval differs)
 """
 from __future__ import annotations
 
@@ -425,13 +427,33 @@ def build() -> dict:
         add(f'kc_scale_ratio_{b}', ks.loc[m, 'scale_ratio'].median(), 'KCs (both genotypes) responding (trial mean > 1 z) to '
             f'{"11 or more" if b == "11plus" else b} of the 16 odors: the median of the whole-trace SD of Fc (the z unit) over its SD within '
             'the pre-odor windows (each window\'s mean removed)', 'yang_response_normalization.py (kc_scales.csv)', ['yang_norm_kc_scales'])
+    # who carries the APL effect (E74): the per-pair effect split by the number of odors each KC responds to in each
+    # condition (0, 1, 2-3, 4-7, 8 or more), with 90 % intervals over resamples of recordings, the floor of the
+    # class-resolved loss and the single-recording-pair yardstick
+    from E74_apl_effect_by_odors_per_kc import registry_entries as e74_entries
+    for name, value, definition, ci in e74_entries():
+        add(name, value, definition, 'E74_apl_effect_by_odors_per_kc.data_tables (2000 resamples of recordings, seed 0)',
+            ['kc_trialmeans'], ci=ci)
     add('n_recordings_ctrl', len(recs['TNT3c']), 'control recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     add('n_recordings_tnt', len(recs['TNT']), 'APL output blocked (TNT) recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     return reg
 
 
 def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap.add_argument('--add-new', action='store_true', help='write only the entries not yet in the registry; the existing '
+        'entries are kept as they are, and any whose recomputed value or interval differs is listed')
+    args = ap.parse_args()
     reg = build()
+    if args.add_new and OUT.exists():
+        old = json.loads(OUT.read_text())
+        differ = [k for k in old if k in reg and (reg[k]['value'] != old[k]['value'] or reg[k].get('ci') != old[k].get('ci'))]
+        new = [k for k in reg if k not in old]
+        for k in differ:
+            print(f'kept (recomputed value differs): {k} {old[k]["value"]!r} (now {reg[k]["value"]!r})')
+        print(f'adding {len(new)} entries: {", ".join(new)}')
+        reg = dict(old, **{k: reg[k] for k in new})
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(reg, indent=1, ensure_ascii=False) + '\n')
     for k, e in reg.items():

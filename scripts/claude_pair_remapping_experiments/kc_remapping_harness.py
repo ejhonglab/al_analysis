@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -1784,6 +1785,169 @@ def calibrate_session_zscore(on_counts, *, q: float, amp: str = 'linear', target
     return dict(noise=noise, K=Kv, noise_ratio=nr, rate=st['rate'], resp_amp_mean=st['resp_amp_mean'],
         nonresp_trial_sd=st['nonresp_trial_sd'], noise_at_bound=bool(noise_at_bound), K_at_bound=bool(K_at_bound),
         converged=converged, iterations=it, q=float(q), amp=amp, center=bool(center), drift=float(drift))
+
+
+# ---------------------------------------------------------------------------
+# the per-pair APL effect split by the number of odors each KC responds to (E74): a pair's cosine
+# similarity is a sum over units, so each condition's similarity splits into the contributions of the
+# units in each odors-per-KC class (classes set per condition), and the APL effect (APL-on distance minus
+# APL-off distance = APL-off similarity minus APL-on similarity) into per-class effects
+OPK_CLASSES = ('0', '1', '2_3', '4_7', '8plus')
+CLASS_TERMS = ('both', 'one', 'neither', 'total')
+
+
+def opk_class_labels(edges=OPK_EDGES) -> List[str]:
+    """Labels of odors-per-KC classes ((lo, hi) inclusive, hi None for no upper limit): '0', '2_3',
+    '8plus', ...; `OPK_CLASSES` for `OPK_EDGES`."""
+    return [f'{lo}' if hi == lo else (f'{lo}plus' if hi is None else f'{lo}_{hi}') for lo, hi in edges]
+
+
+def _ordered_matrix(mat, odors: Optional[Sequence[str]] = None) -> Tuple[np.ndarray, List[str], List[int]]:
+    """(units x odors float array with its columns in `odor_order`, that order, the column positions taken)
+    of a DataFrame (odor labels abbreviated) or an array whose columns are `odors` (default `APL16_ODORS`)."""
+    if isinstance(mat, pd.DataFrame):
+        labels = [odor_abbrev(c) for c in mat.columns]
+        X = mat.to_numpy(dtype=float)
+    else:
+        X = np.asarray(mat, dtype=float)
+        labels = [odor_abbrev(o) for o in (APL16_ODORS if odors is None else odors)]
+    if X.ndim != 2 or X.shape[1] != len(labels) or len(set(labels)) != len(labels):
+        raise ValueError(f'a (units x odors) matrix with {len(labels)} distinct odor columns, not {X.shape}')
+    order = odor_order(labels)
+    idx = [labels.index(o) for o in order]
+    return X[:, idx], order, idx
+
+
+def class_cosine_terms_array(X: np.ndarray, R: np.ndarray, edges=OPK_EDGES) -> np.ndarray:
+    """The core of `class_cosine_terms` on arrays: X (units x odors) values, R (units x odors) bool
+    responders, columns in the order the pairs are wanted in (pairs (i, j), i < j, row-major). Returns
+    (pairs, classes + 1, 4): per pair, each class's contribution to the cosine similarity (the last class
+    all units), split into the terms `CLASS_TERMS`."""
+    X = np.asarray(X, dtype=float)
+    R = np.asarray(R, dtype=bool)
+    n_kc = R.sum(axis=1)
+    XR = np.where(R, X, 0.0)
+    XS = X - XR
+    norms = np.sqrt((X ** 2).sum(axis=0))
+    iu = np.triu_indices(X.shape[1], 1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        den = np.outer(norms, norms)[iu]
+    masks = [(n_kc >= lo) & (n_kc <= (X.shape[1] if hi is None else hi)) for lo, hi in edges]
+    masks.append(np.ones(X.shape[0], dtype=bool))
+    out = np.empty((len(iu[0]), len(masks), len(CLASS_TERMS)))
+    for c, m in enumerate(masks):
+        r, s = XR[m], XS[m]
+        rs = r.T @ s
+        with np.errstate(invalid='ignore', divide='ignore'):
+            out[:, c, 0] = (r.T @ r)[iu] / den
+            out[:, c, 1] = (rs + rs.T)[iu] / den
+            out[:, c, 2] = (s.T @ s)[iu] / den
+    out[:, :, 3] = out[:, :, :3].sum(axis=2)
+    return out
+
+
+def opk_class_shares(resp, edges=OPK_EDGES) -> np.ndarray:
+    """Share of units in each odors-per-KC class of a (units x odors) bool responder matrix."""
+    R = np.asarray(resp.to_numpy() if isinstance(resp, pd.DataFrame) else resp, dtype=bool)
+    n_kc = R.sum(axis=1)
+    return np.array([np.mean((n_kc >= lo) & (n_kc <= (R.shape[1] if hi is None else hi))) for lo, hi in edges])
+
+
+def _class_columns(edges) -> pd.MultiIndex:
+    return pd.MultiIndex.from_product([opk_class_labels(edges) + ['all'], list(CLASS_TERMS)], names=['class', 'term'])
+
+
+def _responders(X: np.ndarray, resp, idx: List[int], order: List[str], thresh: float) -> np.ndarray:
+    """The responders of an `_ordered_matrix` X: X > thresh, or `resp` in X's column order (a DataFrame by its
+    odor labels, an array by the positions `idx` of the matrix it belongs to)."""
+    if resp is None:
+        return X > thresh
+    if isinstance(resp, pd.DataFrame):
+        R = abbrev_columns(resp)[order].to_numpy(dtype=bool)
+    else:
+        R = np.asarray(resp, dtype=bool)[:, idx]
+    if R.shape != X.shape:
+        raise ValueError(f'responders {R.shape} for a matrix {X.shape}')
+    return R
+
+
+def class_cosine_terms(mat, resp=None, *, thresh: float = KC_RESPONSE_Z, edges=OPK_EDGES,
+    odors: Optional[Sequence[str]] = None) -> pd.DataFrame:
+    """Each odor pair's cosine similarity across units split by the units' odors-per-KC class and, within a
+    class, into `cosine_terms`' three terms: both entries responders ('both'), one a responder and the other
+    sub-threshold ('one'), both sub-threshold ('neither'), with their sum ('total'). Each part is that part
+    of the dot product over the product of the two odors' lengths over all units, so the classes' totals add
+    up to the cosine (class 'all', computed over all units).
+
+    Args:
+        mat: (units x odors) values: a DataFrame (odor labels, abbreviated) or an array whose columns are
+            `odors` (default `APL16_ODORS`).
+        resp: (units x odors) responders, in `mat`'s column order (a bool array or DataFrame); default
+            `mat > thresh` (e.g. a model read out as n / (n + K) whose responders are its two-spike entries
+            passes resp=counts >= 2).
+        thresh: the response criterion when `resp` is None.
+        edges: the classes, (lo, hi) inclusive numbers of odors responded to (hi None: no upper limit).
+
+    Returns DataFrame indexed by canonical pairs, columns (class, term) (`opk_class_labels(edges)` + 'all'
+    x `CLASS_TERMS`); NaN for pairs with an odor of zero length.
+    """
+    X, order, idx = _ordered_matrix(mat, odors)
+    R = _responders(X, resp, idx, order, thresh)
+    arr = class_cosine_terms_array(X, R, edges)
+    pl = pair_list(order)
+    return pd.DataFrame(arr.reshape(len(pl), -1), index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']),
+        columns=_class_columns(edges))
+
+
+def apl_effect_by_class(on, off, *, resp_on=None, resp_off=None, thresh_on: float = KC_RESPONSE_Z,
+    thresh_off: float = KC_RESPONSE_Z, edges=OPK_EDGES, odors: Optional[Sequence[str]] = None) -> pd.DataFrame:
+    """The per-pair APL effect split by odors-per-KC class (E74): each condition's `class_cosine_terms`
+    (classes set by that condition's responses), averaged over its recordings, and the effect, APL-off
+    similarity minus APL-on similarity (= APL-on distance minus APL-off distance, as `apl_effect`), per class
+    and term. Class 'all' term 'total' of the effect is `apl_effect` of the two conditions' cosine distances
+    (mean over recordings).
+
+    Args:
+        on, off: each condition's (units x odors) values, or a list of them (recordings; averaged with
+            equal weight, NaN pairs of a recording skipped).
+        resp_on, resp_off: each condition's responders (one per matrix, as `class_cosine_terms`' `resp`), or
+            None for values above `thresh_on` / `thresh_off`.
+        edges, odors: as `class_cosine_terms`.
+
+    Returns DataFrame indexed by canonical pairs, columns (block, class, term), block 'on', 'off' (the
+    similarity contributions) and 'effect' (off minus on); attrs['class_shares'] {'on', 'off'}: the share of
+    units in each class (mean over recordings).
+    """
+    blocks, shares = {}, {}
+    for cond, mats, resps, thresh in (('on', on, resp_on, thresh_on), ('off', off, resp_off, thresh_off)):
+        if isinstance(mats, (list, tuple)):
+            resps = [None] * len(mats) if resps is None else list(resps)
+            if len(resps) != len(mats):
+                raise ValueError(f'{cond}: {len(mats)} matrices but {len(resps)} responder matrices')
+        else:
+            mats, resps = [mats], [resps]
+        arrs, sh, order = [], [], None
+        for m, r in zip(mats, resps):
+            X, o, idx = _ordered_matrix(m, odors)
+            if order is not None and o != order:
+                raise ValueError('the matrices have different odors')
+            order = o
+            R = _responders(X, r, idx, o, thresh)
+            arrs.append(class_cosine_terms_array(X, R, edges))
+            sh.append(opk_class_shares(R, edges))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            a = np.nanmean(np.stack(arrs), axis=0) if len(arrs) > 1 else arrs[0]
+        pl = pair_list(order)
+        blocks[cond] = pd.DataFrame(a.reshape(len(pl), -1), index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']),
+            columns=_class_columns(edges))
+        shares[cond] = pd.Series(np.mean(sh, axis=0), index=opk_class_labels(edges))
+    if not blocks['on'].index.equals(blocks['off'].index):
+        raise ValueError('the two conditions have different odors')
+    blocks['effect'] = blocks['off'] - blocks['on']
+    out = pd.concat(blocks, axis=1, names=['block'])
+    out.attrs['class_shares'] = shares
+    return out
 
 
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,
