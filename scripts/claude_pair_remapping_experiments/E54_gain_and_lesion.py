@@ -168,7 +168,11 @@ def e52_lesions(seeds: List[int]) -> Dict[Tuple[str, int], pd.DataFrame]:
 
 def run_variants(jobs: List[dict], res_dir: Path, out_dir: Path) -> None:
     """Each job: tag, part, model (key), spec (experiment, fit tag, claw_thr, k, gain), gain (the gain to
-    build the base with; None for 1), wiring (matrix or None), wiring_tag, shuffle (group label), seed."""
+    build the base with; None for 1), wiring (matrix or None), wiring_tag, shuffle (group label), seed.
+    Optional keys: gain_gloms (the gained glomeruli; default the eight of E27), wAPLKC_factor (a Series
+    of per-KC multipliers, indexed by KC id, applied to the APL->KC weights on top of the breadth
+    weights; E70's oracle), retune (default True: the somatic threshold re-tuned to 6.8 % by bisection;
+    False keeps the fitted threshold, variant 'fit')."""
     from al_analysis.mb_model import make_fixed_param_kc_simulator
     from E1_apl_knockout import bisect_threshold
     from E3_drive_dependent_gain import per_odor_extras, rate
@@ -236,13 +240,22 @@ def run_variants(jobs: List[dict], res_dir: Path, out_dir: Path) -> None:
         t0 = time.time()
         try:
             initial, wnorm, W, breadth = bouton_base(orn, base_dir, claw_thr=thr, gain=job['gain'],
-                wiring_matrix=job['wiring'], wiring_tag=job['wiring_tag'])
+                gain_gloms=job.get('gain_gloms'), wiring_matrix=job['wiring'], wiring_tag=job['wiring_tag'])
+            wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
+            if job.get('wAPLKC_factor') is not None:
+                f = job['wAPLKC_factor'].reindex(wAPLKC.index.get_level_values(H.KC_ID_LEVEL)).fillna(1.0)
+                wAPLKC = wAPLKC * f.to_numpy()
             sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p_fit, **base_kws(thr), _wPNKC=W,
-                _wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, k), _wKCAPL=wnorm['wKCAPL'],
+                _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
                 _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=p_fit['wKCKC_scale'], kc_kc_tau=TAU)
             t1 = time.time()
-            extra = {kk: p_fit[kk] for kk in SCALE_KEYS}
-            new_thr, thr_f, r_on, s_on = bisect_threshold(sim, p_fit['fixed_thr'], CTRL_FRAC, extra=extra)
+            retune = job.get('retune', True)
+            if retune:
+                extra = {kk: p_fit[kk] for kk in SCALE_KEYS}
+                new_thr, thr_f, r_on, s_on = bisect_threshold(sim, p_fit['fixed_thr'], CTRL_FRAC, extra=extra)
+            else:
+                new_thr, thr_f = p_fit['fixed_thr'], 1.0
+                r_on, s_on = sim(dict(p_fit))
             p_on = dict(p_fit, fixed_thr=float(new_thr))
             r_off, s_off = sim(dict(p_on, wAPLKC_scale=0.0, wAPLPN_scale=0.0))
             for cond, (r_, s_) in (('on', (r_on, s_on)), ('acute_off', (r_off, s_off))):
@@ -250,9 +263,14 @@ def run_variants(jobs: List[dict], res_dir: Path, out_dir: Path) -> None:
                 s_.to_parquet(out_dir / f'{tag}_{cond}_spike_counts.parquet')
             tuned[tag] = dict(p_on, claw_thr=thr, k=k, gain=job['gain'], fit_gain=fit_gain, ref_fit=ftag, ref_experiment=exp,
                 wiring=job['shuffle'], wiring_seed=job['seed'], thr_factor_vs_fit=float(thr_f))
+            if job.get('gain_gloms') is not None:
+                tuned[tag]['gain_glomeruli'] = list(job['gain_gloms'])
+            if job.get('wAPLKC_factor') is not None:
+                fac = job['wAPLKC_factor']
+                tuned[tag]['wAPLKC_factor'] = {str(kc): float(v) for kc, v in fac[fac != 1.0].items()}
             tuned_path.write_text(json.dumps(tuned, indent=1))
-            meta = dict(variant='retuned', tag=tag, part=job['part'], model=job['model'], shuffle=job['shuffle'], seed=job['seed'],
-                base='bouton', target_rate=CTRL_FRAC, claw_thr=thr, k=k, kc_kc_inh=p_fit['wKCKC_scale'], gain=job['gain'],
+            meta = dict(variant='retuned' if retune else 'fit', tag=tag, part=job['part'], model=job['model'], shuffle=job['shuffle'],
+                seed=job['seed'], base='bouton', target_rate=CTRL_FRAC if retune else float(fr['rate_on']), claw_thr=thr, k=k, kc_kc_inh=p_fit['wKCKC_scale'], gain=job['gain'],
                 fit_gain=fit_gain, ref_fit=ftag, ref_experiment=exp, ref_fit_loss=float(fr['loss']), thr_factor_vs_fit=float(thr_f),
                 n_kcs=len(r_on), n_glomeruli=W.shape[1], rate_on=rate(r_on), rate_off=rate(r_off), seconds=time.time() - t1,
                 mean_claws_per_kc=float(kc_by_glomerulus(W).sum(axis='columns').mean()), **p_on)
