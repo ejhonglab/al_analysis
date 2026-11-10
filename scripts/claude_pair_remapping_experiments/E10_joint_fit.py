@@ -95,6 +95,14 @@ fixed (not fitted) KC refractory period and spike-frequency adaptation (`fit_mb_
 kc_refractory_period / kc_adapt_inc / kc_adapt_tau, olfsysm p.kc.refractory_period / adapt_inc /
 adapt_tau) in every simulation of the fit; off by default (the fits as before). Recorded in fits.csv
 (empty when not set); tag prefix refr<ms>_ and adapt<A>t<ms>_ (after the KC-KC prefix).
+Input-scaled threshold (E71): `--kc-thr-input-exp A` multiplies each KC's threshold (fixed_thr + 2 x its
+spontaneous input) by (W / mean W)^A in every simulation of the fit (APL on, APL off, and the jittered runs
+on top of their jitter; optimize_mb_model_params' condition_kc_thr_factors), W the KC's summed PN->claw
+weight in the wiring given (the gain included; without a gain its number of claws; `kc_input_thr_factor`),
+and in the breadth pre-pass (`bouton_base`'s APL-off run, its fixed_thr re-tuned to the factor-free run's
+APL-off response count; `input_scaled_prepass`). Fixed, not fitted; off by default (the fits as before).
+Recorded in fits.csv (kc_thr_input_exp, the pre-pass's threshold factor, the factor's spread) and the
+provenance; tag prefix thrin<A>_ (after the ceiling prefix); refused with --block-proxy.
 """
 from __future__ import annotations
 
@@ -247,10 +255,91 @@ def tune_spike_only_base(orn: pd.DataFrame, claw_thr, spike_base: Dict[str, floa
     return params, info
 
 
+def kc_input_weight(wPNKC: pd.DataFrame) -> pd.Series:
+    """Each KC's summed PN->claw weight in `wPNKC` (claw x bouton, or KC x glomerulus), indexed by KC
+    id: its number of claws where every claw weighs 1, with the glomerulus gain where the wiring carries
+    one."""
+    return kc_by_glomerulus(wPNKC).astype(float).sum(axis='columns')
+
+
+def kc_input_thr_factor(wPNKC: pd.DataFrame, kc_ids, a: float) -> np.ndarray:
+    """The input-scaled threshold factor (E71): (W / mean W)^a per KC, W `kc_input_weight(wPNKC)`, in
+    the order of `kc_ids` (the model's KC order, e.g. its outputs' kc_id level, which is the order of
+    the simulator's `kc_thr_factor`), the mean over those KCs."""
+    W = kc_input_weight(wPNKC).reindex(pd.Index(kc_ids))
+    if W.isna().any():
+        raise ValueError(f'{int(W.isna().sum())} KCs of the model are not in the wiring')
+    w = W.to_numpy(dtype=float)
+    if not (w > 0).all():
+        raise ValueError(f'{int((w <= 0).sum())} KCs without input: their input-scaled threshold is undefined')
+    return (w / w.mean()) ** float(a)
+
+
+PREPASS_THR_BRACKET, PREPASS_THR_STEP = (0.1, 10.0), 1.1
+
+
+def input_scaled_prepass(orn: pd.DataFrame, kws: dict, initial: Dict[str, float], wPNKC: pd.DataFrame,
+    off_spk_ref: pd.DataFrame, a: float, off_path: Path, info: Optional[dict] = None) -> pd.DataFrame:
+    """The breadth pre-pass of `bouton_base` with the input-scaled threshold (E71): the base at its
+    tuned parameters with APL off, each KC's threshold multiplied by `kc_input_thr_factor(wPNKC, ., a)`,
+    and the common threshold (fixed_thr) re-tuned by a factor so that the number of APL-off responses
+    is the factor-free run's (E69's `bisect_factor`, log scale). Simulated with
+    `make_fixed_param_kc_simulator` on `kws` (the base's, with the wiring it was given); its factor-free
+    APL-off run is compared with `off_spk_ref` (the run the breadth otherwise comes from), and the
+    target count is its own. Cached beside `off_path` (prefix kcthrin<a>_, spike counts, responses and
+    a JSON record); returns the spike counts. The record ('kc_thr_input_prepass' in `info`, if passed):
+    the exponent, the threshold factor and the re-tuned fixed_thr, the response counts, the factor's
+    spread, the check against `off_spk_ref`."""
+    import gc
+    name = f'kcthrin{a:g}_' + off_path.name
+    spk_path = off_path.with_name(name)
+    resp_path = spk_path.with_name(name.replace('spike_counts', 'responses'))
+    rec_path = spk_path.with_name(name.replace('_spike_counts.parquet', '.json'))
+    if spk_path.exists() and rec_path.exists():
+        rec = json.loads(rec_path.read_text())
+        print(f'input-scaled pre-pass (a {a:g}) from {spk_path.name}: fixed_thr x{rec["thr_factor"]:.5g}', flush=True)
+    else:
+        from al_analysis.mb_model import make_fixed_param_kc_simulator
+        from E69_kc_firing_ceiling import bisect_factor
+        t0 = time.time()
+        sim, _ = make_fixed_param_kc_simulator(orn, initial_params={k: float(initial[k]) for k in PARAM_KEYS}, **kws)
+        off = dict(wAPLKC_scale=0.0, wAPLPN_scale=0.0)
+        r0, s0 = sim(off)
+        ref = off_spk_ref.astype(float)
+        same_index = bool(ref.index.equals(s0.index))
+        n_mismatch = int((ref.to_numpy() != s0.to_numpy(dtype=float)).sum()) if ref.shape == s0.shape else -1
+        f = kc_input_thr_factor(wPNKC, s0.index.get_level_values(H.KC_ID_LEVEL), a)
+        target_n = int(r0.to_numpy(dtype=float).sum())
+        size = int(r0.size)
+        g, (r, s), hist, at_bound = bisect_factor(
+            lambda x: sim(dict(off, fixed_thr=float(initial['fixed_thr']) * x), kc_thr_factor=f), target_n, size,
+            PREPASS_THR_BRACKET, PREPASS_THR_STEP, f'pre-pass (a {a:g}) threshold factor')
+        s.to_parquet(spk_path)
+        r.to_parquet(resp_path)
+        rec = dict(kc_thr_input_exp=float(a), thr_factor=float(g), fixed_thr=float(initial['fixed_thr']) * float(g),
+            base_fixed_thr=float(initial['fixed_thr']), target_n_responses=target_n, n_responses=int(r.to_numpy(dtype=float).sum()),
+            size=size, at_bound=bool(at_bound), n_sims=len(hist) + 1, factor_min=float(f.min()), factor_max=float(f.max()),
+            factor_cv=float(f.std() / f.mean()), factor_sha256=hashlib.sha256(np.ascontiguousarray(f, dtype='<f8').tobytes()).hexdigest(),
+            ref_index_equal=same_index, ref_n_mismatch=n_mismatch, ref_n_entries=int(ref.size), seconds=time.time() - t0,
+            history=hist)
+        rec_path.write_text(json.dumps(rec, indent=1, default=str) + '\n')
+        del sim
+        gc.collect()
+        print(f'input-scaled pre-pass (a {a:g}): fixed_thr x{g:.5g}, {rec["n_responses"]} APL-off responses (target {target_n}); '
+            f'factor-free run vs the breadth run: {n_mismatch} of {ref.size} counts differ; {rec["seconds"]:.0f}s', flush=True)
+    if not (rec['ref_index_equal'] and rec['ref_n_mismatch'] == 0):
+        raise RuntimeError(f'input-scaled pre-pass (a {a:g}): the simulator\'s factor-free APL-off run does not reproduce '
+            f'the breadth run ({rec["ref_n_mismatch"]} counts differ, index equal {rec["ref_index_equal"]})')
+    if info is not None:
+        info['kc_thr_input_prepass'] = {k: v for k, v in rec.items() if k != 'history'}
+    return pd.read_parquet(spk_path)
+
+
 def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
     gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0, apl_drive: str = 'claws',
     base_params: Optional[str] = None, info: Optional[dict] = None, input_tag: Optional[str] = None,
-    wiring_matrix: Optional[pd.DataFrame] = None, wiring_tag: Optional[str] = None):
+    wiring_matrix: Optional[pd.DataFrame] = None, wiring_tag: Optional[str] = None,
+    kc_thr_input_exp: Optional[float] = None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -278,7 +367,15 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     With `apl_drive='spikes_only'` (E37) `base_params` is likewise the spike-driven base, and
     the returned parameters are the spike-only base re-tuned from it (`tune_spike_only_base`;
     the breadth is unchanged, since the threshold is); the tuning details go into `info`, if
-    passed."""
+    passed.
+
+    With `kc_thr_input_exp` a (not None or 0; the input-scaled threshold experiment, E71), the
+    APL-off run behind the breadth has each KC's threshold multiplied by (W / mean W)^a
+    (`kc_input_thr_factor`, W the KC's summed weight in the returned wiring, gain included) and its
+    common threshold re-tuned to the factor-free run's APL-off response rate (`input_scaled_prepass`,
+    cached beside that run; its record goes into `info['kc_thr_input_prepass']`, if passed): the
+    breadth of the model whose thresholds scale with the input, the APL weights forming on the cell
+    as it is."""
     from al_analysis.mb_model import fit_mb_model
     hal_out = H.shared_dir() / 'data' / 'hal_outputs'
     if claw_thr is None:
@@ -365,6 +462,10 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         off_spk.to_parquet(off_path)
         r_off.to_parquet(off_path.with_name(off_path.name.replace('spike_counts', 'responses')))
         print(f'base APL-off rate {rate(r_off):.4f} (E3 / E19 bases: 0.098)', flush=True)
+    if kc_thr_input_exp is not None and float(kc_thr_input_exp) != 0.0:
+        if apl_drive != 'claws':
+            raise NotImplementedError('kc_thr_input_exp with APL driven by spikes')
+        off_spk = input_scaled_prepass(orn, kws, initial, wPNKC, off_spk, float(kc_thr_input_exp), off_path, info)
     breadth = pd.Series(off_spk.astype(float).sum(axis='columns').to_numpy(),
         index=off_spk.index.get_level_values(H.KC_ID_LEVEL)
     )
@@ -770,7 +871,8 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     aplkc_min: Optional[float] = None, apl_drive: str = 'claws',
     init_params: Optional[str] = None, kc_thr_factors: Optional[np.ndarray] = None,
     init_exact_expect: Optional[dict] = None, kckc_fixed: Optional[float] = None,
-    block_proxy: Optional[dict] = None, kc_spiking: Optional[dict] = None):
+    block_proxy: Optional[dict] = None, kc_spiking: Optional[dict] = None,
+    kc_thr_factor_fixed: Optional[np.ndarray] = None):
     """One joint fit; `kc_thr_factors` (K x KCs, `jitter_factors`) adds the K jittered runs of
     each condition (`jitter_conditions`) to every evaluation; `init_exact_expect` (not None)
     starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True);
@@ -779,7 +881,10 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     condition hook 'proxy' of every evaluation (noise_proxy.make_block_proxy_hook; the simulator's
     olfsysm variables captured with E43's captured_olfsysm_vars); `kc_spiking` (E69: any of
     `fit_mb_model`'s `kc_refractory_period`, `kc_adapt_inc`, `kc_adapt_tau`) is a fixed KC
-    refractory period / adaptation, in every simulation of the fit (not fitted)."""
+    refractory period / adaptation, in every simulation of the fit (not fitted); `kc_thr_factor_fixed`
+    (E71: one factor per KC in the model's KC order, `kc_input_thr_factor`) multiplies each KC's
+    threshold in every condition (the 'on' and 'off' runs, and the jittered runs on top of their
+    jitter), through `optimize_mb_model_params`' condition_kc_thr_factors."""
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
@@ -863,11 +968,20 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         jit = jitter_conditions(len(kc_thr_factors))
         jit_kws['condition_kc_thr_factors'] = {j: kc_thr_factors[int(j.rsplit('jit', 1)[1])] for j, _ in jit}
         overrides.update({j: overrides[c] for j, c in jit})
+    if kc_thr_factor_fixed is not None:
+        # (E71) the fixed per-KC factor in every condition, multiplied into the jittered conditions' factors
+        fx = np.asarray(kc_thr_factor_fixed, dtype=float)
+        ckf = jit_kws.setdefault('condition_kc_thr_factors', {})
+        ckf.update({c: np.asarray(v, dtype=float) * fx for c, v in ckf.items()})
+        ckf.update(on=fx, off=fx)
     hook_kws, ctx = {}, contextlib.nullcontext()
     kc_spiking = dict(kc_spiking or {})
     if block_proxy is not None and kc_spiking:
         # (the proxy replays thresholds on reconstructed drives without the refractory period or adaptation)
         raise NotImplementedError('--block-proxy with --kc-refractory-period / --kc-adapt-inc')
+    if block_proxy is not None and kc_thr_factor_fixed is not None:
+        # (likewise without the input-scaled thresholds)
+        raise NotImplementedError('--block-proxy with --kc-thr-input-exp')
     if block_proxy is not None:
         import noise_proxy
         import E43_model_trial_noise as E43
@@ -1066,6 +1180,9 @@ def main() -> None:
             'p.kc.adapt_inc; not fitted; off by default)')
     ap.add_argument('--kc-adapt-tau', type=float, default=None, metavar='S',
         help='(E69) the adaptation time constant in seconds (olfsysm p.kc.adapt_tau, default 0.2; needs --kc-adapt-inc)')
+    ap.add_argument('--kc-thr-input-exp', type=float, default=None, metavar='A',
+        help='(E71) each KC\'s threshold multiplied by (W / mean W)^A in every condition and in the breadth pre-pass '
+            '(W its summed PN->claw weight in the wiring given, gain included; not fitted; off by default)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -1188,11 +1305,18 @@ def main() -> None:
     if args.wiring_file is not None and args.wiring_tag is None:
         ap.error('--wiring-file needs --wiring-tag')
     wiring_matrix = pd.read_parquet(args.wiring_file) if args.wiring_file else None
+    if args.kc_thr_input_exp is not None and args.block_proxy > 0:
+        ap.error('--kc-thr-input-exp with --block-proxy is not supported')
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
         gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed,
         apl_drive=args.apl_drive, base_params=args.base_params, info=base_info, input_tag=input_tag,
-        wiring_matrix=wiring_matrix, wiring_tag=args.wiring_tag
+        wiring_matrix=wiring_matrix, wiring_tag=args.wiring_tag,
+        **({} if args.kc_thr_input_exp is None else dict(kc_thr_input_exp=args.kc_thr_input_exp))
     )
+    # (E71) the fixed input-scaled threshold factor, in the model's KC order (that of the breadth run), and
+    # the pre-pass's record (kept out of base_info, which describes a spike-only base when it is not empty)
+    prepass_info = base_info.pop('kc_thr_input_prepass', None)
+    thr_in_factor = None if args.kc_thr_input_exp is None else kc_input_thr_factor(wPNKC, breadth.index, args.kc_thr_input_exp)
     wiring_tag = ('' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_') + (
         '' if args.wiring_file is None else f'wiring-{args.wiring_tag}_') + (
         '' if input_tag is None else f'input-{input_tag}_')
@@ -1213,12 +1337,14 @@ def main() -> None:
     kc_tag = ('' if args.kc_refractory_period is None else f'refr{args.kc_refractory_period * 1e3:g}_') + (
         '' if args.kc_adapt_inc is None else f'adapt{args.kc_adapt_inc:.4g}' + (
         '' if args.kc_adapt_tau is None else f't{args.kc_adapt_tau * 1e3:g}') + '_')
+    # (E71) the input-scaled threshold's exponent, in the tag
+    thrin_tag = '' if args.kc_thr_input_exp is None else f'thrin{args.kc_thr_input_exp:g}_'
     loss_tag = f"rho{loss_weights('rho')['on_mat']:g}_" if args.loss == 'rho' else ''
     if args.loss == 'apl':
         loss_tag = (f'apl{args.apl_readout}' + ('pat' if args.apl_pattern_only else '') + ('blk' if args.apl_block_term else '')
             + ('opk' if args.apl_opk_term else '') + '_')
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + kc_tag + proxy_tag + jit_tag
+        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + kc_tag + thrin_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
         jit_factors = jitter_factors(jit_k, len(breadth), jit_sigma, args.jitter_seed, jit_scale)
@@ -1255,7 +1381,7 @@ def main() -> None:
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
             aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
             kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed,
-            block_proxy=proxy, kc_spiking=kc_spiking
+            block_proxy=proxy, kc_spiking=kc_spiking, kc_thr_factor_fixed=thr_in_factor
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -1297,6 +1423,13 @@ def main() -> None:
             # (E69: the fixed KC refractory period / adaptation; empty when not set)
             kc_refractory_period=args.kc_refractory_period, kc_adapt_inc=args.kc_adapt_inc,
             kc_adapt_tau=(args.kc_adapt_tau if args.kc_adapt_inc is not None else None),
+            # (E71: the input-scaled threshold's exponent and its pre-pass; empty when not set)
+            kc_thr_input_exp=args.kc_thr_input_exp,
+            **({f'kc_thr_input_prepass_{kk}': prepass_info[kk] for kk in ('thr_factor', 'fixed_thr', 'n_responses', 'target_n_responses')}
+                if prepass_info else {}),
+            **(dict(kc_thr_input_factor_cv=float(thr_in_factor.std() / thr_in_factor.mean()),
+                kc_thr_input_factor_min=float(thr_in_factor.min()), kc_thr_input_factor_max=float(thr_in_factor.max()))
+                if thr_in_factor is not None else {}),
             **({f'proxy_{kk}': vv for kk, vv in proxy.items()} if proxy is not None else {}),
             **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
                 apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}),
@@ -1365,6 +1498,12 @@ def main() -> None:
             wiring_file=args.wiring_file, wiring_tag=args.wiring_tag,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             kckc_fixed=args.kckc_fixed, base_params=initial, loss_variant=args.loss, kc_spiking=kc_spiking,
+            **(dict(kc_thr_input=dict(exponent=args.kc_thr_input_exp, prepass=prepass_info,
+                factor_sha256=hashlib.sha256(np.ascontiguousarray(thr_in_factor, dtype='<f8').tobytes()).hexdigest(),
+                note=('E71: every simulation (APL on, APL off and any jittered run, whose jitter multiplies it) has each KC\'s '
+                    'threshold (fixed_thr + 2 spont_in) multiplied by (W / mean W)^exponent, W the KC\'s summed PN->claw weight in '
+                    'the wiring given (gain included), mean over the model\'s KCs; the breadth pre-pass likewise, its fixed_thr '
+                    're-tuned to the factor-free pre-pass\'s APL-off response count'))) if thr_in_factor is not None else {}),
             **(dict(block_proxy=dict(proxy, note=('the loss\'s block term on the batched network-aware proxy (noise_proxy.'
                 'make_block_proxy_hook): at every evaluation each condition is simulated once more with the thresholds out of reach '
                 'and once with the voltages saved, every KC\'s drive is reconstructed, and the trials are replayed at the pipeline\'s '

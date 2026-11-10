@@ -146,6 +146,13 @@ simplex vertex that was not the optimum); name E<n>-TAG_ev<EVAL>, response rates
 history row's rate_on / rate_off, no saved outputs to compare with (recorded as missing).
 `--experiment NAME` puts the folders under results/NAME and outputs/NAME instead of E43's (part A in
 a partA subfolder there, parts B / C in partB / partC as above).
+A fit with an input-scaled KC threshold (E71: E10_joint_fit.py --kc-thr-input-exp, recorded in fits.csv as
+kc_thr_input_exp) is rebuilt with it: the breadth from bouton_base's pre-pass at that exponent, and each KC's
+threshold multiplied by the fixed factor (W / mean W)^a in every simulation (the deterministic runs, part A's
+trials, and part B's unjittered thresholds thr0, so the per-trial jitter multiplies the input-scaled
+thresholds). `--save-recording-distances` (off by default) also writes each pseudo-recording's pair distances
+(raw, the cosine distances of its trial means, and noise-corrected) to pairs_recordings_long.csv, so single
+pseudo-recordings can be scored as single recorded flies (E71 part C).
 
 Parts B / C only: `--sigma-from MODEL` skips the calibration and takes the matched sigmas (APL on and
 APL off) of MODEL from an existing noise_levels.json of the same noise (`--sigma-from-dir`; default
@@ -187,7 +194,7 @@ from scipy import stats as sstats
 
 import kc_remapping_harness as H
 import noise_floor_trial_distances as NF
-from E10_joint_fit import TAU, base_kws, bouton_base, breadth_weights, e19_row, read_orn_input
+from E10_joint_fit import TAU, base_kws, bouton_base, breadth_weights, e19_row, kc_input_thr_factor, read_orn_input
 from E26_claw_power import WEAK
 from E27_glomerulus_gain import ORACLE
 
@@ -366,10 +373,11 @@ def summarize(recs: dict, how: str) -> dict:
         recs: {recording: {odor: trials x KCs array}}.
         how: 'graded' or 'thresholded' (NF.transform).
     """
-    floors, pairs = [], []
+    floors, pairs, rec_ids = [], [], []
     for rec, by_odor in recs.items():
         if len(by_odor) < 2:
             continue
+        rec_ids.append(rec)
         with np.errstate(invalid='ignore', divide='ignore'):
             po, pr = NF.analyse(by_odor, how)
         po = po.reset_index()
@@ -385,6 +393,8 @@ def summarize(recs: dict, how: str) -> dict:
         raw=pd.concat([p['raw'] for p in pairs], axis=1).mean(axis=1),
         corrected=pd.concat([p['corrected'] for p in pairs], axis=1).mean(axis=1),
         rec_raw=pd.DataFrame([p['raw'] for p in pairs]).reset_index(drop=True),
+        rec_corrected=pd.DataFrame([p['corrected'] for p in pairs]).reset_index(drop=True),
+        rec_ids=rec_ids,
         per_odor=fl.groupby('odor')[['single_trial_floor', 'trial_mean_floor', 'reliability']].mean().reindex(ODORS),
         n_recordings=len(pairs),
         # (odor, recording) whose noise estimate reached its trial-mean power (signal power clipped
@@ -580,7 +590,8 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         dict: 'orn' (the model's ORN input), 'p_on' (the fitted parameters, wKCKC_scale =
         kc_kc_inh), 'kws' (make_fixed_param_kc_simulator kwargs), 'saved' ({condition: [responses,
         spike counts paths]} of the fit's own outputs, local copy else the shared archive), 'rates'
-        (the row's rate_on, rate_off) and 'info'.
+        (the row's rate_on, rate_off), 'info' and 'kc_thr_factor' (the fixed per-KC threshold factor of a fit with
+        an input-scaled threshold, E71's --kc-thr-input-exp, in the model's KC order; None otherwise).
     """
     experiment, tag = FIT_MODELS[name]
     fit = fit_row(experiment, tag)
@@ -626,8 +637,15 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         p_on['wKCKC_scale'] = float(hr['wKCKC_scale'])
         rates = (float(hr['rate_on']), float(hr['rate_off']))
         source = f'results/{experiment}/history_{tag}.csv evaluation {ev} (base settings from fits.csv row {tag})'
+    # the input-scaled KC threshold (E71), as E10_joint_fit.py's --kc-thr-input-exp recorded it in fits.csv: the
+    # breadth from its pre-pass and the fixed per-KC factor (None for other fits)
+    thr_in = None if _given(fit, 'kc_thr_input_exp') is None else float(fit['kc_thr_input_exp'])
     _, wnorm, W, breadth = bouton_base(orn, out_dir, claw_thr=claw_thr, gain=gain, gain_gloms=gloms or None,
-        wiring=None if wiring is None else str(wiring), wiring_seed=wiring_seed, input_tag=input_tag)
+        wiring=None if wiring is None else str(wiring), wiring_seed=wiring_seed, input_tag=input_tag,
+        **({} if thr_in is None else dict(kc_thr_input_exp=thr_in)))
+    kc_thr_factor = None if thr_in is None else kc_input_thr_factor(W, breadth.index, thr_in)
+    if thr_in is not None:
+        extra.update(kc_thr_input_exp=thr_in)
     kws = dict(base_kws(claw_thr))
     if gain is not None or wiring is not None:
         # (E10_joint_fit passes the wiring only when it differs from the base's)
@@ -656,7 +674,7 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         if theirs is not None and (out_dir / off_name).exists():
             info[f'breadth_run_max_abs_diff_vs_{exp_id(experiment).lower()}'] = float(np.abs(
                 pd.read_parquet(theirs).astype(float).to_numpy() - pd.read_parquet(out_dir / off_name).astype(float).to_numpy()).max())
-    return dict(orn=orn, p_on=p_on, kws=kws, saved=saved, rates=rates, info=info)
+    return dict(orn=orn, p_on=p_on, kws=kws, saved=saved, rates=rates, info=info, kc_thr_factor=kc_thr_factor)
 
 
 class NoisyModel:
@@ -673,6 +691,8 @@ class NoisyModel:
         self.info: dict = {}
         # (models from fits.csv rows: the row's rate_on / rate_off, checked against the deterministic run)
         self.fit_rates = None
+        # (E71) a fixed per-KC threshold factor of the model (the input-scaled threshold), in every simulation
+        self.kc_thr_factor = None
         if name == 'base70':
             r = e19_row(BASE_CLAW_THR, 0.0, 0.0)
             p_on = {k: float(r[k]) for k in PARAM_KEYS}
@@ -687,12 +707,18 @@ class NoisyModel:
             fm = fit_model(name, orn, out_dir)
             orn, p_on, kws, self.saved, self.fit_rates = fm['orn'], fm['p_on'], fm['kws'], fm['saved'], fm['rates']
             self.info.update(fm['info'])
+            self.kc_thr_factor = fm.get('kc_thr_factor')
         else:
             raise ValueError(name)
         self.kws_scalar = {k: v for k, v in kws.items() if not k.startswith('_')}
         store: dict = {}
         with captured_olfsysm_vars(store):
             self.sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p_on, **kws)
+        if self.kc_thr_factor is not None:
+            simulate, factor = self.sim, np.asarray(self.kc_thr_factor, dtype=float)
+            self.sim = lambda params: simulate(params, kc_thr_factor=factor)
+            self.info.update(kc_thr_factor_cv=float(factor.std() / factor.mean()), kc_thr_factor_min=float(factor.min()),
+                kc_thr_factor_max=float(factor.max()))
         self.mp, self.rv = store['mp'], store['rv']
         self.params = {'on': dict(p_on), 'acute_off': dict(p_on, wAPLKC_scale=0.0, wAPLPN_scale=0.0)}
         t = np.asarray(get_time_index(self.mp, self.rv), dtype=float)
@@ -1007,7 +1033,7 @@ def merge_kept(new: pd.DataFrame, path: Path, analysed: set) -> pd.DataFrame:
 
 
 def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir: Path, data: dict, key: str = 'sd',
-        ncol: str = 'noise_sd', extra=None) -> pd.DataFrame:
+        ncol: str = 'noise_sd', extra=None, save_recordings: bool = False) -> pd.DataFrame:
     """The readouts of every model x level (tables written to `res_dir`; models without trial files
     here keep their rows of the existing tables, `merge_kept`).
 
@@ -1016,8 +1042,11 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
         ncol: the noise level's column in the tables ('noise_sd' part A, 'sigma' part B).
         extra: optional function (model, level label, level, condition, trial arrays) -> dict of
             columns added to (or replacing) each stats row (part B: the re-tuned threshold).
+        save_recordings: also write each pseudo-recording's pair distances (raw: cosine of its trial means;
+            corrected: noise-corrected), pairs_recordings_long.csv (E71: single pseudo-recordings scored as single
+            recorded flies); off by default.
     """
-    stats, odor_rows, pair_rows, onoff_rows = [], [], [], []
+    stats, odor_rows, pair_rows, onoff_rows, rec_rows = [], [], [], [], []
     for how in TRANSFORMS:
         for kind in ('raw', 'corrected'):
             st, _ = H.compare_on_off(data[('TNT3c', how)][kind], data[('TNT', how)][kind])
@@ -1108,6 +1137,18 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
                     for col, val in (('transform', how), ('condition', cond), (ncol, float(sd)), ('level', label), ('model', name)):
                         pdf.insert(0, col, val)
                     pair_rows.append(pdf)
+                    if save_recordings:
+                        # (rows of rec_raw / rec_corrected are the pseudo-recordings rec_ids, numbered as their trial
+                        # files; pairs of an odor silent in a recording are missing there)
+                        for kind in ('raw', 'corrected'):
+                            rr = s[f'rec_{kind}'].copy()
+                            rr.index = pd.Index(s['rec_ids'], name='recording')
+                            rr = rr.stack([0, 1]).dropna().rename('distance').reset_index()
+                            rr.columns = ['recording', 'odor_a', 'odor_b', 'distance']
+                            for col, val in (('kind', kind), ('transform', how), ('condition', cond), (ncol, float(sd)),
+                                    ('level', label), ('model', name)):
+                                rr.insert(0, col, val)
+                            rec_rows.append(rr)
                     if how == 'graded':
                         po, dpo = s['per_odor'], d['per_odor']
                         det_spk_o = det[cond][1].mean(axis=0)
@@ -1131,7 +1172,9 @@ def analyse_all(levels_all: dict, n_rec: int, n_tr: int, out_dir: Path, res_dir:
     st.to_csv(res_dir / 'stats_noise.csv', index=False)
     merge_kept(pd.DataFrame(onoff_rows), res_dir / 'onoff_noise.csv', analysed).to_csv(res_dir / 'onoff_noise.csv', index=False)
     for rows, fname in ((pd.DataFrame(odor_rows), 'per_odor_noise.csv'),
-            (pd.concat(pair_rows, ignore_index=True) if pair_rows else pd.DataFrame(), 'pairs_noise_long.csv')):
+            (pd.concat(pair_rows, ignore_index=True) if pair_rows else pd.DataFrame(), 'pairs_noise_long.csv'),
+            *(((pd.concat(rec_rows, ignore_index=True) if rec_rows else pd.DataFrame(), 'pairs_recordings_long.csv'),)
+                if save_recordings else ())):
         rows = merge_kept(rows, res_dir / fname, analysed)
         if len(rows):
             rows.to_csv(res_dir / fname, index=False)
@@ -1378,8 +1421,10 @@ class ExcitabilityModel(NoisyModel):
             pn_pre_sd=pn[:, :, self.pre].std(axis=2).astype(np.float32))
 
     def thr0(self, fixed_thr: float) -> np.ndarray:
-        # (same expression as make_fixed_param_kc_simulator's simulate, so sigma = 0 is exact)
-        return fixed_thr + self.spont_in * 2.0
+        # (same expression as make_fixed_param_kc_simulator's simulate, so sigma = 0 is exact; with the model's fixed
+        # per-KC factor, E71's input-scaled threshold, multiplied in as simulate does, so the jitter composes with it)
+        t = fixed_thr + self.spont_in * 2.0
+        return t if self.kc_thr_factor is None else t * np.asarray(self.kc_thr_factor, dtype=float).reshape(self.spont_in.shape)
 
     def thr_trial(self, fixed_thr: float, sigma: float, xi: np.ndarray):
         """(jittered thresholds, how many were clipped, the factors thr / thr0). 'normal':
@@ -1904,7 +1949,8 @@ def main_b(args) -> None:
     # (again: other processes may have added models to this folder meanwhile)
     levels_all = read_json(levels_path, {})
     data = data_side()
-    st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data, key=B_KEY, ncol=B_KEY, extra=extra)
+    st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data, key=B_KEY, ncol=B_KEY, extra=extra,
+        save_recordings=args.save_recording_distances)
     print_summary(st, res_dir, ncol=B_KEY, extra_cols=('fixed_thr_ratio', 'frac_clipped', 'max_spike_count',
         'spike_share_thr_below_half'))
     if len(st):
@@ -1928,6 +1974,9 @@ def main() -> None:
         help='pseudo-recordings only at the levels with one of these labels (e.g. match_on; part A: match_on match_off lo '
         'hi lo2, parts B / C: match_on match_off lo lo2 ...)')
     ap.add_argument('--n-recordings', type=int, default=10, help='pseudo-recordings per noise level')
+    ap.add_argument('--save-recording-distances', action='store_true',
+        help='(E71) also write each pseudo-recording\'s pair distances, raw and noise-corrected, to pairs_recordings_long.csv '
+        '(off by default)')
     ap.add_argument('--n-trials', type=int, default=3, help='trials per pseudo-recording')
     ap.add_argument('--cal-grid', nargs='+', type=float, default=[25.0, 50.0, 100.0, 200.0, 400.0, 800.0],
         help='noise sds of the calibration grid')
@@ -2061,7 +2110,8 @@ def main() -> None:
             reg = H.data_target(f'{DATA_PREFIX[c]}_{key}')
             if abs(val - reg) > 1e-6:
                 print(f'WARNING: KC data {DATA_PREFIX[c]}_{key} recomputed here {val:.6f}, registry {reg:.6f}', flush=True)
-    st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data)
+    st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data,
+        save_recordings=args.save_recording_distances)
     print_summary(st, res_dir)
     if len(st):
         make_figure(res_dir)
