@@ -336,20 +336,41 @@ PAIRED_KEYS = ('cal_loss', 'cal_mean', 'cal_pattern', 'raw_loss', 'raw_mean', 'r
                'raw_block', 'rate_on', 'ratio', 'rate_rho_on', 'opk_on_dist', 'opk_off_dist')
 
 
+# part G: E69's firing ceiling at the strength its write-up proposes (strength 1, tau 1 s) on P1, P2 and M1, from each
+# draw's part-B optimum; on the real wiring E69's own fit of it
+G_REAL = ('E69_kc_firing_ceiling', 'rate0.068_aplboth_refr3_adapt0.04142t1000_k2')
+G_SUFFIX = 'rate0.068_aplboth_refr3_adapt0.04142t1000_k2_cap3'
+G_DRAWS = [(lab, prefix) for lab, prefix in DRAWS if lab in ('P1', 'P2', 'M1')]
+
+
 def part_c_score(out: Path) -> pd.DataFrame:
     """Part C: per wiring (the real one and P1 to P4), the no-gain 40 Hz base's fit against the breadth-2 family's (part B)
     on the same wiring, every statistic of both and the paired difference (40 Hz minus none); then the two populations of
     those wirings (the mean over wirings of the pair distances per condition) and their difference. Writes
     partC_paired.csv and partC_population.csv; returns the paired table."""
+    return paired_score(out, 'partC', C40_REAL, C40_SUFFIX, C40_DRAWS)
+
+
+def part_g_score(out: Path) -> pd.DataFrame:
+    """Part G: as part C, for the firing ceiling at E69's proposed strength (real wiring: E69's fit; P1, P2, M1: part G's
+    fits) against the breadth-2 family without it on the same wirings ('40' in the column names stands for the
+    variant). Writes partG_paired.csv and partG_population.csv."""
+    return paired_score(out, 'partG', G_REAL, G_SUFFIX, G_DRAWS)
+
+
+def paired_score(out: Path, name: str, real: tuple, suffix: str, draws: Sequence[tuple]) -> pd.DataFrame:
+    """A variant of the breadth-2 family fitted on the real wiring (`real`, (folder, tag)) and on draws (`draws`, tags
+    prefix + `suffix` in this experiment), each paired with part B's fit on the same wiring (see part_c_score); columns
+    *_40 hold the variant's values, *_none the breadth-2 fit's."""
     none = {lab: (folder, tag) for lab, folder, tag in new_fit_members()}
-    c40 = new_fit_members(prefix_tag=C40_SUFFIX, real_folder=C40_REAL[0], real_tag=C40_REAL[1], draws=C40_DRAWS)
+    c40 = new_fit_members(prefix_tag=suffix, real_folder=real[0], real_tag=real[1], draws=draws)
     rows, labels, fits = [], [], {'none': [], '40': []}
     for lab, folder, tag in c40:
         if lab not in none:
             continue
         o40, o0 = load_fit(folder, tag), load_fit(*none[lab])
         if o40 is None or o0 is None:
-            print(f'part C: {lab} has no saved outputs for one of the two fits')
+            print(f'{name}: {lab} has no saved outputs for one of the two fits')
             continue
         r40, r0 = full_row(o40), full_row(o0)
         row = dict(wiring=lab, fit_40=f'{folder}:{tag}', fit_none=':'.join(none[lab]), realism_40=r40['realism_flag'],
@@ -361,7 +382,7 @@ def part_c_score(out: Path) -> pd.DataFrame:
         fits['40'].append(o40)
         fits['none'].append(o0)
     paired = pd.DataFrame(rows)
-    paired.to_csv(out / 'partC_paired.csv', index=False)
+    paired.to_csv(out / f'{name}_paired.csv', index=False)
     pops = []
     if len(labels) >= 2:
         for fam in ('none', '40'):
@@ -370,7 +391,7 @@ def part_c_score(out: Path) -> pd.DataFrame:
         pop = pd.DataFrame(pops)
         diff = {c: pop.loc[1, c] - pop.loc[0, c] for c in pop.columns if c not in ('family', 'members', 'n_wirings')}
         pops.append(dict(family='40 minus none', members=','.join(labels), n_wirings=len(labels), **diff))
-    pd.DataFrame(pops).to_csv(out / 'partC_population.csv', index=False)
+    pd.DataFrame(pops).to_csv(out / f'{name}_population.csv', index=False)
     if len(paired):
         print(paired[['wiring'] + [f'cal_loss_{s}' for s in ('none', '40', 'diff')] + [f'raw_loss_{s}' for s in ('none', '40', 'diff')]
                      + ['realism_40']].round(4).to_string())
@@ -703,7 +724,7 @@ def population_fit(wirings: Sequence[str], held_out: Sequence[str], maxfev: int 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', default='score', choices=['A', 'score', 'C-score', 'D', 'D-check', 'E-score', 'figures'])
+    ap.add_argument('--part', default='score', choices=['A', 'score', 'C-score', 'D', 'D-check', 'E-score', 'G-score', 'figures'])
     ap.add_argument('--maxfev', type=int, default=150)
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
@@ -716,6 +737,8 @@ def main() -> None:
         part_c_score(out)
     elif args.part == 'E-score':
         part_e_score(out)
+    elif args.part == 'G-score':
+        part_g_score(out)
     elif args.part == 'figures':
         figures(out)
     else:
