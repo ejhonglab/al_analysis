@@ -65,13 +65,20 @@ MODEL_SOURCES: Dict[str, Optional[Tuple[str, str]]] = {
     'ref40_68': ('E44_operating_point', 'thr40_gain1.5_rate0.068_k2_cap3'),
     'ref70_68': ('E44_operating_point', 'thr70_gain1.5_rate0.068_k2_cap3'),
     'g125_70_68': ('E45_gain_at_ctrl_frac', 'thr70_gain1.25_rate0.068_k2_cap3'),
+    # E72 part F: the breadth-2 APL-effect fit (C2) and the no-gain 40 Hz fit of the APL-effect fits (E67)
+    'c2_68': ('E67_apl_effect_fits', 'rate0.068_aplcal_k2_cap3'),
+    'nogain40_68': ('E67_apl_effect_fits', 'thr40_rate0.068_aplcal_k2_cap3'),
 }
+# the models E49 itself ran (the default of --models)
+E49_MODELS = ('base70', 'ref40', 'ref40_68', 'ref70_68', 'g125_70_68')
 MODEL_LABELS = {
     'base70': '70 Hz threshold base, tuned at 5 %',
     'ref40': 'the reference model (eight at 1.5, 40 Hz), fitted at 5 %',
     'ref40_68': 'the reference model (eight at 1.5, 40 Hz), fitted at 6.8 %',
     'ref70_68': 'eight at 1.5, 70 Hz, fitted at 6.8 %',
     'g125_70_68': 'eight at 1.25, 70 Hz, fitted at 6.8 %',
+    'c2_68': "the first joint fit's family at breadth 2 (no gain, no per-claw threshold), APL-effect fit at 6.8 %",
+    'nogain40_68': 'no gain, 40 Hz per-claw threshold, APL-effect fit at 6.8 %',
 }
 # the E43 / E48 part B model names whose matched sigma each model uses
 NOISE_SOURCE = {
@@ -80,6 +87,7 @@ NOISE_SOURCE = {
     'ref40_68': ('E48_block_target_noise', 'E44-thr40_gain1.5_rate0.068_k2_cap3'),
     'ref70_68': ('E48_block_target_noise', 'E44-thr70_gain1.5_rate0.068_k2_cap3'),
     'g125_70_68': ('E48_block_target_noise', 'E45-thr70_gain1.25_rate0.068_k2_cap3'),
+    'c2_68': ('E67_apl_effect_fits', 'E67-rate0.068_aplcal_k2_cap3'),
 }
 # Yang's odor (olfdb spelling) -> the ORN spike-delta column that stands in for it
 # (data/yang_weak_odor_kc/orn_input_availability.csv; exact or within one log unit, the stronger
@@ -267,7 +275,10 @@ def noisy_fractions(trials: dict, labels: List[str]) -> Dict[str, pd.DataFrame]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--models', nargs='+', choices=list(MODEL_SOURCES), default=list(MODEL_SOURCES))
+    ap.add_argument('--models', nargs='+', choices=list(MODEL_SOURCES), default=list(E49_MODELS),
+        help='models to run (default: E49\'s five); a model without a matched-noise source runs deterministically only')
+    ap.add_argument('--into', metavar='EXPERIMENT', default=None,
+        help="write results and outputs under <EXPERIMENT>/low_conc/ instead of E49's folders (E72 part F)")
     ap.add_argument('--no-noise', action='store_true', help='part A and C only')
     ap.add_argument('--n-recordings', type=int, default=10)
     ap.add_argument('--n-trials', type=int, default=3)
@@ -277,6 +288,9 @@ def main() -> None:
     args = ap.parse_args()
     if args.local_test:
         res_dir = Path(args.local_test) / 'results'; out_dir = Path(args.local_test) / 'outputs'
+        res_dir.mkdir(parents=True, exist_ok=True); out_dir.mkdir(parents=True, exist_ok=True)
+    elif args.into:
+        res_dir = H.results_dir(args.into) / 'low_conc'; out_dir = H.outputs_dir(args.into) / 'low_conc'
         res_dir.mkdir(parents=True, exist_ok=True); out_dir.mkdir(parents=True, exist_ok=True)
     else:
         res_dir = H.results_dir(EXPERIMENT); out_dir = H.outputs_dir(EXPERIMENT)
@@ -312,7 +326,7 @@ def main() -> None:
         fr = {c: frac_series(det[c][0]) for c in CONDS}
         resp16 = {c: det[c][0].astype(float).iloc[:, :16] for c in CONDS}
         noise = None; nf = None
-        if not args.no_noise:
+        if not args.no_noise and name in NOISE_SOURCE:
             noise = matched_noise(name)
             trials = noisy_trials(m, noise['sigma'], noise['fixed_thr_ratio'], args.n_recordings, args.n_trials, args.seed + len(frac_rows), len(labels))
             np.savez_compressed(out_dir / f'{name}_trials.npz', **trials, sigma=noise['sigma'], fixed_thr_ratio=noise['fixed_thr_ratio'])
