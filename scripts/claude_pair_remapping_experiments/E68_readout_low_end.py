@@ -1503,7 +1503,9 @@ def b_score(args) -> None:
     model when saved); writes the part B tables and figure."""
     res = H.results_dir(EXPERIMENT)
     rows, cal_rows, amp_rows, hist_rows, cal_hist = [], [], [], [], []
-    models = [(k, l, e, t) for k, l, e, t in b_models() if (b_dir() / f'{k}_vm.npz').exists()]
+    # the models as simulated (the APL-effect fits chosen when the simulations ran, from each file's record)
+    keys = [k for k in [m[0] for m in B_MODELS] + ['e67_raw', 'e67_cal'] if (b_dir() / f'{k}_vm.npz').exists()]
+    models = [(k, *(lambda i: (i['label'], i['experiment'], i['tag']))(load_vm(k)['info'])) for k in keys]
     for key, label, exp, tag in models:
         d = load_vm(key)
         n = {c: d[f'{c}_spk'].astype(float) for c in ('on', 'acute_off')}
