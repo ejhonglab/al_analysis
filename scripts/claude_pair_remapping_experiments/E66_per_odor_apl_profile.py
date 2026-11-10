@@ -899,6 +899,105 @@ def part_c(args) -> None:
     write_provenance(res_dir, 'C', args, dict(bases=list(args.c_bases), configs=C_CONFIGS, iters=C_ITERS, factor_bracket=[1 / 64, 64]))
 
 
+PROPERTIES = {'pn_mean_rate': 'mean PN rate of the input', 'pn_n_above_claw_thr': 'glomeruli above the per-claw threshold',
+    'pn_share_gained': 'share of PN drive in the eight gained glomeruli',
+    'off_spike_share_high_breadth': 'share of APL-off spikes in the top 5 % of KCs by breadth',
+    'off_spike_share_top1': "share of APL-off spikes in the odor's top 1 % of KCs", 'frac_on_m1': 'APL-on fraction at multiplier 1',
+    'frac_off': 'APL-off fraction'}
+
+
+def part_s(args) -> None:
+    """Merges parts B and C into the experiment's stats_variants.csv and model_pair_distances_long.csv
+    (read by apl_effect_scores.py and the progress plot) and writes the parts' tables: the loss and its
+    parts under raw counts and the calibrated readout per variant, beside its base; the per-odor
+    multipliers; their Spearman correlations with the odor properties."""
+    res_dir = H.results_dir(EXPERIMENT)
+    st = pd.concat([pd.read_csv(res_dir / f'stats_variants_{s}.csv') for s in ('B', 'C') if (res_dir / f'stats_variants_{s}.csv').exists()],
+        ignore_index=True)
+    st.to_csv(res_dir / 'stats_variants.csv', index=False)
+    pd.concat([pd.read_csv(res_dir / f'model_pair_distances_long_{s}.csv') for s in ('B', 'C')
+        if (res_dir / f'model_pair_distances_long_{s}.csv').exists()], ignore_index=True).to_csv(res_dir / 'model_pair_distances_long.csv', index=False)
+    parts = pd.concat([pd.read_csv(res_dir / f'parts_{s}.csv') for s in ('B', 'C') if (res_dir / f'parts_{s}.csv').exists()], ignore_index=True)
+    V = H.PRIMARY_MODEL_RDM
+    keep = ['tag', 'part', 'model', 'variant', 'rate_on', 'rate_off', 'rate_ratio_off_over_on', 'spearman_rate_on_vs_data',
+        f'{V}__on_spearman', f'{V}__off_spearman', f'{V}__block_fruity_small_iso', f'{V}__on_spearman_resid_vs_vcf_hyp',
+        f'{V}__off_spearman_resid_vs_vcf_hyp', 'multiplier_min', 'multiplier_max', 'apl_kc_factor']
+    wide = parts.pivot_table(index='tag', columns='readout', values=['apl_effect_rmse', 'apl_effect_mean', 'apl_effect_rmse_centered',
+        'apl_effect_per_odor', 'apl_effect_pair_specific', 'apl_effect_spearman', 'apl_effect_share_pearson'])
+    wide.columns = [f'{r}__{k}' for k, r in wide.columns]
+    table = st[[c for c in keep if c in st.columns]].set_index('tag').join(wide)
+    from apl_effect_scores import realism_flag
+    table['realism_flag'] = [realism_flag(r.rate_on, r.rate_off, r.spearman_rate_on_vs_data) for r in table.itertuples()]
+    table.to_csv(res_dir / 'parts_bc_table.csv')
+    mp = res_dir / 'multipliers.csv'
+    corr_rows = []
+    if mp.exists():
+        mu = pd.read_csv(mp)
+        for (base, variant), g in mu.groupby(['base', 'variant']):
+            for prop in PROPERTIES:
+                corr_rows.append(dict(base=base, variant=variant, property=prop,
+                    spearman=H.spearman(np.log(g.multiplier), g[prop]), pearson=corr(np.log(g.multiplier), g[prop])))
+        pd.DataFrame(corr_rows).to_csv(res_dir / 'multiplier_correlates.csv', index=False)
+    write_table_bc(res_dir, table, pd.read_csv(mp) if mp.exists() else None, pd.DataFrame(corr_rows))
+    if mp.exists():
+        figure_multipliers(res_dir, pd.read_csv(mp))
+    print(table.round(3).to_string())
+
+
+def figure_multipliers(res_dir: Path, mu: pd.DataFrame) -> None:
+    """The per-odor APL multipliers of each base, inputs unscaled (open) and scaled to the APL-off
+    fractions (filled), log scale."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    bases = list(dict.fromkeys(mu.base))
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    x = np.arange(len(ODORS))
+    for i, base in enumerate(bases):
+        for v, filled in (('apl', False), ('both', True)):
+            g = mu[(mu.base == base) & (mu.variant == v)].set_index('odor').reindex(ODORS)
+            ax.plot(x + 0.12 * (i - (len(bases) - 1) / 2), g.multiplier, 'o', ms=5, c=f'C{i}',
+                mfc=f'C{i}' if filled else 'none', label=f"{BASES[base]['label']}{', inputs scaled' if filled else ''}")
+    ax.axhline(1, c='0.6', lw=0.8)
+    ax.set_yscale('log')
+    ax.set_xticks(x, ODORS, rotation=60)
+    ax.set_ylabel('APL multiplier that gives the control flies\'\nAPL-on response fraction (× fitted scale)')
+    ax.legend(fontsize=6.5, ncol=2, loc='upper left')
+    fig.tight_layout()
+    fig.savefig(res_dir / 'E66_multipliers.png', dpi=150)
+    plt.close(fig)
+
+
+def write_table_bc(res_dir: Path, table: pd.DataFrame, mu: Optional[pd.DataFrame], corr_df: pd.DataFrame) -> None:
+    V = H.PRIMARY_MODEL_RDM
+    dt = H.data_target
+    L = ['# E66 parts B and C', '', 'Loss and parts: raw counts / calibrated saturating readout (the base\'s parameter). Lower is better '
+         'for the loss and its parts; data floors (resampled recordings): loss 0.039, per-odor part 0.020, pair-specific part 0.021.', '',
+         '| variant | APL-on response rate | APL-off / APL-on | response rate ρ, APL on | loss | mean APL effect | per-odor part | pair-specific part | ρ on the per-pair APL effect | r of shares | ρ on odor-odor distances, APL on / off | block | realism flag |',
+         '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
+    for tag, r in table.iterrows():
+        two = lambda k, spec='.3f': f"{fmt(r.get(f'raw__{k}'), spec)} / {fmt(r.get(f'{CAL_READOUT}__{k}'), spec)}"
+        L.append(f"| {tag} | {fmt(r.rate_on)} | {fmt(r.rate_ratio_off_over_on, '.2f')} | {fmt(r.spearman_rate_on_vs_data, '.2f')} | "
+                 f"{two('apl_effect_rmse')} | {two('apl_effect_mean', '+.3f')} | {two('apl_effect_per_odor')} | {two('apl_effect_pair_specific')} | "
+                 f"{two('apl_effect_spearman', '.2f')} | {two('apl_effect_share_pearson', '.2f')} | {fmt(r[f'{V}__on_spearman'], '.2f')} / "
+                 f"{fmt(r[f'{V}__off_spearman'], '.2f')} | {fmt(r[f'{V}__block_fruity_small_iso'], '+.3f')} | {r.realism_flag or '-'} |")
+    L.append(f"| KC data | {fmt(dt('ctrl_frac'))} | 2.2 | ceiling {fmt(dt('ctrl_rate_rho_ceiling'), '.2f')} | floor 0.039 | {fmt(dt('apl_effect_mean'), '+.3f')} | "
+             f"floor 0.020 | floor 0.021 | ceiling {fmt(dt('apl_effect_rho_ceiling'), '.2f')} | - | ceilings {fmt(dt('ctrl_ceiling'), '.2f')} / "
+             f"{fmt(dt('tnt_ceiling'), '.2f')} | {fmt(dt('block'), '+.3f')} | - |")
+    if mu is not None and len(mu):
+        L += ['', '## Per-odor APL multipliers (×, on the APL->KC and APL->bouton scales)', '',
+              '| base | variant | ' + ' | '.join(ODORS) + ' |', '|---|---|' + '---:|' * len(ODORS)]
+        for (base, variant), g in mu.groupby(['base', 'variant'], sort=False):
+            g = g.set_index('odor').reindex(ODORS)
+            L.append(f'| {base} | {variant} | ' + ' | '.join(f"{m:.2f}{'*' if b else ''}" for m, b in zip(g.multiplier, g.at_bound)) + ' |')
+        L += ['', '(* at the bracket, the fraction not reached)', '', '## Spearman of log multiplier with odor properties', '',
+              '| base | variant | ' + ' | '.join(PROPERTIES.values()) + ' |', '|---|---|' + '---:|' * len(PROPERTIES)]
+        for (base, variant), g in corr_df.groupby(['base', 'variant'], sort=False):
+            g = g.set_index('property').reindex(list(PROPERTIES))
+            L.append(f'| {base} | {variant} | ' + ' | '.join(fmt(x, '+.2f') for x in g.spearman) + ' |')
+    (res_dir / 'comparison_table_bc.md').write_text('\n'.join(L) + '\n')
+
+
 def write_provenance(res_dir: Path, part: str, args, extra: dict) -> None:
     p = res_dir / 'provenance.json'
     prov = json.loads(p.read_text()) if p.exists() else {}
@@ -910,14 +1009,14 @@ def write_provenance(res_dir: Path, part: str, args, extra: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', choices=['A', 'B', 'C'], required=True)
+    ap.add_argument('--part', choices=['A', 'B', 'C', 'S'], required=True, help='S: merge parts B and C and write their tables')
     ap.add_argument('--jobs', type=int, default=8, help='worker processes for parts A and B')
     ap.add_argument('--boot', type=int, default=1000, help='recording resamples for the data\'s shares and floors')
     ap.add_argument('--bases', nargs='+', default=list(BASES), choices=list(BASES), help='part B bases')
     ap.add_argument('--c-bases', nargs='+', default=list(REF_BASES), choices=list(BASES), help='part C bases')
     ap.add_argument('--odors', nargs='+', default=None, help='part B smoke run: only these odors, nothing assembled')
     args = ap.parse_args()
-    {'A': part_a, 'B': part_b, 'C': part_c}[args.part](args)
+    {'A': part_a, 'B': part_b, 'C': part_c, 'S': part_s}[args.part](args)
 
 
 if __name__ == '__main__':
