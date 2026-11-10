@@ -49,6 +49,8 @@ PARAM_COLS = ['tag', 'variant', 'base', 'config', 'kind', 'point', 'part', 'seed
     'apl_drive', 'pn_claw_to_apl', 'apl_inh_divisive', 'bouton_inh_divisive', 'base_params', 'breadth_def', 'apl_kc_factor',
     'arm', 'orn_input', 'multiplier_min', 'multiplier_max', 'multiplier_geomean', 'scale_min', 'scale_max', 'cal_readout_param',
     'init_params', 'aplpn_max', 'aplpn_fixed', 'aplkc_min',
+    'kc_refractory_period', 'kc_adapt_inc', 'kc_adapt_tau', 'adapt_strength', 'apl_factor', 'ref_experiment', 'ref_fit',
+    'max_count_on', 'max_count_off',
     'init_from', 'init_thr', 'loss_variant', 'method', 'maxfev', 'kckc0', 'thr0_factor',
     'n_kcs', 'n_glomeruli', 'rate_on', 'rate_off', 'rate_acute_off', 'rate_homeo_full_off',
     'rate_homeo_data_off', 'error']
