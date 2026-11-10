@@ -359,6 +359,25 @@ def build() -> dict:
         for b, blab in (('0', 'none'), ('1', 'one'), ('2_3', 'two or three'), ('4_7', 'four to seven'), ('8plus', 'eight or more')):
             add(f'{name}_odors_per_kc_{b}', a[f'odors_{b}'], f'KCs, {lab}: fraction of KCs responding (trial mean > 1) to {blab} of the 16 '
                 'odors, mean over recordings', afn, ['kc_trialmeans'])
+    # the realism band on odors per KC (Tom, 2026-11-09): how far a single recorded fly's distribution of the number of
+    # odors each KC responds to is from the other flies' mean (total variation distance over the five bins); a model
+    # whose distance from the flies' mean exceeds the most atypical fly's is outside the band
+    opk_bins = lambda n: np.array([np.mean(n == 0), np.mean(n == 1), np.mean((n >= 2) & (n <= 3)), np.mean((n >= 4) & (n <= 7)),
+        np.mean(n >= 8)])
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        lab = 'control flies' if g == 'TNT3c' else 'APL output blocked (TNT)'
+        per = {}
+        for k, m in H.yang_recording_matrices(g).items():
+            m = H.abbrev_columns(m)[H.APL16_ODORS]
+            per[k] = opk_bins((m.to_numpy(dtype=float) > 1).sum(axis=1))
+        P = pd.DataFrame(per).T
+        loo = [0.5 * float(np.abs(P.loc[k].to_numpy() - P.drop(index=k).mean().to_numpy()).sum()) for k in P.index]
+        ofn = 'data_targets.build (per recording, responders at trial mean > 1; leave-one-out over recordings)'
+        add(f'{name}_odors_per_kc_tv_max', max(loo), f'KCs, {lab}: the largest total variation distance between one recording\'s '
+            'distribution of the number of odors each KC responds to (0, 1, 2-3, 4-7, 8 or more of the 16) and the mean of the other '
+            'recordings: the realism band on odors per KC', ofn, ['kc_trialmeans'])
+        add(f'{name}_odors_per_kc_tv_median', float(np.median(loo)), f'KCs, {lab}: the median of the same leave-one-out distances', ofn,
+            ['kc_trialmeans'])
     add('n_recordings_ctrl', len(recs['TNT3c']), 'control recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     add('n_recordings_tnt', len(recs['TNT']), 'APL output blocked (TNT) recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     return reg

@@ -59,6 +59,11 @@ STAT_KEYS = ('apl_effect_rmse', 'apl_effect_rmse_centered', 'apl_effect_mean', '
 RATE_ON_BAND = (0.045, 0.085)
 RATE_RATIO_BAND = (1.6, 2.9)
 RATE_RHO_MIN = 0.47 - 0.10
+# odors per KC (Tom, 2026-11-09 23:40): the total variation distance between the model's distribution of the number of
+# odors each KC responds to (0, 1, 2-3, 4-7, 8 or more of the 16) and the flies' mean distribution, with APL on against
+# the control flies and with APL off against APL output blocked (TNT), at most the most atypical recorded fly's distance
+# from the other flies' mean (registry ctrl_ / tnt_odors_per_kc_tv_max)
+OPK_BINS = ('0', '1', '2_3', '4_7', '8plus')
 TABLE_GLOBS = ('stats_variants.csv', 'fits.csv', 'stage2_fits.csv', 'wkckc_controls.csv', 'E*_summary.csv', 'comparison.csv')
 BUTTON = re.compile(r'!button\[([^\]]+)\]\(results/apl_effect/matrices/([^)\s]+)\.png\)')
 
@@ -121,7 +126,44 @@ def archive_rates(folder: Path, tag: str) -> Optional[dict]:
     return dict(rate_on=rate(on), rate_off=rate(off), spearman_rate_on_vs_data=np.nan, source='model-output archive')
 
 
-def realism_flag(rate_on, rate_off, rate_rho) -> str:
+def odors_per_kc(responses: pd.DataFrame) -> np.ndarray:
+    """Fractions of KCs responding to 0, 1, 2-3, 4-7 and 8 or more of the odors (`OPK_BINS`), as
+    E10_joint_fit.odors_per_kc."""
+    n = (responses.to_numpy(dtype=float) > 0.5).sum(axis=1)
+    return np.array([np.mean(n == 0), np.mean(n == 1), np.mean((n >= 2) & (n <= 3)), np.mean((n >= 4) & (n <= 7)),
+        np.mean(n >= 8)])
+
+
+_OPK_DATA: Dict[str, np.ndarray] = {}
+
+
+def opk_data(cond: str) -> np.ndarray:
+    """The flies' mean odors-per-KC distribution: control flies for 'on', APL output blocked (TNT) for 'off'."""
+    if cond not in _OPK_DATA:
+        g = 'ctrl' if cond == 'on' else 'tnt'
+        _OPK_DATA[cond] = np.array([H.data_target(f'{g}_odors_per_kc_{b}') for b in OPK_BINS])
+    return _OPK_DATA[cond]
+
+
+def opk_band(cond: str) -> float:
+    return H.data_target(f"{'ctrl' if cond == 'on' else 'tnt'}_odors_per_kc_tv_max")
+
+
+def archive_opk(folder: Path, tag: str) -> dict:
+    """opk_<on|off>_<bin> and opk_<on|off>_tv (total variation distance from the flies' mean distribution) from
+    the model-output archive's response matrices; empty where the archive lacks them."""
+    out = {}
+    for cond, name in (('on', 'on'), ('off', 'acute_off')):
+        p = ARCHIVE / folder.name / f'{tag}_{name}_responses.parquet'
+        if not p.exists():
+            continue
+        d = odors_per_kc(pd.read_parquet(p))
+        out.update({f'opk_{cond}_{b}': float(v) for b, v in zip(OPK_BINS, d)})
+        out[f'opk_{cond}_tv'] = float(0.5 * np.abs(d - opk_data(cond)).sum())
+    return out
+
+
+def realism_flag(rate_on, rate_off, rate_rho, opk_on_tv=np.nan, opk_off_tv=np.nan) -> str:
     """'' when inside every band, else the reasons ('; '-joined)."""
     why = []
     f = lambda x: x is not None and not (isinstance(x, float) and np.isnan(x))
@@ -133,6 +175,9 @@ def realism_flag(rate_on, rate_off, rate_rho) -> str:
             why.append(f'APL-off / APL-on response rate {ratio:.2f} (band {RATE_RATIO_BAND[0]}-{RATE_RATIO_BAND[1]})')
     if f(rate_rho) and float(rate_rho) < RATE_RHO_MIN:
         why.append(f'response rate ρ, APL on, {float(rate_rho):.2f} (below {RATE_RHO_MIN:.2f})')
+    for cond, tv, who in (('on', opk_on_tv, 'APL on'), ('off', opk_off_tv, 'APL off')):
+        if f(tv) and float(tv) > opk_band(cond):
+            why.append(f'odors per KC, {who}, {float(tv):.2f} from the flies (band {opk_band(cond):.2f})')
     return '; '.join(why)
 
 
@@ -154,8 +199,12 @@ def score_all(data: pd.Series) -> pd.DataFrame:
             row = dict(exp=m.group(1), folder=folder.name, tag=tag, **{f'{V}__{k}': v for k, v in st.items()},
                 rate_on=rr.get('rate_on', np.nan), rate_off=rr.get('rate_off', np.nan),
                 spearman_rate_on_vs_data=rr.get('spearman_rate_on_vs_data', np.nan), rate_source=rr.get('source', ''))
-            row['realism_flag'] = realism_flag(row['rate_on'], row['rate_off'], row['spearman_rate_on_vs_data'])
+            row.update(archive_opk(folder, tag))
+            row['realism_flag'] = realism_flag(row['rate_on'], row['rate_off'], row['spearman_rate_on_vs_data'],
+                row.get('opk_on_tv', np.nan), row.get('opk_off_tv', np.nan))
             row['realism'] = 'inside the bands' if not row['realism_flag'] else 'outside: ' + row['realism_flag']
+            if np.isnan(row.get('opk_on_tv', np.nan)) or np.isnan(row.get('opk_off_tv', np.nan)):
+                row['realism'] += ' (odors per KC not scored: no archived responses)'
             rows.append(row)
     return pd.DataFrame(rows)
 
@@ -301,7 +350,8 @@ def main() -> None:
         script='apl_effect_scores.py', host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(),
         al_analysis_commit=commit, statistic='kc_remapping_harness.apl_effect_stats (spike-count cosine; APL on minus acute APL off)',
         data='control flies (TNT3c) minus APL output blocked (TNT), cosine, mean over recordings (harness.yang_mean_rdm)',
-        realism_bands=dict(rate_on=RATE_ON_BAND, rate_ratio_off_over_on=RATE_RATIO_BAND, rate_rho_min=RATE_RHO_MIN),
+        realism_bands=dict(rate_on=RATE_ON_BAND, rate_ratio_off_over_on=RATE_RATIO_BAND, rate_rho_min=RATE_RHO_MIN,
+            odors_per_kc_tv_max=dict(on=opk_band('on'), off=opk_band('off'))),
         figures=made, template=str(TEMPLATE.relative_to(H.REPO)), template_sha256=_sha(TEMPLATE)), indent=1, ensure_ascii=False) + '\n')
     print(f'-> {OUT} ({len(made)} figures)', flush=True)
 

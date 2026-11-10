@@ -1177,8 +1177,13 @@ So:
   model is flagged when its APL-on response rate is outside 0.045 to 0.085 (the control flies' 0.068;
   the models are tuned at 0.05 or 0.068), its APL-off / APL-on response rate ratio outside 1.6 to 2.9
   (the data's 2.2, 90 % interval 1.9 to 2.5 over recordings; a ratio, so that models tuned at 5 % are
-  judged by the same proportion), or its response rate ρ with APL on more than 0.10 below the reference
-  model's (0.47). `apl_effect_scores.py` writes the flags (`realism_flag` in results/apl_effect/
+  judged by the same proportion), its response rate ρ with APL on more than 0.10 below the reference
+  model's (0.47), or its distribution of the number of odors each KC responds to (0, 1, 2-3, 4-7, 8 or
+  more of the 16; Tom, 2026-11-09 23:40) further from the flies' mean distribution than the most atypical
+  recorded fly is from the other flies' (total variation distance; with APL on against the control
+  flies, band 0.17, and with APL off against APL output blocked (TNT), band 0.20; registry
+  ctrl_ / tnt_odors_per_kc_tv_max; read from the model-output archive's response matrices, so a variant
+  is scored on it once archived). `apl_effect_scores.py` writes the flags (`realism_flag` in results/apl_effect/
   by_variant.csv). Tom asked to be told when experiments start to diverge from biological realism: a
   host whose result is flagged (or whose experiment's best variant on the APL-effect loss is) says so in
   chat.md, starting "Realism flag:", and in its next reply to Tom, with the numbers beside the data's;

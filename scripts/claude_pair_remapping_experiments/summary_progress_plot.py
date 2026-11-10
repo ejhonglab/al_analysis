@@ -216,11 +216,12 @@ def merge_apl_effect(folder: Path, df: pd.DataFrame) -> pd.DataFrame:
     ae = ae[ae.folder == folder.name]
     if ae.empty:
         return df
-    ae = ae[['tag'] + _APL_EFFECT_COLS + ['rate_on', 'rate_off']].copy()
+    opk = [c for c in ('opk_on_tv', 'opk_off_tv') if c in ae.columns]
+    ae = ae[['tag'] + _APL_EFFECT_COLS + opk + ['rate_on', 'rate_off']].copy()
     ae['tag'] = ae['tag'].astype(str)
     if df.empty:
         return ae
-    df = df.drop(columns=[c for c in _APL_EFFECT_COLS if c in df.columns]).merge(ae[['tag'] + _APL_EFFECT_COLS], on='tag', how='left')
+    df = df.drop(columns=[c for c in _APL_EFFECT_COLS + opk if c in df.columns]).merge(ae[['tag'] + _APL_EFFECT_COLS + opk], on='tag', how='left')
     extra = ae[~ae.tag.isin(set(df.tag))]
     return pd.concat([df, extra], ignore_index=True, sort=False) if len(extra) else df
 
@@ -258,7 +259,8 @@ REALISM_METRICS = {'apl_loss', 'apl_rho'}
 
 def realistic(df: pd.DataFrame) -> pd.DataFrame:
     """The rows inside the realism bands: APL-on response rate and the APL-off / APL-on ratio in
-    their bands, and the APL-on response rate ρ not below its minimum where recorded."""
+    their bands, the APL-on response rate ρ not below its minimum, and the odors-per-KC distributions with
+    APL on and off within their distance of the flies' (the last two where recorded)."""
     from apl_effect_scores import RATE_ON_BAND, RATE_RATIO_BAND, RATE_RHO_MIN
     if not {'rate_on', 'rate_off'} <= set(df.columns):
         return df.iloc[0:0]
@@ -267,6 +269,12 @@ def realistic(df: pd.DataFrame) -> pd.DataFrame:
     if 'spearman_rate_on_vs_data' in df.columns:
         rr = pd.to_numeric(df['spearman_rate_on_vs_data'], errors='coerce')
         ok &= rr.isna() | (rr >= RATE_RHO_MIN)
+    from apl_effect_scores import opk_band
+    for cond in ('on', 'off'):
+        col = f'opk_{cond}_tv'
+        if col in df.columns:
+            tv = pd.to_numeric(df[col], errors='coerce')
+            ok &= tv.isna() | (tv <= opk_band(cond))
     return df[ok]
 
 
