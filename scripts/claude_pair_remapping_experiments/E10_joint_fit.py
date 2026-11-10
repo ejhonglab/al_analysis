@@ -410,20 +410,29 @@ RHO_WEIGHTS = dict(on_mat=4.0, off_mat=4.0, block=0.0, iso=0.0, wt_dev=0.0, vcf_
 # under E65's calibrated readout, `--apl-readout`), the operating point, the rate ratio and the per-odor rate
 # terms as constraints with walls, the two matrix terms held at 1, block / monotonicity / structure reported
 APL_READOUTS = ('raw', 'cal', 'both')
+APL_WEIGHTS = dict(apl=2.0, apl_raw=1.0, apl_cal=1.0, on_mat=1.0, off_mat=1.0, block=0.0, iso=0.0, wt_dev=0.0, vcf_off=0.0,
+    excess_on=0.0, rate_on=1.0, ratio=1.0, po_on=0.5, po_off=0.5, ratio_wall=1.0, po_wall=1.0, apl_block=1.0, opk=1.0)
+# the walls: the APL-off / APL-on response-rate ratio outside the data's 90 % interval, and the APL-on per-odor
+# response rate rho below 0.37 (the realism band: 0.10 below the reference model's 0.47), each squared over its scale
+RATIO_WALL_SCALE, PO_WALL, PO_WALL_SCALE = 0.05, 0.37, 0.05
+OPK_BINS = ('0', '1', '2_3', '4_7', '8plus')
+OPK_SCALE = 0.15
 LOSS_VARIANTS = ('base', 'structure', 'rho', 'apl')
 
 
 def loss_weights(variant: str) -> dict:
     """The term weights of a loss variant: 'base' (E10), 'structure' (E25: the structure terms added),
     'rho' (E63: the structure statistics computed, the two matrix terms at 4, block / monotonicity / structure
-    at 0)."""
+    at 0), 'apl' (E67: the APL-effect term first, `APL_WEIGHTS`)."""
     if variant not in LOSS_VARIANTS:
         raise ValueError(f'{variant=} not in {LOSS_VARIANTS}')
     w = dict(LOSS_WEIGHTS)
-    if variant in ('structure', 'rho'):
+    if variant in ('structure', 'rho', 'apl'):
         w.update(STRUCTURE_WEIGHTS)
     if variant == 'rho':
         w.update(RHO_WEIGHTS)
+    if variant == 'apl':
+        w.update(APL_WEIGHTS)
     return w
 # data: structure beyond the ORN input vs wild-type somata (APL on), natural-source alignment
 # of the APL-off residual, and block excess - other excess (APL on)
@@ -475,6 +484,42 @@ def matched_noise(experiment: str, tag: str) -> dict:
     return dict(v, source=f'{src}:{name}')
 
 
+def odors_per_kc(responses: pd.DataFrame) -> np.ndarray:
+    """Fractions of KCs responding to 0, 1, 2-3, 4-7 and 8 or more of the odors (`OPK_BINS`)."""
+    n = (responses.to_numpy(dtype=float) > 0.5).sum(axis=1)
+    return np.array([np.mean(n == 0), np.mean(n == 1), np.mean((n >= 2) & (n <= 3)), np.mean((n >= 4) & (n <= 7)),
+        np.mean(n >= 8)])
+
+
+def apl_effect_terms(on: pd.Series, off: pd.Series, s_on: pd.DataFrame, s_off: pd.DataFrame,
+    data: pd.Series, cal_target: float) -> Dict[str, float]:
+    """The APL-effect statistics of one model (E67) under raw spike counts (`on`, `off`: its cosine
+    distances) and under E65's calibrated saturating readout (K set on `s_on` so that the participation
+    ratio among responders, under 2 spikes zeroed, is `cal_target`, then applied to both conditions):
+    apl_<raw|cal>_<rmse, mean, pattern, per_odor, pair_specific, rho> (`apl_effect_decomposition`), apl_cal_K,
+    apl_cal_K_at_bound (1 if the calibration missed its target by more than 2 %), block_cal (the block on the
+    calibrated distances), mean_dist_cal_on / _off."""
+    out = {}
+    K = H.calibrate_readout(s_on, 'saturating', cal_target, stat='participation_ratio', responders_min=2.0)
+    got = H.readout_stat(s_on, 'saturating', K, 'participation_ratio', 2.0)
+    d_on = H.readout_pair_distances(s_on, 'saturating', K)
+    d_off = H.readout_pair_distances(s_off, 'saturating', K)
+    for name, (a, b) in (('raw', (on, off)), ('cal', (d_on, d_off))):
+        dec, _ = H.apl_effect_decomposition(a, b, data)
+        out.update({f'apl_{name}_rmse': dec['apl_effect_rmse'], f'apl_{name}_mean': dec['apl_effect_mean'],
+            f'apl_{name}_pattern': dec['apl_effect_rmse_centered'], f'apl_{name}_per_odor': dec['apl_effect_per_odor'],
+            f'apl_{name}_pair_specific': dec['apl_effect_pair_specific'], f'apl_{name}_rho': dec['apl_effect_spearman']})
+    out['apl_cal_K'] = float(K)
+    out['apl_cal_K_at_bound'] = float(abs(got - cal_target) > 0.02 * cal_target)
+    try:
+        st, _ = H.compare_on_off(d_on, d_off)
+        out['block_cal'] = float(st['block_fruity_small_iso'])
+    except Exception:
+        out['block_cal'] = np.nan
+    out['mean_dist_cal_on'], out['mean_dist_cal_off'] = float(d_on.mean()), float(d_off.mean())
+    return out
+
+
 def trial_mean(runs: list) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """(responses, spike counts) averaged over runs [(responses, spike_counts), ...]: responses
     become the fraction of runs in which each KC responded to each odor."""
@@ -487,7 +532,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     drive: pd.Series, ref: Optional[pd.DataFrame] = None, structure: bool = False,
     rate_target: float = RATE_TARGET, block_target: float = BLOCK_TARGET, jitter_k: int = 0,
     jitter_terms: str = 'block', jitter_trials: Optional[int] = None, proxy: Optional[dict] = None,
-    variant: Optional[str] = None):
+    variant: Optional[str] = None, apl_readout: str = 'cal', apl_pattern_only: bool = False,
+    apl_block_term: bool = False, apl_opk_term: bool = False):
     """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). `variant` names the
     weight set (`loss_weights`; default 'structure' with `structure=True`, else 'base'); 'rho' (E63) computes
     the structure statistics but weights only the two matrix terms, the rates, the operating point and the
@@ -496,6 +542,18 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     network-aware proxy's trial spike counts per condition, and the block term is computed on their
     pipeline statistics (noise_proxy.pipeline_pairs) instead of the deterministic distances; the
     other terms stay deterministic. The proxy's block, floors and rates are returned as proxy_*.
+
+    Variant 'apl' (E67; needs `structure=True`, whose statistics are reported): the APL-effect term, the
+    APL-effect loss over its floor (the registry's apl_effect_rmse_floor), at weight 2 under `apl_readout`
+    'raw' (cosine on raw spike counts) or 'cal' (E65's saturating readout, its K re-calibrated at every
+    evaluation on the APL-on counts to the control flies' responders-only participation ratio, applied
+    unchanged to APL off), or 'both' (the two at weight 1 each); `apl_pattern_only` uses the pattern part
+    (both means removed) instead of the loss; walls on the rate ratio (outside the data's 90 % interval,
+    ((excess) / RATIO_WALL_SCALE)^2) and on the APL-on per-odor response rate ρ (below PO_WALL); optional
+    terms `apl_block_term` (the block on the calibrated distances toward the block target, as the block
+    term) and `apl_opk_term` (the number of odors per KC with APL off: half the summed absolute difference
+    from the data's shares, over OPK_SCALE, squared). Every evaluation records `apl_effect_terms` under
+    both readouts and the APL-off odors-per-KC shares (opk_off_<bin>, opk_off_dist).
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
     with APL on (rank agreement of the KC residual from a linear ORN prediction with the
@@ -527,8 +585,21 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         variant = 'structure' if structure else 'base'
     if variant == 'rho' and not structure:
         raise ValueError("variant='rho' needs structure=True (its statistics are reported)")
-    if variant == 'apl':
-        raise NotImplementedError('--loss apl (E67): interface only so far')
+    apl = variant == 'apl'
+    if apl:
+        if not structure:
+            raise ValueError("variant='apl' needs structure=True (its statistics are reported)")
+        if jitter_k or proxy is not None:
+            raise ValueError("variant='apl' is deterministic only (no jitter_k, no proxy)")
+        if apl_readout not in APL_READOUTS:
+            raise ValueError(f'{apl_readout=} not in {APL_READOUTS}')
+        apl_floor = H.data_target('apl_effect_rmse_floor')
+        apl_data = H.yang_apl_effect()
+        cal_target = H.data_target('ctrl_participation_ratio_resp')
+        ratio_lo, ratio_hi = H.data_target_ci('rate_ratio_fraction')
+        opk_data = np.array([H.data_target(f'tnt_odors_per_kc_{b}') for b in OPK_BINS])
+    elif apl_pattern_only or apl_block_term or apl_opk_term or apl_readout != 'cal':
+        raise ValueError('the apl_* options need variant=apl')
     weights = loss_weights(variant)
     ctrl = data['raw']['TNT3c']
     tnt = data['raw']['TNT']
@@ -614,9 +685,31 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
             terms['vcf_off'] = max(0.0, VCF_OFF_TARGET - np.nan_to_num(out['vcf_off'], nan=0.0)) / VCF_OFF_TARGET
             terms['excess_on'] = ((out['excess_on_block'] - out['excess_on_other'] - EXCESS_DIFF_TARGET)
                 / EXCESS_DIFF_SCALE) ** 2
+        if apl:
+            out.update(apl_effect_terms(on, off, s_on, s_off, apl_data, cal_target))
+            opk = odors_per_kc(r_off)
+            out.update({f'opk_off_{b}': float(v) for b, v in zip(OPK_BINS, opk)})
+            out['opk_off_dist'] = float(0.5 * np.abs(opk - opk_data).sum())
+            part = 'pattern' if apl_pattern_only else 'rmse'
+            if apl_readout == 'both':
+                terms['apl_raw'] = out[f'apl_raw_{part}'] / apl_floor
+                terms['apl_cal'] = out[f'apl_cal_{part}'] / apl_floor
+            else:
+                terms['apl'] = out[f'apl_{apl_readout}_{part}'] / apl_floor
+            excess = max(0.0, ratio_lo - out['ratio'], out['ratio'] - ratio_hi)
+            terms['ratio_wall'] = (excess / RATIO_WALL_SCALE) ** 2
+            terms['po_wall'] = (max(0.0, PO_WALL - np.nan_to_num(out['po_on_spearman'], nan=0.0)) / PO_WALL_SCALE) ** 2
+            if apl_block_term:
+                terms['apl_block'] = ((np.nan_to_num(out['block_cal'], nan=-0.2) - block_target) / BLOCK_SCALE) ** 2
+            if apl_opk_term:
+                terms['opk'] = (out['opk_off_dist'] / OPK_SCALE) ** 2
         return out, terms
 
     loss_fn.ratio_target = ratio_target
+    loss_fn.apl = (dict(readout=apl_readout, pattern_only=bool(apl_pattern_only), block_term=bool(apl_block_term),
+        opk_term=bool(apl_opk_term), floor=apl_floor, cal_target=cal_target, ratio_wall=[ratio_lo, ratio_hi],
+        ratio_wall_scale=RATIO_WALL_SCALE, po_wall=PO_WALL, po_wall_scale=PO_WALL_SCALE, opk_data=dict(zip(OPK_BINS, opk_data.tolist())),
+        opk_scale=OPK_SCALE) if apl else None)
     loss_fn.rate_target = float(rate_target)
     loss_fn.block_target = float(block_target)
     return loss_fn
@@ -1052,9 +1145,18 @@ def main() -> None:
             thr_ratio=p_ratio, thr_ratio_source=p_ratio_src, n_recordings=int(args.proxy_recordings),
             n_trials=int(args.proxy_trials), seed=int(args.proxy_seed), n_spikes_for_response=2)
         proxy_tag = f'proxyP{proxy["passes"]}' + ('r' if proxy['relax'] else '') + '_'
-    loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss in ('structure', 'rho')), variant=args.loss,
+    if args.loss != 'apl' and (args.apl_pattern_only or args.apl_block_term or args.apl_opk_term):
+        ap.error('--apl-pattern-only / --apl-block-term / --apl-opk-term need --loss apl')
+    loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss in ('structure', 'rho', 'apl')), variant=args.loss,
         rate_target=rate_target, block_target=block_target, jitter_k=jit_k, jitter_terms=args.jitter_terms,
-        jitter_trials=args.jitter_trials, proxy=proxy)
+        jitter_trials=args.jitter_trials, proxy=proxy,
+        **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
+            apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}))
+    if loss_fn.apl is not None:
+        print(f"APL-effect loss: readout {args.apl_readout}{', pattern part only' if args.apl_pattern_only else ''}"
+            f"{', block under the readout' if args.apl_block_term else ''}{', odors per KC with APL off' if args.apl_opk_term else ''}; "
+            f"floor {loss_fn.apl['floor']:.4f}, calibration target {loss_fn.apl['cal_target']:.4f}, ratio wall "
+            f"{loss_fn.apl['ratio_wall'][0]:.2f}-{loss_fn.apl['ratio_wall'][1]:.2f}", flush=True)
     if proxy is not None:
         print(f"block term on the proxy: {proxy['passes']} passes{' with relaxation' if proxy['relax'] else ''}, sigma "
             f"{proxy['sigma']:g} ({proxy['sigma_source']}), threshold ratio {proxy['thr_ratio']:.4f} ({proxy['thr_ratio_source']}), "
@@ -1084,6 +1186,9 @@ def main() -> None:
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
     kckc_tag = '' if args.kckc_fixed is None else f'kckc{args.kckc_fixed:g}_'
     loss_tag = f"rho{loss_weights('rho')['on_mat']:g}_" if args.loss == 'rho' else ''
+    if args.loss == 'apl':
+        loss_tag = (f'apl{args.apl_readout}' + ('pat' if args.apl_pattern_only else '') + ('blk' if args.apl_block_term else '')
+            + ('opk' if args.apl_opk_term else '') + '_')
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
@@ -1162,6 +1267,8 @@ def main() -> None:
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             kckc_fixed=args.kckc_fixed,
             **({f'proxy_{kk}': vv for kk, vv in proxy.items()} if proxy is not None else {}),
+            **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
+                apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}),
             fixed_thr=p['fixed_thr'], thr_factor=p['fixed_thr'] / initial['fixed_thr'],
             wAPLKC_scale=p['wAPLKC_scale'], wKCAPL_scale=p['wKCAPL_scale'],
             wAPLPN_scale=p['wAPLPN_scale'], wPNAPL_scale=p['wPNAPL_scale'],
@@ -1209,7 +1316,12 @@ def main() -> None:
             f"{row['on_excess_block']:+.3f}/{row['on_excess_other_between']:+.3f}; per-odor rates "
             f"{row['spearman_rate_on_vs_data']:.2f}/{row['spearman_rate_off_vs_data']:.2f}"
             + (f"; jittered (trial mean of {jit_k}) block {res['losses']['jit_block']:+.3f}, rates on "
-            f"{res['losses']['jit_rate_on']:.4f} off {res['losses']['jit_rate_off']:.4f}" if jit_k > 0 else ''),
+            f"{res['losses']['jit_rate_on']:.4f} off {res['losses']['jit_rate_off']:.4f}" if jit_k > 0 else '')
+            + (f"; APL-effect loss raw {res['losses']['apl_raw_rmse']:.3f} (mean {res['losses']['apl_raw_mean']:+.3f}, pattern "
+            f"{res['losses']['apl_raw_pattern']:.3f}), calibrated {res['losses']['apl_cal_rmse']:.3f} (mean "
+            f"{res['losses']['apl_cal_mean']:+.3f}, pattern {res['losses']['apl_cal_pattern']:.3f}, K {res['losses']['apl_cal_K']:.2f}); "
+            f"block calibrated {res['losses']['block_cal']:+.3f}; odors per KC off distance {res['losses']['opk_off_dist']:.3f}"
+            if args.loss == 'apl' else ''),
             flush=True
         )
         prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'),
@@ -1236,7 +1348,11 @@ def main() -> None:
             ratio_log_scale=RATIO_LOG_SCALE, iso_target=ISO_TARGET, iso_scale=ISO_SCALE,
             **(dict(wt_dev_target=WT_DEV_TARGET, vcf_off_target=VCF_OFF_TARGET,
                 excess_diff_target=EXCESS_DIFF_TARGET, excess_diff_scale=EXCESS_DIFF_SCALE)
-                if args.loss in ('structure', 'rho') else {}),
+                if args.loss in ('structure', 'rho', 'apl') else {}),
+            **(dict(apl_loss=dict(loss_fn.apl, note=('E67: the APL-effect term is the APL-effect loss (or its pattern part) over its '
+                'floor, on raw spike counts (cosine) or under the saturating readout n / (n + K), K re-calibrated at every evaluation '
+                '(kc_remapping_harness.calibrate_readout, responders_min 2) on the APL-on counts and applied unchanged to APL off; the '
+                'data side is the graded effect (yang_apl_effect); walls as in E10_joint_fit.APL_WEIGHTS'))) if loss_fn.apl is not None else {}),
             data_targets_sha256=hashlib.sha256(H.data_targets_path().read_bytes()).hexdigest(),
             tau=TAU, bounds={kk: list(vv) for kk, vv in bounds.items()}, initial=init,
             # (the seed fit and the start mode, so a chained fit's start is explained: see

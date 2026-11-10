@@ -308,6 +308,24 @@ def build() -> dict:
     add('rho_remy_soma_claw', ag['rho_remy_soma_claw'], "ρ on odor-odor distances, Remy's wild-type KC somata vs Remy's KC claws (66 pairs)", agfn, ['ref66'])
     add('rho_remy_soma_soma_2022', ag['rho_remy_soma_soma_2022'], "ρ on odor-odor distances, Remy's 18-fly KC somata vs the 2022 4-fly somata (66 pairs)", agfn, ['ref66'])
     add('rho_ctrl_tnt_66', ag['rho_ctrl_tnt_66'], 'ρ on odor-odor distances between the two Yang KC matrices on the 66 shared pairs', agfn, ['kc_rdms', 'ref66'])
+    # how concentrated each odor's response vector is, and how many odors each KC responds to (the compressive
+    # readout experiment's part A, E65): the calibration targets of its readouts and of the APL-effect fits (E67)
+    from E65_spike_count_readout import part_a
+    _, amp, _ = part_a()
+    afn = 'E65_spike_count_readout.part_a (per recording over the 16 odors, mean over recordings)'
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        lab = 'control flies' if g == 'TNT3c' else 'APL output blocked (TNT)'
+        a = amp.loc[g]
+        add(f'{name}_participation_ratio_resp', a['participation_ratio_resp'], f'KCs, {lab}: participation ratio of each odor\'s response '
+            'vector across KCs, (sum x^2)^2 / (n sum x^4), on responders only (trial means <= 1 set to 0), mean over odors and recordings', afn, ['kc_trialmeans'])
+        add(f'{name}_participation_ratio_all', a['participation_ratio_all'], f'KCs, {lab}: the same participation ratio on all values', afn, ['kc_trialmeans'])
+        add(f'{name}_top1_share_resp', a['top1_share_resp'], f'KCs, {lab}: share of each odor\'s squared response vector carried by the top 1 % '
+            'of KCs, responders only', afn, ['kc_trialmeans'])
+        add(f'{name}_resp_amp_cv', a['resp_amp_cv'], f'KCs, {lab}: coefficient of variation of the responders\' trial-mean amplitudes '
+            '(z > 1), pooled over odors per recording, mean over recordings', afn, ['kc_trialmeans'])
+        for b, blab in (('0', 'none'), ('1', 'one'), ('2_3', 'two or three'), ('4_7', 'four to seven'), ('8plus', 'eight or more')):
+            add(f'{name}_odors_per_kc_{b}', a[f'odors_{b}'], f'KCs, {lab}: fraction of KCs responding (trial mean > 1) to {blab} of the 16 '
+                'odors, mean over recordings', afn, ['kc_trialmeans'])
     add('n_recordings_ctrl', len(recs['TNT3c']), 'control recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     add('n_recordings_tnt', len(recs['TNT']), 'APL output blocked (TNT) recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     return reg

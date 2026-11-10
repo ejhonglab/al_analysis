@@ -157,6 +157,19 @@ def data_target(name: str) -> float:
     return float(_DATA_TARGETS[name]['value'])
 
 
+def data_target_ci(name: str) -> Tuple[float, float]:
+    """The 90 % interval (lo, hi) of a data-target registry entry that has one (`data_target`).
+
+    Raises:
+        KeyError: `name` is not in the registry, or has no interval.
+    """
+    data_target(name)
+    ci = _DATA_TARGETS[name].get('ci')
+    if ci is None:
+        raise KeyError(f'{name!r} has no interval in the data-target registry')
+    return float(ci[0]), float(ci[1])
+
+
 # ---------------------------------------------------------------------------
 # odors and pairs
 def odor_abbrev(odor) -> str:
