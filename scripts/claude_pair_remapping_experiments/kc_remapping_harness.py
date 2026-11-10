@@ -1459,24 +1459,38 @@ def kc_noise_floor(n_sd: float = 2.0) -> float:
 
 # ---------------------------------------------------------------------------
 # the recordings' per-KC normalization on the model's side (E73): Yang's values appear to be each
-# KC's fluorescence z-scored over its whole recording, so a KC's response is relative to its own
-# session; these read a model's spike counts the same way
+# KC's fluorescence divided by its sd over the whole recording (a z-score over the session), so a
+# KC's response is relative to its own session; these read a model's spike counts the same way
 ZCELL_MAPS = ('linear', 'saturating')
+ZCELL_READINGS = ('graded', 'thresholded', 'binary')
+OPK_EDGES = ((0, 0), (1, 1), (2, 3), (4, 7), (8, None))
+
+
+def _zcell_amplitude(x: np.ndarray, amp: str, K: Optional[float]) -> np.ndarray:
+    if amp == 'linear':
+        return x
+    if amp == 'saturating':
+        if K is None or not K > 0:
+            raise ValueError(f'the saturating map needs K > 0, not {K}')
+        return x / (x + float(K))
+    raise ValueError(f'unknown amplitude map {amp!r} (one of {ZCELL_MAPS})')
 
 
 def session_zscore(counts, *, q: float, noise, amp: str = 'linear', K: Optional[float] = None,
-    noise_ratio: float = 0.385, n_trials: int = 3, n_blank: int = 1, divisor: Optional[float] = None
-    ) -> Dict[str, object]:
+    noise_ratio: float = 0.385, n_trials: int = 3, n_blank: int = 1, divisor: Optional[float] = None,
+    center: bool = False) -> Dict[str, object]:
     """A model's KC responses read as the recordings appear to be: each KC's session (the panel's odors
-    and `n_blank` blank stimuli, `n_trials` trials each) assembled from its spike counts and z-scored over
-    the whole session (E73).
+    and `n_blank` blank stimuli, `n_trials` trials each) assembled from its spike counts and divided by the
+    KC's sd over the whole session (E73).
 
     Each trial's response window holds the share `q` of the session's frames; inside it the KC's signal is
     its amplitude a (`amp`: 'linear', a = n; 'saturating', a = n / (n + K)), outside it 0; every frame
-    carries independent noise of sd `noise` (amplitude units). The KC's z-score subtracts its session mean
-    mu = q mean(a) and divides by its session sd S = sqrt(q mean(a^2) - mu^2 + noise^2), so a trial reads
-    (a - mu) / S plus measurement noise of sd noise_ratio x noise / S (a silent KC's trial sd is
-    `noise_ratio`). The per-KC mean of squared trial values cannot exceed 1 / q (the edge of part A).
+    carries independent noise of sd `noise` (amplitude units). The KC's session sd is
+    S = sqrt(q mean(a^2) - (q mean(a))^2 + noise^2) (means over the session's trials), and a trial reads
+    a / S (the window relative to the pre-odor baseline, both in the KC's session z units), or with
+    `center` (a - q mean(a)) / S (the window mean of the plain session z-score, no baseline subtracted),
+    plus measurement noise of sd noise_ratio x noise / S (a silent KC's trial sd is `noise_ratio`). The
+    per-KC mean of squared trial values cannot exceed about 1 / q (the edge of part A of E73).
 
     Args:
         counts: spike counts, (units x odors) DataFrame or array (the same counts on every trial), or
@@ -1484,47 +1498,267 @@ def session_zscore(counts, *, q: float, noise, amp: str = 'linear', K: Optional[
         q: share of the session's frames inside the response windows.
         noise: frame-noise sd in amplitude units, one value for all units (or an array over units).
         amp, K: the amplitude map (`ZCELL_MAPS`); K the saturating map's half-saturation.
-        noise_ratio: sd of a response window's mean noise relative to the frame-noise sd.
+        noise_ratio: sd of a response's measurement noise relative to the frame-noise sd.
         n_trials: trials per odor when `counts` is 2-D.
         n_blank: blank (solvent) stimuli in the session, amplitude 0.
         divisor: the control: every unit's amplitude divided by this one value, nothing subtracted (no
             per-KC normalization), measurement noise sd noise_ratio x noise / divisor.
+        center: subtract the session mean (see above); ignored with `divisor`.
 
-    Returns dict: trials ((recordings, trials, units, odors) noise-free trial values in z), center (their
-    mean over trials), trial_sd ((recordings, units) sd of one trial's measurement noise in z), n_trials,
-    blank ((recordings, units) the blank's value in z), mean_sq ((recordings, units) expected per-unit mean
-    of squared trial values over the session), odors (column labels or None).
+    Returns dict: trials ((recordings, trials, units, odors) noise-free trial values in z; trials is 1
+    for 2-D counts, whose trials are identical), center (their mean over trials, (recordings, units,
+    odors)), trial_sd ((recordings, units) sd of one trial's measurement noise in z), n_trials, blank
+    ((recordings, units) the blank's value in z), mean_sq ((recordings, units) expected per-unit mean of
+    squared trial values over the session, the blank's included), odors (column labels or None), and the
+    parameters.
     """
-    raise NotImplementedError
+    odors = list(counts.columns) if isinstance(counts, pd.DataFrame) else None
+    x = counts.to_numpy(dtype=float) if isinstance(counts, pd.DataFrame) else np.asarray(counts, dtype=float)
+    if x.ndim == 2:
+        x = x[None, None]
+        T = int(n_trials)
+    elif x.ndim == 4:
+        T = x.shape[1]
+    else:
+        raise ValueError(f'counts must be (units, odors) or (recordings, trials, units, odors), not {x.shape}')
+    a = _zcell_amplitude(x, amp, K)
+    n_stim = a.shape[3] + int(n_blank)
+    # session means over the trials: the blank trials add zeros
+    mean_a = a.mean(axis=1).sum(axis=-1) / n_stim                      # recordings x units
+    mean_a2 = (a ** 2).mean(axis=1).sum(axis=-1) / n_stim
+    sig = np.broadcast_to(np.asarray(noise, dtype=float), mean_a.shape[-1:])[None, :]
+    if divisor is not None:
+        S = np.full(mean_a.shape, float(divisor))
+        mu = np.zeros_like(mean_a)
+    else:
+        mu = q * mean_a
+        S = np.sqrt(np.maximum(q * mean_a2 - mu ** 2, 0.0) + sig ** 2)
+        if not center:
+            mu = np.zeros_like(mu)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        vals = (a - mu[:, None, :, None]) / S[:, None, :, None]
+        blank = -mu / S
+        trial_sd = noise_ratio * sig / S
+    vals = np.nan_to_num(vals)
+    blank, trial_sd = np.nan_to_num(blank), np.nan_to_num(trial_sd)
+    mean_sq = ((vals ** 2).mean(axis=1).sum(axis=-1) + n_blank * blank ** 2) / n_stim + trial_sd ** 2
+    return dict(trials=vals, center=vals.mean(axis=1), trial_sd=trial_sd, n_trials=T, blank=blank, mean_sq=mean_sq,
+        odors=odors, q=float(q), noise=noise, amp=amp, K=K, noise_ratio=float(noise_ratio), n_blank=int(n_blank),
+        divisor=divisor, center_mean=bool(center))
+
+
+def _tail_moments(m: np.ndarray, sd: np.ndarray, thresh: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """P(x > thresh), E[x 1{x > thresh}] and E[x^2 1{x > thresh}] for x ~ N(m, sd^2), elementwise
+    (sd broadcast against m; sd 0 is the noise-free indicator)."""
+    from scipy.special import ndtr
+    m = np.asarray(m, dtype=float)
+    sd = np.broadcast_to(np.asarray(sd, dtype=float), m.shape)
+    pos = sd > 0
+    with np.errstate(invalid='ignore', divide='ignore'):
+        a = np.where(pos, (thresh - m) / np.where(pos, sd, 1.0), 0.0)
+        P = np.where(pos, ndtr(-a), (m > thresh).astype(float))
+        phi = np.exp(-0.5 * a ** 2) / np.sqrt(2 * np.pi)
+        E1 = np.where(pos, m * P + sd * phi, m * P)
+        E2 = np.where(pos, (m ** 2 + sd ** 2) * P + sd * phi * (m + thresh), m ** 2 * P)
+    return P, E1, E2
+
+
+def _zcell_odors(z: Dict[str, object], n_odors: int) -> List[str]:
+    odors = z.get('odors')
+    if odors is None:
+        if n_odors != len(APL16_ODORS):
+            raise ValueError('a reading of an unlabeled array needs 16 columns (the APL16 odors)')
+        return list(APL16_ODORS)
+    return [odor_abbrev(o) for o in odors]
 
 
 def zcell_pair_distances(z: Dict[str, object], reading: str = 'graded', thresh: float = KC_RESPONSE_Z) -> pd.Series:
     """Cosine odor-odor distances of a `session_zscore` reading, in expectation over its measurement noise
-    (closed form, as `expected_pair_distances_noisy`), mean over its recordings: 'graded' (all values,
-    negative ones included: the data's cosine), 'thresholded' (trial means <= `thresh` set to 0) or
-    'binary' (trial mean > `thresh`)."""
-    raise NotImplementedError
+    (closed form, the ratio of the expectations as `expected_pair_distances_noisy`: independent noise adds
+    to each odor's squared length and nothing to the products of different odors), mean over its
+    recordings: 'graded' (all values, negative ones included: the data's cosine), 'thresholded' (trial
+    means <= `thresh` set to 0) or 'binary' (trial mean > `thresh`). Canonical pair Series."""
+    C = z['center']
+    s = z['trial_sd'] / np.sqrt(z['n_trials'])
+    odors = _zcell_odors(z, C.shape[2])
+    order = odor_order(odors)
+    idx = [odors.index(o) for o in order]
+    D = []
+    for r in range(C.shape[0]):
+        m = C[r][:, idx]
+        sd = s[r][:, None]
+        if reading == 'graded':
+            E1, E2 = m, m ** 2 + sd ** 2
+        elif reading in ('thresholded', 'binary'):
+            P, E1, E2 = _tail_moments(m, sd, thresh)
+            if reading == 'binary':
+                E1 = E2 = P
+        else:
+            raise ValueError(f'unknown reading {reading!r} (one of {ZCELL_READINGS})')
+        n2 = E2.sum(axis=0)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            D.append(1 - (E1.T @ E1) / np.sqrt(np.outer(n2, n2)))
+    D = np.nanmean(np.stack(D), axis=0) if len(D) > 1 else D[0]
+    pl = pair_list(order)
+    pos = {o: i for i, o in enumerate(order)}
+    return pd.Series([D[pos[a], pos[b]] for a, b in pl], index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
+
+
+def poisson_binomial_bins(P: np.ndarray, edges=OPK_EDGES) -> np.ndarray:
+    """Mean over units of the distribution of the number of odors a unit responds to, each odor
+    independently with its probability (P: units x odors), summed into `edges` bins ((lo, hi) inclusive,
+    hi None for no upper limit): the expected odors-per-KC distribution."""
+    P = np.asarray(P, dtype=float)
+    n_u, n_o = P.shape
+    dist = np.zeros((n_u, n_o + 1))
+    dist[:, 0] = 1.0
+    for j in range(n_o):
+        p = P[:, j:j + 1]
+        dist[:, 1:] = dist[:, 1:] * (1 - p) + dist[:, :-1] * p
+        dist[:, 0] = dist[:, 0] * (1 - p[:, 0])
+    mean = dist.mean(axis=0)
+    return np.array([mean[lo:(n_o + 1 if hi is None else hi + 1)].sum() for lo, hi in edges])
 
 
 def zcell_stats(z: Dict[str, object], thresh: float = KC_RESPONSE_Z) -> Dict[str, object]:
     """Statistics of a `session_zscore` reading under the data's criterion (trial mean > `thresh`), in
-    expectation over the measurement noise: response rate (and per odor), the responders' mean amplitude
-    and coefficient of variation, the shares above 4 z and in 0.5-1.5 z, the odors-per-KC distribution
-    (0, 1, 2-3, 4-7, 8 or more), the non-responders' trial sd, the per-unit mean square's upper edge and
-    the largest trial mean."""
-    raise NotImplementedError
+    expectation over the measurement noise, pooled over its recordings: `rate` (share of entries
+    responding) and `rate_per_odor` (Series), `resp_amp_mean` and `resp_amp_cv` (the responders' trial
+    means), `share_above_4` and `share_05_15` (entries with a trial mean above 4 z, and in (0.5, 1.5] z),
+    `opk` (the odors-per-KC distribution over 0, 1, 2-3, 4-7, 8 or more odors), `silent_share` and
+    `opk_8plus`, `nonresp_trial_sd` (root mean trial-to-trial variance of the non-responding entries, as
+    `kc_trial_noise_sd` measures the data: measurement noise plus the trials' own variation), and the
+    per-unit mean square's upper edge (`mean_sq_max`, `_p999`, `_p99`, `_median`, `edge_gap` = max - 99.9th
+    percentile), `max_trial_mean` and `max_trial` (noise-free)."""
+    from scipy.special import ndtr
+    C = z['center']
+    T = z['n_trials']
+    t = z['trial_sd']
+    sd = t / np.sqrt(T)
+    sdb = sd[:, :, None]
+    P, E1, E2 = _tail_moments(C, sdb, thresh)
+    odors = _zcell_odors(z, C.shape[2])
+    with np.errstate(invalid='ignore', divide='ignore'):
+        amp_mean = float(E1.sum() / P.sum())
+        amp_var = float(E2.sum() / P.sum()) - amp_mean ** 2
+        P4 = _tail_moments(C, sdb, 4.0)[0]
+        band = ndtr((1.5 - C) / np.where(sdb > 0, sdb, np.inf)) - ndtr((0.5 - C) / np.where(sdb > 0, sdb, np.inf))
+    if not (sd > 0).all():
+        band = np.where(sdb > 0, band, ((C > 0.5) & (C <= 1.5)).astype(float))
+    # the trials' own variation (jittered trials) adds to the measurement noise
+    tr = z['trials']
+    var_tr = tr.var(axis=1, ddof=1) if tr.shape[1] > 1 else np.zeros_like(C)
+    w = 1 - P
+    nonresp_var = float((w * (t[:, :, None] ** 2 + var_tr)).sum() / w.sum())
+    opk = np.mean([poisson_binomial_bins(P[r]) for r in range(P.shape[0])], axis=0)
+    ms = z['mean_sq'].ravel()
+    return dict(rate=float(P.mean()), rate_per_odor=pd.Series(P.mean(axis=(0, 1)), index=odors),
+        resp_amp_mean=amp_mean, resp_amp_cv=float(np.sqrt(max(amp_var, 0.0)) / amp_mean) if amp_mean > 0 else np.nan,
+        share_above_4=float(P4.mean()), share_05_15=float(band.mean()), opk=opk, silent_share=float(opk[0]),
+        opk_8plus=float(opk[-1]), nonresp_trial_sd=float(np.sqrt(nonresp_var)), mean_sq_max=float(ms.max()),
+        mean_sq_p999=float(np.quantile(ms, 0.999)), mean_sq_p99=float(np.quantile(ms, 0.99)),
+        mean_sq_median=float(np.median(ms)), edge_gap=float(ms.max() - np.quantile(ms, 0.999)),
+        max_trial_mean=float(C.max()), max_trial=float(tr.max()))
+
+
+def _zcell_rate(on_counts, q, noise, amp, K, noise_ratio, n_trials, n_blank, center, thresh=KC_RESPONSE_Z) -> Tuple[float, Dict]:
+    z = session_zscore(on_counts, q=q, noise=noise, amp=amp, K=K, noise_ratio=noise_ratio, n_trials=n_trials,
+        n_blank=n_blank, center=center)
+    P = _tail_moments(z['center'], (z['trial_sd'] / np.sqrt(z['n_trials']))[:, :, None], thresh)[0]
+    return float(P.mean()), z
 
 
 def calibrate_session_zscore(on_counts, *, q: float, amp: str = 'linear', target_rate: float,
-    target_amp: Optional[float] = None, target_silent_sd: Optional[float] = None, n_trials: int = 3,
-    n_blank: int = 1, K0: float = 5.0, noise_bounds: Tuple[float, float] = (1e-4, 1e4),
-    K_bounds: Tuple[float, float] = (1e-2, 1e3), tol: float = 1e-6, max_iter: int = 30) -> Dict[str, object]:
-    """The parameters of `session_zscore` set on the APL-on counts alone (then used unchanged for APL off):
-    the frame noise so that the APL-on response rate under the data's criterion is `target_rate`; for the
-    saturating map also K so that the responders' mean amplitude is `target_amp`; and, with
-    `target_silent_sd`, the noise ratio so that the trial sd of the non-responding entries is that value.
-    Returns dict(noise, K, noise_ratio, the achieved statistics, at_bound flags, converged)."""
-    raise NotImplementedError
+    target_amp: Optional[float] = None, target_silent_sd: Optional[float] = None, K: Optional[float] = None,
+    noise_ratio: float = 0.385, n_trials: int = 3, n_blank: int = 1, center: bool = False,
+    noise_bounds: Tuple[float, float] = (1e-4, 1e4), K_bounds: Tuple[float, float] = (1e-2, 1e3), n_K_grid: int = 25,
+    tol: float = 1e-4, max_iter: int = 20) -> Dict[str, object]:
+    """The parameters of `session_zscore` set on the APL-on counts alone (then used unchanged for APL off,
+    so the APL effect stays a prediction): the frame noise so that the APL-on response rate under the
+    data's criterion (expected trial mean > 1 z) is `target_rate`; for the saturating map with
+    `target_amp`, also K, so that the responders' mean amplitude (z) is `target_amp`; with
+    `target_silent_sd`, the noise ratio so that the trial-to-trial sd of the non-responding entries
+    (`zcell_stats`' `nonresp_trial_sd`) is that value (iterated to a fixed point; it barely moves the other
+    two). The linear map has the noise as its only free parameter, so its responders' amplitude is a
+    prediction. The rate falls monotonically with the noise (root in log noise, Brent); K is the root of the
+    amplitude error nearest the grid point with the smallest error among the sign changes on a log grid
+    over `K_bounds` (the amplitude, with the noise re-solved at every K, need not be monotone in K), or the
+    grid point with the smallest error when there is no sign change (`K_at_bound`).
+
+    Args:
+        on_counts: APL-on spike counts, (units x odors) or (recordings, trials, units, odors).
+        K: the saturating map's K when it is not calibrated (no `target_amp`).
+
+    Returns dict: noise, K, noise_ratio, rate, resp_amp_mean, nonresp_trial_sd (achieved), noise_at_bound,
+    K_at_bound, converged, iterations, q, amp, center.
+    """
+    from scipy.optimize import brentq
+    lo_n, hi_n = np.log(noise_bounds[0]), np.log(noise_bounds[1])
+
+    def solve_noise(Kv, nr):
+        f = lambda ln: _zcell_rate(on_counts, q, np.exp(ln), amp, Kv, nr, n_trials, n_blank, center)[0] - target_rate
+        flo, fhi = f(lo_n), f(hi_n)
+        if flo * fhi > 0:
+            return float(np.exp(lo_n if abs(flo) < abs(fhi) else hi_n)), True
+        return float(np.exp(brentq(f, lo_n, hi_n, xtol=1e-10, rtol=1e-10))), False
+
+    def stats_at(Kv, nr):
+        noise, nb = solve_noise(Kv, nr)
+        z = session_zscore(on_counts, q=q, noise=noise, amp=amp, K=Kv, noise_ratio=nr, n_trials=n_trials,
+            n_blank=n_blank, center=center)
+        return noise, nb, z
+
+    def amp_of(z):
+        C = z['center']
+        sd = (z['trial_sd'] / np.sqrt(z['n_trials']))[:, :, None]
+        P, E1, _ = _tail_moments(C, sd, KC_RESPONSE_Z)
+        return float(E1.sum() / P.sum()) if P.sum() > 0 else np.nan
+
+    fit_K = amp == 'saturating' and target_amp is not None
+    if amp == 'saturating' and not fit_K and K is None:
+        raise ValueError('the saturating map needs K, or target_amp to calibrate it')
+    nr = float(noise_ratio)
+    Kv = K
+    K_at_bound = False
+    converged = False
+    it = 0
+    for it in range(1, max_iter + 1):
+        fk = lambda lk: amp_of(stats_at(np.exp(lk), nr)[2]) - target_amp
+        if fit_K and it > 1 and not K_at_bound:
+            # later rounds (the noise ratio moved a little): the root near the previous K
+            lo_k, hi_k = np.log(Kv) - 0.7, np.log(Kv) + 0.7
+            if fk(lo_k) * fk(hi_k) <= 0:
+                Kv = float(np.exp(brentq(fk, lo_k, hi_k, xtol=1e-8, rtol=1e-8)))
+            else:
+                K_at_bound = True
+        if fit_K and (it == 1 or K_at_bound):
+            grid = np.linspace(np.log(K_bounds[0]), np.log(K_bounds[1]), n_K_grid)
+            err = np.array([amp_of(stats_at(np.exp(g), nr)[2]) - target_amp for g in grid])
+            ok = np.isfinite(err)
+            best = int(np.nanargmin(np.where(ok, np.abs(err), np.nan)))
+            brackets = [i for i in range(len(grid) - 1) if ok[i] and ok[i + 1] and err[i] * err[i + 1] <= 0]
+            if brackets:
+                i = min(brackets, key=lambda i: abs(i + 0.5 - best))
+                Kv = float(np.exp(brentq(fk, grid[i], grid[i + 1], xtol=1e-8, rtol=1e-8)))
+                K_at_bound = False
+            else:
+                Kv, K_at_bound = float(np.exp(grid[best])), True
+        noise, noise_at_bound, z = stats_at(Kv, nr)
+        if target_silent_sd is None:
+            converged = True
+            break
+        st = zcell_stats(z)
+        new_nr = nr * float(target_silent_sd) / st['nonresp_trial_sd']
+        if abs(new_nr - nr) < tol * nr:
+            nr = new_nr
+            noise, noise_at_bound, z = stats_at(Kv, nr)
+            converged = True
+            break
+        nr = new_nr
+    st = zcell_stats(z)
+    return dict(noise=noise, K=Kv, noise_ratio=nr, rate=st['rate'], resp_amp_mean=st['resp_amp_mean'],
+        nonresp_trial_sd=st['nonresp_trial_sd'], noise_at_bound=bool(noise_at_bound), K_at_bound=bool(K_at_bound),
+        converged=converged, iterations=it, q=float(q), amp=amp, center=bool(center))
 
 
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,
