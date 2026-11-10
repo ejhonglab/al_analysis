@@ -70,6 +70,39 @@ It does the same whether or not a conda environment or venv is active in your sh
 uses or changes a venv it did not make. Machines are identified by their short host name
 (`hostname -s`) throughout the queue, so it must differ from every other machine's.
 
+### Updating Claude Code without stopping a worker's runs
+
+The model runs a worker starts, and its chat watcher, run under its Claude Code process: quitting
+the session (`/exit`, or closing its terminal) stops them, and resuming the session later does not
+bring them back. To move a worker to a new Claude Code version while its runs keep going, put it
+in the background and restart it there:
+
+1. In the worker's session, type `/bg` (or press ← on an empty prompt). The session moves to the
+   background and prints its id. `claude agents --json` also lists it; agent view (`claude
+   agents`) lists only background sessions, and opens one with the arrow keys and Enter.
+2. In a shell on the same machine, install the new version. Claude Code usually updates itself,
+   so this often reports nothing new:
+   ```
+   claude update
+   ```
+3. Restart the session on the newest installed version. Its runs carry over to the new process:
+   ```
+   claude respawn <id>
+   ```
+4. Open it in your terminal again (← or Ctrl+Z leaves it running in the background):
+   ```
+   claude attach <id>
+   ```
+5. Tell the session it was respawned. Its chat watcher does not carry over, so it restarts it,
+   and it checks that its runs are still going.
+
+The first time (hal, 2026-11-09, 2.1.319 to 2.1.321), a 16-thread model run kept its process ids
+and kept writing its log, and the session came back with its conversation intact under a new id.
+If `claude update` installs something after step 3, repeat step 3. A background session left idle
+and unattached for about an hour has its process stopped until someone attaches it, so a worker
+that waits on long runs should be pinned in agent view (Ctrl+T, per Claude Code's documentation)
+or kept attached in a terminal.
+
 ## For Tom: approving a machine and other upkeep
 
 - **Approve its keys.** On one of your hosts, with gh logged in with admin rights on the three
