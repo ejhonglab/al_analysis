@@ -906,6 +906,26 @@ PROPERTIES = {'pn_mean_rate': 'mean PN rate of the input', 'pn_n_above_claw_thr'
     'frac_off': 'APL-off fraction'}
 
 
+def realism_extras(tag: str) -> Dict[str, float]:
+    """Readout-free realism statistics of a saved variant (as the compressive readout experiment, E65,
+    reports for the data): per condition, the responders-only participation ratio and top-1 % share
+    (mean over odors), the peak spike count, and the share of KCs responding to no odor and to 8 or
+    more odors."""
+    from E65_spike_count_readout import odors_per_unit
+    out_dir = H.HERE / 'outputs' / EXPERIMENT
+    out = {}
+    for cond, short in (('on', 'on'), ('acute_off', 'off')):
+        p = out_dir / f'{tag}_{cond}_spike_counts.parquet'
+        if not p.exists():
+            continue
+        m = pd.read_parquet(p)
+        a = H.amplitude_stats(m.where(m >= RESP_MIN, 0)).mean(numeric_only=True)
+        o = odors_per_unit(m >= RESP_MIN)
+        out.update({f'participation_ratio_resp_{short}': float(a['participation_ratio']), f'top1_share_resp_{short}': float(a['top1_share']),
+            f'max_count_{short}': float(m.to_numpy().max()), f'odors_0_{short}': o['odors_0'], f'odors_8plus_{short}': o['odors_8plus']})
+    return out
+
+
 def part_s(args) -> None:
     """Merges parts B and C into the experiment's stats_variants.csv and model_pair_distances_long.csv
     (read by apl_effect_scores.py and the progress plot) and writes the parts' tables: the loss and its
@@ -928,6 +948,9 @@ def part_s(args) -> None:
     table = st[[c for c in keep if c in st.columns]].set_index('tag').join(wide)
     from apl_effect_scores import realism_flag
     table['realism_flag'] = [realism_flag(r.rate_on, r.rate_off, r.spearman_rate_on_vs_data) for r in table.itertuples()]
+    if 'spearman_rate_off_vs_data' in st.columns:
+        table['spearman_rate_off_vs_data'] = st.set_index('tag')['spearman_rate_off_vs_data']
+    table = table.join(pd.DataFrame({t: realism_extras(t) for t in table.index}).T)
     table.to_csv(res_dir / 'parts_bc_table.csv')
     mp = res_dir / 'multipliers.csv'
     corr_rows = []
