@@ -192,7 +192,9 @@ def run(args, res_dir: Path, out_dir: Path) -> None:
             t0 = time.time()
             logf = np.log(parent)[None, :] + sigma * rng.standard_normal((args.pop, len(glomeruli)))
             offspring = np.exp(np.clip(logf, lo, hi))
-            c_on, c_off = simulate(candidate_orn(orn_now, odor, offspring))
+            # the candidates scale the lab's column (offspring are whole factor vectors around the parent), not
+            # the current one, which after a first pass already carries the odor's earlier factors
+            c_on, c_off = simulate(candidate_orn(orn, odor, offspring))
             objs = np.empty(args.pop); parts = []
             for i in range(args.pop):
                 s_on_i = s_on.copy(); s_on_i[oc] = c_on[1].iloc[:, i].to_numpy()
