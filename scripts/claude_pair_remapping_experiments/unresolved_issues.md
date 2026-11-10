@@ -8,24 +8,6 @@ directory's notes/ and are linked from here.
 
 ## Open
 
-### The bounded-input oracle's (E64) second pass searched doubly scaled inputs (found 2026-11-09, hal, from a Fable planning subagent)
-
-- **What.** `E64_input_oracle.py`'s `search()` built each generation's candidates as `candidate_orn(orn_now, ...)`. On an odor's second
-  search `orn_now` already held the lab's response times the first pass's factors, and the candidates were factor vectors around
-  those same factors, so every pass-2 candidate was the lab's response times f1 times a vector near f1 (effective factors 0.25 to 4,
-  outside the bounds), while the input recorded at the end of the pass was the lab's response times the winning vector, which was
-  never evaluated. Seen in search_history.csv (pass-2 offspring scores far below the parent's and falling as sigma shrinks) and in
-  the whole-panel re-simulation (pass 1 and the controls reproduce the search's incumbent to six decimals, pass 2 does not; 2-but's
-  response fractions 0.079 / 0.154, outside the ±15 % band). Pass 1 and the controls are unaffected (an odor's first search starts
-  from the lab's column).
-- **Affects.** E64's pass-2 rows (I_searched_pass2 in stats_variants.csv, apl_effect.csv, model_pair_distances_long.csv and
-  per_odor_response_fractions.csv; per_odor_gains.csv pass 2; factors_weak_pass2.csv, orn_input_searched_pass2.csv; the archive's
-  I_searched_pass2 outputs and params row; results/apl_effect/by_variant.csv's E64 rows), and E64's note and page as first published
-  (they reported pass 2 as the result: 0.70 / 0.78).
-- **Done.** The call is `candidate_orn(orn, ...)` now (this commit); E64's result is pass 1 (the note, page, Completed entry and summary
-  use it); the pass-2 rows and files are moved aside (see Resolved when done).
-- **Remains.** A rerun of pass 2 with the fix, if wanted (paa, B-myr and 2-but, six generations each, about 25 min at 16 threads).
-
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
 - **What.** Several experiment scripts call `model_provenance()` (al_analysis commit, dirty flag and
@@ -135,6 +117,29 @@ directory's notes/ and are linked from here.
   against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### The bounded-input oracle's (E64) second pass searched doubly scaled inputs (found 2026-11-09, hal, from a Fable planning subagent)
+
+- **What.** `E64_input_oracle.py`'s `search()` built each generation's candidates as `candidate_orn(orn_now, ...)`. On an odor's second
+  search `orn_now` already held the lab's response times the first pass's factors, and the candidates were factor vectors around
+  those same factors, so every pass-2 candidate was the lab's response times f1 times a vector near f1 (effective factors 0.25 to 4,
+  outside the bounds), while the input recorded at the end of the pass was the lab's response times the winning vector, which was
+  never evaluated. Seen in search_history.csv (pass-2 offspring scores far below the parent's and falling as sigma shrinks) and in
+  the whole-panel re-simulation (pass 1 and the controls reproduce the search's incumbent to six decimals, pass 2 does not; 2-but's
+  response fractions 0.079 / 0.154, outside the ±15 % band). Pass 1 and the controls are unaffected (an odor's first search starts
+  from the lab's column).
+- **Affects.** E64's pass-2 rows (I_searched_pass2 in stats_variants.csv, apl_effect.csv, model_pair_distances_long.csv and
+  per_odor_response_fractions.csv; per_odor_gains.csv pass 2; factors_weak_pass2.csv, orn_input_searched_pass2.csv; the archive's
+  I_searched_pass2 outputs and params row; results/apl_effect/by_variant.csv's E64 rows), and E64's note and page as first published
+  (they reported pass 2 as the result: 0.70 / 0.78).
+- **Done.** The call is `candidate_orn(orn, ...)` now (this commit); E64's result is pass 1 (the note, page, Completed entry and summary
+  use it); the pass-2 rows are removed from results/E64_input_oracle/ (stats_variants, apl_effect, model_pair_distances_long, per_odor_gains,
+  per_odor_response_fractions; the tables as first written and the pass-2 factor and input files kept in its invalid_pass2/
+  folder with a README), the archive's pass-2 outputs renamed *.parquet.invalid and its params row removed (backup in
+  params_backup/), the tables and figure regenerated (E64_input_oracle.py --summary), the note and page corrected (version 3), the
+  Completed entry annotated, the summary built from pass 1 (version 100), results/apl_effect/by_variant.csv rebuilt without it;
+  summary_progress_plot.py now leaves E62 and E64 out as oracles. A fixed second pass was not rerun (it would refine paa, B-myr and
+  2-but given the others' searched input; about 25 min at 16 threads).
 
 ### A fit seeded with `--init-from` does not start at its seed's optimum and runs with a different bouton->APL / KC->APL input balance (found 2026-11-08, atlas)
 
