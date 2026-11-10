@@ -18,9 +18,16 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import re
 import sys
 from pathlib import Path
+
+# segments longer than this (inline plot data, embedded images) are compared by difflib's quick_ratio, an
+# upper bound: the exact character-level ratio is quadratic in their length and took over ten minutes on
+# the summary page (2026-11-10)
+LONG = 20000
+DATA_URI = re.compile(r'data:([a-z]+/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)')
 
 WRAPPER_START = re.compile(r'^\s*<!doctype html>\s*<html>\s*<head>.*?<body>\s*', re.S | re.I)
 WRAPPER_END = re.compile(r'\s*</body>\s*</html>\s*$', re.S | re.I)
@@ -33,6 +40,8 @@ def normalize(html: str) -> str:
     if m and html.count('<!DOCTYPE html>') + html.count('<!doctype html>') >= 2:
         html = html[m.end():]
         html = WRAPPER_END.sub('', html)
+    # an embedded figure as a short hash of its bytes (a changed figure still shows as a changed segment)
+    html = DATA_URI.sub(lambda m: f'data:{m.group(1)};sha1={hashlib.sha1(m.group(2).encode()).hexdigest()[:12]}', html)
     html = re.sub(r'\[commit [0-9a-f]{6,40}\]', '[commit]', html)
     html = re.sub(r'(title="time this page was built">)[^<]*', r'\1T', html)
     html = re.sub(r'(title="completion time of the latest completed experiment \()E\d+(\) in [^"]*">)[^<]*', r'\1E\2T', html)
@@ -62,7 +71,8 @@ def main() -> None:
         elif op == 'replace':
             old, new = ' '.join(a[i1:i2]), ' '.join(b[j1:j2])
             # a segment the new build rewrote (a status word, a sentence) against one it dropped and replaced
-            if difflib.SequenceMatcher(None, old, new, autojunk=False).ratio() > 0.5:
+            sm2 = difflib.SequenceMatcher(None, old, new, autojunk=False)
+            if (sm2.quick_ratio() if len(old) + len(new) > LONG else sm2.ratio()) > 0.5:
                 changed.append((old, new))
             else:
                 removed.append(old)
