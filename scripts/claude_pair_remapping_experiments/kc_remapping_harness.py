@@ -752,16 +752,20 @@ def apl_effect(on: pd.Series, off: pd.Series) -> pd.Series:
     return (a - b).rename('apl_effect')
 
 
-_YANG_APL_EFFECT: Dict[str, pd.Series] = {}
+_YANG_APL_EFFECT: Dict[tuple, pd.Series] = {}
 
 
-def yang_apl_effect(measure: str = 'cosine') -> pd.Series:
+def yang_apl_effect(measure: str = 'cosine', binarize: Optional[float] = None) -> pd.Series:
     """The KC data's per-pair APL effect: the control flies' (TNT3c) distance minus the
     distance with APL output blocked (TNT), each the mean over recordings (`yang_mean_rdm`).
-    Cached per measure."""
-    if measure not in _YANG_APL_EFFECT:
-        _YANG_APL_EFFECT[measure] = apl_effect(yang_mean_rdm('TNT3c', measure), yang_mean_rdm('TNT', measure))
-    return _YANG_APL_EFFECT[measure]
+    `binarize` (e.g. 1, Yang's responder threshold on z-scored trial means) computes it from
+    binarized responses instead, the like-for-like target of a binarized model readout
+    (`readout(..., 'binary')`). Cached per (measure, binarize)."""
+    key = (measure, binarize)
+    if key not in _YANG_APL_EFFECT:
+        _YANG_APL_EFFECT[key] = apl_effect(yang_mean_rdm('TNT3c', measure, binarize=binarize),
+            yang_mean_rdm('TNT', measure, binarize=binarize))
+    return _YANG_APL_EFFECT[key]
 
 
 def apl_effect_stats(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = None
@@ -790,6 +794,129 @@ def apl_effect_stats(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = 
         apl_effect_mean=float(m.mean()), apl_effect_mean_error=mean_error,
         apl_effect_spearman=spearman(m, d), apl_effect_pearson=pearson(m, d),
         apl_effect_n_pairs=int(len(m)))
+
+
+# ---------------------------------------------------------------------------
+# readouts of the model's spike counts (E65): the model's side of the per-pair APL effect is a
+# cosine distance on raw spike counts, the data's on z-scored GCaMP fluorescence, which
+# compresses large responses; these map a (KCs x odors) spike-count matrix onto a compressed
+# signal before the distances are taken
+READOUT_KINDS = ('raw', 'sqrt', 'power', 'saturating', 'log1p', 'binary', 'rank_match')
+
+
+def readout(counts: pd.DataFrame, kind: str = 'raw', param=None) -> pd.DataFrame:
+    """A readout of a model's spike counts (rows KCs, columns odors), elementwise.
+
+    Args:
+        counts: spike counts, e.g. the archived `<tag>_<condition>_spike_counts.parquet`.
+        kind: 'raw' (the counts; the target as defined); 'sqrt' (n ** 0.5); 'power'
+            (n ** param, 0 < param <= 1); 'saturating' (n / (n + param), half-saturation at
+            `param` spikes); 'log1p' (log(1 + n / param)); 'binary' (1 where n >= param,
+            default 2, i.e. the model's `responses`); 'rank_match' (each count mapped through
+            the lookup `param` from `rank_match_map`, a monotone count -> amplitude map).
+        param: the readout's parameter (see `kind`); None for 'raw' and 'sqrt'.
+
+    Every readout keeps 0 at 0 and is monotone in the count, so which KCs respond, and the
+    response rates, are the same under every readout.
+    """
+    x = counts.astype(float)
+    if kind == 'raw':
+        return x
+    if kind == 'sqrt':
+        return x ** 0.5
+    if kind == 'power':
+        return x ** float(param)
+    if kind == 'saturating':
+        return x / (x + float(param))
+    if kind == 'log1p':
+        return np.log1p(x / float(param))
+    if kind == 'binary':
+        return (x >= (2.0 if param is None else float(param))).astype(float)
+    if kind == 'rank_match':
+        lut = param
+        vals = np.interp(x.to_numpy(), lut.index.to_numpy(dtype=float), lut.to_numpy(dtype=float))
+        return pd.DataFrame(np.where(x.to_numpy() > 0, vals, 0.0), index=x.index, columns=x.columns)
+    raise ValueError(f'unknown readout {kind!r} (one of {READOUT_KINDS})')
+
+
+def readout_pair_distances(counts: pd.DataFrame, kind: str = 'raw', param=None) -> pd.Series:
+    """Cosine odor-odor distances across KCs after `readout`: the model's side of the per-pair
+    APL effect under that readout ('raw' gives the `spike_counts_cosine` distances)."""
+    return pair_distances(readout(counts, kind, param), measure='cosine')
+
+
+def apl_effect_stats_readout(on_counts: pd.DataFrame, off_counts: pd.DataFrame, kind: str = 'raw',
+    param=None, data: Optional[pd.Series] = None) -> Dict[str, float]:
+    """`apl_effect_stats` of a model whose APL-on and acute APL-off spike counts are read out
+    the same way (`readout`, one `kind` and `param` for both conditions, so the APL effect stays
+    a prediction). `data` defaults to the KC data's effect, or for kind 'binary' to the effect
+    of the binarized data (`yang_apl_effect(binarize=1.0)`). The keys of `apl_effect_stats`,
+    plus `mean_dist_on` and `mean_dist_off` (the mean pair distance in each condition)."""
+    if data is None:
+        data = yang_apl_effect(binarize=1.0) if kind == 'binary' else yang_apl_effect()
+    on = readout_pair_distances(on_counts, kind, param)
+    off = readout_pair_distances(off_counts, kind, param)
+    out = apl_effect_stats(on, off, data)
+    out.update(mean_dist_on=float(on.mean()), mean_dist_off=float(off.mean()))
+    return out
+
+
+def amplitude_stats(mat: pd.DataFrame) -> pd.DataFrame:
+    """How concentrated each odor's response vector is across units (rows units, columns odors;
+    a model's counts or readout, or a recording's z-scored trial means), per odor:
+    `top1_share` / `top5_share`, the share of the odor's squared response vector (the quantity a
+    cosine distance weighs) carried by the top 1 % / 5 % of units; `participation_ratio`,
+    (sum x^2)^2 / (n sum x^4), the effective share of units carrying it (1 when all units carry
+    equal squared amplitude, 1 / n when one unit carries all); `n_units`."""
+    x = mat.astype(float).to_numpy()
+    n = x.shape[0]
+    sq = x ** 2
+    tot = sq.sum(axis=0)
+    srt = -np.sort(-sq, axis=0)
+    k1, k5 = max(1, int(np.ceil(0.01 * n))), max(1, int(np.ceil(0.05 * n)))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        out = pd.DataFrame(dict(top1_share=srt[:k1].sum(axis=0) / tot, top5_share=srt[:k5].sum(axis=0) / tot,
+            participation_ratio=tot ** 2 / (n * (sq ** 2).sum(axis=0)), n_units=n), index=mat.columns)
+    return out
+
+
+def calibrate_readout(on_counts: pd.DataFrame, kind: str, target: float, stat: str = 'participation_ratio',
+    bounds: Tuple[float, float] = (1e-3, 1e3), iters: int = 60) -> float:
+    """The parameter of a one-parameter readout ('power', 'saturating' or 'log1p') at which the
+    APL-on mean over odors of `stat` (an `amplitude_stats` column) equals `target`, e.g. the
+    control flies' participation ratio: bisection on a log scale. The parameter is fixed on the APL-on
+    counts alone and then used unchanged for APL off, so the APL effect is not fitted. Returns the
+    bound nearest to the target when it is not bracketed."""
+    if kind == 'power':
+        bounds = (max(bounds[0], 1e-3), 1.0)
+    f = lambda p: float(amplitude_stats(readout(on_counts, kind, p))[stat].mean())
+    lo, hi = np.log(bounds[0]), np.log(bounds[1])
+    flo, fhi = f(np.exp(lo)) - target, f(np.exp(hi)) - target
+    if flo * fhi > 0:
+        return float(np.exp(lo) if abs(flo) < abs(fhi) else np.exp(hi))
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        fm = f(np.exp(mid)) - target
+        if fm * flo <= 0:
+            hi, fhi = mid, fm
+        else:
+            lo, flo = mid, fm
+    return float(np.exp(0.5 * (lo + hi)))
+
+
+def rank_match_map(on_counts: pd.DataFrame, reference: np.ndarray) -> pd.Series:
+    """A monotone count -> amplitude lookup for `readout(..., 'rank_match', lut)`: each positive
+    count of the APL-on matrix is placed at its mid-rank quantile among the positive counts and
+    given the amplitude at that quantile of `reference` (e.g. the control flies' trial-mean
+    amplitudes among responders); counts above the APL-on maximum keep the top amplitude (np.interp
+    clamps), 0 stays 0. Fixed on APL on, used unchanged for APL off."""
+    c = on_counts.astype(float).to_numpy().ravel()
+    c = c[c > 0]
+    vals, cnt = np.unique(c, return_counts=True)
+    q = (np.cumsum(cnt) - 0.5 * cnt) / cnt.sum()
+    ref = np.sort(np.asarray(reference, dtype=float))
+    amp = np.quantile(ref, q)
+    return pd.Series(amp, index=vals, name='amplitude')
 
 
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,
