@@ -185,6 +185,8 @@ Each of these cost real time to diagnose; check them before blaming a script.
 - Thread count: importing `al_analysis.mb_model` imports rastermap, which resets OpenMP to all of the machine's cores, so
   olfsysm runs on 48 threads on hal however OMP_NUM_THREADS is set (found by E69's code subagent, 2026-11-10). Set
   OMP_THREAD_LIMIT as well (e.g. `OMP_NUM_THREADS=16 OMP_THREAD_LIMIT=16`); the limit holds.
+- Logs: Python 3.14 buffers stdout to a file in 128 KB blocks (io.DEFAULT_BUFFER_SIZE), so a fit's `eval ...` lines in a
+  redirected log appear only when it ends (E69 part B, 2026-11-10). Run long jobs with `python -u` or `PYTHONUNBUFFERED=1`.
 - Tests: the whole QUICK=1 suite took 2.5 h on hal (2026-11-06); for model changes,
   test/test_mb_model.py is the part that matters. Known failures, all filed as issues on
   ejhonglab/al_analysis: test_equalize_kc_type_sparsity (a leftover `breakpoint()`, #2),
