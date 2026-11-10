@@ -693,6 +693,28 @@ def merged() -> pd.DataFrame:
     return df.sort_values('_o').drop(columns='_o').reset_index()
 
 
+def basecal_z_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """The amplitude statistics of every variant through its base's 'floor_noise' conversion (K, the
+    one-spike floor and c as calibrated on the base's APL-on counts, held fixed), so that a change in the
+    tail is the counts', not the re-calibration's; from the saved counts, with E68's noise and seeds. The
+    APL-on response rate under the data's criterion is then no longer held at the flies' (z_basecal_rate_z_on)."""
+    import E68_readout_low_end as E68
+    s, floor_z = E68.refs()['noise_sd'], E68.refs()['floor_z']
+    rows = []
+    for r in df.itertuples():
+        b = df[df.tag == f'{r.base}_base'].iloc[0]
+        K, fl, c = float(b.z_floor_noise_K), float(b.z_floor_noise_floor), float(b.z_floor_noise_c)
+        out = dict(tag=r.tag)
+        for cond in CONDS:
+            x = pd.read_parquet(out_dir() / f'{r.tag}_{cond}_spike_counts.parquet').to_numpy(dtype=float)
+            trials = H.sample_pseudo_recordings(c * E68.saturating(x, K, fl), s, n_recordings=E68.N_RECORDINGS,
+                n_trials=E68.N_TRIALS, seed=E68.SEED_ON if cond == 'on' else E68.SEED_OFF, return_trials=True)
+            st = E68.amplitude_summary(np.concatenate([t.ravel() for t in trials.mean(axis=1)]), floor_z)
+            out.update({f'z_basecal_{k}_{cond}': st[k] for k in ('share_above_4', 'resp_amp_mean', 'share_05_15', 'rate_z')})
+        rows.append(out)
+    return pd.DataFrame(rows)
+
+
 def fmt(x, spec='.3f') -> str:
     try:
         if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -730,25 +752,31 @@ def write_table(df: pd.DataFrame) -> None:
         'Each setting re-tuned: threshold factor on the base\'s APL-off response rate, then one factor on the APL->KC and APL->bouton '
         'scales on its APL-on response rate. The APL-effect loss: root mean squared difference of the per-pair APL effect from the '
         'data\'s over the 120 pairs, lower is better; "cal" under the calibrated saturating readout (K re-calibrated on each variant\'s '
-        'APL-on counts). Amplitudes in z: E68\'s one-spike floor with measurement noise.', '']
+        'APL-on counts; at its bound of 1000 the readout is linear: the counts\' own participation ratio is already above the flies\'). '
+        'Amplitudes in z: E68\'s one-spike floor with measurement noise, K, the floor and the conversion to z calibrated on each '
+        'variant\'s APL-on counts; "the base\'s conversion" holds the base\'s K, floor and conversion instead (the APL-on response rate '
+        'under the data\'s criterion is then not held).', '']
     for key, g in df.groupby('base', sort=False):
         L += [f"## {bs[key]['label']} ({key})", '',
             '| setting | largest count<br>APL on / off | APL-effect loss, raw<br>(mean; per-odor; pair-specific) | ρ per-pair<br>raw | '
             'APL-effect loss, cal<br>(mean; per-odor; pair-specific) | ρ per-pair<br>cal | K | APL off: above 4 z /<br>responders\' mean z | '
+            'APL off, the base\'s conversion:<br>above 4 z / responders\' mean z | '
             'odors per KC<br>APL on / off | block<br>raw / cal | response rate ρ<br>APL on / off | rates on / off<br>(ratio) | '
             'threshold /<br>APL factor | realism flag |',
-            '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
+            '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
         for r in g.itertuples():
             L.append(f"| {setting_label(r)} | {r.max_count_on:.0f} / {r.max_count_off:.0f} | {fmt(r.apl_raw_rmse)} ({r.apl_raw_mean:+.3f}; "
                 f"{fmt(r.apl_raw_per_odor)}; {fmt(r.apl_raw_pair_specific)}) | {fmt(r.apl_raw_rho, '.2f')} | {fmt(r.apl_cal_rmse)} "
                 f"({r.apl_cal_mean:+.3f}; {fmt(r.apl_cal_per_odor)}; {fmt(r.apl_cal_pair_specific)}) | {fmt(r.apl_cal_rho, '.2f')} | "
                 f"{fmt(r.cal_K, '.2f')} | {pct(r.z_floor_noise_share_above_4_acute_off)} / {fmt(r.z_floor_noise_resp_amp_mean_acute_off, '.2f')} | "
+                f"{pct(r.z_basecal_share_above_4_acute_off)} / {fmt(r.z_basecal_resp_amp_mean_acute_off, '.2f')} | "
                 f"{fmt(r.opk_on_tv, '.2f')} / {fmt(r.opk_off_tv, '.2f')} | {fmt(r._asdict()[f'{V}__block_fruity_small_iso'])} / {fmt(r.block_cal)} | "
                 f"{fmt(r.spearman_rate_on_vs_data, '.2f')} / {fmt(r.spearman_rate_off_vs_data, '.2f')} | {r.rate_on:.4f} / {r.rate_off:.4f} "
                 f"({r.rate_off / r.rate_on:.2f}) | {fmt(r.thr_factor, '.4f')} / {fmt(r.apl_factor, '.3f')} | {r.realism_flag if isinstance(r.realism_flag, str) and r.realism_flag else '-'} |")
         L.append(f"| KC data | - | floor {fmt(dt('apl_effect_rmse_floor'))} (+{dt('apl_effect_mean'):.3f}) | ceiling "
             f"{fmt(dt('apl_effect_rho_ceiling'), '.2f')} | floor {fmt(dt('apl_effect_rmse_floor'))} (+{dt('apl_effect_mean'):.3f}) | - | - | "
-            f"{pct(dt('tnt_share_z_above_4'))} / {fmt(dt('tnt_resp_amp_mean_z'), '.2f')} | bands {opk_band('on'):.2f} / {opk_band('off'):.2f} | "
+            f"{pct(dt('tnt_share_z_above_4'))} / {fmt(dt('tnt_resp_amp_mean_z'), '.2f')} | {pct(dt('tnt_share_z_above_4'))} / "
+            f"{fmt(dt('tnt_resp_amp_mean_z'), '.2f')} | bands {opk_band('on'):.2f} / {opk_band('off'):.2f} | "
             f"{fmt(dt('block'))} / - | - | {dt('ctrl_frac'):.4f} / {dt('tnt_frac'):.4f} ({dt('rate_ratio_fraction'):.2f}) | - | - |")
         L += ['', '| setting | responders\' median / 99th percentile count, APL on | APL off | share of responding entries at '
             f'{STRONG_COUNT}+ spikes, on / off | their share of the squared responses, on / off | KCs at {STRONG_COUNT}+ to some odor, on / off | '
@@ -877,6 +905,7 @@ def figures(df: pd.DataFrame) -> None:
 
 def stage_summarize() -> None:
     df = merged()
+    df = df.merge(basecal_z_stats(df), on='tag', how='left')
     df.to_csv(res_dir() / 'stats_variants.csv', index=False)
     long = pd.read_csv(res_dir() / 'model_pair_distances_long_A.csv')
     long = long.drop_duplicates(['tag', 'condition', 'odor_a', 'odor_b'], keep='last')
