@@ -3,7 +3,8 @@
 scripts/claude_pair_remapping_experiments/E10_joint_fit.py `zcell_terms` and make_loss's `apl_readout='zcell'`,
 `rate_criterion='zcell'`, `zcell`): the reading per evaluation is E73 part B's (`zcell_rows`), the rate terms take
 the reading's criterion only when asked, the options off leave every term and statistic as before, and the 'start'
-calibration is held; E74 part C's class term (`apl_class_term`) is off by default and adds only its own term. Needs the shared directory (the data-target registry and the KC data); skipped without it."""
+calibration is held; E74 part C's class term (`apl_class_term`) is off by default and adds only its own term, in
+either form (`apl_class_form`). Needs the shared directory (the data-target registry and the KC data); skipped without it."""
 
 import sys
 from pathlib import Path
@@ -175,3 +176,32 @@ def test_apl_class_term(ctx):
     with pytest.raises(ValueError):
         E10.make_loss(ctx['data'], ctx['data_rates'], ctx['orn_pairs'], ctx['drive'], ref=ctx['ref'], structure=True,
             variant='structure', apl_class_term=True)
+
+
+def test_apl_class_form(ctx):
+    """E74 part C: the class term's form. 'sq' (the default) is the squared form; 'lin' is apl_class_rmse over the
+    floor, the same statistics and every other term unchanged; a form other than 'sq' needs the class term."""
+    import json
+    if 'apl_class_rmse_floor' not in json.loads(H.data_targets_path().read_text()):
+        pytest.skip('the registry has no apl_class_rmse_floor yet')
+    o = _outputs()
+    sq = _loss(ctx, apl_readout='zcell', rate_criterion='zcell', apl_class_term=True)
+    lin = _loss(ctx, apl_readout='zcell', rate_criterion='zcell', apl_class_term=True, apl_class_form='lin')
+    assert sq.apl['class_term']['form'] == 'sq' and lin.apl['class_term']['form'] == 'lin'
+    a, b = sq(o), lin(o)
+    floor = H.data_target('apl_class_rmse_floor')
+    assert np.isclose(a['term_apl_class'], E10.APL_CLASS_WEIGHT * a['apl_class_mse'] / floor ** 2)
+    assert np.isclose(b['term_apl_class'], E10.APL_CLASS_WEIGHT * b['apl_class_rmse'] / floor)
+    assert np.isclose(b['apl_class_rmse'] ** 2, b['apl_class_mse'])
+    for k, v in a.items():
+        if k not in ('loss', 'term_apl_class'):
+            assert b[k] == v, k
+    assert np.isclose(b['loss'], a['loss'] - a['term_apl_class'] + b['term_apl_class'])
+    assert lin(o) == b
+    with pytest.raises(ValueError):
+        _loss(ctx, apl_readout='zcell', rate_criterion='zcell', apl_class_form='lin')
+    with pytest.raises(ValueError):
+        _loss(ctx, apl_readout='zcell', rate_criterion='zcell', apl_class_term=True, apl_class_form='log')
+    with pytest.raises(ValueError):
+        E10.make_loss(ctx['data'], ctx['data_rates'], ctx['orn_pairs'], ctx['drive'], ref=ctx['ref'], structure=True,
+            variant='structure', apl_class_form='lin')

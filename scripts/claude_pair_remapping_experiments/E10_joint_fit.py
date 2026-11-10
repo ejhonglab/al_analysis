@@ -133,9 +133,12 @@ the class-resolved loss's floor (the registry's apl_class_rmse_floor), at weight
 term's 2. The model's side is read at the evaluation's calibration of the reading on 10 pseudo-recordings of 3 trials
 through the reading's measurement noise, the draws made once (seed 43) and the same at every evaluation, each KC's class
 by the data's criterion (trial mean > 1 z); computed by E74_apl_effect_by_odors_per_kc.class_term_stats (the one hook).
+`--apl-class-form lin` (with --apl-class-term) takes the term in the form of the APL term instead: the class-resolved
+loss itself (the root of that mean) over its floor, same weight; the default form 'sq' is the squared one above.
 Every evaluation records apl_class_<mse, rmse, floor>, the model's mean per-class effects apl_class_eff_<class> and
 errors apl_class_err_<class>, and the pseudo-recordings' APL-effect loss (apl_class_noisy_<rmse, mean, pattern>) and
-response rates. Off by default (the fits as before); recorded in fits.csv (apl_class_term) and the tag (apl<readout>cls_).
+response rates. Off by default (the fits as before); recorded in fits.csv (apl_class_term, apl_class_form) and the tag
+(apl<readout>cls_ for the squared form, apl<readout>clslin_ for the linear one).
 """
 from __future__ import annotations
 
@@ -568,6 +571,8 @@ OPK_SCALE = 0.15
 LOSS_VARIANTS = ('base', 'structure', 'rho', 'apl')
 # (E74 part C) the class-resolved term's weight, beside the APL term's APL_WEIGHTS['apl']; only with --apl-class-term
 APL_CLASS_WEIGHT = 1.0
+# its forms: 'sq' apl_class_mse / floor ** 2 (as first specified), 'lin' apl_class_rmse / floor (the APL term's form)
+APL_CLASS_FORMS = ('sq', 'lin')
 
 
 def loss_weights(variant: str) -> dict:
@@ -717,7 +722,7 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     jitter_terms: str = 'block', jitter_trials: Optional[int] = None, proxy: Optional[dict] = None,
     variant: Optional[str] = None, apl_readout: str = 'cal', apl_pattern_only: bool = False,
     apl_block_term: bool = False, apl_opk_term: bool = False, rate_criterion: str = 'spikes',
-    zcell: Optional[dict] = None, apl_class_term: bool = False):
+    zcell: Optional[dict] = None, apl_class_term: bool = False, apl_class_form: str = 'sq'):
     """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). `variant` names the
     weight set (`loss_weights`; default 'structure' with `structure=True`, else 'base'); 'rho' (E63) computes
     the structure statistics but weights only the two matrix terms, the rates, the operating point and the
@@ -752,7 +757,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     effect under the reading, model minus data, squared, mean over the five odors-per-KC classes and 120 pairs) over the
     square of the registry's apl_class_rmse_floor, at weight APL_CLASS_WEIGHT, from
     `E74_apl_effect_by_odors_per_kc.class_term_stats` at the evaluation's calibration of the reading; its statistics are
-    recorded as apl_class_*.
+    recorded as apl_class_*. `apl_class_form` (one of APL_CLASS_FORMS): 'sq' (default) is that squared form, 'lin' the
+    form of the APL term, apl_class_rmse over the floor; anything but 'sq' needs `apl_class_term`.
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
     with APL on (rank agreement of the KC residual from a linear ORN prediction with the
@@ -821,10 +827,14 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         if apl_class_term:
             if apl_readout != 'zcell':
                 raise ValueError("apl_class_term needs apl_readout 'zcell' (the class term is computed under the reading)")
+            if apl_class_form not in APL_CLASS_FORMS:
+                raise ValueError(f'apl_class_form {apl_class_form!r}: one of {APL_CLASS_FORMS}')
             import E74_apl_effect_by_odors_per_kc as E74
             class_floor = H.data_target('apl_class_rmse_floor')
+        elif apl_class_form != 'sq':
+            raise ValueError('apl_class_form needs apl_class_term')
     elif apl_pattern_only or apl_block_term or apl_opk_term or apl_readout != 'cal' or rate_criterion != 'spikes' or \
-            zcell is not None or apl_class_term:
+            zcell is not None or apl_class_term or apl_class_form != 'sq':
         raise ValueError('the apl_* / rate_criterion / zcell options need variant=apl')
     weights = loss_weights(variant)
     if apl_class_term:
@@ -926,7 +936,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
                 if apl_class_term:
                     # (E74 part C) the class-resolved term, at the calibration the reading just used
                     out.update(E74.class_term_stats(s_on, s_off, zcell, zcal))
-                    terms['apl_class'] = out['apl_class_mse'] / class_floor ** 2
+                    terms['apl_class'] = (out['apl_class_mse'] / class_floor ** 2 if apl_class_form == 'sq'
+                        else out['apl_class_rmse'] / class_floor)
             part = 'pattern' if apl_pattern_only else 'rmse'
             if apl_readout == 'both':
                 terms['apl_raw'] = out[f'apl_raw_{part}'] / apl_floor
@@ -960,8 +971,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     if use_zcell:
         loss_fn.apl.update(rate_criterion=rate_criterion, zcell=zcell)
     if apl_class_term:
-        loss_fn.apl.update(class_term=dict(weight=APL_CLASS_WEIGHT, floor=float(class_floor), n_recordings=E74.N_RECORDINGS,
-            n_trials=E74.N_TRIALS, seed=E74.SEED, classes=list(E74.CLASSES)))
+        loss_fn.apl.update(class_term=dict(weight=APL_CLASS_WEIGHT, form=apl_class_form, floor=float(class_floor),
+            n_recordings=E74.N_RECORDINGS, n_trials=E74.N_TRIALS, seed=E74.SEED, classes=list(E74.CLASSES)))
     loss_fn.apl_class_term = bool(apl_class_term)
     # (E73 part C) the reading's settings, or None; the held calibration ('calibrate' 'start'; cleared per fit)
     loss_fn.zcell = zcell if use_zcell else None
@@ -1263,8 +1274,11 @@ def main() -> None:
         "--rate-criterion zcell); tag part -cal1 for start")
     ap.add_argument('--apl-class-term', action='store_true',
         help="with --loss apl --apl-readout zcell: add the class-resolved term (E74 part C: the per-pair APL effect by "
-        "odors-per-KC class under the reading, model minus data, squared over its floor, weight 1); tag part cls after the "
+        "odors-per-KC class under the reading, model minus data, over its floor, weight 1); tag part cls after the "
         "APL readout")
+    ap.add_argument('--apl-class-form', choices=list(APL_CLASS_FORMS), default=None,
+        help="with --apl-class-term: the class term's form, 'sq' (default; the mean squared difference over the floor's "
+        "square) or 'lin' (the class-resolved loss over its floor, the APL term's form; tag part clslin)")
     ap.add_argument('--apl-pattern-only', action='store_true',
         help='with --loss apl: the APL-effect term on the pattern part only (both means removed); tag part pat')
     ap.add_argument('--apl-block-term', action='store_true',
@@ -1461,6 +1475,9 @@ def main() -> None:
         ap.error('--zcell-q / --zcell-map / --zcell-calibrate need --apl-readout zcell or --rate-criterion zcell')
     if args.apl_class_term and (args.loss != 'apl' or args.apl_readout != 'zcell'):
         ap.error('--apl-class-term needs --loss apl --apl-readout zcell')
+    if args.apl_class_form is not None and not args.apl_class_term:
+        ap.error('--apl-class-form needs --apl-class-term')
+    class_form = args.apl_class_form or 'sq'
     zcell, zcell_tag = None, ''
     if use_zcell:
         q_window = H.data_target('zcell_q_window')
@@ -1483,7 +1500,7 @@ def main() -> None:
         jitter_trials=args.jitter_trials, proxy=proxy,
         **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
             apl_opk_term=args.apl_opk_term, rate_criterion=args.rate_criterion, zcell=zcell,
-            **(dict(apl_class_term=True) if args.apl_class_term else {})) if args.loss == 'apl' else {}))
+            **(dict(apl_class_term=True, apl_class_form=class_form) if args.apl_class_term else {})) if args.loss == 'apl' else {}))
     if loss_fn.apl is not None:
         print(f"APL-effect loss: readout {args.apl_readout}{', pattern part only' if args.apl_pattern_only else ''}"
             f"{', block under the readout' if args.apl_block_term else ''}{', odors per KC with APL off' if args.apl_opk_term else ''}; "
@@ -1499,7 +1516,8 @@ def main() -> None:
     if args.apl_class_term:
         ct = loss_fn.apl['class_term']
         print(f"class term (E74 part C): the per-pair APL effect by odors-per-KC class under the reading, model minus data, "
-            f"squared over its floor {ct['floor']:.4f}, weight {ct['weight']:g}; {ct['n_recordings']} pseudo-recordings of "
+            + ('squared over its floor' if ct['form'] == 'sq' else 'root mean square over its floor')
+            + f" {ct['floor']:.4f} (form {ct['form']}), weight {ct['weight']:g}; {ct['n_recordings']} pseudo-recordings of "
             f"{ct['n_trials']} trials, seed {ct['seed']}", flush=True)
     if proxy is not None:
         print(f"block term on the proxy: {proxy['passes']} passes{' with relaxation' if proxy['relax'] else ''}, sigma "
@@ -1551,7 +1569,8 @@ def main() -> None:
     loss_tag = f"rho{loss_weights('rho')['on_mat']:g}_" if args.loss == 'rho' else ''
     if args.loss == 'apl':
         loss_tag = (f'apl{args.apl_readout}' + ('pat' if args.apl_pattern_only else '') + ('blk' if args.apl_block_term else '')
-            + ('opk' if args.apl_opk_term else '') + ('cls' if args.apl_class_term else '') + '_')
+            + ('opk' if args.apl_opk_term else '') + (('cls' + ('' if class_form == 'sq' else class_form)) if args.apl_class_term else '')
+            + '_')
     prefix = zcell_tag + {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + kc_tag + thrin_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
@@ -1644,8 +1663,8 @@ def main() -> None:
             **({f'proxy_{kk}': vv for kk, vv in proxy.items()} if proxy is not None else {}),
             **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
                 apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}),
-            # (E74 part C: the class-resolved term; absent when not used)
-            **(dict(apl_class_term=True) if args.apl_class_term else {}),
+            # (E74 part C: the class-resolved term and its form; absent when not used)
+            **(dict(apl_class_term=True, apl_class_form=class_form) if args.apl_class_term else {}),
             # (E73 part C: the per-KC session z-score reading's settings; absent when not used)
             **(dict(rate_criterion=args.rate_criterion, zcell_q=loss_fn.zcell['q'], zcell_map=loss_fn.zcell['amp'],
                 zcell_calibrate=loss_fn.zcell['calibrate'], zcell_drift=loss_fn.zcell['drift'])

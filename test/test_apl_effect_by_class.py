@@ -3,9 +3,9 @@
 scripts/claude_pair_remapping_experiments/kc_remapping_harness.py `class_cosine_terms`, `apl_effect_by_class`;
 E74_apl_effect_by_odors_per_kc.py's class-resolved loss, pattern-error shares, readings and the class term of the joint
 fit): the classes add up to the cosine and to the APL effect per pair, one class gives `apl_effect` / `apl_effect_stats`,
-a naive per-unit sum and a synthetic population with a known split are recovered. The tests of E74's module need the
-shared directory (the KC data and the data-target registry) and are skipped without it; the joint fit's option
-(`--apl-class-term`) is tested in test_e10_zcell.py."""
+a naive per-unit sum and a synthetic population with a known split are recovered, and the per-condition table reads
+the levels. The tests of E74's module need the shared directory (the KC data and the data-target registry) and are
+skipped without it; the joint fit's options (`--apl-class-term`, `--apl-class-form`) are tested in test_e10_zcell.py."""
 
 import sys
 from pathlib import Path
@@ -236,3 +236,34 @@ def test_class_term_stats_is_the_reading():
     assert np.isclose(st['apl_class_rmse'] ** 2, st['apl_class_mse'])
     assert st['apl_class_floor'] == H.data_target('apl_class_rmse_floor')
     assert E.class_term_stats(s_on, s_off, zc, cal) == st          # the same draws at every evaluation
+
+
+def test_per_condition_table():
+    """The per-condition table: a model whose class arrays are the data's reproduces the data's levels and effects, a
+    level moved above the data's interval is marked so, and the 1-to-3 class is the sum of its parts when a by_variant
+    table has no column for it."""
+    E = _shared()
+    tables = E.data_tables(50, seed=0)
+    d = E.data_class_terms()
+    blk = dict(on=d['arrays']['TNT3c'].mean(axis=0), off=d['arrays']['TNT'].mean(axis=0))
+    blk['effect'] = blk['off'] - blk['on']
+    st = E._variant_stats(blk, E.data_effect_array())
+    (s, _, f, t), (s2, _, f2, t2) = E.KEY_MODELS[:2]
+    moved = dict(st, level_on_4_7=st['level_on_4_7'] + 1.0)
+    df = pd.DataFrame([dict(folder=f, tag=t, reading='cal2', **st), dict(folder=f2, tag=t2, reading='zcell', **moved)])
+    pc = E.per_condition_table(df, tables)
+    dat = pc[pc.reading == 'data'].set_index('class')
+    m = pc[pc.model == s].set_index('class')
+    for cls in E.PC_CLASSES:
+        for q in ('level_on', 'level_off', 'effect'):
+            assert np.isclose(m.loc[cls, q], dat.loc[cls, q], rtol=0, atol=1e-12), (cls, q)
+            assert dat.loc[cls, f'{q}_lo'] <= dat.loc[cls, f'{q}_hi']
+    m2 = pc[pc.model == s2].set_index('class')
+    assert (m2.reading == 'zcell').all()
+    assert m2.loc['4_7', 'level_on_outside'] == 'above'
+    assert np.isclose(m2.loc['4_7', 'effect'], dat.loc['4_7', 'effect'] - 1.0)
+    pc2 = E.per_condition_table(df.drop(columns=['level_on_1_3', 'level_off_1_3']), tables)
+    assert np.allclose(pc2.level_on.to_numpy(float), pc.level_on.to_numpy(float), equal_nan=True)
+    assert np.allclose(pc2.level_off.to_numpy(float), pc.level_off.to_numpy(float), equal_nan=True)
+    md = E.per_condition_md(pc)
+    assert sum(l.startswith('| KC data |') for l in md) == 2 and any('↑' in l for l in md)

@@ -53,20 +53,24 @@ Part A (no simulations):
   archive's sweeps as series on the 4-7 class's effect (series.csv); the variant with the lowest
   class-resolved loss inside the bands; part C's condition (the data's 4-7 interval excludes the best
   fits' values, and the floor of the class-resolved loss is at most half the best fits' class-resolved
-  loss).
+  loss); the per-condition table (per_condition.csv): each class's similarity level with APL on and with
+  APL off for the key models beside the data's (control flies, APL output blocked (TNT)) with intervals,
+  under both readings, marking the model values outside the data's interval.
 
 Part C support: `class_term_stats` gives E10_joint_fit.py's `--apl-class-term` (the mean over the five
 classes and 120 pairs of the squared difference between the model's and the data's per-class effect under
-the reading, over the square of the class-resolved loss's floor; the pseudo-recordings' noise drawn once,
-seed 43, the same at every evaluation).
+the reading, over the square of the class-resolved loss's floor, or with `--apl-class-form lin` its root over
+the floor; the pseudo-recordings' noise drawn once, seed 43, the same at every evaluation). `--check-e10
+<off|on|lin>` runs E73 part C's fit 2 for one evaluation at its optimum with the class term off, on in the
+squared form or on in the linear form (outputs/E74_apl_effect_by_odors_per_kc/e10_check/option_<...>/).
 
 Outputs in <shared>/results/E74_apl_effect_by_odors_per_kc/: data_by_class.csv (per class, criterion and
 term: the mean effect, variance share and levels with 90 % intervals, class sizes), data_by_recording.csv,
 data_pairs_by_class.csv (the data's per-pair class effects), floor.csv, yardstick.csv, by_variant.csv (one
-row per variant x reading), pairs_key_models.csv, wirings.csv, rank_correlations.csv, series.csv,
-comparison_table.md, E74_classes.png, E74_series.png, provenance.json (with H.model_provenance).
+row per variant x reading), pairs_key_models.csv, per_condition.csv, wirings.csv, rank_correlations.csv,
+series.csv, comparison_table.md, E74_classes.png, E74_series.png, provenance.json (with H.model_provenance).
 Usage: nice -n 10 ./venv/bin/python -u E74_apl_effect_by_odors_per_kc.py [--jobs 4] [--only-key] [--boot 2000]
-       [--summarize-only]
+       [--summarize-only] [--check-e10 off|on|lin]
 """
 from __future__ import annotations
 
@@ -142,6 +146,10 @@ KEY_MODELS = [
      'zcaplrate_rate0.068_aplzcell_refr3_adapt0.04142t1000_k2_cap3'),
     ('fit S', 'the ceiling family with the input-scaled threshold at 0.25 fitted under the per-KC reading (E74 fit S)', EXPERIMENT,
      'zcaplrate_rate0.068_aplzcell_refr3_adapt0.04142t1000_thrin0.25_k2'),
+    ('part C fit 1', 'the ceiling family fitted under the per-KC reading with the class term, linear form (E74 part C, fit C1)',
+     EXPERIMENT, 'zcaplrate_rate0.068_aplzcellclslin_refr3_adapt0.04142t1000_k2'),
+    ('part C fit 2', 'the same with the input-scaled threshold at 0.25, from fit S (E74 part C, fit C2)', EXPERIMENT,
+     'zcaplrate_rate0.068_aplzcellclslin_refr3_adapt0.04142t1000_thrin0.25_k2'),
     ('ref.', 'the reference model (eight glomeruli at 1.5, 40 Hz per-claw threshold, 6.8 %; E44)', 'E44_operating_point',
      'thr40_gain1.5_rate0.068_k2_cap3'),
     ('first joint fit', 'the first joint fit (breadth exponent 2 with KC-KC inhibition, 5 %; E10)', 'E10_joint_fit', 'k2'),
@@ -572,6 +580,9 @@ def _variant_stats(blk: dict, data: np.ndarray) -> Dict[str, float]:
         out[f'level_on_{cls}'] = float(np.nanmean(blk['on'][:, c, TOTAL]))
         out[f'level_off_{cls}'] = float(np.nanmean(blk['off'][:, c, TOTAL]))
     out['eff_1_3'] = out['eff_1'] + out['eff_2_3']
+    i1, i2 = CLASSES.index('1'), CLASSES.index('2_3')
+    for c in ('on', 'off'):
+        out[f'level_{c}_1_3'] = float(np.nanmean(blk[c][:, i1, TOTAL] + blk[c][:, i2, TOTAL]))
     out['class_rmse'] = class_loss(eff, data)
     ce = eff[:, :ALL, TOTAL] - data[:, :ALL, TOTAL]
     out['class_rmse_centered'] = _rms(ce - np.nanmean(ce, axis=0))
@@ -849,6 +860,94 @@ def part_c_condition(df: pd.DataFrame, tables: Dict[str, pd.DataFrame]) -> Dict[
     return out
 
 
+PC_CLASSES = ('0', '1', '2_3', '1_3', '4_7', '8plus', 'all')
+PC_READINGS = ('cal2', 'zcell', 'zcell_free', 'zcell_trials')
+
+
+def per_condition_table(df: pd.DataFrame, tables: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """The per-condition table: each class's similarity level with APL on and with APL off (the mean over the 120 pairs
+    of the class's contribution to the pair's cosine similarity, `level_on_<class>` / `level_off_<class>`) and the
+    effect (APL off minus on), for the KC data at 1 z (control flies as APL on, APL output blocked (TNT) as APL off;
+    observed with the 90 % recording-bootstrap interval of data_by_class) and the archived key models under each
+    reading of `PC_READINGS`. Model rows also carry their difference from the data's value and whether it lies outside
+    the data's interval ('above' / 'below' / ''). One row per (model, reading, class)."""
+    d = tables['data_by_class']
+    d = d[(d.criterion == 1.0) & (d.term == 'total')]
+    data = {}
+    for q in ('level_on', 'level_off', 'effect'):
+        s = d[d.quantity == q]
+        for cls, o, lo, hi in zip(s['class'].astype(str), s.observed, s.lo, s.hi):
+            data[(q, cls)] = (float(o), float(lo), float(hi))
+    rows = []
+    for cls in PC_CLASSES:
+        row = dict(model='KC data', label="KC data at 1 z: control flies (APL on), APL output blocked (TNT) (APL off)",
+            folder='', tag='', reading='data', **{'class': cls})
+        for q in ('level_on', 'level_off', 'effect'):
+            v, lo, hi = data.get((q, cls), (np.nan, np.nan, np.nan))
+            row.update({q: v, f'{q}_lo': lo, f'{q}_hi': hi})
+        rows.append(row)
+    for s, lab, f, t in KEY_MODELS:
+        g = df[(df.folder == f) & (df.tag == t)]
+        for rd in PC_READINGS:
+            r = g[g.reading == rd]
+            if not len(r):
+                continue
+            r = r.iloc[0]
+            for cls in PC_CLASSES:
+                row = dict(model=s, label=lab, folder=f, tag=t, reading=rd, **{'class': cls})
+                for c in ('on', 'off'):
+                    col = f'level_{c}_{cls}'
+                    if col in r.index and pd.notna(r[col]):
+                        v = float(r[col])
+                    elif cls == '1_3':
+                        v = float(r[f'level_{c}_1'] + r[f'level_{c}_2_3'])
+                    else:
+                        v = np.nan
+                    row[f'level_{c}'] = v
+                row['effect'] = row['level_off'] - row['level_on']
+                for q in ('level_on', 'level_off', 'effect'):
+                    dv, lo, hi = data.get((q, cls), (np.nan, np.nan, np.nan))
+                    row[f'{q}_minus_data'] = row[q] - dv
+                    row[f'{q}_outside'] = 'above' if row[q] > hi else ('below' if row[q] < lo else '')
+                rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def per_condition_md(pc: pd.DataFrame, readings: Sequence[str] = ('cal2', 'zcell')) -> List[str]:
+    """comparison_table.md's section of the per-condition table (`per_condition_table`), one table per reading."""
+    show = ('0', '1_3', '4_7', '8plus', 'all')
+    dat = pc[pc.reading == 'data'].set_index('class')
+
+    def dcell(cls, q):
+        r = dat.loc[cls]
+        return f'{f3(r[q], ".3f")} ({f3(r[q + "_lo"], ".3f")} to {f3(r[q + "_hi"], ".3f")})'
+
+    def mcell(r, q):
+        mark = {'above': ' ↑', 'below': ' ↓'}.get(r[f'{q}_outside'], '')
+        return f3(r[q], '.3f') + mark
+
+    L = ['## Per condition: the similarity each class carries with APL on and with APL off', '',
+        'Each class\'s level is the mean over the 120 pairs of its contribution to the pair\'s cosine similarity; the per-pair APL '
+        'effect of the class is the level with APL off minus the level with APL on. KC data at 1 z, with 90 % intervals over '
+        'resamples of recordings: APL on = control flies, APL off = APL output blocked (TNT). A model value above the data\'s '
+        'interval is marked ↑, below it ↓. All values in per_condition.csv (also the 1 and 2-to-3 classes, the reading without '
+        'the noise and the saved jittered trials).', '']
+    for rd in readings:
+        g = pc[pc.reading == rd]
+        if not len(g):
+            continue
+        L += [f'### {READING_LABEL[rd]}', '',
+            '| model | ' + ' | '.join(f'{CLASS_LABEL[c]} {{span=2}}' for c in show) + ' |',
+            '| | ' + ' | '.join('APL on | APL off' for _ in show) + ' |',
+            '|---|' + '---:|' * (2 * len(show))]
+        L.append('| KC data | ' + ' | '.join(f'{dcell(c, "level_on")} | {dcell(c, "level_off")}' for c in show) + ' |')
+        for s in dict.fromkeys(g.model):
+            m = g[g.model == s].set_index('class')
+            L.append(f'| {s} | ' + ' | '.join(f'{mcell(m.loc[c], "level_on")} | {mcell(m.loc[c], "level_off")}' for c in show) + ' |')
+        L.append('')
+    return L
+
+
 def f3(x, spec: str = '+.3f') -> str:
     try:
         return '–' if x is None or not np.isfinite(float(x)) else format(float(x), spec)
@@ -857,7 +956,7 @@ def f3(x, spec: str = '+.3f') -> str:
 
 
 def write_table(out: Path, df: pd.DataFrame, tables: Dict[str, pd.DataFrame], wires: pd.DataFrame, rc: pd.DataFrame,
-    ser: pd.DataFrame, cond: dict, ref: Dict[str, float], runtime: Optional[float]) -> None:
+    ser: pd.DataFrame, cond: dict, ref: Dict[str, float], runtime: Optional[float], pc: Optional[pd.DataFrame] = None) -> None:
     d = tables['data_by_class']
     L = ['# Who carries the APL effect: the per-pair APL effect split by odors per KC (E74 part A)', '',
         'A pair\'s cosine similarity is a sum over KCs; each KC is put, in each condition, in a class by the number of the 16 odors '
@@ -920,6 +1019,8 @@ def write_table(out: Path, df: pd.DataFrame, tables: Dict[str, pd.DataFrame], wi
                 f'{r.apl_pattern:.3f} | {shares} | {r.eff_all_one:+.3f} / {r.sub_terms:+.3f} | {bands} |')
         L.append('')
     L += ['Key models: ' + '; '.join(f'{s}: {lab} ({f} {t})' for s, lab, f, t in KEY_MODELS) + '.', '']
+    if pc is not None and len(pc):
+        L += per_condition_md(pc)
     # under the reading: the sub-threshold part and the band
     g = df[df.reading == 'zcell']
     if len(g):
@@ -1182,7 +1283,9 @@ def summarize(out: Path, df: pd.DataFrame, blocks: Dict[tuple, dict], tables: Di
                 rows.append(dict(model=lab, folder=f, tag=t, reading=rd, odor_a=a, odor_b=bb,
                     **{f'eff_{c}': float(eff[p, i, TOTAL]) for i, c in enumerate(CLASSES_ALL)}))
     pd.DataFrame(rows).to_csv(out / 'pairs_key_models.csv', index=False)
-    write_table(out, df, tables, wires, rc, ser, cond, ref, runtime)
+    pc = per_condition_table(df, tables)
+    pc.to_csv(out / 'per_condition.csv', index=False)
+    write_table(out, df, tables, wires, rc, ser, cond, ref, runtime, pc)
     try:
         figures(out, df, tables, ser, ref)
     except Exception as e:
@@ -1197,6 +1300,8 @@ E10_CHECK_ARGS = ['-k', '2', '--aplpn-max', '3', '--rate-target', 'ctrl_frac', '
     '--rate-criterion', 'zcell', '--kc-refractory-period', '0.003', '--kc-adapt-inc', '0.041417845143644', '--kc-adapt-tau', '1.0',
     '--maxfev', '1', '--init-from-exact', '--tag', '_cap3']
 E10_PARAM_COLS = ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'wKCKC_scale')
+# --check-e10's settings: the class term off, on in the squared form (the default), on in the linear form
+E10_CHECK_EXTRA = {'off': [], 'on': ['--apl-class-term'], 'lin': ['--apl-class-term', '--apl-class-form', 'lin']}
 
 
 def check_e10(name: str, extra: Sequence[str] = ()) -> dict:
@@ -1255,12 +1360,12 @@ def main() -> None:
     ap.add_argument('--only-key', action='store_true', help='only the key models and E72\'s wirings')
     ap.add_argument('--boot', type=int, default=2000, help='resamples of recordings for the data\'s intervals and floor')
     ap.add_argument('--summarize-only', action='store_true', help='the tables and figures again from the saved by_variant.csv')
-    ap.add_argument('--check-e10', choices=['off', 'on'], default=None, help='part C\'s check of E10_joint_fit.py instead of part A: '
-        'E73 part C\'s fit 2 started at its optimum for one evaluation, with --apl-class-term off (must reproduce the saved best '
-        'evaluation) or on; set OMP_NUM_THREADS for the simulations')
+    ap.add_argument('--check-e10', choices=list(E10_CHECK_EXTRA), default=None, help='part C\'s check of E10_joint_fit.py instead '
+        'of part A: E73 part C\'s fit 2 started at its optimum for one evaluation, with --apl-class-term off (must reproduce the '
+        'saved best evaluation), on (the squared form) or on in the linear form (lin); set OMP_NUM_THREADS for the simulations')
     args = ap.parse_args()
     if args.check_e10:
-        r = check_e10(f'option_{args.check_e10}', ['--apl-class-term'] if args.check_e10 == 'on' else [])
+        r = check_e10(f'option_{args.check_e10}', E10_CHECK_EXTRA[args.check_e10])
         print(json.dumps(r, indent=1, default=str), flush=True)
         return
     warnings.simplefilter('ignore', RuntimeWarning)
