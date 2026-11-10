@@ -40,9 +40,15 @@ needed.
    ```
    cd ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments && claude
    ```
-   Use Opus 5.5 or newer, or Fable, at xhigh effort or above, if you want the session to write
-   code and write-ups; other models and lower efforts only run scripts that are already written.
-4. Ask it to "join the work queue"
+   Run the session on Opus 5.5 or newer at xhigh effort (set with `/model` and `/effort`), never
+   on Fable. At that level it writes code and write-ups as well as running experiments; a smaller
+   model or a lower effort only runs scripts that are already written. Planning (proposing
+   experiments, ordering the queue, writing the all-experiments summary) is done by short-lived
+   Fable helpers that the session starts, and only if your account allows it: the first time,
+   the session asks you whether it may use them and records your answer in the shared folder
+   (tell any of your sessions to change it). Without Fable, your machine still runs and writes up
+   experiments, and other machines do the planning.
+4. Ask it to "join the work queue".
 
 Everything the queue uses lives in ~/src/kc_queue: its own copies of al_analysis, olfsysm and
 hong2p, and a new Python environment, ~/src/kc_queue/al_analysis/venv. Your other checkouts in
