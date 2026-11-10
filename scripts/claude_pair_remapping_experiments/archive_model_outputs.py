@@ -46,6 +46,7 @@ PARAM_COLS = ['tag', 'variant', 'base', 'config', 'kind', 'point', 'part', 'seed
     'gain_glomeruli', 'factor', 'scaled_odors', 'k', 'm', 'breadth', 'breadth_k', 'n_claws_active_to_spike',
     'coinput_factor', 'apl_unit_coupling', 'coupling', 'kc_set', 'kc_scale', 'bouton_scale', 'ext_inh_scale',
     'pn_inhadd', 'pn_inhsc', 'pn_apl_multiplier', 'multibouton_claws', 'claw_weight', 'wiring', 'wiring_seed',
+    'wiring_file', 'wiring_tag',
     'apl_drive', 'pn_claw_to_apl', 'apl_inh_divisive', 'bouton_inh_divisive', 'base_params', 'breadth_def', 'apl_kc_factor',
     'arm', 'orn_input', 'multiplier_min', 'multiplier_max', 'multiplier_geomean', 'scale_min', 'scale_max', 'cal_readout_param',
     'init_params', 'aplpn_max', 'aplpn_fixed', 'aplkc_min',

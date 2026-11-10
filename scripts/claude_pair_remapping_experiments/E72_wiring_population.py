@@ -260,7 +260,8 @@ def score(out: Path) -> None:
     p67 = pd.read_csv(H.results_dir('E67_apl_effect_fits') / 'fits.csv').set_index('tag')
     for lab, folder, tag, o in fits:
         p = (p67 if folder == 'E67_apl_effect_fits' else params).loc[tag]
-        rows.append(dict(wiring=lab, folder=folder, tag=tag, **full_row(o),
+        # (wiring_label, not wiring: archive_model_outputs.py reads `wiring` as the named shuffle)
+        rows.append(dict(wiring_label=lab, folder=folder, tag=tag, **full_row(o),
             **{c: p[c] for c in ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'kc_kc_inh', 'thr_factor',
                                  'apl_factor_vs_e3', 'aplpn_factor_vs_e3', 'loss', 'n_evals') if c in p.index},
             input_balance=float(p['wPNAPL_scale'] / p['wKCAPL_scale'])))
@@ -290,7 +291,7 @@ def score(out: Path) -> None:
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
         members=members)
     (out / 'provenance_score.json').write_text(json.dumps(prov, indent=1) + '\n')
-    print(st[['wiring', 'raw_loss', 'raw_pattern', 'cal_loss', 'cal_mean', 'cal_pattern', 'cal_block', 'rate_on', 'ratio', 'rate_rho_on',
+    print(st[['wiring_label', 'raw_loss', 'raw_pattern', 'cal_loss', 'cal_mean', 'cal_pattern', 'cal_block', 'rate_on', 'ratio', 'rate_rho_on',
               'opk_off_dist', 'kc_kc_inh', 'thr_factor', 'realism_flag']].round(3).to_string())
     if pops:
         print(pd.DataFrame(pops)[['group', 'n_wirings', 'raw_loss', 'raw_pattern', 'cal_loss', 'cal_mean', 'cal_pattern', 'binary_loss']].round(3).to_string())
@@ -310,7 +311,7 @@ def write_table(st: pd.DataFrame, pops: pd.DataFrame, out: Path) -> None:
          'response rate APL on;<br>ratio | response rate ρ<br>APL on | odors per KC<br>APL on / off | KC–KC | somatic threshold<br>(x base) | realism |',
          '|---|' + '---:|' * 11 + '---|']
     for _, r in st.iterrows():
-        L.append(f"| {r['wiring']} | {_f(r['raw_loss'], '.3f')} / {_f(r['cal_loss'], '.3f')} | {_f(r['raw_mean'], '+.3f')} / {_f(r['cal_mean'], '+.3f')} | "
+        L.append(f"| {r['wiring_label']} | {_f(r['raw_loss'], '.3f')} / {_f(r['cal_loss'], '.3f')} | {_f(r['raw_mean'], '+.3f')} / {_f(r['cal_mean'], '+.3f')} | "
                  f"{_f(r['raw_pattern'], '.3f')} / {_f(r['cal_pattern'], '.3f')} | {_f(r['cal_per_odor'], '.3f')} / {_f(r['cal_pair_specific'], '.3f')} | "
                  f"{_f(r['raw_rho'], '.2f')} / {_f(r['cal_rho'], '.2f')} | {_f(r['raw_block'], '.3f')} / {_f(r['cal_block'], '.3f')} | "
                  f"{_f(r['rate_on'], '.3f')}; {_f(r['ratio'], '.2f')} | {_f(r['rate_rho_on'], '.2f')} | {_f(r['opk_on_dist'], '.2f')} / {_f(r['opk_off_dist'], '.2f')} | "
@@ -454,12 +455,12 @@ def figures(out: Path) -> None:
     paired = pd.read_csv(out / 'partC_paired.csv') if (out / 'partC_paired.csv').exists() else pd.DataFrame()
     popfit = json.loads((out / 'population_fit.json').read_text()) if (out / 'population_fit.json').exists() else None
     order = [REAL] + [lab for lab, _ in sorted(DRAWS, key=lambda x: (x[0][0] != 'P', x[0]))]
-    order = [w for w in order if w in set(st.wiring)]
+    order = [w for w in order if w in set(st.wiring_label)]
     x = {w: i for i, w in enumerate(order)}
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), sharey=False)
     for ax, ro, title in ((axes[0], 'cal', 'calibrated readout'), (axes[1], 'raw', 'raw spike counts')):
         for _, r in st.iterrows():
-            w = r['wiring']
+            w = r['wiring_label']
             c = COLORS['ink'] if w == REAL else COLORS[w[0]]
             ax.plot(x[w], r[f'{ro}_loss'], 'o', ms=8, color=c, mec='white', mew=1.5, zorder=3)
         if len(paired):
@@ -722,9 +723,48 @@ def population_fit(wirings: Sequence[str], held_out: Sequence[str], maxfev: int 
     return result
 
 
+def popfit_tables(out: Path) -> None:
+    """Part D's outputs in the experiment's shared tables: each wiring at the shared parameter set (popfit_<wiring>,
+    saved by population_fit) gets its pair distances appended to model_pair_distances_long.csv (as E10_joint_fit.py
+    writes a fit's; skipped for tags already there) and a row of parameters in variants.csv (the shared set, each
+    wiring's tied KC->APL and bouton->APL scales, its wiring), for apl_effect_scores.py and the model-output archive."""
+    import E10_joint_fit as J
+    res = json.loads((out / 'population_fit.json').read_text())
+    theta, ratios = res['theta'], res['ratios']
+    long_path = out / 'model_pair_distances_long.csv'
+    have = set(pd.read_csv(long_path, usecols=['tag']).tag) if long_path.exists() else set()
+    rows, pairs = [], []
+    for lab in list(res['wirings']) + list(res['held_out']):
+        tag = f'popfit_{lab}'
+        o = load_fit(EXPERIMENT, tag)
+        if o is None:
+            print(f'{tag}: no saved outputs')
+            continue
+        r_kc, r_pn = ratios[lab]
+        row = dict(tag=tag, variant=tag, part='D', base='bouton', k=2.0, kc_kc_tau=J.TAU, fixed_thr=theta['fixed_thr'],
+                   wAPLKC_scale=theta['wAPLKC_scale'], wKCAPL_scale=theta['wAPLKC_scale'] * r_kc, wAPLPN_scale=theta['wAPLPN_scale'],
+                   wPNAPL_scale=theta['wAPLKC_scale'] * r_pn, kc_kc_inh=theta['wKCKC_scale'], wiring_label=lab,
+                   fitted_on=','.join(res['wirings']), held_out=lab in res['held_out'],
+                   rate_on=float(o['on'][0].to_numpy(dtype=float).mean()), rate_off=float(o['off'][0].to_numpy(dtype=float).mean()))
+        if lab.startswith('P'):
+            row.update(wiring='claw_permutation_within_type', wiring_seed=int(lab[1:]))
+        elif lab.startswith('M'):
+            path, wtag = M_FILES[lab]
+            row.update(wiring_file=str(path), wiring_tag=wtag)
+        rows.append(row)
+        if tag not in have:
+            pairs.append(pd.concat({(tag, 'on'): H.model_rdms(*o['on'])[H.PRIMARY_MODEL_RDM],
+                                    (tag, 'acute_off'): H.model_rdms(*o['off'])[H.PRIMARY_MODEL_RDM]},
+                                   names=['tag', 'condition', 'odor_a', 'odor_b']).rename('distance').reset_index())
+    pd.DataFrame(rows).to_csv(out / 'variants.csv', index=False)
+    if pairs:
+        pd.concat(pairs, ignore_index=True).to_csv(long_path, index=False, mode='a', header=not long_path.exists())
+    print(f'variants.csv: {len(rows)} rows; pair distances appended for {len(pairs)} tags ({len(rows) - len(pairs)} already there)')
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', default='score', choices=['A', 'score', 'C-score', 'D', 'D-check', 'E-score', 'G-score', 'figures'])
+    ap.add_argument('--part', default='score', choices=['A', 'score', 'C-score', 'D', 'D-check', 'D-tables', 'E-score', 'G-score', 'figures'])
     ap.add_argument('--maxfev', type=int, default=150)
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
@@ -739,6 +779,8 @@ def main() -> None:
         part_e_score(out)
     elif args.part == 'G-score':
         part_g_score(out)
+    elif args.part == 'D-tables':
+        popfit_tables(out)
     elif args.part == 'figures':
         figures(out)
     else:
