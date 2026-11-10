@@ -8,6 +8,25 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### The claw-count thresholds of the KC heterogeneity experiment (E5) were not applied (found 2026-11-10, atlas's planning subagent)
+- **What.** E5_kc_heterogeneity.py's `thr_nclaws_0.5` / `thr_nclaws_1` variants pass a per-KC vector as `fixed_thr` to the simulator of
+  `make_fixed_param_kc_simulator`, whose `simulate` computes `thr = params['fixed_thr'] + spont_in * 2.0` with `spont_in` a column
+  (checked in al_analysis/mb_model.py by atlas, 2026-11-10 04:55): the vector broadcasts to a KC × KC matrix, and by the archived counts every
+  KC got the first KC's value. Evidence (the planning subagent's read-only probe of the archive): against the base, 88 and 181 of the 27,712
+  spike counts differ with APL on (190 and 377 with APL off), none by more than one spike, although the nominal thresholds have a coefficient
+  of variation of 0.22 and 0.41; the first KC's value times the bisected scale is 169.9 and 169.5 against the base's common 170.3, which is the
+  whole change; per-type response rates are identical to the base's. hal's probe (notes/E5_hal_probe_claw_dynamics.md, "thr ∝ claws^k") used
+  the same simulator and reports statistics identical to the base to three decimals. `kc_thr_factor` (reshaped to `spont_in`'s shape) is the
+  working route.
+- **Affects.** E5's result 1 and interpretation as far as they concern per-KC thresholds by claw count (the per-type thresholds, set inside
+  `fit_mb_model`, are not affected); hal's probe note; the two archived variants in results/E5_kc_heterogeneity/ and
+  data/model_outputs/E5_kc_heterogeneity/ (they are the base with a common threshold 0.2 to 0.5 % lower); the summary's "What did not matter"
+  bullet on KC heterogeneity. Nothing that uses `kc_thr_factor` (the trial-noise jitter, E43 onwards).
+- **Done.** The input-scaled KC threshold experiment (E71, claimed by atlas 2026-11-10 04:50) runs the test through `kc_thr_factor`; its code
+  subagent confirms what olfsysm received and adds a guard in `simulate` refusing a non-scalar `fixed_thr`, with a test.
+- **Remains.** The guard and its test (E71's code); annotations on E5's note and page and on hal's probe note; the two archived variants
+  marked; the summary bullet corrected.
+
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
 - **What.** Several experiment scripts call `model_provenance()` (al_analysis commit, dirty flag and

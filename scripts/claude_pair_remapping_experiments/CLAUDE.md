@@ -1040,6 +1040,7 @@ Canonical experiment names for summary reports:
 | E68 | the low end of the readout |
 | E69 | the firing ceiling for the KCs |
 | E70 | the high-firing KCs that survive APL |
+| E71 | the input-scaled KC threshold |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
