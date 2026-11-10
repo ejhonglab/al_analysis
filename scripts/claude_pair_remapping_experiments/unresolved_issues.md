@@ -8,7 +8,7 @@ directory's notes/ and are linked from here.
 
 ## Open
 
-### The KC data's amplitudes and response criterion may be relative to each cell's whole-recording spread (found 2026-11-10, hal's planning subagent)
+### The KC data's amplitudes and response criterion are relative to each cell's whole-recording spread (found 2026-11-10, hal's planning subagent; confirmed by Yang)
 - **What.** Yang's per-trial KC values (files suffixed `zscored_full`) look z-scored per cell over the whole recording, not against a
   pre-odor baseline: in every one of the 19 APL16 recordings the per-KC mean of squared trial values has a sharp upper edge (99.9th
   percentile within 0.6 of the maximum; maxima 3.64 to 4.99 in control flies, 4.90 to 5.83 with APL output blocked (TNT)), the largest
@@ -19,10 +19,13 @@ directory's notes/ and are linked from here.
   amplitudes and the "strong tail" readings; E65's calibration targets), the data's response criterion (trial mean above 1 z) against the
   model's two-spike criterion, so the response rates, their ratio, the per-odor rates and the odors-per-KC distributions (all four realism
   bands, every fit's operating point), and the low-concentration fractions (E49, E72's part F).
-- **Done.** The probes (in the E73 entry of experiment_priorities.md); the per-KC normalization of the recordings (E73) is claimed by hal to
-  test it (part A) and read every archived model the same way (part B).
-- **Remains.** E73's parts A and B; Yang's confirmation of how the responses were z-scored (the question goes to Tom); re-reading or annotating
-  the affected outputs depending on the answer.
+- **Done.** The probes (in the E73 entry of experiment_priorities.md); confirmed by Yang (2026-11-10 10:00, in viki's session) and from her
+  pipeline: each KC's suite2p Fc = F - 0.7 Fneu is z-scored over the whole recording (~7,194 volumes), and a trial's response is the mean z
+  2-8 s after onset minus the mean over the 5 s before (add_to_reports/yang_response_definition.md, viki; a z unit is 1.4-3.0 baseline-noise
+  SDs, rising with the KC's breadth). The per-KC normalization of the recordings (E73) is claimed by hal to read every archived model the
+  same way (part B).
+- **Remains.** E73's parts A and B; re-reading or annotating the affected outputs (E65, E68, E69 amplitudes and bands; E49 and E72's part F
+  fractions) once E73 has read the models the same way; the un-normalized per-trial responses wait on Yang's OK.
 
 ### The claw-count thresholds of the KC heterogeneity experiment (E5) were not applied (found 2026-11-10, atlas's planning subagent)
 - **What.** E5_kc_heterogeneity.py's `thr_nclaws_0.5` / `thr_nclaws_1` variants pass a per-KC vector as `fixed_thr` to the simulator of
