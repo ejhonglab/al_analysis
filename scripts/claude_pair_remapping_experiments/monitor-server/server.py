@@ -11,9 +11,14 @@ Reads only the shared directory (Tom/claude_kc_remapping under /local/tensor or 
 - <host>_status.md, each host's self-reported status (its front matter, if any);
 - chat.md entry headers, experiment_priorities.md (experiment index, work claims).
 
-Serves `/` (HTML, reloads itself; query parameters `days`, `tokens` and `group` choose what the
-usage plots show) and `/api/state` (the same data as JSON). Standard library only, so it runs
-under any system python3 >= 3.8.
+Serves `/`, a page with two tabs: Report (the default; sub-tabs Summary and Experiments and
+mechanisms, the latest copies of the summary and the report page in the shared directory's
+reports/, each in its own frame, never reloaded by themselves: a note offers a reload when a newer
+copy is saved) and Monitor (`/monitor`, the dashboard; it updates itself in place, without a page
+reload, and not while it is hidden or anything is full screen; query parameters `days`, `tokens`
+and `group` choose what the usage plots show). Also `/report/<summary|experiments>` (the report
+files), `/api/reports` (their file names and times) and `/api/state` (the dashboard's data as JSON).
+Standard library only, so it runs under any system python3 >= 3.8.
 """
 import argparse
 import html
@@ -665,12 +670,14 @@ THEME_SCRIPT = (
     "getItem(k)}catch(e){return null}}function ap(t){if(t==='light'||t==='dark')r.setAttribute("
     "'data-theme',t);else r.removeAttribute('data-theme');var l=document.querySelectorAll("
     "'.theme a');for(var i=0;i<l.length;i++)l[i].className=(l[i].getAttribute('data-theme')==="
-    "(t||'auto'))?'on':''}ap(g());document.addEventListener('DOMContentLoaded',function(){ap(g());"
-    "var l=document.querySelectorAll('.theme a');for(var i=0;i<l.length;i++)l[i].addEventListener("
-    "'click',function(e){e.preventDefault();var t=this.getAttribute('data-theme');try{if(t==="
-    "'auto')localStorage.removeItem(k);else localStorage.setItem(k,t)}catch(x){}ap(t)})});"
-    # every option link reloads the page and so does the refresh every 30 s: keep the reader's
-    # place (the usage controls sit far down the page), unless the URL names an anchor
+    "(t||'auto'))?'on':''}ap(g());window.__applyTheme=function(){ap(g())};document."
+    "addEventListener('DOMContentLoaded',function(){ap(g())});document.addEventListener('click',"
+    "function(e){var a=e.target&&e.target.closest&&e.target.closest('.theme a');if(!a)return;e."
+    "preventDefault();var t=a.getAttribute('data-theme');try{if(t==='auto')localStorage.removeItem"
+    "(k);else localStorage.setItem(k,t)}catch(x){}ap(t)});window.addEventListener('storage',"
+    "function(e){if(e.key===k)ap(g())});"
+    # every option link reloads the page: keep the reader's place (the usage controls sit far
+    # down the page), unless the URL names an anchor
     "var sk='scroll:'+location.pathname;function sv(){try{sessionStorage.setItem(sk,String("
     "window.pageYOffset||0))}catch(e){}}window.addEventListener('pagehide',sv);document."
     "addEventListener('DOMContentLoaded',function(){if(location.hash)return;try{var y="
@@ -742,6 +749,163 @@ def parse_opts(query):
 
 OPT_KEYS = ('days', 'tokens', 'group', 'scope')
 # what the usage plots count: key, label, explanation
+# replaces the dashboard's content in place every `refresh` seconds (no page reload, so no blink):
+# fetches the page, swaps <main>, keeps the scroll position and the open <details>; skipped while the
+# page is hidden (a background tab, or the Monitor frame of the tabbed page not shown), while anything
+# is full screen and while text is selected; a check every 5 s catches up once it is shown again
+LIVE_SCRIPT = (
+    "(function(){var R=%d*1000,last=Date.now(),busy=false;function shown(){if(document.hidden)"
+    "return false;try{var f=window.frameElement;if(f&&f.getClientRects().length===0)return false}"
+    "catch(e){}try{if(document.fullscreenElement||(window.top!==window&&window.top.document."
+    "fullscreenElement))return false}catch(e){}try{var s=window.getSelection();if(s&&String(s)."
+    "length)return false}catch(e){}return true}function update(){busy=true;fetch(location.href,"
+    "{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error(r.status);return r.text()})."
+    "then(function(t){var d=new DOMParser().parseFromString(t,'text/html'),m=d.querySelector("
+    "'main'),c=document.querySelector('main');if(!m||!c)return;var o=[].map.call(c."
+    "querySelectorAll('details'),function(x){return x.open}),y=window.pageYOffset;c.innerHTML=m."
+    "innerHTML;var n=c.querySelectorAll('details');if(n.length===o.length)for(var i=0;i<n.length;"
+    "i++)n[i].open=o[i];window.scrollTo(0,y);if(window.__applyTheme)window.__applyTheme();"
+    "document.documentElement.setAttribute('data-updated',String(Date.now()))})."
+    "catch(function(){}).then(function(){last=Date.now();busy=false})}setInterval(function(){if("
+    "!busy&&Date.now()-last>=R&&shown())update()},5000)})();")
+
+# the reports shown in the Report tab: view -> (tab label, file in <shared>/reports/; the
+# current-*.html links that save_report_copy.py keeps pointing at the latest copy)
+REPORTS = {
+    'summary': ('Summary', 'current-summary.html'),
+    'experiments': ('Experiments and mechanisms', 'current-report.html'),
+}
+# added to each report page served: links to other sites open in a new browser tab, not in the frame
+REPORT_LINK_SCRIPT = (
+    "<script>document.addEventListener('DOMContentLoaded',function(){var a=document."
+    "querySelectorAll('a[href]');for(var i=0;i<a.length;i++){if(/^https?:/i.test(a[i]."
+    "getAttribute('href'))&&a[i].host!==location.host){a[i].target='_blank';a[i].rel='noopener'}}})"
+    "</script>")
+
+
+def report_path(shared, view):
+    """The report file of a Report view (its link resolved), or None if `view` is unknown, the file
+    is missing or the link leads out of reports/."""
+    if view not in REPORTS:
+        return None
+    base = os.path.realpath(os.path.join(shared, 'reports'))
+    path = os.path.realpath(os.path.join(base, REPORTS[view][1]))
+    if os.path.dirname(path) != base or not os.path.isfile(path):
+        return None
+    return path
+
+
+def report_info(shared):
+    """{view: {label, file, mtime, updated, size}} of the Report views whose files exist."""
+    out = {}
+    for view, (label, _) in REPORTS.items():
+        path = report_path(shared, view)
+        if path is None:
+            continue
+        st = os.stat(path)
+        out[view] = dict(label=label, file=os.path.basename(path), mtime=st.st_mtime, size=st.st_size,
+            updated=datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M'))
+    return out
+
+
+def report_body(shared, view):
+    """The report page's bytes with REPORT_LINK_SCRIPT added before </body>, or None."""
+    path = report_path(shared, view)
+    if path is None:
+        return None
+    with open(path, 'rb') as f:
+        data = f.read()
+    i = data.lower().rfind(b'</body>')
+    script = REPORT_LINK_SCRIPT.encode()
+    return data[:i] + script + data[i:] if i >= 0 else data + script
+
+
+SHELL_CSS = """
+body.shell { height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+.bar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 6px 12px;
+  background: var(--card); border-bottom: 1px solid var(--line); font-size: .9rem; }
+.bar a { text-decoration: none; }
+.tabs a, .subtabs a { color: var(--muted); padding: 4px 10px; border-radius: 6px; white-space: nowrap; }
+.tabs a.on { color: var(--fg); background: var(--chip); font-weight: 600; }
+.subtabs { display: flex; gap: 2px; border-left: 1px solid var(--line); padding-left: 10px; }
+.subtabs[hidden] { display: none; }
+.subtabs a.on { color: var(--fg); font-weight: 600; box-shadow: inset 0 -2px 0 var(--blue);
+  border-radius: 0; }
+.newer { color: var(--orange); font-size: .85rem; }
+.newer[hidden] { display: none; }
+.newer a { color: var(--blue); }
+.spacer { flex: 1; }
+.alone { color: var(--muted); font-size: .82rem; }
+#views { flex: 1; position: relative; min-height: 0; }
+#views iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0;
+  background: var(--bg); }
+.missing { padding: 24px 16px; color: var(--muted); }
+"""
+
+# the tabbed page: views by URL hash (#summary, #experiments, #monitor; default the last report
+# view shown, else Summary); each view's frame is made on first show and only hidden afterwards, so
+# it keeps its scroll position and any figure open in it; report frames are never reloaded by
+# themselves: once a minute (while the page is visible) /api/reports is checked and a note offers
+# the reload when the shown report's file has changed since its frame was loaded
+SHELL_SCRIPT = (
+    "(function(){var V={summary:{src:'/report/summary',rep:1},experiments:{src:'/report/"
+    "experiments',rep:1},monitor:{src:'/monitor'}},F={},seen={},info={},cur=null;function lab(v){"
+    "var a=document.querySelector('[data-view='+v+']');return a?a.textContent:v}function last(){"
+    "try{var v=localStorage.getItem('reportView');return V[v]&&V[v].rep?v:'summary'}catch(e){"
+    "return 'summary'}}function getInfo(cb){fetch('/api/reports',{cache:'no-store'}).then(function"
+    "(r){return r.json()}).then(function(d){info=d;cb(d)}).catch(function(){})}function frame(v){if"
+    "(!F[v]){var f=document.createElement('iframe');f.src=V[v].src;f.title=lab(v);f.setAttribute("
+    "'allow','fullscreen');f.setAttribute('allowfullscreen','');document.getElementById('views')."
+    "appendChild(f);F[v]=f;if(V[v].rep)getInfo(function(d){if(d[v]&&seen[v]===undefined)seen[v]="
+    "d[v].mtime})}return F[v]}function note(){var n=document.getElementById('newer'),i=info[cur];"
+    "if(cur&&V[cur].rep&&i&&seen[cur]!==undefined&&i.mtime!==seen[cur]){document.getElementById("
+    "'newer-text').textContent='newer '+lab(cur)+' saved '+i.updated+':';n.hidden=false}else "
+    "n.hidden=true}function show(v){if(!V[v])v=last();cur=v;frame(v);for(var k in F)F[k].style."
+    "display=k===v?'block':'none';var t=document.querySelectorAll('.tabs a');for(var i=0;i<t.length"
+    ";i++)t[i].className=(t[i].getAttribute('data-tab')===(V[v].rep?'report':'monitor'))?'on':'';"
+    "var s=document.querySelectorAll('.subtabs a');for(i=0;i<s.length;i++)s[i].className=s[i]."
+    "getAttribute('data-view')===v?'on':'';document.getElementById('subtabs').hidden=!V[v].rep;"
+    "document.getElementById('alone').href=V[v].src;document.title=(V[v].rep?lab(v):'Monitor')+"
+    "' \u00b7 Model experiments';if(V[v].rep){try{localStorage.setItem('reportView',v)}catch(e){}"
+    "getInfo(note)}else note()}function route(){show((location.hash||'').slice(1))}window."
+    "addEventListener('hashchange',route);document.querySelector('[data-tab=report]')."
+    "addEventListener('click',function(e){e.preventDefault();location.hash=last()});document."
+    "getElementById('newer-reload').addEventListener('click',function(e){e.preventDefault();var i="
+    "info[cur];if(!i||!F[cur])return;F[cur].src=V[cur].src+'?v='+i.mtime;seen[cur]=i.mtime;note()})"
+    ";route();setInterval(function(){if(!document.hidden&&cur&&V[cur].rep)getInfo(note)},60000)})"
+    "();")
+
+
+def render_shell(server_host):
+    """The tabbed page served at `/`: Report (Summary, Experiments and mechanisms) and Monitor."""
+    sub = ''.join('<a data-view="{0}" href="#{0}">{1}</a>'.format(v, esc(label))
+        for v, (label, _) in REPORTS.items())
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="color-scheme" content="light dark">'
+        '<script>{theme}</script>'
+        '<title>{title}</title><style>{css}</style></head><body class="shell">'
+        '<nav class="bar"><div class="tabs"><a data-tab="report" href="#summary">Report</a>'
+        '<a data-tab="monitor" href="#monitor">Monitor</a></div>'
+        '<div class="subtabs" id="subtabs">{sub}</div>'
+        '<span class="newer" id="newer" hidden><span id="newer-text"></span> '
+        '<a href="#" id="newer-reload">reload</a></span><span class="spacer"></span>'
+        '<a class="alone" id="alone" href="/report/summary" target="_blank" rel="noopener" '
+        'title="this view in a browser tab of its own">open alone</a>'
+        '<span class="alone" title="the host serving this page">{host}</span></nav>'
+        '<div id="views"></div><script>{script}</script></body></html>').format(
+        theme=THEME_SCRIPT, title=esc(TITLE), css=CSS + SHELL_CSS, sub=sub, host=esc(server_host),
+        script=SHELL_SCRIPT)
+
+
+def missing_report(view):
+    label = REPORTS[view][0] if view in REPORTS else view
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" '
+        'content="light dark"><title>{0}</title><style>{1}</style></head><body><div class="missing">'
+        'No {0} report has been saved in the shared directory\'s reports/ yet.</div></body></html>'
+        ).format(esc(label), CSS + SHELL_CSS)
+
+
 SCOPES = (
     ('queue_work', 'queue work only', 'the queue sessions (those that watch chat.md), without the '
         "turns that prompts typed into a session started (Tom's requests), until the agent "
@@ -1121,18 +1285,17 @@ def render(state, refresh, opts=None):
     w('<!doctype html><html lang="en"><head><meta charset="utf-8">')
     w('<meta name="viewport" content="width=device-width, initial-scale=1">')
     w('<meta name="color-scheme" content="light dark">')
-    if refresh:
-        w('<meta http-equiv="refresh" content="{:d}">'.format(int(refresh)))
     # the theme follows the system or browser setting (prefers-color-scheme) unless the reader
-    # picked one here; the choice is kept in the browser and applied before the first paint
-    w('<script>' + THEME_SCRIPT + '</script>')
+    # picked one here; the choice is kept in the browser and applied before the first paint; then
+    # the in-place updates
+    w('<script>' + THEME_SCRIPT + (LIVE_SCRIPT % int(refresh) if refresh else '') + '</script>')
     w('<title>{}</title><style>{}</style></head><body><main>'.format(esc(TITLE), CSS))
     w('<h1>{}</h1>'.format(esc(TITLE)))
     w('<div class="sub">served by {} &middot; generated {}{} &middot; <span class="theme">theme: '
         '<a href="#" data-theme="auto">auto</a> | <a href="#" data-theme="light">light</a> | '
         '<a href="#" data-theme="dark">dark</a></span><br>'.format(
         esc(state['server_host']), datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S'),
-        ' &middot; reloads every {:d} s'.format(int(refresh)) if refresh else ''))
+        ' &middot; updates every {:d} s'.format(int(refresh)) if refresh else ''))
     where = ('<code>{}</code> on tensor <span class="muted">(here {})</span>'.format(
         esc(state['tensor_path']), esc(state['shared'])) if state.get('tensor_path')
         else '<code>{}</code>'.format(esc(state['shared'])))
@@ -1319,9 +1482,32 @@ def make_handler(monitor, refresh):
         def do_GET(self):
             url = urlparse(self.path)
             path = url.path
+            status = 200
+            if path in ('/', '/index.html') and url.query:
+                # the dashboard was served at / with its options until 2026-11-09
+                self.send_response(302)
+                self.send_header('Location', '/monitor?' + url.query)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             if path in ('/', '/index.html'):
+                body = render_shell(socket.gethostname().split('.')[0]).encode()
+                ctype = 'text/html; charset=utf-8'
+            elif path == '/monitor':
                 body = render(monitor.get(), refresh, parse_opts(url.query)).encode()
                 ctype = 'text/html; charset=utf-8'
+            elif path.startswith('/report/'):
+                view = path[len('/report/'):]
+                body = report_body(monitor.shared, view)
+                if body is None:
+                    if view not in REPORTS:
+                        self.send_error(404)
+                        return
+                    body, status = missing_report(view).encode(), 404
+                ctype = 'text/html; charset=utf-8'
+            elif path == '/api/reports':
+                body = json.dumps(report_info(monitor.shared), indent=1).encode()
+                ctype = 'application/json'
             elif path == '/api/state':
                 body = json.dumps(monitor.get(), indent=1).encode()
                 ctype = 'application/json'
@@ -1330,7 +1516,7 @@ def make_handler(monitor, refresh):
             else:
                 self.send_error(404)
                 return
-            self.send_response(200)
+            self.send_response(status)
             self.send_header('Content-Type', ctype)
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
@@ -1351,7 +1537,7 @@ def main():
     p.add_argument('--port', type=int, default=DEFAULT_PORT, help='default: %(default)s')
     p.add_argument('--bind', default='0.0.0.0', help='address to listen on (default: all)')
     p.add_argument('--refresh', type=int, default=30,
-        help='seconds between page reloads, 0 for none (default: %(default)s)')
+        help="seconds between the dashboard's in-place updates, 0 for none (default: %(default)s)")
     args = p.parse_args()
     args.shared = args.shared or default_shared()
     server = ThreadingHTTPServer((args.bind, args.port),

@@ -434,22 +434,70 @@ def test_missing_shared_dir(tmp_path):
 
 def test_http(tmp_path):
     make_shared(tmp_path, time.time())
+    reports = tmp_path / 'reports'
+    reports.mkdir()
+    (reports / 'summary_all_experiments.html').write_text(
+        '<!doctype html><html><body><h1>the summary</h1><a href="https://claude.ai/x">x</a></body></html>')
+    os.symlink('summary_all_experiments.html', str(reports / 'current-summary.html'))
     httpd = ThreadingHTTPServer(('127.0.0.1', 0),
         server.make_handler(server.Monitor(str(tmp_path)), 30))
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     base = 'http://127.0.0.1:{}'.format(httpd.server_address[1])
     try:
+        # / is the tabbed page: Report (Summary, Experiments and mechanisms) and Monitor
         page = urllib.request.urlopen(base + '/').read().decode()
         assert '<title>Model experiments</title>' in page
+        for label in ('>Report<', '>Monitor<', '>Summary<', '>Experiments and mechanisms<'):
+            assert label in page
+        monitor = urllib.request.urlopen(base + '/monitor').read().decode()
+        assert '<title>Model experiments</title>' in monitor and '<h2>Hosts</h2>' in monitor
         assert '<svg class="plot"' in urllib.request.urlopen(
-            base + '/?days=7&group=account&tokens=output').read().decode()
+            base + '/monitor?days=7&group=account&tokens=output').read().decode()
+        # the dashboard's old address with options redirects to /monitor
+        r = urllib.request.urlopen(base + '/?days=7&group=account&tokens=output')
+        assert r.geturl().endswith('/monitor?days=7&group=account&tokens=output')
+        assert '<svg class="plot"' in r.read().decode()
+        # the reports: the summary through its link, external links sent to a new tab
+        summary = urllib.request.urlopen(base + '/report/summary').read().decode()
+        assert '<h1>the summary</h1>' in summary and "a[i].target='_blank'" in summary
+        assert summary.index('_blank') < summary.index('</body>')
+        info = json.loads(urllib.request.urlopen(base + '/api/reports').read())
+        assert set(info) == {'summary'} and info['summary']['file'] == 'summary_all_experiments.html'
+        assert info['summary']['label'] == 'Summary' and info['summary']['mtime'] > 0
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(base + '/report/experiments')
+        assert e.value.code == 404 and 'No Experiments and mechanisms report' in e.value.read().decode()
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(base + '/report/../../etc/passwd')
         state = json.loads(urllib.request.urlopen(base + '/api/state').read())
         assert {h['host'] for h in state['hosts']} == {'hal', 'atlas'}
         with pytest.raises(urllib.error.HTTPError):
             urllib.request.urlopen(base + '/../etc/passwd')
     finally:
         httpd.shutdown()
+
+
+def test_reports_stay_in_their_folder(tmp_path):
+    (tmp_path / 'reports').mkdir()
+    (tmp_path / 'secret.html').write_text('<body>no</body>')
+    os.symlink('../secret.html', str(tmp_path / 'reports' / 'current-summary.html'))
+    assert server.report_path(str(tmp_path), 'summary') is None
+    assert server.report_body(str(tmp_path), 'summary') is None
+    assert server.report_path(str(tmp_path), 'other') is None
+    assert server.report_info(str(tmp_path)) == {}
+
+
+def test_dashboard_updates_in_place(tmp_path):
+    make_shared(tmp_path, time.time())
+    st = server.collect(str(tmp_path))
+    html = server.render(st, 30)
+    # no page reload (it blinked and closed anything full screen): the content is swapped in place
+    assert 'http-equiv="refresh"' not in html
+    assert 'var R=30*1000' in html and 'fullscreenElement' in html and 'frameElement' in html
+    assert 'updates every 30 s' in html
+    off = server.render(st, 0)
+    assert 'var R=' not in off and 'updates every' not in off
 
 
 def usage_line(mid, model, out, sidechain=False, ts=None):

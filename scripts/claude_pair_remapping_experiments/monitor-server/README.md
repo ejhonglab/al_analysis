@@ -9,9 +9,25 @@ and each host's `<host>_status.md` supplies the rest.
 
 ## Viewing it
 
-Open **http://hal:17486** on any computer on the lab network. The page reloads itself every
-30 s. The second line under the title says which folder on tensor the page is built from
-(`Tom/claude_kc_remapping`, and where the serving host mounts it).
+Open **http://hal:17486** on any computer on the lab network. The page has two tabs, chosen in
+the bar at the top (the address remembers the view: `#summary`, `#experiments`, `#monitor`):
+
+- **Report** (the default), with two sub-tabs: **Summary**, the latest all-experiments summary,
+  and **Experiments and mechanisms**, the report page with the experiment list (the files
+  `reports/current-summary.html` and `reports/current-report.html` in the shared directory, the
+  copies `save_report_copy.py` keeps current). Each is shown in its own frame, as published, with
+  its own contents list, full-screen figures and hover definitions; switching tabs keeps each
+  view's place. The reports never reload by themselves: once a minute the page checks whether a
+  newer copy has been saved and, if so, says so in the bar with a "reload" link. Links to other
+  sites (the artifacts) open in a new browser tab. "open alone" opens the current view in a tab of
+  its own.
+- **Monitor**, the dashboard below (also at `http://hal:17486/monitor`). It updates itself in place
+  every 30 s, without reloading the page (no blink, and the scroll position and open "status
+  file" boxes stay), and not while it is hidden (another tab shown, or the browser tab in the
+  background), while anything is full screen or while text is selected; it catches up within
+  5 s of being shown again. The second line under the title says which folder on tensor the page
+  is built from (`Tom/claude_kc_remapping`, and where the serving host mounts it). Its old address
+  with plot options (`http://hal:17486/?days=7...`) redirects here.
 
 - **Hosts**: one row per host. It shows the most urgent state of its sessions, the model and
   effort level of each of its live sessions (e.g. "Opus 5.5" over "xhigh"; together they set
@@ -33,7 +49,7 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
     `presence_hook.py --mark queue`; "queue sessions only" counts everything the queue sessions
     did; "all work" counts every session started in the experiments folder. A table under the
     controls gives, per host, what each choice leaves out. The page keeps its scroll position
-    across these links and its own refresh;
+    across these links;
   - the same for tokens on Fable models only;
   - plan usage per claude.ai account: the percentage of the 5-hour (dashed) and weekly (solid)
     limits, with a table of the latest reading, its reset times, and each host's first reading
@@ -65,7 +81,8 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
 
   Sessions in this folder that never ran `chat_watch.sh` and are not titled
   `al_analysis modeling - <host>` are marked "not on queue".
-`http://hal:17486/api/state` returns the same data as JSON.
+`http://hal:17486/api/state` returns the same data as JSON, and `http://hal:17486/api/reports`
+the report files' names and save times.
 
 ## Setting it up
 
@@ -125,8 +142,8 @@ so a session that stays idle shows the old record until it next does something.
 ## Configuration
 
 - `server.py` options: `--shared` (default `$KC_SHARED_DIR`, else `Tom/claude_kc_remapping`
-  under `/local/tensor` or `/mnt/tensor`, whichever has it), `--port` (17486), `--bind` (0.0.0.0) and `--refresh` (page reload, s;
-  0 disables it). Edit `ExecStart` in the unit to change them. The thresholds behind the
+  under `/local/tensor` or `/mnt/tensor`, whichever has it), `--port` (17486), `--bind` (0.0.0.0) and `--refresh` (the dashboard's in-place
+  update, s; 0 disables it). Edit `ExecStart` in the unit to change them. The thresholds behind the
   session states are constants at the top of `server.py`.
 - Hook: `presence_hook.py` records sessions whose cwd or transcript is under this folder
   (`$KC_PRESENCE_MATCH`). It writes `presence/<host>__<session>.json` in the shared
