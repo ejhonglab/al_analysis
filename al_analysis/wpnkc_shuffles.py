@@ -940,3 +940,57 @@ def match_coinput(wPNKC: pd.DataFrame, target: pd.DataFrame, *, seed: int = 0,
         'seconds': float(_time.time() - t0),
     }, dtype=object)
     return matched, stats
+
+
+def redraw_kc_subset(wPNKC: pd.DataFrame, kcs: Iterable, *, seed: int = 0,
+    within_kc_type: bool = True, protect_kcs: Optional[Iterable] = None
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns one-row-per-claw `wPNKC` with the claws of a set of KCs re-drawn, and the swaps.
+
+    Each claw of a KC in `kcs` exchanges its column (bouton) with a claw drawn at random
+    (without replacement) from the KCs outside the set (of the same `KC_TYPE` with
+    `within_kc_type`, and not in `protect_kcs`). So every KC keeps its number of claws, every
+    column (bouton, hence glomerulus) its number of claws (per KC type with
+    `within_kc_type`), and only the set's claws and their exchange partners' change.
+
+    Args:
+        wPNKC: one row per claw (`CLAW_ID` index level), 0/1 values.
+        kcs: `KC_ID` values of the set.
+        seed: for `np.random.default_rng`. Output is reproducible for a given seed.
+        within_kc_type: partners come from the same `KC_TYPE` as the claw's KC.
+        protect_kcs: KCs whose claws may not be partners (e.g. another set whose wiring must
+            stay as is).
+
+    Returns (re-drawn copy of `wPNKC`, DataFrame of the swaps: kc, partner_kc, claw_row,
+    partner_row (row positions in `wPNKC`), column_before, column_after (of the set's claw)).
+    """
+    raise NotImplementedError
+
+
+def restore_kc_subset(wPNKC: pd.DataFrame, original: pd.DataFrame, kcs: Iterable, *,
+    seed: int = 0, within_kc_type: bool = True, protect_kcs: Optional[Iterable] = None
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns one-row-per-claw `wPNKC` (e.g. a `shuffle_wPNKC` draw of `original`) with the
+    claws of a set of KCs given back their columns in `original`, by the same margin-keeping
+    exchanges as `redraw_kc_subset` (the reverse of a re-draw), and the swaps.
+
+    Each claw of a KC in `kcs` whose column differs from its column in `original` exchanges
+    columns with a claw of a KC outside the set (same `KC_TYPE` with `within_kc_type`, not
+    in `protect_kcs`) that has the wanted column, drawn at random; where no such claw is
+    left, with a claw of the set that has the wanted column but should not. So every KC keeps
+    its number of claws and every column its number of claws (per type), and the set's claws
+    end with exactly their columns in `original` (when the column totals per type of
+    `wPNKC` and `original` agree, as for a within-type claw permutation).
+
+    Args:
+        wPNKC: one row per claw, same index and columns as `original`.
+        original: the wiring whose columns the set's claws get back.
+        kcs, seed, within_kc_type, protect_kcs: as `redraw_kc_subset`.
+
+    Returns (restored copy of `wPNKC`, DataFrame of the swaps as `redraw_kc_subset`'s).
+
+    Raises:
+        ValueError: `wPNKC` and `original` differ in index or columns, or a set claw's column
+            cannot be restored (the column totals differ).
+    """
+    raise NotImplementedError
