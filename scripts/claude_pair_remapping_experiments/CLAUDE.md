@@ -1035,6 +1035,7 @@ Canonical experiment names for summary reports:
 | E66 | the per-odor profile of the APL effect |
 | E67 | the APL-effect fits |
 | E68 | the low end of the readout |
+| E69 | the firing ceiling for the KCs |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
