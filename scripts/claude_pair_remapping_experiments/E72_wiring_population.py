@@ -410,6 +410,10 @@ def part_e_score(out: Path) -> pd.DataFrame:
     partE_noise.csv."""
     p = out / 'partB' / 'pairs_noise_long.csv'
     d = pd.read_csv(p)
+    # (a model whose APL-on- and APL-off-matched sigmas coincide has one level, 'match_on+match_off': it counts as both)
+    both = d[d.level == 'match_on+match_off']
+    d = pd.concat([d[d.level != 'match_on+match_off'], both.assign(level='match_on'), both.assign(level='match_off')],
+                  ignore_index=True)
     rows = []
     for (level, transform), g in d.groupby(['level', 'transform']):
         models = sorted(g.model.unique())
