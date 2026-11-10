@@ -90,6 +90,11 @@ Tag prefix jitK<K>_ (jitK<K>t<T>_ with --jitter-trials, x<C> with a threshold sc
 after the block prefix.
 `--init-from-exact` starts at the --init-from fit's absolute parameters instead of its factors on
 this base (which reset its bouton->APL scale to the base's).
+Firing ceiling (E69): `--kc-refractory-period S`, `--kc-adapt-inc A` and `--kc-adapt-tau S` set a
+fixed (not fitted) KC refractory period and spike-frequency adaptation (`fit_mb_model`'s
+kc_refractory_period / kc_adapt_inc / kc_adapt_tau, olfsysm p.kc.refractory_period / adapt_inc /
+adapt_tau) in every simulation of the fit; off by default (the fits as before). Recorded in fits.csv
+(empty when not set); tag prefix refr<ms>_ and adapt<A>t<ms>_ (after the KC-KC prefix).
 """
 from __future__ import annotations
 
@@ -765,14 +770,16 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     aplkc_min: Optional[float] = None, apl_drive: str = 'claws',
     init_params: Optional[str] = None, kc_thr_factors: Optional[np.ndarray] = None,
     init_exact_expect: Optional[dict] = None, kckc_fixed: Optional[float] = None,
-    block_proxy: Optional[dict] = None):
+    block_proxy: Optional[dict] = None, kc_spiking: Optional[dict] = None):
     """One joint fit; `kc_thr_factors` (K x KCs, `jitter_factors`) adds the K jittered runs of
     each condition (`jitter_conditions`) to every evaluation; `init_exact_expect` (not None)
     starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True);
     `kckc_fixed` holds the KC-KC scale there and fits the other three parameters; `block_proxy`
     (E60: the settings dict of main's `proxy`) adds the batched network-aware proxy as the
     condition hook 'proxy' of every evaluation (noise_proxy.make_block_proxy_hook; the simulator's
-    olfsysm variables captured with E43's captured_olfsysm_vars)."""
+    olfsysm variables captured with E43's captured_olfsysm_vars); `kc_spiking` (E69: any of
+    `fit_mb_model`'s `kc_refractory_period`, `kc_adapt_inc`, `kc_adapt_tau`) is a fixed KC
+    refractory period / adaptation, in every simulation of the fit (not fitted)."""
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
@@ -857,6 +864,10 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
         jit_kws['condition_kc_thr_factors'] = {j: kc_thr_factors[int(j.rsplit('jit', 1)[1])] for j, _ in jit}
         overrides.update({j: overrides[c] for j, c in jit})
     hook_kws, ctx = {}, contextlib.nullcontext()
+    kc_spiking = dict(kc_spiking or {})
+    if block_proxy is not None and kc_spiking:
+        # (the proxy replays thresholds on reconstructed drives without the refractory period or adaptation)
+        raise NotImplementedError('--block-proxy with --kc-refractory-period / --kc-adapt-inc')
     if block_proxy is not None:
         import noise_proxy
         import E43_model_trial_noise as E43
@@ -873,7 +884,7 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
             initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
             maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
             **base_kws(claw_thr, apl_drive), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
-            _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU
+            _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU, **kc_spiking
         )
     return res, init, bounds
 
@@ -1048,6 +1059,13 @@ def main() -> None:
     ap.add_argument('--jitter-terms', choices=JITTER_TERMS, default='block',
         help="loss terms computed on the trial mean of the jittered runs: 'block' (the block term only) or "
         "'all' (every term; tag prefix jitK<K>all_)")
+    ap.add_argument('--kc-refractory-period', type=float, default=None, metavar='S',
+        help='(E69) a fixed KC refractory period in seconds (olfsysm p.kc.refractory_period; not fitted; off by default)')
+    ap.add_argument('--kc-adapt-inc', type=float, default=None, metavar='A',
+        help='(E69) a fixed KC spike-frequency adaptation increment, in units of the KC\'s threshold (olfsysm '
+            'p.kc.adapt_inc; not fitted; off by default)')
+    ap.add_argument('--kc-adapt-tau', type=float, default=None, metavar='S',
+        help='(E69) the adaptation time constant in seconds (olfsysm p.kc.adapt_tau, default 0.2; needs --kc-adapt-inc)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -1185,12 +1203,22 @@ def main() -> None:
     print(f'bouton base ready ({time.time() - t0:.0f}s; claw_thr {args.claw_thr}; gain {gain}; '
         f'wiring {args.wiring}); tuned params {initial}', flush=True)
     kckc_tag = '' if args.kckc_fixed is None else f'kckc{args.kckc_fixed:g}_'
+    from al_analysis.mb_model import kc_spiking_param_dict
+    try:
+        kc_spiking = kc_spiking_param_dict(kc_refractory_period=args.kc_refractory_period, kc_adapt_inc=args.kc_adapt_inc,
+            kc_adapt_tau=args.kc_adapt_tau)
+    except ValueError as e:
+        ap.error(str(e))
+    # (E69) the fixed firing ceiling, in the tag: refractory period and adaptation time constant in ms
+    kc_tag = ('' if args.kc_refractory_period is None else f'refr{args.kc_refractory_period * 1e3:g}_') + (
+        '' if args.kc_adapt_inc is None else f'adapt{args.kc_adapt_inc:.4g}' + (
+        '' if args.kc_adapt_tau is None else f't{args.kc_adapt_tau * 1e3:g}') + '_')
     loss_tag = f"rho{loss_weights('rho')['on_mat']:g}_" if args.loss == 'rho' else ''
     if args.loss == 'apl':
         loss_tag = (f'apl{args.apl_readout}' + ('pat' if args.apl_pattern_only else '') + ('blk' if args.apl_block_term else '')
             + ('opk' if args.apl_opk_term else '') + '_')
     prefix = {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
-        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + proxy_tag + jit_tag
+        '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + kc_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
         jit_factors = jitter_factors(jit_k, len(breadth), jit_sigma, args.jitter_seed, jit_scale)
@@ -1227,7 +1255,7 @@ def main() -> None:
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
             aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
             kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed,
-            block_proxy=proxy
+            block_proxy=proxy, kc_spiking=kc_spiking
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -1266,6 +1294,9 @@ def main() -> None:
             apl_drive=args.apl_drive, base_params=args.base_params, init_params=args.init_params,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
             kckc_fixed=args.kckc_fixed,
+            # (E69: the fixed KC refractory period / adaptation; empty when not set)
+            kc_refractory_period=args.kc_refractory_period, kc_adapt_inc=args.kc_adapt_inc,
+            kc_adapt_tau=(args.kc_adapt_tau if args.kc_adapt_inc is not None else None),
             **({f'proxy_{kk}': vv for kk, vv in proxy.items()} if proxy is not None else {}),
             **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
                 apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}),
@@ -1333,7 +1364,7 @@ def main() -> None:
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None), orn_input=args.orn_input,
             wiring_file=args.wiring_file, wiring_tag=args.wiring_tag,
             aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed, aplkc_min=args.aplkc_min,
-            kckc_fixed=args.kckc_fixed, base_params=initial, loss_variant=args.loss,
+            kckc_fixed=args.kckc_fixed, base_params=initial, loss_variant=args.loss, kc_spiking=kc_spiking,
             **(dict(block_proxy=dict(proxy, note=('the loss\'s block term on the batched network-aware proxy (noise_proxy.'
                 'make_block_proxy_hook): at every evaluation each condition is simulated once more with the thresholds out of reach '
                 'and once with the voltages saved, every KC\'s drive is reconstructed, and the trials are replayed at the pipeline\'s '
