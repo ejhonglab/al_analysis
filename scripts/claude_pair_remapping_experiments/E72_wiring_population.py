@@ -327,6 +327,203 @@ def write_table(st: pd.DataFrame, pops: pd.DataFrame, out: Path) -> None:
     (out / 'comparison_table.md').write_text('\n'.join(L) + '\n')
 
 
+# part C: the no-gain 40 Hz per-claw-threshold base (E67's readout fit of it on the real wiring) re-fitted under the readout on
+# the four claw permutations
+C40_REAL = ('E67_apl_effect_fits', 'thr40_rate0.068_aplcal_k2_cap3')
+C40_SUFFIX = 'rate0.068_aplcal_k2_cap3'
+C40_DRAWS = [(f'P{s}', f'thr40_wiring-claw_permutation_within_type-seed{s}_') for s in (1, 2, 3, 4)]
+PAIRED_KEYS = ('cal_loss', 'cal_mean', 'cal_pattern', 'raw_loss', 'raw_mean', 'raw_pattern', 'binary_loss_vs_binary', 'cal_block',
+               'raw_block', 'rate_on', 'ratio', 'rate_rho_on', 'opk_on_dist', 'opk_off_dist')
+
+
+def part_c_score(out: Path) -> pd.DataFrame:
+    """Part C: per wiring (the real one and P1 to P4), the no-gain 40 Hz base's fit against the breadth-2 family's (part B)
+    on the same wiring, every statistic of both and the paired difference (40 Hz minus none); then the two populations of
+    those wirings (the mean over wirings of the pair distances per condition) and their difference. Writes
+    partC_paired.csv and partC_population.csv; returns the paired table."""
+    none = {lab: (folder, tag) for lab, folder, tag in new_fit_members()}
+    c40 = new_fit_members(prefix_tag=C40_SUFFIX, real_folder=C40_REAL[0], real_tag=C40_REAL[1], draws=C40_DRAWS)
+    rows, labels, fits = [], [], {'none': [], '40': []}
+    for lab, folder, tag in c40:
+        if lab not in none:
+            continue
+        o40, o0 = load_fit(folder, tag), load_fit(*none[lab])
+        if o40 is None or o0 is None:
+            print(f'part C: {lab} has no saved outputs for one of the two fits')
+            continue
+        r40, r0 = full_row(o40), full_row(o0)
+        row = dict(wiring=lab, fit_40=f'{folder}:{tag}', fit_none=':'.join(none[lab]), realism_40=r40['realism_flag'],
+                   realism_none=r0['realism_flag'])
+        for k in PAIRED_KEYS:
+            row.update({f'{k}_40': r40[k], f'{k}_none': r0[k], f'{k}_diff': r40[k] - r0[k]})
+        rows.append(row)
+        labels.append(lab)
+        fits['40'].append(o40)
+        fits['none'].append(o0)
+    paired = pd.DataFrame(rows)
+    paired.to_csv(out / 'partC_paired.csv', index=False)
+    pops = []
+    if len(labels) >= 2:
+        for fam in ('none', '40'):
+            dist = {ro: [distances(o, ro) for o in fits[fam]] for ro in ('raw', 'cal', 'binary')}
+            pops.append(dict(family=fam, members=','.join(labels), **population_row(fits[fam], dist)))
+        pop = pd.DataFrame(pops)
+        diff = {c: pop.loc[1, c] - pop.loc[0, c] for c in pop.columns if c not in ('family', 'members', 'n_wirings')}
+        pops.append(dict(family='40 minus none', members=','.join(labels), n_wirings=len(labels), **diff))
+    pd.DataFrame(pops).to_csv(out / 'partC_population.csv', index=False)
+    if len(paired):
+        print(paired[['wiring'] + [f'cal_loss_{s}' for s in ('none', '40', 'diff')] + [f'raw_loss_{s}' for s in ('none', '40', 'diff')]
+                     + ['realism_40']].round(4).to_string())
+    if pops:
+        print(pd.DataFrame(pops)[['family', 'n_wirings', 'cal_loss', 'cal_mean', 'cal_pattern', 'raw_loss', 'binary_loss']].round(4).to_string())
+    return paired
+
+
+def part_e_score(out: Path) -> pd.DataFrame:
+    """Part E: the population through the trial-noise pipeline. From this experiment's partB/pairs_noise_long.csv (E43
+    part B at the matched levels, one row per model, level, condition, transform and pair): each model alone and the
+    population (the mean over the models of their pipeline pair distances per condition), scored as E65's
+    noise_apl_effect scores single models (the noisy three-trial means against the data's raw distances, the
+    noise-corrected ones against the data's corrected ones, the deterministic ones against the data's raw). Writes
+    partE_noise.csv."""
+    p = out / 'partB' / 'pairs_noise_long.csv'
+    d = pd.read_csv(p)
+    rows = []
+    for (level, transform), g in d.groupby(['level', 'transform']):
+        models = sorted(g.model.unique())
+        groups = {m: [m] for m in models}
+        if len(models) > 1:
+            groups['population'] = models
+        for gname, ms in groups.items():
+            gg = g[g.model.isin(ms)]
+            on = gg[gg.condition == 'on'].groupby(['odor_a', 'odor_b']).mean(numeric_only=True)
+            off = gg[gg.condition == 'acute_off'].groupby(['odor_a', 'odor_b']).mean(numeric_only=True)
+            for col, dcol in (('raw', 'data_raw'), ('corrected', 'data_corrected'), ('det', 'data_raw')):
+                data_eff = H.apl_effect(on[dcol], off[dcol])
+                st = H.apl_effect_stats(on[col], off[col], data_eff)
+                rows.append(dict(group=gname, models=','.join(ms), n_models=len(ms), level=level, transform=transform,
+                    sigma_mean=float(gg['sigma'].mean()), distances=col, data_distances=dcol, data_effect_mean=float(data_eff.mean()), **st))
+    res = pd.DataFrame(rows)
+    res.to_csv(out / 'partE_noise.csv', index=False)
+    # (res['transform'], not res.transform: DataFrame.transform is a method)
+    show = res[(res['transform'] == 'graded') & (res['distances'].isin(['raw', 'det']))]
+    cols = [c for c in ('group', 'level', 'distances', 'apl_effect_rmse', 'apl_effect_mean', 'apl_effect_rmse_centered', 'apl_effect_spearman') if c in show]
+    print(show[cols].round(4).to_string())
+    return res
+
+
+# figure colors (the dataviz skill's validated categorical slots 1-3, in order) and inks
+COLORS = dict(P='#2a78d6', M='#eb6834', c40='#1baf7a', ink='#0b0b0b', ink2='#52514e', grid='#e6e5e1')
+
+
+def figures(out: Path) -> None:
+    """E72_wirings.png (each wiring's APL-effect loss, the populations, part C's paired 40 Hz fits and part D's shared set,
+    under the readout and on raw counts), E72_curve.png (the loss and its pattern part against the number of wirings
+    averaged) and E72_common_error.png (the population's per-pair pattern error under the readout and how much of each
+    wiring's error it is)."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({'font.size': 9, 'axes.edgecolor': COLORS['ink2'], 'axes.labelcolor': COLORS['ink'],
+                         'xtick.color': COLORS['ink2'], 'ytick.color': COLORS['ink2'], 'axes.spines.top': False,
+                         'axes.spines.right': False})
+    dt = H.data_target
+    st = pd.read_csv(out / 'stats_variants.csv')
+    pops = pd.read_csv(out / 'population.csv').set_index('group')
+    paired = pd.read_csv(out / 'partC_paired.csv') if (out / 'partC_paired.csv').exists() else pd.DataFrame()
+    popfit = json.loads((out / 'population_fit.json').read_text()) if (out / 'population_fit.json').exists() else None
+    order = [REAL] + [lab for lab, _ in sorted(DRAWS, key=lambda x: (x[0][0] != 'P', x[0]))]
+    order = [w for w in order if w in set(st.wiring)]
+    x = {w: i for i, w in enumerate(order)}
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), sharey=False)
+    for ax, ro, title in ((axes[0], 'cal', 'calibrated readout'), (axes[1], 'raw', 'raw spike counts')):
+        for _, r in st.iterrows():
+            w = r['wiring']
+            c = COLORS['ink'] if w == REAL else COLORS[w[0]]
+            ax.plot(x[w], r[f'{ro}_loss'], 'o', ms=8, color=c, mec='white', mew=1.5, zorder=3)
+        if len(paired):
+            for _, r in paired.iterrows():
+                ax.plot([x[r['wiring']], x[r['wiring']]], [r[f'{ro}_loss_none'], r[f'{ro}_loss_40']], color=COLORS['c40'], lw=1.5, zorder=2)
+                ax.plot(x[r['wiring']], r[f'{ro}_loss_40'], 'D', ms=7, color=COLORS['c40'], mec='white', mew=1.5, zorder=3)
+        ax.axhline(pops.loc['all', f'{ro}_loss'], color=COLORS['ink'], lw=2, zorder=1)
+        ax.text(len(order) - 0.5, pops.loc['all', f'{ro}_loss'], f" mean over all {int(pops.loc['all', 'n_wirings'])} wirings",
+                va='bottom', ha='right', color=COLORS['ink'], fontsize=8)
+        ax.axhline(dt('apl_effect_rmse_floor'), color=COLORS['ink2'], lw=1, ls=':', zorder=1)
+        ax.text(len(order) - 0.5, dt('apl_effect_rmse_floor'), ' KC data floor', va='bottom', ha='right', color=COLORS['ink2'], fontsize=8)
+        if popfit is not None:
+            for key, lab, ls in (('fitted_population', 'one set: fitted wirings', '--'), ('held_out_population', 'one set: held-out wirings', '-.')):
+                v = popfit[key][f'{ro}_loss']
+                ax.axhline(v, color=COLORS['ink2'], lw=1.5, ls=ls, zorder=1)
+                ax.text(-0.4, v, lab, va='bottom', ha='left', color=COLORS['ink2'], fontsize=8)
+        ax.set_xticks(range(len(order)), [('real' if w == REAL else w) for w in order])
+        ax.set_xlim(-0.6, len(order) - 0.4)
+        ax.set_ylabel('APL-effect loss (lower is better)')
+        ax.set_title(f'APL-effect loss, {title}', color=COLORS['ink'])
+        ax.grid(axis='y', color=COLORS['grid'], lw=0.8)
+        ax.set_axisbelow(True)
+    from matplotlib.lines import Line2D
+    handles = [Line2D([], [], marker='o', ls='', color=COLORS['ink'], ms=8, label='real wiring'),
+               Line2D([], [], marker='o', ls='', color=COLORS['P'], ms=8, label='claw permutations (P)'),
+               Line2D([], [], marker='o', ls='', color=COLORS['M'], ms=8, label='co-input-matched wirings (M)')]
+    if len(paired):
+        handles.append(Line2D([], [], marker='D', ls='-', color=COLORS['c40'], ms=7, label='with a 40 Hz per-claw threshold (paired)'))
+    fig.legend(handles=handles, loc='lower center', ncol=len(handles), frameon=False, bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle('The breadth-2 APL-effect fit (no gain, no per-claw threshold) re-fitted on each wiring', color=COLORS['ink'])
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    fig.savefig(out / 'E72_wirings.png', dpi=150)
+    plt.close(fig)
+
+    curve = pd.read_csv(out / 'curve.csv')
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.4))
+    for ax, ro, title in ((axes[0], 'cal', 'calibrated readout'), (axes[1], 'raw', 'raw spike counts')):
+        for stat, lab, c in (('loss', 'APL-effect loss', COLORS['ink']), ('pattern', 'its pattern part', COLORS['P'])):
+            g = curve[(curve.readout == ro) & (curve.stat == stat)].sort_values('n')
+            ax.fill_between(g.n, g['mean'] - g['sd'], g['mean'] + g['sd'], color=c, alpha=0.15, lw=0)
+            ax.plot(g.n, g['mean'], '-o', color=c, lw=2, ms=5, label=lab)
+        ax.axhline(dt('apl_effect_rmse_floor'), color=COLORS['ink2'], lw=1, ls=':')
+        ax.set_xlabel('number of wirings averaged')
+        ax.set_ylabel('loss (lower is better)')
+        ax.set_title(title, color=COLORS['ink'])
+        ax.grid(axis='y', color=COLORS['grid'], lw=0.8)
+        ax.set_axisbelow(True)
+    axes[0].legend(frameon=False, loc='upper right')
+    fig.suptitle('Averaging over wirings, as the data average over flies (mean ± SD over subsets; dotted: KC data floor)', color=COLORS['ink'])
+    fig.tight_layout()
+    fig.savefig(out / 'E72_curve.png', dpi=150)
+    plt.close(fig)
+
+    ce = pd.read_csv(out / 'common_error_pairs.csv')
+    a, b = ce.columns[0], ce.columns[1]
+    odors = list(H.APL16_ODORS)
+    M = pd.DataFrame(np.nan, index=odors, columns=odors)
+    for _, r in ce.iterrows():
+        M.loc[r[a], r[b]] = M.loc[r[b], r[a]] = r['common']
+    own = [c for c in ce.columns if c.startswith('own_')]
+    # (each wiring's per-pair pattern error is common + own; its correlation with the common part)
+    share = {c[4:]: float(np.corrcoef(ce['common'], ce['common'] + ce[c])[0, 1]) for c in own}
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.4), gridspec_kw=dict(width_ratios=[1.25, 1]))
+    lim = float(np.nanmax(np.abs(M.to_numpy())))
+    im = axes[0].imshow(M.to_numpy(dtype=float), cmap=H.oklab_diverging_cmap(), vmin=-lim, vmax=lim)
+    axes[0].set_xticks(range(len(odors)), odors, rotation=90, fontsize=7)
+    axes[0].set_yticks(range(len(odors)), odors, fontsize=7)
+    axes[0].set_title('error common to all wirings, per pair\n(model minus KC data, means removed; calibrated readout)', color=COLORS['ink'])
+    fig.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04, label='APL effect, model minus KC data')
+    labs = [w for w in order if w in share]
+    axes[1].bar(range(len(labs)), [share[w] for w in labs], color=[COLORS['ink'] if w == REAL else COLORS[w[0]] for w in labs], width=0.6)
+    for i, w in enumerate(labs):
+        axes[1].text(i, share[w], f'{share[w]:.2f}', ha='center', va='bottom', fontsize=8, color=COLORS['ink'])
+    axes[1].set_xticks(range(len(labs)), [('real' if w == REAL else w) for w in labs])
+    axes[1].set_ylim(0, 1.05)
+    axes[1].set_ylabel('correlation over the 120 pairs')
+    axes[1].set_title('each wiring\'s per-pair error\nagainst the common error', color=COLORS['ink'])
+    axes[1].grid(axis='y', color=COLORS['grid'], lw=0.8)
+    axes[1].set_axisbelow(True)
+    fig.tight_layout()
+    fig.savefig(out / 'E72_common_error.png', dpi=150)
+    plt.close(fig)
+    print('figures written to', out)
+
+
 M_FILES = {f'M{s}': (H.shared_dir() / 'data' / 'model_outputs' / 'E59_coinput_shuffle' / f'wPNKC_curveball_within_type-seed{s}_matched.parquet',
                      f'curveball_within_type_matched-seed{s}') for s in (1, 2, 3)}
 TIED = ('wKCAPL_scale', 'wPNAPL_scale')
@@ -506,7 +703,7 @@ def population_fit(wirings: Sequence[str], held_out: Sequence[str], maxfev: int 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', default='score', choices=['A', 'score', 'D', 'D-check'])
+    ap.add_argument('--part', default='score', choices=['A', 'score', 'C-score', 'D', 'D-check', 'E-score', 'figures'])
     ap.add_argument('--maxfev', type=int, default=150)
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
@@ -515,6 +712,12 @@ def main() -> None:
         part_a(out)
     elif args.part == 'score':
         score(out)
+    elif args.part == 'C-score':
+        part_c_score(out)
+    elif args.part == 'E-score':
+        part_e_score(out)
+    elif args.part == 'figures':
+        figures(out)
     else:
         population_fit([REAL, 'P1', 'P2', 'M1'], ['P3', 'P4', 'M2', 'M3'], maxfev=args.maxfev, check_only=(args.part == 'D-check'))
 
