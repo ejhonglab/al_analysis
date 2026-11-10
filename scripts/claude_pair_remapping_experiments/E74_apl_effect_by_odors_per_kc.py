@@ -844,24 +844,31 @@ def series_table(df: pd.DataFrame) -> pd.DataFrame:
 def part_c_condition(df: pd.DataFrame, tables: Dict[str, pd.DataFrame]) -> Dict[str, object]:
     """Part C's condition, per reading (cal2, zcell): the data's 4-7 class effect has a 90 % interval that excludes
     every best fit's value, and the floor of the class-resolved loss is at most half the best fits' lowest
-    class-resolved loss."""
+    class-resolved loss. Only the best fits inside the realism bands under both criteria (the two-spike one and the
+    data's through the per-KC reading) count (planning decision of 2026-11-10 15:16: fit S meets the 4-7 class only
+    outside three two-spike bands); the others are listed under `outside_bands`."""
     d = tables['data_by_class']
     r = d[(d.criterion == 1.0) & (d.quantity == 'effect') & (d['class'] == '4_7') & (d.term == 'total')].iloc[0]
     floor = float(tables['floor'].set_index('criterion').loc[1.0, 'class_rmse_floor'])
     out = dict(data_4_7=float(r.observed), data_4_7_lo=float(r.lo), data_4_7_hi=float(r.hi), class_rmse_floor=floor, readings={})
     for rd in ('cal2', 'zcell'):
-        fits = []
+        fits, outside = [], []
         for s, _, f, t in KEY_MODELS:
             if s not in BEST_FITS:
                 continue
             row = df[(df.folder == f) & (df.tag == t) & (df.reading == rd)]
             if len(row):
                 row = row.iloc[0]
-                fits.append(dict(model=s, eff_4_7=float(row.eff_4_7), excluded=bool(row.eff_4_7 < r.lo or row.eff_4_7 > r.hi),
-                    class_rmse=float(row.class_rmse), apl_rmse=float(row.apl_rmse)))
+                rec = dict(model=s, eff_4_7=float(row.eff_4_7), excluded=bool(row.eff_4_7 < r.lo or row.eff_4_7 > r.hi),
+                    class_rmse=float(row.class_rmse), apl_rmse=float(row.apl_rmse))
+                if bool(row.get('in_bands_spikes', True)) and bool(row.get('in_bands_reading', True)):
+                    fits.append(rec)
+                else:
+                    outside.append(rec)
         best = min(f['class_rmse'] for f in fits) if fits else np.nan
-        out['readings'][rd] = dict(fits=fits, all_excluded=all(f['excluded'] for f in fits), lowest_class_rmse=best,
-            floor_at_most_half=bool(floor <= 0.5 * best), holds=bool(fits and all(f['excluded'] for f in fits) and floor <= 0.5 * best))
+        out['readings'][rd] = dict(fits=fits, outside_bands=outside, all_excluded=all(f['excluded'] for f in fits),
+            lowest_class_rmse=best, floor_at_most_half=bool(floor <= 0.5 * best),
+            holds=bool(fits and all(f['excluded'] for f in fits) and floor <= 0.5 * best))
     out['holds'] = all(v['holds'] for v in out['readings'].values())
     return out
 
