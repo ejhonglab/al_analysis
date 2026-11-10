@@ -53,6 +53,36 @@ BASES = [
 FIT_COLS = E53.FIT_COLS + ('fit_term_vcf_off', 'loss_variant')
 
 
+def apl_effect_row(experiment: str, tag: str) -> dict:
+    """The APL-effect statistics (`kc_remapping_harness.apl_effect_stats`: the per-pair APL effect,
+    APL-on minus acute APL-off distance, against the KC data's) of fit `tag` of `experiment`, from
+    the deterministic pair distances its results folder saved (model_pair_distances_long.csv);
+    empty if that table or the fit's rows are missing."""
+    f = H.results_dir(experiment) / 'model_pair_distances_long.csv'
+    if not f.exists():
+        return {}
+    d = pd.read_csv(f)
+    d = d[d['tag'] == tag]
+    on = d[d['condition'] == 'on'].set_index(['odor_a', 'odor_b'])['distance']
+    off = d[d['condition'] == 'acute_off'].set_index(['odor_a', 'odor_b'])['distance']
+    if on.empty or off.empty:
+        return {}
+    return H.apl_effect_stats(on, off)
+
+
+def data_apl_effect_cell() -> str:
+    """The KC data's cell for the APL-effect column: the loss floor (when the data-target registry
+    has it), its mean APL effect and the ceiling on the ρ."""
+    def target(name, spec):
+        try:
+            return format(H.data_target(name), spec)
+        except KeyError:
+            return None
+    floor, ceiling = target('apl_effect_rmse_floor', '.3f'), target('apl_effect_rho_ceiling', '.2f')
+    return '{} ({:+.3f} / {})'.format('floor ' + floor if floor else '0 (floor pending)',
+        float(H.yang_apl_effect().mean()), 'ceiling ' + ceiling if ceiling else 'ceiling pending')
+
+
 def rho_fits_for(fits: pd.DataFrame, thr: int, gain) -> list:
     """Tags of the two-rho fits of one base in E63's fits.csv (thr<T>[_gain<G>]_rate0.068_rho<W>_...)."""
     g = '' if gain is None else f'_gain{gain:g}'
@@ -100,6 +130,7 @@ def main() -> None:
             row.update({k: (float(fit[k]) if k != 'loss_variant' else str(fit[k])) for k in FIT_COLS if k in fit.index and pd.notna(fit[k])})
             row['vcf_on'] = float(fit[V + 'on_spearman_resid_vs_vcf_hyp']) if V + 'on_spearman_resid_vs_vcf_hyp' in fit.index else np.nan
             row['vcf_on_minus_off'] = row['vcf_on'] - row['fit_vcf_off'] if 'fit_vcf_off' in row else np.nan
+            row.update(apl_effect_row(exp, tag))
         pr = E53.pipeline_row(tables, mname) if mname is not None else None
         if pr is None:
             row['pipeline'] = 'pending'
@@ -127,21 +158,23 @@ def main() -> None:
     def fmt(x, spec, missing=''):
         return missing if x is None or (isinstance(x, float) and np.isnan(x)) else format(x, spec)
 
-    lines = ['| model (fits at 6.8 %, APL->bouton cap 3) | criterion | loss (its own criterion) | ρ on odor-odor distances, APL on / off (deterministic) | ρ on odor-odor distances, APL on / off (through the noise) | response rate ρ, APL on / off | response rates, APL on / off (deterministic) | block, deterministic | block through independent noise, three-trial means / grand mean | natural-source alignment, APL on / off / on minus off | structure vs wild-type somata | fixed threshold | APL->KC / APL->bouton scale | KC-KC |',
-        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+    lines = ['| model (fits at 6.8 %, APL->bouton cap 3) | criterion | loss (its own criterion) | APL-effect loss (mean APL effect / ρ on the per-pair APL effect) | ρ on odor-odor distances, APL on / off (deterministic) | ρ on odor-odor distances, APL on / off (through the noise) | response rate ρ, APL on / off | response rates, APL on / off (deterministic) | block, deterministic | block through independent noise, three-trial means / grand mean | natural-source alignment, APL on / off / on minus off | structure vs wild-type somata | fixed threshold | APL->KC / APL->bouton scale | KC-KC |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
     for _, r in df.iterrows():
         if r['fit'] != 'done':
-            lines.append(f"| {r['model']} | | | | | | | | | | | | | |")
+            lines.append(f"| {r['model']} | | | | | | | | | | | | | | |")
             continue
+        ae = (f"{fmt(r.get('apl_effect_rmse'), '.3f')} ({fmt(r.get('apl_effect_mean'), '+.3f')} / "
+            f"{fmt(r.get('apl_effect_spearman'), '.2f')})") if pd.notna(r.get('apl_effect_rmse', np.nan)) else ''
         crit = 'structure loss' if r['kind'] == 'seed' else f"two-ρ loss ({r.get('loss_variant', 'rho')})"
         vcf = f"{fmt(r.get('vcf_on'), '.2f', 'n/a')} / {fmt(r.get('fit_vcf_off'), '.2f', 'n/a')} / {fmt(r.get('vcf_on_minus_off'), '+.2f', 'n/a')}"
         noisy = f"{r['rho_raw_on']:.2f} / {r['rho_raw_off']:.2f}" if r['pipeline'] == 'done' else '(pending)'
         blk = f"{r['block_raw']:+.3f} / {r['block_grand']:+.3f}" if r['pipeline'] == 'done' else '(pending)'
-        lines.append(f"| {r['model']} | {crit} | {r['loss_recorded']:.2f} | {fmt(r.get('fit_on_spearman'), '.3f')} / {fmt(r.get('fit_off_spearman'), '.3f')} | {noisy} | "
+        lines.append(f"| {r['model']} | {crit} | {r['loss_recorded']:.2f} | {ae} | {fmt(r.get('fit_on_spearman'), '.3f')} / {fmt(r.get('fit_off_spearman'), '.3f')} | {noisy} | "
             f"{fmt(r.get('fit_po_on_spearman'), '.2f')} / {fmt(r.get('fit_po_off_spearman'), '.2f')} | {fmt(r.get('fit_rate_on'), '.3f')} / {fmt(r.get('fit_rate_off'), '.3f')} | "
             f"{fmt(r.get('fit_block'), '+.3f')} | {blk} | {vcf} | {fmt(r.get('fit_wt_dev_on'), '.2f')} | {fmt(r.get('fixed_thr'), '.1f')} | "
             f"{fmt(r.get('wAPLKC_scale'), '.3f')} / {fmt(r.get('wAPLPN_scale'), '.3f')} | {fmt(r.get('kc_kc_inh'), '.1f')} |")
-    lines.append(f"| KC data | | | ceiling {dt('ctrl_ceiling'):.2f} / {dt('tnt_ceiling'):.2f} | ceiling {dt('ctrl_ceiling'):.2f} / {dt('tnt_ceiling'):.2f} | ceiling {dt('ctrl_rate_rho_ceiling'):.2f} | {dt('ctrl_frac'):.3f} / {dt('tnt_frac'):.3f} | "
+    lines.append(f"| KC data | | | {data_apl_effect_cell()} | ceiling {dt('ctrl_ceiling'):.2f} / {dt('tnt_ceiling'):.2f} | ceiling {dt('ctrl_ceiling'):.2f} / {dt('tnt_ceiling'):.2f} | ceiling {dt('ctrl_rate_rho_ceiling'):.2f} | {dt('ctrl_frac'):.3f} / {dt('tnt_frac'):.3f} | "
         f"{dt('block'):+.3f} measured{'' if data_block_corr is None else f', {data_block_corr:+.3f} noise-corrected'} | | {dt('ctrl_vcf'):.2f} / {dt('tnt_vcf'):.2f} / {dt('vcf_apl_effect'):+.2f} | {dt('ctrl_struct_wt'):.2f} | | | |")
     pend_fit = [r['model'] for _, r in df.iterrows() if r['fit'] != 'done']
     pend_pipe = [r['model'] for _, r in df.iterrows() if r['fit'] == 'done' and r['pipeline'] != 'done']
