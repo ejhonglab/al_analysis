@@ -974,7 +974,7 @@ def figure_multipliers(res_dir: Path, mu: pd.DataFrame) -> None:
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     bases = list(dict.fromkeys(mu.base))
-    fig, ax = plt.subplots(figsize=(11, 4.5))
+    fig, ax = plt.subplots(figsize=(11, 6.2))
     x = np.arange(len(ODORS))
     for i, base in enumerate(bases):
         for v, filled in (('apl', False), ('both', True)):
@@ -985,9 +985,9 @@ def figure_multipliers(res_dir: Path, mu: pd.DataFrame) -> None:
     ax.set_yscale('log')
     ax.set_xticks(x, ODORS, rotation=60)
     ax.set_ylabel('APL multiplier that gives the control flies\'\nAPL-on response fraction (× fitted scale)')
-    ax.legend(fontsize=6.5, ncol=2, loc='upper left')
+    ax.legend(fontsize=7, ncol=2, loc='upper center', bbox_to_anchor=(0.5, -0.2), frameon=False)
     fig.tight_layout()
-    fig.savefig(res_dir / 'E66_multipliers.png', dpi=150)
+    fig.savefig(res_dir / 'E66_multipliers.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
