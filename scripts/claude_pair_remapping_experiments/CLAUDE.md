@@ -1034,6 +1034,7 @@ Canonical experiment names for summary reports:
 | E65 | the compressive readout of the model's spike counts |
 | E66 | the per-odor profile of the APL effect |
 | E67 | the APL-effect fits |
+| E68 | the low end of the readout |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
