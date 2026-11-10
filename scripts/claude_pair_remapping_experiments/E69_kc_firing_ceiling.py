@@ -157,6 +157,8 @@ def resolve_bases() -> Dict[str, dict]:
     saved = read_json(p)
     if saved is not None:
         return saved
+    # (the APL-effect fits run on viki, whose E67 archive and fits.csv grow during part A: the bases are those of
+    # the first call)
     from apl_effect_scores import realism_flag
     f = pd.read_csv(RESULTS / E67_FOLDER / 'fits.csv')
     f['flag'] = [realism_flag(r.rate_on, r.rate_off, r.spearman_rate_on_vs_data, np.nan, r.fit_opk_off_dist)
@@ -421,6 +423,7 @@ def stage_check(key: str) -> None:
             for cond, out in (('on', on), ('acute_off', off)):
                 checks[f'{cond}_e68_mismatch'] = int((z[f'{cond}_spk'] != out[1].to_numpy(dtype=float)).sum())
         else:
+            # (E68's part B simulated another fit: only the archive's counts, the rates and the distances are compared)
             checks['e68_npz_tag'] = info['tag']
         d = pd.read_csv(RESULTS / E67_FOLDER / 'model_pair_distances_long.csv')
         d = d[(d.tag == b['tag']) & (d['variant'] == V)] if 'variant' in d.columns else d[d.tag == b['tag']]
@@ -435,7 +438,7 @@ def stage_check(key: str) -> None:
     n_compared = sum(1 for k in checks if k.endswith('mismatch'))
     bad = [k for k, v in checks.items() if (k.endswith('mismatch') and v != 0) or (k.endswith('index_equal') and not v)
         or (k.startswith('rate_') and abs(v) > 1e-9) or (k.endswith('_vs_fit') and 'distance' in k and v > 1e-9)]
-    if n_compared == 0 or bad or 'e68_npz_tag' in checks:
+    if n_compared == 0 or bad:
         raise RuntimeError(f'{key}: the re-simulated base does not reproduce its saved outputs: {checks}')
     meta = dict(variant='base', tag=f'{key}_base', part='A', setting='base', **base_meta(m), kc_refractory_period=0.0,
         kc_adapt_inc=0.0, kc_adapt_tau=np.nan, adapt_strength='', thr_factor=1.0, apl_factor=1.0,
