@@ -9,8 +9,9 @@ resulting page is republished to the existing artifact (see CLAUDE.md, "Report a
 
 Handles the subset of markdown the report uses: `#` / `##` headings, paragraphs, pipe tables,
 numbered lists (numbering preserved, so a list may continue after a note paragraph), bullet
-and task lists, bold, inline code, links, and the escapes `\\~`, `\\[`, `\\]`, `\\_`. A
-paragraph starting with `*Added` is styled as a provenance note.
+and task lists, bold, inline code, links (http(s) URLs and in-page `#id` anchors; a heading ending
+in `{#id}` gets that id, e.g. `## Footnotes {#footnotes}`), and the escapes `\\~`, `\\[`, `\\]`,
+`\\_`. A paragraph starting with `*Added` is styled as a provenance note.
 
 Usage: ./venv/bin/python build_report_artifact.py [--out PATH]
 """
@@ -52,8 +53,17 @@ def inline(s: str) -> str:
     s = re.sub(r'`([^`]+)`', r'<code>\1</code>', s)
     s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
     s = re.sub(r'(?<![*\w])\*([^*\n]+?)\*(?![*\w])', r'<i>\1</i>', s)
-    s = re.sub(r'\[([^\]]+)\]\((https?://[^)\s]+)\)', r'<a href="\2">\1</a>', s)
+    s = re.sub(r'\[([^\]]+)\]\((https?://[^)\s]+|#[A-Za-z0-9_-]+)\)', r'<a href="\2">\1</a>', s)
     return s
+
+
+def heading(tag: str, text: str) -> str:
+    """A heading element; a trailing `{#id}` in the markdown becomes its id (the target of `[...](#id)`
+    links, e.g. the Footnotes section)."""
+    m = re.search(r'\s*\{#([A-Za-z0-9_-]+)\}\s*$', text)
+    if m:
+        return f'<{tag} id="{m.group(1)}">{inline(text[:m.start()])}</{tag}>'
+    return f'<{tag}>{inline(text)}</{tag}>'
 
 
 def convert(md: str) -> str:
@@ -64,9 +74,9 @@ def convert(md: str) -> str:
     while i < len(lines):
         ln = lines[i]
         if ln.startswith('# '):
-            out.append(f'<h1>{inline(ln[2:])}</h1>'); i += 1; continue
+            out.append(heading('h1', ln[2:])); i += 1; continue
         if ln.startswith('## '):
-            out.append(f'<h2>{inline(ln[3:])}</h2>'); after_note = False; i += 1; continue
+            out.append(heading('h2', ln[3:])); after_note = False; i += 1; continue
         if ln.startswith('|'):
             rows = []
             while i < len(lines) and lines[i].startswith('|'):
@@ -120,7 +130,7 @@ def convert(md: str) -> str:
     if max_exp:
         body = body.replace('page rebuilt ' + dt.date.today().isoformat(),
             f'page rebuilt {dt.date.today().isoformat()} (experiments through E{max_exp})')
-    title = re.search(r'<h1>(.*?)</h1>', body).group(1)
+    title = re.search(r'<h1[^>]*>(.*?)</h1>', body).group(1)
     return (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         f'<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f'<title>{title}</title>\n<style>{CSS}</style>\n</head>\n<body>\n<main>\n{body}\n'
@@ -136,7 +146,7 @@ def main() -> None:
     args.out.write_text(page)
     n_items = [len(re.findall(r'<li>', ol)) for ol in re.findall(r'<ol[^>]*>.*?</ol>', page, flags=re.S)]
     print(f'wrote {args.out} ({len(page) / 1e3:.0f} kB); ordered lists: {n_items}; '
-        f'sections: {re.findall(r"<h2>(.*?)</h2>", page)}')
+        f'sections: {re.findall(r"<h2[^>]*>(.*?)</h2>", page)}')
 
 
 if __name__ == '__main__':
