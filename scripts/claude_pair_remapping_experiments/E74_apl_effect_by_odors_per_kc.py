@@ -55,7 +55,9 @@ Part A (no simulations):
   fits' values, and the floor of the class-resolved loss is at most half the best fits' class-resolved
   loss); the per-condition table (per_condition.csv): each class's similarity level with APL on and with
   APL off for the key models beside the data's (control flies, APL output blocked (TNT)) with intervals,
-  under both readings, marking the model values outside the data's interval.
+  under both readings, marking the model values outside the data's interval; who is released in the key
+  models by claw count (released_by_claws.csv, E71's groups on the bouton-base wiring's claws per KC: each
+  group's share of the responses blocking APL adds, under the two-spike criterion and through the reading).
 
 Part C support: `class_term_stats` gives E10_joint_fit.py's `--apl-class-term` (the mean over the five
 classes and 120 pairs of the squared difference between the model's and the data's per-class effect under
@@ -67,8 +69,9 @@ squared form or on in the linear form (outputs/E74_apl_effect_by_odors_per_kc/e1
 Outputs in <shared>/results/E74_apl_effect_by_odors_per_kc/: data_by_class.csv (per class, criterion and
 term: the mean effect, variance share and levels with 90 % intervals, class sizes), data_by_recording.csv,
 data_pairs_by_class.csv (the data's per-pair class effects), floor.csv, yardstick.csv, by_variant.csv (one
-row per variant x reading), pairs_key_models.csv, per_condition.csv, wirings.csv, rank_correlations.csv,
-series.csv, comparison_table.md, E74_classes.png, E74_series.png, provenance.json (with H.model_provenance).
+row per variant x reading), pairs_key_models.csv, per_condition.csv, released_by_claws.csv, wirings.csv,
+rank_correlations.csv, series.csv, comparison_table.md, E74_classes.png, E74_series.png, provenance.json (with
+H.model_provenance).
 Usage: nice -n 10 ./venv/bin/python -u E74_apl_effect_by_odors_per_kc.py [--jobs 4] [--only-key] [--boot 2000]
        [--summarize-only] [--check-e10 off|on|lin]
 """
@@ -538,7 +541,8 @@ def read_zcell(on, off, cal: dict, noise: bool = True) -> Dict[str, object]:
     measurement noise (`pseudo_noise`, seed 43) or noise-free, the data's criterion (trial mean > 1 z) on each,
     class contributions averaged over the pseudo-recordings. `on` / `off`: (KCs x odors) counts or (recordings,
     trials, KCs, odors) jittered trials, odors in APL16 order. Returns {'on', 'off', 'effect'} class arrays, the
-    class shares, the response rates, the 0.5-1.5 z band shares and the graded and thresholded mean effects."""
+    class shares, the response rates, the responses per KC (`n_resp_on` / `n_resp_off`, mean over the
+    pseudo-recordings), the 0.5-1.5 z band shares and the graded and thresholded mean effects."""
     kw = dict(q=float(cal['q']), noise=float(cal['noise']), amp=cal.get('amp', 'saturating'),
         K=None if cal.get('K') is None or not np.isfinite(cal.get('K')) else float(cal['K']),
         noise_ratio=float(cal['noise_ratio']), drift=float(cal['drift']))
@@ -556,6 +560,8 @@ def read_zcell(on, off, cal: dict, noise: bool = True) -> Dict[str, object]:
         else:
             tm = C
         R = tm > H.KC_RESPONSE_Z
+        # responses per KC (odors above the criterion), mean over the (pseudo-)recordings
+        out[f'n_resp_{c}'] = R.sum(axis=2).mean(axis=0)
         out[c] = _nanmean0([H.class_cosine_terms_array(tm[r], R[r]) for r in range(len(tm))])
         out[f'share_{c}'] = np.mean([H.opk_class_shares(R[r]) for r in range(len(tm))], axis=0)
         out[f'rate_{c}'] = float(R.mean())
@@ -661,7 +667,7 @@ def score_variant(job: tuple) -> Tuple[List[dict], Optional[dict]]:
         for rd, noise in (('zcell', True), ('zcell_free', False)):
             blk = read_zcell(on, off, zcal, noise)
             rows.append(dict(base, reading=rd, zcal_source=zsrc, z_K=zcal['K'], z_noise=zcal['noise'],
-                z_noise_ratio=zcal['noise_ratio'], **_variant_stats(blk, data)))
+                z_noise_ratio=zcal['noise_ratio'], z_q=zcal['q'], z_drift=zcal['drift'], **_variant_stats(blk, data)))
             if keep:
                 kept[rd] = {k: blk[k] for k in ('on', 'off', 'share_on', 'share_off')}
         if trial_pattern is not None and tcal is not None:
@@ -948,6 +954,88 @@ def per_condition_md(pc: pd.DataFrame, readings: Sequence[str] = ('cal2', 'zcell
     return L
 
 
+# who is released, by claw count (as E71's release_stats): the standard bouton-base wiring's claws per KC, the groups of E71
+CLAW_WIRING = ARCHIVE / 'inputs' / 'wPNKC_bouton_base.parquet'
+CLAW_GROUPS = (('1-4', 1, 4), ('5-6', 5, 6), ('7-8', 7, 8), ('9+', 9, 10 ** 6))
+CLAW_READINGS = ('cal2', 'zcell', 'zcell_free')
+
+
+def claw_release(n_on: np.ndarray, n_off: np.ndarray, claws: np.ndarray) -> List[dict]:
+    """Per claw-count group of `CLAW_GROUPS`: the KCs, their mean claw count, the responses with APL on and off (summed
+    over the group's KCs), the group's share of the responses blocking APL adds (its added responses over all KCs'),
+    the mean odors per KC and the share of silent KCs in each condition. `n_on` / `n_off`: responses per KC (odors
+    above the criterion; a mean over recordings may be fractional), `claws`: claws per KC, all in the same KC order."""
+    n_on, n_off, claws = (np.asarray(x, dtype=float) for x in (n_on, n_off, claws))
+    added = float(n_off.sum() - n_on.sum())
+    rows = []
+    for lab, lo, hi in CLAW_GROUPS:
+        m = (claws >= lo) & (claws <= hi)
+        rows.append(dict(group=lab, n_kcs=int(m.sum()), mean_claws=float(claws[m].mean()) if m.any() else np.nan,
+            resp_on=float(n_on[m].sum()), resp_off=float(n_off[m].sum()),
+            share_added=float((n_off[m].sum() - n_on[m].sum()) / added) if added else np.nan,
+            opk_on=float(n_on[m].mean()) if m.any() else np.nan, opk_off=float(n_off[m].mean()) if m.any() else np.nan,
+            silent_on=float((n_on[m] == 0).mean()) if m.any() else np.nan,
+            silent_off=float((n_off[m] == 0).mean()) if m.any() else np.nan, added_all=added))
+    return rows
+
+
+def released_by_claws(df: pd.DataFrame) -> pd.DataFrame:
+    """Who is released in the archived key models, by claw-count group (`claw_release`, the claws of `CLAW_WIRING`, the
+    real wiring all key models are on): under the calibrated readout's two-spike criterion ('cal2', spike count >= 2),
+    and under E73's reading with the data's criterion through the measurement noise ('zcell', responses per KC averaged
+    over the 10 pseudo-recordings) and without it ('zcell_free'), at the calibration the variant's zcell row of `df`
+    records. Models whose KCs are not all in the wiring are skipped. One row per (model, reading, group)."""
+    if not CLAW_WIRING.exists():
+        return pd.DataFrame()
+    W = pd.read_parquet(CLAW_WIRING)
+    # (claw rows with any input, per KC: E71's n_claws_per_kc)
+    claws = (W != 0).any(axis='columns').groupby(level=H.KC_ID_LEVEL).sum().astype(float)
+    rows = []
+    for s, lab, f, t in _key_archived():
+        frames = {c: pd.read_parquet(ARCHIVE / f / f'{t}_{c}_spike_counts.parquet') for c in ('on', 'acute_off')}
+        if H.KC_ID_LEVEL not in (frames['on'].index.names or []):
+            continue
+        ids = frames['on'].index.get_level_values(H.KC_ID_LEVEL)
+        c = claws.reindex(ids).to_numpy()
+        if np.isnan(c).any() or not frames['acute_off'].index.get_level_values(H.KC_ID_LEVEL).equals(ids):
+            continue
+        on, off = (H.abbrev_columns(frames[k].astype(float))[ODORS].to_numpy(dtype=float) for k in ('on', 'acute_off'))
+        per = {'cal2': ((on >= 2).sum(axis=1), (off >= 2).sum(axis=1))}
+        z = df[(df.folder == f) & (df.tag == t) & (df.reading == 'zcell')]
+        if len(z) and pd.notna(z.iloc[0].get('z_noise', np.nan)):
+            z = z.iloc[0]
+            cal = dict(K=z.z_K, noise=z.z_noise, noise_ratio=z.z_noise_ratio)
+            if pd.notna(z.get('z_q', np.nan)):
+                cal.update(q=z.z_q, drift=z.z_drift)
+            else:
+                cal = _calibrate_zcell(on)
+            for rd, noise in (('zcell', True), ('zcell_free', False)):
+                blk = read_zcell(on, off, cal, noise)
+                per[rd] = (blk['n_resp_on'], blk['n_resp_off'])
+        for rd, (n_on, n_off) in per.items():
+            for g in claw_release(n_on, n_off, c):
+                rows.append(dict(model=s, folder=f, tag=t, reading=rd, **g))
+    return pd.DataFrame(rows)
+
+
+def released_md(rel: pd.DataFrame) -> List[str]:
+    """comparison_table.md's section of `released_by_claws`: per model and reading, each claw-count group's share of the
+    responses blocking APL adds, the added responses per recording and the share of KCs silent with APL off."""
+    L = ['## Who is released, by claw count', '',
+        'Each claw-count group\'s share of the KC x odor responses that blocking APL adds (APL off minus APL on; the claws per '
+        'KC of the standard bouton-base wiring, the groups of E71: 1-4 claws, the third of KCs with the fewest; 9+, the 14 % '
+        'with the most); under the reading the responses per KC are averaged over the 10 pseudo-recordings. Values in '
+        'released_by_claws.csv (also the noise-free reading, the groups\' sizes, odors per KC and silent shares).', '',
+        '| model | reading | 1-4 | 5-6 | 7-8 | 9+ | added responses (per recording) | silent with APL off |',
+        '|---|---|---:|---:|---:|---:|---:|---:|']
+    for (s, rd), g in rel[rel.reading.isin(['cal2', 'zcell'])].groupby(['model', 'reading'], sort=False):
+        g = g.set_index('group')
+        silent = float((g.silent_off * g.n_kcs).sum() / g.n_kcs.sum())
+        L.append(f'| {s} | {rd} | ' + ' | '.join(f3(g.loc[k, "share_added"], ".3f") for k, *_ in CLAW_GROUPS)
+            + f' | {g.added_all.iloc[0]:.0f} | {silent:.3f} |')
+    return L + ['']
+
+
 def f3(x, spec: str = '+.3f') -> str:
     try:
         return '–' if x is None or not np.isfinite(float(x)) else format(float(x), spec)
@@ -956,7 +1044,8 @@ def f3(x, spec: str = '+.3f') -> str:
 
 
 def write_table(out: Path, df: pd.DataFrame, tables: Dict[str, pd.DataFrame], wires: pd.DataFrame, rc: pd.DataFrame,
-    ser: pd.DataFrame, cond: dict, ref: Dict[str, float], runtime: Optional[float], pc: Optional[pd.DataFrame] = None) -> None:
+    ser: pd.DataFrame, cond: dict, ref: Dict[str, float], runtime: Optional[float], pc: Optional[pd.DataFrame] = None,
+    rel: Optional[pd.DataFrame] = None) -> None:
     d = tables['data_by_class']
     L = ['# Who carries the APL effect: the per-pair APL effect split by odors per KC (E74 part A)', '',
         'A pair\'s cosine similarity is a sum over KCs; each KC is put, in each condition, in a class by the number of the 16 odors '
@@ -1021,6 +1110,8 @@ def write_table(out: Path, df: pd.DataFrame, tables: Dict[str, pd.DataFrame], wi
     L += ['Key models: ' + '; '.join(f'{s}: {lab} ({f} {t})' for s, lab, f, t in KEY_MODELS) + '.', '']
     if pc is not None and len(pc):
         L += per_condition_md(pc)
+    if rel is not None and len(rel):
+        L += released_md(rel)
     # under the reading: the sub-threshold part and the band
     g = df[df.reading == 'zcell']
     if len(g):
@@ -1252,7 +1343,7 @@ def write_provenance(out: Path, extra: dict) -> None:
         import hashlib
         return hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
     inputs = {str(p): sha(p) for p in (RESULTS / 'apl_effect' / 'by_variant.csv', RESULTS / 'E73_per_kc_normalization' / 'by_variant.csv',
-        H.yang_data_dir() / 'computed' / 'trialmean_responses_long.parquet', H.data_targets_path())}
+        H.yang_data_dir() / 'computed' / 'trialmean_responses_long.parquet', H.data_targets_path(), CLAW_WIRING)}
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script=Path(__file__).name, part='A',
         host=socket.gethostname(), al_analysis_commit=_git('rev-parse', 'HEAD'), al_analysis_dirty=bool(_git('status', '--porcelain', '--', '.')),
         inputs=inputs, archive=str(ARCHIVE), classes=list(CLASSES), criteria_z=list(CRITERIA_Z), spike_criteria=list(SPIKE_CRITERIA),
@@ -1285,7 +1376,9 @@ def summarize(out: Path, df: pd.DataFrame, blocks: Dict[tuple, dict], tables: Di
     pd.DataFrame(rows).to_csv(out / 'pairs_key_models.csv', index=False)
     pc = per_condition_table(df, tables)
     pc.to_csv(out / 'per_condition.csv', index=False)
-    write_table(out, df, tables, wires, rc, ser, cond, ref, runtime, pc)
+    rel = released_by_claws(df)
+    rel.to_csv(out / 'released_by_claws.csv', index=False)
+    write_table(out, df, tables, wires, rc, ser, cond, ref, runtime, pc, rel)
     try:
         figures(out, df, tables, ser, ref)
     except Exception as e:

@@ -3,9 +3,9 @@
 scripts/claude_pair_remapping_experiments/kc_remapping_harness.py `class_cosine_terms`, `apl_effect_by_class`;
 E74_apl_effect_by_odors_per_kc.py's class-resolved loss, pattern-error shares, readings and the class term of the joint
 fit): the classes add up to the cosine and to the APL effect per pair, one class gives `apl_effect` / `apl_effect_stats`,
-a naive per-unit sum and a synthetic population with a known split are recovered, and the per-condition table reads
-the levels. The tests of E74's module need the shared directory (the KC data and the data-target registry) and are
-skipped without it; the joint fit's options (`--apl-class-term`, `--apl-class-form`) are tested in test_e10_zcell.py."""
+a naive per-unit sum and a synthetic population with a known split are recovered, the per-condition table reads the
+levels and the claw-count groups' shares of the added responses add up. The tests of E74's module need the shared
+directory (the KC data and the data-target registry) and are skipped without it; the joint fit's options (`--apl-class-term`, `--apl-class-form`) are tested in test_e10_zcell.py."""
 
 import sys
 from pathlib import Path
@@ -267,3 +267,23 @@ def test_per_condition_table():
     assert np.allclose(pc2.level_off.to_numpy(float), pc.level_off.to_numpy(float), equal_nan=True)
     md = E.per_condition_md(pc)
     assert sum(l.startswith('| KC data |') for l in md) == 2 and any('↑' in l for l in md)
+
+
+def test_claw_release():
+    """Who is released by claw count: the groups' shares of the added responses add to 1 and are each group's added
+    responses over all KCs'; the group sizes, odors per KC and silent shares are the group's."""
+    E = _shared()
+    rng = np.random.default_rng(0)
+    claws = rng.integers(1, 13, 500).astype(float)
+    n_on = rng.poisson(1.0, 500).astype(float)
+    n_off = n_on + rng.poisson(0.2 * claws)
+    rows = {r['group']: r for r in E.claw_release(n_on, n_off, claws)}
+    assert list(rows) == [g for g, *_ in E.CLAW_GROUPS]
+    assert np.isclose(sum(r['share_added'] for r in rows.values()), 1.0)
+    m = claws >= 9
+    assert rows['9+']['n_kcs'] == m.sum()
+    assert np.isclose(rows['9+']['share_added'], (n_off[m] - n_on[m]).sum() / (n_off - n_on).sum())
+    assert np.isclose(rows['1-4']['opk_off'], n_off[claws <= 4].mean())
+    assert np.isclose(rows['5-6']['silent_on'], (n_on[(claws >= 5) & (claws <= 6)] == 0).mean())
+    # more claws, more added responses here: the 9+ group's share exceeds its share of KCs
+    assert rows['9+']['share_added'] > m.mean()
