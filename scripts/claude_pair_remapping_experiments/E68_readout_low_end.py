@@ -62,13 +62,30 @@ trial, the data's processing after; calibrations on the trials' APL-on counts ('
 'noise_trials': K and c; 'floor_trials': K, b and c); the single-trial same-odor distances beside the
 data's.
 
-Part B (`--part B`, simulations) is not implemented yet.
+Part B (`--part B`, simulations at fixed scales; OMP_NUM_THREADS 16 or 8): the reference model, the eight at
+1.5 at 70 Hz, the first joint fits with breadth exponent 2 and 3, and the best APL-effect fit (E67) under each
+definition (`e67_best`), rebuilt with the trial-noise experiment's (E43) model code and re-run at their fitted
+scales with APL on and acute APL off and the KC membrane potential recorded (olfsysm mp.kc.save_vm_sims; spike
+counts checked against the archived ones, entry for entry), each KC x odor trace reduced in the worker to its
+mean and peak over the odor window relative to the last 100 ms before onset and as a fraction of the distance
+to the KC's threshold ('sims'). The readout adds, for entries without a spike, wp x the depolarization (at
+most one spike's readout) and, for every non-responding entry (< 2 spikes), minus wm x the hyperpolarization;
+wp is set on the control flies' share of entries between 0.25 and 1 z and wm on their share below -0.25 z,
+through the noise, jointly with K, b and c (`calibrate_vm`), all on APL on. Scored as predictions: the APL-off
+histogram, the three cosine terms with APL off, the order of the readings and the loss with its parts under
+every reading. Controls (VM_CONFIGS): each weight alone, the peak instead of the mean depolarization, the
+potential permuted across the non-spiking KCs within each odor and condition, the APL-on potential in both
+conditions. For the reference model, thirty jittered trials with the per-KC threshold jitter re-calibrated
+under the readout to the control flies' single-trial distance ('trials'). Then 'score' writes partB_*.csv,
+comparison_table_partB.md, E68_partB_histograms.png and provenance_partB.json (with the model provenance);
+the reduced potentials stay in ./outputs/E68_readout_low_end/partB/.
 
 Outputs, <shared>/results/E68_readout_low_end/: data_*.csv (A1), calibration.csv, by_variant_low_end.csv
 (one row per variant x configuration x reading), variant_amplitude.csv, key_models.csv,
 key_model_histograms.csv, one_spike_weight.csv, medians.csv, trials_low_end.csv, trials_calibration.csv,
 comparison_table.md, the figures, provenance.json.
 Usage: nice -n 10 ./venv/bin/python E68_readout_low_end.py [--jobs 8] [--only-key] [--boot 1000]
+       OMP_NUM_THREADS=16 nice -n 10 ./venv/bin/python E68_readout_low_end.py --part B [--b-step sims|trials|score]
 """
 from __future__ import annotations
 
@@ -692,11 +709,16 @@ def main() -> None:
     ap.add_argument('--jobs', type=int, default=8)
     ap.add_argument('--only-key', action='store_true', help='A2 on the key models only (a quick check)')
     ap.add_argument('--boot', type=int, default=1000, help='recording-bootstrap draws for A1')
+    ap.add_argument('--b-step', default='all', choices=['all', 'sims', 'trials', 'score'], help='part B: which step')
     args = ap.parse_args()
     if args.part == 'B':
-        raise NotImplementedError('part B is built after part A')
+        return main_b(args)
     out = H.results_dir(EXPERIMENT)
     t0 = datetime.now()
+    # the code state at the start of the run (the working tree may change while it runs)
+    git = lambda *a: subprocess.run(['git', *a], cwd=H.HERE, capture_output=True, text=True).stdout.strip()
+    git_state = dict(al_analysis_commit=git('rev-parse', 'HEAD'), al_analysis_dirty=bool(git('status', '--porcelain', '--untracked-files=no')),
+        script_and_harness_dirty=bool(git('status', '--porcelain', '--', 'E68_readout_low_end.py', 'kc_remapping_harness.py', 'data_targets.py')))
     # A1
     a1 = part_a1(args.boot)
     for k in ('rec', 'hist', 'sd', 'cv', 'rep', 'neg', 'term_pairs'):
@@ -714,7 +736,7 @@ def main() -> None:
     have = [(r.folder, r.tag) for r in bv.itertuples() if (ARCHIVE / r.folder / f'{r.tag}_on_spike_counts.parquet').exists()
         and (ARCHIVE / r.folder / f'{r.tag}_acute_off_spike_counts.parquet').exists()]
     keys = {(f, t) for _, f, t in KEY_MODELS}
-    e67 = sorted({(r.folder, r.tag) for r in bv.itertuples() if str(r.folder).startswith('E67')})
+    e67 = sorted({(f, t) for f, t in have if str(f).startswith('E67')})
     flag = bv.set_index(['folder', 'tag'])['realism_flag'].fillna('')
     chosen = [h for h in have if h in keys or h in e67 or (not args.only_key and flag.get(h, 'x') == '')]
     print(f'{len(chosen)} variants ({len(have)} archived; E67 archived: {len(e67)})', flush=True)
@@ -762,15 +784,11 @@ def main() -> None:
     key.to_csv(out / 'key_models.csv', index=False)
     write_table(out, dtab, a1, df, key, amp, one, med, tr, pd.DataFrame(tcal))
     figures(out, dtab, a1, key, hist, amp)
-    git = lambda *a: subprocess.run(['git', *a], cwd=H.HERE, capture_output=True, text=True).stdout.strip()
     import noise_floor_trial_distances as NF
     inputs = [BY_VARIANT, E65_TABLE, H.data_targets_path(), H.yang_data_dir() / 'computed' / 'trialmean_responses_long.parquet',
         H.yang_data_dir() / 'computed' / 'rdm_per_recording_long.csv'] + [H.yang_data_dir() / g / f'dataset_{i}_long.csv' for g, i in NF.DATASETS.items()]
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E68_readout_low_end.py --part A',
-        host=subprocess.run(['hostname', '-s'], capture_output=True, text=True).stdout.strip(),
-        al_analysis_commit=git('rev-parse', 'HEAD'),
-        al_analysis_dirty=bool(git('status', '--porcelain', '--untracked-files=no')),
-        script_and_harness_dirty=bool(git('status', '--porcelain', '--', 'E68_readout_low_end.py', 'kc_remapping_harness.py', 'data_targets.py')),
+        host=subprocess.run(['hostname', '-s'], capture_output=True, text=True).stdout.strip(), **git_state,
         inputs_sha256={str(p): sha256(p) for p in inputs if Path(p).exists()},
         n_variants=len(jobs), failed_variants=failed, n_trial_sets=len(tjobs), configs=[c[0] for c in CONFIGS], readings=list(READINGS), band=BAND,
         band_literal=BAND_LITERAL, floor_bounds=FLOOR_BOUNDS, n_recordings=N_RECORDINGS, n_trials=N_TRIALS, seeds=dict(on=SEED_ON, off=SEED_OFF,
@@ -1030,6 +1048,615 @@ def figures(out, dtab, a1, key, hist, amp) -> None:
     axes[0].legend(fontsize=7.5, frameon=False)
     fig.suptitle('The KC data\'s cosine similarity split by KC (responder = trial mean above 1 z), mean over the 120 pairs, 90 % recording-bootstrap intervals', fontsize=9)
     fig.tight_layout(); fig.savefig(out / 'E68_data_cosine_terms.png', dpi=130); plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# part B: a sub-threshold signal from the membrane potential (simulations at fixed scales)
+B_SUB = 'partB'
+# (key, label, experiment, tag)
+B_MODELS = [('ref40', 'the reference model (eight at 1.5, 40 Hz, 6.8 %)', 'E44_operating_point', 'thr40_gain1.5_rate0.068_k2_cap3'),
+    ('thr70', 'eight at 1.5, 70 Hz, 6.8 %', 'E44_operating_point', 'thr70_gain1.5_rate0.068_k2_cap3'),
+    ('k2', 'the first joint fit (k 2, 5 %)', 'E10_joint_fit', 'k2'),
+    ('k3', 'the joint fit with k 3 (5 %)', 'E10_joint_fit', 'k3')]
+E67_FOLDER = 'E67_apl_effect_fits'
+VM_PRE_S = 0.1             # the pre-odor baseline: the last 100 ms before odor onset
+# (name, which potential terms are calibrated, the depolarization measure, the potential used)
+VM_CONFIGS = [('floor_noise', (), 'mean', 'own'), ('vm', ('wp', 'wm'), 'mean', 'own'), ('vm_peak', ('wp', 'wm'), 'peak', 'own'),
+    ('vm_pos_only', ('wp',), 'mean', 'own'), ('vm_neg_only', ('wm',), 'mean', 'own'),
+    ('vm_permuted', 'vm', 'mean', 'permuted'), ('vm_on_potential', 'vm', 'mean', 'apl_on')]
+VM_LABEL = {'floor_noise': 'one-spike floor with noise (part A)', 'vm': 'membrane potential, both terms',
+    'vm_peak': 'both terms, peak depolarization', 'vm_pos_only': 'depolarization term alone', 'vm_neg_only': 'hyperpolarization term alone',
+    'vm_permuted': 'control: potential permuted across non-spiking KCs', 'vm_on_potential': 'control: APL-on potential in both conditions'}
+PARAM_BOUNDS = {'K': (1e-2, 1e3), 'b': FLOOR_BOUNDS, 'wp': (0.0, 1.0), 'wm': (0.0, 50.0)}
+PARAM_TARGET = {'b': 'band_share', 'K': 'participation_ratio_resp', 'wp': 'band025', 'wm': 'below'}
+JITTER_N_CAL = 6           # trials per evaluation of the jitter search
+JITTER_N_TUNE = 3
+
+
+def b_dir() -> Path:
+    d = H.outputs_dir(EXPERIMENT) / B_SUB
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def e67_best() -> List[Tuple[str, str, str, str, str]]:
+    """The APL-effect fits (E67) with the lowest loss under each definition (raw counts; the calibrated
+    readout), among the saved fits inside the realism bands (apl_effect_scores.realism_flag on the
+    fits' response rates and, where scored, their response rate ρ)."""
+    from apl_effect_scores import realism_flag
+    p = RESULTS / E67_FOLDER / 'fits.csv'
+    if not p.exists():
+        return []
+    f = pd.read_csv(p)
+    bv = pd.read_csv(BY_VARIANT).set_index(['folder', 'tag'])
+    rho = [bv['spearman_rate_on_vs_data'].get((E67_FOLDER, t), np.nan) for t in f.tag]
+    f['flag'] = [realism_flag(a, b, r) for a, b, r in zip(f.rate_on, f.rate_off, rho)]
+    f = f[f.flag == '']
+    out = []
+    for col, d in (('fit_apl_raw_rmse', 'raw'), ('fit_apl_cal_rmse', 'cal')):
+        if col in f and f[col].notna().any():
+            r = f.loc[f[col].idxmin()]
+            out.append((f'e67_{d}', f'the best APL-effect fit, {"raw counts" if d == "raw" else "calibrated readout"} definition ({r.tag})',
+                E67_FOLDER, str(r.tag), d))
+    return out
+
+
+def b_models() -> List[Tuple[str, str, str, str]]:
+    return B_MODELS + [m[:4] for m in e67_best()]
+
+
+def make_vm_model_class():
+    """A subclass of the trial-noise experiment's (E43) excitability model that can record the KC
+    membrane potential of a run and reduce it per KC and odor (imported lazily: E43 imports the model
+    code)."""
+    import E43_model_trial_noise as E43
+    from al_analysis.mb_model import get_time_index
+
+    class VmModel(E43.ExcitabilityModel):
+        def __init__(self, name, orn, out_dir):
+            super().__init__(name, orn, out_dir)
+            t = np.asarray(get_time_index(self.mp, self.rv), dtype=float)
+            self.vpre = (t >= self.mp.time_stim_start - VM_PRE_S) & (t < self.mp.time_stim_start)
+            if not self.vpre.any() or not self.win.any():
+                raise RuntimeError('empty baseline or response window')
+
+        def run_vm(self, cond: str, fixed_thr: float, thr: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+            """One KC run with the membrane potential recorded: (responses, spike counts, reduced
+            potential: per KC and odor (ODORS order) the pre-odor baseline, the mean and the peak over the
+            odor window, and the KC's threshold)."""
+            self.mp.kc.save_vm_sims = True
+            try:
+                resp, spk = self.run_kc(cond, fixed_thr, thr)
+                vm = self.rv.kc.vm_sims
+                n = spk.shape[0]
+                red = {k: np.empty((n, len(ODORS)), dtype=np.float32) for k in ('base', 'mean', 'peak')}
+                for j, i in enumerate(self.pn_idx):
+                    V = np.asarray(vm[i])
+                    if V.shape != (n, len(self.win)):
+                        raise RuntimeError(f'unexpected vm_sims shape {V.shape}')
+                    red['base'][:, j] = V[:, self.vpre].mean(axis=1)
+                    red['mean'][:, j] = V[:, self.win].mean(axis=1)
+                    red['peak'][:, j] = V[:, self.win].max(axis=1)
+                del vm, V
+                red['thr'] = np.asarray(thr, dtype=np.float32).reshape(-1)
+            finally:
+                self.mp.kc.save_vm_sims = False
+            return resp, spk, red
+    return VmModel, E43
+
+
+def potentials(red: Dict[str, np.ndarray], measure: str = 'mean') -> Tuple[np.ndarray, np.ndarray]:
+    """(depolarization, hyperpolarization) per KC and odor as fractions of the distance from the pre-odor
+    baseline to the KC's threshold: (window mean or peak minus baseline) / (threshold minus baseline),
+    and (baseline minus window mean, if positive) / the same. The last axis of 'thr' broadcast over odors."""
+    base = red['base'].astype(float)
+    thr = red['thr'].astype(float)[..., None]
+    dist = np.maximum(thr - base, 1e-9)
+    v = red[measure].astype(float)
+    return (v - base) / dist, np.maximum(base - red['mean'].astype(float), 0.0) / dist
+
+
+def vm_readout(n: np.ndarray, u: np.ndarray, h: np.ndarray, K: float, b: float, wp: float, wm: float) -> np.ndarray:
+    """The saturating readout with the one-spike floor (part A), plus for entries without a spike wp x
+    the depolarization (clipped to [0, 1], so a KC at its threshold reads at most what one spike reads,
+    wp <= 1) x one spike's readout, minus for the non-responding entries (< 2 spikes) wm x the
+    hyperpolarization x one spike's readout."""
+    r = saturating(n, K, b)
+    r1 = (1.0 + b) / (1.0 + b + K)
+    if wp:
+        r = r + np.where(n == 0, wp * r1 * np.clip(u, 0.0, 1.0), 0.0)
+    if wm:
+        r = r - np.where(n < 2, wm * r1 * h, 0.0)
+    return r
+
+
+def vm_stats(mu: np.ndarray, sd: float) -> Dict[str, float]:
+    """`H.low_end_stats` on the 0.5-1.5 z band plus the shares between 0.25 and 1 z and below -0.25 z (the
+    potential terms' targets), in expectation through noise of sd `sd` on a trial mean."""
+    from scipy.special import ndtr
+    st = H.low_end_stats(mu, sd, band=BAND)
+    st['band025'] = float(np.mean(ndtr((1.0 - mu) / sd) - ndtr((0.25 - mu) / sd)))
+    st['below'] = float(np.mean(ndtr((-0.25 - mu) / sd)))
+    return st
+
+
+def calibrate_vm(n: np.ndarray, u: np.ndarray, h: np.ndarray, *, fit: Tuple[str, ...], start: Dict[str, float],
+        max_iter: int = 40, tol: float = 1e-4) -> Dict[str, object]:
+    """K, b, c and the potential weights jointly on the APL-on arrays (KCs x odors, or recordings x trials
+    x KCs x odors): c on the response rate, b on the share between 0.5 and 1.5 z, K on the responders-only
+    participation ratio, wp on the share between 0.25 and 1 z, wm on the share below -0.25 z (the control
+    flies'), through the measurement noise; the parameters in `fit` (plus K and b) iterated to a fixed
+    point, each the root nearest its current value among a grid's sign changes (c re-solved at every
+    point), the others held at `start`."""
+    from scipy.optimize import brentq
+    r = refs()
+    tg = dict(r['targets'], band025=H.data_target('ctrl_share_z_025_1'), below=H.data_target('ctrl_share_z_below_m025'))
+    tg = {'band_share': tg['band'], 'participation_ratio_resp': tg['pr'], 'band025': tg['band025'], 'below': tg['below'], 'rate': tg['rate']}
+    trials = n.ndim == 4
+    n_tr = n.shape[1] if trials else N_TRIALS
+    sd = r['noise_sd'] / np.sqrt(n_tr)
+
+    def mu_unit(p):
+        sig = vm_readout(n, u, h, p['K'], p['b'], p['wp'], p['wm'])
+        if trials:
+            sig = sig.mean(axis=1)
+            return np.concatenate([x.T for x in sig])
+        return sig.T
+
+    from scipy.special import ndtr
+
+    def solve_c(m):
+        f = lambda lc: float(np.mean(ndtr((np.exp(lc) * m - H.KC_RESPONSE_Z) / sd))) - tg['rate']
+        lo, hi = np.log(1e-2), np.log(1e3)
+        flo, fhi = f(lo), f(hi)
+        if flo * fhi > 0:
+            return float(np.exp(lo if abs(flo) < abs(fhi) else hi))
+        return float(np.exp(brentq(f, lo, hi, xtol=1e-10)))
+
+    def err(p, name):
+        m = mu_unit(p)
+        c = solve_c(m)
+        return vm_stats(c * m, sd)[PARAM_TARGET[name]] - tg[PARAM_TARGET[name]]
+
+    def solve(p, name, first):
+        lo, hi = PARAM_BOUNDS[name]
+        logk = name == 'K'
+        tr = (np.log, np.exp) if logk else (lambda x: x, lambda x: x)
+        f = lambda x: err(dict(p, **{name: tr[1](x)}), name)
+        x0 = tr[0](p[name])
+        if not first:
+            # after the first round, a bracket grown outward from the current value (the root moves little)
+            a, fa = x0, f(x0)
+            step = 0.02 * (tr[0](hi) - tr[0](lo))
+            for direction in (1, -1):
+                xb, fb = a, fa
+                for _ in range(8):
+                    xn = min(max(xb + direction * step * 2 ** _, tr[0](lo)), tr[0](hi))
+                    fn = f(xn)
+                    if np.isfinite(fa) and np.isfinite(fn) and fa * fn <= 0:
+                        return float(tr[1](brentq(f, min(a, xn), max(a, xn), xtol=1e-10))), False
+                    if xn in (tr[0](lo), tr[0](hi)):
+                        break
+        grid = np.linspace(tr[0](lo), tr[0](hi), 25)
+        vals = np.array([f(x) for x in grid])
+        ok = np.isfinite(vals)
+        br = [i for i in range(len(grid) - 1) if ok[i] and ok[i + 1] and vals[i] * vals[i + 1] <= 0]
+        if not br:
+            return float(tr[1](grid[int(np.nanargmin(np.abs(np.where(ok, vals, np.nan))))])), True
+        roots = [float(brentq(f, grid[i], grid[i + 1], xtol=1e-10)) if vals[i] != 0 else float(grid[i]) for i in br]
+        return float(tr[1](min(roots, key=lambda x: abs(x - x0)))), False
+
+    p = {k: float(start.get(k, 0.0)) for k in ('K', 'b', 'wp', 'wm')}
+    order = ['b', 'K'] + [k for k in ('wp', 'wm') if k in fit]
+    at_bound, hist = {}, []
+    converged = False
+    for it in range(1, max_iter + 1):
+        prev = dict(p)
+        for name in order:
+            p[name], at_bound[name] = solve(p, name, it == 1)
+        m = mu_unit(p)
+        c = solve_c(m)
+        st = vm_stats(c * m, sd)
+        hist.append(dict(iteration=it, c=c, **p, **st))
+        if it > 1 and abs(np.log(p['K']) - np.log(prev['K'])) < tol and all(abs(p[k] - prev[k]) < tol for k in ('b', 'wp', 'wm')):
+            converged = True
+            break
+    return dict(p, c=c, iterations=it, converged=converged, **{f'{k}_at_bound': v for k, v in at_bound.items()}, **st,
+        history=hist, targets=tg)
+
+
+def permute_potentials(n: np.ndarray, u: np.ndarray, h: np.ndarray, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+    """The (depolarization, hyperpolarization) pairs permuted across the KCs without a spike, within each
+    odor (KCs x odors arrays): the same distribution per odor, no structure."""
+    rng = np.random.default_rng(seed)
+    u2, h2 = u.copy(), h.copy()
+    for j in range(n.shape[1]):
+        idx = np.flatnonzero(n[:, j] == 0)
+        perm = rng.permutation(idx)
+        u2[idx, j], h2[idx, j] = u[perm, j], h[perm, j]
+    return u2, h2
+
+
+def b_sims(args) -> None:
+    """The deterministic APL-on and acute APL-off runs of every part B model with the membrane potential
+    recorded, each checked against the archived spike counts (or, for an APL-effect fit, against its
+    fits.csv rates and saved distances), reduced and saved to outputs/E68_readout_low_end/partB/<key>_vm.npz."""
+    VmModel, E43 = make_vm_model_class()
+    orn = H.apl16_orn_deltas()
+    log = []
+    for key, label, exp, tag in b_models():
+        path = b_dir() / f'{key}_vm.npz'
+        if path.exists():
+            print(f'{key}: {path.name} exists', flush=True)
+            continue
+        t0 = datetime.now()
+        name = E43.model_from(f'{exp}:{tag}')
+        m = VmModel(name, orn, b_dir())
+        checks = {}
+        arch = ARCHIVE / exp
+        for cond in E43.CONDS:
+            p = arch / f'{tag}_{cond}_spike_counts.parquet'
+            if p.exists():
+                a = H.abbrev_columns(pd.read_parquet(p).astype(float))[ODORS].to_numpy()
+                checks[f'{cond}_archived_mismatch'] = int((a != m.det[cond][1]).sum())
+        if exp == E67_FOLDER:
+            row = pd.read_csv(RESULTS / exp / 'fits.csv').set_index('tag').loc[tag]
+            checks['rate_on_vs_fit'] = float(m.det['on'][0].mean() - row['rate_on'])
+            checks['rate_off_vs_fit'] = float(m.det['acute_off'][0].mean() - row['rate_off'])
+            pd_long = RESULTS / exp / 'model_pair_distances_long.csv'
+            if pd_long.exists():
+                d = pd.read_csv(pd_long)
+                d = d[(d.tag == tag) & (d.rdm == 'spike_counts_cosine')] if 'rdm' in d else d[d.tag == tag]
+                for cond, gcol in (('on', 'on'), ('acute_off', 'acute_off')):
+                    dd = d[d.condition == gcol] if 'condition' in d else d.iloc[0:0]
+                    if len(dd):
+                        mine = as_pairs(cos_dist(m.det[cond][1].astype(float)))
+                        theirs = H.canonical_pairs(dd.set_index(['odor_a', 'odor_b'])['distance'])
+                        a_, b_ = H.align_pairs(mine, theirs)
+                        checks[f'{cond}_distance_max_abs_diff_vs_fit'] = float(np.abs(a_ - b_).max())
+        if any(v != 0 for k, v in checks.items() if k.endswith('mismatch')) or \
+                any(abs(v) > 1e-9 for k, v in checks.items() if k.startswith('rate_')) or \
+                any(v > 1e-9 for k, v in checks.items() if k.endswith('_vs_fit') and 'distance' in k):
+            raise RuntimeError(f'{key}: the re-simulated model differs from its saved outputs: {checks}')
+        arrs = {}
+        for cond in E43.CONDS:
+            resp, spk, red = m.run_vm(cond, m.f0, m.thr0(m.f0))
+            checks[f'{cond}_vm_run_spike_mismatch'] = int((spk != m.det[cond][1]).sum())
+            if checks[f'{cond}_vm_run_spike_mismatch']:
+                raise RuntimeError(f'{key}: recording the potential changed the spike counts ({checks})')
+            arrs[f'{cond}_spk'] = spk
+            arrs.update({f'{cond}_{k}': v for k, v in red.items()})
+        info = dict(key=key, label=label, experiment=exp, tag=tag, name=name, checks=checks, model_info=m.info,
+            params={c: {k: float(v) for k, v in p.items()} for c, p in m.params.items()}, fixed_thr=m.f0,
+            seconds=(datetime.now() - t0).seconds)
+        np.savez_compressed(path, info=json.dumps(info), **arrs)
+        print(f'{key}: {label}: checks {checks}; {info["seconds"]} s -> {path.name}', flush=True)
+        log.append(info)
+        m.close()
+    (b_dir() / 'sims_log.json').write_text(json.dumps(log, indent=1, default=str) + '\n')
+
+
+def load_vm(key: str) -> Dict[str, object]:
+    z = np.load(b_dir() / f'{key}_vm.npz')
+    out = {k: z[k] for k in z.files if k != 'info'}
+    out['info'] = json.loads(str(z['info']))
+    return out
+
+
+def part_a_start(exp: str, tag: str) -> Dict[str, float]:
+    """Part A's joint calibration (K, b) of an archived variant, the start of part B's."""
+    p = H.results_dir(EXPERIMENT) / 'calibration.csv'
+    if p.exists():
+        c = pd.read_csv(p)
+        r = c[(c.folder == exp) & (c.tag == tag) & (c.calibration == 'joint_floor')]
+        if len(r):
+            return dict(K=float(r.K.iloc[0]), b=float(r.floor.iloc[0]))
+    return dict(K=10.0, b=0.0)
+
+
+def single_trial_distance(trials: np.ndarray) -> float:
+    """Mean over recordings, odors and trial pairs of 1 - cosine between two single trials of one odor
+    ((recordings, trials, units, odors) array)."""
+    vals = []
+    for r in range(trials.shape[0]):
+        for i in range(trials.shape[1]):
+            for j in range(i + 1, trials.shape[1]):
+                A, B = trials[r, i], trials[r, j]
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    vals.append(1 - (A * B).sum(axis=0) / (np.linalg.norm(A, axis=0) * np.linalg.norm(B, axis=0)))
+    return float(np.nanmean(vals))
+
+
+def b_trials(args) -> None:
+    """For the reference model: the per-KC threshold jitter (as the trial-to-trial variability experiment's
+    part B, E43: thr0 x (1 + sigma xi), fixed_thr re-tuned to hold the APL-on response rate) re-calibrated
+    so that the APL-on single-trial same-odor distance, under the readout with both potential terms
+    (calibrated on the deterministic run) and measurement noise per trial, equals the control flies';
+    then thirty trials (ten pseudo-recordings of three) with APL on and off and the potential recorded."""
+    VmModel, E43 = make_vm_model_class()
+    orn = H.apl16_orn_deltas()
+    key, label, exp, tag = B_MODELS[0]
+    out = b_dir() / f'{key}_trials.npz'
+    if out.exists():
+        print(f'{out.name} exists', flush=True)
+        return
+    det = load_vm(key)
+    n0, (u0, h0) = det['on_spk'].astype(float), potentials({k[3:]: det[k] for k in ('on_base', 'on_mean', 'on_peak', 'on_thr')})
+    cal = calibrate_vm(n0, u0, h0, fit=('wp', 'wm'), start=part_a_start(exp, tag))
+    pr = {k: cal[k] for k in ('K', 'b', 'wp', 'wm', 'c')}
+    print(f'{key}: deterministic calibration {pr}', flush=True)
+    name = E43.model_from(f'{exp}:{tag}')
+    m = VmModel(name, orn, b_dir())
+    target_rate = float(m.det['on'][0].mean())
+    target = H.data_target('ctrl_single_trial_floor')
+    s = refs()['noise_sd']
+    seed = 0
+    history, tuned = [], {}
+
+    def run_trials(sigma, fixed_thr, kind, rep, n, conds):
+        xis = E43.b_draws(seed, name, kind, rep, n, m.draw_size)
+        res = {c: dict(spk=[], base=[], mean=[], peak=[], thr=[]) for c in conds}
+        for xi in xis:
+            thr, _, _ = m.thr_trial(fixed_thr, sigma, xi)
+            for c in conds:
+                _, spk, red = m.run_vm(c, fixed_thr, thr)
+                res[c]['spk'].append(spk)
+                for k in ('base', 'mean', 'peak', 'thr'):
+                    res[c][k].append(red[k])
+        return {c: {k: np.stack(v) for k, v in d.items()} for c, d in res.items()}
+
+    def evaluate(sigma):
+        t0 = datetime.now()
+        guess = None
+        if tuned:
+            near = min(tuned, key=lambda x: abs(x - sigma))
+            guess = tuned[near]
+        tn = m.tune(sigma, E43.b_draws(seed, name, 'tune', 0, JITTER_N_TUNE, m.draw_size), target_rate, guess, 0.01, 10)
+        tuned[sigma] = tn['fixed_thr']
+        tr = run_trials(sigma, tn['fixed_thr'], 'rec', 99, JITTER_N_CAL, ('on',))['on']
+        u, h = potentials(tr)
+        sig = pr['c'] * vm_readout(tr['spk'].astype(float), u, h, pr['K'], pr['b'], pr['wp'], pr['wm'])
+        noisy = H.sample_pseudo_recordings(sig[None], s, seed=500, return_trials=True)[0]
+        d = single_trial_distance(noisy[None])
+        history.append(dict(sigma=sigma, fixed_thr=tn['fixed_thr'], rate=tn['rate'], tune_converged=tn['converged'],
+            single_trial_dist_on=d, seconds=(datetime.now() - t0).seconds))
+        print(f'{key}: sigma {sigma:.4f}: fixed_thr {tn["fixed_thr"]:.4g} (rate {tn["rate"]:.4f}, target {target_rate:.4f}); '
+            f'single-trial distance {d:.3f} (target {target:.3f}); {history[-1]["seconds"]} s', flush=True)
+        return d - target
+
+    # regula falsi on sigma between no jitter and the level the trial-noise experiments matched on raw counts
+    lo, hi = 0.0, 0.207
+    f_lo, f_hi = evaluate(lo), evaluate(hi)
+    sigma = hi
+    if f_lo > 0:
+        sigma = lo
+    elif f_hi < 0:
+        sigma = hi
+    else:
+        for _ in range(5):
+            sigma = float(lo - f_lo * (hi - lo) / (f_hi - f_lo))
+            f = evaluate(sigma)
+            if abs(f) < 0.005:
+                break
+            if f > 0:
+                hi, f_hi = sigma, f
+            else:
+                lo, f_lo = sigma, f
+    best = min(history, key=lambda r: abs(r['single_trial_dist_on'] - target))
+    sigma, fixed_thr = best['sigma'], best['fixed_thr']
+    print(f'{key}: jitter sigma {sigma:.4f}, fixed_thr {fixed_thr:.6g}: 30 trials with APL on and off', flush=True)
+    recs = [run_trials(sigma, fixed_thr, 'rec', rep, N_TRIALS, E43.CONDS) for rep in range(N_RECORDINGS)]
+    arrs = {}
+    for c in E43.CONDS:
+        for k in ('spk', 'base', 'mean', 'peak', 'thr'):
+            arrs[f'{c}_{k}'] = np.stack([r[c][k] for r in recs])
+    info = dict(key=key, sigma=sigma, fixed_thr=fixed_thr, fixed_thr_det=m.f0, rate_target=target_rate, history=history,
+        det_calibration=pr, seed=seed, single_trial_target=target)
+    np.savez_compressed(out, info=json.dumps(info), **arrs)
+    pd.DataFrame(history).to_csv(H.results_dir(EXPERIMENT) / 'partB_jitter_search.csv', index=False)
+    m.close()
+    print('->', out, flush=True)
+
+
+def score_vm_config(n_on, n_off, pot_on, pot_off, cal, trials: bool, seeds=(SEED_ON, SEED_OFF)) -> Tuple[List[dict], dict, dict]:
+    """Readout with the potential terms, measurement noise, every reading against the same reading of the
+    data; (rows per reading, amplitude / cosine-term row, histograms per condition)."""
+    s = refs()['noise_sd']
+    out = {}
+    amp, hists = {}, {}
+    for cond, n, (u, h), seed in (('on', n_on, pot_on, seeds[0]), ('off', n_off, pot_off, seeds[1])):
+        sig = cal['c'] * vm_readout(n, u, h, cal['K'], cal['b'], cal['wp'], cal['wm'])
+        if trials:
+            noisy = np.stack([H.sample_pseudo_recordings(sig[r][None], s, seed=seed * 1000 + r, return_trials=True)[0]
+                for r in range(sig.shape[0])])
+            dist = readings_noisy(noisy, None)
+            amp[f'single_trial_dist_{cond}'] = single_trial_distance(noisy)
+        else:
+            noisy = H.sample_pseudo_recordings(sig, s, n_recordings=N_RECORDINGS, n_trials=N_TRIALS, seed=seed, return_trials=True)
+            dist = readings_noisy(noisy, sig)
+        means = noisy.mean(axis=1)
+        pooled = means.ravel()
+        amp.update({f'{k}_{cond}': v for k, v in amplitude_summary(pooled, refs()['floor_z']).items()})
+        amp.update({f'term_{k}_{cond}': v for k, v in terms_of(list(means)).items()})
+        hists[cond] = hist_shares(pooled)
+        out[cond] = dist
+    rows = []
+    for reading in list(READINGS) + ['graded_sampled']:
+        rows.append(dict(reading=reading, **score_pair(as_pairs(out['on'][reading]), as_pairs(out['off'][reading]), reading)))
+    return rows, amp, hists
+
+
+def b_score(args) -> None:
+    """Calibrates and scores every part B model under VM_CONFIGS (and the jittered trials of the reference
+    model when saved); writes the part B tables and figure."""
+    res = H.results_dir(EXPERIMENT)
+    rows, cal_rows, amp_rows, hist_rows, cal_hist = [], [], [], [], []
+    models = [(k, l, e, t) for k, l, e, t in b_models() if (b_dir() / f'{k}_vm.npz').exists()]
+    for key, label, exp, tag in models:
+        d = load_vm(key)
+        n = {c: d[f'{c}_spk'].astype(float) for c in ('on', 'acute_off')}
+        red = {c: {k: d[f'{c}_{k}'] for k in ('base', 'mean', 'peak', 'thr')} for c in ('on', 'acute_off')}
+        start = part_a_start(exp, tag)
+        cals = {}
+        for name, fit, measure, which in VM_CONFIGS:
+            pot = {c: potentials(red[c], measure) for c in n}
+            if isinstance(fit, str):
+                cal = cals[fit]
+            else:
+                cal = calibrate_vm(n['on'], *pot['on'], fit=fit, start=start)
+                cals[name] = cal
+                cal_rows.append(dict(model=key, label=label, config=name, **{k: v for k, v in cal.items() if k not in ('history', 'targets')}))
+                cal_hist += [dict(model=key, config=name, **h) for h in cal['history']]
+            if which == 'permuted':
+                pot = {c: permute_potentials(n[c], *pot[c], seed=7) for c in n}
+            elif which == 'apl_on':
+                pot = {'on': pot['on'], 'acute_off': pot['on']}
+            r, amp, hists = score_vm_config(n['on'], n['acute_off'], pot['on'], pot['acute_off'], cal, False)
+            base = dict(model=key, label=label, config=name, K=cal['K'], floor=cal['b'], c=cal['c'], wp=cal['wp'], wm=cal['wm'])
+            rows += [dict(base, **x) for x in r]
+            amp_rows.append(dict(base, **amp))
+            for cond, hh in hists.items():
+                hist_rows.append(dict(base, condition=cond, **dict(zip(hist_labels(), hh))))
+            print(f"{key} {name}: K {cal['K']:.2f} b {cal['b']:+.2f} c {cal['c']:.2f} wp {cal['wp']:.3f} wm {cal['wm']:.3f}; graded loss "
+                f"{[x for x in r if x['reading'] == 'graded'][0]['rmse']:.3f}", flush=True)
+    # the jittered trials of the reference model
+    tp = b_dir() / f'{B_MODELS[0][0]}_trials.npz'
+    if tp.exists():
+        z = np.load(tp)
+        info = json.loads(str(z['info']))
+        n = {c: z[f'{c}_spk'].astype(float) for c in ('on', 'acute_off')}
+        red = {c: {k: z[f'{c}_{k}'] for k in ('base', 'mean', 'peak')} for c in n}
+        for c in n:
+            red[c]['thr'] = z[f'{c}_thr']
+        pot = {c: potentials(red[c]) for c in n}
+        start = part_a_start(B_MODELS[0][2], B_MODELS[0][3])
+        for name, fit in (('floor_trials', ()), ('vm_trials', ('wp', 'wm'))):
+            cal = calibrate_vm(n['on'], *pot['on'], fit=fit, start=start)
+            cal_rows.append(dict(model='ref40_trials', label=f"the reference model, thirty jittered trials (sigma {info['sigma']:.3f})", config=name,
+                **{k: v for k, v in cal.items() if k not in ('history', 'targets')}))
+            cal_hist += [dict(model='ref40_trials', config=name, **h) for h in cal['history']]
+            r, amp, hists = score_vm_config(n['on'], n['acute_off'], pot['on'], pot['acute_off'], cal, True)
+            base = dict(model='ref40_trials', label='the reference model, jittered trials', config=name, K=cal['K'], floor=cal['b'], c=cal['c'],
+                wp=cal['wp'], wm=cal['wm'], sigma=info['sigma'])
+            rows += [dict(base, **x) for x in r]
+            amp_rows.append(dict(base, **amp))
+            for cond, hh in hists.items():
+                hist_rows.append(dict(base, condition=cond, **dict(zip(hist_labels(), hh))))
+    df, cal_df, amp_df, hist_df = pd.DataFrame(rows), pd.DataFrame(cal_rows), pd.DataFrame(amp_rows), pd.DataFrame(hist_rows)
+    df.to_csv(res / 'partB_by_model.csv', index=False)
+    cal_df.to_csv(res / 'partB_calibration.csv', index=False)
+    pd.DataFrame(cal_hist).to_csv(res / 'partB_calibration_history.csv', index=False)
+    amp_df.to_csv(res / 'partB_amplitude.csv', index=False)
+    hist_df.to_csv(res / 'partB_histograms.csv', index=False)
+    write_table_b(res, df, cal_df, amp_df)
+    figure_b(res, hist_df, df)
+    sims = json.loads((b_dir() / 'sims_log.json').read_text()) if (b_dir() / 'sims_log.json').exists() else []
+    vm_infos = {k: load_vm(k)['info'] for k, *_ in models}
+    git = lambda *a: subprocess.run(['git', *a], cwd=H.HERE, capture_output=True, text=True).stdout.strip()
+    prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E68_readout_low_end.py --part B',
+        host=subprocess.run(['hostname', '-s'], capture_output=True, text=True).stdout.strip(), al_analysis_commit=git('rev-parse', 'HEAD'),
+        al_analysis_dirty=bool(git('status', '--porcelain', '--untracked-files=no')),
+        model_provenance=H.model_provenance(orn_deltas=H.apl16_orn_deltas()), models=vm_infos, sims_log=sims,
+        trials=json.loads(str(np.load(tp)['info'])) if tp.exists() else None, vm_configs=[list(map(str, c)) for c in VM_CONFIGS],
+        baseline_window_s=[-VM_PRE_S, 0.0], response_window='mp.time_stim_start to mp.time_stim_end (as the trial-noise experiment, E43)',
+        e67_selection=[list(x) for x in e67_best()], targets=dict(refs()['targets'], band025=H.data_target('ctrl_share_z_025_1'),
+        below=H.data_target('ctrl_share_z_below_m025')), noise_sd=refs()['noise_sd'],
+        outputs_local=str(b_dir()))
+    (res / 'provenance_partB.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
+    print('->', res)
+
+
+def write_table_b(res: Path, df: pd.DataFrame, cal: pd.DataFrame, amp: pd.DataFrame) -> None:
+    dt = H.data_target
+    dmean = {v: float(refs()[v]['effect'].mean()) for v in READINGS}
+    s = pd.read_csv(res / 'data_summary_by_genotype.csv', index_col=0)
+    T = pd.read_csv(res / 'data_effect_terms.csv', index_col=0)['observed']
+    L = ['# E68 part B: a sub-threshold signal from the membrane potential (tables)', '']
+    L += ['## Calibrated parameters (APL-on counts and potential, control-fly targets, through the noise)', '',
+        '| model | configuration | K | b | c | wp | wm | iterations | converged | at a bound | rate | 0.5-1.5 z | 0.25-1 z | below -0.25 z |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---|---|---:|---:|---:|---:|']
+    for r in cal.itertuples():
+        ab = ', '.join(k.replace('_at_bound', '') for k in cal.columns if k.endswith('_at_bound') and getattr(r, k) is True)
+        L.append(f'| {r.model} | {r.config} | {r.K:.2f} | {r.b:+.2f} | {r.c:.2f} | {r.wp:.3f} | {r.wm:.3f} | {r.iterations} | {r.converged} | {ab} | '
+            f'{pct(r.rate)} | {pct(r.band_share)} | {pct(r.band025)} | {pct(r.below)} |')
+    L += ['', f"Targets (control flies): rate {pct(dt('ctrl_frac'))}, 0.5-1.5 z {pct(dt('ctrl_share_z_05_15'))}, 0.25-1 z "
+        f"{pct(dt('ctrl_share_z_025_1'))}, below -0.25 z {pct(dt('ctrl_share_z_below_m025'))}, responders-only participation ratio "
+        f"{pct(dt('ctrl_participation_ratio_resp'))}.", '']
+    L += ['## Predictions with APL off (the low end the potential terms add) beside the KC data', '',
+        '| model | configuration | 0.5-1.5 z, APL on / off | 0.25-1 z | below -0.25 z | above 4 z | responders\' mean amplitude | both responders, APL on / off | one responder | both sub-threshold |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+    L.append(f"| KC data | control flies / APL output blocked (TNT) | {pct(s.loc['share_05_15', 'TNT3c'])} / {pct(s.loc['share_05_15', 'TNT'])} | "
+        f"{pct(s.loc['share_025_1', 'TNT3c'])} / {pct(s.loc['share_025_1', 'TNT'])} | {pct(s.loc['share_below_m025', 'TNT3c'])} / {pct(s.loc['share_below_m025', 'TNT'])} | "
+        f"{pct(s.loc['share_above_4', 'TNT3c'])} / {pct(s.loc['share_above_4', 'TNT'])} | {s.loc['resp_amp_mean', 'TNT3c']:.2f} / {s.loc['resp_amp_mean', 'TNT']:.2f} | "
+        f"{T['both__ctrl']:.3f} / {T['both__tnt']:.3f} | {T['one__ctrl']:.3f} / {T['one__tnt']:.3f} | {T['neither__ctrl']:.3f} / {T['neither__tnt']:.3f} |")
+    for r in amp.itertuples():
+        g = lambda k: getattr(r, k)
+        L.append(f"| {r.model} | {r.config} | {pct(g('share_05_15_on'))} / {pct(g('share_05_15_off'))} | {pct(g('share_025_1_on'))} / {pct(g('share_025_1_off'))} | "
+            f"{pct(g('share_below_m025_on'))} / {pct(g('share_below_m025_off'))} | {pct(g('share_above_4_on'))} / {pct(g('share_above_4_off'))} | "
+            f"{g('resp_amp_mean_on'):.2f} / {g('resp_amp_mean_off'):.2f} | {g('term_both_on'):.3f} / {g('term_both_off'):.3f} | "
+            f"{g('term_one_on'):.3f} / {g('term_one_off'):.3f} | {g('term_neither_on'):.3f} / {g('term_neither_off'):.3f} |")
+    L += ['', '## Mean APL effect (loss) under each reading, against the same reading of the data', '',
+        '| model | configuration | ' + ' | '.join(READING_LABEL[v] for v in READINGS) + ' | order of the readings as the data\'s |',
+        '|---|---|' + '---:|' * len(READINGS) + '---|']
+    L.append('| KC data | | ' + ' | '.join(f'{dmean[v]:+.3f}' for v in READINGS) + ' | thresholded < graded < noise-corrected |')
+    for (model, cfg), g in df.groupby(['model', 'config'], sort=False):
+        g = g.set_index('reading')
+        m = {v: g.loc[v, 'mean'] for v in READINGS}
+        order = m['thresholded'] < m['graded'] < m['noise_corrected']
+        L.append(f'| {model} | {cfg} | ' + ' | '.join(f"{m[v]:+.3f} ({g.loc[v, 'rmse']:.3f})" for v in READINGS) + f" | {'yes' if order else 'no'} |")
+    L += ['', '## The loss and its parts against the graded data', '',
+        '| model | configuration | loss | mean effect | per-odor part | pair-specific part | ρ on the per-pair APL effect | ρ on odor-odor distances, APL on / off | block | natural-source alignment, APL on / off / on minus off |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+    for r in df[df.reading == 'graded'].itertuples():
+        L.append(f"| {r.model} | {r.config} | {r.rmse:.3f} | {r.mean:+.3f} | {r.per_odor:.3f} | {r.pair_specific:.3f} | {r.spearman:.2f} | {r.rho_on:.2f} / {r.rho_off:.2f} | "
+            f"{r.block:+.3f} | {r.vcf_on:.2f} / {r.vcf_off:.2f} / {r.vcf_diff:+.2f} |")
+    L += ['', f"KC data: mean effect {dmean['graded']:+.3f}, loss floor {dt('apl_effect_rmse_floor'):.3f}, ρ ceiling {dt('apl_effect_rho_ceiling'):.2f}; "
+        f"block {dt('block'):+.3f}; natural-source alignment {dt('ctrl_vcf'):.2f} / {dt('tnt_vcf'):.2f} / {dt('vcf_apl_effect'):+.2f}.", '']
+    if 'single_trial_dist_on' in amp:
+        tr = amp[amp.single_trial_dist_on.notna()]
+        L += ['## The jittered trials of the reference model', '', '| configuration | single-trial distance, APL on / off |', '|---|---:|']
+        L += [f'| {r.config} | {r.single_trial_dist_on:.3f} / {r.single_trial_dist_off:.3f} |' for r in tr.itertuples()]
+        L += ['', f"KC data: {dt('ctrl_single_trial_floor'):.3f} (control flies, the jitter's target) / {dt('tnt_single_trial_floor'):.3f} (APL output blocked (TNT), a prediction).", '']
+    (res / 'comparison_table_partB.md').write_text('\n'.join(L) + '\n')
+
+
+def figure_b(res: Path, hist: pd.DataFrame, df: pd.DataFrame) -> None:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    labels = hist_labels()
+    x = np.arange(len(labels))
+    dh = pd.read_csv(res / 'data_hist_by_genotype.csv', index_col=0)
+    models = list(dict.fromkeys(hist.model))
+    fig, axes = plt.subplots(len(models), 2, figsize=(14, 3.2 * len(models)), sharey=True, squeeze=False)
+    cfgs = [('floor_noise', '#9ecae1'), ('vm', '#2171b5'), ('vm_permuted', '#fd8d3c'), ('vm_on_potential', '#a1d99b'),
+        ('floor_trials', '#9ecae1'), ('vm_trials', '#2171b5')]
+    for i, mdl in enumerate(models):
+        for j, (cond, g) in enumerate((('on', 'TNT3c'), ('off', 'TNT'))):
+            ax = axes[i, j]
+            ax.bar(x - 0.36, dh[g].reindex(labels), 0.18, color='k', label=f'KC data, {GENO_LABEL[g]}')
+            k = 0
+            for cfg, col in cfgs:
+                h = hist[(hist.model == mdl) & (hist.config == cfg) & (hist.condition == cond)]
+                if len(h):
+                    ax.bar(x - 0.18 + 0.18 * k, h[labels].iloc[0].to_numpy(dtype=float), 0.18, color=col, label=f'{VM_LABEL.get(cfg, cfg)}, APL {cond}')
+                    k += 1
+            ax.set_yscale('log'); ax.set_ylim(1e-4, 1)
+            ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
+            ax.set_title(f'{mdl}: APL {cond} / {GENO_LABEL[g]}', fontsize=9)
+            ax.spines[['top', 'right']].set_visible(False)
+            if i == 0:
+                ax.legend(fontsize=6.5, frameon=False)
+        axes[i, 0].set_ylabel('share of KC x odor entries')
+    fig.suptitle('Amplitude histograms of the trial means (z) with the membrane-potential terms: the APL-off column is a prediction', fontsize=10)
+    fig.tight_layout(); fig.savefig(res / 'E68_partB_histograms.png', dpi=120); plt.close(fig)
+
+
+def main_b(args) -> None:
+    steps = ['sims', 'trials', 'score'] if args.b_step == 'all' else [args.b_step]
+    for st in steps:
+        print(f'part B: {st} ({datetime.now():%Y-%m-%d %H:%M})', flush=True)
+        {'sims': b_sims, 'trials': b_trials, 'score': b_score}[st](args)
 
 
 if __name__ == '__main__':
