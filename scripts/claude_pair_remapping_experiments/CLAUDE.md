@@ -35,9 +35,9 @@ easier to search than the PDF.
 
 ## Code changes
 
-Only agents at the code level or above (Opus >=5.5 or Fable at xhigh or max; see "Permissions by
-model and effort" below) write or edit code and scripts; others only run scripts already
-committed.
+Only Opus >=5.5 at xhigh or max writes or edits code and scripts: the session itself when it is
+that model and effort, otherwise an Opus subagent it spawns for the change (see "Permissions by
+model and effort" below; Fable never writes code); others only run scripts already committed.
 
 When implementing experiments, modify olfsysm (the model) or the library code in this
 repo or hong2p, and then make scripts in this folder as needed. The olfsysm and hong2p
@@ -59,7 +59,8 @@ tests (with QUICK=1, see the al_analysis CLAUDE.md) before committing model chan
 
 If multiple experiments would benefit from an overlapping set of changes to any library
 code, start with some of those code changes, regardless of which experiments you are
-running first. You may spawn up to 3 subagents (Opus >=5.5, at xhigh effort) to work on
+running first. You may spawn up to 3 code subagents (Opus >=5.5 at xhigh: the Agent tool's
+`model: "opus"`, `effort: "xhigh"`, type general-purpose, never a fork of a Fable session) to work on
 code changes necessary for any future experiments (prioritize code changes for
 experiments with higher priority), so they can work in parallel with ongoing experiments
 (which may take a non-negligible amount of simulation time). Commit and push as code
@@ -99,10 +100,14 @@ information only; nothing compares it.
 
 ## Model and usage caps
 
-When a usage cap on Claude Fable is hit, switch to Opus >=5.5 at xhigh effort and carry on
-with the same work. Subagents spawned while capped also use Opus 5.5 at xhigh (as for
-code-change subagents above). Opus >=5.5 at xhigh keeps the code level but not the editorial level
-(see "Permissions by model and effort" below).
+Queue sessions do not run on Fable ("Permissions by model and effort" below), so a Fable usage
+cap touches only the planning subagents: when a Fable subagent cannot be spawned, or reports a
+model that is not Fable, the host records it in its status file (`blocked_on: Fable cap` when
+planning is what it waits for) and in chat.md, and the planning work waits for a host whose Fable
+is available or goes to Tom; code and coordination work go on, on Opus >=5.5 at xhigh, as before.
+A session that is itself on Fable (started before 2026-11-09, or by mistake) asks its user to
+switch it to Opus >=5.5 at xhigh (/model, /effort) at the first opportunity and takes no new
+work until switched. Code subagents are always Opus >=5.5 at xhigh.
 
 ## System resources
 
@@ -229,7 +234,10 @@ sessions on Tom's hosts do. Once per machine:
 3. Queue sessions start in this folder (`cd ~/src/kc_queue/al_analysis/scripts/claude_pair_remapping_experiments
    && claude`), since Claude Code reads `.claude/settings.json` (the session-title,
    queue-monitor and queue-tree hooks) only from the folder a session starts in; accept its
-   workspace-trust prompt.
+   workspace-trust prompt. Start them on Opus >=5.5 at xhigh (or a smaller model for a run-only
+   host), not on Fable; the first session on a machine also runs the Fable-consent step
+   ("Fable consent" under "Permissions by model and effort") and tells the owner where its
+   account's consent record comes from, or asks.
 
 On those machines:
 - Queue sessions work only in ~/src/kc_queue: its al_analysis, olfsysm and hong2p, and the venv
@@ -321,6 +329,10 @@ In the shared directory, create/maintain/read at least the following:
 - push_keys/<host>/: public deploy keys and an info.txt, written by join_queue.sh on lab
   members' machines (see "Lab members' machines" above); never edit it by hand.
 
+- consent/fable/<holder>.md: one record per Claude account of whether its holder allows Fable
+  subagents for planning work ("Fable consent" under "Permissions by model and effort"; README
+  there); written only by the holder's own sessions.
+
 - nas_data.md
 
 - chat.md: for communicating with agents running on other computers (let me know if
@@ -342,9 +354,9 @@ In the shared directory, you may also create/edit:
 - arbitrary markdown files to summarize findings / keep notes. Notes that are more
   for you than for me should be organized under a notes/ subdirectory.
 
-- proposed_experiments.md (editorial: only agents at the editorial level, see "Permissions by
-  model and effort" below, add, rewrite or move proposals, including under the idle-host
-  exception): add new
+- proposed_experiments.md (planning work: proposals are written, rewritten or moved only as a
+  Fable subagent returns them, applied by the host's session, including under the idle-host
+  exception; see "Permissions by model and effort" below): add new
   experiments not already in experiment_priorities.md
   here (standard entry text plus "proposed by <host>, <date time>"), and if some of these
   should be higher priority than something in experiment_priorities.md, talk me through it
@@ -382,9 +394,9 @@ run the same experiment.
 
 The priority list is a queue. An idle host takes the next unclaimed item that it can run and
 that its level allows (claims it with its Status line and index row, then starts it); if
-nothing runnable is unclaimed, an agent at the editorial level ("Permissions by model and
-effort" below) moves a proposal into the list under the idle-host rule and starts that, and any
-other agent does what that section says for an idle host. A
+nothing runnable is unclaimed, a host whose account has Fable consent ("Permissions by model and
+effort" below) moves a proposal into the list under the idle-host rule, on a planning subagent's
+judgment, and starts that, and any other host does what that section says for an idle host. A
 blocked item (data not on hand, code missing) says in its Status line exactly what unblocks
 it, and an idle host may take the unblocking itself as a work claim (a data pull, a
 connectome query, a code change); items whose unblocking needs something only Tom can
@@ -394,36 +406,40 @@ to Tom with offers or choices about queued work ("E9 or the coverage check?"): w
 is determined by the list and these rules, and the interface turns such closing lines into
 suggestions he does not need to see. Raise only decisions that are genuinely his.
 
-### Permissions by model and effort
+### Permissions by model and effort (revised 2026-11-09 at Tom's request)
 
-What an agent may do depends on its model (your system prompt names it: Fable IDs start with
-`claude-fable-`, Opus IDs with `claude-opus-`) and its effort level (`echo $CLAUDE_EFFORT`).
-Check both when you are about to use a permission, since either can change mid-session (the
-switch to Opus >=5.5 when the Fable usage cap is hit, an /effort change). A subagent has the level of
-its own model and effort, except that it never makes editorial edits (it reports to the agent
-that spawned it). Each level may also do everything the levels below it may do:
+Work is assigned to models by kind of work, not by the model the session happens to run on. The
+session's model and effort are in its system prompt (Fable IDs start with `claude-fable-`, Opus
+IDs with `claude-opus-`) and in `echo $CLAUDE_EFFORT`; a subagent's are set when it is spawned
+(the Agent tool's `model` and `effort`; a `fork` inherits the parent's model and ignores `model`,
+so planning and code subagents are type general-purpose), and every subagent reports its own
+model ID in the first line of its answer so the parent can record it. Checked on atlas
+2026-11-09 16:40: `model: "fable"` gave claude-fable-5-1 at the parent's effort, `model: "opus",
+effort: "xhigh"` gave claude-opus-5-5 at xhigh; which Fable the alias resolves to is the
+account's, so a record of the ID matters.
 
-| level | model and effort | adds |
-|---|---|---|
-| editorial | Fable, at xhigh or max | editorial edits (below) |
-| code | Opus >=5.5 or Fable, at xhigh or max | writing and editing code and scripts; writing up experiments |
-| run-only | any other model, or any model below xhigh | running scripts other agents wrote, copying their outputs to the shared directory, claims, status and chat |
+| kind of work | who does it |
+|---|---|
+| planning: proposing experiments (a proposal's text), planning and prioritizing them (rewriting the text that describes an experiment, ordering the priority list, moving proposals into it, including under the idle-host rule, placing a completed experiment in the Completed list), and the summary write-ups (new or rewritten text of the all-experiments summary, `reports/summary_template.md`, and of the final report) | a Fable subagent (Fable 5.2 where the account serves it, otherwise the Fable it serves; effort xhigh) spawned by the host's session for that one task, on an account whose holder has consented ("Fable consent" below) and whose Fable usage cap is not hit; the subagent returns text, the session applies it |
+| code: creating or editing any script or code (this folder, the rest of al_analysis, hong2p, olfsysm, the monitor and hooks), code fixes down to one line, committing and pushing them; writing up a completed experiment (its note and page, "Completing an experiment" below, apart from its place in the Completed list and its summary passage) | Opus >=5.5 at xhigh or max, and only that: the session itself when it is that model and effort, otherwise an Opus subagent (`model: "opus"`, `effort: "xhigh"`) it spawns for the change, which checks its own ID and stops if below 5.5. Fable never writes code or scripts, not even when the session is Fable |
+| coordination and compute: claims (Status lines, index rows, Work-claims rows), the status file, chat posts, the heartbeat, pulling and reinstalling, running committed scripts, copying and archiving outputs, building and publishing pages from markdown that exists, and applying to the shared files the text a Fable subagent returned (under the lock, with the provenance line below) | the session itself, on any model that is not Fable: Opus >=5.5 at xhigh (which also covers the code work) or a smaller model or lower effort (run-only, as before). Queue sessions therefore run on Opus >=5.5 at xhigh, or smaller for run-only hosts, never on Fable |
 
-Joining the queue. When a session first joins the queue (before its first claim or its first
-chat_watch.sh), it tells me in its reply, in a few lines: its model and effort, its level and
-what that limits in the work it will take, and the three levels in one short line each, with no
-paths or file-level detail (e.g. "Fable at xhigh or max: everything, including adding, rewriting
-and reordering experiments. Opus >=5.5 or Fable at xhigh or max: code, scripts and write-ups, but not
-the experiment list. Anything else: runs existing scripts and hands the outputs over for
-write-up."). It tells me again if its level changes mid-session.
+Fable's text is applied as returned: the session that spawned the subagent writes it into
+proposed_experiments.md, experiment_priorities.md, the report markdown or the template with
+formatting fixes only, never a change of substance (otherwise the planning was done by the wrong
+model), and every proposal, move, placement or summary passage so applied carries "(planned by a
+Fable subagent, <model ID>, spawned from <host> <date time>)" in its provenance text or the
+Moved log, so the record shows which model decided. The brief a session gives a planning
+subagent names the task (a proposal for ..., whether and where to move ..., where to place E<n>,
+the summary passage for E<n>), the files to read (experiment_priorities.md with its index and
+claims, proposed_experiments.md, the last day of chat.md, the E<n> notes it bears on, this
+file's "The main goal for new experiments" and "Naming and choosing experiments" and, for the
+summary, "Summary reports"), the exact output form (an entry in the standard form; a template
+passage with `{{...}}` placeholders and no literal numbers), and that it edits nothing and posts
+nowhere: it returns text. One subagent per decision, not one per sentence; a code subagent may
+not be asked to plan, nor a planning subagent to code.
 
-Code and write-ups (code level and up): creating or editing any script or code (this folder,
-the rest of al_analysis, hong2p, olfsysm, the monitor and hooks), committing it, and spawning
-code-change subagents ("Code changes" above); and writing up experiments ("Completing an
-experiment" below: the interpretation markdown, the experiment's artifact, the summary and the
-report copies).
-
-Run-only agents may claim and run an experiment, or some of its variants, whose scripts are
+Run-only sessions may claim and run an experiment, or some of its variants, whose scripts are
 already written, committed and pushed, with the parameters its entry or the script's author
 gives; pull the repositories and reinstall the packages those scripts need (`pip install -e` of
 a clean checkout); copy the outputs to the shared directory (its results/ folder, and the
@@ -431,40 +447,67 @@ model-output archive with `archive_model_outputs.py`) and list anything left loc
 local_data file; take unblocking work only when it needs no new code (copying data that already
 exists); and keep claims, Status lines, the status file and chat. They do not create or edit
 scripts or code, not even a one-line fix, and do not write up results. When a run finishes or
-fails, the agent writes in the experiment's Status what ran, where the outputs are and what
+fails, the session writes in the experiment's Status what ran, where the outputs are and what
 remains ("outputs copied, needs write-up", or "crashed: <error>, needs a code fix"), and posts in
-chat.md "For a code-level host: ..."; an agent at the code level or above claims the write-up or
-the fix and finishes the experiment. A run-only agent with nothing runnable says in chat.md that
-it is idle and sets `state: idle` in its status file.
+chat.md "For an Opus host: ..."; a session on Opus >=5.5 at xhigh claims the write-up or the fix
+and finishes the experiment. A run-only session with nothing runnable says in chat.md that it is
+idle and sets `state: idle` in its status file.
 
-Editorial edits (editorial level only) are:
-- adding, rewriting or moving proposals in proposed_experiments.md, including moving them into
-  experiment_priorities.md under the idle-host exception, and the report-list append and
-  report artifact republish that go with adding experiments ("Report artifact" below);
-- rewriting the text that describes any experiment (goal, design, outcomes, requirements) in
-  experiment_priorities.md, proposed_experiments.md or the report;
-- changing the order of the priority list or of the Completed list.
+Without Fable (no consent, no Fable on the account, the cap hit, a spawn that fails or comes
+back on another model): the host does code and coordination work only. Its proposals,
+corrections to an experiment's text and cases for reordering go to chat.md starting "For a Fable
+host:" with the text it would have written; a host whose Fable is available runs a planning
+subagent on them and applies the result, saying so in chat. The idle-host exception is exercised
+only through a Fable subagent, so a host without Fable that would otherwise be idle takes any
+unblocking work claim the list offers, and otherwise says in chat.md that it is idle and sets
+`state: idle` until a Fable-capable host moves something in. A host without Fable that completes
+an experiment stages the entry ("Completing an experiment" below): it adds the reference to the
+experiment's markdown to the entry, moves the entry (otherwise unchanged) to the end of the
+"Awaiting placement in Completed" section of experiment_priorities.md and writes `(staged)` where
+the index row would give `(#k)`. A Fable-capable host that takes the lock on
+experiment_priorities.md for any reason first asks a planning subagent where each staged entry
+belongs, moves them (ordered as the list always is, experiments we learned more from first),
+renumbers and updates the `(#k)` of every index row whose position changed, in the same edit.
+Claims, probes noted in a Status, the status file and chat posts need no Fable.
 
-Claiming and releasing experiments and work (Status lines, index rows, Work claims rows),
-noting probes in a Status, the status file and chat posts are not editorial. An agent at the
-code level completes an experiment without choosing its place in the Completed list: it adds
-the reference to the experiment's markdown to the entry, moves the entry (otherwise unchanged)
-to the end of the "Awaiting placement in Completed" section of experiment_priorities.md, and
-writes `(staged)` where the index row would give `(#k)`.
+Joining the queue. When a session first joins the queue (before its first claim or its first
+chat_watch.sh), it tells its user in its reply, in a few lines: its model and effort (and, if it
+is on Fable, that it should be switched to Opus >=5.5 at xhigh and takes no new work until it
+is); what that lets it do (Opus >=5.5 at xhigh: code, write-ups and coordination; smaller or
+lower: running committed scripts and coordination); the Fable-consent status of its account and
+where it comes from ("Fable consent" below); and the three kinds of work in one short line each,
+with no paths or file-level detail. It tells the user again if any of this changes mid-session.
 
-An agent at the editorial level that takes the lock on experiment_priorities.md for any reason
-first empties that section: it moves each staged entry to its place in the Completed list
-(ordered as that list always is, experiments we learned more from first), renumbers the list,
-and updates the `(#k)` of every index row whose position changed, all in the same edit. An
-agent at the editorial level that completes an experiment places it directly.
+### Fable consent (per Claude account)
 
-An agent below the editorial level that has a proposal, a correction to an experiment's text,
-or a case for reordering posts it in chat.md, starting "For a Fable host:", with the text it
-would have written; an agent at the editorial level folds it in (or replies why not) and says so
-in chat. When such an agent's host would otherwise be idle, the idle-host exception does not
-apply to it: it takes any unblocking work claim the list offers that its level allows, and
-otherwise says in chat.md that it is idle and sets `state: idle` in its status file until an
-agent at the editorial level moves something in.
+A Fable subagent is spawned only on an account whose holder has agreed to it. The record is in
+the shared directory, `consent/fable/<holder>.md` (one file per account; README.md there), with:
+the holder's short name, an account key (the first 16 hex digits of the sha256 of the account's
+e-mail address, `printf '%s' '<address>' | sha256sum | cut -c1-16`, so the address itself is not
+stored; the address is the user e-mail in the session's context, or is asked of the user when the
+context has none), `fable_planning: yes` or `no`, who answered and how, when, from which host,
+and the Fable model ID the account served when last checked. The host keeps a copy in this folder
+as `.fable_consent.local` (gitignored, same fields), so a session knows without reading the share.
+
+On joining, before any Fable subagent:
+1. compute the account key; look for `.fable_consent.local`, then for `consent/fable/*.md` with
+   that key;
+2. found: say in the joining reply where the consent comes from ("Fable planning subagents are
+   enabled on this account: consent given by <holder> on <host> at <time>, recorded in the shared
+   directory's consent/fable/<file>; say so to change it"), and write `.fable_consent.local` if
+   it is missing;
+3. not found: ask the user (AskUserQuestion) whether this worker may use Fable subagents to plan
+   and prioritize experiments and write the summary, write the answer to both places and say so;
+   no answer (an unattended session) counts as no until one comes, and the host works without
+   Fable meanwhile;
+4. a "no" holds wherever that account runs; the holder changes it by telling a session, which
+   rewrites both records, and the other hosts pick the change up from the share at their next
+   join.
+A record says only that Fable may be tried on that account: whether the account serves Fable,
+which version, and whether its cap is hit shows in each spawn's result (a failed spawn, or the
+model line the subagent reports). The share is writable by everyone on the lab network, so a
+consent record there is a convenience, not a credential: what it enables is Fable use on the
+holder's own account, visible in the holder's own sessions.
 
 ### Claims, probes and status
 
@@ -619,9 +662,12 @@ depth (e.g. 4), and start with the Tom, Remy, Yang, Remy_Yang, MB_Model, MB_team
 
 ## Completing an experiment
 
-Completing an experiment is write-up work for an agent at the code level or above ("Permissions
-by model and effort" above); a run-only agent copies the outputs and hands over as that section
-says. When you complete an experiment and its interpretation:
+Completing an experiment is write-up work for Opus >=5.5 at xhigh or max (the session, or a code
+subagent; "Permissions by model and effort" above); a run-only session copies the outputs and
+hands over as that section says. Its place in the Completed list (step 2) and its passage in
+the summary (step 4) are planning work: a Fable subagent gives them when the account has Fable,
+otherwise the entry is staged and the summary passage is requested in chat.md ("For a Fable
+host:"). When you complete an experiment and its interpretation:
 1. write a new markdown file in the shared folder with interpretation (longer form than
    in the summary in the experiment priorities entries above)
 
@@ -629,9 +675,10 @@ says. When you complete an experiment and its interpretation:
    markdown, then move the experiment entry to another numbered list in a "Completed"
    section at the bottom of the file (renumber remaining entries in priority list as you
    do this, but not their E<n> IDs). Entries in this list should be ordered with
-   experiments we learned more from presented earlier. An agent below the editorial level
-   moves the entry to "Awaiting placement in Completed" instead, with `(staged)` in its index
-   row, and an agent at the editorial level places it later.
+   experiments we learned more from presented earlier. The position is a planning subagent's
+   call (its brief: the Completed list and the new note's results and interpretation); a host
+   without Fable moves the entry to "Awaiting placement in Completed" instead, with `(staged)`
+   in its index row, and a Fable-capable host places it later.
 
 3. make an artifact summarizing the findings of the experiment (with goals up top, and
    next steps summarized at the bottom) (this could just be taken directly from or
@@ -643,7 +690,9 @@ says. When you complete an experiment and its interpretation:
 4. regenerate the summary artifact (the all-experiments summary, see "Summary reports"
    below): fold the experiment's result into the section it belongs to in the template
    `reports/summary_template.md` (its row in the relevant table, a sentence on what moved and
-   whether it reached the data; its numbers as placeholders on its results table), move it out
+   whether it reached the data; its numbers as placeholders on its results table; the passage's
+   text comes from a planning subagent, which is given the note, the section and the "Summary
+   reports" rules, and the session applies it, builds and publishes), move it out
    of the pending list, update the experiment key, run `./venv/bin/python build_summary.py`
    (progress plot, fill, the generated markdown in `add_to_reports/`, the page), republish the
    page to the same slug, run `save_report_copy.py`, commit the template, update the

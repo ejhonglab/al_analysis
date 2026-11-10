@@ -4,3 +4,6 @@ from_yang/
 # Large outputs of the experiment scripts in this folder. Compact results go to the
 # shared NAS directory instead (see CLAUDE.md).
 outputs/
+
+# This host's copy of its Claude account's Fable-consent record (CLAUDE.md, "Fable consent").
+.fable_consent.local
