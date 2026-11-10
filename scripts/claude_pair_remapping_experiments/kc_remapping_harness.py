@@ -768,19 +768,25 @@ def apl_effect(on: pd.Series, off: pd.Series) -> pd.Series:
 _YANG_APL_EFFECT: Dict[tuple, pd.Series] = {}
 
 
-YANG_EFFECT_VALUES = ('graded', 'thresholded', 'noise_corrected')
+YANG_EFFECT_VALUES = ('graded', 'thresholded', 'noise_corrected', 'nonneg', 'floor')
 
 
 def yang_recording_rdms_values(genotype: str, values: str = 'graded') -> pd.DataFrame:
     """Per-recording cosine pair distances (rows recordings, columns pairs) of the KC data
     transformed as `values` says: 'graded' (as `yang_recording_rdms`), 'thresholded' (trial
-    means <= 1 set to 0 before the distance, as a model KC that does not respond contributes 0)
-    or 'noise_corrected' (each recording's cosine corrected for trial-to-trial noise,
-    `noise_floor_trial_distances.analyse`: the distance a noise-free recording would show)."""
+    means <= 1 set to 0 before the distance, as a model KC that does not respond contributes 0),
+    'noise_corrected' (each recording's cosine corrected for trial-to-trial noise,
+    `noise_floor_trial_distances.analyse`: the distance a noise-free recording would show),
+    'nonneg' (negative trial means set to 0) or 'floor' (trial means at or below the noise-defined
+    floor `kc_noise_floor()` set to 0: twice the sd of a trial mean's noise, from the control
+    flies' trial-to-trial sd of the non-responding entries, the same floor for both genotypes)."""
     if values == 'graded':
         return yang_recording_rdms(genotype, 'cosine')
-    if values == 'thresholded':
-        return recording_rdms_from_matrices({k: transform_matrix(m, values='thresholded')
+    if values in ('thresholded', 'nonneg', 'floor'):
+        thresh = {'thresholded': KC_RESPONSE_Z, 'nonneg': 0.0}.get(values)
+        if thresh is None:
+            thresh = kc_noise_floor()
+        return recording_rdms_from_matrices({k: transform_matrix(m, values='thresholded', thresh=thresh)
             for k, m in yang_recording_matrices(genotype).items()})
     if values == 'noise_corrected':
         # a script module of this folder that imports the harness, hence imported here
@@ -799,8 +805,9 @@ def yang_apl_effect(measure: str = 'cosine', binarize: Optional[float] = None,
     distance with APL output blocked (TNT), each the mean over recordings (`yang_mean_rdm`).
     `binarize` (e.g. 1, Yang's responder threshold on z-scored trial means) computes it from
     binarized responses instead, the like-for-like target of a binarized model readout
-    (`readout(..., 'binary')`). `values` 'thresholded' or 'noise_corrected' (cosine only, without
-    `binarize`) computes it from the data transformed as `yang_recording_rdms_values` says.
+    (`readout(..., 'binary')`). `values` 'thresholded', 'noise_corrected', 'nonneg' or 'floor'
+    (cosine only, without `binarize`) computes it from the data transformed as
+    `yang_recording_rdms_values` says.
     Cached per (measure, binarize, values)."""
     key = (measure, binarize, values)
     if key not in _YANG_APL_EFFECT:
@@ -926,7 +933,7 @@ def apl_effect_decomposition(on: pd.Series, off: pd.Series, data: Optional[pd.Se
 READOUT_KINDS = ('raw', 'sqrt', 'power', 'saturating', 'log1p', 'binary', 'rank_match')
 
 
-def readout(counts: pd.DataFrame, kind: str = 'raw', param=None) -> pd.DataFrame:
+def readout(counts: pd.DataFrame, kind: str = 'raw', param=None, floor: float = 0.0) -> pd.DataFrame:
     """A readout of a model's spike counts (rows KCs, columns odors), elementwise.
 
     Args:
@@ -937,11 +944,17 @@ def readout(counts: pd.DataFrame, kind: str = 'raw', param=None) -> pd.DataFrame
             default 2, i.e. the model's `responses`); 'rank_match' (each count mapped through
             the lookup `param` from `rank_match_map`, a monotone count -> amplitude map).
         param: the readout's parameter (see `kind`); None for 'raw' and 'sqrt'.
+        floor: 'saturating' only: the one-spike floor b of the readout with a low end (E68),
+            (n + b) / (n + b + param) for n >= 1 and 0 for n = 0, so b raises the weight of the
+            weakest responses (b = -1 reads one spike as 0). The default 0 is the plain
+            saturating readout, computed exactly as before.
 
     Every readout keeps 0 at 0 and is monotone in the count, so which KCs respond, and the
     response rates, are the same under every readout.
     """
     x = counts.astype(float)
+    if floor and kind != 'saturating':
+        raise ValueError(f'floor is defined for the saturating readout only, not {kind!r}')
     if kind == 'raw':
         return x
     if kind == 'sqrt':
@@ -949,7 +962,13 @@ def readout(counts: pd.DataFrame, kind: str = 'raw', param=None) -> pd.DataFrame
     if kind == 'power':
         return x ** float(param)
     if kind == 'saturating':
-        return x / (x + float(param))
+        if not floor:
+            return x / (x + float(param))
+        b = float(floor)
+        if b < -1:
+            raise ValueError(f'floor must be >= -1 (one spike reads (1 + b) / (1 + b + K)), not {b}')
+        with np.errstate(invalid='ignore', divide='ignore'):
+            return ((x + b) / (x + b + float(param))).where(x > 0, 0.0)
     if kind == 'log1p':
         return np.log1p(x / float(param))
     if kind == 'binary':
@@ -961,10 +980,12 @@ def readout(counts: pd.DataFrame, kind: str = 'raw', param=None) -> pd.DataFrame
     raise ValueError(f'unknown readout {kind!r} (one of {READOUT_KINDS})')
 
 
-def readout_pair_distances(counts: pd.DataFrame, kind: str = 'raw', param=None) -> pd.Series:
-    """Cosine odor-odor distances across KCs after `readout`: the model's side of the per-pair
-    APL effect under that readout ('raw' gives the `spike_counts_cosine` distances)."""
-    return pair_distances(readout(counts, kind, param), measure='cosine')
+def readout_pair_distances(counts: pd.DataFrame, kind: str = 'raw', param=None, floor: float = 0.0
+    ) -> pd.Series:
+    """Cosine odor-odor distances across KCs after `readout` (`floor` as there): the model's
+    side of the per-pair APL effect under that readout ('raw' gives the `spike_counts_cosine`
+    distances)."""
+    return pair_distances(readout(counts, kind, param, floor=floor), measure='cosine')
 
 
 def apl_effect_stats_readout(on_counts: pd.DataFrame, off_counts: pd.DataFrame, kind: str = 'raw',
@@ -1010,13 +1031,14 @@ def responder_cv(values: np.ndarray) -> float:
 
 
 def readout_stat(on_counts: pd.DataFrame, kind: str, param, stat: str = 'participation_ratio',
-    responders_min: Optional[float] = None) -> float:
+    responders_min: Optional[float] = None, floor: float = 0.0) -> float:
     """A concentration statistic of the readout of `on_counts`: an `amplitude_stats` column
     (mean over odors) or 'responder_cv' (`responder_cv` of the readout among responders).
     `responders_min` (e.g. 2, the model's response threshold) zeroes the readout of the
     non-responding entries first, like-for-like with the data's statistics on responders only
-    (trial means <= 1 set to 0); 'responder_cv' always uses responders (default 2 spikes)."""
-    r = readout(on_counts, kind, param)
+    (trial means <= 1 set to 0); 'responder_cv' always uses responders (default 2 spikes).
+    `floor`: the saturating readout's one-spike floor (`readout`; default 0, none)."""
+    r = readout(on_counts, kind, param, floor=floor)
     if stat == 'responder_cv':
         thr = 2.0 if responders_min is None else responders_min
         return responder_cv(r.to_numpy()[on_counts.to_numpy() >= thr])
@@ -1026,15 +1048,18 @@ def readout_stat(on_counts: pd.DataFrame, kind: str, param, stat: str = 'partici
 
 
 def calibrate_readout(on_counts: pd.DataFrame, kind: str, target: float, stat: str = 'participation_ratio',
-    bounds: Tuple[float, float] = (1e-3, 1e3), iters: int = 60, responders_min: Optional[float] = None) -> float:
+    bounds: Tuple[float, float] = (1e-3, 1e3), iters: int = 60, responders_min: Optional[float] = None,
+    floor: float = 0.0) -> float:
     """The parameter of a one-parameter readout ('power', 'saturating' or 'log1p') at which the
     APL-on `readout_stat` (`stat`, `responders_min`) equals `target`, e.g. the control flies'
     participation ratio: bisection on a log scale. The parameter is fixed on the APL-on counts
     alone and then used unchanged for APL off, so the APL effect is not fitted. Returns the bound
-    nearest to the target when it is not bracketed (for 'power' the upper bound is 1, raw counts)."""
+    nearest to the target when it is not bracketed (for 'power' the upper bound is 1, raw counts).
+    `floor`: the saturating readout's one-spike floor, held fixed (`readout`; default 0, none);
+    `calibrate_low_end` calibrates it jointly with the half-saturation."""
     if kind == 'power':
         bounds = (max(bounds[0], 1e-3), 1.0)
-    f = lambda p: readout_stat(on_counts, kind, p, stat, responders_min)
+    f = lambda p: readout_stat(on_counts, kind, p, stat, responders_min, floor)
     lo, hi = np.log(bounds[0]), np.log(bounds[1])
     flo, fhi = f(np.exp(lo)) - target, f(np.exp(hi)) - target
     if flo * fhi > 0:
@@ -1062,6 +1087,156 @@ def rank_match_map(on_counts: pd.DataFrame, reference: np.ndarray) -> pd.Series:
     ref = np.sort(np.asarray(reference, dtype=float))
     amp = np.quantile(ref, q)
     return pd.Series(amp, index=vals, name='amplitude')
+
+
+# ---------------------------------------------------------------------------
+# the low end of the readout (E68): measurement noise below the data's response criterion, the
+# saturating readout's one-spike floor (`readout(..., floor=b)`), the conversion of readout units
+# to the data's z units, and the split of a cosine into responder / sub-threshold terms. The
+# data's criterion is a trial mean (of 3 trials) above 1 z; its measurement noise is the
+# trial-to-trial sd of the non-responding entries (`kc_trial_noise_sd`).
+KC_RESPONSE_Z = 1.0
+LOW_END_BAND = (0.5, 1.0)
+
+
+def expected_pair_distances_noisy(mat: pd.DataFrame, noise_sd: float, n_trials: int = 1) -> pd.Series:
+    """Cosine distances of a (units x odors) matrix, in expectation over independent zero-mean
+    measurement noise of sd `noise_sd` per entry and trial, after averaging `n_trials` trials.
+
+    Closed form: independent noise adds N s^2 / n_trials to each odor's squared length (N units,
+    s = `noise_sd`) and nothing, in expectation, to the products between different odors, so the
+    distance is 1 - a.b / sqrt((|a|^2 + N s^2 / n)(|b|^2 + N s^2 / n)) (the ratio of the
+    expectations, which the sampled mean approaches for many units). `noise_sd` 0 gives
+    `pair_distances(mat, 'cosine')`.
+    """
+    raise NotImplementedError
+
+
+def sample_pseudo_recordings(signal, noise_sd: float, *, n_recordings: int = 10, n_trials: int = 3,
+    seed: int = 0, return_trials: bool = False) -> np.ndarray:
+    """Pseudo-recordings of a model's readout through measurement noise: independent Gaussian noise
+    of sd `noise_sd` added to every entry of every trial (seeded), as the data's trial-to-trial
+    noise of the non-responding entries.
+
+    Args:
+        signal: the noise-free signal, in z units: a (units x odors) DataFrame or array (the same
+            signal on every trial), or an array (n_recordings, n_trials, units, odors) of per-trial
+            signals (e.g. jittered trials read out per trial), whose first two dimensions then set
+            `n_recordings` and `n_trials`.
+        noise_sd: noise sd per entry and trial (z).
+        return_trials: return the noisy trials instead of their means.
+
+    Returns (n_recordings, units, odors) noisy trial means, or (n_recordings, n_trials, units,
+    odors) noisy trials with `return_trials`.
+    """
+    raise NotImplementedError
+
+
+def noise_corrected_pair_distances(trials: np.ndarray, odors: Sequence[str]) -> pd.Series:
+    """The noise-corrected cosine distances of one recording from its trials (n_trials, units,
+    odors), as `noise_floor_trial_distances.analyse(..., 'graded')` computes them for the data:
+    each odor's signal power is the squared length of its trial mean minus the trial-to-trial
+    variance summed over units divided by the number of trials (floored at 1e-12), and the
+    corrected distance is 1 - (dot product of the trial means) / sqrt(signal power a x signal
+    power b). Returns a canonical pair Series."""
+    raise NotImplementedError
+
+
+def low_end_stats(trial_signal: np.ndarray, noise_sd: float, *, band: Tuple[float, float] = LOW_END_BAND,
+    thresh: float = KC_RESPONSE_Z, weights: Optional[np.ndarray] = None, n_units: Optional[np.ndarray] = None
+    ) -> Dict[str, float]:
+    """The control-fly statistics the low end is calibrated on, in expectation over Gaussian
+    measurement noise (closed form, so a calibration is smooth and needs no sampling): the
+    response rate (share of entries whose trial mean exceeds `thresh`), the share of entries
+    whose trial mean lies in `band` (lo, hi], and the responders-only participation ratio
+    ((sum x^2)^2 / (n sum x^4) over the entries above `thresh`, others 0; the ratio of the
+    expectations of the two sums, per group), each the mean over groups (odors, or recordings x
+    odors).
+
+    Args:
+        trial_signal: (groups, entries) noise-free trial means in z (an entry's mean over trials of
+            its readout times the conversion c).
+        noise_sd: sd of the noise on a trial mean (the per-trial sd / sqrt(n_trials)); 0 for none.
+        weights: (groups, entries) multiplicities of the entries (identical entries grouped);
+            default 1.
+        n_units: (groups,) number of units per group (the participation ratio's n and the shares'
+            denominator); default the summed weights.
+
+    Returns dict with 'rate', 'band_share', 'participation_ratio_resp'.
+    """
+    raise NotImplementedError
+
+
+def z_scale(signal_on, target_rate: float, noise_sd: float, *, n_trials: int = 3, thresh: float = KC_RESPONSE_Z,
+    bounds: Tuple[float, float] = (1e-3, 1e4)) -> float:
+    """The conversion c of readout units to the data's z units: the factor at which the APL-on
+    response rate under the data's criterion (trial mean of `n_trials` trials above `thresh` z,
+    through independent Gaussian measurement noise of sd `noise_sd` per trial; `low_end_stats`)
+    equals `target_rate` (e.g. `data_target('ctrl_frac')`, the control flies' 6.8 %).
+
+    Args:
+        signal_on: the APL-on readout (units x odors DataFrame or array), or per-trial readouts
+            (n_recordings, n_trials, units, odors), whose trial means are taken first.
+
+    Root of the (monotone) expected rate in log c (Brent); returns the nearer bound when the target
+    is not bracketed.
+    """
+    raise NotImplementedError
+
+
+def calibrate_low_end(on_counts, *, noise_sd: float, target_rate: float, target_band: float,
+    target_pr: float, n_trials: int = 3, fit_floor: bool = True, K0: float = 10.0, floor0: float = 0.0,
+    K_bounds: Tuple[float, float] = (1e-3, 1e3), floor_bounds: Tuple[float, float] = (-1.0, 50.0),
+    tol: float = 1e-5, max_iter: int = 50, band: Tuple[float, float] = LOW_END_BAND,
+    thresh: float = KC_RESPONSE_Z) -> Dict[str, object]:
+    """The saturating readout with a low end, calibrated jointly on the APL-on counts alone, so the
+    APL-off amplitudes and the APL effect stay predictions: the half-saturation K, the one-spike
+    floor b (`readout(..., 'saturating', K, floor=b)`) and the conversion c of readout units to z,
+    through measurement noise of sd `noise_sd` per trial (`low_end_stats`, closed form), such that
+    the APL-on response rate under the data's criterion equals `target_rate` (sets c), the share of
+    entries with a trial mean in `band` equals `target_band` (sets b) and the responders-only
+    participation ratio equals `target_pr` (sets K). Iterated to a fixed point: each round solves b
+    (c re-solved at every b) and then K (c re-solved at every K) until K and b change by less than
+    `tol` (relative for K, absolute for b).
+
+    Args:
+        on_counts: APL-on spike counts, (units x odors) DataFrame or array, or per-trial counts
+            (n_recordings, n_trials, units, odors) (jittered trials; `n_trials` is then taken from
+            the array).
+        fit_floor: False holds b at `floor0` (K and c still calibrated jointly).
+
+    Returns dict: K, floor, c, iterations, converged, history (list of per-round dicts), the
+    achieved rate / band_share / participation_ratio_resp, and K_at_bound / floor_at_bound.
+    """
+    raise NotImplementedError
+
+
+def cosine_terms(mat: pd.DataFrame, thresh: float = KC_RESPONSE_Z) -> pd.DataFrame:
+    """Each odor pair's cosine similarity across units split into three terms by unit: both
+    entries responders (above `thresh`), one a responder and the other sub-threshold, both
+    sub-threshold; each term is that part of the dot product divided by the product of the two
+    odors' lengths, so the three add up to the cosine. Columns 'both', 'one', 'neither', 'cosine';
+    index canonical pairs."""
+    raise NotImplementedError
+
+
+_KC_NOISE_SD: Dict[str, float] = {}
+
+
+def kc_trial_noise_sd(genotype: str = 'TNT3c') -> float:
+    """The KC data's measurement noise: the trial-to-trial sd of the non-responding entries
+    (trial mean <= 1 z), the root of the mean over those entries of their variance across the
+    three trials (ddof 1), pooled over a genotype's recordings (Yang's per-trial values,
+    `noise_floor_trial_distances.load_trials`). Cached."""
+    raise NotImplementedError
+
+
+def kc_noise_floor(n_sd: float = 2.0) -> float:
+    """The noise-defined floor of the 'floor' reading of the KC data: `n_sd` times the sd of a
+    trial mean's noise, kc_trial_noise_sd('TNT3c') / sqrt(3) (the control flies' measurement
+    noise, used for both genotypes and for the models, as every low-end parameter is set on the
+    control flies)."""
+    raise NotImplementedError
 
 
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,
