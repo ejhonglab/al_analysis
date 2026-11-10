@@ -634,6 +634,12 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         kws['_wPNKC'] = W
     kws.update(_wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, k), _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'],
         _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=p_on['wKCKC_scale'], kc_kc_tau=tau)
+    # a fixed KC firing ceiling (the firing-ceiling experiment, E69: refractory period, spike-triggered
+    # adaptation), as E10_joint_fit.py's --kc-* options recorded it in fits.csv; absent for other fits
+    kc_spiking = {c: float(fit[c]) for c in ('kc_refractory_period', 'kc_adapt_inc', 'kc_adapt_tau')
+        if _given(fit, c) is not None}
+    kws.update(kc_spiking)
+    extra.update(kc_spiking)
     # the fit's own outputs: this host's copy, else the shared archive (a history evaluation has none:
     # the fit saved only its optimum's outputs, so the paths below are missing for it and recorded so)
     dirs = (H.HERE / 'outputs' / experiment, H.shared_dir() / 'data' / 'model_outputs' / experiment)
