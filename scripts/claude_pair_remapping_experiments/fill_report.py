@@ -110,6 +110,7 @@ def lint(template: str) -> List[str]:
             for c, cell in enumerate(row[1:], 1):
                 bare = PH.sub('', cell)
                 bare = re.sub(r'<br>', ' ', bare)
+                bare = re.sub(r'!button\[[^\]]*\]\([^)]*\)', '', bare)   # matrix buttons (md_to_artifact.py)
                 if re.search(r'\d', bare):
                     probs.append(f'line {start + r + 1}: {row[0][:30]!r} / {labels[c][:40]!r}: bare number in {cell[:60]!r}')
     return probs

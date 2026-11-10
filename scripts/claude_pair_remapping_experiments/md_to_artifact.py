@@ -13,7 +13,10 @@ other columns are all numeric is a table of statistics compared across columns: 
 column is right-aligned, next to the numbers, and the table is centered on the page, up to
 the full window width, scrolling sideways only if wider), figures written as
 `![caption](path.png)` on their own line (embedded as data URIs, so the page is one file;
-clicking one opens it full screen, closed by a click, Esc or the x),
+clicking one opens it full screen, closed by a click, Esc or the x), buttons in table cells
+written `!button[label](path.png)` (a button that opens that figure full screen in the same way,
+the image embedded in the button; the summary's best-models table uses them for each column's
+distance matrices),
 `---` rules, collapsible blocks (a line `??? Title` opens one, a line `???` closes it; rendered
 as <details>, collapsed by default), hover definitions (a block opened by a line `%%% hover` and
 closed by `%%%`, each line `term: definition`; every whole-word occurrence of the term in
@@ -68,6 +71,8 @@ CSS = """
   figure img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
   figcaption { color: var(--muted); font-size: 0.86em; margin-top: 6px; }
   figure img.zoomable { cursor: zoom-in; }
+  button.zoombtn { font: inherit; font-size: 0.85em; padding: 2px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); color: var(--accent); cursor: zoom-in; white-space: nowrap; }
+  button.zoombtn:hover { border-color: var(--accent); }
   .zoom-overlay { display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, 0.92); cursor: zoom-out; align-items: center; justify-content: center; }
   .zoom-overlay.open { display: flex; }
   .zoom-overlay img { width: 98vw; height: 98vh; object-fit: contain; background: #fff; border-radius: 4px; }
@@ -88,6 +93,7 @@ _ITEM_RE = re.compile(r'^(\d+)\. (.*)')
 _BULLET_RE = re.compile(r'^[-*] (.*)')
 _FIG_RE = re.compile(r'^!\[(.*?)\]\((\S+?)\)\s*$')
 _BR_RE = re.compile(r'<br\s*/?>', re.I)
+_BUTTON_RE = re.compile(r'!button\[([^\]]+)\]\((\S+?)\)')
 
 
 # Click-to-fullscreen for the static figures (img.zoomable): an overlay over the page that
@@ -95,7 +101,7 @@ _BR_RE = re.compile(r'<br\s*/?>', re.I)
 # permission, in which case the overlay alone fills the frame); a click, Esc or the x closes it.
 ZOOM_JS = """<script>
 (function () {
-  var imgs = document.querySelectorAll('img.zoomable');
+  var imgs = document.querySelectorAll('img.zoomable, button.zoombtn');
   if (!imgs.length) return;
   var ov = document.createElement('div');
   ov.className = 'zoom-overlay'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true');
@@ -108,12 +114,12 @@ ZOOM_JS = """<script>
     hide();
   }
   function open(img) {
-    big.src = img.src; big.alt = img.alt; ov.classList.add('open');
+    big.src = img.getAttribute('data-src') || img.src; big.alt = img.alt || img.title || ''; ov.classList.add('open');
     if (ov.requestFullscreen) ov.requestFullscreen().catch(function () {});
   }
   imgs.forEach(function (img) {
     img.addEventListener('click', function () { open(img); });
-    img.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(img); } });
+    if (img.tagName === 'IMG') img.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(img); } });
   });
   ov.addEventListener('click', close);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && ov.classList.contains('open')) close(); });
@@ -249,8 +255,24 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
         return with_defs(inline(s), defs)
 
     def cell_html(s: str) -> str:
-        """A table cell: `<br>` splits it into lines, each converted on its own."""
-        return '<br>'.join(text_html(part.strip()) for part in _BR_RE.split(s))
+        """A table cell: `<br>` splits it into lines, each converted on its own; a
+        `!button[label](path)` becomes a button that opens the figure at `path` (relative to
+        `figdir`) full screen."""
+        buttons: List[str] = []
+
+        def stash(m):
+            p = Path(m.group(2))
+            if not p.is_absolute():
+                p = (figdir or Path('.')) / p
+            if not p.exists():
+                raise FileNotFoundError(f'button figure not found: {p}')
+            buttons.append(f'<button type="button" class="zoombtn" data-src="{_data_uri(p)}" '
+                f'title="{html_mod.escape(m.group(1), quote=True)}: click to view full screen">{html_mod.escape(m.group(1))}</button>')
+            return f'\x01{len(buttons) - 1}\x01'
+
+        s = _BUTTON_RE.sub(stash, s)
+        out = '<br>'.join(text_html(part.strip()) for part in _BR_RE.split(s))
+        return re.sub('\x01(\\d+)\x01', lambda m: buttons[int(m.group(1))], out)
 
     def take_item(first: str) -> str:
         """Returns the item text with its continuation lines joined."""
@@ -387,7 +409,7 @@ def convert_markdown(md: str, figdir: Optional[Path] = None, title: Optional[str
     return (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         f'<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f'<title>{title}</title>\n<style>{CSS}</style>\n</head>\n<body>\n<main>\n{body}\n'
-        f'</main>\n' + (ZOOM_JS + '\n' if 'class="zoomable"' in body else '') + '</body>\n</html>\n')
+        f'</main>\n' + (ZOOM_JS + '\n' if ('class="zoomable"' in body or 'class="zoombtn"' in body) else '') + '</body>\n</html>\n')
 
 
 def lint(page: str) -> List[str]:

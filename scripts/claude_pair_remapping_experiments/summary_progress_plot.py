@@ -72,6 +72,14 @@ METRIC_DEFS = {
         ['spike_counts_cosine__on_spearman_resid_vs_vcf_hyp', 'spearman_resid_vs_vcf_hyp_on']),
     'vcf_off': ('natural-source alignment of the APL-off residual', 'tnt_vcf', '.2f',
         ['spike_counts_cosine__off_spearman_resid_vs_vcf_hyp', 'spearman_resid_vs_vcf_hyp_off']),
+    # the main target since 2026-11-09 17:55 (CLAUDE.md "The main goal for new experiments"): the per-pair
+    # APL effect (APL-on minus APL-off distance); its loss against the KC data's (lower is better, the
+    # target is the data's own floor) and the ρ across pairs; scored for every saved variant by
+    # apl_effect_scores.py (results/apl_effect/by_variant.csv, merged into each experiment's table by tag)
+    'apl_loss': ('APL-effect loss (per-pair APL on minus APL off; lower is better)', 'apl_effect_rmse_floor', '.3f',
+        ['spike_counts_cosine__apl_effect_rmse']),
+    'apl_rho': ('ρ on the per-pair APL effect', 'apl_effect_rho_ceiling', '.2f',
+        ['spike_counts_cosine__apl_effect_spearman']),
 }
 # statistic -> (label, target, candidate columns), the target read from the registry
 METRICS = {k: (label, H.data_target(entry), cols) for k, (label, entry, _, cols) in METRIC_DEFS.items()}
@@ -88,7 +96,12 @@ SERIES_COLORS = {
     'ctrl': ('#2a78d6', '#3987e5'), 'tnt': ('#83b1ed', '#8cbaf7'),
     'block': ('#1baf7a', '#199e70'), 'rate_rank': ('#eda100', '#c98500'),
     'wt_dev': ('#e87ba4', '#d55181'), 'vcf_on': ('#008300', '#2a9d2a'), 'vcf_off': ('#7fc27f', '#8ccf8c'),
+    # the APL-effect pair in violet: full strength for the loss, a lighter step for its ρ
+    'apl_loss': ('#8250df', '#a475f9'), 'apl_rho': ('#c2a5f0', '#c9b0fb'),
 }
+APL_EFFECT = H.shared_dir() / 'results' / 'apl_effect' / 'by_variant.csv'
+_APL_EFFECT_COLS = ['spike_counts_cosine__apl_effect_rmse', 'spike_counts_cosine__apl_effect_spearman',
+    'spike_counts_cosine__apl_effect_mean']
 TABLE_NAMES = ('stats_variants.csv', 'fits.csv', 'wkckc_controls.csv')
 
 # parameter columns shown in the hover text of a best model, in this order (label, format)
@@ -180,14 +193,33 @@ def load_tables(folder: Path) -> pd.DataFrame:
     for p in folder.glob('E*_summary.csv'):
         frames.append(pd.read_csv(p))
     if not frames:
-        return pd.DataFrame()
+        return merge_apl_effect(folder, pd.DataFrame())
     df = pd.concat(frames, ignore_index=True, sort=False)
     if 'tag' not in df.columns:
         df['tag'] = df['variant'] if 'variant' in df.columns else [f'row{i}' for i in range(len(df))]
     df['tag'] = df['tag'].astype(str)
+    df = merge_apl_effect(folder, df)
     if '__ratio__' not in df.columns and {'rate_on', 'rate_off'} <= set(df.columns):
         df['__ratio__'] = df['rate_off'] / df['rate_on'].replace(0, np.nan)
     return df
+
+
+def merge_apl_effect(folder: Path, df: pd.DataFrame) -> pd.DataFrame:
+    """Adds the per-pair APL-effect columns of `folder`'s variants (apl_effect_scores.py) to its
+    result table by tag; variants the table lacks are appended with their response rates."""
+    if not APL_EFFECT.exists():
+        return df
+    ae = pd.read_csv(APL_EFFECT)
+    ae = ae[ae.folder == folder.name]
+    if ae.empty:
+        return df
+    ae = ae[['tag'] + _APL_EFFECT_COLS + ['rate_on', 'rate_off']].copy()
+    ae['tag'] = ae['tag'].astype(str)
+    if df.empty:
+        return ae
+    df = df.drop(columns=[c for c in _APL_EFFECT_COLS if c in df.columns]).merge(ae[['tag'] + _APL_EFFECT_COLS], on='tag', how='left')
+    extra = ae[~ae.tag.isin(set(df.tag))]
+    return pd.concat([df, extra], ignore_index=True, sort=False) if len(extra) else df
 
 
 def best_rows(exp: str, df: pd.DataFrame) -> list:
@@ -203,16 +235,36 @@ def best_rows(exp: str, df: pd.DataFrame) -> list:
     df = df[keep]
     out = []
     for key, (label, target, cols) in METRICS.items():
-        col = next((c for c in cols if c in df.columns), None)
+        d = realistic(df) if key in REALISM_METRICS else df
+        col = next((c for c in cols if c in d.columns), None)
         if col is None:
             continue
-        vals = pd.to_numeric(df[col], errors='coerce')
+        vals = pd.to_numeric(d[col], errors='coerce')
         if vals.notna().sum() == 0:
             continue
         i = (vals - target).abs().idxmin()
-        out.append(dict(exp=exp, metric=key, value=float(vals[i]), target=target, variant=str(df.loc[i, 'tag']),
-            params=describe_params(df.loc[i]), stats=describe_stats(df.loc[i]), n_variants=int(vals.notna().sum())))
+        out.append(dict(exp=exp, metric=key, value=float(vals[i]), target=target, variant=str(d.loc[i, 'tag']),
+            params=describe_params(d.loc[i]), stats=describe_stats(d.loc[i]), n_variants=int(vals.notna().sum())))
     return out
+
+
+# the APL-effect series count only variants inside the realism bands (CLAUDE.md, "The main goal for new
+# experiments"; apl_effect_scores.py): the loss's mean part can be bought by moving the response rates
+REALISM_METRICS = {'apl_loss', 'apl_rho'}
+
+
+def realistic(df: pd.DataFrame) -> pd.DataFrame:
+    """The rows inside the realism bands: APL-on response rate and the APL-off / APL-on ratio in
+    their bands, and the APL-on response rate ρ not below its minimum where recorded."""
+    from apl_effect_scores import RATE_ON_BAND, RATE_RATIO_BAND, RATE_RHO_MIN
+    if not {'rate_on', 'rate_off'} <= set(df.columns):
+        return df.iloc[0:0]
+    on, off = pd.to_numeric(df['rate_on'], errors='coerce'), pd.to_numeric(df['rate_off'], errors='coerce')
+    ok = on.between(*RATE_ON_BAND) & (off / on).between(*RATE_RATIO_BAND)
+    if 'spearman_rate_on_vs_data' in df.columns:
+        rr = pd.to_numeric(df['spearman_rate_on_vs_data'], errors='coerce')
+        ok &= rr.isna() | (rr >= RATE_RHO_MIN)
+    return df[ok]
 
 
 def collect() -> pd.DataFrame:

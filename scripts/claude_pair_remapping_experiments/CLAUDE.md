@@ -1146,8 +1146,9 @@ So:
   response rates (more KCs responding with APL off brings the APL-off distances down and the effect up),
   so every result is read with the overall response rates and the per-odor pattern beside it, and a
   model is flagged when its APL-on response rate is outside 0.045 to 0.085 (the control flies' 0.068;
-  the models are tuned at 0.05 or 0.068), its APL-off response rate outside 0.11 to 0.19 (the data's
-  0.150; off / on ratio 2.2), or its response rate ρ with APL on more than 0.10 below the reference
+  the models are tuned at 0.05 or 0.068), its APL-off / APL-on response rate ratio outside 1.6 to 2.9
+  (the data's 2.2, 90 % interval 1.9 to 2.5 over recordings; a ratio, so that models tuned at 5 % are
+  judged by the same proportion), or its response rate ρ with APL on more than 0.10 below the reference
   model's (0.47). `apl_effect_scores.py` writes the flags (`realism_flag` in results/apl_effect/
   by_variant.csv). Tom asked to be told when experiments start to diverge from biological realism: a
   host whose result is flagged (or whose experiment's best variant on the APL-effect loss is) says so in

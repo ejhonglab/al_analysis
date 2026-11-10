@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build the all-experiments summary report from its template (reports/summary_template.md).
 
-1. regenerates the progress plot (summary_progress_plot.py);
+1. scores every saved model variant's per-pair APL effect and draws the best-models table's matrix
+   figures (apl_effect_scores.py), then regenerates the progress plot (summary_progress_plot.py);
 2. fills the template from the data-target registry and the experiments' results tables
    (fill_report.py; fails on any unresolved placeholder, prints lint for bare numbers in KC-data
    rows and the best-models table);
@@ -40,6 +41,7 @@ def main() -> None:
     if args.data_targets:
         subprocess.run([py, str(H.HERE / 'data_targets.py')], check=True)
     if not args.skip_progress_plot:
+        subprocess.run([py, str(H.HERE / 'apl_effect_scores.py')], check=True)
         subprocess.run([py, str(H.HERE / 'summary_progress_plot.py')], check=True)
     template = TEMPLATE.read_text()
     probs = F.lint(template)

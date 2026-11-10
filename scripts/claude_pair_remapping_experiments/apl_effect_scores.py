@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""The per-pair APL effect on odor-odor distances for every saved model variant, and the
+distance-matrix figures the summary's best-models table opens from its buttons.
+
+The main target since 2026-11-09 17:55 (Tom; CLAUDE.md "The main goal for new experiments"): for each
+of the 120 odor pairs, the distance with APL on minus the distance with APL off; in the KC data the
+control flies' cosine distance minus the distance with APL output blocked (TNT), each the mean over
+recordings, in a model its APL-on minus its acute APL-off distance (cosine on spike counts). Scored
+by `kc_remapping_harness.apl_effect_stats` (the APL-effect loss, the root mean squared difference
+from the data's per-pair effect over the 120 pairs, with its mean and pattern parts).
+
+Reads every <shared>/results/E<n>_*/model_pair_distances_long.csv (the spike-count cosine rows where
+the table has a `variant` column; conditions `on` and `acute_off`), takes each variant's response
+rates from the experiment's result tables (by tag or variant; else from the model-output archive's
+response matrices), flags variants outside the realism bands (CLAUDE.md), and writes
+
+    <shared>/results/apl_effect/by_variant.csv           one row per experiment folder x tag
+    <shared>/results/apl_effect/best_by_experiment.csv   each experiment's lowest APL-effect loss,
+                                                         among variants with no realism flag and the
+                                                         lowest overall
+    <shared>/results/apl_effect/matrices/<name>.png      for every `!button[...](results/apl_effect/
+                                                         matrices/<name>.png)` in the summary template:
+                                                         `data` (the KC data's APL-on, APL-off and
+                                                         difference matrices) or `<folder>__<tag>`
+                                                         (the data's row above the model's)
+    <shared>/results/apl_effect/provenance.json
+
+build_summary.py runs it before the progress plot. Usage: ./venv/bin/python apl_effect_scores.py
+[--no-figures] [--only-figures]
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+import kc_remapping_harness as H
+
+RESULTS = H.shared_dir() / 'results'
+OUT = RESULTS / 'apl_effect'
+ARCHIVE = H.shared_dir() / 'data' / 'model_outputs'
+TEMPLATE = H.HERE / 'reports' / 'summary_template.md'
+V = 'spike_counts_cosine'
+STAT_KEYS = ('apl_effect_rmse', 'apl_effect_rmse_centered', 'apl_effect_mean', 'apl_effect_mean_error',
+    'apl_effect_spearman', 'apl_effect_pearson', 'apl_effect_n_pairs')
+# the realism bands (CLAUDE.md, "The main goal for new experiments"): APL-on response rate (the control
+# flies' 0.068; models tuned at 0.05 or 0.068), the APL-off / APL-on response rate ratio (the data's 2.2,
+# 90 % interval 1.9-2.5 over recordings; a ratio band rather than an APL-off rate band, so that models
+# tuned at 5 % are judged by the same proportion), and the APL-on response rate ρ no more than 0.10
+# below the reference model's
+RATE_ON_BAND = (0.045, 0.085)
+RATE_RATIO_BAND = (1.6, 2.9)
+RATE_RHO_MIN = 0.47 - 0.10
+TABLE_GLOBS = ('stats_variants.csv', 'fits.csv', 'stage2_fits.csv', 'wkckc_controls.csv', 'E*_summary.csv', 'comparison.csv')
+BUTTON = re.compile(r'!button\[([^\]]+)\]\(results/apl_effect/matrices/([^)\s]+)\.png\)')
+
+
+def _sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def pair_series(g: pd.DataFrame) -> pd.Series:
+    return H.canonical_pairs(g.set_index(['odor_a', 'odor_b'])['distance'])
+
+
+def model_pairs(folder: Path) -> Dict[str, Tuple[pd.Series, pd.Series]]:
+    """{tag: (APL-on pairs, acute APL-off pairs)} of a results folder's saved distances."""
+    p = folder / 'model_pair_distances_long.csv'
+    if not p.exists():
+        return {}
+    df = pd.read_csv(p)
+    if 'variant' in df.columns:
+        df = df[df['variant'].astype(str) == V]
+    df = df[df['tag'].astype(str) != 'tag']
+    out = {}
+    for tag, g in df.groupby(df['tag'].astype(str), sort=False):
+        on, off = g[g.condition == 'on'], g[g.condition == 'acute_off']
+        if len(on) and len(off):
+            out[tag] = (pair_series(on), pair_series(off))
+    return out
+
+
+def rate_lookup(folder: Path) -> Dict[str, dict]:
+    """{tag or variant: dict(rate_on, rate_off, spearman_rate_on_vs_data, source)} from the
+    experiment's result tables (the first table that has the key wins)."""
+    out: Dict[str, dict] = {}
+    for pat in TABLE_GLOBS:
+        for p in sorted(folder.glob(pat)):
+            try:
+                df = pd.read_csv(p)
+            except Exception:
+                continue
+            if 'rate_on' not in df.columns:
+                continue
+            keys = [c for c in ('tag', 'variant') if c in df.columns]
+            for _, r in df.iterrows():
+                vals = dict(rate_on=r.get('rate_on'), rate_off=r.get('rate_off'),
+                    spearman_rate_on_vs_data=r.get('spearman_rate_on_vs_data', np.nan), source=p.name)
+                names = [str(r[k]) for k in keys]
+                if {'base', 'variant'} <= set(df.columns):
+                    names.append(f"{r['base']}__{r['variant']}")
+                for n in names:
+                    out.setdefault(n, vals)
+    return out
+
+
+def archive_rates(folder: Path, tag: str) -> Optional[dict]:
+    d = ARCHIVE / folder.name
+    on, off = d / f'{tag}_on_responses.parquet', d / f'{tag}_acute_off_responses.parquet'
+    if not (on.exists() and off.exists()):
+        return None
+    rate = lambda p: float(pd.read_parquet(p).astype(float).mean().mean())
+    return dict(rate_on=rate(on), rate_off=rate(off), spearman_rate_on_vs_data=np.nan, source='model-output archive')
+
+
+def realism_flag(rate_on, rate_off, rate_rho) -> str:
+    """'' when inside every band, else the reasons ('; '-joined)."""
+    why = []
+    f = lambda x: x is not None and not (isinstance(x, float) and np.isnan(x))
+    if f(rate_on) and not RATE_ON_BAND[0] <= float(rate_on) <= RATE_ON_BAND[1]:
+        why.append(f'APL-on response rate {float(rate_on):.3f} (band {RATE_ON_BAND[0]}-{RATE_ON_BAND[1]})')
+    if f(rate_on) and f(rate_off) and float(rate_on) > 0:
+        ratio = float(rate_off) / float(rate_on)
+        if not RATE_RATIO_BAND[0] <= ratio <= RATE_RATIO_BAND[1]:
+            why.append(f'APL-off / APL-on response rate {ratio:.2f} (band {RATE_RATIO_BAND[0]}-{RATE_RATIO_BAND[1]})')
+    if f(rate_rho) and float(rate_rho) < RATE_RHO_MIN:
+        why.append(f'response rate ρ, APL on, {float(rate_rho):.2f} (below {RATE_RHO_MIN:.2f})')
+    return '; '.join(why)
+
+
+def score_all(data: pd.Series) -> pd.DataFrame:
+    rows = []
+    for folder in sorted(RESULTS.glob('E*_*')):
+        m = re.match(r'(E\d+)_', folder.name)
+        if not m or not folder.is_dir():
+            continue
+        pairs = model_pairs(folder)
+        if not pairs:
+            continue
+        rates = rate_lookup(folder)
+        for tag, (on, off) in pairs.items():
+            st = H.apl_effect_stats(on, off, data)
+            if st['apl_effect_n_pairs'] < 100:
+                continue
+            rr = rates.get(tag) or archive_rates(folder, tag) or {}
+            row = dict(exp=m.group(1), folder=folder.name, tag=tag, **{f'{V}__{k}': v for k, v in st.items()},
+                rate_on=rr.get('rate_on', np.nan), rate_off=rr.get('rate_off', np.nan),
+                spearman_rate_on_vs_data=rr.get('spearman_rate_on_vs_data', np.nan), rate_source=rr.get('source', ''))
+            row['realism_flag'] = realism_flag(row['rate_on'], row['rate_off'], row['spearman_rate_on_vs_data'])
+            row['realism'] = 'inside the bands' if not row['realism_flag'] else 'outside: ' + row['realism_flag']
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def best_by_experiment(df: pd.DataFrame) -> pd.DataFrame:
+    col = f'{V}__apl_effect_rmse'
+    out = []
+    for (exp, folder), g in df.groupby(['exp', 'folder'], sort=False):
+        best = g.loc[g[col].idxmin()]
+        ok = g[g.realism_flag == '']
+        best_ok = ok.loc[ok[col].idxmin()] if len(ok) else None
+        out.append(dict(exp=exp, folder=folder, n_variants=len(g),
+            best_tag=best.tag, best_loss=best[col], best_flag=best.realism_flag,
+            best_realistic_tag=None if best_ok is None else best_ok.tag,
+            best_realistic_loss=np.nan if best_ok is None else best_ok[col],
+            best_realistic_mean=np.nan if best_ok is None else best_ok[f'{V}__apl_effect_mean'],
+            best_realistic_rho=np.nan if best_ok is None else best_ok[f'{V}__apl_effect_spearman']))
+    return pd.DataFrame(out).sort_values('best_realistic_loss')
+
+
+# ---------------------------------------------------------------------------- figures
+
+def button_targets(template: str) -> Dict[str, str]:
+    """{figure name: label} for every matrices button in the template; the label is the column's
+    header in the best-models table (parameters joined by ', ') where the button sits there."""
+    labels: Dict[str, str] = {}
+    lines = template.split('\n')
+    header: Optional[List[str]] = None
+    for ln in lines:
+        if ln.startswith('## '):
+            header = None
+        if ln.startswith('| statistic |'):
+            header = [c.strip() for c in ln.strip().strip('|').split('|')]
+        if '!button[' not in ln:
+            continue
+        cells = [c.strip() for c in ln.strip().strip('|').split('|')]
+        for k, cell in enumerate(cells):
+            for _, name in BUTTON.findall(cell):
+                lab = header[k] if header and k < len(header) else name
+                labels[name] = re.sub(r'\s*<br>\s*', ', ', re.sub(r'\{span=\d+\}', '', lab)).strip()
+    return labels
+
+
+def square(pairs: pd.Series, order: List[str]) -> np.ndarray:
+    sq = np.array(H.square_from_pairs(pairs).reindex(index=order, columns=order).to_numpy(dtype=float))
+    np.fill_diagonal(sq, np.nan)
+    return sq
+
+
+def draw(name: str, label: str, data_on: pd.Series, data_off: pd.Series, model: Optional[dict], out: Path) -> None:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    order = H.odor_order(H.APL16_ODORS)
+    d_eff = H.apl_effect(data_on, data_off)
+    rows = [('KCs', square(data_on, order), square(data_off, order), square(d_eff, order), None)]
+    if model is not None:
+        m_eff = H.apl_effect(model['on'], model['off'])
+        rows.append(('model', square(model['on'], order), square(model['off'], order), square(m_eff, order), model))
+    lim = max(np.nanmax(np.abs(r[3])) for r in rows)
+    cmap_d, cmap_e = 'viridis', H.oklab_diverging_cmap()
+    fig, axes = plt.subplots(len(rows), 3, figsize=(17, 4.9 * len(rows) + 1.0), squeeze=False,
+        gridspec_kw=dict(hspace=0.32, wspace=0.32))
+    for i, (who, on, off, eff, mod) in enumerate(rows):
+        if who == 'KCs':
+            titles = ['KCs, control flies\n(APL on)', 'KCs, APL output blocked (TNT)\n(APL off)', 'KCs: APL on minus APL off\n(mean {:+.3f})'.format(np.nanmean(eff[np.triu_indices(len(order), 1)]))]
+        else:
+            titles = ['model, APL on', 'model, APL off (acute)',
+                'model: APL on minus APL off\n(loss {:.3f}, mean {:+.3f}, ρ {:.2f} with the KCs\')'.format(
+                    mod['stats']['apl_effect_rmse'], mod['stats']['apl_effect_mean'], mod['stats']['apl_effect_spearman'])]
+        for j, (mat, title) in enumerate(zip((on, off, eff), titles)):
+            ax = axes[i, j]
+            if j < 2:
+                im = ax.imshow(mat, cmap=cmap_d, vmin=0, vmax=1)
+                cb_label = 'cosine distance across KC responses' if who == 'KCs' else 'cosine distance across model KC spike counts'
+            else:
+                im = ax.imshow(mat, cmap=cmap_e, vmin=-lim, vmax=lim)
+                cb_label = 'APL on minus APL off: cosine distance'
+            ax.set_xticks(range(len(order))); ax.set_xticklabels(order, rotation=90, fontsize=8)
+            ax.set_yticks(range(len(order))); ax.set_yticklabels(order, fontsize=8)
+            ax.set_title(title, fontsize=10)
+            cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+            cb.set_label(cb_label, fontsize=8); cb.ax.tick_params(labelsize=7)
+    sup = label
+    if model is not None and model.get('rates'):
+        r = model['rates']
+        f = lambda x: '—' if x is None or (isinstance(x, float) and np.isnan(x)) else f'{x:.3f}'
+        sup += (f"\nresponse rate, APL on / off: {f(r.get('rate_on'))} / {f(r.get('rate_off'))} "
+            f"(KCs {H.data_target('ctrl_frac'):.3f} / {H.data_target('tnt_frac'):.3f})")
+        if model.get('flag'):
+            sup += f"\nrealism flag: {model['flag']}"
+    fig.suptitle(sup, fontsize=11)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=95, bbox_inches='tight')
+    plt.close(fig)
+
+
+def make_figures(df: pd.DataFrame, data_on: pd.Series, data_off: pd.Series) -> List[str]:
+    labels = button_targets(TEMPLATE.read_text())
+    made = []
+    for name, label in labels.items():
+        out = OUT / 'matrices' / f'{name}.png'
+        if name == 'data':
+            draw(name, 'KC data (Yang\'s APL16 recordings): the control flies (APL on), APL output blocked (TNT) (APL off) and their difference',
+                data_on, data_off, None, out)
+            made.append(name)
+            continue
+        folder, _, tag = name.partition('__')
+        pairs = model_pairs(RESULTS / folder).get(tag)
+        if pairs is None:
+            raise KeyError(f'button {name!r}: no saved distances for tag {tag!r} in results/{folder}')
+        row = df[(df.folder == folder) & (df.tag == tag)]
+        r = row.iloc[0] if len(row) else None
+        model = dict(on=pairs[0], off=pairs[1], stats=H.apl_effect_stats(*pairs, H.apl_effect(data_on, data_off)),
+            rates=None if r is None else dict(rate_on=r.rate_on, rate_off=r.rate_off),
+            flag=r.realism_flag if r is not None and isinstance(r.realism_flag, str) else '')
+        draw(name, f'{label}  ({folder}, {tag})', data_on, data_off, model, out)
+        made.append(name)
+    return made
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap.add_argument('--no-figures', action='store_true')
+    ap.add_argument('--only-figures', action='store_true')
+    args = ap.parse_args()
+    OUT.mkdir(parents=True, exist_ok=True)
+    data_on, data_off = H.yang_mean_rdm('TNT3c'), H.yang_mean_rdm('TNT')
+    data = H.apl_effect(data_on, data_off)
+    if args.only_figures:
+        df = pd.read_csv(OUT / 'by_variant.csv')
+    else:
+        df = score_all(data)
+        df.to_csv(OUT / 'by_variant.csv', index=False)
+        best = best_by_experiment(df)
+        best.to_csv(OUT / 'best_by_experiment.csv', index=False)
+        print(f'{len(df)} variants from {df.folder.nunique()} result folders; {int((df.realism_flag != "").sum())} flagged; '
+              f'{int(df.rate_on.isna().sum())} without response rates', flush=True)
+        print(best.head(12).to_string(index=False, max_colwidth=45), flush=True)
+    made = [] if args.no_figures else make_figures(df, data_on, data_off)
+    commit = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True, cwd=H.HERE).stdout.strip()
+    (OUT / 'provenance.json').write_text(json.dumps(dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        script='apl_effect_scores.py', host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(),
+        al_analysis_commit=commit, statistic='kc_remapping_harness.apl_effect_stats (spike-count cosine; APL on minus acute APL off)',
+        data='control flies (TNT3c) minus APL output blocked (TNT), cosine, mean over recordings (harness.yang_mean_rdm)',
+        realism_bands=dict(rate_on=RATE_ON_BAND, rate_ratio_off_over_on=RATE_RATIO_BAND, rate_rho_min=RATE_RHO_MIN),
+        figures=made, template=str(TEMPLATE.relative_to(H.REPO)), template_sha256=_sha(TEMPLATE)), indent=1, ensure_ascii=False) + '\n')
+    print(f'-> {OUT} ({len(made)} figures)', flush=True)
+
+
+if __name__ == '__main__':
+    main()
