@@ -152,12 +152,29 @@ rate, n_responses = E69.rate, E69.n_responses
 
 # ---------------------------------------------------------------------------
 # bases
+def base2_partA() -> dict:
+    """The firing-ceiling base as E69's part A re-tuned it: C2's family at `e67cal_r3_a1_t1000`'s absolute parameters."""
+    c2 = read_json(RESULTS / E69_EXP / 'bases.json')['e67cal']
+    tp = read_json(RESULTS / E69_EXP / 'tuned_params.json')['e67cal_r3_a1_t1000']
+    return dict(label='C2 with the firing ceiling (E69 part A\'s e67cal_r3_a1_t1000: 3 ms refractory, adaptation '
+        f"{tp['kc_adapt_inc']:.4g} with tau 1 s, both response rates re-tuned)", exp=c2['exp'], tag=c2['tag'],
+        params_from=f'{E69_EXP}/tuned_params.json:e67cal_r3_a1_t1000', archive=f'{E69_EXP}/e67cal_r3_a1_t1000',
+        survivors_model=f"e67__{c2['tag']}", source='E69 part A setting')
+
+
+def base2_fit(tag: str, source: str) -> dict:
+    """The firing-ceiling base as one of E69's part-B fits (row `tag` of its fits.csv, counts archived)."""
+    c2 = read_json(RESULTS / E69_EXP / 'bases.json')['e67cal']
+    r = pd.read_csv(RESULTS / E69_EXP / 'fits.csv').set_index('tag').loc[tag]
+    return dict(label='C2 with the firing ceiling (E69 part-B fit: 3 ms refractory, adaptation '
+        f"{float(r.kc_adapt_inc):.4g} with tau {float(r.kc_adapt_tau):g} s)", exp=E69_EXP, tag=tag, params_from=None,
+        archive=f'{E69_EXP}/{tag}', survivors_model=f"e67__{c2['tag']}", source=source)
+
+
 def base2_from_e69() -> dict:
-    """The firing-ceiling base: hal's E69 part-B fit 1 (C2's family at the literature setting, strength 1,
-    tau 1 s) when results/E69_kc_firing_ceiling/fits.csv has it and its counts are archived; else part A's
-    re-tuned setting `e67cal_r3_a1_t1000` (C2's family at E69's re-tuned absolute parameters)."""
-    e69_bases = read_json(RESULTS / E69_EXP / 'bases.json')
-    c2 = e69_bases['e67cal']
+    """The firing-ceiling base: hal's E69 part-B fit 1 (C2's family at the literature setting, strength 1, tau 1 s,
+    started from part A's `e67cal_r3_a1_t1000`) when results/E69_kc_firing_ceiling/fits.csv has it and its counts are
+    archived; else part A's re-tuned setting `e67cal_r3_a1_t1000` (`base2_partA`)."""
     tp = read_json(RESULTS / E69_EXP / 'tuned_params.json')['e67cal_r3_a1_t1000']
     fits = RESULTS / E69_EXP / 'fits.csv'
     if fits.exists():
@@ -170,47 +187,53 @@ def base2_from_e69() -> dict:
                 & f.init_params.astype(str).str.contains('e67cal_r3_a1_t1000')]
             m = m[[(ARCHIVE / E69_EXP / f'{t}_on_spike_counts.parquet').exists() for t in m.tag]]
             if len(m):
-                r = m.iloc[-1]
-                return dict(label='C2 with the firing ceiling (hal\'s E69 part-B fit at the literature setting: 3 ms refractory, '
-                    f"adaptation {tp['kc_adapt_inc']:.4g} with tau 1 s)", exp=E69_EXP, tag=str(r.tag), params_from=None,
-                    archive=f'{E69_EXP}/{r.tag}', survivors_model=f"e67__{c2['tag']}", source='E69 part B fit (fits.csv)')
-    return dict(label='C2 with the firing ceiling (E69 part A\'s e67cal_r3_a1_t1000: 3 ms refractory, adaptation '
-        f"{tp['kc_adapt_inc']:.4g} with tau 1 s, both response rates re-tuned)", exp=c2['exp'], tag=c2['tag'],
-        params_from=f'{E69_EXP}/tuned_params.json:e67cal_r3_a1_t1000', archive=f'{E69_EXP}/e67cal_r3_a1_t1000',
-        survivors_model=f"e67__{c2['tag']}", source='E69 part A setting (hal\'s part-B fit not archived at resolution)')
+                return base2_fit(str(m.iloc[-1].tag), 'E69 part B fit 1 (fits.csv, archived)')
+    return dict(base2_partA(), source='E69 part A setting (hal\'s part-B fit 1 not archived when this base was resolved)')
 
 
-def resolve_bases(write: bool = True, base2: Optional[str] = None) -> Dict[str, dict]:
-    """The three bases, from bases.json once written (so every setting uses the same bases). `base2`
-    ('partA' or an E69 fits.csv tag) overrides the firing-ceiling base's resolution before that."""
+def resolve_bases(write: bool = True, base2: Optional[str] = None, keys=BASE_ORDER) -> Dict[str, dict]:
+    """The bases `keys`, each from bases.json once written there (so every setting of a base uses the same base);
+    a base missing there is resolved and written at its first use, so the firing-ceiling base ('c2ceil', whose part-B
+    fit 1 may land on hal while c2 and ref40 run) is resolved only when its own check runs. `base2` ('partA' or an E69
+    fits.csv tag) chooses the firing-ceiling base when it is resolved."""
     p = res_dir() / 'bases.json'
-    saved = read_json(p)
-    if saved is not None:
+    saved = read_json(p, {})
+    missing = [k for k in keys if k not in saved]
+    if not missing:
         return saved
     e69_bases = read_json(RESULTS / E69_EXP / 'bases.json')
     c2, ref = e69_bases['e67cal'], e69_bases['ref40']
-    out = dict(
-        c2=dict(label='C2: the first joint fit\'s family at breadth exponent 2, fitted under the APL-effect loss with both '
-            'definitions at 6.8 % (E67)', exp=c2['exp'], tag=c2['tag'], params_from=None, archive=f"{c2['exp']}/{c2['tag']}",
-            survivors_model=f"e67__{c2['tag']}", source='E69 bases.json e67cal'),
-        ref40=dict(label='the reference model (eight at 1.5, 40 Hz, 6.8 %)', exp=ref['exp'], tag=ref['tag'], params_from=None,
-            archive=f"{ref['exp']}/{ref['tag']}", survivors_model='ref40', source='E69 bases.json ref40'),
-        c2ceil=base2_from_e69())
-    if base2 == 'partA':
-        out['c2ceil'] = dict(base2_from_e69(), exp=c2['exp'], tag=c2['tag'],
-            params_from=f'{E69_EXP}/tuned_params.json:e67cal_r3_a1_t1000', archive=f'{E69_EXP}/e67cal_r3_a1_t1000',
-            source='E69 part A setting (chosen with --base2 partA)')
-    elif base2:
-        out['c2ceil'] = dict(out['c2ceil'], exp=E69_EXP, tag=base2, params_from=None, archive=f'{E69_EXP}/{base2}',
-            source='E69 part B fit (chosen with --base2)')
+    out = {}
+    for k in missing:
+        if k == 'c2':
+            out[k] = dict(label='C2: the first joint fit\'s family at breadth exponent 2, fitted under the APL-effect loss with '
+                'both definitions at 6.8 % (E67)', exp=c2['exp'], tag=c2['tag'], params_from=None, archive=f"{c2['exp']}/{c2['tag']}",
+                survivors_model=f"e67__{c2['tag']}", source='E69 bases.json e67cal')
+        elif k == 'ref40':
+            out[k] = dict(label='the reference model (eight at 1.5, 40 Hz, 6.8 %)', exp=ref['exp'], tag=ref['tag'], params_from=None,
+                archive=f"{ref['exp']}/{ref['tag']}", survivors_model='ref40', source='E69 bases.json ref40')
+        elif k == 'c2ceil':
+            out[k] = (dict(base2_partA(), source='E69 part A setting (chosen with --base2 partA)') if base2 == 'partA' else
+                base2_fit(base2, 'E69 part B fit (chosen with --base2)') if base2 else base2_from_e69())
+        else:
+            raise KeyError(k)
     if write:
-        write_json(p, dict(out, _resolved=dict(time=now(), host=socket.gethostname())))
+        saved = read_json(p, {})
+        saved.update({k: v for k, v in out.items() if k not in saved})
+        saved.update({f'_resolved_{k}': dict(time=now(), host=socket.gethostname()) for k in out})
+        write_json(p, saved)
         return read_json(p)
-    return out
+    return {**saved, **out}
+
+
+def base(key: str) -> dict:
+    """Base `key`, resolved (and recorded in bases.json) on first use."""
+    return resolve_bases(keys=(key,))[key]
 
 
 def bases() -> Dict[str, dict]:
-    return {k: v for k, v in resolve_bases().items() if not k.startswith('_')}
+    """The bases resolved so far (bases.json)."""
+    return {k: v for k, v in read_json(res_dir() / 'bases.json', {}).items() if not k.startswith('_')}
 
 
 def copy_base_caches() -> None:
@@ -245,7 +268,7 @@ class Model:
         from E10_joint_fit import bouton_base, breadth_weights, kc_input_thr_factor, kc_input_weight
         if breadth not in ('recomputed', 'kept'):
             raise ValueError(f'{breadth=}')
-        b = bases()[key]
+        b = base(key)
         self.key, self.base, self.a, self.breadth_mode = key, b, float(a), breadth
         copy_base_caches()
         name = E43.model_from(f"{b['exp']}:{b['tag']}")
@@ -601,17 +624,16 @@ def child(args: List[str], log: Path) -> int:
 
 
 def stage_run(only_bases: Optional[List[str]] = None) -> None:
-    """Every missing base check, then every missing setting (c2's first, so the firing-ceiling base's
-    exponents can follow its choice), each in its own process, then the summary."""
+    """Base by base (c2, ref40, c2ceil: c2 first, so the firing-ceiling base's exponents can follow its choice,
+    and that base last, so it is resolved as late as possible), its check if missing and then its missing
+    settings, each in its own process; then the summary."""
     logs = out_dir() / 'logs'
-    resolve_bases()
     keys = [k for k in BASE_ORDER if only_bases is None or k in only_bases]
     failed = []
     for key in keys:
         if key not in read_json(res_dir() / 'base_checks.json', {}):
             if child(['--stage', 'check', '--base', key], logs / f'check_{key}.log'):
                 failed.append(f'check {key}')
-    for key in keys:
         checked = read_json(res_dir() / 'base_checks.json', {})
         # (settings() again per base: c2ceil's exponents depend on c2's scored settings)
         for s in [s for s in settings() if s['base'] == key]:
@@ -1029,7 +1051,7 @@ def partC_commands() -> List[str]:
     env = 'OMP_NUM_THREADS=12 OMP_THREAD_LIMIT=12 nice -n 10'
     common = (f'--part B --tune-trials 3 --seed 43 --n-recordings 10 --n-trials 3 --experiment {EXPERIMENT} '
         '--levels match_on match_off --save-recording-distances')
-    c2 = bases()['c2']
+    c2 = base('c2')
     cmds = ['# C2 itself (calibrated anew: E67 did not run C2 through the pipeline)',
         f"{env} {py} E43_model_trial_noise.py {common} --model-from {c2['exp']}:{c2['tag']}"]
     fits = res_dir() / 'fits.csv'
@@ -1124,7 +1146,7 @@ def main() -> None:
         print(f'{len(settings())} settings + {len(BASE_ORDER)} base checks; results -> {res_dir()}, outputs -> {out_dir()}')
         return
     if args.base2 is not None:
-        resolve_bases(base2=args.base2)
+        resolve_bases(base2=args.base2, keys=('c2ceil',))
     if args.stage == 'bases':
         print(json.dumps(resolve_bases(), indent=1, default=str))
     elif args.stage == 'list':
