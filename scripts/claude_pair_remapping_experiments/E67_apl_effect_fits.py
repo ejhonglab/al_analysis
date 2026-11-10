@@ -47,10 +47,16 @@ STARTS = {
 
 
 def start_key(row: pd.Series) -> str:
-    """Which start a fits.csv row came from (STARTS key, or 'D' for the DM1-alone start)."""
-    if isinstance(row.get('init_params'), str) and 'E44_thr70' in row['init_params']:
+    """Which start a fits.csv row came from (STARTS key, 'D' for the DM1-alone start, 'C2*' for C2's fitted
+    parameters given as --init-params in stage 3, 'from <tag>' for an exact start at another E67 fit)."""
+    ip = row.get('init_params')
+    if isinstance(ip, str) and 'E44_thr70' in ip:
         return 'D'
+    if isinstance(ip, str) and 'E67_C2_cal' in ip:
+        return 'C2*' + ip.split('E67_C2_cal', 1)[1]
     src = (row.get('init_from_experiment'), row.get('init_from'))
+    if src[0] == EXPERIMENT:
+        return f'from {src[1]}'
     for key, (_, folder, tag) in STARTS.items():
         if src == (folder, tag):
             return key
@@ -141,6 +147,10 @@ def full_row(o: dict) -> Dict[str, float]:
         flags.append(f"APL-off / APL-on response rate {row['ratio']:.2f}")
     if row['rate_rho_on'] < 0.37:
         flags.append(f"response rate ρ, APL on, {row['rate_rho_on']:.2f}")
+    # the odors-per-KC band (Tom, 2026-11-09 23:40): total variation distance from the flies' distribution
+    for c, band in (('on', 'ctrl_odors_per_kc_tv_max'), ('off', 'tnt_odors_per_kc_tv_max')):
+        if row[f'opk_{c}_dist'] > H.data_target(band):
+            flags.append(f"odors per KC, APL {c}, {row[f'opk_{c}_dist']:.2f}")
     row['realism_flag'] = '; '.join(flags)
     return row
 
@@ -171,6 +181,8 @@ def main() -> None:
             print('no saved outputs for', f['tag'])
             continue
         params = {c: f[c] for c in ('fixed_thr', 'wAPLKC_scale', 'wAPLPN_scale', 'kc_kc_inh', 'thr_factor', 'apl_factor_vs_e3', 'aplpn_factor_vs_e3') if c in f.index}
+        # the unfitted bouton->APL / KC->APL input balance each start brings (unresolved_issues.md, --init-from)
+        params['input_balance'] = float(f['wPNAPL_scale'] / f['wKCAPL_scale'])
         rows.append(dict(kind='fit', start=key, tag=f['tag'], apl_readout=f.get('apl_readout'), pattern_only=f.get('apl_pattern_only'),
             block_term=f.get('apl_block_term'), opk_term=f.get('apl_opk_term'), loss=f['loss'], initial_loss=f['initial_loss'],
             n_evals=f['n_evals'], **params, **full_row(o)))
@@ -225,19 +237,21 @@ def write_table(df: pd.DataFrame, res_dir: Path) -> None:
     if len(fit):
         L += ['| fit | mean distance raw<br>APL on / off | mean distance calibrated<br>APL on / off | ρ on odor-odor distances raw<br>APL on / off | '
               'natural-source alignment raw<br>APL on / off / on minus off | participation ratio among responders,<br>APL off, calibrated | K | '
+              'bouton→APL / KC→APL<br>input balance | odors per KC, distance<br>APL on / off | '
               'loss vs data sub-threshold zeroed / noise-corrected<br>raw | the same<br>calibrated | square root<br>loss (mean) | binarized vs binarized data<br>loss (mean) | '
-              'threshold factor / APL→KC / APL→bouton / KC–KC |', '|---|' + '---:|' * 10]
+              'somatic threshold factor / APL→KC / APL→bouton / KC–KC |', '|---|' + '---:|' * 12]
         for _, r in fit.iterrows():
             L.append(f"| {r['tag']} | {_f(r['raw_mean_dist_on'], '.3f')} / {_f(r['raw_mean_dist_off'], '.3f')} | {_f(r['cal_mean_dist_on'], '.3f')} / "
                 f"{_f(r['cal_mean_dist_off'], '.3f')} | {_f(r['raw_rho_on'], '.2f')} / {_f(r['raw_rho_off'], '.2f')} | {_f(r['raw_vcf_on'], '.2f')} / "
                 f"{_f(r['raw_vcf_off'], '.2f')} / {_f(r['raw_vcf_on'] - r['raw_vcf_off'], '+.2f')} | {_f(100 * r['cal_pr_resp_off'], '.1f')} % | {_f(r['K'], '.1f')} | "
+                f"{_f(r.get('input_balance'), '.1f')} | {_f(r['opk_on_dist'], '.2f')} / {_f(r['opk_off_dist'], '.2f')} | "
                 f"{_f(r['raw_loss_vs_thresholded'], '.3f')} / {_f(r['raw_loss_vs_noise_corrected'], '.3f')} | {_f(r['cal_loss_vs_thresholded'], '.3f')} / "
                 f"{_f(r['cal_loss_vs_noise_corrected'], '.3f')} | {_f(r['sqrt_loss'], '.3f')} ({_f(r['sqrt_mean'], '+.3f')}) | "
                 f"{_f(r['binary_loss_vs_binary'], '.3f')} ({_f(r['binary_mean'], '+.3f')}) | {_f(r.get('thr_factor'), '.3f')} / {_f(r.get('apl_factor_vs_e3'), '.3f')} / "
                 f"{_f(r.get('aplpn_factor_vs_e3'), '.2f')} / {_f(r.get('kc_kc_inh'), '.1f')} |")
         L.append(f"| KC data | {dt('ctrl_mean_dist'):.3f} / {dt('tnt_mean_dist'):.3f} | {dt('ctrl_mean_dist_noise_corrected'):.3f} / {dt('tnt_mean_dist_noise_corrected'):.3f} "
             f"(noise-corrected) | ceiling {dt('ctrl_ceiling'):.2f} / {dt('tnt_ceiling'):.2f} | {dt('ctrl_vcf'):.2f} / {dt('tnt_vcf'):.2f} / {dt('vcf_apl_effect'):+.2f} | "
-            f"{100 * dt('tnt_participation_ratio_resp'):.1f} % | | floor {dt('apl_effect_thresholded_rmse_floor'):.3f} / - | | | floor {dt('apl_effect_binary_rmse_floor'):.3f} "
+            f"{100 * dt('tnt_participation_ratio_resp'):.1f} % | | | bands {dt('ctrl_odors_per_kc_tv_max'):.2f} / {dt('tnt_odors_per_kc_tv_max'):.2f} | floor {dt('apl_effect_thresholded_rmse_floor'):.3f} / - | | | floor {dt('apl_effect_binary_rmse_floor'):.3f} "
             f"({dt('apl_effect_binary_mean'):+.3f}) | |")
     (res_dir / 'comparison_table.md').write_text('\n'.join(L) + '\n')
 
