@@ -41,7 +41,7 @@ APL-on response rate. Variants C_<base>_<definition>_k<k>.
 Outputs, <shared>/results/E66_per_odor_apl_profile/: part A: data_shares.csv, data_floor_parts.csv,
 data_share_correlates.csv, by_variant_parts.csv, shares_long.csv, parts_summary.csv, key_models.csv,
 worst_pairs.csv, worst_pair_kcs.csv, oracles.csv, comparison_table.md, figures; parts B / C:
-stats_variants_<B|C>.csv, model_pair_distances_long_<B|C>.csv, parts_<B|C>.csv, shares_<B|C>.csv,
+part<B|C>_variant_stats.csv, model_pair_distances_long_<B|C>.csv, parts_<B|C>.csv, shares_<B|C>.csv,
 multipliers.csv, multiplier_history.csv; provenance.json. Counts in ./outputs/E66_per_odor_apl_profile/.
 Usage: ./venv/bin/python E66_per_odor_apl_profile.py --part A [--jobs N] [--boot 1000]
        OMP_NUM_THREADS=1 nice -n 10 ./venv/bin/python E66_per_odor_apl_profile.py --part B --jobs 8 [--bases ...]
@@ -662,7 +662,7 @@ def score_variant(ctx: dict, tag: str, meta: dict, on_out, off_out, W, orn, cal:
         res_dir: Path, out_dir: Path) -> dict:
     """The harness scoring of one variant (the stats-table columns of the rate oracle, E62), plus the
     loss decomposition under each readout (the base's calibrated parameter); appends to the part's
-    tables (stats_variants_<suffix>.csv, model_pair_distances_long_<suffix>.csv, parts_<suffix>.csv,
+    tables (part<suffix>_variant_stats.csv, model_pair_distances_long_<suffix>.csv, parts_<suffix>.csv,
     shares_<suffix>.csv) and saves the counts and responses."""
     from E3_drive_dependent_gain import per_odor_extras
     from E4_substrate import score as e4_score
@@ -692,7 +692,7 @@ def score_variant(ctx: dict, tag: str, meta: dict, on_out, off_out, W, orn, cal:
             row.update({f'cal__{k}': v for k, v in st.items() if k.startswith('apl_effect_')})
         if name == 'raw':
             row.update({f'raw__{k}': st[k] for k in ('apl_effect_per_odor', 'apl_effect_pair_specific', 'apl_effect_share_pearson')})
-    for name, df in ((f'stats_variants_{suffix}.csv', pd.DataFrame([row])), (f'parts_{suffix}.csv', pd.DataFrame(parts)),
+    for name, df in ((f'part{suffix}_variant_stats.csv', pd.DataFrame([row])), (f'parts_{suffix}.csv', pd.DataFrame(parts)),
             (f'shares_{suffix}.csv', pd.concat(shares, ignore_index=True))):
         p = res_dir / name
         df.to_csv(p, mode='a', header=not p.exists(), index=False)
@@ -710,7 +710,7 @@ def score_variant(ctx: dict, tag: str, meta: dict, on_out, off_out, W, orn, cal:
 
 
 def done_tags(res_dir: Path, suffix: str) -> set:
-    p = res_dir / f'stats_variants_{suffix}.csv'
+    p = res_dir / f'part{suffix}_variant_stats.csv'
     return set(pd.read_csv(p)['tag'].astype(str)) if p.exists() else set()
 
 
@@ -932,8 +932,10 @@ def part_s(args) -> None:
     parts under raw counts and the calibrated readout per variant, beside its base; the per-odor
     multipliers; their Spearman correlations with the odor properties."""
     res_dir = H.results_dir(EXPERIMENT)
-    st = pd.concat([pd.read_csv(res_dir / f'stats_variants_{s}.csv') for s in ('B', 'C') if (res_dir / f'stats_variants_{s}.csv').exists()],
+    st = pd.concat([pd.read_csv(res_dir / f'part{s}_variant_stats.csv') for s in ('B', 'C') if (res_dir / f'part{s}_variant_stats.csv').exists()],
         ignore_index=True)
+    # merged under the name apl_effect_scores.py and archive_model_outputs.py read; the per-part tables are
+    # named so that the archive's 'stats*.csv' glob does not list their rows twice
     st.to_csv(res_dir / 'stats_variants.csv', index=False)
     pd.concat([pd.read_csv(res_dir / f'model_pair_distances_long_{s}.csv') for s in ('B', 'C')
         if (res_dir / f'model_pair_distances_long_{s}.csv').exists()], ignore_index=True).to_csv(res_dir / 'model_pair_distances_long.csv', index=False)
