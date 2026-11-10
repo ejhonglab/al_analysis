@@ -286,6 +286,18 @@ def score(out: Path) -> None:
         two_wiring_yardstick(labels, dist).to_csv(out / 'yardstick.csv', index=False)
         for ro in ('raw', 'cal'):
             error_corr(labels, dist, ro).to_csv(out / f'error_corr_{ro}.csv')
+    # the spread between single wirings and what averaging gains, per readout (for the summary)
+    allp = next((r for r in pops if r['group'] == 'all'), None)
+    spread = []
+    for ro in ('cal', 'raw', 'binary'):
+        col = 'binary_loss_vs_binary' if ro == 'binary' else f'{ro}_loss'
+        v = st[col].astype(float)
+        row = dict(readout=ro, n_wirings=len(v), sd_single=float(v.std()), median_single=float(v.median()),
+                   min_single=float(v.min()), max_single=float(v.max()), real_single=float(st.loc[st.wiring_label == REAL, col].iloc[0]))
+        if allp is not None:
+            row.update(population=float(allp[f'{ro}_loss']), median_minus_population=float(v.median() - allp[f'{ro}_loss']))
+        spread.append(row)
+    pd.DataFrame(spread).to_csv(out / 'spread.csv', index=False)
     write_table(st, pd.DataFrame(pops), out)
     prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E72_wiring_population.py --part score',
         al_analysis_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=H.HERE, capture_output=True, text=True).stdout.strip(),
@@ -761,6 +773,17 @@ def popfit_tables(out: Path) -> None:
                                     (tag, 'acute_off'): H.model_rdms(*o['off'])[H.PRIMARY_MODEL_RDM]},
                                    names=['tag', 'condition', 'odor_a', 'odor_b']).rename('distance').reset_index())
     pd.DataFrame(rows).to_csv(out / 'variants.csv', index=False)
+    # part D against the same wirings fitted one by one (part B), as populations (for the summary)
+    members = {lab: (folder, tag) for lab, folder, tag in new_fit_members()}
+    dd = []
+    for gname, labs in (('fitted wirings', list(res['wirings'])), ('held-out wirings', list(res['held_out']))):
+        for variant, src in (('each wiring fitted alone', lambda l: members[l]), ('one shared set', lambda l: (EXPERIMENT, f'popfit_{l}'))):
+            fits = [load_fit(*src(l)) for l in labs]
+            if any(f is None for f in fits):
+                continue
+            dist = {ro: [distances(o, ro) for o in fits] for ro in ('raw', 'cal', 'binary')}
+            dd.append(dict(group=gname, variant=variant, members=','.join(labs), **population_row(fits, dist)))
+    pd.DataFrame(dd).to_csv(out / 'partD_populations.csv', index=False)
     if pairs:
         pd.concat(pairs, ignore_index=True).to_csv(long_path, index=False, mode='a', header=not long_path.exists())
     print(f'variants.csv: {len(rows)} rows; pair distances appended for {len(pairs)} tags ({len(rows) - len(pairs)} already there)')
