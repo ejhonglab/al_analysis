@@ -165,8 +165,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--drive-root', type=Path, default=Path('/media/yang'))
     ap.add_argument('--out', type=Path, default=H.shared_dir() / 'notes' / 'yang_response_normalization')
+    ap.add_argument('--figures-only', action='store_true', help='only redraw the figure from the saved tables in --out')
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    if args.figures_only:
+        figures(pd.read_csv(args.out / 'recordings.csv'), pd.read_csv(args.out / 'kc_scales.csv'),
+                pd.read_csv(args.out / 'amplitude_by_breadth.csv'), args.out)
+        return
     rows, kcs, tz, tb = [], [], {}, {}
     for g, rec in RECORDINGS:
         row, kc, tm_z, tm_b, odors = recording(g, rec, args.drive_root)
@@ -258,22 +263,21 @@ def figures(rec_df: pd.DataFrame, kc_df: pd.DataFrame, amp: pd.DataFrame, out: P
                 label=f'{lab[g]}, baseline-noise units (scaled to match at 1)')
     ax.set_xlabel('odors the KC responds to')
     ax.set_ylabel('responders\' mean response (median over recordings)')
-    ax.set_title('response amplitude against breadth', color=ink)
-    ax.legend(frameon=False, fontsize=7)
+    ax.set_title('response amplitude against breadth\n(solid: whole-trace z; dashed: baseline-noise units,\nscaled to the solid line at 1 odor)', color=ink)
     ax.grid(axis='y', color=grid)
     ax = axes[2]
+    ceiling = float(rec_df.ceiling_mean_sq.median())
+    bins_ = np.linspace(0, max(ceiling, float(kc_df.mean_sq_resp.max())) * 1.05, 60)
     for g in ('TNT3c', 'TNT'):
-        d = rec_df[rec_df.genotype == g]
-        ax.scatter(d.ceiling_mean_sq, d.max_mean_sq, color=col[g], s=40, label=lab[g], zorder=3)
-    lim = [0, float(max(rec_df.ceiling_mean_sq.max(), rec_df.max_mean_sq.max())) * 1.1]
-    ax.plot(lim, lim, ':', color=ink2)
-    ax.set_xlim(lim)
-    ax.set_ylim(lim)
-    ax.set_xlabel('ceiling: volumes / (trials x window volumes)')
-    ax.set_ylabel('largest per-KC mean squared response')
-    ax.set_title('the whole-trace z-score caps a KC\'s responses', color=ink)
+        ax.hist(kc_df[kc_df.genotype == g].mean_sq_resp, bins=bins_, color=col[g], alpha=0.55, label=lab[g], log=True)
+    ax.axvline(ceiling, color=ink2, ls=':', lw=1.5)
+    ax.text(ceiling, 0.55, 'ceiling set by the\nwhole-trace z-score ', color=ink2, fontsize=8, va='center', ha='right',
+            transform=ax.get_xaxis_transform())
+    ax.set_xlabel('KC\'s mean squared response over its 51 trials (z^2)')
+    ax.set_ylabel('KCs (all 19 recordings)')
+    ax.set_title('each KC\'s mean squared response\nand the ceiling of the whole-trace z-score', color=ink)
     ax.legend(frameon=False)
-    ax.grid(color=grid)
+    ax.grid(axis='y', color=grid)
     fig.tight_layout()
     fig.savefig(out / 'yang_response_normalization.png', dpi=150)
     plt.close(fig)
