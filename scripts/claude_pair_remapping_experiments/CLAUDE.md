@@ -1045,6 +1045,7 @@ Canonical experiment names for summary reports:
 | E71 | the input-scaled KC threshold |
 | E72 | the APL-effect fit on re-drawn wirings (the model as a population of flies) |
 | E73 | the per-KC normalization of the recordings |
+| E74 | the APL effect split by odors per KC |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
