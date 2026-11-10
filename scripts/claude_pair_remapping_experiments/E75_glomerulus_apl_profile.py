@@ -332,11 +332,172 @@ def _append(path: Path, rows: List[dict]) -> None:
     pd.DataFrame(rows).to_csv(path, index=False, mode='a', header=not path.exists())
 
 
+LAMBDAS = (0.0, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1)
+S_MAX = float(np.log(4))
+
+
+def _canon(idx: pd.Index) -> pd.MultiIndex:
+    return pd.MultiIndex.from_tuples([tuple(sorted(x)) for x in idx], names=['odor_a', 'odor_b'])
+
+
+def map_matrix(out: Path, site: str, readout: str = 'cal') -> pd.DataFrame:
+    """The map of a site: per pair (rows, canonical order) and glomerulus (columns), the change of the per-pair APL effect
+    per unit score (the factor-2 point's change from C2's, divided by ln 2), under `readout`."""
+    m = pd.read_csv(out / 'sensitivity_map.csv')
+    pr = pd.read_csv(out / 'sensitivity_pairs.csv')
+    pr = pr[pr.readout == readout]
+    base = pr[pr.point_id == 'base'].set_index(['odor_a', 'odor_b'])['effect']
+    base.index = _canon(base.index)
+    cols = {}
+    for _, r in m[(m.stage == 'map') & (m.site == site)].iterrows():
+        g = r.point_id.split(':')[1]
+        e = pr[pr.point_id == r.point_id].set_index(['odor_a', 'odor_b'])['effect']
+        e.index = _canon(e.index)
+        cols[g] = (e - base.reindex(e.index)) / np.log(2)
+    M = pd.DataFrame(cols).sort_index()
+    return M
+
+
+def population_effect(readout: str = 'cal') -> pd.Series:
+    """The per-pair APL effect of E72's mean over its eight wirings (the population whose error is the common error)."""
+    import E72_wiring_population as E72
+    fits = [E72.load_fit(f, t) for _, f, t in E72.new_fit_members()]
+    md = E72.mean_distances([E72.distances(o, readout) for o in fits])
+    e = H.apl_effect(md['on'], md['off'])
+    e.index = _canon(e.index)
+    return e.sort_index()
+
+
+def _centered(x: np.ndarray) -> np.ndarray:
+    return x - x.mean(axis=0, keepdims=True)
+
+
+def fit_scores(M: np.ndarray, c: np.ndarray, lam: float) -> np.ndarray:
+    """Scores s minimizing |c + Mc s|^2 + lam * n |s|^2 with |s_g| <= ln 4 (Mc: the map's columns with their means over
+    pairs removed, since the pattern error removes the means; c the target pattern error)."""
+    from scipy.optimize import lsq_linear
+    Mc = _centered(M)
+    n, k = Mc.shape
+    A = np.vstack([Mc, np.sqrt(lam * n) * np.eye(k)]) if lam > 0 else Mc
+    b = np.concatenate([-c, np.zeros(k)]) if lam > 0 else -c
+    return lsq_linear(A, b, bounds=(-S_MAX, S_MAX)).x
+
+
+def residual(M: np.ndarray, c: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """The predicted pattern error after the profile: c plus the centered predicted change (re-centered)."""
+    r = c + _centered(M) @ s
+    return r - r.mean()
+
+
+def _loo_odor(M: pd.DataFrame, c: pd.Series, lam: float) -> Tuple[float, float]:
+    """Leave one odor out: for each odor, scores fitted on the pairs without it, the predicted residual on its pairs.
+    (fraction of the held-out pairs' squared common error removed, summed over the 16 folds; the same for no profile = 0)."""
+    odors = sorted(set(M.index.get_level_values(0)) | set(M.index.get_level_values(1)))
+    num = den = 0.0
+    for o in odors:
+        held = np.array([o in pr for pr in M.index])
+        s = fit_scores(M.to_numpy()[~held], c.to_numpy()[~held] - c.to_numpy()[~held].mean(), lam)
+        pred = c.to_numpy() + _centered(M.to_numpy()) @ s
+        pred = pred - pred.mean()
+        num += float((pred[held] ** 2).sum())
+        den += float((c.to_numpy()[held] ** 2).sum())
+    return 1.0 - num / den, den
+
+
+def _inner_lambda(M: pd.DataFrame, c: pd.Series) -> float:
+    """The ridge strength with the best leave-one-odor-out reduction (chosen on the data the profile is built from)."""
+    best = max(LAMBDAS, key=lambda lam: _loo_odor(M, c, lam)[0])
+    return best
+
+
+def _split_halves(n_splits: int = 100, seed: int = 0) -> List[pd.Series]:
+    """The data's per-pair APL effect from random halves of the recordings (control flies and APL output blocked (TNT)
+    each split in two), as pairs of (half A, half B) effects."""
+    rng = np.random.default_rng(seed)
+    ctrl = H.yang_recording_rdms_values('TNT3c', 'graded')
+    tnt = H.yang_recording_rdms_values('TNT', 'graded')
+    out = []
+    for _ in range(n_splits):
+        halves = []
+        ic, it = rng.permutation(len(ctrl)), rng.permutation(len(tnt))
+        for sel_c, sel_t in ((ic[:len(ic) // 2], it[:len(it) // 2]), (ic[len(ic) // 2:], it[len(it) // 2:])):
+            e = ctrl.iloc[sel_c].mean() - tnt.iloc[sel_t].mean()
+            e.index = _canon(e.index)
+            halves.append(e.sort_index())
+        out.append(tuple(halves))
+    return out
+
+
 def linear_profile(out: Path) -> pd.DataFrame:
     """Part D1: per site, the ridge-penalized score vector whose linear prediction (the map's per-pair changes) cancels
     the common error, |s_g| <= ln 4; a two-site and a sparse version; leave-one-odor-out and split-half cross-validation;
     the gate. Writes profiles.csv and profile_cv.csv."""
-    raise NotImplementedError
+    import hashlib
+    import json
+    c = common_error('cal')
+    c.index = _canon(c.index)
+    c = c.sort_index()
+    pop = population_effect('cal')
+    maps = {site: map_matrix(out, site).reindex(c.index) for site in SITES}
+    variants = {site: maps[site] for site in SITES}
+    two = sorted(SITES, key=lambda s: _loo_odor(maps[s], c, _inner_lambda(maps[s], c))[0], reverse=True)[:2]
+    variants['+'.join(two)] = pd.concat({s: maps[s] for s in two}, axis=1)
+    splits = _split_halves()
+    prof_rows, cv_rows = [], []
+    for name, M in variants.items():
+        lam = _inner_lambda(M, c)
+        s = fit_scores(M.to_numpy(), c.to_numpy(), lam)
+        loo, _ = _loo_odor(M, c, lam)
+        # split halves: the population's error against half A's effect, the profile built on it, scored against half B's
+        wins, red = 0, []
+        for a, b in splits:
+            ca = (pop - pop.mean()) - (a.reindex(pop.index) - a.reindex(pop.index).mean())
+            cb = (pop - pop.mean()) - (b.reindex(pop.index) - b.reindex(pop.index).mean())
+            sa = fit_scores(M.reindex(pop.index).to_numpy(), ca.to_numpy(), lam)
+            rb = residual(M.reindex(pop.index).to_numpy(), cb.to_numpy(), sa)
+            r0 = float((cb.to_numpy() ** 2).sum())
+            wins += float((rb ** 2).sum()) < r0
+            red.append(1.0 - float((rb ** 2).sum()) / r0)
+        full = residual(M.to_numpy(), c.to_numpy(), s)
+        # (two-site profiles key their scores site:glomerulus)
+        scores = {(f'{k[0]}:{k[1]}' if isinstance(k, tuple) else str(k)): float(v) for k, v in zip(M.columns, s)}
+        sha = hashlib.sha256(json.dumps(scores, sort_keys=True).encode()).hexdigest()
+        prof_rows.append(dict(profile=name, variant='ridge', lam=lam, scores=json.dumps(scores), sha256=sha,
+                              in_sample_reduction=1.0 - float((full ** 2).sum()) / float((c.to_numpy() ** 2).sum()),
+                              n_at_bound=int((np.abs(s) >= S_MAX - 1e-9).sum())))
+        gate = (loo >= 0.15) and (wins / len(splits) >= 0.9)
+        cv_rows.append(dict(profile=name, variant='ridge', lam=lam, loo_odor_reduction=loo, split_win_fraction=wins / len(splits),
+                            split_reduction_median=float(np.median(red)), gate=gate))
+        print(f'{name}: ridge {lam:g}; in-sample reduction {prof_rows[-1]["in_sample_reduction"]:.3f}, leave-one-odor-out {loo:.3f}, '
+              f'split halves won {wins}/{len(splits)} (median reduction {np.median(red):.3f}); gate {"passed" if gate else "failed"}', flush=True)
+    # the sparse version, per site: forward selection of at most eight glomeruli by leave-one-odor-out reduction
+    for site in SITES:
+        M = maps[site]
+        chosen: List[str] = []
+        best_loo = 0.0
+        for _ in range(8):
+            cand = [(g, _loo_odor(M[chosen + [g]], c, 0.0)[0]) for g in M.columns if g not in chosen]
+            g, v = max(cand, key=lambda x: x[1])
+            if v <= best_loo + 1e-3:
+                break
+            chosen.append(g)
+            best_loo = v
+        if not chosen:
+            continue
+        s = fit_scores(M[chosen].to_numpy(), c.to_numpy(), 0.0)
+        full = residual(M[chosen].to_numpy(), c.to_numpy(), s)
+        scores = {g: float(v) for g, v in zip(chosen, s)}
+        prof_rows.append(dict(profile=site, variant='sparse', lam=0.0, scores=json.dumps(scores),
+                              sha256=hashlib.sha256(json.dumps(scores, sort_keys=True).encode()).hexdigest(),
+                              in_sample_reduction=1.0 - float((full ** 2).sum()) / float((c.to_numpy() ** 2).sum()),
+                              n_at_bound=int((np.abs(s) >= S_MAX - 1e-9).sum())))
+        cv_rows.append(dict(profile=site, variant='sparse', lam=0.0, loo_odor_reduction=best_loo, split_win_fraction=np.nan,
+                            split_reduction_median=np.nan, gate=np.nan))
+        print(f'{site}: sparse {chosen}; leave-one-odor-out {best_loo:.3f}', flush=True)
+    pr, cv = pd.DataFrame(prof_rows), pd.DataFrame(cv_rows)
+    pr.to_csv(out / 'profiles.csv', index=False)
+    cv.to_csv(out / 'profile_cv.csv', index=False)
+    return cv
 
 
 def simulate_profiles(out: Path) -> pd.DataFrame:
