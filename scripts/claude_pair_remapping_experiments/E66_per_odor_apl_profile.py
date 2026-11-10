@@ -25,12 +25,27 @@ and combined across conditions (APL-on counts from the arm set on the APL-on fra
 from the arm set on the APL-off fractions), and the bounded-input oracle's (E64) searched input and its
 controls; in the oracle table every arm is read with its base model's calibrated readout parameter.
 
-Part B (the oracle) and part C (the breadth exponent): see `part_b` and `part_c`.
+Part B (the per-odor APL oracle), at the fitted scales of five bases (BASES: the three reference models,
+the first joint fit, the 40 Hz reference model with E64's searched input): each odor simulated on its own
+(odors are independent at fixed scales), its APL->KC and APL->bouton scales multiplied by a per-odor
+factor bisected on its APL-on response fraction against the control flies'; arm 'apl' with the inputs
+unscaled, arm 'both' with each odor's input first scaled to its APL-off fraction against APL output
+blocked (TNT) (E62's off-arm scales for the reference models, bisected here for the others). Variants
+O_<base>_{untuned, apl, scales_off, both}; per-odor multipliers against odor properties
+(multipliers.csv).
 
-Outputs, <shared>/results/E66_per_odor_apl_profile/: data_shares.csv, data_floor_parts.csv,
+Part C (the breadth exponent): on the three reference models, the breadth exponent at 0-3 with the breadth
+as the KC's APL-off spike total or its number of odors, the APL->KC scale re-tuned to hold the fitted
+APL-on response rate. Variants C_<base>_<definition>_k<k>.
+
+Outputs, <shared>/results/E66_per_odor_apl_profile/: part A: data_shares.csv, data_floor_parts.csv,
 data_share_correlates.csv, by_variant_parts.csv, shares_long.csv, parts_summary.csv, key_models.csv,
-worst_pairs.csv, worst_pair_kcs.csv, oracles.csv, comparison_table.md, figures, provenance.json.
+worst_pairs.csv, worst_pair_kcs.csv, oracles.csv, comparison_table.md, figures; parts B / C:
+stats_variants_<B|C>.csv, model_pair_distances_long_<B|C>.csv, parts_<B|C>.csv, shares_<B|C>.csv,
+multipliers.csv, multiplier_history.csv; provenance.json. Counts in ./outputs/E66_per_odor_apl_profile/.
 Usage: ./venv/bin/python E66_per_odor_apl_profile.py --part A [--jobs N] [--boot 1000]
+       OMP_NUM_THREADS=1 nice -n 10 ./venv/bin/python E66_per_odor_apl_profile.py --part B --jobs 8 [--bases ...]
+       OMP_NUM_THREADS=16 nice -n 10 ./venv/bin/python E66_per_odor_apl_profile.py --part C [--c-bases ...]
 """
 from __future__ import annotations
 
@@ -472,19 +487,435 @@ def figures_a(out: Path, df: pd.DataFrame, key: pd.DataFrame, shares: pd.DataFra
     plt.close(fig)
 
 
+# ---------------------------------------------------------------------------
+# parts B and C: simulations at fixed scales
+# base key -> label, experiment and tag of the fitted parameters (fits.csv), per-claw threshold,
+# breadth exponent, glomerulus gain, ORN input (None: the lab's; else a CSV under the shared
+# directory, glomeruli x odors as E64 saved it), E62's model key (its off-arm input scales), and the
+# archived variant whose E65 calibrated readout parameter the base's variants use
+BASES = {
+    'thr40_gain1.5': dict(label='the reference model (eight at 1.5, 40 Hz, 6.8 %)', exp='E44_operating_point',
+        tag='thr40_gain1.5_rate0.068_k2_cap3', thr=40.0, k=2.0, gain=1.5, input=None, e62='thr40_gain1.5',
+        cal=('E62_rate_oracle', 'R_thr40_gain1.5_untuned')),
+    'thr70_gain1.5': dict(label='eight at 1.5, 70 Hz, 6.8 %', exp='E44_operating_point', tag='thr70_gain1.5_rate0.068_k2_cap3',
+        thr=70.0, k=2.0, gain=1.5, input=None, e62='thr70_gain1.5', cal=('E62_rate_oracle', 'R_thr70_gain1.5_untuned')),
+    'thr70_gain1.25': dict(label='eight at 1.25, 70 Hz, 6.8 %', exp='E45_gain_at_ctrl_frac', tag='thr70_gain1.25_rate0.068_k2_cap3',
+        thr=70.0, k=2.0, gain=1.25, input=None, e62='thr70_gain1.25', cal=('E62_rate_oracle', 'R_thr70_gain1.25_untuned')),
+    'e10_k2': dict(label='the first joint fit (k 2, 5 %)', exp='E10_joint_fit', tag='k2', thr=None, k=2.0, gain=None, input=None,
+        e62=None, cal=('E10_joint_fit', 'k2')),
+    'thr40_gain1.5_e64input': dict(label='the reference model with the searched weak-odor input (E64, pass 1; an oracle)',
+        exp='E44_operating_point', tag='thr40_gain1.5_rate0.068_k2_cap3', thr=40.0, k=2.0, gain=1.5,
+        input='results/E64_input_oracle/orn_input_searched_pass1.csv', e62=None, cal=('E64_input_oracle', 'I_searched_pass1')),
+}
+REF_BASES = ('thr40_gain1.5', 'thr70_gain1.5', 'thr70_gain1.25')
+# part B: the variants assembled from each base's two arms ('apl': inputs unscaled; 'both': each odor's
+# input scaled to its APL-off fraction first), the APL-on counts at multiplier 1 or at the odor's own
+# multiplier
+B_VARIANTS = {'untuned': ('apl', 'm1'), 'apl': ('apl', 'mo'), 'scales_off': ('both', 'm1'), 'both': ('both', 'mo')}
+B_LABEL = {'untuned': 'the base model (multiplier 1, inputs unscaled)',
+    'apl': 'per-odor APL multiplier set on the APL-on fractions (inputs unscaled)',
+    'scales_off': 'input scales set on the APL-off fractions (multiplier 1; the rate oracle\'s off arm)',
+    'both': 'input scales on the APL-off fractions, then the APL multiplier on the APL-on fractions'}
+SCALE_LO, SCALE_HI, SCALE_ITERS = 0.125, 8.0, 8      # as the rate oracle (E62)
+M_LO, M_HI, M_ITERS = 1 / 16, 16.0, 12
+# part C: (breadth definition, exponent); spikes k 2 is each base as fitted (the re-tune checks it)
+C_CONFIGS = [('spikes', 0.0), ('spikes', 1.0), ('spikes', 2.0), ('spikes', 3.0), ('n_odors', 1.0), ('n_odors', 2.0), ('n_odors', 3.0)]
+C_ITERS = 14
+GAINED_GLOMS = ('D', 'DC2', 'DL1', 'DM1', 'DM5', 'DP1m', 'VA7m', 'VC1')
+
+_WORKER: Dict[str, object] = {}
+
+
+def load_base(key: str, base_dir: Path) -> dict:
+    """A base's fitted parameters, wiring, normalized APL weights, breadth (the bouton base's APL-off
+    spike totals, `E10_joint_fit.bouton_base`, from the lab's input as in every experiment), the
+    simulator kwargs and its ORN input."""
+    from E10_joint_fit import TAU, base_kws, bouton_base, breadth_weights
+    from E47_wiring_features import fitted_params
+    b = dict(BASES[key])
+    lab = H.apl16_orn_deltas()
+    p_fit, fr = fitted_params(b['exp'], b['tag'])
+    initial, wnorm, W, breadth = bouton_base(lab, base_dir, claw_thr=b['thr'], gain=b['gain'])
+    orn = lab
+    if b['input'] is not None:
+        alt = pd.read_csv(H.shared_dir() / b['input'], header=[0, 1], index_col=0)
+        if list(alt.index) != list(lab.index) or [c[1] for c in alt.columns] != list(lab.columns.get_level_values('odor')):
+            raise ValueError(f"{b['input']}: glomeruli / odors differ from apl16_orn_deltas()")
+        orn = lab.astype(float).copy()
+        orn[:] = alt.to_numpy(dtype=float)
+    sim_kws = dict(base_kws(b['thr']), _wPNKC=W, _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'],
+        kc_kc_inh=p_fit['wKCKC_scale'], kc_kc_tau=TAU)
+    b.update(key=key, p_fit=p_fit, fit_row=fr, wnorm=wnorm, W=W, breadth=breadth, orn=orn, lab_orn=lab,
+        wAPLKC=breadth_weights(wnorm['wAPLKC'], breadth, b['k']), sim_kws=sim_kws, pn_kws=base_kws(b['thr']))
+    return b
+
+
+def off_base_counts(b: dict, base_dir: Path) -> pd.DataFrame:
+    """The APL-off spike counts of a gained base's bouton base (`bouton_base`'s cached run, whose
+    spike totals are the breadth)."""
+    if b['gain'] is None and b['thr'] is None:
+        return pd.read_parquet(H.shared_dir() / 'data' / 'hal_outputs' / 'E3_drive_dependent_gain'
+            / 'bouton_pnapl_x1_acute_off_spike_counts.parquet')
+    return pd.read_parquet(base_dir / f"gain{b['gain']:g}_thr{b['thr']:g}_base_acute_off_spike_counts.parquet")
+
+
+def _init_worker(shared: dict) -> None:
+    _WORKER.update(shared)
+
+
+def _frac(out) -> float:
+    return float(out[0].astype(float).iloc[:, 0].mean())
+
+
+def odor_job(job: dict) -> dict:
+    """One odor of one arm of part B, simulated on its own (odors are independent at fixed scales; a
+    one-odor simulation equals that odor's column of the 16-odor one, checked 2026-11-09): for arm
+    'both' the odor's input scale (given, or bisected on its APL-off fraction), then the multiplier on
+    the APL->KC and APL->bouton scales bisected (log scale) on its APL-on fraction. Returns the counts
+    and responses at the multiplier, at multiplier 1 and with APL off, the history and the PN rates of
+    the odor's input."""
+    from al_analysis.mb_model import make_fixed_param_kc_simulator
+    from E32_pn_stage import glomerulus_pn_rates
+    w = _WORKER
+    p = dict(w['p_fit'])
+    col = w['orn'].iloc[:, [job['j']]].astype(float)
+    tol = 0.5 / w['n_kcs']
+    hist = []
+
+    def build(scale):
+        sim, _ = make_fixed_param_kc_simulator(col * scale, initial_params=p, _wAPLKC=w['wAPLKC'], **w['sim_kws'])
+        return sim
+    off_p = dict(p, wAPLKC_scale=0.0, wAPLPN_scale=0.0)
+    scale, sim, off = 1.0, None, None
+    if job['arm'] == 'both':
+        if job['scale'] is not None:
+            scale = float(job['scale'])
+        else:
+            lo, hi, best = np.log(SCALE_LO), np.log(SCALE_HI), None
+            for it in range(SCALE_ITERS):
+                s = float(np.exp(0.5 * (lo + hi)))
+                sim_s = build(s)
+                o = sim_s(off_p)
+                f = _frac(o)
+                hist.append(dict(stage='scale', iteration=it, value=s, fraction=f, target=job['target_off']))
+                if best is None or abs(f - job['target_off']) < best[0]:
+                    best = (abs(f - job['target_off']), s, sim_s, o)
+                if abs(f - job['target_off']) < tol:
+                    break
+                if f > job['target_off']:
+                    hi = np.log(s)
+                else:
+                    lo = np.log(s)
+            _, scale, sim, off = best
+    if sim is None:
+        sim = build(scale)
+    if off is None:
+        off = sim(off_p)
+    on1 = sim(p)
+    t = job['target_on']
+    evals = [(1.0, on1, _frac(on1))]
+    hist.append(dict(stage='multiplier', iteration=-1, value=1.0, fraction=evals[0][2], target=t))
+    lo, hi = np.log(M_LO), np.log(M_HI)
+    if abs(evals[0][2] - t) >= tol:
+        if evals[0][2] > t:
+            lo = 0.0
+        else:
+            hi = 0.0
+        for it in range(M_ITERS):
+            m = float(np.exp(0.5 * (lo + hi)))
+            o = sim(dict(p, wAPLKC_scale=p['wAPLKC_scale'] * m, wAPLPN_scale=p['wAPLPN_scale'] * m))
+            f = _frac(o)
+            evals.append((m, o, f))
+            hist.append(dict(stage='multiplier', iteration=it, value=m, fraction=f, target=t))
+            if abs(f - t) < tol:
+                break
+            if f > t:
+                lo = np.log(m)
+            else:
+                hi = np.log(m)
+    m, on_m, f_m = min(evals, key=lambda e: abs(e[2] - t))
+    at_bound = bool(abs(f_m - t) >= 2 * tol and (m <= M_LO * 1.05 or m >= M_HI / 1.05 or
+        np.exp(lo) <= M_LO * 1.05 or np.exp(hi) >= M_HI / 1.05))
+    pn = glomerulus_pn_rates(col * scale, dict(w['pn_kws']), p).iloc[:, 0]
+    return dict(arm=job['arm'], odor=job['odor'], j=job['j'], scale=scale, multiplier=m, frac_on=f_m, frac_on_m1=evals[0][2],
+        frac_off=_frac(off), target_on=t, target_off=job['target_off'], at_bound=at_bound, n_sims=len(evals) + 1,
+        on_m=on_m, on_1=on1, off=off, history=hist, pn=pn)
+
+
+def stats_context() -> dict:
+    """What the stats tables' scoring needs (as the rate oracle's, E62)."""
+    from E10_joint_fit import make_loss
+    from E18_bouton_depletion import all_refs
+    from E44_operating_point import CTRL_FRAC
+    data_mats = {'raw': {g: H.yang_mean_rdm(g, 'cosine') for g in ('TNT3c', 'TNT')},
+        'binarized': {g: H.yang_mean_rdm(g, 'cosine', binarize=1.0) for g in ('TNT3c', 'TNT')},
+        'pearson': {g: H.yang_mean_rdm(g, 'pearson') for g in ('TNT3c', 'TNT')}}
+    data_rates = {g: H.yang_response_fractions(g)[ODORS].mean() for g in ('TNT3c', 'TNT')}
+    orn_pairs, drive, ref = H.orn16_consensus_pairs(), H.consensus_orn_drive(), H.reference_pairs()
+    return dict(data_mats=data_mats, data_rates=data_rates, orn_pairs=orn_pairs, drive=drive, ref=ref, refs=all_refs(),
+        loss5=make_loss(data_mats, data_rates, orn_pairs, drive, ref, structure=True, rate_target=0.05),
+        loss_ctrl=make_loss(data_mats, data_rates, orn_pairs, drive, ref, structure=True, rate_target=CTRL_FRAC),
+        data_pairs=pd.read_csv(RESULTS / 'E7_confound_controls' / 'B_pairs_graded.csv').set_index(['odor_a', 'odor_b']))
+
+
+def score_variant(ctx: dict, tag: str, meta: dict, on_out, off_out, W, orn, cal: float, suffix: str,
+        res_dir: Path, out_dir: Path) -> dict:
+    """The harness scoring of one variant (the stats-table columns of the rate oracle, E62), plus the
+    loss decomposition under each readout (the base's calibrated parameter); appends to the part's
+    tables (stats_variants_<suffix>.csv, model_pair_distances_long_<suffix>.csv, parts_<suffix>.csv,
+    shares_<suffix>.csv) and saves the counts and responses."""
+    from E3_drive_dependent_gain import per_odor_extras
+    from E4_substrate import score as e4_score
+    from E12_breadth_apl import density_excess
+    from E16_claw_saturation import spearman_with_refs
+    from E26_claw_power import sharing_deficit
+    from E35_divisive_apl import suppression_stats
+    from E44_operating_point import fraction_stats, losses
+    V = H.PRIMARY_MODEL_RDM
+    row, on, off = e4_score(meta, on_out, off_out, W, orn, ctx['orn_pairs'], ctx['drive'], ctx['data_mats'], ctx['ref'])
+    on_p, off_p = on[V], off[V]
+    row.update(per_odor_extras(on_out[0], off_out[0], on_p, off_p, ctx['drive'], ctx['data_rates']))
+    for cond, s in (('on', on_out[1]), ('off', off_out[1])):
+        row.update({f'{cond}_{kk}': v for kk, v in density_excess(s).items()})
+    row.update(spearman_with_refs(on_p, off_p, ctx['refs']))
+    row.update(sharing_deficit(off_out[1], ctx['data_pairs']))
+    row.update(suppression_stats(H.response_fractions(on_out[0]), H.response_fractions(off_out[0]), ctx['data_rates']))
+    row.update(fraction_stats(on_out[0], off_out[0], ctx['data_rates']))
+    row.update(losses(ctx['loss5'], ctx['loss_ctrl'], on_out, off_out))
+    parts, shares = [], []
+    for name, kind, param, data in READOUTS:
+        p = cal if param == 'cal' else param
+        st, t, _ = score(on_out[1], off_out[1], kind, p, data)
+        parts.append(dict(tag=tag, readout=name, param=p, **st))
+        shares.append(t.reset_index().assign(tag=tag, readout=name))
+        if name == CAL_READOUT:
+            row.update({f'cal__{k}': v for k, v in st.items() if k.startswith('apl_effect_')})
+        if name == 'raw':
+            row.update({f'raw__{k}': st[k] for k in ('apl_effect_per_odor', 'apl_effect_pair_specific', 'apl_effect_share_pearson')})
+    for name, df in ((f'stats_variants_{suffix}.csv', pd.DataFrame([row])), (f'parts_{suffix}.csv', pd.DataFrame(parts)),
+            (f'shares_{suffix}.csv', pd.concat(shares, ignore_index=True))):
+        p = res_dir / name
+        df.to_csv(p, mode='a', header=not p.exists(), index=False)
+    long_path = res_dir / f'model_pair_distances_long_{suffix}.csv'
+    pd.concat({(tag, 'on'): on_p, (tag, 'acute_off'): off_p}, names=['tag', 'condition', 'odor_a', 'odor_b']).rename(
+        'distance').reset_index().to_csv(long_path, index=False, mode='a', header=not long_path.exists())
+    for cond, (r_, s_) in (('on', on_out), ('acute_off', off_out)):
+        r_.to_parquet(out_dir / f'{tag}_{cond}_responses.parquet')
+        s_.to_parquet(out_dir / f'{tag}_{cond}_spike_counts.parquet')
+    print(f"{tag}: rates on {row['rate_on']:.4f} off {row['rate_off']:.4f}; APL-effect loss raw {row[V + '__apl_effect_rmse']:.3f} "
+        f"(per-odor {row['raw__apl_effect_per_odor']:.3f}, pair-specific {row['raw__apl_effect_pair_specific']:.3f}), calibrated "
+        f"{row['cal__apl_effect_rmse']:.3f} (per-odor {row['cal__apl_effect_per_odor']:.3f}, pair-specific "
+        f"{row['cal__apl_effect_pair_specific']:.3f}); rho {row[V + '__on_spearman']:.3f} / {row[V + '__off_spearman']:.3f}", flush=True)
+    return row
+
+
+def done_tags(res_dir: Path, suffix: str) -> set:
+    p = res_dir / f'stats_variants_{suffix}.csv'
+    return set(pd.read_csv(p)['tag'].astype(str)) if p.exists() else set()
+
+
+def odor_properties(b: dict, off_counts: pd.DataFrame, pn: pd.DataFrame) -> pd.DataFrame:
+    """Per odor, what an APL rule could depend on: the PN drive of its input (mean PN rate over the
+    glomeruli of the input), the number of glomeruli whose PN rate exceeds the per-claw threshold
+    (40 Hz where the base has none), the share of its PN drive in the eight gained glomeruli, the share
+    of its APL-off spikes in the KCs of the top 5 % by breadth (APL-off spike total over odors, the
+    breadth weight's variable) and in its own top 1 % of KCs."""
+    thr = b['thr'] if b['thr'] is not None else 40.0
+    drv = [g for g in pn.index if g in set(b['lab_orn'].index)]
+    pnd = pn.loc[drv]
+    br = b['breadth']
+    high = set(br[br >= br.quantile(0.95)].index)
+    c = H.abbrev_columns(off_counts)
+    kc = c.index.get_level_values('kc_id')
+    in_high = np.asarray([k in high for k in kc])
+    out = {}
+    for o in ODORS:
+        x = c[o].to_numpy(dtype=float)
+        tot = x.sum()
+        top = np.sort(x)[::-1][:max(1, int(np.ceil(0.01 * len(x))))].sum()
+        out[o] = dict(pn_mean_rate=float(pnd[o].mean()), pn_n_above_claw_thr=int((pnd[o] > thr).sum()),
+            pn_share_gained=float(pnd.loc[[g for g in GAINED_GLOMS if g in pnd.index], o].clip(lower=0).sum() / pnd[o].clip(lower=0).sum()),
+            off_spike_share_high_breadth=float(x[in_high].sum() / tot) if tot > 0 else np.nan,
+            off_spike_share_top1=float(top / tot) if tot > 0 else np.nan, off_spikes_total=float(tot))
+    return pd.DataFrame(out).T.rename_axis('odor')
+
+
 def part_b(args) -> None:
-    raise NotImplementedError('part B (the per-odor APL oracle) is next')
+    import time
+    from E3_drive_dependent_gain import rate
+    from E4_substrate import kc_by_glomerulus
+    res_dir = H.results_dir(EXPERIMENT)
+    out_dir = H.HERE / 'outputs' / EXPERIMENT
+    base_dir = out_dir / 'bases'
+    base_dir.mkdir(parents=True, exist_ok=True)
+    for p in (H.HERE / 'outputs' / 'E62_rate_oracle' / 'bases').glob('*.parquet'):
+        if not (base_dir / p.name).exists():
+            (base_dir / p.name).write_bytes(p.read_bytes())
+    e65 = pd.read_csv(E65_TABLE, low_memory=False)
+    cal_table = e65[e65.readout == CAL_READOUT].set_index(['folder', 'tag'])['param']
+    e62_scales = pd.read_csv(RESULTS / 'E62_rate_oracle' / 'scales.csv')
+    ctx = stats_context()
+    data_rates = ctx['data_rates']
+    done = done_tags(res_dir, 'B')
+    for key in args.bases:
+        tags = {v: f'O_{key}_{v}' for v in B_VARIANTS}
+        if all(t in done for t in tags.values()):
+            continue
+        t0 = time.time()
+        b = load_base(key, base_dir)
+        cal = float(cal_table.loc[b['cal']])
+        given = None
+        if b['e62'] is not None:
+            s = e62_scales[(e62_scales.model == b['e62']) & (e62_scales.arm == 'off')].set_index('odor')['scale']
+            given = s.reindex(ODORS)
+        odors = list(H.abbrev_columns(b['orn']).columns)
+        jobs = [dict(arm=arm, odor=o, j=j, scale=(None if given is None else float(given[o])) if arm == 'both' else None,
+            target_on=float(data_rates['TNT3c'][o]), target_off=float(data_rates['TNT'][o]))
+            for arm in ('apl', 'both') for j, o in enumerate(odors) if o in (args.odors or odors)]
+        shared = dict(orn=b['orn'], p_fit=b['p_fit'], wAPLKC=b['wAPLKC'], sim_kws=b['sim_kws'], pn_kws=b['pn_kws'],
+            n_kcs=len(off_base_counts(b, base_dir)))
+        cache = out_dir / f'partB_{key}_odor_results.pkl'
+        if cache.exists() and not args.odors:
+            results = pd.read_pickle(cache)
+            print(f'{key}: odor results from {cache}', flush=True)
+        else:
+            print(f'{key}: {len(jobs)} odor jobs on {args.jobs} processes', flush=True)
+            results = []
+            with ProcessPoolExecutor(max_workers=args.jobs, initializer=_init_worker, initargs=(shared,)) as ex:
+                for r in ex.map(odor_job, jobs):
+                    print(f"  {key} {r['arm']} {r['odor']}: scale {r['scale']:.3f}, multiplier {r['multiplier']:.3f}, APL-on fraction "
+                        f"{r['frac_on']:.4f} (target {r['target_on']:.4f}; at multiplier 1 {r['frac_on_m1']:.4f}), APL-off "
+                        f"{r['frac_off']:.4f} (target {r['target_off']:.4f}){' AT BOUND' if r['at_bound'] else ''}", flush=True)
+                    results.append(r)
+            if args.odors:
+                print('smoke run (--odors): nothing assembled')
+                continue
+            pd.to_pickle(results, cache)
+        res = {(r['arm'], r['odor']): r for r in results}
+        per_odor, hist_rows = [], []
+        pn_by_arm = {arm: pd.concat([res[(arm, o)]['pn'].rename(o) for o in odors], axis=1) for arm in ('apl', 'both')}
+        for r in results:
+            hist_rows += [dict(base=key, arm=r['arm'], odor=r['odor'], **h) for h in r['history']]
+        for v, (arm, which) in B_VARIANTS.items():
+            tag = tags[v]
+            cols = [res[(arm, o)] for o in odors]
+            on_r = pd.concat([c['on_m' if which == 'mo' else 'on_1'][0] for c in cols], axis=1)
+            on_s = pd.concat([c['on_m' if which == 'mo' else 'on_1'][1] for c in cols], axis=1)
+            off_r = pd.concat([c['off'][0] for c in cols], axis=1)
+            off_s = pd.concat([c['off'][1] for c in cols], axis=1)
+            scales = pd.Series([c['scale'] for c in cols], index=odors)
+            mult = pd.Series([c['multiplier'] if which == 'mo' else 1.0 for c in cols], index=odors)
+            if tag not in done:
+                meta = dict(variant=v, tag=tag, part='B', model=key, arm=arm, base='bouton', claw_thr=b['thr'], k=b['k'], gain=b['gain'],
+                    kc_kc_inh=b['p_fit']['wKCKC_scale'], ref_fit=b['tag'], ref_experiment=b['exp'], ref_fit_loss=float(b['fit_row']['loss']),
+                    thr_factor_vs_fit=1.0, orn_input=b['input'] or 'lab', target_rate=float(H.data_target('ctrl_frac')),
+                    n_kcs=len(on_r), n_glomeruli=b['W'].shape[1], rate_on=rate(on_r), rate_off=rate(off_r),
+                    mean_claws_per_kc=float(kc_by_glomerulus(b['W']).sum(axis='columns').mean()),
+                    scale_min=float(scales.min()), scale_max=float(scales.max()), multiplier_min=float(mult.min()),
+                    multiplier_max=float(mult.max()), multiplier_geomean=float(np.exp(np.log(mult).mean())),
+                    cal_readout_param=cal, seconds=time.time() - t0, **b['p_fit'])
+                meta['rate_ratio_off_over_on'] = meta['rate_off'] / meta['rate_on']
+                score_variant(ctx, tag, meta, (on_r, on_s), (off_r, off_s), b['W'], b['lab_orn'], cal, 'B', res_dir, out_dir)
+            if v in ('apl', 'both'):
+                props = odor_properties(b, off_s, pn_by_arm[arm])
+                for o in odors:
+                    c = res[(arm, o)]
+                    per_odor.append(dict(base=key, variant=v, arm=arm, odor=o, scale=c['scale'], multiplier=c['multiplier'],
+                        frac_on=c['frac_on'], frac_on_m1=c['frac_on_m1'], frac_off=c['frac_off'], target_on=c['target_on'],
+                        target_off=c['target_off'], at_bound=c['at_bound'], n_sims=c['n_sims'], **props.loc[o].to_dict()))
+        for name, rows in (('multipliers.csv', per_odor), ('multiplier_history.csv', hist_rows)):
+            p = res_dir / name
+            pd.DataFrame(rows).to_csv(p, mode='a', header=not p.exists(), index=False)
+        print(f'{key} done in {time.time() - t0:.0f} s', flush=True)
+    write_provenance(res_dir, 'B', args, dict(bases={k: {kk: vv for kk, vv in BASES[k].items()} for k in args.bases},
+        scale_bracket=[SCALE_LO, SCALE_HI], scale_iters=SCALE_ITERS, multiplier_bracket=[M_LO, M_HI], multiplier_iters=M_ITERS))
 
 
 def part_c(args) -> None:
-    raise NotImplementedError('part C (the breadth exponent) is next')
+    """The breadth exponent at 0-3 under both definitions of a KC's breadth on the reference models,
+    the APL->KC scale re-tuned (bisection on a factor, log scale) to hold the fitted APL-on response
+    rate; APL off is the same for every exponent."""
+    import time
+    from al_analysis.mb_model import make_fixed_param_kc_simulator
+    from E3_drive_dependent_gain import rate
+    from E4_substrate import kc_by_glomerulus
+    from E10_joint_fit import breadth_weights
+    res_dir = H.results_dir(EXPERIMENT)
+    out_dir = H.HERE / 'outputs' / EXPERIMENT
+    base_dir = out_dir / 'bases'
+    base_dir.mkdir(parents=True, exist_ok=True)
+    for p in (H.HERE / 'outputs' / 'E62_rate_oracle' / 'bases').glob('*.parquet'):
+        if not (base_dir / p.name).exists():
+            (base_dir / p.name).write_bytes(p.read_bytes())
+    e65 = pd.read_csv(E65_TABLE, low_memory=False)
+    cal_table = e65[e65.readout == CAL_READOUT].set_index(['folder', 'tag'])['param']
+    ctx = stats_context()
+    done = done_tags(res_dir, 'C')
+    for key in args.c_bases:
+        todo = [(d, k) for d, k in C_CONFIGS if f'C_{key}_{d}_k{k:g}' not in done]
+        if not todo:
+            continue
+        b = load_base(key, base_dir)
+        cal = float(cal_table.loc[b['cal']])
+        p = dict(b['p_fit'])
+        target = float(b['fit_row']['rate_on'])
+        # the n_odors breadth: odors with >= 2 spikes in the same APL-off run as the spike breadth
+        off_base = off_base_counts(b, base_dir)
+        n_odors = pd.Series((off_base.astype(float) >= 2).sum(axis='columns').to_numpy(),
+            index=off_base.index.get_level_values(H.KC_ID_LEVEL))
+        assert n_odors.index.equals(b['breadth'].index)
+        breadths = {'spikes': b['breadth'], 'n_odors': n_odors}
+        off_out = None
+        for bdef, k in todo:
+            tag = f'C_{key}_{bdef}_k{k:g}'
+            t0 = time.time()
+            wAPLKC = breadth_weights(b['wnorm']['wAPLKC'], breadths[bdef], k)
+            sim, _ = make_fixed_param_kc_simulator(b['orn'], initial_params=p, _wAPLKC=wAPLKC, **b['sim_kws'])
+            if off_out is None:
+                off_out = sim(dict(p, wAPLKC_scale=0.0, wAPLPN_scale=0.0))
+            lo, hi, evals = np.log(1 / 64), np.log(64.0), []
+            tol = 0.5 / off_out[0].size
+            for it in range(C_ITERS):
+                g = 1.0 if it == 0 else float(np.exp(0.5 * (lo + hi)))
+                out = sim(dict(p, wAPLKC_scale=p['wAPLKC_scale'] * g))
+                r = rate(out[0])
+                evals.append((g, out, r))
+                print(f'  {tag} iteration {it}: APL->KC factor {g:.4f}, APL-on rate {r:.4f} (target {target:.4f})', flush=True)
+                if abs(r - target) < tol:
+                    break
+                if r > target:
+                    lo = np.log(g)
+                else:
+                    hi = np.log(g)
+            g, on_out, r = min(evals, key=lambda e: abs(e[2] - target))
+            meta = dict(variant=f'{bdef}_k{k:g}', tag=tag, part='C', model=key, breadth_def=bdef, k=k, base='bouton', claw_thr=b['thr'],
+                gain=b['gain'], kc_kc_inh=p['wKCKC_scale'], ref_fit=b['tag'], ref_experiment=b['exp'], ref_fit_loss=float(b['fit_row']['loss']),
+                thr_factor_vs_fit=1.0, target_rate=target, apl_kc_factor=g, n_sims=len(evals), n_kcs=len(on_out[0]), n_glomeruli=b['W'].shape[1],
+                rate_on=rate(on_out[0]), rate_off=rate(off_out[0]), mean_claws_per_kc=float(kc_by_glomerulus(b['W']).sum(axis='columns').mean()),
+                cal_readout_param=cal, seconds=time.time() - t0, **dict(p, wAPLKC_scale=p['wAPLKC_scale'] * g))
+            meta['rate_ratio_off_over_on'] = meta['rate_off'] / meta['rate_on']
+            score_variant(ctx, tag, meta, on_out, off_out, b['W'], b['lab_orn'], cal, 'C', res_dir, out_dir)
+            del sim
+    write_provenance(res_dir, 'C', args, dict(bases=list(args.c_bases), configs=C_CONFIGS, iters=C_ITERS, factor_bracket=[1 / 64, 64]))
+
+
+def write_provenance(res_dir: Path, part: str, args, extra: dict) -> None:
+    p = res_dir / 'provenance.json'
+    prov = json.loads(p.read_text()) if p.exists() else {}
+    prov[f'part{part}'] = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        script=f'E66_per_odor_apl_profile.py --part {part}', argv=vars(args),
+        model_provenance=H.model_provenance(orn_deltas=H.apl16_orn_deltas()), **extra)
+    p.write_text(json.dumps(prov, indent=1, default=str) + '\n')
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--part', choices=['A', 'B', 'C'], required=True)
-    ap.add_argument('--jobs', type=int, default=8, help='worker processes for part A')
+    ap.add_argument('--jobs', type=int, default=8, help='worker processes for parts A and B')
     ap.add_argument('--boot', type=int, default=1000, help='recording resamples for the data\'s shares and floors')
+    ap.add_argument('--bases', nargs='+', default=list(BASES), choices=list(BASES), help='part B bases')
+    ap.add_argument('--c-bases', nargs='+', default=list(REF_BASES), choices=list(BASES), help='part C bases')
+    ap.add_argument('--odors', nargs='+', default=None, help='part B smoke run: only these odors, nothing assembled')
     args = ap.parse_args()
     {'A': part_a, 'B': part_b, 'C': part_c}[args.part](args)
 
