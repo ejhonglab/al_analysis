@@ -380,6 +380,33 @@ def test_usage_collect_and_render(tmp_path):
     assert server.parse_opts('work=all')['scope'] == 'queue_sessions'
 
 
+def test_plot_events():
+    t1 = server.local_epoch('2026-11-09 18:00')
+    t0 = t1 - 86400
+    series = [{'label': 'hal', 'color': 'var(--s1)', 'points': [(t0, 0), (t1, 5)], 'step': True}]
+    events = [('2026-11-09 16:52', 'fable scope limit', 'the scheme change'),
+        ('2026-11-07 12:00', 'too old', 'before the window'),
+        ('2026-11-08 20:00', 'mid', 'well inside')]
+    svg = server.svg_plot(series, t0, t1, server.fmt_tokens, events=events)
+    # one line per event inside the window; the one before it is not drawn at all
+    assert svg.count('<line class="event"') == 2 and 'too old' not in svg
+    assert '<title>fable scope limit (2026-11-09 16:52): the scheme change</title>' in svg
+    # near the right edge the label reads leftward from the line, elsewhere rightward
+    assert 'text-anchor="end">fable scope limit</text>' in svg
+    assert 'text-anchor="start">mid</text>' in svg
+    # labels are drawn after the series, so they sit on top
+    assert svg.index('<polyline') < svg.index('class="event"')
+    # once the window has moved past an event, the plot is as it was without it
+    later = server.svg_plot(series, t0 + 2 * 86400, t1 + 2 * 86400, server.fmt_tokens,
+        events=events[:1])
+    assert 'class="event"' not in later
+    assert later == server.svg_plot(series, t0 + 2 * 86400, t1 + 2 * 86400, server.fmt_tokens,
+        events=[])
+    # the default list carries the fable scope limit, and every entry's time parses
+    assert any(lab == 'fable scope limit' for _, lab, _ in server.PLOT_EVENTS)
+    assert all(server.local_epoch(when) for when, _, _ in server.PLOT_EVENTS)
+
+
 def test_model_names():
     names = {
         'claude-opus-5-5': 'Opus 5.5',

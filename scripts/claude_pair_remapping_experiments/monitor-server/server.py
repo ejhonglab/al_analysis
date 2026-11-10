@@ -57,6 +57,17 @@ TOKEN_MEASURES = {
     'output': 'output tokens',
 }
 USAGE_FILE = re.compile(r'^([A-Za-z0-9-]+)__([A-Za-z0-9._-]+)\.jsonl$')
+# changes to how the queue works, marked on every usage plot as a labelled vertical line so
+# their effect on the series can be seen; each is drawn only while it falls inside the plot's
+# window, so an old one simply stops showing and needs no removal: (local time
+# 'YYYY-MM-DD HH:MM', short label, hover text)
+PLOT_EVENTS = [
+    ('2026-11-09 16:52', 'fable scope limit',
+        'Fable limited to planning subagents: code on Opus >=5.5 only, coordination never on '
+        'Fable (CLAUDE.md "Permissions by model and effort", al_analysis 013e3ce, Tom). The queue '
+        'sessions switched to Opus 5.5 at about 16:50 (hal), 16:53 (viki) and 16:54 (atlas); '
+        'the line is at their average.'),
+]
 # categorical slots (the dataviz reference palette, light / dark), assigned to hosts and
 # accounts in a fixed (sorted) order
 SERIES_COLORS = [('#2a78d6', '#3987e5'), ('#eb6834', '#d95926'), ('#1baf7a', '#199e70'),
@@ -627,6 +638,10 @@ code { font-size: .85em; }
 .plot .soft { opacity: .55; }
 .plot .pt { stroke: var(--card); stroke-width: 1.5; }
 .plot .hit { fill: transparent; stroke: none; }
+.plot .event { stroke: var(--fg); stroke-width: 1.2; stroke-dasharray: 3 3; opacity: .65; }
+.plot .evhit { stroke: transparent; stroke-width: 10; }
+.plot .evlabel { fill: var(--fg); font-size: 11px; font-weight: 600; paint-order: stroke;
+  stroke: var(--card); stroke-width: 4px; stroke-linejoin: round; }
 .keys { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: .84rem; margin: 6px 2px 0; }
 .sw { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle;
   margin-right: 6px; }
@@ -814,7 +829,8 @@ def soft_color(color):
     return 'color-mix(in srgb, {} 45%, var(--card))'.format(color)
 
 
-def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230, keys='lines'):
+def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230, keys='lines',
+        events=None):
     """An inline SVG line plot over time.
 
     Args:
@@ -826,6 +842,8 @@ def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230, 
         ref: y value of a dotted reference line (e.g. 100 %).
         keys: the legend's swatches: 'lines' (a stroke, dashed for dashed series) or
             'markers' (a dot in the series' marker color).
+        events: [(local time, label, hover text)] drawn as labelled vertical lines where they
+            fall inside [t0, t1] (default PLOT_EVENTS); events outside the window are skipped.
     """
     W, H, ml, mr, mt, mb = 900, height, 58, 14, 8, 24
     ys = [y for s in series for _, y in s['points']]
@@ -869,6 +887,21 @@ def svg_plot(series, t0, t1, y_fmt, y_max=None, ref=None, label='', height=230, 
             o.append('<g><circle class="hit" cx="{0:.1f}" cy="{1:.1f}" r="8"/><circle class="pt" '
                 'cx="{0:.1f}" cy="{1:.1f}" r="3.5" style="fill: {2}"/><title>{3}</title></g>'.format(
                 X(tv), Y(v), mark_color, esc(tip)))
+    # events last, so their labels sit on top of the series
+    for when, ev_label, ev_text in (PLOT_EVENTS if events is None else events):
+        te = local_epoch(when)
+        if te is None or not t0 <= te <= t1:
+            continue
+        x = X(te)
+        # the label reads rightward from the line, or leftward when it would leave the plot
+        # (about 6.5 px per character at the axis font size)
+        right = x + 6 + 6.5 * len(ev_label) <= W - mr
+        o.append('<g><line class="event" x1="{0:.1f}" x2="{0:.1f}" y1="{1}" y2="{2}"/>'
+            '<line class="evhit" x1="{0:.1f}" x2="{0:.1f}" y1="{1}" y2="{2}"/>'
+            '<text class="evlabel" x="{3:.1f}" y="{4}" text-anchor="{5}">{6}</text>'
+            '<title>{7}</title></g>'.format(x, mt, H - mb, x + 5 if right else x - 5, mt + 11,
+            'start' if right else 'end', esc(ev_label), esc('{} ({}): {}'.format(ev_label, when,
+            ev_text))))
     o.append('</svg>')
     if keys == 'markers':
         legend = ''.join('<span><span class="mk" style="background: {}"></span>{}</span>'.format(

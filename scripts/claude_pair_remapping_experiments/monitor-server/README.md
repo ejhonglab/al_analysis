@@ -39,6 +39,13 @@ Open **http://hal:17486** on any computer on the lab network. The page reloads i
     limits, with a table of the latest reading, its reset times, and each host's first reading
     (its usage when it joined). Claude Code reports no separate Fable or Opus limit, so there
     is no Fable plot of this kind.
+
+  Changes to how the queue works are marked on all three plots by a labelled dashed vertical
+  line (hover for what changed), so their effect on the series can be seen, e.g. "fable scope
+  limit" at 2026-11-09 16:52, when the queue sessions moved off Fable and Fable was limited to
+  planning subagents. They are listed in `PLOT_EVENTS` in server.py; each is drawn only while
+  it falls inside the plot's window, so an old one stops showing by itself (after 7 days at
+  the longest window) and needs no removal.
 - **Recent chat.md entries**: the latest posts; click one for the whole message, again to fold
   it.
 - **Claude sessions**: one row per session, from the hooks, with its model and effort level, its
