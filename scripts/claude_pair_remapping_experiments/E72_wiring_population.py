@@ -766,9 +766,52 @@ def popfit_tables(out: Path) -> None:
     print(f'variants.csv: {len(rows)} rows; pair distances appended for {len(pairs)} tags ({len(rows) - len(pairs)} already there)')
 
 
+def release(out: Path) -> pd.DataFrame:
+    """Who is released when APL is blocked (atlas's realism flag, E71): for every fit of this experiment and its real-wiring
+    members, the share of the responses blocking APL adds that comes from each claw-count group (E71's CLAW_GROUPS; claw
+    counts are the real wiring's, which the claw permutations and the matched wirings keep per KC), and the squared CV of
+    the number of odors per KC with APL on and off (E71's definitions), beside the KC data's per-recording values
+    (E71.data_refs). Writes release.csv."""
+    import E10_joint_fit as J
+    import E71_input_scaled_threshold as E71
+    _, _, W, _ = J.bouton_base(H.apl16_orn_deltas(), H.outputs_dir(EXPERIMENT), None)
+    claws = E71.n_claws_per_kc(W)
+    fits = new_fit_members()
+    fits += [(lab, f, t) for lab, f, t in new_fit_members(prefix_tag=C40_SUFFIX, real_folder=C40_REAL[0], real_tag=C40_REAL[1],
+                                                         draws=C40_DRAWS)]
+    fits += [(lab, f, t) for lab, f, t in new_fit_members(prefix_tag=G_SUFFIX, real_folder=G_REAL[0], real_tag=G_REAL[1],
+                                                         draws=G_DRAWS)]
+    fits += [(lab, EXPERIMENT, f'popfit_{lab}') for lab in (REAL, 'P1', 'P2', 'M1', 'P3', 'P4', 'M2', 'M3')]
+    rows = []
+    for lab, folder, tag in fits:
+        o = load_fit(folder, tag)
+        if o is None:
+            continue
+        on = o['on'][0].to_numpy(dtype=float) > 0.5
+        off = o['off'][0].to_numpy(dtype=float) > 0.5
+        n_on, n_off = on.sum(axis=1), off.sum(axis=1)
+        c = claws.reindex(o['on'][0].index.get_level_values(H.KC_ID_LEVEL)).to_numpy()
+        added = float(n_off.sum() - n_on.sum())
+        row = dict(wiring_label=lab, folder=folder, tag=tag, n_added=added, opk_cv2_on=float(n_on.var() / n_on.mean() ** 2),
+                   opk_cv2_off=float(n_off.var() / n_off.mean() ** 2))
+        for g, lo, hi in E71.CLAW_GROUPS:
+            m = (c >= lo) & (c <= hi)
+            row[f'share_added_{g}'] = float((n_off[m].sum() - n_on[m].sum()) / added) if added else np.nan
+            row[f'frac_kcs_{g}'] = float(m.mean())
+        rows.append(row)
+    d = E71.data_refs()
+    rows.append(dict(wiring_label='KC data', folder='', tag='', opk_cv2_on=d['opk_cv2_on']['mean'], opk_cv2_off=d['opk_cv2_off']['mean'],
+                     opk_cv2_on_min=d['opk_cv2_on']['min'], opk_cv2_on_max=d['opk_cv2_on']['max'],
+                     opk_cv2_off_min=d['opk_cv2_off']['min'], opk_cv2_off_max=d['opk_cv2_off']['max']))
+    res = pd.DataFrame(rows)
+    res.to_csv(out / 'release.csv', index=False)
+    print(res[['wiring_label', 'tag', 'opk_cv2_on', 'opk_cv2_off', 'share_added_9+', 'share_added_1-4']].round(3).to_string())
+    return res
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', default='score', choices=['A', 'score', 'C-score', 'D', 'D-check', 'D-tables', 'E-score', 'G-score', 'figures'])
+    ap.add_argument('--part', default='score', choices=['A', 'score', 'C-score', 'D', 'D-check', 'D-tables', 'E-score', 'G-score', 'release', 'figures'])
     ap.add_argument('--maxfev', type=int, default=150)
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
@@ -785,6 +828,8 @@ def main() -> None:
         part_g_score(out)
     elif args.part == 'D-tables':
         popfit_tables(out)
+    elif args.part == 'release':
+        release(out)
     elif args.part == 'figures':
         figures(out)
     else:
