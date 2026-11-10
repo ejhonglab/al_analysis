@@ -16,7 +16,7 @@ a z-score over the whole recording (an edge at 1 / q, q the share of the recordi
 windows), a z-score per trial (an edge on every single trial) and a z-score against a pre-odor baseline
 (no edge). q with an interval from the edge and, independently, from the largest trial means of KCs that
 respond to a single odor. Writes data_edge_per_recording.csv, data_edge_by_breadth.csv, synthetic_*.csv,
-q_estimates.csv and the figures.
+q_estimates.csv, the figures E73_edge.png and E73_breadth.png, provenance_A.json.
 
 Part B, the models (`--part B`): every archived variant with both conditions saved
 (data/model_outputs/<folder>/<tag>_<on|acute_off>_spike_counts.parquet), read as the recordings appear to
@@ -36,14 +36,20 @@ odors; the responders' mean amplitude and coefficient of variation, the entries 
 to 1.5 z band; the block; the two ρ's on odor-odor distances; the natural-source alignment (APL on / off /
 on minus off); beside the present readings (raw counts and E65's calibrated readout, two-spike criterion).
 Controls: a fixed divisor for all KCs reproduces the present readings; q over its interval; the reading
-applied to a model shows part A's edge. Writes by_variant.csv, calibration.csv, controls.csv.
+applied to a model shows part A's edge. Also the reading of E49's low-concentration panels within their own
+session. Writes by_variant.csv (one row per variant x reading definition x reading, with the calibrated
+parameters and both conditions' statistics under that reading's criterion), controls.csv, low_conc.csv,
+provenance_B.json (with the model provenance).
 
 `--part summarize`: comparison_table.md (the key models, the order of the variants under the reading
 against the present order, the best-models columns, the firing ceiling's gain, the wiring population and
-the input-scaled threshold's settings, as archived), the figures, provenance.json.
+the input-scaled threshold's settings, as archived; the low-concentration panels), key_models.csv, order.csv,
+best_models_columns.csv, map_choice.csv (the map kept: the one whose APL-on amplitude statistics are nearer the
+control flies'), E73_loss_present_vs_reading.png, E73_key_models.png, provenance_summary.json.
 
 Outputs in <shared>/results/E73_per_kc_normalization/. Nothing is simulated.
 Usage: nice -n 10 ./venv/bin/python -u E73_per_kc_normalization.py --part A|B|summarize [--jobs 16] [--only-key]
+       [--folders E71_input_scaled_threshold E72_wiring_population] (part B: add folders archived later, then --part summarize)
 """
 from __future__ import annotations
 
@@ -422,7 +428,10 @@ def a_figures(out: Path, per_rec, bt, mt, synth, s_mt, kcs) -> None:
     for g, dd in d.groupby('genotype'):
         ax.scatter(dd.ms_max, dd.max_trial, s=22, color=col[g], label=f'KCs, {GENO_LABEL[g]}')
     ax.axvline(1 / 0.17, color='k', ls='--', lw=0.8)
-    ax.set_xscale('log'); ax.set_xlabel('largest per-KC mean square in the recording (z²)'); ax.set_ylabel('largest single-trial value (z)')
+    ax.set_xscale('log'); ax.set_xlabel('largest per-KC mean square in the recording (z²)')
+    from matplotlib.ticker import FixedLocator, NullLocator, ScalarFormatter
+    ax.xaxis.set_major_locator(FixedLocator([2, 3, 4, 6, 10, 20, 40])); ax.xaxis.set_minor_locator(NullLocator())
+    ax.xaxis.set_major_formatter(ScalarFormatter()); ax.set_ylabel('largest single-trial value (z)')
     ax.set_title('Per recording: the largest mean square against the largest single trial\n(synthetic cells at q = 0.17, dashed 1 / q)', fontsize=9)
     ax.legend(fontsize=6.5, frameon=False, loc='upper left')
     ax = axes[1, 0]
@@ -766,14 +775,60 @@ def controls(q: float) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def variant_list(only_key: bool) -> List[Tuple[str, str]]:
-    """Every (folder, tag) of results/apl_effect/by_variant.csv with both conditions archived."""
+# the low-concentration panels in E49's archive (26 odors: the 16 APL16 odors, then these, named as in olfdb)
+LOW_CONC_NAMES = {'2h+ma @ -7': '2h @ -7 + ma @ -7', '2h-7+farn-3 @ 0': '2h @ -7 + farn @ -3', 'ma-7+farn-3 @ 0': 'ma @ -7 + farn @ -3'}
+LOW_CONC_PANELS = {'diag_mix': (('2h @ -7', 'ma @ -7', 'ma @ -8', 'farn @ -3', '2h @ -7 + ma @ -7', '2h @ -7 + farn @ -3',
+    'ma @ -7 + farn @ -3'), 6), 'natmix_dilute': (('2h @ -7', 'ma @ -7', '2h @ -7 + ma @ -7', '2h @ -5', 'ea @ -5', 'ea @ -7'), 3)}
+
+
+def low_conc(q: float) -> pd.DataFrame:
+    """The low-concentration response fractions of E49's archived models (each an earlier model at its fitted
+    parameters on a 26-odor input), read within each low-concentration panel's own session: the reading
+    calibrated on the model's APL-on counts of the 16 APL16 odors (both maps), then each panel's odors that
+    the model has, plus a blank, z-scored over that session (diag_mix: 6 trials per odor; natmix_dilute: 3),
+    and the fraction of KCs with a trial mean above 1 z, beside the two-spike criterion and the KC data
+    (E49's data_fractions.csv). The model's session lacks the panel's odors it was not given (diag_mix: 2h
+    @ -8, farn @ -4, farn @ -2.5 and their mixtures), so its session sd is an approximation."""
+    t = refs()['targets']
+    d_frac = pd.read_csv(RESULTS / 'E49_low_conc_kc' / 'data_fractions.csv')
+    rows = []
+    a = ARCHIVE / 'E49_low_conc_kc'
+    for f in sorted(a.glob('*_on_spike_counts.parquet')):
+        tag = f.name[:-len('_on_spike_counts.parquet')]
+        if tag.endswith('_base') or not (a / f'{tag}_acute_off_spike_counts.parquet').exists():
+            continue
+        cnt = {c: pd.read_parquet(a / f'{tag}_{c}_spike_counts.parquet').astype(float).rename(columns=LOW_CONC_NAMES)
+            for c in ('on', 'acute_off')}
+        apl16 = H.abbrev_columns(cnt['on'].iloc[:, :16])[H.APL16_ODORS]
+        for a_map in MAPS:
+            cal = H.calibrate_session_zscore(apl16, q=q, amp=a_map, target_rate=t['rate'], target_amp=t['amp'] if a_map == 'saturating' else None,
+                target_silent_sd=t['silent_sd'])
+            for panel, (odors, n_tr) in LOW_CONC_PANELS.items():
+                cols = [o for o in odors if o in cnt['on'].columns]
+                for c, m in cnt.items():
+                    z = H.session_zscore(m[cols], q=q, noise=cal['noise'], amp=a_map, K=cal['K'], noise_ratio=cal['noise_ratio'], n_trials=n_tr)
+                    sd = (z['trial_sd'] / np.sqrt(n_tr))[:, :, None]
+                    P = H._tail_moments(z['center'], sd, 1.0)[0].mean(axis=(0, 1))
+                    group = 'control' if c == 'on' else 'apl_output_blocked'
+                    for o, pz in zip(cols, P):
+                        dd = d_frac[(d_frac.panel == panel) & (d_frac.group == group) & (d_frac.odor == o)]
+                        rows.append(dict(model=tag, map=a_map, panel=panel, condition=c, odor=o, frac_zcell=float(pz),
+                            frac_two_spikes=float((m[o] >= 2).mean()), frac_data=float(dd.frac.iloc[0]) if len(dd) else np.nan,
+                            noise=cal['noise'], K=cal['K'], noise_ratio=cal['noise_ratio'], q=q))
+    return pd.DataFrame(rows)
+
+
+def variant_list(only_key: bool, folders: Optional[List[str]] = None) -> List[Tuple[str, str]]:
+    """Every (folder, tag) of results/apl_effect/by_variant.csv with both conditions archived (only those of
+    `folders` when given)."""
     bv = pd.read_csv(RESULTS / 'apl_effect' / 'by_variant.csv')
     have = [(r.folder, str(r.tag)) for r in bv.itertuples()
         if (ARCHIVE / r.folder / f'{r.tag}_on_spike_counts.parquet').exists() and (ARCHIVE / r.folder / f'{r.tag}_acute_off_spike_counts.parquet').exists()]
     if only_key:
         keys = {(f, t) for _, _, f, t, _ in KEY_MODELS}
         have = [h for h in have if h in keys]
+    if folders:
+        have = [h for h in have if h[0] in folders]
     return list(dict.fromkeys(have))
 
 
@@ -782,7 +837,7 @@ def part_b(args) -> None:
     out = H.results_dir(EXPERIMENT)
     out.mkdir(parents=True, exist_ok=True)
     q, q_lo, q_hi = (args.q, args.q, args.q) if args.q else q_values()
-    have = variant_list(args.only_key)
+    have = variant_list(args.only_key, args.folders)
     print(f'part B: {len(have)} variants, q {q:.4f} (interval {q_lo:.4f} to {q_hi:.4f})', flush=True)
     jobs = [(f, t, q, q_lo, q_hi) for f, t in have]
     rows, errors = [], []
@@ -798,12 +853,18 @@ def part_b(args) -> None:
     df = df.merge(bv[['folder', 'tag', 'exp', 'realism_flag']].rename(columns={'realism_flag': 'realism_flag_by_variant'}),
         on=['folder', 'tag'], how='left')
     name = 'by_variant_key.csv' if args.only_key else 'by_variant.csv'
+    if args.folders and (out / name).exists():
+        # scores of the named folders replace their rows in the existing table
+        old = pd.read_csv(out / name)
+        df = pd.concat([old[~old.folder.isin(args.folders)], df], ignore_index=True)
     df.to_csv(out / name, index=False)
     if errors:
         pd.DataFrame(errors).to_csv(out / 'errors.csv', index=False)
         print(f'{len(errors)} variants failed: see errors.csv', flush=True)
     ctl = controls(q)
     ctl.to_csv(out / 'controls.csv', index=False)
+    lc = low_conc(q)
+    lc.to_csv(out / 'low_conc.csv', index=False)
     print(ctl.round(4).to_string(), flush=True)
     write_provenance(out, 'B', dict(q=q, q_interval=[q_lo, q_hi], n_variants=len(have), n_rows=len(df), n_errors=len(errors),
         maps=MAPS, readings=READINGS, key_models=KEY_MODELS, trial_sets=list(TRIAL_SETS.values()),
@@ -850,6 +911,8 @@ def summarize(args) -> None:
     mc.to_csv(out / 'map_choice.csv', index=False)
     print('map choice (median relative deviation of the APL-on amplitude statistics from the control flies\'):', med.round(3).to_dict(),
         '->', chosen, flush=True)
+    if not (out / 'low_conc.csv').exists():
+        low_conc(q).to_csv(out / 'low_conc.csv', index=False)
     write_tables(out, df, chosen, med, mc.attrs['target'], q, q_lo, q_hi)
     b_figures(out, df, chosen)
     write_provenance(out, 'summary', dict(q=q, q_interval=[q_lo, q_hi], map_kept=chosen, map_deviation=med.to_dict(),
@@ -1097,6 +1160,19 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
             continue
         L.append(f"| {rd_def} | {len(g)} | {g.rmse.median():.3f} | {g['mean'].median():+.3f} | {g.rmse_centered.median():.3f} | {g.spearman.median():.2f} | "
             f"{g.rate_ratio.median():.2f} | {int((g.realism_flag != '').sum())} |")
+    lc = pd.read_csv(out / 'low_conc.csv')
+    lc = lc[lc['map'] == chosen]
+    if len(lc):
+        models = list(dict.fromkeys(lc.model))
+        L += ['', f'### The low-concentration panels within their own session (E49\'s archived models; {MAP_LABEL[chosen]}, calibrated on the '
+              'APL16 odors)', '', 'Fraction of KCs responding: two-spike criterion / the data\'s criterion under the reading; E72 part F\'s fits (C2 among '
+              'them) are not archived, so C2\'s low-concentration fractions are not read here.', '',
+              '| panel | condition | odor | KC data | ' + ' | '.join(models) + ' |', '|---|---|---|---:|' + '---:|' * len(models)]
+        for (panel, cond, odor), g in lc.groupby(['panel', 'condition', 'odor'], sort=False):
+            g = g.set_index('model')
+            dv = g.frac_data.iloc[0]
+            L.append(f"| {panel} | {'APL on / control flies' if cond == 'on' else 'APL off / APL output blocked (TNT)'} | {odor} | {f3(dv)} | "
+                + ' | '.join(f"{g.loc[m, 'frac_two_spikes']:.3f} / {g.loc[m, 'frac_zcell']:.3f}" if m in g.index else '–' for m in models) + ' |')
     (out / 'comparison_table.md').write_text('\n'.join(L) + '\n')
 
 
@@ -1134,6 +1210,26 @@ def b_figures(out: Path, df: pd.DataFrame, chosen: str) -> None:
                     axes[i, j].annotate(short, (p[col], z.loc[(folder, tag), col]), fontsize=7, color='#c8553d')
     fig.suptitle('Every archived variant: the per-pair APL effect read as the recordings appear to be against the present readings', fontsize=10)
     fig.tight_layout(); fig.savefig(out / 'E73_loss_present_vs_reading.png', dpi=120); plt.close(fig)
+    # the key models: loss and mean APL effect under each reading
+    other = [m for m in MAPS if m != chosen][0]
+    defs = [('present_raw', 'raw counts (as now)', '0.75'), ('present_cal', 'calibrated readout (as now)', '0.45'),
+        (f'zcell_{other}', MAP_LABEL[other], '#9ecae1'), (f'zcell_{chosen}', MAP_LABEL[chosen], '#2b6cb0'),
+        (f'zcell_{chosen}_trials', MAP_LABEL[chosen] + ', jittered trials', '#c8553d')]
+    keys = [k for k in KEY_MODELS if _row(df, k[2], k[3], 'present_raw') is not None]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.8))
+    w = 0.8 / len(defs)
+    for i, (rd, lab, colr) in enumerate(defs):
+        for ax, col in zip(axes, ('rmse', 'mean')):
+            vals = [(_row(df, f, t, rd)[col] if _row(df, f, t, rd) is not None else np.nan) for _, _, f, t, _ in keys]
+            ax.bar(np.arange(len(keys)) + (i - len(defs) / 2 + 0.5) * w, vals, w, color=colr, label=lab)
+    axes[0].axhline(dt('apl_effect_rmse_floor'), color='k', ls='--', lw=0.8); axes[0].text(-0.4, dt('apl_effect_rmse_floor'), 'KC data floor', fontsize=7, va='bottom')
+    axes[1].axhline(dt('apl_effect_mean'), color='k', ls='--', lw=0.8); axes[1].text(-0.4, dt('apl_effect_mean'), 'KC data', fontsize=7, va='bottom')
+    for ax, ylab in zip(axes, ('APL-effect loss, graded (lower is better)', 'mean APL effect')):
+        ax.set_xticks(np.arange(len(keys))); ax.set_xticklabels([k[0] for k in keys]); ax.set_ylabel(ylab)
+        ax.spines[['top', 'right']].set_visible(False)
+    axes[0].legend(fontsize=7, frameon=False)
+    fig.suptitle('Key models under the present readings and read as the recordings appear to be (each against the same reading of the KC data)', fontsize=10)
+    fig.tight_layout(); fig.savefig(out / 'E73_key_models.png', dpi=120); plt.close(fig)
 
 
 def main() -> None:
@@ -1142,6 +1238,8 @@ def main() -> None:
     ap.add_argument('--jobs', type=int, default=16, help='worker processes (part B; at most 16)')
     ap.add_argument('--only-key', action='store_true', help='part B on the key models only (a quick check)')
     ap.add_argument('--q', type=float, default=None, help='part B: q (default: part A\'s estimate)')
+    ap.add_argument('--folders', nargs='+', default=None, help='part B: score only these results folders (e.g. once E71 / E72 are '
+        'archived) and replace their rows in by_variant.csv')
     args = ap.parse_args()
     {'A': part_a, 'B': part_b, 'summarize': summarize}[args.part](args)
 

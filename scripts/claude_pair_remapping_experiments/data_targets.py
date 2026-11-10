@@ -378,6 +378,37 @@ def build() -> dict:
             'recordings: the realism band on odors per KC', ofn, ['kc_trialmeans'])
         add(f'{name}_odors_per_kc_tv_median', float(np.median(loo)), f'KCs, {lab}: the median of the same leave-one-out distances', ofn,
             ['kc_trialmeans'])
+    # the recordings' per-KC normalization (E73, part A): each KC's mean of squared trial values over the whole
+    # recording sits under an edge at about 1 / q, q the share of the recording inside the response windows, as a
+    # z-score over the whole recording requires; q from the edge (the top 1 % of each recording's KCs by mean
+    # square), from the single-odor responders with the largest trial means and from the noise budget (each KC's
+    # own trial noise against its mean square), per recording, over the 19 APL16 recordings
+    from E73_per_kc_normalization import edge_stats, load_panel_trials
+    zrows = []
+    for key, r in load_panel_trials('APL16').items():
+        summ, _ = edge_stats(r['X'], r['stim'])
+        zrows.append(dict(genotype=r['genotype'], **summ))
+    zr = pd.DataFrame(zrows)
+    zfn = 'E73_per_kc_normalization.edge_stats (per recording, 51 trials per KC: 16 odors and the solvent, 3 trials each)'
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        lab = 'control flies' if g == 'TNT3c' else 'APL output blocked (TNT)'
+        d = zr[zr.genotype == g]
+        add(f'{name}_zcell_edge', d.ms_max.mean(), f'KCs, {lab}: the largest per-KC mean of squared trial values (every trial of the '
+            'recording, the solvent\'s included), mean over recordings: the edge a z-score over the whole recording puts at about 1 / q',
+            zfn, [f'kc_trials_{name}'], ci=np.percentile(d.ms_max, [5, 95]))
+        add(f'{name}_zcell_edge_gap', d.edge_gap.mean(), f'KCs, {lab}: the largest per-KC mean square minus its 99.9th percentile, mean '
+            'over recordings (how sharp the edge is)', zfn, [f'kc_trials_{name}'], ci=np.percentile(d.edge_gap, [5, 95]))
+    for est, desc in (('q_edge', 'from the edge: per KC, the q its variance budget implies (1 = q (ms - t^2) - q^2 mean^2 + t^2 / r0^2, '
+            't the KC\'s own trial noise, r0 a silent KC\'s), median over the top 1 % of the recording\'s KCs by mean square'),
+            ('q_single', 'from the single-odor responders: the same per-KC q, median over the 10 KCs responding to one odor with the '
+             'largest trial means'),
+            ('q_noise', 'from the noise budget: least squares of the KCs\' own trial-noise variance on their mean square, '
+             't^2 = r0^2 - r0^2 q (ms - t^2), q = -slope / intercept')):
+        v = zr[est].dropna()
+        add('zcell_q' if est == 'q_edge' else f'zcell_{est}', float(np.median(v)), f'KCs (both genotypes): the share q of the '
+            f'recording inside the response windows under a z-score over the whole recording, {desc}; median over the 19 APL16 '
+            'recordings, interval the 5th to 95th percentiles over recordings', zfn, ['kc_trials_ctrl', 'kc_trials_tnt'],
+            ci=np.percentile(v, [5, 95]))
     add('n_recordings_ctrl', len(recs['TNT3c']), 'control recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     add('n_recordings_tnt', len(recs['TNT']), 'APL output blocked (TNT) recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     return reg
