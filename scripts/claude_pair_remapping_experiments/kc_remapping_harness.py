@@ -1109,7 +1109,17 @@ def expected_pair_distances_noisy(mat: pd.DataFrame, noise_sd: float, n_trials: 
     expectations, which the sampled mean approaches for many units). `noise_sd` 0 gives
     `pair_distances(mat, 'cosine')`.
     """
-    raise NotImplementedError
+    m = abbrev_columns(mat).astype(float)
+    odors = odor_order(m.columns)
+    X = m[odors].to_numpy().T
+    n_units = X.shape[1]
+    sq = (X ** 2).sum(axis=1) + n_units * float(noise_sd) ** 2 / n_trials
+    with np.errstate(invalid='ignore', divide='ignore'):
+        S = (X @ X.T) / np.sqrt(np.outer(sq, sq))
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    return pd.Series([1 - S[idx[a], idx[b]] for a, b in pl],
+        index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
 
 
 def sample_pseudo_recordings(signal, noise_sd: float, *, n_recordings: int = 10, n_trials: int = 3,
@@ -1129,17 +1139,47 @@ def sample_pseudo_recordings(signal, noise_sd: float, *, n_recordings: int = 10,
     Returns (n_recordings, units, odors) noisy trial means, or (n_recordings, n_trials, units,
     odors) noisy trials with `return_trials`.
     """
-    raise NotImplementedError
+    sig = signal.to_numpy(dtype=float) if isinstance(signal, pd.DataFrame) else np.asarray(signal, dtype=float)
+    if sig.ndim == 2:
+        sig = np.broadcast_to(sig, (n_recordings, n_trials) + sig.shape)
+    elif sig.ndim != 4:
+        raise ValueError(f'signal must be (units, odors) or (recordings, trials, units, odors), not {sig.shape}')
+    rng = np.random.default_rng(seed)
+    trials = sig + rng.normal(0.0, float(noise_sd), size=sig.shape)
+    return trials if return_trials else trials.mean(axis=1)
 
 
-def noise_corrected_pair_distances(trials: np.ndarray, odors: Sequence[str]) -> pd.Series:
+def noise_corrected_pair_distances(trials: np.ndarray, odors: Sequence[str],
+    min_reliability: Optional[float] = None) -> pd.Series:
     """The noise-corrected cosine distances of one recording from its trials (n_trials, units,
     odors), as `noise_floor_trial_distances.analyse(..., 'graded')` computes them for the data:
     each odor's signal power is the squared length of its trial mean minus the trial-to-trial
     variance summed over units divided by the number of trials (floored at 1e-12), and the
     corrected distance is 1 - (dot product of the trial means) / sqrt(signal power a x signal
-    power b). Returns a canonical pair Series."""
-    raise NotImplementedError
+    power b). Returns a canonical pair Series.
+
+    `min_reliability`: pairs with an odor whose signal power is less than this share of its trial
+    mean's squared length are NaN (the correction divides by a near-zero signal there; a model odor
+    with almost no responders). The KC data's shares are all above 0.5, so 0.1 leaves them intact.
+    """
+    X = np.asarray(trials, dtype=float)
+    n = X.shape[0]
+    xbar = X.mean(axis=0)                                   # units x odors
+    s2 = X.var(axis=0, ddof=1).sum(axis=0)                  # per odor, summed over units
+    norm2 = (xbar ** 2).sum(axis=0)
+    sig = np.maximum(norm2 - s2 / n, 1e-12)
+    dots = xbar.T @ xbar
+    D = 1 - dots / np.sqrt(np.outer(sig, sig))
+    if min_reliability is not None:
+        with np.errstate(invalid='ignore', divide='ignore'):
+            bad = ~(sig / norm2 >= min_reliability)
+        D[bad, :] = np.nan
+        D[:, bad] = np.nan
+    odors = list(odors)
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    return pd.Series([D[idx[a], idx[b]] for a, b in pl],
+        index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
 
 
 def low_end_stats(trial_signal: np.ndarray, noise_sd: float, *, band: Tuple[float, float] = LOW_END_BAND,
@@ -1164,7 +1204,59 @@ def low_end_stats(trial_signal: np.ndarray, noise_sd: float, *, band: Tuple[floa
 
     Returns dict with 'rate', 'band_share', 'participation_ratio_resp'.
     """
-    raise NotImplementedError
+    mu = np.atleast_2d(np.asarray(trial_signal, dtype=float))
+    w = np.ones_like(mu) if weights is None else np.atleast_2d(np.asarray(weights, dtype=float))
+    n = w.sum(axis=1) if n_units is None else np.asarray(n_units, dtype=float)
+    lo, hi = band
+    if noise_sd > 0:
+        from scipy.special import ndtr
+        sd = float(noise_sd)
+        a = (thresh - mu) / sd
+        tail = ndtr(-a)
+        p_resp = tail
+        p_band = ndtr((hi - mu) / sd) - ndtr((lo - mu) / sd)
+        # partial moments of the standard normal above a: E[Z^j 1{Z > a}], j = 0..4
+        phi = np.exp(-0.5 * a ** 2) / np.sqrt(2 * np.pi)
+        m = [tail, phi, a * phi + tail, (a ** 2 + 2) * phi, (a ** 3 + 3 * a) * phi + 3 * tail]
+        # E[(mu + sd Z)^k 1{Z > a}] for k = 2, 4, binomially from the partial moments
+        e2 = mu ** 2 * m[0] + 2 * mu * sd * m[1] + sd ** 2 * m[2]
+        e4 = (mu ** 4 * m[0] + 4 * mu ** 3 * sd * m[1] + 6 * mu ** 2 * sd ** 2 * m[2] + 4 * mu * sd ** 3 * m[3]
+            + sd ** 4 * m[4])
+    else:
+        resp = mu > thresh
+        p_resp = resp.astype(float)
+        p_band = ((mu > lo) & (mu <= hi)).astype(float)
+        e2, e4 = np.where(resp, mu ** 2, 0.0), np.where(resp, mu ** 4, 0.0)
+    s2, s4 = (w * e2).sum(axis=1), (w * e4).sum(axis=1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        pr = np.where(s4 > 0, s2 ** 2 / (n * s4), np.nan)
+    return dict(rate=float(np.mean((w * p_resp).sum(axis=1) / n)), band_share=float(np.mean((w * p_band).sum(axis=1) / n)),
+        participation_ratio_resp=float(np.nanmean(pr)))
+
+
+def _unique_groups(mu: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(groups x entries) values -> (values, weights, n_units), identical values of a group merged
+    (zero weights pad the groups to one width)."""
+    groups = [np.unique(row, return_counts=True) for row in mu]
+    width = max(len(c) for _, c in groups)
+    vals, w = np.zeros((len(groups), width)), np.zeros((len(groups), width))
+    for g, (u, c) in enumerate(groups):
+        vals[g, :len(c)], w[g, :len(c)] = u, c
+    return vals, w, np.array([mu.shape[1]] * len(groups), dtype=float)
+
+
+def _solve_c(grouped, target_rate: float, sd_mean: float, thresh: float = KC_RESPONSE_Z,
+    bounds: Tuple[float, float] = (1e-3, 1e4)) -> float:
+    """The conversion c at which the expected response rate of c x `grouped` (values, weights,
+    n_units) through noise of sd `sd_mean` on a trial mean equals `target_rate`."""
+    from scipy.optimize import brentq
+    vals, w, n = grouped
+    f = lambda lc: low_end_stats(np.exp(lc) * vals, sd_mean, thresh=thresh, weights=w, n_units=n)['rate'] - target_rate
+    lo, hi = np.log(bounds[0]), np.log(bounds[1])
+    flo, fhi = f(lo), f(hi)
+    if flo * fhi > 0:
+        return float(np.exp(lo) if abs(flo) < abs(fhi) else np.exp(hi))
+    return float(np.exp(brentq(f, lo, hi, xtol=1e-12, rtol=1e-12)))
 
 
 def z_scale(signal_on, target_rate: float, noise_sd: float, *, n_trials: int = 3, thresh: float = KC_RESPONSE_Z,
@@ -1181,14 +1273,21 @@ def z_scale(signal_on, target_rate: float, noise_sd: float, *, n_trials: int = 3
     Root of the (monotone) expected rate in log c (Brent); returns the nearer bound when the target
     is not bracketed.
     """
-    raise NotImplementedError
+    sig = signal_on.to_numpy(dtype=float) if isinstance(signal_on, pd.DataFrame) else np.asarray(signal_on, dtype=float)
+    if sig.ndim == 4:
+        n_trials = sig.shape[1]
+        sig = sig.mean(axis=1)                              # recordings x units x odors
+        mu = np.concatenate([sig[r].T for r in range(sig.shape[0])])
+    else:
+        mu = sig.T                                          # odors x units
+    return _solve_c(_unique_groups(mu), target_rate, float(noise_sd) / np.sqrt(n_trials), thresh, bounds)
 
 
 def calibrate_low_end(on_counts, *, noise_sd: float, target_rate: float, target_band: float,
     target_pr: float, n_trials: int = 3, fit_floor: bool = True, K0: float = 10.0, floor0: float = 0.0,
     K_bounds: Tuple[float, float] = (1e-3, 1e3), floor_bounds: Tuple[float, float] = (-1.0, 50.0),
-    tol: float = 1e-5, max_iter: int = 50, band: Tuple[float, float] = LOW_END_BAND,
-    thresh: float = KC_RESPONSE_Z) -> Dict[str, object]:
+    c_bounds: Tuple[float, float] = (1e-2, 1e3), tol: float = 1e-5, max_iter: int = 50,
+    band: Tuple[float, float] = LOW_END_BAND, thresh: float = KC_RESPONSE_Z) -> Dict[str, object]:
     """The saturating readout with a low end, calibrated jointly on the APL-on counts alone, so the
     APL-off amplitudes and the APL effect stay predictions: the half-saturation K, the one-spike
     floor b (`readout(..., 'saturating', K, floor=b)`) and the conversion c of readout units to z,
@@ -1197,18 +1296,109 @@ def calibrate_low_end(on_counts, *, noise_sd: float, target_rate: float, target_
     entries with a trial mean in `band` equals `target_band` (sets b) and the responders-only
     participation ratio equals `target_pr` (sets K). Iterated to a fixed point: each round solves b
     (c re-solved at every b) and then K (c re-solved at every K) until K and b change by less than
-    `tol` (relative for K, absolute for b).
+    `tol` (relative for K, absolute for b). The band share need not be monotone in b (with c
+    re-solved), so b is the root nearest to `floor0` among the sign changes on a grid over
+    `floor_bounds`; K is the root of the (monotone) participation ratio in log K.
 
     Args:
         on_counts: APL-on spike counts, (units x odors) DataFrame or array, or per-trial counts
             (n_recordings, n_trials, units, odors) (jittered trials; `n_trials` is then taken from
             the array).
         fit_floor: False holds b at `floor0` (K and c still calibrated jointly).
+        c_bounds: the range of c; floors at which the target rate needs c outside it are
+            excluded, and when no floor inside the range reaches the band target, the one
+            nearest to it is returned with `floor_at_bound` True.
 
     Returns dict: K, floor, c, iterations, converged, history (list of per-round dicts), the
     achieved rate / band_share / participation_ratio_resp, and K_at_bound / floor_at_bound.
     """
-    raise NotImplementedError
+    arr = on_counts.to_numpy(dtype=float) if isinstance(on_counts, pd.DataFrame) else np.asarray(on_counts, dtype=float)
+    if arr.ndim == 2:
+        trials = arr.T[:, :, None]                          # groups (odors) x units x trials
+    elif arr.ndim == 4:
+        n_trials = arr.shape[1]
+        trials = np.concatenate([np.moveaxis(arr[r], 0, -1).transpose(1, 0, 2) for r in range(arr.shape[0])])
+    else:
+        raise ValueError(f'on_counts must be (units, odors) or (recordings, trials, units, odors), not {arr.shape}')
+    # identical count tuples read out identically: group them per odor (and recording)
+    groups = []
+    for g in range(trials.shape[0]):
+        u, cnt = np.unique(trials[g], axis=0, return_counts=True)
+        groups.append((u, cnt))
+    n_units = np.array([trials.shape[1]] * trials.shape[0], dtype=float)
+    width = max(len(c) for _, c in groups)
+    counts = np.zeros((len(groups), width, trials.shape[2]))
+    weights = np.zeros((len(groups), width))
+    for g, (u, cnt) in enumerate(groups):
+        counts[g, :len(cnt)] = u
+        weights[g, :len(cnt)] = cnt
+    sd_mean = float(noise_sd) / np.sqrt(n_trials)
+
+    def signal(K, b):
+        x = counts
+        with np.errstate(invalid='ignore', divide='ignore'):
+            r = np.where(x > 0, (x + b) / (x + b + K), 0.0)
+        return r.mean(axis=2)
+
+    def solve_c(K, b):
+        return _solve_c((signal(K, b), weights, n_units), target_rate, sd_mean, thresh, c_bounds)
+
+    def c_ok(c):
+        return c_bounds[0] * 1.0001 < c < c_bounds[1] * 0.9999
+
+    def band_err(bb):
+        # nan where the rate cannot be reached with c inside its bounds (e.g. b near -1, where a
+        # model tuned below the target rate reaches it only by inflating c without limit)
+        c = solve_c(K, bb)
+        return stats_at(K, bb, c)['band_share'] - target_band if c_ok(c) else np.nan
+
+    def stats_at(K, b, c):
+        return low_end_stats(c * signal(K, b), sd_mean, band=band, thresh=thresh, weights=weights, n_units=n_units)
+
+    def root(f, lo, hi):
+        flo, fhi = f(lo), f(hi)
+        if not np.isfinite(flo) or not np.isfinite(fhi) or flo * fhi > 0:
+            return (lo if abs(flo) < abs(fhi) else hi), True
+        from scipy.optimize import brentq
+        return float(brentq(f, lo, hi, xtol=1e-10, rtol=1e-12)), False
+
+    def root_nearest(f, grid, x0):
+        # the band share need not be monotone in b once c is re-solved at every b (a model tuned
+        # below the target rate reaches it only through its one-spike entries), so the root nearest
+        # to the starting floor is taken among the sign changes on a grid
+        vals = np.array([f(x) for x in grid])
+        ok = np.isfinite(vals)
+        brackets = [i for i in range(len(grid) - 1) if ok[i] and ok[i + 1] and vals[i] * vals[i + 1] <= 0]
+        if not brackets:
+            i = int(np.nanargmin(np.abs(np.where(ok, vals, np.nan))))
+            return float(grid[i]), True
+        from scipy.optimize import brentq
+        roots = [float(brentq(f, grid[i], grid[i + 1], xtol=1e-10, rtol=1e-12)) if vals[i] != 0 else float(grid[i])
+            for i in brackets]
+        return min(roots, key=lambda r: abs(r - x0)), False
+
+    b_grid = np.unique(np.concatenate([np.linspace(floor_bounds[0], 0.0, 21),
+        np.geomspace(0.05, floor_bounds[1], 40)]))
+    K, b = float(K0), float(floor0)
+    history = []
+    K_at_bound = floor_at_bound = False
+    converged = False
+    for it in range(1, max_iter + 1):
+        K_prev, b_prev = K, b
+        if fit_floor:
+            b, floor_at_bound = root_nearest(band_err, b_grid, float(floor0))
+        fk = lambda lk: stats_at(np.exp(lk), b, solve_c(np.exp(lk), b))['participation_ratio_resp'] - target_pr
+        lk, K_at_bound = root(fk, np.log(K_bounds[0]), np.log(K_bounds[1]))
+        K = float(np.exp(lk))
+        c = solve_c(K, b)
+        st = stats_at(K, b, c)
+        history.append(dict(iteration=it, K=K, floor=b, c=c, **st))
+        if abs(np.log(K) - np.log(K_prev)) < tol and abs(b - b_prev) < tol and it > 1 or (not fit_floor and it > 1):
+            converged = True
+            break
+    return dict(K=K, floor=b, c=c, iterations=it, converged=converged, history=history, K_at_bound=K_at_bound,
+        floor_at_bound=floor_at_bound, c_at_bound=not c_ok(c), noise_sd=float(noise_sd),
+        n_trials=n_trials, **st)
 
 
 def cosine_terms(mat: pd.DataFrame, thresh: float = KC_RESPONSE_Z) -> pd.DataFrame:
@@ -1217,7 +1407,24 @@ def cosine_terms(mat: pd.DataFrame, thresh: float = KC_RESPONSE_Z) -> pd.DataFra
     sub-threshold; each term is that part of the dot product divided by the product of the two
     odors' lengths, so the three add up to the cosine. Columns 'both', 'one', 'neither', 'cosine';
     index canonical pairs."""
-    raise NotImplementedError
+    m = abbrev_columns(mat).astype(float)
+    odors = odor_order(m.columns)
+    X = m[odors].to_numpy()
+    R = (X > thresh).astype(float)
+    S = 1.0 - R
+    norms = np.linalg.norm(X, axis=0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        den = np.outer(norms, norms)
+        both = ((X * R).T @ (X * R)) / den
+        one = ((X * R).T @ (X * S) + (X * S).T @ (X * R)) / den
+        neither = ((X * S).T @ (X * S)) / den
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    rows = [(both[idx[a], idx[b]], one[idx[a], idx[b]], neither[idx[a], idx[b]]) for a, b in pl]
+    out = pd.DataFrame(rows, columns=['both', 'one', 'neither'],
+        index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
+    out['cosine'] = out.sum(axis=1)
+    return out
 
 
 _KC_NOISE_SD: Dict[str, float] = {}
@@ -1228,7 +1435,15 @@ def kc_trial_noise_sd(genotype: str = 'TNT3c') -> float:
     (trial mean <= 1 z), the root of the mean over those entries of their variance across the
     three trials (ddof 1), pooled over a genotype's recordings (Yang's per-trial values,
     `noise_floor_trial_distances.load_trials`). Cached."""
-    raise NotImplementedError
+    if genotype not in _KC_NOISE_SD:
+        from noise_floor_trial_distances import load_trials, recording_arrays
+        var = []
+        for by_odor in recording_arrays(load_trials(genotype)).values():
+            X = np.stack([by_odor[o] for o in APL16_ODORS if o in by_odor], axis=-1)   # trials x KCs x odors
+            v = X.var(axis=0, ddof=1)
+            var.append(v[X.mean(axis=0) <= KC_RESPONSE_Z])
+        _KC_NOISE_SD[genotype] = float(np.sqrt(np.concatenate(var).mean()))
+    return _KC_NOISE_SD[genotype]
 
 
 def kc_noise_floor(n_sd: float = 2.0) -> float:
@@ -1236,7 +1451,7 @@ def kc_noise_floor(n_sd: float = 2.0) -> float:
     trial mean's noise, kc_trial_noise_sd('TNT3c') / sqrt(3) (the control flies' measurement
     noise, used for both genotypes and for the models, as every low-end parameter is set on the
     control flies)."""
-    raise NotImplementedError
+    return float(n_sd * kc_trial_noise_sd('TNT3c') / np.sqrt(3))
 
 
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,

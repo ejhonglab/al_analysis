@@ -206,6 +206,39 @@ def build() -> dict:
     add('apl_effect_noise_corrected_mean', H.yang_apl_effect(values='noise_corrected').mean(), 'mean over the 120 pairs of the per-pair APL effect '
         'computed from the noise-corrected distances (each recording\'s cosine corrected for trial-to-trial noise, mean over recordings)',
         'harness.yang_apl_effect(values=noise_corrected)', ['kc_trials_ctrl', 'kc_trials_tnt'])
+    # the low end of the readout (E68): the data's measurement noise (trial-to-trial sd of the
+    # non-responding entries), the noise floor, the APL effect with negative values or values below
+    # the floor set to 0, and the shares of entries per amplitude band the low end is calibrated on
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        add(f'{name}_trial_noise_sd', H.kc_trial_noise_sd(g), f'KCs, {"control flies" if g == "TNT3c" else "APL output blocked (TNT)"}: '
+            'trial-to-trial sd of the non-responding entries (trial mean <= 1 z), the root of the mean over those entries of their variance '
+            'across the three trials, pooled over recordings', 'harness.kc_trial_noise_sd', [f'kc_trials_{name}'])
+    floor_z = H.kc_noise_floor()
+    add('kc_noise_floor', floor_z, 'noise floor of the KC data\'s "floor" reading: twice the sd of a trial mean\'s noise, ctrl_trial_noise_sd / sqrt(3) '
+        '(the control flies\' noise, used for both genotypes)', 'harness.kc_noise_floor', ['kc_trials_ctrl'])
+    for key, lab, inp in (('nonneg', 'trial means with negative values set to 0', ['kc_trialmeans']),
+            ('floor', f'trial means at or below the noise floor ({floor_z:.3f} z) set to 0', ['kc_trialmeans', 'kc_trials_ctrl'])):
+        e_v, bm_v, br_v, sh_v = apl_effect_resamples({g: H.yang_recording_rdms_values(g, key) for g in recs})
+        fn_v = f'harness.yang_apl_effect(values={key}); interval and floor as apl_effect_rmse_floor'
+        add(f'apl_effect_{key}_mean', e_v.mean(), f'mean over the 120 pairs of the per-pair APL effect computed from {lab}', fn_v, inp,
+            ci=np.percentile(bm_v, [5, 95]))
+        add(f'apl_effect_{key}_rmse_floor', float(np.mean(br_v)), f'floor of the APL-effect loss against the effect computed from {lab} '
+            '(as apl_effect_rmse_floor)', fn_v, inp, ci=np.percentile(br_v, [5, 95]))
+        r_v = float(np.nanmean(sh_v))
+        add(f'apl_effect_{key}_rho_ceiling', float(np.sqrt(2 * r_v / (1 + r_v))), f'ceiling on ρ on the per-pair APL effect computed from {lab} '
+            '(as apl_effect_rho_ceiling)', fn_v, inp)
+    from E68_readout_low_end import trialmean_band_shares
+    bands = {'share_05_15': 'with a trial mean above 0.5 and at most 1.5 z', 'share_05_1': 'with a trial mean above 0.5 and at most 1 z',
+        'share_1_15': 'with a trial mean above 1 and at most 1.5 z', 'share_025_1': 'with a trial mean above 0.25 and at most 1 z',
+        'share_above_4': 'with a trial mean above 4 z', 'share_below_m025': 'with a trial mean below -0.25 z', 'share_negative': 'with a negative trial mean'}
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        lab = 'control flies' if g == 'TNT3c' else 'APL output blocked (TNT)'
+        sh = trialmean_band_shares(g)
+        for k, desc in bands.items():
+            add(f'{name}_{k.replace("share_", "share_z_")}', sh[k], f'KCs, {lab}: share of the KC x odor entries (16 odors) {desc}, mean over recordings',
+                'E68_readout_low_end.trialmean_band_shares', ['kc_trialmeans'])
+        add(f'{name}_resp_amp_mean_z', sh['resp_amp_mean'], f'KCs, {lab}: mean trial mean of the responders (above 1 z), pooled over odors per '
+            'recording, mean over recordings', 'E68_readout_low_end.trialmean_band_shares', ['kc_trialmeans'])
 
     for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
         sh = H.split_half_reliability(recs[g], n_splits=200, seed=0)
