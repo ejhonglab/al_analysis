@@ -68,7 +68,8 @@ from al_analysis.mb_model import (fit_mb_model, fit_and_plot_mb_model, connectom
     get_fitmbmodel_default, load_apl_unit_centroids, load_apl_points,
     plot_apl_activity_sections, view_apl_activity_3d, onestep_lr_cache_key,
     read_onestep_lr_cache, connectome_KCKC_weights, CLAW_SAT_PARAMS,
-    BOUTON_DEPLETION_PARAMS, EXT_INH_RECORDED_PARAMS, APL_INH_FORM_PARAMS, get_sim_var
+    BOUTON_DEPLETION_PARAMS, EXT_INH_RECORDED_PARAMS, APL_INH_FORM_PARAMS, get_sim_var,
+    KC_SPIKING_PARAMS, _get_fixed_params
 )
 
 # TODO better way?
@@ -6903,3 +6904,329 @@ def test_apl_inh_divisive_simulator(apl_inh_form_model):
     responses_off_sub, spike_counts_off_sub = simulate_sub(apl_off)
     assert responses_off.equals(responses_off_sub)
     assert spike_counts_off.equals(spike_counts_off_sub)
+
+
+# one-row-per-KC hemibrain model (the olfsysm `sim_KC_layer` branch w/o claws), and a
+# (reduced, for speed) claw + bouton model (the claw branch), as for KC-KC inhibition.
+# the KC refractory period / adaptation act on the somatic potential both compute.
+KC_SPIKING_MODEL_KWS: List[ParamDict] = KC_KC_INH_MODEL_KWS
+
+@pytest.fixture(scope='module', params=KC_SPIKING_MODEL_KWS, ids=format_model_params)
+def kc_spiking_model(request, orn_deltas
+    ) -> Tuple[pd.DataFrame, ParamDict, FitMBModelOutputs]:
+    """Returns `orn_deltas`, model kwargs, and tuned outputs w/o a KC refractory period
+    or adaptation.
+
+    Bouton model uses `reduced_bouton_system` (so the returned `orn_deltas` and kwargs
+    should be used). Do not modify outputs.
+    """
+    orn_deltas, kws = maybe_reduce_bouton_system(orn_deltas, request.param)
+    return orn_deltas, kws, _fit_mb_model(orn_deltas=orn_deltas, **kws)
+
+
+def _pop_params(ret: FitMBModelOutputs, expected: ParamDict) -> FitMBModelOutputs:
+    for k, v in expected.items():
+        ret = _pop_param(ret, k, v)
+    return ret
+
+
+def test_kc_spiking_zero_equals_default(kc_spiking_model):
+    """Tests a KC refractory period / adaptation that change nothing (0, and a refractory
+    period of one time step, w/ which consecutive steps can still both have spikes) do
+    not change tuned outputs, and are recorded when passed.
+    """
+    orn_deltas, kws, ret = kc_spiking_model
+    assert not any(k in ret[3] for k in KC_SPIKING_PARAMS)
+
+    # (0.5 ms: olfsysm's default time step)
+    for spiking_kws in (
+            dict(kc_refractory_period=0.0, kc_adapt_inc=0.0, kc_adapt_tau=1.0),
+            dict(kc_refractory_period=0.5e-3)
+        ):
+        ret2 = _fit_mb_model(orn_deltas=orn_deltas, **spiking_kws, **kws)
+        assert all(type(ret2[3][k]) is float for k in spiking_kws)
+        assert_fit_outputs_equal(ret, _pop_params(ret2, spiking_kws))
+
+
+def _spike_recordings(orn_deltas: pd.DataFrame, kws: ParamDict, params: ParamDict,
+    spiking_kws: ParamDict) -> Tuple[np.ndarray, np.ndarray]:
+    """Returns ((odors, KCs, time) spikes, (KCs, odors) spike counts) of a `fit_mb_model`
+    call w/ `params` (`optimizable_model_params` values) fixed, re-simulated w/ olfsysm
+    spike recordings saved.
+    """
+    _, _, _, param_dict = _fit_mb_model(orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, **spiking_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws(params)}
+    )
+    mp, rv = param_dict['mp'], param_dict['rv']
+    spike_counts = np.array(rv.kc.spike_counts, copy=True)
+    mp.kc.save_spike_recordings = True
+    osm.run_KC_sims(mp, rv, False)
+    spikes = get_sim_var(rv.kc, 'spike_recordings')
+    assert np.array_equal(np.array(rv.kc.spike_counts), spike_counts)
+    assert np.array_equal(spikes.sum(axis=-1).T, spike_counts)
+    return spikes, spike_counts
+
+
+def _min_steps_between_spikes(spikes: np.ndarray) -> Optional[int]:
+    """Smallest number of steps between consecutive spikes of any KC (and odor), from
+    (odors, KCs, time) spikes, or None if no KC spikes twice to an odor."""
+    s = spikes.reshape(-1, spikes.shape[-1]).astype(bool)
+    rows, steps = np.nonzero(s)
+    same_row = rows[1:] == rows[:-1]
+    if not same_row.any():
+        return None
+    return int(np.diff(steps)[same_row].min())
+
+
+def test_kc_refractory_period(kc_spiking_model):
+    """Tests no KC spikes twice within `kc_refractory_period` (w/ thresholds and APL
+    weights fixed at tuned values, on the odors w/ the largest spike counts), while some
+    do without it, and that it lowers no spike count of feedforward runs (APL off).
+    """
+    orn_deltas, kws, ret = kc_spiking_model
+    spike_counts = ret[1]
+    params = _get_fixed_params(ret[3])
+    dt = 0.5e-3
+    assert osm.ModelParams().time_dt == dt
+
+    # (odors w/ the largest spike counts, to keep the recordings small)
+    odors = spike_counts.max().sort_values(ascending=False).index[:3]
+    model_odors = orn_deltas.columns
+    if 'panel' in model_odors.names:
+        model_odors = model_odors.droplevel('panel')
+    odor_cols = model_odors.get_indexer(odors)
+    assert (odor_cols >= 0).all()
+    sub_orn_deltas = orn_deltas.iloc[:, sorted(odor_cols)]
+
+    spikes0, counts0 = _spike_recordings(sub_orn_deltas, kws, params, dict())
+    min_steps0 = _min_steps_between_spikes(spikes0)
+    print(f'max spike count {counts0.max():.0f}, min steps between spikes w/o a '
+        f'refractory period: {min_steps0}'
+    )
+    assert min_steps0 is not None
+
+    # (3 ms, as in E69 of the KC-remapping experiments, and one longer than the
+    # shortest interval w/o a refractory period, so some spikes must move)
+    for refractory_period in (3e-3, 2 * min_steps0 * dt):
+        n_steps = int(round(refractory_period / dt))
+        spikes, counts = _spike_recordings(sub_orn_deltas, kws, params,
+            dict(kc_refractory_period=refractory_period)
+        )
+        min_steps = _min_steps_between_spikes(spikes)
+        print(f'kc_refractory_period={refractory_period}: max spike count '
+            f'{counts.max():.0f}, min steps between spikes {min_steps}'
+        )
+        assert min_steps is None or min_steps >= n_steps
+        if min_steps0 < n_steps:
+            assert not np.array_equal(counts, counts0)
+
+    # feedforward (APL and any KC-KC inhibition off): later resets never give more spikes
+    simulate, _ = make_fixed_param_kc_simulator(orn_deltas, initial_params=params, **kws)
+    apl_off = {k: 0.0 for k in params if k != 'fixed_thr'}
+    _, counts_off = simulate(apl_off)
+    _, counts_refr = simulate(apl_off, kc_spiking=dict(kc_refractory_period=10e-3))
+    assert (counts_refr.values <= counts_off.values).all()
+    assert counts_refr.values.max() < counts_off.values.max()
+    # (one spike: same first spike, w/ or w/o a refractory period after it)
+    assert counts_refr[counts_off <= 1].equals(counts_off[counts_off <= 1])
+
+
+def test_kc_adaptation_feedforward(kc_spiking_model):
+    """Tests that, in feedforward runs (APL and any KC-KC inhibition off, thresholds
+    fixed at tuned values), raising `kc_adapt_inc` or `kc_adapt_tau` raises no KC x odor
+    spike count, lowers the largest, and leaves entries w/ fewer than two spikes
+    (without adaptation) unchanged, w/ and w/o a refractory period.
+    """
+    orn_deltas, kws, ret = kc_spiking_model
+    params = _get_fixed_params(ret[3])
+    simulate, _ = make_fixed_param_kc_simulator(orn_deltas, initial_params=params, **kws)
+    apl_off = {k: 0.0 for k in params if k != 'fixed_thr'}
+
+    incs = (0.0, 0.05, 0.3, 2.0)
+    taus = (0.05, 0.2, 1.0)
+    for refractory_period in (0.0, 3e-3):
+        _, counts0 = simulate(apl_off,
+            kc_spiking=dict(kc_refractory_period=refractory_period)
+        )
+        few = counts0 < 2
+        counts = dict()
+        for inc in incs:
+            for tau in taus:
+                _, counts[inc, tau] = simulate(apl_off, kc_spiking=dict(
+                    kc_refractory_period=refractory_period, kc_adapt_inc=inc,
+                    kc_adapt_tau=tau
+                ))
+                assert counts[inc, tau][few].equals(counts0[few])
+                if inc == 0:
+                    assert counts[inc, tau].equals(counts0)
+
+        maxes = {k: v.values.max() for k, v in counts.items()}
+        print(f'kc_refractory_period={refractory_period}: largest spike count w/o '
+            f'adaptation {counts0.values.max():.0f}, by (kc_adapt_inc, kc_adapt_tau): '
+            f'{maxes}'
+        )
+        for (inc, tau), c in counts.items():
+            for inc2 in incs:
+                if inc2 > inc:
+                    assert (counts[inc2, tau].values <= c.values).all()
+            for tau2 in taus:
+                if tau2 > tau:
+                    assert (counts[inc, tau2].values <= c.values).all()
+
+        assert maxes[incs[-1], taus[-1]] < counts0.values.max() / 2
+
+
+def test_kc_spiking_simulator(kc_spiking_model):
+    """Tests `make_fixed_param_kc_simulator` w/ a KC refractory period and adaptation
+    (set in the initial call, or per simulation via `kc_spiking`) matches `fit_mb_model`,
+    and that tuning (the initial call) runs w/ them on.
+    """
+    orn_deltas, kws, ret = kc_spiking_model
+    spiking_kws = dict(kc_refractory_period=3e-3, kc_adapt_inc=0.3, kc_adapt_tau=0.2)
+
+    # initial call tunes threshold / APL weights w/ the refractory period and
+    # adaptation on (simulator checks it reproduces those tuned outputs)
+    simulate, initial_params = make_fixed_param_kc_simulator(orn_deltas, **spiking_kws,
+        **kws
+    )
+    assert not any(k in initial_params for k in KC_SPIKING_PARAMS)
+    tuned_responses, tuned_counts = simulate(dict())
+    assert abs(tuned_responses.mean().mean() - ret[0].mean().mean()) < 0.02
+    assert tuned_counts.values.max() < ret[1].values.max()
+    # (may equal those tuned w/o them: with one spike as a response, adaptation and the
+    # refractory period only act through the KCs' drive to APL)
+    print(f'tuned w/ {spiking_kws}: {initial_params}; w/o: {_get_fixed_params(ret[3])}')
+
+    # same parameters, w/o the refractory period and adaptation
+    simulate0, _ = make_fixed_param_kc_simulator(orn_deltas,
+        initial_params=initial_params, **kws
+    )
+    responses0, counts0 = simulate0(dict())
+    assert not counts0.equals(tuned_counts)
+    # (per-simulation values, then back to the initial call's)
+    responses1, counts1 = simulate0(dict(), kc_spiking=spiking_kws)
+    assert responses1.equals(tuned_responses) and counts1.equals(tuned_counts)
+    assert simulate0(dict())[1].equals(counts0)
+    assert simulate(dict(), kc_spiking=dict(kc_adapt_inc=0.0,
+        kc_refractory_period=0.0))[1].equals(counts0)
+    assert simulate(dict())[1].equals(tuned_counts)
+
+    half_apl = {k: v / 2 for k, v in initial_params.items() if k != 'fixed_thr'}
+    other_kws = dict(kc_refractory_period=5e-3, kc_adapt_inc=0.1, kc_adapt_tau=1.0)
+    responses, spike_counts = simulate(half_apl, kc_spiking=other_kws)
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **other_kws,
+        **{**kws, **fixed_params_to_fit_mb_model_kws({**initial_params, **half_apl})}
+    )
+    assert all(params2[k] == v for k, v in other_kws.items())
+    assert responses.equals(responses2)
+    assert spike_counts.equals(spike_counts2)
+
+    with pytest.raises(ValueError):
+        simulate(dict(), kc_spiking=dict(kc_adapt_inc=-1.0))
+    with pytest.raises(ValueError):
+        simulate(dict(), kc_spiking=dict(kc_adapt_tau=0.0))
+    with pytest.raises(ValueError):
+        simulate(dict(), kc_spiking=dict(adapt_inc=0.1))
+
+
+def test_kc_spiking_invalid(orn_deltas):
+    """Tests invalid KC refractory period / adaptation values raise ValueError.
+    """
+    kws = dict(weight_divisor=20)
+    for bad in (dict(kc_refractory_period=-1e-3), dict(kc_refractory_period=np.nan),
+            dict(kc_adapt_inc=-0.1), dict(kc_adapt_inc=np.inf),
+            dict(kc_adapt_inc=0.1, kc_adapt_tau=0.0),
+            dict(kc_adapt_inc=0.1, kc_adapt_tau=-1.0),
+            # (requires kc_adapt_inc)
+            dict(kc_adapt_tau=0.2)
+        ):
+        with pytest.raises(ValueError, match='kc_'):
+            fit_mb_model(orn_deltas, **bad, **kws)
+
+    with pytest.raises(ValueError, match='n_claws_active_to_spike'):
+        fit_mb_model(orn_deltas, one_row_per_claw=True, prat_claws=True,
+            use_connectome_APL_weights=True, n_claws_active_to_spike=2,
+            kc_adapt_inc=0.1
+        )
+
+
+
+def test_kc_spiking_model_id():
+    """Tests model IDs / LR cache keys only change when KC refractory period /
+    adaptation parameters are passed (including 0.0).
+    """
+    kws = dict(weight_divisor=20)
+    none_kws = {**kws, **{k: None for k in KC_SPIKING_PARAMS}}
+    assert format_model_params(none_kws) == format_model_params(kws)
+    assert onestep_lr_cache_key(none_kws) == onestep_lr_cache_key(kws)
+
+    variants = (dict(), dict(kc_refractory_period=0.0), dict(kc_refractory_period=3e-3),
+        dict(kc_adapt_inc=0.0), dict(kc_adapt_inc=0.05), dict(kc_adapt_inc=0.06),
+        dict(kc_adapt_inc=0.05, kc_adapt_tau=0.2),
+        dict(kc_adapt_inc=0.05, kc_adapt_tau=1.0),
+        dict(kc_refractory_period=3e-3, kc_adapt_inc=0.05, kc_adapt_tau=1.0)
+    )
+    ids = {format_model_params({**kws, **x}) for x in variants}
+    assert len(ids) == len(variants)
+    lr_keys = {onestep_lr_cache_key({**kws, **x}) for x in variants}
+    assert len(lr_keys) == len(variants)
+
+
+def test_kc_spiking_olfsysm_checks(kc_spiking_model):
+    """Tests olfsysm `run_KC_sims` rejects invalid KC refractory period / adaptation
+    values set directly (w/o the Python checks), and leaves the outputs unchanged.
+    """
+    orn_deltas, kws, ret = kc_spiking_model
+    params = _get_fixed_params(ret[3])
+    _, spike_counts, _, param_dict = _fit_mb_model(orn_deltas=orn_deltas,
+        return_olfsysm_vars=True, **{**kws, **fixed_params_to_fit_mb_model_kws(params)}
+    )
+    mp, rv = param_dict['mp'], param_dict['rv']
+    counts = np.array(rv.kc.spike_counts, copy=True)
+    for attr, value in (('refractory_period', -1e-3), ('refractory_period', np.nan),
+            ('adapt_inc', -1.0), ('adapt_inc', np.nan), ('adapt_tau', 0.0)):
+        default = getattr(mp.kc, attr)
+        setattr(mp.kc, attr, value)
+        if attr == 'adapt_tau':
+            # (only checked w/ adaptation on)
+            mp.kc.adapt_inc = 0.1
+        try:
+            with pytest.raises(ValueError, match=attr):
+                osm.run_KC_sims(mp, rv, False)
+        finally:
+            setattr(mp.kc, attr, default)
+            mp.kc.adapt_inc = 0.0
+
+    osm.run_KC_sims(mp, rv, False)
+    assert np.array_equal(np.array(rv.kc.spike_counts), counts)
+
+
+def test_kc_spiking_threshold_tuning(orn_deltas):
+    """Tests threshold tuning w/ `n_spikes_for_response=2` (the olfsysm loop counting
+    spikes) runs w/ adaptation on: the response rate before APL is still tuned to its
+    target, which needs a lower threshold than w/o adaptation.
+    """
+    kws = dict(weight_divisor=20, n_spikes_for_response=2)
+    responses, spike_counts, _, params = _fit_mb_model(orn_deltas=orn_deltas, **kws)
+    spiking_kws = dict(kc_adapt_inc=0.3, kc_adapt_tau=0.2)
+    responses2, spike_counts2, _, params2 = _fit_mb_model(orn_deltas=orn_deltas,
+        **spiking_kws, **kws
+    )
+    assert (spike_counts2 >= 2).equals(responses2.astype(bool))
+    print(f'fixed_thr {params["fixed_thr"]:.4g} (no adaptation) -> '
+        f'{params2["fixed_thr"]:.4g} ({spiking_kws}); response rates '
+        f'{responses.mean().mean():.4f} -> {responses2.mean().mean():.4f}'
+    )
+    assert params2['fixed_thr'] < params['fixed_thr']
+    assert not np.isclose(params2['fixed_thr'], params['fixed_thr'])
+    assert abs(responses2.mean().mean() - responses.mean().mean()) < 0.02
+
+    # the tuned thresholds and APL weights reproduce the outputs w/ adaptation, but not
+    # w/o it
+    fixed_kws = get_thr_and_APL_weights(params2, kws)
+    ret3 = _fit_mb_model(orn_deltas=orn_deltas, **spiking_kws, **fixed_kws, **kws)
+    assert ret3[1].equals(spike_counts2)
+    ret4 = _fit_mb_model(orn_deltas=orn_deltas, **fixed_kws, **kws)
+    assert not ret4[1].equals(spike_counts2)

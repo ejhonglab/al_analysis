@@ -616,6 +616,57 @@ EXT_INH_RECORDED_PARAMS: Tuple[str, ...] = ('ext_inh_kc_max', 'ext_inh_bouton_ma
 # output params (and model IDs) if True.
 APL_INH_FORM_PARAMS: Tuple[str, ...] = ('apl_inh_divisive', 'bouton_inh_divisive')
 
+# `fit_mb_model` kwargs for a KC refractory period and spike-frequency adaptation
+# (olfsysm `mp.kc.refractory_period`, `mp.kc.adapt_inc`, `mp.kc.adapt_tau`: each kwarg
+# is the olfsysm parameter with a 'kc_' prefix). Each left at olfsysm's default (no
+# refractory period, no adaptation) if None, and only recorded in output params (and
+# model IDs) if passed.
+KC_SPIKING_PARAMS: Tuple[str, ...] = ('kc_refractory_period', 'kc_adapt_inc',
+    'kc_adapt_tau'
+)
+
+
+def kc_spiking_param_dict(*, kc_refractory_period: Optional[float] = None,
+    kc_adapt_inc: Optional[float] = None, kc_adapt_tau: Optional[float] = None
+    ) -> Dict[str, float]:
+    """Returns checked `KC_SPIKING_PARAMS` (as floats), only those not None.
+
+    See `fit_mb_model` for what each does. Raises ValueError for values olfsysm would
+    reject, and for `kc_adapt_tau` without `kc_adapt_inc`.
+    """
+    params = {k: float(v) for k, v in zip(KC_SPIKING_PARAMS,
+        (kc_refractory_period, kc_adapt_inc, kc_adapt_tau)) if v is not None
+    }
+    if kc_adapt_tau is not None and kc_adapt_inc is None:
+        raise ValueError('kc_adapt_tau requires kc_adapt_inc')
+
+    for k, v in params.items():
+        if not np.isfinite(v) or v < 0 or (k == 'kc_adapt_tau' and v == 0):
+            raise ValueError(f'{k} must be finite and not negative (and kc_adapt_tau '
+                f'must be positive) (got {v})'
+            )
+    return params
+
+
+def set_kc_spiking_params(mp: osm.ModelParams, params: Dict[str, float]) -> None:
+    """Sets `KC_SPIKING_PARAMS` in `params` (e.g. from `kc_spiking_param_dict`) on
+    olfsysm `mp.kc` (each without its 'kc_' prefix).
+
+    Nothing is set (so older olfsysm builds, without these parameters, still work) if
+    `params` is empty.
+    """
+    for k, v in params.items():
+        assert k in KC_SPIKING_PARAMS, k
+        attr = k[len('kc_'):]
+        if not hasattr(mp.kc, attr):
+            raise RuntimeError(f'{k} requires an olfsysm build with mp.kc.{attr} '
+                '(olfsysm "Add a KC refractory period and spike-frequency adaptation" or '
+                'later); pull and reinstall olfsysm'
+            )
+        setattr(mp.kc, attr, float(v))
+        # (pybind11 attributes of the wrong type raise, but check the value was kept)
+        assert getattr(mp.kc, attr) == float(v)
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -693,7 +744,8 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
         'multibouton_claws': 'first',
         'claw_weight': 'presence',
         **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
-            BOUTON_DEPLETION_PARAMS + EXT_INH_PARAMS + EXT_INH_RECORDED_PARAMS
+            BOUTON_DEPLETION_PARAMS + EXT_INH_PARAMS + EXT_INH_RECORDED_PARAMS +
+            KC_SPIKING_PARAMS
         },
         **{k: False for k in APL_INH_FORM_PARAMS},
     }
@@ -702,7 +754,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     param_float_formats = {k: '.3g'
         for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr', 'claw_thr_width',
             'claw_thr_subgain', 'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS +
-            EXT_INH_RECORDED_PARAMS
+            EXT_INH_RECORDED_PARAMS + KC_SPIKING_PARAMS
     }
 
     def is_excluded_value(k: str, v: Any) -> bool:
@@ -12484,6 +12536,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     ext_inh_bouton: Optional[pd.DataFrame] = None,
     ext_inh_scale: Optional[float] = None,
     apl_inh_divisive: bool = False, bouton_inh_divisive: bool = False,
+    kc_refractory_period: Optional[float] = None, kc_adapt_inc: Optional[float] = None,
+    kc_adapt_tau: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12910,6 +12964,28 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `prat_boutons=True`. False (the default) keeps the subtractive form, and is
             not recorded in output params.
 
+        kc_refractory_period: if not None, an absolute refractory period (seconds) of
+            each KC (olfsysm `mp.kc.refractory_period`): after a spike the KC's
+            potential is held at its reset value (0) and no spike can occur until
+            `kc_refractory_period` has passed (rounded up to whole time steps, so values
+            up to the step, 0.5 ms by default, change nothing). Active during threshold /
+            APL tuning too. With `n_claws_active_to_spike` it only blocks spikes. Must be
+            finite and not negative. 0.0 has no effect (but is recorded).
+
+        kc_adapt_inc: if not None, spike-frequency adaptation of each KC (olfsysm
+            `mp.kc.adapt_inc`): each spike raises a per-KC variable `a` by
+            `kc_adapt_inc`, which decays with time constant `kc_adapt_tau`, and the KC
+            spikes when its potential exceeds `thr * (1 + a)` (`thr` its threshold,
+            `fixed_thr` + 2 x its spontaneous input; in olfsysm `thr + a * |thr|`), so
+            `a` is in units of the KC's own threshold and keeps its meaning when
+            thresholds are re-tuned. Active during tuning too. Not supported with
+            `n_claws_active_to_spike`. Must be finite and not negative. 0.0 has no
+            effect (but is recorded).
+
+        kc_adapt_tau: time constant (seconds) of the adaptation variable (olfsysm
+            `mp.kc.adapt_tau`, default 0.2 if None). Requires `kc_adapt_inc`. Must be
+            finite and positive.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -12996,8 +13072,9 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             relevant for reproducibility (e.g. 'sp_acc', 'max_iters', and any of
             `AL_INH_PARAMS`, `KC_KC_INH_PARAMS`, `CLAW_SAT_PARAMS` or
             `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc',
-            `EXT_INH_RECORDED_PARAMS` for `EXT_INH_PARAMS` passed, and any of
-            `APL_INH_FORM_PARAMS` that were True).
+            `EXT_INH_RECORDED_PARAMS` for `EXT_INH_PARAMS` passed, any of
+            `APL_INH_FORM_PARAMS` that were True, and any of `KC_SPIKING_PARAMS` that
+            were passed).
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -13317,6 +13394,17 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         mp.kc.apl_inh_divisive = True
     if bouton_inh_divisive:
         mp.pn.bouton_inh_divisive = True
+
+    # (only those passed, to also add to param_dict below)
+    kc_spiking_params = kc_spiking_param_dict(kc_refractory_period=kc_refractory_period,
+        kc_adapt_inc=kc_adapt_inc, kc_adapt_tau=kc_adapt_tau
+    )
+    if kc_spiking_params.get('kc_adapt_inc', 0) > 0 and n_claws_active_to_spike is not None:
+        raise ValueError('kc_adapt_inc not supported with n_claws_active_to_spike '
+            '(adaptation raises the somatic threshold, which then does not determine '
+            'spiking)'
+        )
+    set_kc_spiking_params(mp, kc_spiking_params)
 
     # (KC / bouton x odor DataFrames w/ columns in orn_deltas order. rows are aligned to
     # the model's KCs / boutons, and the matrices set into rv, below, after rv is
@@ -16297,6 +16385,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     param_dict.update(bouton_depletion_params)
     param_dict.update(ext_inh_params)
     param_dict.update(apl_inh_form_params)
+    param_dict.update(kc_spiking_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -16933,7 +17022,8 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             change how thresholds / APL weights are defined (e.g. `claw_sat` /
             `claw_thr` / `claw_thr_width` / `claw_thr_subgain` / `claw_pow` /
             `claw_pow_ref` / `bouton_ves_p` / `ext_inh_kc` / `ext_inh_bouton` /
-            `ext_inh_scale` / `apl_inh_divisive` / `bouton_inh_divisive`) apply to the
+            `ext_inh_scale` / `apl_inh_divisive` / `bouton_inh_divisive` /
+            `kc_refractory_period` / `kc_adapt_inc` / `kc_adapt_tau`) apply to the
             initial call and to all simulations (the external inhibition matrices stay
             set in the olfsysm variables the simulations reuse).
 
@@ -16945,7 +17035,11 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     `kc_thr_factor` (one positive value per KC, in output row order), multiplying each
     KC's threshold (`fixed_thr` + 2 * its spontaneous input) for that simulation only
     (e.g. a per-trial excitability jitter); those outputs have no `fit_mb_model`
-    equivalent. Initial parameters have values for
+    equivalent. It also takes an optional `kc_spiking` dict (keys among
+    `KC_SPIKING_PARAMS`, checked as in `fit_mb_model`), setting those KC refractory /
+    adaptation parameters for that simulation only (others stay as the initial call set
+    them); the outputs equal those of a `fit_mb_model` call with these parameters and the
+    others fixed. Initial parameters have values for
     all keys of `optimizable_model_params` that apply to this model (PN<>APL weight
     scales only included if `prat_boutons=True`, 'apl_unit_coupling' only if the APL is
     split into units, and 'wKCKC_scale' [= `kc_kc_inh`] only if there is KC-KC
@@ -17039,7 +17133,15 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     rv.log.disable()
     rv.verbose = False
 
-    def simulate(params: ParamDict, kc_thr_factor: Optional[np.ndarray] = None
+    # the KC refractory / adaptation parameters the initial call set (olfsysm defaults
+    # unless passed), restored after any simulation that overrides them. empty for older
+    # olfsysm builds, which do not have them.
+    initial_kc_spiking = {k: float(getattr(mp.kc, k[len('kc_'):]))
+        for k in KC_SPIKING_PARAMS if hasattr(mp.kc, k[len('kc_'):])
+    }
+
+    def simulate(params: ParamDict, kc_thr_factor: Optional[np.ndarray] = None, *,
+        kc_spiking: Optional[Dict[str, float]] = None
         ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Returns `responses`, `spike_counts` from re-running KCs w/ `params` changed.
 
@@ -17047,10 +17149,30 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             params: see `make_fixed_param_kc_simulator`
             kc_thr_factor: if passed, one positive factor per KC (in output row order)
                 that each KC's threshold is multiplied by, in this simulation only
+            kc_spiking: if passed, values for any of `KC_SPIKING_PARAMS` (see
+                `fit_mb_model`), in this simulation only
         """
         unknown = set(params) - set(initial_params)
         if len(unknown) > 0:
             raise ValueError(f'parameters {unknown} not in {set(initial_params)}')
+
+        if kc_spiking:
+            unknown = set(kc_spiking) - set(KC_SPIKING_PARAMS)
+            if len(unknown) > 0:
+                raise ValueError(f'kc_spiking keys {unknown} not in {KC_SPIKING_PARAMS}')
+
+            # (checked w/ the values of the parameters not overridden)
+            effective = kc_spiking_param_dict(**{**initial_kc_spiking, **kc_spiking})
+            if effective.get('kc_adapt_inc', 0) > 0 and (
+                    int(mp.kc.n_claws_active_to_spike) > 0):
+                raise ValueError('kc_adapt_inc not supported with '
+                    'n_claws_active_to_spike'
+                )
+            try:
+                set_kc_spiking_params(mp, effective)
+                return simulate(params, kc_thr_factor)
+            finally:
+                set_kc_spiking_params(mp, initial_kc_spiking)
 
         if kc_thr_factor is not None:
             kc_thr_factor = np.asarray(kc_thr_factor, dtype=float)
