@@ -27,35 +27,6 @@ directory's notes/ and are linked from here.
 - **Remains.** E73's parts A and B; re-reading or annotating the affected outputs (E65, E68, E69 amplitudes and bands; E49 and E72's part F
   fractions) once E73 has read the models the same way; the un-normalized per-trial responses wait on Yang's OK.
 
-### The claw-count thresholds of the KC heterogeneity experiment (E5) were not applied (found 2026-11-10, atlas's planning subagent)
-- **What.** E5_kc_heterogeneity.py's `thr_nclaws_0.5` / `thr_nclaws_1` variants pass a per-KC vector as `fixed_thr` to the simulator of
-  `make_fixed_param_kc_simulator`, whose `simulate` computes `thr = params['fixed_thr'] + spont_in * 2.0` with `spont_in` a column
-  (checked in al_analysis/mb_model.py by atlas, 2026-11-10 04:55): the vector broadcasts to a KC × KC matrix, and by the archived counts every
-  KC got the first KC's value. Evidence (the planning subagent's read-only probe of the archive): against the base, 88 and 181 of the 27,712
-  spike counts differ with APL on (190 and 377 with APL off), none by more than one spike, although the nominal thresholds have a coefficient
-  of variation of 0.22 and 0.41; the first KC's value times the bisected scale is 169.9 and 169.5 against the base's common 170.3, which is the
-  whole change; per-type response rates are identical to the base's. hal's probe (notes/E5_hal_probe_claw_dynamics.md, "thr ∝ claws^k") used
-  the same simulator and reports statistics identical to the base to three decimals. `kc_thr_factor` (reshaped to `spont_in`'s shape) is the
-  working route.
-- **Affects.** E5's result 1 and interpretation as far as they concern per-KC thresholds by claw count (the per-type thresholds, set inside
-  `fit_mb_model`, are not affected); hal's probe note; the two archived variants in results/E5_kc_heterogeneity/ and
-  data/model_outputs/E5_kc_heterogeneity/ (they are the base with a common threshold 0.2 to 0.5 % lower); the summary's "What did not matter"
-  bullet on KC heterogeneity. Nothing that uses `kc_thr_factor` (the trial-noise jitter, E43 onwards).
-- **Done.** Confirmed by E71's code subagent (2026-11-10 05:59): in the claw base's `thr_nclaws_1`, `simulate` set `rv.kc.thr` to a
-  1732 × 1732 matrix whose column 0 (what olfsysm reads) is `thr[0] + 2·spont_in`, so every KC had the first KC's `fixed_thr` (253.16, a
-  5-claw KC, against the intended mean 288.44, SD 117.6); re-running the call reproduces the archived counts exactly (0 of 27,712 differ, APL
-  on and off) and equals a scalar run at `thr[0]`; the intended thresholds through `kc_thr_factor` change 3,673 of the 27,712 APL-on counts by
-  up to 52 spikes (APL-on rate 0.0531 against 0.0507). Archived variants against E5's base (counts differing, each by at most one spike, APL
-  on / off): claw thr_nclaws_0.5 53 / 131, thr_nclaws_1 99 / 254; claw-dynamics thr_nclaws_0.5 88 / 190, thr_nclaws_1 181 / 377. The guard
-  (`simulate` refuses a non-scalar `fixed_thr`) and its test: al_analysis 1d7c5e5 (E5_kc_heterogeneity.py, lines 144 and 202, would now
-  raise; no other script passes a vector `fixed_thr`). Annotated 2026-11-10 06:04 by atlas: E5's note (a correction at the top and in result
-  1), its page (v2, https://claude.ai/artifact/1cZNDeiWRca44KMRJGURaM, and reports/ copy), hal's probe note, the archive README of
-  data/model_outputs/E5_kc_heterogeneity/; the summary's KC-heterogeneity bullet corrected (template 5d6af1b, summary v110). The
-  input-scaled KC threshold experiment (E71) runs the test.
-- **Remains.** The info.json `thr_mean`, `thr_sd` and `thr_mean_by_type` of the 20 archived thr_nclaws files and the matching rows of
-  results/E5_kc_heterogeneity/ (E5_summary*.csv, model_pair_distances_long.csv, blocks_* and per_odor_* thr_nclaws files) describe the
-  intended vector; they are marked only through the archive README. Move to Resolved once E71 reports what such thresholds do.
-
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
 - **What.** Several experiment scripts call `model_provenance()` (al_analysis commit, dirty flag and
@@ -165,6 +136,39 @@ directory's notes/ and are linked from here.
   against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### The claw-count thresholds of the KC heterogeneity experiment (E5) were not applied (found 2026-11-10, atlas's planning subagent)
+- **What.** E5_kc_heterogeneity.py's `thr_nclaws_0.5` / `thr_nclaws_1` variants pass a per-KC vector as `fixed_thr` to the simulator of
+  `make_fixed_param_kc_simulator`, whose `simulate` computes `thr = params['fixed_thr'] + spont_in * 2.0` with `spont_in` a column
+  (checked in al_analysis/mb_model.py by atlas, 2026-11-10 04:55): the vector broadcasts to a KC × KC matrix, and by the archived counts every
+  KC got the first KC's value. Evidence (the planning subagent's read-only probe of the archive): against the base, 88 and 181 of the 27,712
+  spike counts differ with APL on (190 and 377 with APL off), none by more than one spike, although the nominal thresholds have a coefficient
+  of variation of 0.22 and 0.41; the first KC's value times the bisected scale is 169.9 and 169.5 against the base's common 170.3, which is the
+  whole change; per-type response rates are identical to the base's. hal's probe (notes/E5_hal_probe_claw_dynamics.md, "thr ∝ claws^k") used
+  the same simulator and reports statistics identical to the base to three decimals. `kc_thr_factor` (reshaped to `spont_in`'s shape) is the
+  working route.
+- **Affects.** E5's result 1 and interpretation as far as they concern per-KC thresholds by claw count (the per-type thresholds, set inside
+  `fit_mb_model`, are not affected); hal's probe note; the two archived variants in results/E5_kc_heterogeneity/ and
+  data/model_outputs/E5_kc_heterogeneity/ (they are the base with a common threshold 0.2 to 0.5 % lower); the summary's "What did not matter"
+  bullet on KC heterogeneity. Nothing that uses `kc_thr_factor` (the trial-noise jitter, E43 onwards).
+- **Done.** Confirmed by E71's code subagent (2026-11-10 05:59): in the claw base's `thr_nclaws_1`, `simulate` set `rv.kc.thr` to a
+  1732 × 1732 matrix whose column 0 (what olfsysm reads) is `thr[0] + 2·spont_in`, so every KC had the first KC's `fixed_thr` (253.16, a
+  5-claw KC, against the intended mean 288.44, SD 117.6); re-running the call reproduces the archived counts exactly (0 of 27,712 differ, APL
+  on and off) and equals a scalar run at `thr[0]`; the intended thresholds through `kc_thr_factor` change 3,673 of the 27,712 APL-on counts by
+  up to 52 spikes (APL-on rate 0.0531 against 0.0507). Archived variants against E5's base (counts differing, each by at most one spike, APL
+  on / off): claw thr_nclaws_0.5 53 / 131, thr_nclaws_1 99 / 254; claw-dynamics thr_nclaws_0.5 88 / 190, thr_nclaws_1 181 / 377. The guard
+  (`simulate` refuses a non-scalar `fixed_thr`) and its test: al_analysis 1d7c5e5 (E5_kc_heterogeneity.py, lines 144 and 202, would now
+  raise; no other script passes a vector `fixed_thr`). Annotated 2026-11-10 06:04 by atlas: E5's note (a correction at the top and in result
+  1), its page (v2, https://claude.ai/artifact/1cZNDeiWRca44KMRJGURaM, and reports/ copy), hal's probe note, the archive README of
+  data/model_outputs/E5_kc_heterogeneity/; the summary's KC-heterogeneity bullet corrected (template 5d6af1b, summary v110). The
+  input-scaled KC threshold experiment (E71) runs the test.
+- **Remains.** The info.json `thr_mean`, `thr_sd` and `thr_mean_by_type` of the 20 archived thr_nclaws files and the matching rows of
+  results/E5_kc_heterogeneity/ (E5_summary*.csv, model_pair_distances_long.csv, blocks_* and per_odor_* thr_nclaws files) describe the
+  intended vector; they are marked only through the archive README. Move to Resolved once E71 reports what such thresholds do.
+- **Resolved 2026-11-10 12:35 (atlas).** The input-scaled KC threshold experiment (E71; note E71_input_scaled_threshold.md, page
+  https://claude.ai/artifact/Y2Ki5cgRNKS4cA1U9Jb3ft) ran the test properly: thresholds scaled to claw input change the representation
+  a lot (the release by claw count reverses) but cost the APL effect in every family. The 20 archived thr_nclaws files and E5's results
+  rows still describe the intended vector; they are marked through the archive README, E5's note and page.
 
 ### The bounded-input oracle's (E64) second pass searched doubly scaled inputs (found 2026-11-09, hal, from a Fable planning subagent)
 
