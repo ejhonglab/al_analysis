@@ -35,6 +35,9 @@ INPUTS = {
     'e7_blocks': H.shared_dir() / 'results' / 'E7_confound_controls' / 'B_blocks_graded.csv',
     'kc_trials_ctrl': H.yang_data_dir() / 'TNT3c' / 'dataset_20_long.csv',
     'kc_trials_tnt': H.yang_data_dir() / 'TNT' / 'dataset_19_long.csv',
+    # how Yang's responses are made, checked on her suite2p outputs (yang_response_normalization.py, viki)
+    'yang_norm_recordings': H.shared_dir() / 'notes' / 'yang_response_normalization' / 'recordings.csv',
+    'yang_norm_kc_scales': H.shared_dir() / 'notes' / 'yang_response_normalization' / 'kc_scales.csv',
 }
 
 
@@ -409,6 +412,19 @@ def build() -> dict:
             f'recording inside the response windows under a z-score over the whole recording, {desc}; median over the 19 APL16 '
             'recordings, interval the 5th to 95th percentiles over recordings', zfn, ['kc_trials_ctrl', 'kc_trials_tnt'],
             ci=np.percentile(v, [5, 95]))
+    # the recordings' structure as Yang's pipeline makes them (add_to_reports/yang_response_definition.md): the share of
+    # each recording inside the 51 response windows (18 volumes, 2-8 s after onset), and each KC's whole-trace SD (its z
+    # unit) over its baseline-noise SD, by the number of odors it responds to
+    yr = pd.read_csv(INPUTS['yang_norm_recordings'])
+    add('zcell_q_window', yr.frac_window_volumes.mean(), 'the share of an APL16 recording inside its 51 response windows (18 volumes each, '
+        '2-8 s after onset, of about 7,194 volumes), mean over the 19 recordings', 'yang_response_normalization.py (recordings.csv)',
+        ['yang_norm_recordings'])
+    ks = pd.read_csv(INPUTS['yang_norm_kc_scales'])
+    for b in list(range(11)) + ['11plus']:
+        m = ks.n_odors_z1 >= 11 if b == '11plus' else ks.n_odors_z1 == b
+        add(f'kc_scale_ratio_{b}', ks.loc[m, 'scale_ratio'].median(), 'KCs (both genotypes) responding (trial mean > 1 z) to '
+            f'{"11 or more" if b == "11plus" else b} of the 16 odors: the median of the whole-trace SD of Fc (the z unit) over its SD within '
+            'the pre-odor windows (each window\'s mean removed)', 'yang_response_normalization.py (kc_scales.csv)', ['yang_norm_kc_scales'])
     add('n_recordings_ctrl', len(recs['TNT3c']), 'control recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     add('n_recordings_tnt', len(recs['TNT']), 'APL output blocked (TNT) recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     return reg

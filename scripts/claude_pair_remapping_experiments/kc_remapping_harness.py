@@ -1478,19 +1478,26 @@ def _zcell_amplitude(x: np.ndarray, amp: str, K: Optional[float]) -> np.ndarray:
 
 def session_zscore(counts, *, q: float, noise, amp: str = 'linear', K: Optional[float] = None,
     noise_ratio: float = 0.385, n_trials: int = 3, n_blank: int = 1, divisor: Optional[float] = None,
-    center: bool = False) -> Dict[str, object]:
+    center: bool = False, drift: float = 0.0) -> Dict[str, object]:
     """A model's KC responses read as the recordings appear to be: each KC's session (the panel's odors
     and `n_blank` blank stimuli, `n_trials` trials each) assembled from its spike counts and divided by the
     KC's sd over the whole session (E73).
 
     Each trial's response window holds the share `q` of the session's frames; inside it the KC's signal is
     its amplitude a (`amp`: 'linear', a = n; 'saturating', a = n / (n + K)), outside it 0; every frame
-    carries independent noise of sd `noise` (amplitude units). The KC's session sd is
-    S = sqrt(q mean(a^2) - (q mean(a))^2 + noise^2) (means over the session's trials), and a trial reads
+    carries independent noise of sd `noise` (amplitude units: the baseline-noise SD) and the trace a slow
+    drift of sd drift x noise, which the pre-odor baseline removes from every response but which adds to the
+    session's variance. The KC's session sd is S = sqrt(q mean(a^2) - (q mean(a))^2 + noise^2 (1 + drift^2))
+    (means over the session's trials), and a trial reads
     a / S (the window relative to the pre-odor baseline, both in the KC's session z units), or with
     `center` (a - q mean(a)) / S (the window mean of the plain session z-score, no baseline subtracted),
     plus measurement noise of sd noise_ratio x noise / S (a silent KC's trial sd is `noise_ratio`). The
-    per-KC mean of squared trial values cannot exceed about 1 / q (the edge of part A of E73).
+    per-KC mean of squared trial values cannot exceed about 1 / q (the edge of part A of E73). Yang's APL16
+    responses are made this way (each KC's Fc z-scored over the whole recording, a trial's response the mean
+    z 2-8 s after onset minus the mean over the 5 s before: add_to_reports/yang_response_definition.md), with
+    the response windows covering a share 51 x 18 / 7194 = 0.128 of the recording. drift changes no reading
+    when the noise is calibrated (noise sqrt(1 + drift^2) and noise_ratio / sqrt(1 + drift^2) at drift 0
+    read identically); it sets the units, so that S / noise is the whole-trace SD over the baseline-noise SD.
 
     Args:
         counts: spike counts, (units x odors) DataFrame or array (the same counts on every trial), or
@@ -1504,13 +1511,14 @@ def session_zscore(counts, *, q: float, noise, amp: str = 'linear', K: Optional[
         divisor: the control: every unit's amplitude divided by this one value, nothing subtracted (no
             per-KC normalization), measurement noise sd noise_ratio x noise / divisor.
         center: subtract the session mean (see above); ignored with `divisor`.
+        drift: the slow drift's sd relative to `noise`.
 
     Returns dict: trials ((recordings, trials, units, odors) noise-free trial values in z; trials is 1
     for 2-D counts, whose trials are identical), center (their mean over trials, (recordings, units,
     odors)), trial_sd ((recordings, units) sd of one trial's measurement noise in z), n_trials, blank
     ((recordings, units) the blank's value in z), mean_sq ((recordings, units) expected per-unit mean of
-    squared trial values over the session, the blank's included), odors (column labels or None), and the
-    parameters.
+    squared trial values over the session, the blank's included), scale_ratio ((recordings, units) S / noise,
+    the whole-trace SD over the baseline-noise SD), odors (column labels or None), and the parameters.
     """
     odors = list(counts.columns) if isinstance(counts, pd.DataFrame) else None
     x = counts.to_numpy(dtype=float) if isinstance(counts, pd.DataFrame) else np.asarray(counts, dtype=float)
@@ -1532,7 +1540,7 @@ def session_zscore(counts, *, q: float, noise, amp: str = 'linear', K: Optional[
         mu = np.zeros_like(mean_a)
     else:
         mu = q * mean_a
-        S = np.sqrt(np.maximum(q * mean_a2 - mu ** 2, 0.0) + sig ** 2)
+        S = np.sqrt(np.maximum(q * mean_a2 - mu ** 2, 0.0) + sig ** 2 * (1 + float(drift) ** 2))
         if not center:
             mu = np.zeros_like(mu)
     with np.errstate(invalid='ignore', divide='ignore'):
@@ -1542,9 +1550,11 @@ def session_zscore(counts, *, q: float, noise, amp: str = 'linear', K: Optional[
     vals = np.nan_to_num(vals)
     blank, trial_sd = np.nan_to_num(blank), np.nan_to_num(trial_sd)
     mean_sq = ((vals ** 2).mean(axis=1).sum(axis=-1) + n_blank * blank ** 2) / n_stim + trial_sd ** 2
+    with np.errstate(invalid='ignore', divide='ignore'):
+        scale_ratio = S / sig
     return dict(trials=vals, center=vals.mean(axis=1), trial_sd=trial_sd, n_trials=T, blank=blank, mean_sq=mean_sq,
-        odors=odors, q=float(q), noise=noise, amp=amp, K=K, noise_ratio=float(noise_ratio), n_blank=int(n_blank),
-        divisor=divisor, center_mean=bool(center))
+        scale_ratio=scale_ratio, odors=odors, q=float(q), noise=noise, amp=amp, K=K, noise_ratio=float(noise_ratio),
+        n_blank=int(n_blank), divisor=divisor, center_mean=bool(center), drift=float(drift))
 
 
 def _tail_moments(m: np.ndarray, sd: np.ndarray, thresh: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1629,7 +1639,10 @@ def zcell_stats(z: Dict[str, object], thresh: float = KC_RESPONSE_Z) -> Dict[str
     `opk_8plus`, `nonresp_trial_sd` (root mean trial-to-trial variance of the non-responding entries, as
     `kc_trial_noise_sd` measures the data: measurement noise plus the trials' own variation), and the
     per-unit mean square's upper edge (`mean_sq_max`, `_p999`, `_p99`, `_median`, `edge_gap` = max - 99.9th
-    percentile), `max_trial_mean` and `max_trial` (noise-free)."""
+    percentile), `max_trial_mean` and `max_trial` (noise-free); by breadth (each unit at its expected number
+    of odors responded to, rounded, 11 or more pooled), `scale_ratio_by_breadth` (the median whole-trace SD
+    over the baseline-noise SD) and `amp_base_by_breadth` (the responders' mean amplitude in baseline-noise
+    units, z x that ratio), the checks against the KC data's (notes/yang_response_normalization/)."""
     from scipy.special import ndtr
     C = z['center']
     T = z['n_trials']
@@ -1652,25 +1665,37 @@ def zcell_stats(z: Dict[str, object], thresh: float = KC_RESPONSE_Z) -> Dict[str
     nonresp_var = float((w * (t[:, :, None] ** 2 + var_tr)).sum() / w.sum())
     opk = np.mean([poisson_binomial_bins(P[r]) for r in range(P.shape[0])], axis=0)
     ms = z['mean_sq'].ravel()
+    breadth = np.minimum(np.rint(P.sum(axis=2)), 11).ravel()
+    sr = np.asarray(z['scale_ratio'], dtype=float).ravel()
+    e1b = (E1 * z['scale_ratio'][:, :, None]).sum(axis=2).ravel()
+    pb = P.sum(axis=2).ravel()
+    sr_b, amp_b = {}, {}
+    for b in range(12):
+        m = breadth == b
+        if m.any():
+            sr_b[b] = float(np.median(sr[m]))
+            if b > 0 and pb[m].sum() > 0:
+                amp_b[b] = float(e1b[m].sum() / pb[m].sum())
     return dict(rate=float(P.mean()), rate_per_odor=pd.Series(P.mean(axis=(0, 1)), index=odors),
         resp_amp_mean=amp_mean, resp_amp_cv=float(np.sqrt(max(amp_var, 0.0)) / amp_mean) if amp_mean > 0 else np.nan,
         share_above_4=float(P4.mean()), share_05_15=float(band.mean()), opk=opk, silent_share=float(opk[0]),
         opk_8plus=float(opk[-1]), nonresp_trial_sd=float(np.sqrt(nonresp_var)), mean_sq_max=float(ms.max()),
         mean_sq_p999=float(np.quantile(ms, 0.999)), mean_sq_p99=float(np.quantile(ms, 0.99)),
         mean_sq_median=float(np.median(ms)), edge_gap=float(ms.max() - np.quantile(ms, 0.999)),
-        max_trial_mean=float(C.max()), max_trial=float(tr.max()))
+        max_trial_mean=float(C.max()), max_trial=float(tr.max()), scale_ratio_by_breadth=sr_b, amp_base_by_breadth=amp_b)
 
 
-def _zcell_rate(on_counts, q, noise, amp, K, noise_ratio, n_trials, n_blank, center, thresh=KC_RESPONSE_Z) -> Tuple[float, Dict]:
+def _zcell_rate(on_counts, q, noise, amp, K, noise_ratio, n_trials, n_blank, center, drift=0.0, thresh=KC_RESPONSE_Z
+    ) -> Tuple[float, Dict]:
     z = session_zscore(on_counts, q=q, noise=noise, amp=amp, K=K, noise_ratio=noise_ratio, n_trials=n_trials,
-        n_blank=n_blank, center=center)
+        n_blank=n_blank, center=center, drift=drift)
     P = _tail_moments(z['center'], (z['trial_sd'] / np.sqrt(z['n_trials']))[:, :, None], thresh)[0]
     return float(P.mean()), z
 
 
 def calibrate_session_zscore(on_counts, *, q: float, amp: str = 'linear', target_rate: float,
     target_amp: Optional[float] = None, target_silent_sd: Optional[float] = None, K: Optional[float] = None,
-    noise_ratio: float = 0.385, n_trials: int = 3, n_blank: int = 1, center: bool = False,
+    noise_ratio: float = 0.385, n_trials: int = 3, n_blank: int = 1, center: bool = False, drift: float = 0.0,
     noise_bounds: Tuple[float, float] = (1e-4, 1e4), K_bounds: Tuple[float, float] = (1e-2, 1e3), n_K_grid: int = 25,
     tol: float = 1e-4, max_iter: int = 20) -> Dict[str, object]:
     """The parameters of `session_zscore` set on the APL-on counts alone (then used unchanged for APL off,
@@ -1696,7 +1721,7 @@ def calibrate_session_zscore(on_counts, *, q: float, amp: str = 'linear', target
     lo_n, hi_n = np.log(noise_bounds[0]), np.log(noise_bounds[1])
 
     def solve_noise(Kv, nr):
-        f = lambda ln: _zcell_rate(on_counts, q, np.exp(ln), amp, Kv, nr, n_trials, n_blank, center)[0] - target_rate
+        f = lambda ln: _zcell_rate(on_counts, q, np.exp(ln), amp, Kv, nr, n_trials, n_blank, center, drift)[0] - target_rate
         flo, fhi = f(lo_n), f(hi_n)
         if flo * fhi > 0:
             return float(np.exp(lo_n if abs(flo) < abs(fhi) else hi_n)), True
@@ -1705,7 +1730,7 @@ def calibrate_session_zscore(on_counts, *, q: float, amp: str = 'linear', target
     def stats_at(Kv, nr):
         noise, nb = solve_noise(Kv, nr)
         z = session_zscore(on_counts, q=q, noise=noise, amp=amp, K=Kv, noise_ratio=nr, n_trials=n_trials,
-            n_blank=n_blank, center=center)
+            n_blank=n_blank, center=center, drift=drift)
         return noise, nb, z
 
     def amp_of(z):
@@ -1758,7 +1783,7 @@ def calibrate_session_zscore(on_counts, *, q: float, amp: str = 'linear', target
     st = zcell_stats(z)
     return dict(noise=noise, K=Kv, noise_ratio=nr, rate=st['rate'], resp_amp_mean=st['resp_amp_mean'],
         nonresp_trial_sd=st['nonresp_trial_sd'], noise_at_bound=bool(noise_at_bound), K_at_bound=bool(K_at_bound),
-        converged=converged, iterations=it, q=float(q), amp=amp, center=bool(center))
+        converged=converged, iterations=it, q=float(q), amp=amp, center=bool(center), drift=float(drift))
 
 
 def resample_recording_means(rec_rdms: Dict[str, pd.DataFrame], rng: np.random.Generator,

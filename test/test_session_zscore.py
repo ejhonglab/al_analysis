@@ -151,3 +151,38 @@ def test_synthetic_cells_edge_and_q():
     sb, _ = E.edge_stats(Xb, stim)
     assert sb['ms_max'] > 2 / q
     assert abs(sb['q_noise']) < 0.05
+
+
+def test_drift_sets_units_only():
+    """A drift term changes no reading once the noise is calibrated (it sets the units: S / noise is the
+    whole-trace SD over the baseline-noise SD, sqrt(1 + drift^2) for a silent KC)."""
+    c = _counts(6, n_units=1200, p_resp=0.09)
+    kw = dict(q=0.128, amp='saturating', target_rate=0.068, target_amp=2.0, target_silent_sd=0.385)
+    c0 = H.calibrate_session_zscore(c, **kw)
+    c1 = H.calibrate_session_zscore(c, drift=1.0, **kw)
+    z0 = H.session_zscore(c, q=0.128, noise=c0['noise'], amp='saturating', K=c0['K'], noise_ratio=c0['noise_ratio'])
+    z1 = H.session_zscore(c, q=0.128, noise=c1['noise'], amp='saturating', K=c1['K'], noise_ratio=c1['noise_ratio'], drift=1.0)
+    assert np.isclose(c0['K'], c1['K'], rtol=1e-5)
+    assert np.allclose(z0['center'], z1['center'], atol=1e-6) and np.allclose(z0['trial_sd'], z1['trial_sd'], atol=1e-6)
+    silent = c.to_numpy().sum(axis=1) == 0
+    assert np.allclose(z1['scale_ratio'][0][silent], np.sqrt(2.0))
+
+
+def test_trace_simulation_matches_closed_form():
+    """A KC trace with Yang's trial structure (baseline, response window, inter-trial time), z-scored over the
+    whole trace, with the response the window mean minus the baseline mean, reads as the closed form does."""
+    E = pytest.importorskip('E73_per_kc_normalization')
+    c = _counts(7, n_units=3000, p_resp=0.08)
+    noise, drift = 0.6, 1.0
+    X, stim, T = E.trace_reading(c, noise=noise, drift=drift, amp='linear', K=None, seed=3)
+    X0, _, _ = E.trace_reading(c * 0, noise=noise, drift=drift, amp='linear', K=None, seed=3)
+    nr = float(X0.std() * np.sqrt(1 + drift ** 2))
+    z = H.session_zscore(c, q=51 * 18 / T, noise=noise, amp='linear', noise_ratio=nr, drift=drift)
+    names, tm, _, _ = E._per_stimulus(X, stim)
+    tm = tm[:, [names.index(o) for o in c.columns]]
+    st = H.zcell_stats(z)
+    assert abs((tm > 1).mean() - st['rate']) < 0.004
+    assert abs(tm[tm > 1].mean() - st['resp_amp_mean']) < 0.05
+    d_sim = H.canonical_pairs(H.pair_distances(pd.DataFrame(tm, columns=c.columns), 'cosine'))
+    d_cf = H.zcell_pair_distances(z)
+    assert float((d_sim - d_cf.reindex(d_sim.index)).abs().mean()) < 0.01

@@ -18,12 +18,18 @@ windows), a z-score per trial (an edge on every single trial) and a z-score agai
 respond to a single odor. Writes data_edge_per_recording.csv, data_edge_by_breadth.csv, synthetic_*.csv,
 q_estimates.csv, the figures E73_edge.png and E73_breadth.png, provenance_A.json.
 
+Yang confirmed the premise on 2026-11-10 (add_to_reports/yang_response_definition.md): each KC's Fc is
+z-scored over the whole recording and a trial's response is the mean z 2-8 s after onset minus the mean over
+the 5 s before; part A is kept as the independent check from the per-trial values.
+
 Part B, the models (`--part B`): every archived variant with both conditions saved
 (data/model_outputs/<folder>/<tag>_<on|acute_off>_spike_counts.parquet), read as the recordings appear to
 be (`kc_remapping_harness.session_zscore`: per model KC a session of the panel's 16 odors and the solvent,
 3 trials each, its spike counts through an amplitude map, linear or E65's saturating n / (n + K), the
-response occupying the share q of each trial, one frame-noise term for all KCs, z-scored over the KC's
-session; trial means, the data's criterion (above 1 z) and the data's cosine on all values; in expectation
+response confined to its window, which holds the share q = 51 x 18 / 7194 = 0.128 of the recording as in
+Yang's APL16 recordings (`zcell_q_window`; sensitivity at part A's footprint 0.18 and its interval), one
+baseline-noise term for all KCs and a slow drift (the silent KCs' whole-trace SD is 1.40 baseline SDs),
+z-scored over the KC's session, the response relative to the pre-odor baseline; trial means, the data's criterion (above 1 z) and the data's cosine on all values; in expectation
 over the measurement noise), calibrated on the APL-on counts alone (`calibrate_session_zscore`: the noise
 term, and K for the saturating map, so that the APL-on response rate under the data's criterion is the
 control flies' 6.8 % and the responders' mean amplitude 2.00 z; the noise of a silent KC's trial set to
@@ -35,8 +41,10 @@ their distances from the flies' (bands 0.167 / 0.196), the silent share and the 
 odors; the responders' mean amplitude and coefficient of variation, the entries above 4 z and in the 0.5
 to 1.5 z band; the block; the two ρ's on odor-odor distances; the natural-source alignment (APL on / off /
 on minus off); beside the present readings (raw counts and E65's calibrated readout, two-spike criterion).
-Controls: a fixed divisor for all KCs reproduces the present readings; q over its interval; the reading
-applied to a model shows part A's edge. Also the reading of E49's low-concentration panels within their own
+Controls: a fixed divisor for all KCs reproduces the present readings; q over part A's interval; the reading
+applied to a model shows part A's edge; a simulated whole-recording trace with Yang's trial structure reads as
+the closed form (`trace_reading`); the breadth checks (whole-trace over baseline-noise SD, and the responders'
+amplitude in baseline-noise units, by breadth) against viki's measurements. Also the reading of E49's low-concentration panels within their own
 session. Writes by_variant.csv (one row per variant x reading definition x reading, with the calibrated
 parameters and both conditions' statistics under that reading's criterion), controls.csv, low_conc.csv,
 provenance_B.json (with the model provenance).
@@ -568,20 +576,44 @@ def refs() -> Dict[str, object]:
         _REFS['targets'] = dict(rate=dt('ctrl_frac'), amp=dt('ctrl_resp_amp_mean_z'), silent_sd=dt('ctrl_trial_noise_sd'),
             pr=dt('ctrl_participation_ratio_resp'))
         _REFS['noise_sd'] = H.kc_trial_noise_sd('TNT3c')
+        _REFS['drift'] = drift_ratio()
     return _REFS
 
 
-def q_values() -> Tuple[float, float, float]:
-    """(q, lower, upper): part A's estimate from the edge over the 19 APL16 recordings (median, 5th and 95th
-    percentiles over recordings), from the registry (`zcell_q`) when it has it, else from q_estimates.csv."""
+# Yang's APL16 recordings (add_to_reports/yang_response_definition.md, notes/yang_response_normalization/): 51 response
+# windows of 18 volumes (2-8 s after onset) and 15 baseline volumes before each onset, in about 7,194 volumes
+Q_WINDOW_DEFAULT = 51 * 18 / 7194
+SCALE_RATIO_SILENT_DEFAULT = 1.403
+YANG_NORM = H.shared_dir() / 'notes' / 'yang_response_normalization'
+
+
+def q_values() -> Tuple[float, List[float]]:
+    """(q, sensitivity q's). q is the share of the recording inside the 51 response windows of Yang's APL16
+    recordings (registry `zcell_q_window`), the model's response taken as confined to its window; the
+    sensitivity check runs at part A's estimate of a response's variance footprint (`zcell_q`, from the edge,
+    0.18: a GCaMP response spreads beyond the 2-8 s window) and the ends of its interval over recordings."""
     try:
-        q = H.data_target('zcell_q')
+        qw = H.data_target('zcell_q_window')
+    except KeyError:
+        qw = Q_WINDOW_DEFAULT
+    try:
+        qe = H.data_target('zcell_q')
         lo, hi = H.data_target_ci('zcell_q')
-        return float(q), float(lo), float(hi)
-    except (KeyError, FileNotFoundError):
+    except KeyError:
         e = pd.read_csv(H.results_dir(EXPERIMENT) / 'q_estimates.csv')
         r = e[(e.panel == 'APL16') & (e.genotype == 'all') & (e.estimator == 'q_edge')].iloc[0]
-        return float(r['median']), float(r['p5']), float(r['p95'])
+        qe, lo, hi = r['median'], r['p5'], r['p95']
+    return float(qw), [float(lo), float(qe), float(hi)]
+
+
+def drift_ratio() -> float:
+    """The slow drift's sd relative to the baseline noise, from the KCs that respond to no odor: their
+    whole-trace SD over baseline-noise SD (registry `kc_scale_ratio_0`, 1.40) is sqrt(1 + drift^2)."""
+    try:
+        r = H.data_target('kc_scale_ratio_0')
+    except KeyError:
+        r = SCALE_RATIO_SILENT_DEFAULT
+    return float(np.sqrt(max(r ** 2 - 1, 0.0)))
 
 
 def vcf_alignment(d: pd.Series) -> float:
@@ -617,7 +649,10 @@ def score_distances(d_on: pd.Series, d_off: pd.Series, reading: str) -> dict:
     return out
 
 
-def criterion_stats(s_on: dict, s_off: dict) -> dict:
+BREADTH_CHECK = (0, 1, 2, 3, 4, 6, 8, 11)
+
+
+def criterion_stats(s_on: dict, s_off: dict, breadth_checks: bool = True) -> dict:
     """The response-criterion statistics of both conditions (`zcell_stats` dicts), the response rate ρ against
     the KC data's per-odor fractions, the odors-per-KC distances from the flies' and the realism flag."""
     from apl_effect_scores import OPK_BINS, opk_band, opk_data, realism_flag
@@ -627,6 +662,9 @@ def criterion_stats(s_on: dict, s_off: dict) -> dict:
         out[f'rate_rho_{c}'] = H.spearman(s['rate_per_odor'].rename(H.odor_abbrev), refs()['frac'][c])
         out.update({f'opk_{c}_{b}': float(v) for b, v in zip(OPK_BINS, s['opk'])})
         out[f'opk_{c}_tv'] = float(0.5 * np.abs(np.asarray(s['opk']) - opk_data(c)).sum())
+        if breadth_checks and 'scale_ratio_by_breadth' in s:
+            out.update({f'scale_ratio_b{b}_{c}': s['scale_ratio_by_breadth'].get(b, np.nan) for b in BREADTH_CHECK})
+            out.update({f'amp_base_b{b}_{c}': s['amp_base_by_breadth'].get(b, np.nan) for b in BREADTH_CHECK if b})
     out['rate_ratio'] = out['rate_off'] / out['rate_on'] if out['rate_on'] > 0 else np.nan
     out['realism_flag'] = realism_flag(out['rate_on'], out['rate_off'], out['rate_rho_on'], out['opk_on_tv'], out['opk_off_tv'])
     return out
@@ -650,7 +688,8 @@ def present_rows(base: dict, on: pd.DataFrame, off: pd.DataFrame) -> List[dict]:
     crit = {}
     for c, m in (('on', on), ('off', off)):
         resp = (m >= 2).astype(float)
-        crit[c] = dict(rate=float(resp.mean().mean()), rate_per_odor=resp.mean(), opk=odors_per_kc(resp))
+        opk = odors_per_kc(resp)
+        crit[c] = dict(rate=float(resp.mean().mean()), rate_per_odor=resp.mean(), opk=opk, silent_share=float(opk[0]), opk_8plus=float(opk[-1]))
     rows = []
     for name, kind, param, a_map, reading in (('present_raw', 'raw', None, 'linear', 'graded'),
             ('present_cal', 'saturating', K, 'saturating', 'graded'), ('present_binary', 'binary', 2.0, 'linear', 'binary')):
@@ -665,7 +704,7 @@ def present_rows(base: dict, on: pd.DataFrame, off: pd.DataFrame) -> List[dict]:
             amp[cnd] = st
         st_on = dict(amp['on'], **crit['on'])
         st_off = dict(amp['off'], **crit['off'])
-        row.update(criterion_stats(st_on, st_off))
+        row.update(criterion_stats(st_on, st_off, breadth_checks=False))
         row['c_z'] = cz
         rows.append(row)
     return rows
@@ -677,10 +716,11 @@ def zcell_rows(base: dict, on, off, *, q: float, a_map: str, center: bool = Fals
     read, every reading scored. `on` / `off` (units x odors) DataFrames or (recordings, trials, units, odors)
     arrays of jittered trials."""
     t = refs()['targets']
+    drift = refs()['drift']
     if cal is None:
         cal = H.calibrate_session_zscore(on, q=q, amp=a_map, target_rate=t['rate'],
-            target_amp=t['amp'] if a_map == 'saturating' else None, target_silent_sd=t['silent_sd'], center=center)
-    kw = dict(q=q, noise=cal['noise'], amp=a_map, K=cal['K'], noise_ratio=cal['noise_ratio'], center=center)
+            target_amp=t['amp'] if a_map == 'saturating' else None, target_silent_sd=t['silent_sd'], center=center, drift=drift)
+    kw = dict(q=q, noise=cal['noise'], amp=a_map, K=cal['K'], noise_ratio=cal['noise_ratio'], center=center, drift=drift)
     z_on, z_off = H.session_zscore(on, **kw), H.session_zscore(off, **kw)
     crit = criterion_stats(H.zcell_stats(z_on), H.zcell_stats(z_off))
     name = f'zcell_{a_map}' + tag
@@ -688,7 +728,7 @@ def zcell_rows(base: dict, on, off, *, q: float, a_map: str, center: bool = Fals
     for rd in readings:
         row = dict(base, reading_def=name, reading=rd, q=q, K=cal['K'] if a_map == 'saturating' else np.nan, noise=cal['noise'],
             noise_ratio=cal['noise_ratio'], cal_noise_at_bound=cal['noise_at_bound'], cal_K_at_bound=cal['K_at_bound'],
-            cal_converged=cal['converged'], center=center)
+            cal_converged=cal['converged'], center=center, drift=drift)
         row.update(score_distances(H.zcell_pair_distances(z_on, rd), H.zcell_pair_distances(z_off, rd), rd))
         row.update(crit)
         rows.append(row)
@@ -709,12 +749,17 @@ def load_trials(pattern: str) -> Tuple[np.ndarray, np.ndarray]:
     return tuple(np.stack([a[f'{c}_spk'].astype(float) for a in arrs]) for c in ('on', 'acute_off'))
 
 
+def q_tag(q: float) -> str:
+    return f'_q{q:.3f}'
+
+
 def score_variant(job: tuple) -> List[dict]:
     """One archived variant: the present readings and the session z-score readings (both maps, three readings
-    each, at q and at its interval's ends; the saturating map also with the session mean subtracted), each
-    scored against the same reading of the data; and, for the key models with saved jittered trials, the
-    reading of their trials. Returns rows (an exception is returned as one row with `error`)."""
-    folder, tag, q, q_lo, q_hi = job
+    each, at q; the saturating map also at the sensitivity q's (rows `zcell_saturating_q<q>`) and with the
+    session mean subtracted), each scored against the same reading of the data; and, for the key models with
+    saved jittered trials, the reading of their trials (`_trials`, both maps at q, the saturating map also at
+    part A's footprint). Returns rows (an exception is returned as one row with `error`)."""
+    folder, tag, q, q_sens = job
     import warnings
     warnings.simplefilter('ignore', RuntimeWarning)
     base = dict(folder=folder, tag=tag)
@@ -722,15 +767,16 @@ def score_variant(job: tuple) -> List[dict]:
         on, off = load_counts(folder, tag, 'on'), load_counts(folder, tag, 'acute_off')
         rows = present_rows(base, on, off)
         for a_map in MAPS:
-            r, _ = zcell_rows(base, on, off, q=q, a_map=a_map)
-            rows += r
-            for qq, lab in ((q_lo, '_qlo'), (q_hi, '_qhi')):
-                rows += zcell_rows(base, on, off, q=qq, a_map=a_map, tag=lab)[0]
+            rows += zcell_rows(base, on, off, q=q, a_map=a_map)[0]
+        for qq in q_sens:
+            rows += zcell_rows(base, on, off, q=qq, a_map='saturating', tag=q_tag(qq))[0]
         rows += zcell_rows(base, on, off, q=q, a_map='saturating', center=True, tag='_centered')[0]
         if (folder, tag) in TRIAL_SETS:
             t_on, t_off = load_trials(TRIAL_SETS[(folder, tag)])
+            tb = dict(base, n_trial_recordings=t_on.shape[0])
             for a_map in MAPS:
-                rows += zcell_rows(dict(base, n_trial_recordings=t_on.shape[0]), t_on, t_off, q=q, a_map=a_map, tag='_trials')[0]
+                rows += zcell_rows(tb, t_on, t_off, q=q, a_map=a_map, tag='_trials')[0]
+            rows += zcell_rows(tb, t_on, t_off, q=q_sens[1], a_map='saturating', tag='_trials' + q_tag(q_sens[1]))[0]
         return rows
     except Exception as e:
         import traceback
@@ -764,15 +810,85 @@ def controls(q: float) -> pd.DataFrame:
                 max_abs_distance_diff=diff, loss_present=l_p, loss_fixed_divisor=l_f, max_abs_distance_diff_noisy=diff_n))
         for a_map in MAPS:
             cal = H.calibrate_session_zscore(on, q=q, amp=a_map, target_rate=t['rate'], target_amp=t['amp'] if a_map == 'saturating' else None,
-                target_silent_sd=t['silent_sd'])
+                target_silent_sd=t['silent_sd'], drift=refs()['drift'])
             for c, m in (('on', on), ('off', off)):
-                z = H.session_zscore(m, q=q, noise=cal['noise'], amp=a_map, K=cal['K'], noise_ratio=cal['noise_ratio'])
+                z = H.session_zscore(m, q=q, noise=cal['noise'], amp=a_map, K=cal['K'], noise_ratio=cal['noise_ratio'], drift=refs()['drift'])
                 st = H.zcell_stats(z)
                 rows.append(dict(model=short, folder=folder, tag=tag, map=a_map, check=f'edge of the reading, APL {c}',
                     mean_sq_max=st['mean_sq_max'], mean_sq_p999=st['mean_sq_p999'], edge_gap=st['edge_gap'], inv_q=1 / q,
                     rate=st['rate'], resp_amp_mean=st['resp_amp_mean'], nonresp_trial_sd=st['nonresp_trial_sd'],
                     noise=cal['noise'], K=cal['K'], noise_ratio=cal['noise_ratio']))
+            if a_map == 'saturating' and short in ('C2', 'ref.'):
+                rows += trace_check(short, folder, tag, on, off, cal)
     return pd.DataFrame(rows)
+
+
+def trace_reading(counts: pd.DataFrame, *, noise: float, drift: float, amp: str, K: Optional[float], seed: int = 0,
+    n_trials: int = 3, n_volumes: int = 7194, base: int = 15, gap: int = 6, window: int = 18, lead: int = 5,
+    drift_tau: float = 300.0) -> Tuple[np.ndarray, np.ndarray, int]:
+    """Per-trial responses of a model's KCs read from a simulated whole-recording trace with the structure of Yang's
+    APL16 recordings: the 16 odors and a blank, `n_trials` blocks in random order, each trial n_volumes // 51
+    volumes; the odor onset `lead` volumes after the `base` baseline volumes; the response (the count through
+    the amplitude map) a boxcar over volumes gap .. gap + window - 1 after onset; white noise of sd `noise` per
+    volume and an AR(1) drift of sd drift x noise (time constant `drift_tau` volumes); each KC's trace
+    z-scored over all its volumes (ddof 0); a trial's response the mean z over the window minus the mean over
+    the `base` volumes before onset. Returns (trials x KCs responses, per-trial stimulus labels, volumes)."""
+    from scipy.signal import lfilter
+    rng = np.random.default_rng(seed)
+    names = list(counts.columns) + ['pfo @ 0']
+    a = H._zcell_amplitude(counts.to_numpy(dtype=float), amp, K).astype(np.float32)
+    U, n_st = a.shape[0], len(names)
+    L = n_volumes // (n_st * n_trials)
+    order = np.concatenate([rng.permutation(n_st) for _ in range(n_trials)])
+    T = L * len(order)
+    onset = np.arange(len(order)) * L + base + lead
+    F = rng.normal(0, noise, (U, T)).astype(np.float32)
+    if drift > 0:
+        rho = np.exp(-1.0 / drift_tau)
+        e = rng.normal(0, 1, (U, T + int(5 * drift_tau))).astype(np.float32)
+        F += (lfilter([np.sqrt(1 - rho ** 2)], [1, -rho], e, axis=1)[:, int(5 * drift_tau):] * (drift * noise)).astype(np.float32)
+    for j, st in enumerate(order):
+        if st < a.shape[1]:
+            F[:, onset[j] + gap:onset[j] + gap + window] += a[:, st][:, None]
+    z = (F - F.mean(axis=1, keepdims=True)) / F.std(axis=1, keepdims=True)
+    iw = onset[:, None] + gap + np.arange(window)
+    ib = onset[:, None] - base + np.arange(base)
+    r = z[:, iw].mean(axis=2) - z[:, ib].mean(axis=2)
+    return r.T, np.array([names[st] for st in order]), T
+
+
+def trace_check(short: str, folder: str, tag: str, on: pd.DataFrame, off: pd.DataFrame, cal: dict) -> List[dict]:
+    """The closed form against the simulated trace: the model's calibrated noise and K, Yang's trial structure,
+    the trace reading's own window share and noise ratio (from the same trace with no responses) in the closed
+    form; the response rate, the responders' amplitude, the per-KC mean square's maximum, the silent KCs' whole-
+    trace SD over baseline-noise SD, and the graded distances (largest difference over the 120 pairs) and the
+    APL-effect loss of the two."""
+    drift = refs()['drift']
+    rows = []
+    sims = {}
+    for c, m in (('on', on), ('off', off)):
+        X, stim, T = trace_reading(m, noise=cal['noise'], drift=drift, amp='saturating', K=cal['K'], seed=7)
+        X0, _, _ = trace_reading(m * 0, noise=cal['noise'], drift=drift, amp='saturating', K=cal['K'], seed=7)
+        nr = float(X0.std() * np.sqrt(1 + drift ** 2))
+        qw = 51 * 18 / T
+        names, tm, _, _ = _per_stimulus(X, stim)
+        odor_cols = [names.index(o) for o in m.columns]
+        tm = tm[:, odor_cols]
+        z = H.session_zscore(m, q=qw, noise=cal['noise'], amp='saturating', K=cal['K'], noise_ratio=nr, drift=drift)
+        st = H.zcell_stats(z)
+        d_cf = H.zcell_pair_distances(z, 'graded')
+        d_sim = H.canonical_pairs(H.pair_distances(pd.DataFrame(tm, columns=m.columns), 'cosine'))
+        sims[c] = (d_sim, d_cf)
+        resp = tm > 1
+        rows.append(dict(model=short, folder=folder, tag=tag, map='saturating', check=f'trace simulation = closed form, APL {c}', q_window=qw,
+            noise_ratio_trace=nr, rate_trace=float(resp.mean()), rate_closed=st['rate'], amp_trace=float(tm[resp].mean()),
+            amp_closed=st['resp_amp_mean'], ms_max_trace=float((X ** 2).mean(axis=0).max()), ms_max_closed=st['mean_sq_max'],
+            silent_scale_ratio_trace=float(np.sqrt(1 + drift ** 2)), max_abs_distance_diff=float((d_sim - d_cf.reindex(d_sim.index)).abs().max())))
+    l_sim = H.apl_effect_stats(sims['on'][0], sims['off'][0])
+    l_cf = H.apl_effect_stats(sims['on'][1], sims['off'][1])
+    rows.append(dict(model=short, folder=folder, tag=tag, map='saturating', check='trace simulation = closed form, APL effect',
+        loss_trace=l_sim['apl_effect_rmse'], loss_closed=l_cf['apl_effect_rmse'], mean_trace=l_sim['apl_effect_mean'], mean_closed=l_cf['apl_effect_mean']))
+    return rows
 
 
 # the low-concentration panels in E49's archive (26 odors: the 16 APL16 odors, then these, named as in olfdb)
@@ -802,11 +918,12 @@ def low_conc(q: float) -> pd.DataFrame:
         apl16 = H.abbrev_columns(cnt['on'].iloc[:, :16])[H.APL16_ODORS]
         for a_map in MAPS:
             cal = H.calibrate_session_zscore(apl16, q=q, amp=a_map, target_rate=t['rate'], target_amp=t['amp'] if a_map == 'saturating' else None,
-                target_silent_sd=t['silent_sd'])
+                target_silent_sd=t['silent_sd'], drift=refs()['drift'])
             for panel, (odors, n_tr) in LOW_CONC_PANELS.items():
                 cols = [o for o in odors if o in cnt['on'].columns]
                 for c, m in cnt.items():
-                    z = H.session_zscore(m[cols], q=q, noise=cal['noise'], amp=a_map, K=cal['K'], noise_ratio=cal['noise_ratio'], n_trials=n_tr)
+                    z = H.session_zscore(m[cols], q=q, noise=cal['noise'], amp=a_map, K=cal['K'], noise_ratio=cal['noise_ratio'], n_trials=n_tr,
+                        drift=refs()['drift'])
                     sd = (z['trial_sd'] / np.sqrt(n_tr))[:, :, None]
                     P = H._tail_moments(z['center'], sd, 1.0)[0].mean(axis=(0, 1))
                     group = 'control' if c == 'on' else 'apl_output_blocked'
@@ -836,10 +953,12 @@ def part_b(args) -> None:
     from concurrent.futures import ProcessPoolExecutor
     out = H.results_dir(EXPERIMENT)
     out.mkdir(parents=True, exist_ok=True)
-    q, q_lo, q_hi = (args.q, args.q, args.q) if args.q else q_values()
+    q, q_sens = q_values()
+    if args.q:
+        q = args.q
     have = variant_list(args.only_key, args.folders)
-    print(f'part B: {len(have)} variants, q {q:.4f} (interval {q_lo:.4f} to {q_hi:.4f})', flush=True)
-    jobs = [(f, t, q, q_lo, q_hi) for f, t in have]
+    print(f'part B: {len(have)} variants, q {q:.4f} (sensitivity {", ".join(f"{x:.4f}" for x in q_sens)}), drift {refs()["drift"]:.3f}', flush=True)
+    jobs = [(f, t, q, q_sens) for f, t in have]
     rows, errors = [], []
     with ProcessPoolExecutor(max_workers=min(args.jobs, 16)) as ex:
         for i, res in enumerate(ex.map(score_variant, jobs, chunksize=2)):
@@ -866,7 +985,7 @@ def part_b(args) -> None:
     lc = low_conc(q)
     lc.to_csv(out / 'low_conc.csv', index=False)
     print(ctl.round(4).to_string(), flush=True)
-    write_provenance(out, 'B', dict(q=q, q_interval=[q_lo, q_hi], n_variants=len(have), n_rows=len(df), n_errors=len(errors),
+    write_provenance(out, 'B', dict(q=q, q_sensitivity=q_sens, drift=refs()['drift'], n_variants=len(have), n_rows=len(df), n_errors=len(errors),
         maps=MAPS, readings=READINGS, key_models=KEY_MODELS, trial_sets=list(TRIAL_SETS.values()),
         calibration_targets=refs()['targets'], data_noise_sd=refs()['noise_sd'],
         inputs={'by_variant': str(RESULTS / 'apl_effect' / 'by_variant.csv'), 'archive': str(ARCHIVE)}), models=True)
@@ -906,7 +1025,7 @@ def summarize(args) -> None:
     df = pd.read_csv(out / ('by_variant_key.csv' if args.only_key else 'by_variant.csv'))
     df['tag'] = df['tag'].astype(str)
     df['realism_flag'] = df['realism_flag'].fillna('')
-    q, q_lo, q_hi = q_values()
+    q, q_sens = q_values()
     mc = map_choice(df)
     med = mc[mc.realistic].groupby('map').amp_deviation.median() if mc.realistic.any() else mc.groupby('map').amp_deviation.median()
     chosen = str(med.idxmin())
@@ -915,9 +1034,9 @@ def summarize(args) -> None:
         '->', chosen, flush=True)
     if not (out / 'low_conc.csv').exists():
         low_conc(q).to_csv(out / 'low_conc.csv', index=False)
-    write_tables(out, df, chosen, med, mc.attrs['target'], q, q_lo, q_hi)
+    write_tables(out, df, chosen, med, mc.attrs['target'], q, q_sens)
     b_figures(out, df, chosen)
-    write_provenance(out, 'summary', dict(q=q, q_interval=[q_lo, q_hi], map_kept=chosen, map_deviation=med.to_dict(),
+    write_provenance(out, 'summary', dict(q=q, q_sensitivity=q_sens, map_kept=chosen, map_deviation=med.to_dict(),
         amplitude_targets=mc.attrs['target']))
     print('->', out, flush=True)
 
@@ -959,7 +1078,7 @@ def _key_line(label: str, reading_label: str, g: pd.Series, thr: Optional[pd.Ser
         f"{'yes: ' + flag if flag else 'no'} |")
 
 
-def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_target: dict, q: float, q_lo: float, q_hi: float) -> None:
+def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_target: dict, q: float, q_sens: List[float]) -> None:
     """comparison_table.md and the summary CSVs (key_models.csv, order.csv, best_models_columns.csv)."""
     dt = H.data_target
     other = [m for m in MAPS if m != chosen][0]
@@ -968,11 +1087,16 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
     est = pd.read_csv(out / 'q_estimates.csv')
     synth = pd.read_csv(out / 'synthetic_per_recording.csv')
     L = [f'# E73: the per-KC normalization of the recordings (parts A and B)', '',
-         f'Generated by E73_per_kc_normalization.py; q = {q:.3f} (the edge estimate, median over the 19 APL16 recordings; 90 % '
-         f'over recordings {q_lo:.3f} to {q_hi:.3f}). Readings: "as now" are the present readings (raw spike counts, or E65\'s '
-         'calibrated saturating readout, with the two-spike response criterion; amplitudes through E68\'s conversion to z); '
+         f'Generated by E73_per_kc_normalization.py. Yang\'s responses (her answer of 2026-11-10, checked against her pipeline by viki: '
+         'add_to_reports/yang_response_definition.md): each KC\'s Fc z-scored over the whole recording (about 7,194 volumes), a trial\'s '
+         'response the mean z 2-8 s after onset (18 volumes) minus the mean over the 15 volumes before. The model\'s session is built the '
+         f'same way: q = {q:.3f}, the share of the recording inside the 51 response windows (51 x 18 / 7,194), the response confined to its '
+         f'window; a slow drift of {refs()["drift"]:.2f} times the baseline noise (the silent KCs\' whole-trace SD over baseline-noise SD, '
+         '1.40); sensitivity at part A\'s estimate of a response\'s variance footprint, q = ' + ', '.join(f'{x:.3f}' for x in q_sens)
+         + ' (the edge estimate and its 5th to 95th percentiles over recordings). Readings: "as now" are the present readings (raw spike '
+         'counts, or E65\'s calibrated saturating readout, with the two-spike response criterion; amplitudes through E68\'s conversion to z); '
          f'"{MAP_LABEL["linear"]}" and "{MAP_LABEL["saturating"]}" are the per-KC session z-score reading (responses relative to the '
-         'pre-odor frames, in units of the KC\'s sd over the whole session), calibrated on APL on (6.8 % of entries above 1 z, a silent '
+         'pre-odor baseline, in units of the KC\'s SD over the whole session), calibrated on APL on (6.8 % of entries above 1 z, a silent '
          'KC\'s trial sd 0.385 z and, for the saturating map, the responders\' mean amplitude 2.00 z) and applied unchanged to APL off, '
          'scored in expectation over the measurement noise; "trials" reads the model\'s saved jittered trials the same way. Every '
          'reading is scored against the same reading of the KC data.', '']
@@ -1014,6 +1138,74 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
     for how in ('session', 'session_centered', 'baseline'):
         m = sb[(sb.normalization == how) & (sb.q_true == 0.17)].groupby('breadth')['blank_mean'].mean().reindex(order_b)
         L.append(f'| synthetic, {NORM_LABEL[how]} | ' + ' | '.join(f3(v, '+.2f') for v in m) + ' |')
+    # Yang's answer and the known window share
+    L += ['', f'Confirmed by Yang (2026-11-10): a z-score over the whole recording, the response relative to the 5 s before onset; part A '
+          'found this from the per-trial values alone (the edge, the noise budget, the solvent\'s trial mean rising with breadth, which a '
+          'subtraction of the session mean would push below 0). The 51 response windows hold a share '
+          f'{q:.3f} of the recording, so a response confined to its window puts the edge at 1 / q = {1 / q:.1f} z²; the recordings\' '
+          f'largest per-KC mean squares are {apl.ms_max.min():.1f} to {apl.ms_max.max():.1f} z², and part A\'s three estimators put the share '
+          f'of a KC\'s session variance that a unit of squared response takes at {q_sens[1]:.3f} ({q_sens[0]:.3f} to {q_sens[2]:.3f}): a '
+          'response\'s variance footprint is larger than its window (the GCaMP response rises before 2 s and decays after 8 s, outside the '
+          'window but inside the z-score), so the main reading (q the window share) and the sensitivity reading (q the footprint) bracket '
+          'the model\'s side.', '']
+    # the breadth checks: the whole-trace SD over the baseline-noise SD, and the responders' amplitude in baseline-noise units
+    ks = pd.read_csv(YANG_NORM / 'kc_scales.csv')
+    ks['b'] = ks.n_odors_z1.clip(upper=11)
+    ab = pd.read_csv(YANG_NORM / 'amplitude_by_breadth.csv')
+    ab['b'] = ab.n_odors.clip(upper=11)
+    lab_b = [str(b) if b < 11 else '11+' for b in BREADTH_CHECK]
+    L += ['### The breadth checks (data: viki\'s whole-trace and baseline-noise SDs, notes/yang_response_normalization/)', '',
+          'Whole-trace SD over baseline-noise SD, median over the KCs that respond (trial mean above 1 z) to the given number of odors '
+          '(models: each KC at its expected number, the reading\'s S / noise):', '',
+          '| | ' + ' | '.join(lab_b) + ' |', '|---|' + '---:|' * len(lab_b)]
+    L.append('| KC data, both genotypes | ' + ' | '.join(f3(ks.loc[ks.b == b, 'scale_ratio'].median(), '.2f') for b in BREADTH_CHECK) + ' |')
+    chk_defs = [(f'zcell_{chosen}', f'q {q:.3f}'), (f'zcell_saturating{q_tag(q_sens[1])}', f'q {q_sens[1]:.3f}'),
+        (f'zcell_{other}', f'{other} map, q {q:.3f}')]
+    for short, _, folder, tag, _ in KEY_MODELS:
+        if short in ('C2 both', 'fit 3'):
+            continue
+        for rd, qlab in chk_defs:
+            g = _row(df, folder, tag, rd)
+            if g is None:
+                continue
+            for c, cl in (('on', 'APL on'), ('off', 'APL off')):
+                L.append(f'| {short}, {cl}, {qlab} | ' + ' | '.join(f3(g.get(f"scale_ratio_b{b}_{c}", np.nan), '.2f') for b in BREADTH_CHECK) + ' |')
+    L += ['', 'Responders\' mean amplitude in baseline-noise units (z times the KC\'s whole-trace SD over baseline-noise SD), by breadth:', '',
+          '| | ' + ' | '.join(lab_b[1:]) + ' |', '|---|' + '---:|' * (len(lab_b) - 1)]
+    for g_, gl in (('TNT3c', 'KC data, control flies'), ('TNT', 'KC data, APL output blocked (TNT)')):
+        d = ab[ab.genotype == g_]
+        L.append(f'| {gl} | ' + ' | '.join(f3(np.average(d.loc[d.b == b, 'amp_base'], weights=d.loc[d.b == b, 'n_kcs']) if (d.b == b).any() else np.nan, '.1f')
+            for b in BREADTH_CHECK[1:]) + ' |')
+    for short, _, folder, tag, _ in KEY_MODELS:
+        if short in ('C2 both', 'fit 3'):
+            continue
+        for rd, qlab in chk_defs:
+            g = _row(df, folder, tag, rd)
+            if g is None:
+                continue
+            for c, cl in (('on', 'APL on'), ('off', 'APL off')):
+                L.append(f'| {short}, {cl}, {qlab} | ' + ' | '.join(f3(g.get(f"amp_base_b{b}_{c}", np.nan), '.1f') for b in BREADTH_CHECK[1:]) + ' |')
+    # the data under the two normalizations, beside the models
+    nr = pd.read_csv(YANG_NORM / 'normalization_rates.csv')
+    L += ['', '### The KC data in baseline-noise units (viki: one threshold, 1.97 baseline SDs, holds the control flies at 0.068)', '',
+          '| | response rate, control flies / APL output blocked (TNT) (ratio) | KCs responding to no odor, control / TNT | KCs at 8 or more odors, control / TNT |',
+          '|---|---:|---:|---:|']
+    for norm, d in nr.groupby('normalization', sort=False):
+        c, t_ = d[d.genotype == 'TNT3c'].iloc[0], d[d.genotype == 'TNT'].iloc[0]
+        L.append(f"| KC data, {norm} | {c.response_rate:.3f} / {t_.response_rate:.3f} ({t_.response_rate / c.response_rate:.2f}) | "
+            f"{c.odors_per_kc_0_0:.2f} / {t_.odors_per_kc_0_0:.2f} | {c.odors_per_kc_8_99:.3f} / {t_.odors_per_kc_8_99:.3f} |")
+    for short, _, folder, tag, pres in KEY_MODELS:
+        if short in ('C2 both', 'fit 3'):
+            continue
+        for rd, rl in ((f'present_{pres}', 'as now, two spikes'), (f'zcell_{chosen}', f'the reading, q {q:.3f}'),
+                (f'zcell_saturating{q_tag(q_sens[1])}', f'the reading, q {q_sens[1]:.3f}')):
+            g = _row(df, folder, tag, rd)
+            if g is None:
+                continue
+            L.append(f"| {short}, {rl} | {g['rate_on']:.3f} / {g['rate_off']:.3f} ({g['rate_ratio']:.2f}) | {g['silent_share_on']:.2f} / "
+                f"{g['silent_share_off']:.2f} | {g['opk_8plus_on']:.3f} / {g['opk_8plus_off']:.3f} |")
+    L += ['', 'The two-spike criterion counts a model KC\'s response in fixed units, as baseline-noise units count the flies\'; the reading '
+          'applies the flies\' criterion in the flies\' units.', '']
     # map choice
     L += ['', '## Part B: the models read the same way', '',
           f'Map kept: **{chosen}** (median over the variants without a realism flag of the mean relative deviation of the APL-on '
@@ -1038,7 +1230,8 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
                 ('present_raw' if pres == 'cal' else 'present_cal', 'as now: ' + ('raw counts' if pres == 'cal' else 'calibrated readout') + ', two-spike criterion'),
                 (f'zcell_{chosen}', MAP_LABEL[chosen]), (f'zcell_{other}', MAP_LABEL[other]),
                 (f'zcell_{chosen}_trials', MAP_LABEL[chosen] + ', jittered trials'),
-                (f'zcell_{chosen}_qlo', MAP_LABEL[chosen] + f', q {q_lo:.3f}'), (f'zcell_{chosen}_qhi', MAP_LABEL[chosen] + f', q {q_hi:.3f}'),
+                *[(f'zcell_saturating{q_tag(x)}', MAP_LABEL['saturating'] + f', q {x:.3f}') for x in q_sens],
+                ('zcell_saturating_trials' + q_tag(q_sens[1]), MAP_LABEL['saturating'] + f', jittered trials, q {q_sens[1]:.3f}'),
                 ('zcell_saturating_centered', MAP_LABEL['saturating'] + ', session mean subtracted')):
             g = _row(df, folder, tag, rd_def)
             if g is None:
@@ -1062,6 +1255,9 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
         p0, z1 = _row(df, folder, tag, f'present_{pres}'), _row(df, folder, tag, f'zcell_{chosen}')
         if p0 is not None and z1 is not None:
             cond.append((short, p0['mean'], z1['mean'], z1['mean'] - p0['mean']))
+        z2 = _row(df, folder, tag, f'zcell_saturating{q_tag(q_sens[1])}')
+        if p0 is not None and z2 is not None:
+            cond.append((short + f' (q {q_sens[1]:.3f})', p0['mean'], z2['mean'], z2['mean'] - p0['mean']))
     moved = any(abs(c[3]) >= 0.03 for c in cond)
     L += ['### Part C\'s condition', '',
           f'- the edge in every APL16 recording: {"yes" if n_edge == len(apl) else "no"} ({n_edge} of {len(apl)}; gap 0.6 z² or less)',
@@ -1156,7 +1352,7 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
     L += ['', '### Over every archived variant (medians; variants without a realism flag under the present definitions)', '',
           '| reading | variants | loss, graded | mean APL effect | pattern part | ρ on the per-pair APL effect | APL-off / APL-on response rate | '
           'flagged under this reading\'s criterion |', '|---|---:|---:|---:|---:|---:|---:|---:|']
-    for rd_def in ('present_raw', 'present_cal', f'zcell_{chosen}', f'zcell_{other}', f'zcell_{chosen}_qlo', f'zcell_{chosen}_qhi', 'zcell_saturating_centered'):
+    for rd_def in ('present_raw', 'present_cal', f'zcell_{chosen}', f'zcell_{other}', *[f'zcell_saturating{q_tag(x)}' for x in q_sens], 'zcell_saturating_centered'):
         g = real(df[(df.reading_def == rd_def) & (df.reading == 'graded')])
         if g.empty:
             continue
