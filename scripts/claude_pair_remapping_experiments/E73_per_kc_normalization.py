@@ -423,6 +423,10 @@ def a_figures(out: Path, per_rec, bt, mt, synth, s_mt, kcs) -> None:
         ax.plot(np.arange(1, len(v) + 1) / len(v), v, color=col[g], lw=0.8, alpha=0.7)
     ax.axhline(1 / q_main, color='k', ls='--', lw=1)
     ax.text(1e-3, 1 / q_main, f' 1 / q = {1 / q_main:.1f} (q {q_main:.3f}, from the edge)', fontsize=7.5, va='bottom')
+    q_win = q_values()[0]
+    ax.axhline(1 / q_win, color='0.5', ls=':', lw=1)
+    ax.text(1e-3, 1 / q_win, f' 1 / q = {1 / q_win:.1f} (q {q_win:.3f}, the response windows\' share of the recording)', fontsize=7.5, va='bottom')
+    ax.set_ylim(0, 1 / q_win + 0.6)
     ax.set_xscale('log'); ax.set_xlim(3e-4, 1)
     ax.set_xlabel('share of the recording\'s KCs at or above (rank / KCs)'); ax.set_ylabel('per-KC mean of squared trial values (z²)')
     ax.set_title('KCs: the mean square\'s upper tail, one line per APL16 recording\n(blue control flies, red APL output blocked (TNT))', fontsize=9)
