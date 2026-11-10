@@ -12,7 +12,7 @@
    (summary_all_experiments.values.json);
 4. builds the page with source tooltips (md_to_artifact.py) at
    outputs/_artifacts/summary/index.html.
-Publishing and save_report_copy.py stay manual (CLAUDE.md, "Summary reports").
+save_report_copy.py stays manual; the page is not published as an artifact (CLAUDE.md, "Report copies").
 Usage: ./venv/bin/python build_summary.py [--skip-progress-plot] [--data-targets]
        (--data-targets first rebuilds the registry, data_targets.py)
 """

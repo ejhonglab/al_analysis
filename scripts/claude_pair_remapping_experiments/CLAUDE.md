@@ -269,9 +269,9 @@ On those machines:
   publishes it into Tom's account, writes the URL into the markdown, rebuilds and republishes the
   page, runs save_report_copy.py with the URL, and puts the URL where the scheme asks for it (the
   experiment markdown, the Completed entry, the add_to_reports README). The summary page and the
-  report page are rebuilt by Tom's hosts from the template or the report markdown: after
-  committing and pushing the change to `reports/summary_template.md` or the report markdown,
-  post "For one of Tom's hosts: rebuild and republish the summary" (or the report) in chat.md.
+  report page are not artifacts ("Report copies" below): any host, a lab member's included, rebuilds
+  them after pushing its change to `reports/summary_template.md` or the report markdown and saves
+  them to reports/ with save_report_copy.py; no request to Tom's hosts is needed.
 - Tom's personal instructions and memory are not there, so the conventions from them that the
   queue relies on are below ("Git and code conventions"), for every host, and so are the
   practical gotchas ("Gotchas", below).
@@ -374,7 +374,7 @@ In the shared directory, you may also create/edit:
   suited to it), move proposed experiments into experiment_priorities.md yourself, without
   my approval: give them the next E<n>, place them where their stated rationale puts them
   (write that rationale in the entry; I will reorder if I disagree), append them to the
-  report markdown and republish the report artifact (see "Report artifact" below), say in
+  report markdown and rebuild the report page (see "Report artifact" below), say in
   chat.md what you moved and why, then claim one and start it. Proposals that would
   displace work another host is about to start still go through me.
 
@@ -693,16 +693,16 @@ host:"). When you complete an experiment and its interpretation:
    not publish it: save it to reports/ with `pending` as its URL and hand the publishing to one
    of Tom's hosts through chat.md ("Lab members' machines" above).
 
-4. regenerate the summary artifact (the all-experiments summary, see "Summary reports"
+4. regenerate the summary page (the all-experiments summary, see "Summary reports"
    below): fold the experiment's result into the section it belongs to in the template
    `reports/summary_template.md` (its row in the relevant table, a sentence on what moved and
    whether it reached the data; its numbers as placeholders on its results table; the passage's
    text comes from a planning subagent, which is given the note, the section and the "Summary
-   reports" rules, and the session applies it, builds and publishes), move it out
+   reports" rules, and the session applies it and builds), move it out
    of the pending list, update the experiment key, run `./venv/bin/python build_summary.py`
-   (progress plot, fill, the generated markdown in `add_to_reports/`, the page), republish the
-   page to the same slug, run `save_report_copy.py`, commit the template, update the
-   add_to_reports README row and say so in chat.md. Every completed experiment appears in the
+   (progress plot, fill, the generated markdown in `add_to_reports/`, the page), run
+   `save_report_copy.py outputs/_artifacts/summary/index.html summary_all_experiments` (the page is
+   not published as an artifact; "Report copies"), commit the template and say so in chat.md. Every completed experiment appears in the
    summary before the host moves on.
 
 Realism in every write-up (Tom, 2026-11-09). Every per-experiment note and its page, those in
@@ -782,7 +782,7 @@ has both kinds for the same condition, group them under a spanning header, e.g. 
 ρ(control flies, model), computed on {span=2}" over "response rates" and "odor-odor distances".
 
 Describe experiments in plain English ("the per-claw threshold sweep", "the KC-KC lateral
-inhibition experiment"), not by ID. Polished reports (the summary artifact, the final report)
+inhibition experiment"), not by ID. Polished reports (the summary page, the final report)
 use no IDs in prose. Preliminary and experiment-specific notes (the per-experiment markdown,
 chat.md, replies to me) use the plain-English description first and then the ID in
 parentheses: "the per-claw threshold sweep (E16)". The same applies when referring to
@@ -857,7 +857,7 @@ bare ID ("the per-glomerulus drive normalization sweep (E20)", not "E20").
   it), then one de-emphasized line, "last model experiment: {{meta:last_experiment}}, edited:
   {{meta:generated}}" (both filled at build time as YYYY-MM-DD HH:MM, no comma inside a
   timestamp; the converter renders the first paragraph under the title muted), then the first
-  content section. When republishing, pass that title to the artifact too.
+  content section.
 - **The progress plot follows the best-models section.** The section right after "Where the
   best models stand" and before the pending-experiments section is the interactive plot of
   how far the best model so far has closed the gap to the KC data on each
@@ -1069,7 +1069,7 @@ characters only: letters, digits, `_`, `-`, `.`; no en or em dashes, arrows, mul
 signs or other characters that need a Unicode input method. This applies to names only;
 the contents of notes keep normal typography.
 
-## Report artifact
+## Report artifact (the report page)
 
 The report markdown in this folder ("APL and the ORN→KC remapping of odor–odor
 correlations.md") doubles as the running list of in silico experiments. Whenever new
@@ -1079,17 +1079,27 @@ idle host under the exception above), also:
    E1–E10 (bold `E<n>, title (mechanism)` then goal / design / readout / prediction in one
    paragraph), after the `*Added ...*` note (extend that note with when and from what the
    new ones were conceived; keep E1–E10 unchanged);
-2. rebuild the page with `./venv/bin/python build_report_artifact.py` and republish it to the
-   existing report artifact (same slug, so the link stays valid; the slug and the URL are
-   recorded at the top of experiment_priorities.md), then commit and push the markdown;
-3. mention the republish in chat.md.
+2. commit and push the markdown, rebuild the page with `./venv/bin/python build_report_artifact.py`
+   and save it with `./venv/bin/python save_report_copy.py outputs/report_artifact/report.html
+   report_apl_remapping` (not published as an artifact since 2026-11-10; the old artifact URL at the
+   top of experiment_priorities.md shows the last published version only);
+3. mention it in chat.md.
 Only the experiment list changes this way; findings go in the per-experiment markdown
 files, not in the report.
 
 ## Report copies (reports/ in the shared directory)
 
-Every artifact page we publish (per-experiment summaries, the report page, summary and
-add_to_reports pages) must also exist as a self-contained file under
+Pages that several hosts rewrite, the all-experiments summary and the report page, are not published
+as artifacts (Tom, 2026-11-10): the same HTML is built as before and saved to reports/ only, with
+`save_report_copy.py <index.html> <name>` and no URL (the README row says "local"); the queue monitor
+(http://hal:17486, Report tab) serves them from `current-summary.html` and `current-report.html`. Before
+saving, pull, and build from a template (or report markdown) at origin/main or ahead of it with your own
+change only, so that no other host's content is dropped; `publish_check.py <old copy> <new build>` lists
+what the previous copy has that a new build lacks. Per-experiment pages and add_to_reports pages are
+still published.
+
+Every artifact page we publish (per-experiment summaries, add_to_reports pages) must also exist as a
+self-contained file under
 `<shared>/reports/`, the same document the artifact's share > export download gives. The
 artifact server serves the HTML we upload unchanged, so:
 1. build every artifact page as a local file and publish it with `publish_files` from that
@@ -1102,7 +1112,7 @@ artifact server serves the HTML we upload unchanged, so:
    which copies the file to `<shared>/reports/<name>.html`, or, when the artifact has files
    alongside `index.html`, pass the directory holding exactly the published files and it
    writes `<name>.zip` (index.html plus those files, as the export does); it upserts the
-   page's row in `reports/README.md` (name, page title, URL, when and from which host). Use the
+   page's row in `reports/README.md` (name, page title, URL or "local", when and from which host). Use the
    same `<name>` on republish so the folder holds the latest version only: `E<n>_<short>` for
    experiment pages, `report_<short>` for the report, `summary_all_experiments` for the summary (one
    name, no date: the page's header carries the edit time; Tom, 2026-11-09),
@@ -1116,41 +1126,15 @@ Publishing happens only from Tom's hosts: a session on a lab member's machine sa
 `pending` as the URL and asks in chat.md for one of Tom's hosts to publish it ("Lab members'
 machines").
 
-### Republishing a shared page (the summary, the report)
+### Republishing a shared page (history)
 
-Several sessions publish the same artifact (the summary page, the report page), each from a page built
-from its own checkout. The Artifact tool refuses a publish that was not built on the live version (it
-tracks per session which version that session has seen), and it should: a page built from a template
-that is behind another host's publish would drop that host's content. Git is the source of truth for the
-content, the live artifact for what is published; the tool cannot know that a pull already merged the
-other host's change, so a cross-host publish is refused once with a diff, refused again as "identical",
-and goes through on the third attempt. Instead of that dance, before republishing the summary or the
-report:
-1. pull, and make sure the template (or the report markdown) you build from is at origin/main or ahead
-   of it with your own change only; build;
-2. publish. If it goes through, run `save_report_copy.py` as usual. If it is refused because "a newer
-   version published elsewhere is live", that is the expected case after another host's publish: the
-   refusal saves the live page's source to a file (its path is in the message) and counts that version as
-   seen (the Artifact tool's `read` with `path: index.html` saves the same file without counting as seen,
-   and `read` without a path would put the whole page into the context, so neither replaces this step);
-3. run `./venv/bin/python publish_check.py <saved live index.html> <your build>`: it compares the two at
-   the level of tags and sentences, ignoring the build timestamps, the `[commit ...]` tooltip hashes and
-   the server's wrapper, and prints what the live page has that your build drops (REMOVED) or rewrites
-   (CHANGED). If it prints nothing, or only your own intended edits (a status word, a pending bullet you
-   removed because the experiment completed), open the saved live file once with the Read tool (a few lines
-   are enough: the Artifact tool counts only a Read of that file as having looked at the live version, not a
-   script that read it), then for the summary rebuild it (`build_summary.py`) and publish the rebuild: the same
-   bytes as the refused publish are refused a second time as "identical", and the build timestamp makes the
-   rebuild new content (atlas, 2026-11-09 15:33). The report page changes only when its experiment list does,
-   so there the same build is resent and goes through on that second attempt. If publish_check.py
-   prints content you did not touch, the template in git is behind someone's publish: pull again and
-   rebuild, or ask in chat.md who published from what; never force a publish over it;
-4. `save_report_copy.py` as usual.
-Who publishes what: an experiment's own page is published only by the host that wrote it; the report
-page by the host that moved an experiment in (after its own markdown commit); "For one of Tom's hosts"
-republish requests (from lab members' machines) go to hal by default and to atlas only if hal has not
-answered within about fifteen minutes, so that two hosts do not publish the same page within a minute of
-each other.
+Until 2026-11-10 the summary and the report page were artifacts that several hosts republished, and the
+Artifact tool refused a publish from a session that had not seen the live version (once with a diff, then as
+"identical"); publish_check.py was written for that. Tom then asked that these pages stay local in reports/
+("Report copies" above), so there is nothing to republish. Who publishes what now: an experiment's own page
+only by the host that wrote it; "For one of Tom's hosts" publish requests (from lab members' machines, for
+experiment and note pages) go to hal by default and to atlas only if hal has not answered within about
+fifteen minutes.
 
 ## The main goal for new experiments (Tom, 2026-11-09 17:55; replaces the 13:00 version)
 

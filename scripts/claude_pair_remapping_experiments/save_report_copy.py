@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Saves a self-contained copy of a published artifact page to the shared reports/ folder.
+"""Saves a self-contained copy of an artifact page to the shared reports/ folder.
 
 Our artifact pages are single HTML files with figures embedded as data URIs, published with
 `publish_files` from a local file; the server serves that file unchanged, so a copy of it is
 the same document the artifact's share > export download gives. Run this after every publish
 or republish (CLAUDE.md, "Report copies"):
 
-    ./venv/bin/python save_report_copy.py <index.html or directory> <name> <artifact url>
+    ./venv/bin/python save_report_copy.py <index.html or directory> <name> [<artifact url>]
+
+The pages that several hosts rewrite (the all-experiments summary and the report page) are not
+published as artifacts since 2026-11-10 (Tom): they are built as before and saved here only, without
+a URL (the README row then says "local"); the queue monitor serves them (its Report tab, from the
+current-*.html links).
 
 Writes <shared>/reports/<name>.html (or <name>.zip with index.html and the other files when a
 directory is given, i.e. a multi-file artifact) and upserts a row in reports/README.md
@@ -55,7 +60,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('source', type=Path, help='the published index.html, or the directory of a multi-file artifact')
     ap.add_argument('name', help='file stem in reports/, e.g. E17_panel_general_apl, report_apl_remapping')
-    ap.add_argument('url', help='the artifact URL')
+    ap.add_argument('url', nargs='?', default='local',
+        help="the artifact URL; omit it for a page kept only here (the summary, the report page): 'local'")
     ap.add_argument('--current', default=None, metavar='LINK',
         help='also point reports/<LINK> at this copy (default: current-summary.html for '
         'names starting with summary_)')
