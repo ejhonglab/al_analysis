@@ -595,6 +595,14 @@ def score_variant(job: tuple) -> Tuple[List[dict], List[dict], List[dict], Dict[
     return rows, cal_rows, amp_rows, extras
 
 
+def score_variant_safe(job: tuple):
+    """`score_variant`, with an exception reported as (None, message) instead of stopping the run."""
+    try:
+        return score_variant(job)
+    except Exception as e:
+        return None, f'{job[0]} {job[1]}: {type(e).__name__}: {e}'
+
+
 def trial_sets() -> List[Tuple[str, str, float, str]]:
     """(folder, model, sigma, level) of every archived jittered trial set at the level matched on the
     control flies' single-trial distance ('match_on', or 'match_on+match_off')."""
@@ -717,9 +725,14 @@ def main() -> None:
             on_df = H.abbrev_columns(pd.read_parquet(ARCHIVE / f / f'{t}_on_spike_counts.parquet').astype(float))[ODORS]
             K = H.calibrate_readout(on_df, 'saturating', refs()['targets']['pr'], stat='participation_ratio', responders_min=2.0)
         jobs.append((f, t, K, (f, t) in keys))
-    rows, cal_rows, amp_rows, hist_rows, os_rows = [], [], [], [], []
+    rows, cal_rows, amp_rows, hist_rows, os_rows, failed = [], [], [], [], [], []
     with ProcessPoolExecutor(max_workers=args.jobs) as ex:
-        for i, (r, c, a, x) in enumerate(ex.map(score_variant, jobs, chunksize=2)):
+        for i, res in enumerate(ex.map(score_variant_safe, jobs, chunksize=2)):
+            if res[0] is None:
+                failed.append(res[1])
+                print('failed:', res[1], flush=True)
+                continue
+            r, c, a, x = res
             rows.extend(r); cal_rows.extend(c); amp_rows.extend(a); hist_rows.extend(x['hist']); os_rows.extend(x['one_spike'])
             if (i + 1) % 50 == 0:
                 print(f'{i + 1} / {len(jobs)} variants ({(datetime.now() - t0).seconds} s)', flush=True)
@@ -759,7 +772,7 @@ def main() -> None:
         al_analysis_dirty=bool(git('status', '--porcelain', '--untracked-files=no')),
         script_and_harness_dirty=bool(git('status', '--porcelain', '--', 'E68_readout_low_end.py', 'kc_remapping_harness.py', 'data_targets.py')),
         inputs_sha256={str(p): sha256(p) for p in inputs if Path(p).exists()},
-        n_variants=len(jobs), n_trial_sets=len(tjobs), configs=[c[0] for c in CONFIGS], readings=list(READINGS), band=BAND,
+        n_variants=len(jobs), failed_variants=failed, n_trial_sets=len(tjobs), configs=[c[0] for c in CONFIGS], readings=list(READINGS), band=BAND,
         band_literal=BAND_LITERAL, floor_bounds=FLOOR_BOUNDS, n_recordings=N_RECORDINGS, n_trials=N_TRIALS, seeds=dict(on=SEED_ON, off=SEED_OFF,
         trials_on='1000 + rep', trials_off='2000 + rep', a1_bootstrap=0), n_boot=args.boot, noise_sd=refs()['noise_sd'],
         floor_z=refs()['floor_z'], targets=refs()['targets'], e67_archived=[list(x) for x in e67],

@@ -1370,6 +1370,9 @@ def calibrate_low_end(on_counts, *, noise_sd: float, target_rate: float, target_
         ok = np.isfinite(vals)
         brackets = [i for i in range(len(grid) - 1) if ok[i] and ok[i + 1] and vals[i] * vals[i + 1] <= 0]
         if not brackets:
+            if not ok.any():
+                # the target rate is out of reach at every floor (c at its bounds): keep the start
+                return float(x0), True
             i = int(np.nanargmin(np.abs(np.where(ok, vals, np.nan))))
             return float(grid[i]), True
         from scipy.optimize import brentq

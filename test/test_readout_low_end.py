@@ -220,3 +220,10 @@ def test_noise_corrected_min_reliability():
     assert d[with_odor0].isna().all() and d[[not w for w in with_odor0]].notna().all()
     d0 = H.noise_corrected_pair_distances(trials, ODORS)
     assert d0.notna().all()
+
+
+def test_calibrate_low_end_unreachable_rate():
+    """A model with fewer active entries than the target rate: c at its bound, no exception."""
+    counts = _counts(11, n_units=1500, p_resp=0.01)
+    cal = H.calibrate_low_end(counts, noise_sd=0.39, target_rate=0.2, target_band=0.05, target_pr=0.05)
+    assert cal['c_at_bound'] and cal['floor_at_bound']
