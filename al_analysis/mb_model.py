@@ -667,6 +667,62 @@ def set_kc_spiking_params(mp: osm.ModelParams, params: Dict[str, float]) -> None
         # (pybind11 attributes of the wrong type raise, but check the value was kept)
         assert getattr(mp.kc, attr) == float(v)
 
+
+# `fit_mb_model` kwargs for the end of the odor pulse and the end of the simulation
+# (olfsysm `mp.time_stim_end` and `mp.time_end`, in seconds from odor onset, which is at
+# `mp.time_stim_start`, 0.0). Each left at olfsysm's default (0.5 / 0.75 s) if None, and
+# only recorded in output params (and model IDs) if passed. Every olfsysm simulation
+# (ORN / LN / PN / KC layers, tuning included) and the spike counts (summed over the
+# whole simulation) follow them.
+TIME_PARAMS: Tuple[str, ...] = ('time_stim_end', 'time_end')
+
+
+def time_param_dict(*, time_stim_end: Optional[float] = None,
+    time_end: Optional[float] = None) -> Dict[str, float]:
+    """Returns checked `TIME_PARAMS` (as floats), only those not None.
+
+    See `fit_mb_model`. Raises ValueError unless, with olfsysm's defaults for any not
+    passed, odor onset < `time_stim_end` < `time_end`, and each is a whole number of
+    olfsysm time steps after the start of its simulations (`mp.time_pre_start`), so
+    that olfsysm's (truncating) step arithmetic gives the nearest step.
+    """
+    params = {k: float(v) for k, v in zip(TIME_PARAMS, (time_stim_end, time_end))
+        if v is not None
+    }
+    for k, v in params.items():
+        if not np.isfinite(v):
+            raise ValueError(f'{k} must be finite (got {v})')
+
+    mp = osm.ModelParams()
+    stim_end = params.get('time_stim_end', mp.time_stim_end)
+    end = params.get('time_end', mp.time_end)
+    if not mp.time_stim_start < stim_end < end:
+        raise ValueError('need odor onset (time_stim_start, '
+            f'{mp.time_stim_start}) < time_stim_end ({stim_end}) < time_end ({end}) '
+            "(olfsysm's defaults for any not passed: time_stim_end "
+            f'{mp.time_stim_end}, time_end {mp.time_end})'
+        )
+    for k, v in params.items():
+        # (olfsysm computes steps as unsigned((t - pre_start) / dt))
+        n_steps = (v - mp.time_pre_start) / mp.time_dt
+        if int(n_steps) != round(n_steps) or abs(n_steps - round(n_steps)) > 1e-6:
+            raise ValueError(f'{k} ({v}) must be a whole number of time steps '
+                f'({mp.time_dt} s) after time_pre_start ({mp.time_pre_start})'
+            )
+    return params
+
+
+def set_time_params(mp: osm.ModelParams, params: Dict[str, float]) -> None:
+    """Sets `TIME_PARAMS` in `params` (e.g. from `time_param_dict`) on olfsysm `mp`.
+
+    Must be called before `olfsysm.RunVars(mp)` is created (which sizes the per-odor
+    timeseries from them). Nothing is set if `params` is empty.
+    """
+    for k, v in params.items():
+        assert k in TIME_PARAMS, k
+        setattr(mp, k, float(v))
+        assert getattr(mp, k) == float(v)
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -745,7 +801,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
         'claw_weight': 'presence',
         **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
             BOUTON_DEPLETION_PARAMS + EXT_INH_PARAMS + EXT_INH_RECORDED_PARAMS +
-            KC_SPIKING_PARAMS
+            KC_SPIKING_PARAMS + TIME_PARAMS
         },
         **{k: False for k in APL_INH_FORM_PARAMS},
     }
@@ -754,7 +810,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     param_float_formats = {k: '.3g'
         for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr', 'claw_thr_width',
             'claw_thr_subgain', 'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS +
-            EXT_INH_RECORDED_PARAMS + KC_SPIKING_PARAMS
+            EXT_INH_RECORDED_PARAMS + KC_SPIKING_PARAMS + TIME_PARAMS
     }
 
     def is_excluded_value(k: str, v: Any) -> bool:
@@ -12115,6 +12171,11 @@ def load_and_plot_dynamics(model_dir: Path, **kwargs) -> MinMaxDict:
     # probably
 
     params = read_params(model_dir)
+    # (a model run with a non-default odor pulse records it, see `TIME_PARAMS`)
+    saved_stim_end = params.get('time_stim_end')
+    if saved_stim_end is not None and not pd.isna(saved_stim_end):
+        stim_end = float(saved_stim_end)
+
     tuned_params = read_tuned_params(model_dir)
     thrs_and_apl_weights = get_thr_and_APL_weights(tuned_params, params)
 
@@ -12538,6 +12599,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     apl_inh_divisive: bool = False, bouton_inh_divisive: bool = False,
     kc_refractory_period: Optional[float] = None, kc_adapt_inc: Optional[float] = None,
     kc_adapt_tau: Optional[float] = None,
+    time_stim_end: Optional[float] = None, time_end: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -12986,6 +13048,21 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `mp.kc.adapt_tau`, default 0.2 if None). Requires `kc_adapt_inc`. Must be
             finite and positive.
 
+        time_stim_end: if not None, the end of the odor pulse (seconds after its onset
+            at 0.0; olfsysm `mp.time_stim_end`, default 0.5 if None): the ORN input (and
+            any `ext_inh_kc` / `ext_inh_bouton`) is on from onset until then.
+
+        time_end: if not None, the end of the simulation (seconds after odor onset;
+            olfsysm `mp.time_end`, default 0.75 if None). Spike counts (and responses)
+            are over the whole KC simulation, from `mp.time_start` (-0.5) to this.
+
+            Both apply to every simulation, including tuning, and must satisfy
+            0 < `time_stim_end` < `time_end` (with the default for one not passed), each
+            a whole number of olfsysm time steps (0.5 ms) after `mp.time_pre_start`.
+            Passing a default explicitly does not change outputs (but is recorded).
+            Longer simulations take proportionally longer and their saved dynamics are
+            proportionally larger.
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -13073,8 +13150,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `AL_INH_PARAMS`, `KC_KC_INH_PARAMS`, `CLAW_SAT_PARAMS` or
             `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc',
             `EXT_INH_RECORDED_PARAMS` for `EXT_INH_PARAMS` passed, any of
-            `APL_INH_FORM_PARAMS` that were True, and any of `KC_SPIKING_PARAMS` that
-            were passed).
+            `APL_INH_FORM_PARAMS` that were True, and any of `KC_SPIKING_PARAMS` or
+            `TIME_PARAMS` that were passed).
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -13405,6 +13482,11 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             'spiking)'
         )
     set_kc_spiking_params(mp, kc_spiking_params)
+
+    # (only those passed, to also add to param_dict below. set before rv is created,
+    # which sizes all per-odor timeseries from mp.time_*)
+    time_params = time_param_dict(time_stim_end=time_stim_end, time_end=time_end)
+    set_time_params(mp, time_params)
 
     # (KC / bouton x odor DataFrames w/ columns in orn_deltas order. rows are aligned to
     # the model's KCs / boutons, and the matrices set into rv, below, after rv is
@@ -16386,6 +16468,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     param_dict.update(ext_inh_params)
     param_dict.update(apl_inh_form_params)
     param_dict.update(kc_spiking_params)
+    param_dict.update(time_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -16993,6 +17076,62 @@ def _get_fixed_params(param_dict: ParamDict) -> ParamDict:
     return params
 
 
+def _spike_times_frame(mp: osm.ModelParams, rv: osm.RunVars, odor_order: np.ndarray,
+    spike_counts: np.ndarray) -> pd.DataFrame:
+    """Returns every KC spike of the last olfsysm KC simulation, one row per spike.
+
+    The simulation must have run with `mp.kc.save_spike_recordings=True`.
+
+    Args:
+        mp, rv: the olfsysm variables of the simulation.
+        odor_order: for each output column, the olfsysm odor index (as in
+            `make_fixed_param_kc_simulator`).
+        spike_counts: (KCs x odors, in output order) spike counts of the simulation,
+            which the spikes of each KC and odor must add up to (RuntimeError otherwise).
+
+    Returns DataFrame with columns 'kc' (the KC's row position in the outputs), 'odor'
+    (the odor's column position in the outputs), 'step' (olfsysm time step, counted from
+    `mp.time_pre_start`) and 'time_s' (seconds from odor onset, `mp.time_pre_start +
+    step * mp.time_dt`; a spike at step t is the KC crossing threshold in the update from
+    t - 1 to t), sorted by odor, KC and step. Only the odors simulated are included (those
+    in `mp.sim_only`, if set).
+    """
+    # (one copy of all the per-odor recordings; indexing the property again would copy
+    # them all again)
+    recordings = rv.kc.spike_recordings
+    if len(recordings) == 0:
+        raise RuntimeError('no spike recordings (mp.kc.save_spike_recordings was False)')
+
+    sim_only = {int(i) for i in mp.sim_only}
+    parts = []
+    for j, i in enumerate(np.asarray(odor_order, dtype=int)):
+        if sim_only and int(i) not in sim_only:
+            continue
+        rec = recordings[int(i)]
+        kc, step = np.nonzero(rec)
+        if not (rec[kc, step] == 1).all():
+            raise RuntimeError('spike recordings have values other than 0 and 1')
+        counts = np.bincount(kc, minlength=rec.shape[0])
+        if not np.array_equal(counts, spike_counts[:, j]):
+            raise RuntimeError(f'spike recordings of odor {j} do not add up to its spike '
+                'counts'
+            )
+        parts.append(pd.DataFrame({'kc': kc.astype(np.int32),
+            'odor': np.full(len(kc), j, dtype=np.int32),
+            'step': step.astype(np.int32)
+        }))
+    del recordings
+
+    df = pd.concat(parts, ignore_index=True) if len(parts) > 0 else pd.DataFrame(
+        {c: np.array([], dtype=np.int32) for c in ('kc', 'odor', 'step')}
+    )
+    # (rounded to 1e-9 s, far below the 0.5 ms step, only to drop float noise)
+    df['time_s'] = np.round(
+        mp.time_pre_start + df['step'].to_numpy(dtype=float) * mp.time_dt, 9
+    )
+    return df.sort_values(['odor', 'kc', 'step'], kind='stable', ignore_index=True)
+
+
 def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     initial_params: Optional[ParamDict] = None, **model_kws
     ) -> Tuple[Callable[[ParamDict], Tuple[pd.DataFrame, pd.DataFrame]], ParamDict]:
@@ -17025,7 +17164,10 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             `ext_inh_scale` / `apl_inh_divisive` / `bouton_inh_divisive` /
             `kc_refractory_period` / `kc_adapt_inc` / `kc_adapt_tau`) apply to the
             initial call and to all simulations (the external inhibition matrices stay
-            set in the olfsysm variables the simulations reuse).
+            set in the olfsysm variables the simulations reuse). So do `TIME_PARAMS`
+            (`time_stim_end`, `time_end`: the odor pulse and the simulation length),
+            which can only be set for the initial call, since the ORN/LN/PN layers they
+            also determine are only simulated there.
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -17040,7 +17182,9 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     `KC_SPIKING_PARAMS`, checked as in `fit_mb_model`), setting those KC refractory /
     adaptation parameters for that simulation only (others stay as the initial call set
     them); the outputs equal those of a `fit_mb_model` call with these parameters and the
-    others fixed. Initial parameters have values for
+    others fixed. With `spike_times=True` it returns a third output, every KC spike of
+    that simulation (`_spike_times_frame`: KC and odor positions, time step and time),
+    e.g. to count spikes in windows of the response. Initial parameters have values for
     all keys of `optimizable_model_params` that apply to this model (PN<>APL weight
     scales only included if `prat_boutons=True`, 'apl_unit_coupling' only if the APL is
     split into units, and 'wKCKC_scale' [= `kc_kc_inh`] only if there is KC-KC
@@ -17142,8 +17286,9 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
     }
 
     def simulate(params: ParamDict, kc_thr_factor: Optional[np.ndarray] = None, *,
-        kc_spiking: Optional[Dict[str, float]] = None
-        ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        kc_spiking: Optional[Dict[str, float]] = None, spike_times: bool = False
+        ) -> Union[Tuple[pd.DataFrame, pd.DataFrame],
+            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
         """Returns `responses`, `spike_counts` from re-running KCs w/ `params` changed.
 
         Args:
@@ -17152,6 +17297,10 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
                 that each KC's threshold is multiplied by, in this simulation only
             kc_spiking: if passed, values for any of `KC_SPIKING_PARAMS` (see
                 `fit_mb_model`), in this simulation only
+            spike_times: if True, also returns every spike of this simulation (see
+                `_spike_times_frame`), as a third output. Responses and spike counts
+                are the same either way. olfsysm keeps the (KCs x time steps per odor)
+                recordings this needs allocated in the simulator from then on.
         """
         unknown = set(params) - set(initial_params)
         if len(unknown) > 0:
@@ -17171,7 +17320,7 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
                 )
             try:
                 set_kc_spiking_params(mp, effective)
-                return simulate(params, kc_thr_factor)
+                return simulate(params, kc_thr_factor, spike_times=spike_times)
             finally:
                 set_kc_spiking_params(mp, initial_kc_spiking)
 
@@ -17236,7 +17385,17 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             rv.kc.wKCKC = float(params['wKCKC_scale']) * wKCKC_unscaled
 
         # regen=False skips olfsysm build_wPNKC and fit_sparseness, just simulating KCs
-        osm.run_KC_sims(mp, rv, False)
+        if spike_times:
+            # (the spikes written into the recordings are the ones counted either way:
+            # olfsysm only swaps which matrix sim_KC_layer writes them to)
+            save_spike_recordings = mp.kc.save_spike_recordings
+            mp.kc.save_spike_recordings = True
+            try:
+                osm.run_KC_sims(mp, rv, False)
+            finally:
+                mp.kc.save_spike_recordings = save_spike_recordings
+        else:
+            osm.run_KC_sims(mp, rv, False)
 
         sim_responses = pd.DataFrame(rv.kc.responses[:, odor_order], index=kc_index,
             columns=odor_index
@@ -17244,7 +17403,12 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
         sim_spike_counts = pd.DataFrame(rv.kc.spike_counts[:, odor_order],
             index=kc_index, columns=odor_index
         )
-        return sim_responses, sim_spike_counts
+        if not spike_times:
+            return sim_responses, sim_spike_counts
+
+        return sim_responses, sim_spike_counts, _spike_times_frame(mp, rv, odor_order,
+            sim_spike_counts.to_numpy()
+        )
 
     responses2, spike_counts2 = simulate(initial_params)
     if not (responses2.equals(responses) and spike_counts2.equals(spike_counts)):
