@@ -788,6 +788,76 @@ def diagnostic_d2(out: Path) -> dict:
     return res
 
 
+SAVE_POINTS = ('D2s1:cell:ridge:x0.5', 'cell:C2_four:x2')
+
+
+def save_points(out: Path, point_ids: Sequence[str] = SAVE_POINTS) -> pd.DataFrame:
+    """Re-simulate chosen points of the map (their scores and bisected APL scale from sensitivity_map.csv) and save their
+    APL-on and APL-off responses and spike counts under outputs/E75_glomerulus_apl_profile/ (tag C2_<point, ':' as '_'>),
+    with their pair distances in model_pair_distances_long.csv and their parameters in variants.csv, for the archive,
+    apl_effect_scores.py and E73's / E74's readers; and their realism under both rules (the model's two spikes against the
+    KC data in baseline-noise units, the bands since 2026-11-10 16:10; and against Yang's z, the earlier bands) in
+    realism_points.csv (C2 itself too)."""
+    import json
+    import apl_effect_scores as A
+    import E72_wiring_population as E72
+    m = pd.read_csv(out / 'sensitivity_map.csv').set_index('point_id')
+    model = ProfileModel(H.outputs_dir(EXPERIMENT))
+    odir = H.outputs_dir(EXPERIMENT)
+    rows, var_rows, pair_parts = [], [], []
+    todo = [('C2', None)] + [(f"C2_{pid.replace(':', '_')}", pid) for pid in point_ids]
+    long_path = out / 'model_pair_distances_long.csv'
+    have = set(pd.read_csv(long_path, usecols=['tag']).tag) if long_path.exists() else set()
+    for tag, pid in todo:
+        if pid is None:
+            o = model.base
+        else:
+            r = m.loc[pid]
+            model.set_profile(r.site, json.loads(r.scores))
+            ron, son = model.run_on(float(r.factor))
+            if int((ron.to_numpy(dtype=float) > 0.5).sum()) != int(r.n_responses):
+                raise RuntimeError(f'{pid}: re-simulation gives a different response count')
+            o = {'on': (ron, son), 'off': model.base['off']}
+            for c, cc in (('on', 'on'), ('off', 'acute_off')):
+                o[c][0].to_parquet(odir / f'{tag}_{cc}_responses.parquet')
+                o[c][1].to_parquet(odir / f'{tag}_{cc}_spike_counts.parquet')
+            var_rows.append(dict(tag=tag, variant=tag, point_id=pid, site=r.site, scores=r.scores, base='bouton', k=2.0,
+                                 fixed_thr=model.p['fixed_thr'], wAPLKC_scale=model.p['wAPLKC_scale'] * r.factor,
+                                 wKCAPL_scale=model.p['wKCAPL_scale'] * r.factor, wAPLPN_scale=model.p['wAPLPN_scale'],
+                                 wPNAPL_scale=model.p['wPNAPL_scale'] * r.factor, kc_kc_inh=model.p['wKCKC_scale'],
+                                 apl_factor=float(r.factor), rate_on=float(ron.to_numpy(dtype=float).mean()),
+                                 rate_off=float(o['off'][0].to_numpy(dtype=float).mean())))
+            if tag not in have:
+                pair_parts.append(pd.concat({(tag, 'on'): H.model_rdms(*o['on'])[H.PRIMARY_MODEL_RDM],
+                                             (tag, 'acute_off'): H.model_rdms(*o['off'])[H.PRIMARY_MODEL_RDM]},
+                                            names=['tag', 'condition', 'odor_a', 'odor_b']).rename('distance').reset_index())
+        row = dict(tag=tag, point_id=pid or 'base')
+        rate_on = float(o['on'][0].to_numpy(dtype=float).mean())
+        rate_off = float(o['off'][0].to_numpy(dtype=float).mean())
+        row.update(rate_on=rate_on, rate_off=rate_off, ratio=rate_off / rate_on)
+        for c in ('on', 'off'):
+            d = A.odors_per_kc(o[c][0])
+            row[f'opk_{c}_tv'] = float(0.5 * np.abs(d - A.opk_data(c, 'noise')).sum())
+            row[f'opk_{c}_tv_zcrit'] = float(0.5 * np.abs(d - A.opk_data(c, 'z')).sum())
+            per_odor = H.abbrev_columns(o[c][0].astype(float) > 0.5).mean().reindex(H.APL16_ODORS)
+            row[f'rate_rho_{c}'] = H.spearman(per_odor, A.frac_data(c, 'noise'))
+            row[f'rate_rho_{c}_zcrit'] = H.spearman(per_odor, A.frac_data(c, 'z'))
+            row[f'opk_{c}_0'], row[f'opk_{c}_8plus'] = float(d[0]), float(d[-1])
+            row[f'max_count_{c}'] = int(o[c][1].to_numpy(dtype=float).max())
+        row['realism_flag'] = A.realism_flag(rate_on, rate_off, row['rate_rho_on'], row['opk_on_tv'], row['opk_off_tv'], units='noise')
+        row['realism_flag_zcrit'] = A.realism_flag(rate_on, rate_off, row['rate_rho_on_zcrit'], row['opk_on_tv_zcrit'],
+                                                   row['opk_off_tv_zcrit'], units='z')
+        rows.append(row)
+    model.set_profile(None, {})
+    if pair_parts:
+        pd.concat(pair_parts, ignore_index=True).to_csv(long_path, index=False, mode='a', header=not long_path.exists())
+    pd.DataFrame(var_rows).to_csv(out / 'variants.csv', index=False)
+    res = pd.DataFrame(rows)
+    res.to_csv(out / 'realism_points.csv', index=False)
+    print(res.round(3).to_string(), flush=True)
+    return res
+
+
 def _write_d2(out: Path, res: dict) -> None:
     import json
     (out / 'd2_stages.json').write_text(json.dumps(res, indent=1, default=float) + '\n')
@@ -801,7 +871,7 @@ def anatomy(out: Path) -> pd.DataFrame:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['A-score', 'B', 'C', 'D1', 'D2', 'D2-diag', 'F'])
+    ap.add_argument('--part', required=True, choices=['A-score', 'B', 'C', 'D1', 'D2', 'D2-diag', 'save-points', 'F'])
     ap.add_argument('--stage', default='known', choices=['known', 'map', 'neg'], help="part C's stage")
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
@@ -813,6 +883,8 @@ def main() -> None:
         sensitivity_map(out, stage=args.stage)
     elif args.part == 'D2-diag':
         diagnostic_d2(out)
+    elif args.part == 'save-points':
+        save_points(out)
     else:
         {'B': archive_vs_common, 'D1': linear_profile, 'D2': simulate_profiles, 'F': anatomy}[args.part](out)
 
