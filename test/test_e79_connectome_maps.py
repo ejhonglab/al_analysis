@@ -126,3 +126,17 @@ def test_loo_share():
     assert E.loo_share(err, err, pairs, 6, nonneg=True) == pytest.approx(0.0)
     noise = rng.normal(size=(200, len(pairs)))
     assert np.median(E.loo_share(noise, err, pairs, 6)) < 0.05
+
+
+def test_flip_consensus():
+    rng = np.random.default_rng(4)
+    n_rec, n_perm = 6, 200
+    maxima = {}
+    for c in ('a_L', 'b_R', 'model_x_R'):
+        mx = rng.normal(0.3, 0.05, size=(n_rec, len(E.FLIPS), n_perm + 1))
+        mx[:, E.FLIPS.index('both'), 0] = 0.9
+        maxima[(c, 'bouton', 'pa-ms')] = mx
+    t = E.flip_consensus(maxima, ['a_L', 'b_R', 'model_x_R'])
+    row = t.iloc[0]
+    assert row['n_calyces'] == 2 and row['modal_flip'] == 'both' and row['n_recordings_won'] == n_rec
+    assert row['null_pct_n_won'] > 90 and row['null_pct_mean_r'] == 100.0

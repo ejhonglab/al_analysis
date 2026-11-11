@@ -664,6 +664,7 @@ def run_maps(n_perm: int = N_PERM, calyces: Optional[Dict[str, dict]] = None, ra
         del per_flip
     pooled = pd.DataFrame(pooled_rows)
     flips = pd.DataFrame(flip_rows)
+    consensus = flip_consensus(maxima, list(calyces))
     measured = pd.DataFrame([dict(recording=rec, side=m['side'], comparison=comp,
                                   **{f'conc_{o}': c for o, c in m['concs'][comp].items()},
                                   **{f'mean_dff_{o}': v for o, v in m['means'][comp].items()},
@@ -675,9 +676,44 @@ def run_maps(n_perm: int = N_PERM, calyces: Optional[Dict[str, dict]] = None, ra
     best.to_csv(OUT / f'connectome_map_best{sfx}.csv', index=False)
     pooled.to_csv(OUT / f'connectome_map_pooled{sfx}.csv', index=False)
     flips.to_csv(OUT / f'connectome_map_flips{sfx}.csv', index=False)
+    consensus.to_csv(OUT / f'connectome_map_flip_consensus{sfx}.csv', index=False)
     measured.to_csv(OUT / f'connectome_measured{sfx}.csv', index=False)
     plot_maps(scores, pooled, keep_maps, meas, sfx)
-    return dict(scores=scores, best=best, pooled=pooled, flips=flips, measured=measured)
+    return dict(scores=scores, best=best, pooled=pooled, flips=flips, measured=measured, flip_consensus=consensus)
+
+
+def flip_consensus(maxima: Dict[Tuple[str, str, str], np.ndarray], calyces: Sequence[str]) -> pd.DataFrame:
+    """Whether one flip wins across recordings, with the calyces pooled: per alternative and comparison, each
+    recording's best r (over slabs and blurs) per flip averaged over the seven dataset calyces (the model's own hemibrain
+    boutons left out, as a duplicate of hemibrain R), the flip with the highest average per recording, the number of
+    recordings the most frequent flip wins, and the same count in each label permutation (the calyces' permutations
+    are independent draws under the null), with its percentile; and the mean over recordings of the calyx-averaged r at
+    the winning flip against the same in each permutation."""
+    rows = []
+    alts = sorted({k[1] for k in maxima})
+    comps = sorted({k[2] for k in maxima})
+    for alt in alts:
+        for comp in comps:
+            keys = [(c, alt, comp) for c in calyces if not c.startswith('model_') and (c, alt, comp) in maxima]
+            arrs = [maxima[k] for k in keys]
+            if not arrs or len({a.shape for a in arrs}) != 1 or arrs[0].shape[-1] < 2:
+                continue
+            m = np.mean(arrs, axis=0)
+            win = m.argmax(axis=1)
+            counts = np.stack([(win == f).sum(axis=0) for f in range(len(FLIPS))])
+            top = counts.max(axis=0)
+            f0 = int(counts[:, 0].argmax())
+            # each permutation at its own most frequent flip
+            fk = counts.argmax(axis=0)
+            mean_at = m[:, fk, np.arange(m.shape[-1])].mean(axis=0)
+            rows.append(dict(alternative=alt, comparison=comp, n_calyces=len(keys), modal_flip=FLIPS[f0],
+                             n_recordings_won=int(top[0]), n_recordings=m.shape[0],
+                             **{f'won_{f}': int(counts[i, 0]) for i, f in enumerate(FLIPS)},
+                             null_pct_n_won=float((top[1:] < top[0]).mean() * 100),
+                             null_p95_n_won=float(np.quantile(top[1:], 0.95)),
+                             mean_r_at_modal_flip=float(mean_at[0]),
+                             null_pct_mean_r=float((mean_at[1:] < mean_at[0]).mean() * 100)))
+    return pd.DataFrame(rows)
 
 
 def profiles(calyces: Optional[Dict[str, dict]] = None, rates: Optional[pd.DataFrame] = None, blur_um: float = 2.0,
@@ -1145,7 +1181,8 @@ def _md(df: pd.DataFrame, floatfmt: str = '.3f') -> str:
 
 TABLE_FILES = {'axes': 'connectome_axis_checks.csv', 'calyces': 'connectome_calyces.csv',
                'pooled': 'connectome_map_pooled.csv', 'flips': 'connectome_map_flips.csv',
-               'best': 'connectome_map_best.csv', 'measured': 'connectome_measured.csv',
+               'best': 'connectome_map_best.csv', 'flip_consensus': 'connectome_map_flip_consensus.csv',
+               'measured': 'connectome_measured.csv',
                'centroid_shift': 'connectome_centroid_shift.csv', 'positions': 'connectome_glomerulus_positions.csv',
                'agreement': 'coloc_agreement.csv',
                'sets': 'coloc_sets.csv', 'concentration': 'coloc_concentration.csv', 'proxy': 'coloc_proxy.csv'}
@@ -1200,6 +1237,14 @@ def write_table(tables: Dict[str, pd.DataFrame]) -> None:
         q.columns = [f'{a} {b}' for a, b in q.columns]
         lines += [f'### pa-ms and paa-ms with the measured maps\' {bl} baseline (E79_apl_calyx_constraints.py\'s '
                   f'stimulus_maps; connectome_map_*_{bl}.csv), best flip', '', _md(q.reset_index(), '.2f'), '']
+    if 'flip_consensus' in tables:
+        lines += ['## Analysis 4: one flip across recordings, calyces pooled (connectome_map_flip_consensus.csv)', '',
+                  'Per recording, the flip with the highest best r averaged over the seven dataset calyces; n_recordings_won '
+                  'by the most frequent flip against the same count in 1,000 label permutations (null_pct_n_won: share '
+                  'of permutations with fewer; null_p95_n_won: their 95th percentile), and the mean over recordings of the '
+                  'calyx-averaged r at that flip against the same in each permutation at its own most frequent flip '
+                  '(null_pct_mean_r).', '',
+                  _md(tables['flip_consensus'], '.2f'), '']
     if 'flips' in tables:
         f = tables['flips']
         f = f[f.comparison.isin(['pa-ms', 'paa-ms'])]
