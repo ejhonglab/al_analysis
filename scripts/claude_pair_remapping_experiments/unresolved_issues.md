@@ -21,7 +21,7 @@ directory's notes/ and are linked from here.
   baseline-noise units (threshold 1.97 noise SDs). The code (cbdebc2: 54 `noise_*` registry entries, `apl_effect_scores.py`'s new
   `realism_flag` with the old one kept as `realism_flag_zcrit`, E73's fixed-unit columns, the progress plot's filter; 5100063: E10's
   `--band-units noise`), by an Opus code subagent of hal's session. The archive re-scored (results/apl_effect/by_variant.csv, 2026-11-10
-  16:3x): 423 of 916 variants flagged under the new rule against 604 under the old (24 newly flagged, 205 cleared); 3 of the summary's 14
+  16:34): 423 of 916 variants flagged under the new rule against 604 under the old (24 newly flagged, 205 cleared); 3 of the summary's 14
   best-models columns against 10. The summary's footnote on baseline-noise units, the band paragraph, its table and the best-models
   realism rows (e83c8bb). E73's note reports both rules.
 - **Remains.** The summary template's other band rows and prose (rows that pair the re-scored, noise-unit distances with the z-unit
