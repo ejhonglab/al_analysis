@@ -1171,6 +1171,101 @@ def rank_match_map(on_counts: pd.DataFrame, reference: np.ndarray) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
+# the flies' recording protocol (E82): the flies' response is the mean calcium signal 2.0 to 8.1 s
+# after the odor's onset minus the 5 s before it (a 2 s pulse, nuclear GCaMP6s), so a model spike
+# at time s counts by the area inside that window of the indicator kernel it starts,
+# (1 - exp(-(t - s) / rise)) exp(-(t - s) / decay) for t > s.
+
+def kernel_window_weights(times, rise: float, decay: float, window: Tuple[float, float] = (2.0, 8.1),
+    ref_time: Optional[float] = None) -> np.ndarray:
+    """Each spike's weight under the flies' protocol: the area inside `window` of the kernel
+    (1 - exp(-u / rise)) exp(-u / decay) (u the time since the spike), divided by the area of
+    a spike at `ref_time`.
+
+    Args:
+        times: spike times in seconds from the odor's onset (array-like).
+        rise, decay: the kernel's time constants in seconds; rise 0 (an instant rise) and decay
+            np.inf (no decay) are the limits, so rise 0 with decay inf is a step and every spike
+            before the window has weight exactly 1 (with `ref_time` before the window too).
+        window: the response window (start, end) in seconds from onset; the flies' is 2.0 to 8.1.
+        ref_time: the spike time of weight 1; default the window's start, which for the flies' 2 s
+            pulse is the pulse's end (so the weights are in units of a spike at the end of the
+            flies' pulse, whatever the model's pulse). Must be before the window's end.
+
+    A spike inside the window counts by the part of its kernel after it, one after the window by
+    0. The baseline (the 5 s before onset) holds no kernel of a spike after onset, so it is not
+    subtracted; spikes before onset get the same window area with no baseline correction. With a
+    finite rise a spike shortly before the window's start can weigh a little more than one at it
+    (whose kernel is still rising when the window opens): at most 1.8 % for rise 1 s, decay 5 s.
+    Returns float weights, one per spike.
+    """
+    t = np.asarray(times, dtype=float)
+    w0, w1 = float(window[0]), float(window[1])
+    rise, decay = float(rise), float(decay)
+    if not w1 > w0:
+        raise ValueError(f'window must have end > start, not {window}')
+    if rise < 0 or not decay > 0:
+        raise ValueError(f'rise must be >= 0 and decay > 0, not {rise}, {decay}')
+    ref = w0 if ref_time is None else float(ref_time)
+    if not ref < w1:
+        raise ValueError(f'ref_time ({ref}) must be before the window end ({w1})')
+
+    def area(s: np.ndarray) -> np.ndarray:
+        # u from lo to hi: the window in time since the spike, clipped at the spike
+        lo, hi = np.maximum(w0 - s, 0.0), np.maximum(w1 - s, 0.0)
+        if np.isinf(decay):
+            # (the window's length after the spike, computed so that it is the same float for every spike before
+            # the window: w1 - w0 exactly)
+            first = np.maximum(w1, s) - np.maximum(w0, s)
+            tau = rise
+        else:
+            # decay * (exp(-lo / decay) - exp(-hi / decay)), accurate for long decays
+            first = -decay * np.exp(-lo / decay) * np.expm1(-(hi - lo) / decay)
+            tau = rise * decay / (rise + decay)
+        if tau == 0:
+            return first
+        return first - tau * (np.exp(-lo / tau) - np.exp(-hi / tau))
+
+    a_ref = float(area(np.array([ref]))[0])
+    if not a_ref > 0:
+        raise ValueError(f'a spike at ref_time {ref} has no kernel area inside the window {window}')
+    return area(t) / a_ref
+
+
+def kernel_weighted_counts(spike_times: pd.DataFrame, index: pd.Index, columns: pd.Index, rise: float, decay: float,
+    window: Tuple[float, float] = (2.0, 8.1), ref_time: Optional[float] = None, stim_onset: float = 0.0
+    ) -> pd.DataFrame:
+    """A model's spike counts read through the flies' protocol (E82): KCs x odors sums of each
+    spike's `kernel_window_weights`.
+
+    Args:
+        spike_times: one row per spike, as mb_model's `simulate(..., spike_times=True)` returns
+            and E80_pulse.py saves (`<tag>_<condition>_spike_times.parquet`): `kc` and `odor` (the
+            positions of the spike's KC and odor in the spike-count matrix), `time_s` (seconds in
+            olfsysm's time, where the odor's onset is 0); other columns are ignored.
+        index, columns: the spike-count matrix's KC index and odor columns (the rows of `kc` and
+            `odor` refer to them by position).
+        rise, decay, window, ref_time: the kernel and the window (`kernel_window_weights`).
+        stim_onset: the odor's onset in `time_s` units (the window and `ref_time` are relative to
+            it).
+
+    Returns a float DataFrame (`index` x `columns`); with every weight 1 (e.g. rise 0 and decay
+    inf with every spike before the window) it equals the spike counts exactly. The responses (two
+    or more spikes over the whole simulation) are not affected: only the amplitudes are.
+    """
+    n_kc, n_odor = len(index), len(columns)
+    kc = spike_times['kc'].to_numpy(dtype=np.int64)
+    od = spike_times['odor'].to_numpy(dtype=np.int64)
+    if len(kc) and (kc.min() < 0 or kc.max() >= n_kc or od.min() < 0 or od.max() >= n_odor):
+        raise ValueError(f'spike positions outside a {n_kc} x {n_odor} matrix')
+    w = kernel_window_weights(spike_times['time_s'].to_numpy(dtype=float) - float(stim_onset), rise, decay,
+        window=window, ref_time=ref_time)
+    a = np.zeros((n_kc, n_odor), dtype=float)
+    np.add.at(a, (kc, od), w)
+    return pd.DataFrame(a, index=index, columns=columns)
+
+
+# ---------------------------------------------------------------------------
 # the low end of the readout (E68): measurement noise below the data's response criterion, the
 # saturating readout's one-spike floor (`readout(..., floor=b)`), the conversion of readout units
 # to the data's z units, and the split of a cosine into responder / sub-threshold terms. The
