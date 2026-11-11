@@ -640,6 +640,10 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
         wp = Path(str(wiring_file))
         # (relative paths as E10_joint_fit.py read them, from this folder)
         wp = wp if wp.is_absolute() else H.HERE / wp
+        key = '/Tom/claude_kc_remapping/'
+        if not wp.exists() and key in str(wp):
+            # (a shared-directory path recorded on a host that mounts tensor elsewhere, e.g. /local/tensor on hal)
+            wp = H.shared_dir() / str(wp).split(key, 1)[1]
         wiring_matrix, wiring_tag = pd.read_parquet(wp), str(wiring_tag)
         extra.update(wiring_file=str(wiring_file), wiring_tag=wiring_tag,
             wiring_file_sha256=hashlib.sha256(wp.read_bytes()).hexdigest())
