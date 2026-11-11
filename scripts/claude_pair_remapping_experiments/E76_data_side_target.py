@@ -1766,7 +1766,8 @@ def write_table(out: Path) -> None:
                 r = sc.loc[(f, tg)]
                 L.append(f'| {lab} | {r.model_mean:+.3f} | ' + ' | '.join(f"{r[n + '_loss']:.3f} / {r[n + '_pattern']:.3f} / {r[n + '_rho']:.2f}"
                     for n in ('eight_z', 'six_z', 'two_z', 'eight_noise', 'six_noise', 'two_noise')) + ' |')
-        ok = sc[sc['realism_flag'] == ''].reset_index()
+        # na_values=[''] above reads an empty flag (inside the bands) as NaN
+        ok = sc[sc['realism_flag'].fillna('') == ''].reset_index()
         L += ['', f'Best inside the bands (baseline-noise units) of {len(sc)} archived variants ({len(ok)} inside):', '']
         for n in ('eight_z', 'six_z', 'two_z', 'eight_noise', 'six_noise', 'two_noise'):
             b = ok.sort_values(f'{n}_loss').head(3)
