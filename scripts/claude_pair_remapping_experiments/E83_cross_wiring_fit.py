@@ -184,12 +184,14 @@ def build_simulator(label: str, orn: Optional[pd.DataFrame] = None, breadth: Opt
         input_tag: see `breadth`.
 
     Returns:
-        (simulate, info): info has 'label', 'params', 'breadth', 'wAPLKC' (breadth-weighted APL->KC weights),
+        (simulate, info): info has 'label', 'params', 'kws' (the scalar model kwargs, as E77's `build_c2_simulator`
+        gives them, which `hold_rates` records), 'breadth', 'wAPLKC' (breadth-weighted APL->KC weights),
         'wAPLPN', 'W', 'orn', 'cells' (the simulator's closure cells: 'wAPLKC_unscaled' / 'wAPLPN_unscaled' for
         in-place profile changes, 'mp', 'rv', 'odor_order').
     """
     import E10_joint_fit as J
     from al_analysis.mb_model import make_fixed_param_kc_simulator
+    from E77_input_screen import _scalar_kws
     P = wiring_parts(label)
     p = dict(P['p'] if params is None else params)
     wnorm, W = P['wnorm'], P['W']
@@ -211,7 +213,8 @@ def build_simulator(label: str, orn: Optional[pd.DataFrame] = None, breadth: Opt
     if not (np.array_equal(cells['wAPLKC_unscaled'].cell_contents.ravel(), wAPLKC.to_numpy())
             and np.array_equal(cells['wAPLPN_unscaled'].cell_contents.ravel(), wnorm['wAPLPN'].to_numpy())):
         raise RuntimeError("the simulator's unscaled APL weights are not the ones it was built with")
-    return sim, dict(label=label, params=p, breadth=breadth, wAPLKC=wAPLKC, wAPLPN=wnorm['wAPLPN'], W=W, orn=orn,
+    kws = _scalar_kws(dict(J.base_kws(None), kc_kc_inh=p['wKCKC_scale'], kc_kc_tau=J.TAU))
+    return sim, dict(label=label, params=p, kws=kws, breadth=breadth, wAPLKC=wAPLKC, wAPLPN=wnorm['wAPLPN'], W=W, orn=orn,
                      cells=cells)
 
 
@@ -860,32 +863,50 @@ def a2_input(half: str, size: float) -> pd.DataFrame:
     return orn_in
 
 
-def part_a2(out: Path, halves: Sequence[str] = A2_HALVES, check_e77: bool = True) -> pd.DataFrame:
-    """Part A2 (see the module docstring); resumable. First (with `check_e77`) every wiring's simulator against its saved
-    fit, and E77's archived reading of half A's input on the real wiring re-simulated through this reading and compared
-    exactly (tag A2_check_halfA_s1_real, not a point of the part)."""
+def check_e77_input(out: Path, halves: Sequence[str] = A2_HALVES, label: str = 'real') -> None:
+    """E77's archived readings of its searched inputs at full size on `label`, re-simulated through `build_simulator`
+    (the input's breadth recomputed under this experiment's cache tag) at E77's recorded absolute parameters
+    (oracle_runs.csv; APL off: the same somatic threshold, the APL->KC and APL->bouton scales 0): the counts and
+    responses must equal E77's exactly (raises otherwise). Three simulations per half, against about 40 for re-running
+    both bisections, whose factors the first, interrupted run of part A2 followed to E77's (0.978845 and 1.08082 for
+    half A)."""
+    e77 = pd.read_csv(H.shared_dir() / 'results' / 'E77_input_side_common_error' / 'oracle_runs.csv',
+                      float_precision='round_trip')
+    P = saved_fit(label)
+    for X in halves:
+        q = e77[(e77.input == f'oracle_half{X}') & (e77.wiring == label)].iloc[0]
+        orn_in = a2_input(X, 1.0)
+        sim, info = build_simulator(label, orn_in, input_tag=input_tag_for(orn_in, f'E83_A2_half{X}_s1'))
+        p_on = {k: float(q[k]) for k in PARAM_KEYS}
+        p_off = dict(P['p'], fixed_thr=p_on['fixed_thr'], wAPLKC_scale=0.0, wAPLPN_scale=0.0)
+        o = {'on': sim(p_on), 'off': sim(p_off)}
+        del sim, info
+        ns, nr = _same(o, e77_oracle_run(X, label))
+        if ns or nr:
+            raise RuntimeError(f"half {X}'s input on {label} differs from E77's archived run in {ns} counts and {nr} responses")
+        print(f"half {X}'s input at full size on {label}, at E77's parameters, reproduces E77's archived run exactly", flush=True)
+
+
+def part_a2(out: Path, halves: Sequence[str] = A2_HALVES, check_wirings: bool = True, check_e77: bool = True) -> pd.DataFrame:
+    """Part A2 (see the module docstring); resumable. First (with `check_wirings`) every wiring's simulator against its
+    saved fit, and (with `check_e77`) E77's archived reading of half A's input on the real wiring re-simulated through
+    at its recorded parameters through this reading's simulator (`check_e77_input`; a row A2_check_e77_real in
+    runs_A2.csv, not a point of the part)."""
     import gc
     rp, pp = out / 'runs_A2.csv', out / 'provenance_A2.json'
     done = set(_read_rows(rp).get('tag', pd.Series(dtype=str)))
     plan = [(X, size, w) for X in halves for size, ws in ((GATE_SIZE, ALL_WIRINGS), (1.0, T_WIRINGS)) for w in ws]
-    if check_e77:
+    if check_wirings:
         for w in ALL_WIRINGS:
             if any(f'A2_half{X}_s{size:g}_{ww}' not in done for X, size, ww in plan if ww == w):
                 sim, info = build_simulator(w)
                 _check_saved(w, sim, info['params'], saved_fit(w)['saved'])
                 del sim, info
                 print(f'{w}: the simulator reproduces {saved_fit(w)["folder"]}:{saved_fit(w)["tag"]}', flush=True)
-        if 'A2_check_halfA_s1_real' not in done:
-            orn_in = a2_input('A', 1.0)
-            res = input_reading('real', orn_in, input_tag=input_tag_for(orn_in, 'E83_A2_halfA_s1'))
-            o = {'on': res['on'], 'off': res['off']}
-            ns, nr = _same(o, e77_oracle_run('A', 'real'))
-            if ns or nr:
-                raise RuntimeError(f"half A's input on the real wiring differs from E77's archived run in {ns} counts and {nr} responses")
-            print("half A's input at full size on the real wiring reproduces E77's archived run exactly", flush=True)
-            _append_row(rp, _run_row('A2', 'A2_check_halfA_s1', 'real', 'A2_check_halfA_s1_real', res, o, half='A', size=1.0,
-                                     input_tag=res['input_tag'], reproduces='E77 oracle_halfA_real'))
-            del res, o
+    if check_e77 and 'A2_check_e77_real' not in done:
+        check_e77_input(out)
+        _append_row(rp, dict(part='A2', change='A2_check_e77', wiring='real', tag='A2_check_e77_real',
+                             reproduces='E77 oracle_halfA_real and oracle_halfB_real at their parameters'))
     for X, size, w in plan:
         tag = f'A2_half{X}_s{size:g}_{w}'
         if tag in done:
@@ -1405,6 +1426,8 @@ def main() -> None:
     ap.add_argument('--half', choices=['A', 'B'], help='parts B and C: the half of the recordings searched against')
     ap.add_argument('--arm', choices=['P', 'I'], help='part D: the arm read')
     ap.add_argument('--wirings', nargs='+', default=list(ALL_WIRINGS), help='part A1: the wirings to run')
+    ap.add_argument('--no-wiring-checks', action='store_true',
+                    help="part A2: skip the wirings' identity checks (when a run of it already logged them)")
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
     if args.part == 'identity':
@@ -1412,7 +1435,7 @@ def main() -> None:
     elif args.part == 'A1':
         part_a1(out, wirings=args.wirings)
     elif args.part == 'A2':
-        part_a2(out)
+        part_a2(out, check_wirings=not args.no_wiring_checks)
     elif args.part == 'A-score':
         score_part_a(out)
     elif args.part in ('B', 'C'):
