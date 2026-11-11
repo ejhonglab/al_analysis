@@ -8,6 +8,24 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### E75's part B named the archive's least-common-error variants wrongly (found 2026-11-10 18:15, viki's planning subagent for E77; checked by viki)
+- **What.** The glomerulus profile of APL inhibition (E75) part B ranks every archived variant by how much of the error common to
+  all wirings its pattern error carries (archive_vs_common_error.csv; the numbers are right). The write-up named the variants by
+  their experiment's canonical name, not by what they are: E3's `hemibrain-wd20_inhadd*` were called "APL inhibition added at the
+  PN boutons", but they are E3's part A, the antennal lobe's divisive normalization weakened (pn_inhadd raised with pn_inhsc,
+  E3_drive_dependent_gain.py lines 207-211) on the one-row-per-KC wd20 base, whose default (inhadd 31.4) already projects 0.52.
+  E3's bouton arm (`bouton_pnapl_x0` to `x2`) projects 0.80 to 0.82, as the rest of the archive. "The per-claw saturation at
+  130 Hz (E16)" is `bouton_thr130_tanh50`, a 130 Hz per-claw threshold with a tanh cap at 50 Hz (the saturation-only variants
+  project 0.79 to 1.04). "The uniform and hemidraw substrates, 0.43 to 0.53" are the lowest three of 34 random draws (median
+  0.68). Their pattern errors (0.056 to 0.074 under the readout; other E4 draws 0.052 to 0.055) are not below C2's 0.056.
+- **Affects.** E75_glomerulus_apl_profile.md (summary, part B, interpretation, next step 1) and its page; E75's Status of 15:38
+  and its Completed entry in experiment_priorities.md; viki's chat posts of 14:50 and 17:51; the E77 brief (corrected by E77's
+  planner, whose entry gives the right names). The conclusion "the variants least aligned with the common error change what
+  reaches the KCs" stands; "bouton inhibition" is not one of them.
+- **Done.** Note corrected in place with a dated correction line; page rebuilt; Status and Completed entry annotated; the summary
+  passage for E75 uses the corrected names (its planner had the correction).
+- **Remains.** Nothing once the summary passage is in (the page was republished by hal at 18:23, version 3).
+
 ### The realism bands compared the models' two-spike responses with the KC data's whole-recording z-score responses (found 2026-11-10, hal's planning subagent; decided by Tom 16:10)
 - **What.** Since the bands were set (2026-11-09), the model side counted a response at two or more spikes and the data side at a
   trial mean above 1 z of Yang's whole-recording z-score, whose unit grows with how much a KC responds (1.4 to 3.0 times its baseline

@@ -429,12 +429,16 @@ def _inner_lambda(M: pd.DataFrame, c: pd.Series) -> float:
     return best
 
 
-def _split_halves(n_splits: int = 100, seed: int = 0) -> List[pd.Series]:
+def _split_halves(n_splits: int = 100, seed: int = 0, strong_apart: bool = False) -> List[pd.Series]:
     """The data's per-pair APL effect from random halves of the recordings (control flies and APL output blocked (TNT)
-    each split in two), as pairs of (half A, half B) effects."""
+    each split in two), as pairs of (half A, half B) effects. With `strong_apart`, each pair gets a third element: whether
+    the two strong TNT recordings (STRONG_TNT) fall in different halves (the draws are the same either way)."""
     rng = np.random.default_rng(seed)
     ctrl = H.yang_recording_rdms_values('TNT3c', 'graded')
     tnt = H.yang_recording_rdms_values('TNT', 'graded')
+    strong = [i for i, r in enumerate(tnt.index) if (str(r[0]), int(r[1]), str(r[2])) in STRONG_TNT]
+    if strong_apart and len(strong) != 2:
+        raise RuntimeError(f'expected the 2 strong TNT recordings among {len(tnt)}, found {len(strong)}')
     out = []
     for _ in range(n_splits):
         halves = []
@@ -443,6 +447,9 @@ def _split_halves(n_splits: int = 100, seed: int = 0) -> List[pd.Series]:
             e = ctrl.iloc[sel_c].mean() - tnt.iloc[sel_t].mean()
             e.index = _canon(e.index)
             halves.append(e.sort_index())
+        if strong_apart:
+            in_a = [s in set(it[:len(it) // 2]) for s in strong]
+            halves.append(in_a[0] != in_a[1])
         out.append(tuple(halves))
     return out
 
@@ -863,6 +870,72 @@ def _write_d2(out: Path, res: dict) -> None:
     (out / 'd2_stages.json').write_text(json.dumps(res, indent=1, default=float) + '\n')
 
 
+def report_tables(out: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """The two small tables the summary's passage reads (its placeholders cannot address a point_id with ':' in it):
+    report_points.csv, every row of sensitivity_map.csv with a first column `tag` (point_id, ':' replaced by '_'), and
+    report_scalars.csv (tag, value, definition): the archive's counts and medians (part B), the ranges of the single-
+    glomerulus points (part C), D2's transfer and held-out reductions, and D1's split-half wins of the cell ridge profile
+    by whether the two strong TNT recordings fall in different halves (recomputed here as D1 computes them; their total
+    must equal profile_cv.csv's)."""
+    import json
+    m = pd.read_csv(out / 'sensitivity_map.csv')
+    pts = m.copy()
+    pts.insert(0, 'tag', pts.point_id.str.replace(':', '_', regex=False))
+    if pts.tag.duplicated().any():
+        raise RuntimeError('report_points tags are not unique')
+    pts.to_csv(out / 'report_points.csv', index=False)
+    a = pd.read_csv(out / 'archive_vs_common_error.csv')
+    d2 = json.loads((out / 'd2_stages.json').read_text())
+    rows = [
+        ('archive_n_variants', len(a), 'rows of archive_vs_common_error.csv'),
+        ('archive_n_variants_cal', int(a.cal_proj_common.notna().sum()), 'rows of archive_vs_common_error.csv with cal_proj_common'),
+        ('archive_median_cal_proj_common', float(a.cal_proj_common.median()), 'median of cal_proj_common over archive_vs_common_error.csv'),
+        ('archive_median_raw_proj_common', float(a.raw_proj_common.median()), 'median of raw_proj_common over archive_vs_common_error.csv'),
+        ('archive_n_cal_proj_below_0.5', int((a.cal_proj_common < 0.5).sum()), 'rows of archive_vs_common_error.csv with cal_proj_common below 0.5'),
+    ]
+    for stage, name, what in (('map', 'map_x2', 'the stage=map points (one glomerulus doubled)'),
+                              ('neg', 'map_half', 'the stage=neg points (one glomerulus halved)')):
+        s = m[m.stage == stage]
+        lo, hi = s.loc[s.cal_loss.idxmin()], s.loc[s.cal_loss.idxmax()]
+        rows += [(f'{name}_cal_loss_min', float(lo.cal_loss), f'lowest cal_loss of the {len(s)} {what} of sensitivity_map.csv ({lo.point_id})'),
+                 (f'{name}_cal_loss_max', float(hi.cal_loss), f'highest cal_loss of the {len(s)} {what} ({hi.point_id})')]
+    rows += [
+        ('d2_stage1_transfer_x0.5', float(d2['stage1']['transfer_reduction']['x0.5']), 'd2_stages.json stage1.transfer_reduction[x0.5]'),
+        ('d2_stage2_pooled_heldout', float(d2['stage2']['pooled_heldout_reduction']), 'd2_stages.json stage2.pooled_heldout_reduction'),
+        ('d2_stage2_fold_B-myr', float(d2['stage2']['folds']['B-myr']), 'd2_stages.json stage2.folds[B-myr]'),
+    ]
+    # D1's split halves for the cell ridge profile, by stratum
+    c = common_error('cal')
+    c.index = _canon(c.index)
+    c = c.sort_index()
+    pop = population_effect('cal')
+    M = map_matrix(out, 'cell').reindex(c.index)
+    cv = pd.read_csv(out / 'profile_cv.csv')
+    row = cv[(cv.profile == 'cell') & (cv.variant == 'ridge')].iloc[0]
+    lam = float(row.lam)
+    won = {True: 0, False: 0}
+    n = {True: 0, False: 0}
+    for a_eff, b_eff, apart in _split_halves(strong_apart=True):
+        ca = (pop - pop.mean()) - (a_eff.reindex(pop.index) - a_eff.reindex(pop.index).mean())
+        cb = (pop - pop.mean()) - (b_eff.reindex(pop.index) - b_eff.reindex(pop.index).mean())
+        sa = fit_scores(M.reindex(pop.index).to_numpy(), ca.to_numpy(), lam)
+        rb = residual(M.reindex(pop.index).to_numpy(), cb.to_numpy(), sa)
+        n[apart] += 1
+        won[apart] += float((rb ** 2).sum()) < float((cb.to_numpy() ** 2).sum())
+    total = won[True] + won[False]
+    if abs(total / (n[True] + n[False]) - float(row.split_win_fraction)) > 1e-12:
+        raise RuntimeError(f'split wins {total} do not reproduce profile_cv.csv ({row.split_win_fraction})')
+    what = ('D1, the cell ridge profile, the 100 splits (seed 0), by whether the recordings 2024-07-17 fly 3 L and '
+            '2024-07-25 fly 1 L fall in different halves (apart) or in one (together)')
+    rows += [('split_cell_apart_won', won[True], what), ('split_cell_apart_n', n[True], what),
+             ('split_cell_together_won', won[False], what), ('split_cell_together_n', n[False], what)]
+    sc = pd.DataFrame(rows, columns=['tag', 'value', 'definition'])
+    sc['value'] = sc['value'].astype(float)
+    sc.to_csv(out / 'report_scalars.csv', index=False)
+    print(sc[['tag', 'value']].to_string(index=False), flush=True)
+    return pts, sc
+
+
 def anatomy(out: Path) -> pd.DataFrame:
     """Part F: the scores against the hemibrain's and the male CNS's per-glomerulus APL densities and their ratio, each
     glomerulus's drive, E17's co-drive score, E15's eight, the gain sets. Writes anatomy.csv."""
@@ -871,7 +944,7 @@ def anatomy(out: Path) -> pd.DataFrame:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['A-score', 'B', 'C', 'D1', 'D2', 'D2-diag', 'save-points', 'F'])
+    ap.add_argument('--part', required=True, choices=['A-score', 'B', 'C', 'D1', 'D2', 'D2-diag', 'save-points', 'report-tables', 'F'])
     ap.add_argument('--stage', default='known', choices=['known', 'map', 'neg'], help="part C's stage")
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
@@ -885,6 +958,8 @@ def main() -> None:
         diagnostic_d2(out)
     elif args.part == 'save-points':
         save_points(out)
+    elif args.part == 'report-tables':
+        report_tables(out)
     else:
         {'B': archive_vs_common, 'D1': linear_profile, 'D2': simulate_profiles, 'F': anatomy}[args.part](out)
 
