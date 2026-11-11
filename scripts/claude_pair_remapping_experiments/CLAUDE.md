@@ -1050,6 +1050,7 @@ Canonical experiment names for summary reports:
 | E76 | the data side of the main target |
 | E77 | the input side of the error common to all wirings |
 | E78 | the high per-claw knee without a dead zone |
+| E79 | the APL calyx maps against the connectome |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
