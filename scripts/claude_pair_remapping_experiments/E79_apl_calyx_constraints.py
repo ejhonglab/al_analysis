@@ -435,8 +435,9 @@ def shared_stats(maps: Dict[Stim, Tuple[np.ndarray, List[np.ndarray]]], mask: np
         raw_diff = [float(np.corrcoef(bl[ka][mask], bl[kb][mask])[0, 1]) for i, ka in enumerate(ks) for kb in ks[i + 1:]
             if ka[0] != kb[0]]
         auto_len = [autocorr_length(img[k], mask) for k in resid_stims]
+        cv = [bl[k][mask].std() / bl[k][mask].mean() for k in ks if bl[k][mask].mean() > 0]
         rows.append(dict(blur_px=blur, mode='means removed' if demean else 'means kept', n_stimuli=len(all_stims),
-            n_resid_stimuli=len(ks), share_first_sv=share,
+            n_resid_stimuli=len(ks), share_first_sv=share, cv_median=float(np.median(cv)) if cv else np.nan,
             resid_ss_share=float(np.mean([(res[k] ** 2).sum() / ((bl[k][mask] - (bl[k][mask].mean() if demean else 0)) ** 2).sum()
                 for k in ks])),
             resid_repeat_r_median=float(np.median(rep_r)) if rep_r else np.nan,
@@ -478,7 +479,7 @@ def analysis_shared(recs: Sequence[Recording], out: Path, baseline: str = MAIN_B
                         roi_height_px=int(ys.max() - ys.min() + 1), **r))
     df = pd.DataFrame(rows)
     df.to_csv(out / 'E79_shared_specific_per_recording.csv', index=False)
-    num = [c for c in df.columns if c.startswith(('share', 'resid_', 'raw_', 'noise_')) and pd.api.types.is_numeric_dtype(df[c])]
+    num = [c for c in df.columns if c.startswith(('share', 'resid_', 'raw_', 'noise_', 'cv_')) and pd.api.types.is_numeric_dtype(df[c])]
     g = df.groupby(['stimulus_set', 'mode', 'blur_px'])[num]
     summ = g.median().add_suffix('_median').join(g.min().add_suffix('_min')).join(g.max().add_suffix('_max')).reset_index()
     summ.to_csv(out / 'E79_shared_specific_summary.csv', index=False)
@@ -888,7 +889,8 @@ def model_vs_measured(stats: pd.DataFrame, profs: pd.DataFrame, measured: Dict[s
     stimuli, and all stimuli), and the model's value per coupling and view."""
     rows = []
     sh = measured.get('shared', {}).get('per_recording')
-    stat_cols = [('share_first_sv', 'share of sum of squares in the first singular vector'),
+    stat_cols = [('cv_median', 'spatial CV of the maps (SD / mean over the calyx; median over maps)'),
+        ('share_first_sv', 'share of sum of squares in the first singular vector'),
         ('resid_between_odor_r_mean', 'residual between-odor r (mean over odor pairs; about -1/(n-1) by construction)'),
         ('raw_between_odor_r_median', 'between-odor r of the maps (median over odor pairs)'),
         ('resid_autocorr_len', 'residual autocorrelation 1/e length (measured: of the mean map, noise included)'),
