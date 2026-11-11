@@ -288,4 +288,8 @@ def test_sweep_writes_and_aggregates(monkeypatch, tmp_path):
     assert set(mp.tag) == {'C2_identity_held', 'C2_knee130_g0.25'} and len(mp) == 2 * 2 * 120
     assert (tmp_path / 'outputs' / 'C' / 'C2_knee130_g0.25_on_spike_counts.parquet').exists()
     g = E78.gate(out)
-    assert g['n_points'] == 2
+    assert g['n_points'] == 1 and g['ref_point'] == 'identity'
+    row = g['points'][0]
+    assert row['tag'] == 'C2_knee130_g0.25' and 'held_pass' in row and row['held_cal_loss_start'] != row['cal_loss_start']
+    gh = E78.gate(out, 'identity_held')
+    assert gh['ref_point'] == 'identity_held' and (out / 'gate_identity_held.json').exists() and 'ident_pass' in gh['points'][0]

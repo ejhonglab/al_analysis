@@ -1184,28 +1184,41 @@ def gate_point(row: dict, ref: dict, ceiling: bool = False) -> Dict[str, object]
     return out
 
 
-def gate(out: Path) -> dict:
+def gate(out: Path, ref_point: str = 'identity') -> dict:
     """The gate on part C's points (every start; the firing ceiling's with its tolerance): each point's conditions
-    (`gate_point`, against its start's identity row, with the low-concentration fractions merged from low_conc/ where
-    run), and the transfers that go on to part D: at most two, the best passing knee point on C2 (by the readout loss)
-    and the best passing odor-relative point if it passes too. Writes gate.json and gate.csv."""
+    (`gate_point`, against its start's `ref_point` row: 'identity', the start itself as the entry specifies, or
+    'identity_held', the start with only the held breadth, like for like with the points' breadth; both are computed,
+    the other with a `held_` / `ident_` prefix), with the low-concentration fractions merged from low_conc/ where run, and
+    the transfers that go on to part D: at most two, the best passing knee point on C2 (by the readout loss) and the best
+    passing odor-relative point if it passes too. Writes gate.json and gate.csv (gate_<ref_point>.* when not
+    'identity')."""
     import json
     df = aggregate(out)
     lc = out / 'low_conc' / 'points_low_conc.csv'
     if lc.exists():
         low = pd.read_csv(lc)
         df = df.drop(columns=[c for c in low.columns if c.startswith('low_') and c in df.columns]).merge(low, on='tag', how='left')
+    if ref_point not in ('identity', 'identity_held'):
+        raise ValueError(f'{ref_point=}')
+    other = 'identity_held' if ref_point == 'identity' else 'identity'
     rows = []
     for start, d in df.groupby('start'):
-        ref = d[d.point_id == 'identity']
-        if not len(ref):
+        refs = {i: d[d.point_id == i] for i in ('identity', 'identity_held')}
+        if not len(refs[ref_point]):
             continue
-        ref = ref.iloc[0].to_dict()
-        for _, r in d[d.point_id != 'identity'].iterrows():
-            rows.append(dict(gate_point(r.to_dict(), ref, ceiling=start == 'fit1'), tag=r['tag'], family=r['family']))
+        ref = refs[ref_point].iloc[0].to_dict()
+        for _, r in d[~d.point_id.isin(['identity', 'identity_held'])].iterrows():
+            row = dict(gate_point(r.to_dict(), ref, ceiling=start == 'fit1'), tag=r['tag'], family=r['family'], ref_point=ref_point)
+            if len(refs[other]):
+                alt = gate_point(r.to_dict(), refs[other].iloc[0].to_dict(), ceiling=start == 'fit1')
+                pre = 'held_' if other == 'identity_held' else 'ident_'
+                row.update({pre + k: alt[k] for k in ('i', 'ii', 'iii', 'iv', 'pass', 'pass_without_iv', 'cal_loss_start',
+                    'ester_error_start', 'six_effect_start')})
+            rows.append(row)
     g = pd.DataFrame(rows)
+    suffix = '' if ref_point == 'identity' else f'_{ref_point}'
     if len(g):
-        g.to_csv(out / 'gate.csv', index=False)
+        g.to_csv(out / f'gate{suffix}.csv', index=False)
     sel = []
     c2 = g[(g.start == 'C2') & g['pass']] if len(g) else g
     if len(c2):
@@ -1215,10 +1228,10 @@ def gate(out: Path) -> dict:
             if len(x):
                 best = x.loc[x.tag.map(cal).idxmin()]
                 sel.append(dict(tag=best.tag, point_id=best.point_id, family=best.family, cal_loss=float(cal[best.tag])))
-    res = dict(n_points=int(len(g)), n_pass=int(g['pass'].sum()) if len(g) else 0,
+    res = dict(ref_point=ref_point, n_points=int(len(g)), n_pass=int(g['pass'].sum()) if len(g) else 0,
         n_pass_without_iv=int(g['pass_without_iv'].sum()) if len(g) else 0, selected=sel, thresholds=GATE,
         points=g.to_dict('records') if len(g) else [])
-    (out / 'gate.json').write_text(json.dumps(res, indent=1, default=_json_default) + '\n')
+    (out / f'gate{suffix}.json').write_text(json.dumps(res, indent=1, default=_json_default) + '\n')
     print(f"gate: {res['n_pass']} of {res['n_points']} points pass ({res['n_pass_without_iv']} without the low-concentration "
         f"condition); selected {[s['tag'] for s in sel]}", flush=True)
     return res
@@ -1620,6 +1633,9 @@ def main() -> None:
     ap.add_argument('--best', action='store_true', help=f"part C / C-low: the {N_BEST} best points of the sweep on C2 (by the "
         'readout loss, inside the bands), e.g. with --start fit1 or P1 for the repeats')
     ap.add_argument('--jobs', type=int, default=1, help='check-e10: runs at a time')
+    ap.add_argument('--gate-ref', default='identity', choices=['identity', 'identity_held'],
+        help="gate: compare each point with its start ('identity', the entry's reference) or with the start carrying only "
+            "the held breadth ('identity_held', like for like with the points' breadth); both are in the table")
     ap.add_argument('--baseline', default=None, metavar='COMMIT', help="check-e10: also run the 'off_*' runs on E10_joint_fit.py as of COMMIT")
     ap.add_argument('--local-test', metavar='DIR', default=None,
         help="write this experiment's results and outputs under DIR/results and DIR/outputs (a smoke test)")
@@ -1649,7 +1665,7 @@ def main() -> None:
     elif args.part == 'C-low':
         low_conc(out, args.only if args.only and not args.best else best_points(aggregate(out)), args.start)
     elif args.part == 'gate':
-        gate(out)
+        gate(out, args.gate_ref)
     elif args.part == 'D':
         d_launch(d_commands(gate(out)))
     elif args.part == 'E':
