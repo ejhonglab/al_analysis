@@ -1052,6 +1052,7 @@ Canonical experiment names for summary reports:
 | E78 | the high per-claw knee without a dead zone |
 | E79 | the APL calyx maps against the connectome |
 | E80 | the flies' pulse in the model and the remaining candidates for the common error |
+| E81 | the flies' variability across the three repeats |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 

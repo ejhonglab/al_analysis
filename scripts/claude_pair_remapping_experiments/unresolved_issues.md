@@ -8,6 +8,20 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### The noise correction of the KC distances assumes noise independent between odors, which the recordings' repeats contradict (found 2026-11-11, atlas's planning subagent, probe)
+- **What.** `noise_floor_trial_distances.py` corrects each recording's odor-odor distances on the assumption that trial-to-trial noise adds
+  nothing to the dot product between different odors. In the recordings two different odors of the same repeat of the panel are more alike
+  than two odors of different repeats, in all 19 recordings (single-trial cosine distance gap 0.006 to 0.053 in control flies, 0.041 to 0.113
+  with APL output blocked (TNT); a planning subagent's read-only probe, single pass, no intervals), so part of the noise is shared between the
+  odors of a repeat and the correction is biased low: by the probe, mean distances 0.79 / 0.58 (control flies / APL output blocked (TNT))
+  where an estimate from products of different repeats gives about 0.81 / 0.62, the mean APL effect +0.212 where it gives +0.186, and the six
+  pairs with near-identical ORN input 0.30 / 0.12 where it gives about 0.36 / 0.22.
+- **Touches.** results/noise_floor/; the registry's noise-corrected values (the mean distances, the block's +0.072, the effect's +0.212) and
+  the summary rows that quote them; the "corrected for trial-to-trial noise" rows of E43, E48 and E68 and of E76's unit table; the "trial
+  noise removed" column and the "at zero" sentence of E78's entry and report item 78.
+- **Done.** Filed; the flies' variability across the three repeats (E81, atlas) estimates the noise-free distances with intervals (part A4).
+- **Remains.** Part A4's estimate; then annotation of every quoted noise-corrected value, or the correction replaced.
+
 ### E75's part B named the archive's least-common-error variants wrongly (found 2026-11-10 18:15, viki's planning subagent for E77; checked by viki)
 - **What.** The glomerulus profile of APL inhibition (E75) part B ranks every archived variant by how much of the error common to
   all wirings its pattern error carries (archive_vs_common_error.csv; the numbers are right). The write-up named the variants by
