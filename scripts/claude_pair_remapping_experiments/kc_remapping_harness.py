@@ -2760,6 +2760,60 @@ def repeat_pair_table(trials: np.ndarray, odors: Sequence[str], *, values: str =
     return pd.DataFrame(cols, index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
 
 
+def presentation_pairs(trials: np.ndarray, odors: Sequence[str], order: pd.DataFrame, *, values: str = 'graded',
+    thresh: float = KC_RESPONSE_Z, volume_rate: Optional[float] = None) -> pd.DataFrame:
+    """One recording's single-trial distance between every two presentations of two different odors, with the
+    time between them (E81 part A6, the stimulus order).
+
+    Args:
+        trials: (n_repeats, units, odors), odors in the order of `odors` (`yang_recording_trials`).
+        odors: the odors of the last axis. Presentations of other stimuli (the solvent) form no pairs but keep
+            their places in the order.
+        order: the recording's presentations, one row each: 'presentation' (index in time order), 'block',
+            'odor' (abbreviation), 'repeat' (the index of the presentation's trial on the first axis of
+            `trials`) and, with `volume_rate`, 'onset_volume'.
+        values, thresh: how the single trials are read (`trial_values`).
+        volume_rate: volumes per second, for 'separation_s'.
+
+    Returns a DataFrame, one row per pair of presentations of two different odors of `odors`: 'odor_a',
+    'odor_b' (the canonical pair, as `pair_list` orders it), 'presentation_a', 'presentation_b', 'block_a',
+    'block_b' (of odor_a's and odor_b's presentation), 'position_a', 'position_b' (in the block, when `order` has
+    'position'), 'same_block', 'separation' (presentations apart, solvent presentations counted), 'separation_s'
+    (seconds between the onsets; NaN without `volume_rate`) and 'distance' (1 - cosine of the two single trials;
+    NaN where either is all zero).
+    """
+    odors = list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    o = order[order['odor'].isin(odors)].sort_values('presentation')
+    if o.duplicated(['odor', 'repeat']).any():
+        raise ValueError('order: an (odor, repeat) given to two presentations')
+    if (o['repeat'] < 0).any() or (o['repeat'] >= trials.shape[0]).any():
+        raise ValueError('order: a repeat outside the trials')
+    X = trial_values(trials, values, thresh)
+    C = trial_cosines(X)
+    rank = {p: i for i, p in enumerate(odor_order(odors))}
+    pres = o['presentation'].to_numpy()
+    blk = o['block'].to_numpy()
+    rep = o['repeat'].to_numpy()
+    oi = np.array([idx[x] for x in o['odor']])
+    onset = o['onset_volume'].to_numpy(dtype=float) if volume_rate is not None else np.full(len(o), np.nan)
+    i, j = np.triu_indices(len(o), k=1)
+    keep = oi[i] != oi[j]
+    i, j = i[keep], j[keep]
+    swap = np.array([rank[odors[oi[a]]] > rank[odors[oi[b]]] for a, b in zip(i, j)], dtype=bool)
+    ia, ib = np.where(swap, j, i), np.where(swap, i, j)
+    with np.errstate(invalid='ignore'):
+        dist = 1 - C[rep[ia], oi[ia], rep[ib], oi[ib]]
+    out = {'odor_a': [odors[k] for k in oi[ia]], 'odor_b': [odors[k] for k in oi[ib]],
+        'presentation_a': pres[ia], 'presentation_b': pres[ib], 'block_a': blk[ia], 'block_b': blk[ib]}
+    if 'position' in o.columns:
+        pos = o['position'].to_numpy()
+        out.update(position_a=pos[ia], position_b=pos[ib])
+    out.update(same_block=blk[ia] == blk[ib], separation=np.abs(pres[ib] - pres[ia]),
+        separation_s=np.abs(onset[ib] - onset[ia]) / (volume_rate if volume_rate else np.nan), distance=dist)
+    return pd.DataFrame(out)
+
+
 def repeat_response_stats(trials: np.ndarray, odors: Sequence[str], *, thresh: float = KC_RESPONSE_Z
     ) -> pd.DataFrame:
     """Per repeat and odor of one recording: 'rate' (fraction of units whose single-trial value is above

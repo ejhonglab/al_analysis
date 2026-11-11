@@ -37,7 +37,20 @@ binarized (above 1 z, or above the bands' noise_threshold in baseline-noise unit
   the six pairs, ρ and the projection on the error common to all wirings (E72's common error, model minus data,
   means removed; on the calibrated readout and on raw counts), the pattern's correlation between repeats, and the
   breadth-2 APL-effect fit's (C2, E67) loss and group errors against each repeat's effect.
-- A6, the stimulus order: a stub (`--order-table`), until viki has the order of the 51 presentations.
+- A6, the stimulus order (`--part A6`, also run by `--part A`; `--order-table`, default E84 part A's
+  results/E84_trace_time_course/presentation_order.csv): (1) the order matched to olfdb's trials by recording and odor,
+  olfdb's `repeat` against the order's block, trial by trial, with E84's check by value beside (order_match.csv,
+  order_match_summary.csv); (2) the single-trial cosine distance between two presentations of two different odors
+  against their separation (presentations apart; onsets in seconds from the volume rate), within a block and across a
+  block boundary, per genotype, with each pair's mean over its nine pairs of presentations removed
+  (order_separation_curve.csv), and the same-repeat gap split by least squares into the part carried by the
+  separation and the part of the block at equal separation (`gap_decomposition`; order_gap_decomposition.csv), in
+  Yang's z and baseline-noise units; (3) the confound: how often each pair is adjacent or close in a block, ρ of a
+  pair's mean separation (by genotype and their difference) with the per-pair APL effect and with the error common to
+  all wirings (E72), against random orders that keep the design's reuse of block orders; the shift of the per-pair
+  APL effect predicted from the separations (order_pairs.csv, order_confound.csv); the per-pair APL effect from
+  recordings with different session orders only (order_distinct.csv). E81_order.png and the A6 block of
+  comparison_table.md (between its own markers).
 
 Part B, the models against the noise-free effect and the saved trials (`--part B`):
 - B1 (by_variant_noise_free.csv): every archived variant (each results/E*/model_pair_distances_long.csv, read as
@@ -61,11 +74,13 @@ the CSVs; `--part A` and `--part B` end with it. `registry_entries()` gives data
 (`repeat_*`, `noise_free_*`). Outputs: <shared>/results/E81_repeat_structure/ (the CSVs above, comparison_table.md,
 E81_*.png, provenance_A.json / provenance_B.json, recorded at the start of each part).
 Usage (light CPU): OMP_NUM_THREADS=2 nice -n 10 ../../venv/bin/python -u E81_repeat_structure.py --part A
+(or --part A6 for the stimulus order alone; provenance_A6.json).
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import re
 import time
@@ -586,18 +601,899 @@ def part_a5(n_boot: int) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# A6, the stimulus order (stub)
-def part_a6(order_table: Optional[Path]) -> None:
-    """A6, the stimulus order: with a table of each recording's 51 presentations in the order given (viki, from the
-    recordings' YAML files; Yang's to release): that olfdb's `repeat` is the repeat's number, the same-repeat
-    distances against the time between two presentations, and whether the order is the same in every recording (if
-    so, a pair's place in the order is confounded with the pair). Not written yet: the table's layout is not known.
-    Expected columns: date, fly_num, hemibrain, presentation (0-50, in time order), odor (`<abbrev> @ <conc>`),
-    repeat (olfdb's)."""
-    if order_table is None:
-        print('A6: no stimulus-order table; part A runs without it')
-        return
-    raise NotImplementedError('A6 (the stimulus order) is a stub until the order table exists')
+# A6, the stimulus order
+A6_START = '<!-- E81_repeat_structure.py part A6: start -->'
+A6_END = '<!-- E81_repeat_structure.py part A6: end -->'
+# separation bins (presentations apart) for the tables: within a block two odors are 1 to 15 apart (the solvent
+# closes every block), across a block boundary 2 to 32 (adjacent blocks) or 19 to 49 (the first and the third)
+COARSE_BINS = ((1, 1), (2, 3), (4, 7), (8, 15), (16, 31), (32, 49))
+N_NULL = 2000
+_PAIR_IDX = (np.array([ODORS.index(a) for a, _ in H.PAIRS16]), np.array([ODORS.index(b) for _, b in H.PAIRS16]))
+PAIR_INDEX = pd.MultiIndex.from_tuples([tuple(p) for p in H.PAIRS16], names=['odor_a', 'odor_b'])
+
+
+def default_order_table() -> Path:
+    """E84 part A's presentation_order.csv (the order of the 51 presentations of each recording)."""
+    return H.shared_dir() / 'results' / 'E84_trace_time_course' / 'presentation_order.csv'
+
+
+def k_bin(k) -> np.ndarray:
+    """The separation bin of `k` presentations apart, labelled by its first separation: one bin per separation up
+    to 15, then bins three wide (16-18, 19-21, ...)."""
+    k = np.asarray(k, dtype=int)
+    return np.where(k <= 15, k, 16 + 3 * ((k - 16) // 3))
+
+
+def k_bin_center(b) -> np.ndarray:
+    b = np.asarray(b, dtype=float)
+    return np.where(b <= 15, b, b + 1)
+
+
+def coarse_bin(k) -> np.ndarray:
+    """The index into COARSE_BINS of `k` presentations apart (-1 outside them)."""
+    k = np.asarray(k, dtype=int)
+    out = np.full(k.shape, -1)
+    for i, (lo, hi) in enumerate(COARSE_BINS):
+        out[(k >= lo) & (k <= hi)] = i
+    return out
+
+
+def load_order(path: Path) -> pd.DataFrame:
+    """The stimulus-order table (E84 part A's presentation_order.csv): one row per presentation, with 'odor' the full
+    name as olfdb gives it (`<abbrev> @ <log10 conc>`), 'odor_abbrev', 'block' (0-based), 'position' (in the block),
+    'presentation' (0-50, in time order), 'repeat' (the number of earlier presentations of the odor in the session)
+    and 'onset_volume'."""
+    od = pd.read_csv(path, dtype={'date': str, 'hemibrain': str, 'recording': str, 'odor': str, 'odor_abbrev': str})
+    need = {'recording', 'genotype', 'block', 'position', 'odor', 'odor_abbrev', 'date', 'fly_num', 'hemibrain',
+            'presentation', 'repeat', 'onset_volume'}
+    missing = need - set(od.columns)
+    if missing:
+        raise ValueError(f'{path}: no columns {sorted(missing)}')
+    od['fly_num'] = od['fly_num'].astype(int)
+    return od.sort_values(['recording', 'presentation']).reset_index(drop=True)
+
+
+def olfdb_trial_keys() -> pd.DataFrame:
+    """One row per trial of olfdb's per-trial KC data: genotype, date, fly_num, hemibrain, odor (full name), repeat."""
+    out = []
+    for g, i in H.YANG_DATASETS.items():
+        d = pd.read_csv(H.yang_data_dir() / g / f'dataset_{i}_long.csv', usecols=H.RECORDING_KEYS + ['odor', 'repeat'],
+                        dtype={'date': str, 'hemibrain': str, 'odor': str}).drop_duplicates()
+        d.insert(0, 'genotype', g)
+        out.append(d)
+    return pd.concat(out, ignore_index=True)
+
+
+def match_order(order: pd.DataFrame, keys: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
+    """Matches the order table to olfdb's trials by recording (date, fly_num, hemibrain) and odor, each presentation
+    to the trial whose `repeat` is the presentation's block.
+
+    Args:
+        order: `load_order`'s table.
+        keys: olfdb's trials (`olfdb_trial_keys`: genotype, date, fly_num, hemibrain, odor, repeat).
+
+    Returns (table, summary). table: one row per presentation of the order table and per olfdb trial left without
+    one, with 'n_olfdb_trials' (olfdb's trials of the presentation's recording and odor), 'n_order_presentations'
+    (the order's presentations of that recording and odor), 'olfdb_repeat' (the matched trial's repeat; NaN if none),
+    'matched', 'trial_matched_times' (how many presentations took the matched trial), 'order_repeat_is_block' (the
+    order's count of earlier presentations of the odor equals the block) and 'genotype_agrees'. summary: counts of
+    each (see the keys); the match is one to one when 'matched' is every presentation and every trial and no trial is
+    matched more than once.
+    """
+    rk = list(H.RECORDING_KEYS)
+    k = keys.rename(columns={'repeat': 'olfdb_repeat', 'genotype': 'olfdb_genotype'})
+    n_k = k.groupby(rk + ['odor']).size().rename('n_olfdb_trials')
+    o = order.join(n_k, on=rk + ['odor'])
+    o['n_olfdb_trials'] = o['n_olfdb_trials'].fillna(0).astype(int)
+    o['n_order_presentations'] = o.groupby(rk + ['odor'])['presentation'].transform('size').astype(int)
+    m = o.merge(k, left_on=rk + ['odor', 'block'], right_on=rk + ['odor', 'olfdb_repeat'], how='outer', indicator=True)
+    side = m.pop('_merge').astype(str)
+    m['matched'] = side == 'both'
+    m['order_repeat_is_block'] = (m['repeat'] == m['block']) & (side != 'right_only')
+    m['genotype_agrees'] = (m['genotype'] == m['olfdb_genotype']) & m['matched']
+    m['trial_matched_times'] = m.groupby(rk + ['odor', 'olfdb_repeat'], dropna=False)['matched'].transform('sum')
+    in_order = side != 'right_only'
+    blocks_ok = order.groupby(['recording', 'block'])['odor'].agg(lambda s: s.is_unique).all() and (
+        order.groupby('recording')['odor'].nunique() == order.groupby(['recording', 'block']).size().groupby('recording').max()).all()
+    rec_o = set(map(tuple, order[rk].drop_duplicates().to_numpy().tolist()))
+    rec_k = set(map(tuple, keys[rk].drop_duplicates().to_numpy().tolist()))
+    summ = dict(order_presentations=int(len(order)), olfdb_trials=int(len(keys)), recordings_order=len(rec_o),
+                recordings_olfdb=len(rec_k), recordings_both=len(rec_o & rec_k),
+                presentations_recording_and_odor_found=int((m.loc[in_order, 'n_olfdb_trials'] > 0).sum()),
+                presentations_same_count=int((m.loc[in_order, 'n_olfdb_trials'] == m.loc[in_order, 'n_order_presentations']).sum()),
+                matched=int(m['matched'].sum()), order_only=int((side == 'left_only').sum()),
+                olfdb_only=int((side == 'right_only').sum()),
+                olfdb_trials_matched_more_than_once=int(m.loc[m['matched'] & (m['trial_matched_times'] > 1)]
+                                                         .drop_duplicates(rk + ['odor', 'olfdb_repeat']).shape[0]),
+                order_repeat_not_block=int((in_order & ~m['order_repeat_is_block']).sum()),
+                genotype_disagrees=int((m['matched'] & ~m['genotype_agrees']).sum()),
+                each_block_each_stimulus_once=bool(blocks_ok))
+    return m, summ
+
+
+def e84_value_check(order_path: Path) -> dict:
+    """E84 part A's check by value (reproduction_checks.json beside the order table): per recording, olfdb's trial
+    (odor, repeat r) against the window mean of the r-th presentation of that odor in the recording's traces."""
+    p = Path(order_path).parent / 'reproduction_checks.json'
+    if not p.exists():
+        return {}
+    d = json.loads(p.read_text())
+    recs = d.get('recordings', {})
+    return dict(value_check_recordings=len(recs), value_check_trials=int(sum(v['olfdb_trials'] for v in recs.values())),
+                value_check_max_abs=float(max(v['olfdb_max_abs'] for v in recs.values())),
+                value_check_tolerance=float(d.get('tolerances', {}).get('olfdb_max_abs', np.nan)),
+                value_check_all_ok=bool(d.get('all_ok')))
+
+
+def recording_volume_rates(order_path: Path) -> Dict[tuple, float]:
+    """{recording: volumes per second} from E84 part A's records_summary.csv beside the order table ({} if absent)."""
+    p = Path(order_path).parent / 'records_summary.csv'
+    if not p.exists():
+        return {}
+    r = pd.read_csv(p, dtype={'date': str, 'hemibrain': str})
+    return {(str(a), int(b), str(c)): float(v) for a, b, c, v in zip(r.date, r.fly_num, r.hemibrain, r.volume_rate)}
+
+
+def recording_orders(matched: pd.DataFrame) -> Dict[tuple, pd.DataFrame]:
+    """{recording key: its presentations (presentation, block, position, odor (abbreviation), repeat (the matched
+    olfdb trial's), onset_volume, genotype)}, from `match_order`'s table. Raises if a presentation has no trial."""
+    o = matched[matched['presentation'].notna()]
+    if not o['matched'].all():
+        raise ValueError(f'{int((~o["matched"]).sum())} presentations without an olfdb trial')
+    out = {}
+    for rec, g in o.groupby(H.RECORDING_KEYS, sort=True):
+        out[(str(rec[0]), int(rec[1]), str(rec[2]))] = pd.DataFrame(dict(
+            presentation=g['presentation'].astype(int).to_numpy(), block=g['block'].astype(int).to_numpy(),
+            position=g['position'].astype(int).to_numpy(), odor=g['odor_abbrev'].to_numpy(),
+            repeat=g['olfdb_repeat'].astype(int).to_numpy(), onset_volume=g['onset_volume'].astype(float).to_numpy(),
+            genotype=g['genotype'].to_numpy())).sort_values('presentation').reset_index(drop=True)
+    return out
+
+
+def presentation_tables(orders: Dict[tuple, pd.DataFrame], units: str, rates: Dict[tuple, float]
+                        ) -> Dict[str, Dict[tuple, pd.DataFrame]]:
+    """{genotype: {recording: `H.presentation_pairs` of its graded single trials in `units`, with 'k_bin' and 'resid'
+    (the distance minus the mean over the pair's nine pairs of presentations in the recording)}}."""
+    out = {}
+    for g in GENOS:
+        out[g] = {}
+        for rec, X in H.yang_recording_trials(g, units).items():
+            if rec not in orders:
+                raise KeyError(f'{g} {rec}: not in the order table')
+            t = H.presentation_pairs(X, ODORS, orders[rec], volume_rate=rates.get(rec))
+            t['k_bin'] = k_bin(t['separation'])
+            t['resid'] = t['distance'] - t.groupby(['odor_a', 'odor_b'])['distance'].transform('mean')
+            out[g][rec] = t
+    return out
+
+
+def _hat_basis(t: np.ndarray, knots: np.ndarray) -> np.ndarray:
+    """(len(t), len(knots)) piecewise-linear interpolation weights of `t` on `knots` (flat beyond the ends)."""
+    t = np.clip(np.asarray(t, dtype=float), knots[0], knots[-1])
+    j = np.clip(np.searchsorted(knots, t, side='right') - 1, 0, len(knots) - 2)
+    w = (t - knots[j]) / (knots[j + 1] - knots[j])
+    B = np.zeros((len(t), len(knots)))
+    B[np.arange(len(t)), j] = 1 - w
+    B[np.arange(len(t)), j + 1] = w
+    return B
+
+
+def separation_basis(t: pd.DataFrame, basis: str, levels: np.ndarray) -> np.ndarray:
+    """The separation's design columns: 'positions', one indicator per separation bin (`k_bin`) in `levels`;
+    'seconds', piecewise-linear interpolation of 'separation_s' on the knots `levels`."""
+    if basis == 'positions':
+        return (k_bin(t['separation'].to_numpy())[:, None] == np.asarray(levels)[None, :]).astype(float)
+    if basis == 'seconds':
+        return _hat_basis(t['separation_s'].to_numpy(), np.asarray(levels, dtype=float))
+    raise ValueError(f"basis must be 'positions' or 'seconds', not {basis!r}")
+
+
+def decomposition_parts(t: pd.DataFrame, basis: str, levels: np.ndarray, value: str = 'distance',
+                        presentations: bool = False) -> dict:
+    """One recording's sufficient statistics for `gap_decomposition` (its pairs of presentations, `presentation_pairs`
+    rows): the normal equations of the design (the separation's columns but the first, and same block) with each
+    pair of odors' level (and with `presentations`, also a level for each presentation, counted over the two of a
+    row) projected out, and the column and value sums over the same-block and the different-block rows."""
+    t = t[t[value].notna()]
+    B = separation_basis(t, basis, levels)
+    s = t['same_block'].to_numpy(dtype=float)
+    y = t[value].to_numpy(dtype=float)
+    D = np.column_stack([B[:, 1:], s])
+    codes = t.groupby(['odor_a', 'odor_b'], sort=False).ngroup().to_numpy()
+    if presentations:
+        pres = np.unique(np.concatenate([t['presentation_a'].to_numpy(), t['presentation_b'].to_numpy()]))
+        ia = np.searchsorted(pres, t['presentation_a'].to_numpy())
+        ib = np.searchsorted(pres, t['presentation_b'].to_numpy())
+        n_pair = codes.max() + 1
+        M = np.zeros((len(t), n_pair + len(pres)))
+        r = np.arange(len(t))
+        M[r, codes] = 1
+        M[r, n_pair + ia] += 1
+        M[r, n_pair + ib] += 1
+        Z = np.column_stack([D, y])
+        Zm = Z - M @ np.linalg.lstsq(M, Z, rcond=None)[0]
+        Dm, ym = Zm[:, :-1], Zm[:, -1]
+    else:
+        n = np.bincount(codes).astype(float)
+        Dm = D - (np.stack([np.bincount(codes, weights=D[:, c]) for c in range(D.shape[1])], axis=1) / n[:, None])[codes]
+        ym = y - (np.bincount(codes, weights=y) / n)[codes]
+    same = s == 1
+    return dict(A=Dm.T @ Dm, b=Dm.T @ ym, bsum_same=B[same].sum(axis=0), bsum_diff=B[~same].sum(axis=0),
+                ysum_same=float(y[same].sum()), ysum_diff=float(y[~same].sum()), n_same=int(same.sum()),
+                n_diff=int((~same).sum()))
+
+
+def gap_decomposition(parts: Sequence[dict]) -> dict:
+    """The same-repeat gap over the pooled pairs of presentations of `parts` (`decomposition_parts` of each
+    recording), split into the part carried by the separation between the two presentations and the part of the
+    block at equal separation.
+
+    The single-trial distance of two presentations is fitted, by least squares, as an effect of the pair of odors in
+    the recording (with `presentations` in the parts, plus a level for each of the two presentations), plus a function
+    f of the separation (one level per separation bin, or piecewise linear in seconds), plus beta when the two are in
+    the same block. Every pair of odors has three same-block and six different-block pairs of presentations in each
+    recording, and every presentation enters same-block and different-block pairs in the same proportion, so neither
+    level can make a gap: the gap (the different-block minus the same-block mean distance) splits exactly into the
+    separation part (the mean of f over the different-block pairs minus that over the same-block pairs) and the block
+    part (-beta); 'check' is what is left (0 up to rounding when balanced).
+    """
+    A = sum(p['A'] for p in parts)
+    b = sum(p['b'] for p in parts)
+    coef = np.linalg.lstsq(A, b, rcond=None)[0]
+    beta = float(coef[-1])
+    f = np.concatenate([[0.0], coef[:-1]])
+    n_s, n_d = sum(p['n_same'] for p in parts), sum(p['n_diff'] for p in parts)
+    bs, bd = sum(p['bsum_same'] for p in parts), sum(p['bsum_diff'] for p in parts)
+    sep = float(f @ (bd / n_d - bs / n_s))
+    gap = sum(p['ysum_diff'] for p in parts) / n_d - sum(p['ysum_same'] for p in parts) / n_s
+    return dict(gap=float(gap), separation_part=sep, block_part=-beta, check=float(gap - sep + beta))
+
+
+def separation_levels(tables: Dict[str, Dict[tuple, pd.DataFrame]], basis: str) -> np.ndarray:
+    """The separation bins (positions) present in any recording, or the knots in seconds: the mean onset interval
+    within a block times 1 to 15, then every three intervals up to the largest separation."""
+    allt = pd.concat([t for g in tables.values() for t in g.values()], ignore_index=True)
+    if basis == 'positions':
+        return np.unique(k_bin(allt['separation']))
+    w = allt[allt.same_block & (allt.separation == 1)]
+    step = float(w['separation_s'].mean())
+    top = float(allt['separation_s'].max())
+    knots = list(step * np.arange(1, 16))
+    while knots[-1] < top:
+        knots.append(knots[-1] + 3 * step)
+    return np.array(knots)
+
+
+def a6_decomposition(tables: Dict[str, Dict[tuple, pd.DataFrame]], units: str, n_boot: int) -> List[dict]:
+    """Rows of order_gap_decomposition.csv for one unit: per genotype and basis ('positions', 'seconds', and
+    'positions_presentations': positions with a level for each presentation) the gap, its separation and block parts,
+    their shares and the check, the TNT / control ratios, with 90 % intervals over resamples of the recordings."""
+    rows = []
+    for name, basis, pres in (('positions', 'positions', False), ('seconds', 'seconds', False),
+                              ('positions_presentations', 'positions', True)):
+        if basis == 'seconds' and not all(t['separation_s'].notna().all() for g in tables.values() for t in g.values()):
+            continue
+        lv = separation_levels(tables, basis)
+        parts = {g: [decomposition_parts(t, basis, lv, presentations=pres) for t in tables[g].values()] for g in GENOS}
+
+        def fn(sel):
+            out = {}
+            for g in GENOS:
+                for k, v in gap_decomposition(sel[g]).items():
+                    out[(g, k)] = v
+            for k in ('gap', 'separation_part', 'block_part'):
+                out[('ratio', k)] = out[('TNT', k)] / out[('TNT3c', k)]
+            for g in GENOS:
+                out[(g, 'separation_share')] = out[(g, 'separation_part')] / out[(g, 'gap')]
+                out[(g, 'block_share')] = out[(g, 'block_part')] / out[(g, 'gap')]
+            return out
+        obs = fn(parts)
+        rng = np.random.default_rng(0)
+        draws = []
+        for _ in range(n_boot):
+            sel = {g: [parts[g][i] for i in rng.integers(0, len(parts[g]), len(parts[g]))] for g in GENOS}
+            draws.append(fn(sel))
+        for key, v in obs.items():
+            d = np.array([x[key] for x in draws], dtype=float)
+            lo, hi = np.nanpercentile(d, [5, 95]) if n_boot else (np.nan, np.nan)
+            rows.append(dict(units=units, basis=name, genotype=key[0], statistic=key[1], value=v, lo=lo, hi=hi,
+                             n_levels=len(lv)))
+    return rows
+
+
+def a6_curve(tables: Dict[str, Dict[tuple, pd.DataFrame]], units: str, n_boot: int) -> List[dict]:
+    """Rows of order_separation_curve.csv for one unit: per genotype, same or different block and separation bin
+    (fine: `k_bin`; coarse: COARSE_BINS), the per-recording mean single-trial distance ('distance') and the same with
+    each pair of odors' mean over its nine pairs of presentations removed ('resid'), mean over recordings with 90 %
+    intervals, and the number of pairs of presentations per recording."""
+    per = {}
+    counts = {}
+    for g in GENOS:
+        rows = {}
+        for rec, t in tables[g].items():
+            t = t.assign(kind=np.where(t['same_block'], 'same_block', 'different_block'), coarse=coarse_bin(t['separation']))
+            parts = {}
+            for binning, col in (('fine', 'k_bin'), ('coarse', 'coarse')):
+                gb = t[t[col] >= 0].groupby(['kind', col])
+                for q in ('distance', 'resid'):
+                    s = gb[q].mean()
+                    s.index = pd.MultiIndex.from_tuples([(q, binning, a, int(b)) for a, b in s.index])
+                    parts[(q, binning)] = s
+                n = gb.size()
+                n.index = pd.MultiIndex.from_tuples([('n', binning, a, int(b)) for a, b in n.index])
+                parts[('n', binning)] = n.astype(float)
+            rows[rec] = pd.concat(parts.values())
+        per[g] = pd.DataFrame(rows).T
+        counts[g] = per[g].mean()
+
+    def fn(m):
+        return {(g,) + tuple(k): float(v) for g, s in m.items() for k, v in s.items() if k[0] != 'n'}
+    res = boot(per, fn, n_boot=n_boot)
+    out = []
+    for key, r in res.iterrows():
+        g, q, binning, kind, b = key
+        if binning == 'fine':
+            lo_k, hi_k = (b, b) if b <= 15 else (b, b + 2)
+        else:
+            lo_k, hi_k = COARSE_BINS[b]
+        n = counts[g].get(('n', binning, kind, b), np.nan)
+        out.append(dict(units=units, genotype=g, quantity=q, binning=binning, kind=kind, bin=b, k_lo=lo_k, k_hi=hi_k,
+                        k_center=float(k_bin_center(b)) if binning == 'fine' else (lo_k + hi_k) / 2,
+                        n_per_recording=n, value=r.value, lo=r.lo, hi=r.hi))
+    return out
+
+
+# --- the confound: each pair's place in the order
+def block_positions(orders: Dict[tuple, pd.DataFrame], recs: Sequence[tuple]) -> np.ndarray:
+    """(recordings, blocks, odors): each odor's position in each block (ODORS order)."""
+    P = []
+    for r in recs:
+        o = orders[r]
+        P.append(o[o['odor'].isin(ODORS)].pivot(index='block', columns='odor', values='position')[ODORS].to_numpy())
+    return np.stack(P).astype(int)
+
+
+def pair_separation_stats(P: np.ndarray) -> Dict[str, np.ndarray]:
+    """From positions (..., blocks, odors), per pair (..., pairs; H.PAIRS16 order): 'sep', the mean over the
+    blocks of the two odors' separation within the block (positions), and 'adj', 'within2', 'within3', the number of
+    blocks in which they are adjacent, at most 2 or at most 3 positions apart."""
+    ia, ib = _PAIR_IDX
+    d = np.abs(P[..., ia] - P[..., ib])
+    return dict(sep=d.mean(axis=-2), adj=(d == 1).sum(axis=-2), within2=(d <= 2).sum(axis=-2),
+                within3=(d <= 3).sum(axis=-2))
+
+
+def null_positions(P: np.ndarray, rng: np.random.Generator, n: int, keep_reuse: bool = True) -> np.ndarray:
+    """(n, recordings, blocks, odors) positions under random orders. With `keep_reuse` (the design's reuse of block
+    orders kept), each distinct block order (a row of P) gets one random permutation of its odors over its positions
+    per draw, applied to every block that had that order; otherwise every block gets its own."""
+    R, B, O = P.shape
+    flat = P.reshape(R * B, O)
+    if keep_reuse:
+        _, ids = np.unique(flat, axis=0, return_inverse=True)
+        ids = np.asarray(ids).reshape(-1)
+    else:
+        ids = np.arange(R * B)
+    slots = np.sort(flat, axis=1)                                   # the positions the odors occupy
+    rank = flat.argsort(axis=1).argsort(axis=1)                     # each odor's rank among them
+    sigma = rng.random((n, ids.max() + 1, O)).argsort(axis=-1)      # one permutation per distinct block order
+    new_rank = np.take_along_axis(sigma[:, ids, :], np.broadcast_to(rank, (n, R * B, O)), axis=-1)
+    newP = np.take_along_axis(np.broadcast_to(slots, (n, R * B, O)), new_rank, axis=-1)
+    return newP.reshape(n, R, B, O).astype(np.int16)
+
+
+def _ranks(x: np.ndarray) -> np.ndarray:
+    from scipy.stats import rankdata
+    return rankdata(x, axis=-1)
+
+
+def _rank_corr(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Spearman correlation along the last axis of `x` (any leading shape) with the vector `y`."""
+    rx, ry = _ranks(x), _ranks(np.asarray(y, dtype=float))
+    rx = rx - rx.mean(axis=-1, keepdims=True)
+    ry = ry - ry.mean()
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return (rx @ ry) / np.sqrt((rx ** 2).sum(axis=-1) * (ry ** 2).sum())
+
+
+def _twoway_slope(y: np.ndarray, x: np.ndarray) -> float:
+    """Least-squares slope of y on x (recordings x pairs) with each pair's and each recording's mean removed."""
+    def dm(a):
+        return a - a.mean(axis=0, keepdims=True) - a.mean(axis=1, keepdims=True) + a.mean()
+    yd, xd = dm(y), dm(x)
+    return float((xd * yd).sum() / (xd * xd).sum())
+
+
+def session_order_ids(orders: Dict[tuple, pd.DataFrame], recs: Sequence[tuple]) -> np.ndarray:
+    """An id per recording of its session order (the stimuli of its presentations in time order)."""
+    seqs = [tuple(orders[r].sort_values('presentation')['odor']) for r in recs]
+    uniq = {s: i for i, s in enumerate(dict.fromkeys(seqs))}
+    return np.array([uniq[s] for s in seqs])
+
+
+def a6_confound(orders: Dict[tuple, pd.DataFrame], n_boot: int, n_null: int = N_NULL
+                ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """The confound of the pair with its place in the order, in Yang's z (graded trial means, the main target).
+
+    Returns (order_pairs.csv: per pair its adjacency counts and mean separations by genotype, the per-pair APL effect
+    (all recordings, and each distinct session order once), the error common to all wirings and the effect's shift
+    predicted from the separations; order_confound.csv: statistic, value, 90 % interval over resamples of the
+    recordings, the null's 90 % range and two-sided p over `n_null` random orders that keep the design's reuse of block
+    orders; order_distinct.csv: the per-pair APL effect from recordings with different session orders only)."""
+    T = pair_tables('z', 'graded')
+    recs = {g: [tuple(r) for r in T[g].index] for g in GENOS}
+    TM = {g: T[g]['trial_mean'].reindex(columns=PAIR_INDEX).to_numpy(dtype=float) for g in GENOS}   # (recordings, pairs)
+    if any(np.isnan(v).any() for v in TM.values()):
+        raise ValueError('A6: trial-mean distances missing for some pairs')
+    P = {g: block_positions(orders, recs[g]) for g in GENOS}
+    S = {g: pair_separation_stats(P[g]) for g in GENOS}
+    ce = {k: v.reindex(PAIR_INDEX).to_numpy(dtype=float) for k, v in common_errors().items()}
+    eff = TM['TNT3c'].mean(axis=0) - TM['TNT'].mean(axis=0)
+    n_rec = {g: len(recs[g]) for g in GENOS}
+    n_all = sum(n_rec.values())
+
+    def seps(sc, st):
+        """{'all', 'ctrl', 'tnt', 'diff'}: per pair mean separations from per-recording separations."""
+        c, t = sc.mean(axis=-2), st.mean(axis=-2)
+        return dict(all=(sc.sum(axis=-2) + st.sum(axis=-2)) / (sc.shape[-2] + st.shape[-2]), ctrl=c, tnt=t, diff=c - t)
+
+    sp_obs = {g: {q: S[g][q].mean(axis=0) for q in ('sep', 'adj')} for g in GENOS}
+
+    def stats(tm_c, tm_t, sc, st, ac, at):
+        """The ρ's of the separations with the effect and the common error, and the shift of the per-pair effect
+        predicted from the design's separations (the observed ones: the design is known; only the slopes are
+        estimated) by each genotype's slope of the trial-mean distance on the separation, or on the number of
+        blocks in which the two are adjacent."""
+        e = tm_c.mean(axis=0) - tm_t.mean(axis=0)
+        sp = seps(sc, st)
+        out = {}
+        for tname, tv in (('effect', e), ('common_cal', ce['cal']), ('common_raw', ce['raw'])):
+            for sname, sv in sp.items():
+                out[f'rho_{tname}_sep_{sname}'] = float(_rank_corr(sv, tv))
+        out.update(effect_mean=float(e.mean()), effect_pattern_sd=float(np.std(e)))
+        shifts = {}
+        for q, (xc, xt) in (('sep', (sc, st)), ('adj', (ac, at))):
+            sl = {'ctrl': _twoway_slope(tm_c, xc), 'tnt': _twoway_slope(tm_t, xt)}
+            xo = {'ctrl': sp_obs['TNT3c'][q], 'tnt': sp_obs['TNT'][q]}
+            conf = sl['ctrl'] * (xo['ctrl'] - xo['ctrl'].mean()) - sl['tnt'] * (xo['tnt'] - xo['tnt'].mean())
+            sfx = '' if q == 'sep' else '_adj'
+            out.update({f'slope_ctrl{sfx}': sl['ctrl'], f'slope_tnt{sfx}': sl['tnt'],
+                        f'confound_rms{sfx}': float(np.sqrt(np.mean(conf ** 2))),
+                        f'confound_share{sfx}': float(np.sqrt(np.mean(conf ** 2)) / np.std(e)),
+                        f'rho_confound_effect{sfx}': float(_rank_corr(conf, e)),
+                        f'rho_confound_common_cal{sfx}': float(_rank_corr(conf, ce['cal'])),
+                        f'rho_confound_common_raw{sfx}': float(_rank_corr(conf, ce['raw']))})
+            shifts[q] = conf
+        out['_conf'] = shifts
+        return out
+    obs = stats(TM['TNT3c'], TM['TNT'], S['TNT3c']['sep'], S['TNT']['sep'], S['TNT3c']['adj'], S['TNT']['adj'])
+    conf_obs = obs.pop('_conf')
+    rng = np.random.default_rng(0)
+    draws = []
+    for _ in range(n_boot):
+        ic = rng.integers(0, n_rec['TNT3c'], n_rec['TNT3c'])
+        it = rng.integers(0, n_rec['TNT'], n_rec['TNT'])
+        d = stats(TM['TNT3c'][ic], TM['TNT'][it], S['TNT3c']['sep'][ic], S['TNT']['sep'][it], S['TNT3c']['adj'][ic],
+                  S['TNT']['adj'][it])
+        d.pop('_conf')
+        draws.append(d)
+    # the null: random orders keeping which blocks share an order (both genotypes together, as the design has them)
+    P_all = np.concatenate([P['TNT3c'], P['TNT']])
+    nullP = null_positions(P_all, np.random.default_rng(1), n_null)
+    nS = pair_separation_stats(nullP)
+    nsp = seps(nS['sep'][:, :n_rec['TNT3c']], nS['sep'][:, n_rec['TNT3c']:])
+    null = {}
+    for tname, tv in (('effect', eff), ('common_cal', ce['cal']), ('common_raw', ce['raw'])):
+        for sname, sv in nsp.items():
+            null[f'rho_{tname}_sep_{sname}'] = _rank_corr(sv, tv)
+    # and with every block its own random order, for how much the reuse of block orders concentrates the pairs
+    nS_ind = pair_separation_stats(null_positions(P_all, np.random.default_rng(2), n_null, keep_reuse=False))
+    null_ind = {}
+    S_all = pair_separation_stats(P_all)
+    for q in ('adj', 'within2', 'within3'):
+        x = S_all[q].sum(axis=0)                                    # per pair, over the blocks of all recordings
+        obs.update({f'{q}_mean': float(x.mean()), f'{q}_sd': float(x.std()), f'{q}_min': float(x.min()),
+                    f'{q}_max': float(x.max()), f'{q}_n_zero': float((x == 0).sum())})
+        for dst, src in ((null, nS), (null_ind, nS_ind)):
+            xn = src[q].sum(axis=1)                                 # (draws, pairs)
+            dst.update({f'{q}_mean': xn.mean(axis=1), f'{q}_sd': xn.std(axis=1), f'{q}_min': xn.min(axis=1).astype(float),
+                        f'{q}_max': xn.max(axis=1).astype(float), f'{q}_n_zero': (xn == 0).sum(axis=1).astype(float)})
+    rows = []
+    for k, v in obs.items():
+        d = np.array([x.get(k, np.nan) for x in draws], dtype=float)
+        lo, hi = (np.nanpercentile(d, [5, 95]) if n_boot and np.isfinite(d).any() else (np.nan, np.nan))
+        row = dict(statistic=k, value=v, lo=lo, hi=hi, null_mean=np.nan, null_lo=np.nan, null_hi=np.nan, p_null=np.nan,
+                   null_ind_mean=np.nan, null_ind_lo=np.nan, null_ind_hi=np.nan)
+        if k in null:
+            nv = np.asarray(null[k], dtype=float)
+            row.update(null_mean=float(nv.mean()), null_lo=float(np.percentile(nv, 5)), null_hi=float(np.percentile(nv, 95)))
+            if k.startswith('rho_'):
+                row['p_null'] = float((np.abs(nv) >= abs(v) - 1e-12).mean())
+            else:
+                row['p_null'] = float(min(1.0, 2 * min((nv >= v - 1e-12).mean(), (nv <= v + 1e-12).mean())))
+        if k in null_ind:
+            nv = np.asarray(null_ind[k], dtype=float)
+            row.update(null_ind_mean=float(nv.mean()), null_ind_lo=float(np.percentile(nv, 5)),
+                       null_ind_hi=float(np.percentile(nv, 95)))
+        rows.append(row)
+    rows.append(dict(statistic='n_blocks', value=float(P_all.shape[0] * P_all.shape[1])))
+    rows.append(dict(statistic='n_distinct_block_orders', value=float(len(np.unique(P_all.reshape(-1, P_all.shape[-1]), axis=0)))))
+    rows.append(dict(statistic='n_recordings', value=float(n_all)))
+    rows.append(dict(statistic='n_null', value=float(n_null)))
+    conf_tab = pd.DataFrame(rows)
+
+    # each distinct session order once
+    ids = {g: session_order_ids(orders, recs[g]) for g in GENOS}
+    all_ids = session_order_ids(orders, recs['TNT3c'] + recs['TNT'])
+    shared = len(set(all_ids[:n_rec['TNT3c']]) & set(all_ids[n_rec['TNT3c']:]))
+
+    def per_order_mean(tm, i):
+        return np.stack([tm[i == u].mean(axis=0) for u in np.unique(i)]).mean(axis=0)
+    eff_w = per_order_mean(TM['TNT3c'], ids['TNT3c']) - per_order_mean(TM['TNT'], ids['TNT'])
+    floor = float(H.data_target('apl_effect_rmse_floor'))
+
+    def compare(e2, name, n_c, n_t):
+        out = dict(subset=name, n_ctrl=n_c, n_tnt=n_t, effect_mean=float(e2.mean()),
+                   rho_with_all=float(_rank_corr(e2, eff)), rms_diff_from_all=float(np.sqrt(np.mean((e2 - eff) ** 2))),
+                   pattern_rms_diff_from_all=float(np.std(e2 - eff)), floor=floor)
+        for ro in ('cal', 'raw'):
+            c2 = ce[ro] + (eff - eff.mean()) - (e2 - e2.mean())
+            out[f'common_{ro}_rms'] = float(np.sqrt(np.mean(c2 ** 2)))
+            out[f'common_{ro}_rho_with_all'] = float(_rank_corr(c2, ce[ro]))
+        return out
+    drows = [compare(eff, 'all recordings', n_rec['TNT3c'], n_rec['TNT']),
+             compare(eff_w, 'each session order once (recordings sharing an order averaged first)',
+                     len(np.unique(ids['TNT3c'])), len(np.unique(ids['TNT'])))]
+    # every choice of one recording per session order
+    choices = {g: [list(np.flatnonzero(ids[g] == u)) for u in np.unique(ids[g])] for g in GENOS}
+    for ci, (cc, ct) in enumerate(itertools.product(itertools.product(*choices['TNT3c']), itertools.product(*choices['TNT']))):
+        e2 = TM['TNT3c'][list(cc)].mean(axis=0) - TM['TNT'][list(ct)].mean(axis=0)
+        drows.append(compare(e2, f'one recording per session order, choice {ci + 1}', len(cc), len(ct)))
+    dist_tab = pd.DataFrame(drows)
+    dist_tab['session_orders'] = len(np.unique(all_ids))
+    dist_tab['session_orders_in_both_genotypes'] = shared
+
+    pr = pd.DataFrame(index=PAIR_INDEX)
+    for q in ('adj', 'within2', 'within3'):
+        pr[f'n_{q}_all'] = S_all[q].sum(axis=0)
+        pr[f'n_{q}_ctrl'] = S['TNT3c'][q].sum(axis=0)
+        pr[f'n_{q}_tnt'] = S['TNT'][q].sum(axis=0)
+    sp = seps(S['TNT3c']['sep'], S['TNT']['sep'])
+    for k, v in sp.items():
+        pr[f'mean_sep_{k}'] = v
+    pr['effect'] = eff
+    pr['effect_each_order_once'] = eff_w
+    pr['effect_shift_from_separation'] = conf_obs['sep']
+    pr['effect_shift_from_adjacency'] = conf_obs['adj']
+    pr['common_cal'] = ce['cal']
+    pr['common_raw'] = ce['raw']
+    pr['in_six'] = [p in PAIRSETS['six'] for p in PAIR_INDEX]
+    return pr.reset_index(), conf_tab, dist_tab
+
+
+def part_a6(order_table: Optional[Path], n_boot: int = N_BOOT, n_null: int = N_NULL) -> Optional[dict]:
+    """A6, the stimulus order (E84 part A's presentation_order.csv by default): (1) olfdb's `repeat` against the
+    order's block, trial by trial (order_match.csv, order_match_summary.csv); (2) the single-trial distance of two
+    different odors against the separation between their presentations, within a block and across a block boundary,
+    and the same-repeat gap split into the part carried by the separation and the part of the block at equal
+    separation (order_separation_curve.csv, order_gap_decomposition.csv); (3) the confound of a pair with its place
+    in the order (order_pairs.csv, order_confound.csv, order_distinct.csv). Then E81_order.png and the A6 section
+    of comparison_table.md."""
+    path = Path(order_table) if order_table is not None else default_order_table()
+    if not path.exists():
+        print(f'A6: no stimulus-order table at {path}; skipped')
+        return None
+    out = out_dir()
+    write_provenance('A6', dict(order_table=str(path), n_boot=n_boot, n_null=n_null, units=UNITS, values='graded',
+                                coarse_bins=COARSE_BINS), data_inputs() + [
+        path, path.parent / 'reproduction_checks.json', path.parent / 'records_summary.csv',
+        H.results_dir('E72_wiring_population') / 'common_error_pairs.csv',
+        H.results_dir('E72_wiring_population') / 'common_error_pairs_raw.csv'])
+    order = load_order(path)
+    m, summ = match_order(order, olfdb_trial_keys())
+    summ.update(e84_value_check(path))
+    m.to_csv(out / 'order_match.csv', index=False)
+    rates = recording_volume_rates(path)
+    one_to_one = (summ['matched'] == summ['order_presentations'] == summ['olfdb_trials'] and summ['olfdb_only'] == 0
+                  and summ['olfdb_trials_matched_more_than_once'] == 0)
+    orders = recording_orders(m) if one_to_one else None
+    if orders is not None:
+        summ.update(onset_intervals(orders, rates))
+    pd.DataFrame([dict(statistic=k, value=v) for k, v in summ.items()]).to_csv(out / 'order_match_summary.csv', index=False)
+    print('A6 match:', json.dumps(summ, default=str), flush=True)
+    if orders is None:
+        raise RuntimeError('A6: the order and olfdb\'s trials do not match one to one (order_match.csv); the rest of A6 '
+                           'not run')
+    curve, dec = [], []
+    for units in UNITS:
+        tabs = presentation_tables(orders, units, rates)
+        curve += a6_curve(tabs, units, n_boot)
+        dec += a6_decomposition(tabs, units, n_boot)
+    pd.DataFrame(curve).to_csv(out / 'order_separation_curve.csv', index=False)
+    pd.DataFrame(dec).to_csv(out / 'order_gap_decomposition.csv', index=False)
+    pr, conf, dist = a6_confound(orders, n_boot, n_null)
+    pr.to_csv(out / 'order_pairs.csv', index=False)
+    conf.to_csv(out / 'order_confound.csv', index=False)
+    dist.to_csv(out / 'order_distinct.csv', index=False)
+    figure_a6()
+    write_table_a6()
+    return summ
+
+
+def onset_intervals(orders: Dict[tuple, pd.DataFrame], rates: Dict[tuple, float]) -> dict:
+    """Mean onset interval (s) between consecutive presentations within a block and across a block boundary."""
+    within, across = [], []
+    for rec, o in orders.items():
+        if rec not in rates:
+            continue
+        o = o.sort_values('presentation')
+        dt = np.diff(o['onset_volume'].to_numpy()) / rates[rec]
+        nb = np.diff(o['block'].to_numpy()) != 0
+        within += list(dt[~nb])
+        across += list(dt[nb])
+    return dict(onset_interval_within_block_s=float(np.mean(within)) if within else np.nan,
+                onset_interval_across_boundary_s=float(np.mean(across)) if across else np.nan,
+                volume_rate_hz=float(np.mean(list(rates.values()))) if rates else np.nan)
+
+
+def figure_a6() -> None:
+    """E81_order.png: the single-trial distance of two odors against the separation of their presentations, within
+    a block and across a block boundary, per genotype; the same-repeat gap split into its separation and block parts;
+    the per-pair APL effect against the difference of the pairs' mean separations between the genotypes."""
+    plt = H._plt()
+    out = out_dir()
+    cv = pd.read_csv(out / 'order_separation_curve.csv')
+    dec = pd.read_csv(out / 'order_gap_decomposition.csv')
+    pr = pd.read_csv(out / 'order_pairs.csv')
+    conf = pd.read_csv(out / 'order_confound.csv').set_index('statistic')
+    ms = pd.read_csv(out / 'order_match_summary.csv').set_index('statistic')['value']
+    step = float(ms.get('onset_interval_within_block_s', np.nan))
+    fig, axs = plt.subplots(2, 2, figsize=(11.5, 8.2))
+    sel = cv[(cv.units == 'z') & (cv.quantity == 'resid') & (cv.binning == 'fine')]
+    for ax, g in ((axs[0, 0], 'TNT3c'), (axs[0, 1], 'TNT')):
+        for kind, ls, mfc, lab in (('same_block', '-', COLORS[g], 'same block'),
+                                   ('different_block', '--', 'white', 'different blocks')):
+            s = sel[(sel.genotype == g) & (sel.kind == kind)].sort_values('k_center')
+            ax.fill_between(s.k_center, s.lo, s.hi, color=COLORS[g], alpha=0.15 if kind == 'same_block' else 0.08, lw=0)
+            ax.plot(s.k_center, s.value, ls=ls, color=COLORS[g], lw=2, marker='o', ms=5, mfc=mfc, mec=COLORS[g],
+                    label=lab)
+        ax.axhline(0, color=COLORS['ink2'], lw=0.8)
+        ax.set_xlabel('separation of the two presentations (presentations apart)')
+        ax.set_ylabel("single-trial cosine distance,\nrelative to the pair's mean (Yang's z)")
+        ax.set_title(f'{GLAB[g]}: two different odors', fontsize=9)
+        ax.legend(fontsize=7, frameon=False, loc='upper left')
+        if np.isfinite(step):
+            sec = ax.secondary_xaxis('top', functions=(lambda k: k * step / 60, lambda mn: mn * 60 / step))
+            sec.set_xlabel('minutes apart (within a block)', fontsize=8, color=COLORS['ink2'])
+            sec.tick_params(colors=COLORS['ink2'], labelsize=8)
+    ylo = min(axs[0, 0].get_ylim()[0], axs[0, 1].get_ylim()[0])
+    yhi = max(axs[0, 0].get_ylim()[1], axs[0, 1].get_ylim()[1])
+    for ax in axs[0]:
+        ax.set_ylim(ylo, yhi)
+    d = dec[(dec.units == 'z')].set_index(['basis', 'genotype', 'statistic'])
+    items = [('positions', 'gap', 'same-repeat\ngap'), ('positions', 'separation_part', 'carried by\nthe separation'),
+             ('positions', 'block_part', 'block, at equal\nseparation'),
+             ('seconds', 'block_part', 'the same,\nseparation in s'),
+             ('positions_presentations', 'block_part', 'the same, each\npresentation\nits own level')]
+    items = [it for it in items if (it[0], 'TNT3c', it[1]) in d.index]
+    w = 0.38
+    ax = axs[1, 0]
+    for i, g in enumerate(GENOS):
+        v = [d.loc[(b, g, st)] for b, st, _ in items]
+        x = np.arange(len(items)) + (i - 0.5) * w
+        ax.bar(x, [r.value for r in v], width=w * 0.92, color=COLORS[g], label=GLAB[g])
+        ax.errorbar(x, [r.value for r in v], yerr=[[r.value - r.lo for r in v], [r.hi - r.value for r in v]], fmt='none',
+                    ecolor=COLORS['ink'], lw=1, capsize=2)
+    ax.axhline(0, color=COLORS['ink2'], lw=0.8)
+    ax.set_xticks(np.arange(len(items)))
+    ax.set_xticklabels([lab for _, _, lab in items], fontsize=7)
+    ax.set_ylabel("single-trial cosine distance (Yang's z)")
+    ax.set_title('the same-repeat gap: separation and block parts', fontsize=9)
+    ax.legend(fontsize=7, frameon=False)
+    ax = axs[1, 1]
+    six = pr['in_six'].astype(bool)
+    ax.scatter(pr.loc[~six, 'mean_sep_diff'], pr.loc[~six, 'effect'], s=16, color=COLORS['ink2'], edgecolor='white', lw=0.4,
+               label='pairs')
+    ax.scatter(pr.loc[six, 'mean_sep_diff'], pr.loc[six, 'effect'], s=26, color=COLORS['c3'], edgecolor='white', lw=0.5,
+               label='the six pairs with near-identical ORN input')
+    r = conf.loc['rho_effect_sep_diff']
+    ax.text(0.02, 0.98, f"ρ = {r['value']:.2f} (90 % interval {r['lo']:.2f} to {r['hi']:.2f});\n"
+            f"random orders: {r['null_lo']:.2f} to {r['null_hi']:.2f}, p = {r['p_null']:.2f}", transform=ax.transAxes,
+            fontsize=7, va='top', color=COLORS['ink'], zorder=5,
+            bbox=dict(facecolor='white', edgecolor=COLORS['grid'], boxstyle='round,pad=0.3', alpha=0.95))
+    ax.axvline(0, color=COLORS['ink2'], lw=0.8)
+    ax.set_xlabel('mean separation within a block (positions),\ncontrol flies minus APL output blocked (TNT)')
+    ax.set_ylabel('per-pair APL effect (trial means, Yang\'s z)')
+    ax.set_title("the per-pair APL effect against the pair's place in the order", fontsize=9)
+    ylo_, yhi_ = ax.get_ylim()
+    ax.set_ylim(ylo_ - 0.12 * (yhi_ - ylo_), yhi_ + 0.12 * (yhi_ - ylo_))
+    ax.legend(fontsize=7, frameon=True, framealpha=0.95, edgecolor=COLORS['grid'], loc='lower right')
+    for ax in axs.ravel():
+        _style(ax)
+    fig.suptitle('The stimulus order: single-trial distances against the separation of two presentations (90 % '
+                 'intervals over resamples of the recordings)', fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out / 'E81_order.png', dpi=150)
+    plt.close(fig)
+
+
+def table_a6() -> List[str]:
+    out = out_dir()
+    ms = pd.read_csv(out / 'order_match_summary.csv').set_index('statistic')['value']
+    cv = pd.read_csv(out / 'order_separation_curve.csv')
+    dec = pd.read_csv(out / 'order_gap_decomposition.csv')
+    conf = pd.read_csv(out / 'order_confound.csv').set_index('statistic')
+    dist = pd.read_csv(out / 'order_distinct.csv')
+    prov = json.loads((out / 'provenance_A6.json').read_text()) if (out / 'provenance_A6.json').exists() else {}
+    path = prov.get('settings', {}).get('order_table', str(default_order_table()))
+
+    def num(k, spec='.0f'):
+        v = ms.get(k, np.nan)
+        try:
+            return format(float(v), spec)
+        except (TypeError, ValueError):
+            return str(v)
+    L = ['## Part A6, the stimulus order (E81_repeat_structure.py --part A6)', '',
+         f'The order of the 51 presentations of each recording: `{Path(path).relative_to(H.shared_dir()) if str(path).startswith(str(H.shared_dir())) else path}` '
+         "(E84 part A, from the recordings' YAML and stimulus files). Every block holds the 16 odors and the solvent (pfo) "
+         f"once each, the solvent last; onsets are {num('onset_interval_within_block_s', '.1f')} s apart within a block and "
+         f"{num('onset_interval_across_boundary_s', '.1f')} s across a block boundary (volume rate "
+         f"{num('volume_rate_hz', '.4f')} Hz). Separations are in presentations (the solvent counted), unless in seconds. "
+         'Intervals: 90 % over 1000 resamples of the recordings (each genotype with replacement).', '',
+         "### A6.1 olfdb's repeat and the block", '',
+         '| check | count |', '|---|---:|',
+         f"| presentations in the order table / trials in olfdb (both datasets) | {num('order_presentations')} / {num('olfdb_trials')} |",
+         f"| recordings in the order table / in olfdb / in both | {num('recordings_order')} / {num('recordings_olfdb')} / {num('recordings_both')} |",
+         f"| presentations whose recording and odor olfdb has, with as many trials as the order has presentations | "
+         f"{num('presentations_recording_and_odor_found')} / {num('presentations_same_count')} |",
+         f"| presentations matched to olfdb's trial of the same recording and odor whose repeat is the presentation's block | {num('matched')} |",
+         f"| presentations without a trial / olfdb trials without a presentation | {num('order_only')} / {num('olfdb_only')} |",
+         f"| olfdb trials matched to more than one presentation | {num('olfdb_trials_matched_more_than_once')} |",
+         f"| presentations whose number of earlier presentations of the odor differs from the block | {num('order_repeat_not_block')} |",
+         f"| matched trials whose genotype differs | {num('genotype_disagrees')} |",
+         f"| every block holds every stimulus once | {ms.get('each_block_each_stimulus_once', '')} |"]
+    if 'value_check_trials' in ms.index:
+        L.append(f"| by value (E84 part A): olfdb's trial (odor, repeat r) against the mean over the response window of the "
+                 f"r-th presentation of the odor in the traces | {num('value_check_trials')} trials of "
+                 f"{num('value_check_recordings')} recordings, largest difference {num('value_check_max_abs', '.1e')} |")
+    L += ['']
+    ok = (num('matched') == num('order_presentations') == num('olfdb_trials') and num('order_only') == '0'
+          and num('olfdb_only') == '0' and num('olfdb_trials_matched_more_than_once') == '0' and num('order_repeat_not_block') == '0')
+    L += [("olfdb's `repeat` is the block (repeat) number of the order for every trial." if ok else
+           "olfdb's `repeat` is NOT the block for every trial: see order_match.csv."), '']
+
+    # A6.2
+    L += ['### A6.2 The same-repeat effect against the separation', '',
+          "Single-trial cosine distance between two presentations of two different odors (Yang's z, graded), with each "
+          "pair of odors' mean over its nine pairs of presentations in the recording removed; per recording, then mean "
+          'over recordings. Within a block two odors are 1 to 15 presentations apart; across a block boundary 2 to 32 '
+          '(adjacent blocks) or 19 to 49 (the first and the third).', '',
+          '| separation (presentations) | control flies,<br>same block | control flies,<br>different blocks | '
+          'APL output blocked (TNT),<br>same block | APL output blocked (TNT),<br>different blocks |',
+          '|---|---:|---:|---:|---:|']
+    c = cv[(cv.units == 'z') & (cv.quantity == 'resid') & (cv.binning == 'coarse')]
+    for i, (lo, hi) in enumerate(COARSE_BINS):
+        cells = []
+        for g in GENOS:
+            for kind in ('same_block', 'different_block'):
+                x = c[(c.genotype == g) & (c.kind == kind) & (c['bin'] == i)]
+                cells.append(f'{_ci(x.iloc[0], "+.3f")} [{x.iloc[0].n_per_recording:.0f}]' if len(x) else '–')
+        L.append(f'| {lo if lo == hi else f"{lo}-{hi}"} | ' + ' | '.join(cells) + ' |')
+    L += ['', '[n] is the number of pairs of presentations per recording in the bin.', '',
+          'The same-repeat gap (two odors of different blocks minus the same block) split by least squares: each pair of '
+          'odors in a recording its own level, a function of the separation (one level per separation up to 15, then '
+          'bins three wide; or piecewise linear in seconds, knots every onset interval up to 15 and every three beyond, '
+          'which counts the longer pause at a block boundary) and a step for two presentations of the same block; in the '
+          'last variant also a level for each presentation (two odors of different blocks a short separation apart are '
+          'always near the end of one block and the start of the next; the level takes up any edge effect, the run-down '
+          'and a noisier trial). Every pair has three same-block and six different-block pairs of presentations per '
+          'recording, and every presentation enters both kinds in the same proportion, so the gap is exactly the '
+          'separation part plus the block part.', '',
+          '| statistic | control flies | APL output blocked (TNT) | ratio (TNT / control) |', '|---|---:|---:|---:|']
+    for units, ulab in (('z', "Yang's z"), ('noise', 'baseline-noise units')):
+        d = dec[dec.units == units].set_index(['basis', 'genotype', 'statistic'])
+
+        def dv(b, g, st, spec='.3f'):
+            return _ci(d.loc[(b, g, st)], spec) if (b, g, st) in d.index else ''
+        for b, st, name, spec in (('positions', 'gap', 'same-repeat gap', '.3f'),
+                                  ('positions', 'separation_part', 'carried by the separation', '.3f'),
+                                  ('positions', 'block_part', 'block, at equal separation (positions)', '.3f'),
+                                  ('positions', 'separation_share', 'share carried by the separation', '.2f'),
+                                  ('seconds', 'separation_part', 'carried by the separation (seconds)', '.3f'),
+                                  ('seconds', 'block_part', 'block, at equal separation (seconds)', '.3f'),
+                                  ('positions_presentations', 'separation_part', 'carried by the separation, each presentation its own level', '.3f'),
+                                  ('positions_presentations', 'block_part', 'block, at equal separation, each presentation its own level', '.3f')):
+            L.append(f'| {name}, {ulab} | {dv(b, "TNT3c", st, spec)} | {dv(b, "TNT", st, spec)} | '
+                     f'{dv(b, "ratio", st, ".2f") if st in ("gap", "separation_part", "block_part") else ""} |')
+    chk = dec[dec.statistic == 'check']['value'].abs().max()
+    L += ['', f'Largest |gap minus the two parts| over units, bases and genotypes: {chk:.1e}.', '']
+
+    # A6.3
+    nb = conf.loc['n_blocks', 'value'] if 'n_blocks' in conf.index else np.nan
+    nbo = conf.loc['n_distinct_block_orders', 'value'] if 'n_distinct_block_orders' in conf.index else np.nan
+    L += ["### A6.3 The confound of a pair with its place in the order", '',
+          f'Blocks: {nb:.0f} (19 recordings x 3), {nbo:.0f} distinct block orders; session orders: '
+          f'{dist.session_orders.iloc[0]} distinct over 19 recordings, {dist.session_orders_in_both_genotypes.iloc[0]} of them '
+          f'in both genotypes. "Random orders": {int(conf.loc["n_null", "value"])} draws in which every distinct block order '
+          'gets one random permutation of its 16 odors over their positions, applied to every block that had it (the '
+          'design\'s reuse of block orders kept); p two-sided. "Every block its own": the same with an independent '
+          'permutation for every block.', '',
+          '| per pair, over the 57 blocks | observed | random orders: mean (90 % range) | p | every block its own: mean (90 % range) |',
+          '|---|---:|---:|---:|---:|']
+
+    def cf(k, spec='.2f', with_ci=True, ind=False):
+        if k not in conf.index:
+            return ['', '', ''] + ([''] if ind else [])
+        r = conf.loc[k]
+        obs_ = _ci(r, spec) if with_ci else _f(r['value'], spec)
+        nul = f"{_f(r['null_mean'], spec)} ({_f(r['null_lo'], spec)} to {_f(r['null_hi'], spec)})" if pd.notna(r['null_mean']) else ''
+        degenerate = pd.notna(r['null_lo']) and r['null_lo'] == r['null_hi']
+        cells = [obs_, nul, '' if degenerate else _f(r['p_null'], '.3f')]
+        if ind:
+            cells.append(f"{_f(r['null_ind_mean'], spec)} ({_f(r['null_ind_lo'], spec)} to {_f(r['null_ind_hi'], spec)})"
+                         if pd.notna(r.get('null_ind_mean', np.nan)) else '')
+        return cells
+    for q, lab in (('adj', 'adjacent'), ('within3', 'at most 3 positions apart')):
+        for st, sl in (('mean', 'mean'), ('sd', 'SD over pairs'), ('min', 'fewest'), ('max', 'most'),
+                       ('n_zero', 'pairs never')):
+            L.append(f'| blocks in which the two are {lab}: {sl} | ' + ' | '.join(cf(f'{q}_{st}', '.1f', False, True)) + ' |')
+    L += ['', '| ρ over the 120 pairs | ρ (90 % interval) | random orders: mean (90 % range) | p |', '|---|---:|---:|---:|']
+    for tname, tl in (('effect', 'per-pair APL effect (trial means, Yang\'s z)'),
+                      ('common_cal', 'error common to all wirings (calibrated readout)'),
+                      ('common_raw', 'error common to all wirings (raw counts)')):
+        for sname, sl in (('all', 'all recordings'), ('ctrl', 'control flies'), ('tnt', 'APL output blocked (TNT)'),
+                          ('diff', 'control flies minus APL output blocked (TNT)')):
+            L.append(f'| {tl} with the mean separation within a block, {sl} | ' + ' | '.join(cf(f'rho_{tname}_sep_{sname}')) + ' |')
+    floor = dist['floor'].iloc[0]
+    L += ['', "The size of the confound: each pair's trial-mean distance in a recording (Yang's z) against its mean "
+          'separation within a block in that recording (positions), or against the number of its blocks in which the two '
+          "are adjacent (0 to 3), each pair's and each recording's mean removed, per genotype; the per-pair APL effect's "
+          "shift predicted from the design (control flies' slope times their pairs' mean separation or adjacency count "
+          'minus the same with APL output blocked (TNT), each centered). The intervals resample the recordings for the '
+          'slopes and the effect; the design\'s separations are held at the observed ones.', '',
+          '| statistic | by mean separation | by adjacency count |', '|---|---:|---:|']
+    for k, lab, spec in (('slope_ctrl', 'slope, control flies (cosine distance per position, or per adjacent block)', '+.4f'),
+                         ('slope_tnt', 'slope, APL output blocked (TNT)', '+.4f'),
+                         ('confound_rms', 'RMS over pairs of the predicted shift of the per-pair APL effect', '.4f'),
+                         ('confound_share', 'the shift over the SD over pairs of the per-pair APL effect', '.3f'),
+                         ('rho_confound_effect', 'ρ of the shift with the per-pair APL effect', '.2f'),
+                         ('rho_confound_common_cal', 'ρ of the shift with the error common to all wirings (calibrated)', '.2f'),
+                         ('rho_confound_common_raw', 'ρ of the shift with the error common to all wirings (raw counts)', '.2f')):
+        L.append(f"| {lab} | {_ci(conf.loc[k], spec)} | {_ci(conf.loc[k + '_adj'], spec)} |")
+    L += [f"| SD over pairs of the per-pair APL effect (its pattern) / the floor of the APL-effect loss | "
+          f"{_ci(conf.loc['effect_pattern_sd'], '.3f')} / {floor:.3f} | |", '',
+          'The per-pair APL effect from recordings with different session orders only. "Error common to all wirings": the '
+          "eight wirings' mean error against that effect (E72's common error with the data side replaced), RMS over pairs "
+          '(its pattern part).', '',
+          '| recordings | control / TNT recordings | mean APL effect | ρ with all recordings\' | RMS difference from all recordings\' | '
+          'common error RMS,<br>calibrated / raw | ρ of the common error<br>with all recordings\', calibrated / raw |',
+          '|---|---:|---:|---:|---:|---:|---:|']
+    for _, r in dist.iloc[:2].iterrows():
+        L.append(f'| {r.subset} | {r.n_ctrl} / {r.n_tnt} | {r.effect_mean:+.3f} | {r.rho_with_all:.3f} | {r.rms_diff_from_all:.4f} | '
+                 f'{r.common_cal_rms:.4f} / {r.common_raw_rms:.4f} | {r.common_cal_rho_with_all:.3f} / {r.common_raw_rho_with_all:.3f} |')
+    ch = dist.iloc[2:]
+    if len(ch):
+        def rg(col, spec):
+            return f'{ch[col].min():{spec}} to {ch[col].max():{spec}}'
+        L.append(f'| one recording per session order, all {len(ch)} choices (range) | {ch.n_ctrl.iloc[0]} / {ch.n_tnt.iloc[0]} | '
+                 f'{rg("effect_mean", "+.3f")} | {rg("rho_with_all", ".3f")} | {rg("rms_diff_from_all", ".4f")} | '
+                 f'{rg("common_cal_rms", ".4f")} / {rg("common_raw_rms", ".4f")} | '
+                 f'{rg("common_cal_rho_with_all", ".3f")} / {rg("common_raw_rho_with_all", ".3f")} |')
+    L += ['', '![The stimulus order](E81_order.png)', '']
+    return L
+
+
+def write_table_a6() -> None:
+    """Writes (or rewrites) the A6 block of comparison_table.md (between A6_START and A6_END), keeping the rest."""
+    p = out_dir() / 'comparison_table.md'
+    block = A6_START + '\n' + '\n'.join(table_a6()).rstrip() + '\n' + A6_END + '\n'
+    old = p.read_text() if p.exists() else '# E81, the flies\' variability across the three repeats: comparison tables\n\n'
+    if A6_START in old and A6_END in old:
+        new = old[:old.index(A6_START)] + block + old[old.index(A6_END) + len(A6_END) + 1:]
+    else:
+        new = old.rstrip('\n') + '\n\n' + block
+    p.write_text(new)
+    print('->', p, '(A6)')
 
 
 # ---------------------------------------------------------------------------
@@ -1440,11 +2336,13 @@ def write_table() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', choices=('A', 'B', 'table', 'figures'), required=True)
+    ap.add_argument('--part', choices=('A', 'A6', 'B', 'table', 'figures'), required=True)
     ap.add_argument('--n-boot', type=int, default=N_BOOT)
+    ap.add_argument('--n-null', type=int, default=N_NULL, help='A6: random orders for the null')
     ap.add_argument('--no-cal', action='store_true', help='B1: raw counts only (no calibrated readout from the archived counts)')
     ap.add_argument('--only', nargs='*', default=None, help='sub-parts to run (e.g. A1 A4, B2)')
-    ap.add_argument('--order-table', type=Path, default=None, help='A6: the stimulus-order table (not available yet)')
+    ap.add_argument('--order-table', type=Path, default=None,
+                    help='A6: the stimulus-order table (default: results/E84_trace_time_course/presentation_order.csv)')
     args = ap.parse_args()
     t0 = time.time()
 
@@ -1457,9 +2355,13 @@ def main() -> None:
             if want(name):
                 fn(args.n_boot)
                 print(f'{name} done, {time.time() - t0:.0f} s', flush=True)
-        part_a6(args.order_table)
+        if want('A6'):
+            part_a6(args.order_table, args.n_boot, args.n_null)
         figures_a()
         write_table()
+    elif args.part == 'A6':
+        part_a6(args.order_table, args.n_boot, args.n_null)
+        print(f'A6 done, {time.time() - t0:.0f} s', flush=True)
     elif args.part == 'B':
         write_provenance('B', dict(no_cal=args.no_cal, only=args.only), data_inputs() + [
             H.shared_dir() / 'results' / 'apl_effect' / 'by_variant.csv',
@@ -1481,8 +2383,12 @@ def main() -> None:
             figures_a()
         if (out_dir() / 'by_variant_noise_free.csv').exists() and (out_dir() / 'jitter_calibration_structure.csv').exists():
             figures_b()
+        if (out_dir() / 'order_confound.csv').exists():
+            figure_a6()
     else:
         write_table()
+        if (out_dir() / 'order_confound.csv').exists():
+            write_table_a6()
 
 
 if __name__ == '__main__':
