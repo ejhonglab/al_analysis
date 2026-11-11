@@ -43,6 +43,9 @@ INPUTS = {
     # how Yang's responses are made, checked on her suite2p outputs (yang_response_normalization.py, viki)
     'yang_norm_recordings': H.shared_dir() / 'notes' / 'yang_response_normalization' / 'recordings.csv',
     'yang_norm_kc_scales': H.shared_dir() / 'notes' / 'yang_response_normalization' / 'kc_scales.csv',
+    # Yang's APL16 KC trial means and trials in baseline-noise units (yang_apl16_kc_noise_units.py, hal)
+    'noise_trialmeans': H.shared_dir() / 'data' / 'yang_apl16_kc_noise_units' / 'trialmean_long.parquet',
+    'noise_trials': H.shared_dir() / 'data' / 'yang_apl16_kc_noise_units' / 'per_trial_long.parquet',
 }
 
 
@@ -608,6 +611,13 @@ def build() -> dict:
     add('noise_rate_ratio_fraction', nu['rate_ratio'], 'response rate with APL output blocked (TNT) relative to control flies, '
         f'responses {crit}: ratio of the mean fractions of KCs responding; 90 % interval over 5000 resamples of recordings (as '
         'rate_ratio_fraction)', nfn, nin, ci=nu['rate_ratio_ci90'])
+    # the per-pair APL effect in baseline-noise units (E76, the data side of the main target): its statistics as the
+    # apl_effect_* entries have them in Yang's z, the groups, its agreement with the z-based effect, the thresholded and
+    # binarized versions, the calibrated readout's target and the split by odors per KC
+    from E76_data_side_target import registry_entries as e76_entries
+    for name, value, definition, ci in e76_entries():
+        add(name, value, definition, 'E76_data_side_target.registry_entries (effect_resamples: 1000 resamples of recordings, '
+            'seed 0, as apl_effect_*)', ['noise_trialmeans', 'noise_trials', 'kc_trialmeans'], ci=ci)
     return reg
 
 

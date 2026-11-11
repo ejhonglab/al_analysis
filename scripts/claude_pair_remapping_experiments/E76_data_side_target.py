@@ -65,10 +65,12 @@ Parts (CLI `--part`):
   family against the fixed-unit effect).
 
 Outputs in results/E76_data_side_target/: recordings.csv, splits_tnt.csv, splits_ctrl.csv, axis_tests.csv,
-subsets_vs_archive.csv, common_error_subsets.csv, recording_subsets.csv, split_halves.csv (part D); data_units.csv,
-effect_by_unit_pairs.csv, class_split_units.csv (part B); by_variant_units.csv, common_error_units.csv,
-rank_correlations_units.csv, best_by_family_units.csv, pipeline_units.csv (part C); model_axes.csv, populations.csv
-(part E); comparison_table.md; figures; provenance_<part>.json.
+subsets_vs_archive.csv, common_error_subsets.csv (and _summary), subset_floors.csv, recording_subsets.csv,
+split_halves.csv (part D); data_units.csv, effect_by_unit_pairs.csv, class_split_units.csv (part B);
+by_variant_units.csv, common_error_units.csv (and _summary), rank_correlations_units.csv, best_by_family_units.csv,
+pipeline_units.csv (part C); model_axes_runs.csv and model_axes_pairs.csv (part E's runs), model_axes.csv,
+populations.csv, recording_ranges.csv (`--part E-tables`); comparison_table.md (`--part table`); provenance_<part>.json.
+The check of E10_joint_fit.py's --apl-data-units (`--part check-e10`) writes outputs/E76_data_side_target/e10_check/.
 Usage (from this folder): ../../venv/bin/python -u E76_data_side_target.py --part D | B | C [--jobs 3]
        OMP_NUM_THREADS=12 OMP_THREAD_LIMIT=12 nice -n 10 ../../venv/bin/python -u E76_data_side_target.py --part E --threads 12
            [--bases c2 ceiling2] [--base2 EXP:TAG] [--only POINT ...] [--check-only]
@@ -755,9 +757,135 @@ def _fly_positions(df: pd.DataFrame, rng: np.random.Generator) -> np.ndarray:
     return np.concatenate([pos[f] for f in drawn])
 
 
+def _canon_array(df: pd.DataFrame, index: pd.Index) -> np.ndarray:
+    """(recordings x pairs) array of a per-recording pair frame with its columns in the order of the canonical pair index
+    `index` (each pair found in either orientation; NaN where a pair is missing)."""
+    pos = {tuple(c): i for i, c in enumerate(df.columns)}
+    X = df.to_numpy(dtype=float)
+    out = np.full((X.shape[0], len(index)), np.nan)
+    for j, (a, b) in enumerate(index):
+        i = pos.get((a, b), pos.get((b, a)))
+        if i is not None:
+            out[:, j] = X[:, i]
+    return out
+
+
+def _nanmean_rows(X: np.ndarray) -> np.ndarray:
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        return np.nanmean(X, axis=0)
+
+
+def _spearman_arr(a: np.ndarray, b: np.ndarray) -> float:
+    from scipy import stats
+    ok = np.isfinite(a) & np.isfinite(b)
+    return float(stats.spearmanr(a[ok], b[ok])[0]) if ok.sum() > 2 else np.nan
+
+
+def _pattern_diff_arr(a: np.ndarray, b: np.ndarray) -> float:
+    ok = np.isfinite(a) & np.isfinite(b)
+    d = (a[ok] - a[ok].mean()) - (b[ok] - b[ok].mean())
+    return float(np.sqrt(np.mean(d ** 2)))
+
+
 def effect_resamples(recs: Dict[str, pd.DataFrame], ref: Optional[Dict[str, pd.DataFrame]] = None, n_boot: int = 1000,
                      n_split: int = 500, seed: int = 0) -> Dict[str, object]:
     """The per-pair APL effect of per-recording distances `recs` ({'TNT3c', 'TNT'}, in this order) with its statistics
+    over resamples of the recordings, and, given `ref` (the same recordings in another unit, e.g. Yang's z), ρ and the
+    pattern difference (rms of the difference with both means removed) against `ref`'s effect, over the same draws.
+
+    One generator seeded `seed` draws `n_boot` resamples of recordings (with replacement within each genotype), then
+    `n_split` random halves (each genotype split in two), in the order of data_targets.apl_effect_resamples, so that in z
+    the mean, interval, floor and split-half ρ are the registry's apl_effect_* entries (to rounding); the intervals over
+    flies come from a second generator seeded `seed + 1` (flies drawn with replacement within each genotype, a fly's
+    hemispheres kept). Means over recordings and pairs skip missing values, as the pandas computation does.
+
+    Returns: `effect` (Series), `mean`, `mean_lo` / `mean_hi` (90 % over recordings), `mean_fly_lo` / `mean_fly_hi`, `sd`
+    (over pairs, ddof 0: what an effect with the right mean and no pattern scores as the pattern part), `rmse_floor` (the
+    mean over resamples of the loss of a resampled data set against the measured effect) with its 5th / 95th percentiles,
+    `pattern_floor` (the same for the pattern part), `split_half_rho` (mean over splits) with its interval and
+    `rho_ceiling` (sqrt of the Spearman-Brown-corrected split-half ρ), the groups' relative effects with intervals over
+    recordings, and, with `ref`, `rho_ref`, `pattern_diff_ref` with intervals."""
+    recs = {g: recs[g] for g in GENOTYPES}
+    effect = H.apl_effect(recs['TNT3c'].mean(), recs['TNT'].mean())
+    idx = effect.index
+    gr = group_effects(effect)
+    out: Dict[str, object] = dict(effect=effect, mean=float(effect.mean()), sd=_std(effect), ester=gr['ester'], alcohol=gr['alcohol'],
+        ester_rel=gr['ester_rel'], alcohol_rel=gr['alcohol_rel'])
+    X = {g: _canon_array(recs[g], idx) for g in GENOTYPES}
+    e0 = effect.to_numpy(dtype=float)
+    est, alc = pair_mask(idx, ESTER_GROUP), pair_mask(idx, ALCOHOL_GROUP)
+
+    def groups(e):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            m = np.nanmean(e)
+            return float(np.nanmean(e[est]) - m), float(np.nanmean(e[alc]) - m)
+
+    Xr = None
+    if ref is not None:
+        ref = {g: ref[g].reindex(recs[g].index) for g in GENOTYPES}
+        assert not any(ref[g].isna().all(axis=1).any() for g in GENOTYPES)
+        e_ref = H.apl_effect(ref['TNT3c'].mean(), ref['TNT'].mean())
+        out.update(rho_ref=H.spearman(effect, e_ref), pattern_diff_ref=_pattern_diff(effect, e_ref))
+        Xr = {g: _canon_array(ref[g], idx) for g in GENOTYPES}
+    rng = np.random.default_rng(seed)
+    b = {k: [] for k in ('mean', 'rmse', 'pattern', 'ester_rel', 'alcohol_rel', 'rho_ref', 'pattern_diff_ref')}
+    for _ in range(n_boot):
+        pos = {g: rng.integers(0, len(X[g]), len(X[g])) for g in GENOTYPES}
+        e_b = _nanmean_rows(X['TNT3c'][pos['TNT3c']]) - _nanmean_rows(X['TNT'][pos['TNT']])
+        e_b = np.where(np.isfinite(e0), e_b, np.nan)
+        err = e_b - e0
+        ok = np.isfinite(err)
+        b['mean'].append(float(np.nanmean(e_b)))
+        b['rmse'].append(float(np.sqrt(np.mean(err[ok] ** 2))))
+        b['pattern'].append(float(np.sqrt(np.mean((err[ok] - err[ok].mean()) ** 2))))
+        g_e, g_a = groups(e_b)
+        b['ester_rel'].append(g_e)
+        b['alcohol_rel'].append(g_a)
+        if Xr is not None:
+            r_b = _nanmean_rows(Xr['TNT3c'][pos['TNT3c']]) - _nanmean_rows(Xr['TNT'][pos['TNT']])
+            b['rho_ref'].append(_spearman_arr(e_b, r_b))
+            b['pattern_diff_ref'].append(_pattern_diff_arr(e_b, r_b))
+    pct = lambda v: [float(x) for x in np.nanpercentile(v, [5, 95])]
+    out['mean_lo'], out['mean_hi'] = pct(b['mean'])
+    out['rmse_floor'] = float(np.mean(b['rmse']))
+    out['rmse_floor_lo'], out['rmse_floor_hi'] = pct(b['rmse'])
+    out['pattern_floor'] = float(np.mean(b['pattern']))
+    out['pattern_floor_lo'], out['pattern_floor_hi'] = pct(b['pattern'])
+    for k in ('ester_rel', 'alcohol_rel'):
+        out[f'{k}_lo'], out[f'{k}_hi'] = pct(b[k])
+    if Xr is not None:
+        for k in ('rho_ref', 'pattern_diff_ref'):
+            out[f'{k}_lo'], out[f'{k}_hi'] = pct(b[k])
+    sh = []
+    for _ in range(n_split):
+        halves = [{}, {}]
+        for g in GENOTYPES:
+            i = rng.permutation(len(X[g]))
+            halves[0][g] = _nanmean_rows(X[g][i[:len(i) // 2]])
+            halves[1][g] = _nanmean_rows(X[g][i[len(i) // 2:]])
+        sh.append(_spearman_arr(halves[0]['TNT3c'] - halves[0]['TNT'], halves[1]['TNT3c'] - halves[1]['TNT']))
+    if sh:
+        r = float(np.nanmean(sh))
+        out['split_half_rho'] = r
+        out['split_half_lo'], out['split_half_hi'] = pct(sh)
+        out['rho_ceiling'] = float(np.sqrt(2 * r / (1 + r))) if r > 0 else np.nan
+    rng_f = np.random.default_rng(seed + 1)
+    bf = []
+    for _ in range(n_boot):
+        pos = {g: _fly_positions(recs[g], rng_f) for g in GENOTYPES}
+        e_b = _nanmean_rows(X['TNT3c'][pos['TNT3c']]) - _nanmean_rows(X['TNT'][pos['TNT']])
+        bf.append(float(np.nanmean(np.where(np.isfinite(e0), e_b, np.nan))))
+    out['mean_fly_lo'], out['mean_fly_hi'] = pct(bf)
+    return out
+
+
+def _effect_resamples_pandas(recs: Dict[str, pd.DataFrame], ref: Optional[Dict[str, pd.DataFrame]] = None, n_boot: int = 1000,
+                     n_split: int = 500, seed: int = 0) -> Dict[str, object]:
+    """(The pandas form of `effect_resamples`, kept to check it.) The per-pair APL effect of per-recording distances `recs` ({'TNT3c', 'TNT'}, in this order) with its statistics
     over resamples of the recordings, and, given `ref` (the same recordings in another unit, e.g. Yang's z), ρ and the
     pattern difference (rms of the difference with both means removed) against `ref`'s effect, over the same draws.
 
@@ -869,13 +997,13 @@ def unit_rates(unit: str) -> Dict[str, float]:
 CLASS_N_BOOT = 1000
 
 
-def class_split_units(out: Path, n_boot: int = CLASS_N_BOOT, seed: int = 0) -> pd.DataFrame:
+def class_split_units(out: Optional[Path], n_boot: int = CLASS_N_BOOT, seed: int = 0) -> pd.DataFrame:
     """The split of the per-pair APL effect by odors per KC (`kc_remapping_harness.apl_effect_by_class`: each condition's
     class contributions to the cosine similarity averaged over its recordings, the classes set by that condition's
     responses) in baseline-noise units at noise_threshold, beside the same in z at 1 z (E74's): per unit, class and term
     the mean effect over pairs, its share of the effect's variance over pairs (cov(class effect, effect) / var(effect)),
     each condition's level and share of KCs, with 90 % intervals over `n_boot` resamples of recordings (one generator
-    seeded `seed` per unit, the control recordings drawn first). Writes class_split_units.csv."""
+    seeded `seed` per unit, the control recordings drawn first). Writes class_split_units.csv to `out` (if given)."""
     import E74_apl_effect_by_odors_per_kc as E74
     rows = []
     checks = {}
@@ -941,7 +1069,8 @@ def class_split_units(out: Path, n_boot: int = CLASS_N_BOOT, seed: int = 0) -> p
         common = mine.index.intersection(e74.index)
         checks['z_vs_e74_max_abs'] = float((mine.reindex(common) - e74.reindex(common)).abs().max())
     df.attrs['checks'] = checks
-    df.to_csv(out / 'class_split_units.csv', index=False)
+    if out is not None:
+        df.to_csv(out / 'class_split_units.csv', index=False)
     return df
 
 
@@ -1075,7 +1204,7 @@ def registry_entries(n_boot: int = 1000, seed: int = 0) -> List[Tuple[str, float
     out.append((f'{pre}noise_corrected_mean', float(H.apl_effect(nc['TNT3c'].mean(), nc['TNT'].mean()).mean()), f'{lab}, from '
         'each recording\'s cosine corrected for trial-to-trial noise (noise_floor_trial_distances.analyse on the per-trial '
         'values in baseline-noise units): mean over the 120 pairs', None))
-    cs = class_split_units(H.results_dir(EXPERIMENT), seed=seed)
+    cs = class_split_units(None, seed=seed)
     cs = cs[(cs['unit'] == unit) & (cs['term'] == 'total')]
     for cls in H.opk_class_labels():
         r = cs[(cs['quantity'] == 'effect') & (cs['class'] == cls)].iloc[0]
@@ -1424,6 +1553,285 @@ def part_e(out: Path, threads: int = 12, only: Optional[Sequence[str]] = None, c
         threads=threads, omp_num_threads=os.environ.get('OMP_NUM_THREADS'), omp_thread_limit=os.environ.get('OMP_THREAD_LIMIT')))
 
 
+def _interp_pairs(points: pd.DataFrame, pairs: Dict[str, pd.Series], x: float) -> Tuple[pd.Series, float, bool]:
+    """The pair distances at response-rate ratio `x` along an axis: `points` (point, ratio) sorted by ratio, `pairs`
+    {point: distances}; linear interpolation between the two neighbouring points, or the nearest end when `x` is outside
+    the axis's range. Returns (distances, the ratio used, whether `x` was reachable)."""
+    pts = points.sort_values('ratio')
+    r = pts['ratio'].to_numpy()
+    if x <= r[0] or x >= r[-1]:
+        i = 0 if x <= r[0] else len(r) - 1
+        return pairs[pts['point'].iloc[i]], float(r[i]), bool(np.isclose(x, r[i]))
+    j = int(np.searchsorted(r, x))
+    w = (x - r[j - 1]) / (r[j] - r[j - 1])
+    a, b = H.align_pairs(pairs[pts['point'].iloc[j - 1]], pairs[pts['point'].iloc[j]])
+    return (1 - w) * a + w * b, float(x), True
+
+
+def part_e_tables(out: Path) -> Dict[str, pd.DataFrame]:
+    """Part E's reading from model_axes_runs.csv and model_axes_pairs.csv (no simulations): model_axes.csv (per base, axis
+    point and readout: the response rate and its ratio to the base's APL-on rate, the mean distance, the effect from the
+    base's APL-on distances against the data's eight, six and two (loss, pattern part, ρ) in z and in baseline-noise units,
+    and the step from the previous point of the axis with its ρ against the data's two steps, the control flies to the six
+    and the six to the two); populations.csv (the population reading: the APL-off side as six pseudo-flies at the point of
+    the axis whose APL-off / APL-on response-rate ratio is the six's and two at the two's, linearly interpolated between
+    points, or the axis's nearest end when out of reach; on the excitability axis the APL-on side also over the control
+    recordings' rates; its loss with parts against the eight's effect beside the homogeneous model's, and each state
+    against its own group's effect). The readouts are raw counts and the calibrated readout with K held at the base's own
+    calibration ('cal_z', 'cal_noise'), each scored against the data in the matching unit (raw against both)."""
+    runs = pd.read_csv(out / 'model_axes_runs.csv')
+    prs = pd.read_csv(out / 'model_axes_pairs.csv')
+    rec = pd.read_csv(out / 'recordings.csv')
+    two = [rec_label(t) for t in _actual_two('TNT')]
+    targets = subset_targets(('z', 'noise'))
+    steps_data = {}
+    for u in ('z', 'noise'):
+        R = reading_rdms(u)
+        six = R['TNT'].drop(index=_actual_two('TNT')).mean()
+        steps_data[u] = dict(step1=H.canonical_pairs(R['TNT3c'].mean() - six), step2=H.canonical_pairs(six - R['TNT'].loc[_actual_two('TNT')].mean()))
+    # the data's APL-off / APL-on response-rate ratios: the six's and the two's mean rate over the control flies' mean
+    ctrl = rec[rec['genotype'] == 'TNT3c']
+    tnt = rec[rec['genotype'] == 'TNT']
+    ratio_data = {}
+    for u in ('z', 'noise'):
+        c = float(ctrl[f'rate_{u}'].mean())
+        ratio_data[u] = dict(six=float(tnt.loc[~tnt['recording'].isin(two), f'rate_{u}'].mean()) / c,
+            two=float(tnt.loc[tnt['recording'].isin(two), f'rate_{u}'].mean()) / c, ctrl=(ctrl[f'rate_{u}'] / c).tolist())
+    rows, pops = [], []
+    for (b, exp, tag), g in runs.groupby(['base', 'experiment', 'tag'], sort=False):
+        P = prs[(prs['base'] == b) & (prs['experiment'] == exp) & (prs['tag'] == tag)]
+        rate_on = float(g.loc[g['point'] == 'base_on', 'rate'].iloc[0])
+        g = g.assign(ratio=g['rate'] / rate_on)
+        for readout in sorted(P['readout'].unique()):
+            dd = {pt: H.canonical_pairs(x.set_index(['odor_a', 'odor_b'])['distance']) for pt, x in P[P['readout'] == readout].groupby('point')}
+            if 'base_on' not in dd or 'base_off' not in dd:
+                continue
+            units = ('z', 'noise') if readout == 'raw' else (readout.split('_', 1)[1],)
+            # the axes as ordered sequences of points: the block from APL on (factor 1) to APL off (factor 0); the
+            # excitability axis with APL off (and with APL on) from the highest threshold to the lowest
+            seqs = {'block': ['base_on'] + [f'block{f:g}' for f in BLOCK_FACTORS] + ['base_off'],
+                'thr_off': [f'thr{f:g}_off' for f in sorted(THR_FACTORS, reverse=True) if f > 1] + ['base_off']
+                    + [f'thr{f:g}_off' for f in sorted(THR_FACTORS, reverse=True) if f < 1],
+                'thr_on': [f'thr{f:g}_on' for f in sorted(THR_FACTORS, reverse=True) if f > 1] + ['base_on']
+                    + [f'thr{f:g}_on' for f in sorted(THR_FACTORS, reverse=True) if f < 1]}
+            for axis, seq in seqs.items():
+                seq = [x for x in seq if x in dd]
+                for i, pt in enumerate(seq):
+                    gr = g[g['point'] == pt].iloc[0]
+                    row = dict(base=b, experiment=exp, tag=tag, readout=readout, axis=axis, point=pt, factor=float(gr['factor']),
+                        rate=float(gr['rate']), ratio=float(gr['ratio']), mean_dist=float(dd[pt].mean()),
+                        **{f'opk_{k}': float(gr[f'opk_{k}']) for k in ('0', '1', '2_3', '4_7', '8plus')})
+                    e = H.apl_effect(dd['base_on'], dd[pt])
+                    for u in units:
+                        for name in ('eight', 'six', 'two'):
+                            st = H.apl_effect_stats(dd['base_on'], dd[pt], targets[f'{name}_{u}'])
+                            row.update({f'{name}_{u}_loss': st['apl_effect_rmse'], f'{name}_{u}_pattern': st['apl_effect_rmse_centered'],
+                                f'{name}_{u}_rho': st['apl_effect_spearman']})
+                        if i:
+                            stp = H.canonical_pairs(dd[seq[i - 1]] - dd[pt])
+                            row[f'step_mean'] = float(stp.mean())
+                            for k, v in steps_data[u].items():
+                                row[f'step_rho_{k}_{u}'] = H.spearman(stp, v)
+                    row['effect_mean'] = float(e.mean())
+                    rows.append(row)
+            # the population reading
+            for u in units:
+                rd = ratio_data[u]
+                pts_off = pd.DataFrame([dict(point=x, ratio=float(g.loc[g['point'] == x, 'ratio'].iloc[0])) for x in seqs['block'] if x in dd])
+                pts_thr = pd.DataFrame([dict(point=x, ratio=float(g.loc[g['point'] == x, 'ratio'].iloc[0])) for x in seqs['thr_off'] if x in dd])
+                pts_thr_on = pd.DataFrame([dict(point=x, ratio=float(g.loc[g['point'] == x, 'ratio'].iloc[0])) for x in seqs['thr_on'] if x in dd])
+                homog = {name: H.apl_effect_stats(dd['base_on'], dd['base_off'], targets[f'{name}_{u}']) for name in ('eight', 'six', 'two')}
+                for axis, pts in (('block', pts_off), ('thr', pts_thr)):
+                    if len(pts) < 2:
+                        continue
+                    d6, x6, ok6 = _interp_pairs(pts, dd, rd['six'])
+                    d2, x2, ok2 = _interp_pairs(pts, dd, rd['two'])
+                    a6, a2 = H.align_pairs(d6, d2)
+                    off_pop = (6 * a6 + 2 * a2) / 8
+                    on_sides = {'homogeneous APL on': dd['base_on']}
+                    if axis == 'thr' and len(pts_thr_on) >= 2:
+                        ons = [_interp_pairs(pts_thr_on, dd, x)[0] for x in rd['ctrl']]
+                        on_sides['APL on over the control recordings\' rates'] = pd.concat(ons, axis=1).mean(axis=1)
+                    for on_name, on in on_sides.items():
+                        st = H.apl_effect_stats(on, off_pop, targets[f'eight_{u}'])
+                        pops.append(dict(base=b, experiment=exp, tag=tag, readout=readout, unit=u, axis=axis, apl_on_side=on_name,
+                            ratio_six=rd['six'], ratio_two=rd['two'], ratio_used_six=x6, ratio_used_two=x2, reachable_six=ok6, reachable_two=ok2,
+                            loss=st['apl_effect_rmse'], pattern=st['apl_effect_rmse_centered'], mean=st['apl_effect_mean'], rho=st['apl_effect_spearman'],
+                            homog_loss=homog['eight']['apl_effect_rmse'], homog_pattern=homog['eight']['apl_effect_rmse_centered'],
+                            homog_mean=homog['eight']['apl_effect_mean'], homog_rho=homog['eight']['apl_effect_spearman'],
+                            six_state_vs_six_loss=H.apl_effect_stats(on, d6, targets[f'six_{u}'])['apl_effect_rmse'],
+                            six_state_vs_six_rho=H.apl_effect_stats(on, d6, targets[f'six_{u}'])['apl_effect_spearman'],
+                            two_state_vs_two_loss=H.apl_effect_stats(on, d2, targets[f'two_{u}'])['apl_effect_rmse'],
+                            two_state_vs_two_rho=H.apl_effect_stats(on, d2, targets[f'two_{u}'])['apl_effect_spearman'],
+                            homog_vs_six_loss=homog['six']['apl_effect_rmse'], homog_vs_two_loss=homog['two']['apl_effect_rmse']))
+    ma, po = pd.DataFrame(rows), pd.DataFrame(pops)
+    ma.to_csv(out / 'model_axes.csv', index=False)
+    po.to_csv(out / 'populations.csv', index=False)
+    # the recordings' ranges beside the axes'
+    ranges = rec.groupby(rec['genotype'].where(rec['genotype'] == 'TNT3c', np.where(rec['recording'].isin(two), 'TNT two', 'TNT six'))).agg(
+        mean_dist_z_min=('mean_dist_z', 'min'), mean_dist_z_max=('mean_dist_z', 'max'), mean_dist_noise_min=('mean_dist_noise', 'min'),
+        mean_dist_noise_max=('mean_dist_noise', 'max'), rate_noise_min=('rate_noise', 'min'), rate_noise_max=('rate_noise', 'max'),
+        rate_z_min=('rate_z', 'min'), rate_z_max=('rate_z', 'max'))
+    ranges.to_csv(out / 'recording_ranges.csv')
+    return dict(model_axes=ma, populations=po, ranges=ranges)
+
+
+def _ci(r, k, spec='+.3f') -> str:
+    lo, hi = r.get(f'{k}_lo', np.nan), r.get(f'{k}_hi', np.nan)
+    return f"{_f(r[k], spec)} [{_f(lo, spec)}, {_f(hi, spec)}]"
+
+
+def write_table(out: Path) -> None:
+    """comparison_table.md from the parts' tables (whichever exist): the unit (part B), the recordings and the step tests
+    (part D), the subsets with the key models and E72's common error, the half-split strata, the archive in fixed units
+    (part C). Numbers as computed; the experiment's note interprets them."""
+    L = ['# E76: the data side of the main target (tables)', '']
+    p = out / 'data_units.csv'
+    if p.exists():
+        du = pd.read_csv(p)
+        L += ['## The unit (part B)', '', 'The KC data\'s per-pair APL effect with each KC\'s trial means in each unit; intervals 90 % over 1000 '
+              'resamples of recordings (flies: of flies); floors and the split-half ρ as the registry\'s apl_effect_* entries.', '',
+              '| unit | values | mean distance, control flies / APL output blocked (TNT) | mean APL effect [recordings] | [flies] | sd over pairs '
+              '| floor of the loss (pattern part) | split-half ρ (ceiling) | ρ with the z-based effect | pattern difference from it '
+              '| ester group / alcohol group, relative |', '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+        for _, r in du.iterrows():
+            L.append(f"| {UNIT_LABEL.get(r['unit'], r['unit'])} | {r['values']} | {_f(r['mean_dist_ctrl'])} / {_f(r['mean_dist_tnt'])} | "
+                f"{_ci(r, 'mean')} | [{_f(r['mean_fly_lo'], '+.3f')}, {_f(r['mean_fly_hi'], '+.3f')}] | {_f(r['sd'])} | "
+                f"{_f(r['rmse_floor'])} ({_f(r['pattern_floor'])}) | {_f(r.get('split_half_rho'))} ({_f(r.get('rho_ceiling'))}) | "
+                f"{_ci(r, 'rho_ref', '.3f')} | {_ci(r, 'pattern_diff_ref', '.3f')} | {_ci(r, 'ester_rel')} / {_ci(r, 'alcohol_rel')} |")
+        L.append('')
+    p = out / 'class_split_units.csv'
+    if p.exists():
+        cs = pd.read_csv(p, dtype={'class': str})
+        t = cs[(cs['term'] == 'total') & (cs['quantity'].isin(['effect', 'var_share']))]
+        L += ['## The effect by odors per KC (part B)', '', '| class (odors per KC) | Yang\'s z: mean effect | share of the variance '
+              '| baseline-noise units: mean effect | share of the variance |', '|---|---:|---:|---:|---:|']
+        for cls in list(H.opk_class_labels()) + ['all']:
+            cells = []
+            for u in ('z', 'noise'):
+                for q in ('effect', 'var_share'):
+                    x = t[(t['unit'] == u) & (t['quantity'] == q) & (t['class'] == cls)]
+                    cells.append('–' if not len(x) else f"{x.iloc[0]['observed']:+.3f} [{x.iloc[0]['lo']:+.3f}, {x.iloc[0]['hi']:+.3f}]")
+            L.append(f'| {cls} | ' + ' | '.join(cells) + ' |')
+        L.append('')
+    p = out / 'recordings.csv'
+    if p.exists():
+        rec = pd.read_csv(p)
+        L += ['## The recordings (part D)', '', '| genotype | recording | KCs | mean distance (noise-corrected) | in baseline-noise units '
+              '| response rate, z / baseline-noise units | ester group / alcohol group distance | effect against the control flies\' mean '
+              '(sd over pairs; ester / alcohol relative) | induction (h) | median scale ratio | label group |',
+              '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|']
+        for _, r in rec.iterrows():
+            eff = '' if r['genotype'] != 'TNT' else (f"{r['effect_mean_z']:+.3f} ({r['effect_sd_z']:.3f}; {r['effect_ester_rel_z']:+.3f} / "
+                f"{r['effect_alcohol_rel_z']:+.3f})" + (' strongest' if r.get('strongest') in (True, 'True') else ''))
+            L.append(f"| {'control flies' if r['genotype'] == 'TNT3c' else 'APL output blocked (TNT)'} | {r['recording']} | {r['n_kcs']} | "
+                f"{r['mean_dist_z']:.3f} ({r['mean_dist_nc_z']:.3f}) | {r['mean_dist_noise']:.3f} | {r['rate_z']:.3f} / {r['rate_noise']:.3f} | "
+                f"{r['ester_dist_z']:.3f} / {r['alcohol_dist_z']:.3f} | {eff} | {r['induction_hours']:g} | {r['median_scale_ratio']:.2f} | {r['label_group']} |")
+        L.append('')
+    p = out / 'axis_tests.csv'
+    if p.exists():
+        a = pd.read_csv(p)
+        L += ['## The step tests (part D)', '', 'With APL output blocked (TNT): step 1 the control flies\' mean minus the six typical recordings\' '
+              'mean, step 2 the six\'s mean minus the two strongest\'s; among the control recordings step 1 is the APL effect with the other '
+              'nine as the control side and step 2 the nine minus the two control recordings with the lowest mean distance. Rank among '
+              'every split into two and the rest (1 the lowest; 28 splits with APL output blocked, 55 among the controls); the null\'s '
+              'median and 5th / 95th percentiles over those splits; intervals over recordings (the two kept).', '',
+              '| reading | recordings | ρ between the steps [recordings] | rank | the splits\' median [5 %, 95 %] | the two\'s own steps, ρ '
+              '[recordings] | rank | the splits\' median | step 2, mean | rank |', '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+        for _, r in a.iterrows():
+            L.append(f"| {READING_LABEL[r['reading']]} | {'APL output blocked (TNT)' if r['genotype'] == 'TNT' else 'control flies'} | "
+                f"{_ci(r, 'rho_steps', '.3f')} | {r['rank_rho_steps']}/{r['n_splits']} | {r['null_median_rho_steps']:.3f} "
+                f"[{r['null_lo_rho_steps']:.3f}, {r['null_hi_rho_steps']:.3f}] | {_ci(r, 'rho_own', '.3f')} | {r['rank_rho_own']}/{r['n_splits']} | "
+                f"{r['null_median_rho_own']:.3f} | {r['step2_mean']:+.3f} | {r['rank_step2_mean']}/{r['n_splits']} |")
+        L.append('')
+    p, q = out / 'subset_floors.csv', out / 'subsets_vs_archive.csv'
+    if p.exists() and q.exists():
+        fl = pd.read_csv(p)
+        sc = pd.read_csv(q, keep_default_na=False, na_values=['']).set_index(['folder', 'tag'])
+        L += ['## The six typical and the two strongest recordings with APL output blocked (TNT) (part D)', '',
+              '| unit | APL-off side | mean APL effect [recordings] | sd over pairs | ester / alcohol relative | floor (pattern part) '
+              '| split-half ρ (ceiling) |', '|---|---|---:|---:|---:|---:|---:|']
+        for _, r in fl.iterrows():
+            L.append(f"| {r['unit']} | {r['subset']} | {_ci(r, 'mean')} | {r['sd']:.3f} | {r['ester_rel']:+.3f} / {r['alcohol_rel']:+.3f} | "
+                f"{r['rmse_floor']:.3f} ({r['pattern_floor']:.3f}) | {_f(r.get('split_half_rho'))} ({_f(r.get('rho_ceiling'))}) |")
+        L += ['', 'Key models on raw spike counts against each side (loss / pattern part / ρ on the per-pair APL effect):', '',
+              '| model | mean APL effect | eight, z | six, z | two, z | eight, baseline-noise units | six | two |', '|---|---:|---:|---:|---:|---:|---:|---:|']
+        for short, lab, f, tg in KEY_MODELS:
+            if (f, tg) in sc.index:
+                r = sc.loc[(f, tg)]
+                L.append(f'| {lab} | {r.model_mean:+.3f} | ' + ' | '.join(f"{r[n + '_loss']:.3f} / {r[n + '_pattern']:.3f} / {r[n + '_rho']:.2f}"
+                    for n in ('eight_z', 'six_z', 'two_z', 'eight_noise', 'six_noise', 'two_noise')) + ' |')
+        ok = sc[sc['realism_flag'] == ''].reset_index()
+        L += ['', f'Best inside the bands (baseline-noise units) of {len(sc)} archived variants ({len(ok)} inside):', '']
+        for n in ('eight_z', 'six_z', 'two_z', 'eight_noise', 'six_noise', 'two_noise'):
+            b = ok.sort_values(f'{n}_loss').head(3)
+            L.append(f'- against {n}: ' + '; '.join(f"{r.folder}:{r.tag} {r[n + '_loss']:.3f} / {r[n + '_pattern']:.3f} / {r[n + '_rho']:.2f}"
+                for _, r in b.iterrows()))
+        L.append('')
+    p = out / 'common_error_subsets_summary.csv'
+    if p.exists():
+        ce = pd.read_csv(p)
+        L += ['E72\'s common error (the eight wirings\' mean, calibrated readout) against each side: rms, the ester and alcohol groups\' '
+              'mean errors, its correlation with the common error against the eight in z:', '', '| target | rms | ester | alcohol | correlation |',
+              '|---|---:|---:|---:|---:|']
+        L += [f"| {r['target']} | {r['rms']:.3f} | {r['err_ester']:+.3f} | {r['err_alcohol']:+.3f} | {r['corr_with_reference']:.3f} |" for _, r in ce.iterrows()]
+        L.append('')
+    p = out / 'split_halves.csv'
+    if p.exists():
+        sh = pd.read_csv(p)
+        L += ['## Half-splits for E75 (part D)', '', f'{len(sh)} half-splits (seed {int(sh["seed"].iloc[0])}; the first 100 are E75 D1\'s):', '',
+              '| both strongest in one half | splits | of E75\'s 100 | ρ between the halves, median | share below 0.45 | pattern difference, '
+              'median | alcohol group\'s relative effect, difference between halves, median |', '|---|---:|---:|---:|---:|---:|---:|']
+        for k, g in sh.groupby('strongest_together'):
+            L.append(f"| {'yes' if k else 'no'} | {len(g)} | {int((g['split'] < 100).sum())} | {g['rho_halves'].median():.3f} | "
+                f"{(g['rho_halves'] < 0.45).mean():.2f} | {g['pattern_diff'].median():.3f} | {g['alcohol_rel_diff'].median():.3f} |")
+        L.append('')
+    p = out / 'by_variant_units.csv'
+    if p.exists():
+        bv = pd.read_csv(p, keep_default_na=False, na_values=[''])
+        L += ['## The archive in fixed units (part C)', '']
+        rc = pd.read_csv(out / 'rank_correlations_units.csv')
+        rc = rc[(rc['part'] != 'rho')]
+        L += ['Spearman correlation across variants between the score against Yang\'s z and against the unit:', '',
+              '| readout | unit | part | all variants | inside the bands |', '|---|---|---|---:|---:|']
+        for (ro, u, part), g in rc.groupby(['readout', 'unit', 'part'], sort=False):
+            v = g.set_index('variants')['spearman']
+            L.append(f"| {ro} | {u} | {part} | {v.get('all', np.nan):.3f} | {v.get('inside the bands', np.nan):.3f} |")
+        bb = pd.read_csv(out / 'best_by_family_units.csv', keep_default_na=False, na_values=[''])
+        for col in ('raw_noise_loss', 'cal_noise_loss', 'bin_noise_loss'):
+            b = bb[(bb['ranked_by'] == col) & (bb['group_by'] == 'family')].sort_values(col)
+            ro = col.split('_')[0]
+            L += ['', f'Best inside the bands per family, ranked by {col} (loss / pattern part / ρ against the effect in baseline-noise units; '
+                  'the same against Yang\'s z):', '', '| family | variant | mean APL effect | baseline-noise units | Yang\'s z | response rates on / off |',
+                  '|---|---|---:|---:|---:|---:|']
+            for _, r in b.iterrows():
+                L.append(f"| {r['family']} | {r['folder']}:{r['tag']} | {_f(r.get(ro + '_mean' if ro != 'raw' else 'raw_mean'), '+.3f')} | "
+                    f"{_f(r[ro + '_noise_loss'])} / {_f(r[ro + '_noise_pattern'])} / {_f(r[ro + '_noise_rho'], '.2f')} | "
+                    f"{_f(r[ro + '_z_loss'])} / {_f(r[ro + '_z_pattern'])} / {_f(r[ro + '_z_rho'], '.2f')} | {_f(r['rate_on'])} / {_f(r['rate_off'])} |")
+        L.append('')
+        p2 = out / 'common_error_units_summary.csv'
+        if p2.exists():
+            ce = pd.read_csv(p2)
+            ce = ce[ce['wiring'] == 'population']
+            L += ['E72\'s eight wirings\' mean (the population) against each unit:', '', '| readout | unit | loss | pattern part | mean APL effect '
+                  '| ρ | common error rms | ester / alcohol | correlation with z\'s |', '|---|---|---:|---:|---:|---:|---:|---:|---:|']
+            L += [f"| {r['readout']} | {r['unit']} | {r['loss']:.3f} | {r['pattern']:.3f} | {r['mean']:+.3f} | {r['rho']:.2f} | {r['common_rms']:.3f} | "
+                  f"{r['err_ester']:+.3f} / {r['err_alcohol']:+.3f} | {_f(r.get('corr_with_z'))} |" for _, r in ce.iterrows()]
+            L.append('')
+    p = out / 'populations.csv'
+    if p.exists():
+        po = pd.read_csv(p)
+        L += ['## The model\'s axes: the population reading (part E)', '', '| base | readout | unit | axis | APL-on side | ratio six / two (used) '
+              '| loss / pattern / mean / ρ | homogeneous | six\'s state vs the six | two\'s state vs the two |', '|---|---|---|---|---|---:|---:|---:|---:|---:|']
+        for _, r in po.iterrows():
+            L.append(f"| {r['base']} | {r['readout']} | {r['unit']} | {r['axis']} | {r['apl_on_side']} | {r['ratio_six']:.2f} / {r['ratio_two']:.2f} "
+                f"({r['ratio_used_six']:.2f} / {r['ratio_used_two']:.2f}) | {r['loss']:.3f} / {r['pattern']:.3f} / {r['mean']:+.3f} / {r['rho']:.2f} | "
+                f"{r['homog_loss']:.3f} / {r['homog_pattern']:.3f} / {r['homog_mean']:+.3f} / {r['homog_rho']:.2f} | {r['six_state_vs_six_loss']:.3f} "
+                f"(ρ {r['six_state_vs_six_rho']:.2f}) | {r['two_state_vs_two_loss']:.3f} (ρ {r['two_state_vs_two_rho']:.2f}) |")
+        L.append('')
+    (out / 'comparison_table.md').write_text('\n'.join(L) + '\n')
+
+
 # the check of E10_joint_fit.py's --apl-data-units: E69's fit 2 (the firing ceiling at strength 2 on C2's family), started
 # exactly at its optimum for one evaluation; with the option off it must reproduce the fit's best evaluation to the last digit
 E10_CHECK_START = ('E69_kc_firing_ceiling', 'rate0.068_aplboth_refr3_adapt0.1114t1000_k2')
@@ -1487,7 +1895,7 @@ def check_e10(name: str, extra: Sequence[str] = ()) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=('D', 'B', 'C', 'E', 'check-e10'))
+    ap.add_argument('--part', required=True, choices=('D', 'B', 'C', 'E', 'E-tables', 'table', 'check-e10'))
     ap.add_argument('--check', nargs='*', default=['off'], help=f'with --part check-e10: the checks to run, of {list(E10_CHECK_EXTRA)}')
     ap.add_argument('--jobs', type=int, default=3, help='part C: worker processes')
     ap.add_argument('--threads', type=int, default=12)
@@ -1504,6 +1912,11 @@ def main() -> None:
         part_b(out)
     elif args.part == 'C':
         part_c(out, jobs=args.jobs)
+    elif args.part == 'table':
+        write_table(out)
+    elif args.part == 'E-tables':
+        t = part_e_tables(out)
+        print(t['populations'].round(3).to_string(), flush=True)
     elif args.part == 'check-e10':
         for name in args.check:
             r = check_e10(name, E10_CHECK_EXTRA[name])
