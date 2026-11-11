@@ -895,9 +895,41 @@ def archive_prep(out: Path) -> pd.DataFrame:
     return v
 
 
+def report_tables(out: Path) -> pd.DataFrame:
+    """report_scalars.csv (tag, value, definition): the values the summary's passage reads that are in no table (the
+    inherited share's range over half-splits, the per-odor share against response-fraction gain correlations, the two
+    halves' factor agreement in part E, the screen's highest transfer reductions)."""
+    hv = pd.read_csv(out / 'inherited_halves.csv')
+    hc = hv[hv.readout == 'cal'].share_inherited
+    po = pd.read_csv(out / 'per_odor_parts.csv')
+    rows = [('inherited_halves_cal_q05', float(hc.quantile(0.05)), "5th percentile of share_inherited over the 100 splits of inherited_halves.csv, readout=cal"),
+            ('inherited_halves_cal_q95', float(hc.quantile(0.95)), 'the 95th percentile of the same')]
+    for tg in ('z8', 'z6'):
+        g = po[(po.readout == 'cal') & (po.target == tg)]
+        rows.append((f'per_odor_share_gain_corr_cal_{tg}', float(np.corrcoef(g.share, g.gain_diff)[0, 1]),
+                     f'Pearson over the 16 odors between share and gain_diff in per_odor_parts.csv, readout=cal, target={tg}'))
+    f = pd.concat([pd.read_csv(out / f'oracle_factors_{h}.csv') for h in 'AB'])
+    w = f.pivot_table(index=['odor', 'glomerulus'], columns='half', values='log2_factor')
+    cors = pd.Series({o: float(np.corrcoef(g['A'], g['B'])[0, 1]) for o, g in w.groupby(level=0)})
+    d = ('over the 10 searched odors, Pearson over the 36 glomeruli between log2_factor in oracle_factors_A.csv and '
+         'oracle_factors_B.csv')
+    rows += [('halves_factor_corr_min', float(cors.min()), f'{d}; the minimum ({cors.idxmin()})'),
+             ('halves_factor_corr_median', float(cors.median()), f'{d}; the median'),
+             ('halves_factor_corr_max', float(cors.max()), f'{d}; the maximum ({cors.idxmax()})')]
+    gt = pd.read_csv(out / 'gate.csv')
+    rows += [('gate_transfer_all_max', float(gt.cal_transfer_all.max()),
+              f'highest cal_transfer_all over the {len(gt)} rows of gate.csv ({gt.loc[gt.cal_transfer_all.idxmax(), "point_id"]})'),
+             ('gate_transfer_six_max', float(gt.cal_transfer_six.max()),
+              f'highest cal_transfer_six over the same rows ({gt.loc[gt.cal_transfer_six.idxmax(), "point_id"]})')]
+    sc = pd.DataFrame(rows, columns=['tag', 'value', 'definition'])
+    sc.to_csv(out / 'report_scalars.csv', index=False)
+    print(sc[['tag', 'value']].to_string(index=False), flush=True)
+    return sc
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['A-input', 'A-score', 'B', 'C', 'gate', 'D', 'E', 'F', 'archive-prep'])
+    ap.add_argument('--part', required=True, choices=['A-input', 'A-score', 'B', 'C', 'gate', 'D', 'E', 'F', 'archive-prep', 'report-tables'])
     ap.add_argument('--half', choices=['A', 'B'], help="part E's half of the recordings to search against")
     ap.add_argument('--score', action='store_true', help="part E: score the two searched inputs (score_oracle)")
     ap.add_argument('--odors', nargs='+', default=list(E_ODORS))
@@ -919,6 +951,8 @@ def main() -> None:
         gate(out)
     elif args.part == 'archive-prep':
         archive_prep(out)
+    elif args.part == 'report-tables':
+        report_tables(out)
     elif args.part == 'E' and args.score:
         score_oracle(out)
     elif args.part == 'E':
