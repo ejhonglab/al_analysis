@@ -23,14 +23,14 @@ def test_point_counts_and_ids():
     assert len(ids) == len(set(ids))
     assert all(re.fullmatch(r'[A-Za-z0-9_.-]+', i) for i in ids)
     held = [s for s in specs if not s['identity']]
-    by_part = {p: [s for s in held if s['part'] == p] for p in ('B1', 'B2', 'B3', 'B4', 'B5')}
-    # 7 new B1 points plus E80's two re-held 2 s points; then 5, 4, 4, 5
-    assert {p: len(v) for p, v in by_part.items()} == dict(B1=9, B2=5, B3=4, B4=4, B5=5)
+    by_part = {p: [s for s in held if s['part'] == p] for p in ('B1', 'B2', 'B3', 'B4', 'B5', 'B6')}
+    # 7 new B1 points plus E80's two re-held 2 s points; then 5, 4, 4, 5; B6 the literature setting's four wirings at 3 s
+    assert {p: len(v) for p, v in by_part.items()} == dict(B1=9, B2=5, B3=4, B4=4, B5=5, B6=4)
     assert len([s for s in by_part['B1'] if not s['reproduces']]) == 7
     assert sorted(s['model'] for s in by_part['B1']) == sorted(R.MODELS)
     idents = [s for s in specs if s['identity']]
-    # one identity per B1 model, and one per model of each other family
-    assert len(idents) == 9 + 2 + 2 + 2 + 2
+    # one identity per B1 model, and one per model of each other family (B6: four)
+    assert len(idents) == 9 + 2 + 2 + 2 + 2 + 4
     for s in held:
         assert any(i['part'] == s['part'] and i['model'] == s['model'] for i in idents), s['point_id']
 

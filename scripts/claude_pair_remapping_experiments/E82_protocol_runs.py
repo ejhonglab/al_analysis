@@ -117,9 +117,10 @@ def apl_taum_supported() -> bool:
 
 def _spec(pid: str, part: str, model: str, *, identity: bool, option: str = '', value: float = np.nan,
           opts: Optional[dict] = None, kc_kc_tau: float = KC_KC_TAU, prepass: Optional[dict] = None,
-          after: Sequence[str] = (), reference: str = '', reproduces: str = '', requires: str = '') -> dict:
+          after: Sequence[str] = (), reference: str = '', reproduces: str = '', requires: str = '',
+          population: str = '') -> dict:
     pulse = IDENTITY_PULSE if identity else PULSE
-    pop = next((k for k, v in POPULATIONS.items() if model in v), '') if part == 'B1' else ''
+    pop = next((k for k, v in POPULATIONS.items() if model in v), '') if part == 'B1' else population
     return dict(point_id=pid, part=part, model=model, identity=bool(identity), option=option, value=float(value),
                 pulse=float(pulse), **E80P.timing_kws(pulse), held=not identity, opts=dict(opts or {}),
                 kc_kc_tau=float(kc_kc_tau), prepass=dict(prepass or {}), after=list(after), reference=reference,
@@ -179,6 +180,25 @@ def point_specs() -> List[dict]:
             pts.append(_spec(f'B5_{m}_taum{t:g}', 'B5', m, identity=False, option='apl_taum', value=t,
                              opts=dict(apl_taum=t), after=[f'I_B5_{m}'] + gate, reference=f'B1_{m}',
                              requires='apl_taum'))
+    pts += b6_specs()
+    return pts
+
+
+# part B6 (the entry's part D, "if a setting passed the protocol gate"): the literature setting's four wirings re-held
+# at the passing setting with the smallest change, the ceiling's adaptation at 3 s (B2_fit0_tau3 passed, 2026-11-11 06:44)
+B6_TAU = 3.0
+B6_MODELS = ('fit1',) + tuple(f'{w}_fc' for w in DRAW_LABELS)
+
+
+def b6_specs() -> List[dict]:
+    """Part B6's points: each of the literature setting's four wirings (E69's fit 1 and E72 part G's P1, P2, M1 fits) at
+    the flies' pulse, re-held, with the adaptation's time constant at B6_TAU; population 'fc_tau3'."""
+    gate = list(REPRODUCTIONS)
+    pts = [_spec(f'I_B6_{m}', 'B6', m, identity=True, option='kc_adapt_tau', value=FIT_ADAPT_TAU,
+                 opts=dict(kc_adapt_tau=FIT_ADAPT_TAU)) for m in B6_MODELS]
+    pts += [_spec(f'B6_{m}_tau{B6_TAU:g}', 'B6', m, identity=False, option='kc_adapt_tau', value=B6_TAU,
+                  opts=dict(kc_adapt_tau=B6_TAU), after=[f'I_B6_{m}'] + gate, reference=f'B1_{m}', population='fc_tau3')
+             for m in B6_MODELS]
     return pts
 
 
@@ -677,7 +697,7 @@ def population_rows(out: Path, outputs: Optional[Path] = None) -> pd.DataFrame:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--only', nargs='+', help='point ids to run (the points they wait for run first)')
-    ap.add_argument('--part', nargs='+', choices=('B1', 'B2', 'B3', 'B4', 'B5'),
+    ap.add_argument('--part', nargs='+', choices=('B1', 'B2', 'B3', 'B4', 'B5', 'B6'),
                     help="the parts' points to run (with --only: both; the points they wait for run first)")
     ap.add_argument('--list', action='store_true', help='list the points and exit')
     ap.add_argument('--populations', action='store_true', help='only rewrite runs_populations.csv from saved points')
