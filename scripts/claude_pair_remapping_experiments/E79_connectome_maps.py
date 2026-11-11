@@ -1180,6 +1180,16 @@ def write_table(tables: Dict[str, pd.DataFrame]) -> None:
                 continue
             s.columns = [f'{a} {b}' for a, b in s.columns]
             lines += [f'### {comp}', '', _md(s.reset_index(), '.2f'), '']
+    for bl in ('order_matched', 'first_in_block'):
+        f = OUT / f'connectome_map_pooled_{bl}.csv'
+        if not f.exists():
+            continue
+        q = pd.read_csv(f)
+        q = q[q.comparison.isin(['pa-ms', 'paa-ms']) & (q.flip == 'best')]
+        q = q.pivot_table(index=['alternative', 'calyx'], columns='comparison', values=['mean_best_r', 'null_pct'])
+        q.columns = [f'{a} {b}' for a, b in q.columns]
+        lines += [f'### pa-ms and paa-ms with the measured maps\' {bl} baseline (E79_apl_calyx_constraints.py\'s '
+                  f'stimulus_maps; connectome_map_*_{bl}.csv), best flip', '', _md(q.reset_index(), '.2f'), '']
     if 'flips' in tables:
         f = tables['flips']
         f = f[f.comparison.isin(['pa-ms', 'paa-ms'])]
@@ -1290,7 +1300,9 @@ def main() -> None:
     tables['calyces'] = summary
     extra = dict(n_perm=args.n_perm, analyses=sorted(which), baseline=args.baseline)
     if '4' in which:
-        tables.update(run_maps(args.n_perm, calyces, rates, baseline=args.baseline))
+        res = run_maps(args.n_perm, calyces, rates, baseline=args.baseline)
+        if args.baseline == 'all_pfo':
+            tables.update(res)
     if '4' in which or 'profiles' in which:
         tables.update(profiles(calyces, rates))
     if '6' in which:
