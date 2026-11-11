@@ -1079,9 +1079,44 @@ def write_provenance(out: Path, part: str) -> None:
     (out / f'protocol_provenance_{part}.json').write_text(json.dumps(prov, indent=1, default=str) + '\n')
 
 
+def archive_prep(out: Path) -> pd.DataFrame:
+    """Before archive_model_outputs.py: variants.csv with every part-B run (runs.csv; outputs under
+    outputs/E82_flies_protocol/runs/, tag = point_id) and its absolute parameters and options, and their pair distances
+    (raw spike counts, the harness's primary model RDM) added to model_pair_distances_long.csv (part D's fits write their
+    own rows and fits.csv)."""
+    import kc_remapping_harness as H
+    odir = H.outputs_dir(EXPERIMENT) / 'runs'
+    keep = ['model', 'wiring', 'option', 'value', 'time_stim_end', 'time_end', 'fixed_thr', 'fixed_thr_off', 'wAPLKC_scale',
+            'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'wKCKC_scale', 'kc_kc_tau', 'thr_factor', 'apl_factor', 'rate_on',
+            'rate_off', 'identity', 'part']
+    r = pd.read_csv(out / 'runs.csv').drop_duplicates('point_id', keep='last')
+    rows = [dict(tag=x.point_id, variant=x.point_id, base='bouton', k=2.0, kc_kc_inh=x.get('wKCKC_scale'),
+                 **{c: x[c] for c in keep if c in r.columns}) for _, x in r.iterrows()]
+    v = pd.DataFrame(rows)
+    v.to_csv(out / 'variants.csv', index=False)
+    lp = out / 'model_pair_distances_long.csv'
+    old = pd.read_csv(lp) if lp.exists() else pd.DataFrame(columns=['tag', 'condition', 'odor_a', 'odor_b', 'distance'])
+    new = []
+    for tag in v.tag:
+        if tag in set(old.tag):
+            continue
+        d = {}
+        for c in ('on', 'acute_off'):
+            f, g = odir / f'{tag}_{c}_spike_counts.parquet', odir / f'{tag}_{c}_responses.parquet'
+            if not (f.exists() and g.exists()):
+                break
+            d[c] = H.model_rdms(pd.read_parquet(g), pd.read_parquet(f))[H.PRIMARY_MODEL_RDM]
+        if len(d) == 2:
+            new.append(pd.concat({(tag, c): x for c, x in d.items()}, names=['tag', 'condition', 'odor_a', 'odor_b']).rename('distance').reset_index())
+    if new:
+        pd.concat([old] + new, ignore_index=True).to_csv(lp, index=False)
+    print(f'{len(v)} variants; {len(new)} added to model_pair_distances_long.csv', flush=True)
+    return v
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', choices=('A', 'C', 'tables'), required=True)
+    ap.add_argument('--part', choices=('A', 'C', 'tables', 'archive-prep'), required=True)
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
     out.mkdir(parents=True, exist_ok=True)
@@ -1100,6 +1135,8 @@ def main() -> None:
         population_readings(out)
         gates(out)
         write_provenance(out, 'C')
+    elif args.part == 'archive-prep':
+        archive_prep(out)
     else:
         print(tables(out), flush=True)
         figures(out)
