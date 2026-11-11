@@ -188,41 +188,79 @@ def test_gate_point_edges():
     assert not g['bands'] and not g['pass'] and not g['pass_without_iv']
 
 
-def _write_point(out: Path, row: dict):
-    d = out / 'points' / row['start']
+def test_gate_point_rates_and_limit():
+    ref = _ref_row()
+    # a point whose bisection ended at a bound fails every condition
+    g = E78.gate_point(_row(rates_held=False), ref)
+    assert not g['rates_held'] and not any(g[c] for c in ('i', 'ii', 'iii')) and not g['pass'] and not g['pass_without_iv']
+    assert E78.gate_point(_row(rates_held='False'), ref)['pass'] is False
+    # an absolute loss limit (C2's 0.060)
+    assert E78.gate_point(_row(cal_loss=0.0600), ref, loss_limit=0.060)['ii']
+    assert not E78.gate_point(_row(cal_loss=0.0601), ref, loss_limit=0.060)['ii']
+
+
+def _write_point(out: Path, row: dict, run: str = 'prepass'):
+    d = out / ('points' if run == 'held' else f'points_{run}') / row['start']
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{row['point_id']}.json").write_text(json.dumps(row))
+    (d / f"{row.get('point_key', row['point_id'])}.json").write_text(json.dumps(row))
 
 
 def test_gate_selects(tmp_path):
     base = dict(start='C2', family='knee', claw_thr=100.0, claw_thr_subgain=0.25, claw_thr_width=0.0, rel=np.nan,
-        start_experiment='E67', start_tag='x', k=2.0)
-    _write_point(tmp_path, dict(_ref_row(), **dict(base, family='identity'), tag='C2_identity'))
-    _write_point(tmp_path, dict(_row(point_id='knee100_g0.25', cal_loss=0.058), **base, tag='C2_knee100_g0.25'))
-    _write_point(tmp_path, dict(_row(point_id='knee130_g0.25', cal_loss=0.057), **base, tag='C2_knee130_g0.25'))
-    _write_point(tmp_path, dict(_row(point_id='knee115_g0', cal_loss=0.050, rate_rho_on=0.4), **base, tag='C2_knee115_g0'))
-    _write_point(tmp_path, dict(_row(point_id='rel0.7', cal_loss=0.059), **dict(base, family='rel'), tag='C2_rel0.7'))
+        start_experiment='E67', start_tag='x', k=2.0, kckc='tied', rates_held=True, control=False)
+    _write_point(tmp_path, dict(_ref_row(), **dict(base, family='identity', kckc=''), tag='C2_identity'))
+    _write_point(tmp_path, dict(_row(point_id='knee100_g0.25', cal_loss=0.058), **base, tag='C2_pp_knee100_g0.25'))
+    _write_point(tmp_path, dict(_row(point_id='knee130_g0.25', cal_loss=0.057), **base, tag='C2_pp_knee130_g0.25'))
+    _write_point(tmp_path, dict(_row(point_id='knee115_g0', cal_loss=0.050, rate_rho_on=0.4), **base, tag='C2_pp_knee115_g0'))
+    _write_point(tmp_path, dict(_row(point_id='rel0.7', cal_loss=0.059), **dict(base, family='rel'), tag='C2_pp_rel0.7'))
+    _write_point(tmp_path, dict(_row(point_id='knee130_g0', cal_loss=0.040), **dict(base, rates_held=False), tag='C2_pp_knee130_g0'))
+    # a KC-KC-fixed control (not gated) and a point 0.0605 from C2's 0.056 (above the 0.060 limit)
+    _write_point(tmp_path, dict(_row(point_id='knee100_g0.25', point_key='knee100_g0.25_kf', cal_loss=0.030),
+        **dict(base, kckc='fixed', control=True), tag='C2_pp_knee100_g0.25_kf'))
+    _write_point(tmp_path, dict(_row(point_id='knee100_g0.5', cal_loss=0.0605), **base, tag='C2_pp_knee100_g0.5'))
     res = E78.gate(tmp_path)
-    assert res['n_points'] == 4 and res['n_pass'] == 3
-    assert [s['tag'] for s in res['selected']] == ['C2_knee130_g0.25', 'C2_rel0.7']
+    assert res['n_points'] == 6 and res['n_pass'] == 3 and res['n_rates_not_held'] == 1
+    assert [s['tag'] for s in res['selected']] == ['C2_pp_knee130_g0.25', 'C2_pp_rel0.7']
     assert (tmp_path / 'gate.json').exists() and (tmp_path / 'sweep.csv').exists()
+    assert {p['tag']: p['loss_limit'] for p in res['points']}['C2_pp_knee100_g0.5'] == pytest.approx(0.060)
+    assert E78.best_points(E78.aggregate(tmp_path), 2) == ['C2_pp_knee115_g0'.split('C2_pp_')[1], 'knee130_g0.25']
+    # the held run: its own files and gate against its identity_held point
+    _write_point(tmp_path, dict(_ref_row(), **dict(base, family='identity', kckc=''), tag='C2_identity'), 'held')
+    _write_point(tmp_path, dict(_ref_row(point_id='identity_held', cal_loss=0.071), **dict(base, family='identity_held'),
+        tag='C2_identity_held'), 'held')
+    _write_point(tmp_path, dict(_row(point_id='knee100_g0.25', cal_loss=0.074), **dict(base, kckc='fixed'), tag='C2_knee100_g0.25'), 'held')
+    rh = E78.gate(tmp_path, 'identity_held', 'held')
+    assert rh['n_points'] == 1 and rh['points'][0]['loss_limit'] == pytest.approx(0.075) and rh['points'][0]['ii']
+    assert rh['points'][0]['ident_loss_limit'] == pytest.approx(0.060) and not rh['points'][0]['ident_ii']
+    assert (tmp_path / 'gate_identity_held.json').exists() and (tmp_path / 'sweep_held.csv').exists()
+    assert len(pd.read_csv(tmp_path / 'sweep.csv')) == 8
 
 
 def test_point_specs():
     pts = E78.point_specs()
     ids = [p['point_id'] for p in pts]
-    assert ids[:2] == ['identity', 'identity_held'] and len(ids) == len(set(ids)) == 2 + 12 + 2 + 3
+    assert ids[0] == 'identity' and len(ids) == len(set(ids)) == 1 + 12 + 2 + 3
+    assert all(p['kckc'] == 'tied' for p in pts[1:]) and not any(p['control'] for p in pts)
+    held = [p['point_id'] for p in E78.point_specs(breadth='held', kckc='fixed')]
+    assert held[:2] == ['identity', 'identity_held'] and len(held) == 2 + 17
     assert 'knee115_g0.5' in ids and 'knee70_g0.25' in ids and 'rel0.85' in ids
     k = next(p for p in pts if p['point_id'] == 'knee130_g0')
     assert k['transfer'] == {'claw_thr': 130.0}
     k = next(p for p in pts if p['point_id'] == 'knee100_g0.1')
     assert k['transfer'] == {'claw_thr': 100.0, 'claw_thr_subgain': 0.1}
-    sw = pd.DataFrame([dict(start='C2', family='knee', point_id=p['point_id'], claw_thr=p['claw_thr'],
-        claw_thr_subgain=p['claw_thr_subgain'], cal_loss=0.05 + 0.001 * i, realism_flag_noise='')
+    sw = pd.DataFrame([dict(start='C2', family='knee', point_id=p['point_id'], claw_thr=p['claw_thr'], kckc='tied',
+        claw_thr_subgain=p['claw_thr_subgain'], cal_loss=0.05 + 0.001 * i, realism_flag_noise='', rates_held=p['point_id'] != 'knee100_g0', control=False)
         for i, p in enumerate(pts) if p['family'] == 'knee'])
-    soft = [p for p in E78.point_specs(sw) if p['family'] == 'knee_soft']
-    assert [p['point_id'] for p in soft] == ['knee100_g0_w15', 'knee100_g0.1_w15']
-    assert soft[1]['transfer'] == {'claw_thr': 100.0, 'claw_thr_subgain': 0.1, 'claw_thr_width': 15.0}
+    # the best knee point's rates were not held: the next two
+    specs = E78.point_specs(sw)
+    soft = [p for p in specs if p['family'] == 'knee_soft']
+    assert [p['point_id'] for p in soft] == ['knee100_g0.1_w15', 'knee100_g0.25_w15']
+    assert soft[0]['transfer'] == {'claw_thr': 100.0, 'claw_thr_subgain': 0.1, 'claw_thr_width': 15.0}
+    ctrl = [p for p in specs if p['control']]
+    assert [E78.point_key(p) for p in ctrl] == ['knee100_g0.1_kf', 'knee100_g0.25_kf'] and all(p['kckc'] == 'fixed' for p in ctrl)
+    assert E78.point_tag('C2', ctrl[0]) == 'C2_pp_knee100_g0.1_kf' and E78.point_tag('C2', soft[0]) == 'C2_pp_knee100_g0.1_w15'
+    assert E78.point_tag('C2', dict(point_id='knee100_g0', kckc='fixed'), 'held') == 'C2_knee100_g0'
+    assert not any(p['control'] for p in E78.point_specs(sw, 'prepass', 'fixed'))
 
 
 def test_odor_relative_inhibition():
@@ -250,9 +288,9 @@ def _fake_outputs(seed, n=600):
 
 
 def test_sweep_writes_and_aggregates(monkeypatch, tmp_path):
-    """sweep's per-point bookkeeping on a fake model (no simulations): the identity and a knee point are scored, written
-    per point, aggregated into sweep.csv and the harness-readable tables (the identity left out of those), and the gate
-    reads them."""
+    """sweep's per-point bookkeeping on a fake model (no simulations), in both runs: the identity and a knee point are
+    scored, written per point under each run's folder and tags, aggregated into sweep.csv / sweep_held.csv and the
+    harness-readable tables of both (the identity left out of those), and the gate reads them."""
     ref, pt_out = _fake_outputs(0), _fake_outputs(1)
 
     class FakeModel:
@@ -263,11 +301,12 @@ def test_sweep_writes_and_aggregates(monkeypatch, tmp_path):
             self.n_on, self.n_off = int(ref['on'][0].to_numpy().sum()), int(ref['off'][0].to_numpy().sum())
             self.orn = H.apl16_orn_deltas()
 
-        def hold(self, pt):
-            return dict(self.p, fixed_thr=50.0), pt_out, dict(point_id=pt['point_id'], start=self.start, breadth_from='held',
-                thr_factor=0.5, apl_factor=1.2, thr_at_bound=False, apl_at_bound=False, n_responses_on=1, n_responses_off=2,
-                target_n_on=1, target_n_off=2, n_sims=3, seconds=1.0, bisections=[], breadth_sha256='x', breadth_corr_vs_start=0.9,
-                runner_kws={})
+        def hold(self, pt, breadth='prepass'):
+            tied = pt['kckc'] == 'tied'
+            return dict(self.p, fixed_thr=50.0, wKCKC_scale=13.0 if tied else 26.0), pt_out, dict(point_id=pt['point_id'],
+                start=self.start, breadth_from=breadth, kckc=pt['kckc'], kckc_factor=0.5 if tied else 1.0, thr_factor=0.5,
+                apl_factor=1.2, thr_at_bound=False, apl_at_bound=False, rates_held=True, n_responses_on=1, n_responses_off=2,
+                target_n_on=1, target_n_off=2, n_sims=3, seconds=1.0, bisections=[], breadth_sha256='x', breadth_corr_vs_start=0.9)
 
     orig_r, orig_o = H.results_dir, H.outputs_dir
     monkeypatch.setattr(H, 'results_dir', lambda e: tmp_path / 'results' if e == E78.EXPERIMENT else orig_r(e))
@@ -277,19 +316,37 @@ def test_sweep_writes_and_aggregates(monkeypatch, tmp_path):
     out = H.results_dir(E78.EXPERIMENT)
     out.mkdir(parents=True)
     df = E78.sweep(out, 'C2', ['knee130_g0.25'])
-    assert set(df.point_id) == {'identity', 'identity_held', 'knee130_g0.25'}
+    assert set(df.point_id) == {'identity', 'knee130_g0.25'} and set(df.tag) == {'C2_identity', 'C2_pp_knee130_g0.25'}
     k = df.set_index('point_id').loc['knee130_g0.25']
-    assert k['claw_thr'] == 130.0 and k['claw_thr_subgain'] == 0.25 and k['fixed_thr'] == 50.0 and k['breadth_from'] == 'held'
+    assert k['claw_thr'] == 130.0 and k['claw_thr_subgain'] == 0.25 and k['fixed_thr'] == 50.0 and k['breadth_from'] == 'prepass'
+    assert k['kckc'] == 'tied' and k['kckc_factor'] == 0.5 and k['wKCKC_scale'] == 13.0 and k['rates_held'] == True
     for col in ('cal_loss', 'raw_six_effect', 'cal_err_ester', 'frac_on_ms', 'realism_flag_noise', 'rate_rho_on'):
         assert col in df.columns
+    assert (out / 'points_prepass' / 'C2' / 'knee130_g0.25.json').exists()
+    assert (tmp_path / 'outputs' / 'C' / 'C2_pp_knee130_g0.25_on_spike_counts.parquet').exists()
+    dh = E78.sweep(out, 'C2', ['knee130_g0.25'], 'held', 'fixed')
+    assert set(dh.tag) == {'C2_identity', 'C2_identity_held', 'C2_knee130_g0.25'} and (out / 'points' / 'C2' / 'knee130_g0.25.json').exists()
+    assert set(pd.read_csv(out / 'sweep.csv').tag) == {'C2_identity', 'C2_pp_knee130_g0.25'}
+    assert set(pd.read_csv(out / 'sweep_held.csv').tag) == {'C2_identity', 'C2_identity_held', 'C2_knee130_g0.25'}
     sv = pd.read_csv(out / 'stats_variants.csv')
-    assert 'C2_identity' not in set(sv.tag) and 'C2_knee130_g0.25' in set(sv.tag)
+    assert set(sv.tag) == {'C2_pp_knee130_g0.25', 'C2_identity_held', 'C2_knee130_g0.25'}
     mp = pd.read_csv(out / 'model_pair_distances_long.csv')
-    assert set(mp.tag) == {'C2_identity_held', 'C2_knee130_g0.25'} and len(mp) == 2 * 2 * 120
-    assert (tmp_path / 'outputs' / 'C' / 'C2_knee130_g0.25_on_spike_counts.parquet').exists()
+    assert set(mp.tag) == set(sv.tag) and len(mp) == 3 * 2 * 120
     g = E78.gate(out)
-    assert g['n_points'] == 1 and g['ref_point'] == 'identity'
-    row = g['points'][0]
-    assert row['tag'] == 'C2_knee130_g0.25' and 'held_pass' in row and row['held_cal_loss_start'] != row['cal_loss_start']
-    gh = E78.gate(out, 'identity_held')
-    assert gh['ref_point'] == 'identity_held' and (out / 'gate_identity_held.json').exists() and 'ident_pass' in gh['points'][0]
+    assert g['n_points'] == 1 and g['ref_point'] == 'identity' and g['points'][0]['tag'] == 'C2_pp_knee130_g0.25'
+    gh = E78.gate(out, 'identity_held', 'held')
+    assert gh['run'] == 'held' and (out / 'gate_identity_held.json').exists() and 'ident_pass' in gh['points'][0]
+
+
+@pytest.mark.skipif(not Path('/proc/cpuinfo').exists(), reason='needs the model')
+def test_prepass_identity_check(monkeypatch, tmp_path):
+    """The pre-pass run at an empty transfer (the model, a few minutes): E10's transfer_prepass gives C2's breadth, and
+    the point held with it (KC-KC tied) equals C2's saved spike counts in both conditions."""
+    orig_r, orig_o = H.results_dir, H.outputs_dir
+    monkeypatch.setattr(H, 'results_dir', lambda e: tmp_path / 'results' if e == E78.EXPERIMENT else orig_r(e))
+    monkeypatch.setattr(H, 'outputs_dir', lambda e: tmp_path / 'outputs' if e == E78.EXPERIMENT else orig_o(e))
+    out = H.results_dir(E78.EXPERIMENT)
+    out.mkdir(parents=True)
+    res = E78.check_c(out, 'C2')
+    assert res['ok'] and res['breadth_equal'] and res['on_mismatch'] == 0 and res['acute_off_mismatch'] == 0
+    assert res['thr_factor'] == 1.0 and res['apl_factor'] == 1.0 and res['params_equal']

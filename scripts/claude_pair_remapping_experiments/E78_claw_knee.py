@@ -26,30 +26,40 @@ The entry (experiment_priorities.md, item 3; planned by a Fable subagent, claude
 - E (`--part E`): every fit and gate point under the per-KC reading (E73's scorer), the release by claw count.
 - summarize (`--part summarize`): comparison_table.md and the figures.
 
-Part C's model (`KneeModel`): the start on E77's fixed-scale runner (E77_input_screen's `build_c2_simulator` and
-`hold_rates`, the start's parameters, wiring and firing ceiling; checked to reproduce the start's saved spike counts),
-the transfer as model kwargs (claw_thr, claw_thr_subgain, claw_thr_width; the odor-relative knee as ext_inh_bouton),
-both response rates held with the breadth weights recomputed from the threshold-held APL-off run (breadth_from='held',
-as the entry specifies; KC-KC inhibition included). The 'identity' point is the start itself, against which the gate
-compares; 'identity_held' is the start with only the held breadth, the control for that choice. Part A's and part D's
-E10 fits take their breadth from E10's base instead (E16's base at the knee, its APL-off run at its own tuned threshold,
-with the sub-threshold gain / width re-tuned to that run's response count), so part C and the fits differ in that respect.
+Part C's model (`KneeModel`): the start on E77's fixed-scale runner (E77_input_screen's `build_c2_simulator`, the start's
+parameters, wiring and firing ceiling; checked to reproduce the start's saved spike counts), the transfer as model kwargs
+(claw_thr, claw_thr_subgain, claw_thr_width; the odor-relative knee as ext_inh_bouton), both response rates held. Two runs:
+- 'prepass' (`--breadth prepass`, the default; planned at hal 21:39 after the first run): each point's breadth weights from
+  E10_joint_fit.transfer_prepass on the plain bouton base of the start's wiring with the whole transfer (its threshold
+  re-tuned to the transfer-free run's APL-off response count; at the identity C2's breadth exactly, `--part check-C`), and
+  with `--kckc tied` (default) the KC-KC scale multiplied by the somatic threshold's factor when the APL-off count is
+  held (KC-KC inhibition is driven by the other KCs' spikes, so with the scale fixed a 100-130 Hz hard knee cannot reach
+  the APL-off count); the two best knee points also with the KC-KC scale fixed, as controls (not gated). Tags
+  <start>_pp_<point>[_kf]; points_prepass/<start>/; sweep.csv, gate.json.
+- 'held' (the first run, bd78d6e): the breadth from the threshold-held APL-off run (breadth_from='held'), the KC-KC scale
+  at the start's; 'identity_held' is the start with only that breadth. Kept for the record: tags <start>_<point>;
+  points/<start>/; sweep_held.csv, gate_identity_held.json.
+The 'identity' point is the start itself. The gate compares with C2 itself; points whose bisection ended at a bound
+(rates_held false) fail it and are left out of the best points.
 
-Outputs: <shared>/results/E78_claw_knee/ (points/<start>/<point>.json, _pairs.csv, _record.json and provenance_*.json;
-sweep.csv, sweep_pairs.csv, sweep_params.json, stats_variants.csv and model_pair_distances_long.csv built from them;
+Outputs: <shared>/results/E78_claw_knee/ (points_prepass/<start>/ and points/<start>/: <point>.json, _pairs.csv,
+_record.json and provenance_*.json; sweep[_held].csv, sweep_pairs[_held].csv, sweep_params[_held].json, and
+stats_variants.csv and model_pair_distances_long.csv of both, built from them; check_prepass_identity.json;
 archive_knee_variants.csv, noise_six_pairs.csv, who_selects.csv, pn_rates.csv; low_conc/; gate.json, gate.csv;
-init_params.json, partD_commands.json, paired.csv, population.csv; release.csv; comparison_table.md, E78_*.png); spike
+init_params.json, partD_commands.json, paired.csv, population.csv; release.csv; comparison_table[_held].md, E78_*.png); spike
 counts and responses under ./outputs/E78_claw_knee/C/<start>_<point>_<on|acute_off>_<spike_counts|responses>.parquet.
 
 Usage (from this folder; at most two 16-thread processes on hal, under nice, as systemd-run --user units for long runs):
-    ../../venv/bin/python E78_claw_knee.py --part C-launch   (all of part C as four chained units, after part A's units;
-        `c_launch`), or step by step:
+    ../../venv/bin/python E78_claw_knee.py --part check-C   (the pre-pass run's identity check on C2; before launching)
+    ../../venv/bin/python E78_claw_knee.py --part C-launch  (the pre-pass run as four chained units; `c_launch`), or step by
+        step:
     OMP_NUM_THREADS=16 OMP_THREAD_LIMIT=16 nice -n 10 ../../venv/bin/python -u E78_claw_knee.py --part C [--only ID ...]
-        (C2; split the points over two processes with --only; run once more without --only for the softplus width at
-        the two best knee points)
-    ... --part C --start fit1 --best    and    ... --part C --start P1 --best    (the five best repeated)
+        (C2; split the points over two processes with --only; run once more without --only for the softplus width and the
+        KC-KC-fixed controls at the two best knee points; --breadth held / --kckc fixed for the other settings)
     ... --part C-low --best             (the five best and C2 at the low concentrations)
-    ../../venv/bin/python E78_claw_knee.py --part gate | --part summarize | --part B | --part E
+    ... --part C --start fit1 --best    and    ... --part C --start P1 --best    (the five best repeated)
+    ../../venv/bin/python E78_claw_knee.py --part gate [--breadth held --gate-ref identity_held] | --part summarize
+        [--breadth held] | --part B | --part E
     ../../venv/bin/python E78_claw_knee.py --part check-e10 [--baseline COMMIT] [--jobs N]   (E10's options checked)
 """
 from __future__ import annotations
@@ -95,11 +105,12 @@ LINK_KNEE, LINK_SUBGAINS = 70.0, (0.0, 0.25)
 SOFT_WIDTH = 15.0
 REL_LEVELS = (0.5, 0.7, 0.85)
 N_BEST = 5
-# the gate (the entry's part D): (i) ester group's error reduced by a third or more and the six pairs' raw APL effect
-# raised by 0.03 or more; (ii) readout loss within 0.004 of the start's (0.006 for the firing ceiling's points);
-# (iii) every odor keeps half its start's response fraction in both conditions, response rate ρ with APL on >= 0.50;
-# (iv) 2h at 10^-5 keeps half the fraction the start recruits
-GATE = dict(ester_reduction=1 / 3, six_raise=0.03, loss_tol=0.004, loss_tol_ceiling=0.006, odor_frac_keep=0.5,
+# the gate (the entry's part D, against C2 itself; hal's planning, 21:39): (i) ester group's error reduced by a third or
+# more and the six pairs' raw APL effect raised by 0.03 or more; (ii) readout loss 0.060 or lower on C2 (the firing
+# ceiling's points within 0.006 of their own start, the re-drawn wirings' within 0.004); (iii) every odor keeps half of C2's
+# response fraction in both conditions, response rate ρ with APL on >= 0.50; (iv) 2h at 10^-5 keeps half the fraction C2
+# recruits
+GATE = dict(ester_reduction=1 / 3, six_raise=0.03, loss_max_c2=0.060, loss_tol=0.004, loss_tol_ceiling=0.006, odor_frac_keep=0.5,
     rate_rho_min=0.50, low_conc_keep=0.5)
 
 
@@ -560,10 +571,39 @@ COND_FILE = {'on': 'on', 'off': 'acute_off'}
 _CACHE: Dict[object, object] = {}
 
 
-def points_dir(start: str) -> Path:
-    d = H.results_dir(EXPERIMENT) / 'points' / start
+# the two part C runs: 'held' (the first run, bd78d6e: the breadth from the threshold-held APL-off run, KC-KC held at the
+# start's scale; points/<start>/, tags <start>_<point>), kept for the record, and 'prepass' (the rerun planned 21:39: the
+# breadth from E10's transfer pre-pass, the KC-KC scale tied to the somatic threshold by default; points_prepass/<start>/,
+# tags <start>_pp_<point>[_kf])
+BREADTHS = ('prepass', 'held')
+KCKC_MODES = ('tied', 'fixed')
+# the pre-pass's threshold-factor bracket, widened from E10's (0.02, 50) for the odor-relative knee
+PREPASS_BRACKET = (1e-3, 1e3)
+
+
+def points_dir(start: str, breadth: str = 'prepass') -> Path:
+    d = H.results_dir(EXPERIMENT) / ('points' if breadth == 'held' else f'points_{breadth}') / start
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def point_key(pt: dict, breadth: str = 'prepass') -> str:
+    """A point's file name and tag part: its id, with _kf for a KC-KC-fixed point of the pre-pass run (and _kt for a
+    KC-KC-tied point of the held run)."""
+    k = pt.get('kckc')
+    if pt['point_id'] in ('identity', 'identity_held') or k is None:
+        return pt['point_id']
+    if breadth == 'prepass':
+        return pt['point_id'] + ('_kf' if k == 'fixed' else '')
+    return pt['point_id'] + ('_kt' if k == 'tied' else '')
+
+
+def point_tag(start: str, pt: dict, breadth: str = 'prepass') -> str:
+    """A point's tag: <start>_pp_<point key> in the pre-pass run, <start>_<point key> in the held run; the start itself
+    ('identity') is <start>_identity in both."""
+    if pt['point_id'] == 'identity':
+        return f'{start}_identity'
+    return f'{start}_' + ('pp_' if breadth == 'prepass' else '') + point_key(pt, breadth)
 
 
 def c_outputs_dir() -> Path:
@@ -639,22 +679,48 @@ def knee_point(T: float, g: float, w: Optional[float] = None) -> dict:
         claw_thr_width=float(w) if w else 0.0, rel=np.nan, transfer=t)
 
 
-def point_specs(sweep_df: Optional[pd.DataFrame] = None) -> List[dict]:
-    """Part C's points: the start itself ('identity'), C1 (knee x sub-threshold gain, the 70 Hz link points; the softplus
-    width at the two best of them, once `sweep_df` has them) and C2 (the odor-relative knee at REL_LEVELS); each a dict
-    with point_id, family ('identity', 'knee', 'knee_soft', 'rel'), the settings, and 'transfer' (the claw kwargs; the
-    odor-relative knee's inhibition matrix is built by KneeModel)."""
-    pts = [dict(point_id=i, family=i, claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan, rel=np.nan, transfer={})
-        for i in ('identity', 'identity_held')]
-    pts += [knee_point(T, g) for T in KNEES for g in SUBGAINS]
-    pts += [knee_point(LINK_KNEE, g) for g in LINK_SUBGAINS]
-    pts += [dict(point_id=f'rel{lv:g}', family='rel', claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan,
+def _usable(d: pd.DataFrame) -> pd.DataFrame:
+    """Rows of a sweep table whose two response rates were held (neither bisection at a bound) and that are not controls."""
+    if not len(d):
+        return d
+    held = d['rates_held'].astype(str).str.lower().isin(['true', '1', '1.0']) if 'rates_held' in d else pd.Series(True, index=d.index)
+    ctrl = d['control'].astype(str).str.lower().isin(['true', '1', '1.0']) if 'control' in d else pd.Series(False, index=d.index)
+    return d[held & ~ctrl]
+
+
+def best_knee_points(sweep_df: Optional[pd.DataFrame], n: int = 2, kckc: str = 'tied') -> List[dict]:
+    """The n best knee points on C2 (hard knee, with or without a sub-threshold gain) by the readout loss, among those
+    whose rates were held, inside the bands where n of them are, with the run's KC-KC mode."""
+    if sweep_df is None or not len(sweep_df):
+        return []
+    k = _usable(sweep_df[(sweep_df.family == 'knee') & (sweep_df.start == 'C2')])
+    if 'kckc' in k:
+        k = k[k.kckc.fillna(kckc) == kckc]
+    inside = k[k.realism_flag_noise.fillna('') == '']
+    k = inside if len(inside) >= n else k
+    return [knee_point(float(r.claw_thr), float(r.claw_thr_subgain)) for _, r in k.sort_values('cal_loss').head(n).iterrows()]
+
+
+def point_specs(sweep_df: Optional[pd.DataFrame] = None, breadth: str = 'prepass', kckc: str = 'tied') -> List[dict]:
+    """Part C's points: the start itself ('identity'; for the held run also 'identity_held', the start with only the held
+    breadth), C1 (knee x sub-threshold gain, the 70 Hz link points; the softplus width at the two best of them once
+    `sweep_df` has them) and C2 (the odor-relative knee at REL_LEVELS), each with the run's KC-KC mode `kckc`; for the
+    pre-pass run with the KC-KC scale tied, also the two best knee points with it fixed ('control', not gated). Each a
+    dict with point_id, family ('identity', 'identity_held', 'knee', 'knee_soft', 'rel'), the settings, 'kckc', 'control'
+    and 'transfer' (the claw kwargs; the odor-relative knee's inhibition matrix is built by KneeModel)."""
+    ids = ('identity', 'identity_held') if breadth == 'held' else ('identity',)
+    pts = [dict(point_id=i, family=i, claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan, rel=np.nan, transfer={},
+        kckc=None, control=False) for i in ids]
+    rest = [knee_point(T, g) for T in KNEES for g in SUBGAINS] + [knee_point(LINK_KNEE, g) for g in LINK_SUBGAINS]
+    rest += [dict(point_id=f'rel{lv:g}', family='rel', claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan,
         rel=float(lv), transfer={}) for lv in REL_LEVELS]
-    if sweep_df is not None and len(sweep_df):
-        k = sweep_df[(sweep_df.family == 'knee') & (sweep_df.start == 'C2')]
-        k = k[k.realism_flag_noise.fillna('') == ''] if (k.realism_flag_noise.fillna('') == '').sum() >= 2 else k
-        for _, r in k.sort_values('cal_loss').head(2).iterrows():
-            pts.append(knee_point(float(r.claw_thr), float(r.claw_thr_subgain), SOFT_WIDTH))
+    best = best_knee_points(sweep_df, 2, kckc)
+    rest += [knee_point(b['claw_thr'], b['claw_thr_subgain'], SOFT_WIDTH) for b in best]
+    for p in rest:
+        p.update(kckc=kckc, control=False)
+    pts += rest
+    if breadth == 'prepass' and kckc == 'tied':
+        pts += [dict(b, kckc='fixed', control=True) for b in best]
     return pts
 
 
@@ -695,6 +761,11 @@ class KneeModel:
         if not np.array_equal(np.asarray(w0, dtype=float), np.asarray(self.kws['_wAPLKC'], dtype=float)):
             raise RuntimeError(f"{start}: the breadth weights rebuilt here differ from fit_model's")
         self.wPNKC = self.W if self.wiring else None
+        # (the plain base's kwargs and wiring, for the pre-pass; its wiring names the pre-pass caches)
+        self.plain_kws = dict(J.base_kws(None), **({'_wPNKC': self.W} if self.wiring else {}))
+        self.wiring_name = ('real' if not wiring else (f"{wiring['wiring']}-seed{int(wiring['wiring_seed'])}" if 'wiring' in wiring
+            else wiring['wiring_tag']))
+        self._base_off = None
         sim, info = S.build_c2_simulator(self.spiking or None, wPNKC=self.wPNKC, breadth=self.breadth0, params=self.p)
         on, off = sim(self.p), sim(self.off(self.p))
         del sim, info
@@ -730,43 +801,137 @@ class KneeModel:
             return dict(ext_inh_bouton=odor_relative_inhibition(self.W, orn, top, pt['rel']))
         return dict(pt['transfer'])
 
-    def breadth_path(self, pt: dict) -> Path:
-        return c_outputs_dir() / f"{self.start}_{pt['point_id']}_breadth.parquet"
+    def breadth_path(self, tag: str) -> Path:
+        return c_outputs_dir() / f'{tag}_breadth.parquet'
 
-    def point_kws(self, pt: dict, orn: Optional[pd.DataFrame] = None) -> dict:
-        """The simulator kwargs of a held point (`hold` must have run; for E49's extended input in `low_conc`): the
-        start's kwargs with the point's held breadth (saved by `hold`; the start's own for 'identity') and its transfer
-        on `orn`."""
+    def base_off_spk(self) -> pd.DataFrame:
+        """The plain base's APL-off run at its tuned parameters (the run the start's breadth comes from), simulated and
+        checked against the breadth."""
+        if getattr(self, '_base_off', None) is None:
+            import E10_joint_fit as J
+            from al_analysis.mb_model import make_fixed_param_kc_simulator
+            p0 = {k: float(self.initial[k]) for k in J.PARAM_KEYS}
+            sim, _ = make_fixed_param_kc_simulator(self.orn, initial_params=p0, **self.plain_kws)
+            _, s0 = sim(self.off(p0))
+            del sim
+            if not np.array_equal(s0.astype(float).sum(axis='columns').to_numpy(), self.breadth0.to_numpy(dtype=float)):
+                raise RuntimeError(f"{self.start}: the plain base's APL-off run does not reproduce the breadth")
+            self._base_off = s0
+        return self._base_off
+
+    def prepass_breadth(self, pt: dict, force: bool = False) -> Tuple[pd.Series, Optional[dict]]:
+        """(breadth, pre-pass record) of point `pt` in the pre-pass run: E10_joint_fit.transfer_prepass on the plain bouton
+        base of the start's wiring (E3's tuned parameters, APL off, no KC-KC inhibition, no firing ceiling) with the whole
+        transfer (claw_thr, claw_thr_subgain, claw_thr_width, or the odor-relative ext_inh_bouton), its threshold re-tuned to
+        the transfer-free run's APL-off response count (bracket PREPASS_BRACKET); cached by point id. Without a transfer
+        the start's own breadth, unless `force` (the identity check: the pre-pass itself with an empty transfer)."""
+        import E10_joint_fit as J
+        transfer = self.transfer_kws(pt)
+        if not transfer and not force:
+            return self.breadth0, None
+        info: dict = {}
+        old = J.TRANSFER_PREPASS_BRACKET
+        J.TRANSFER_PREPASS_BRACKET = PREPASS_BRACKET
+        try:
+            spk = J.transfer_prepass(self.orn, self.plain_kws, self.initial, self.base_off_spk(), transfer,
+                self.out_dir / f'{self.wiring_name}_plain_base_acute_off_spike_counts.parquet', info, label=pt['point_id'])
+        finally:
+            J.TRANSFER_PREPASS_BRACKET = old
+        b = pd.Series(spk.astype(float).sum(axis='columns').to_numpy(), index=spk.index.get_level_values(H.KC_ID_LEVEL))
+        return b, info['claw_transfer_prepass']
+
+    def point_kws(self, pt: dict, tag: str, orn: Optional[pd.DataFrame] = None) -> dict:
+        """The simulator kwargs of a held point (`hold` must have run; for E49's extended input in `low_conc`): the start's
+        kwargs with the point's breadth (saved by `hold` under `tag`; the start's own for 'identity') and its transfer on
+        `orn`."""
         import E10_joint_fit as J
         if pt['point_id'] == 'identity':
             breadth = self.breadth0
         else:
-            b = pd.read_parquet(self.breadth_path(pt))
+            b = pd.read_parquet(self.breadth_path(tag))
             breadth = pd.Series(b['breadth'].to_numpy(dtype=float), index=b.index)
         return dict(self.kws, _wAPLKC=J.breadth_weights(self.wnorm['wAPLKC'], breadth, self.k), **self.transfer_kws(pt, orn))
 
-    def hold(self, pt: dict) -> Tuple[dict, Dict[str, tuple], dict]:
-        """(absolute parameters, {'on': (responses, spike counts), 'off': ...}, record of the bisections) of the start with
-        point `pt`'s transfer, on E77's `hold_rates` with breadth_from='held'; the held breadth is saved
-        (`breadth_path`)."""
+    def hold(self, pt: dict, breadth: str = 'prepass', force_prepass: bool = False) -> Tuple[dict, Dict[str, tuple], dict]:
+        """(absolute parameters, {'on': (responses, spike counts), 'off': ...}, record) of the start with point `pt`'s
+        transfer, both response rates held; the point's breadth is saved under its tag (`breadth_path`).
+
+        breadth 'prepass': the breadth from `prepass_breadth`, fixed before the bisections; on E77's `build_c2_simulator`
+        (the start's parameters, wiring and firing ceiling) the somatic threshold is bisected with APL off to the start's
+        APL-off response count, with the KC-KC scale multiplied by the same factor when pt['kckc'] is 'tied' (it is driven
+        by the other KCs' spikes, so it does not shrink when a knee cuts the drive), then the APL->KC scale (KC->APL and
+        bouton->APL tied to it; APL->bouton the start's) to the start's APL-on count at those values (E69's
+        `bisect_factor`). breadth 'held': E77's `hold_rates` with breadth_from='held' and the KC-KC scale fixed (the first
+        run)."""
+        import E69_kc_firing_ceiling as E69
         import E77_input_screen as S
-        label = f"{self.start}_{pt['point_id']}"
+        import time
+        tag = point_tag(self.start, pt, breadth)
+        label = tag
         extra = dict(self.transfer_kws(pt), **self.spiking)
-        res = S.hold_rates(lambda: S.build_c2_simulator(extra or None, wPNKC=self.wPNKC, breadth=self.breadth0, params=self.p),
-            target_off=self.n_off, target_on=self.n_on, params=self.p, breadth_from='held', label=label,
-            thr_bracket=THR_BRACKET, apl_bracket=APL_BRACKET)
-        breadth = res['breadth']
-        breadth.rename('breadth').to_frame().to_parquet(self.breadth_path(pt))
-        rec = dict(point_id=pt['point_id'], start=self.start, breadth_from='held', thr_factor=res['thr_factor'],
-            apl_factor=res['apl_factor'], thr_at_bound=res['at_bound_thr'], apl_at_bound=res['at_bound_apl'],
-            n_responses_on=res['n_on'], n_responses_off=res['n_off'], target_n_on=res['target_on'], target_n_off=res['target_off'],
-            n_sims=res['n_sims'], seconds=res['seconds'], bisections=res['history'], breadth_sha256=res['breadth_sha256'],
-            breadth_corr_vs_start=float(np.corrcoef(breadth.reindex(self.breadth0.index).to_numpy(dtype=float),
-                self.breadth0.to_numpy(dtype=float))[0, 1]), runner_kws=res['kws'])
+        kckc = pt.get('kckc') or 'fixed'
+        if breadth == 'held':
+            if kckc != 'fixed':
+                raise NotImplementedError("breadth 'held' with the KC-KC scale tied")
+            res = S.hold_rates(lambda: S.build_c2_simulator(extra or None, wPNKC=self.wPNKC, breadth=self.breadth0, params=self.p),
+                target_off=self.n_off, target_on=self.n_on, params=self.p, breadth_from='held', label=label,
+                thr_bracket=THR_BRACKET, apl_bracket=APL_BRACKET)
+            b = res['breadth']
+            b.rename('breadth').to_frame().to_parquet(self.breadth_path(tag))
+            rec = dict(point_id=pt['point_id'], start=self.start, breadth_from='held', kckc='fixed', kckc_factor=1.0,
+                thr_factor=res['thr_factor'], apl_factor=res['apl_factor'], thr_at_bound=res['at_bound_thr'],
+                apl_at_bound=res['at_bound_apl'], n_responses_on=res['n_on'], n_responses_off=res['n_off'],
+                target_n_on=res['target_on'], target_n_off=res['target_off'], n_sims=res['n_sims'], seconds=res['seconds'],
+                bisections=res['history'], breadth_sha256=res['breadth_sha256'], runner_kws=res['kws'])
+            p_on = dict(res['params'])
+            outs = {'on': res['on'], 'off': res['off']}
+        else:
+            t0 = time.time()
+            b, prepass = self.prepass_breadth(pt, force=force_prepass)
+            b.rename('breadth').to_frame().to_parquet(self.breadth_path(tag))
+            sim, info = S.build_c2_simulator(extra or None, wPNKC=self.wPNKC, breadth=b, params=self.p)
+            p0 = dict(self.p)
+            scaled = ('fixed_thr', 'wKCKC_scale') if kckc == 'tied' else ('fixed_thr',)
+            f, off_out, h1, b1 = E69.bisect_factor(lambda x: sim(self.off(dict(p0, **{k: p0[k] * x for k in scaled}))), self.n_off,
+                self.size, THR_BRACKET, S.THR_STEP, f'{label} threshold' + (' and KC-KC' if kckc == 'tied' else '') + ' (APL off)')
+            p1 = dict(p0, **{k: p0[k] * f for k in scaled})
+            x, on_out, h2, b2 = E69.bisect_factor(lambda y: sim(dict(p1, **{k: p0[k] * y for k in S.TIED_ON})), self.n_on, self.size,
+                APL_BRACKET, S.APL_STEP, f'{label} APL scale (APL on)')
+            p_on = dict(p1, **{k: p0[k] * x for k in S.TIED_ON})
+            del sim, info
+            outs = {'on': on_out, 'off': off_out}
+            rec = dict(point_id=pt['point_id'], start=self.start, breadth_from='prepass', kckc=kckc,
+                kckc_factor=float(f) if kckc == 'tied' else 1.0, thr_factor=float(f), apl_factor=float(x), thr_at_bound=bool(b1),
+                apl_at_bound=bool(b2), n_responses_on=int((on_out[0].to_numpy(dtype=float) > 0.5).sum()),
+                n_responses_off=int((off_out[0].to_numpy(dtype=float) > 0.5).sum()), target_n_on=self.n_on, target_n_off=self.n_off,
+                n_sims=len(h1) + len(h2), seconds=time.time() - t0, bisections=h1 + h2, breadth_sha256=_sha(b.to_numpy(dtype=float)))
+            if prepass is not None:
+                rec['prepass'] = prepass
+        rec['rates_held'] = not (rec['thr_at_bound'] or rec['apl_at_bound'])
+        rec['breadth_corr_vs_start'] = float(np.corrcoef(b.reindex(self.breadth0.index).to_numpy(dtype=float),
+            self.breadth0.to_numpy(dtype=float))[0, 1])
         if pt['family'] == 'rel':
             top = largest_bouton_rates(self.start)
             rec['rel_level_hz'] = {o: float(pt['rel'] * top[o]) for o in H.APL16_ODORS}
-        return dict(res['params']), {'on': res['on'], 'off': res['off']}, rec
+        return p_on, outs, rec
+
+    def check_prepass_identity(self) -> dict:
+        """The pre-pass run's identity check: with an empty transfer the pre-pass breadth (`transfer_prepass` itself) is the
+        start's breadth, and the point held with it (KC-KC tied) equals the start's saved spike counts in both
+        conditions. Returns the counts' mismatches and raises if any is not 0."""
+        b, rec = self.prepass_breadth(dict(point_id='identity_check', family='identity', transfer={}), force=True)
+        res = dict(start=self.start, breadth_equal=bool(np.array_equal(b.to_numpy(dtype=float), self.breadth0.to_numpy(dtype=float))
+            and b.index.equals(self.breadth0.index)), prepass_thr_factor=rec['thr_factor'])
+        pt = dict(point_id='identity_check', family='identity', claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan,
+            rel=np.nan, transfer={}, kckc='tied', control=False)
+        p, o, r = self.hold(pt, 'prepass', force_prepass=True)
+        for c, cond in (('on', 'on'), ('off', 'acute_off')):
+            res[f'{cond}_mismatch'] = int((o[c][1].to_numpy(dtype=float) != self.ref[c][1].to_numpy(dtype=float)).sum())
+        res.update(thr_factor=r['thr_factor'], apl_factor=r['apl_factor'], params_equal=all(p[k] == self.p[k] for k in self.p))
+        res['ok'] = bool(res['breadth_equal'] and res['on_mismatch'] == 0 and res['acute_off_mismatch'] == 0)
+        if not res['ok']:
+            raise RuntimeError(f'{self.start}: the pre-pass identity check failed: {res}')
+        return res
 
 
 def _sha(x: np.ndarray) -> str:
@@ -875,60 +1040,73 @@ def score_point(o: Dict[str, tuple], ref: Dict[str, tuple]) -> Tuple[dict, List[
     return row, pairs
 
 
-def sweep(out: Path, start: str = 'C2', only: Optional[Sequence[str]] = None) -> pd.DataFrame:
-    """Runs (resumably) part C's points on `start` and scores each (`score_point`): one JSON row, a per-pair CSV and the
-    spike counts / responses per point (points/<start>/, outputs/E78_claw_knee/C/<start>_<point>_*.parquet), with the
-    point's absolute parameters, transfer, bisections and the code / model provenance; then `aggregate`."""
+def sweep(out: Path, start: str = 'C2', only: Optional[Sequence[str]] = None, breadth: str = 'prepass',
+    kckc: str = 'tied') -> pd.DataFrame:
+    """Runs (resumably) part C's points on `start` in run `breadth` with KC-KC mode `kckc` and scores each
+    (`score_point`): one JSON row, a per-pair CSV and a record per point (points_dir(start, breadth)/<point key>.*), the
+    spike counts / responses and the breadth under outputs/E78_claw_knee/C/<tag>_*.parquet, with the point's absolute
+    parameters, transfer, bisections, breadth_from, kckc, kckc_factor, rates_held and the code / model provenance; then
+    `aggregate`. `only`: point ids (the identity points always run); the points added once others are done (the softplus
+    width and, in the pre-pass run, the KC-KC-fixed controls at the two best knee points) run when `only` is None."""
     import json
     import time
-    pdir = points_dir(start)
+    if breadth not in BREADTHS or kckc not in KCKC_MODES:
+        raise ValueError(f'{breadth=} {kckc=}')
+    pdir = points_dir(start, breadth)
+
+    def specs() -> List[dict]:
+        return point_specs(aggregate(out, breadth), breadth, kckc)
 
     def todo_points() -> List[dict]:
-        pts = point_specs(aggregate(out) if (out / 'points').exists() else None)
+        pts = specs()
         if only is not None:
-            pts = [p for p in pts if p['point_id'] in only or p['point_id'] in ('identity', 'identity_held')]
-        return [p for p in pts if not (pdir / f"{p['point_id']}.json").exists() and not (pdir / f"{p['point_id']}.failed.txt").exists()]
+            pts = [p for p in pts if (p['point_id'] in only and not p['control']) or p['family'] in ('identity', 'identity_held')]
+        return [p for p in pts if not (pdir / f'{point_key(p, breadth)}.json').exists()
+            and not (pdir / f'{point_key(p, breadth)}.failed.txt').exists()]
 
     if only is not None:
-        known = {p['point_id'] for p in point_specs(aggregate(out) if (out / 'points').exists() else None)}
-        known |= {knee_point(T, g, SOFT_WIDTH)['point_id'] for T in KNEES + (LINK_KNEE,) for g in SUBGAINS}
+        known = {p['point_id'] for p in specs()} | {knee_point(T, g, SOFT_WIDTH)['point_id'] for T in KNEES + (LINK_KNEE,)
+            for g in SUBGAINS}
         missing = set(only) - known
         if missing:
             raise ValueError(f'unknown points {sorted(missing)}')
     todo = todo_points()
     if not todo:
-        print(f'{start}: every point done', flush=True)
-        return aggregate(out)
+        print(f'{start} ({breadth}, KC-KC {kckc}): every point done', flush=True)
+        return aggregate(out, breadth)
     model = KneeModel(start, H.outputs_dir(EXPERIMENT) / 'C' / 'bases')
     prov = H.model_provenance(orn_deltas=model.orn)
     import E69_kc_firing_ceiling as E69
     code = E69.code_state()
     ppath = pdir / f"provenance_{time.strftime('%Y%m%d-%H%M%S')}.json"
     ppath.write_text(json.dumps(dict(model=prov, start=dict(experiment=model.exp, tag=model.tag, wiring=model.wiring,
-        info=model.info, check=model.check), script='E78_claw_knee.py'), indent=1, default=str) + '\n')
+        info=model.info, check=model.check), breadth=breadth, kckc=kckc, prepass_bracket=PREPASS_BRACKET,
+        script='E78_claw_knee.py'), indent=1, default=str) + '\n')
     while todo:
         for pt in todo:
             t0 = time.time()
+            key, tag = point_key(pt, breadth), point_tag(start, pt, breadth)
             if pt['point_id'] == 'identity':
                 p, o, rec = dict(model.p), model.ref, dict(point_id='identity', start=start, thr_factor=1.0, apl_factor=1.0,
                     thr_at_bound=False, apl_at_bound=False, n_responses_on=model.n_on, n_responses_off=model.n_off,
-                    target_n_on=model.n_on, target_n_off=model.n_off, n_sims=0, bisections=[], breadth_from='start')
+                    target_n_on=model.n_on, target_n_off=model.n_off, n_sims=0, bisections=[], breadth_from='start', kckc='',
+                    kckc_factor=1.0, rates_held=True)
             else:
                 try:
-                    p, o, rec = model.hold(pt)
+                    p, o, rec = model.hold(pt, breadth)
                 except Exception as e:
-                    print(f"{start} {pt['point_id']} FAILED: {e!r}"[:400], flush=True)
-                    (pdir / f"{pt['point_id']}.failed.txt").write_text(repr(e) + '\n')
+                    print(f'{tag} FAILED: {e!r}'[:400], flush=True)
+                    (pdir / f'{key}.failed.txt').write_text(repr(e) + '\n')
                     continue
-            tag = f"{start}_{pt['point_id']}"
             for c, (r, s) in o.items():
                 r.to_parquet(c_outputs_dir() / f'{tag}_{COND_FILE[c]}_responses.parquet')
                 s.to_parquet(c_outputs_dir() / f'{tag}_{COND_FILE[c]}_spike_counts.parquet')
             row, pairs = score_point(o, model.ref)
-            meta = dict(tag=tag, start=start, start_experiment=model.exp, start_tag=model.tag, point_id=pt['point_id'],
-                family=pt['family'], claw_thr=pt['claw_thr'], claw_thr_subgain=pt['claw_thr_subgain'], claw_thr_width=pt['claw_thr_width'],
-                rel=pt['rel'], k=model.k, kc_kc_tau=float(model.kws.get('kc_kc_tau', np.nan)),
-                **{kk: float(v) for kk, v in p.items()}, kc_kc_inh=float(p['wKCKC_scale']),
+            meta = dict(tag=tag, start=start, start_experiment=model.exp, start_tag=model.tag, point_id=pt['point_id'], point_key=key,
+                run=breadth, control=bool(pt.get('control')), family=pt['family'], claw_thr=pt['claw_thr'],
+                claw_thr_subgain=pt['claw_thr_subgain'], claw_thr_width=pt['claw_thr_width'], rel=pt['rel'], k=model.k,
+                kc_kc_tau=float(model.kws.get('kc_kc_tau', np.nan)), **{kk: float(v) for kk, v in p.items()},
+                kc_kc_inh=float(p['wKCKC_scale']),
                 **{kk: model.kws[kk] for kk in ('kc_refractory_period', 'kc_adapt_inc', 'kc_adapt_tau') if kk in model.kws},
                 **{kk: v for kk, v in rec.items() if kk not in ('bisections', 'prepass', 'rel_level_hz', 'point_id', 'start',
                     'runner_kws')},
@@ -938,19 +1116,35 @@ def sweep(out: Path, start: str = 'C2', only: Optional[Sequence[str]] = None) ->
                 knee_over_top=float(pt['claw_thr'] / largest_bouton_rates(start).max()) if pt['family'] in ('knee', 'knee_soft') else np.nan,
                 **code, provenance_file=_rel(ppath), seconds_total=time.time() - t0)
             full = dict(meta, **row)
-            (pdir / f"{pt['point_id']}_pairs.csv").write_text(pd.DataFrame(pairs).to_csv(index=False))
-            (pdir / f"{pt['point_id']}_record.json").write_text(json.dumps(dict(rec, params=p), indent=1, default=str) + '\n')
-            (pdir / f"{pt['point_id']}.json").write_text(json.dumps(full, indent=1, default=_json_default) + '\n')
-            print(f"{tag}: thr x{rec['thr_factor']:.4f}, APL x{rec['apl_factor']:.4f}; readout loss {row['cal_loss']:.4f} (pattern "
-                f"{row['cal_pattern']:.4f}, mean {row['cal_mean']:+.3f}), raw {row['raw_loss']:.4f} (mean {row['raw_mean']:+.3f}); rho on the "
-                f"per-pair effect {row['cal_rho']:.3f}; six pairs' raw effect {row['raw_six_effect']:+.3f}; ester / alcohol error "
-                f"{row['cal_err_ester']:+.3f} / {row['cal_err_alcohol']:+.3f}; response rate rho {row['rate_rho_on']:.2f}; silent on "
-                f"[{row['silent_odors_on']}] off [{row['silent_odors_off']}]; flag: {row['realism_flag_noise'] or '-'}; "
-                f"{time.time() - t0:.0f} s", flush=True)
-        aggregate(out)
-        # (the softplus width at the two best knee points, once those are done)
+            (pdir / f'{key}_pairs.csv').write_text(pd.DataFrame(pairs).to_csv(index=False))
+            (pdir / f'{key}_record.json').write_text(json.dumps(dict(rec, params=p), indent=1, default=str) + '\n')
+            (pdir / f'{key}.json').write_text(json.dumps(full, indent=1, default=_json_default) + '\n')
+            print(f"{tag}: thr x{rec['thr_factor']:.4f}" + (' (KC-KC tied)' if rec.get('kckc') == 'tied' else '') +
+                f", APL x{rec['apl_factor']:.4f}{'' if rec['rates_held'] else ' (RATES NOT HELD: a bisection at its bound)'}; "
+                f"readout loss {row['cal_loss']:.4f} (pattern {row['cal_pattern']:.4f}, mean {row['cal_mean']:+.3f}), raw "
+                f"{row['raw_loss']:.4f} (mean {row['raw_mean']:+.3f}); rho on the per-pair effect {row['cal_rho']:.3f}; six pairs' raw "
+                f"effect {row['raw_six_effect']:+.3f}; ester / alcohol error {row['cal_err_ester']:+.3f} / {row['cal_err_alcohol']:+.3f}; "
+                f"response rate rho {row['rate_rho_on']:.2f}; silent on [{row['silent_odors_on']}] off [{row['silent_odors_off']}]; "
+                f"flag: {row['realism_flag_noise'] or '-'}; {time.time() - t0:.0f} s", flush=True)
+        aggregate(out, breadth)
+        # (the softplus width and the controls at the two best knee points, once those are done)
         todo = todo_points()
-    return aggregate(out)
+    return aggregate(out, breadth)
+
+
+def check_c(out: Path, start: str = 'C2') -> dict:
+    """The pre-pass run's identity check on `start` (`KneeModel.check_prepass_identity`), written to
+    check_prepass_identity.json (one entry per start)."""
+    import json
+    import E69_kc_firing_ceiling as E69
+    model = KneeModel(start, H.outputs_dir(EXPERIMENT) / 'C' / 'bases')
+    res = dict(model.check_prepass_identity(), start_check=model.check, **E69.code_state())
+    path = out / 'check_prepass_identity.json'
+    allr = json.loads(path.read_text()) if path.exists() else {}
+    allr[start] = res
+    path.write_text(json.dumps(allr, indent=1, default=_json_default) + '\n')
+    print(f'pre-pass identity check on {start}: {res}', flush=True)
+    return res
 
 
 def _rel(p: Path) -> str:
@@ -970,57 +1164,83 @@ def _json_default(x):
     return str(x)
 
 
-def aggregate(out: Path) -> pd.DataFrame:
-    """sweep.csv (one row per start and point), sweep_pairs.csv (per-pair model distances, raw and calibrated),
-    sweep_params.json (absolute parameters and transfer per tag), and the harness-readable stats_variants.csv and
-    model_pair_distances_long.csv (raw cosine distances; tags <start>_<point>; the identity points, which are other
-    experiments' fits, left out) from points/. model_pair_distances_long.csv keeps the rows of every other tag (part A's
-    and part D's fits, which E10_joint_fit.py appends there)."""
+def _family(out: Path, breadth: str) -> Tuple[List[dict], List[pd.DataFrame], dict]:
     import json
     rows, pairs, params = [], [], {}
-    for p in sorted((out / 'points').glob('*/*.json')):
-        if p.name.endswith(('_record.json',)) or p.name.startswith('provenance_'):
+    root = out / ('points' if breadth == 'held' else f'points_{breadth}')
+    for p in sorted(root.glob('*/*.json')):
+        if p.name.endswith('_record.json') or p.name.startswith(('provenance_', 'check_')):
             continue
         r = json.loads(p.read_text())
+        # (the held run's first points have no run / kckc / rates_held columns)
+        r.setdefault('run', breadth)
+        r.setdefault('point_key', r['point_id'])
+        r.setdefault('control', False)
+        if breadth == 'held':
+            r.setdefault('kckc', '' if r['point_id'] == 'identity' else 'fixed')
+            r.setdefault('kckc_factor', 1.0)
+        r.setdefault('rates_held', not (bool(r.get('thr_at_bound')) or bool(r.get('apl_at_bound'))))
         rows.append(r)
         pp = p.with_name(p.stem + '_pairs.csv')
         if pp.exists():
-            pairs.append(pd.read_csv(pp).assign(tag=r['tag'], start=r['start'], point_id=r['point_id']))
+            pairs.append(pd.read_csv(pp).assign(tag=r['tag'], start=r['start'], point_id=r['point_id'], run=breadth))
         rec = p.with_name(p.stem + '_record.json')
         if rec.exists():
             rr = json.loads(rec.read_text())
             params[r['tag']] = dict(rr['params'], claw_thr=r['claw_thr'], claw_thr_subgain=r['claw_thr_subgain'],
                 claw_thr_width=r['claw_thr_width'], rel=r['rel'], start=r['start'], start_experiment=r['start_experiment'],
-                start_tag=r['start_tag'], k=r['k'], **({'rel_level_hz': rr['rel_level_hz']} if 'rel_level_hz' in rr else {}),
+                start_tag=r['start_tag'], k=r['k'], run=breadth, breadth_from=r.get('breadth_from'), kckc=r.get('kckc'),
+                kckc_factor=r.get('kckc_factor'), rates_held=r['rates_held'],
+                **({'rel_level_hz': rr['rel_level_hz']} if 'rel_level_hz' in rr else {}),
                 **({'prepass': rr['prepass']} if 'prepass' in rr else {}))
-    df = pd.DataFrame(rows)
-    if not len(df):
-        return df
-    df.to_csv(out / 'sweep.csv', index=False)
-    (out / 'sweep_params.json').write_text(json.dumps(params, indent=1, default=_json_default) + '\n')
-    if pairs:
-        pl = pd.concat(pairs, ignore_index=True)
-        pl.to_csv(out / 'sweep_pairs.csv', index=False)
+    return rows, pairs, params
+
+
+def aggregate(out: Path, breadth: str = 'prepass') -> pd.DataFrame:
+    """From the point files of both runs: the pre-pass run's sweep.csv, sweep_pairs.csv and sweep_params.json, the held
+    run's sweep_held.csv, sweep_pairs_held.csv and sweep_params_held.json (one row per start and point; per-pair model
+    distances raw and calibrated; absolute parameters and transfer per tag), and the harness-readable stats_variants.csv
+    and model_pair_distances_long.csv of both (raw cosine distances; the identity points, which are other experiments'
+    fits, left out; every other tag of model_pair_distances_long.csv, part A's and part D's fits, kept). Returns run
+    `breadth`'s table."""
+    import json
+    tables, all_pairs = {}, []
+    for b in BREADTHS:
+        rows, pairs, params = _family(out, b)
+        suffix = '' if b == 'prepass' else f'_{b}'
+        df = pd.DataFrame(rows)
+        tables[b] = df
+        if len(df):
+            df.to_csv(out / f'sweep{suffix}.csv', index=False)
+            (out / f'sweep_params{suffix}.json').write_text(json.dumps(params, indent=1, default=_json_default) + '\n')
+        if pairs:
+            pl = pd.concat(pairs, ignore_index=True)
+            pl.to_csv(out / f'sweep_pairs{suffix}.csv', index=False)
+            all_pairs.append(pl)
+    both = pd.concat([t for t in tables.values() if len(t)], ignore_index=True) if any(len(t) for t in tables.values()) else pd.DataFrame()
+    if all_pairs:
+        pl = pd.concat(all_pairs, ignore_index=True)
         raw = pl[(pl.readout == 'raw') & (pl.point_id != 'identity') & pl.condition.isin(['on', 'acute_off'])][
             ['tag', 'condition', 'odor_a', 'odor_b', 'distance']]
         mp = out / 'model_pair_distances_long.csv'
-        mine = set(df.tag)
+        mine = set(both.tag)
         other = pd.read_csv(mp) if mp.exists() else pd.DataFrame(columns=raw.columns)
         other = other[~other['tag'].astype(str).isin(mine)]
         pd.concat([other, raw], ignore_index=True).to_csv(mp, index=False)
-    sv = df[df.point_id != 'identity']
-    sv = sv.assign(variant=sv.tag, spearman_rate_on_vs_data=sv.get('rate_rho_on'), spearman_rate_off_vs_data=sv.get('rate_rho_off'))
-    sv.to_csv(out / 'stats_variants.csv', index=False)
-    return df
+    if len(both):
+        sv = both[both.point_id != 'identity']
+        sv = sv.assign(variant=sv.tag, spearman_rate_on_vs_data=sv.get('rate_rho_on'), spearman_rate_off_vs_data=sv.get('rate_rho_off'))
+        sv.to_csv(out / 'stats_variants.csv', index=False)
+    return tables[breadth]
 
 
 def best_points(sweep_df: pd.DataFrame, n: int = N_BEST, start: str = 'C2') -> List[str]:
-    """The n best points of the sweep on `start` by the readout loss among those inside the bands (16:10 rule; all
-    non-identity points if fewer than n are inside)."""
-    d = sweep_df[(sweep_df.start == start) & ~sweep_df.point_id.isin(['identity', 'identity_held'])]
-    ok = d[d.realism_flag_noise.fillna('') == '']
-    pick = ok if len(ok) >= n else pd.concat([ok, d[~d.index.isin(ok.index)].sort_values('cal_loss')])
-    return list(pick.sort_values('cal_loss').point_id.head(n)) if len(ok) >= n else list(pick.point_id.head(n))
+    """The n best points of the sweep on `start` by the readout loss among those whose rates were held and that are not
+    controls, inside the bands (16:10 rule) where n of them are, else the best inside first and then the rest."""
+    d = _usable(sweep_df[(sweep_df.start == start) & ~sweep_df.point_id.isin(['identity', 'identity_held'])])
+    ok = d[d.realism_flag_noise.fillna('') == ''].sort_values('cal_loss')
+    rest = d[~d.index.isin(ok.index)].sort_values('cal_loss')
+    return list(pd.concat([ok, rest]).point_id.head(n))
 
 
 LANES = (
@@ -1030,12 +1250,14 @@ LANES = (
 )
 
 
-def c_launch(wait_units: Sequence[str] = ('e78a-knee100', 'e78a-knee130')) -> List[str]:
-    """Part C end to end as systemd-run --user units (nice 10, 16 threads each, python -u, two at a time; logs under
-    outputs/E78_claw_knee/logs/partC_*.log), each waiting first for `wait_units` (part A's fits) to be inactive: lanes a and
-    b split the points on C2 (LANES); unit c, once both are done, runs the softplus width at the two best knee points, then
-    the five best on the firing ceiling's fit 1, then the five best and C2 at the low concentrations; unit d, once the width
-    step is done, the five best on P1; c ends with the gate and the summary once d is done. Returns the unit names."""
+def c_launch(wait_units: Sequence[str] = ()) -> List[str]:
+    """Part C's pre-pass run end to end as systemd-run --user units (nice 10, 16 threads each, python -u, two at a time;
+    logs under outputs/E78_claw_knee/logs/partC_*_<time>.log), each waiting first for `wait_units` to be inactive:
+    units a and b run the two lanes of points on C2 (LANES); unit c, once both are done, runs the softplus width and the
+    KC-KC-fixed controls at the two best knee points, the five best and C2 at the low concentrations, the gate's first
+    reading, then the five best on the firing ceiling's fit 1 while unit d runs them on P1, then (once d is done) the
+    gate again, the held run's gate against its identity_held point, and the summaries of both runs. Returns the unit
+    names."""
     import subprocess
     import time
     logs = H.outputs_dir(EXPERIMENT) / 'logs'
@@ -1043,21 +1265,23 @@ def c_launch(wait_units: Sequence[str] = ('e78a-knee100', 'e78a-knee130')) -> Li
     py = str(Path(__file__).resolve().parents[2] / 'venv' / 'bin' / 'python')
     me = f'{py} -u E78_claw_knee.py'
     stamp = time.strftime('%H%M%S')
-    names = {k: f'e78c-{k}-{stamp}' for k in 'abcd'}
+    names = {k: f'e78c2-{k}-{stamp}' for k in 'abcd'}
+    log = lambda name: f'{logs}/partC_{name}_{stamp}.log'
     wait_a = ''.join(f'while systemctl --user is-active --quiet {u}; do sleep 60; done; ' for u in wait_units)
-    width_done = logs / f'partC_width_{stamp}.done'
+    gate1_done = logs / f'partC_gate1_{stamp}.done'
 
     def wait_for(*units):
         return ''.join(f'sleep 5; while systemctl --user is-active --quiet {u}; do sleep 30; done; ' for u in units)
 
     script = {
-        'a': f"{wait_a}{me} --part C --only {' '.join(LANES[0])} > {logs}/partC_a.log 2>&1",
-        'b': f"{wait_a}{me} --part C --only {' '.join(LANES[1])} > {logs}/partC_b.log 2>&1",
-        'c': (f"{wait_a}{wait_for(names['a'], names['b'])}{me} --part C > {logs}/partC_width.log 2>&1; touch {width_done}; "
-              f"{me} --part C --start fit1 --best > {logs}/partC_fit1.log 2>&1; "
-              f"{me} --part C-low --best > {logs}/partC_low.log 2>&1; {wait_for(names['d'])}"
-              f"{me} --part gate > {logs}/partC_gate.log 2>&1; {me} --part summarize > {logs}/partC_summarize.log 2>&1"),
-        'd': f"{wait_a}until [ -f {width_done} ]; do sleep 30; done; {me} --part C --start P1 --best > {logs}/partC_P1.log 2>&1",
+        'a': f"{wait_a}{me} --part C --only {' '.join(LANES[0])} > {log('a')} 2>&1",
+        'b': f"{wait_a}{me} --part C --only {' '.join(LANES[1])} > {log('b')} 2>&1",
+        'c': (f"{wait_a}{wait_for(names['a'], names['b'])}{me} --part C > {log('width_controls')} 2>&1; "
+              f"{me} --part C-low --best > {log('low')} 2>&1; {me} --part gate > {log('gate1')} 2>&1; touch {gate1_done}; "
+              f"{me} --part C --start fit1 --best > {log('fit1')} 2>&1; {wait_for(names['d'])}"
+              f"{me} --part gate > {log('gate2')} 2>&1; {me} --part gate --breadth held --gate-ref identity_held > {log('gate_held')} 2>&1; "
+              f"{me} --part summarize > {log('summarize')} 2>&1; {me} --part summarize --breadth held > {log('summarize_held')} 2>&1"),
+        'd': f"{wait_a}until [ -f {gate1_done} ]; do sleep 30; done; {me} --part C --start P1 --best > {log('P1')} 2>&1",
     }
     for k in 'abcd':
         subprocess.run(['systemd-run', '--user', f'--unit={names[k]}', '--collect', '-p', 'Nice=10', f'--working-directory={H.HERE}',
@@ -1067,7 +1291,7 @@ def c_launch(wait_units: Sequence[str] = ('e78a-knee100', 'e78a-knee130')) -> Li
     return list(names.values())
 
 
-def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2') -> pd.DataFrame:
+def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2', breadth: str = 'prepass') -> pd.DataFrame:
     """The points at Yang's low concentrations, deterministic (E49's extended input: ma at 10^-7 and 10^-8, 2h at 10^-7
     and 10^-5, ea, farn and the binary mixtures; odors are simulated independently, so the APL16 columns must equal the
     point's saved outputs), at each point's absolute parameters with its transfer (the odor-relative knee at each odor's
@@ -1079,8 +1303,11 @@ def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2') -> pd.DataF
     from al_analysis.mb_model import make_fixed_param_kc_simulator
     ldir = out / 'low_conc'
     ldir.mkdir(parents=True, exist_ok=True)
-    params = json.loads((out / 'sweep_params.json').read_text())
-    specs = {p['point_id']: p for p in point_specs(aggregate(out))}
+    sw = aggregate(out, breadth)
+    params = json.loads((out / ('sweep_params.json' if breadth == 'prepass' else f'sweep_params_{breadth}.json')).read_text())
+    nc = sw[~sw['control'].astype(str).str.lower().isin(['true', '1', '1.0'])] if 'control' in sw else sw
+    kck = nc.set_index('point_id')['kckc'].to_dict() if 'kckc' in nc else {}
+    specs = {p['point_id']: p for p in point_specs(sw, breadth) if not p['control']}
     orn16 = H.apl16_orn_deltas()
     orn, info = E49.extended_orn(orn16)
     labels = E49.odor_labels(orn)
@@ -1091,12 +1318,13 @@ def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2') -> pd.DataF
     done = set(old.tag) if len(old) else set()
     checks = {}
     for pid in ['identity'] + [p for p in point_ids if p != 'identity']:
-        tag = f'{start}_{pid}'
+        pt = dict(specs[pid], kckc=(kck.get(pid) or specs[pid].get('kckc')) if pid != 'identity' else None)
+        tag = point_tag(start, pt, breadth)
         if tag in done:
             continue
         p = {k: float(v) for k, v in params[tag].items() if k in ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale',
             'wPNAPL_scale', 'wKCKC_scale')}
-        kws = model.point_kws(specs[pid], orn)
+        kws = model.point_kws(pt, tag, orn)
         sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p, **kws)
         det = {'on': sim(p), 'acute_off': sim(model.off(p))}
         del sim
@@ -1138,30 +1366,38 @@ def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2') -> pd.DataF
 
 # ---------------------------------------------------------------------------
 # the gate
-def gate_point(row: dict, ref: dict, ceiling: bool = False) -> Dict[str, object]:
-    """The entry's four conditions for one point (`row`, a sweep.csv row) against its start (`ref`, the start's identity
-    row), inside the four bands (16:10 rule, `realism_flag_noise`):
+def gate_point(row: dict, ref: dict, ceiling: bool = False, loss_limit: Optional[float] = None) -> Dict[str, object]:
+    """The entry's four conditions for one point (`row`, a sweep.csv row) against `ref` (C2's identity row, the start
+    itself), inside the four bands (16:10 rule, `realism_flag_noise`), with both response rates held (`rates_held`; a
+    point whose bisection ended at a bound fails every condition):
     (i) the ester group's error under the calibrated readout (`cal_err_ester`) smaller in magnitude by a third or more and
         the six pairs' APL effect on raw counts (`raw_six_effect`) raised by 0.03 or more;
-    (ii) the readout loss (`cal_loss`) within 0.004 of the start's (0.006 with `ceiling`, the firing ceiling's points);
-    (iii) each of the 16 odors keeps half or more of the start's response fraction in both conditions (`frac_<on|off>_<odor>`,
-        odors the start does not recruit skipped) and the response rate ρ with APL on (`rate_rho_on`, against the KC data
-        in Yang's z, C2's 0.60) is 0.50 or more;
-    (iv) 2h at 10^-5 keeps half or more of the start's APL-on response fraction (`low_2h_m5_frac_on`); None (not passed)
+    (ii) the readout loss (`cal_loss`) at most `loss_limit` (default `ref`'s plus 0.004, or 0.006 with `ceiling`; the gate
+        passes 0.060 for C2's points, the start's own plus 0.006 for the firing ceiling's and plus 0.004 for the re-drawn
+        wiring's);
+    (iii) each of the 16 odors keeps half or more of `ref`'s response fraction in both conditions (`frac_<on|off>_<odor>`,
+        odors `ref` does not recruit skipped) and the response rate ρ with APL on (`rate_rho_on`, against the KC data in
+        Yang's z, C2's 0.60) is 0.50 or more;
+    (iv) 2h at 10^-5 keeps half or more of `ref`'s APL-on response fraction (`low_2h_m5_frac_on`); None (not passed)
         while the point has not been run at the low concentrations.
-    Returns each condition's values and flag, 'bands', 'pass' (all four and the bands) and 'pass_without_iv'."""
+    Returns each condition's values and flag, 'rates_held', 'bands', 'pass' (all four and the bands) and
+    'pass_without_iv'."""
     g = GATE
     f = lambda k, d=row: float(d[k]) if k in d and d[k] is not None and not (isinstance(d[k], float) and np.isnan(d[k])) else np.nan
-    out: Dict[str, object] = dict(point_id=row.get('point_id'), start=row.get('start'))
+    held = row.get('rates_held', True)
+    held = not (held is False or str(held).lower() in ('false', '0', '0.0'))
+    out: Dict[str, object] = dict(point_id=row.get('point_id'), start=row.get('start'), rates_held=held)
     e, e0 = f('cal_err_ester'), f('cal_err_ester', ref)
     red = 1.0 - abs(e) / abs(e0) if np.isfinite(e) and np.isfinite(e0) and e0 != 0 else np.nan
     raise6 = f('raw_six_effect') - f('raw_six_effect', ref)
     out.update(ester_error=e, ester_error_start=e0, ester_reduction=red, six_effect=f('raw_six_effect'),
         six_effect_start=f('raw_six_effect', ref), six_raise=raise6)
-    out['i'] = bool(np.isfinite(red) and red >= g['ester_reduction'] - 1e-12 and np.isfinite(raise6) and raise6 >= g['six_raise'] - 1e-12)
-    tol = g['loss_tol_ceiling'] if ceiling else g['loss_tol']
-    out.update(cal_loss=f('cal_loss'), cal_loss_start=f('cal_loss', ref), loss_tol=tol)
-    out['ii'] = bool(np.isfinite(out['cal_loss']) and out['cal_loss'] <= out['cal_loss_start'] + tol + 1e-12)
+    out['i'] = bool(held and np.isfinite(red) and red >= g['ester_reduction'] - 1e-12 and np.isfinite(raise6)
+        and raise6 >= g['six_raise'] - 1e-12)
+    if loss_limit is None:
+        loss_limit = f('cal_loss', ref) + (g['loss_tol_ceiling'] if ceiling else g['loss_tol'])
+    out.update(cal_loss=f('cal_loss'), cal_loss_start=f('cal_loss', ref), loss_limit=float(loss_limit))
+    out['ii'] = bool(held and np.isfinite(out['cal_loss']) and out['cal_loss'] <= loss_limit + 1e-12)
     worst, worst_odor = np.inf, None
     for c in ('on', 'off'):
         for od in H.APL16_ODORS:
@@ -1171,69 +1407,93 @@ def gate_point(row: dict, ref: dict, ceiling: bool = False) -> Dict[str, object]
                 if q < worst:
                     worst, worst_odor = q, f'{od} ({c})'
     out.update(worst_frac_ratio=float(worst), worst_frac_odor=worst_odor, rate_rho_on=f('rate_rho_on'))
-    out['iii'] = bool(worst >= g['odor_frac_keep'] - 1e-12 and np.isfinite(out['rate_rho_on']) and out['rate_rho_on'] >= g['rate_rho_min'] - 1e-12)
+    out['iii'] = bool(held and worst >= g['odor_frac_keep'] - 1e-12 and np.isfinite(out['rate_rho_on'])
+        and out['rate_rho_on'] >= g['rate_rho_min'] - 1e-12)
     lo, lo0 = f('low_2h_m5_frac_on'), f('low_2h_m5_frac_on', ref)
     out.update(low_2h_m5_frac_on=lo, low_2h_m5_frac_on_start=lo0,
         low_ratio=lo / lo0 if np.isfinite(lo) and np.isfinite(lo0) and lo0 > 0 else np.nan)
-    out['iv'] = None if not (np.isfinite(lo) and np.isfinite(lo0)) else bool(lo0 <= 0 or lo >= g['low_conc_keep'] * lo0 - 1e-12)
+    out['iv'] = None if not (np.isfinite(lo) and np.isfinite(lo0)) else bool(held and (lo0 <= 0 or lo >= g['low_conc_keep'] * lo0 - 1e-12))
     flag = row.get('realism_flag_noise')
     flag = '' if flag is None or (isinstance(flag, float) and np.isnan(flag)) else str(flag)
     out.update(realism_flag_noise=flag, bands=flag == '')
-    out['pass_without_iv'] = bool(out['bands'] and out['i'] and out['ii'] and out['iii'])
+    out['pass_without_iv'] = bool(held and out['bands'] and out['i'] and out['ii'] and out['iii'])
     out['pass'] = bool(out['pass_without_iv'] and out['iv'] is True)
     return out
 
 
-def gate(out: Path, ref_point: str = 'identity') -> dict:
-    """The gate on part C's points (every start; the firing ceiling's with its tolerance): each point's conditions
-    (`gate_point`, against its start's `ref_point` row: 'identity', the start itself as the entry specifies, or
-    'identity_held', the start with only the held breadth, like for like with the points' breadth; both are computed,
-    the other with a `held_` / `ident_` prefix), with the low-concentration fractions merged from low_conc/ where run, and
-    the transfers that go on to part D: at most two, the best passing knee point on C2 (by the readout loss) and the best
-    passing odor-relative point if it passes too. Writes gate.json and gate.csv (gate_<ref_point>.* when not
-    'identity')."""
+def gate_suffix(breadth: str, ref_point: str) -> str:
+    if (breadth, ref_point) == ('prepass', 'identity'):
+        return ''
+    if (breadth, ref_point) == ('held', 'identity_held'):
+        return '_identity_held'
+    return f'_{breadth}_{ref_point}'
+
+
+def gate(out: Path, ref_point: str = 'identity', breadth: str = 'prepass') -> dict:
+    """The gate on run `breadth`'s points (every start; not the identity points and not the KC-KC-fixed controls), with
+    the low-concentration fractions merged from low_conc/ where run: (i), (iii) and (iv) against C2's `ref_point` row
+    ('identity', C2 itself, as the entry specifies; 'identity_held', C2 with only the held breadth, for the held run),
+    (ii) the readout loss at most GATE['loss_max_c2'] (0.060) for C2's points against C2 itself (C2's identity_held
+    plus 0.004 against it), the start's own `ref_point` row plus 0.006 for the firing ceiling's (fit1) and plus 0.004 for
+    the re-drawn wirings'. In the held run each row also carries the conditions against the other reference (held_* /
+    ident_*). The transfers that go on to part D: at most two, the best passing knee point on C2 (by the readout loss)
+    and the best passing odor-relative point if it passes too. Writes gate.json / gate.csv for the pre-pass run against
+    C2 itself, gate_identity_held.* for the held run against identity_held, gate_<run>_<ref>.* otherwise."""
     import json
-    df = aggregate(out)
+    if ref_point not in ('identity', 'identity_held') or breadth not in BREADTHS:
+        raise ValueError(f'{ref_point=} {breadth=}')
+    df = aggregate(out, breadth)
     lc = out / 'low_conc' / 'points_low_conc.csv'
-    if lc.exists():
+    if lc.exists() and len(df):
         low = pd.read_csv(lc)
         df = df.drop(columns=[c for c in low.columns if c.startswith('low_') and c in df.columns]).merge(low, on='tag', how='left')
-    if ref_point not in ('identity', 'identity_held'):
-        raise ValueError(f'{ref_point=}')
-    other = 'identity_held' if ref_point == 'identity' else 'identity'
-    rows = []
-    for start, d in df.groupby('start'):
-        refs = {i: d[d.point_id == i] for i in ('identity', 'identity_held')}
-        if not len(refs[ref_point]):
-            continue
-        ref = refs[ref_point].iloc[0].to_dict()
-        for _, r in d[~d.point_id.isin(['identity', 'identity_held'])].iterrows():
-            row = dict(gate_point(r.to_dict(), ref, ceiling=start == 'fit1'), tag=r['tag'], family=r['family'], ref_point=ref_point)
-            if len(refs[other]):
-                alt = gate_point(r.to_dict(), refs[other].iloc[0].to_dict(), ceiling=start == 'fit1')
-                pre = 'held_' if other == 'identity_held' else 'ident_'
-                row.update({pre + k: alt[k] for k in ('i', 'ii', 'iii', 'iv', 'pass', 'pass_without_iv', 'cal_loss_start',
-                    'ester_error_start', 'six_effect_start')})
-            rows.append(row)
-    g = pd.DataFrame(rows)
-    suffix = '' if ref_point == 'identity' else f'_{ref_point}'
+    rows, g = [], pd.DataFrame()
+    c2 = df[df.start == 'C2'] if len(df) else df
+    c2_refs = {i: c2[c2.point_id == i].iloc[0].to_dict() for i in ('identity', 'identity_held') if (c2.point_id == i).any()}
+    if ref_point in c2_refs:
+        other = 'identity_held' if ref_point == 'identity' else 'identity'
+
+        def limit(start: str, refs: Dict[str, dict], which: str) -> float:
+            if start == 'C2' and which == 'identity':
+                return GATE['loss_max_c2']
+            own = refs[which]['cal_loss']
+            return float(own) + (GATE['loss_tol_ceiling'] if start == 'fit1' else GATE['loss_tol'])
+
+        for start, d in df.groupby('start'):
+            refs = {i: d[d.point_id == i].iloc[0].to_dict() for i in ('identity', 'identity_held') if (d.point_id == i).any()}
+            if ref_point not in refs:
+                continue
+            ctrl = d['control'].astype(str).str.lower().isin(['true', '1', '1.0']) if 'control' in d else False
+            for _, r in d[~d.point_id.isin(['identity', 'identity_held']) & ~ctrl].iterrows():
+                row = dict(gate_point(r.to_dict(), c2_refs[ref_point], loss_limit=limit(start, refs, ref_point)), tag=r['tag'],
+                    family=r['family'], ref_point=ref_point, run=breadth, kckc=r.get('kckc'))
+                if other in refs and other in c2_refs:
+                    alt = gate_point(r.to_dict(), c2_refs[other], loss_limit=limit(start, refs, other))
+                    pre = 'held_' if other == 'identity_held' else 'ident_'
+                    row.update({pre + k: alt[k] for k in ('i', 'ii', 'iii', 'iv', 'pass', 'pass_without_iv', 'loss_limit',
+                        'ester_error_start', 'six_effect_start')})
+                rows.append(row)
+        g = pd.DataFrame(rows)
+    suffix = gate_suffix(breadth, ref_point)
     if len(g):
         g.to_csv(out / f'gate{suffix}.csv', index=False)
     sel = []
-    c2 = g[(g.start == 'C2') & g['pass']] if len(g) else g
-    if len(c2):
+    passed = g[(g.start == 'C2') & g['pass']] if len(g) else g
+    if len(passed):
         cal = df.set_index('tag')['cal_loss']
         for fam in (('knee', 'knee_soft'), ('rel',)):
-            x = c2[c2.family.isin(fam)]
+            x = passed[passed.family.isin(fam)]
             if len(x):
                 best = x.loc[x.tag.map(cal).idxmin()]
                 sel.append(dict(tag=best.tag, point_id=best.point_id, family=best.family, cal_loss=float(cal[best.tag])))
-    res = dict(ref_point=ref_point, n_points=int(len(g)), n_pass=int(g['pass'].sum()) if len(g) else 0,
-        n_pass_without_iv=int(g['pass_without_iv'].sum()) if len(g) else 0, selected=sel, thresholds=GATE,
+    res = dict(run=breadth, ref_point=ref_point, n_points=int(len(g)), n_pass=int(g['pass'].sum()) if len(g) else 0,
+        n_pass_without_iv=int(g['pass_without_iv'].sum()) if len(g) else 0,
+        n_rates_not_held=int((~g['rates_held']).sum()) if len(g) else 0, selected=sel, thresholds=GATE,
         points=g.to_dict('records') if len(g) else [])
     (out / f'gate{suffix}.json').write_text(json.dumps(res, indent=1, default=_json_default) + '\n')
-    print(f"gate: {res['n_pass']} of {res['n_points']} points pass ({res['n_pass_without_iv']} without the low-concentration "
-        f"condition); selected {[s['tag'] for s in sel]}", flush=True)
+    print(f"gate ({breadth} run, against {ref_point}): {res['n_pass']} of {res['n_points']} points pass ({res['n_pass_without_iv']} "
+        f"without the low-concentration condition; {res['n_rates_not_held']} with a rate not held); selected "
+        f"{[s['tag'] for s in sel]}", flush=True)
     return res
 
 
@@ -1257,7 +1517,8 @@ def d_commands(g: dict) -> List[List[str]]:
     """E10_joint_fit.py argument lists of part D's fits: for each knee transfer the gate selected (the odor-relative knee
     is not fitted), on the real wiring and on P1, P2 and M1, each from that wiring's held point (part C's point with the
     transfer on the wiring's part-B optimum, both response rates held; `sweep(out, start, [point])` makes it when
-    missing), whose absolute parameters go to results/E78_claw_knee/init_params.json as '<start>_<point>'."""
+    missing; the pre-pass run, KC-KC tied), whose absolute parameters go to results/E78_claw_knee/init_params.json under
+    the point's tag."""
     import json
     out = H.results_dir(EXPERIMENT)
     cmds = []
@@ -1268,7 +1529,7 @@ def d_commands(g: dict) -> List[List[str]]:
             continue
         pid = sel['point_id']
         for start in FIT_WIRINGS:
-            tag = f'{start}_{pid}'
+            tag = point_tag(start, dict(point_id=pid, kckc='tied'), 'prepass')
             df = aggregate(out)
             if not ((df.tag == tag).any() if len(df) else False):
                 sweep(out, start, [pid])
@@ -1471,7 +1732,7 @@ def e_score(out: Path) -> pd.DataFrame:
         d_on, d_off = H.yang_mean_rdm('TNT3c'), H.yang_mean_rdm('TNT')
         rows = []
         for _, r in df.iterrows():
-            pp = out / 'points' / r['start'] / f"{r['point_id']}_pairs.csv"
+            pp = points_dir(r['start'], r.get('run') or 'prepass') / f"{r.get('point_key') or r['point_id']}_pairs.csv"
             if not pp.exists():
                 continue
             d = pd.read_csv(pp)
@@ -1505,14 +1766,16 @@ def _f(x, spec='.3f') -> str:
     return '-' if not np.isfinite(x) else format(x, spec)
 
 
-def summarize(out: Path) -> None:
+def summarize(out: Path, breadth: str = 'prepass') -> None:
     """comparison_table.md (the sweep's points against their start and the KC data: the readout loss with its pattern
     part, the raw loss and mean, ρ on the per-pair APL effect, the six pairs, the ester and alcohol group errors, the
     response rates, the response rate ρ, the weak odors' fractions, the bands; the gate; the archive's knee variants)
     and the figures (E78_sweep.png: the loss, the pattern part, the six pairs' effect and the ester error against the knee
-    and the gain; E78_weak_odors.png: the weak odors' response fractions)."""
+    and the gain; E78_weak_odors.png: the weak odors' response fractions), for run `breadth` (the held run's files carry
+    a _held suffix)."""
     import json
-    df = aggregate(out)
+    sfx = '' if breadth == 'prepass' else f'_{breadth}'
+    df = aggregate(out, breadth)
     if not len(df):
         print('no points yet', flush=True)
         return
@@ -1524,16 +1787,20 @@ def summarize(out: Path) -> None:
         "E72's re-drawn wirings) and each point on it. Lower is better for the losses; the floor of the APL-effect loss is "
         f"{H.data_target('apl_effect_rmse_floor'):.3f}. Six pairs: eb-ep, 6al-t2h, IaA-pa, 2h-pa, 1-5ol-1-6ol, 2h-IaA (raw counts; "
         f'the KC data\'s APL effect +{data_six:.3f}). Bands: the 16:10 rule (two spikes against the KC data in baseline-noise units).', '',
-        "Breadth: every point but 'identity' takes the breadth weights from its own threshold-held APL-off run (E77's runner, "
-        "breadth_from='held', KC-KC inhibition included), as the entry specifies; 'identity' is the start itself (its breadth from "
-        "the bouton base's APL-off run at E3's threshold), and 'identity_held' the start with only the held breadth, the control "
-        "for that choice. Part A's E10 fits at 100 / 130 Hz (and part D's) take their breadth from E16's knee base instead (its "
-        "APL-off run at its own tuned threshold; with a sub-threshold gain or width, that run's threshold re-tuned to its "
-        "response count), so part C and the fits differ in that respect.", '',
+        (("Breadth (the pre-pass run): each point's breadth weights from E10's transfer pre-pass, the plain bouton base of the "
+        "start's wiring at E3's tuned parameters with APL off and the whole transfer, its threshold re-tuned to the transfer-free "
+        "run's APL-off response count (at the identity C2's breadth exactly); KC-KC column 'tied': the KC-KC scale multiplied by "
+        "the somatic threshold's factor when the APL-off count is held, 'fixed': held at the start's (the controls, not gated). "
+        "Part A's E10 fits at 100 / 130 Hz (and part D's) take their breadth from E16's knee base (its APL-off run at its own "
+        "tuned threshold) and fit the KC-KC scale.") if breadth == 'prepass' else
+        ("Breadth (the held run, the first one): every point but 'identity' takes the breadth weights from its own "
+        "threshold-held APL-off run (E77's runner, breadth_from='held', KC-KC inhibition included) with the KC-KC scale held at "
+        "the start's; 'identity_held' is the start with only the held breadth. Kept for the record; the pre-pass run replaces "
+        "it.")) + " Rows with 'no' under rates held had a bisection end at its bound (the response counts not reached).", '',
         '| start | point | knee (Hz) | g | width | rel | readout loss | pattern part | raw loss | raw mean | ρ on the per-pair APL effect '
         '(readout) | six pairs, APL on / off (raw) | six pairs\' APL effect (raw) | ester group error | alcohol group error | '
-        'response rate, APL on / off | response rate ρ, APL on | silent odors (on / off) | bands |',
-        '|---|---|' + '---:|' * 15 + '---|---|']
+        'response rate, APL on / off | response rate ρ, APL on | silent odors (on / off) | bands | KC-KC | rates held |',
+        '|---|---|' + '---:|' * 15 + '---|---|---|---|']
     order = {s: i for i, s in enumerate(STARTS)}
     df = df.assign(_o=df.start.map(order)).sort_values(['_o', 'family', 'claw_thr', 'claw_thr_subgain', 'rel'])
     for _, r in df.iterrows():
@@ -1543,20 +1810,23 @@ def summarize(out: Path) -> None:
             f"{_f(r.cal_err_alcohol, '+.3f')} | {_f(r.rate_on, '.4f')} / {_f(r.rate_off, '.4f')} | {_f(r.rate_rho_on, '.2f')} | "
             f"{r.silent_odors_on if isinstance(r.silent_odors_on, str) and r.silent_odors_on else '-'} / "
             f"{r.silent_odors_off if isinstance(r.silent_odors_off, str) and r.silent_odors_off else '-'} | "
-            f"{'inside' if not (isinstance(r.realism_flag_noise, str) and r.realism_flag_noise) else r.realism_flag_noise} |")
+            f"{'inside' if not (isinstance(r.realism_flag_noise, str) and r.realism_flag_noise) else r.realism_flag_noise} | "
+            f"{r.get('kckc') if isinstance(r.get('kckc'), str) and r.get('kckc') else '-'} | "
+            f"{'yes' if str(r.get('rates_held')).lower() in ('true', '1', '1.0') else 'no'} |")
     lines += [f"| KC data | | | | | | floor {H.data_target('apl_effect_rmse_floor'):.3f} | | | +{H.yang_apl_effect().mean():.3f} | "
         f"ceiling {H.data_target('apl_effect_rho_ceiling'):.2f} | {kind_mean(H.yang_mean_rdm('TNT3c'), SIX):.3f} / "
-        f"{kind_mean(H.yang_mean_rdm('TNT'), SIX):.3f} | +{data_six:.3f} | 0 | 0 | {fr_on.mean():.4f} / {fr_off.mean():.4f} | | | |"]
-    gp = out / 'gate.json'
+        f"{kind_mean(H.yang_mean_rdm('TNT'), SIX):.3f} | +{data_six:.3f} | 0 | 0 | {fr_on.mean():.4f} / {fr_off.mean():.4f} | | | | | |"]
+    gp = out / ('gate.json' if breadth == 'prepass' else 'gate_identity_held.json')
     if gp.exists():
         g = json.loads(gp.read_text())
         lines += ['', '## The gate', '', f"{g['n_pass']} of {g['n_points']} points pass ({g['n_pass_without_iv']} without the "
             f"low-concentration condition); selected: {', '.join(s['tag'] for s in g['selected']) or 'none'}.", '',
-            '| tag | (i) ester error reduced / six pairs raised | (ii) readout loss vs start | (iii) worst odor kept / response rate ρ | '
+            f"Against C2's {g.get('ref_point', 'identity')} row; (ii) against the loss limit given.", '',
+            '| tag | (i) ester error reduced / six pairs raised | (ii) readout loss / limit | (iii) worst odor kept / response rate ρ | '
             '(iv) 2h at 10^-5 kept | bands | pass |', '|---|---|---|---|---|---|---|']
         for p in g['points']:
             lines.append(f"| {p['tag']} | {_f(p['ester_reduction'], '.2f')} / {_f(p['six_raise'], '+.3f')} ({'yes' if p['i'] else 'no'}) | "
-                f"{_f(p['cal_loss'], '.4f')} vs {_f(p['cal_loss_start'], '.4f')} ({'yes' if p['ii'] else 'no'}) | "
+                f"{_f(p['cal_loss'], '.4f')} / {_f(p.get('loss_limit', p.get('cal_loss_start')), '.4f')} ({'yes' if p['ii'] else 'no'}) | "
                 f"{_f(p['worst_frac_ratio'], '.2f')} ({p['worst_frac_odor']}) / {_f(p['rate_rho_on'], '.2f')} ({'yes' if p['iii'] else 'no'}) | "
                 f"{_f(p['low_ratio'], '.2f')} ({'-' if p['iv'] is None else ('yes' if p['iv'] else 'no')}) | "
                 f"{'yes' if p['bands'] else 'no'} | {'yes' if p['pass'] else 'no'} |")
@@ -1572,12 +1842,12 @@ def summarize(out: Path) -> None:
                 f"{_f(r.knee_over_top, '.2f')} | {_f(r.raw_six_on)} / {_f(r.raw_six_off)} ({_f(r.raw_six_effect, '+.3f')}) | "
                 f"{_f(r.get('d_raw_six_effect'), '+.3f')} | {_f(r.get('raw_err_ester'), '+.3f')} / {_f(r.get('raw_err_alcohol'), '+.3f')} | "
                 f"{_f(r.raw_pattern)} | {_f(r.raw_rho, '.2f')} | {r.silent_odors_on if isinstance(r.get('silent_odors_on'), str) and r.silent_odors_on else '-'} |")
-    (out / 'comparison_table.md').write_text('\n'.join(lines) + '\n')
-    _figures(df, out)
-    print(f"{out / 'comparison_table.md'} written ({len(df)} points)", flush=True)
+    (out / f'comparison_table{sfx}.md').write_text('\n'.join(lines) + '\n')
+    _figures(df[df.get('control', False).astype(str).str.lower() != 'true'] if 'control' in df else df, out, sfx)
+    print(f"{out / f'comparison_table{sfx}.md'} written ({len(df)} points)", flush=True)
 
 
-def _figures(df: pd.DataFrame, out: Path) -> None:
+def _figures(df: pd.DataFrame, out: Path, sfx: str = '') -> None:
     plt = H._plt()
     d = df[(df.start == 'C2') & df.family.isin(['knee', 'knee_soft'])]
     ref = df[(df.start == 'C2') & (df.point_id == 'identity')]
@@ -1600,7 +1870,7 @@ def _figures(df: pd.DataFrame, out: Path) -> None:
         axes[0].legend(fontsize=7, frameon=False)
         fig.suptitle('The per-claw knee on the breadth-2 APL-effect fit, both response rates held', fontsize=10.5)
         fig.tight_layout()
-        fig.savefig(out / 'E78_sweep.png', dpi=130)
+        fig.savefig(out / f'E78_sweep{sfx}.png', dpi=130)
         plt.close(fig)
     weak = ['ms', 'B-myr', 'euc', '-aPine', 'paa', '1-8ol']
     d = df[df.start == 'C2']
@@ -1617,7 +1887,7 @@ def _figures(df: pd.DataFrame, out: Path) -> None:
             ax.spines[['top', 'right']].set_visible(False)
         axes[0].legend(fontsize=7, frameon=False, ncol=2)
         fig.tight_layout()
-        fig.savefig(out / 'E78_weak_odors.png', dpi=130)
+        fig.savefig(out / f'E78_weak_odors{sfx}.png', dpi=130)
         plt.close(fig)
 
 
@@ -1627,7 +1897,14 @@ def main() -> None:
         _run_e10_redirected(Path(sys.argv[2]), sys.argv[4:])
         return
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['check-e10', 'B', 'C', 'C-launch', 'C-low', 'gate', 'D', 'E', 'summarize'])
+    ap.add_argument('--part', required=True, choices=['check-e10', 'check-C', 'B', 'C', 'C-launch', 'C-low', 'gate', 'D', 'E',
+        'summarize'])
+    ap.add_argument('--breadth', default='prepass', choices=list(BREADTHS),
+        help="parts C, C-low, gate, summarize: the run: 'prepass' (default; each point's breadth from E10's transfer pre-pass) or "
+            "'held' (the first run: the breadth from the threshold-held APL-off run)")
+    ap.add_argument('--kckc', default=None, choices=list(KCKC_MODES),
+        help="part C: 'tied' (the default of the pre-pass run; the KC-KC scale multiplied by the somatic threshold's factor when "
+            "the APL-off count is held) or 'fixed' (held at the start's, the entry's letter; the held run's only mode)")
     ap.add_argument('--start', default='C2', choices=list(STARTS), help='part C: the fit the points are set on')
     ap.add_argument('--only', nargs='+', default=None, help='part C: these point ids only (check-e10: these runs)')
     ap.add_argument('--best', action='store_true', help=f"part C / C-low: the {N_BEST} best points of the sweep on C2 (by the "
@@ -1640,6 +1917,8 @@ def main() -> None:
     ap.add_argument('--local-test', metavar='DIR', default=None,
         help="write this experiment's results and outputs under DIR/results and DIR/outputs (a smoke test)")
     args = ap.parse_args()
+    if args.kckc is None:
+        args.kckc = 'tied' if args.breadth == 'prepass' else 'fixed'
     if args.local_test:
         root = Path(args.local_test).resolve()
         orig_r, orig_o = H.results_dir, H.outputs_dir
@@ -1657,21 +1936,23 @@ def main() -> None:
     elif args.part == 'C':
         only = args.only
         if args.best:
-            only = best_points(aggregate(out))
+            only = best_points(aggregate(out, args.breadth))
             print(f'the {N_BEST} best points on C2: {only}', flush=True)
-        sweep(out, args.start, only)
+        sweep(out, args.start, only, args.breadth, args.kckc)
+    elif args.part == 'check-C':
+        check_c(out, args.start)
     elif args.part == 'C-launch':
         c_launch()
     elif args.part == 'C-low':
-        low_conc(out, args.only if args.only and not args.best else best_points(aggregate(out)), args.start)
+        low_conc(out, args.only if args.only and not args.best else best_points(aggregate(out, args.breadth)), args.start, args.breadth)
     elif args.part == 'gate':
-        gate(out, args.gate_ref)
+        gate(out, args.gate_ref, args.breadth)
     elif args.part == 'D':
         d_launch(d_commands(gate(out)))
     elif args.part == 'E':
         e_score(out)
     else:
-        summarize(out)
+        summarize(out, args.breadth)
 
 
 if __name__ == '__main__':
