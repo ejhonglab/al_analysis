@@ -1276,7 +1276,10 @@ def window_volumes(window: Tuple[float, float], volume_rate: float) -> Tuple[int
     """A window (start, end) in seconds from the odor's onset as volumes after the onset volume: (round(start
     * volume_rate), round(end * volume_rate)), the end exclusive, as Yang's pipeline makes its 2-8 s window
     (at the APL16 recordings' 2.964 volumes / s: (2, 8) and (2.0, 8.1) are both volumes 6 to 23)."""
-    raise NotImplementedError
+    a, b = int(round(float(window[0]) * volume_rate)), int(round(float(window[1]) * volume_rate))
+    if not b > a:
+        raise ValueError(f'window {window} has no volume at {volume_rate} volumes / s')
+    return a, b
 
 
 def trace_excerpts(traces: np.ndarray, onsets: Sequence[int], n_before: int, n_after: int) -> np.ndarray:
@@ -1290,7 +1293,18 @@ def trace_excerpts(traces: np.ndarray, onsets: Sequence[int], n_before: int, n_a
 
     Returns (trials, units, n_before + n_after) float64; sample j is volume onset - n_before + j.
     """
-    raise NotImplementedError
+    X = np.asarray(traces, dtype=np.float64)
+    on = np.asarray(onsets, dtype=np.int64)
+    n_before, n_after = int(n_before), int(n_after)
+    if n_before < 1 or n_after < 1:
+        raise ValueError('n_before and n_after must be at least 1')
+    if len(on) and (on.min() - n_before < 0 or on.max() + n_after > X.shape[1]):
+        raise ValueError(f'excerpts of {n_before} + {n_after} volumes run off a trace of {X.shape[1]} volumes')
+    out = np.empty((len(on), X.shape[0], n_before + n_after))
+    for i, n in enumerate(on):
+        seg = X[:, n - n_before:n + n_after]
+        out[i] = seg - seg[:, :n_before].mean(axis=1, keepdims=True)
+    return out
 
 
 def windowed_responses(excerpts: np.ndarray, windows: Sequence[Tuple[float, float]], *, first_volume: int,
@@ -1306,21 +1320,59 @@ def windowed_responses(excerpts: np.ndarray, windows: Sequence[Tuple[float, floa
     Returns (..., len(windows)). With the window (round(2 v), round(8 v)) on excerpts of a z-scored trace this is
     Yang's per-trial response.
     """
-    raise NotImplementedError
+    E = np.asarray(excerpts)
+    n = E.shape[-1]
+    out = []
+    for w in windows:
+        a, b = window_volumes(w, volume_rate) if volume_rate is not None else (int(w[0]), int(w[1]))
+        i, j = a - int(first_volume), b - int(first_volume)
+        if i < 0 or j > n or not j > i:
+            raise ValueError(f'window {w} (volumes {a} to {b - 1}) is outside the excerpts '
+                f'(volumes {first_volume} to {first_volume + n - 1})')
+        out.append(E[..., i:j].mean(axis=-1, dtype=np.float64))
+    return np.stack(out, axis=-1)
 
 
 def indicator_kernel(u, rise: float, decay: float) -> np.ndarray:
     """The indicator kernel (1 - exp(-u / rise)) exp(-u / decay) at times u since a spike (0 for u <= 0; rise 0
     is an instant rise, decay np.inf no decay)."""
-    raise NotImplementedError
+    u = np.asarray(u, dtype=float)
+    pos = u > 0
+    up = np.where(pos, u, 0.0)
+    k = np.ones_like(up) if rise == 0 else -np.expm1(-up / rise)
+    if not np.isinf(decay):
+        k = k * np.exp(-up / decay)
+    return np.where(pos, k, 0.0)
 
 
 def indicator_kernel_integral(u, rise: float, decay: float) -> np.ndarray:
     """The kernel's integral from 0 to u (0 for u <= 0)."""
-    raise NotImplementedError
+    u = np.maximum(np.asarray(u, dtype=float), 0.0)
+    first = u if np.isinf(decay) else -decay * np.expm1(-u / decay)
+    tau = rise if np.isinf(decay) else (rise * decay / (rise + decay) if rise > 0 else 0.0)
+    return first if tau == 0 else first + tau * np.expm1(-u / tau)
 
 
 DRIVES: Tuple[str, ...] = ('onset', 'steady', 'histogram')
+
+
+def _drive_bins(drive: str, pulse: float, edges, weights) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """(edges, weights summing to 1) of a drive, None for the onset impulse."""
+    if drive == 'onset':
+        return None
+    if drive == 'steady':
+        if not pulse > 0:
+            raise ValueError(f'pulse must be > 0, not {pulse}')
+        return np.array([0.0, float(pulse)]), np.array([1.0])
+    if drive == 'histogram':
+        e = np.asarray(edges, dtype=float)
+        w = np.asarray(weights, dtype=float)
+        if e.ndim != 1 or len(e) != len(w) + 1 or np.any(np.diff(e) <= 0):
+            raise ValueError('a histogram drive needs increasing edges, one more than its weights')
+        if np.any(w < 0) or not w.sum() > 0:
+            raise ValueError('a histogram drive needs non-negative weights with a positive sum')
+        return e, w / w.sum()
+    raise ValueError(f'drive must be one of {DRIVES}, not {drive!r}')
 
 
 def kernel_signal(t, rise: float, decay: float, drive: str = 'onset', *, pulse: float = 2.0,
@@ -1334,7 +1386,16 @@ def kernel_signal(t, rise: float, decay: float, drive: str = 'onset', *, pulse: 
 
     Returns float array shaped like `t`.
     """
-    raise NotImplementedError
+    t = np.asarray(t, dtype=float)
+    bins = _drive_bins(drive, pulse, edges, weights)
+    if bins is None:
+        return indicator_kernel(t, rise, decay)
+    e, w = bins
+    keep = w > 0
+    lo, hi, w = e[:-1][keep], e[1:][keep], w[keep]
+    tt = t.reshape(-1, 1)
+    K = (indicator_kernel_integral(tt - lo, rise, decay) - indicator_kernel_integral(tt - hi, rise, decay)) / (hi - lo)
+    return (K @ w).reshape(t.shape)
 
 
 def fit_indicator_kernel(t, y, drive: str = 'onset', *, pulse: float = 2.0, edges=None, weights=None,
@@ -1349,7 +1410,45 @@ def fit_indicator_kernel(t, y, drive: str = 'onset', *, pulse: float = 2.0, edge
     Returns dict: rise, decay, amplitude, rms (root mean squared residual, in y's units), n, rise_at_bound,
     decay_at_bound (within 1 % of a bound), drive.
     """
-    raise NotImplementedError
+    from scipy.optimize import least_squares
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ok = np.isfinite(t) & np.isfinite(y)
+    t, y = t[ok], y[ok]
+    if len(t) < 4:
+        raise ValueError('need at least 4 finite points')
+
+    def amp_res(rise, decay):
+        s = kernel_signal(t, rise, decay, drive, pulse=pulse, edges=edges, weights=weights)
+        ss = float(s @ s)
+        a = max(float(s @ y) / ss, 0.0) if ss > 0 else 0.0
+        return a, y - a * s
+
+    if fixed is not None:
+        r, d = float(fixed[0]), float(fixed[1])
+        a, res = amp_res(r, d)
+        return dict(rise=r, decay=d, amplitude=a, rms=float(np.sqrt(np.mean(res ** 2))), n=int(len(t)),
+            rise_at_bound=False, decay_at_bound=False, drive=drive)
+    lb = np.log([rise_bounds[0], decay_bounds[0]])
+    ub = np.log([rise_bounds[1], decay_bounds[1]])
+
+    def fun(p):
+        return amp_res(np.exp(p[0]), np.exp(p[1]))[1]
+
+    best = None
+    for r0 in (0.2, 0.7, 2.0):
+        for d0 in (2.0, 8.0, 30.0):
+            x0 = np.clip(np.log([r0, d0]), lb + 1e-9, ub - 1e-9)
+            sol = least_squares(fun, x0, bounds=(lb, ub), x_scale=1.0, xtol=1e-10, ftol=1e-12, gtol=1e-12)
+            if best is None or sol.cost < best.cost:
+                best = sol
+    r, d = float(np.exp(best.x[0])), float(np.exp(best.x[1]))
+    a, res = amp_res(r, d)
+
+    def at(v, b):
+        return bool(v <= b[0] * 1.01 or v >= b[1] / 1.01)
+    return dict(rise=r, decay=d, amplitude=a, rms=float(np.sqrt(np.mean(res ** 2))), n=int(len(t)),
+        rise_at_bound=at(r, rise_bounds), decay_at_bound=at(d, decay_bounds), drive=drive)
 
 
 # ---------------------------------------------------------------------------

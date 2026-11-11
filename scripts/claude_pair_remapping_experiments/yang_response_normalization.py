@@ -30,6 +30,9 @@ Outputs (`--out`, default <shared>/notes/yang_response_normalization/): recordin
 recording), kc_scales.csv (per KC: whole-trace SD, baseline-noise SD, their ratio, the number of odors
 responded to, mean squared response), normalization_rates.csv, summary.json, two figures.
 
+The reader (`read_suite2p`, which accepts only the 19 recordings of `RECORDINGS`) is shared with
+E84_trace_time_course.py.
+
 Usage: ./venv/bin/python yang_response_normalization.py [--drive-root /media/yang] [--out DIR]
 """
 from __future__ import annotations
@@ -80,7 +83,21 @@ def olfdb_matrix(genotype: str, rec: str) -> pd.DataFrame:
     return d.pivot_table(index='roi', columns=['odor', 'repeat'], values='value')
 
 
-def recording(genotype: str, rec: str, drive_root: Path) -> tuple:
+def read_suite2p(genotype: str, rec: str, drive_root: Path) -> dict:
+    """One of the 19 recordings' suite2p output and stimulus records, read-only, by its exact name.
+
+    Only the recordings in `RECORDINGS` are accepted (ValueError otherwise): Yang agreed to the reading of these
+    (notes/yang_drive_data_agreement.md, item 2); nothing else on her drives is read or listed. Reads the recording's
+    YAML file (`YANGZHENG_0*/0_2P/<date>/<recording>.yaml`), suite2p's ops.npy, F.npy, Fneu.npy and iscell.npy (the
+    `<recording>_els_moco_s2p0` run's suite2p/combined in `<date>_fromHal`) and the onset table
+    (`<recording>_els_moco_thor_df_summary_n.csv` in the `_PCA_result` folder).
+
+    Returns dict: genotype, recording, cfg (the YAML), ops, yaml_path, s2p_dir, pca_dir, n_rois, F and Fneu (float64,
+    the ROIs with iscell == 1, in suite2p's order: olfdb's roi), onsets (the onset volume of each presentation, in
+    time order), pins (the stimulus of each presentation, Yang's odor names).
+    """
+    if (genotype, rec) not in RECORDINGS:
+        raise ValueError(f'{genotype} {rec} is not one of the 19 recordings in olfdb (RECORDINGS)')
     date = rec.split('_')[0]
     y = find_one(drive_root, f'YANGZHENG_0*/0_2P/{date}/{rec}.yaml')
     cfg = yaml.safe_load(y.read_text())
@@ -91,12 +108,22 @@ def recording(genotype: str, rec: str, drive_root: Path) -> tuple:
     F = np.load(s2p / 'F.npy').astype(np.float64)
     Fneu = np.load(s2p / 'Fneu.npy').astype(np.float64)
     iscell = np.load(s2p / 'iscell.npy')
-    Fc = (F - 0.7 * Fneu)[iscell[:, 0] == 1]
-    Fmean = F[iscell[:, 0] == 1].mean(axis=1)
-    Fneumean = Fneu[iscell[:, 0] == 1].mean(axis=1)
-    del F, Fneu
+    keep = iscell[:, 0] == 1
+    onsets = pd.read_csv(pca / f'{rec}_els_moco_thor_df_summary_n.csv', index_col=0)['VC'].to_numpy(dtype=int)
+    pins = np.array(cfg['odor_pin'])[np.array(cfg['odor_stim_seq']) - 1]
+    return dict(genotype=genotype, recording=rec, cfg=cfg, ops=ops, yaml_path=y, s2p_dir=s2p, pca_dir=pca,
+                n_rois=int(iscell.shape[0]), F=F[keep], Fneu=Fneu[keep], onsets=onsets, pins=pins)
+
+
+def recording(genotype: str, rec: str, drive_root: Path) -> tuple:
+    r = read_suite2p(genotype, rec, drive_root)
+    cfg, ops, pca = r['cfg'], r['ops'], r['pca_dir']
+    Fc = r['F'] - 0.7 * r['Fneu']
+    Fmean = r['F'].mean(axis=1)
+    Fneumean = r['Fneu'].mean(axis=1)
+    del r['F'], r['Fneu']
     z = zscore(Fc, axis=1)
-    row = dict(genotype=genotype, recording=rec, n_rois=int(iscell.shape[0]), n_kcs=int(Fc.shape[0]), n_volumes=int(Fc.shape[1]),
+    row = dict(genotype=genotype, recording=rec, n_rois=r['n_rois'], n_kcs=int(Fc.shape[0]), n_volumes=int(Fc.shape[1]),
                frame_rate=float(cfg['frame_rate']), frame_per_volume=int(cfg['frame_per_volume']), base_s=float(cfg['basePeriodLen']),
                peak_start_s=float(cfg['peak_start']), peak_end_s=float(cfg['peak_end']), odor_pulse_s=float(cfg['odorPulseLen']),
                inter_odor_s=float(cfg['interOdorInterval']), induction_hours=cfg.get('Thirtytwo_hours'),
@@ -109,8 +136,7 @@ def recording(genotype: str, rec: str, drive_root: Path) -> tuple:
     vr = cfg['frame_rate'] / cfg['frame_per_volume']
     B, S, P = round(cfg['basePeriodLen'] * vr), round(cfg['peak_start'] * vr), round(cfg['peak_end'] * vr)
     row.update(volume_rate=vr, baseline_volumes=B, window_first=S, window_last=P - 1, window_volumes=P - S)
-    onsets = pd.read_csv(pca / f'{rec}_els_moco_thor_df_summary_n.csv', index_col=0)['VC'].to_numpy(dtype=int)
-    pins = np.array(cfg['odor_pin'])[np.array(cfg['odor_stim_seq']) - 1]
+    onsets, pins = r['onsets'], r['pins']
     K = len(onsets)
     row['n_trials'] = K
     win = np.stack([z[:, n + S:n + P].mean(axis=1) - z[:, n - B:n].mean(axis=1) for n in onsets], axis=1)
