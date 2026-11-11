@@ -45,7 +45,7 @@ directory's notes/ and are linked from here.
   the summary rows that quote them; the "corrected for trial-to-trial noise" rows of E43, E48 and E68 and of E76's unit table; the "trial
   noise removed" column and the "at zero" sentence of E78's entry and report item 78.
 - **Done.** E81 (atlas) estimated the noise-free values with intervals (registry `noise_free_*`; part A4); the summary quotes them beside or in place of
-  the earlier values (template, 2026-11-11 11:20); E76's note carries a dated annotation (11:25).
+  the earlier values (template, 2026-11-11 10:57); E76's note carries a dated annotation (10:57).
 - **Done (hal, 2026-11-11).** E78's note gives both estimates (its six-pair table and text); E78's Completed entry and
   report item 78 carry dated annotations.
 - **Done (E81 parts A and B, atlas, 2026-11-11).** The shared part is confirmed with intervals (E81_repeat_structure.py,
