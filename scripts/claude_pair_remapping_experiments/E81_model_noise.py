@@ -716,8 +716,9 @@ def _rates(res: dict, ro: str, u: str) -> Dict[str, float]:
 
 
 def check_present(results: Dict[str, dict]) -> Dict[str, object]:
-    """The present-pipeline distances (raw counts, matched levels) against each source's pairs_noise_long.csv ('raw',
-    graded): the largest absolute difference per model and level."""
+    """The present-pipeline distances (raw counts, matched levels) against every source's pairs_noise_long.csv ('raw',
+    graded): the largest absolute difference per model, level and source (with E81 part C's trials loaded first, the
+    comparison with E72's / E75's tables is the check that part C's match_on trials reproduce theirs)."""
     out = {}
     for label, res in results.items():
         if 'error' in res:
@@ -743,7 +744,6 @@ def check_present(results: Dict[str, dict]) -> Dict[str, object]:
                     a, b = H.align_pairs(H.canonical_pairs(pr[c]), H.canonical_pairs(s))
                     diffs.append(float((a - b).abs().max()))
                 out[f'{label} {lab} vs {exp}'] = max(diffs)
-            break
     return out
 
 
