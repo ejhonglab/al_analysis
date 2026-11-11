@@ -105,6 +105,14 @@ and in the breadth pre-pass (`bouton_base`'s APL-off run, its fixed_thr re-tuned
 APL-off response count; `input_scaled_prepass`). Fixed, not fitted; off by default (the fits as before).
 Recorded in fits.csv (kc_thr_input_exp, the pre-pass's threshold factor, the factor's spread) and the
 provenance; tag prefix thrin<A>_ (after the ceiling prefix); refused with --block-proxy.
+The claw's transfer (E78): `--claw-thr-subgain G` lets the per-claw knee (--claw-thr T) pass a fraction G of each claw's
+input below T and all of the excess above it (olfsysm claw_thr_subgain, E41; G = 0 is the hard knee, G = 1 no knee), and
+`--claw-thr-width W` makes the knee a softplus of width W Hz (olfsysm claw_thr_width, E22), in every simulation of the fit
+(`base_kws`' transfer) and in the breadth pre-pass (`transfer_prepass`: the base at its tuned parameters with APL off and
+the transfer, its fixed_thr re-tuned to the transfer-free run's APL-off response count, as E71's pre-pass). Fixed, not
+fitted; need --claw-thr; off by default (the fits as before). Recorded in fits.csv (claw_thr_subgain, claw_thr_width,
+claw_transfer_prepass_*) and the provenance (claw_transfer); tag part sg<G> / w<W> right after thr<T> (e.g.
+thr100sg0.25_); refused with --block-proxy, --kc-thr-input-exp and spike-driven APL.
 The per-KC session z-score reading (E73 part C; with --loss apl): `--apl-readout zcell` computes the APL-effect
 term under the reading of the recordings that E73's part B scores every archived variant with
 (E73_per_kc_normalization.zcell_rows, graded, against the graded data): each model KC's session of the 16 odors
@@ -215,11 +223,31 @@ def e16_row(claw_thr: float):
     return None if len(m) == 0 else m.iloc[0]
 
 
-def base_kws(claw_thr, apl_drive: str = 'claws') -> dict:
+def claw_transfer_kws(subgain: Optional[float] = None, width: Optional[float] = None) -> dict:
+    """fit_mb_model kwargs of the per-claw knee's sub-threshold gain (claw_thr_subgain, E41) and softplus width
+    (claw_thr_width, E22), as E78's --claw-thr-subgain / --claw-thr-width set them; empty when neither is given."""
+    t = {}
+    if subgain is not None:
+        t['claw_thr_subgain'] = float(subgain)
+    if width is not None:
+        t['claw_thr_width'] = float(width)
+    return t
+
+
+def claw_transfer_tag(transfer: Optional[dict]) -> str:
+    """The tag part of a claw transfer (after thr<T>): sg<G> and / or w<W>; '' for none."""
+    t = transfer or {}
+    return ('' if 'claw_thr_subgain' not in t else f"sg{t['claw_thr_subgain']:g}") + (
+        '' if 'claw_thr_width' not in t else f"w{t['claw_thr_width']:g}")
+
+
+def base_kws(claw_thr, apl_drive: str = 'claws', transfer: Optional[dict] = None) -> dict:
     """The bouton base's fit_mb_model kwargs; `apl_drive='spikes'` drives APL by the KCs'
     spikes (plus the bouton rates) instead of the summed claw input (pn_claw_to_apl=False;
     E35 / E36). 'spikes_only' (E37) has the same kwargs: the bouton->APL input is removed by
-    its scale (wPNAPL_scale = 0), which is a parameter, not a kwarg."""
+    its scale (wPNAPL_scale = 0), which is a parameter, not a kwarg. `transfer`
+    (`claw_transfer_kws`; E78) adds the per-claw knee's sub-threshold gain / softplus width,
+    which need `claw_thr`."""
     kws = dict(BOUTON, make_plots=False, silent=True)
     if claw_thr is not None:
         kws['claw_thr'] = float(claw_thr)
@@ -227,6 +255,13 @@ def base_kws(claw_thr, apl_drive: str = 'claws') -> dict:
         kws['pn_claw_to_apl'] = False
     elif apl_drive != 'claws':
         raise ValueError(f'{apl_drive=}')
+    if transfer:
+        if claw_thr is None:
+            raise ValueError(f'a claw transfer ({transfer}) needs claw_thr')
+        bad = set(transfer) - {'claw_thr_subgain', 'claw_thr_width'}
+        if bad:
+            raise ValueError(f'unknown claw transfer kwargs {sorted(bad)}')
+        kws.update(transfer)
     return kws
 
 
@@ -396,11 +431,81 @@ def input_scaled_prepass(orn: pd.DataFrame, kws: dict, initial: Dict[str, float]
     return pd.read_parquet(spk_path)
 
 
+TRANSFER_PREPASS_BRACKET, TRANSFER_PREPASS_STEP = (0.02, 50.0), 1.1
+
+
+def transfer_prepass(orn: pd.DataFrame, kws: dict, initial: Dict[str, float], off_spk_ref: pd.DataFrame,
+    transfer: dict, off_path: Path, info: Optional[dict] = None, label: Optional[str] = None) -> pd.DataFrame:
+    """The breadth pre-pass of `bouton_base` with a claw transfer (E78: the per-claw knee's sub-threshold gain and / or
+    softplus width, `claw_transfer_kws`), as the input-scaled threshold's pre-pass (`input_scaled_prepass`, E71) is
+    built: the base at its tuned parameters with APL off and the transfer, its common threshold (fixed_thr) re-tuned
+    by a factor so that the number of APL-off responses is the transfer-free run's (E69's `bisect_factor`, log scale),
+    so the breadth is that of the base at its own operating point with the transfer. Simulated with
+    `make_fixed_param_kc_simulator` on `kws` (the base's, with the wiring it was given) without and with the transfer;
+    the transfer-free APL-off run must reproduce `off_spk_ref` (the run the breadth otherwise comes from), and the
+    target count is its own. Cached beside `off_path` (prefix `claw_transfer_tag(transfer)`_: spike counts, responses
+    and a JSON record); returns the spike counts. The record ('claw_transfer_prepass' in `info`, if passed): the
+    transfer, the threshold factor and the re-tuned fixed_thr, the response counts, the check against `off_spk_ref`.
+    `transfer` may hold any model kwargs (E78's part C passes claw_thr itself, or a per-odor ext_inh_bouton, on a base
+    without a knee); `label` (default `claw_transfer_tag(transfer)`) is then the cache prefix, and non-scalar values are
+    recorded by their type and sha256."""
+    import gc
+    label = claw_transfer_tag(transfer) if label is None else str(label)
+    name = label + '_' + off_path.name
+    spk_path = off_path.with_name(name)
+    resp_path = spk_path.with_name(name.replace('spike_counts', 'responses'))
+    rec_path = spk_path.with_name(name.replace('_spike_counts.parquet', '.json'))
+    if spk_path.exists() and rec_path.exists():
+        rec = json.loads(rec_path.read_text())
+        print(f'claw-transfer pre-pass ({label}) from {spk_path.name}: fixed_thr x{rec["thr_factor"]:.5g}', flush=True)
+    else:
+        from al_analysis.mb_model import make_fixed_param_kc_simulator
+        from E69_kc_firing_ceiling import bisect_factor
+        t0 = time.time()
+        p0 = {k: float(initial[k]) for k in PARAM_KEYS}
+        off = dict(wAPLKC_scale=0.0, wAPLPN_scale=0.0)
+        sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p0, **kws)
+        r0, s0 = sim(off)
+        del sim
+        gc.collect()
+        ref = off_spk_ref.astype(float)
+        same_index = bool(ref.index.equals(s0.index))
+        n_mismatch = int((ref.to_numpy() != s0.to_numpy(dtype=float)).sum()) if ref.shape == s0.shape else -1
+        target_n = int(r0.to_numpy(dtype=float).sum())
+        size = int(r0.size)
+        sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p0, **dict(kws, **transfer))
+        g, (r, s), hist, at_bound = bisect_factor(
+            lambda x: sim(dict(off, fixed_thr=p0['fixed_thr'] * x)), target_n, size,
+            TRANSFER_PREPASS_BRACKET, TRANSFER_PREPASS_STEP, f'pre-pass ({label}) threshold factor')
+        del sim
+        gc.collect()
+        s.to_parquet(spk_path)
+        r.to_parquet(resp_path)
+        rec = dict(transfer={k: (float(v) if np.isscalar(v) else f'{type(v).__name__} sha256 ' + hashlib.sha256(
+            np.ascontiguousarray(np.asarray(v, dtype='<f8')).tobytes()).hexdigest()) for k, v in transfer.items()}, thr_factor=float(g), fixed_thr=p0['fixed_thr'] * float(g),
+            base_fixed_thr=p0['fixed_thr'], target_n_responses=target_n, n_responses=int(r.to_numpy(dtype=float).sum()),
+            size=size, at_bound=bool(at_bound), n_sims=len(hist) + 1, ref_index_equal=same_index, ref_n_mismatch=n_mismatch,
+            ref_n_entries=int(ref.size), seconds=time.time() - t0, history=hist)
+        rec_path.write_text(json.dumps(rec, indent=1, default=str) + '\n')
+        print(f'claw-transfer pre-pass ({label}): fixed_thr x{g:.5g}, {rec["n_responses"]} APL-off responses (target '
+            f'{target_n}); transfer-free run vs the breadth run: {n_mismatch} of {ref.size} counts differ; '
+            f'{rec["seconds"]:.0f}s', flush=True)
+    if not (rec['ref_index_equal'] and rec['ref_n_mismatch'] == 0):
+        raise RuntimeError(f'claw-transfer pre-pass ({label}): the simulator\'s transfer-free APL-off run does not '
+            f'reproduce the breadth run ({rec["ref_n_mismatch"]} counts differ, index equal {rec["ref_index_equal"]})')
+    if rec['at_bound']:
+        raise RuntimeError(f'claw-transfer pre-pass ({label}): the APL-off response count {rec["target_n_responses"]} '
+            f'is not reached within threshold factors {TRANSFER_PREPASS_BRACKET} ({rec["n_responses"]} at best)')
+    if info is not None:
+        info['claw_transfer_prepass'] = {k: v for k, v in rec.items() if k != 'history'}
+    return pd.read_parquet(spk_path)
+
+
 def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[float] = None,
     gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0, apl_drive: str = 'claws',
     base_params: Optional[str] = None, info: Optional[dict] = None, input_tag: Optional[str] = None,
     wiring_matrix: Optional[pd.DataFrame] = None, wiring_tag: Optional[str] = None,
-    kc_thr_input_exp: Optional[float] = None):
+    kc_thr_input_exp: Optional[float] = None, claw_transfer: Optional[dict] = None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -436,7 +541,14 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     common threshold re-tuned to the factor-free run's APL-off response rate (`input_scaled_prepass`,
     cached beside that run; its record goes into `info['kc_thr_input_prepass']`, if passed): the
     breadth of the model whose thresholds scale with the input, the APL weights forming on the cell
-    as it is."""
+    as it is.
+
+    With `claw_transfer` (`claw_transfer_kws`, not empty; the per-claw knee's sub-threshold gain and / or
+    softplus width, E78; needs `claw_thr`), the APL-off run behind the breadth has that transfer and its
+    common threshold re-tuned to the transfer-free run's APL-off response count (`transfer_prepass`,
+    cached beside that run; its record goes into `info['claw_transfer_prepass']`, if passed). The
+    returned parameters, weights and wiring are the base's (the transfer is a model kwarg: pass it to
+    `base_kws` for the fit)."""
     from al_analysis.mb_model import fit_mb_model
     hal_out = H.shared_dir() / 'data' / 'hal_outputs'
     if claw_thr is None:
@@ -532,6 +644,14 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         if apl_drive != 'claws':
             raise NotImplementedError('kc_thr_input_exp with APL driven by spikes')
         off_spk = input_scaled_prepass(orn, kws, initial, wPNKC, off_spk, float(kc_thr_input_exp), off_path, info)
+    if claw_transfer:
+        if claw_thr is None:
+            raise ValueError(f'claw_transfer {claw_transfer} needs claw_thr')
+        if kc_thr_input_exp is not None and float(kc_thr_input_exp) != 0.0:
+            raise NotImplementedError('claw_transfer with kc_thr_input_exp')
+        if apl_drive != 'claws':
+            raise NotImplementedError('claw_transfer with APL driven by spikes')
+        off_spk = transfer_prepass(orn, kws, initial, off_spk, dict(claw_transfer), off_path, info)
     breadth = pd.Series(off_spk.astype(float).sum(axis='columns').to_numpy(),
         index=off_spk.index.get_level_values(H.KC_ID_LEVEL)
     )
@@ -1109,7 +1229,7 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     init_params: Optional[str] = None, kc_thr_factors: Optional[np.ndarray] = None,
     init_exact_expect: Optional[dict] = None, kckc_fixed: Optional[float] = None,
     block_proxy: Optional[dict] = None, kc_spiking: Optional[dict] = None,
-    kc_thr_factor_fixed: Optional[np.ndarray] = None):
+    kc_thr_factor_fixed: Optional[np.ndarray] = None, claw_transfer: Optional[dict] = None):
     """One joint fit; `kc_thr_factors` (K x KCs, `jitter_factors`) adds the K jittered runs of
     each condition (`jitter_conditions`) to every evaluation; `init_exact_expect` (not None)
     starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True);
@@ -1121,7 +1241,9 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     refractory period / adaptation, in every simulation of the fit (not fitted); `kc_thr_factor_fixed`
     (E71: one factor per KC in the model's KC order, `kc_input_thr_factor`) multiplies each KC's
     threshold in every condition (the 'on' and 'off' runs, and the jittered runs on top of their
-    jitter), through `optimize_mb_model_params`' condition_kc_thr_factors."""
+    jitter), through `optimize_mb_model_params`' condition_kc_thr_factors; `claw_transfer` (E78:
+    `claw_transfer_kws`, the per-claw knee's sub-threshold gain / softplus width) is a fixed model kwarg of
+    every simulation of the fit (`base_kws`), with `claw_thr`."""
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
@@ -1219,6 +1341,9 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     if block_proxy is not None and kc_thr_factor_fixed is not None:
         # (likewise without the input-scaled thresholds)
         raise NotImplementedError('--block-proxy with --kc-thr-input-exp')
+    if block_proxy is not None and claw_transfer:
+        # (likewise without the claw transfer's sub-threshold gain / width)
+        raise NotImplementedError('--block-proxy with --claw-thr-subgain / --claw-thr-width')
     if block_proxy is not None:
         import noise_proxy
         import E43_model_trial_noise as E43
@@ -1234,7 +1359,7 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
             params_to_optimize=params,
             initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
             maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
-            **base_kws(claw_thr, apl_drive), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
+            **base_kws(claw_thr, apl_drive, claw_transfer), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
             _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU, **kc_spiking
         )
     return res, init, bounds
@@ -1452,6 +1577,13 @@ def main() -> None:
     ap.add_argument('--kc-thr-input-exp', type=float, default=None, metavar='A',
         help='(E71) each KC\'s threshold multiplied by (W / mean W)^A in every condition and in the breadth pre-pass '
             '(W its summed PN->claw weight in the wiring given, gain included; not fitted; off by default)')
+    ap.add_argument('--claw-thr-subgain', type=float, default=None, metavar='G',
+        help='(E78) the per-claw knee passes a fraction G of each claw\'s input below --claw-thr and all of the excess above '
+            'it (olfsysm claw_thr_subgain; E41); fixed, not fitted, in every simulation of the fit and in the breadth pre-pass '
+            '(its threshold re-tuned to the transfer-free APL-off response count); needs --claw-thr; off by default; tag part sg<G>')
+    ap.add_argument('--claw-thr-width', type=float, default=None, metavar='W',
+        help='(E78) the per-claw knee is a softplus of width W Hz (olfsysm claw_thr_width; E22); fixed, as --claw-thr-subgain; '
+            'needs --claw-thr; off by default; tag part w<W>')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -1636,15 +1768,32 @@ def main() -> None:
     wiring_matrix = pd.read_parquet(args.wiring_file) if args.wiring_file else None
     if args.kc_thr_input_exp is not None and args.block_proxy > 0:
         ap.error('--kc-thr-input-exp with --block-proxy is not supported')
+    # (E78) the per-claw knee's sub-threshold gain / softplus width, fixed
+    for name, v in (('--claw-thr-subgain', args.claw_thr_subgain), ('--claw-thr-width', args.claw_thr_width)):
+        if v is not None and not (np.isfinite(v) and v >= 0):
+            ap.error(f'{name} must be finite and not negative')
+    claw_transfer = claw_transfer_kws(args.claw_thr_subgain, args.claw_thr_width)
+    if claw_transfer:
+        if args.claw_thr is None:
+            ap.error('--claw-thr-subgain / --claw-thr-width need --claw-thr')
+        if args.block_proxy > 0:
+            ap.error('--claw-thr-subgain / --claw-thr-width with --block-proxy is not supported')
+        if args.kc_thr_input_exp is not None:
+            ap.error('--claw-thr-subgain / --claw-thr-width with --kc-thr-input-exp is not supported')
+        if args.apl_drive != 'claws':
+            ap.error('--claw-thr-subgain / --claw-thr-width need --apl-drive claws')
     initial, wnorm, wPNKC, breadth = bouton_base(orn, out_dir, args.claw_thr, gain=gain,
         gain_gloms=args.gain_glomeruli, wiring=args.wiring, wiring_seed=args.wiring_seed,
         apl_drive=args.apl_drive, base_params=args.base_params, info=base_info, input_tag=input_tag,
         wiring_matrix=wiring_matrix, wiring_tag=args.wiring_tag,
-        **({} if args.kc_thr_input_exp is None else dict(kc_thr_input_exp=args.kc_thr_input_exp))
+        **({} if args.kc_thr_input_exp is None else dict(kc_thr_input_exp=args.kc_thr_input_exp)),
+        **({} if not claw_transfer else dict(claw_transfer=claw_transfer))
     )
     # (E71) the fixed input-scaled threshold factor, in the model's KC order (that of the breadth run), and
     # the pre-pass's record (kept out of base_info, which describes a spike-only base when it is not empty)
     prepass_info = base_info.pop('kc_thr_input_prepass', None)
+    # (E78) the claw transfer's pre-pass record, likewise
+    transfer_info = base_info.pop('claw_transfer_prepass', None)
     thr_in_factor = None if args.kc_thr_input_exp is None else kc_input_thr_factor(wPNKC, breadth.index, args.kc_thr_input_exp)
     wiring_tag = ('' if args.wiring is None else f'wiring-{args.wiring}-seed{args.wiring_seed}_') + (
         '' if args.wiring_file is None else f'wiring-{args.wiring_tag}_') + (
@@ -1673,7 +1822,7 @@ def main() -> None:
         loss_tag = (f'apl{args.apl_readout}' + ('pat' if args.apl_pattern_only else '') + ('blk' if args.apl_block_term else '')
             + ('opk' if args.apl_opk_term else '') + (('cls' + ('' if class_form == 'sq' else class_form)) if args.apl_class_term else '')
             + ('dnu' if args.apl_data_units == 'noise' else '') + '_')
-    prefix = zcell_tag + band_tag + {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
+    prefix = zcell_tag + band_tag + {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}{claw_transfer_tag(claw_transfer)}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + kc_tag + thrin_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
@@ -1704,7 +1853,8 @@ def main() -> None:
             exact_expect = dict(k=k, claw_thr=args.claw_thr, gain=gain,
                 gain_glomeruli=(','.join(gain_gloms) if gain_gloms else None), wiring=args.wiring,
                 wiring_seed=(args.wiring_seed if args.wiring else None), orn_input=args.orn_input,
-                apl_drive=args.apl_drive, base_params=args.base_params)
+                apl_drive=args.apl_drive, base_params=args.base_params,
+                **({} if not claw_transfer else dict(claw_thr_subgain=args.claw_thr_subgain, claw_thr_width=args.claw_thr_width)))
         res, init, bounds = fit_one(k, orn, initial, wnorm, breadth, loss_fn, kckc0=args.kckc0,
             maxfev=5 if args.smoke else args.maxfev, method=args.method,
             thr0_factor=args.thr0_factor, claw_thr=args.claw_thr, init_from=args.init_from,
@@ -1713,7 +1863,8 @@ def main() -> None:
             init_thr=args.init_thr, aplpn_max=args.aplpn_max, aplpn_fixed=args.aplpn_fixed,
             aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
             kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed,
-            block_proxy=proxy, kc_spiking=kc_spiking, kc_thr_factor_fixed=thr_in_factor
+            block_proxy=proxy, kc_spiking=kc_spiking, kc_thr_factor_fixed=thr_in_factor,
+            **({} if not claw_transfer else dict(claw_transfer=claw_transfer))
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -1762,6 +1913,11 @@ def main() -> None:
             **(dict(kc_thr_input_factor_cv=float(thr_in_factor.std() / thr_in_factor.mean()),
                 kc_thr_input_factor_min=float(thr_in_factor.min()), kc_thr_input_factor_max=float(thr_in_factor.max()))
                 if thr_in_factor is not None else {}),
+            # (E78: the per-claw knee's sub-threshold gain and softplus width, and the breadth pre-pass's re-tuned
+            # threshold; empty when not set)
+            claw_thr_subgain=args.claw_thr_subgain, claw_thr_width=args.claw_thr_width,
+            **({f'claw_transfer_prepass_{kk}': transfer_info[kk] for kk in ('thr_factor', 'fixed_thr', 'n_responses',
+                'target_n_responses')} if transfer_info else {}),
             **({f'proxy_{kk}': vv for kk, vv in proxy.items()} if proxy is not None else {}),
             **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
                 apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}),
@@ -1843,7 +1999,7 @@ def main() -> None:
             script='E10_joint_fit.py', host=subprocess.run(['hostname'], capture_output=True,
                 text=True).stdout.strip(),
             **start_prov,
-            base=base_kws(args.claw_thr, args.apl_drive), apl_drive=args.apl_drive,
+            base=base_kws(args.claw_thr, args.apl_drive, claw_transfer), apl_drive=args.apl_drive,
             init_params=args.init_params, claw_thr=args.claw_thr, gain=gain, gain_glomeruli=gain_gloms,
             wiring=args.wiring, wiring_seed=(args.wiring_seed if args.wiring else None), orn_input=args.orn_input,
             wiring_file=args.wiring_file, wiring_tag=args.wiring_tag,
@@ -1855,6 +2011,11 @@ def main() -> None:
                     'threshold (fixed_thr + 2 spont_in) multiplied by (W / mean W)^exponent, W the KC\'s summed PN->claw weight in '
                     'the wiring given (gain included), mean over the model\'s KCs; the breadth pre-pass likewise, its fixed_thr '
                     're-tuned to the factor-free pre-pass\'s APL-off response count'))) if thr_in_factor is not None else {}),
+            **(dict(claw_transfer=dict(claw_transfer, prepass=transfer_info, note=('E78: every simulation (APL on and '
+                'APL off) has the per-claw knee claw_thr with this sub-threshold gain (claw_thr_subgain: a claw passes g x its '
+                'input below the knee and all of the excess above it) and / or softplus width (claw_thr_width); the breadth '
+                'pre-pass (the base at its tuned parameters, APL off) likewise, its fixed_thr re-tuned to the transfer-free '
+                'pre-pass\'s APL-off response count'))) if claw_transfer else {}),
             **(dict(block_proxy=dict(proxy, note=('the loss\'s block term on the batched network-aware proxy (noise_proxy.'
                 'make_block_proxy_hook): at every evaluation each condition is simulated once more with the thresholds out of reach '
                 'and once with the voltages saved, every KC\'s drive is reconstructed, and the trials are replayed at the pipeline\'s '

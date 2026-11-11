@@ -203,7 +203,8 @@ from scipy import stats as sstats
 
 import kc_remapping_harness as H
 import noise_floor_trial_distances as NF
-from E10_joint_fit import TAU, base_kws, bouton_base, breadth_weights, e19_row, kc_input_thr_factor, read_orn_input
+from E10_joint_fit import (TAU, base_kws, bouton_base, breadth_weights, claw_transfer_kws, e19_row, kc_input_thr_factor,
+    read_orn_input)
 from E26_claw_power import WEAK
 from E27_glomerulus_gain import ORACLE
 
@@ -665,14 +666,18 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
     # the input-scaled KC threshold (E71), as E10_joint_fit.py's --kc-thr-input-exp recorded it in fits.csv: the
     # breadth from its pre-pass and the fixed per-KC factor (None for other fits)
     thr_in = None if _given(fit, 'kc_thr_input_exp') is None else float(fit['kc_thr_input_exp'])
+    # the per-claw knee's sub-threshold gain and softplus width (E78), as E10_joint_fit.py's --claw-thr-subgain /
+    # --claw-thr-width recorded them in fits.csv: in every simulation and in the breadth pre-pass (empty for other fits)
+    transfer = claw_transfer_kws(*[None if _given(fit, c) is None else float(fit[c]) for c in ('claw_thr_subgain', 'claw_thr_width')])
     _, wnorm, W, breadth = bouton_base(orn, out_dir, claw_thr=claw_thr, gain=gain, gain_gloms=gloms or None,
         wiring=None if wiring is None else str(wiring), wiring_seed=wiring_seed, input_tag=input_tag,
         **({} if wiring_matrix is None else dict(wiring_matrix=wiring_matrix, wiring_tag=wiring_tag)),
-        **({} if thr_in is None else dict(kc_thr_input_exp=thr_in)))
+        **({} if thr_in is None else dict(kc_thr_input_exp=thr_in)), **({} if not transfer else dict(claw_transfer=transfer)))
     kc_thr_factor = None if thr_in is None else kc_input_thr_factor(W, breadth.index, thr_in)
     if thr_in is not None:
         extra.update(kc_thr_input_exp=thr_in)
-    kws = dict(base_kws(claw_thr))
+    kws = dict(base_kws(claw_thr, transfer=transfer or None))
+    extra.update(transfer)
     if gain is not None or wiring is not None or wiring_matrix is not None:
         # (E10_joint_fit passes the wiring only when it differs from the base's)
         kws['_wPNKC'] = W
