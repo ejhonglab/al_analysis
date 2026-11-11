@@ -42,7 +42,7 @@ import html as html_mod
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 CSS = """
   :root { --ink: #1f2328; --muted: #57606a; --line: #d8dee4; --bg: #ffffff; --soft: #f6f8fa; --accent: #2a78d6; }
@@ -230,6 +230,22 @@ def _data_uri(path: Path) -> str:
     return f'data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}'
 
 
+def _bullet_list(items: List[Tuple[int, str]], render) -> str:
+    """A bullet list from (indent, text) items: an item indented further than the list's first item goes in a nested list
+    under the item before it (so `- a` then `  - b` puts b under a; items at one indent give the flat list as before)."""
+    base = items[0][0]
+    html, k = ['<ul>'], 0
+    while k < len(items):
+        text = items[k][1]
+        k += 1
+        sub = []
+        while k < len(items) and items[k][0] > base:
+            sub.append(items[k]); k += 1
+        html.append(f'<li>{render(text)}' + (_bullet_list(sub, render) if sub else '') + '</li>')
+    html.append('</ul>')
+    return ''.join(html)
+
+
 def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True, defs: Optional[dict] = None) -> str:
     """Converts markdown to the body HTML (no page wrapper)."""
     lines = md.split('\n')
@@ -383,11 +399,12 @@ def convert_body(md: str, figdir: Optional[Path] = None, *, byline: bool = True,
         if m:
             items = []
             while i < len(lines) and _BULLET_RE.match(lines[i].strip()):
-                items.append(take_item(_BULLET_RE.match(lines[i].strip()).group(1)))
+                indent = len(lines[i]) - len(lines[i].lstrip())
+                items.append((indent, take_item(_BULLET_RE.match(lines[i].strip()).group(1))))
                 while i < len(lines) and lines[i].strip() == '' and i + 1 < len(lines) \
                         and _BULLET_RE.match(lines[i + 1].strip()):
                     i += 1
-            out.append('<ul>' + ''.join(f'<li>{text_html(x)}</li>' for x in items) + '</ul>')
+            out.append(_bullet_list(items, text_html))
             continue
         para = [s]; i += 1
         while i < len(lines) and lines[i].strip() and not _is_block_start(lines[i].strip()):
