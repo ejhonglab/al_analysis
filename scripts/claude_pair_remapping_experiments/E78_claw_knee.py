@@ -42,6 +42,8 @@ init_params.json, partD_commands.json, paired.csv, population.csv; release.csv; 
 counts and responses under ./outputs/E78_claw_knee/C/<start>_<point>_<on|acute_off>_<spike_counts|responses>.parquet.
 
 Usage (from this folder; at most two 16-thread processes on hal, under nice, as systemd-run --user units for long runs):
+    ../../venv/bin/python E78_claw_knee.py --part C-launch   (all of part C as four chained units, after part A's units;
+        `c_launch`), or step by step:
     OMP_NUM_THREADS=16 OMP_THREAD_LIMIT=16 nice -n 10 ../../venv/bin/python -u E78_claw_knee.py --part C [--only ID ...]
         (C2; split the points over two processes with --only; run once more without --only for the softplus width at
         the two best knee points)
@@ -440,14 +442,16 @@ def noise_six_pairs(out: Path) -> pd.DataFrame:
 
 
 def who_selects(out: Path, models: Optional[Sequence[str]] = None) -> pd.DataFrame:
-    """Who selects the responders, from one run of each model with the bouton rates and APL's activity saved
-    (window means over the odor, 0-0.5 s): C2 and the part-A fits (fits.csv rows with a knee) that exist. Per odor and
-    condition: the share of claws whose input (the claw's PN->claw weight times its bouton's rate, after APL's bouton
-    inhibition) is above the knee (100 and 130 Hz for C2, the fit's own otherwise); for the responders, the number of
-    claws carrying half of the KC's transferred input (median), the KC's threshold over its transferred input (median);
-    APL's inhibition at the claw (the claw's APL->KC weight times APL's activity, median over claws) over the odor's
-    largest bouton rate. The transferred input is the knee's transfer applied to the window-mean claw input, so it
-    approximates the model's time-resolved sum. Writes who_selects.csv."""
+    """Who selects the responders, from one run of each model with the bouton rates and APL's activity saved (the odor
+    window, 0-0.5 s): C2 and the part-A fits (fits.csv rows with a knee) that exist. Each claw's input is its PN->claw
+    weight times its bouton's rate (after APL's bouton inhibition) at every time step. Per odor and condition: the share
+    of claws whose input exceeds the knee at some time in the window and the share of claw-time above it (100 and 130 Hz
+    for C2, the fit's own knee otherwise); for the responders, the number of claws carrying half of the KC's transferred
+    input (the knee's transfer applied at every time step, then the window mean; median over responders) and the KC's
+    threshold over that summed input (median); APL's inhibition at the claw (wAPLKC_scale x the claw's unscaled weight x
+    APL's window-mean activity, as olfsysm subtracts it from the claw's drive), over all claws and over the responders'
+    claws, and over the odor's largest bouton rate. This follows the per-claw transfer, not the KC's integration, so the
+    threshold ratio is approximate. Writes who_selects.csv."""
     import gc
     import E43_model_trial_noise as E43
     import E10_joint_fit as J
@@ -499,24 +503,31 @@ def who_selects(out: Path, models: Optional[Sequence[str]] = None) -> pd.DataFra
             resp = r.to_numpy(dtype=float)
             for i, col in enumerate(r.columns):
                 od = H.odor_abbrev(col)
-                b = btn[i][:, win].mean(axis=1)
-                x = Wm @ b                                          # claw inputs (window mean)
+                bt = btn[i][:, win]                                 # boutons x time (the odor window)
+                xt = Wm @ bt                                        # claws x time: each claw's input
+                b = bt.mean(axis=1)
                 row = dict(model=name, experiment=exp, tag=tag, cond=cond, odor=od, claw_thr=claw_thr, subgain=g, width=w,
-                    top_bouton_rate=float(b.max()), n_claws=int(len(x)))
+                    top_bouton_rate=float(b.max()), top_bouton_rate_peak=float(bt.max()), n_claws=int(xt.shape[0]))
                 for T in knees:
-                    row[f'share_claws_above_{T:g}'] = float((x > T).mean())
+                    row[f'share_claws_above_{T:g}'] = float((xt.max(axis=1) > T).mean())
+                    row[f'time_share_above_{T:g}'] = float((xt > T).mean())
                 T0 = knees[0]
                 if claw_thr and w > 0:
-                    fx = w * np.logaddexp(0.0, (x - T0) / w) + g * np.clip(x, 0, T0)
+                    ft = w * np.logaddexp(0.0, (xt - T0) / w) + g * np.clip(xt, 0, T0)
                 elif claw_thr:
-                    fx = np.maximum(x - T0, 0) + g * np.clip(x, 0, T0)
+                    ft = np.maximum(xt - T0, 0) + g * np.clip(xt, 0, T0)
                 else:
-                    fx = np.maximum(x, 0)
+                    ft = np.maximum(xt, 0)
+                fx = ft.mean(axis=1)                                # each claw's transferred input, window mean
+                del xt, ft
                 rsp = resp[:, i] > 0.5
+                resp_claws = np.zeros(len(fx), dtype=bool)
                 if rsp.any() and len(thr) == len(kc_ids):
                     n_half, ratio = [], []
                     for k in np.flatnonzero(rsp):
-                        v = np.sort(fx[claws_of[kc_ids[k]]])[::-1]
+                        idx = claws_of[kc_ids[k]]
+                        resp_claws[idx] = True
+                        v = np.sort(fx[idx])[::-1]
                         tot = v.sum()
                         n_half.append(int(np.searchsorted(np.cumsum(v), 0.5 * tot) + 1) if tot > 0 else 0)
                         ratio.append(thr[k] / tot if tot > 0 else np.inf)
@@ -525,11 +536,14 @@ def who_selects(out: Path, models: Optional[Sequence[str]] = None) -> pd.DataFra
                 if inh is not None and inh.size:
                     a = float(np.asarray(inh[i])[..., win].mean())
                     row['apl_activity'] = a
-                    # the claw's APL->KC weight as the simulator scaled it, times APL's window-mean activity
+                    # the claw's APL->KC inhibition (olfsysm: wAPLKC_scale x the unscaled per-claw weight x APL's activity),
+                    # window mean, over all claws and over the responders' claws, and against the odor's largest bouton rate
                     wk = np.asarray(fm['kws']['_wAPLKC'], dtype=float).ravel() * float(p['wAPLKC_scale'])
-                    if len(wk) == len(x):
-                        row['apl_at_claw_median'] = float(np.median(wk * a))
-                        row['apl_at_claw_over_top_median'] = row['apl_at_claw_median'] / max(float(top.get(od, b.max())), 1e-9)
+                    if len(wk) == len(fx):
+                        row['apl_at_claw_mean'] = float(np.mean(wk * a))
+                        row['apl_at_responder_claw_mean'] = float(np.mean(wk[resp_claws] * a)) if resp_claws.any() else np.nan
+                        row['apl_at_claw_over_top'] = row['apl_at_claw_mean'] / max(float(b.max()), 1e-9)
+                        row['apl_at_responder_claw_over_top'] = row['apl_at_responder_claw_mean'] / max(float(b.max()), 1e-9)
                 rows.append(row)
         del sim, store
         gc.collect()
@@ -869,7 +883,7 @@ def sweep(out: Path, start: str = 'C2', only: Optional[Sequence[str]] = None) ->
     def todo_points() -> List[dict]:
         pts = point_specs(aggregate(out) if (out / 'points').exists() else None)
         if only is not None:
-            pts = [p for p in pts if p['point_id'] in only or p['point_id'] == 'identity']
+            pts = [p for p in pts if p['point_id'] in only or p['point_id'] in ('identity', 'identity_held')]
         return [p for p in pts if not (pdir / f"{p['point_id']}.json").exists() and not (pdir / f"{p['point_id']}.failed.txt").exists()]
 
     if only is not None:
@@ -1003,6 +1017,50 @@ def best_points(sweep_df: pd.DataFrame, n: int = N_BEST, start: str = 'C2') -> L
     ok = d[d.realism_flag_noise.fillna('') == '']
     pick = ok if len(ok) >= n else pd.concat([ok, d[~d.index.isin(ok.index)].sort_values('cal_loss')])
     return list(pick.sort_values('cal_loss').point_id.head(n)) if len(ok) >= n else list(pick.point_id.head(n))
+
+
+LANES = (
+    ('knee100_g0', 'knee100_g0.1', 'knee100_g0.25', 'knee100_g0.5', 'knee115_g0', 'knee115_g0.1', 'knee115_g0.25', 'knee115_g0.5',
+     'knee70_g0'),
+    ('knee130_g0', 'knee130_g0.1', 'knee130_g0.25', 'knee130_g0.5', 'knee70_g0.25', 'rel0.5', 'rel0.7', 'rel0.85'),
+)
+
+
+def c_launch(wait_units: Sequence[str] = ('e78a-knee100', 'e78a-knee130')) -> List[str]:
+    """Part C end to end as systemd-run --user units (nice 10, 16 threads each, python -u, two at a time; logs under
+    outputs/E78_claw_knee/logs/partC_*.log), each waiting first for `wait_units` (part A's fits) to be inactive: lanes a and
+    b split the points on C2 (LANES); unit c, once both are done, runs the softplus width at the two best knee points, then
+    the five best on the firing ceiling's fit 1, then the five best and C2 at the low concentrations; unit d, once the width
+    step is done, the five best on P1; c ends with the gate and the summary once d is done. Returns the unit names."""
+    import subprocess
+    import time
+    logs = H.outputs_dir(EXPERIMENT) / 'logs'
+    logs.mkdir(parents=True, exist_ok=True)
+    py = str(Path(__file__).resolve().parents[2] / 'venv' / 'bin' / 'python')
+    me = f'{py} -u E78_claw_knee.py'
+    stamp = time.strftime('%H%M%S')
+    names = {k: f'e78c-{k}-{stamp}' for k in 'abcd'}
+    wait_a = ''.join(f'while systemctl --user is-active --quiet {u}; do sleep 60; done; ' for u in wait_units)
+    width_done = logs / f'partC_width_{stamp}.done'
+
+    def wait_for(*units):
+        return ''.join(f'sleep 5; while systemctl --user is-active --quiet {u}; do sleep 30; done; ' for u in units)
+
+    script = {
+        'a': f"{wait_a}{me} --part C --only {' '.join(LANES[0])} > {logs}/partC_a.log 2>&1",
+        'b': f"{wait_a}{me} --part C --only {' '.join(LANES[1])} > {logs}/partC_b.log 2>&1",
+        'c': (f"{wait_a}{wait_for(names['a'], names['b'])}{me} --part C > {logs}/partC_width.log 2>&1; touch {width_done}; "
+              f"{me} --part C --start fit1 --best > {logs}/partC_fit1.log 2>&1; "
+              f"{me} --part C-low --best > {logs}/partC_low.log 2>&1; {wait_for(names['d'])}"
+              f"{me} --part gate > {logs}/partC_gate.log 2>&1; {me} --part summarize > {logs}/partC_summarize.log 2>&1"),
+        'd': f"{wait_a}until [ -f {width_done} ]; do sleep 30; done; {me} --part C --start P1 --best > {logs}/partC_P1.log 2>&1",
+    }
+    for k in 'abcd':
+        subprocess.run(['systemd-run', '--user', f'--unit={names[k]}', '--collect', '-p', 'Nice=10', f'--working-directory={H.HERE}',
+            '--setenv=OMP_NUM_THREADS=16', '--setenv=OMP_THREAD_LIMIT=16', '--setenv=PYTHONUNBUFFERED=1', '/bin/bash', '-c',
+            script[k]], check=True)
+        print(f"{names[k]}: {script[k]}", flush=True)
+    return list(names.values())
 
 
 def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2') -> pd.DataFrame:
@@ -1391,22 +1449,33 @@ def e_score(out: Path) -> pd.DataFrame:
         print(f'{arch} does not exist yet: archive the outputs first (archive_model_outputs.py {EXPERIMENT}), then run --part E '
             'again for the per-KC reading', flush=True)
     if hasattr(H, 'apl_effect_inherited_split'):
-        import E72_wiring_population as E72
+        import E75_glomerulus_apl_profile as E75
         df = aggregate(out)
+        d_on, d_off = H.yang_mean_rdm('TNT3c'), H.yang_mean_rdm('TNT')
         rows = []
         for _, r in df.iterrows():
             pp = out / 'points' / r['start'] / f"{r['point_id']}_pairs.csv"
             if not pp.exists():
                 continue
             d = pd.read_csv(pp)
-            d = d[d.readout == 'cal']
-            on = d[d.condition == 'on'].set_index(['odor_a', 'odor_b'])['distance']
-            off = d[d.condition == 'acute_off'].set_index(['odor_a', 'odor_b'])['distance']
-            try:
-                sp = H.apl_effect_inherited_split(on, off, E72.data_for('cal'))
-                rows.append(dict(tag=r['tag'], **{k: v for k, v in (sp.items() if isinstance(sp, dict) else []) if np.isscalar(v)}))
-            except Exception as e:
-                print(f"{r['tag']}: inherited split failed: {e!r}"[:200], flush=True)
+            for ro in ('raw', 'cal'):
+                x = d[d.readout == ro]
+                on = x[x.condition == 'on'].set_index(['odor_a', 'odor_b'])['distance']
+                off = x[x.condition == 'acute_off'].set_index(['odor_a', 'odor_b'])['distance']
+                try:
+                    sp = H.apl_effect_inherited_split(on, off, d_on, d_off)
+                except Exception as e:
+                    print(f"{r['tag']} ({ro}): inherited split failed: {e!r}"[:200], flush=True)
+                    continue
+                row = dict(tag=r['tag'], start=r['start'], point_id=r['point_id'], readout=ro)
+                tot = float((sp['error_c'] ** 2).sum()) if 'error_c' in sp else np.nan
+                for term in ('inherited', 'curve', 'pair_specific'):
+                    c = sp[f'{term}_c'].to_numpy(dtype=float)
+                    row[f'{term}_rms'] = float(np.sqrt(np.mean(c ** 2)))
+                    row[f'{term}_share'] = float((c * sp['error_c'].to_numpy(dtype=float)).sum() / tot) if tot else np.nan
+                    for grp, odors in (('ester', ESTER), ('alcohol', ALCOHOL)):
+                        row[f'{term}_{grp}'] = float(np.nanmean(c[E75.pair_mask(sp.index, odors)]))
+                rows.append(row)
         pd.DataFrame(rows).to_csv(out / 'inherited_split.csv', index=False)
     return rel
 
@@ -1458,7 +1527,7 @@ def summarize(out: Path) -> None:
             f"{r.silent_odors_on if isinstance(r.silent_odors_on, str) and r.silent_odors_on else '-'} / "
             f"{r.silent_odors_off if isinstance(r.silent_odors_off, str) and r.silent_odors_off else '-'} | "
             f"{'inside' if not (isinstance(r.realism_flag_noise, str) and r.realism_flag_noise) else r.realism_flag_noise} |")
-    lines += ['', f"| KC data | | | | | | floor {H.data_target('apl_effect_rmse_floor'):.3f} | | | +{H.yang_apl_effect().mean():.3f} | "
+    lines += [f"| KC data | | | | | | floor {H.data_target('apl_effect_rmse_floor'):.3f} | | | +{H.yang_apl_effect().mean():.3f} | "
         f"ceiling {H.data_target('apl_effect_rho_ceiling'):.2f} | {kind_mean(H.yang_mean_rdm('TNT3c'), SIX):.3f} / "
         f"{kind_mean(H.yang_mean_rdm('TNT'), SIX):.3f} | +{data_six:.3f} | 0 | 0 | {fr_on.mean():.4f} / {fr_off.mean():.4f} | | | |"]
     gp = out / 'gate.json'
@@ -1541,7 +1610,7 @@ def main() -> None:
         _run_e10_redirected(Path(sys.argv[2]), sys.argv[4:])
         return
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['check-e10', 'B', 'C', 'C-low', 'gate', 'D', 'E', 'summarize'])
+    ap.add_argument('--part', required=True, choices=['check-e10', 'B', 'C', 'C-launch', 'C-low', 'gate', 'D', 'E', 'summarize'])
     ap.add_argument('--start', default='C2', choices=list(STARTS), help='part C: the fit the points are set on')
     ap.add_argument('--only', nargs='+', default=None, help='part C: these point ids only (check-e10: these runs)')
     ap.add_argument('--best', action='store_true', help=f"part C / C-low: the {N_BEST} best points of the sweep on C2 (by the "
@@ -1571,6 +1640,8 @@ def main() -> None:
             only = best_points(aggregate(out))
             print(f'the {N_BEST} best points on C2: {only}', flush=True)
         sweep(out, args.start, only)
+    elif args.part == 'C-launch':
+        c_launch()
     elif args.part == 'C-low':
         low_conc(out, args.only if args.only and not args.best else best_points(aggregate(out)), args.start)
     elif args.part == 'gate':
