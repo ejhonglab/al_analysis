@@ -465,9 +465,80 @@ def pn_level(out: Path) -> pd.DataFrame:
     raise NotImplementedError
 
 
+# the controls of the gate's third condition: a point's control is the opposite direction of S3 (power p against 1 / p,
+# the nearest of the screen's powers) or the handle's permutation
+S3_OPPOSITE = {'S3_pow0.5': 'S3_pow2', 'S3_pow2': 'S3_pow0.5', 'S3_pow0.75': 'S3_pow1.33', 'S3_pow1.33': 'S3_pow0.75'}
+GATE_PATTERN_GAIN = 0.003
+GATE_RAW_SLACK = 0.005
+GATE_TRANSFER = 0.15
+
+
+def _control_of(pid: str) -> Optional[str]:
+    if pid in S3_OPPOSITE:
+        return S3_OPPOSITE[pid]
+    if pid.startswith('S5_claws_e'):
+        return 'S5_claws_perm'
+    for h in ('L1', 'L2'):
+        if pid.startswith(f'{h}_p'):
+            return f'{h}_perm'
+    return None
+
+
 def gate(out: Path) -> pd.DataFrame:
-    """The gate on part C's screen (the entry's three conditions, inside the four bands). Writes gate.csv."""
-    raise NotImplementedError
+    """The gate on part C's screen, as the entry states it: a handle goes on if its best point (the lowest pattern part
+    under the calibrated readout among its points that are not identities or controls) is inside the four bands (the
+    rule since 2026-11-10 16:10; Yang's z reported beside) and (1) lowers C2's pattern part under the readout by 0.003 or
+    more with the raw-count loss no more than 0.005 above C2's, (2) has a transfer reduction of the common error of 15 %
+    or more and, against the six typical TNT recordings, at least half that share, and (3) where it has a control (S3's
+    opposite direction, S5's permutation, L1's and L2's permutations), the control gains less than half as much on the
+    pattern part. At most two go on: the best static handle and the best emulation, or the two best static handles of
+    different kinds. Writes gate.csv (every non-identity point with its conditions; `best` marks each handle's best point,
+    `goes_on` the ones that go on)."""
+    s = pd.read_csv(out / 'screen.csv').drop_duplicates('point_id', keep='last').set_index('point_id')
+    base = s.loc['base']
+    pts = s[(s.index != 'base') & ~s['identity'].fillna(False).astype(bool)].copy()
+    gain = base.cal_pattern - pts.cal_pattern
+    pts['pattern_gain'] = gain
+    pts['inside_bands'] = pts.realism_flag.isna() | (pts.realism_flag.astype(str).str.strip() == '')
+    pts['inside_bands_zcrit'] = pts.realism_flag_zcrit.isna() | (pts.realism_flag_zcrit.astype(str).str.strip() == '')
+    pts['c1'] = (gain >= GATE_PATTERN_GAIN) & (pts.raw_loss <= base.raw_loss + GATE_RAW_SLACK)
+    pts['c2'] = (pts.cal_transfer_all >= GATE_TRANSFER) & (pts.cal_transfer_six >= 0.5 * pts.cal_transfer_all)
+    ctrl = [_control_of(i) for i in pts.index]
+    pts['control'] = ctrl
+    pts['control_gain'] = [float(gain.get(c, np.nan)) if c else np.nan for c in ctrl]
+    pts['c3'] = [True if c is None else bool(np.isfinite(cg) and cg < 0.5 * g) for c, cg, g in zip(ctrl, pts.control_gain, gain)]
+    pts['passes'] = pts.inside_bands & pts.c1 & pts.c2 & pts.c3
+    is_control = pts.index.isin([c for c in set(ctrl) if c]) & pts.index.str.contains('perm')
+    pts['best'] = False
+    cand = pts[~is_control]
+    for h, g in cand.groupby('handle'):
+        pts.loc[g.cal_pattern.idxmin(), 'best'] = True
+    best = pts[pts.best & pts.passes].sort_values('cal_pattern')
+    static = best[best.kind == 'static']
+    emul = best[best.kind == 'emulation']
+    on = []
+    if len(static):
+        on.append(static.index[0])
+    if len(emul):
+        on.append(emul.index[0])
+    elif len(static) > 1:
+        on.append(static.index[1])
+    pts['goes_on'] = pts.index.isin(on)
+    pts['base_cal_pattern'] = base.cal_pattern
+    pts['base_raw_loss'] = base.raw_loss
+    cols = ['handle', 'setting', 'kind', 'best', 'goes_on', 'passes', 'inside_bands', 'inside_bands_zcrit', 'c1', 'c2', 'c3',
+            'cal_loss', 'cal_mean', 'cal_pattern', 'pattern_gain', 'raw_loss', 'cal_rho', 'cal_transfer_all', 'cal_transfer_six',
+            'control', 'control_gain', 'cal_err_ester', 'cal_err_alcohol', 'cal_err_ms', 'cal_err_nearest', 'cal_err_block',
+            'cal_block', 'rate_on', 'ratio', 'rate_rho_on', 'opk_on_tv', 'opk_off_tv', 'realism_flag', 'realism_flag_zcrit',
+            'thr_factor', 'apl_factor', 'at_bound_thr', 'at_bound_apl', 'base_cal_pattern', 'base_raw_loss']
+    res = pts[[c for c in cols if c in pts.columns]].reset_index()
+    res.to_csv(out / 'gate.csv', index=False)
+    show = ['point_id', 'best', 'passes', 'cal_loss', 'cal_pattern', 'pattern_gain', 'raw_loss', 'cal_transfer_all',
+            'cal_transfer_six', 'control_gain', 'inside_bands']
+    print(f"C2: pattern {base.cal_pattern:.4f}, raw loss {base.raw_loss:.4f}", flush=True)
+    print(res[show].round(4).to_string(index=False), flush=True)
+    print(f'goes on: {on or "none"}', flush=True)
+    return res
 
 
 def main() -> None:
