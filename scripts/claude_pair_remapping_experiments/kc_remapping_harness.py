@@ -1266,6 +1266,93 @@ def kernel_weighted_counts(spike_times: pd.DataFrame, index: pd.Index, columns: 
 
 
 # ---------------------------------------------------------------------------
+# the flies' traces (E84): per-trial excerpts of a KC's signal around each odor onset, the response
+# in any window after the onset (Yang's is the mean over volumes round(2 v) .. round(8 v) - 1 after the
+# onset volume minus the mean over the round(5 v) volumes before it, v the volume rate), and the
+# indicator kernel (1 - exp(-u / rise)) exp(-u / decay) fitted to mean traces under a drive (an onset
+# burst, a steady drive over the pulse, or a histogram of firing).
+
+def window_volumes(window: Tuple[float, float], volume_rate: float) -> Tuple[int, int]:
+    """A window (start, end) in seconds from the odor's onset as volumes after the onset volume: (round(start
+    * volume_rate), round(end * volume_rate)), the end exclusive, as Yang's pipeline makes its 2-8 s window
+    (at the APL16 recordings' 2.964 volumes / s: (2, 8) and (2.0, 8.1) are both volumes 6 to 23)."""
+    raise NotImplementedError
+
+
+def trace_excerpts(traces: np.ndarray, onsets: Sequence[int], n_before: int, n_after: int) -> np.ndarray:
+    """Per-onset excerpts of traces with each excerpt's pre-onset mean subtracted.
+
+    Args:
+        traces: (units, volumes).
+        onsets: the onset volume of each trial.
+        n_before: volumes before the onset (the baseline: its mean is subtracted).
+        n_after: volumes from the onset volume on (the onset volume is the first of them).
+
+    Returns (trials, units, n_before + n_after) float64; sample j is volume onset - n_before + j.
+    """
+    raise NotImplementedError
+
+
+def windowed_responses(excerpts: np.ndarray, windows: Sequence[Tuple[float, float]], *, first_volume: int,
+    volume_rate: Optional[float] = None) -> np.ndarray:
+    """Mean of baseline-subtracted excerpts (`trace_excerpts`) over each window.
+
+    Args:
+        excerpts: (..., samples), sample j being volume `first_volume` + j relative to the onset volume.
+        windows: (start, end) pairs, in volumes after the onset volume (end exclusive), or in seconds when
+            `volume_rate` is given (`window_volumes`).
+        first_volume: the volume of sample 0 relative to the onset volume (-n_before).
+
+    Returns (..., len(windows)). With the window (round(2 v), round(8 v)) on excerpts of a z-scored trace this is
+    Yang's per-trial response.
+    """
+    raise NotImplementedError
+
+
+def indicator_kernel(u, rise: float, decay: float) -> np.ndarray:
+    """The indicator kernel (1 - exp(-u / rise)) exp(-u / decay) at times u since a spike (0 for u <= 0; rise 0
+    is an instant rise, decay np.inf no decay)."""
+    raise NotImplementedError
+
+
+def indicator_kernel_integral(u, rise: float, decay: float) -> np.ndarray:
+    """The kernel's integral from 0 to u (0 for u <= 0)."""
+    raise NotImplementedError
+
+
+DRIVES: Tuple[str, ...] = ('onset', 'steady', 'histogram')
+
+
+def kernel_signal(t, rise: float, decay: float, drive: str = 'onset', *, pulse: float = 2.0,
+    edges: Optional[Sequence[float]] = None, weights: Optional[Sequence[float]] = None) -> np.ndarray:
+    """The kernel convolved with a drive of total weight 1, at times `t` (s from the odor's onset).
+
+    Args:
+        drive: 'onset' (all firing at the onset, an impulse at 0), 'steady' (uniform firing over 0 to `pulse`)
+            or 'histogram' (firing uniform within each bin [edges[i], edges[i + 1]) with total weight
+            weights[i]; the weights are divided by their sum).
+
+    Returns float array shaped like `t`.
+    """
+    raise NotImplementedError
+
+
+def fit_indicator_kernel(t, y, drive: str = 'onset', *, pulse: float = 2.0, edges=None, weights=None,
+    rise_bounds: Tuple[float, float] = (0.05, 10.0), decay_bounds: Tuple[float, float] = (0.5, 200.0),
+    fixed: Optional[Tuple[float, float]] = None) -> Dict[str, float]:
+    """Least-squares fit of amplitude * `kernel_signal(t, rise, decay, drive, ...)` to a mean trace `y`.
+
+    The amplitude is solved linearly for each (rise, decay) (and kept >= 0); rise and decay are fitted on a log
+    scale within their bounds from several starts. With `fixed` = (rise, decay) only the amplitude is fitted
+    (a kernel fitted on one trace tested on another).
+
+    Returns dict: rise, decay, amplitude, rms (root mean squared residual, in y's units), n, rise_at_bound,
+    decay_at_bound (within 1 % of a bound), drive.
+    """
+    raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
 # the low end of the readout (E68): measurement noise below the data's response criterion, the
 # saturating readout's one-spike floor (`readout(..., floor=b)`), the conversion of readout units
 # to the data's z units, and the split of a cosine into responder / sub-threshold terms. The
