@@ -1833,7 +1833,7 @@ def write_table(out: Path) -> None:
         L += ['## The model\'s axes: the population reading (part E)', '', '| base | readout | unit | axis | APL-on side | ratio six / two (used) '
               '| loss / pattern / mean / ρ | homogeneous | six\'s state vs the six | two\'s state vs the two |', '|---|---|---|---|---|---:|---:|---:|---:|---:|']
         for _, r in po.iterrows():
-            L.append(f"| {r['base']} | {r['readout']} | {r['unit']} | {r['axis']} | {r['apl_on_side']} | {r['ratio_six']:.2f} / {r['ratio_two']:.2f} "
+            L.append(f"| {r['base']} ({r['experiment']}) | {r['readout']} | {r['unit']} | {r['axis']} | {r['apl_on_side']} | {r['ratio_six']:.2f} / {r['ratio_two']:.2f} "
                 f"({r['ratio_used_six']:.2f} / {r['ratio_used_two']:.2f}) | {r['loss']:.3f} / {r['pattern']:.3f} / {r['mean']:+.3f} / {r['rho']:.2f} | "
                 f"{r['homog_loss']:.3f} / {r['homog_pattern']:.3f} / {r['homog_mean']:+.3f} / {r['homog_rho']:.2f} | {r['six_state_vs_six_loss']:.3f} "
                 f"(ρ {r['six_state_vs_six_rho']:.2f}) | {r['two_state_vs_two_loss']:.3f} (ρ {r['two_state_vs_two_rho']:.2f}) |")
