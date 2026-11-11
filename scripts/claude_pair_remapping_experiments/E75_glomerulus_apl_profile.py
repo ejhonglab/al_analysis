@@ -618,6 +618,181 @@ def score_profile_sims(out: Path) -> pd.DataFrame:
     return res
 
 
+STRONG_TNT = (('2024-07-17', 3, 'L'), ('2024-07-25', 1, 'L'))
+
+
+def _target(effect: pd.Series, pop: pd.Series) -> pd.Series:
+    """The population's pattern error against a data effect (both means removed), canonical pair order."""
+    e = effect.copy()
+    e.index = _canon(e.index)
+    e = e.reindex(pop.index)
+    return (pop - pop.mean()) - (e - e.mean())
+
+
+def six_target(pop: pd.Series) -> pd.Series:
+    """The population's error against the six typical recordings with APL output blocked (TNT) (the eight without
+    2024-07-17 fly 3 L and 2024-07-25 fly 1 L) and all eleven control recordings."""
+    ctrl = H.yang_recording_rdms_values('TNT3c', 'graded')
+    tnt = H.yang_recording_rdms_values('TNT', 'graded')
+    keep = [r for r in tnt.index if tuple((str(r[0]), int(r[1]), str(r[2]))) not in STRONG_TNT]
+    if len(keep) != len(tnt) - 2:
+        raise RuntimeError(f'expected to drop 2 of {len(tnt)} TNT recordings, kept {len(keep)}')
+    return _target(ctrl.mean() - tnt.loc[keep].mean(), pop)
+
+
+def sim_change(out: Path, point_id: str, index: pd.Index) -> pd.Series:
+    """A simulated point's change of the per-pair APL effect (calibrated readout) from C2's, canonical pair order."""
+    pr = pd.read_csv(out / 'sensitivity_pairs.csv')
+    pr = pr[pr.readout == 'cal']
+    base = pr[pr.point_id == 'base'].set_index(['odor_a', 'odor_b'])['effect']
+    e = pr[pr.point_id == point_id].set_index(['odor_a', 'odor_b'])['effect']
+    base.index, e.index = _canon(base.index), _canon(e.index)
+    return (e - base.reindex(e.index)).reindex(index)
+
+
+def reduction(target: pd.Series, change: pd.Series, mask: Optional[np.ndarray] = None) -> float:
+    """The share of `target`'s squared sum removed when `change` (its mean removed) is added (re-centered); over the pairs
+    of `mask` if given."""
+    ch = change.to_numpy(dtype=float)
+    r = target.to_numpy(dtype=float) + (ch - ch.mean())
+    r = r - r.mean()
+    tg = target.to_numpy(dtype=float)
+    if mask is None:
+        mask = np.ones(len(r), dtype=bool)
+    return 1.0 - float((r[mask] ** 2).sum()) / float((tg[mask] ** 2).sum())
+
+
+def diagnostic_d2(out: Path) -> dict:
+    """Part D2 as a staged diagnostic of the cell site after the failed gate (planned by a Fable subagent, 2026-11-10
+    17:08; E75's Status): stage 1, the cell ridge profile at 0.5, 1, 1.5 and 2 times its scores, two permutations at the
+    best strength k*, and the sparse cell profile at 0.5 and 1 (description only); stage 2, the sixteen leave-one-odor-out
+    cell profiles at k*, pooled on their held-out pairs; stage 3, the first 20 of D1's splits that put the two strong TNT
+    recordings in different halves, the profile built on half A at k*, scored against half B. A stage runs only if the
+    one before passed. Writes d2_stages.json and profile_sims.csv."""
+    import json
+    c = common_error('cal')
+    c.index = _canon(c.index)
+    c = c.sort_index()
+    pop = population_effect('cal')
+    c6 = six_target(pop)
+    prof = pd.read_csv(out / 'profiles.csv')
+    ridge = prof[(prof.profile == 'cell') & (prof.variant == 'ridge')].iloc[0]
+    sparse = prof[(prof.profile == 'cell') & (prof.variant == 'sparse')].iloc[0]
+    sc = json.loads(ridge.scores)
+    lam = float(ridge.lam)
+    m0 = pd.read_csv(out / 'sensitivity_map.csv')
+    base_loss = float(m0[m0.point_id == 'base'].cal_loss.iloc[0])
+    res = dict(profile_sha256=ridge.sha256, lam=lam, base_cal_loss=base_loss)
+    # stage 1
+    ks = (0.5, 1.0, 1.5, 2.0)
+    pts = [dict(point_id=f'D2s1:cell:ridge:x{k:g}', stage='D2s1', site='cell', scores={g: v * k for g, v in sc.items()}) for k in ks]
+    ssc = json.loads(sparse.scores)
+    pts += [dict(point_id=f'D2s1:cell:sparse:x{k:g}', stage='D2s1', site='cell', scores={g: v * k for g, v in ssc.items()}) for k in (0.5, 1.0)]
+    sensitivity_map(out, points=pts)
+    m = pd.read_csv(out / 'sensitivity_map.csv').set_index('point_id')
+    tr = {k: reduction(c, sim_change(out, f'D2s1:cell:ridge:x{k:g}', c.index)) for k in ks}
+    kstar = max(tr, key=tr.get)
+    keys = list(sc)
+    perm_pts = []
+    for seed in (1, 2):
+        perm = np.random.default_rng(seed).permutation(len(keys))
+        perm_pts.append(dict(point_id=f'D2s1:cell:perm{seed}:x{kstar:g}', stage='D2s1', site='cell',
+                             scores={keys[i]: sc[keys[j]] * kstar for i, j in enumerate(perm)}))
+    sensitivity_map(out, points=perm_pts)
+    m = pd.read_csv(out / 'sensitivity_map.csv').set_index('point_id')
+    pid = f'D2s1:cell:ridge:x{kstar:g}'
+    ch = sim_change(out, pid, c.index)
+    s1 = dict(transfer_reduction={f'x{k:g}': v for k, v in tr.items()}, kstar=kstar, kstar_transfer=tr[kstar],
+              kstar_six=reduction(c6, ch), kstar_loss=float(m.loc[pid, 'cal_loss']), kstar_loss_gain=base_loss - float(m.loc[pid, 'cal_loss']),
+              kstar_corr_sim_pred=float(np.corrcoef(ch.to_numpy(), _centered(map_matrix(out, 'cell').reindex(c.index)[keys].to_numpy())
+                                                    @ np.array([sc[g] * kstar for g in keys]) + 0)[0, 1]),
+              perms={p['point_id']: dict(transfer=reduction(c, sim_change(out, p['point_id'], c.index)),
+                                         loss_gain=base_loss - float(m.loc[p['point_id'], 'cal_loss'])) for p in perm_pts},
+              sparse={f'x{k:g}': dict(transfer=reduction(c, sim_change(out, f'D2s1:cell:sparse:x{k:g}', c.index)),
+                                      loss=float(m.loc[f'D2s1:cell:sparse:x{k:g}', 'cal_loss'])) for k in (0.5, 1.0)},
+              realism={pid: str(m.loc[pid, 'realism_flag'])})
+    s1['passed'] = bool(s1['kstar_transfer'] >= 0.15 and s1['kstar_six'] >= 0.5 * s1['kstar_transfer'] and s1['kstar_loss_gain'] >= 0.002
+                        and all(v['transfer'] < 0.5 * s1['kstar_transfer'] and v['loss_gain'] < 0.5 * s1['kstar_loss_gain']
+                                for v in s1['perms'].values()))
+    res['stage1'] = s1
+    _write_d2(out, res)
+    print(json.dumps(res['stage1'], indent=1, default=float), flush=True)
+    if not s1['passed']:
+        res['outcome'] = 'stage 1 failed: outcome (c) final'
+        _write_d2(out, res)
+        return res
+    # stage 2: the leave-one-odor-out profiles at k*
+    M = map_matrix(out, 'cell').reindex(c.index)
+    odors = sorted(set(c.index.get_level_values(0)) | set(c.index.get_level_values(1)))
+    pts, masks = [], {}
+    for o in odors:
+        held = np.array([o in pr for pr in c.index])
+        s = fit_scores(M.to_numpy()[~held], c.to_numpy()[~held] - c.to_numpy()[~held].mean(), lam)
+        pts.append(dict(point_id=f'D2s2:cell:loo:{o}:x{kstar:g}', stage='D2s2', site='cell',
+                        scores={g: float(v) * kstar for g, v in zip(M.columns, s)}))
+        masks[o] = held
+    sensitivity_map(out, points=pts)
+    num = den = 0.0
+    folds = {}
+    for o in odors:
+        chg = sim_change(out, f'D2s2:cell:loo:{o}:x{kstar:g}', c.index).to_numpy(dtype=float)
+        r = c.to_numpy() + (chg - chg.mean())
+        r = r - r.mean()
+        held = masks[o]
+        num += float((r[held] ** 2).sum())
+        den += float((c.to_numpy()[held] ** 2).sum())
+        folds[o] = 1.0 - float((r[held] ** 2).sum()) / float((c.to_numpy()[held] ** 2).sum())
+    s2 = dict(pooled_heldout_reduction=1.0 - num / den, folds=folds)
+    s2['passed'] = bool(s2['pooled_heldout_reduction'] >= 0.15)
+    res['stage2'] = s2
+    _write_d2(out, res)
+    print(json.dumps(dict(pooled=s2['pooled_heldout_reduction'], passed=s2['passed']), default=float), flush=True)
+    if not s2['passed']:
+        res['outcome'] = 'stage 2 failed: outcome (c) final'
+        _write_d2(out, res)
+        return res
+    # stage 3: D1's splits (seed 0, D1's order) with the two strong TNT recordings in different halves, the first 20
+    ctrl = H.yang_recording_rdms_values('TNT3c', 'graded')
+    tnt = H.yang_recording_rdms_values('TNT', 'graded')
+    strong = [i for i, r in enumerate(tnt.index) if tuple((str(r[0]), int(r[1]), str(r[2]))) in STRONG_TNT]
+    rng = np.random.default_rng(0)
+    chosen = []
+    for k in range(100):
+        ic, it = rng.permutation(len(ctrl)), rng.permutation(len(tnt))
+        hA = set(it[:len(it) // 2])
+        if (strong[0] in hA) == (strong[1] in hA):
+            continue
+        a = ctrl.iloc[ic[:len(ic) // 2]].mean() - tnt.iloc[it[:len(it) // 2]].mean()
+        b = ctrl.iloc[ic[len(ic) // 2:]].mean() - tnt.iloc[it[len(it) // 2:]].mean()
+        chosen.append((k, _target(a, pop), _target(b, pop)))
+        if len(chosen) == 20:
+            break
+    pts = []
+    Mp = map_matrix(out, 'cell').reindex(pop.index)
+    for k, ca, cb in chosen:
+        sa = fit_scores(Mp.to_numpy(), ca.to_numpy(), lam)
+        pts.append(dict(point_id=f'D2s3:cell:split{k}:x{kstar:g}', stage='D2s3', site='cell',
+                        scores={g: float(v) * kstar for g, v in zip(Mp.columns, sa)}))
+    sensitivity_map(out, points=pts)
+    wins, per = 0, {}
+    for (k, ca, cb), pt in zip(chosen, pts):
+        rd = reduction(cb, sim_change(out, pt['point_id'], pop.index))
+        per[k] = rd
+        wins += rd > 0
+    s3 = dict(n=len(chosen), wins=wins, reductions=per)
+    s3['passed'] = bool(wins >= 18)
+    res['stage3'] = s3
+    res['outcome'] = 'all three stages passed: D3 reopens' if s3['passed'] else 'stage 3 failed: outcome (c) final'
+    _write_d2(out, res)
+    print(json.dumps(dict(wins=wins, n=len(chosen), passed=s3['passed']), default=float), flush=True)
+    return res
+
+
+def _write_d2(out: Path, res: dict) -> None:
+    import json
+    (out / 'd2_stages.json').write_text(json.dumps(res, indent=1, default=float) + '\n')
+
+
 def anatomy(out: Path) -> pd.DataFrame:
     """Part F: the scores against the hemibrain's and the male CNS's per-glomerulus APL densities and their ratio, each
     glomerulus's drive, E17's co-drive score, E15's eight, the gain sets. Writes anatomy.csv."""
@@ -626,7 +801,7 @@ def anatomy(out: Path) -> pd.DataFrame:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['A-score', 'B', 'C', 'D1', 'D2', 'F'])
+    ap.add_argument('--part', required=True, choices=['A-score', 'B', 'C', 'D1', 'D2', 'D2-diag', 'F'])
     ap.add_argument('--stage', default='known', choices=['known', 'map', 'neg'], help="part C's stage")
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
@@ -636,6 +811,8 @@ def main() -> None:
         E72.part_e_score(out)
     elif args.part == 'C':
         sensitivity_map(out, stage=args.stage)
+    elif args.part == 'D2-diag':
+        diagnostic_d2(out)
     else:
         {'B': archive_vs_common, 'D1': linear_profile, 'D2': simulate_profiles, 'F': anatomy}[args.part](out)
 
