@@ -47,7 +47,27 @@ def searched_input(out: Path) -> Path:
     """Part A's fit S input: E64's pass-1 searched ORN input for the weak odors (orn_input_searched_pass1.csv, two-row
     panel / odor header) rewritten in E38's layout (glomeruli x abbreviated odors) as inputs/searched_weak.csv, values
     equal to the last digit. Returns the path relative to the shared directory, for `E10_joint_fit.py --orn-input`."""
-    raise NotImplementedError
+    orn = H.apl16_orn_deltas()
+    src = H.results_dir('E64_input_oracle') / 'orn_input_searched_pass1.csv'
+    s = pd.read_csv(src, header=[0, 1], index_col=0, float_precision='round_trip')
+    s.index.name = 'glomerulus'
+    s.columns = [str(o).split(' @ ')[0] for o in s.columns.get_level_values(1)]
+    ab = H.abbrev_columns(orn)
+    if list(s.columns) != list(ab.columns):
+        raise ValueError(f'{src}: odors {list(s.columns)} differ from {list(ab.columns)}')
+    s = s.reindex(orn.index)
+    if s.isna().any().any():
+        raise ValueError(f'{src}: glomeruli differ from apl16_orn_deltas()')
+    dst = out / 'inputs' / 'searched_weak.csv'
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    s.to_csv(dst)
+    back = pd.read_csv(dst, index_col=0, float_precision='round_trip')
+    if not np.array_equal(back.to_numpy(dtype=float), s.to_numpy(dtype=float)):
+        raise RuntimeError(f'{dst} does not reproduce {src} to the last digit')
+    changed = (np.abs(s.to_numpy(dtype=float) - ab.to_numpy(dtype=float)) > 1e-9)
+    odors = [o for o, c in zip(s.columns, changed.any(axis=0)) if c]
+    print(f'{dst}: {int(changed.sum())} of {changed.size} values differ from the lab input, in {odors}', flush=True)
+    return dst.relative_to(H.shared_dir())
 
 
 def score_fits(out: Path) -> pd.DataFrame:
