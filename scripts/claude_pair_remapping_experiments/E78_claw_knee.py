@@ -817,7 +817,10 @@ def score_point(o: Dict[str, tuple], ref: Dict[str, tuple]) -> Tuple[dict, List[
     import E76_data_side_target as E76
     import apl_effect_scores as S
     base_eff = {ro: H.apl_effect(*[E72.distances(ref, ro)[c] for c in ('on', 'off')]) for ro in ('raw', 'cal')}
-    row, pairs = E75.score_point(o, base_eff)
+    row, eff_rows = E75.score_point(o, base_eff)
+    # (E75's per-pair APL effects as condition 'effect'; the model's distances follow as 'on' / 'acute_off')
+    pairs = [dict(readout=r['readout'], condition='effect', odor_a=r['odor_a'], odor_b=r['odor_b'], distance=r['effect'])
+        for r in eff_rows]
     s_on, s_off = o['on'][1].astype(float), o['off'][1].astype(float)
     dist = {ro: E72.distances(o, ro) for ro in ('raw', 'cal')}
     graded = E72.data_for('raw')
@@ -998,7 +1001,8 @@ def aggregate(out: Path) -> pd.DataFrame:
     if pairs:
         pl = pd.concat(pairs, ignore_index=True)
         pl.to_csv(out / 'sweep_pairs.csv', index=False)
-        raw = pl[(pl.readout == 'raw') & (pl.point_id != 'identity')][['tag', 'condition', 'odor_a', 'odor_b', 'distance']]
+        raw = pl[(pl.readout == 'raw') & (pl.point_id != 'identity') & pl.condition.isin(['on', 'acute_off'])][
+            ['tag', 'condition', 'odor_a', 'odor_b', 'distance']]
         mp = out / 'model_pair_distances_long.csv'
         mine = set(df.tag)
         other = pd.read_csv(mp) if mp.exists() else pd.DataFrame(columns=raw.columns)

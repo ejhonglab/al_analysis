@@ -234,3 +234,58 @@ def test_odor_relative_inhibition():
     m = E78.odor_relative_inhibition(W, orn, top, 0.7)
     assert m.index.equals(W.columns) and m.columns.equals(orn.columns)
     assert np.allclose(m.to_numpy(), np.tile([70.0, 70.7, 71.4], (4, 1)))
+
+
+def _fake_outputs(seed, n=600):
+    rng = np.random.default_rng(seed)
+    cols = pd.MultiIndex.from_tuples([('megamat', f'{o} @ -3') for o in ODORS], names=['panel', 'odor'])
+    idx = pd.MultiIndex.from_tuples([(f'kc{i}', 'ab') for i in range(n)], names=[H.KC_ID_LEVEL, H.KC_TYPE_LEVEL])
+    out = {}
+    for c, p in (('on', 0.07), ('off', 0.15)):
+        base = rng.gamma(0.6, 1.0, (n, len(ODORS))) * rng.gamma(2.0, 0.5, (n, 1))
+        thr = np.quantile(base, 1 - p)
+        s = pd.DataFrame(np.where(base > thr, np.rint(2 + 6 * (base - thr) / base.std()), 0.0), index=idx, columns=cols)
+        out[c] = ((s >= 2).astype(float), s)
+    return out
+
+
+def test_sweep_writes_and_aggregates(monkeypatch, tmp_path):
+    """sweep's per-point bookkeeping on a fake model (no simulations): the identity and a knee point are scored, written
+    per point, aggregated into sweep.csv and the harness-readable tables (the identity left out of those), and the gate
+    reads them."""
+    ref, pt_out = _fake_outputs(0), _fake_outputs(1)
+
+    class FakeModel:
+        def __init__(self, start, out_dir):
+            self.start, self.exp, self.tag, self.wiring, self.info, self.check = start, 'E67', 'x', {}, {}, {}
+            self.p = dict(fixed_thr=100.0, wAPLKC_scale=0.1, wKCAPL_scale=1e-4, wAPLPN_scale=0.3, wPNAPL_scale=1e-3, wKCKC_scale=26.0)
+            self.k, self.kws, self.ref = 2.0, dict(kc_kc_tau=0.05), ref
+            self.n_on, self.n_off = int(ref['on'][0].to_numpy().sum()), int(ref['off'][0].to_numpy().sum())
+            self.orn = H.apl16_orn_deltas()
+
+        def hold(self, pt):
+            return dict(self.p, fixed_thr=50.0), pt_out, dict(point_id=pt['point_id'], start=self.start, breadth_from='held',
+                thr_factor=0.5, apl_factor=1.2, thr_at_bound=False, apl_at_bound=False, n_responses_on=1, n_responses_off=2,
+                target_n_on=1, target_n_off=2, n_sims=3, seconds=1.0, bisections=[], breadth_sha256='x', breadth_corr_vs_start=0.9,
+                runner_kws={})
+
+    orig_r, orig_o = H.results_dir, H.outputs_dir
+    monkeypatch.setattr(H, 'results_dir', lambda e: tmp_path / 'results' if e == E78.EXPERIMENT else orig_r(e))
+    monkeypatch.setattr(H, 'outputs_dir', lambda e: tmp_path / 'outputs' if e == E78.EXPERIMENT else orig_o(e))
+    monkeypatch.setattr(E78, 'KneeModel', FakeModel)
+    monkeypatch.setattr(H, 'model_provenance', lambda **kw: {})
+    out = H.results_dir(E78.EXPERIMENT)
+    out.mkdir(parents=True)
+    df = E78.sweep(out, 'C2', ['knee130_g0.25'])
+    assert set(df.point_id) == {'identity', 'identity_held', 'knee130_g0.25'}
+    k = df.set_index('point_id').loc['knee130_g0.25']
+    assert k['claw_thr'] == 130.0 and k['claw_thr_subgain'] == 0.25 and k['fixed_thr'] == 50.0 and k['breadth_from'] == 'held'
+    for col in ('cal_loss', 'raw_six_effect', 'cal_err_ester', 'frac_on_ms', 'realism_flag_noise', 'rate_rho_on'):
+        assert col in df.columns
+    sv = pd.read_csv(out / 'stats_variants.csv')
+    assert 'C2_identity' not in set(sv.tag) and 'C2_knee130_g0.25' in set(sv.tag)
+    mp = pd.read_csv(out / 'model_pair_distances_long.csv')
+    assert set(mp.tag) == {'C2_identity_held', 'C2_knee130_g0.25'} and len(mp) == 2 * 2 * 120
+    assert (tmp_path / 'outputs' / 'C' / 'C2_knee130_g0.25_on_spike_counts.parquet').exists()
+    g = E78.gate(out)
+    assert g['n_points'] == 2
