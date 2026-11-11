@@ -632,7 +632,8 @@ def two_by_two(readings: pd.DataFrame, arm: str) -> pd.DataFrame:
                     rows.append(dict(arm=arm, searched_on=X, size=size, unit=unit, kind=g.loc[unit, 'kind'], against=which,
                                      target=t, unchanged=u0, changed=u1, gain=u0 - u1,
                                      sq_reduction=1.0 - (u1 ** 2) / (u0 ** 2)))
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=['arm', 'searched_on', 'size', 'unit', 'kind', 'against', 'target', 'unchanged',
+                                       'changed', 'gain', 'sq_reduction'])
 
 
 GATE_GAIN, GATE_BORDER = 0.003, (0.0015, 0.0045)
@@ -1049,22 +1050,27 @@ def _comparison_table_a(out: Path, ex: pd.DataFrame, readings: pd.DataFrame, rt:
          'distances per condition. S: real, P1, P2, M1; T: P3, P4, M2, M3; the seven re-drawn: all but the real wiring.', '',
          "### A1, E75's cell-site profiles (APL->KC scale re-bisected to each wiring's APL-on count)", '',
          '| change | S, all recordings | T, all recordings | the seven re-drawn, all recordings | all eight, all recordings | '
-         'T, six typical | re-drawn wirings lower (of 7) | all eight, raw-count loss | all eight, mean APL effect | runs flagged |',
+         'T, six typical | re-drawn wirings lower | all eight, raw-count loss | all eight, mean APL effect | runs flagged |',
          '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
-    for ch in ['none'] + [c for c in A1_LABELS if (c, 'S') in cal.index]:
+    def v(df, ch, unit, col, spec='.4f'):
+        return _fmt(float(df.loc[(ch, unit), col]), spec) if (ch, unit) in df.index else '–'
+
+    def gains(ch, t='z8'):
+        q = ex[(ex.change == ch) & ex.unit.isin(ALL_WIRINGS[1:])]
+        return '–' if q.empty else f"{int((q[f'{t}_gain'] > 0).sum())} of {len(q)}"
+
+    for ch in ['none'] + [c for c in A1_LABELS if any((c, w) in cal.index for w in ALL_WIRINGS)]:
         lab = 'unchanged (each wiring at its fit)' if ch == 'none' else A1_LABELS[ch]
-        nl = '–' if ch == 'none' else str(int(sum(float(ex[(ex.change == ch) & (ex.unit == w)].z8_gain.iloc[0]) > 0
-                                                  for w in ALL_WIRINGS[1:])))
+        nl = '–' if ch == 'none' else gains(ch)
         fl = '–' if ch == 'none' else str(int((rt[rt.change == ch].realism_flag.fillna('').astype(str).str.strip() != '').sum()))
-        L.append(f"| {lab} | {_fmt(cal.loc[(ch, 'S'), 'z8_pattern'])} | {_fmt(cal.loc[(ch, 'T'), 'z8_pattern'])} | "
-                 f"{_fmt(cal.loc[(ch, 'draws7'), 'z8_pattern'])} | {_fmt(cal.loc[(ch, 'all8'), 'z8_pattern'])} | "
-                 f"{_fmt(cal.loc[(ch, 'T'), 'z6_pattern'])} | {nl} | {_fmt(raw.loc[(ch, 'all8'), 'z8_loss'])} | "
-                 f"{_fmt(cal.loc[(ch, 'all8'), 'mean_effect'], '+.3f')} | {fl} |")
+        L.append(f"| {lab} | {v(cal, ch, 'S', 'z8_pattern')} | {v(cal, ch, 'T', 'z8_pattern')} | {v(cal, ch, 'draws7', 'z8_pattern')} | "
+                 f"{v(cal, ch, 'all8', 'z8_pattern')} | {v(cal, ch, 'T', 'z6_pattern')} | {nl} | {v(raw, ch, 'all8', 'z8_loss')} | "
+                 f"{v(cal, ch, 'all8', 'mean_effect', '+.3f')} | {fl} |")
     L.append(f"| KC data | floor {_fmt(H.data_target('apl_effect_rmse_floor'), '.3f')} | | | | | | | "
              f"{_fmt(float(targets()['z8'].mean()), '+.3f')} | |")
     L += ['', 'Single wirings, the change of the pattern part against all recordings (changed minus unchanged; negative is better):', '',
           '| change | ' + ' | '.join(ALL_WIRINGS) + ' |', '|---|' + '---:|' * len(ALL_WIRINGS)]
-    for ch in [c for c in A1_LABELS if (c, 'S') in cal.index]:
+    for ch in [c for c in A1_LABELS if any((c, w) in cal.index for w in ALL_WIRINGS)]:
         cells = [_fmt(-float(ex[(ex.change == ch) & (ex.unit == w)].z8_gain.iloc[0]), '+.4f') if ((ex.change == ch) & (ex.unit == w)).any()
                  else '–' for w in ALL_WIRINGS]
         L.append(f'| {A1_LABELS[ch]} | ' + ' | '.join(cells) + ' |')
@@ -1081,7 +1087,8 @@ def _comparison_table_a(out: Path, ex: pd.DataFrame, readings: pd.DataFrame, rt:
             nl = '–'
         else:
             X = ch.split('_')[1][-1]
-            q = tb[(tb.searched_on == X) & np.isclose(tb['size'], float(sz)) & tb.unit.isin(T_WIRINGS) & (tb.against == 'unseen')]
+            q = tb[(tb.searched_on == X) & np.isclose(tb['size'].astype(float), float(sz)) & tb.unit.isin(T_WIRINGS)
+                   & (tb.against == 'unseen')]
             nl = str(int((q.gain > 0).sum())) if len(q) else '–'
         fl = '–' if ch == 'none' else str(int((rt[rt.change == ch].realism_flag.fillna('').astype(str).str.strip() != '').sum()))
         rl = _fmt(raw.loc[(ch, 'T'), 'z8_loss']) if (ch, 'T') in raw.index else '–'
