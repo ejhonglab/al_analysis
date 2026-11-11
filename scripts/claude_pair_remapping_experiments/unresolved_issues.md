@@ -19,9 +19,16 @@ directory's notes/ and are linked from here.
   firing ceiling's gain on raw counts, the comparison with the effect in baseline-noise units, the progress plot's raw-count series).
 - **Done.** E80's note and the summary ({#remaining-candidates}, pointers from {#firing-ceiling}, {#data-side}, {#readout},
   {#apl-effect}) say so.
-- **Remains.** The flies' recording protocol in the model (E82, viki) reads the best families at the flies' pulse and window and
-  looks for what holds the late response; whether the main target's raw-count numbers are repeated at the flies' pulse is for
-  planning and Tom.
+- **E82 (2026-11-11 09:21, viki).** Read as the flies were recorded (2 s pulse, an indicator kernel over 2.0 to 8.1 s), the
+  firing-ceiling family keeps its raw-count numbers only with an adaptation outlasting the odor: at 3 s the fit at 0.5 s re-held at
+  2 s passes the protocol gate (0.052; largest counts 7 / 14), the literature setting's four wirings read 0.055 (0.056 at 0.5 s),
+  and a fit at 2 s (D1) reads 0.050 on counts and 0.051 through the window, fit 0's numbers at 0.5 s. With its present 1 s
+  adaptation the late APL-off spikes return (0.071 through the window). The breadth-2 family without a ceiling holds only under
+  the calibrated readout (0.050 to 0.051); on raw counts a fit at 2 s stays at 0.138 / 0.149. E82's note and Status say so.
+- **Remains.** Tom's decisions: whether the firing ceiling, with an adaptation outlasting the odor, joins the base model, and
+  which reading carries the model's side of the main target (raw counts under the flies' protocol, or the calibrated readout).
+  Open on the model side: the 3 s adaptation at the 0.5 s pulse (whether the short pulse can stand in for the flies' protocol);
+  the summary's raw-count sentences are qualified by E82's passage once it is folded in.
 
 ### The noise correction of the KC distances assumes noise independent between odors, which the recordings' repeats contradict (found 2026-11-11, atlas's planning subagent, probe)
 - **What.** `noise_floor_trial_distances.py` corrects each recording's odor-odor distances on the assumption that trial-to-trial noise adds
