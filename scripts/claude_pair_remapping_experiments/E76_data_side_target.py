@@ -2270,9 +2270,46 @@ def check_e10(name: str, extra: Sequence[str] = ()) -> dict:
     return out
 
 
+def part_f_noise_score(out: Path) -> pd.DataFrame:
+    """Part F: the fits through the trial-noise pipeline (E43 part B at E48's settings, run with `--experiment
+    E76_data_side_target`, so in out/partB/pairs_noise_long.csv), scored as E72's part E (`E72_wiring_population.part_e_score`:
+    the noisy three-trial means against the data's raw distances, the noise-corrected ones against the data's corrected ones,
+    the deterministic ones against the data's raw), against the effect in Yang's z (the file's own data columns) and against
+    the effect in baseline-noise units (effect_by_unit_pairs.csv: graded for the raw and deterministic distances,
+    noise-corrected for the corrected ones). One model at a time (no population). Writes partF_noise.csv."""
+    d = pd.read_csv(out / 'partB' / 'pairs_noise_long.csv')
+    # (a model whose APL-on- and APL-off-matched sigmas coincide has one level, 'match_on+match_off': it counts as both)
+    both = d[d['level'] == 'match_on+match_off']
+    d = pd.concat([d[d['level'] != 'match_on+match_off'], both.assign(level='match_on'), both.assign(level='match_off')],
+                  ignore_index=True)
+    nu = pd.read_csv(out / 'effect_by_unit_pairs.csv').set_index(['odor_a', 'odor_b'])
+    rows = []
+    for (model, level, transform), g in d.groupby(['model', 'level', 'transform']):
+        on = g[g['condition'] == 'on'].groupby(['odor_a', 'odor_b']).mean(numeric_only=True)
+        off = g[g['condition'] == 'acute_off'].groupby(['odor_a', 'odor_b']).mean(numeric_only=True)
+        # (the data's thresholded effect in baseline-noise units is at 1.97 noise SDs; it has no noise-corrected form)
+        nraw = 'effect__noise__thresholded' if transform == 'thresholded' else 'effect__noise__graded'
+        ncorr = None if transform == 'thresholded' else 'effect__noise__noise_corrected'
+        for col, dcol, ncol in (('raw', 'data_raw', nraw), ('corrected', 'data_corrected', ncorr), ('det', 'data_raw', nraw)):
+            for unit in ('z', 'noise'):
+                if unit == 'z':
+                    data_eff = H.apl_effect(on[dcol], off[dcol])
+                elif ncol is None:
+                    continue
+                else:
+                    data_eff = H.canonical_pairs(nu[ncol])
+                st = H.apl_effect_stats(on[col], off[col], data_eff)
+                assert st['apl_effect_n_pairs'] == 120, st['apl_effect_n_pairs']
+                rows.append(dict(model=model, level=level, transform=transform, sigma=float(g['sigma'].mean()), distances=col,
+                                 unit=unit, data_effect_mean=float(data_eff.mean()), **st))
+    res = pd.DataFrame(rows)
+    res.to_csv(out / 'partF_noise.csv', index=False)
+    return res
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=('D', 'B', 'C', 'E', 'E-tables', 'table', 'figures', 'check-e10'))
+    ap.add_argument('--part', required=True, choices=('D', 'B', 'C', 'E', 'E-tables', 'F-noise', 'table', 'figures', 'check-e10'))
     ap.add_argument('--check', nargs='*', default=['off'], help=f'with --part check-e10: the checks to run, of {list(E10_CHECK_EXTRA)}')
     ap.add_argument('--jobs', type=int, default=3, help='part C: worker processes')
     ap.add_argument('--threads', type=int, default=12)
@@ -2297,6 +2334,11 @@ def main() -> None:
     elif args.part == 'E-tables':
         t = part_e_tables(out)
         print(t['populations'].round(3).to_string(), flush=True)
+    elif args.part == 'F-noise':
+        r = part_f_noise_score(out)
+        r = r[r['transform'] == 'graded']
+        print(r[['model', 'level', 'distances', 'unit', 'apl_effect_rmse', 'apl_effect_rmse_centered', 'apl_effect_mean', 'apl_effect_spearman',
+                 'data_effect_mean']].round(3).to_string(), flush=True)
     elif args.part == 'check-e10':
         for name in args.check:
             r = check_e10(name, E10_CHECK_EXTRA[name])
