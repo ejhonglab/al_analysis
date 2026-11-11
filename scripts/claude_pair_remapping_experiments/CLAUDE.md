@@ -1048,6 +1048,7 @@ Canonical experiment names for summary reports:
 | E74 | the APL effect split by odors per KC |
 | E75 | the glomerulus profile of APL inhibition |
 | E76 | the data side of the main target |
+| E77 | the input side of the error common to all wirings |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
