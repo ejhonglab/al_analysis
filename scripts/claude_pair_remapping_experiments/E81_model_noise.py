@@ -54,6 +54,34 @@ against the flies with APL output blocked (TNT)):
   three). Populations: the mean over the models of their pair distances per condition (each model at its own
   calibration): the breadth-2 four, the firing-ceiling four and all eight.
 
+Part D's check, the independent part as a threshold jitter drawn per presentation (`--part D-presentation`, simulations;
+the entry's alternative when the binarized checks miss by more than a third). For C2 and F1 (E69's fit 1), on E43's
+pipeline model with its per-presentation jitter (E43_model_trial_noise.py, `ExcitabilityModel.trials_presentation`):
+each presentation's threshold is thr0 * (1 + sigma_s xi + sigma_p zeta), xi the KC's draw for the trial (shared by the 16
+odors; E43's draws at seed 43, so the pseudo-recordings' shared draws are part C's) and zeta its own for the odor, each
+trial assembled from one run per odor, in `--workers` processes forked from this one. Per condition (APL on, APL off):
+- the shared jitter sigma_s is part D's level for that condition (mix_levels.json, raw spike counts, Yang's z), and the
+  per-presentation SD sigma_p is fitted so that the same-odor distance between two single trials is the flies' (0.444 /
+  0.394 in z), with the conversion and the silent entries' Gaussian noise of part D in place (in place of its lognormal
+  factor); at every sigma_p the mean threshold is re-tuned so that the per-trial APL-on response rate is the
+  deterministic run's (E43's tuning), and the APL-off runs of a level use the threshold tuned there. The search starts
+  from part D's saved levels (a presentation's threshold has relative SD sqrt(sigma_s^2 + sigma_p^2) under either noise,
+  and the same-odor distance involves single presentations only, so the saved shared-jitter levels give the starting
+  sigma_p and the slope), and runs on `--search-recordings` pseudo-recordings (E43's tuning draws) to within `--same-tol`
+  or `--search-max` evaluations;
+- then `--n-recordings` pseudo-recordings of three trials at the fitted levels (APL on at the APL-on level, APL off at
+  the APL-off level), converted to the flies' unit with the conversion set on the APL-on runs of each level (E68's, as
+  part D), plus the Gaussian noise of the silent entries, under both readouts and both units;
+- scored as part D scores the re-specified noise: per_presentation.csv (kinds 'presentation', the three-trial means,
+  against the flies' effect as measured; 'presentation_noise_free'; 'presentation_corrected'; 'det'), with the loss and
+  its parts, ρ on the per-pair APL effect, the group errors, the six pairs, the block and the response rates;
+  per_presentation_checks.csv (the same-odor distance, the same-repeat gap and the means of three against the
+  noise-free distances, graded and binarized, beside the flies' and part D's lognormal re-specification);
+  per_presentation_search.csv; provenance_D_presentation.json. Checks: the model's single-odor path reproduces its
+  deterministic run, and one trial of part C's saved match_on level re-run through it with sigma_p = 0 reproduces the
+  saved trial entry for entry. `--smoke`: C2, the checks, one search evaluation and one pseudo-recording with APL on,
+  timed (files with _smoke).
+
 Part E (`--part E`, simulations; `--part E-tables` reads them; no gate): what the shared state could be.
 - Twelve simulations per model (C2, E67; E69's fit 1, the firing ceiling at the literature setting), on E69's
   fixed-scale model wrapper (`E69_kc_firing_ceiling.Model`), each first re-run with APL on and off to reproduce its
@@ -77,14 +105,18 @@ The repeat statistics are computed here in numpy (`kind_arrays`), to the definit
 checks them against each other once the harness's bodies exist): a calibration evaluates them thousands of times.
 
 Outputs in results/E81_repeat_structure/: mix_levels.json, mix_scores.csv, mix_pairs.csv, mix_checks.csv,
-populations.csv, provenance_D.json (part D); shared_state_runs.csv, shared_state.csv, rundown_axes.csv,
-provenance_E.json (part E); model_noise_table.md and the figures (`--part table`). Part E's counts in
-outputs/E81_repeat_structure/partE/.
+populations.csv, provenance_D.json (part D); per_presentation.csv, per_presentation_checks.csv,
+per_presentation_search.csv, per_presentation_build_checks.json, provenance_D_presentation.json (part D's check);
+shared_state_runs.csv, shared_state.csv, rundown_axes.csv, provenance_E.json (part E); model_noise_table.md and the
+figures (`--part table`). Part E's counts in outputs/E81_repeat_structure/partE/, part D's check's trials in
+outputs/E81_repeat_structure/partD_presentation/.
 Usage (from this folder):
        OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 nice -n 10 ../../venv/bin/python -u E81_model_noise.py --part D [--jobs 2]
            [--models C2 ...] [--no-rereads]
        OMP_NUM_THREADS=12 OMP_THREAD_LIMIT=12 nice -n 10 ../../venv/bin/python -u E81_model_noise.py --part E --threads 12
            [--smoke]
+       OMP_NUM_THREADS=12 OMP_THREAD_LIMIT=12 nice -n 10 ../../venv/bin/python -u E81_model_noise.py --part D-presentation
+           [--workers 10] [--models C2 F1] [--search-recordings 2] [--n-recordings 3] [--smoke]
        ../../venv/bin/python -u E81_model_noise.py --part E-tables | table
 """
 from __future__ import annotations
@@ -869,6 +901,370 @@ def part_d(out: Path, args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# part D's check: the independent part as a threshold jitter drawn per presentation
+PRES_MODELS = {'C2': 'E67_apl_effect_fits:rate0.068_aplboth_k2_cap3',
+               'F1': 'E69_kc_firing_ceiling:rate0.068_aplboth_refr3_adapt0.04142t1000_k2'}
+# E43's seed, so that the shared draws of the pseudo-recordings are part C's (E43 `b_draws`, kind 'rec', reps 0, 1, ...)
+PRES_SEED = 43
+PRES_KINDS = ('presentation', 'presentation_noise_free', 'presentation_corrected', 'det')
+PRES_DATA_KIND = {'presentation': 'trial_mean', 'presentation_noise_free': 'noise_free',
+                  'presentation_corrected': 'corrected', 'det': 'trial_mean'}
+# the Gaussian draws of the silent entries: part D's streams are spawn_key (model, condition); these are their own
+PRES_ETA_STREAM = {'search': 3, 'final': 2}
+
+
+def _pres_trials(a: dict, cond: str) -> np.ndarray:
+    """A trial set's counts (trials, KCs, odors) as pseudo-recordings of `N_TRIALS` trials (R, T, KCs, odors)."""
+    x = np.asarray(a[f'{cond}_spk'], dtype=float)
+    if x.shape[0] % N_TRIALS:
+        raise ValueError(f'{x.shape[0]} trials are not pseudo-recordings of {N_TRIALS}')
+    return x.reshape(x.shape[0] // N_TRIALS, N_TRIALS, *x.shape[1:])
+
+
+def _pres_eta(name: str, cond: str, which: str, shape) -> np.ndarray:
+    ss = np.random.SeedSequence(SEED, spawn_key=(_seed_key(name), CONDS.index(cond), PRES_ETA_STREAM[which]))
+    return np.random.default_rng(ss).standard_normal(shape)
+
+
+def pres_guess(mm: 'ModelMix', cond: str, sigma_s: float, target: float) -> Dict[str, float]:
+    """The search's start from part D's saved levels (the shared jitter alone, with the silent entries' Gaussian noise in
+    Yang's z, raw counts): a presentation's threshold has relative SD sqrt(sigma_s^2 + sigma_p^2) under the shared jitter
+    and under the per-presentation one alike, and the same-odor distance involves single presentations only, so the
+    level sigma_tot at which the saved levels' same-odor distance is `target` (interpolated in sigma^2) gives sigma_p =
+    sqrt(sigma_tot^2 - sigma_s^2) (at least sigma_s / 4); 'slope', the distance's change per unit sigma^2 there."""
+    d = [mm.gs(i, cond, 'raw', 'z', 0.0)[1] for i in range(len(mm.levels))]
+    x = np.asarray(mm.sigmas, dtype=float) ** 2
+    ip = interp_sigma(mm.sigmas, d, target)
+    lo, hi = ip['lo'], ip['hi']
+    if not ip['bracketed'] or lo == hi:
+        # (not reached: extrapolated from the top segment)
+        lo, hi = len(x) - 2, len(x) - 1
+    slope = float((d[hi] - d[lo]) / (x[hi] - x[lo]))
+    tot2 = ip['sigma'] ** 2 if ip['bracketed'] else x[hi] + (target - d[hi]) / slope
+    sp = float(np.sqrt(max(tot2 - sigma_s ** 2, (sigma_s / 4) ** 2)))
+    return dict(sigma_tot=float(np.sqrt(max(tot2, 0.0))), sigma_p=sp, slope=slope, bracketed=bool(ip['bracketed']),
+        level_same=[float(v) for v in d], level_sigmas=[float(s) for s in mm.sigmas])
+
+
+def pres_next(hist: List[dict], target: float, slope0: float) -> float:
+    """The next per-presentation SD of the search: secant in sigma_p^2 through the two evaluations nearest the target
+    (the first step with `slope0`, part D's slope), the step kept within a factor of 2 of the last sigma_p."""
+    last = hist[-1]
+    pts = sorted(hist, key=lambda h: abs(h['same'] - target))[:2]
+    slope = slope0
+    if len(pts) == 2 and pts[0]['sigma_p'] != pts[1]['sigma_p']:
+        s = (pts[1]['same'] - pts[0]['same']) / (pts[1]['sigma_p'] ** 2 - pts[0]['sigma_p'] ** 2)
+        if np.isfinite(s) and s > 0:
+            slope = s
+    ref = pts[0]
+    sp2 = ref['sigma_p'] ** 2 + (target - ref['same']) / slope
+    return float(np.sqrt(min(max(sp2, (last['sigma_p'] / 2) ** 2), (2 * last['sigma_p']) ** 2)))
+
+
+def _pres_tuned_curve(name: str, exps: Sequence[str]) -> Dict[float, float]:
+    """{sigma: the mean threshold part B tuned there} (its calibration points, from the first of `exps`'
+    noise_levels.json that has them; empty if none), the start of the re-tuning at the matching total SD."""
+    for exp in exps:
+        p = H.results_dir(exp) / 'partB' / 'noise_levels.json'
+        if p.exists():
+            js = json.loads(p.read_text())
+            if name in js and js[name].get('tuned'):
+                return {float(k): float(v) for k, v in js[name]['tuned'].items()}
+    return {}
+
+
+class PresentationRun:
+    """One model's part of `--part D-presentation`: E43's pipeline model (built, checked, with its forked workers), the
+    search per condition and the pseudo-recordings at the fitted levels. Trial sets are saved to (and read back from)
+    `odir`, so an interrupted run resumes."""
+
+    def __init__(self, label: str, out: Path, odir: Path, args, flies: dict, log_rows: list):
+        import E43_model_trial_noise as E43
+        self.E43, self.label, self.out, self.odir, self.args, self.flies = E43, label, out, odir, args, flies
+        self.spec = PRES_MODELS[label]
+        self.name = E43.model_from(self.spec)
+        if self.name != MODELS[label][0]:
+            raise RuntimeError(f'{label}: {self.spec} is {self.name}, part D read {MODELS[label][0]}')
+        self.exps = FAMILY_SOURCES[MODELS[label][1]]
+        self.mm = ModelMix(label, self.name, self.exps, {u: flies[u] for u in UNITS})
+        js = json.loads((out / 'mix_levels.json').read_text())['models'][label]
+        self.part_d = {c: js['calibration'][f'raw/z/{c}'] for c in CONDS}
+        self.sigma_s = {c: E43.r3(self.part_d[c]['sigma']) for c in CONDS}
+        self.gsd = {u: {c: float(flies[u][GENOTYPE[c]]['silent_sd']) for c in CONDS} for u in UNITS}
+        self.log_rows = log_rows
+        E43.ExcitabilityModel.presentation = True
+        E43.ExcitabilityModel.sigma_p = 0.0
+        E43.ExcitabilityModel.workers = int(args.workers)
+        E43.ExcitabilityModel.thr_min_frac = 0.01
+        E43.ExcitabilityModel.thr_jitter = 'normal'
+        self.orn = H.apl16_orn_deltas()
+        self.checks_path = out / f'per_presentation_build_checks{args.sfx}.json'
+        self.prov = dict(generated=datetime.now(timezone.utc).isoformat(timespec='seconds'), script='E81_model_noise.py '
+            '--part D-presentation (E43_model_trial_noise.SessionB)', models=[self.name])
+        self.sess = E43.SessionB(self.name, self.orn, odir, {}, self.checks_path, self.prov, odir / 'session_provenance.json')
+        t0 = time.time()
+        self.m = self.sess.get()
+        self.build_seconds = time.time() - t0
+        self.rate_target = float(self.m.det['on'][0].mean())
+        self.f0 = float(self.m.f0)
+
+    def log(self, s: str) -> None:
+        print(f'{self.label}: {s}', flush=True)
+
+    def identity_check(self) -> dict:
+        """Trial 0 of part C's saved pseudo-recording 0 at the model's match_on level, re-run through the single-odor path
+        with sigma_p = 0 (its shared draw from E43's draws, its threshold from the file): equal entry for entry."""
+        E43 = self.E43
+        sig = self.mm.matched.get('on')
+        hit = [L for L in self.mm.levels if L['paths'] and sig is not None and np.isclose(L['sigma'], sig)]
+        if not hit:
+            return dict(skipped=f'no saved match_on level ({sig}) for {self.name}')
+        p = hit[0]['paths'][0]
+        with np.load(p) as z:
+            saved = {k: z[k] for k in z.files}
+        if int(saved['seed']) != PRES_SEED:
+            return dict(skipped=f'{p} has seed {int(saved["seed"])}, not {PRES_SEED}')
+        xi = E43.b_draws(PRES_SEED, self.name, 'rec', 0, N_TRIALS, self.m.draw_size)[:1]
+        t0 = time.time()
+        tr = self.m.trials_presentation(float(saved['sigma']), xi, np.zeros((1, len(ODORS), self.m.n_kcs)),
+            float(saved['fixed_thr']), sigma_p=0.0)
+        res = dict(file=str(p), sigma=float(saved['sigma']), fixed_thr=float(saved['fixed_thr']), seconds=time.time() - t0,
+            **{f'{c}_{k}_mismatch': int((tr[f'{c}_{k}'][0] != saved[f'{c}_{k}'][0]).sum()) for c in CONDS for k in ('resp', 'spk')})
+        res['reproduced'] = all(v == 0 for k, v in res.items() if k.endswith('_mismatch'))
+        self.log(f'part C\'s saved trial through the single-odor path at sigma_p = 0: {res}')
+        return res
+
+    def conv(self, on_counts: np.ndarray, readout: str, unit: str) -> float:
+        """E68's conversion on APL-on trials (R, T, KCs, odors), as part D's `ModelMix.conv`."""
+        return H.z_scale(self.mm.read(on_counts, readout, unit), unit_ctrl_rate(unit), self.gsd[unit]['on'],
+            thresh=unit_threshold(unit))
+
+    def evaluate(self, cond: str, sp: float, xis, zetas, f_guess) -> dict:
+        """One search point: the mean threshold re-tuned at (sigma_s, sp) on the search draws (APL on), the APL-off runs
+        there for `cond` APL off, and the same-odor distance and gap (raw counts converted to Yang's z, Gaussian noise of
+        the silent entries in place)."""
+        E43, m, a = self.E43, self.m, self.args
+        n = len(xis)
+        sig = self.sigma_s[cond]
+        path = self.odir / f'{self.label}_{cond}_search_s{E43.sd_tag(sig)}_p{E43.sd_tag(sp)}_n{n}.npz'
+        t0 = time.time()
+        if path.exists():
+            arrs = E43.load_npz(path)
+            if int(arrs['seed']) != PRES_SEED or float(arrs['rate_target']) != self.rate_target:
+                raise RuntimeError(f'{path}: another seed or rate target; move it away')
+            fresh = False
+        else:
+            res = m.tune(sig, xis, self.rate_target, f_guess, a.rate_tol, a.tune_max_evals, zetas=zetas, sigma_p=sp,
+                log=lambda s: self.log(f'{cond}, sigma_p {sp:g}:{s}'))
+            arrs = {k: v for k, v in res['arrs'].items() if k.startswith('on_') or k in ('n_clipped', 'n_draws_per_trial')}
+            if cond == 'acute_off':
+                arrs.update({k: v for k, v in m.trials_b(sig, xis, res['fixed_thr'], conds=('acute_off',), zetas=zetas,
+                    sigma_p=sp).items() if k.startswith('acute_off_')})
+            arrs.update(fixed_thr=np.asarray(res['fixed_thr']), rate_tuned=np.asarray(res['rate']),
+                converged=np.asarray(res['converged']), n_evals=np.asarray(res['n_evals']), tune_history=res['history'],
+                sigma=np.asarray(sig), sigma_p=np.asarray(sp), seed=np.asarray(PRES_SEED), rate_target=np.asarray(self.rate_target))
+            E43.save_npz(path, arrs)
+            fresh = True
+        on = _pres_trials(arrs, 'on')
+        c = self.conv(on, 'raw', 'z')
+        X = _pres_trials(arrs, cond)
+        Y = c * X + self.gsd['z'][cond] * _pres_eta(self.name, cond, 'search', X.shape)
+        gap, same = gap_same(Y)
+        row = dict(model=self.label, name=self.name, condition=cond, sigma_s=sig, sigma_p=sp, n_trials=n,
+            fixed_thr=float(arrs['fixed_thr']), fixed_thr_ratio=float(arrs['fixed_thr']) / self.f0,
+            rate_tuned=float(arrs['rate_tuned']), rate_target=self.rate_target, tune_converged=bool(arrs['converged']),
+            tune_evals=int(arrs['n_evals']), conv=c, same=same, gap=gap, same_target=float(self.flies['z'][GENOTYPE[cond]]['same_odor']),
+            gap_target=float(self.flies['z'][GENOTYPE[cond]]['gap']), seconds=time.time() - t0 if fresh else np.nan,
+            frac_clipped=float(np.asarray(arrs['n_clipped']).mean()) / float(arrs['n_draws_per_trial']), file=path.name)
+        self.log(f"{cond}: sigma_s {sig:g}, sigma_p {sp:g}: fixed_thr {row['fixed_thr']:.4f} ({row['fixed_thr_ratio']:.3f} x "
+                 f"deterministic), APL-on rate {row['rate_tuned']:.5f} (target {self.rate_target:.5f}); same-odor distance "
+                 f"{same:.4f} (flies {row['same_target']:.4f}), same-repeat gap {gap:.4f} (flies {row['gap_target']:.4f})"
+                 + (f' ({row["seconds"]:.0f} s)' if fresh else ' (saved)'))
+        self.log_rows.append(row)
+        return dict(row, arrs=arrs)
+
+    def search(self, cond: str) -> dict:
+        """The per-presentation SD at which the same-odor distance is the flies', for condition `cond`."""
+        E43, a = self.E43, self.args
+        n = N_TRIALS * a.search_recordings
+        xis = E43.b_draws(PRES_SEED, self.name, 'tune', 0, n, self.m.draw_size)
+        zetas = self.m.p_draws(PRES_SEED, 'tune', 0, n)
+        target = float(self.flies['z'][GENOTYPE[cond]]['same_odor'])
+        g = pres_guess(self.mm, cond, self.sigma_s[cond], target)
+        self.log(f"{cond}: start from part D's levels: total SD {g['sigma_tot']:.4f}, sigma_p {g['sigma_p']:.4f} (shared "
+                 f"{self.sigma_s[cond]:g}), slope {g['slope']:.3f} per sigma^2")
+        # (the threshold's start: part B's tuned threshold at the same total SD per presentation, which holds the same
+        # per-presentation response rate in expectation; after an evaluation, scaled by what the last one needed)
+        curve = _pres_tuned_curve(self.name, self.exps)
+        sig_s = self.sigma_s[cond]
+
+        def f_part_b(sp_):
+            return E43.b_guess(curve, float(np.hypot(sig_s, sp_))) if curve else None
+        sp = E43.r3(g['sigma_p'])
+        f_g = f_part_b(sp)
+        hist: List[dict] = []
+        for _ in range(a.search_max):
+            ev = self.evaluate(cond, sp, xis, zetas, f_g)
+            hist.append(ev)
+            if abs(ev['same'] - target) <= a.same_tol or a.smoke:
+                break
+            new = E43.r3(pres_next(hist, target, g['slope']))
+            if any(h['sigma_p'] == new for h in hist):
+                break
+            f_g = None if f_part_b(sp) is None else f_part_b(new) * ev['fixed_thr'] / f_part_b(sp)
+            sp = new
+        best = min(hist, key=lambda h: abs(h['same'] - target))
+        best = dict(best, converged=abs(best['same'] - target) <= a.same_tol, guess=g, n_evaluations=len(hist))
+        return best
+
+    def final(self, cond: str, best: dict) -> Tuple[np.ndarray, float]:
+        """`--n-recordings` pseudo-recordings of `cond` at the fitted level (R, T, KCs, odors), and the per-trial response
+        rate at two spikes."""
+        E43, m = self.E43, self.m
+        sig, sp, f = best['sigma_s'], best['sigma_p'], best['fixed_thr']
+        X, resp = [], []
+        for rep in range(self.args.n_recordings):
+            path = self.odir / f'{self.label}_{cond}_final_s{E43.sd_tag(sig)}_p{E43.sd_tag(sp)}_n{N_TRIALS}_rep{rep:02d}.npz'
+            if path.exists():
+                arrs = E43.load_npz(path)
+                if float(arrs['fixed_thr']) != float(f) or int(arrs['seed']) != PRES_SEED:
+                    raise RuntimeError(f'{path}: another threshold or seed; move it away')
+            else:
+                t0 = time.time()
+                arrs = m.trials_b(sig, E43.b_draws(PRES_SEED, self.name, 'rec', rep, N_TRIALS, m.draw_size), f, conds=(cond,),
+                    zetas=m.p_draws(PRES_SEED, 'rec', rep, N_TRIALS), sigma_p=sp)
+                arrs['seed'] = np.asarray(PRES_SEED)
+                E43.save_npz(path, arrs)
+                self.log(f'{cond}: pseudo-recording {rep} at sigma_s {sig:g}, sigma_p {sp:g} in {time.time() - t0:.0f} s')
+            X.append(np.asarray(arrs[f'{cond}_spk'], dtype=float))
+            resp.append(np.asarray(arrs[f'{cond}_resp'], dtype=float).mean())
+        return np.stack(X), float(np.mean(resp))
+
+    def close(self) -> None:
+        self.sess.finish()
+        self.m = None
+        gc.collect()
+
+
+def pres_score(run: PresentationRun, best: Dict[str, dict], X: Dict[str, np.ndarray], rate_spk: Dict[str, float],
+               fpairs: dict) -> Tuple[List[dict], List[dict]]:
+    """Scores and checks of one model's pseudo-recordings at the fitted levels, per readout and unit, as part D's."""
+    scores, checks = [], []
+    name, mm = run.name, run.mm
+    eta = {c: _pres_eta(name, c, 'final', X[c].shape) for c in CONDS}
+    mix_chk = pd.read_csv(run.out / 'mix_checks.csv') if (run.out / 'mix_checks.csv').exists() else pd.DataFrame()
+    for ro in READOUTS:
+        for u in UNITS:
+            thr = unit_threshold(u)
+            fin, pairs = {}, {}
+            for c in CONDS:
+                conv = run.conv(_pres_trials(best[c]['arrs'], 'on'), ro, u)
+                Y = conv * mm.read(X[c], ro, u) + run.gsd[u][c] * eta[c]
+                st = summary_stats(kind_arrays(Y))
+                stb = summary_stats(kind_arrays((Y > thr).astype(float)))
+                st.update(bin_same=stb['same_odor'], bin_gap=stb['gap'], bin_gap_six=stb['gap_six'], conv=conv,
+                    rate_trial=float((Y > thr).mean()), rate_mean=float((Y.mean(axis=1) > thr).mean()), rate_spikes=rate_spk[c])
+                fin[c] = st
+                fl = run.flies[u][GENOTYPE[c]]
+                row = dict(model=run.label, name=name, readout=ro, unit=u, condition=c, sigma_s=best[c]['sigma_s'],
+                    sigma_p=best[c]['sigma_p'], sigma_total=float(np.hypot(best[c]['sigma_s'], best[c]['sigma_p'])),
+                    shared_share=best[c]['sigma_s'] ** 2 / (best[c]['sigma_s'] ** 2 + best[c]['sigma_p'] ** 2),
+                    fixed_thr=best[c]['fixed_thr'], fixed_thr_ratio=best[c]['fixed_thr_ratio'],
+                    search_converged=best[c]['converged'], search_same=best[c]['same'], conv=conv)
+                for k in ('same_odor', 'gap', 'gap_six', 'bin_same', 'bin_gap', 'bin_gap_six', 'inflation', 'inflation_six',
+                          'same_odor_adjacent', 'same_rep', 'diff_rep', 'rate_trial', 'rate_mean'):
+                    row[k] = st[k]
+                    row[f'flies_{k}'] = fl[k]
+                row['rate_spikes'] = rate_spk[c]
+                miss = [abs(st[k] - fl[k]) / abs(fl[k]) for k in ('bin_same', 'bin_gap')]
+                row['bin_same_miss'], row['bin_gap_miss'] = miss
+                row['bin_check_miss'] = bool(max(miss) > 1 / 3)
+                if len(mix_chk):
+                    mc = mix_chk[(mix_chk['model'] == run.label) & (mix_chk['readout'] == ro) & (mix_chk['unit'] == u) &
+                                 (mix_chk['condition'] == c)]
+                    if len(mc):
+                        for k in ('same_odor', 'gap', 'bin_same', 'bin_gap', 'inflation', 'inflation_six', 'sigma', 's'):
+                            row[f'mix_{k}'] = float(mc[k].iloc[0])
+                checks.append(row)
+            det = mm.det_pairs(ro, u)
+            kinds = {'presentation': {c: fin[c]['pairs_trial_mean'] for c in CONDS},
+                     'presentation_noise_free': {c: fin[c]['pairs_noise_free'] for c in CONDS},
+                     'presentation_corrected': {c: fin[c]['pairs_corrected'] for c in CONDS}, 'det': det}
+            for kind, pr in kinds.items():
+                d = fpairs[(u, PRES_DATA_KIND[kind])]
+                row = dict(group=run.label, members=run.label, n_models=1, name=name, readout=ro, unit=u, kind=kind,
+                    data_kind=PRES_DATA_KIND[kind], **score_row(pr['on'], pr['acute_off'], d['on'], d['acute_off']))
+                for c, s in (('on', 'on'), ('acute_off', 'off')):
+                    row.update({f'rate_spikes_{s}': rate_spk[c], f'rate_trial_{s}': fin[c]['rate_trial'],
+                        f'rate_mean_{s}': fin[c]['rate_mean'], f'sigma_s_{s}': best[c]['sigma_s'], f'sigma_p_{s}': best[c]['sigma_p'],
+                        f'fixed_thr_{s}': best[c]['fixed_thr']})
+                scores.append(row)
+    return scores, checks
+
+
+def part_d_presentation(out: Path, args) -> None:
+    """Part D's check (see the module docstring)."""
+    t_start = datetime.now(timezone.utc)
+    args.sfx = '_smoke' if args.smoke else ''
+    odir = H.outputs_dir(EXPERIMENT) / f'partD_presentation{args.sfx}'
+    odir.mkdir(parents=True, exist_ok=True)
+    flies = {u: flies_side(u) for u in UNITS}
+    fpairs = _flies_pairs(flies)
+    labels = ['C2'] if args.smoke else [m for m in (args.models or list(PRES_MODELS)) if m in PRES_MODELS]
+    if not labels:
+        raise ValueError(f'--models: none of {list(PRES_MODELS)}')
+    search_rows, scores, checks, info = [], [], [], {}
+    for label in labels:
+        t0 = time.time()
+        run = PresentationRun(label, out, odir, args, flies, search_rows)
+        rec = dict(name=run.name, spec=run.spec, build_seconds=run.build_seconds, rate_target=run.rate_target, f0=run.f0,
+            sigma_s=run.sigma_s, part_d_sigma={c: run.part_d[c]['sigma'] for c in CONDS}, workers=args.workers)
+        try:
+            rec['identity'] = run.identity_check()
+            if rec['identity'].get('reproduced') is False:
+                raise RuntimeError(f'{label}: the single-odor path did not reproduce part C\'s saved trial: {rec["identity"]}')
+            best, X, rate_spk = {}, {}, {}
+            for c in (['on'] if args.smoke else list(CONDS)):
+                t1 = time.time()
+                best[c] = run.search(c)
+                rec[f'search_seconds_{c}'] = time.time() - t1
+                t1 = time.time()
+                X[c], rate_spk[c] = run.final(c, best[c])
+                rec[f'final_seconds_{c}'] = time.time() - t1
+                rec[f'fitted_{c}'] = {k: v for k, v in best[c].items() if k != 'arrs'}
+            if not args.smoke:
+                sc, ck = pres_score(run, best, X, rate_spk, fpairs)
+                scores += sc
+                checks += ck
+        finally:
+            run.close()
+        rec['seconds'] = time.time() - t0
+        info[label] = rec
+        print(f'{label}: done in {rec["seconds"]:.0f} s', flush=True)
+    pd.DataFrame(search_rows).to_csv(out / f'per_presentation_search{args.sfx}.csv', index=False)
+    if scores:
+        sc = pd.DataFrame(scores)
+        sc.to_csv(out / 'per_presentation.csv', index=False)
+        ck = pd.DataFrame(checks)
+        ck.to_csv(out / 'per_presentation_checks.csv', index=False)
+        show = sc[(sc['readout'] == 'raw') & (sc['unit'] == 'z')]
+        print(show[['group', 'kind', 'loss', 'pattern', 'mean_effect', 'data_mean_effect', 'rho', 'block', 'six_effect',
+            'data_six_effect']].round(4).to_string(), flush=True)
+        print(ck[(ck['readout'] == 'raw') & (ck['unit'] == 'z')][['model', 'condition', 'sigma_s', 'sigma_p', 'same_odor',
+            'flies_same_odor', 'gap', 'flies_gap', 'bin_same', 'flies_bin_same', 'bin_gap', 'flies_bin_gap',
+            'bin_check_miss']].round(4).to_string(), flush=True)
+    import E43_model_trial_noise as E43
+    _provenance(out, f'D_presentation{args.sfx}', dict(started=t_start.isoformat(timespec='seconds'), models=info,
+        seed=PRES_SEED, eta_seed=SEED, workers=args.workers, search_recordings=args.search_recordings, search_max=args.search_max,
+        same_tol=args.same_tol, n_recordings=args.n_recordings, rate_tol=args.rate_tol, tune_max_evals=args.tune_max_evals,
+        smoke=args.smoke, noise=E43.THR_NOISE_NOTE + E43.PRES_NOISE_NOTE, omp_num_threads=os.environ.get('OMP_NUM_THREADS'),
+        omp_thread_limit=os.environ.get('OMP_THREAD_LIMIT'),
+        model=H.model_provenance(orn_deltas=H.apl16_orn_deltas())))
+    if scores:
+        part_table(out)
+
+
+# ---------------------------------------------------------------------------
 # part E
 E_MODELS = {
     'C2': ('e67cal', ('E67_apl_effect_fits', 'rate0.068_aplboth_k2_cap3'), 'C2, the breadth-2 APL-effect fit (E67)'),
@@ -1220,6 +1616,7 @@ def part_table(out: Path) -> None:
                 get = lambda k: _f(s.loc[k, 'block']) if k in s.index else '-'
                 dm = f"{_f(s.loc['mix', 'data_block'])} / {_f(s.loc['mix_noise_free', 'data_block'])}" if 'mix' in s.index else '-'
                 L.append(f"| {g} | {get('present_match_on')} | {get('present_match_off')} | {get('mix')} | {get('mix_noise_free')} | {get('det')} | {dm} |")
+    L += _presentation_section(out)
     ss_p, rd_p = out / 'shared_state.csv', out / 'rundown_axes.csv'
     if ss_p.exists():
         ss = pd.read_csv(ss_p)
@@ -1244,6 +1641,84 @@ def part_table(out: Path) -> None:
     (out / 'model_noise_table.md').write_text('\n'.join(L) + '\n')
     figures(out)
     print(f"-> {out / 'model_noise_table.md'}", flush=True)
+
+
+PRES_KIND_LABEL = {'presentation': 'three-trial means, per-presentation jitter (as measured)',
+    'presentation_noise_free': 'noise-free, per-presentation jitter (noise-free)',
+    'presentation_corrected': 'correction in use, per-presentation jitter (corrected)'}
+
+
+def _presentation_section(out: Path) -> List[str]:
+    """model_noise_table.md's section on part D's check (per_presentation.csv, per_presentation_checks.csv), with part D's
+    lognormal re-specification (mix_scores.csv, mix_checks.csv) beside it."""
+    pp, pc = out / 'per_presentation.csv', out / 'per_presentation_checks.csv'
+    if not (pp.exists() and pc.exists()):
+        return []
+    ps, pk = pd.read_csv(pp), pd.read_csv(pc)
+    mix = pd.read_csv(out / 'mix_scores.csv') if (out / 'mix_scores.csv').exists() else pd.DataFrame()
+    cond_l = {'on': 'APL on', 'acute_off': 'APL off'}
+    L = ['', "## Part D's check: the independent part as a threshold jitter drawn per presentation", '',
+         "Each presentation's threshold is thr0 (1 + σ_s ξ + σ_p ζ): ξ the KC's draw for the trial, shared by the 16 odors, at "
+         "part D's level for the condition; ζ the presentation's own, its SD σ_p fitted so that the same-odor distance between "
+         "two single trials is the flies' (raw spike counts converted to Yang's z, the silent entries' Gaussian noise in place, "
+         "in place of part D's lognormal factor); each trial assembled from one run per odor; the mean threshold re-tuned at "
+         "each level so that the per-trial APL-on response rate is the deterministic run's. APL on is read at the APL-on "
+         "level, APL off at the APL-off level. Flies in parentheses, part D's lognormal re-specification in brackets.", '',
+         "### Levels (fitted on raw spike counts in Yang's z)", '',
+         '| model | condition | shared jitter σ_s (part D) | per-presentation SD σ_p | SD per presentation | share of its variance '
+         'shared by the odors | mean threshold over the deterministic run\'s | same-odor distance, search / pseudo-recordings '
+         '(flies) | search converged |', '|---|---|---:|---:|---:|---:|---:|---:|---|']
+    rz = pk[(pk['readout'] == 'raw') & (pk['unit'] == 'z')]
+    for _, r in rz.iterrows():
+        L.append(f"| {r['model']} | {cond_l[r['condition']]} | {_f(r['sigma_s'], '.4f')} | {_f(r['sigma_p'], '.4f')} | "
+                 f"{_f(r['sigma_total'], '.4f')} | {_f(r['shared_share'], '.2f')} | {_f(r['fixed_thr_ratio'])} | "
+                 f"{_f(r['search_same'])} / {_f(r['same_odor'])} ({_f(r['flies_same_odor'])}) | "
+                 f"{'yes' if bool(r['search_converged']) else 'no'} |")
+
+    def mx(r, k, spec='.3f'):
+        return f" [{_f(r[f'mix_{k}'], spec)}]" if f'mix_{k}' in r and pd.notna(r.get(f'mix_{k}')) else ''
+    for ro in READOUTS:
+        for u in UNITS:
+            sub = pk[(pk['readout'] == ro) & (pk['unit'] == u)]
+            if not len(sub):
+                continue
+            L += ['', f'### Checks not used in the fit: {READOUT_LABEL[ro]}, {UNIT_LABEL[u]}', '',
+                  '| model | condition | same odor (graded) | same-repeat gap (graded) | same odor, binarized | same-repeat gap, '
+                  'binarized | means of three minus noise-free | the same, six pairs | response rate: single trials / means of '
+                  'three | binarized miss > 1/3 |', '|---|---|---:|---:|---:|---:|---:|---:|---:|---|']
+            for _, r in sub.iterrows():
+                L.append(f"| {r['model']} | {cond_l[r['condition']]} | {_f(r['same_odor'])} ({_f(r['flies_same_odor'])}){mx(r, 'same_odor')} | "
+                         f"{_f(r['gap'], '.4f')} ({_f(r['flies_gap'], '.4f')}){mx(r, 'gap', '.4f')} | "
+                         f"{_f(r['bin_same'])} ({_f(r['flies_bin_same'])}){mx(r, 'bin_same')} | "
+                         f"{_f(r['bin_gap'], '.4f')} ({_f(r['flies_bin_gap'], '.4f')}){mx(r, 'bin_gap', '.4f')} | "
+                         f"{_f(r['inflation'], '+.3f')} ({_f(r['flies_inflation'], '+.3f')}){mx(r, 'inflation', '+.3f')} | "
+                         f"{_f(r['inflation_six'], '+.3f')} ({_f(r['flies_inflation_six'], '+.3f')}){mx(r, 'inflation_six', '+.3f')} | "
+                         f"{_f(r['rate_trial'], '.4f')} / {_f(r['rate_mean'], '.4f')} ({_f(r['flies_rate_trial'], '.4f')} / "
+                         f"{_f(r['flies_rate_mean'], '.4f')}) | {'yes' if bool(r['bin_check_miss']) else 'no'} |")
+    for ro in READOUTS:
+        for u in UNITS:
+            L += ['', f'### Scores: {READOUT_LABEL[ro]}, {UNIT_LABEL[u]}', '',
+                  '| model | distances (against the flies\') | APL-effect loss | pattern part | mean APL effect (data) | ρ on the '
+                  'per-pair APL effect | block (data) | mean distance APL on / off (data) | six pairs: APL effect (data) | '
+                  'response rate APL on / off, single trials |', '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+            for g in [x for x in PRES_MODELS if x in set(ps['group'])]:
+                rows = []
+                for k in ('presentation', 'presentation_noise_free', 'presentation_corrected'):
+                    r = ps[(ps['group'] == g) & (ps['kind'] == k) & (ps['readout'] == ro) & (ps['unit'] == u)]
+                    if len(r):
+                        rows.append((PRES_KIND_LABEL[k], r.iloc[0]))
+                if len(mix):
+                    for k in ('mix', 'mix_noise_free', 'present_match_on', 'det'):
+                        r = mix[(mix['group'] == g) & (mix['kind'] == k) & (mix['readout'] == ro) & (mix['unit'] == u)]
+                        if len(r):
+                            rows.append((f'part D: {KIND_LABEL[k]}', r.iloc[0]))
+                for lab, r in rows:
+                    L.append(f"| {g} | {lab} | {_f(r['loss'])} | {_f(r['pattern'])} | {_f(r['mean_effect'], '+.3f')} "
+                             f"({_f(r['data_mean_effect'], '+.3f')}) | {_f(r['rho'], '.2f')} | {_f(r['block'])} ({_f(r['data_block'])}) | "
+                             f"{_f(r['mean_on'])} / {_f(r['mean_off'])} ({_f(r['data_mean_on'])} / {_f(r['data_mean_off'])}) | "
+                             f"{_f(r['six_effect'], '+.3f')} ({_f(r['data_six_effect'], '+.3f')}) | "
+                             f"{_f(r.get('rate_trial_on'), '.4f')} / {_f(r.get('rate_trial_off'), '.4f')} |")
+    return L
 
 
 def _apl_cell(r: pd.Series) -> str:
@@ -1364,22 +1839,42 @@ def _provenance(out: Path, part: str, extra: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--part', required=True, choices=('D', 'E', 'E-tables', 'table'))
-    ap.add_argument('--threads', type=int, default=12, help='part E: OMP threads (OMP_NUM_THREADS and OMP_THREAD_LIMIT must match)')
-    ap.add_argument('--smoke', action='store_true', help='part E: C2 only, its reproduction check and one point (thr0.9_on)')
+    ap.add_argument('--part', required=True, choices=('D', 'D-presentation', 'E', 'E-tables', 'table'))
+    ap.add_argument('--threads', type=int, default=12,
+        help='parts E and D-presentation: OMP threads (OMP_NUM_THREADS and OMP_THREAD_LIMIT must match)')
+    ap.add_argument('--smoke', action='store_true', help='part E: C2 only, its reproduction check and one point (thr0.9_on); '
+        'part D-presentation: C2, the checks, one search evaluation and one pseudo-recording with APL on, timed')
     ap.add_argument('--jobs', type=int, default=2, help='part D: models in parallel (one process each)')
-    ap.add_argument('--models', nargs='*', default=None, help='part D: only these models (labels or pipeline names)')
+    ap.add_argument('--models', nargs='*', default=None, help='parts D and D-presentation: only these models (labels or, part '
+        'D, pipeline names)')
+    ap.add_argument('--workers', type=int, default=10,
+        help='part D-presentation: processes forked from this one for the single-odor runs (one OpenMP thread each)')
+    ap.add_argument('--search-recordings', type=int, default=2,
+        help='part D-presentation: pseudo-recordings of three trials the per-presentation SD is fitted on')
+    ap.add_argument('--search-max', type=int, default=4, help='part D-presentation: search evaluations per condition, at most')
+    ap.add_argument('--same-tol', type=float, default=0.004,
+        help="part D-presentation: the search stops within this of the flies' same-odor distance")
+    ap.add_argument('--n-recordings', type=int, default=3,
+        help='part D-presentation: pseudo-recordings of three trials at the fitted levels')
+    ap.add_argument('--rate-tol', type=float, default=0.01,
+        help='part D-presentation: relative tolerance of the re-tuned APL-on response rate (E43\'s)')
+    ap.add_argument('--tune-max-evals', type=int, default=16, help='part D-presentation: evaluations per re-tuning, at most')
     ap.add_argument('--no-rereads', action='store_true', help="part D: only the eight models of part C, not the re-reads")
     ap.add_argument('--out', type=Path, default=None, help='write the tables here instead of results/E81_repeat_structure (tests)')
     args = ap.parse_args()
     out = args.out or H.results_dir(EXPERIMENT)
     out.mkdir(parents=True, exist_ok=True)
-    if args.part == 'E':
+    if args.part in ('E', 'D-presentation'):
         for v in ('OMP_NUM_THREADS', 'OMP_THREAD_LIMIT'):
             if os.environ.get(v) != str(args.threads):
-                ap.error(f'part E: run with OMP_NUM_THREADS={args.threads} OMP_THREAD_LIMIT={args.threads} in the environment '
-                         f'(importing mb_model resets OpenMP to all cores otherwise)')
+                ap.error(f'part {args.part}: run with OMP_NUM_THREADS={args.threads} OMP_THREAD_LIMIT={args.threads} in the '
+                         f'environment (importing mb_model resets OpenMP to all cores otherwise)')
+    if args.part == 'E':
         part_e(out, args.threads, args.smoke)
+    elif args.part == 'D-presentation':
+        if args.smoke:
+            args.search_recordings, args.n_recordings = 1, 1
+        part_d_presentation(out, args)
     elif args.part == 'D':
         part_d(out, args)
     elif args.part == 'E-tables':

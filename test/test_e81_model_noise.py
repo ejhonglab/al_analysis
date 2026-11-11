@@ -2,8 +2,8 @@
 """Tests for E81 parts D and E (scripts/claude_pair_remapping_experiments/E81_model_noise.py, the model's variability with
 the flies' shares): the repeat statistics against brute-force loops, the noise correction in use and the harness's
 functions; the interpolation of the jitter to a target gap on synthetic curves; and the calibration of the independent
-part on synthetic counts (it returns the target same-odor distance and gap). Synthetic data only, except the last test,
-which needs the shared directory's KC data."""
+part on synthetic counts (it returns the target same-odor distance and gap); the search step of part D's check
+(`pres_next`). Synthetic data only, except the flies' side test, which needs the shared directory's KC data."""
 
 import sys
 from pathlib import Path
@@ -209,3 +209,45 @@ def test_flies_side_reproduces_registry():
     same = np.mean([np.nanmean(x['same_odor']) for x in k])
     assert np.isclose(same, H.data_target('ctrl_single_trial_floor'), atol=1e-9)
     assert np.isclose(M.silent_sd(recs, 1.0), H.kc_trial_noise_sd('TNT3c'), atol=1e-12)
+
+
+def test_presentation_search_step():
+    # the same-odor distance linear in sigma_p^2: the secant through two points lands on the target
+    d = lambda sp: 0.2 + 18.0 * sp ** 2
+    target = 0.41
+    hist = [dict(sigma_p=0.08, same=d(0.08)), dict(sigma_p=0.13, same=d(0.13))]
+    assert np.isclose(M.pres_next(hist, target, slope0=5.0), np.sqrt((target - 0.2) / 18.0))
+    # the first step uses the given slope, the step kept within a factor of 2
+    assert np.isclose(M.pres_next(hist[:1], target, slope0=18.0), np.sqrt((target - 0.2) / 18.0))
+    assert np.isclose(M.pres_next(hist[:1], 10.0, slope0=18.0), 0.16)
+
+
+def test_presentation_scoring_and_table(tmp_path):
+    """pres_score and the table section on synthetic pseudo-recordings (no model): every readout, unit, kind and condition
+    is scored, and the section renders from the written tables."""
+    from types import SimpleNamespace
+    flies = {u: M.flies_side(u) for u in M.UNITS}
+    rng = np.random.default_rng(5)
+    base = _counts(seed=2, n_kc=400)
+    det = {'on': base, 'acute_off': base * 1.6 + (rng.random(base.shape) < 0.05) * 3}
+
+    def trials(m, n):
+        return np.stack([np.where(rng.random(m.shape) < 0.85, m, 0) * rng.lognormal(0, 0.3, m.shape) for _ in range(n)])
+    X = {c: trials(det[c], 9).reshape(3, 3, *base.shape) for c in M.CONDS}
+    read = lambda x, ro, u: x if ro == 'raw' else x / (x + 5.0)
+    mm = SimpleNamespace(read=read, det_pairs=lambda ro, u: {c: H.canonical_pairs(H.pair_distances(
+        pd.DataFrame(read(det[c], ro, u), columns=ODORS), 'cosine')) for c in M.CONDS})
+    run = SimpleNamespace(name='stub', label='C2', mm=mm, out=tmp_path, flies=flies, conv=lambda on, ro, u: 0.6,
+        gsd={u: {c: float(flies[u][M.GENOTYPE[c]]['silent_sd']) for c in M.CONDS} for u in M.UNITS})
+    best = {c: dict(sigma_s=0.07, sigma_p=0.09, fixed_thr=110.0, fixed_thr_ratio=1.08, converged=True, same=0.44,
+        arrs={'on_spk': trials(det['on'], 6)}) for c in M.CONDS}
+    sc, ck = M.pres_score(run, best, X, {'on': 0.07, 'acute_off': 0.15}, M._flies_pairs(flies))
+    sc, ck = pd.DataFrame(sc), pd.DataFrame(ck)
+    assert len(sc) == len(M.READOUTS) * len(M.UNITS) * len(M.PRES_KINDS) and len(ck) == len(M.READOUTS) * len(M.UNITS) * 2
+    assert sc[['loss', 'pattern', 'mean_effect', 'rho', 'six_effect', 'rate_trial_on', 'rate_trial_off']].notna().all().all()
+    assert ck[['same_odor', 'gap', 'bin_same', 'bin_gap', 'flies_bin_gap', 'inflation']].notna().all().all()
+    assert np.isclose(ck['shared_share'].iloc[0], 0.07 ** 2 / (0.07 ** 2 + 0.09 ** 2))
+    sc.to_csv(tmp_path / 'per_presentation.csv', index=False)
+    ck.to_csv(tmp_path / 'per_presentation_checks.csv', index=False)
+    text = '\n'.join(M._presentation_section(tmp_path))
+    assert "## Part D's check" in text and '| C2 | APL off |' in text and 'three-trial means, per-presentation jitter' in text

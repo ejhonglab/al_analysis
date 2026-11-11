@@ -137,7 +137,9 @@ usable without the option). `--workers W` runs the single-odor runs in W process
 model, each with one OpenMP thread (a run of one odor uses one thread). Folders partB_presentation (and
 partB_presentation_lognormal); calibration and trial files named <model>_p<SP>_sigma<sigma>_...; tables as part B's with
 a presentation_sd column. Cost: a run of one odor on one thread takes about a third of a run of all 16 on 12 threads
-(C2 on atlas: 4.4 s against 14 s), so in one process a trial costs about five times part B's; use --workers.
+(C2 on atlas: 4.4 s against 14 s), so in one process a trial costs about five times part B's; with --workers 10 on
+atlas (6 cores, 12 threads) about 1.4 single-odor runs a second, a trial (APL on and off) in about 23 s against part B's
+28 s, the workers adding about 8 GB beside the parent's.
 E81_model_noise.py --part D-presentation drives the same model with per-condition levels.
 
 Models from other experiments' joint fits (`--model-from EXPERIMENT:TAG`, repeatable; E48): the model
