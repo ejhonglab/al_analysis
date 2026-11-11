@@ -848,9 +848,56 @@ def score_oracle(out: Path, wirings: Sequence[str] = E_WIRINGS) -> pd.DataFrame:
     return sc
 
 
+def archive_prep(out: Path) -> pd.DataFrame:
+    """Before archive_model_outputs.py: variants.csv with every saved screen point (tag C2_<point_id>, outputs under
+    outputs/E77_input_side_common_error/screen/) and part E run (tag oracle_half<X>_<wiring>, outputs under .../oracle/)
+    and its absolute parameters, and their pair distances (raw spike counts, the harness's primary model RDM) added to
+    model_pair_distances_long.csv, for the archive's params.csv and apl_effect_scores.py."""
+    odir = H.outputs_dir(EXPERIMENT)
+    rows, parts = [], []
+    s = pd.read_csv(out / 'screen.csv').drop_duplicates('point_id', keep='last')
+    keep = ['fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'wKCKC_scale', 'thr_factor', 'apl_factor']
+    for _, r in s.iterrows():
+        tag = f'C2_{r.point_id}'
+        rows.append(dict(tag=tag, variant=tag, part='C', point=r.point_id, kind=r['kind'], handle=r.handle, setting=r.setting,
+                         value=r.get('value'), base='bouton', k=2.0, kc_kc_inh=r.wKCKC_scale, **{c: r[c] for c in keep if c in r.index},
+                         rate_on=r.rate_on, rate_off=r.rate_off, note=r.get('note')))
+        parts.append(('screen', tag))
+    if (out / 'oracle_runs.csv').exists():
+        o = pd.read_csv(out / 'oracle_runs.csv')
+        for _, r in o[o.input != 'lab'].iterrows():
+            tag = f'{r.input}_{r.wiring}'
+            rows.append(dict(tag=tag, variant=tag, part='E', point=r.input, kind='oracle', handle='E', setting=r.wiring,
+                             base='bouton', k=2.0, kc_kc_inh=r.wKCKC_scale, wiring=r.wiring,
+                             orn_input=f'results/{EXPERIMENT}/inputs/{r.input}.csv', **{c: r[c] for c in keep if c in r.index},
+                             rate_on=r.rate_on, rate_off=r.rate_off))
+            parts.append(('oracle', tag))
+    v = pd.DataFrame(rows)
+    v.to_csv(out / 'variants.csv', index=False)
+    lp = out / 'model_pair_distances_long.csv'
+    old = pd.read_csv(lp) if lp.exists() else pd.DataFrame(columns=['tag', 'condition', 'odor_a', 'odor_b', 'distance'])
+    new = []
+    for sub, tag in parts:
+        if tag in set(old.tag):
+            continue
+        d = {}
+        for c in ('on', 'acute_off'):
+            f = odir / sub / f'{tag}_{c}_spike_counts.parquet'
+            g = odir / sub / f'{tag}_{c}_responses.parquet'
+            if not (f.exists() and g.exists()):
+                break
+            d[c] = H.model_rdms(pd.read_parquet(g), pd.read_parquet(f))[H.PRIMARY_MODEL_RDM]
+        if len(d) == 2:
+            new.append(pd.concat({(tag, c): x for c, x in d.items()}, names=['tag', 'condition', 'odor_a', 'odor_b']).rename('distance').reset_index())
+    if new:
+        pd.concat([old] + new, ignore_index=True).to_csv(lp, index=False)
+    print(f'{len(v)} variants; {len(new)} added to model_pair_distances_long.csv', flush=True)
+    return v
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['A-input', 'A-score', 'B', 'C', 'gate', 'D', 'E', 'F'])
+    ap.add_argument('--part', required=True, choices=['A-input', 'A-score', 'B', 'C', 'gate', 'D', 'E', 'F', 'archive-prep'])
     ap.add_argument('--half', choices=['A', 'B'], help="part E's half of the recordings to search against")
     ap.add_argument('--score', action='store_true', help="part E: score the two searched inputs (score_oracle)")
     ap.add_argument('--odors', nargs='+', default=list(E_ODORS))
@@ -870,6 +917,8 @@ def main() -> None:
         S.screen(out)
     elif args.part == 'gate':
         gate(out)
+    elif args.part == 'archive-prep':
+        archive_prep(out)
     elif args.part == 'E' and args.score:
         score_oracle(out)
     elif args.part == 'E':
