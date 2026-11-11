@@ -27,8 +27,11 @@ directory's notes/ and are linked from here.
   the calibrated readout (0.050 to 0.051); on raw counts a fit at 2 s stays at 0.138 / 0.149. E82's note and Status say so.
 - **Remains.** Tom's decisions: whether the firing ceiling, with an adaptation outlasting the odor, joins the base model, and
   which reading carries the model's side of the main target (raw counts under the flies' protocol, or the calibrated readout).
-  Open on the model side: the 3 s adaptation at the 0.5 s pulse (whether the short pulse can stand in for the flies' protocol);
-  the summary's raw-count sentences are qualified by E82's passage once it is folded in.
+  Open on the model side: the 3 s adaptation at the 0.5 s pulse (whether the short pulse can stand in for the flies' protocol;
+  E82 part B7, running from 2026-11-11 10:10); the summary's raw-count sentences are qualified by E82's passage (folded in,
+  5f7bd8b). The trial-noise pipeline (E43_model_trial_noise.fit_model) does not rebuild fits at another pulse or APL time
+  constant; since 2026-11-11 it refuses a fits.csv row with time_stim_end, time_end or apl_taum away from olfsysm's defaults
+  rather than rebuilding it at 0.5 s unnoticed (test_e43_timing_refusal.py). E73's part B reads saved counts and trials only.
 
 ### The noise correction of the KC distances assumes noise independent between odors, which the recordings' repeats contradict (found 2026-11-11, atlas's planning subagent, probe)
 - **What.** `noise_floor_trial_distances.py` corrects each recording's odor-odor distances on the assumption that trial-to-trial noise adds

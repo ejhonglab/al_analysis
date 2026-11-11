@@ -23,15 +23,22 @@ def test_point_counts_and_ids():
     assert len(ids) == len(set(ids))
     assert all(re.fullmatch(r'[A-Za-z0-9_.-]+', i) for i in ids)
     held = [s for s in specs if not s['identity']]
-    by_part = {p: [s for s in held if s['part'] == p] for p in ('B1', 'B2', 'B3', 'B4', 'B5', 'B6')}
-    # 7 new B1 points plus E80's two re-held 2 s points; then 5, 4, 4, 5; B6 the literature setting's four wirings at 3 s
-    assert {p: len(v) for p, v in by_part.items()} == dict(B1=9, B2=5, B3=4, B4=4, B5=5, B6=4)
+    by_part = {p: [s for s in held if s['part'] == p] for p in ('B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7')}
+    # 7 new B1 points plus E80's two re-held 2 s points; then 5, 4, 4, 5; B6 the literature setting's four wirings at 3 s;
+    # B7 fit0 at 3 and 10 s, B6's four wirings at 3 s and D1 fixed and re-held, all at 0.5 s
+    assert {p: len(v) for p, v in by_part.items()} == dict(B1=9, B2=5, B3=4, B4=4, B5=5, B6=4, B7=8)
     assert len([s for s in by_part['B1'] if not s['reproduces']]) == 7
     assert sorted(s['model'] for s in by_part['B1']) == sorted(R.MODELS)
     idents = [s for s in specs if s['identity']]
-    # one identity per B1 model, and one per model of each other family (B6: four)
-    assert len(idents) == 9 + 2 + 2 + 2 + 2 + 4
+    # one identity per B1 model, and one per model of each other family (B6: four; B7: D1 only, its other points read
+    # against the B2 / B6 identities)
+    assert len(idents) == 9 + 2 + 2 + 2 + 2 + 4 + 1
+    by = {s['point_id']: s for s in specs}
     for s in held:
+        if s['part'] == 'B7':
+            i = by[s['reference']]
+            assert i['identity'] and i['model'] == s['model'] and s['reference'] in s['after'], s['point_id']
+            continue
         assert any(i['part'] == s['part'] and i['model'] == s['model'] for i in idents), s['point_id']
 
 
@@ -40,7 +47,9 @@ def test_identity_kwargs_are_the_fits_own():
     for s in by.values():
         if not s['identity']:
             continue
-        assert (s['pulse'], s['time_stim_end'], s['time_end'], s['held']) == (0.5, 0.5, 0.75, False)
+        # D1 was fitted at the flies' pulse, so its identity is at 2 s
+        pulse = (2.0, 2.0, 2.25) if s['point_id'] == 'I_B7_D1' else (0.5, 0.5, 0.75)
+        assert (s['pulse'], s['time_stim_end'], s['time_end'], s['held']) == pulse + (False,)
         assert s['after'] == [] and s['reference'] == '' and s['reproduces'] == ''
     assert by['I_B2_fit0']['opts'] == dict(kc_adapt_tau=1.0) == by['I_B2_fit1']['opts']
     for m in ('C2', 'fit0'):
@@ -55,7 +64,7 @@ def test_identity_kwargs_are_the_fits_own():
 def test_held_point_kwargs():
     by = _by_id()
     for s in by.values():
-        if s['identity']:
+        if s['identity'] or s['part'] == 'B7':
             continue
         assert (s['pulse'], s['time_stim_end'], s['time_end'], s['held']) == (2.0, 2.0, 2.25, True)
         assert f"I_{s['part']}_{s['model']}" in s['after']
@@ -87,6 +96,33 @@ def test_held_point_kwargs():
         0.01, 0.25, 1.0]
     assert sorted(s['value'] for s in by.values() if s['part'] == 'B5' and s['model'] == 'C2' and not s['identity']) == [
         0.01, 0.25]
+
+
+def test_b7_points():
+    """B7: every point at the model's 0.5 s pulse; fit0 at 3 and 10 s and B6's four wirings at 3 s re-held after
+    their B2 / B6 identities (population 'fc_tau3' at 0.5 s); D1 after its 2 s identity, fixed and re-held."""
+    by = _by_id()
+    b7 = {p: s for p, s in by.items() if s['part'] == 'B7'}
+    assert set(b7) == {'B7_fit0_tau3', 'B7_fit0_tau10', 'B7_fit1_tau3', 'B7_P1_fc_tau3', 'B7_P2_fc_tau3',
+                       'B7_M1_fc_tau3', 'I_B7_D1', 'B7_D1', 'B7_D1_held'}
+    for p, s in b7.items():
+        assert s['option'] == 'kc_adapt_tau' and s['opts'] == dict(kc_adapt_tau=s['value']) and s['prepass'] == {}
+        assert s['kc_kc_tau'] == 0.05
+        if p != 'I_B7_D1':
+            assert (s['pulse'], s['time_stim_end'], s['time_end']) == (0.5, 0.5, 0.75)
+    assert [b7[f'B7_fit0_tau{t}']['value'] for t in (3, 10)] == [3.0, 10.0]
+    for t in (3, 10):
+        s = b7[f'B7_fit0_tau{t}']
+        assert s['held'] and s['reference'] == 'I_B2_fit0' and s['population'] == ''
+    for m in R.B6_MODELS:
+        s = b7[f'B7_{m}_tau3']
+        assert s['held'] and s['value'] == 3.0 and s['reference'] == f'I_B6_{m}' and s['population'] == 'fc_tau3'
+        assert set(R.REPRODUCTIONS) <= set(s['after'])
+    assert b7['I_B7_D1']['identity'] and b7['I_B7_D1']['value'] == R.D1_TAU == 3.0
+    assert not b7['B7_D1']['held'] and b7['B7_D1']['after'] == ['I_B7_D1']
+    assert b7['B7_D1_held']['held'] and b7['B7_D1_held']['reference'] == 'I_B7_D1'
+    assert R.model_kws(b7['B7_D1'], dict(kc=dict(kc_refractory_period=0.003, kc_adapt_inc=0.11, kc_adapt_tau=3.0))) == dict(
+        kc_refractory_period=0.003, kc_adapt_inc=0.11, kc_adapt_tau=3.0, time_stim_end=0.5, time_end=0.75)
 
 
 def test_order_and_prerequisites():
@@ -154,6 +190,20 @@ def test_model_sources(model):
     else:
         assert pd.isna(r['kc_refractory_period'])
     assert wiring == (None if model == 'fit1' else model.split('_')[0])
+
+
+@pytest.mark.skipif(not _shared(), reason='needs the shared directory')
+def test_d1_parts():
+    """D1 is part D's fit at 2 s with the 3 s adaptation on the real wiring, and its breadth is the 2 s base run's,
+    which the breadth pre-pass of its identity point reproduces."""
+    folder, tag, wiring = R.model_source('D1')
+    r = R.fit_row(folder, tag, wiring)
+    assert wiring is None and float(r['kc_adapt_tau']) == 3.0 and float(r['time_stim_end']) == 2.0
+    m = R.model_parts('D1')
+    assert m['kc']['kc_adapt_tau'] == 3.0 and set(m['kc']) == set(R.KC_SPIKING)
+    assert m['target_on'] == int((m['saved']['on'][0].to_numpy() > 0.5).sum())
+    b = R.point_breadth(_by_id()['I_B7_D1'], m)
+    assert b.index.equals(m['breadth'].index) and np.array_equal(b.to_numpy(), m['breadth'].to_numpy())
 
 
 @pytest.mark.skipif(not _shared(), reason='needs the shared directory')

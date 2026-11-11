@@ -28,6 +28,14 @@ The points (`point_specs`), each family starting with identity points at the 0.5
 - B5, APL's time constant (apl_taum 0.01, 0.25 and 1 s on fit0, 0.01 and 0.25 s on C2, for 0.05 s); needs mb_model's
   `apl_taum` kwarg (`apl_taum_supported`), skipped with a message until it is there. APL is off in the breadth pre-pass,
   so neither apl_taum nor kc_kc_tau enters it (KC-KC inhibition is not in the bouton base either).
+- B6, the literature setting's four wirings (fit1, P1_fc, P2_fc, M1_fc) at 2 s, re-held, with the adaptation at 3 s
+  (population 'fc_tau3').
+- B7 (the addendum, the note's next step 1), all at the model's 0.5 s pulse: fit0 with the adaptation at 3 and 10 s and
+  the four wirings of B6 at 3 s (population 'fc_tau3' at 0.5 s), re-held to their own counts, after their B2 / B6
+  identities; and D1, part D's fit of the firing-ceiling family at 2 s with the 3 s adaptation
+  (results/E82_flies_protocol/fits.csv), first at its own 2 s pulse as an identity (I_B7_D1: its saved counts exactly,
+  with its breadth pre-pass equal to the base run E10_joint_fit cached for it), then at 0.5 s at its own parameters
+  (B7_D1) and re-held to its own counts (B7_D1_held). Like every point, B7_D1 takes the breadth of its pulse (0.5 s).
 Every 2 s point holds the APL-off response count, then the APL-on one, at its model's own saved counts (0.5 s), from
 its model's fitted parameters. B2 to B5 name their model's B1 point as `reference` (the gates' re-held 2 s start).
 
@@ -118,11 +126,13 @@ def apl_taum_supported() -> bool:
 def _spec(pid: str, part: str, model: str, *, identity: bool, option: str = '', value: float = np.nan,
           opts: Optional[dict] = None, kc_kc_tau: float = KC_KC_TAU, prepass: Optional[dict] = None,
           after: Sequence[str] = (), reference: str = '', reproduces: str = '', requires: str = '',
-          population: str = '') -> dict:
-    pulse = IDENTITY_PULSE if identity else PULSE
+          population: str = '', pulse: Optional[float] = None, held: Optional[bool] = None) -> dict:
+    # pulse and held default to the identity's (0.5 s, fixed) or the part-B point's (2 s, re-held); B7 sets them
+    pulse = (IDENTITY_PULSE if identity else PULSE) if pulse is None else float(pulse)
+    held = (not identity) if held is None else bool(held)
     pop = next((k for k, v in POPULATIONS.items() if model in v), '') if part == 'B1' else population
     return dict(point_id=pid, part=part, model=model, identity=bool(identity), option=option, value=float(value),
-                pulse=float(pulse), **E80P.timing_kws(pulse), held=not identity, opts=dict(opts or {}),
+                pulse=float(pulse), **E80P.timing_kws(pulse), held=held, opts=dict(opts or {}),
                 kc_kc_tau=float(kc_kc_tau), prepass=dict(prepass or {}), after=list(after), reference=reference,
                 reproduces=reproduces, population=pop, requires=requires)
 
@@ -181,6 +191,7 @@ def point_specs() -> List[dict]:
                              opts=dict(apl_taum=t), after=[f'I_B5_{m}'] + gate, reference=f'B1_{m}',
                              requires='apl_taum'))
     pts += b6_specs()
+    pts += b7_specs()
     return pts
 
 
@@ -199,6 +210,38 @@ def b6_specs() -> List[dict]:
     pts += [_spec(f'B6_{m}_tau{B6_TAU:g}', 'B6', m, identity=False, option='kc_adapt_tau', value=B6_TAU,
                   opts=dict(kc_adapt_tau=B6_TAU), after=[f'I_B6_{m}'] + gate, reference=f'B1_{m}', population='fc_tau3')
              for m in B6_MODELS]
+    return pts
+
+
+# part B7 (E82's addendum, the note's next step 1): the firing-ceiling family at the model's 0.5 s pulse with the
+# adaptation that passed at 2 s, re-held; and the fit made at the flies' pulse (part D's D1) read at 0.5 s
+B7_TAUS = {'fit0': (3.0, 10.0)}
+B7_FC_TAU = B6_TAU
+D1 = (EXPERIMENT, 'nu_rate0.068_aplboth_refr3_adapt0.1114t3000_k2_pulse2')
+D1_TAU = 3.0
+
+
+def b7_specs() -> List[dict]:
+    """Part B7's points, all at the model's 0.5 s pulse: fit0 with the adaptation's time constant at 3 and 10 s and
+    the literature setting's four wirings at 3 s (population 'fc_tau3' at 0.5 s), re-held, after their B2 / B6
+    identities; and D1 (the firing-ceiling family fitted at 2 s with the 3 s adaptation) at its own parameters and
+    re-held, after its identity at its own 2 s pulse (I_B7_D1). `reference` is the identity the point is read
+    against."""
+    gate = list(REPRODUCTIONS)
+    pts: List[dict] = []
+    for m, taus in B7_TAUS.items():
+        pts += [_spec(f'B7_{m}_tau{t:g}', 'B7', m, identity=False, pulse=IDENTITY_PULSE, option='kc_adapt_tau',
+                      value=t, opts=dict(kc_adapt_tau=t), after=[f'I_B2_{m}'] + gate, reference=f'I_B2_{m}')
+                for t in taus]
+    pts += [_spec(f'B7_{m}_tau{B7_FC_TAU:g}', 'B7', m, identity=False, pulse=IDENTITY_PULSE, option='kc_adapt_tau',
+                  value=B7_FC_TAU, opts=dict(kc_adapt_tau=B7_FC_TAU), after=[f'I_B6_{m}'] + gate,
+                  reference=f'I_B6_{m}', population='fc_tau3') for m in B6_MODELS]
+    d1 = dict(option='kc_adapt_tau', value=D1_TAU, opts=dict(kc_adapt_tau=D1_TAU))
+    pts.append(_spec('I_B7_D1', 'B7', 'D1', identity=True, pulse=PULSE, **d1))
+    pts.append(_spec('B7_D1', 'B7', 'D1', identity=False, pulse=IDENTITY_PULSE, held=False, after=['I_B7_D1'],
+                     reference='I_B7_D1', **d1))
+    pts.append(_spec('B7_D1_held', 'B7', 'D1', identity=False, pulse=IDENTITY_PULSE, after=['I_B7_D1'] + gate,
+                     reference='I_B7_D1', **d1))
     return pts
 
 
@@ -244,6 +287,8 @@ def model_source(model: str) -> Tuple[str, str, Optional[str]]:
         if tuple(E72.G_REAL) != FIT1:
             raise RuntimeError(f"E72's part G real-wiring fit is {E72.G_REAL}, not {FIT1}")
         return FIT1[0], FIT1[1], None
+    if model == 'D1':
+        return D1[0], D1[1], None
     label, fam = model.split('_')
     if label not in DRAW_LABELS:
         raise ValueError(model)
@@ -306,6 +351,16 @@ def model_parts(model: str) -> dict:
         F = E80P.fit0_parts()
         m = dict(p=dict(F['p']), kc=dict(F['kc']), saved=F['saved'], target_on=F['target_on'],
                  target_off=F['target_off'], source=(E80P.FIT0_FOLDER, F['tag']), wiring=None)
+    elif model == 'D1':
+        r = fit_row(*D1, None)
+        timing = E80P.timing_kws(PULSE)
+        if (float(r['time_stim_end']) != timing['time_stim_end'] or float(r['time_end']) != timing['time_end']
+                or float(r['kc_adapt_tau']) != D1_TAU):
+            raise RuntimeError(f"{D1[1]}: pulse {r['time_stim_end']} / {r['time_end']} s, kc_adapt_tau {r['kc_adapt_tau']}")
+        saved = d1_saved()
+        m = dict(p=E72.fitted_params(*D1), kc={c: float(r[c]) for c in KC_SPIKING}, saved=saved,
+                 target_on=_n(saved['on'][0]), target_off=_n(saved['off'][0]), source=D1, wiring=None,
+                 breadth=d1_breadth())
     else:
         folder, tag, wiring = model_source(model)
         r = fit_row(folder, tag, wiring)
@@ -349,10 +404,43 @@ def wiring_parts(label: str) -> dict:
     return _WIRINGS[label]
 
 
+def _d1_dirs() -> List[Path]:
+    """Where part D's fits are: outputs/E82_flies_protocol/fits/ and the experiment's outputs folder, then the
+    model-output archive."""
+    import E72_wiring_population as E72
+    return [H.outputs_dir(EXPERIMENT) / 'fits', H.outputs_dir(EXPERIMENT), E72.ARCHIVE / EXPERIMENT]
+
+
+def d1_saved() -> Dict[str, tuple]:
+    """D1's saved {'on', 'off'}: (responses, spike counts), at its 2 s pulse."""
+    for d in _d1_dirs():
+        fs = {c: [d / f'{D1[1]}_{cc}_{k}.parquet' for k in ('responses', 'spike_counts')]
+              for c, cc in (('on', 'on'), ('off', 'acute_off'))}
+        if all(f.exists() for v in fs.values() for f in v):
+            return {c: tuple(pd.read_parquet(f) for f in v) for c, v in fs.items()}
+    raise RuntimeError(f"D1's saved outputs ({D1[1]}) not found in {[str(d) for d in _d1_dirs()]}")
+
+
+def d1_breadth() -> pd.Series:
+    """The breadth behind D1's APL->KC weights: each KC's total spike count in the bouton base's APL-off run at the
+    2 s pulse that E10_joint_fit cached for that fit (`<timing label>_base_acute_off_spike_counts.parquet`), as
+    E10_joint_fit.bouton_base sums it."""
+    import E10_joint_fit as J
+    name = J.timing_label(E80P.timing_kws(PULSE)) + '_base_acute_off_spike_counts.parquet'
+    for d in _d1_dirs():
+        if (d / name).exists():
+            off = pd.read_parquet(d / name)
+            return pd.Series(off.astype(float).sum(axis='columns').to_numpy(),
+                             index=off.index.get_level_values(H.KC_ID_LEVEL))
+    raise RuntimeError(f"D1's base APL-off run ({name}) not found in {[str(d) for d in _d1_dirs()]}")
+
+
 def own_breadth(m: dict) -> pd.Series:
     """The breadth behind a model's saved APL->KC weights (the bouton base's pre-pass at olfsysm's 0.5 s pulse on its
-    wiring)."""
+    wiring; D1's at its 2 s pulse)."""
     import E77_input_screen as S
+    if 'breadth' in m:
+        return m['breadth']
     return S.c2_parts()['breadth'] if m['wiring'] is None else wiring_parts(m['wiring'])['breadth']
 
 
@@ -519,7 +607,8 @@ def write_provenance(out: Path, specs: Sequence[dict]) -> None:
                 al_analysis_dirty=bool(_git('status', '--porcelain', '--untracked-files=no')),
                 model=H.model_provenance(orn_deltas=P['orn'], _wPNKC=P['W']), apl_taum_supported=apl_taum_supported(),
                 c2=dict(experiment=S.C2[0], tag=S.C2[1]), fit0=dict(experiment=E80P.FIT0_FOLDER),
-                fit1=dict(experiment=FIT1[0], tag=FIT1[1]), draws=list(DRAW_LABELS), populations=POPULATIONS,
+                fit1=dict(experiment=FIT1[0], tag=FIT1[1]), d1=dict(experiment=D1[0], tag=D1[1]),
+                draws=list(DRAW_LABELS), populations=POPULATIONS,
                 e80_reproduced=E80_HELD, bouton_base_params=P['init'], breadth_k=S.BREADTH_K, tied_on=S.TIED_ON,
                 thr_bracket=S.THR_BRACKET, thr_step=S.THR_STEP, apl_bracket=S.APL_BRACKET, apl_step=S.APL_STEP,
                 tail=E80P.TAIL, windows=[list(w) for w in E80P.WINDOWS], points=list(specs),
@@ -697,7 +786,7 @@ def population_rows(out: Path, outputs: Optional[Path] = None) -> pd.DataFrame:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--only', nargs='+', help='point ids to run (the points they wait for run first)')
-    ap.add_argument('--part', nargs='+', choices=('B1', 'B2', 'B3', 'B4', 'B5', 'B6'),
+    ap.add_argument('--part', nargs='+', choices=('B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7'),
                     help="the parts' points to run (with --only: both; the points they wait for run first)")
     ap.add_argument('--list', action='store_true', help='list the points and exit')
     ap.add_argument('--populations', action='store_true', help='only rewrite runs_populations.csv from saved points')

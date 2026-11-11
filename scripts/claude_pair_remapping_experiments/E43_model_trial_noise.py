@@ -637,6 +637,16 @@ def fit_model(name: str, orn: pd.DataFrame, out_dir: Path) -> dict:
             'claw-driven APL can be rebuilt here')
     if _given(fit, 'base_params') is not None:
         raise NotImplementedError(f'{experiment}:{tag}: fits from a --base-params base are not supported')
+    # fits at another odor pulse or APL time constant (E10's --stim-end / --sim-end / --apl-taum, E82) are not rebuilt
+    # with those settings here, so refuse them rather than rebuild them at olfsysm's defaults
+    import olfsysm as osm
+    mp = osm.ModelParams()
+    defaults = dict(time_stim_end=mp.time_stim_end, time_end=mp.time_end, apl_taum=mp.kc.apl_taum)
+    other = {c: _given(fit, c) for c in defaults
+             if _given(fit, c) is not None and float(_given(fit, c)) != float(defaults[c])}
+    if other:
+        raise NotImplementedError(f'{experiment}:{tag}: {other} differ from olfsysm\'s defaults {defaults}; the pipeline '
+            'does not rebuild fits at another pulse or APL time constant yet')
     if name == 'ref40' and sorted(str(fit['gain_glomeruli']).split(',')) != sorted(ORACLE):
         raise ValueError(f"{REF_FIT}: gain glomeruli {fit['gain_glomeruli']} are not the oracle set {ORACLE}")
     claw_thr = None if _given(fit, 'claw_thr') is None else float(fit['claw_thr'])

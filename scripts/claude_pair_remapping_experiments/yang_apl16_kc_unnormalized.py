@@ -144,6 +144,8 @@ recordings; and they equal the `dfc` column of per_trial_long.parquet (hal's, ol
 - `olfdb/APL16_KCs_TNT_unnormalized_dFc_long.parquet` ({olf['TNT']['kcs']} KCs) and
   `olfdb/APL16_KCs_TNT3c_unnormalized_dFc_long.parquet` ({olf['TNT3c']['kcs']} KCs): olfdb's long upload layout (date, fly_num,
   hemibrain, roi, panel, odor, repeat, value), value the change in Fc; `olfdb/README_olfdb_unnormalized.md` has the metadata.
+  In olfdb they are datasets #24 (TNT) and #25 (TNT3c), "unnormalized dFc" (uploaded from hal at Tom's request, 2026-11-11;
+  #19 / #20 are the same recordings in Yang's whole-recording z, #22 / #23 in baseline-noise units).
 - `provenance_unnormalized.json`: the per-recording checks, the inputs' locations, the commit.
 """
     (out / 'README_unnormalized.md').write_text(txt)
