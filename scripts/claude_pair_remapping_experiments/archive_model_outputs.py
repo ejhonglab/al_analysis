@@ -51,6 +51,7 @@ PARAM_COLS = ['tag', 'variant', 'base', 'config', 'kind', 'point', 'part', 'seed
     'arm', 'orn_input', 'multiplier_min', 'multiplier_max', 'multiplier_geomean', 'scale_min', 'scale_max', 'cal_readout_param',
     'init_params', 'aplpn_max', 'aplpn_fixed', 'aplkc_min',
     'kc_refractory_period', 'kc_adapt_inc', 'kc_adapt_tau', 'adapt_strength', 'apl_factor', 'ref_experiment', 'ref_fit',
+    'time_stim_end', 'time_end', 'apl_taum', 'count_kernel_rise', 'count_kernel_decay', 'option', 'value', 'fixed_thr_off',
     'kc_thr_input_exp', 'breadth_kept', 'prepass_thr_factor', 'prepass_fixed_thr',
     'rel', 'start_experiment', 'start_tag', 'breadth_from', 'kckc', 'kckc_factor',
     'max_count_on', 'max_count_off',
