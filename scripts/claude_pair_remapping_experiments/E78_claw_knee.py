@@ -7,7 +7,7 @@ The entry (experiment_priorities.md, item 3; planned by a Fable subagent, claude
 17:47) is the spec. Parts:
 
 - A: the hard knee at 100 and 130 Hz in the best family, `E10_joint_fit.py` as it is (run by hal's session; fits.csv and
-  histories in results/E78_claw_knee/).
+  histories in results/E78_claw_knee/); `--part A-score` scores the fits and C2 with part C's statistics (partA_scored.csv).
 - B (`--part B`, no simulations but one run per model for the time courses): the archive's knee variants on E77's kinds
   of pairs and on the six near pairs, each against its own base (archive_knee_variants.csv); the six pairs through the
   saved trial-noise rows (noise_six_pairs.csv); who selects the responders (who_selects.csv).
@@ -1366,9 +1366,10 @@ def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2', breadth: st
 
 # ---------------------------------------------------------------------------
 # the gate
-def gate_point(row: dict, ref: dict, ceiling: bool = False, loss_limit: Optional[float] = None) -> Dict[str, object]:
-    """The entry's four conditions for one point (`row`, a sweep.csv row) against `ref` (C2's identity row, the start
-    itself), inside the four bands (16:10 rule, `realism_flag_noise`), with both response rates held (`rates_held`; a
+def gate_point(row: dict, ref: dict, ceiling: bool = False, loss_limit: Optional[float] = None,
+        own: Optional[dict] = None) -> Dict[str, object]:
+    """The entry's four conditions for one point (`row`, a sweep.csv row) against `ref` (C2's identity row, for every
+    start), inside the four bands (16:10 rule, `realism_flag_noise`), with both response rates held (`rates_held`; a
     point whose bisection ended at a bound fails every condition):
     (i) the ester group's error under the calibrated readout (`cal_err_ester`) smaller in magnitude by a third or more and
         the six pairs' APL effect on raw counts (`raw_six_effect`) raised by 0.03 or more;
@@ -1380,6 +1381,9 @@ def gate_point(row: dict, ref: dict, ceiling: bool = False, loss_limit: Optional
         Yang's z, C2's 0.60) is 0.50 or more;
     (iv) 2h at 10^-5 keeps half or more of `ref`'s APL-on response fraction (`low_2h_m5_frac_on`); None (not passed)
         while the point has not been run at the low concentrations.
+    `own` is the identity row of the point's own start (default `ref`): the '*_start' columns hold its values and
+    'ester_reduction_vs_start' / 'six_raise_vs_start' read (i) like for like against it (reported, not gated); the
+    '*_ref' columns hold `ref`'s, which the conditions use.
     Returns each condition's values and flag, 'rates_held', 'bands', 'pass' (all four and the bands) and
     'pass_without_iv'."""
     g = GATE
@@ -1387,16 +1391,21 @@ def gate_point(row: dict, ref: dict, ceiling: bool = False, loss_limit: Optional
     held = row.get('rates_held', True)
     held = not (held is False or str(held).lower() in ('false', '0', '0.0'))
     out: Dict[str, object] = dict(point_id=row.get('point_id'), start=row.get('start'), rates_held=held)
+    own = ref if own is None else own
+    reduction = lambda e, e0: 1.0 - abs(e) / abs(e0) if np.isfinite(e) and np.isfinite(e0) and e0 != 0 else np.nan
     e, e0 = f('cal_err_ester'), f('cal_err_ester', ref)
-    red = 1.0 - abs(e) / abs(e0) if np.isfinite(e) and np.isfinite(e0) and e0 != 0 else np.nan
+    red = reduction(e, e0)
     raise6 = f('raw_six_effect') - f('raw_six_effect', ref)
-    out.update(ester_error=e, ester_error_start=e0, ester_reduction=red, six_effect=f('raw_six_effect'),
-        six_effect_start=f('raw_six_effect', ref), six_raise=raise6)
+    out.update(ester_error=e, ester_error_ref=e0, ester_reduction=red, six_effect=f('raw_six_effect'),
+        six_effect_ref=f('raw_six_effect', ref), six_raise=raise6, ester_error_start=f('cal_err_ester', own),
+        six_effect_start=f('raw_six_effect', own), ester_reduction_vs_start=reduction(e, f('cal_err_ester', own)),
+        six_raise_vs_start=f('raw_six_effect') - f('raw_six_effect', own))
     out['i'] = bool(held and np.isfinite(red) and red >= g['ester_reduction'] - 1e-12 and np.isfinite(raise6)
         and raise6 >= g['six_raise'] - 1e-12)
     if loss_limit is None:
-        loss_limit = f('cal_loss', ref) + (g['loss_tol_ceiling'] if ceiling else g['loss_tol'])
-    out.update(cal_loss=f('cal_loss'), cal_loss_start=f('cal_loss', ref), loss_limit=float(loss_limit))
+        loss_limit = f('cal_loss', own) + (g['loss_tol_ceiling'] if ceiling else g['loss_tol'])
+    out.update(cal_loss=f('cal_loss'), cal_loss_start=f('cal_loss', own), cal_loss_ref=f('cal_loss', ref),
+        loss_limit=float(loss_limit))
     out['ii'] = bool(held and np.isfinite(out['cal_loss']) and out['cal_loss'] <= loss_limit + 1e-12)
     worst, worst_odor = np.inf, None
     for c in ('on', 'off'):
@@ -1435,9 +1444,10 @@ def gate(out: Path, ref_point: str = 'identity', breadth: str = 'prepass') -> di
     ('identity', C2 itself, as the entry specifies; 'identity_held', C2 with only the held breadth, for the held run),
     (ii) the readout loss at most GATE['loss_max_c2'] (0.060) for C2's points against C2 itself (C2's identity_held
     plus 0.004 against it), the start's own `ref_point` row plus 0.006 for the firing ceiling's (fit1) and plus 0.004 for
-    the re-drawn wirings'. In the held run each row also carries the conditions against the other reference (held_* /
-    ident_*). The transfers that go on to part D: at most two, the best passing knee point on C2 (by the readout loss)
-    and the best passing odor-relative point if it passes too. Writes gate.json / gate.csv for the pre-pass run against
+    the re-drawn wirings'. Each row's '*_start' columns hold its own start's identity values (for P1 and fit1 not C2's)
+    and '*_ref' C2's, which (i), (iii) and (iv) use. In the held run each row also carries the conditions against the
+    other reference (held_* / ident_*). The transfers that go on to part D: at most two, the best passing knee point on
+    C2 (by the readout loss) and the best passing odor-relative point if it passes too. Writes gate.json / gate.csv for the pre-pass run against
     C2 itself, gate_identity_held.* for the held run against identity_held, gate_<run>_<ref>.* otherwise."""
     import json
     if ref_point not in ('identity', 'identity_held') or breadth not in BREADTHS:
@@ -1465,13 +1475,13 @@ def gate(out: Path, ref_point: str = 'identity', breadth: str = 'prepass') -> di
                 continue
             ctrl = d['control'].astype(str).str.lower().isin(['true', '1', '1.0']) if 'control' in d else False
             for _, r in d[~d.point_id.isin(['identity', 'identity_held']) & ~ctrl].iterrows():
-                row = dict(gate_point(r.to_dict(), c2_refs[ref_point], loss_limit=limit(start, refs, ref_point)), tag=r['tag'],
-                    family=r['family'], ref_point=ref_point, run=breadth, kckc=r.get('kckc'))
+                row = dict(gate_point(r.to_dict(), c2_refs[ref_point], loss_limit=limit(start, refs, ref_point),
+                    own=refs[ref_point]), tag=r['tag'], family=r['family'], ref_point=ref_point, run=breadth, kckc=r.get('kckc'))
                 if other in refs and other in c2_refs:
-                    alt = gate_point(r.to_dict(), c2_refs[other], loss_limit=limit(start, refs, other))
+                    alt = gate_point(r.to_dict(), c2_refs[other], loss_limit=limit(start, refs, other), own=refs[other])
                     pre = 'held_' if other == 'identity_held' else 'ident_'
                     row.update({pre + k: alt[k] for k in ('i', 'ii', 'iii', 'iv', 'pass', 'pass_without_iv', 'loss_limit',
-                        'ester_error_start', 'six_effect_start')})
+                        'ester_error_ref', 'six_effect_ref', 'cal_loss_start')})
                 rows.append(row)
         g = pd.DataFrame(rows)
     suffix = gate_suffix(breadth, ref_point)
@@ -1668,6 +1678,40 @@ def d_heldout(out: Path, point_id: str) -> pd.DataFrame:
 
 # ---------------------------------------------------------------------------
 # part E and the summary
+def a_score(out: Path) -> pd.DataFrame:
+    """Part A's fits (fits.csv) and C2 scored with part C's statistics (`score_point`, against C2: the loss and its parts
+    under each readout, the six pairs and E77's kinds of pairs, the group errors, the 16 odors' response fractions, the
+    response rate ρ and odors per KC under both rules, the largest spike counts, the bands), with the fits' absolute
+    parameters and the knee over the model's largest PN rate (pn_rates.csv). Writes partA_scored.csv."""
+    import E72_wiring_population as E72
+    ref = E72.load_fit(*C2)
+    items = [('C2', C2[0], C2[1], dict(fixed_thr=np.nan))]
+    fp = out / 'fits.csv'
+    if fp.exists():
+        items += [(str(r.tag), EXPERIMENT, str(r.tag), r.to_dict()) for _, r in pd.read_csv(fp).iterrows()]
+    pn = out / 'pn_rates.csv'
+    top = float(pd.read_csv(pn).set_index('glomerulus').max().max()) if pn.exists() else np.nan
+    rows = []
+    for name, folder, tag, fit in items:
+        o = E72.load_fit(folder, tag)
+        if o is None:
+            print(f'{name}: no saved outputs', flush=True)
+            continue
+        row, _ = score_point(o, ref)
+        row = dict(dict(name=name, folder=folder, tag=tag), **row)
+        for k in ('claw_thr', 'fixed_thr', 'thr_factor', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'kc_kc_inh',
+                'fit_apl_cal_rmse', 'fit_apl_raw_rmse'):
+            if k in fit:
+                row[f'fit_{k}' if not k.startswith('fit_') else k] = fit[k]
+        row['top_pn_rate'] = top
+        row['knee_over_top_pn_rate'] = float(fit.get('claw_thr', np.nan)) / top if np.isfinite(top) else np.nan
+        rows.append(row)
+    res = pd.DataFrame(rows)
+    res.to_csv(out / 'partA_scored.csv', index=False)
+    print(f"partA_scored.csv: {', '.join(res.name)}", flush=True)
+    return res
+
+
 def release_rows(out: Path) -> pd.DataFrame:
     """Who is released when APL is blocked, by claw count (E72's release.csv form, E71's claw groups): for C2, every part
     A / D fit of this experiment and every part C point, the share of the responses blocking APL adds that comes from
@@ -1821,11 +1865,15 @@ def summarize(out: Path, breadth: str = 'prepass') -> None:
         g = json.loads(gp.read_text())
         lines += ['', '## The gate', '', f"{g['n_pass']} of {g['n_points']} points pass ({g['n_pass_without_iv']} without the "
             f"low-concentration condition); selected: {', '.join(s['tag'] for s in g['selected']) or 'none'}.", '',
-            f"Against C2's {g.get('ref_point', 'identity')} row; (ii) against the loss limit given.", '',
-            '| tag | (i) ester error reduced / six pairs raised | (ii) readout loss / limit | (iii) worst odor kept / response rate ρ | '
-            '(iv) 2h at 10^-5 kept | bands | pass |', '|---|---|---|---|---|---|---|']
+            f"(i), (iii) and (iv) against C2's {g.get('ref_point', 'identity')} row for every start; (ii) against the limit given "
+            f"({'0.060 on C2' if g.get('ref_point', 'identity') == 'identity' else 'C2 identity_held row plus 0.004 on C2'}; the "
+            "start's own readout loss plus 0.004 on P1 and plus 0.006 on fit1). The column '(i) against the start itself' reads "
+            "(i) like for like against the point's own start (not gated).", '',
+            '| tag | (i) ester error reduced / six pairs raised | (i) against the start itself | (ii) readout loss / limit | '
+            '(iii) worst odor kept / response rate ρ | (iv) 2h at 10^-5 kept | bands | pass |', '|---|---|---|---|---|---|---|---|']
         for p in g['points']:
             lines.append(f"| {p['tag']} | {_f(p['ester_reduction'], '.2f')} / {_f(p['six_raise'], '+.3f')} ({'yes' if p['i'] else 'no'}) | "
+                f"{_f(p.get('ester_reduction_vs_start'), '.2f')} / {_f(p.get('six_raise_vs_start'), '+.3f')} | "
                 f"{_f(p['cal_loss'], '.4f')} / {_f(p.get('loss_limit', p.get('cal_loss_start')), '.4f')} ({'yes' if p['ii'] else 'no'}) | "
                 f"{_f(p['worst_frac_ratio'], '.2f')} ({p['worst_frac_odor']}) / {_f(p['rate_rho_on'], '.2f')} ({'yes' if p['iii'] else 'no'}) | "
                 f"{_f(p['low_ratio'], '.2f')} ({'-' if p['iv'] is None else ('yes' if p['iv'] else 'no')}) | "
@@ -1872,6 +1920,8 @@ def _figures(df: pd.DataFrame, out: Path, sfx: str = '') -> None:
         fig.tight_layout()
         fig.savefig(out / f'E78_sweep{sfx}.png', dpi=130)
         plt.close(fig)
+    if len(ref):
+        _gate_scatter(df, ref.iloc[0], out, sfx, plt)
     weak = ['ms', 'B-myr', 'euc', '-aPine', 'paa', '1-8ol']
     d = df[df.start == 'C2']
     if len(d):
@@ -1891,14 +1941,101 @@ def _figures(df: pd.DataFrame, out: Path, sfx: str = '') -> None:
         plt.close(fig)
 
 
+def _gate_scatter(df: pd.DataFrame, ref: pd.Series, out: Path, sfx: str, plt) -> None:
+    """E78_gate_scatter.png: each point on C2 (rates held, not the controls) by the six near pairs' APL effect on raw
+    counts against the readout loss, with C2, the region the gate's (i) and (ii) leave on these axes (six pairs raised by
+    0.03 or more, readout loss 0.060 or lower), the KC data's six-pair effect and the loss's floor; part A's fits (fitted
+    hard knees) beside them."""
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Rectangle
+    d = _usable(df[(df.start == 'C2') & (df.point_id != 'identity')])
+    if not len(d):
+        return
+    fig, ax = plt.subplots(figsize=(9.6, 5.4))
+    x0, y0 = float(ref['raw_six_effect']), float(ref['cal_loss'])
+    x_data, floor = kind_mean(H.yang_apl_effect(), SIX), H.data_target('apl_effect_rmse_floor')
+    colors = {100.0: '#2a78d6', 115.0: '#eb6834', 130.0: '#1baf7a'}
+    pts = []
+    for _, r in d.iterrows():
+        soft = r.family == 'knee_soft'
+        if r.family == 'rel':
+            c, m, lab = '0.45', 'D', f'rel {r.rel:g}'
+        else:
+            c, m = colors.get(float(r.claw_thr), '0.45'), ('s' if soft else 'o')
+            lab = f'g {r.claw_thr_subgain:g}' + (', w 15' if soft else '')
+        pts.append((float(r.raw_six_effect), float(r.cal_loss), c, m, 46, lab, False))
+    fp, ap = out / 'fits.csv', out / 'archive_knee_variants.csv'
+    if fp.exists() and ap.exists():
+        f, a = pd.read_csv(fp), pd.read_csv(ap)
+        a = a[a.folder == EXPERIMENT].set_index('tag')
+        for _, r in f.iterrows():
+            if r.tag in a.index:
+                pts.append((float(a.loc[r.tag, 'raw_six_effect']), float(r.fit_apl_cal_rmse), colors.get(float(r.claw_thr), '0.45'),
+                    'o', 70, f'part A fit, {r.claw_thr:g} Hz', True))
+    xs = [p[0] for p in pts] + [x0, x_data]
+    ys = [p[1] for p in pts] + [y0, floor]
+    ax.set_xlim(min(xs) - 0.01, max(xs) + 0.02)
+    ax.set_ylim(min(ys) - 0.006, max(ys) + 0.008)
+    xl, yl = ax.get_xlim(), ax.get_ylim()
+    ax.add_patch(Rectangle((x0 + GATE['six_raise'], yl[0]), xl[1] - x0 - GATE['six_raise'], GATE['loss_max_c2'] - yl[0], color='0.92',
+        zorder=0, lw=0))
+    ax.axhline(GATE['loss_max_c2'], color='0.6', lw=0.8, ls='--', zorder=1)
+    ax.axvline(x0 + GATE['six_raise'], color='0.6', lw=0.8, ls='--', zorder=1)
+    ax.axvline(x_data, color='k', lw=1, ls=':', zorder=1)
+    ax.axhline(floor, color='k', lw=1, ls=':', zorder=1)
+    for x, y, c, m, sz, lab, hollow in pts:
+        if hollow:
+            ax.scatter(x, y, s=sz, facecolors='none', edgecolors=c, linewidths=1.8, marker=m, zorder=3)
+        else:
+            ax.scatter(x, y, s=sz, c=c, marker=m, edgecolors='white', linewidths=1.2, zorder=3)
+    ax.scatter([x0], [y0], s=120, marker='*', c='k', zorder=4)
+    # labels: the first of a few offsets whose box does not overlap a box already placed (pixel coordinates)
+    fig.canvas.draw()
+    T = ax.transData
+    placed = [tuple(T.transform((x, y))) + (6.0, 6.0) for x, y, *_ in pts]
+    placed = [(px - 5, py - 5, 10, 10) for px, py, _, _ in placed]
+    labels = [(x, y, lab, 7) for x, y, c, m, sz, lab, h in pts] + [(x0, y0, 'C2 (no knee)', 8)]
+    order = sorted(range(len(labels)), key=lambda i: (labels[i][0], labels[i][1]))
+    for i in order:
+        x, y, lab, fs = labels[i]
+        px, py = T.transform((x, y))
+        w, h = 0.62 * fs * len(lab), fs + 2
+        for dx, dy in ((6, 2), (6, -11), (-w - 6, 2), (-w - 6, -11), (6, 11), (6, -20), (-w - 6, 11), (-w - 6, -20)):
+            bx, by = px + dx, py + dy
+            if not any(bx < qx + qw and qx < bx + w and by < qy + qh and qy < by + h for qx, qy, qw, qh in placed):
+                break
+        placed.append((bx, by, w, h))
+        ax.annotate(lab, (x, y), xytext=(dx, dy), textcoords='offset pixels', fontsize=fs,
+            color='0.2' if fs > 7 else '0.3')
+    ax.text(x_data, yl[1], ' KC data', fontsize=8, va='top')
+    ax.text(xl[0], floor, ' floor', fontsize=8, va='bottom')
+    ax.text(x0 + GATE['six_raise'], GATE['loss_max_c2'] - 0.001, ' region the gate asks for (i, ii)', fontsize=7.5, color='0.35',
+        va='top')
+    handles = [Line2D([], [], ls='', marker='o', color=c, label=f'knee {T_:g} Hz') for T_, c in colors.items()]
+    handles += [Line2D([], [], ls='', marker='o', color='0.45', label='knee 70 Hz'),
+        Line2D([], [], ls='', marker='s', color='0.45', label='softplus width 15 Hz (w 15)'),
+        Line2D([], [], ls='', marker='D', color='0.45', label='knee relative to the odor'),
+        Line2D([], [], ls='', marker='o', mfc='none', mec='0.45', mew=1.8, label='part A fits (hard knee, fitted)'),
+        Line2D([], [], ls='', marker='*', color='k', ms=10, label='C2 (no knee)')]
+    ax.legend(handles=handles, fontsize=8, frameon=False, loc='upper left', bbox_to_anchor=(1.01, 1.0),
+        title='g: sub-threshold gain', title_fontsize=8)
+    ax.set(xlabel="six near pairs' APL effect, raw counts (higher is closer to the KC data)",
+        ylabel='APL-effect loss, calibrated readout (lower is better)')
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.set_title('The per-claw knee on C2, both response rates held', fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out / f'E78_gate_scatter{sfx}.png', dpi=140)
+    plt.close(fig)
+
+
 def main() -> None:
     import sys
     if len(sys.argv) > 2 and sys.argv[1] == '--run-e10':
         _run_e10_redirected(Path(sys.argv[2]), sys.argv[4:])
         return
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['check-e10', 'check-C', 'B', 'C', 'C-launch', 'C-low', 'gate', 'D', 'E',
-        'summarize'])
+    ap.add_argument('--part', required=True, choices=['check-e10', 'check-C', 'A-score', 'B', 'C', 'C-launch', 'C-low', 'gate', 'D',
+        'E', 'summarize'])
     ap.add_argument('--breadth', default='prepass', choices=list(BREADTHS),
         help="parts C, C-low, gate, summarize: the run: 'prepass' (default; each point's breadth from E10's transfer pre-pass) or "
             "'held' (the first run: the breadth from the threshold-held APL-off run)")
@@ -1930,6 +2067,8 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     if args.part == 'check-e10':
         check_e10(args.only, args.jobs, args.baseline)
+    elif args.part == 'A-score':
+        a_score(out)
     elif args.part == 'B':
         for f in (archive_knee_variants, noise_six_pairs, who_selects):
             f(out)

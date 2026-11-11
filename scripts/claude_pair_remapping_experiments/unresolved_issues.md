@@ -196,6 +196,17 @@ directory's notes/ and are linked from here.
 
 ## Resolved
 
+### E78's gate.csv gave C2's readout loss as the start's for the points on P1 and the firing-ceiling fit (found 2026-11-11 02:45, hal's session)
+- **What.** In results/E78_claw_knee/gate.csv (the high per-claw knee without a dead zone, E78), the column `cal_loss_start` held C2's
+  readout loss (0.0561) for the points repeated on P1 and on E69's fit 1, while condition (ii)'s limit (`loss_limit`) used each start's own
+  loss (0.0638 + 0.004 on P1, 0.0567 + 0.006 on fit 1); `ester_error_start` and `six_effect_start` likewise held C2's values, which
+  conditions (i), (iii) and (iv) use for every start, as planned at 21:39.
+- **Touches.** gate.csv and gate.json only. comparison_table.md printed `loss_limit`, so the limits shown and every pass / fail were right;
+  nothing passed (i) on any start.
+- **Done.** `gate_point` takes the start's own identity row: `*_start` now hold the point's own start, `*_ref` C2's reference, and
+  `ester_reduction_vs_start` / `six_raise_vs_start` read (i) like for like against the start (not gated); the comparison table prints that
+  column. The gate (both runs) and the tables were regenerated 2026-11-11 02:50 (al_analysis, with this entry).
+
 ### E76's note gave three fit-start parameters from the wrong rows (found 2026-11-10 23:40, atlas's planning subagent)
 - **What.** In E76_data_side_target.md (the data side of the main target), the fits table's row "somatic threshold / APL→KC /
   APL→bouton / KC–KC" gave E69's fit 2 (the start of fits 0 and 1) APL→bouton 0.27 and KC–KC 20.8, which are fit 0's values; E69's

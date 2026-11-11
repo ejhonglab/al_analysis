@@ -236,6 +236,25 @@ def test_gate_selects(tmp_path):
     assert len(pd.read_csv(tmp_path / 'sweep.csv')) == 8
 
 
+def test_gate_own_start(tmp_path):
+    """A point on another start (P1): (i), (iii) and (iv) against C2's identity row, (ii) against P1's own readout loss plus
+    0.004; the '*_start' columns hold P1's identity values, the '*_ref' columns C2's."""
+    base = dict(family='knee', claw_thr=130.0, claw_thr_subgain=0.5, claw_thr_width=0.0, rel=np.nan, start_experiment='E67',
+        start_tag='x', k=2.0, kckc='tied', rates_held=True, control=False)
+    _write_point(tmp_path, dict(_ref_row(), **dict(base, family='identity', kckc=''), tag='C2_identity'))
+    _write_point(tmp_path, dict(_ref_row(start='P1', cal_loss=0.064, cal_err_ester=-0.054, raw_six_effect=0.065),
+        **dict(base, family='identity', kckc=''), start='P1', tag='P1_identity'))
+    _write_point(tmp_path, dict(_row(start='P1', point_id='knee130_g0.5', cal_loss=0.0664, cal_err_ester=-0.061,
+        raw_six_effect=0.054), **base, start='P1', tag='P1_pp_knee130_g0.5'))
+    p = {q['tag']: q for q in E78.gate(tmp_path)['points']}['P1_pp_knee130_g0.5']
+    assert p['loss_limit'] == pytest.approx(0.068) and p['ii']
+    assert p['cal_loss_start'] == pytest.approx(0.064) and p['cal_loss_ref'] == pytest.approx(0.056)
+    assert p['ester_error_ref'] == pytest.approx(-0.069) and p['ester_error_start'] == pytest.approx(-0.054)
+    assert p['six_raise'] == pytest.approx(0.054 - 0.085) and p['six_raise_vs_start'] == pytest.approx(0.054 - 0.065)
+    assert p['ester_reduction_vs_start'] == pytest.approx(1 - 0.061 / 0.054)
+    assert not p['i'] and not p['pass']
+
+
 def test_point_specs():
     pts = E78.point_specs()
     ids = [p['point_id'] for p in pts]
