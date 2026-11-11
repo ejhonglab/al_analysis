@@ -1047,6 +1047,7 @@ Canonical experiment names for summary reports:
 | E73 | the per-KC normalization of the recordings |
 | E74 | the APL effect split by odors per KC |
 | E75 | the glomerulus profile of APL inhibition |
+| E76 | the data side of the main target |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
