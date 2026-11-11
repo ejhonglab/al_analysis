@@ -24,6 +24,7 @@ outputs/E77_input_side_common_error/.
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -583,9 +584,154 @@ def gate(out: Path) -> pd.DataFrame:
     return res
 
 
+# part E: the bounded input oracle (the entry's design; E64's evolution strategy on C2 at fixed parameters)
+E_ODORS = ('eb', '1-8ol', 'IaA', 'ep', '2h', '1-6ol', 'pa', '6al', '1-5ol', 'ms')
+E_POP, E_GENS = 32, 8
+E_BOUNDS = (0.5, 2.0)
+E_RATE_TOL, E_PENALTY = 0.15, 10.0
+E_SIGMA0, E_SIGMA_MIN, E_SIGMA_MAX = 0.3, 0.03, 1.0
+
+
+def recording_halves(seed: int = 0) -> Dict[str, Dict[str, list]]:
+    """Two halves of the recordings for part E: each genotype's flies (a fly's hemispheres together) split in two, the
+    two strong TNT recordings (STRONG_TNT) in different halves; {'A' / 'B': {'ctrl' / 'tnt': [recording keys]}}."""
+    ctrl = H.yang_recording_rdms_values('TNT3c', 'graded')
+    tnt = H.yang_recording_rdms_values('TNT', 'graded')
+    rng = np.random.default_rng(seed)
+
+    def split(idx, must_split=()):
+        flies = sorted({(str(r[0]), int(r[1])) for r in idx})
+        strong = {(d, f) for d, f, _ in must_split}
+        for _ in range(1000):
+            perm = [flies[i] for i in rng.permutation(len(flies))]
+            a = set(perm[:len(perm) // 2])
+            if len(strong) < 2 or len(strong & a) == 1:
+                return ([r for r in idx if (str(r[0]), int(r[1])) in a], [r for r in idx if (str(r[0]), int(r[1])) not in a])
+        raise RuntimeError('no split keeps the strong recordings apart')
+    ca, cb = split(list(ctrl.index))
+    ta, tb = split(list(tnt.index), STRONG_TNT)
+    return {'A': {'ctrl': ca, 'tnt': ta}, 'B': {'ctrl': cb, 'tnt': tb}}
+
+
+def half_effect(half: Dict[str, list]) -> pd.Series:
+    """The data's per-pair APL effect (Yang's z, graded) from one half's recordings, canonical (sorted) pair order."""
+    ctrl = H.yang_recording_rdms_values('TNT3c', 'graded')
+    tnt = H.yang_recording_rdms_values('TNT', 'graded')
+    return _cs(H.apl_effect(H.canonical_pairs(ctrl.loc[half['ctrl']].mean()), H.canonical_pairs(tnt.loc[half['tnt']].mean())))
+
+
+def c2_readout_K() -> float:
+    """The calibrated readout's K of C2 (set on its APL-on counts as E72's `distances` sets it), held fixed in part E."""
+    import E72_wiring_population as E72
+    from E67_apl_effect_fits import refs
+    o = E72.load_fit(*C2)
+    return float(H.calibrate_readout(o['on'][1], 'saturating', refs()['cal_target'], stat='participation_ratio', responders_min=2.0))
+
+
+def _pattern_sse(s_on: pd.DataFrame, s_off: pd.DataFrame, K: float, target: pd.Series) -> float:
+    on = H.readout_pair_distances(s_on, 'saturating', K)
+    off = H.readout_pair_distances(s_off, 'saturating', K)
+    e = _cs(H.apl_effect(on, off))
+    d = target.reindex(e.index)
+    err = (e - e.mean()) - (d - d.mean())
+    return float((err.to_numpy() ** 2).sum())
+
+
+def input_oracle(out: Path, half_name: str, odors: Sequence[str] = E_ODORS, pop: int = E_POP, gens: int = E_GENS,
+                 seed: int = 0) -> pd.DataFrame:
+    """Part E's search on one half of the recordings: on C2 at its fitted parameters and breadth on the real wiring,
+    each odor of `odors` in turn gets a per-glomerulus factor vector in [0.5, 2] on the lab's response (glomeruli without
+    a response stay without), searched by a (1 + pop) evolution strategy in log-factor space (E64's: pop candidates
+    simulated as pseudo-odors, the incumbent's column replaced by each candidate's for the scoring) to minimize the
+    squared pattern error of the per-pair APL effect under the readout (K held at C2's) against `half_name`'s effect,
+    with a penalty when the odor's response fraction leaves +-15 % of C2's in either condition. Writes
+    oracle_history_<half>.csv, oracle_factors_<half>.csv and inputs/oracle_half<half>.csv (E38's layout)."""
+    import E77_input_screen as S
+    from E64_input_oracle import candidate_orn, out_col
+    rng = np.random.default_rng(seed + (0 if half_name == 'A' else 1))
+    halves = recording_halves()
+    target = half_effect(halves[half_name])
+    other = half_effect(halves['B' if half_name == 'A' else 'A'])
+    P = S.c2_parts()
+    orn, params, breadth = P['orn'], dict(P['p']), P['breadth']
+    off_params = dict(params, wAPLKC_scale=0.0, wAPLPN_scale=0.0)
+    K = c2_readout_K()
+    r_on, s_on = (x.copy() for x in P['saved']['on'])
+    r_off, s_off = (x.copy() for x in P['saved']['off'])
+    ab = [H.odor_abbrev(c) for c in orn.columns]
+    f0 = {o: (float(r_on[out_col(r_on, o)].astype(float).mean()), float(r_off[out_col(r_off, o)].astype(float).mean())) for o in odors}
+    lo, hi = np.log(E_BOUNDS[0]), np.log(E_BOUNDS[1])
+    hist, frows = [], []
+    orn_now = orn.astype(float).copy()
+    # the pseudo-odor path at factor 1 must give C2's own counts for the odor
+    sim, _ = S.build_c2_simulator(orn=candidate_orn(orn, odors[0], np.ones((1, len(orn.index)))), breadth=breadth)
+    chk_on, chk_off = sim(dict(params)), sim(dict(off_params))
+    del sim
+    oc0 = out_col(s_on, odors[0])
+    for c_, sv in ((chk_on[1], s_on), (chk_off[1], s_off)):
+        if not np.array_equal(c_.iloc[:, 0].to_numpy(dtype=float), sv[oc0].to_numpy(dtype=float)):
+            raise RuntimeError(f"the pseudo-odor run of {odors[0]} at factor 1 differs from C2's saved counts")
+    sse0 = _pattern_sse(s_on, s_off, K, target)
+    print(f'half {half_name}: C2 pattern rms {np.sqrt(sse0 / 120):.4f} against this half, '
+          f'{np.sqrt(_pattern_sse(s_on, s_off, K, other) / 120):.4f} against the other', flush=True)
+    for odor in odors:
+        oc = out_col(s_on, odor)
+        parent = np.ones(len(orn.index))
+        parent_obj = _pattern_sse(s_on, s_off, K, target)
+        sigma = E_SIGMA0
+        for g in range(gens):
+            t0 = time.time()
+            offspring = np.exp(np.clip(np.log(parent)[None, :] + sigma * rng.standard_normal((pop, len(parent))), lo, hi))
+            cand = candidate_orn(orn, odor, offspring)
+            sim, _ = S.build_c2_simulator(orn=cand, breadth=breadth)
+            c_on, c_off = sim(dict(params)), sim(dict(off_params))
+            del sim
+            objs = np.empty(pop)
+            parts = []
+            for i in range(pop):
+                so, sf = s_on.copy(), s_off.copy()
+                so[oc] = c_on[1].iloc[:, i].to_numpy()
+                sf[oc] = c_off[1].iloc[:, i].to_numpy()
+                fo, ff = float(c_on[0].iloc[:, i].astype(float).mean()), float(c_off[0].iloc[:, i].astype(float).mean())
+                pen = sum(E_PENALTY * max(0.0, abs(f / b - 1.0) - E_RATE_TOL) for f, b in ((fo, f0[odor][0]), (ff, f0[odor][1])) if b > 0)
+                sse = _pattern_sse(so, sf, K, target)
+                objs[i] = sse + pen
+                parts.append((sse, pen, fo, ff))
+            b = int(np.argmin(objs))
+            success = objs[b] < parent_obj
+            if success:
+                parent, parent_obj = offspring[b], float(objs[b])
+                for df_, c_ in ((r_on, c_on[0]), (s_on, c_on[1]), (r_off, c_off[0]), (s_off, c_off[1])):
+                    df_[oc] = c_.iloc[:, b].to_numpy()
+            sigma = float(np.clip(sigma * (1.5 if success else 0.8), E_SIGMA_MIN, E_SIGMA_MAX))
+            sse_other = _pattern_sse(s_on, s_off, K, other)
+            hist.append(dict(half=half_name, odor=odor, generation=g, best_obj=float(objs[b]), parent_obj=parent_obj, success=bool(success),
+                             sigma=sigma, pattern_rms_half=float(np.sqrt(_pattern_sse(s_on, s_off, K, target) / 120)),
+                             pattern_rms_other=float(np.sqrt(sse_other / 120)), frac_on=parts[b][2], frac_off=parts[b][3],
+                             c2_frac_on=f0[odor][0], c2_frac_off=f0[odor][1], seconds=time.time() - t0))
+            pd.DataFrame(hist).to_csv(out / f'oracle_history_{half_name}.csv', index=False)
+            print(f'half {half_name} {odor} gen {g}: best {objs[b]:.4f} (parent {parent_obj:.4f}), rms this half '
+                  f'{hist[-1]["pattern_rms_half"]:.4f}, other {hist[-1]["pattern_rms_other"]:.4f}, sigma {sigma:.2f}, '
+                  f'{time.time() - t0:.0f}s', flush=True)
+        j = ab.index(odor)
+        orn_now.iloc[:, j] = orn.iloc[:, j].to_numpy(dtype=float) * parent
+        for gi, glom in enumerate(orn.index):
+            frows.append(dict(half=half_name, odor=odor, glomerulus=glom, orn_delta=float(orn.iloc[gi, j]), factor=float(parent[gi]),
+                              log2_factor=float(np.log2(parent[gi])), searched_delta=float(orn.iloc[gi, j] * parent[gi])))
+        pd.DataFrame(frows).to_csv(out / f'oracle_factors_{half_name}.csv', index=False)
+        lay = H.abbrev_columns(orn_now)
+        lay.index.name = 'glomerulus'
+        (out / 'inputs').mkdir(exist_ok=True)
+        lay.to_csv(out / 'inputs' / f'oracle_half{half_name}.csv')
+    return pd.DataFrame(hist)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--part', required=True, choices=['A-input', 'A-score', 'B', 'C', 'gate', 'D', 'E', 'F'])
+    ap.add_argument('--half', choices=['A', 'B'], help="part E's half of the recordings to search against")
+    ap.add_argument('--odors', nargs='+', default=list(E_ODORS))
+    ap.add_argument('--generations', type=int, default=E_GENS)
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
     out.mkdir(parents=True, exist_ok=True)
@@ -601,6 +747,10 @@ def main() -> None:
         S.screen(out)
     elif args.part == 'gate':
         gate(out)
+    elif args.part == 'E':
+        if args.half is None:
+            ap.error('--part E needs --half A or B')
+        input_oracle(out, args.half, odors=args.odors, gens=args.generations)
     else:
         raise NotImplementedError(f'part {args.part}')
 
