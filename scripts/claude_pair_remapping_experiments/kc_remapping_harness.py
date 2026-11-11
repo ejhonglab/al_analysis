@@ -893,6 +893,86 @@ def apl_effect_pair_parts(on: pd.Series, off: pd.Series, data: Optional[pd.Serie
         'pair_specific': err.to_numpy(dtype=float) - proj}, index=m.index)
 
 
+CURVE_EPS = 1e-6
+
+
+def power_curve(s_off: np.ndarray, s_on: np.ndarray) -> Tuple[float, float]:
+    """Least-squares fit of `s_on = a * s_off ** b` over pairs (similarities, one minus cosine distance; values below
+    CURVE_EPS enter as CURVE_EPS), a and b positive (E77). Returns (a, b)."""
+    from scipy.optimize import curve_fit
+    x = np.maximum(np.asarray(s_off, dtype=float), CURVE_EPS)
+    y = np.asarray(s_on, dtype=float)
+    (a, b), _ = curve_fit(lambda x, a, b: a * x ** b, x, y, p0=(1.0, 1.0), bounds=([1e-9, 1e-9], [np.inf, np.inf]), maxfev=20000)
+    return float(a), float(b)
+
+
+def apply_power_curve(s_off, curve) -> np.ndarray:
+    """`a * s_off ** b` for `curve` (a, b), or per pair for an (n, 2) array of curves."""
+    c = np.asarray(curve, dtype=float)
+    x = np.maximum(np.asarray(s_off, dtype=float), CURVE_EPS)
+    if c.ndim == 1:
+        return c[0] * x ** c[1]
+    return c[:, 0] * x ** c[:, 1]
+
+
+def apl_effect_inherited_split(m_on: pd.Series, m_off: pd.Series, d_on: pd.Series, d_off: pd.Series,
+                               data_curve=None, model_curve=None) -> pd.DataFrame:
+    """A model's per-pair APL-effect error split into what it inherits from its APL-off distances, its on-against-off
+    curve and a pair-specific part (E77). With similarities s = 1 - distance and monotone curves s_on ~ f(s_off),
+    f(x) = a x^b fitted to the data (f_d) and to the model (f_m), and g_d(x) = x - f_d(x):
+
+        error = (m_on - m_off) - (d_on - d_off)
+              = [g_d(s_off_m) - g_d(s_off_d)]          inherited: the data's own curve applied to both APL-off sets
+              + [f_d(s_off_m) - f_m(s_off_m)]          curve: the model's curve against the data's
+              + [r_d - r_m]                             pair-specific: each side's residual about its own curve,
+
+    with r = s_on - f(s_off), exactly (to rounding). The `_c` columns are the same terms with their means over pairs
+    removed (the pattern part's error is the sum of those).
+
+    Args:
+        m_on, m_off, d_on, d_off: pair distances (any pair order; aligned in canonical order).
+        data_curve, model_curve: (a, b), or one (a, b) per pair as an (n, 2) array in the canonical pair order (e.g. a
+            data curve fitted leaving each pair's odors out); fitted in sample when None.
+
+    Returns:
+        DataFrame by pair: error, inherited, curve, pair_specific and their `_c` versions; `attrs` holds the two curves
+        when fitted here.
+    """
+    mo, mf = align_pairs(canonical_pairs(m_on), canonical_pairs(m_off))
+    do, df_ = align_pairs(canonical_pairs(d_on), canonical_pairs(d_off))
+    mo, do = align_pairs(mo, do)
+    mf, df_ = mf.reindex(mo.index), df_.reindex(mo.index)
+    som, sfm, sod, sfd = (1 - x.to_numpy(dtype=float) for x in (mo, mf, do, df_))
+    attrs = {}
+    if data_curve is None:
+        data_curve = power_curve(sfd, sod)
+        attrs['data_curve'] = data_curve
+    if model_curve is None:
+        model_curve = power_curve(sfm, som)
+        attrs['model_curve'] = model_curve
+    fd_m, fd_d = apply_power_curve(sfm, data_curve), apply_power_curve(sfd, data_curve)
+    fm_m = apply_power_curve(sfm, model_curve)
+    inherited = (sfm - fd_m) - (sfd - fd_d)
+    curve = fd_m - fm_m
+    pair_specific = (sod - fd_d) - (som - fm_m)
+    error = (mo.to_numpy(dtype=float) - mf.to_numpy(dtype=float)) - (do.to_numpy(dtype=float) - df_.to_numpy(dtype=float))
+    out = pd.DataFrame({'error': error, 'inherited': inherited, 'curve': curve, 'pair_specific': pair_specific}, index=mo.index)
+    for c in list(out.columns):
+        out[f'{c}_c'] = out[c] - out[c].mean()
+    out.attrs.update(attrs)
+    return out
+
+
+def inherited_shares(split: pd.DataFrame, mask=None) -> Dict[str, float]:
+    """Each term's share of the squared pattern error (its projection on the centered error, over `mask`'s pairs if
+    given; the three add to 1) and the pattern part's rms (E77)."""
+    e = split['error_c'].to_numpy(dtype=float)
+    m = np.ones(len(e), dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+    den = float(e[m] @ e[m])
+    return {**{f'share_{k}': float(split[f'{k}_c'].to_numpy(dtype=float)[m] @ e[m]) / den for k in ('inherited', 'curve', 'pair_specific')},
+            'pattern_rms': float(np.sqrt(np.mean(e[m] ** 2)))}
+
+
 def apl_effect_decomposition(on: pd.Series, off: pd.Series, data: Optional[pd.Series] = None
     ) -> Tuple[Dict[str, float], pd.DataFrame]:
     """The APL-effect loss (`apl_effect_stats`) split into three parts whose squares add:
