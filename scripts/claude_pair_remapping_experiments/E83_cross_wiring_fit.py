@@ -1247,9 +1247,72 @@ def score_part_d(out: Path, arm: str) -> pd.DataFrame:
     g = gate(main_r, part, runs=rt[rt.control_seed.isna()] if 'control_seed' in rt.columns else rt, controls=ctl)
     g.to_csv(out / f'gate_{part}.csv', index=False)
     ag = agreement(out, arm)
+    _comparison_table_d(out, arm, tb, g, ag)
     print(g.to_string(), flush=True)
     print(ag.to_string(), flush=True)
     return g
+
+
+def _section(out: Path, heading: str, lines: List[str]) -> None:
+    """Replace (or append) the comparison_table.md section starting with `heading` ('## ...')."""
+    path = out / 'comparison_table.md'
+    text = path.read_text() if path.exists() else '# E83, the input and APL\'s glomerulus profile fitted on several wirings at once\n\n'
+    sec = '\n'.join([heading] + lines)
+    start = text.find(heading)
+    if start >= 0:
+        nxt = text.find('\n## ', start + 1)
+        text = text[:start] + sec + ('\n' if nxt >= 0 else '') + ('' if nxt < 0 else text[nxt + 1:])
+    else:
+        text = text.rstrip('\n') + '\n\n' + sec
+    path.write_text(text.rstrip('\n') + '\n')
+
+
+ARM_NAMES = {'P': "arm P, APL's weight by glomerulus (cell site)", 'I': "arm I, each odor's input"}
+
+
+def _comparison_table_d(out: Path, arm: str, tb: pd.DataFrame, g: pd.DataFrame, ag: pd.DataFrame) -> None:
+    """Part D's section of comparison_table.md for an arm: the two-by-two (S and T against the half searched on and the
+    half never seen), T's single wirings as paired differences, the gate's conditions and the agreement."""
+    part = f'D{arm}'
+    L = ['', 'Pattern part of the APL-effect loss under the calibrated readout (lower is better), each wiring at its own fit, '
+         'both response rates held; unchanged / with the change; S: real, P1, P2, M1; T: P3, P4, M2, M3.', '',
+         '| searched on | size | population | against the half searched on | against the half never seen | against all recordings | against the six typical |',
+         '|---|---:|---|---:|---:|---:|---:|']
+    for X in ('A', 'B'):
+        for size in (GATE_SIZE, 1.0):
+            for unit in ('S', 'T'):
+                q = tb[(tb.searched_on == X) & np.isclose(tb['size'], size) & (tb.unit == unit)].set_index('against')
+                if q.empty:
+                    continue
+                cells = [f"{_fmt(q.loc[a, 'unchanged'])} / {_fmt(q.loc[a, 'changed'])}" for a in ('searched', 'unseen', 'all', 'six')]
+                L.append(f'| half {X} | {size:g} | {unit} | ' + ' | '.join(cells) + ' |')
+    L += ['', "T's single wirings against the half never seen, changed minus unchanged at the gate's size (negative is better):", '',
+          '| searched on | ' + ' | '.join(T_WIRINGS) + ' |', '|---|' + '---:|' * len(T_WIRINGS)]
+    for X in ('A', 'B'):
+        q = tb[(tb.searched_on == X) & np.isclose(tb['size'], GATE_SIZE) & (tb.against == 'unseen')].set_index('unit')
+        if len(q):
+            L.append(f'| half {X} | ' + ' | '.join(_fmt(-float(q.loc[w, 'gain']), '+.4f') if w in q.index else '–'
+                                                for w in T_WIRINGS) + ' |')
+    if len(g):
+        L += ['', 'The gate at the size 0.6:', '']
+        for _, r in g.iterrows():
+            if r.searched_on == 'both':
+                conds = ', '.join(f'({k}) {"holds" if bool(r[k]) else "fails"}' for k in ('i', 'ii', 'iii', 'iv', 'v')
+                                  if k in r.index and pd.notna(r[k]))
+                L.append(f"- both directions: {conds}; T's singles lower in {int(r.n_singles_lower)} of {int(r.n_singles)}; "
+                         f"squared pattern error against all recordings {_fmt(100 * r.sq_reduction_all, '.1f')} % lower "
+                         f"(needs 15), against the six typical {_fmt(100 * r.sq_reduction_six, '.1f')} % (needs 7.5); "
+                         f"borderline: {'yes' if r.borderline else 'no'}.")
+            else:
+                L.append(f"- searched on half {r.searched_on}: T against the unseen half lower by {_fmt(r.gain_unseen)} (needs 0.003); "
+                         f"raw-count loss {_fmt(r.raw_loss_change, '+.4f')}; mean APL effect under the readout "
+                         f"{_fmt(r.mean_effect_cal, '+.3f')} (the flies' {_fmt(r.flies_mean, '+.3f')}); runs flagged: "
+                         f"{'–' if pd.isna(r.n_flagged) else int(r.n_flagged)}.")
+    if len(ag):
+        L += ['', 'Agreement between the halves:', '']
+        for _, r in ag.iterrows():
+            L.append(f"- {r.what}{(' (' + r.odor + ')') if isinstance(r.odor, str) and r.odor else ''}: {_fmt(r.value, '.2f')}")
+    _section(out, f'## Part D, {ARM_NAMES[arm]}', L + [''])
 
 
 def agreement(out: Path, arm: str) -> pd.DataFrame:
