@@ -8,6 +8,21 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### The realism bands compared the models' two-spike responses with the KC data's whole-recording z-score responses (found 2026-11-10, hal's planning subagent; decided by Tom 16:10)
+- **What.** Since the bands were set (2026-11-09), the model side counted a response at two or more spikes and the data side at a
+  trial mean above 1 z of Yang's whole-recording z-score, whose unit grows with how much a KC responds (1.4 to 3.0 times its baseline
+  noise). The unit change alone moves the flies' own odors-per-KC distribution by 0.064 (control flies) / 0.078 (APL output blocked
+  (TNT)) against bands of 0.167 / 0.196, so many odors-per-KC flags (116 archived variants carry only an APL-off one between 0.196 and
+  0.25) were the criterion's, not the model's.
+- **Affects.** Every realism flag and band verdict written since 2026-11-09 (results/apl_effect/by_variant.csv `realism_flag`, the
+  Realism sections of the per-experiment notes, the summary's best-models realism row and the "Realism flag:" posts), most visibly the
+  reference model's and its fits' APL-off odors-per-KC flags (0.200-0.212 against 0.196).
+- **Done.** Tom's decision (CLAUDE.md, "The main goal for new experiments"; notes/response_criterion_decision.md): the data side in
+  baseline-noise units (threshold 1.97 noise SDs). Code being written by an Opus code subagent of hal's session (registry entries,
+  `apl_effect_scores.py` with the old flag kept as `realism_flag_zcrit`, a switch in E10_joint_fit.py, E73's tables).
+- **Remains.** The code; the archive re-scored; the summary's realism row and a footnote; earlier notes annotated (not rerun) where a
+  flag changes.
+
 ### The KC data's amplitudes and response criterion are relative to each cell's whole-recording spread (found 2026-11-10, hal's planning subagent; confirmed by Yang)
 - **What.** Yang's per-trial KC values (files suffixed `zscored_full`) look z-scored per cell over the whole recording, not against a
   pre-odor baseline: in every one of the 19 APL16 recordings the per-KC mean of squared trial values has a sharp upper edge (99.9th

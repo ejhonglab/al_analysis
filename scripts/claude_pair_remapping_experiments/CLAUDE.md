@@ -1184,6 +1184,20 @@ So:
   host whose result is flagged (or whose experiment's best variant on the APL-effect loss is) says so in
   chat.md, starting "Realism flag:", and in its next reply to Tom, with the numbers beside the data's;
   the summary's best-models table shows the response rates of every column;
+- the response criterion of the bands (Tom, 2026-11-10 16:10; notes/response_criterion_decision.md, page
+  https://claude.ai/artifact/CN2ms1DDfQbEgKRFTqAzdy): the model side stays two or more spikes for all four bands; the KC
+  data's side is each KC's trial-mean response in baseline-noise units (its change in Fc, the 2-8 s window mean minus
+  the 5 s pre-odor mean, divided by the SD of its Fc within the 51 pre-odor windows, each window's mean removed;
+  equivalently Yang's z response times the KC's whole-trace SD over that baseline SD, from
+  notes/yang_response_normalization/kc_scales.csv), a response being above 1.97 noise SDs (the threshold that keeps
+  the control flies at 0.068). With it the data's APL-off / APL-on ratio is 2.28 (90 % interval 2.0 to 2.7; the band
+  stays 1.6 to 2.9), the odors-per-KC bands are 0.155 with APL on and 0.223 with APL off (the most atypical recording,
+  as before), and the response rate ρ is computed against per-odor rates in the same units. Yang's whole-recording
+  z-score makes a KC's unit grow with how much it responds, so it is not compared with spike counts for the bands.
+  E73's per-KC session z-score reading of the models is reported beside the bands, never used to flag them, and fits
+  keep their operating point on two spikes (`--rate-criterion spikes`; `--rate-criterion zcell` is not used for fits).
+  The flags until 2026-11-10 used Yang's z on the data side (`realism_flag_zcrit`, kept for the record); results are
+  annotated, not rerun;
 - running experiments (the batched-proxy fit E60 on atlas, the two-ρ fit E63 on viki, the bounded input
   oracle E64 on hal) finish as planned and their write-ups report the APL-effect loss beside their own
   statistics.
