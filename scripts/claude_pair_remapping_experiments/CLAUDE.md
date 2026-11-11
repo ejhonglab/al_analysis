@@ -1049,6 +1049,7 @@ Canonical experiment names for summary reports:
 | E75 | the glomerulus profile of APL inhibition |
 | E76 | the data side of the main target |
 | E77 | the input side of the error common to all wirings |
+| E78 | the high per-claw knee without a dead zone |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 
