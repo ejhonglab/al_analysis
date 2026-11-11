@@ -2,7 +2,7 @@
 """E80: the flies' pulse in the model and the remaining candidates for the common error.
 
 The entry is in experiment_priorities.md (planned by a Fable subagent, claude-fable-5-2, spawned from viki 2026-11-10
-23:41). Parts A to C (the pulse, the screen, the gate) are in E80_screen.py; this script has part D (no simulations: the
+23:41). Part A (the pulse) is in E80_pulse.py, parts B and C (the screen, the gate) in E80_screen.py; this script has part D (no simulations: the
 response amplitude against a KC's breadth in the flies, in baseline-noise units, and in the archived fits of the best
 families; the breadth-weighted reading of the fits against the effect in baseline-noise units and in Yang's z; each KC
 type alone with recording-bootstrap intervals) and the tables. Only shared data are read.
@@ -50,8 +50,12 @@ def main() -> None:
         for f in (amplitude_by_breadth, breadth_weighted, type_split):
             f(out)
     elif args.part in ('A', 'B', 'C'):
-        import E80_screen as S
-        {'A': S.run_pulse, 'B': S.screen, 'C': S.gate}[args.part](out)
+        if args.part == 'A':
+            import E80_pulse as Pp
+            Pp.run_pulse(out)
+        else:
+            import E80_screen as S
+            {'B': S.screen, 'C': S.gate}[args.part](out)
     else:
         raise NotImplementedError(args.part)
 
