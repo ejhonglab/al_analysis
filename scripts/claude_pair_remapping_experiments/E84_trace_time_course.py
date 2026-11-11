@@ -1449,11 +1449,21 @@ def flies_ratio(TR: dict, n_boot: int = N_BOOT) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def kernel_recovery(t: np.ndarray, fit_rows: pd.DataFrame, TR: dict, n_draws: int = 200) -> pd.DataFrame:
-    """kernel_recovery.csv: synthetic responders' mean traces at the flies' sampling, with firing uniform over the first
-    D s (D 0 = an onset burst, 0.5, 1, 2 = the steady drive) through the control flies' onset-fit kernel, at the
-    amplitude of the control flies' trace and white noise of its pre-onset SD (per recording, and for the mean over the
-    11 recordings), each fitted under every D; how often each D is chosen (lowest rms) and the recovered rise / decay."""
+RECOVERY_DS = (0.0, 0.25, 0.5, 1.0, 2.0)
+
+
+def _dlab(D: float) -> str:
+    return format(D, 'g').replace('.', 'p')
+
+
+def kernel_recovery(t: np.ndarray, fit_rows: pd.DataFrame, TR: dict, n_draws: int = 100) -> pd.DataFrame:
+    """kernel_recovery.csv. Synthetic responders' mean traces at the flies' sampling, with firing uniform over the first
+    D s (RECOVERY_DS; D 0 = an onset burst, 2 = the steady drive over the pulse) through the control flies' onset-fit
+    kernel at the amplitude of the control flies' trace, plus white noise at three levels (the pre-onset SD of one
+    recording's responders' trace, of the mean over the 11, and the rms misfit of the onset fit to the control flies'
+    trace, which is mostly the kernel's shape and not noise), each fitted under every D: how often each D is chosen
+    (lowest rms) and the rise / decay recovered under the true D. Rows `kind` 'real': each subset's responders' trace
+    fitted under every D (the rms and the D chosen)."""
     rng = np.random.default_rng(0)
     f = fit_rows[(fit_rows.level == 'subset') & (fit_rows.subset == 'control flies') & (fit_rows.selection == 'resp')
                  & (fit_rows.fit == 'free') & (fit_rows.drive == 'onset')].iloc[0]
@@ -1462,32 +1472,40 @@ def kernel_recovery(t: np.ndarray, fit_rows: pd.DataFrame, TR: dict, n_draws: in
         if g == 'TNT3c':
             y, _, _ = _marginal(R, 'resp')
             pre_sd.append(float(np.std(y[t < 0])))
-    noise_levels = {'one recording': float(np.median(pre_sd)), 'mean of the 11': float(np.median(pre_sd) / np.sqrt(len(pre_sd)))}
-    Ds = (0.0, 0.5, 1.0, 2.0)
+    noise_levels = {'one recording': float(np.median(pre_sd)), 'mean of the 11': float(np.median(pre_sd) / np.sqrt(len(pre_sd))),
+                    'the onset fit\'s misfit': float(f['rms'])}
 
     def drive_kw(D):
         return dict(drive='onset') if D == 0 else dict(drive='steady', pulse=D)
     rows = []
+    for subset in FIT_SUBSETS:
+        y, _, d, nr = subset_trace(TR, subset, 'resp')
+        fits = {D: H.fit_indicator_kernel(t, y, **drive_kw(D)) for D in RECOVERY_DS}
+        best = min(fits, key=lambda q: fits[q]['rms'])
+        row = dict(kind='real', noise=subset, noise_sd=np.nan, true_D=np.nan, chosen_D=best, n_draws=0)
+        for D in RECOVERY_DS:
+            row[f'rms_D{_dlab(D)}'] = fits[D]['rms']
+            row[f'rise_D{_dlab(D)}'] = fits[D]['rise']
+            row[f'decay_D{_dlab(D)}'] = fits[D]['decay']
+        rows.append(row)
     for nl, sd in noise_levels.items():
-        for D in Ds:
+        for D in RECOVERY_DS:
             clean = f['amplitude'] * H.kernel_signal(t, f['rise'], f['decay'], **drive_kw(D))
-            chosen = []
-            rec = []
+            chosen, rec = [], []
             for _ in range(n_draws):
                 y = clean + sd * rng.standard_normal(len(t))
-                fits = {Dc: H.fit_indicator_kernel(t, y, **drive_kw(Dc)) for Dc in Ds}
-                best = min(fits, key=lambda q: fits[q]['rms'])
-                chosen.append(best)
+                fits = {Dc: H.fit_indicator_kernel(t, y, **drive_kw(Dc)) for Dc in RECOVERY_DS}
+                chosen.append(min(fits, key=lambda q: fits[q]['rms']))
                 rec.append((fits[D]['rise'], fits[D]['decay']))
             rec = np.array(rec)
-            row = dict(noise=nl, noise_sd=sd, true_D=D, true_rise=f['rise'], true_decay=f['decay'], n_draws=n_draws,
-                       rise_median=float(np.median(rec[:, 0])), rise_p5=float(np.percentile(rec[:, 0], 5)),
+            row = dict(kind='synthetic', noise=nl, noise_sd=sd, true_D=D, true_rise=f['rise'], true_decay=f['decay'],
+                       n_draws=n_draws, rise_median=float(np.median(rec[:, 0])), rise_p5=float(np.percentile(rec[:, 0], 5)),
                        rise_p95=float(np.percentile(rec[:, 0], 95)), decay_median=float(np.median(rec[:, 1])),
                        decay_p5=float(np.percentile(rec[:, 1], 5)), decay_p95=float(np.percentile(rec[:, 1], 95)))
-            for Dc in Ds:
-                row[f"chosen_D{format(Dc, 'g').replace('.', 'p')}"] = float(np.mean(np.array(chosen) == Dc))
+            for Dc in RECOVERY_DS:
+                row[f'chosen_D{_dlab(Dc)}'] = float(np.mean(np.array(chosen) == Dc))
             rows.append(row)
-            print(f'recovery {nl} D={D}: chosen {[round(row[f"chosen_D{format(q, chr(103)).replace(chr(46), chr(112))}"], 2) for q in Ds]}', flush=True)
+            print(f'recovery {nl} D={D}: chosen {[round(row["chosen_D" + _dlab(q)], 2) for q in RECOVERY_DS]}', flush=True)
     df = pd.DataFrame(rows)
     df.to_csv(out_dir() / 'kernel_recovery.csv', index=False)
     return df
@@ -1589,8 +1607,10 @@ def part_d(n_boot: int = N_BOOT) -> None:
 
 
 def ratio_verdicts(rt: pd.DataFrame) -> pd.DataFrame:
-    """Each model row (4-8.1 over 0-2) gets `outside_eight` / `outside_six` (outside the flies' 90 % interval for the same
-    selection with all eight, with the six typical) and `excluded` (both)."""
+    """Each model row gets `outside_eight` / `outside_six` (outside the flies' 90 % interval for the same selection and
+    ratio with all eight, with the six typical) and `excluded` (both; the entry's test (d) is the all-entries row of 4-8.1
+    over 0-2). The entries below the criterion get no verdict: their 0-2 s signal is about 0 in the flies (so the
+    flies' ratio is not defined; `interpretable` False on the flies' rows)."""
     fl = rt[rt.kind == 'flies'].set_index(['subset', 'selection', 'ratio'])
     out = rt.copy()
     for col, sub in (('outside_eight', 'APL output blocked (TNT), all eight'), ('outside_six', 'APL output blocked (TNT), the six typical')):
@@ -1599,11 +1619,15 @@ def ratio_verdicts(rt: pd.DataFrame) -> pd.DataFrame:
             if r.kind != 'model':
                 vals.append(np.nan)
                 continue
+            if r.selection == 'below':
+                vals.append(np.nan)
+                continue
             f = fl.loc[(sub, r.selection, r.ratio)]
             vals.append(bool(r.value < f.lo or r.value > f.hi))
         out[col] = vals
-    out['excluded'] = [bool(a) and bool(b) if k == 'model' else np.nan for k, a, b in
-                       zip(out.kind, out.outside_eight, out.outside_six)]
+    out['excluded'] = [bool(a) and bool(b) if k == 'model' and s_ != 'below' else np.nan for k, s_, a, b in
+                       zip(out.kind, out.selection, out.outside_eight, out.outside_six)]
+    out['interpretable'] = [not (k == 'flies' and s_ == 'below') for k, s_ in zip(out.kind, out.selection)]
     return out
 
 
@@ -2177,24 +2201,36 @@ def tables() -> str:
         lines.append('')
     if (o / 'kernel_recovery.csv').exists():
         kr = pd.read_csv(o / 'kernel_recovery.csv')
+        ds = [_dlab(D) for D in RECOVERY_DS]
+        syn = kr[kr.kind == 'synthetic']
         lines += ['## Recovery test: synthetic traces with firing uniform over the first D s, how often each D is chosen', '',
-                  '| noise | true D | D 0 (onset) | D 0.5 | D 1 | D 2 (steady) | rise recovered (median, 5-95 %) | decay recovered |',
-                  '|---|---:|---:|---:|---:|---:|---:|---:|']
-        for r in kr.itertuples():
-            lines.append(f"| {r.noise} ({_f(r.noise_sd, '.3f')}) | {r.true_D:g} | {_f(r.chosen_D0, '.2f')} | {_f(r.chosen_D0p5, '.2f')} "
-                         f"| {_f(r.chosen_D1, '.2f')} | {_f(r.chosen_D2, '.2f')} | {_f(r.rise_median, '.2f')} ({_f(r.rise_p5, '.2f')} to "
-                         f"{_f(r.rise_p95, '.2f')}) | {_f(r.decay_median, '.1f')} ({_f(r.decay_p5, '.1f')} to {_f(r.decay_p95, '.1f')}) |")
+                  '| noise (SD) | true D | ' + ' | '.join(f'D {d.replace("p", ".")}' for d in ds)
+                  + ' | rise recovered (median, 5-95 %) | decay recovered |', '|---|---:|' + '---:|' * (len(ds) + 2)]
+        for _, r in syn.iterrows():
+            lines.append(f"| {r['noise']} ({_f(r['noise_sd'], '.3f')}) | {r['true_D']:g} | "
+                         + ' | '.join(_f(r[f'chosen_D{d}'], '.2f') for d in ds)
+                         + f" | {_f(r['rise_median'], '.2f')} ({_f(r['rise_p5'], '.2f')} to {_f(r['rise_p95'], '.2f')}) | "
+                         f"{_f(r['decay_median'], '.1f')} ({_f(r['decay_p5'], '.1f')} to {_f(r['decay_p95'], '.1f')}) |")
+        real = kr[kr.kind == 'real']
+        lines += ['', 'The responders\' mean traces fitted under each D (rms misfit, noise SDs; rise at the fit):', '',
+                  '| trace | ' + ' | '.join(f'D {d.replace("p", ".")}' for d in ds) + ' | D chosen |', '|---|' + '---:|' * (len(ds) + 1)]
+        for _, r in real.iterrows():
+            lines.append(f"| {r['noise']} | " + ' | '.join(f"{_f(r[f'rms_D{d}'], '.3f')} (rise {_f(r[f'rise_D{d}'], '.2f')})" for d in ds)
+                         + f" | {r['chosen_D']:g} |")
         lines.append('')
     if (o / 'trace_ratio_tests.csv').exists():
         rt = pd.read_csv(o / 'trace_ratio_tests.csv')
         fl = rt[(rt.kind == 'flies') & (rt.ratio == '4-8.1 over 0-2')]
         lines += ['## The signal with APL output blocked (TNT) relative to the control flies\', 4-8.1 s over 0-2 s', '',
-                  '| | responders | entries below the criterion | all KC x odor entries |', '|---|---:|---:|---:|']
+                  '"excluded": outside the flies\' 90 % interval both with all eight and with the six typical, the test of '
+                  'outcome (d) on all entries (on the responders for information). The flies\' entries below the criterion '
+                  'have no defined ratio (their 0-2 s signal is about 0 in the control flies); the models\' are given without '
+                  'a verdict.', '', '| | responders | entries below the criterion | all KC x odor entries |', '|---|---:|---:|---:|']
         for sub in fl.subset.unique():
             q = fl[fl.subset == sub].set_index('selection')
             lines.append(f"| flies, {sub} | " + ' | '.join(
-                f"{_f(q.loc[s].value, '.2f')} ({_f(q.loc[s].lo, '.2f')} to {_f(q.loc[s].hi, '.2f')})" if s in q.index else '-'
-                for s in ('resp', 'below', 'all')) + ' |')
+                ('-' if s == 'below' else f"{_f(q.loc[s].value, '.2f')} ({_f(q.loc[s].lo, '.2f')} to {_f(q.loc[s].hi, '.2f')})")
+                if s in q.index else '-' for s in ('resp', 'below', 'all')) + ' |')
         md = rt[(rt.kind == 'model') & (rt.ratio == '4-8.1 over 0-2')]
         for kern in md.kernel.unique():
             q = md[md.kernel == kern]
@@ -2281,6 +2317,8 @@ def figures() -> None:
         for est, ls in (('noise_free', '-'), ('measured', ':')):
             for stat, g, ax in (('ctrl_mean', 'TNT3c', axes[0]), ('tnt_mean', 'TNT', axes[0]), ('effect_mean', None, axes[1])):
                 q = x[(x.statistic == stat) & (x.estimator == est)].sort_values('t0')
+                if est == 'noise_free':
+                    q = q[q.t0 >= 0]                       # (before the onset there is no signal to normalize by)
                 mid = (q.t0 + q.t1) / 2
                 col = COLORS[g] if g else COLORS['ink']
                 lab = (GLAB[g] if g else 'mean APL effect') + (', noise-free' if est == 'noise_free' else ', as measured')
