@@ -69,9 +69,12 @@ subsets_vs_archive.csv, common_error_subsets.csv (and _summary), subset_floors.c
 split_halves.csv (part D); data_units.csv, effect_by_unit_pairs.csv, class_split_units.csv (part B);
 by_variant_units.csv, common_error_units.csv (and _summary), rank_correlations_units.csv, best_by_family_units.csv,
 pipeline_units.csv (part C); model_axes_runs.csv and model_axes_pairs.csv (part E's runs), model_axes.csv,
-populations.csv, recording_ranges.csv (`--part E-tables`); comparison_table.md (`--part table`); provenance_<part>.json.
+populations.csv, recording_ranges.csv (`--part E-tables`); comparison_table.md (`--part table`); provenance_<part>.json;
+the write-up's figures (`--part figures`, from those tables, no simulations): E76_units.png (part B), E76_recordings.png
+and E76_subsets.png (part D; the latter also scores this experiment's own fits against the six, the two and the eight),
+E76_axes.png (part E).
 The check of E10_joint_fit.py's --apl-data-units (`--part check-e10`) writes outputs/E76_data_side_target/e10_check/.
-Usage (from this folder): ../../venv/bin/python -u E76_data_side_target.py --part D | B | C [--jobs 3]
+Usage (from this folder): ../../venv/bin/python -u E76_data_side_target.py --part D | B | C [--jobs 3] | E-tables | table | figures
        OMP_NUM_THREADS=12 OMP_THREAD_LIMIT=12 nice -n 10 ../../venv/bin/python -u E76_data_side_target.py --part E --threads 12
            [--bases c2 ceiling2] [--base2 EXP:TAG] [--only POINT ...] [--check-only]
        ../../venv/bin/python -u E76_data_side_target.py --part check-e10 [--check off noise]
@@ -1838,6 +1841,374 @@ def write_table(out: Path) -> None:
     (out / 'comparison_table.md').write_text('\n'.join(L) + '\n')
 
 
+# the figures (`--part figures`): E74's palette and inks
+FIG_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
+INK, MUTED = '#0b0b0b', '#52514e'
+UNIT_TICK = {'z': "Yang's z", 'noise': 'baseline-noise\nunits', 'dfc': 'raw change\nin Fc', 'dff_fmean': "change in Fc\nover the KC's\nmean F",
+    'dff_fcmean': "change in Fc\nover the KC's\nmean Fc", 'dff_fctrial': "change in Fc\nover each trial's\npre-odor Fc"}
+UNIT_NAME = {'z': "Yang's z", 'noise': 'baseline-noise units'}
+READING_TICK = {'z': "Yang's z", 'noise': 'baseline-noise\nunits', 'nc_z': "noise-corrected,\nYang's z",
+    'nc_noise': 'noise-corrected,\nbaseline-noise units'}
+CLASS_TICK = {'0': 'none', '1': '1', '2_3': '2-3', '4_7': '4-7', '8plus': '8 or more', 'all': 'all KCs'}
+SUBSET_LABEL = {'eight': 'all eight', 'six': 'the six typical', 'two': 'the two strongest'}
+FIG_MODEL_LABEL = {'C2': 'C2 (breadth-2 APL-effect fit)', 'ceiling 1': 'C2 family, firing ceiling 1',
+    'ceiling 2': 'C2 family, firing ceiling 2', 'reading ceiling': 'ceiling fitted under the per-KC reading',
+    'ref. ceiling 2': 'reference set, ceiling 2, fitted', 'ref. ceiling fixed': 'reference model, strongest ceiling,\nfixed scales',
+    'ref.': 'reference model'}
+# part E's bases in the figures, (base, experiment): label; the ceiling base's E69 rows in model_axes.csv are the
+# runner's smoke test (three points), so only fit 0's optimum is drawn for it
+AXES_BASES = {('c2', 'E67_apl_effect_fits'): 'C2 (breadth-2 APL-effect fit)',
+    ('ceiling2', EXPERIMENT): 'fit 0 (firing ceiling 2, re-fitted)'}
+
+
+def _fit_label(tag: str) -> str:
+    """The figures' label of one of this experiment's fits from its E10_joint_fit.py tag: fit 0 (the rate terms against the
+    data in baseline-noise units), fit 1 (also the APL term, `dnu`), fit 2 (fit 1's options from E69's fit 3, `thr40`)."""
+    if 'dnu' not in tag:
+        return 'fit 0: ceiling 2 re-fitted,\nrate terms in baseline-noise units'
+    if 'thr40' in tag:
+        return 'fit 2: reference set, ceiling 2,\nfitted to baseline-noise units'
+    return 'fit 1: ceiling 2 fitted\nto baseline-noise units'
+
+
+def _style(ax) -> None:
+    ax.spines[['top', 'right']].set_visible(False)
+
+
+def _tnt_split(rec: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+    """recordings.csv's control recordings, its recordings with APL output blocked (TNT), and which of the latter are the
+    two strongest."""
+    tnt = rec[rec['genotype'] == 'TNT'].reset_index(drop=True)
+    return rec[rec['genotype'] == 'TNT3c'], tnt, np.asarray(tnt['strongest'].astype(str) == 'True')
+
+
+def fig_units(out: Path, plt) -> Path:
+    """E76_units.png (part B): the flies' mean per-pair APL effect per unit, the per-pair effect in baseline-noise units
+    against Yang's z, and the split by odors per KC in both."""
+    du = pd.read_csv(out / 'data_units.csv')
+    ep = pd.read_csv(out / 'effect_by_unit_pairs.csv', index_col=[0, 1])
+    cs = pd.read_csv(out / 'class_split_units.csv', dtype={'class': str})
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.6), gridspec_kw=dict(width_ratios=[1.3, 1, 1.2]))
+    ax = axes[0]
+    g = du[du['values'] == 'graded'].set_index('unit').loc[list(UNITS)]
+    nc = du[du['values'] == 'noise_corrected'].set_index('unit')
+    x = np.arange(len(UNITS))
+    ax.errorbar(x, g['mean'], yerr=[g['mean'] - g['mean_lo'], g['mean_hi'] - g['mean']], fmt='o', ms=7, color=FIG_COLORS[0],
+        capsize=3, label='graded trial means (90 % interval over recordings)')
+    for i, v in enumerate(g['mean']):
+        ax.annotate(f'{v:+.3f}', (i, v), xytext=(-8, 0), textcoords='offset points', ha='right', va='center', fontsize=7.5)
+    first = True
+    for i, u in enumerate(UNITS):
+        if u not in nc.index:
+            continue
+        r = nc.loc[u]
+        ax.errorbar(i + 0.25, r['mean'], yerr=[[r['mean'] - r['mean_lo']], [r['mean_hi'] - r['mean']]], fmt='D', ms=6, mfc='white',
+            mec=FIG_COLORS[1], color=FIG_COLORS[1], capsize=3, label="noise-corrected: each recording's cosine corrected\nfor trial-to-trial noise (90 % interval)" if first else None)
+        ax.annotate(f'{r["mean"]:+.3f}', (i + 0.25, r['mean']), xytext=(6, 0), textcoords='offset points', va='center', fontsize=7.5,
+            color=FIG_COLORS[1])
+        first = False
+    ax.set_xticks(x)
+    ax.set_xticklabels([UNIT_TICK[u] for u in UNITS], fontsize=8)
+    ax.set_xlim(-0.6, len(UNITS) - 0.3)
+    ax.set_ylim(0, max(float(nc['mean_hi'].max()), float(g['mean_hi'].max())) * 1.12)
+    ax.set_xlabel("unit of each KC's trial-mean responses")
+    ax.set_ylabel('mean APL effect on odor-odor distances\n(control flies minus APL output blocked (TNT), cosine distance)')
+    ax.set_title("The KC data's mean APL effect, by the unit of the responses", fontsize=10)
+    ax.legend(fontsize=7.5, frameon=False, loc='upper right')
+    _style(ax)
+
+    ax = axes[1]
+    z, nz = ep['effect__z__graded'], ep['effect__noise__graded']
+    est, alc = pair_mask(ep.index, ESTER_GROUP), pair_mask(ep.index, ALCOHOL_GROUP)
+    other = ~est & ~alc
+    ax.scatter(z[other], nz[other], s=14, color=MUTED, alpha=0.5, lw=0, label=f'other pairs ({other.sum()})')
+    ax.scatter(z[est], nz[est], s=26, color=FIG_COLORS[0], label=f'ester group ({est.sum()} pairs among {", ".join(ESTER_GROUP)})')
+    ax.scatter(z[alc], nz[alc], s=26, color=FIG_COLORS[1], label=f'alcohol group ({alc.sum()} pairs among {", ".join(ALCOHOL_GROUP)})')
+    lo, hi = float(min(z.min(), nz.min())), float(max(z.max(), nz.max()))
+    pad = 0.03 * (hi - lo)
+    ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color=INK, lw=0.8, ls='--', label='identity')
+    ax.set_xlim(lo - pad, hi + pad)
+    ax.set_ylim(lo - pad, hi + pad)
+    ax.set_aspect('equal')
+    rho = H.spearman(z, nz)
+    ax.set_xlabel("per-pair APL effect, Yang's z: cosine distance")
+    ax.set_ylabel('per-pair APL effect, baseline-noise units: cosine distance')
+    ax.set_title(f"Per-pair APL effect, baseline-noise units against Yang's z\n(120 pairs; ρ on the per-pair APL effect {rho:.2f})",
+        fontsize=10)
+    ax.legend(fontsize=7, frameon=False, loc='upper left')
+    _style(ax)
+
+    ax = axes[2]
+    t = cs[(cs['quantity'] == 'effect') & (cs['term'] == 'total')]
+    classes = list(H.opk_class_labels()) + ['all']
+    w = 0.38
+    for j, u in enumerate(('z', 'noise')):
+        d = t[t['unit'] == u].set_index('class').loc[classes]
+        thr = float(d['threshold'].iloc[0])
+        lab = (f"Yang's z (a response: above {thr:g} z)" if u == 'z' else
+            f'baseline-noise units (a response: above {thr:.2f} noise SDs)')
+        ax.bar(np.arange(len(classes)) + (j - 0.5) * w, d['observed'], w * 0.92, color=FIG_COLORS[j], label=lab,
+            yerr=[d['observed'] - d['lo'], d['hi'] - d['observed']], error_kw=dict(ecolor=INK, lw=1, capsize=2))
+    ax.axhline(0, color=MUTED, lw=0.8)
+    ax.axvline(len(classes) - 1.5, color=MUTED, lw=0.6, ls=':')
+    ax.set_xticks(np.arange(len(classes)))
+    ax.set_xticklabels([CLASS_TICK[c] for c in classes])
+    ax.set_xlabel('odors a KC responds to (of the 16, in each condition)')
+    ax.set_ylabel('mean per-pair APL effect carried by the class\n(cosine distance)')
+    ax.set_title('The APL effect split by odors per KC\n(90 % intervals over recordings)', fontsize=10)
+    ax.legend(fontsize=7.5, frameon=False, loc='upper left')
+    _style(ax)
+    fig.tight_layout()
+    p = out / 'E76_units.png'
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    return p
+
+
+def fig_recordings(out: Path, plt) -> Path:
+    """E76_recordings.png (part D): each recording with APL output blocked (TNT) against the control flies' mean, in Yang's
+    z and in baseline-noise units; the steps' ρ and the two recordings' own agreement among the 28 splits of the eight
+    into six and two, in each reading."""
+    from matplotlib.lines import Line2D
+    rec = pd.read_csv(out / 'recordings.csv')
+    fl = pd.read_csv(out / 'subset_floors.csv').set_index(['unit', 'subset'])
+    sp = pd.read_csv(out / 'splits_tnt.csv')
+    sp['actual'] = sp['actual'].astype(str) == 'True'
+    _, tnt, strong = _tnt_split(rec)
+    order = np.argsort(tnt['effect_mean_z'].to_numpy())
+    tnt, strong = tnt.iloc[order].reset_index(drop=True), strong[order]
+    fig = plt.figure(figsize=(17, 9.5))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.3, 1])
+    x = np.arange(len(tnt))
+    sub_ls = {'eight': '--', 'six': ':', 'two': '-.'}
+    for row, u in enumerate(('z', 'noise')):
+        ax = fig.add_subplot(gs[row, 0])
+        m, sd = tnt[f'effect_mean_{u}'].to_numpy(), tnt[f'effect_sd_{u}'].to_numpy()
+        for i in x:
+            c = FIG_COLORS[1] if strong[i] else FIG_COLORS[0]
+            ax.errorbar(i, m[i], yerr=sd[i], fmt='o', ms=7, color=c, capsize=3)
+            ax.scatter(i - 0.22, m[i] + tnt[f'effect_ester_rel_{u}'].iloc[i], marker='^', s=34, facecolor='white', edgecolor=c, lw=1.2)
+            ax.scatter(i + 0.22, m[i] + tnt[f'effect_alcohol_rel_{u}'].iloc[i], marker='v', s=34, facecolor='white', edgecolor=c, lw=1.2)
+        for name, ls in sub_ls.items():
+            ax.axhline(fl.loc[(u, name), 'mean'], color=MUTED, lw=0.9, ls=ls)
+        ax.axhline(0, color=MUTED, lw=0.6)
+        ax.set_xticks(x)
+        ax.set_xticklabels(tnt['recording'], rotation=25, ha='right', fontsize=8)
+        for lab, s in zip(ax.get_xticklabels(), strong):
+            if s:
+                lab.set_color(FIG_COLORS[1])
+                lab.set_fontweight('bold')
+        ax.set_xlim(-0.6, len(tnt) - 0.4)
+        ax.set_ylabel("APL effect against the control flies' mean\n(per pair, cosine distance)")
+        ax.set_title(f"Each recording with APL output blocked (TNT), {UNIT_NAME[u]}", fontsize=10)
+        handles = [Line2D([], [], marker='o', ls='-', color=FIG_COLORS[0], label='mean over the 120 pairs ± sd over pairs (typical)'),
+            Line2D([], [], marker='o', ls='-', color=FIG_COLORS[1], label='the same, the two strongest recordings'),
+            Line2D([], [], marker='^', ls='', mfc='white', mec=MUTED, label='ester-group pairs (15), mean'),
+            Line2D([], [], marker='v', ls='', mfc='white', mec=MUTED, label='alcohol-group pairs (6), mean')]
+        handles += [Line2D([], [], color=MUTED, lw=0.9, ls=ls, label=f'effect against {SUBSET_LABEL[name]}: {fl.loc[(u, name), "mean"]:+.3f}')
+            for name, ls in sub_ls.items()]
+        ax.legend(handles=handles, fontsize=7, frameon=False, loc='upper left', ncol=2)
+        top = max(float((tnt[f'effect_mean_{u}'] + tnt[f'effect_sd_{u}']).max()),
+            float((tnt[f'effect_mean_{u}'] + tnt[f'effect_ester_rel_{u}']).max()))
+        ax.set_ylim(min(-0.02, float((tnt[f'effect_mean_{u}'] + tnt[f'effect_alcohol_rel_{u}']).min()) - 0.02), top * 1.45)
+        _style(ax)
+    rng = np.random.default_rng(0)
+    stats = (('rho_steps', 'ρ over the 120 pairs between the step from the\ncontrol flies to the six and the step from the six to the two',
+              'The two steps, over the 28 splits of the eight into six and two'),
+             ('rho_own', "ρ over the 120 pairs between the two recordings' own steps\n(the six's mean minus each of the two)",
+              "The two recordings' own steps, over the same 28 splits"))
+    for row, (stat, ylabel, title) in enumerate(stats):
+        ax = fig.add_subplot(gs[row, 1])
+        for i, rd in enumerate(READINGS):
+            s = sp[sp['reading'] == rd]
+            jit = rng.uniform(-0.16, 0.16, len(s))
+            null = ~s['actual'].to_numpy()
+            ax.scatter(i + jit[null], s.loc[null, stat], s=16, color=MUTED, alpha=0.55, lw=0,
+                label='every other split into six and two' if i == 0 else None)
+            ax.hlines(float(s[stat].median()), i - 0.28, i + 0.28, color=INK, lw=1.2, label="the 28 splits' median" if i == 0 else None)
+            a = s[s['actual']].iloc[0]
+            ax.scatter(i, a[stat], s=80, marker='D', color=FIG_COLORS[1], edgecolor=INK, zorder=3,
+                label='the actual split (the two strongest)' if i == 0 else None)
+            ax.annotate(f'{a[stat]:.2f}\nrank {int(a["rank_" + stat])} of {len(s)}', (i, a[stat]), xytext=(12, 0),
+                textcoords='offset points', va='center', fontsize=7.5, color=FIG_COLORS[1], zorder=4,
+                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.85))
+        ax.axhline(0, color=MUTED, lw=0.6)
+        ax.set_xticks(np.arange(len(READINGS)))
+        ax.set_xticklabels([READING_TICK[r] for r in READINGS], fontsize=8)
+        ax.set_xlim(-0.5, len(READINGS) - 0.3)
+        ax.set_ylabel(ylabel)
+        ax.set_title(f'{title}\n(recordings with APL output blocked (TNT); rank 1 the lowest)', fontsize=10)
+        lo, hi = float(sp[stat].min()), float(sp[stat].max())
+        ax.set_ylim(lo - 0.05, hi + 0.3 * (hi - lo))
+        ax.legend(fontsize=7, frameon=False, loc='upper center', ncol=3)
+        _style(ax)
+    fig.tight_layout()
+    p = out / 'E76_recordings.png'
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    return p
+
+
+def _data_ratios(rec: pd.DataFrame, u: str) -> Dict[str, float]:
+    """The KC data's APL-off / APL-on response-rate ratios in unit `u` ('z' or 'noise'; recordings.csv's rate_<u>): the
+    six's, the two's and the eight's mean response rate over the control flies' mean, as `part_e_tables`."""
+    ctrl, tnt, strong = _tnt_split(rec)
+    c = float(ctrl[f'rate_{u}'].mean())
+    r = tnt[f'rate_{u}'].to_numpy()
+    return dict(six=float(r[~strong].mean()) / c, two=float(r[strong].mean()) / c, eight=float(r.mean()) / c)
+
+
+def fig_axes(out: Path, plt) -> Optional[Path]:
+    """E76_axes.png (part E, raw spike counts): per base, the mean APL effect against the APL-off / APL-on response-rate
+    ratio along the graded block and along the somatic threshold with APL off, beside the KC data's six, two and eight;
+    and ρ of each step along an axis with the data's step from the six to the two; one row per unit of the KC data."""
+    from matplotlib.lines import Line2D
+    ma = pd.read_csv(out / 'model_axes.csv')
+    ma = ma[ma['readout'] == 'raw']
+    rec = pd.read_csv(out / 'recordings.csv')
+    fl = pd.read_csv(out / 'subset_floors.csv').set_index(['unit', 'subset'])
+    at = pd.read_csv(out / 'axis_tests.csv').set_index(['reading', 'genotype'])
+    bases = [(b, e, lab) for (b, e), lab in AXES_BASES.items() if ((ma['base'] == b) & (ma['experiment'] == e)).any()]
+    if not bases:
+        return None
+    axes_style = {'block': ('-', 'o', 'graded block (APL→KC and APL→bouton times 1, 0.75, 0.5, 0.25, 0.125, 0)'),
+        'thr_off': ('--', 's', 'somatic threshold times 1.2, 1.1, 1, 0.9, 0.8, APL off'),
+        'thr_on': (':', '^', 'somatic threshold times 1.2, 1.1, 1, 0.9, 0.8, APL on')}
+    sub_mk = {'six': 'o', 'two': 's', 'eight': '*'}
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10.5))
+    for row, u in enumerate(('z', 'noise')):
+        ax = axes[row, 0]
+        for j, (b, e, lab) in enumerate(bases):
+            g = ma[(ma['base'] == b) & (ma['experiment'] == e)]
+            for axis in ('block', 'thr_off'):
+                ls, mk, _ = axes_style[axis]
+                q = g[g['axis'] == axis].sort_values('ratio')
+                ax.plot(q['ratio'], q['effect_mean'], ls=ls, marker=mk, ms=5, lw=1.5, color=FIG_COLORS[j])
+        rd = _data_ratios(rec, u)
+        kc_handles = []
+        for name, mk in sub_mk.items():
+            y = float(fl.loc[(u, name), 'mean'])
+            ax.scatter(rd[name], y, marker=mk, s=110 if mk == '*' else 60, color=INK, zorder=4)
+            kc_handles.append(Line2D([], [], marker=mk, ms=10 if mk == '*' else 7, ls='', color=INK,
+                label=f'{SUBSET_LABEL[name]}: {y:+.3f}, ratio {rd[name]:.2f}'))
+        ax.legend(handles=kc_handles, fontsize=7.5, frameon=False, loc='upper left', title_fontsize=7.5, alignment='left',
+            title=f'KCs, recordings with APL output blocked (TNT), {UNIT_NAME[u]}:\nmean APL effect, response-rate ratio')
+        ax.axhline(0, color=MUTED, lw=0.6)
+        ax.set_xlim(0.9, max(float(ma["ratio"].max()), max(rd.values())) + 0.15)
+        ax.set_ylim(-0.015, max(float(fl.loc[(u, 'two'), 'mean']), float(ma['effect_mean'].max())) * 1.6)
+        ax.set_xlabel("APL-off / APL-on response-rate ratio\n(model: the point's response rate over the base's with APL on)")
+        ax.set_ylabel("mean APL effect on odor-odor distances\n(model: the base with APL on minus the point; cosine distance)")
+        ax.set_title(f"Mean APL effect along the model's axes (raw spike counts)\nbeside the KC data in {UNIT_NAME[u]}", fontsize=10)
+        _style(ax)
+
+        ax = axes[row, 1]
+        col = f'step_rho_step2_{u}'
+        for j, (b, e, lab) in enumerate(bases):
+            g = ma[(ma['base'] == b) & (ma['experiment'] == e)]
+            for axis, (ls, mk, _) in axes_style.items():
+                # (part_e_tables writes each axis's points in its order, so a row's step is from the row before)
+                q = g[g['axis'] == axis]
+                mid = (q['ratio'] + q['ratio'].shift(1)) / 2
+                ok = q[col].notna().to_numpy()
+                ax.plot(mid[ok], q.loc[ok, col], ls=ls, marker=mk, ms=5, lw=1.5, color=FIG_COLORS[j])
+        own = float(at.loc[(u, 'TNT'), 'rho_own'])
+        ax.axhline(own, color=INK, lw=1, ls='--')
+        ax.axhline(0.5, color=FIG_COLORS[7], lw=1, ls=':')
+        ax.axhline(0, color=MUTED, lw=0.6)
+        ax.set_xlabel("response-rate ratio at the step's midpoint\n(the point's response rate over the base's with APL on)")
+        ax.set_ylabel("ρ over the 120 pairs between the model's step\nand the KC data's step from the six to the two")
+        ax.set_title(f"Each step along an axis against the step from the six to the two\n(KC data in {UNIT_NAME[u]})", fontsize=10)
+        handles = [Line2D([], [], color=INK, lw=1, ls='--', label=f"the two recordings' own steps agree (ρ {own:.2f})"),
+            Line2D([], [], color=FIG_COLORS[7], lw=1, ls=':', label='ρ 0.5: an axis that reproduces the step')]
+        ax.legend(handles=handles, fontsize=7.5, frameon=False, loc='upper left')
+        ax.set_ylim(-0.45, 0.95)
+        _style(ax)
+    handles = [Line2D([], [], color=FIG_COLORS[j], lw=2, label=lab) for j, (_, _, lab) in enumerate(bases)]
+    handles += [Line2D([], [], color=MUTED, ls=st[0], marker=st[1], label=st[2] + (' (right only)' if a == 'thr_on' else ''))
+        for a, st in axes_style.items()]
+    fig.legend(handles=handles, fontsize=8, frameon=False, loc='upper center', ncol=3)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    p = out / 'E76_axes.png'
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    return p
+
+
+def subset_scores(out: Path) -> pd.DataFrame:
+    """The key models' (`KEY_MODELS`, from subsets_vs_archive.csv) and this experiment's fits' (its
+    model_pair_distances_long.csv, scored here against recording_subsets.csv's effects) loss and pattern part on raw
+    spike counts against the eight, the six and the two, in Yang's z and in baseline-noise units: one row per model
+    (`label`, `<subset>_<unit>_loss`, `<subset>_<unit>_pattern`, `fit` whether it is this experiment's)."""
+    import apl_effect_scores as A
+    sc = pd.read_csv(out / 'subsets_vs_archive.csv', keep_default_na=False, na_values=['']).set_index(['folder', 'tag'])
+    cols = [f'{n}_{u}_{q}' for u in ('z', 'noise') for n in ('eight', 'six', 'two') for q in ('loss', 'pattern')]
+    rows = []
+    for short, _, f, tg in KEY_MODELS:
+        if (f, tg) in sc.index:
+            r = sc.loc[(f, tg)]
+            rows.append(dict(label=FIG_MODEL_LABEL.get(short, short), fit=False, **{c: float(r[c]) for c in cols}))
+    rs = pd.read_csv(out / 'recording_subsets.csv', index_col=[0, 1])
+    targets = {c[len('effect_'):]: H.canonical_pairs(rs[c]) for c in rs.columns if c.startswith('effect_')}
+    for tag, (on, off) in A.model_pairs(out).items():
+        row = dict(label=_fit_label(tag), fit=True)
+        for name, t in targets.items():
+            st = H.apl_effect_stats(on, off, t)
+            row.update({f'{name}_loss': st['apl_effect_rmse'], f'{name}_pattern': st['apl_effect_rmse_centered']})
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def fig_subsets(out: Path, plt) -> Path:
+    """E76_subsets.png (part D): the key models' and this experiment's fits' loss and pattern part on raw spike counts
+    against the eight, the six and the two, in Yang's z and in baseline-noise units, with each side's floors."""
+    from matplotlib.lines import Line2D
+    df = subset_scores(out)
+    fl = pd.read_csv(out / 'subset_floors.csv').set_index(['unit', 'subset'])
+    subsets = ('eight', 'six', 'two')
+    sub_c = {'eight': FIG_COLORS[0], 'six': FIG_COLORS[2], 'two': FIG_COLORS[1]}
+    sub_mk = {'eight': 'o', 'six': 's', 'two': '^'}
+    y = np.arange(len(df))
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10), sharey=True)
+    for c, u in enumerate(('z', 'noise')):
+        for r, (q, xlabel, floor_col) in enumerate((('loss', 'APL-effect loss on raw spike counts\n(rms over the 120 pairs, cosine distance)', 'rmse_floor'),
+                ('pattern', 'pattern part of the APL-effect loss on raw spike counts\n(rms over the 120 pairs, both means removed)', 'pattern_floor'))):
+            ax = axes[r, c]
+            for k, n in enumerate(subsets):
+                ax.scatter(df[f'{n}_{u}_{q}'], y + (k - 1) * 0.22, marker=sub_mk[n], s=40, color=sub_c[n], zorder=3)
+                ax.axvline(float(fl.loc[(u, n), floor_col]), color=sub_c[n], lw=1, ls='--')
+            for yy in y:
+                ax.axhline(yy, color=MUTED, lw=0.3, alpha=0.4, zorder=0)
+            if df['fit'].any() and not df['fit'].all():
+                ax.axhline(float(np.flatnonzero(df['fit'].to_numpy())[0]) - 0.5, color=MUTED, lw=0.8)
+            ax.set_xlim(0, None)
+            ax.set_xlabel(xlabel)
+            ax.set_title(f"{'APL-effect loss' if q == 'loss' else 'Its pattern part'} against the KC data in {UNIT_NAME[u]}", fontsize=10)
+            ax.tick_params(axis='y', labelsize=8)
+            _style(ax)
+    axes[0, 0].set_yticks(y)
+    axes[0, 0].set_yticklabels(df['label'])
+    axes[0, 0].invert_yaxis()
+    handles = [Line2D([], [], marker=sub_mk[n], ls='', color=sub_c[n],
+        label=f'against {SUBSET_LABEL[n]} recordings with APL output blocked (TNT)') for n in subsets]
+    handles += [Line2D([], [], color=MUTED, lw=1, ls='--', label="dashed: the floor of each, in its colour (the KC data's own variability)")]
+    fig.legend(handles=handles, fontsize=8, frameon=False, loc='upper center', ncol=2)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    p = out / 'E76_subsets.png'
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    return p
+
+
+def part_figures(out: Path) -> List[Path]:
+    """The write-up's figures from the parts' tables (no simulations): E76_units.png (part B), E76_recordings.png and
+    E76_subsets.png (part D), E76_axes.png (part E)."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    paths = [fig_units(out, plt), fig_recordings(out, plt), fig_axes(out, plt), fig_subsets(out, plt)]
+    return [p for p in paths if p is not None]
+
+
 # the check of E10_joint_fit.py's --apl-data-units: E69's fit 2 (the firing ceiling at strength 2 on C2's family), started
 # exactly at its optimum for one evaluation; with the option off it must reproduce the fit's best evaluation to the last digit
 E10_CHECK_START = ('E69_kc_firing_ceiling', 'rate0.068_aplboth_refr3_adapt0.1114t1000_k2')
@@ -1901,7 +2272,7 @@ def check_e10(name: str, extra: Sequence[str] = ()) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=('D', 'B', 'C', 'E', 'E-tables', 'table', 'check-e10'))
+    ap.add_argument('--part', required=True, choices=('D', 'B', 'C', 'E', 'E-tables', 'table', 'figures', 'check-e10'))
     ap.add_argument('--check', nargs='*', default=['off'], help=f'with --part check-e10: the checks to run, of {list(E10_CHECK_EXTRA)}')
     ap.add_argument('--jobs', type=int, default=3, help='part C: worker processes')
     ap.add_argument('--threads', type=int, default=12)
@@ -1920,6 +2291,9 @@ def main() -> None:
         part_c(out, jobs=args.jobs)
     elif args.part == 'table':
         write_table(out)
+    elif args.part == 'figures':
+        for q in part_figures(out):
+            print(q, flush=True)
     elif args.part == 'E-tables':
         t = part_e_tables(out)
         print(t['populations'].round(3).to_string(), flush=True)
