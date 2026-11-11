@@ -2247,6 +2247,163 @@ def shuffled_pair_distances(mat: pd.DataFrame, rng: np.random.Generator, *,
 
 
 # ---------------------------------------------------------------------------
+# the three repeats of the recordings (E81, the flies' variability across the three repeats; atlas):
+# single-trial distances by kind of trial pair, the same-repeat gap, noise-free distances from products
+# of different repeats, and the parts of a response's variability across repeats. A recording (or a
+# model's pseudo-recording) is an array (n_repeats, units, odors) of single-trial values; in the model,
+# whose trials are exchangeable, the trial index stands in for the repeat.
+REPEAT_KINDS: Tuple[str, ...] = ('same_repeat', 'different_repeat', 'adjacent', 'first_third')
+TRIAL_VALUES: Tuple[str, ...] = ('graded', 'thresholded', 'binary')
+YANG_DATASETS: Dict[str, int] = {'TNT': 19, 'TNT3c': 20}
+
+
+def yang_recording_trials(genotype: str, units: str = 'z', odors: Optional[Sequence[str]] = None
+    ) -> Dict[Tuple[str, int, str], np.ndarray]:
+    """One genotype's single-trial KC responses, per recording.
+
+    Args:
+        genotype: 'TNT3c' (control flies) or 'TNT' (APL output blocked (TNT)).
+        units: 'z' (Yang's whole-recording z, olfdb's values: data/yang_apl16_kc_olfdb/<genotype>/
+            dataset_<id>_long.csv) or 'noise' (baseline-noise units: data/yang_apl16_kc_noise_units/
+            per_trial_long.parquet, the realism bands' units).
+        odors: odor abbreviations, in the order of the last axis (default `APL16_ODORS`).
+
+    Returns {(date, fly_num, hemibrain): array (n_repeats, KCs, odors)}, repeats in the order of olfdb's
+    `repeat` (taken as the repeat's number in the session), KCs sorted by roi.
+    """
+    raise NotImplementedError
+
+
+def trial_values(trials: np.ndarray, values: str = 'graded', thresh: float = KC_RESPONSE_Z) -> np.ndarray:
+    """Single trials read as `values`: 'graded' (unchanged), 'thresholded' (values at or below `thresh`
+    set to 0, trial by trial, as a non-responding model KC contributes 0) or 'binary' (1 above `thresh`,
+    else 0). Works on any array shape."""
+    raise NotImplementedError
+
+
+def trial_cosines(trials: np.ndarray) -> np.ndarray:
+    """Cosine similarities between every pair of single-trial response vectors of one recording.
+
+    Args:
+        trials: (n_repeats, units, odors).
+
+    Returns (n_repeats, odors, n_repeats, odors): [i, a, j, b] is the cosine between the units' responses
+    to odor a in repeat i and to odor b in repeat j; NaN where either vector is all zero.
+    """
+    raise NotImplementedError
+
+
+def distances_by_kind(trials: np.ndarray, odors: Sequence[str], *, values: str = 'graded',
+    thresh: float = KC_RESPONSE_Z) -> pd.DataFrame:
+    """One recording's single-trial cosine distances (1 - cosine), averaged by kind of trial pair.
+
+    Args:
+        trials: (n_repeats, units, odors), odors in the order of `odors`.
+        values, thresh: how the single trials are read (`trial_values`).
+
+    Returns a DataFrame indexed (odor_a, odor_b): the canonical two-odor pairs (in `odors` order), then
+    one same-odor row per odor (odor_a == odor_b); columns `REPEAT_KINDS`: 'same_repeat' (the two odors
+    in the same repeat; NaN for a same-odor row), 'different_repeat' (any two different repeats),
+    'adjacent' (repeats one apart) and 'first_third' (repeats two apart; NaN with fewer than three
+    repeats). Each entry is the mean over the trial pairs of that kind (NaN cosines skipped).
+    """
+    raise NotImplementedError
+
+
+def same_repeat_gap(by_kind: pd.DataFrame, pairs: Optional[Sequence[Tuple[str, str]]] = None) -> float:
+    """The same-repeat gap of one recording: the mean over two-odor pairs (default all of `by_kind`'s;
+    `pairs` restricts them, e.g. to the six pairs with near-identical ORN input) of the single-trial
+    distance between different repeats minus the distance within the same repeat (`distances_by_kind`).
+    Positive when two odors of one repeat are more alike than two odors of different repeats, i.e. when
+    part of the trial-to-trial variability is shared by the odors of a repeat."""
+    raise NotImplementedError
+
+
+def noise_free_pair_distances(trials: np.ndarray, odors: Sequence[str], *, repeats: str = 'different',
+    values: str = 'graded', thresh: float = KC_RESPONSE_Z) -> pd.Series:
+    """Noise-free cosine distances of one recording from products of different repeats.
+
+    For each pair (a, b): 1 - C_ab / sqrt(C_aa C_bb), C_ab the mean single-trial cosine between odor a in
+    repeat i and odor b in repeat j over the repeat pairs i != j selected by `repeats`, C_aa the same for
+    odor a with itself. Noise independent between repeats adds nothing, in expectation, to a product of
+    two different repeats, whether or not it is shared by the odors of a repeat; a drift common to an
+    odor's repeats acts on C_ab and C_aa alike and cancels in the ratio. Not clipped: a near-identical pair
+    can come out slightly below 0.
+
+    Args:
+        trials: (n_repeats, units, odors).
+        repeats: 'different' (every i != j), 'adjacent' (|i - j| == 1) or 'first_third' (|i - j| == 2).
+        values, thresh: how the single trials are read (`trial_values`).
+
+    Returns a canonical pair Series (index (odor_a, odor_b)).
+    """
+    raise NotImplementedError
+
+
+def repeat_pair_table(trials: np.ndarray, odors: Sequence[str], *, values: str = 'graded',
+    thresh: float = KC_RESPONSE_Z) -> pd.DataFrame:
+    """Every pair distance of one recording that E81 compares, one row per canonical two-odor pair.
+
+    Columns: 'trial_mean' (1 - cosine of the two odors' trial means, the main target's distance; the
+    trial mean of the trials read as `values`), 'corrected' (the noise correction in use,
+    `noise_corrected_pair_distances`: noise assumed independent between odors), 'noise_free',
+    'noise_free_adjacent', 'noise_free_first_third' (`noise_free_pair_distances` with each `repeats`),
+    and the single-trial distances by kind (`REPEAT_KINDS`, from `distances_by_kind`).
+    """
+    raise NotImplementedError
+
+
+def repeat_response_stats(trials: np.ndarray, odors: Sequence[str], *, thresh: float = KC_RESPONSE_Z
+    ) -> pd.DataFrame:
+    """Per repeat and odor of one recording: 'rate' (fraction of units whose single-trial value is above
+    `thresh`), 'amplitude' (the mean single-trial value of those units; NaN if none), 'n_resp', 'n_units'.
+    Indexed (repeat (0-based), odor)."""
+    raise NotImplementedError
+
+
+def repeat_variance_parts(trials: np.ndarray, odors: Sequence[str], *, thresh: float = KC_RESPONSE_Z,
+    n_amp_bins: int = 4) -> pd.DataFrame:
+    """The parts of one recording's variability across repeats.
+
+    Each entry's deviation from its own mean over repeats, d[r, k, o] = x[r, k, o] - mean_r x[., k, o],
+    is split into three parts, with x the units' (KCs') single-trial values:
+    - 'gain': common to all units of a presentation (repeat r of odor o), proportional to the units' mean
+      response to that odor: c[r, o] * mean_r x[., k, o], c fitted by least squares over all units (a
+      cosine does not see it);
+    - 'shared': common to one unit's odors within a repeat: the covariance between two different odors'
+      residual deviations (after the gain part) of the same unit in the same repeat;
+    - 'rest': the remainder, independent between the odors of a repeat.
+    Variances are per trial (sums over repeats of squared deviations divided by n_repeats - 1, which is
+    unbiased for a part independent between repeats), averaged over the entries of a class.
+
+    Args:
+        trials: (n_repeats, units, odors).
+        thresh: an entry (unit, odor) is a responder when its trial mean is above `thresh`, silent
+            otherwise; the shared part of a class is taken over pairs of odors whose two entries are both
+            in the class.
+        n_amp_bins: the responders' entries are also split into this many quantile bins of their trial
+            mean (a pair's bin: the geometric mean of its two entries' trial means), to show whether each
+            part scales with the amplitude.
+
+    Returns a DataFrame indexed by class ('all', 'responders', 'silent', 'responders_amp1', ...): n_entries,
+    n_pairs (odor pairs of entries in the class, over units), mean_amplitude, var_total, var_gain,
+    var_shared, var_rest (var_total minus the other two), share_gain, share_shared, share_rest (of
+    var_total), sd_trial (sqrt(var_total)) and corr_shared (var_shared over the class's residual variance,
+    the correlation of two odors' residual deviations within a repeat).
+    """
+    raise NotImplementedError
+
+
+def coresponder_deviation_corr(trials: np.ndarray, odors: Sequence[str], *, thresh: float = KC_RESPONSE_Z,
+    min_units: int = 5) -> pd.Series:
+    """Per two-odor pair of one recording: the correlation, over the units responding to both odors (trial
+    mean above `thresh`) and the repeats, between the two odors' deviations from each unit's mean over
+    repeats (the shared state among co-responders). NaN for pairs with fewer than `min_units` such units.
+    Returns a canonical pair Series."""
+    raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
 # plots (matplotlib; sequential single-hue maps for distances, diverging for residuals)
 def _plt():
     import matplotlib
