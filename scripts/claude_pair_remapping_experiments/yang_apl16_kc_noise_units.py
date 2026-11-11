@@ -194,6 +194,10 @@ registry's noise_ctrl_frac and noise_tnt_frac (to 1e-12). viki checked the scale
 z-scored traces and the per-trial responses recomputed from her suite2p output match her saved values and olfdb's to
 at most 3e-6 in all 19 recordings (notes/yang_response_normalization/recordings.csv).
 
+## In olfdb
+
+Uploaded 2026-11-11 (olfdb ce400a5 and later keep several response calculations of the same recordings as datasets of their own): #22 (APL output blocked (TNT)) and #23 (control flies, TNT3c) in baseline-noise units, viki's unnormalized change in Fc as #24 / #25; #19 and #20 carry the response calculation "whole-recording z".
+
 ## Caveats
 
 A baseline-noise unit is not a unit of activity: Fc is not divided by a resting fluorescence, so a response in these
