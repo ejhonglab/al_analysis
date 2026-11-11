@@ -726,10 +726,133 @@ def input_oracle(out: Path, half_name: str, odors: Sequence[str] = E_ODORS, pop:
     return pd.DataFrame(hist)
 
 
+E_WIRINGS = ('real', 'P1', 'P2', 'M1')
+
+
+def wiring_simulator(label: str, orn: pd.DataFrame, input_tag: Optional[str] = None) -> Tuple:
+    """C2's family on one of E72's wirings ('real' or a draw label) at that wiring's own fitted parameters (E72's
+    part-B optimum), with the ORN input `orn` and its breadth recomputed for it (E10_joint_fit.bouton_base, as a fit with
+    `--orn-input` and the wiring options builds it). Returns (simulate, params, (folder, tag) of the wiring's fit)."""
+    import E10_joint_fit as J
+    import E72_wiring_population as E72
+    from al_analysis.mb_model import make_fixed_param_kc_simulator
+    mem = {lab: (f, tg) for lab, f, tg in members()}
+    folder, tag = mem[label]
+    p = E72.fitted_params(folder, tag)
+    wk: dict = {}
+    if label != 'real':
+        prefix = dict(E72.DRAWS)[label]
+        seed = int(prefix.split('seed')[1].rstrip('_'))
+        if label.startswith('P'):
+            wk = dict(wiring='claw_permutation_within_type', wiring_seed=seed)
+        else:
+            m59 = H.shared_dir() / 'data' / 'model_outputs' / 'E59_coinput_shuffle'
+            wk = dict(wiring_matrix=pd.read_parquet(m59 / f'wPNKC_curveball_within_type-seed{seed}_matched.parquet'),
+                      wiring_tag=f'curveball_within_type_matched-seed{seed}')
+    _, wnorm, W, breadth = J.bouton_base(orn, H.outputs_dir(EXPERIMENT), None, input_tag=input_tag, **wk)
+    wAPLKC = J.breadth_weights(wnorm['wAPLKC'], breadth, 2.0)
+    sim, _ = make_fixed_param_kc_simulator(orn, initial_params=dict(p), **J.base_kws(None), _wPNKC=W, _wAPLKC=wAPLKC,
+                                           _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'],
+                                           kc_kc_inh=p['wKCKC_scale'], kc_kc_tau=J.TAU)
+    return sim, p, (folder, tag)
+
+
+def score_oracle(out: Path, wirings: Sequence[str] = E_WIRINGS) -> pd.DataFrame:
+    """Part E's reading: each half's searched input (inputs/oracle_half<X>.csv) on C2's family on `wirings`, the breadth
+    recomputed for the input and both response rates re-bisected to that wiring's fit's counts (E77_input_screen's
+    `hold_rates`; the lab's input is each wiring's saved fit, after a check that the rebuilt simulator reproduces it),
+    scored per wiring and as the population of the four (mean distances) against the half it was searched on, the half
+    it never saw, all eight recordings and the six typical ones. Writes oracle_scores.csv, oracle_runs.csv (parameters,
+    factors, realism), model_pair_distances_long.csv rows (tags oracle_half<X>_<wiring>) and the runs' outputs under
+    outputs/E77_input_side_common_error/oracle/."""
+    import E72_wiring_population as E72
+    import E77_input_screen as S
+    from E10_joint_fit import read_orn_input
+    halves = recording_halves()
+    targets = {'halfA': half_effect(halves['A']), 'halfB': half_effect(halves['B'])}
+    for t in ('z8', 'z6'):
+        dd = data_distances(t)
+        targets[t] = _cs(H.apl_effect(dd['on'], dd['off']))
+    orn = H.apl16_orn_deltas()
+    odir = H.outputs_dir(EXPERIMENT) / 'oracle'
+    odir.mkdir(parents=True, exist_ok=True)
+    runs: Dict[Tuple[str, str], Dict[str, tuple]] = {}
+    rrows, long_parts = [], []
+    for w in wirings:
+        sim, p, (folder, tag) = wiring_simulator(w, orn)
+        saved = E72.load_fit(folder, tag)
+        on, off = sim(dict(p)), sim(dict(p, wAPLKC_scale=0.0, wAPLPN_scale=0.0))
+        for c, o in (('on', on), ('off', off)):
+            if not np.array_equal(o[1].to_numpy(dtype=float), saved[c][1].to_numpy(dtype=float)):
+                raise RuntimeError(f'{w}: the rebuilt simulator does not reproduce the saved {c} counts of {tag}')
+        del sim
+        runs[('lab', w)] = saved
+        rrows.append(dict(input='lab', wiring=w, fit_folder=folder, fit_tag=tag, thr_factor=1.0, apl_factor=1.0, **p, **realism_of(saved)))
+        print(f'{w}: rebuilt simulator reproduces {tag}', flush=True)
+    for hx in ('A', 'B'):
+        path = out / 'inputs' / f'oracle_half{hx}.csv'
+        if not path.exists():
+            print(f'{path} missing; half {hx} skipped', flush=True)
+            continue
+        o_in = read_orn_input(str(path), orn)
+        for w in wirings:
+            saved = runs[('lab', w)]
+            n_on, n_off = int((saved['on'][0].to_numpy(dtype=float) > 0.5).sum()), int((saved['off'][0].to_numpy(dtype=float) > 0.5).sum())
+            sim, p, _ = wiring_simulator(w, o_in, input_tag=f'E77_oracle_half{hx}')
+            res = S.hold_rates(lambda: sim, target_off=n_off, target_on=n_on, params=p, label=f'oracle {hx} {w}')
+            del sim
+            o = {'on': res['on'], 'off': res['off']}
+            tg = f'oracle_half{hx}_{w}'
+            runs[(f'oracle_half{hx}', w)] = o
+            for c, cc in (('on', 'on'), ('off', 'acute_off')):
+                o[c][0].to_parquet(odir / f'{tg}_{cc}_responses.parquet')
+                o[c][1].to_parquet(odir / f'{tg}_{cc}_spike_counts.parquet')
+            long_parts.append(pd.concat({(tg, 'on'): H.model_rdms(*o['on'])[H.PRIMARY_MODEL_RDM],
+                                         (tg, 'acute_off'): H.model_rdms(*o['off'])[H.PRIMARY_MODEL_RDM]},
+                                        names=['tag', 'condition', 'odor_a', 'odor_b']).rename('distance').reset_index())
+            rrows.append(dict(input=f'oracle_half{hx}', wiring=w, thr_factor=res['thr_factor'], apl_factor=res['apl_factor'],
+                              n_on=res['n_on'], n_off=res['n_off'], at_bound_thr=res['at_bound_thr'], at_bound_apl=res['at_bound_apl'],
+                              **res['params'], **realism_of(o)))
+            pd.DataFrame(rrows).to_csv(out / 'oracle_runs.csv', index=False)
+            print(f'oracle {hx} on {w}: thr x{res["thr_factor"]:.3f}, APL x{res["apl_factor"]:.3f}', flush=True)
+    srows = []
+    inputs = sorted({k[0] for k in runs})
+    for inp in inputs:
+        for readout in ('cal', 'raw'):
+            ds = {w: {c: _cs(v) for c, v in E72.distances(runs[(inp, w)], readout).items()} for w in wirings if (inp, w) in runs}
+            if len(ds) == len(wirings):
+                ds['pop4'] = {c: _cs(v) for c, v in E72.mean_distances([ds[w] for w in wirings]).items()}
+            for w, d in ds.items():
+                me = _cs(H.apl_effect(d['on'], d['off']))
+                for tn, te in targets.items():
+                    de = te.reindex(me.index)
+                    err = (me - me.mean()) - (de - de.mean())
+                    masks = kind_masks(err.index)
+                    srows.append(dict(input=inp, wiring=w, readout=readout, target=tn, mean_effect=float(me.mean()),
+                                      loss=float(np.sqrt(np.mean((me - de).to_numpy() ** 2))),
+                                      pattern_rms=float(np.sqrt(np.mean(err.to_numpy() ** 2))),
+                                      err_ester=float(err[masks['ester']].mean()), err_alcohol=float(err[masks['alcohol']].mean())))
+    sc = pd.DataFrame(srows)
+    lab = sc[sc.input == 'lab'].set_index(['wiring', 'readout', 'target'])['pattern_rms']
+    sc['pattern_gain_vs_lab'] = [float(lab.get((w, r, tn), np.nan)) - v for w, r, tn, v in zip(sc.wiring, sc.readout, sc.target, sc.pattern_rms)]
+    sc.to_csv(out / 'oracle_scores.csv', index=False)
+    if long_parts:
+        lp = out / 'model_pair_distances_long.csv'
+        new = pd.concat(long_parts, ignore_index=True)
+        if lp.exists():
+            old = pd.read_csv(lp)
+            new = pd.concat([old[~old.tag.isin(set(new.tag))], new], ignore_index=True)
+        new.to_csv(lp, index=False)
+    show = sc[(sc.readout == 'cal') & sc.wiring.isin(['real', 'pop4'])]
+    print(show.pivot_table(index=['input', 'wiring'], columns='target', values='pattern_rms').round(4).to_string(), flush=True)
+    return sc
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--part', required=True, choices=['A-input', 'A-score', 'B', 'C', 'gate', 'D', 'E', 'F'])
     ap.add_argument('--half', choices=['A', 'B'], help="part E's half of the recordings to search against")
+    ap.add_argument('--score', action='store_true', help="part E: score the two searched inputs (score_oracle)")
     ap.add_argument('--odors', nargs='+', default=list(E_ODORS))
     ap.add_argument('--generations', type=int, default=E_GENS)
     args = ap.parse_args()
@@ -747,6 +870,8 @@ def main() -> None:
         S.screen(out)
     elif args.part == 'gate':
         gate(out)
+    elif args.part == 'E' and args.score:
+        score_oracle(out)
     elif args.part == 'E':
         if args.half is None:
             ap.error('--part E needs --half A or B')
