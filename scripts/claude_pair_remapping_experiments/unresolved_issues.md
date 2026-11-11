@@ -46,6 +46,8 @@ directory's notes/ and are linked from here.
   noise removed" column and the "at zero" sentence of E78's entry and report item 78.
 - **Done.** E81 (atlas) estimated the noise-free values with intervals (registry `noise_free_*`; part A4); the summary quotes them beside or in place of
   the earlier values (template, 2026-11-11 11:20); E76's note carries a dated annotation (11:25).
+- **Done (hal, 2026-11-11).** E78's note gives both estimates (its six-pair table and text); E78's Completed entry and
+  report item 78 carry dated annotations.
 - **Done (E81 parts A and B, atlas, 2026-11-11).** The shared part is confirmed with intervals (E81_repeat_structure.py,
   results/E81_repeat_structure/): the same-repeat gap is 0.025 (90 % interval over resampled recordings 0.019 to 0.033) in control
   flies and 0.070 (0.055 to 0.085) with APL output blocked (TNT), positive in all 19 recordings. The noise-free estimate from cosines
