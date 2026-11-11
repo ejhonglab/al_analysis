@@ -112,6 +112,9 @@ SERIES_COLORS = {
 APL_EFFECT = H.shared_dir() / 'results' / 'apl_effect' / 'by_variant.csv'
 _APL_EFFECT_COLS = ['spike_counts_cosine__apl_effect_rmse', 'spike_counts_cosine__apl_effect_spearman',
     'spike_counts_cosine__apl_effect_mean']
+# the response rate ρ the realism bands use (apl_effect_scores.py: against the KC data in baseline-noise units, from the
+# archived responses), merged under its own name so it never replaces a table's own column
+BAND_RATE_RHO = 'band_rate_rho_on'
 TABLE_NAMES = ('stats_variants.csv', 'fits.csv', 'wkckc_controls.csv')
 
 # parameter columns shown in the hover text of a best model, in this order (label, format)
@@ -224,6 +227,9 @@ def merge_apl_effect(folder: Path, df: pd.DataFrame) -> pd.DataFrame:
     if ae.empty:
         return df
     opk = [c for c in ('opk_on_tv', 'opk_off_tv') if c in ae.columns]
+    if 'rate_rho_on' in ae.columns:
+        ae = ae.rename(columns={'rate_rho_on': BAND_RATE_RHO})
+        opk.append(BAND_RATE_RHO)
     ae = ae[['tag'] + _APL_EFFECT_COLS + opk + ['rate_on', 'rate_off']].copy()
     ae['tag'] = ae['tag'].astype(str)
     if df.empty:
@@ -267,21 +273,25 @@ REALISM_METRICS = {'apl_loss', 'apl_rho'}
 def realistic(df: pd.DataFrame) -> pd.DataFrame:
     """The rows inside the realism bands: APL-on response rate and the APL-off / APL-on ratio in
     their bands, the APL-on response rate ρ not below its minimum, and the odors-per-KC distributions with
-    APL on and off within their distance of the flies' (the last two where recorded)."""
+    APL on and off within their distance of the flies' (the last two where recorded). The KC data's side is in
+    baseline-noise units (Tom, 2026-11-10 16:10), as apl_effect_scores.py's realism_flag: the odors-per-KC
+    distances and the response rate ρ come from its table (`merge_apl_effect`); a table without them falls back
+    to its own response rate ρ."""
     from apl_effect_scores import RATE_ON_BAND, RATE_RATIO_BAND, RATE_RHO_MIN
     if not {'rate_on', 'rate_off'} <= set(df.columns):
         return df.iloc[0:0]
     on, off = pd.to_numeric(df['rate_on'], errors='coerce'), pd.to_numeric(df['rate_off'], errors='coerce')
     ok = on.between(*RATE_ON_BAND) & (off / on).between(*RATE_RATIO_BAND)
-    if 'spearman_rate_on_vs_data' in df.columns:
-        rr = pd.to_numeric(df['spearman_rate_on_vs_data'], errors='coerce')
+    rho_col = BAND_RATE_RHO if BAND_RATE_RHO in df.columns else 'spearman_rate_on_vs_data'
+    if rho_col in df.columns:
+        rr = pd.to_numeric(df[rho_col], errors='coerce')
         ok &= rr.isna() | (rr >= RATE_RHO_MIN)
     from apl_effect_scores import opk_band
     for cond in ('on', 'off'):
         col = f'opk_{cond}_tv'
         if col in df.columns:
             tv = pd.to_numeric(df[col], errors='coerce')
-            ok &= tv.isna() | (tv <= opk_band(cond))
+            ok &= tv.isna() | (tv <= opk_band(cond, 'noise'))
     return df[ok]
 
 

@@ -53,7 +53,12 @@ provenance_B.json (with the model provenance).
 against the present order, the best-models columns, the firing ceiling's gain, the wiring population and
 the input-scaled threshold's settings, as archived; the low-concentration panels), key_models.csv, order.csv,
 best_models_columns.csv, map_choice.csv (the map kept: the one whose APL-on amplitude statistics are nearer the
-control flies'), E73_loss_present_vs_reading.png, E73_key_models.png, provenance_summary.json.
+control flies'), E73_loss_present_vs_reading.png, E73_key_models.png, provenance_summary.json. It also adds to
+by_variant.csv (every existing column kept as it is) the realism bands as decided on 2026-11-10 16:10 (Tom: the model's
+two-spike responses against the KC data in baseline-noise units, `fixed_unit_flags`), one value per variant on every
+row of the variant: fixed_rate_rho_on / _off, fixed_opk_on_tv / _off_tv and fixed_realism_flag; the tables show that
+flag beside the existing ones (the row's own criterion against Yang's z, and realism_flag_by_variant, the present
+definitions when part B ran).
 
 Outputs in <shared>/results/E73_per_kc_normalization/. Nothing is simulated.
 Usage: nice -n 10 ./venv/bin/python -u E73_per_kc_normalization.py --part A|B|summarize [--jobs 16] [--only-key]
@@ -1027,10 +1032,61 @@ def map_choice(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+FIXED_COLS = ('fixed_rate_rho_on', 'fixed_rate_rho_off', 'fixed_opk_on_tv', 'fixed_opk_off_tv', 'fixed_realism_flag')
+
+
+def _two_spike_rates_per_odor(job: Tuple[str, str]) -> Tuple[str, str, Optional[pd.Series], Optional[pd.Series]]:
+    folder, tag = job
+    try:
+        return (folder, tag, *((load_counts(folder, tag, c) >= 2).astype(float).mean() for c in ('on', 'acute_off')))
+    except FileNotFoundError:
+        return folder, tag, None, None
+
+
+def fixed_unit_flags(df: pd.DataFrame, jobs: int = 8) -> pd.DataFrame:
+    """The realism bands as decided on 2026-11-10 16:10 (Tom; CLAUDE.md "The main goal for new experiments"): the
+    model's two-spike responses (the present rows' rate_on / rate_off and opk_<on|off>_<bin>, from the archived spike
+    counts) against the KC data in baseline-noise units (the registry's noise_* entries): per variant (folder, tag),
+    fixed_rate_rho_<on|off> (the response rate ρ of the per-odor two-spike rates with the flies' in those units),
+    fixed_opk_<on|off>_tv (the odors-per-KC distances from the flies' distributions in those units) and
+    fixed_realism_flag (`apl_effect_scores.realism_flag` with units 'noise'; '' inside every band)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from apl_effect_scores import OPK_BINS, frac_data, opk_data, realism_flag
+    p = df[df.reading_def == 'present_raw'].drop_duplicates(['folder', 'tag']).set_index(['folder', 'tag'])
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        per_odor = {(f, t): (on, off) for f, t, on, off in ex.map(_two_spike_rates_per_odor, list(p.index))}
+    rows = []
+    for (folder, tag), r in p.iterrows():
+        on, off = per_odor[(folder, tag)]
+        row = dict(folder=folder, tag=tag)
+        for c, po in (('on', on), ('off', off)):
+            row[f'fixed_rate_rho_{c}'] = np.nan if po is None else H.spearman(po, frac_data(c, 'noise'))
+            d = np.array([r[f'opk_{c}_{b}'] for b in OPK_BINS], dtype=float)
+            row[f'fixed_opk_{c}_tv'] = float(0.5 * np.abs(d - opk_data(c, 'noise')).sum())
+        row['fixed_realism_flag'] = realism_flag(r['rate_on'], r['rate_off'], row['fixed_rate_rho_on'], row['fixed_opk_on_tv'],
+            row['fixed_opk_off_tv'], units='noise')
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def add_fixed_unit_flags(path: Path) -> pd.DataFrame:
+    """Adds (or replaces) the `fixed_unit_flags` columns of every row of the table at `path` and rewrites it; every
+    other column is read and written back as it was (floats round-trip). Returns the table."""
+    df = pd.read_csv(path, float_precision='round_trip', low_memory=False)
+    df['tag'] = df['tag'].astype(str)
+    fx = fixed_unit_flags(df)
+    df = df.drop(columns=[c for c in FIXED_COLS if c in df.columns]).merge(fx, on=['folder', 'tag'], how='left')
+    df['fixed_realism_flag'] = df['fixed_realism_flag'].fillna('')
+    df.to_csv(path, index=False)
+    flagged = (fx.fixed_realism_flag != '')
+    print(f'fixed-unit realism bands (two spikes against the KC data in baseline-noise units): {int(flagged.sum())} of {len(fx)} '
+        'variants flagged', flush=True)
+    return df
+
+
 def summarize(args) -> None:
     out = H.results_dir(EXPERIMENT)
-    df = pd.read_csv(out / ('by_variant_key.csv' if args.only_key else 'by_variant.csv'))
-    df['tag'] = df['tag'].astype(str)
+    df = add_fixed_unit_flags(out / ('by_variant_key.csv' if args.only_key else 'by_variant.csv'))
     df['realism_flag'] = df['realism_flag'].fillna('')
     q, q_sens = q_values()
     mc = map_choice(df)
@@ -1082,7 +1138,13 @@ def _key_line(label: str, reading_label: str, g: pd.Series, thr: Optional[pd.Ser
         f"{_fmt_rates(g)} | {f3(g['rate_rho_on'], '.2f')} / {f3(g['rate_rho_off'], '.2f')} | "
         f"{f3(g['resp_amp_mean_on'], '.2f')} / {f3(g['resp_amp_mean_off'], '.2f')} | {100 * g['share_above_4_off']:.1f} % | "
         f"{100 * g['silent_share_off']:.0f} % / {100 * g['opk_8plus_off']:.0f} % | {f3(g['opk_on_tv'], '.2f')} / {f3(g['opk_off_tv'], '.2f')} | "
-        f"{'yes: ' + flag if flag else 'no'} |")
+        f"{'yes: ' + flag if flag else 'no'} | {_fixed_flag(g)} |")
+
+
+def _fixed_flag(g: pd.Series) -> str:
+    """The variant's flag under the bands as decided on 2026-11-10 16:10 (`fixed_unit_flags`), for a table cell."""
+    f = g.get('fixed_realism_flag', np.nan)
+    return '–' if not isinstance(f, str) else ('yes: ' + f if f else 'no')
 
 
 def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_target: dict, q: float, q_sens: List[float]) -> None:
@@ -1225,12 +1287,15 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
         f"{dt('ctrl_frac'):.3f} / {dt('tnt_frac'):.3f} ({dt('rate_ratio_fraction'):.2f}) | ceiling | "
         f"{dt('ctrl_resp_amp_mean_z'):.2f} / {dt('tnt_resp_amp_mean_z'):.2f} | {100 * dt('tnt_share_z_above_4'):.1f} % | "
         f"{100 * dt('tnt_odors_per_kc_0'):.0f} % / {100 * dt('tnt_odors_per_kc_8plus'):.0f} % | "
-        f"bands {dt('ctrl_odors_per_kc_tv_max'):.3f} / {dt('tnt_odors_per_kc_tv_max'):.3f} | |")
+        f"bands {dt('ctrl_odors_per_kc_tv_max'):.3f} / {dt('tnt_odors_per_kc_tv_max'):.3f} | | "
+        f"bands in baseline-noise units {dt('noise_ctrl_odors_per_kc_tv_max'):.3f} / {dt('noise_tnt_odors_per_kc_tv_max'):.3f}, "
+        f"response rates {dt('noise_ctrl_frac'):.3f} / {dt('noise_tnt_frac'):.3f} ({dt('noise_rate_ratio_fraction'):.2f}) |")
     head = ('| model | reading | APL-effect loss, graded | mean APL effect | pattern part | ρ on the per-pair APL effect | '
             'loss, sub-threshold set to 0 (mean) | loss, binarized (mean) | response rates, APL on / off (ratio) | response rate ρ, APL on / off | '
             'responders\' amplitude, APL on / off (z) | entries above 4 z, APL off | KCs silent / at 8 or more odors, APL off | '
-            'odors per KC, distance from the flies, APL on / off | realism flag |')
-    L += [head, '|---|---|' + '---:|' * 12 + '---|']
+            'odors per KC, distance from the flies, APL on / off | realism flag | realism flag, two spikes against the KC data in baseline-noise units '
+            '(the bands since 2026-11-10) |')
+    L += [head, '|---|---|' + '---:|' * 12 + '---|---|']
     key_rows = []
     for short, label, folder, tag, pres in KEY_MODELS:
         for rd_def, rd_label in ((f'present_{pres}', 'as now: ' + ('raw counts' if pres == 'raw' else 'calibrated readout') + ', two-spike criterion'),
@@ -1307,7 +1372,7 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
             continue
         bm.append(dict(column=label, folder=folder, tag=tag, loss_raw=p['rmse'], mean_raw=p['mean'], loss_cal=pc['rmse'], mean_cal=pc['mean'],
             loss_zcell=z['rmse'], mean_zcell=z['mean'], rho_zcell=z['spearman'], rate_on_zcell=z['rate_on'], rate_ratio_zcell=z['rate_ratio'],
-            flag_present=p['realism_flag'], flag_zcell=z['realism_flag']))
+            flag_present=p['realism_flag'], flag_zcell=z['realism_flag'], flag_fixed=p.get('fixed_realism_flag', np.nan)))
     bm = pd.DataFrame(bm)
     if 'loss_raw' in bm:
         ok = bm.loss_raw.notna()
@@ -1316,14 +1381,16 @@ def write_tables(out: Path, df: pd.DataFrame, chosen: str, med: pd.Series, amp_t
         bm.loc[ok, 'rank_zcell'] = bm.loc[ok, 'loss_zcell'].rank()
     bm.to_csv(out / 'best_models_columns.csv', index=False)
     L += ['', '### The best-models columns', '',
-          '| column | loss (mean APL effect), raw counts | rank | calibrated readout | rank | under the reading | rank | response rates under the data\'s criterion, APL on (ratio) | realism flag under the reading |',
-          '|---|---:|---:|---:|---:|---:|---:|---:|---|']
+          '| column | loss (mean APL effect), raw counts | rank | calibrated readout | rank | under the reading | rank | response rates under the data\'s criterion, APL on (ratio) | realism flag under the reading | '
+          'realism flag, two spikes against the KC data in baseline-noise units |',
+          '|---|---:|---:|---:|---:|---:|---:|---:|---|---|']
     for r in bm.itertuples():
         if getattr(r, 'missing', False) is True:
-            L.append(f'| {r.column} | not archived | | | | | | | |')
+            L.append(f'| {r.column} | not archived | | | | | | | | |')
             continue
         L.append(f'| {r.column} | {r.loss_raw:.3f} ({r.mean_raw:+.3f}) | {r.rank_raw:.0f} | {r.loss_cal:.3f} ({r.mean_cal:+.3f}) | {r.rank_cal:.0f} | '
-            f'{r.loss_zcell:.3f} ({r.mean_zcell:+.3f}) | {r.rank_zcell:.0f} | {r.rate_on_zcell:.3f} ({r.rate_ratio_zcell:.2f}) | {r.flag_zcell if r.flag_zcell else "no"} |')
+            f'{r.loss_zcell:.3f} ({r.mean_zcell:+.3f}) | {r.rank_zcell:.0f} | {r.rate_on_zcell:.3f} ({r.rate_ratio_zcell:.2f}) | {r.flag_zcell if r.flag_zcell else "no"} | '
+            f'{_fixed_flag(pd.Series(dict(fixed_realism_flag=r.flag_fixed)))} |')
     if 'loss_raw' in bm and bm.loss_raw.notna().sum() > 2:
         L += ['', f"Spearman of the columns' order, the reading against raw counts {H.spearman(bm.loss_zcell, bm.loss_raw):.2f}, against the calibrated readout "
               f"{H.spearman(bm.loss_zcell, bm.loss_cal):.2f}."]

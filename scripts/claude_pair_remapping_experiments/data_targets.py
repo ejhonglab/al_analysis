@@ -8,7 +8,9 @@ computed_at}}. Report templates reference entries as `{{data:<name>|spec}}` (rep
 figure scripts and loss functions should read their reference values from here instead of
 literals. KC distances are one minus the cosine similarity of per-recording trial-mean response
 vectors, averaged over recordings (the report's matrices); ORN distances are
-`kc_remapping_harness.orn16_consensus_pairs()` (1 - Pearson r, 36 glomeruli, olfdb).
+`kc_remapping_harness.orn16_consensus_pairs()` (1 - Pearson r, 36 glomeruli, olfdb). Entries named
+`noise_*` are the KC data's side of the realism bands (Tom, 2026-11-10 16:10): each KC's responses in units
+of its own baseline noise, a response above `noise_threshold` (`noise_unit_criterion`).
 Usage: ./venv/bin/python data_targets.py [--add-new]
 (--add-new: compute every entry but write only those not yet in the registry, keeping the existing entries as
 they are, and list any existing entry whose recomputed value or interval differs)
@@ -20,6 +22,7 @@ import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -71,6 +74,104 @@ def apl_effect_resamples(recs: dict, seed: int = 0) -> tuple:
         b = H.apl_effect(halves[1]['TNT3c'], halves[1]['TNT']).reindex(a.index)
         sh_rho.append(H.spearman(a, b))
     return effect, boot_mean, boot_rmse, sh_rho
+
+
+# the realism bands' response criterion on the KC data's side (Tom, 2026-11-10 16:10; notes/response_criterion_decision.md):
+# each KC's trial-mean response in units of its own baseline noise (Yang's whole-recording z response times the KC's
+# whole-trace SD over its baseline-noise SD), a response being above the threshold that keeps the control flies at their
+# rate under Yang's criterion (trial mean > 1 z); the registry entries carry the prefix `noise_`
+OPK_BIN_NAMES = ('0', '1', '2_3', '4_7', '8plus')
+
+
+def opk_bin_fractions(n: np.ndarray) -> np.ndarray:
+    """Fractions of KCs responding to 0, 1, 2-3, 4-7 and 8 or more odors (`OPK_BIN_NAMES`), from each KC's count `n`."""
+    return np.array([np.mean(n == 0), np.mean(n == 1), np.mean((n >= 2) & (n <= 3)), np.mean((n >= 4) & (n <= 7)),
+        np.mean(n >= 8)])
+
+
+def kc_scale_ratios(path: Optional[Path] = None) -> pd.Series:
+    """Each KC's whole-trace SD of Fc (Yang's z unit) over its SD within the pre-odor windows (each window's mean
+    removed), from viki's kc_scales.csv (yang_response_normalization.py, whose `kc` is the row order of the iscell
+    ROIs and equals olfdb's `roi` within a recording); indexed (genotype, date, fly_num, hemibrain, roi) as the
+    trial means (`kc_remapping_harness.yang_trialmeans`)."""
+    ks = pd.read_csv(path or INPUTS['yang_norm_kc_scales'])
+    day, unit = (ks.recording.str.split('_', expand=True)[i] for i in (0, 1))
+    idx = pd.MultiIndex.from_arrays([ks.genotype, day.str[:4] + '-' + day.str[4:6] + '-' + day.str[6:8],
+        unit.str[0].astype(int), unit.str[2], ks.kc], names=['genotype'] + H.RECORDING_KEYS + ['roi'])
+    s = pd.Series(ks.scale_ratio.to_numpy(dtype=float), index=idx)
+    assert not s.index.duplicated().any()
+    return s
+
+
+def kc_response_matrices(scale: Optional[pd.Series] = None) -> Dict[str, Dict[tuple, pd.DataFrame]]:
+    """{genotype: {(date, fly_num, hemibrain): KCs x the 16 odors (APL16_ODORS order) trial-mean matrix}}, recordings
+    in sorted order: Yang's z units, or, with `scale` (`kc_scale_ratios`), each KC's row times its scale (its
+    responses in units of its baseline noise)."""
+    tm = H.yang_trialmeans()
+    tm = tm[tm.odor.isin(H.APL16_ODORS)]
+    out: Dict[str, Dict[tuple, pd.DataFrame]] = {}
+    for g in ('TNT3c', 'TNT'):
+        out[g] = {}
+        for rec, sub in tm[tm.genotype == g].groupby(H.RECORDING_KEYS, sort=True):
+            m = sub.pivot(index='roi', columns='odor', values='value')[H.APL16_ODORS]
+            assert not m.isna().any().any(), rec
+            if scale is not None:
+                s = scale.loc[(g, *rec)].reindex(m.index)
+                assert not s.isna().any(), (g, rec)
+                m = m.mul(s.to_numpy(), axis=0)
+            out[g][rec] = m
+    return out
+
+
+def criterion_threshold(mats: Dict[str, Dict[tuple, pd.DataFrame]], target: float, genotype: str = 'TNT3c') -> float:
+    """The threshold at which `genotype`'s mean response rate over recordings (each recording's share of KC x odor
+    entries above it) comes down to `target`: geometric bisection on [0.1, 100], 60 steps, as
+    yang_response_normalization.py chose its 1.97."""
+    lo, hi = 0.1, 100.0
+    arrs = [m.to_numpy(dtype=float) for m in mats[genotype].values()]
+    for _ in range(60):
+        mid = np.sqrt(lo * hi)
+        r = np.mean([float((a > mid).mean()) for a in arrs])
+        lo, hi = (mid, hi) if r > target else (lo, mid)
+    return float(np.sqrt(lo * hi))
+
+
+def criterion_stats(mats: Dict[str, Dict[tuple, pd.DataFrame]], threshold: float, n_boot: int = 5000, seed: int = 0) -> dict:
+    """The KC data's response-criterion statistics with a response being a trial mean above `threshold`, per genotype
+    ('ctrl' for TNT3c, 'tnt' for TNT): `frac_per_recording` (recordings x odors), `frac` (mean over odors and
+    recordings), `frac_per_odor` (mean over recordings), `opk_per_recording` (recordings x `OPK_BIN_NAMES`), `opk`
+    (mean over recordings), `opk_tv_loo` (each recording's total variation distance from the mean of the others),
+    `opk_tv_max` / `opk_tv_median`; and `rate_ratio` (APL output blocked (TNT) over control flies, the ratio of the
+    mean fractions) with `rate_ratio_ci90` (`n_boot` resamples of recordings within each genotype, seed `seed`, the TNT
+    draw first: as summary_background_figure.rate_ratios). With `kc_response_matrices()` and threshold 1 these are the
+    registry's ctrl_ / tnt_frac, rate_ratio_fraction, ctrl_ / tnt_odors_per_kc_* and _tv_max / _tv_median."""
+    out = {}
+    per_rec = {}
+    for g, name in (('TNT3c', 'ctrl'), ('TNT', 'tnt')):
+        fr = pd.DataFrame({rec: (m > threshold).mean() for rec, m in mats[g].items()}).T[H.APL16_ODORS]
+        P = pd.DataFrame({rec: opk_bin_fractions((m.to_numpy(dtype=float) > threshold).sum(axis=1)) for rec, m in mats[g].items()},
+            index=list(OPK_BIN_NAMES)).T
+        loo = [0.5 * float(np.abs(P.loc[[k]].to_numpy()[0] - P.drop(index=[k]).mean().to_numpy()).sum()) for k in P.index]
+        per_rec[g] = fr.mean(axis=1)
+        out[name] = dict(frac_per_recording=fr, frac=float(fr.mean(axis=1).mean()), frac_per_odor=fr.mean(),
+            opk_per_recording=P, opk=P.mean(), opk_tv_loo=loo, opk_tv_max=float(max(loo)), opk_tv_median=float(np.median(loo)))
+    rng = np.random.default_rng(seed)
+    boots = [per_rec['TNT'].iloc[rng.integers(0, len(per_rec['TNT']), len(per_rec['TNT']))].mean()
+        / per_rec['TNT3c'].iloc[rng.integers(0, len(per_rec['TNT3c']), len(per_rec['TNT3c']))].mean() for _ in range(n_boot)]
+    out['rate_ratio'] = float(per_rec['TNT'].mean() / per_rec['TNT3c'].mean())
+    out['rate_ratio_ci90'] = [float(v) for v in np.percentile(boots, [5, 95])]
+    return out
+
+
+def noise_unit_criterion() -> Tuple[float, dict, dict]:
+    """(threshold, statistics in baseline-noise units, statistics in Yang's z units at 1): the threshold keeps the
+    control flies' mean response rate at the one under Yang's criterion; statistics as `criterion_stats`."""
+    z = kc_response_matrices()
+    st_z = criterion_stats(z, 1.0)
+    target = float(np.mean([float((m.to_numpy(dtype=float) > 1.0).mean()) for m in z['TNT3c'].values()]))
+    nu = kc_response_matrices(kc_scale_ratios())
+    thr = criterion_threshold(nu, target)
+    return thr, criterion_stats(nu, thr), st_z
 
 
 def build() -> dict:
@@ -436,6 +537,39 @@ def build() -> dict:
             ['kc_trialmeans'], ci=ci)
     add('n_recordings_ctrl', len(recs['TNT3c']), 'control recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
     add('n_recordings_tnt', len(recs['TNT']), 'APL output blocked (TNT) recordings', 'harness.yang_recording_rdms', ['kc_rdms'])
+    # the KC data's side of the realism bands (Tom, 2026-11-10 16:10): responses in baseline-noise units
+    thr_n, nu, zu = noise_unit_criterion()
+    nfn = 'data_targets.noise_unit_criterion (kc_response_matrices scaled by kc_scale_ratios; criterion_stats)'
+    unit = ('each KC\'s trial-mean response in units of its baseline noise (Yang\'s z response times the KC\'s whole-trace SD of Fc '
+        'over its SD within the pre-odor windows, each window\'s mean removed)')
+    nin = ['kc_trialmeans', 'yang_norm_kc_scales']
+    add('noise_threshold', thr_n, f'the response threshold on {unit} that keeps the control flies\' mean response rate (16 odors, mean '
+        'over recordings) at the one under Yang\'s criterion (trial mean > 1 z): the realism bands\' criterion on the KC data\'s side',
+        'data_targets.criterion_threshold', nin)
+    crit = f'{unit}, above noise_threshold'
+    for name, lab in (('ctrl', 'control flies'), ('tnt', 'APL output blocked (TNT)')):
+        s = nu[name]
+        add(f'noise_{name}_frac', s['frac'], f'KCs, {lab}: fraction of KC x odor entries responding ({crit}), mean over the 16 odors and '
+            'the recordings', nfn, nin)
+        for o in H.APL16_ODORS:
+            add(f'noise_{name}_frac_{o}', s['frac_per_odor'][o], f'KCs, {lab}: fraction of KCs responding to {o} ({crit}), mean over '
+                'recordings (the data side of the response rate ρ in the realism bands)', nfn, nin)
+        for b, blab in (('0', 'none'), ('1', 'one'), ('2_3', 'two or three'), ('4_7', 'four to seven'), ('8plus', 'eight or more')):
+            add(f'noise_{name}_odors_per_kc_{b}', s['opk'][b], f'KCs, {lab}: fraction of KCs responding ({crit}) to {blab} of the 16 '
+                'odors, mean over recordings', nfn, nin)
+        add(f'noise_{name}_odors_per_kc_tv_max', s['opk_tv_max'], f'KCs, {lab}: the largest total variation distance between one '
+            'recording\'s distribution of the number of odors each KC responds to (0, 1, 2-3, 4-7, 8 or more of the 16; '
+            f'{crit}) and the mean of the other recordings: the realism band on odors per KC', nfn, nin)
+        add(f'noise_{name}_odors_per_kc_tv_median', s['opk_tv_median'], f'KCs, {lab}: the median of the same leave-one-out distances',
+            nfn, nin)
+        add(f'noise_{name}_odors_per_kc_tv_vs_z', 0.5 * float(np.abs(s['opk'] - zu[name]['opk']).sum()), f'KCs, {lab}: total '
+            'variation distance between the flies\' mean distribution of the number of odors each KC responds to in baseline-noise '
+            'units (above noise_threshold) and in Yang\'s z units (above 1 z)', nfn, nin)
+        add(f'noise_{name}_frac_rho_vs_z', H.spearman(s['frac_per_odor'], zu[name]['frac_per_odor']), f'KCs, {lab}: ρ between the '
+            'per-odor response fractions (mean over recordings) in baseline-noise units and in Yang\'s z units', nfn, nin)
+    add('noise_rate_ratio_fraction', nu['rate_ratio'], 'response rate with APL output blocked (TNT) relative to control flies, '
+        f'responses {crit}: ratio of the mean fractions of KCs responding; 90 % interval over 5000 resamples of recordings (as '
+        'rate_ratio_fraction)', nfn, nin, ci=nu['rate_ratio_ci90'])
     return reg
 
 
