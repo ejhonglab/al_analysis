@@ -8,18 +8,6 @@ directory's notes/ and are linked from here.
 
 ## Open
 
-### E82's part C dropped part D's two fits from its readings when their fits/ folder was missing (found 2026-11-11 11:50, viki's planning subagent)
-- **What.** `E82_flies_protocol.saved_runs()` read part D's fits (D1, D2) only from a `fits/` subfolder of the outputs folder or the
-  archive. E10_joint_fit writes them at the top level, and the B6/D chain had copied them into `fits/`; that folder was gone when
-  viki's B7 chain re-ran part C (11:31-11:39), so protocol_readings.csv, late_spikes.csv, late_leave_out.csv, predicted_traces.csv,
-  predicted_ratios.csv and protocol_pairs.csv were rewritten without D1 and D2, with no error.
-- **Affects.** The summary template (62 placeholders on D1 / D2 unresolved, so no host could build the summary from 11:39); E84's part D
-  identity check (11:44-11:55, which reproduced the 70 runs present then). Nothing published used the incomplete tables.
-- **Done.** `fits/` recreated and part C and the tables re-run (11:52-); `saved_runs()` now also looks at the top level of the outputs
-  and archive folders, takes part D's fits from fits.csv's tags and raises an error for a listed fit without saved spike times
-  (test_e82_protocol.py::test_saved_runs_finds_part_d_at_top_level).
-- **Remains.** Confirm the re-run tables hold D1 and D2, rebuild the summary, and E84's part D re-runs its identity check.
-
 ### The raw-count readings of the main target are tied to the model's 0.5 s odor pulse; the flies had 2 s (found 2026-11-11 02:37, viki, E80)
 - **What.** Every model number compares spike counts of a 0.5 s pulse, counted to 0.75 s, with the flies' calcium signal 2 to 8 s
   after the onset of a 2 s pulse. With the flies' pulse (E80, both response rates re-held, parameters fitted at 0.5 s), C2's
@@ -43,7 +31,10 @@ directory's notes/ and are linked from here.
   model's 0.5 s pulse within 0.002 of the 1 s numbers (fit 0 0.052 / 0.052 on counts / through the window for 0.050 / 0.051, the
   population of four 0.054 / 0.055 for 0.055 / 0.056), so the 0.5 s pulse with that setting stands in for the flies' protocol;
   the summary's raw-count sentences are qualified by E82's passage (folded in, 5f7bd8b) and its stale "one run is missing"
-  sentences are being replaced. The trial-noise pipeline (E43_model_trial_noise.fit_model) does not rebuild fits at another pulse or APL time
+  sentences are replaced (16f552e). E84 (12:21) measured the indicator's kinetics in the traces (rise 1.3 s, decay about 21 s):
+  through them every reading at the flies' protocol is within 0.002 of plain counts at the 2 s pulse, so E82's primary reading
+  (an assumed 3 s decay) is replaced and the firing-ceiling fit's 1 s adaptation costs 0.010 to 0.012 there, not 0.020; E82's note
+  carries a dated note, the summary's passage is with a planning subagent. The trial-noise pipeline (E43_model_trial_noise.fit_model) does not rebuild fits at another pulse or APL time
   constant; since 2026-11-11 it refuses a fits.csv row with time_stim_end, time_end or apl_taum away from olfsysm's defaults
   rather than rebuilding it at 0.5 s unnoticed (test_e43_timing_refusal.py). E73's part B reads saved counts and trials only.
 
@@ -221,6 +212,20 @@ directory's notes/ and are linked from here.
   against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### E82's part C dropped part D's two fits from its readings when their fits/ folder was missing (found 2026-11-11 11:50, viki's planning subagent)
+- **What.** `E82_flies_protocol.saved_runs()` read part D's fits (D1, D2) only from a `fits/` subfolder of the outputs folder or the
+  archive. E10_joint_fit writes them at the top level, and the B6/D chain had copied them into `fits/`; that folder was gone when
+  viki's B7 chain re-ran part C (11:31-11:39), so protocol_readings.csv, late_spikes.csv, late_leave_out.csv, predicted_traces.csv,
+  predicted_ratios.csv and protocol_pairs.csv were rewritten without D1 and D2, with no error.
+- **Affects.** The summary template (62 placeholders on D1 / D2 unresolved, so no host could build the summary from 11:39); E84's part D
+  identity check (11:44-11:55, which reproduced the 70 runs present then). Nothing published used the incomplete tables.
+- **Done.** `fits/` recreated and part C and the tables re-run (11:52-); `saved_runs()` now also looks at the top level of the outputs
+  and archive folders, takes part D's fits from fits.csv's tags and raises an error for a listed fit without saved spike times
+  (test_e82_protocol.py::test_saved_runs_finds_part_d_at_top_level).
+- **Resolved (2026-11-11 12:22).** The re-run tables (12:10) hold D1 and D2, with the other 770 rows of protocol_readings.csv identical;
+  the summary builds again (16f552e); E84's part D re-ran its identity check on all 72 runs, D1 and D2 included, exactly; the code
+  fix is f448971. The duplicate fits/ copy was removed.
 
 ### The noise correction of the KC distances assumes noise independent between odors, which the recordings' repeats contradict (found 2026-11-11, atlas's planning subagent, probe)
 - **What.** `noise_floor_trial_distances.py` corrects each recording's odor-odor distances on the assumption that trial-to-trial noise adds
