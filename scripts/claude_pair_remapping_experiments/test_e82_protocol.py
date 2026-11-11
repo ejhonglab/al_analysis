@@ -246,3 +246,29 @@ def test_e80_counts_and_step_reading():
         assert rc[k] == pytest.approx(float(ref[k]), abs=1e-12), k
     assert rc['raw_n_pairs'] == 120 and rc['raw_z6_n_pairs'] == 120 and rc['raw_noise_n_pairs'] == 120
     assert rp['raw_loss'] != rc['raw_loss']
+
+
+def test_saved_runs_finds_part_d_at_top_level(tmp_path, monkeypatch):
+    """Part D's fits are found at the top level of the outputs folder (where E10_joint_fit writes them) without a fits/
+    folder, only fits.csv's tags are read as part D, and a listed fit without saved spike times is an error rather than a
+    dropped row (2026-11-11: part C dropped D1 and D2 when fits/ was missing)."""
+    res, out, shared = tmp_path / 'results', tmp_path / 'outputs', tmp_path / 'shared'
+    monkeypatch.setattr(H, 'results_dir', lambda f: res / f)
+    monkeypatch.setattr(H, 'outputs_dir', lambda f: out / f)
+    monkeypatch.setattr(H, 'shared_dir', lambda: shared)
+    (res / E.E80).mkdir(parents=True)
+    pd.DataFrame(columns=['point_id', 'model', 'pulse', 'time_stim_end', 'held', 'identity']).to_csv(
+        res / E.E80 / 'pulse.csv', index=False)
+    (res / E.EXPERIMENT).mkdir(parents=True)
+    pd.DataFrame(dict(tag=['fitX'], time_stim_end=[2.0])).to_csv(res / E.EXPERIMENT / 'fits.csv', index=False)
+    d = out / E.EXPERIMENT
+    d.mkdir(parents=True)
+    for f in list(E._files(d, 'fitX').values()) + list(E._files(d, 'not_a_fit').values()):
+        f.write_bytes(b'')
+    r = E.saved_runs()
+    assert r.point_id.tolist() == ['fitX'] and r.source.tolist() == ['E82D'] and r.dir.iloc[0] == str(d)
+    assert float(r.pulse.iloc[0]) == 2.0
+    for f in E._files(d, 'fitX').values():
+        f.unlink()
+    with pytest.raises(RuntimeError, match='fitX'):
+        E.saved_runs()

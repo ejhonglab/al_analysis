@@ -8,6 +8,18 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### E82's part C dropped part D's two fits from its readings when their fits/ folder was missing (found 2026-11-11 11:50, viki's planning subagent)
+- **What.** `E82_flies_protocol.saved_runs()` read part D's fits (D1, D2) only from a `fits/` subfolder of the outputs folder or the
+  archive. E10_joint_fit writes them at the top level, and the B6/D chain had copied them into `fits/`; that folder was gone when
+  viki's B7 chain re-ran part C (11:31-11:39), so protocol_readings.csv, late_spikes.csv, late_leave_out.csv, predicted_traces.csv,
+  predicted_ratios.csv and protocol_pairs.csv were rewritten without D1 and D2, with no error.
+- **Affects.** The summary template (62 placeholders on D1 / D2 unresolved, so no host could build the summary from 11:39); E84's part D
+  identity check (11:44-11:55, which reproduced the 70 runs present then). Nothing published used the incomplete tables.
+- **Done.** `fits/` recreated and part C and the tables re-run (11:52-); `saved_runs()` now also looks at the top level of the outputs
+  and archive folders, takes part D's fits from fits.csv's tags and raises an error for a listed fit without saved spike times
+  (test_e82_protocol.py::test_saved_runs_finds_part_d_at_top_level).
+- **Remains.** Confirm the re-run tables hold D1 and D2, rebuild the summary, and E84's part D re-runs its identity check.
+
 ### The raw-count readings of the main target are tied to the model's 0.5 s odor pulse; the flies had 2 s (found 2026-11-11 02:37, viki, E80)
 - **What.** Every model number compares spike counts of a 0.5 s pulse, counted to 0.75 s, with the flies' calcium signal 2 to 8 s
   after the onset of a 2 s pulse. With the flies' pulse (E80, both response rates re-held, parameters fitted at 0.5 s), C2's
@@ -27,9 +39,11 @@ directory's notes/ and are linked from here.
   the calibrated readout (0.050 to 0.051); on raw counts a fit at 2 s stays at 0.138 / 0.149. E82's note and Status say so.
 - **Remains.** Tom's decisions: whether the firing ceiling, with an adaptation outlasting the odor, joins the base model, and
   which reading carries the model's side of the main target (raw counts under the flies' protocol, or the calibrated readout).
-  Open on the model side: the 3 s adaptation at the 0.5 s pulse (whether the short pulse can stand in for the flies' protocol;
-  E82 part B7, running from 2026-11-11 10:10); the summary's raw-count sentences are qualified by E82's passage (folded in,
-  5f7bd8b). The trial-noise pipeline (E43_model_trial_noise.fit_model) does not rebuild fits at another pulse or APL time
+  The model side is settled for the firing-ceiling family: E82's part B7 (2026-11-11 10:01-11:25) found the 3 s adaptation at the
+  model's 0.5 s pulse within 0.002 of the 1 s numbers (fit 0 0.052 / 0.052 on counts / through the window for 0.050 / 0.051, the
+  population of four 0.054 / 0.055 for 0.055 / 0.056), so the 0.5 s pulse with that setting stands in for the flies' protocol;
+  the summary's raw-count sentences are qualified by E82's passage (folded in, 5f7bd8b) and its stale "one run is missing"
+  sentences are being replaced. The trial-noise pipeline (E43_model_trial_noise.fit_model) does not rebuild fits at another pulse or APL time
   constant; since 2026-11-11 it refuses a fits.csv row with time_stim_end, time_end or apl_taum away from olfsysm's defaults
   rather than rebuilding it at 0.5 s unnoticed (test_e43_timing_refusal.py). E73's part B reads saved counts and trials only.
 

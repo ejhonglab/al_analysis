@@ -213,10 +213,23 @@ def saved_runs() -> pd.DataFrame:
                          ref_point='', dir=str(d)))
     for source, sub in (('E82B', 'runs'), ('E82D', 'fits')):
         dirs = _run_dirs(EXPERIMENT, sub)
+        if sub == 'fits':
+            # E10_joint_fit writes part D's fits at the top level of the outputs folder, and the archive keeps them there
+            dirs += [H.outputs_dir(EXPERIMENT), H.shared_dir() / 'data' / 'model_outputs' / EXPERIMENT]
         pids = set()
         for d in dirs:
             if d.exists():
                 pids |= {f.name[:-len('_on_spike_times.parquet')] for f in d.glob('*_on_spike_times.parquet')}
+        if sub == 'fits':
+            fp = H.results_dir(EXPERIMENT) / 'fits.csv'
+            if fp.exists():
+                # every fit in fits.csv, and only those; a listed fit without saved spike times is an error, not a
+                # silently dropped row (2026-11-11: part C dropped D1 and D2 when fits/ was missing)
+                tags = set(pd.read_csv(fp).tag.astype(str))
+                missing = sorted(t for t in tags if _find(dirs, t) is None)
+                if missing:
+                    raise RuntimeError(f'part D fits without saved spike times in {[str(d) for d in dirs]}: {missing}')
+                pids = tags
         if not pids:
             continue
         meta = {}
